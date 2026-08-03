@@ -28,6 +28,10 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "appstudio.serviceAccountName" . }}
+      # The provider uses the explicitly mounted workspace-admin kubeconfig;
+      # neither the provider nor its browser-worker sidecar should receive an
+      # ambient Kubernetes ServiceAccount token.
+      automountServiceAccountToken: false
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -91,6 +95,10 @@ spec:
               value: /var/run/secrets/kedge/kedge-provider-kubeconfig
             - name: APP_STUDIO_WORKSPACE_ROOT
               value: {{ .Values.workspace.path | quote }}
+            {{- if .Values.browserWorker.enabled }}
+            - name: APP_STUDIO_BROWSER_WORKER_URL
+              value: {{ printf "http://127.0.0.1:%v" .Values.browserWorker.port | quote }}
+            {{- end }}
             {{- if .Values.store.databaseURL }}
             - name: APP_STUDIO_DATABASE_URL
               value: {{ .Values.store.databaseURL | quote }}
@@ -155,6 +163,53 @@ spec:
               mountPath: {{ .Values.workspace.path | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+        {{- if .Values.browserWorker.enabled }}
+        - name: browser-worker
+          image: "{{ .Values.browserWorker.image.repository }}:{{ default .Chart.AppVersion .Values.browserWorker.image.tag }}"
+          imagePullPolicy: {{ .Values.browserWorker.image.pullPolicy }}
+          ports:
+            - name: browser-http
+              containerPort: {{ .Values.browserWorker.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ .Values.browserWorker.port | quote }}
+            - name: BROWSER_WORKER_TIMEOUT_MS
+              value: {{ .Values.browserWorker.timeoutMs | quote }}
+            - name: BROWSER_WORKER_IGNORE_HTTPS_ERRORS
+              value: {{ .Values.browserWorker.ignoreHTTPSErrors | quote }}
+            - name: HOME
+              value: /tmp/browser-worker
+            - name: XDG_CACHE_HOME
+              value: /tmp/browser-worker/cache
+            - name: XDG_CONFIG_HOME
+              value: /tmp/browser-worker/config
+          livenessProbe:
+            exec:
+              command: ["node", "-e", "fetch('http://127.0.0.1:{{ .Values.browserWorker.port }}/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            exec:
+              command: ["node", "-e", "fetch('http://127.0.0.1:{{ .Values.browserWorker.port }}/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: browser-worker-tmp
+              mountPath: /tmp
+            - name: browser-worker-shm
+              mountPath: /dev/shm
+          resources:
+            {{- toYaml .Values.browserWorker.resources | nindent 12 }}
+        {{- end }}
       volumes:
         # Required input: the workspace-admin kubeconfig minted via /bonkers
         # (admin onboarding), consumed by both init and serve. The onboard
@@ -181,6 +236,15 @@ spec:
           persistentVolumeClaim:
             claimName: {{ include "appstudio.fullname" . }}-workspaces
           {{- end }}
+        {{- if .Values.browserWorker.enabled }}
+        - name: browser-worker-tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: browser-worker-shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

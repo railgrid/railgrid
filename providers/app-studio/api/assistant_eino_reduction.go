@@ -26,6 +26,12 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+const (
+	projectEinoAssistantWorkspaceMutationEvidencePrefix = "Workspace mutation evidence:"
+	projectEinoAssistantSyntheticMessageKindKey         = "app_studio_synthetic_message_kind"
+	projectEinoAssistantWorkspaceMutationEvidenceKind   = "workspace_mutation_evidence"
+)
+
 const projectEinoAssistantReductionContextTokens int64 = 12000
 
 // projectEinoAssistantReductionMiddleware removes large historical workspace
@@ -85,10 +91,22 @@ func projectEinoAssistantRewriteWorkspaceMutations(
 	messages := make([]*schema.Message, 0, len(compactedResponses)+2)
 	messages = append(messages, schema.AssistantMessage("", compactedCalls))
 	messages = append(messages, compactedResponses...)
-	messages = append(messages, schema.UserMessage(
-		"<system-reminder>Workspace mutations succeeded: "+strings.Join(summaries, "; ")+". Treat successful whole-file writes as authoritative and proceed to development verification; reread only after a conflict, failed patch, or later mutation.</system-reminder>",
-	))
+	evidence := schema.UserMessage(
+		projectEinoAssistantWorkspaceMutationEvidencePrefix + " " + strings.Join(summaries, "; ") + ". Treat these completed results as authoritative; reread only after a conflict, failed patch, or later mutation.",
+	)
+	evidence.Extra = map[string]any{
+		projectEinoAssistantSyntheticMessageKindKey: projectEinoAssistantWorkspaceMutationEvidenceKind,
+	}
+	messages = append(messages, evidence)
 	return messages, nil
+}
+
+func projectEinoAssistantSyntheticWorkspaceMutationEvidence(message *schema.Message) bool {
+	if message == nil || message.Role != schema.User || message.Extra == nil {
+		return false
+	}
+	kind, _ := message.Extra[projectEinoAssistantSyntheticMessageKindKey].(string)
+	return kind == projectEinoAssistantWorkspaceMutationEvidenceKind
 }
 
 func projectEinoAssistantSuccessfulWorkspaceMutationGroup(toolCallMessage *schema.Message, toolResponseMessages []*schema.Message) bool {
@@ -109,7 +127,7 @@ func projectEinoAssistantSuccessfulWorkspaceMutationGroup(toolCallMessage *schem
 
 func projectEinoAssistantWorkspaceMutationTool(name string) bool {
 	switch projectToolBaseName(name) {
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	case projectToolApplyPatch:
 		return true
 	default:
 		return false

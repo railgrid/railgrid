@@ -18,6 +18,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -66,6 +67,32 @@ func TestGitTreeEntries(t *testing.T) {
 	}
 }
 
+func TestGitTreeEntriesEncodeDeletion(t *testing.T) {
+	entries, paths, err := gitTreeEntries([]backend.RepositoryCommitFile{
+		{Path: "src/new.ts", Content: "new"},
+		{Path: "src/old.ts", Delete: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || strings.Join(paths, ",") != "src/new.ts,src/old.ts" {
+		t.Fatalf("entries=%d paths=%v", len(entries), paths)
+	}
+	raw, err := json.Marshal(entries[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"sha":null`) || strings.Contains(string(raw), `"content"`) {
+		t.Fatalf("deletion tree entry = %s", raw)
+	}
+}
+
+func TestGitTreeEntriesRejectsDeletionContent(t *testing.T) {
+	if _, _, err := gitTreeEntries([]backend.RepositoryCommitFile{{Path: "old.ts", Content: "stale", Delete: true}}); err == nil {
+		t.Fatal("gitTreeEntries accepted content on a deletion")
+	}
+}
+
 func TestGitTreeEntriesRejectsDuplicatePaths(t *testing.T) {
 	_, _, err := gitTreeEntries([]backend.RepositoryCommitFile{
 		{Path: "src/../app.go", Content: "a"},
@@ -73,6 +100,59 @@ func TestGitTreeEntriesRejectsDuplicatePaths(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("gitTreeEntries returned nil error for duplicate normalized paths")
+	}
+}
+
+func TestFilterNoopGitTreeDeletionsWithoutBaseTree(t *testing.T) {
+	entries, paths, err := gitTreeEntries([]backend.RepositoryCommitFile{
+		{Path: "src/new.ts", Content: "new"},
+		{Path: "src/never-committed.ts", Delete: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries, paths, err = filterNoopGitTreeDeletions(context.Background(), nil, "acme", "widgets", "", entries, paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || len(paths) != 1 || paths[0] != "src/new.ts" {
+		t.Fatalf("entries=%d paths=%v, want only src/new.ts", len(entries), paths)
+	}
+}
+
+func TestFilterNoopGitTreeDeletionsUsesRemoteBaseTree(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v3/repos/acme/widgets/git/trees/tree-base" || r.URL.Query().Get("recursive") != "1" {
+			t.Fatalf("unexpected GitHub request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"sha":"tree-base","tree":[{"path":"src/present.ts","type":"blob","sha":"blob-1"}]}`))
+	}))
+	defer srv.Close()
+
+	client := gogithub.NewClient(nil)
+	baseURL := srv.URL + "/api/v3/"
+	client.BaseURL, _ = client.BaseURL.Parse(baseURL)
+	client.UploadURL, _ = client.UploadURL.Parse(baseURL)
+	entries, paths, err := gitTreeEntries([]backend.RepositoryCommitFile{
+		{Path: "src/new.ts", Content: "new"},
+		{Path: "src/missing.ts", Delete: true},
+		{Path: "src/present.ts", Delete: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries, paths, err = filterNoopGitTreeDeletions(context.Background(), client, "acme", "widgets", "tree-base", entries, paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || strings.Join(paths, ",") != "src/new.ts,src/present.ts" {
+		t.Fatalf("entries=%d paths=%v, want new file and existing deletion", len(entries), paths)
+	}
+	if entries[1].SHA != nil || entries[1].Content != nil {
+		t.Fatalf("present deletion was not preserved: %#v", entries[1])
 	}
 }
 
@@ -421,6 +501,135 @@ func TestCommitFilesRetriesWhenConcurrentUpdateAlreadyAppliedSameTreeWithoutProo
 	}
 	if strings.Join(updateRefSHAs, ",") != orphanCommitSHA+","+retryCommitSHA {
 		t.Fatalf("UpdateRef SHAs = %#v, want orphan then retry commit", updateRefSHAs)
+	}
+}
+
+func TestRecoverConcurrentCommitReevaluatesDeletionWhenRacedBaseAddedPath(t *testing.T) {
+	const (
+		concurrentSHA  = "commit-concurrent"
+		concurrentTree = "tree-concurrent"
+		retryTree      = "tree-retry"
+		retrySHA       = "commit-retry"
+	)
+	var createTreeCalls, createCommitCalls, updateRefCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/ref/heads/main" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"ref":"refs/heads/main","object":{"type":"commit","sha":%q}}`, concurrentSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits/"+concurrentSHA && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":%q}}`, concurrentSHA, concurrentTree)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/trees/"+concurrentTree && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"sha":"tree-concurrent","tree":[{"path":"race.txt","type":"blob","sha":"blob-race"}]}`))
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/trees" && r.Method == http.MethodPost {
+			createTreeCalls++
+			body := mustReadRequestBody(t, r)
+			if !strings.Contains(body, "race.txt") || !strings.Contains(body, `"sha":null`) {
+				t.Fatalf("retry tree omitted original deletion intent: %s", body)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q}`, retryTree)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits" && r.Method == http.MethodPost {
+			createCommitCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":%q}}`, retrySHA, retryTree)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/refs/heads/main" && r.Method == http.MethodPatch {
+			updateRefCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"ref":"refs/heads/main","object":{"type":"commit","sha":%q}}`, retrySHA)
+			return
+		}
+		t.Fatalf("unexpected GitHub request %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+	client := gogithub.NewClient(nil)
+	baseURL := srv.URL + "/api/v3/"
+	client.BaseURL, _ = client.BaseURL.Parse(baseURL)
+	client.UploadURL, _ = client.UploadURL.Parse(baseURL)
+	entries, files, err := gitTreeEntries([]backend.RepositoryCommitFile{
+		{Path: "new.txt", Content: "new"},
+		{Path: "race.txt", Delete: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok, err := recoverOrRetryConcurrentCommit(
+		context.Background(), client, "acme", &codev1alpha1.Repository{Spec: codev1alpha1.RepositorySpec{Name: "widgets"}},
+		"main", "orphan", "", "Update", entries, files,
+	)
+	if err != nil || !ok {
+		t.Fatalf("recover result = %#v, ok=%t, err=%v", result, ok, err)
+	}
+	if result.CommitSHA != retrySHA || createTreeCalls != 1 || createCommitCalls != 1 || updateRefCalls != 1 {
+		t.Fatalf("result=%#v calls=(tree=%d commit=%d ref=%d), want retried commit", result, createTreeCalls, createCommitCalls, updateRefCalls)
+	}
+}
+
+func TestRecoverConcurrentCommitReturnsHeadWhenRacedBaseRemovedDeletion(t *testing.T) {
+	const (
+		concurrentSHA  = "commit-concurrent"
+		concurrentTree = "tree-concurrent"
+	)
+	var createTreeCalls, createCommitCalls, updateRefCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/ref/heads/main" && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"ref":"refs/heads/main","object":{"type":"commit","sha":%q}}`, concurrentSHA)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits/"+concurrentSHA && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprintf(w, `{"sha":%q,"tree":{"sha":%q}}`, concurrentSHA, concurrentTree)
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/trees/"+concurrentTree && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"sha":"tree-concurrent","tree":[]}`))
+			return
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/trees" && r.Method == http.MethodPost {
+			createTreeCalls++
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/commits" && r.Method == http.MethodPost {
+			createCommitCalls++
+		}
+		if r.URL.Path == "/api/v3/repos/acme/widgets/git/refs/heads/main" && r.Method == http.MethodPatch {
+			updateRefCalls++
+		}
+		t.Fatalf("unexpected retry mutation request %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+	client := gogithub.NewClient(nil)
+	baseURL := srv.URL + "/api/v3/"
+	client.BaseURL, _ = client.BaseURL.Parse(baseURL)
+	client.UploadURL, _ = client.UploadURL.Parse(baseURL)
+	entries, files, err := gitTreeEntries([]backend.RepositoryCommitFile{{Path: "race.txt", Delete: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, ok, err := recoverOrRetryConcurrentCommit(
+		context.Background(), client, "acme", &codev1alpha1.Repository{Spec: codev1alpha1.RepositorySpec{Name: "widgets"}},
+		"main", "orphan", "", "Update", entries, files,
+	)
+	if err != nil || !ok {
+		t.Fatalf("recover result = %#v, ok=%t, err=%v", result, ok, err)
+	}
+	if result.CommitSHA != concurrentSHA || len(result.Files) != 0 {
+		t.Fatalf("result = %#v, want current head with zero effective files", result)
+	}
+	if createTreeCalls != 0 || createCommitCalls != 0 || updateRefCalls != 0 {
+		t.Fatalf("retry mutation calls = tree=%d commit=%d ref=%d, want zero", createTreeCalls, createCommitCalls, updateRefCalls)
 	}
 }
 

@@ -49,11 +49,10 @@ func TestProjectEinoAssistantModelCallbackRecordsStreamedToolCalls(t *testing.T)
 	auditRecorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
 	if err := auditRecorder.recordModelCall(
 		context.Background(),
-		projectEinoAssistantPhaseApproval,
 		1,
 		0,
 		0,
-		false,
+		nil,
 		nil,
 		nil,
 	); err != nil {
@@ -77,7 +76,7 @@ func TestProjectEinoAssistantModelCallbackRecordsStreamedToolCalls(t *testing.T)
 			ID:    "call-write",
 			Type:  "function",
 			Function: schema.FunctionCall{
-				Name:      projectToolWriteFile,
+				Name:      projectToolApplyPatch,
 				Arguments: `{"path":`,
 			},
 		}})},
@@ -104,7 +103,7 @@ func TestProjectEinoAssistantModelCallbackRecordsStreamedToolCalls(t *testing.T)
 		t.Fatalf("tool calls = %#v, want one merged tool call", state.ToolCalls)
 	}
 	call := state.ToolCalls[0]
-	if call.ID != "call-write" || call.Function.Name != projectToolWriteFile || call.Function.Arguments != `{"path":"src/App.tsx","content":"hi"}` {
+	if call.ID != "call-write" || call.Function.Name != projectToolApplyPatch || call.Function.Arguments != `{"path":"src/App.tsx","content":"hi"}` {
 		t.Fatalf("tool call = %#v, want merged streamed function call", call)
 	}
 	var audit projectAssistantRunAudit

@@ -20,11 +20,11 @@ import {
   PanelRight,
   Plus,
   RefreshCw,
-  RotateCcw,
   Search,
   Send,
   Settings2,
   Square,
+  TriangleAlert,
   Trash2,
   Users,
   Wrench,
@@ -45,16 +45,26 @@ import AssistantActionLog from './AssistantActionLog.vue'
 import { activeAssistantPlanMessage, assistantPlanProgress, parseAssistantPlan, type AssistantPlan } from './assistantPlan'
 import { formatAssistantWorkedDuration, parseAssistantProgress, type AssistantProgress } from './assistantProgress'
 import { buildAssistantTrace, type AssistantTraceBlock } from './assistantTrace'
+import {
+  assistantThreadItemIdentity,
+  assistantThreadItemToRun,
+  assistantThreadItemsToMessages,
+  assistantThreadItemsToRuns,
+  mergeAssistantThreadMessages,
+  maxAssistantThreadSequence,
+} from './assistantThreadProjection'
 import AssistantPlanPopover from './AssistantPlanPopover.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
 import ResponseModePicker, { type AssistantResponseMode } from './ResponseModePicker.vue'
+import PreviewActionsMenu from './PreviewActionsMenu.vue'
 import {
   ConversationRunController,
   abortedConversationSnapshot,
   acceptScopedConversationSnapshot,
-  assistantRunStartPayload,
   assistantRunStartFingerprint,
   assistantRunMatchesStartRequest,
+  assistantRunCanImplementPlan,
+  assistantRunRequiresLiveControls,
   assistantRunTerminal,
   firstProjectStartPlan,
   firstProjectSubmissionAccepted,
@@ -63,6 +73,7 @@ import {
   firstProjectSubmissionWithProject,
   mergeConversationSnapshot,
   newFirstProjectSubmission,
+  normalizeAssistantRunStatus,
   normalizeSnapshotMessage,
   orderConversationMessages,
   replaceOptimisticUserMessage,
@@ -85,7 +96,11 @@ import {
   type WorkbenchTabDropPlacement,
   type WorkbenchTabDescriptor,
 } from './workbench'
-import { developmentPreviewDisplayPhase, developmentPreviewSyncStatus } from './previewState'
+import {
+  developmentPreviewDisplayPhase,
+  developmentPreviewShouldRefreshOnWake,
+  developmentPreviewSyncStatus,
+} from './previewState'
 import { PreviewConsoleController } from './previewConsole'
 import type {
   DevelopmentTemplate,
@@ -95,7 +110,13 @@ import type {
   ProjectAssistantSnapshot,
   ProjectAssistantApprovalMode,
   ProjectAssistantActionFeedItem,
+  ProjectAssistantThread,
+  ProjectAssistantThreadEvent,
+  ProjectAssistantThreadItem,
+  ProjectAssistantRunStart,
   ProjectAssistantUIComponent,
+  ProjectAssistantFollowUpQuestion,
+  ProjectAssistantFollowUpQuestionOption,
   ProjectAssistantUIInterruptRequest,
   ProjectProviderBinding,
   ProjectLLMSettings,
@@ -163,12 +184,6 @@ interface PendingApprovalView {
 interface PendingFollowUpView {
   message: ProjectMessageView
   interrupt: ProjectAssistantUIInterruptRequest
-}
-
-interface ProjectAssistantUndoMetadata {
-  runID: string
-  status: 'workspace_restored'
-  fileCount?: number
 }
 
 interface ProjectDevelopmentPreviewAuthorization {
@@ -294,10 +309,14 @@ const projects = ref<Project[]>([])
 const providers = ref<ProviderItem[]>([])
 const selected = ref<Project | null>(null)
 const messages = ref<ProjectMessageView[]>([])
+const assistantThreads = ref<ProjectAssistantThread[]>([])
+const activeAssistantThreadID = ref('')
 const conversationMessages = computed(() => projectMessagesForConversation(messages.value))
 const pendingApproval = computed<PendingApprovalView | null>(() => {
-  for (let i = messages.value.length - 1; i >= 0; i--) {
-    const message = messages.value[i]
+  const currentMessages = messages.value
+  if (!assistantRunRequiresLiveControls(activeAssistantRun)) return null
+  for (let i = currentMessages.length - 1; i >= 0; i--) {
+    const message = currentMessages[i]
     const interrupt = message.interrupt
     if (interrupt?.status === 'pending' && interrupt.kind !== 'follow_up' && interrupt.action?.runId && interrupt.action.requestId) {
       return { message, interrupt }
@@ -306,8 +325,10 @@ const pendingApproval = computed<PendingApprovalView | null>(() => {
   return null
 })
 const pendingFollowUp = computed<PendingFollowUpView | null>(() => {
-  for (let i = messages.value.length - 1; i >= 0; i--) {
-    const message = messages.value[i]
+  const currentMessages = messages.value
+  if (!assistantRunRequiresLiveControls(activeAssistantRun)) return null
+  for (let i = currentMessages.length - 1; i >= 0; i--) {
+    const message = currentMessages[i]
     const interrupt = message.interrupt
     if (interrupt?.status === 'pending' && interrupt.kind === 'follow_up' && interrupt.action?.runId && interrupt.action.requestId) {
       return { message, interrupt }
@@ -334,8 +355,8 @@ const projectSettingsError = ref<string | null>(null)
 const deleteProjectTarget = ref<Project | null>(null)
 const deletingProject = ref(false)
 const prompt = ref('')
-const assistantIntent = ref<AssistantResponseMode>('auto')
-const approvalMode = ref<ProjectAssistantApprovalMode>('auto_approve')
+const assistantIntent = ref<AssistantResponseMode>('default')
+const approvalMode = ref<ProjectAssistantApprovalMode>('on_request')
 const approvalModeLoading = ref(false)
 const approvalModeSaving = ref(false)
 const approvalModeError = ref<string | null>(null)
@@ -367,7 +388,7 @@ let promotionPollTimer: number | undefined
 const conversationStatus = ref('')
 const permissionBusy = ref<Record<string, 'allow' | 'deny'>>({})
 const permissionErrors = ref<Record<string, string>>({})
-const followUpAnswers = ref<Record<string, string>>({})
+const followUpAnswers = ref<Record<string, Record<string, string>>>({})
 const followUpBusy = ref<Record<string, boolean>>({})
 const followUpErrors = ref<Record<string, string>>({})
 const toolState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
@@ -379,7 +400,6 @@ const importSelectedRepository = ref('')
 const importBusy = ref(false)
 const importError = ref<string | null>(null)
 const developmentTemplates = ref<DevelopmentTemplate[]>([])
-const developmentTemplateSelection = ref('')
 const developmentTemplateBusy = ref(false)
 const developmentHydrateBusy = ref(false)
 const workbench = ref(createDefaultWorkbenchState())
@@ -424,6 +444,7 @@ const previewConsoleController = new PreviewConsoleController({
 let activeAssistantSubscription: AbortController | null = null
 let activeAssistantRun: AssistantRun | null = null
 let activeAssistantProject = ''
+let activeAssistantThreadSequence = 0
 let pendingMessageSubmission: { fingerprint: string; clientRequestID: string } | null = null
 const pendingAssistantStopRequestIDs: Record<string, string> = {}
 let pendingFirstProjectSubmission: ReturnType<typeof newFirstProjectSubmission> | null = null
@@ -436,16 +457,78 @@ function clearPendingFirstProjectSubmission() {
   pendingFirstProjectSubmission = null
 }
 const assistantRunRevisions: Record<string, AssistantRun> = {}
+
+function hydrateAssistantRuns(items: ProjectAssistantThreadItem[]) {
+  const incoming = assistantThreadItemsToRuns(items) as Record<string, AssistantRun>
+  for (const [runID, run] of Object.entries(incoming)) {
+    const current = assistantRunRevisions[runID]
+    // A list response can race the mirror's latest event. Never let an older
+    // response move the run back to its pre-steering segment/revision.
+    if (!current || run.revision >= current.revision) assistantRunRevisions[runID] = run
+  }
+}
+
+function projectAssistantThreadItems(
+  items: ProjectAssistantThreadItem[],
+  projectName: string,
+  preserveLiveMessages = false,
+): ProjectMessageView[] {
+  hydrateAssistantRuns(items)
+  const projected = assistantThreadItemsToMessages(items, projectName)
+  const messagesToUse = preserveLiveMessages
+    ? mergeAssistantThreadMessages(messages.value, projected)
+    : projected
+  return messagesToUse.map(toProjectMessageView)
+}
+
+function latestAssistantThreadRun(items: ProjectAssistantThreadItem[], turnID = ''): AssistantRun | undefined {
+  const item = items
+    .filter((candidate) => candidate.type === 'agentMessage' && candidate.turnID && (!turnID || candidate.turnID === turnID))
+    .reduce<ProjectAssistantThreadItem | undefined>((current, candidate) => {
+      if (!current) return candidate
+      const candidateRevision = typeof candidate.revision === 'number' && Number.isFinite(candidate.revision) ? candidate.revision : candidate.sequence
+      const currentRevision = typeof current.revision === 'number' && Number.isFinite(current.revision) ? current.revision : current.sequence
+      return candidateRevision > currentRevision || (candidateRevision === currentRevision && candidate.sequence > current.sequence)
+        ? candidate
+        : current
+    }, undefined)
+  return item ? assistantThreadItemToRun(item) as AssistantRun | undefined : undefined
+}
+
+function rebindAssistantRunFromThreadItems(items: ProjectAssistantThreadItem[], projectName: string, runID: string): boolean {
+  const current = activeAssistantRun
+  if (!current || current.id !== runID) return false
+  const replacement = latestAssistantThreadRun(items, runID)
+  if (!replacement) return false
+  const message = messages.value.find((candidate) =>
+    candidate.role === 'assistant' && (candidate.id === replacement.activeMessageID || candidate.metadata?.assistantMessageID === replacement.activeMessageID),
+  )
+  if (!message) return false
+  const nextRun: AssistantRun = {
+    ...current,
+    ...replacement,
+    id: runID,
+    clientRequestID: current.clientRequestID,
+    userMessageID: current.userMessageID,
+  }
+  const applied = applyAssistantSnapshot({ run: nextRun, message }, projectName, 'stream')
+  if (!applied.accepted || !applied.current) return false
+  if (assistantRunRequiresLiveControls(applied.current)) assistantRunController.start(applied.current.id, applied.current.revision)
+  return true
+}
+
 const assistantRunController = new ConversationRunController({
-  connect: async (runID, afterRevision, setDisconnect) => {
+  connect: async (runID, _afterRevision, setDisconnect) => {
     const projectName = selected.value?.name
     if (!projectName) return
     const controller = new AbortController()
     activeAssistantSubscription = controller
     setDisconnect(() => controller.abort())
-    await api.streamAssistantRun(props.ctx, projectName, runID, afterRevision, (snapshot) => {
-      if (selected.value?.name !== projectName || snapshot.run.id !== runID) return
-      applyAssistantSnapshot(snapshot, projectName, 'stream')
+    if (!activeAssistantThreadID.value) throw new Error('active assistant thread is missing')
+    await api.streamAssistantThread(props.ctx, projectName, activeAssistantThreadID.value, activeAssistantThreadSequence, (event) => {
+      if (selected.value?.name !== projectName || event.turnID && event.turnID !== runID) return
+      activeAssistantThreadSequence = Math.max(activeAssistantThreadSequence, event.sequence)
+      applyAssistantThreadEvent(event, projectName, runID)
     }, controller.signal)
   },
   abort: async (runID) => {
@@ -453,17 +536,18 @@ const assistantRunController = new ConversationRunController({
     if (!projectName) return
     const clientRequestID = pendingAssistantStopRequestIDs[runID] ?? crypto.randomUUID()
     pendingAssistantStopRequestIDs[runID] = clientRequestID
-    const response = await api.stopAssistantRun(props.ctx, projectName, runID, clientRequestID)
+    if (!activeAssistantThreadID.value) throw new Error('active assistant thread is missing')
+    const response = await api.interruptAssistantTurn(props.ctx, projectName, activeAssistantThreadID.value, runID, clientRequestID)
     if (response.status === 'stopping' && activeAssistantRun?.id === runID) {
       activeAssistantRun = { ...activeAssistantRun, status: 'stopping' }
       messageStreaming.value = true
       return
     }
-    if (response.status === 'aborted' && activeAssistantRun?.id === runID) {
+    if ((response.status === 'interrupted' || response.status === 'aborted') && activeAssistantRun?.id === runID) {
       const message = messages.value.find((item) => item.id === activeAssistantRun?.activeMessageID)
       if (message) applyAssistantSnapshot(abortedConversationSnapshot({ run: activeAssistantRun, message }), projectName)
       else {
-        activeAssistantRun = { ...activeAssistantRun, status: 'aborted', revision: activeAssistantRun.revision + 1 }
+        activeAssistantRun = { ...activeAssistantRun, status: 'interrupted', revision: activeAssistantRun.revision + 1 }
         messageStreaming.value = false
         conversationStatus.value = ''
       }
@@ -499,7 +583,7 @@ const canStartProjectFromPrompt = computed(() => canSubmitCreatePrompt(prompt.va
 const canSendPrompt = computed(() =>
   (llmSettings.value?.configured ?? false) &&
   prompt.value.trim().length > 0 &&
-  !messageStreaming.value &&
+  (!messageStreaming.value || activeAssistantRun?.status === 'running') &&
   !assistantResumeBusy.value &&
   !approvalModeLoading.value &&
   !approvalModeSaving.value,
@@ -947,7 +1031,6 @@ watch(
   () => selected.value?.name,
   () => {
     void previewConsoleController.disconnect()
-    developmentTemplateSelection.value = selected.value?.template ?? ''
     developmentSyncStatus.value = null
     developmentSyncError.value = null
     developmentPreviewAuthorizationError.value = null
@@ -1243,10 +1326,9 @@ async function importRepositoryProject() {
 // applyDevelopmentTemplate binds (or switches) the project's development
 // environment onto the selected template; the backend re-provisions in
 // development mode and re-syncs the workspace.
-async function applyDevelopmentTemplate() {
+async function applyDevelopmentTemplate(template: string) {
   const projectName = selected.value?.name
-  const template = developmentTemplateSelection.value
-  if (!projectName || !template || developmentTemplateBusy.value) return
+  if (!projectName || !template || messageStreaming.value || developmentTemplateBusy.value) return
   // Switching templates re-provisions the development environment; the
   // workspace and git repository survive, but the running instance does not.
   if (!(await confirmDialog({ title: `Switch to the "${template}" template?`, message: 'The current development instance will be replaced (your code stays in the workspace and git).', confirmLabel: 'Switch' }))) return
@@ -1427,7 +1509,7 @@ onBeforeUnmount(clearPromotionPoll)
 // git repository (the durable source of truth) and re-syncs the runtime.
 async function hydrateDevelopmentWorkspace() {
   const projectName = selected.value?.name
-  if (!projectName || developmentHydrateBusy.value) return
+  if (!projectName || messageStreaming.value || developmentHydrateBusy.value) return
   // Hydration overwrites workspace files with the repository's tree.
   if (!(await confirmDialog({ title: 'Load the workspace from git?', message: 'Files in the workspace will be overwritten with the repository versions (workspace-only files are kept).', confirmLabel: 'Load' }))) return
   developmentHydrateBusy.value = true
@@ -1777,10 +1859,36 @@ async function createProjectAndStartConversation(content: string) {
     }
 
     const startPlan = firstProjectStartPlan(submission)
-    const started = await api.startAssistantRun(props.ctx, projectName, assistantRunStartPayload(
-      startPlan.content,
-      startPlan.clientRequestID,
-    ))
+    const thread = await api.createAssistantThread(props.ctx, projectName, startPlan.content.slice(0, 72))
+    assistantThreads.value = [thread]
+    activeAssistantThreadID.value = thread.id
+    const canonical = await api.startAssistantTurn(props.ctx, projectName, thread.id, {
+      content: startPlan.content,
+      clientUserMessageID: startPlan.clientRequestID,
+      collaborationMode: 'default',
+    })
+    const items = await api.listAssistantThreadItems(props.ctx, projectName, thread.id)
+    activeAssistantThreadSequence = maxAssistantThreadSequence(items)
+    const projected = assistantThreadItemsToMessages(items, projectName)
+    const user = projected.find((message) => message.role === 'user' && message.id === items.find((item) => item.turnID === canonical.turn.id && item.type === 'userMessage')?.id)
+    const assistant = projected.find((message) => message.role === 'assistant' && message.id === items.find((item) => item.turnID === canonical.turn.id && item.type === 'agentMessage')?.id)
+    if (!user || !assistant) throw new Error('assistant turn message projection is incomplete')
+    const started: ProjectAssistantRunStart = {
+      run: {
+        id: canonical.turn.id,
+        mode: canonical.turn.mode,
+        approvalMode: canonical.turn.approvalMode,
+        status: 'running',
+        revision: 1,
+        clientRequestID: startPlan.clientRequestID,
+        userMessageID: user.id,
+        activeMessageID: assistant.id,
+        createdAt: canonical.turn.createdAt,
+        updatedAt: canonical.turn.updatedAt,
+      },
+      user,
+      assistant,
+    }
     if (!current()) return
     const applied = applyAssistantSnapshot({ run: started.run, message: started.assistant }, projectName, 'start')
     if (applied.accepted && applied.current) {
@@ -1892,9 +2000,9 @@ async function openProject(name: string, updateURL = true) {
   }
   error.value = null
   try {
-    const [project, loadedMessages, preference] = await Promise.all([
+    const [project, threads, preference] = await Promise.all([
       api.getProject(props.ctx, name),
-      api.listAllMessages(props.ctx, name),
+      api.listAssistantThreads(props.ctx, name),
       api.getAssistantApprovalMode(props.ctx, name).catch((preferenceError: unknown) => {
         if (approvalRequestSerial === approvalModeLoadSerial) {
           approvalModeError.value = preferenceError instanceof Error ? preferenceError.message : String(preferenceError)
@@ -1904,8 +2012,12 @@ async function openProject(name: string, updateURL = true) {
     ])
     if (approvalRequestSerial !== approvalModeLoadSerial) return
     selected.value = project
-    messages.value = loadedMessages.map(toProjectMessageView)
-    approvalMode.value = preference?.mode ?? 'auto_approve'
+    assistantThreads.value = threads
+    activeAssistantThreadID.value = threads[0]?.id ?? ''
+    const threadItems = activeAssistantThreadID.value ? await api.listAssistantThreadItems(props.ctx, name, activeAssistantThreadID.value) : []
+    activeAssistantThreadSequence = maxAssistantThreadSequence(threadItems)
+    messages.value = projectAssistantThreadItems(threadItems, name)
+    approvalMode.value = preference?.mode ?? 'on_request'
     await recoverAssistantConversation(name)
     if (updateURL) props.navigate(encodeURIComponent(name))
   } catch (e) {
@@ -1936,20 +2048,84 @@ async function selectApprovalMode(mode: ProjectAssistantApprovalMode) {
 
 async function refreshSelectedProjectConversation(projectName: string) {
   if (!projectName || selected.value?.name !== projectName) return
-  const [project, loadedMessages, projectList] = await Promise.all([
+  const [project, threads, projectList] = await Promise.all([
     api.getProject(props.ctx, projectName),
-    api.listAllMessages(props.ctx, projectName),
+    api.listAssistantThreads(props.ctx, projectName),
     api.listProjects(props.ctx),
   ])
   if (selected.value?.name !== projectName) return
   selected.value = project
-  messages.value = loadedMessages.map(toProjectMessageView)
+  assistantThreads.value = threads
+  if (!threads.some((thread) => thread.id === activeAssistantThreadID.value)) activeAssistantThreadID.value = threads[0]?.id ?? ''
+  const threadItems = activeAssistantThreadID.value ? await api.listAssistantThreadItems(props.ctx, projectName, activeAssistantThreadID.value) : []
+  activeAssistantThreadSequence = maxAssistantThreadSequence(threadItems)
+  messages.value = projectAssistantThreadItems(threadItems, projectName)
   projects.value = projectList
   await recoverAssistantConversation(projectName)
 }
 
 function selectAssistantResponseMode(mode: AssistantResponseMode) {
   assistantIntent.value = mode
+}
+
+async function selectAssistantThread(threadID: string) {
+  const projectName = selected.value?.name
+  if (!projectName || !threadID || threadID === activeAssistantThreadID.value || messageStreaming.value) return
+  assistantRunController.disconnect()
+  activeAssistantSubscription?.abort()
+  activeAssistantRun = null
+  activeAssistantProject = ''
+  activeAssistantThreadID.value = threadID
+  const items = await api.listAssistantThreadItems(props.ctx, projectName, threadID)
+  activeAssistantThreadSequence = maxAssistantThreadSequence(items)
+  messages.value = projectAssistantThreadItems(items, projectName)
+  messageStreaming.value = false
+}
+
+async function createAssistantThread() {
+  const projectName = selected.value?.name
+  if (!projectName || messageStreaming.value) return
+  const thread = await api.createAssistantThread(props.ctx, projectName)
+  assistantThreads.value = [thread, ...assistantThreads.value]
+  activeAssistantThreadID.value = thread.id
+  activeAssistantThreadSequence = 1
+  messages.value = []
+  activeAssistantRun = null
+  activeAssistantProject = ''
+  assistantRunController.disconnect()
+}
+
+function assistantRunForMessage(messageID: string): AssistantRun | undefined {
+  const message = messages.value.find((candidate) => candidate.id === messageID)
+  const assistantMessageID = typeof message?.metadata?.assistantMessageID === 'string'
+    ? message.metadata.assistantMessageID
+    : ''
+  return Object.values(assistantRunRevisions).find((run) =>
+    run.activeMessageID === messageID || (!!assistantMessageID && run.activeMessageID === assistantMessageID),
+  )
+}
+
+function assistantRunErrorForMessage(messageID: string): string {
+  return assistantRunForMessage(messageID)?.error?.message?.trim() || ''
+}
+
+function canImplementPlan(message: ProjectMessageView): boolean {
+  const run = assistantRunForMessage(message.id)
+  const lastConversationMessage = conversationMessages.value[conversationMessages.value.length - 1]
+  return message.role === 'assistant' &&
+    lastConversationMessage?.id === message.id &&
+		assistantRunCanImplementPlan(run) &&
+    !messageStreaming.value &&
+    !busy.value &&
+    !assistantResumeBusy.value
+}
+
+async function implementPlan(message: ProjectMessageView) {
+  if (!canImplementPlan(message)) return
+  assistantIntent.value = 'default'
+  prompt.value = 'Implement the plan above.'
+  await nextTick()
+  await sendMessage()
 }
 
 function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName = selected.value?.name ?? '', source: 'stream' | 'start' | 'latest' = 'stream', expectedRunID = ''): { accepted: boolean; current: AssistantRun | undefined } {
@@ -1965,32 +2141,66 @@ function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName 
   if (current.messages !== messages.value) messages.value = current.messages.map(toProjectMessageView)
   Object.assign(assistantRunRevisions, current.runs)
   const acceptedTerminal = assistantRunTerminal(normalized.run.status) && (!previousRun || !assistantRunTerminal(previousRun.status) || normalized.run.revision > previousRun.revision)
+  const requiresLiveControls = assistantRunRequiresLiveControls(normalized.run)
   activeAssistantRun = normalized.run
   if (!assistantRunTerminal(normalized.run.status) && normalized.run.approvalMode) {
     approvalMode.value = normalized.run.approvalMode
   }
   activeAssistantProject = projectName
-  assistantRunController.markHealthySnapshot(normalized.run.revision)
-  messageStreaming.value = !assistantRunTerminal(normalized.run.status)
+  if (requiresLiveControls) assistantRunController.markHealthySnapshot(normalized.run.revision)
+  else assistantRunController.disconnect()
+  messageStreaming.value = requiresLiveControls
   if (assistantRunTerminal(normalized.run.status) && acceptedTerminal) {
     conversationStatus.value = ''
     assistantRunController.disconnect()
     void loadCheckpoints()
     if (normalized.message.metadata?.previewRefreshNeeded === true) void refreshDevelopmentPreviewFrame('Preview refreshed')
-  } else if (!assistantRunTerminal(normalized.run.status)) {
+  } else if (requiresLiveControls) {
     const status = normalized.message.metadata?.assistantStatus
     conversationStatus.value = typeof status === 'string' ? status : 'Working'
+  } else {
+    conversationStatus.value = ''
   }
   return accepted
 }
 
 async function recoverAssistantConversation(projectName: string): Promise<{ accepted: boolean; current: AssistantRun | undefined } | undefined> {
-  if (selected.value?.name !== projectName) return undefined
+  if (selected.value?.name !== projectName || !activeAssistantThreadID.value) return undefined
   const expectedRunID = activeAssistantProject === projectName ? activeAssistantRun?.id ?? '' : ''
-  const snapshot = await api.getLatestAssistantRun(props.ctx, projectName)
-  if (!snapshot || selected.value?.name !== projectName) return undefined
+  const turn = await api.getActiveAssistantTurn(props.ctx, projectName, activeAssistantThreadID.value)
+  if (!turn || selected.value?.name !== projectName) return undefined
+  const items = await api.listAssistantThreadItems(props.ctx, projectName, activeAssistantThreadID.value)
+  activeAssistantThreadSequence = maxAssistantThreadSequence(items)
+  messages.value = projectAssistantThreadItems(items, projectName, true)
+  const assistantItem = [...items].reverse().find((item) => item.turnID === turn.id && item.type === 'agentMessage')
+  const userItem = [...items].reverse().find((item) => item.turnID === turn.id && item.type === 'userMessage')
+  const message = assistantItem
+    ? messages.value.find((candidate) => candidate.role === 'assistant' && (
+      candidate.id === (assistantItem.assistantMessageID || assistantItem.id) ||
+      candidate.metadata?.assistantMessageID === (assistantItem.assistantMessageID || assistantItem.id)
+    ))
+    : undefined
+  if (!assistantItem || !message) return undefined
+  const pending = [...items].reverse().find((item) => item.turnID === turn.id && (item.type === 'approval' || item.type === 'input') && item.status === 'in_progress')
+  const itemRun = assistantThreadItemToRun(assistantItem)
+  const snapshot: ProjectAssistantSnapshot = {
+    run: {
+      id: turn.id,
+      mode: itemRun?.mode ?? turn.mode,
+      approvalMode: turn.approvalMode,
+      status: pending?.type === 'approval' ? 'pending_permission' : pending?.type === 'input' ? 'pending_input' : itemRun?.status ?? 'running',
+      revision: itemRun?.revision ?? Math.max(activeAssistantThreadSequence, 1),
+      activeMessageID: itemRun?.activeMessageID ?? assistantItem.id,
+      userMessageID: userItem?.id,
+      clientRequestID: turn.clientUserMessageID,
+      createdAt: turn.createdAt,
+      updatedAt: turn.updatedAt,
+      error: itemRun?.error ?? (turn.error?.message ? { message: turn.error.message, errorInfo: turn.error.errorInfo } : undefined),
+    },
+    message,
+  }
   const applied = applyAssistantSnapshot(snapshot, projectName, 'latest', expectedRunID)
-  if (applied.accepted && applied.current && !assistantRunTerminal(applied.current.status)) {
+  if (applied.accepted && assistantRunRequiresLiveControls(applied.current)) {
     assistantRunController.start(applied.current.id, applied.current.revision)
   }
   return applied
@@ -2001,7 +2211,7 @@ function reloadActiveAssistantConversation() {
   if (projectName) void recoverAssistantConversation(projectName)
 }
 
-function ensureAssistantMessage(projectName: string, assistantMessageID: string): number {
+function ensureAssistantMessage(projectName: string, assistantMessageID: string, turnID = ''): number {
   const idx = messages.value.findIndex((message) => message.id === assistantMessageID && message.role === 'assistant')
   if (idx !== -1) return idx
   messages.value = [...messages.value, {
@@ -2009,6 +2219,11 @@ function ensureAssistantMessage(projectName: string, assistantMessageID: string)
     projectID: projectName,
     role: 'assistant',
     content: '',
+    metadata: {
+      assistantStatus: 'running',
+      assistantMessageID,
+      ...(turnID ? { assistantTurnID: turnID } : {}),
+    },
     createdAt: new Date().toISOString(),
   }]
   return messages.value.length - 1
@@ -2028,6 +2243,7 @@ function applyAssistantInterrupt(projectName: string, assistantMessageID: string
 }
 
 async function syncDevelopmentPreview() {
+	if (messageStreaming.value) return
 	const projectName = selected.value?.name
 	await syncDevelopmentPreviewForProject(projectName, 'Synced and refreshed preview')
 }
@@ -2131,12 +2347,15 @@ async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
   } catch (e) {
     if (serial !== developmentPreviewAuthorizationSerial || selected.value?.name !== projectName) return
     developmentPreviewOverrideURL.value = null
-    developmentPreviewAuthorizationKey.value = ''
+    developmentPreviewAuthorizationKey.value = key
     developmentPreviewTokenExpiresAt.value = ''
     developmentPreviewReadinessMessage.value = null
     clearDevelopmentPreviewAuthorizationRetry()
     clearDevelopmentPreviewAuthorizationRenewal()
     developmentPreviewAuthorizationError.value = e instanceof Error ? e.message : String(e)
+    if (developmentPreviewAuthorizationRetryable(e)) {
+      scheduleDevelopmentPreviewAuthorizationRetry(projectName, key)
+    }
   } finally {
     if (serial === developmentPreviewAuthorizationSerial) developmentPreviewAuthorizing.value = false
   }
@@ -2225,7 +2444,7 @@ function projectDevelopmentPreviewString(result: unknown, key: 'message' | 'reas
 }
 
 function handleDevelopmentPreviewFrameLoad() {
-  refreshDevelopmentPreviewAuthorizationIfExpiring()
+  refreshDevelopmentPreviewAuthorizationIfNeeded()
   const projectName = selected.value?.name
   if (projectName) void previewConsoleController.connect(projectName)
 }
@@ -2235,20 +2454,23 @@ function handleDevelopmentPreviewVisibilityChange() {
 }
 
 function handleDevelopmentPreviewAuthorizationWake() {
-  refreshDevelopmentPreviewAuthorizationIfExpiring()
+  refreshDevelopmentPreviewAuthorizationIfNeeded()
 }
 
-function refreshDevelopmentPreviewAuthorizationIfExpiring() {
+function refreshDevelopmentPreviewAuthorizationIfNeeded() {
   const projectName = selected.value?.name
-  const key = developmentPreviewAuthorizationKey.value
-  if (!projectName || !key || !developmentPreviewNeedsAuthorization.value || developmentPreviewAuthorizing.value) return
-  if (!developmentPreviewTokenExpiresSoon()) return
+  if (!projectName || !developmentPreviewShouldRefreshOnWake({
+    needsAuthorization: developmentPreviewNeedsAuthorization.value,
+    authorizing: developmentPreviewAuthorizing.value,
+    previewURL: developmentPreviewURL.value,
+    authorizationError: developmentPreviewAuthorizationError.value || '',
+    tokenExpiresAt: developmentPreviewTokenExpiresAt.value,
+  }, Date.now(), DEVELOPMENT_PREVIEW_AUTH_RENEWAL_SKEW_MS)) return
   void authorizeDevelopmentPreview({ force: true })
 }
 
-function developmentPreviewTokenExpiresSoon(): boolean {
-  const expiresMs = Date.parse(developmentPreviewTokenExpiresAt.value)
-  return Number.isFinite(expiresMs) && expiresMs <= Date.now() + DEVELOPMENT_PREVIEW_AUTH_RENEWAL_SKEW_MS
+function developmentPreviewAuthorizationRetryable(error: unknown): boolean {
+  return !(error instanceof ProjectAPIRequestError) || error.status === 408 || error.status === 429 || error.status >= 500
 }
 
 function resetWorkbench() {
@@ -2393,7 +2615,8 @@ async function confirmDeleteProject() {
 
 async function sendMessage() {
   const content = prompt.value.trim()
-  if (!content || !selected.value || !llmSettings.value?.configured || messageStreaming.value || assistantResumeBusy.value || approvalModeLoading.value || approvalModeSaving.value) return
+  const steeringActiveRun = messageStreaming.value && activeAssistantRun?.status === 'running'
+  if (!content || !selected.value || !llmSettings.value?.configured || (messageStreaming.value && !steeringActiveRun) || assistantResumeBusy.value || approvalModeLoading.value || approvalModeSaving.value) return
   const projectName = selected.value.name
   prompt.value = ''
   busy.value = true
@@ -2404,7 +2627,8 @@ async function sendMessage() {
     : null
   const startOperation = {
     content,
-    assistantAction: firstProjectPending ? 'auto' as const : assistantIntent.value,
+    collaborationMode: firstProjectPending ? 'default' as const : assistantIntent.value,
+    ...(steeringActiveRun ? { expectedRunID: activeAssistantRun!.id } : {}),
   }
   const submissionFingerprint = assistantRunStartFingerprint(projectName, startOperation)
   const clientRequestID = firstProjectPending
@@ -2426,7 +2650,68 @@ async function sendMessage() {
   }
   if (!messages.value.some((message) => message.id === optimisticID)) messages.value = [...messages.value, optimisticUserMessage]
   try {
-    const started = await api.startAssistantRun(props.ctx, projectName, payload)
+    let started: ProjectAssistantRunStart
+    if (steeringActiveRun) {
+      if (!activeAssistantThreadID.value) throw new Error('active assistant thread is missing')
+      await api.steerAssistantTurn(props.ctx, projectName, activeAssistantThreadID.value, activeAssistantRun!.id, {
+        content,
+        clientUserMessageID: clientRequestID,
+      })
+      const items = await api.listAssistantThreadItems(props.ctx, projectName, activeAssistantThreadID.value)
+      activeAssistantThreadSequence = maxAssistantThreadSequence(items)
+      messages.value = projectAssistantThreadItems(items, projectName, true)
+      // Steering rotates the durable assistant segment while retaining the
+      // turn ID. Rebind the run to that replacement before reconnecting from
+      // the list's sequence; otherwise the old segment remains active and the
+      // first replacement delta can be applied to (or dropped from) it.
+      if (!rebindAssistantRunFromThreadItems(items, projectName, activeAssistantRun!.id)) {
+        await recoverAssistantConversation(projectName)
+      }
+      pendingMessageSubmission = null
+      return
+    } else {
+      let thread = assistantThreads.value.find((candidate) => candidate.id === activeAssistantThreadID.value)
+      if (!thread) {
+        thread = await api.createAssistantThread(props.ctx, projectName, content.slice(0, 72))
+        assistantThreads.value = [thread, ...assistantThreads.value]
+        activeAssistantThreadID.value = thread.id
+      }
+      const canonical = startOperation.collaborationMode === 'review'
+        ? await api.startAssistantReview(props.ctx, projectName, thread.id, {
+            clientUserMessageID: clientRequestID,
+            target: { type: 'current_workspace', instructions: content },
+          })
+        : await api.startAssistantTurn(props.ctx, projectName, thread.id, {
+            content,
+            clientUserMessageID: clientRequestID,
+            collaborationMode: startOperation.collaborationMode,
+          })
+      const items = await api.listAssistantThreadItems(props.ctx, projectName, thread.id)
+      activeAssistantThreadSequence = maxAssistantThreadSequence(items)
+      const userItem = [...items].reverse().find((item) => item.turnID === canonical.turn.id && item.type === 'userMessage')
+      const assistantItem = [...items].reverse().find((item) => item.turnID === canonical.turn.id && item.type === 'agentMessage')
+      if (!userItem || !assistantItem) throw new Error('assistant turn did not create its canonical message items')
+      const canonicalMessages = assistantThreadItemsToMessages(items, projectName)
+      const user = canonicalMessages.find((message) => message.id === userItem.id)
+      const assistant = canonicalMessages.find((message) => message.id === assistantItem.id)
+      if (!user || !assistant) throw new Error('assistant turn message projection is incomplete')
+      started = {
+        run: {
+          id: canonical.turn.id,
+          mode: canonical.turn.mode,
+          approvalMode: canonical.turn.approvalMode,
+          status: 'running',
+          revision: 1,
+          clientRequestID,
+          userMessageID: user.id,
+          activeMessageID: assistant.id,
+          createdAt: canonical.turn.createdAt,
+          updatedAt: canonical.turn.updatedAt,
+        },
+        user,
+        assistant,
+      }
+    }
     const applied = applyAssistantSnapshot({ run: started.run, message: started.assistant }, projectName, 'start')
     if (applied.accepted && applied.current) {
       messages.value = replaceOptimisticUserMessage(messages.value, optimisticID, started.user ?? optimisticUserMessage).map(toProjectMessageView)
@@ -2488,17 +2773,10 @@ async function resolveToolPermission(message: ProjectMessageView, interrupt: Pro
   let responseApplied = false
   try {
     markInterruptResolvedLocally(projectName, message.id, interrupt)
-    const response = await api.resumeAssistantRun(props.ctx, projectName, runID, {
-      requestID,
-      decision,
-      assistantMessageID: message.id,
-    })
-    const shouldRefreshPreview = applyPermissionResponse(projectName, interrupt, response)
+    if (!activeAssistantThreadID.value) throw new Error('active assistant thread is missing')
+    await api.respondAssistantTurn(props.ctx, projectName, activeAssistantThreadID.value, runID, 'approval', { requestID, decision })
     responseApplied = true
     await refreshSelectedProjectConversation(projectName)
-    if (shouldRefreshPreview) {
-      await refreshDevelopmentPreviewFrame('Preview refreshed')
-    }
   } catch (e) {
     await handleResumeFailure(projectName, key, e, {
       panelMessage: responseApplied ? 'Approval updated, but the conversation did not refresh. Reopen this project.' : 'Could not update approval. Try again.',
@@ -2520,10 +2798,15 @@ async function submitFollowUpAnswer(message: ProjectMessageView, interrupt: Proj
   const runID = interrupt.action?.runId
   const requestID = interrupt.action?.requestId
   const key = followUpKey(interrupt)
-  const answer = (followUpAnswers.value[key] || '').trim()
+  const questions = followUpQuestions(interrupt)
+  const values = followUpAnswers.value[key] || {}
+  const responseAnswers = Object.fromEntries(questions.map((question) => [
+    question.id,
+    { answers: [(values[question.id] || '').trim()].filter(Boolean) },
+  ]))
   if (!projectName || !runID || !requestID || !key || followUpBusy.value[key]) return
-  if (!answer) {
-    followUpErrors.value = { ...followUpErrors.value, [key]: 'Add an answer before continuing.' }
+  if (questions.length === 0 || Object.values(responseAnswers).some((answer) => answer.answers.length === 0)) {
+    followUpErrors.value = { ...followUpErrors.value, [key]: 'Answer each question before continuing.' }
     return
   }
 
@@ -2533,20 +2816,13 @@ async function submitFollowUpAnswer(message: ProjectMessageView, interrupt: Proj
   let responseApplied = false
   try {
     markInterruptResolvedLocally(projectName, message.id, interrupt)
-    const response = await api.resumeAssistantRun(props.ctx, projectName, runID, {
-      requestID,
-      answer,
-      assistantMessageID: message.id,
-    })
-    const shouldRefreshPreview = applyPermissionResponse(projectName, interrupt, response)
+    if (!activeAssistantThreadID.value) throw new Error('active assistant thread is missing')
+    await api.respondAssistantTurn(props.ctx, projectName, activeAssistantThreadID.value, runID, 'input', { requestID, answers: responseAnswers })
     responseApplied = true
     await refreshSelectedProjectConversation(projectName)
-    if (shouldRefreshPreview) {
-      await refreshDevelopmentPreviewFrame('Preview refreshed')
-    }
-    const answers = { ...followUpAnswers.value }
-    delete answers[key]
-    followUpAnswers.value = answers
+    const storedAnswers = { ...followUpAnswers.value }
+    delete storedAnswers[key]
+    followUpAnswers.value = storedAnswers
   } catch (e) {
     await handleResumeFailure(projectName, key, e, {
       panelMessage: responseApplied ? 'Answer sent, but the conversation did not refresh. Reopen this project.' : 'Could not send answer. Try again.',
@@ -2563,10 +2839,32 @@ async function submitFollowUpAnswer(message: ProjectMessageView, interrupt: Proj
   }
 }
 
-function updateFollowUpAnswer(interrupt: ProjectAssistantUIInterruptRequest, value: string) {
+function followUpQuestions(interrupt: ProjectAssistantUIInterruptRequest): ProjectAssistantFollowUpQuestion[] {
+  return (interrupt.questions || []).map((question, index) => typeof question === 'string'
+    ? { id: `question_${index + 1}`, question, isOther: true, options: [] }
+    : question)
+}
+
+function followUpAnswer(interrupt: ProjectAssistantUIInterruptRequest, question: ProjectAssistantFollowUpQuestion): string {
+  return followUpAnswers.value[followUpKey(interrupt)]?.[question.id] || ''
+}
+
+function followUpOptionSelected(
+  interrupt: ProjectAssistantUIInterruptRequest,
+  question: ProjectAssistantFollowUpQuestion,
+  option: ProjectAssistantFollowUpQuestionOption,
+): boolean {
+  return followUpAnswer(interrupt, question) === option.label
+}
+
+function updateFollowUpAnswer(interrupt: ProjectAssistantUIInterruptRequest, questionID: string, value: string) {
+  const key = followUpKey(interrupt)
   followUpAnswers.value = {
     ...followUpAnswers.value,
-    [followUpKey(interrupt)]: value,
+    [key]: {
+      ...(followUpAnswers.value[key] || {}),
+      [questionID]: value,
+    },
   }
 }
 
@@ -2602,24 +2900,164 @@ async function handleResumeFailure(
   error.value = e instanceof Error ? e.message : String(e)
 }
 
-function applyPermissionResponse(projectName: string, interrupt: ProjectAssistantUIInterruptRequest, response: ProjectAssistantSnapshot): boolean {
-  const applied = applyAssistantSnapshot(response, projectName, 'latest', activeAssistantRun?.id ?? '')
-  if (!applied.accepted || !applied.current) return false
-  if (applied.accepted && applied.current && !assistantRunTerminal(applied.current.status)) assistantRunController.start(applied.current.id, applied.current.revision)
-  const key = permissionKey(interrupt)
-  if (key) {
-    const errors = { ...permissionErrors.value }
-    delete errors[key]
-    permissionErrors.value = errors
-    const followErrors = { ...followUpErrors.value }
-    delete followErrors[key]
-    followUpErrors.value = followErrors
-  }
-  return false
-}
-
 function projectMessagesForConversation(source: ProjectMessageView[]): ProjectMessageView[] {
   return orderConversationMessages(source)
+}
+
+function assistantMessageIDForThreadItem(item: ProjectAssistantThreadItem, turnID = ''): string {
+  const explicit = item.assistantMessageID?.trim()
+  if (explicit) return explicit
+  if (item.type === 'agentMessage') return item.id
+  const scopedTurnID = item.turnID || turnID
+  const scoped = messages.value.filter((message) => {
+    if (message.role !== 'assistant') return false
+    return !scopedTurnID || message.metadata?.assistantTurnID === scopedTurnID
+  })
+  return scoped[scoped.length - 1]?.id
+    || (activeAssistantRun?.id === scopedTurnID ? activeAssistantRun.activeMessageID : '')
+}
+
+function assistantMessageIndexForThreadItem(item: ProjectAssistantThreadItem, turnID = ''): number {
+  const messageID = assistantMessageIDForThreadItem(item, turnID)
+  if (!messageID) return -1
+  return messages.value.findIndex((message) =>
+    message.role === 'assistant' && (message.id === messageID || message.metadata?.assistantMessageID === messageID),
+  )
+}
+
+function updateActiveRunFromAssistantItem(item: ProjectAssistantThreadItem, runID: string) {
+  const itemRun = assistantThreadItemToRun(item)
+  const current = activeAssistantRun
+  if (!itemRun || !current || current.id !== runID) return
+  const isCurrentSegment = itemRun.activeMessageID === current.activeMessageID
+  const isReplacementSegment = itemRun.revision > current.revision
+  if (!isCurrentSegment && !isReplacementSegment) return
+  const next: AssistantRun = {
+    ...current,
+    ...itemRun,
+    id: runID,
+    clientRequestID: current.clientRequestID,
+    userMessageID: current.userMessageID,
+  }
+  activeAssistantRun = next
+  assistantRunRevisions[runID] = next
+  activeAssistantProject = selected.value?.name ?? activeAssistantProject
+  assistantRunController.setRevision(next.revision)
+  messageStreaming.value = assistantRunRequiresLiveControls(next)
+}
+
+function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectName: string, runID: string) {
+  const payload = event.payload ?? {}
+  const rawItem = payload.item as ProjectAssistantThreadItem | undefined
+  if (event.type === 'item.delta' && event.itemID) {
+    const delta = typeof payload.delta === 'string' ? payload.delta : ''
+    if (delta) {
+      let index = messages.value.findIndex((message) =>
+        message.role === 'assistant' && (message.id === event.itemID || message.metadata?.assistantMessageID === event.itemID),
+      )
+      // The mirror guarantees item.started before item.delta, but creating a
+      // placeholder here makes the stream lossless across reconnect races and
+      // old servers that did not persist the started event.
+      if (index < 0) index = ensureAssistantMessage(projectName, event.itemID, event.turnID || runID)
+      const next = [...messages.value]
+      next[index] = { ...next[index], content: next[index].content + delta }
+      messages.value = next
+    }
+  } else if (rawItem?.id && (rawItem.type === 'userMessage' || rawItem.type === 'agentMessage')) {
+    const role = rawItem.type === 'userMessage' ? 'user' : 'assistant'
+    const messageID = role === 'assistant' ? assistantMessageIDForThreadItem(rawItem, event.turnID || runID) : rawItem.id
+    const existing = messages.value.find((message) => message.id === messageID || message.id === rawItem.id)
+    const itemRun = role === 'assistant' ? assistantThreadItemToRun(rawItem) : undefined
+    const itemContent = rawItem.content ?? ''
+    const existingContent = existing?.content ?? ''
+    const metadata = {
+      ...(existing?.metadata ?? {}),
+      ...(role === 'assistant' ? {
+        assistantStatus: itemRun?.status ?? 'running',
+        assistantMessageID: messageID,
+        ...(rawItem.turnID ? { assistantTurnID: rawItem.turnID } : {}),
+        ...(itemRun ? { assistantMode: itemRun.mode, assistantRevision: itemRun.revision } : {}),
+        ...(rawItem.error ? { assistantError: rawItem.error } : {}),
+      } : {}),
+      ...(role === 'assistant' && rawItem.data?.assistantProgress ? { assistantProgress: rawItem.data.assistantProgress } : {}),
+    }
+    const projected = toProjectMessageView({
+      id: messageID,
+      projectID: projectName,
+      role,
+      content: existingContent.length >= itemContent.length && existingContent.startsWith(itemContent) ? existingContent : itemContent,
+      metadata,
+      createdAt: event.createdAt,
+    })
+    messages.value = existing
+      ? messages.value.map((message) => message.id === existing.id ? projected : message)
+      : [...messages.value, projected]
+    if (role === 'assistant') updateActiveRunFromAssistantItem(rawItem, runID)
+  } else if (rawItem?.id && event.turnID) {
+    const assistantIndex = assistantMessageIndexForThreadItem(rawItem, event.turnID)
+    if (assistantIndex >= 0) {
+      const next = [...messages.value]
+      const assistant = next[assistantIndex]
+      const metadata = { ...(assistant.metadata ?? {}) }
+      if (rawItem.type === 'dynamicToolCall' && rawItem.data) {
+        const actions = Array.isArray(metadata.assistantActionFeed) ? [...metadata.assistantActionFeed] : []
+        const identity = assistantThreadItemIdentity(rawItem)
+        const actionIndex = actions.findIndex((action) => typeof action === 'object' && action !== null && (action as { id?: string }).id === identity)
+        if (actionIndex >= 0) actions[actionIndex] = rawItem.data
+        else actions.push(rawItem.data)
+        metadata.assistantActionFeed = actions
+      } else if (rawItem.type === 'plan' && rawItem.data) {
+        metadata.assistantPlan = rawItem.data
+      }
+      next[assistantIndex] = toProjectMessageView({ ...assistant, metadata })
+      messages.value = next
+    }
+  }
+
+  const interrupt = payload.interrupt as ProjectAssistantUIInterruptRequest | undefined
+  if ((event.type === 'approval.requested' || event.type === 'input.requested') && interrupt) {
+    const assistantMessageID = interrupt.action?.assistantMessageId
+      || activeAssistantRun?.activeMessageID
+    const index = assistantMessageID
+      ? messages.value.findIndex((message) => message.role === 'assistant' && (message.id === assistantMessageID || message.metadata?.assistantMessageID === assistantMessageID))
+      : lastAssistantMessageIndex(messages.value)
+    if (index >= 0) {
+      const next = [...messages.value]
+      const message = next[index]
+      next[index] = toProjectMessageView({ ...message, metadata: { ...(message.metadata ?? {}), assistantInterrupt: interrupt } })
+      messages.value = next
+      if (activeAssistantRun?.id === runID) {
+        activeAssistantRun = {
+          ...activeAssistantRun,
+          status: event.type === 'approval.requested' ? 'pending_permission' : 'pending_input',
+          revision: activeAssistantRun.revision + 1,
+        }
+      }
+    }
+  }
+  if (event.type === 'approval.resolved' || event.type === 'input.resolved') {
+    messages.value = messages.value.map((message) => message.role === 'assistant'
+      ? toProjectMessageView({ ...message, metadata: Object.fromEntries(Object.entries(message.metadata ?? {}).filter(([key]) => key !== 'assistantInterrupt')) })
+      : message)
+  }
+  if ((event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.interrupted') && activeAssistantRun?.id === runID) {
+    const status = event.type === 'turn.completed' ? 'completed' : event.type === 'turn.interrupted' ? 'interrupted' : 'failed'
+    const message = messages.value.find((candidate) => candidate.id === activeAssistantRun?.activeMessageID)
+    if (message) {
+      const rawError = message.metadata?.assistantError
+      const error = activeAssistantRun.error || (rawError && typeof rawError === 'object' && typeof (rawError as { message?: unknown }).message === 'string'
+        ? { message: (rawError as { message: string }).message, errorInfo: typeof (rawError as { errorInfo?: unknown }).errorInfo === 'string' ? (rawError as { errorInfo: string }).errorInfo : undefined }
+        : undefined)
+      applyAssistantSnapshot({ run: { ...activeAssistantRun, status, revision: activeAssistantRun.revision + 1, error }, message }, projectName, 'stream')
+    }
+  }
+}
+
+function lastAssistantMessageIndex(source: ProjectMessageView[]): number {
+  for (let index = source.length - 1; index >= 0; index--) {
+    if (source[index].role === 'assistant') return index
+  }
+  return -1
 }
 
 function toProjectMessageView(message: ProjectMessage): ProjectMessageView {
@@ -2644,12 +3082,16 @@ function projectMessageProgress(message: ProjectMessage): AssistantProgress | un
   return parseAssistantProgress(message.metadata?.assistantProgress)
 }
 
-function assistantProgressCompleted(message: ProjectMessageView): boolean {
-  return message.metadata?.assistantStatus === 'Completed'
+function projectMessageAssistantStatus(message: ProjectMessage): ReturnType<typeof normalizeAssistantRunStatus> {
+  return normalizeAssistantRunStatus(message.metadata?.assistantStatus)
+}
+
+function assistantProgressClosed(message: ProjectMessageView): boolean {
+  return assistantRunTerminal(projectMessageAssistantStatus(message))
 }
 
 function assistantProgressExpanded(message: ProjectMessageView): boolean {
-  return !assistantProgressCompleted(message) || expandedAssistantProgressIDs.value.has(message.id)
+  return !assistantProgressClosed(message) || expandedAssistantProgressIDs.value.has(message.id)
 }
 
 function toggleAssistantProgress(messageID: string): void {
@@ -2682,7 +3124,8 @@ function assistantPlanCompletionLabel(plan?: AssistantPlan): string {
 }
 
 function projectMessageViewStatus(message: ProjectMessage): ProjectMessageViewStatus | undefined {
-  return message.role === 'assistant' && message.metadata?.status === 'interrupted' ? 'interrupted' : undefined
+  if (message.role !== 'assistant') return undefined
+  return String(message.metadata?.assistantStatus ?? '').trim().toLowerCase() === 'interrupted' ? 'interrupted' : undefined
 }
 
 function projectMessageActionFeed(message: ProjectMessage): ProjectAssistantActionFeedItem[] {
@@ -2694,14 +3137,6 @@ function projectMessageInterrupt(message: ProjectMessage): ProjectAssistantUIInt
   if (message.role !== 'assistant') return undefined
   const raw = message.metadata?.assistantInterrupt
   return isProjectAssistantInterrupt(raw) ? raw : undefined
-}
-
-function projectMessageUndo(message: ProjectMessage): ProjectAssistantUndoMetadata | undefined {
-  const raw = message.metadata?.assistantUndo
-  if (!raw || typeof raw !== 'object') return undefined
-  const item = raw as Partial<ProjectAssistantUndoMetadata>
-  if (item.status !== 'workspace_restored' || typeof item.runID !== 'string') return undefined
-  return { runID: item.runID, status: item.status, ...(typeof item.fileCount === 'number' ? { fileCount: item.fileCount } : {}) }
 }
 
 function isProjectAssistantInterrupt(value: unknown): value is ProjectAssistantUIInterruptRequest {
@@ -2995,10 +3430,6 @@ function permissionError(interrupt: ProjectAssistantUIInterruptRequest): string 
 
 function followUpKey(interrupt: ProjectAssistantUIInterruptRequest): string {
   return interrupt.action?.requestId || interrupt.interruptId
-}
-
-function followUpAnswer(interrupt: ProjectAssistantUIInterruptRequest): string {
-  return followUpAnswers.value[followUpKey(interrupt)] || ''
 }
 
 function followUpBusyState(interrupt: ProjectAssistantUIInterruptRequest): boolean {
@@ -3451,6 +3882,28 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             </template>
           </div>
         </div>
+        <select
+          v-if="assistantThreads.length"
+          :value="activeAssistantThreadID"
+          class="hidden h-8 max-w-40 rounded-lg border border-border-subtle bg-surface px-2 text-[11px] text-text-secondary lg:block"
+          :disabled="messageStreaming"
+          aria-label="Assistant thread"
+          @change="selectAssistantThread(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="thread in assistantThreads" :key="thread.id" :value="thread.id">
+            {{ thread.title || 'New thread' }}
+          </option>
+        </select>
+        <button
+          type="button"
+          class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border-subtle text-text-muted transition hover:bg-surface-hover hover:text-text-primary disabled:opacity-50"
+          :disabled="messageStreaming"
+          title="New assistant thread"
+          aria-label="New assistant thread"
+          @click="createAssistantThread"
+        >
+          <Plus class="h-4 w-4" :stroke-width="1.75" />
+        </button>
         <div v-if="checkpoints.length" class="hidden shrink-0 items-center gap-1.5 sm:flex">
           <CheckpointChip
             v-for="cp in checkpoints"
@@ -3583,7 +4036,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                   :items="message.actionFeed"
                 />
                 <template v-if="message.progress">
-                  <div v-if="assistantProgressCompleted(message)" class="mb-3">
+                  <div v-if="assistantProgressClosed(message)" class="mb-3 flex flex-wrap items-center gap-2">
                     <button
                       type="button"
                       class="inline-flex items-center gap-1.5 rounded-md py-1 text-[12px] font-medium text-text-muted transition hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
@@ -3600,14 +4053,24 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                         aria-hidden="true"
                       />
                     </button>
+                    <span
+                      v-if="message.viewStatus === 'interrupted'"
+                      class="inline-flex items-center gap-1.5 rounded-md border border-warning/30 bg-warning-subtle px-2 py-1 text-[11px] font-medium text-warning"
+                      role="status"
+                      aria-live="polite"
+                      aria-atomic="true"
+                    >
+                      <TriangleAlert class="h-3 w-3" :stroke-width="2" aria-hidden="true" />
+                      Interrupted before completion
+                    </span>
                   </div>
                   <div
                     v-show="assistantProgressExpanded(message)"
                     :id="assistantProgressRegionID(message.id)"
                     class="mb-3 space-y-3"
-                    :role="assistantProgressCompleted(message) ? undefined : 'log'"
-                    :aria-live="assistantProgressCompleted(message) ? undefined : 'polite'"
-                    :aria-relevant="assistantProgressCompleted(message) ? undefined : 'additions'"
+                    :role="assistantProgressClosed(message) ? undefined : 'log'"
+                    :aria-live="assistantProgressClosed(message) ? undefined : 'polite'"
+                    :aria-relevant="assistantProgressClosed(message) ? undefined : 'additions'"
                     aria-atomic="false"
                   >
                     <template
@@ -3643,15 +4106,30 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                   v-html="renderAssistantResponse(message)"
                 />
                 <div
-                  v-if="message.viewStatus === 'interrupted'"
-                  class="mt-2 inline-flex items-center gap-1.5 rounded-md border border-border-subtle px-2 py-1 text-[11px] font-medium text-text-muted"
+                  v-if="assistantRunErrorForMessage(message.id)"
+                  class="mt-3 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger"
+                  role="alert"
                 >
-                  <Square class="h-3 w-3 fill-current" :stroke-width="2" />
-                  Interrupted
+                  {{ assistantRunErrorForMessage(message.id) }}
                 </div>
-                <div v-if="projectMessageUndo(message)" class="mt-2 inline-flex items-center gap-1.5 text-[11px] font-medium text-text-muted">
-                  <RotateCcw class="h-3.5 w-3.5 text-success" :stroke-width="1.75" />
-                  Restored {{ projectMessageUndo(message)?.fileCount ?? 0 }} workspace file{{ projectMessageUndo(message)?.fileCount === 1 ? '' : 's' }}; Git history unchanged
+                <button
+                  v-if="canImplementPlan(message)"
+                  type="button"
+                  class="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-accent/30 bg-accent-subtle px-3 py-1.5 text-[12px] font-medium text-accent transition hover:bg-accent/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  @click="implementPlan(message)"
+                >
+                  Implement plan
+                  <ArrowRight class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
+                </button>
+                <div
+                  v-if="message.viewStatus === 'interrupted' && !message.progress"
+                  class="mt-2 inline-flex items-center gap-1.5 rounded-md border border-warning/30 bg-warning-subtle px-2 py-1 text-[11px] font-medium text-warning"
+                  role="status"
+                  aria-live="polite"
+                  aria-atomic="true"
+                >
+                  <TriangleAlert class="h-3 w-3" :stroke-width="2" aria-hidden="true" />
+                  Interrupted before completion
                 </div>
               </div>
             </div>
@@ -3697,17 +4175,39 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 <div class="mt-0.5 text-[12px] leading-5 text-text-secondary">
                   {{ pendingFollowUp.interrupt.description || 'App Studio needs a little more information before continuing.' }}
                 </div>
-                <ul v-if="pendingFollowUp.interrupt.questions?.length" class="mt-2 list-disc space-y-1 pl-4 text-[12px] leading-5 text-text-secondary">
-                  <li v-for="question in pendingFollowUp.interrupt.questions" :key="question">{{ question }}</li>
-                </ul>
-                <textarea
-                  class="mt-3 min-h-20 w-full resize-y rounded-md border border-border-subtle bg-surface px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-                  aria-label="Clarification response"
-                  placeholder="Answer here..."
-                  :value="followUpAnswer(pendingFollowUp.interrupt)"
-                  :disabled="followUpBusyState(pendingFollowUp.interrupt)"
-                  @input="updateFollowUpAnswer(pendingFollowUp.interrupt, ($event.target as HTMLTextAreaElement).value)"
-                />
+                <div v-if="pendingFollowUp.interrupt.questions?.length" class="mt-3 grid gap-3">
+                  <div
+                    v-for="question in followUpQuestions(pendingFollowUp.interrupt)"
+                    :key="question.id"
+                    class="rounded-xl border border-border-subtle bg-surface p-3"
+                  >
+                    <div v-if="question.header" class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">{{ question.header }}</div>
+                    <div class="mt-1 text-[12px] font-medium leading-5 text-text-primary">{{ question.question }}</div>
+                    <div v-if="question.options?.length" class="mt-2 grid gap-2">
+                      <button
+                        v-for="option in question.options"
+                        :key="option.label"
+                        type="button"
+                        class="rounded-lg border px-3 py-2 text-left transition"
+                        :class="followUpOptionSelected(pendingFollowUp.interrupt, question, option) ? 'border-accent bg-accent-subtle' : 'border-border-subtle bg-surface-raised hover:border-accent/40 hover:bg-surface-hover'"
+                        :disabled="followUpBusyState(pendingFollowUp.interrupt)"
+                        @click="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, option.label)"
+                      >
+                        <div class="text-[12px] font-medium text-text-primary">{{ option.label }}</div>
+                        <div class="mt-0.5 text-[11px] leading-4 text-text-secondary">{{ option.description }}</div>
+                      </button>
+                    </div>
+                    <input
+                      v-if="question.isOther !== false"
+                      class="mt-2 h-9 w-full rounded-lg border border-border-subtle bg-surface-raised px-3 text-[12px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                      :aria-label="`${question.header || 'Clarification'} other answer`"
+                      placeholder="Other..."
+                      :value="followUpAnswer(pendingFollowUp.interrupt, question)"
+                      :disabled="followUpBusyState(pendingFollowUp.interrupt)"
+                      @input="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, ($event.target as HTMLInputElement).value)"
+                    />
+                  </div>
+                </div>
                 <div v-if="followUpError(pendingFollowUp.interrupt)" class="mt-2 text-[11px] leading-4 text-danger">
                   {{ followUpError(pendingFollowUp.interrupt) }}
                 </div>
@@ -3807,7 +4307,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               />
             </div>
             <button
-              v-if="messageStreaming && activeAssistantRun?.status !== 'stopping'"
+              v-if="messageStreaming && !prompt.trim() && activeAssistantRun?.status !== 'stopping'"
               type="button"
               class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-md border border-danger/30 bg-danger-subtle text-danger transition hover:bg-danger-subtle/80"
               title="Stop generating"
@@ -4027,45 +4527,20 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               <StatusBadge :status="developmentPreviewPhase" />
             </div>
             <div class="ml-auto flex shrink-0 items-center gap-2">
-              <template v-if="developmentTemplates.length > 0">
-                <select
-                  v-model="developmentTemplateSelection"
-                  class="h-8 max-w-[180px] rounded-md border border-border-subtle bg-surface px-2 text-[12px] text-text-secondary"
-                  title="Infrastructure template backing this development environment"
-                  :disabled="developmentTemplateBusy"
-                >
-                  <option value="" disabled>{{ selected?.template ? selected.template : 'Choose template…' }}</option>
-                  <option v-for="tpl in developmentTemplates" :key="tpl.name" :value="tpl.name">
-                    {{ tpl.displayName || tpl.name }}
-                  </option>
-                </select>
-                <button
-                  v-if="developmentTemplateSelection && developmentTemplateSelection !== (selected?.template ?? '')"
-                  type="button"
-                  class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-3 text-[12px] font-medium text-text-primary transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                  :disabled="developmentTemplateBusy"
-                  title="Switch the development environment onto this template. Code is preserved in git and re-synced."
-                  @click="applyDevelopmentTemplate"
-                >
-                  <Loader2 v-if="developmentTemplateBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                  Apply
-                </button>
-              </template>
+              <PreviewActionsMenu
+                :templates="developmentTemplates"
+                :current-template="selected?.template"
+                :template-busy="developmentTemplateBusy"
+                :hydrate-busy="developmentHydrateBusy"
+                :hydrate-disabled="!selected"
+                :disabled="messageStreaming"
+                @select-template="applyDevelopmentTemplate"
+                @load-from-git="hydrateDevelopmentWorkspace"
+              />
               <button
                 type="button"
                 class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                :disabled="!selected || developmentHydrateBusy"
-                title="Replace-load the workspace from the project's git repository and re-sync"
-                @click="hydrateDevelopmentWorkspace"
-              >
-                <Loader2 v-if="developmentHydrateBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                <GitBranch v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                Load from git
-              </button>
-              <button
-                type="button"
-                class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                :disabled="!selected || !developmentBinding || developmentSyncBusy"
+                :disabled="!selected || !developmentBinding || messageStreaming || developmentSyncBusy"
                 title="Sync"
                 @click="syncDevelopmentPreview"
               >
@@ -4327,17 +4802,39 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 </div>
               </div>
             </div>
-            <ul v-if="pendingFollowUp.interrupt.questions?.length" class="list-disc space-y-1 pl-4 text-[12px] leading-5 text-text-secondary">
-              <li v-for="question in pendingFollowUp.interrupt.questions" :key="question">{{ question }}</li>
-            </ul>
-            <textarea
-              class="min-h-20 w-full resize-y rounded-md border border-border-subtle bg-surface px-3 py-2 text-[13px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-              aria-label="Clarification response"
-              placeholder="Answer here..."
-              :value="followUpAnswer(pendingFollowUp.interrupt)"
-              :disabled="followUpBusyState(pendingFollowUp.interrupt)"
-              @input="updateFollowUpAnswer(pendingFollowUp.interrupt, ($event.target as HTMLTextAreaElement).value)"
-            />
+            <div v-if="pendingFollowUp.interrupt.questions?.length" class="grid gap-3">
+              <div
+                v-for="question in followUpQuestions(pendingFollowUp.interrupt)"
+                :key="question.id"
+                class="rounded-xl border border-border-subtle bg-surface p-3"
+              >
+                <div v-if="question.header" class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">{{ question.header }}</div>
+                <div class="mt-1 text-[12px] font-medium leading-5 text-text-primary">{{ question.question }}</div>
+                <div v-if="question.options?.length" class="mt-2 grid gap-2">
+                  <button
+                    v-for="option in question.options"
+                    :key="option.label"
+                    type="button"
+                    class="rounded-lg border px-3 py-2 text-left transition"
+                    :class="followUpOptionSelected(pendingFollowUp.interrupt, question, option) ? 'border-accent bg-accent-subtle' : 'border-border-subtle bg-surface-raised hover:border-accent/40 hover:bg-surface-hover'"
+                    :disabled="followUpBusyState(pendingFollowUp.interrupt)"
+                    @click="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, option.label)"
+                  >
+                    <div class="text-[12px] font-medium text-text-primary">{{ option.label }}</div>
+                    <div class="mt-0.5 text-[11px] leading-4 text-text-secondary">{{ option.description }}</div>
+                  </button>
+                </div>
+                <input
+                  v-if="question.isOther !== false"
+                  class="mt-2 h-9 w-full rounded-lg border border-border-subtle bg-surface-raised px-3 text-[12px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+                  :aria-label="`${question.header || 'Clarification'} other answer`"
+                  placeholder="Other..."
+                  :value="followUpAnswer(pendingFollowUp.interrupt, question)"
+                  :disabled="followUpBusyState(pendingFollowUp.interrupt)"
+                  @input="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, ($event.target as HTMLInputElement).value)"
+                />
+              </div>
+            </div>
             <div v-if="followUpError(pendingFollowUp.interrupt)" class="text-[11px] leading-4 text-danger">
               {{ followUpError(pendingFollowUp.interrupt) }}
             </div>

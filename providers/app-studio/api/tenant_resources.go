@@ -21,10 +21,11 @@ import (
 // (<Kind>Yaml / <Plural>Yaml / delete<Kind>); they must match the CRD's kind
 // and its pluralization.
 var (
-	secretResource         = tenant.Resource{GVR: secretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
-	codeConnectionResource = tenant.Resource{GVR: codeConnectionsGVR, Kind: "Connection", Plural: "Connections"}
-	codeRepositoryResource = tenant.Resource{GVR: codeRepositoriesGVR, Kind: "Repository", Plural: "Repositories"}
-	codePackageResource    = tenant.Resource{GVR: codePackagesGVR, Kind: "Package", Plural: "Packages"}
+	secretResource               = tenant.Resource{GVR: secretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
+	codeConnectionResource       = tenant.Resource{GVR: codeConnectionsGVR, Kind: "Connection", Plural: "Connections"}
+	codeRepositoryResource       = tenant.Resource{GVR: codeRepositoriesGVR, Kind: "Repository", Plural: "Repositories"}
+	codeRepositoryCommitResource = tenant.Resource{GVR: codeRepositoryCommitsGVR, Kind: "RepositoryCommit", Plural: "RepositoryCommits"}
+	codePackageResource          = tenant.Resource{GVR: codePackagesGVR, Kind: "Package", Plural: "Packages"}
 )
 
 // codeResourceFor maps a code-provider GVR to its descriptor, for the
@@ -35,6 +36,8 @@ func codeResourceFor(gvr schema.GroupVersionResource) tenant.Resource {
 		return codeRepositoryResource
 	case codeConnectionsGVR:
 		return codeConnectionResource
+	case codeRepositoryCommitsGVR:
+		return codeRepositoryCommitResource
 	default:
 		return tenant.Resource{GVR: gvr, Kind: "", Plural: ""}
 	}

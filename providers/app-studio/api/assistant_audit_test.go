@@ -20,15 +20,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/cloudwego/eino/adk"
-	einomodel "github.com/cloudwego/eino/components/model"
-	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/faroshq/provider-app-studio/store"
@@ -48,25 +44,16 @@ func TestProjectAssistantRunAuditIsBoundedAndSanitized(t *testing.T) {
 		TurnProfile: projectAssistantTurnProfileImplementation,
 	}, run, started)
 
-	recorder.recordPhaseAt(projectEinoAssistantPhaseApproval, started)
-	recorder.recordPhaseAt(projectEinoAssistantPhaseApproval, started.Add(time.Millisecond))
-	for i := 0; i < projectAssistantAuditMaxPhases+10; i++ {
-		phase := projectEinoAssistantPhaseMutate
-		if i%2 == 1 {
-			phase = projectEinoAssistantPhaseVerify
-		}
-		recorder.recordPhaseAt(phase, started.Add(time.Duration(i+1)*time.Millisecond))
-	}
 	recorder.recordToolAt(projectToolCallStreamEvent{
 		ID:        "call-write",
-		Name:      projectToolWriteFile,
+		Name:      projectToolApplyPatch,
 		Status:    "requested",
 		Arguments: "path src/App.tsx; 123 bytes",
 		Summary:   "source=do-not-store",
 	}, started.Add(time.Second))
 	recorder.recordToolAt(projectToolCallStreamEvent{
 		ID:        "call-write",
-		Name:      projectToolWriteFile,
+		Name:      projectToolApplyPatch,
 		Status:    "succeeded",
 		Arguments: "path src/App.tsx; 123 bytes",
 		Summary:   "source=do-not-store",
@@ -121,9 +108,6 @@ func TestProjectAssistantRunAuditIsBoundedAndSanitized(t *testing.T) {
 	if audit.Outcome != projectAssistantAuditOutcomeSucceeded || audit.DurationMS != 600000 {
 		t.Fatalf("audit completion = %#v", audit)
 	}
-	if len(audit.PhaseTransitions) > projectAssistantAuditMaxPhases {
-		t.Fatalf("phase transitions = %d, want <= %d", len(audit.PhaseTransitions), projectAssistantAuditMaxPhases)
-	}
 	if len(audit.Tools) > projectAssistantAuditMaxTools {
 		t.Fatalf("tools = %d, want <= %d", len(audit.Tools), projectAssistantAuditMaxTools)
 	}
@@ -141,28 +125,22 @@ func TestProjectAssistantRunAuditIsBoundedAndSanitized(t *testing.T) {
 	}
 }
 
-func TestProjectAssistantRunAuditRecordsAdaptiveRoutingAndPromotion(t *testing.T) {
-	run := &store.AssistantRun{ID: "run-adaptive"}
-	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{
-		TurnProfile:              projectAssistantTurnProfileAdaptive,
-		RequestedAction:          string(projectAssistantActionAuto),
-		ResolvedAction:           string(projectAssistantTurnProfileAdaptive),
-		ClassificationReason:     "adaptive_auto_policy",
-		ClassificationConfidence: projectAssistantTurnConfidenceMedium,
-	}, run, time.Now().UTC())
-	recorder.recordPromotion("work-item-1")
-
-	var audit projectAssistantRunAudit
-	if err := json.Unmarshal(run.Audit, &audit); err != nil {
-		t.Fatal(err)
+func TestProjectAssistantAuditToolContractDigestIsStableAndSchemaBound(t *testing.T) {
+	first := []*schema.ToolInfo{
+		{Name: "b", Extra: map[string]any{projectEinoToolParametersExtraKey: `{"type":"object"}`, "risk": "read", "parallelSafe": true}},
+		{Name: "a", Extra: map[string]any{projectEinoToolParametersExtraKey: `{"type":"object","properties":{}}`, "risk": "write"}},
 	}
-	if audit.RequestedAction != "auto" ||
-		audit.ResolvedAction != "build" ||
-		audit.ClassificationReason != "adaptive_auto_policy" ||
-		audit.ClassificationConfidence != projectAssistantTurnConfidenceMedium ||
-		audit.ResolutionReason != "plan_approval_requested" ||
-		audit.PromotedWorkItemID != "work-item-1" {
-		t.Fatalf("adaptive routing audit = %#v", audit)
+	reordered := []*schema.ToolInfo{first[1], first[0]}
+	digest := projectAssistantAuditToolContractDigest(first)
+	if digest == "" || digest != projectAssistantAuditToolContractDigest(reordered) {
+		t.Fatalf("tool contract digest is not stable: %q", digest)
+	}
+	changed := []*schema.ToolInfo{
+		{Name: "a", Extra: map[string]any{projectEinoToolParametersExtraKey: `{"type":"object","required":["path"]}`, "risk": "write"}},
+		first[0],
+	}
+	if got := projectAssistantAuditToolContractDigest(changed); got == digest {
+		t.Fatalf("schema change retained digest %q", got)
 	}
 }
 
@@ -170,22 +148,21 @@ func TestProjectAssistantRunAuditRecordsModelCallShapeWithoutPayloads(t *testing
 	started := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
 	run := &store.AssistantRun{ID: "run-model-call"}
 	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, started)
+	remaining := int64(1234)
 	recorder.recordModelCall(
 		context.Background(),
-		projectEinoAssistantPhaseMutate,
 		2,
 		7,
 		5,
-		true,
+		&remaining,
 		[]*schema.ToolInfo{
-			{Name: projectToolWriteFile},
+			{Name: projectToolApplyPatch},
 			{Name: projectEinoAssistantWriteTodosTool},
 		},
 		[]*schema.ToolInfo{{Name: projectToolApplyPatch}},
 	)
 	recorder.recordModelResult(
 		context.Background(),
-		projectEinoAssistantPhaseMutate,
 		2,
 		schema.AssistantMessage("top-secret-model-content", []schema.ToolCall{{
 			ID:   "call-todos",
@@ -217,15 +194,15 @@ func TestProjectAssistantRunAuditRecordsModelCallShapeWithoutPayloads(t *testing
 		t.Fatalf("model calls = %#v, want one entry", audit.ModelCalls)
 	}
 	call := audit.ModelCalls[0]
-	if call.Phase != projectEinoAssistantPhaseMutate ||
-		call.Ordinal != 2 ||
+	if call.Ordinal != 2 ||
 		call.SourceRevision != 7 ||
 		call.VerifiedRevision != 5 ||
-		!call.WarningInjected ||
+		call.RolloutBudgetRemaining == nil ||
+		*call.RolloutBudgetRemaining != remaining ||
 		call.Outcome != "tool_calls" {
 		t.Fatalf("model call = %#v", call)
 	}
-	wantVisible := []string{projectToolWriteFile, projectEinoAssistantWriteTodosTool, projectToolApplyPatch}
+	wantVisible := []string{projectToolApplyPatch, projectEinoAssistantWriteTodosTool}
 	if strings.Join(call.VisibleTools, ",") != strings.Join(wantVisible, ",") {
 		t.Fatalf("visible tools = %#v, want %#v", call.VisibleTools, wantVisible)
 	}
@@ -273,11 +250,10 @@ func TestProjectAssistantRunAuditPersistsBoundedModelMilestones(t *testing.T) {
 
 	if err := recorder.recordModelCall(
 		context.Background(),
-		projectEinoAssistantPhasePlan,
 		1,
 		0,
 		0,
-		false,
+		nil,
 		[]*schema.ToolInfo{{Name: projectToolDefineInitialProjectPlan}},
 		nil,
 	); err != nil {
@@ -287,7 +263,6 @@ func TestProjectAssistantRunAuditPersistsBoundedModelMilestones(t *testing.T) {
 	recorder.recordModelResponseChunk(context.Background(), true)
 	if err := recorder.recordModelResult(
 		context.Background(),
-		projectEinoAssistantPhasePlan,
 		1,
 		schema.AssistantMessage("", []schema.ToolCall{{
 			Function: schema.FunctionCall{Name: projectToolDefineInitialProjectPlan},
@@ -320,11 +295,10 @@ func TestProjectAssistantRunAuditTransportErrorDoesNotPreemptRetryResult(t *test
 	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
 	if err := recorder.recordModelCall(
 		context.Background(),
-		projectEinoAssistantPhaseApproval,
 		1,
 		0,
 		0,
-		false,
+		nil,
 		nil,
 		nil,
 	); err != nil {
@@ -333,7 +307,6 @@ func TestProjectAssistantRunAuditTransportErrorDoesNotPreemptRetryResult(t *test
 	recorder.recordModelTransportError(context.Background(), errors.New("temporary provider failure"))
 	if err := recorder.recordModelResult(
 		context.Background(),
-		projectEinoAssistantPhaseApproval,
 		1,
 		schema.AssistantMessage("recovered", nil),
 	); err != nil {
@@ -358,10 +331,9 @@ func TestProjectAssistantRunAuditKeepsFailureAdjacentModelCalls(t *testing.T) {
 	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
 	total := projectAssistantAuditMaxModelCalls + 3
 	for ordinal := 1; ordinal <= total; ordinal++ {
-		recorder.recordModelCall(context.Background(), projectEinoAssistantPhaseMutate, ordinal, 0, 0, false, nil, nil)
+		recorder.recordModelCall(context.Background(), ordinal, 0, 0, nil, nil, nil)
 		recorder.recordModelResult(
 			context.Background(),
-			projectEinoAssistantPhaseMutate,
 			ordinal,
 			schema.AssistantMessage("safe", nil),
 		)
@@ -386,7 +358,7 @@ func TestProjectAssistantRunAuditKeepsFailureAdjacentModelCalls(t *testing.T) {
 func TestProjectAssistantRunAuditMarksUnfinishedModelCallAsError(t *testing.T) {
 	run := &store.AssistantRun{ID: "run-model-call-error"}
 	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
-	recorder.recordModelCall(context.Background(), projectEinoAssistantPhaseMutate, 1, 0, 0, false, nil, nil)
+	recorder.recordModelCall(context.Background(), 1, 0, 0, nil, nil, nil)
 	recorder.recordModelError()
 
 	var audit projectAssistantRunAudit
@@ -401,7 +373,6 @@ func TestProjectAssistantRunAuditMarksUnfinishedModelCallAsError(t *testing.T) {
 func TestProjectAssistantRunAuditPersistsSafeStructuredFailures(t *testing.T) {
 	t.Run("no progress preserves safe fields", func(t *testing.T) {
 		run, err := recordProjectAssistantRunAuditFailure(store.AssistantRun{}, &projectEinoAssistantNoProgressError{
-			Phase:            projectEinoAssistantPhaseMutate,
 			ToolName:         "provider__read_file",
 			Calls:            3,
 			Limit:            3,
@@ -418,7 +389,6 @@ func TestProjectAssistantRunAuditPersistsSafeStructuredFailures(t *testing.T) {
 		}
 		if audit.Failure == nil ||
 			audit.Failure.Kind != "no_progress" ||
-			audit.Failure.Phase != projectEinoAssistantPhaseMutate ||
 			audit.Failure.ToolName != projectToolReadFile ||
 			audit.Failure.Calls != 3 ||
 			audit.Failure.Limit != 3 ||
@@ -663,12 +633,12 @@ func TestProjectAssistantMutationPercentPathsAreNotCanonicalDecoded(t *testing.T
 	const path = "src/literal%3Bsegment.tsx"
 	const arguments = "path " + path
 
-	if got := projectAssistantAuditToolPath(projectToolWriteFile, arguments); got != path {
+	if got := projectAssistantAuditToolPath(projectToolApplyPatch, arguments); got != path {
 		t.Fatalf("mutation audit path = %q, want literal %q", got, path)
 	}
 	action := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
 		ID:        "write",
-		Name:      projectToolWriteFile,
+		Name:      projectToolApplyPatch,
 		Status:    "succeeded",
 		Arguments: arguments,
 		Summary:   "write_file",
@@ -753,7 +723,7 @@ func TestProjectAssistantPermissionAuditDoesNotPersistRawPayloads(t *testing.T) 
 		Decision:        projectAssistantPermissionAllow,
 		Actor:           "user@example.test",
 		ToolCallID:      "call-1",
-		ToolName:        projectToolWriteFile,
+		ToolName:        projectToolApplyPatch,
 		EditedArguments: map[string]any{"path": "src/App.tsx", "content": "secret-source"},
 		Result:          `{"content":"secret-result"}`,
 		Error:           "secret-error",
@@ -785,7 +755,7 @@ func TestProjectAssistantPermissionAuditKeepsOnlyRecentDecisions(t *testing.T) {
 			RequestID:  "perm-" + strconv.Itoa(i),
 			Decision:   projectAssistantPermissionAllow,
 			ToolCallID: "call-" + strconv.Itoa(i),
-			ToolName:   projectToolWriteFile,
+			ToolName:   projectToolApplyPatch,
 			ResolvedAt: time.Date(2026, 7, 26, 12, 0, 0, i, time.UTC),
 		})
 		if err != nil {
@@ -817,6 +787,7 @@ func TestCompleteClaimedProjectAssistantRunAfterResumeErrorFinalizesAudit(t *tes
 	run := store.AssistantRun{
 		ID:          "run-1",
 		ProjectName: scope.ProjectName,
+		Mode:        store.AssistantRunModeDefault,
 		Status:      store.AssistantRunStatusRunning,
 		RequestID:   "perm-1",
 		CreatedAt:   started,
@@ -834,7 +805,7 @@ func TestCompleteClaimedProjectAssistantRunAfterResumeErrorFinalizesAudit(t *tes
 		ToolCalls: []chatToolCall{{
 			ID: "call-1",
 			Function: chatToolCallFunction{
-				Name: projectToolWriteFile,
+				Name: projectToolApplyPatch,
 			},
 		}},
 	}
@@ -863,107 +834,51 @@ func TestCompleteClaimedProjectAssistantRunAfterResumeErrorFinalizesAudit(t *tes
 	if err := json.Unmarshal(saved.Audit, &audit); err != nil {
 		t.Fatalf("decode audit: %v", err)
 	}
-	if saved.Status != store.AssistantRunStatusCompleted ||
+	if saved.Status != store.AssistantRunStatusFailed ||
 		audit.Outcome != projectAssistantAuditOutcomeFailed ||
 		audit.DurationMS < 1000 {
 		t.Fatalf("saved run = %#v, audit = %#v; want finalized failure", saved, audit)
 	}
 }
 
-func TestEinoAssistantEnginePersistsCompletedAndFailedRunAudits(t *testing.T) {
-	tests := []struct {
-		name             string
-		profile          projectAssistantTurnProfile
-		content          string
-		streamErrors     []error
-		wantOutcome      projectAssistantAuditOutcome
-		wantErr          bool
-		wantModelOutcome string
-	}{
-		{
-			name:        "completed discussion",
-			profile:     projectAssistantTurnProfileDiscussion,
-			content:     "Here is the answer.",
-			wantOutcome: projectAssistantAuditOutcomeSucceeded,
-		},
-		{
-			name:        "implementation report is accepted",
-			profile:     projectAssistantTurnProfileImplementation,
-			content:     "I reviewed the request.",
-			wantOutcome: projectAssistantAuditOutcomeSucceeded,
-		},
-		{
-			name:             "failed model call records error shape",
-			profile:          projectAssistantTurnProfileImplementation,
-			content:          "unreachable",
-			streamErrors:     []error{io.ErrUnexpectedEOF, io.ErrUnexpectedEOF, io.ErrUnexpectedEOF},
-			wantOutcome:      projectAssistantAuditOutcomeFailed,
-			wantErr:          true,
-			wantModelOutcome: "error",
-		},
+func TestProjectAssistantCompactionAuditUpdatesBoundedMetadataWithoutSummary(t *testing.T) {
+	run := store.AssistantRun{}
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, &run, time.Now().UTC())
+	ctx := context.Background()
+	if err := recorder.recordCompaction(ctx, projectAssistantAuditCompaction{
+		ID:                 "compact-1",
+		Trigger:            "auto",
+		Status:             "started",
+		PriorTokenEstimate: 24001,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.recordCompaction(ctx, projectAssistantAuditCompaction{
+		ID:                       "compact-1",
+		Trigger:                  "auto",
+		Status:                   "completed",
+		WindowNumber:             2,
+		PreviousWindowID:         "window-1",
+		WindowID:                 "window-2",
+		PriorTokenEstimate:       24001,
+		ReplacementTokenEstimate: 8000,
+		IgnoredToolCallCount:     2,
+	}); err != nil {
+		t.Fatal(err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			messages := &countingAssistantRunStore{MemoryStore: store.NewMemoryStore()}
-			server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
-			chatModel := &retryingEinoChatModel{content: tt.content, streamErrors: tt.streamErrors}
-			engine := projectEinoAssistantEngine{
-				server: server,
-				newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
-					return chatModel, nil
-				},
-				newTools: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
-					return nil, nil
-				},
-			}
-			req := projectEinoRunRequestForProfileTest(tt.profile)
-			req.LLM = projectLLMSettings{Provider: "google-ai-studio", Model: "google/gemini-3.5-flash"}
-			var started projectAssistantDurableStartResult
-			var err error
-			attach := func(run store.AssistantRun, assistant store.Message, _ bool) error {
-				_, attachErr := server.projectAssistantSupervisor().Attach(req.MessageScope, run, assistant)
-				return attachErr
-			}
-			if tt.profile == projectAssistantTurnProfileImplementation {
-				started, err = server.startProjectAssistantBuildRunDurably(context.Background(), req.MessageScope, req.Identity.user, "Implement the request", "audit-"+strings.ReplaceAll(tt.name, " ", "-"), attach)
-			} else {
-				started, err = server.startProjectAssistantRunDurably(context.Background(), req.MessageScope, req.Identity.user, "Answer the request", "audit-"+strings.ReplaceAll(tt.name, " ", "-"), attach)
-			}
-			if err != nil {
-				t.Fatalf("start durable audit run: %v", err)
-			}
-			req.AssistantRun = &started.Run
-			req.executionAuthority = nil
-
-			_, err = engine.StreamProjectAssistant(context.Background(), req)
-			if tt.wantErr && err == nil {
-				t.Fatal("StreamProjectAssistant error = nil, want lifecycle failure")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("StreamProjectAssistant returned error: %v", err)
-			}
-			if tt.wantErr && !errors.Is(err, adk.ErrExceedMaxRetries) && !strings.Contains(err.Error(), "exceeds max retries") {
-				t.Fatalf("StreamProjectAssistant error = %v, want Eino retry exhaustion", err)
-			}
-			if messages.lastAssistantRun == nil {
-				t.Fatal("no assistant run persisted")
-			}
-			if messages.lastAssistantRun.Status != store.AssistantRunStatusRunning {
-				t.Fatalf("run status = %q, want lifecycle-owned running row", messages.lastAssistantRun.Status)
-			}
-			var audit projectAssistantRunAudit
-			if err := json.Unmarshal(messages.lastAssistantRun.Audit, &audit); err != nil {
-				t.Fatalf("decode audit: %v", err)
-			}
-			if audit.Outcome != tt.wantOutcome || audit.Provider != req.LLM.Provider || audit.Model != req.LLM.Model {
-				t.Fatalf("audit = %#v", audit)
-			}
-			if tt.wantModelOutcome != "" {
-				if len(audit.ModelCalls) == 0 || audit.ModelCalls[len(audit.ModelCalls)-1].Outcome != tt.wantModelOutcome {
-					t.Fatalf("model calls = %#v, want terminal outcome %q", audit.ModelCalls, tt.wantModelOutcome)
-				}
-			}
-		})
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatal(err)
+	}
+	if len(audit.Compactions) != 1 {
+		t.Fatalf("compactions = %#v, want one updated entry", audit.Compactions)
+	}
+	entry := audit.Compactions[0]
+	if entry.Status != "completed" || entry.WindowID != "window-2" || entry.ReplacementTokenEstimate != 8000 || entry.IgnoredToolCallCount != 2 || entry.CompletedAtOffsetMS == nil {
+		t.Fatalf("compaction audit = %#v", entry)
+	}
+	if strings.Contains(string(run.Audit), "summary") {
+		t.Fatalf("compaction audit leaked summary-shaped content: %s", run.Audit)
 	}
 }

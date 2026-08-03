@@ -17,36 +17,45 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/adk"
+
 	"github.com/faroshq/provider-app-studio/store"
+	"github.com/faroshq/provider-app-studio/workspace"
 )
+
+func TestProjectAssistantRunErrorInfoClassifiesExhaustedModelRetries(t *testing.T) {
+	err := &adk.RetryExhaustedError{LastErr: &projectEinoAssistantIncompleteStreamError{}, TotalRetries: 5}
+	if got := projectAssistantRunErrorInfo(err); got != "response_too_many_failed_attempts" {
+		t.Fatalf("error info = %q, want response_too_many_failed_attempts", got)
+	}
+}
 
 func TestProjectAssistantPublicRunSnapshotsOmitInternalExecutionState(t *testing.T) {
 	now := time.Now().UTC()
 	snapshot := projectAssistantRunSnapshot{
 		Run: store.AssistantRun{
-			ID:                    "run-1",
-			ProjectName:           "internal-project",
-			ProjectUID:            "internal-project-uid",
-			WorkItemID:            "work-item-1",
-			Mode:                  store.AssistantRunModeContinue,
-			ApprovalMode:          store.AssistantApprovalModeAlwaysAsk,
-			ExpectedGrantRevision: "secret-grant-revision",
-			Status:                store.AssistantRunStatusRunning,
-			ClientRequestID:       "request-1",
-			UserMessageID:         "user-1",
-			ActiveMessageID:       "assistant-1",
-			Revision:              7,
-			RequestID:             "permission-1",
-			Checkpoint:            json.RawMessage(`{"prompt":"secret prompt"}`),
-			Audit:                 json.RawMessage(`{"result":"secret result"}`),
-			CreatedAt:             now,
-			UpdatedAt:             now,
+			ID:              "run-1",
+			ProjectName:     "internal-project",
+			ProjectUID:      "internal-project-uid",
+			Mode:            store.AssistantRunModeDefault,
+			ApprovalMode:    store.AssistantApprovalModeAlwaysAsk,
+			Status:          store.AssistantRunStatusRunning,
+			ClientRequestID: "request-1",
+			UserMessageID:   "user-1",
+			ActiveMessageID: "assistant-1",
+			Revision:        7,
+			RequestID:       "permission-1",
+			Checkpoint:      json.RawMessage(`{"prompt":"secret prompt"}`),
+			Audit:           json.RawMessage(`{"result":"secret result"}`),
+			CreatedAt:       now,
+			UpdatedAt:       now,
 		},
 		Message: store.Message{
 			ID:        "assistant-1",
@@ -70,7 +79,7 @@ func TestProjectAssistantPublicRunSnapshotsOmitInternalExecutionState(t *testing
 			t.Fatalf("public snapshot contains internal value %q: %s", forbidden, raw)
 		}
 	}
-	for _, required := range []string{`"id":"run-1"`, `"workItemID":"work-item-1"`, `"revision":7`, `"activeMessageID":"assistant-1"`} {
+	for _, required := range []string{`"id":"run-1"`, `"revision":7`, `"activeMessageID":"assistant-1"`} {
 		if !strings.Contains(string(raw), required) {
 			t.Fatalf("public snapshot is missing %s: %s", required, raw)
 		}
@@ -87,62 +96,233 @@ func TestProjectAssistantPublicRunSnapshotsOmitInternalExecutionState(t *testing
 	}
 }
 
-func TestProjectAssistantMutationTerminalContentExplainsStateConversationally(t *testing.T) {
-	complete := projectAssistantMutationTerminalContent(projectAssistantCompletionEvidence{
-		SourceMutationRevision:   4,
-		VerifiedMutationRevision: 4,
-		LatestMutationVerified:   true,
-		VerificationOutcome:      "ready",
-		VerificationSummary:      "The development runtime is ready.",
-	}, true)
-	for _, expected := range []string{
-		"Status: Complete",
-		"The latest app changes are running in the development preview.",
-		"What I verified:",
-		"The development runtime is ready.",
-	} {
-		if !strings.Contains(complete, expected) {
-			t.Fatalf("complete content = %q, want %q", complete, expected)
-		}
+func TestProjectAssistantRunViewIncludesStructuredTerminalFields(t *testing.T) {
+	run := store.AssistantRun{
+		ID:          "run-1",
+		Mode:        store.AssistantRunModeDefault,
+		Status:      store.AssistantRunStatusAborted,
+		Error:       json.RawMessage(`{"message":"retry budget exhausted","errorInfo":"session_budget_exceeded"}`),
+		AbortReason: store.AssistantRunAbortReasonBudgetLimited,
 	}
-	if strings.Contains(complete, "Workspace revision") || strings.Contains(complete, "Outcome:") {
-		t.Fatalf("complete content exposes internal verification language: %q", complete)
+	view := projectAssistantRunToAPI(run)
+	if view.Error == nil || view.Error.Message != "retry budget exhausted" || view.Error.ErrorInfo != "session_budget_exceeded" {
+		t.Fatalf("terminal error view = %#v", view.Error)
 	}
+	if view.AbortReason != store.AssistantRunAbortReasonBudgetLimited {
+		t.Fatalf("abort reason = %q", view.AbortReason)
+	}
+}
 
-	pending := projectAssistantMutationTerminalContent(projectAssistantCompletionEvidence{
-		PlanDefined:              true,
-		PlanComplete:             false,
-		VerificationOutcome:      "ready",
-		VerificationSummary:      "The development runtime is ready. The Git repository is still becoming ready, so commit and CI handoff are pending.",
-		SourceMutationRevision:   4,
-		VerifiedMutationRevision: 4,
-		LatestMutationVerified:   true,
-	}, true)
-	for _, expected := range []string{
-		"Status: Incomplete",
-		"The app is running in the development preview",
-		"requested project work is not finished yet",
-		"repository is still becoming ready",
-		"Finish the remaining project steps",
-	} {
-		if !strings.Contains(pending, expected) {
-			t.Fatalf("pending content = %q, want %q", pending, expected)
-		}
+func TestProjectAssistantTerminalContentPreservesFinalProse(t *testing.T) {
+	server := &Server{}
+	const want = "Final model prose."
+	if got := server.projectAssistantRunTerminalContent(context.Background(), store.Scope{}, store.AssistantRun{}, want, "partial", errors.New("provider failed"), projectAssistantCompletionEvidence{}, false); got != want {
+		t.Fatalf("terminal content = %q, want %q", got, want)
 	}
-	if strings.Contains(pending, "initial project objective is incomplete") {
-		t.Fatalf("pending content contains circular blocker: %q", pending)
+}
+
+func TestProjectAssistantTerminalContentDoesNotRewriteModelProse(t *testing.T) {
+	server := &Server{}
+	const want = "Committed and pushed the changes; CI is running."
+	got := server.projectAssistantRunTerminalContent(
+		context.Background(),
+		store.Scope{},
+		store.AssistantRun{},
+		want,
+		"",
+		nil,
+		projectAssistantCompletionEvidence{
+			SourceMutationRevision:  2,
+			CommitRequired:          true,
+			LatestMutationCommitted: false,
+		},
+		true,
+	)
+	if got != want {
+		t.Fatalf("terminal content = %q, want unmodified model prose", got)
+	}
+}
+
+func TestProjectAssistantPreviewEvidenceDoesNotRewriteModelProse(t *testing.T) {
+	const want = "The preview is verified."
+	got := projectAssistantGroundPreviewTerminalContent(
+		want,
+		[]projectToolCallStreamEvent{{
+			ID:     "inspect-1",
+			Name:   projectToolInspectDevelopmentPreview,
+			Status: "failed",
+		}},
+	)
+	if got != want {
+		t.Fatalf("terminal content = %q, want unmodified model prose", got)
+	}
+}
+
+func TestProjectAssistantSuccessfulPreviewDoesNotAppendBoilerplate(t *testing.T) {
+	const want = "The app is fully functional."
+	got := projectAssistantGroundPreviewTerminalContent(
+		want,
+		[]projectToolCallStreamEvent{{
+			ID:     "inspect-1",
+			Name:   projectToolInspectDevelopmentPreview,
+			Status: "succeeded",
+		}},
+	)
+	if got != want {
+		t.Fatalf("terminal content = %q, want unmodified model prose", got)
+	}
+}
+
+func TestProjectAssistantTerminalPlanUsesExplicitCompletionEvidence(t *testing.T) {
+	plan := &projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
+		{Content: "Verify development runtime and inspect preview", Status: "pending"},
+		{Content: "Commit finished files", Status: "pending"},
+	}}
+	evidence := projectAssistantCompletionEvidence{PlanComplete: false, LatestMutationVerified: true, LatestMutationCommitted: true}
+	failedInspection := []projectToolCallStreamEvent{{
+		ID: "inspect-1", Name: projectToolInspectDevelopmentPreview, Status: "failed",
+	}}
+	if projectAssistantTerminalPlanGrounded(plan, failedInspection, evidence) {
+		t.Fatal("plan completed without explicit completion evidence")
+	}
+	succeededInspection := append(failedInspection, projectToolCallStreamEvent{
+		ID: "inspect-2", Name: projectToolInspectDevelopmentPreview, Status: "succeeded",
+	})
+	evidence.PlanComplete = true
+	if !projectAssistantTerminalPlanGrounded(plan, succeededInspection, evidence) {
+		t.Fatal("explicitly completed plan was not accepted")
+	}
+	evidence.LatestMutationCommitted = false
+	if !projectAssistantTerminalPlanGrounded(plan, succeededInspection, evidence) {
+		t.Fatal("keyword-derived commit state overrode explicit completion evidence")
+	}
+}
+
+func TestProjectAssistantEffectAwareTerminalContentDisclosesSuccessfulNonSourceMutations(t *testing.T) {
+	tests := []struct {
+		name   string
+		tool   string
+		result string
+	}{
+		{name: "runtime restart", tool: projectToolRestartRuntime, result: `{"status":"ready"}`},
+		{name: "runtime environment", tool: projectToolSetRuntimeEnv, result: `{"status":"ok"}`},
+		{name: "template selection", tool: projectToolSelectTemplate, result: `{"template":"application"}`},
+		{name: "infrastructure provision", tool: projectToolInfrastructureProvision, result: `{"name":"database"}`},
+		{name: "repository commit", tool: projectToolCommitProjectFiles, result: `{"phase":"Succeeded","commitSHA":"abc123"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runID := "run-terminal-" + strings.ReplaceAll(tt.name, " ", "-")
+			messageStore, scope := newAssistantRunEventLedgerTestStore(t, runID)
+			registry := projectAssistantLocalToolRegistry(nil)
+			spec, ok := registry.Spec(tt.tool)
+			if !ok {
+				spec, ok = projectAssistantMCPToolSpec(projectMCPTool{Name: tt.tool})
+			}
+			if !ok {
+				t.Fatalf("tool spec %q is not configured", tt.tool)
+			}
+			ledger := newProjectAssistantRunEventLedger(messageStore, scope, runID)
+			decision, err := ledger.BeginToolCall(context.Background(), "call-effect", spec, map[string]any{})
+			if err != nil {
+				t.Fatalf("BeginToolCall: %v", err)
+			}
+			if _, err := ledger.FinishToolCall(context.Background(), decision.Token, tt.result, nil); err != nil {
+				t.Fatalf("FinishToolCall: %v", err)
+			}
+
+			server := &Server{store: messageStore}
+			effect, err := server.projectAssistantSuccessfulNonSourceRunEffect(context.Background(), scope, runID)
+			if err != nil {
+				t.Fatalf("successful effect evidence: %v", err)
+			}
+			if !effect {
+				t.Fatal("durable successful non-source effect was not recognized")
+			}
+			got := server.projectAssistantRunTerminalContent(
+				context.Background(),
+				scope,
+				store.AssistantRun{ID: runID, Mode: store.AssistantRunModeDefault},
+				"Updated the project configuration and confirmed the checkout flow works.",
+				"",
+				nil,
+				projectAssistantCompletionEvidence{},
+				true,
+			)
+			if want := "Updated the project configuration and confirmed the checkout flow works."; got != want {
+				t.Fatalf("terminal content = %q, want unchanged model response %q", got, want)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantSuccessfulNonSourceRunEffectRejectsNonMutationsAndFailedEffects(t *testing.T) {
+	tests := []struct {
+		name      string
+		spec      projectAssistantToolSpec
+		result    string
+		invokeErr error
+	}{
+		{
+			name:   "blocked runtime action",
+			spec:   projectAssistantToolSpec{Name: projectToolRestartRuntime, Risk: projectAssistantToolRiskRuntime},
+			result: `{"status":"blocked","summary":"No runtime is deployed."}`,
+		},
+		{
+			name:   "failed runtime action",
+			spec:   projectAssistantToolSpec{Name: projectToolSetRuntimeEnv, Risk: projectAssistantToolRiskRuntime},
+			result: "Tool call failed: runtime update failed",
+		},
+		{
+			name:      "errored runtime action",
+			spec:      projectAssistantToolSpec{Name: projectToolRestartRuntime, Risk: projectAssistantToolRiskRuntime},
+			result:    "runtime restart failed",
+			invokeErr: errors.New("runtime restart failed"),
+		},
+		{
+			name:   "plan approval",
+			spec:   projectAssistantToolSpec{Name: projectToolDefineInitialProjectPlan, Risk: projectAssistantToolRiskPlan},
+			result: `{"status":"approved"}`,
+		},
+		{
+			name:   "runtime read",
+			spec:   projectAssistantToolSpec{Name: projectToolGetRuntimeStatus, Risk: projectAssistantToolRiskRead},
+			result: `{"status":"ready"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runID := "run-terminal-rejected-" + strings.ReplaceAll(tt.name, " ", "-")
+			messageStore, scope := newAssistantRunEventLedgerTestStore(t, runID)
+			ledger := newProjectAssistantRunEventLedger(messageStore, scope, runID)
+			decision, err := ledger.BeginToolCall(context.Background(), "call-effect", tt.spec, map[string]any{})
+			if err != nil {
+				t.Fatalf("BeginToolCall: %v", err)
+			}
+			if _, err := ledger.FinishToolCall(context.Background(), decision.Token, tt.result, tt.invokeErr); err != nil {
+				t.Fatalf("FinishToolCall: %v", err)
+			}
+			server := &Server{store: messageStore}
+			effect, err := server.projectAssistantSuccessfulNonSourceRunEffect(context.Background(), scope, runID)
+			if err != nil {
+				t.Fatalf("successful effect evidence: %v", err)
+			}
+			if effect {
+				t.Fatal("non-mutation or unsuccessful effect was recognized as a successful mutation")
+			}
+		})
 	}
 }
 
 func TestProjectAssistantDurableMetadataTracksEveryTransition(t *testing.T) {
 	now := time.Now().UTC()
-	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, Revision: 2, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModePlan, Status: store.AssistantRunStatusRunning, Revision: 2, CreatedAt: now, UpdatedAt: now}
 	plan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
 		{Content: "Inspect project", ActiveForm: "Inspecting project", Status: "completed"},
 		{Content: "Verify preview", ActiveForm: "Verifying preview", Status: "in_progress"},
 	}}
 	metadata := projectAssistantDurableMetadataForTransition(run, "Writing files", true, false, []projectToolCallStreamEvent{{
-		ID: "tool-1", Name: projectToolWriteFile, Status: "running", Arguments: `{"path":"src/App.tsx"}`,
+		ID: "tool-1", Name: projectToolApplyPatch, Status: "running", Arguments: `{"path":"src/App.tsx"}`,
 	}}, &plan)
 	if got := metadata[projectAssistantMetadataRevision]; got != int64(2) {
 		t.Fatalf("revision = %#v, want current run revision", got)
@@ -163,7 +343,7 @@ func TestProjectAssistantDurableMetadataTracksEveryTransition(t *testing.T) {
 	run.Status = store.AssistantRunStatusCompleted
 	run.Revision = 5
 	metadata = projectAssistantDurableMetadataForTransition(run, "Completed", false, true, []projectToolCallStreamEvent{{
-		ID: "tool-1", Name: projectToolWriteFile, Status: "succeeded", Arguments: `{"path":"src/App.tsx"}`,
+		ID: "tool-1", Name: projectToolApplyPatch, Status: "succeeded", Arguments: `{"path":"src/App.tsx"}`,
 	}}, &plan)
 	if got := metadata[projectAssistantMetadataRevision]; got != int64(5) {
 		t.Fatalf("terminal revision = %#v, want 5", got)
@@ -173,212 +353,6 @@ func TestProjectAssistantDurableMetadataTracksEveryTransition(t *testing.T) {
 	}
 	if got := metadata[projectAssistantMetadataPreviewRefreshNeeded]; got != true {
 		t.Fatalf("preview refresh = %#v, want true for successful mutation", got)
-	}
-}
-
-func TestProjectAssistantInitialCompletionSuspensionReason(t *testing.T) {
-	tests := []struct {
-		name     string
-		evidence projectAssistantCompletionEvidence
-		want     string
-	}{
-		{name: "legacy result is unchanged"},
-		{
-			name: "complete initial build",
-			evidence: projectAssistantCompletionEvidence{
-				PlanDefined:              true,
-				PlanComplete:             true,
-				SourceMutationRevision:   5,
-				VerifiedMutationRevision: 5,
-				LatestMutationVerified:   true,
-				VerificationOutcome:      "ready",
-			},
-		},
-		{
-			name: "complete ordinary mutation",
-			evidence: projectAssistantCompletionEvidence{
-				SourceMutationRevision:   2,
-				VerifiedMutationRevision: 2,
-				LatestMutationVerified:   true,
-				VerificationOutcome:      "ready",
-			},
-		},
-		{
-			name: "ordinary dirty mutation suspends",
-			evidence: projectAssistantCompletionEvidence{
-				SourceMutationRevision: 2,
-				VerificationOutcome:    "not_run",
-			},
-			want: "objective incomplete",
-		},
-		{
-			name: "non-authoritative reachable cannot complete",
-			evidence: projectAssistantCompletionEvidence{
-				SourceMutationRevision:   2,
-				VerifiedMutationRevision: 2,
-				LatestMutationVerified:   true,
-				VerificationOutcome:      "reachable",
-			},
-			want: "objective incomplete",
-		},
-		{
-			name: "non-authoritative available cannot complete",
-			evidence: projectAssistantCompletionEvidence{
-				SourceMutationRevision:   2,
-				VerifiedMutationRevision: 2,
-				LatestMutationVerified:   true,
-				VerificationOutcome:      "available",
-			},
-			want: "objective incomplete",
-		},
-		{
-			name: "not ready cannot complete",
-			evidence: projectAssistantCompletionEvidence{
-				SourceMutationRevision: 2,
-				VerificationOutcome:    "not_ready",
-			},
-			want: "objective incomplete",
-		},
-		{
-			name: "unavailable cannot complete",
-			evidence: projectAssistantCompletionEvidence{
-				SourceMutationRevision: 2,
-				VerificationOutcome:    "unavailable",
-			},
-			want: "objective incomplete",
-		},
-		{
-			name: "not configured cannot complete",
-			evidence: projectAssistantCompletionEvidence{
-				SourceMutationRevision: 2,
-				VerificationOutcome:    "not_configured",
-			},
-			want: "objective incomplete",
-		},
-		{
-			name: "non-canonical uppercase ready cannot complete",
-			evidence: projectAssistantCompletionEvidence{
-				SourceMutationRevision:   2,
-				VerifiedMutationRevision: 2,
-				LatestMutationVerified:   true,
-				VerificationOutcome:      "READY",
-			},
-			want: "objective incomplete",
-		},
-		{
-			name: "early prose suspends",
-			evidence: projectAssistantCompletionEvidence{
-				PlanDefined:         true,
-				VerificationOutcome: "not_run",
-			},
-			want: "objective incomplete",
-		},
-		{
-			name: "provisioning suspends distinctly",
-			evidence: projectAssistantCompletionEvidence{
-				PlanDefined:         true,
-				PlanComplete:        true,
-				VerificationOutcome: "provisioning",
-			},
-			want: "runtime provisioning",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := projectAssistantRunResult{CompletionEvidence: tt.evidence}
-			if got := projectAssistantCompletionSuspensionReason(result, false); got != tt.want {
-				t.Fatalf("reason = %q, want %q", got, tt.want)
-			}
-		})
-	}
-	if got := projectAssistantCompletionSuspensionReason(projectAssistantRunResult{}, true); got != "objective incomplete" {
-		t.Fatalf("fresh initial prose reason = %q, want objective incomplete", got)
-	}
-}
-
-func TestProjectAssistantCompletedPlanSnapshotRequiresVerifiedTerminalWork(t *testing.T) {
-	plan := &projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
-		{Content: "Edit source", ActiveForm: "Editing source", Status: "completed"},
-		{Content: "Verify preview", ActiveForm: "Verifying preview", Status: "in_progress"},
-		{Content: "Commit changes", ActiveForm: "Committing changes", Status: "pending"},
-	}}
-	ready := projectAssistantCompletionEvidence{
-		SourceMutationRevision:   3,
-		VerifiedMutationRevision: 3,
-		LatestMutationVerified:   true,
-		VerificationOutcome:      "ready",
-	}
-	if !projectAssistantVerifiedMutationCompleted(ready) {
-		t.Fatal("current exact-ready verification was not recognized")
-	}
-	if projectAssistantTerminalPlanCompleted(ready, nil) {
-		t.Fatal("runtime readiness alone authorized terminal plan completion")
-	}
-	if !projectAssistantTerminalPlanCompleted(ready, []projectToolCallStreamEvent{{
-		Name:   projectToolCommitProjectFiles,
-		Status: "succeeded",
-	}}) {
-		t.Fatal("verified mutation with successful commit did not authorize terminal plan completion")
-	}
-	plannedReady := ready
-	plannedReady.PlanDefined = true
-	plannedReady.PlanComplete = true
-	if !projectAssistantTerminalPlanCompleted(plannedReady, nil) {
-		t.Fatal("completed authoritative plan did not authorize terminal plan completion")
-	}
-	completed := projectAssistantCompletedPlanSnapshot(plan)
-	if completed == nil || len(completed.Steps) != len(plan.Steps) {
-		t.Fatalf("completed plan = %#v, want cloned plan", completed)
-	}
-	for index, step := range completed.Steps {
-		if step.Status != "completed" {
-			t.Fatalf("completed step %d status = %q, want completed", index, step.Status)
-		}
-		if step.Content != plan.Steps[index].Content || step.ActiveForm != plan.Steps[index].ActiveForm {
-			t.Fatalf("completed step %d = %#v, want content preserved", index, step)
-		}
-	}
-	if plan.Steps[1].Status != "in_progress" || plan.Steps[2].Status != "pending" {
-		t.Fatalf("source plan was mutated: %#v", plan)
-	}
-
-	for _, evidence := range []projectAssistantCompletionEvidence{
-		{},
-		{
-			SourceMutationRevision:   3,
-			VerifiedMutationRevision: 2,
-			LatestMutationVerified:   true,
-			VerificationOutcome:      "ready",
-		},
-		{
-			SourceMutationRevision:   3,
-			VerifiedMutationRevision: 3,
-			LatestMutationVerified:   true,
-			VerificationOutcome:      "READY",
-		},
-		{
-			SourceMutationRevision:   3,
-			VerifiedMutationRevision: 3,
-			VerificationOutcome:      "ready",
-		},
-	} {
-		if projectAssistantTerminalPlanCompleted(evidence, []projectToolCallStreamEvent{{
-			Name:   projectToolCommitProjectFiles,
-			Status: "succeeded",
-		}}) {
-			t.Fatalf("evidence %#v unexpectedly authorized terminal plan completion", evidence)
-		}
-	}
-	incompletePlan := ready
-	incompletePlan.PlanDefined = true
-	if projectAssistantTerminalPlanCompleted(incompletePlan, []projectToolCallStreamEvent{{
-		Name:   projectToolCommitProjectFiles,
-		Status: "succeeded",
-	}}) {
-		t.Fatal("successful commit overrode an explicitly incomplete authoritative plan")
-	}
-	if completed := projectAssistantCompletedPlanSnapshot(nil); completed != nil {
-		t.Fatalf("nil plan completion = %#v, want nil", completed)
 	}
 }
 
@@ -393,9 +367,7 @@ func TestProjectAssistantDurableMetadataFromExistingPreservesPlanAcrossTransitio
 		status store.AssistantRunStatus
 	}{
 		{name: "running", status: store.AssistantRunStatusRunning},
-		{name: "interrupted", status: store.AssistantRunStatusInterrupted},
 		{name: "aborted", status: store.AssistantRunStatusAborted},
-		{name: "failed", status: store.AssistantRunStatusFailed},
 		{name: "claimed", status: store.AssistantRunStatusRunning},
 		{name: "completed", status: store.AssistantRunStatusCompleted},
 	} {
@@ -427,7 +399,7 @@ func TestProjectAssistantProgressMetadataIsBoundedAndPreserved(t *testing.T) {
 		}, want: true},
 		{name: "unknown version", progress: map[string]any{"version": 2, "messages": []any{"Update"}, "workedDurationMs": 1}},
 		{name: "unknown field", progress: map[string]any{"version": 1, "messages": []any{"Update"}, "workedDurationMs": 1, "raw": "secret"}},
-		{name: "empty messages", progress: map[string]any{"version": 1, "messages": []any{}, "workedDurationMs": 1}},
+		{name: "empty messages", progress: map[string]any{"version": 1, "messages": []any{}, "messageSequences": []any{}, "workedDurationMs": 1}, want: true},
 		{name: "control text", progress: map[string]any{"version": 1, "messages": []any{"unsafe\u0000text"}, "workedDurationMs": 1}},
 		{name: "oversized text", progress: map[string]any{"version": 1, "messages": []any{strings.Repeat("x", projectEinoAssistantProgressMaxBytes+1)}, "workedDurationMs": 1}},
 		{name: "oversized duration", progress: map[string]any{"version": 1, "messages": []any{"Update"}, "workedDurationMs": projectAssistantWorkedDurationMaxMS + 1}},
@@ -462,9 +434,129 @@ func TestProjectAssistantProgressSnapshotTracksActiveWorkOnly(t *testing.T) {
 		workedDuration:     40 * time.Second,
 		workSegmentStarted: started,
 	}
-	progress := state.progressSnapshot(started.Add(43*time.Second + 400*time.Millisecond))
+	progress := state.progressSnapshot(started.Add(43*time.Second+400*time.Millisecond), false)
 	if progress == nil || progress.Version != 1 || progress.WorkedDurationMS != 83_400 {
 		t.Fatalf("progress = %#v, want 83.4 seconds of active work", progress)
+	}
+}
+
+func TestProjectAssistantActionOnlyTerminalTurnPersistsWorkedDuration(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "test-project-uid-project-1"}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModePlan, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "inspect it", CreatedAt: now, UpdatedAt: now}
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil), CreatedAt: now, UpdatedAt: now}
+	msgStore := store.NewMemoryStore()
+	if _, err := msgStore.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {
+		t.Fatalf("CreateAssistantRun: %v", err)
+	}
+	supervisor := newProjectAssistantSupervisor(ctx, msgStore)
+	accumulator, err := supervisor.Attach(scope, run, assistant)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	state := &projectAssistantDurableMetadataState{
+		status:         "Completed",
+		workedDuration: 2400 * time.Millisecond,
+	}
+	state.upsertToolCall(projectToolCallStreamEvent{ID: "call-read", Name: projectToolReadFile, Status: "succeeded"})
+	server := NewWithWorkspace(nil, msgStore, nil, "", false)
+	completed := store.AssistantRunStatusCompleted
+	if err := server.persistProjectAssistantDurableMetadata(ctx, accumulator, workspace.Scope{}, state, &completed); err != nil {
+		t.Fatalf("persist terminal metadata: %v", err)
+	}
+
+	page, err := msgStore.ListMessages(ctx, scope, 10, "")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	for _, message := range page.Items {
+		if message.ID != assistant.ID {
+			continue
+		}
+		progress, ok := projectAssistantProgressSnapshotFromMetadata(message.Metadata[projectAssistantMetadataProgress])
+		if !ok || len(progress.Messages) != 0 || len(progress.MessageSequences) != 0 || progress.WorkedDurationMS != 2400 {
+			t.Fatalf("action-only terminal progress = %#v, want empty trace prose and 2400ms worked duration", progress)
+		}
+		encoded, err := json.Marshal(progress)
+		if err != nil {
+			t.Fatalf("marshal action-only terminal progress: %v", err)
+		}
+		if !strings.Contains(string(encoded), `"messages":[]`) {
+			t.Fatalf("action-only terminal progress JSON = %s, want an empty message array", encoded)
+		}
+		if actions := projectAssistantActionFeedFromMetadata(message.Metadata[projectMessageMetadataAssistantActionFeed]); len(actions) != 1 {
+			t.Fatalf("action-only terminal actions = %#v, want one durable action", actions)
+		}
+		return
+	}
+	t.Fatal("assistant message was not persisted")
+}
+
+func TestProjectAssistantSetStatusClosesRestoredWaitingAction(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "test-project-uid-project-1"}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "restart it", CreatedAt: now, UpdatedAt: now}
+	waiting := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{ID: "restart-1", Name: projectToolRestartRuntime, Status: "permission_required"})
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil), CreatedAt: now, UpdatedAt: now}
+	assistant.Metadata[projectMessageMetadataAssistantActionFeed] = []projectAssistantActionFeedItem{waiting}
+	assistant.Metadata[projectMessageMetadataAssistantInterrupt] = projectAssistantUIInterruptRequest{InterruptID: "permission-1"}
+	msgStore := store.NewMemoryStore()
+	if _, err := msgStore.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {
+		t.Fatalf("CreateAssistantRun: %v", err)
+	}
+	supervisor := newProjectAssistantSupervisor(ctx, msgStore)
+	accumulator, err := supervisor.Attach(scope, run, assistant)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if err := accumulator.SetStatus(ctx, store.AssistantRunStatusCompleted); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	page, err := msgStore.ListMessages(ctx, scope, 10, "")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	var message store.Message
+	for _, candidate := range page.Items {
+		if candidate.ID == assistant.ID {
+			message = candidate
+			break
+		}
+	}
+	if message.ID == "" {
+		t.Fatal("terminal assistant message not found")
+	}
+	actions := projectAssistantActionFeedFromMetadata(message.Metadata[projectMessageMetadataAssistantActionFeed])
+	if len(actions) != 1 || actions[0].Status != projectAssistantActionFeedStatusSucceeded || actions[0].Title != "Ran checks" {
+		t.Fatalf("terminal actions = %#v, want closed successful action", actions)
+	}
+	if interrupt := projectAssistantUIInterruptFromMetadata(message.Metadata[projectMessageMetadataAssistantInterrupt]); interrupt != nil {
+		t.Fatalf("terminal interrupt = %#v, want cleared", interrupt)
+	}
+}
+
+func TestProjectAssistantWorkedDurationExcludesPendingPermissionPause(t *testing.T) {
+	firstSegmentStarted := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
+	pending := &projectAssistantDurableMetadataState{
+		workedDuration:     10 * time.Second,
+		workSegmentStarted: firstSegmentStarted,
+	}
+	pending.upsertToolCall(projectToolCallStreamEvent{ID: "call-read", Name: projectToolReadFile, Status: "succeeded"})
+	pendingSnapshot := pending.progressSnapshot(firstSegmentStarted.Add(5*time.Second), true)
+	if pendingSnapshot == nil || pendingSnapshot.WorkedDurationMS != 15_000 {
+		t.Fatalf("pending snapshot = %#v, want 15 seconds", pendingSnapshot)
+	}
+
+	resumeStarted := firstSegmentStarted.Add(2 * time.Hour)
+	resumed := &projectAssistantDurableMetadataState{workSegmentStarted: resumeStarted}
+	resumed.restoreTrace(pendingSnapshot, projectAssistantActionFeedFromToolCalls(pending.toolCalls))
+	completedSnapshot := resumed.progressSnapshot(resumeStarted.Add(3*time.Second), true)
+	if completedSnapshot == nil || completedSnapshot.WorkedDurationMS != 18_000 {
+		t.Fatalf("resumed snapshot = %#v, want 18 seconds without the permission pause", completedSnapshot)
 	}
 }
 
@@ -492,7 +584,7 @@ func TestProjectAssistantProgressSnapshotOrdersProseAndActionLifecycle(t *testin
 		Status: "succeeded",
 	})
 
-	progress := state.progressSnapshot(time.Now().UTC())
+	progress := state.progressSnapshot(time.Now().UTC(), false)
 	if progress == nil || !reflect.DeepEqual(progress.MessageSequences, []int{1, 3}) {
 		t.Fatalf("progress sequences = %#v, want [1 3]", progress)
 	}
@@ -534,7 +626,7 @@ func TestProjectAssistantProgressSnapshotContinuesOrderingAfterResume(t *testing
 		Status: "succeeded",
 	})
 
-	progress := state.progressSnapshot(time.Now().UTC())
+	progress := state.progressSnapshot(time.Now().UTC(), false)
 	if progress == nil || !reflect.DeepEqual(progress.MessageSequences, []int{1, 3}) {
 		t.Fatalf("resumed progress sequences = %#v, want [1 3]", progress)
 	}
@@ -568,31 +660,9 @@ func TestProjectAssistantProgressSnapshotKeepsHiddenActionSequenceWhenItFails(t 
 	if len(actions) != 1 || actions[0].Sequence != 1 || actions[0].Status != projectAssistantActionFeedStatusFailed {
 		t.Fatalf("failed custom action = %#v, want original sequence 1", actions)
 	}
-	progress := state.progressSnapshot(time.Now().UTC())
+	progress := state.progressSnapshot(time.Now().UTC(), false)
 	if progress == nil || !reflect.DeepEqual(progress.MessageSequences, []int{2}) {
 		t.Fatalf("progress sequences = %#v, want [2]", progress)
-	}
-}
-
-func TestProjectAssistantProgressSnapshotFallsBackWhenOrderingIsExhausted(t *testing.T) {
-	state := &projectAssistantDurableMetadataState{nextTraceSequence: projectAssistantTraceMaxSequence}
-	if !state.appendProgress("The work update remains visible.") {
-		t.Fatal("progress update was not accepted at sequence exhaustion")
-	}
-	state.upsertToolCall(projectToolCallStreamEvent{
-		ID:     "call-after-limit",
-		Name:   projectToolReadFile,
-		Status: "succeeded",
-	})
-
-	progress := state.progressSnapshot(time.Now().UTC())
-	if progress == nil || !reflect.DeepEqual(progress.Messages, []string{"The work update remains visible."}) ||
-		len(progress.MessageSequences) != 0 {
-		t.Fatalf("progress = %#v, want preserved prose with legacy ordering fallback", progress)
-	}
-	actions := projectAssistantActionFeedFromToolCalls(state.toolCalls)
-	if len(actions) != 1 || actions[0].Sequence != 0 {
-		t.Fatalf("actions = %#v, want preserved unsequenced action", actions)
 	}
 }
 
@@ -624,12 +694,11 @@ func TestProjectAssistantDurableMetadataFromExistingDecodesOnlyValidPlanSnapshot
 		{name: "too many steps", plan: tooMany},
 		{name: "long label", plan: projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{Content: strings.Repeat("x", projectEinoAssistantTodoProgressMaxLabelBytes+1), Status: "pending"}}}},
 		{name: "uncanonical whitespace", plan: projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{Content: "Inspect\nproject", Status: "pending"}}}},
-		{name: "unredacted secret", plan: projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{Content: "Inspect token=raw-secret", Status: "pending"}}}},
 		{name: "invalid status", plan: projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{Content: "Inspect project", Status: "running"}}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			metadata := projectAssistantDurableMetadataFromExisting(
-				store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, Revision: 3},
+				store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModePlan, Status: store.AssistantRunStatusRunning, Revision: 3},
 				"Working",
 				false,
 				map[string]any{projectAssistantMetadataPlan: tt.plan},
@@ -686,7 +755,7 @@ func TestProjectAssistantDurableMetadataSurvivesStatusToolProvisionalAndTerminal
 	ctx := context.Background()
 	now := time.Now().UTC()
 	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "test-project-uid-project-1"}
-	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModePlan, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "make it", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil), CreatedAt: now, UpdatedAt: now}
 	msgStore := store.NewMemoryStore()
@@ -713,13 +782,13 @@ func TestProjectAssistantDurableMetadataSurvivesStatusToolProvisionalAndTerminal
 			}
 			next := *current
 			next.Revision++
-			message.Metadata = projectAssistantDurableMetadataForTransition(next, status, provisional, server.projectAssistantPreviewRefreshNeeded(ctx, projectWorkspaceScope(identity{}, scope.ProjectName), "", false, toolCalls), toolCalls, nil)
+			message.Metadata = projectAssistantDurableMetadataForTransition(next, status, provisional, server.projectAssistantPreviewRefreshNeeded(ctx, workspace.Scope{}, "", false, toolCalls), toolCalls, nil)
 		}); err != nil {
 			t.Fatalf("UpdateSnapshot: %v", err)
 		}
 	}
 	persist(nil)
-	toolCalls = []projectToolCallStreamEvent{{ID: "tool-1", Name: projectToolWriteFile, Status: "running"}}
+	toolCalls = []projectToolCallStreamEvent{{ID: "tool-1", Name: projectToolApplyPatch, Status: "running"}}
 	persist(nil)
 	provisional = true
 	persist(nil)
@@ -766,7 +835,7 @@ func TestReconcileOrphanedProjectAssistantRunPersistsInterruptedMessageMetadata(
 	ctx := context.Background()
 	now := time.Now().UTC()
 	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "test-project-uid-project-1"}
-	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDiscussion, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModePlan, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
 	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", CreatedAt: now, UpdatedAt: now}
 	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil), CreatedAt: now, UpdatedAt: now}
 	msgStore := store.NewMemoryStore()

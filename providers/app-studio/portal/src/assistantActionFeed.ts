@@ -56,7 +56,7 @@ function parseFeedItem(value: unknown): ProjectAssistantActionFeedItem | undefin
     || !boundedString(value.outcome ?? '', 240)
     || !boundedString(value.groupKey ?? '', 80)
     || !boundedString(value.groupTitle ?? '', 160)
-    || (value.sequence !== undefined && (!Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1 || Number(value.sequence) > 10_000))
+    || !Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1 || Number(value.sequence) > 10_000
     || (value.count !== undefined && (!Number.isSafeInteger(value.count) || Number(value.count) < 1 || Number(value.count) > 10_000))) {
     return undefined
   }
@@ -73,7 +73,7 @@ function parseFeedItem(value: unknown): ProjectAssistantActionFeedItem | undefin
     ...(value.count !== undefined ? { count: value.count as number } : {}),
     ...(value.groupKey ? { groupKey: value.groupKey as string } : {}),
     ...(value.groupTitle ? { groupTitle: value.groupTitle as string } : {}),
-    ...(value.sequence !== undefined ? { sequence: value.sequence as number } : {}),
+    sequence: value.sequence as number,
     ...(diagnostic ? { diagnostic } : {}),
   }
 }

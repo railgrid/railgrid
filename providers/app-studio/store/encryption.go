@@ -142,6 +142,291 @@ func (s *encryptedStore) EnsureSchema(ctx context.Context) error {
 	return s.inner.EnsureSchema(ctx)
 }
 
+func (s *encryptedStore) CreateAssistantThread(ctx context.Context, scope Scope, thread AssistantThread, events []AssistantThreadEvent) (AssistantThread, error) {
+	var err error
+	thread, err = prepareAssistantThread(thread)
+	if err != nil {
+		return AssistantThread{}, err
+	}
+	thread, err = s.encryptAssistantThread(scope, thread)
+	if err != nil {
+		return AssistantThread{}, err
+	}
+	encryptedEvents := make([]AssistantThreadEvent, len(events))
+	for index, event := range events {
+		event.ThreadID = thread.ID
+		encryptedEvents[index], err = s.encryptAssistantThreadEvent(scope, event)
+		if err != nil {
+			return AssistantThread{}, err
+		}
+	}
+	created, err := s.inner.CreateAssistantThread(ctx, scope, thread, encryptedEvents)
+	if err != nil {
+		return AssistantThread{}, err
+	}
+	if err := s.decryptAssistantThread(scope, &created); err != nil {
+		return AssistantThread{}, err
+	}
+	return created, nil
+}
+
+func (s *encryptedStore) GetAssistantThread(ctx context.Context, scope Scope, threadID string) (AssistantThread, error) {
+	thread, err := s.inner.GetAssistantThread(ctx, scope, threadID)
+	if err != nil {
+		return AssistantThread{}, err
+	}
+	if err := s.decryptAssistantThread(scope, &thread); err != nil {
+		return AssistantThread{}, err
+	}
+	return thread, nil
+}
+
+func (s *encryptedStore) ListAssistantThreads(ctx context.Context, scope Scope, actorID string, includeArchived bool, limit int, cursor string) (AssistantThreadPage, error) {
+	page, err := s.inner.ListAssistantThreads(ctx, scope, actorID, includeArchived, limit, cursor)
+	if err != nil {
+		return AssistantThreadPage{}, err
+	}
+	for index := range page.Items {
+		if err := s.decryptAssistantThread(scope, &page.Items[index]); err != nil {
+			return AssistantThreadPage{}, err
+		}
+	}
+	return page, nil
+}
+
+func (s *encryptedStore) UpdateAssistantThread(ctx context.Context, scope Scope, thread AssistantThread) (AssistantThread, error) {
+	prepared, err := prepareAssistantThread(thread)
+	if err != nil {
+		return AssistantThread{}, err
+	}
+	prepared, err = s.encryptAssistantThread(scope, prepared)
+	if err != nil {
+		return AssistantThread{}, err
+	}
+	updated, err := s.inner.UpdateAssistantThread(ctx, scope, prepared)
+	if err != nil {
+		return AssistantThread{}, err
+	}
+	if err := s.decryptAssistantThread(scope, &updated); err != nil {
+		return AssistantThread{}, err
+	}
+	return updated, nil
+}
+
+func (s *encryptedStore) UpdateAssistantThreadWithEvent(ctx context.Context, scope Scope, thread AssistantThread, event AssistantThreadEvent, expectedSequence int64) (AssistantThread, AssistantThreadEvent, error) {
+	var err error
+	thread, err = prepareAssistantThread(thread)
+	if err != nil {
+		return AssistantThread{}, AssistantThreadEvent{}, err
+	}
+	thread, err = s.encryptAssistantThread(scope, thread)
+	if err != nil {
+		return AssistantThread{}, AssistantThreadEvent{}, err
+	}
+	event.ThreadID = thread.ID
+	encrypted, err := s.encryptAssistantThreadEvent(scope, event)
+	if err != nil {
+		return AssistantThread{}, AssistantThreadEvent{}, err
+	}
+	updated, created, err := s.inner.UpdateAssistantThreadWithEvent(ctx, scope, thread, encrypted, expectedSequence)
+	if err != nil {
+		return AssistantThread{}, AssistantThreadEvent{}, err
+	}
+	if err := s.decryptAssistantThread(scope, &updated); err != nil {
+		return AssistantThread{}, AssistantThreadEvent{}, err
+	}
+	if err := s.decryptAssistantThreadEvent(scope, &created); err != nil {
+		return AssistantThread{}, AssistantThreadEvent{}, err
+	}
+	return updated, created, nil
+}
+
+func (s *encryptedStore) CreateAssistantTurn(ctx context.Context, scope Scope, turn AssistantTurn, events []AssistantThreadEvent) (AssistantTurn, error) {
+	var err error
+	turn, err = s.encryptAssistantTurn(scope, turn)
+	if err != nil {
+		return AssistantTurn{}, err
+	}
+	encryptedEvents := make([]AssistantThreadEvent, len(events))
+	for index, event := range events {
+		event.ThreadID, event.TurnID = turn.ThreadID, turn.ID
+		encryptedEvents[index], err = s.encryptAssistantThreadEvent(scope, event)
+		if err != nil {
+			return AssistantTurn{}, err
+		}
+	}
+	created, err := s.inner.CreateAssistantTurn(ctx, scope, turn, encryptedEvents)
+	if err != nil {
+		return AssistantTurn{}, err
+	}
+	if err := s.decryptAssistantTurn(scope, &created); err != nil {
+		return AssistantTurn{}, err
+	}
+	return created, nil
+}
+
+func (s *encryptedStore) GetAssistantTurn(ctx context.Context, scope Scope, threadID, turnID string) (AssistantTurn, error) {
+	turn, err := s.inner.GetAssistantTurn(ctx, scope, threadID, turnID)
+	if err != nil {
+		return AssistantTurn{}, err
+	}
+	if err := s.decryptAssistantTurn(scope, &turn); err != nil {
+		return AssistantTurn{}, err
+	}
+	return turn, nil
+}
+
+func (s *encryptedStore) FindAssistantTurnByClientUserMessageID(ctx context.Context, scope Scope, threadID, clientUserMessageID string) (AssistantTurn, error) {
+	turn, err := s.inner.FindAssistantTurnByClientUserMessageID(ctx, scope, threadID, clientUserMessageID)
+	if err != nil {
+		return AssistantTurn{}, err
+	}
+	if err := s.decryptAssistantTurn(scope, &turn); err != nil {
+		return AssistantTurn{}, err
+	}
+	return turn, nil
+}
+
+func (s *encryptedStore) ActiveAssistantTurn(ctx context.Context, scope Scope, threadID string) (AssistantTurn, error) {
+	turn, err := s.inner.ActiveAssistantTurn(ctx, scope, threadID)
+	if err != nil {
+		return AssistantTurn{}, err
+	}
+	if err := s.decryptAssistantTurn(scope, &turn); err != nil {
+		return AssistantTurn{}, err
+	}
+	return turn, nil
+}
+
+func (s *encryptedStore) SaveAssistantTurn(ctx context.Context, scope Scope, turn AssistantTurn) error {
+	encrypted, err := s.encryptAssistantTurn(scope, turn)
+	if err != nil {
+		return err
+	}
+	return s.inner.SaveAssistantTurn(ctx, scope, encrypted)
+}
+
+func (s *encryptedStore) SaveAssistantTurnWithEvent(ctx context.Context, scope Scope, turn AssistantTurn, event AssistantThreadEvent, expectedSequence int64) error {
+	var err error
+	turn, err = s.encryptAssistantTurn(scope, turn)
+	if err != nil {
+		return err
+	}
+	event.ThreadID, event.TurnID = turn.ThreadID, turn.ID
+	event, err = s.encryptAssistantThreadEvent(scope, event)
+	if err != nil {
+		return err
+	}
+	return s.inner.SaveAssistantTurnWithEvent(ctx, scope, turn, event, expectedSequence)
+}
+
+func (s *encryptedStore) AppendAssistantThreadEvent(ctx context.Context, scope Scope, event AssistantThreadEvent, expectedSequence int64) (AssistantThreadEvent, error) {
+	encrypted, err := s.encryptAssistantThreadEvent(scope, event)
+	if err != nil {
+		return AssistantThreadEvent{}, err
+	}
+	created, err := s.inner.AppendAssistantThreadEvent(ctx, scope, encrypted, expectedSequence)
+	if err != nil {
+		return AssistantThreadEvent{}, err
+	}
+	if err := s.decryptAssistantThreadEvent(scope, &created); err != nil {
+		return AssistantThreadEvent{}, err
+	}
+	return created, nil
+}
+
+func (s *encryptedStore) ListAssistantThreadEvents(ctx context.Context, scope Scope, threadID string, afterSequence int64, limit int) ([]AssistantThreadEvent, error) {
+	events, err := s.inner.ListAssistantThreadEvents(ctx, scope, threadID, afterSequence, limit)
+	if err != nil {
+		return nil, err
+	}
+	for index := range events {
+		if err := s.decryptAssistantThreadEvent(scope, &events[index]); err != nil {
+			return nil, err
+		}
+	}
+	return events, nil
+}
+
+// Thread titles are part of the user-authored transcript and must follow the
+// same at-rest protection as thread event payloads.  The title column remains
+// text for compatibility with existing schemas; an encrypted assistant-run
+// envelope is serialized into that column and transparently decoded on reads.
+func (s *encryptedStore) encryptAssistantThread(scope Scope, thread AssistantThread) (AssistantThread, error) {
+	if thread.Title == "" {
+		return thread, nil
+	}
+	run := AssistantRun{ID: strings.TrimSpace(thread.ID)}
+	payload, err := s.encryptAssistantRunBlob(scope, run, "thread-title", []byte(thread.Title))
+	if err != nil {
+		return AssistantThread{}, fmt.Errorf("encrypt assistant thread title: %w", err)
+	}
+	thread.Title = string(payload)
+	return thread, nil
+}
+
+func (s *encryptedStore) decryptAssistantThread(scope Scope, thread *AssistantThread) error {
+	if thread == nil || thread.Title == "" {
+		return nil
+	}
+	payload := json.RawMessage(thread.Title)
+	var envelope encryptedAssistantRunCheckpoint
+	if err := json.Unmarshal(payload, &envelope); err != nil || !envelope.Encrypted {
+		// Titles written before envelope encryption remain readable and are
+		// migrated to ciphertext on the next create/update.
+		return nil
+	}
+	run := AssistantRun{ID: strings.TrimSpace(thread.ID)}
+	if err := s.decryptAssistantRunBlob(scope, &run, "thread-title", &payload); err != nil {
+		return fmt.Errorf("decrypt assistant thread title: %w", err)
+	}
+	thread.Title = string(payload)
+	return nil
+}
+
+func (s *encryptedStore) encryptAssistantTurn(scope Scope, turn AssistantTurn) (AssistantTurn, error) {
+	run := AssistantRun{ID: turn.ThreadID + "/" + turn.ID}
+	var err error
+	turn.Checkpoint, err = s.encryptAssistantRunBlob(scope, run, "turn-checkpoint", turn.Checkpoint)
+	if err != nil {
+		return AssistantTurn{}, err
+	}
+	turn.Error, err = s.encryptAssistantRunBlob(scope, run, "turn-error", turn.Error)
+	if err != nil {
+		return AssistantTurn{}, err
+	}
+	return turn, nil
+}
+
+func (s *encryptedStore) decryptAssistantTurn(scope Scope, turn *AssistantTurn) error {
+	if turn == nil {
+		return nil
+	}
+	run := AssistantRun{ID: turn.ThreadID + "/" + turn.ID}
+	if err := s.decryptAssistantRunBlob(scope, &run, "turn-checkpoint", &turn.Checkpoint); err != nil {
+		return err
+	}
+	return s.decryptAssistantRunBlob(scope, &run, "turn-error", &turn.Error)
+}
+
+func (s *encryptedStore) encryptAssistantThreadEvent(scope Scope, event AssistantThreadEvent) (AssistantThreadEvent, error) {
+	run := AssistantRun{ID: event.ThreadID + "/" + event.TurnID}
+	payload, err := s.encryptAssistantRunBlob(scope, run, "thread-event:"+event.Type+":"+event.ItemID+":"+event.RequestID, event.Payload)
+	if err != nil {
+		return AssistantThreadEvent{}, err
+	}
+	event.Payload = payload
+	return event, nil
+}
+
+func (s *encryptedStore) decryptAssistantThreadEvent(scope Scope, event *AssistantThreadEvent) error {
+	if event == nil {
+		return nil
+	}
+	run := AssistantRun{ID: event.ThreadID + "/" + event.TurnID}
+	return s.decryptAssistantRunBlob(scope, &run, "thread-event:"+event.Type+":"+event.ItemID+":"+event.RequestID, &event.Payload)
+}
+
 func (s *encryptedStore) AppendMessage(ctx context.Context, scope Scope, msg Message) error {
 	if err := scope.validate(); err != nil {
 		return err
@@ -254,19 +539,6 @@ func (s *encryptedStore) LoadRecentMessages(ctx context.Context, scope Scope, li
 	return items, nil
 }
 
-func (s *encryptedStore) LoadRecentDiscussionMessages(ctx context.Context, scope Scope, limit int) ([]Message, error) {
-	items, err := s.inner.LoadRecentDiscussionMessages(ctx, scope, limit)
-	if err != nil {
-		return nil, err
-	}
-	for i := range items {
-		if err := s.decryptMessage(scope, &items[i]); err != nil {
-			return nil, err
-		}
-	}
-	return items, nil
-}
-
 func (s *encryptedStore) GetAssistantApprovalPreference(ctx context.Context, scope Scope, actor string) (AssistantApprovalPreference, error) {
 	return s.inner.GetAssistantApprovalPreference(ctx, scope, actor)
 }
@@ -295,8 +567,13 @@ func (s *encryptedStore) SaveAssistantRun(ctx context.Context, scope Scope, run 
 	if err != nil {
 		return err
 	}
+	terminalError, err := s.encryptAssistantRunBlob(scope, run, "error", run.Error)
+	if err != nil {
+		return err
+	}
 	run.Checkpoint = checkpoint
 	run.Audit = audit
+	run.Error = terminalError
 	return s.inner.SaveAssistantRun(ctx, scope, run)
 }
 
@@ -320,8 +597,13 @@ func (s *encryptedStore) CreateAssistantRun(ctx context.Context, scope Scope, us
 	if err != nil {
 		return AssistantRun{}, err
 	}
+	terminalError, err := s.encryptAssistantRunBlob(scope, run, "error", run.Error)
+	if err != nil {
+		return AssistantRun{}, err
+	}
 	run.Checkpoint = checkpoint
 	run.Audit = audit
+	run.Error = terminalError
 	created, err := s.inner.CreateAssistantRun(ctx, scope, user, assistant, run)
 	if err != nil {
 		return AssistantRun{}, err
@@ -332,316 +614,26 @@ func (s *encryptedStore) CreateAssistantRun(ctx context.Context, scope Scope, us
 	return created, nil
 }
 
-func (s *encryptedStore) CreateWorkItemAndAssistantRun(ctx context.Context, scope Scope, item AssistantWorkItem, user Message, assistant Message, run AssistantRun) (AssistantWorkItem, error) {
-	// A Start action may claim the just-submitted, unassigned root message.
-	// Preserve its existing ciphertext so the inner store can compare its exact
-	// immutable content while this wrapper verifies the plaintext identity.
-	if persisted, found, err := s.findRawMessage(ctx, scope, user.ID); err != nil {
-		return AssistantWorkItem{}, err
-	} else if found {
-		plaintext := persisted
-		if err := s.decryptMessage(scope, &plaintext); err != nil {
-			return AssistantWorkItem{}, err
-		}
-		if persisted.WorkItemID != "" || plaintext.Role != user.Role || plaintext.ActorID != user.ActorID || plaintext.Content != user.Content {
-			return AssistantWorkItem{}, fmt.Errorf("%w: root message %q cannot be attached", ErrAssistantWorkItemConflict, user.ID)
-		}
-		user = persisted
-	} else {
-		var err error
-		user, err = s.encryptMessage(scope, user)
-		if err != nil {
-			return AssistantWorkItem{}, err
-		}
+func (s *encryptedStore) RequestAssistantRunStop(ctx context.Context, scope Scope, runID string, expectedRunRevision int64, now time.Time) (AssistantRun, error) {
+	run, err := s.inner.RequestAssistantRunStop(ctx, scope, runID, expectedRunRevision, now)
+	if err != nil {
+		return AssistantRun{}, err
+	}
+	if err := s.decryptAssistantRunBlobs(scope, &run); err != nil {
+		return AssistantRun{}, err
+	}
+	return run, nil
+}
+
+func (s *encryptedStore) RequestAssistantRunStopWithAssistantMessage(ctx context.Context, scope Scope, runID string, expectedRunRevision int64, assistant Message, now time.Time) (AssistantRun, error) {
+	if err := scope.validate(); err != nil {
+		return AssistantRun{}, err
 	}
 	assistant, err := s.encryptMessage(scope, assistant)
 	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	item.PlanGrant, err = s.encryptAssistantWorkItemGrant(scope, item, item.PlanGrant)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	item.ExecutionPlan, err = s.encryptAssistantWorkItemExecutionPlan(scope, item, item.ExecutionPlan)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	run.Checkpoint, err = s.encryptAssistantRunBlob(scope, run, "checkpoint", run.Checkpoint)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	run.Audit, err = s.encryptAssistantRunBlob(scope, run, "audit", run.Audit)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	created, err := s.inner.CreateWorkItemAndAssistantRun(ctx, scope, item, user, assistant, run)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	if err := s.decryptAssistantWorkItem(scope, &created); err != nil {
-		return AssistantWorkItem{}, err
-	}
-	return created, nil
-}
-
-func (s *encryptedStore) PromoteAssistantRunToWorkItem(
-	ctx context.Context,
-	scope Scope,
-	runID, actor, workItemID string,
-	expectedRunRevision int64,
-	now time.Time,
-) (AssistantWorkItem, AssistantRun, error) {
-	// Promotion does not change checkpoint or audit content. Validate and
-	// decrypt those blobs before the inner atomic mutation so no missing-key
-	// or corrupt-ciphertext error can be discovered only after commit.
-	existing, err := s.inner.GetAssistantRun(ctx, scope, runID)
-	if err != nil {
-		if errors.Is(err, ErrAssistantRunNotFound) {
-			return AssistantWorkItem{}, AssistantRun{}, fmt.Errorf("%w: assistant run %q", ErrAssistantRunConflict, runID)
-		}
-		return AssistantWorkItem{}, AssistantRun{}, err
-	}
-	if err := s.decryptAssistantRunBlobs(scope, &existing); err != nil {
-		return AssistantWorkItem{}, AssistantRun{}, err
-	}
-	item, run, err := s.inner.PromoteAssistantRunToWorkItem(
-		ctx,
-		scope,
-		runID,
-		actor,
-		workItemID,
-		expectedRunRevision,
-		now,
-	)
-	if err != nil {
-		return AssistantWorkItem{}, AssistantRun{}, err
-	}
-	run.Checkpoint = existing.Checkpoint
-	run.Audit = existing.Audit
-	// A first-time promotion always creates an empty grant, so this cannot
-	// discover a ciphertext error after a mutation. On an idempotent replay
-	// the inner operation is read-only and returns the authoritative grant and
-	// revision together; decrypt that result to avoid racing plan changes.
-	if err := s.decryptAssistantWorkItem(scope, &item); err != nil {
-		return AssistantWorkItem{}, AssistantRun{}, err
-	}
-	return item, run, nil
-}
-
-func (s *encryptedStore) ResumeWorkItemAndCreateAssistantRun(ctx context.Context, scope Scope, workItemID, actor string, expectedRevision int64, user Message, assistant Message, run AssistantRun) (AssistantWorkItem, error) {
-	var err error
-	user, err = s.encryptMessage(scope, user)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	assistant, err = s.encryptMessage(scope, assistant)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	run.Checkpoint, err = s.encryptAssistantRunBlob(scope, run, "checkpoint", run.Checkpoint)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	run.Audit, err = s.encryptAssistantRunBlob(scope, run, "audit", run.Audit)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	item, err := s.inner.ResumeWorkItemAndCreateAssistantRun(ctx, scope, workItemID, actor, expectedRevision, user, assistant, run)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	if err := s.decryptAssistantWorkItem(scope, &item); err != nil {
-		return AssistantWorkItem{}, err
-	}
-	return item, nil
-}
-
-func (s *encryptedStore) findRawMessage(ctx context.Context, scope Scope, id string) (Message, bool, error) {
-	cursor := ""
-	for {
-		page, err := s.inner.ListMessages(ctx, scope, 500, cursor)
-		if err != nil {
-			return Message{}, false, err
-		}
-		for _, message := range page.Items {
-			if message.ID == id {
-				return message, true, nil
-			}
-		}
-		if page.NextCursor == "" {
-			return Message{}, false, nil
-		}
-		cursor = page.NextCursor
-	}
-}
-
-func (s *encryptedStore) GetAssistantWorkItem(ctx context.Context, scope Scope, id string) (AssistantWorkItem, error) {
-	item, err := s.inner.GetAssistantWorkItem(ctx, scope, id)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	if err := s.decryptAssistantWorkItem(scope, &item); err != nil {
-		return AssistantWorkItem{}, err
-	}
-	return item, nil
-}
-
-func (s *encryptedStore) ListAssistantWorkItems(ctx context.Context, scope Scope) ([]AssistantWorkItem, error) {
-	items, err := s.inner.ListAssistantWorkItems(ctx, scope)
-	if err != nil {
-		return nil, err
-	}
-	for i := range items {
-		if err := s.decryptAssistantWorkItem(scope, &items[i]); err != nil {
-			return nil, err
-		}
-	}
-	return items, nil
-}
-
-func (s *encryptedStore) CompareAndSwapAssistantWorkItem(ctx context.Context, scope Scope, item AssistantWorkItem, expectedRevision int64) error {
-	if len(item.ExecutionPlan) > 0 && !json.Valid(item.ExecutionPlan) {
-		return fmt.Errorf("assistant work item execution plan is not valid json")
-	}
-	grant, err := s.encryptAssistantWorkItemGrant(scope, item, item.PlanGrant)
-	if err != nil {
-		return err
-	}
-	item.PlanGrant = grant
-	executionPlan, err := s.encryptAssistantWorkItemExecutionPlan(scope, item, item.ExecutionPlan)
-	if err != nil {
-		return err
-	}
-	item.ExecutionPlan = executionPlan
-	return s.inner.CompareAndSwapAssistantWorkItem(ctx, scope, item, expectedRevision)
-}
-
-func (s *encryptedStore) SaveWorkItemExecutionPlan(ctx context.Context, scope Scope, workItemID, runID string, expectedRevision int64, executionPlanRevision string, executionPlan json.RawMessage, now time.Time) (AssistantWorkItem, error) {
-	if strings.TrimSpace(workItemID) == "" || strings.TrimSpace(runID) == "" || expectedRevision < 1 || strings.TrimSpace(executionPlanRevision) == "" || len(executionPlan) == 0 {
-		return AssistantWorkItem{}, fmt.Errorf("%w: work item, run, revision, and execution plan are required", ErrAssistantWorkItemConflict)
-	}
-	if !json.Valid(executionPlan) {
-		return AssistantWorkItem{}, fmt.Errorf("work item execution plan is not valid json")
-	}
-	item := AssistantWorkItem{ID: workItemID}
-	encryptedPlan, err := s.encryptAssistantWorkItemExecutionPlan(scope, item, executionPlan)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	saved, err := s.inner.SaveWorkItemExecutionPlan(ctx, scope, workItemID, runID, expectedRevision, executionPlanRevision, encryptedPlan, now)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	if err := s.decryptAssistantWorkItem(scope, &saved); err != nil {
-		return AssistantWorkItem{}, err
-	}
-	return saved, nil
-}
-
-func (s *encryptedStore) ApproveWorkItemPlan(ctx context.Context, scope Scope, workItemID, runID string, expectedRevision int64, grantRevision string, planGrant json.RawMessage, now time.Time) (AssistantWorkItem, error) {
-	item := AssistantWorkItem{ID: workItemID}
-	grant, err := s.encryptAssistantWorkItemGrant(scope, item, planGrant)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	approved, err := s.inner.ApproveWorkItemPlan(ctx, scope, workItemID, runID, expectedRevision, grantRevision, grant, now)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	if err := s.decryptAssistantWorkItem(scope, &approved); err != nil {
-		return AssistantWorkItem{}, err
-	}
-	return approved, nil
-}
-
-func (s *encryptedStore) RetireWorkItemPlan(ctx context.Context, scope Scope, workItemID, runID, actor string, expectedWorkItemRevision int64, expectedGrantRevision, tombstoneGrantRevision string, now time.Time) (AssistantWorkItem, error) {
-	item, err := s.inner.RetireWorkItemPlan(ctx, scope, workItemID, runID, actor, expectedWorkItemRevision, expectedGrantRevision, tombstoneGrantRevision, now)
-	if err != nil {
-		return AssistantWorkItem{}, err
-	}
-	if err := s.decryptAssistantWorkItem(scope, &item); err != nil {
-		return AssistantWorkItem{}, err
-	}
-	return item, nil
-}
-
-func (s *encryptedStore) TransitionWorkItemAndRun(ctx context.Context, scope Scope, workItemID string, expectedWorkItemRevision int64, run AssistantRun, status AssistantWorkItemStatus, reason string, now time.Time) error {
-	// Terminal transitions deliberately delete the resumable checkpoint. Do not
-	// encrypt an old plaintext blob only for the inner store to retain it.
-	run.Checkpoint = nil
-	checkpoint, err := s.encryptAssistantRunBlob(scope, run, "checkpoint", run.Checkpoint)
-	if err != nil {
-		return err
-	}
-	audit, err := s.encryptAssistantRunBlob(scope, run, "audit", run.Audit)
-	if err != nil {
-		return err
-	}
-	run.Checkpoint, run.Audit = checkpoint, audit
-	return s.inner.TransitionWorkItemAndRun(ctx, scope, workItemID, expectedWorkItemRevision, run, status, reason, now)
-}
-
-func (s *encryptedStore) TransitionWorkItemAndRunWithAssistantMessage(ctx context.Context, scope Scope, workItemID string, expectedWorkItemRevision int64, run AssistantRun, status AssistantWorkItemStatus, reason string, assistant Message, now time.Time) error {
-	var err error
-	assistant, err = s.encryptMessage(scope, assistant)
-	if err != nil {
-		return err
-	}
-	run.Checkpoint = nil
-	checkpoint, err := s.encryptAssistantRunBlob(scope, run, "checkpoint", run.Checkpoint)
-	if err != nil {
-		return err
-	}
-	audit, err := s.encryptAssistantRunBlob(scope, run, "audit", run.Audit)
-	if err != nil {
-		return err
-	}
-	run.Checkpoint, run.Audit = checkpoint, audit
-	return s.inner.TransitionWorkItemAndRunWithAssistantMessage(ctx, scope, workItemID, expectedWorkItemRevision, run, status, reason, assistant, now)
-}
-
-func (s *encryptedStore) RequestAssistantRunStop(ctx context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, now time.Time) (AssistantRun, error) {
-	run, err := s.inner.RequestAssistantRunStop(ctx, scope, workItemID, runID, expectedWorkItemRevision, expectedRunRevision, now)
-	if err != nil {
 		return AssistantRun{}, err
 	}
-	if err := s.decryptAssistantRunBlobs(scope, &run); err != nil {
-		return AssistantRun{}, err
-	}
-	return run, nil
-}
-
-func (s *encryptedStore) RequestAssistantRunStopWithAssistantMessage(ctx context.Context, scope Scope, workItemID, runID string, expectedWorkItemRevision, expectedRunRevision int64, assistant Message, now time.Time) (AssistantRun, error) {
-	var err error
-	assistant, err = s.encryptMessage(scope, assistant)
-	if err != nil {
-		return AssistantRun{}, err
-	}
-	run, err := s.inner.RequestAssistantRunStopWithAssistantMessage(ctx, scope, workItemID, runID, expectedWorkItemRevision, expectedRunRevision, assistant, now)
-	if err != nil {
-		return AssistantRun{}, err
-	}
-	if err := s.decryptAssistantRunBlobs(scope, &run); err != nil {
-		return AssistantRun{}, err
-	}
-	return run, nil
-}
-
-func (s *encryptedStore) LoadMessagesForWorkItem(ctx context.Context, scope Scope, workItemID string, limit int) ([]Message, error) {
-	items, err := s.inner.LoadMessagesForWorkItem(ctx, scope, workItemID, limit)
-	if err != nil {
-		return nil, err
-	}
-	for i := range items {
-		if err := s.decryptMessage(scope, &items[i]); err != nil {
-			return nil, err
-		}
-	}
-	return items, nil
-}
-
-func (s *encryptedStore) LatestAssistantRunForWorkItem(ctx context.Context, scope Scope, workItemID string) (AssistantRun, error) {
-	run, err := s.inner.LatestAssistantRunForWorkItem(ctx, scope, workItemID)
+	run, err := s.inner.RequestAssistantRunStopWithAssistantMessage(ctx, scope, runID, expectedRunRevision, assistant, now)
 	if err != nil {
 		return AssistantRun{}, err
 	}
@@ -663,8 +655,13 @@ func (s *encryptedStore) SaveAssistantRunSnapshot(ctx context.Context, scope Sco
 	if err != nil {
 		return err
 	}
+	terminalError, err := s.encryptAssistantRunBlob(scope, run, "error", run.Error)
+	if err != nil {
+		return err
+	}
 	run.Checkpoint = checkpoint
 	run.Audit = audit
+	run.Error = terminalError
 	encryptedMessages := make([]Message, len(messages))
 	for i := range messages {
 		encryptedMessages[i], err = s.encryptMessage(scope, messages[i])
@@ -717,6 +714,113 @@ func (s *encryptedStore) LatestAssistantRun(ctx context.Context, scope Scope) (A
 		return AssistantRun{}, err
 	}
 	return run, nil
+}
+
+func (s *encryptedStore) AppendAssistantRunEvent(ctx context.Context, scope Scope, event AssistantRunEvent, expectedSequence int64) (AssistantRunEvent, error) {
+	event, err := prepareAssistantRunEvent(scope, event, expectedSequence)
+	if err != nil {
+		return AssistantRunEvent{}, err
+	}
+	event.Payload, err = s.encryptAssistantRunBlob(scope, AssistantRun{ID: event.RunID}, assistantRunEventBlobLabel(event), event.Payload)
+	if err != nil {
+		return AssistantRunEvent{}, err
+	}
+	saved, err := s.inner.AppendAssistantRunEvent(ctx, scope, event, expectedSequence)
+	if err != nil {
+		return AssistantRunEvent{}, err
+	}
+	if err := s.decryptAssistantRunEvent(scope, &saved); err != nil {
+		return AssistantRunEvent{}, err
+	}
+	return saved, nil
+}
+
+func (s *encryptedStore) ListAssistantRunEvents(ctx context.Context, scope Scope, runID string, afterSequence int64, limit int) ([]AssistantRunEvent, error) {
+	events, err := s.inner.ListAssistantRunEvents(ctx, scope, runID, afterSequence, limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range events {
+		if err := s.decryptAssistantRunEvent(scope, &events[i]); err != nil {
+			return nil, err
+		}
+	}
+	return events, nil
+}
+
+func (s *encryptedStore) AppendAssistantConversationItem(ctx context.Context, scope Scope, item AssistantConversationItem) (AssistantConversationItem, error) {
+	prepared, err := prepareAssistantConversationItem(scope, item)
+	if err != nil {
+		return AssistantConversationItem{}, err
+	}
+	if existing, found, err := s.findAssistantConversationItem(ctx, scope, prepared.RunID, prepared.ID); err != nil {
+		return AssistantConversationItem{}, err
+	} else if found {
+		if !assistantConversationItemsMatch(existing, prepared) {
+			return AssistantConversationItem{}, ErrAssistantConversationItemConflict
+		}
+		return existing, nil
+	}
+	run := AssistantRun{ID: prepared.RunID}
+	prepared.Payload, err = s.encryptAssistantRunBlob(scope, run, "conversation:"+prepared.ID, prepared.Payload)
+	if err != nil {
+		return AssistantConversationItem{}, err
+	}
+	created, err := s.inner.AppendAssistantConversationItem(ctx, scope, prepared)
+	if errors.Is(err, ErrAssistantConversationItemConflict) {
+		existing, found, findErr := s.findAssistantConversationItem(ctx, scope, item.RunID, item.ID)
+		if findErr != nil {
+			return AssistantConversationItem{}, findErr
+		}
+		if found && assistantConversationItemsMatch(existing, item) {
+			return existing, nil
+		}
+	}
+	if err != nil {
+		return AssistantConversationItem{}, err
+	}
+	if err := s.decryptAssistantRunBlob(scope, &run, "conversation:"+created.ID, &created.Payload); err != nil {
+		return AssistantConversationItem{}, err
+	}
+	return created, nil
+}
+
+func (s *encryptedStore) findAssistantConversationItem(ctx context.Context, scope Scope, runID, itemID string) (AssistantConversationItem, bool, error) {
+	after := int64(0)
+	for {
+		items, err := s.inner.ListAssistantConversationItems(ctx, scope, after, 500)
+		if err != nil {
+			return AssistantConversationItem{}, false, err
+		}
+		for _, item := range items {
+			if item.RunID != runID || item.ID != itemID {
+				continue
+			}
+			run := AssistantRun{ID: item.RunID}
+			if err := s.decryptAssistantRunBlob(scope, &run, "conversation:"+item.ID, &item.Payload); err != nil {
+				return AssistantConversationItem{}, false, err
+			}
+			return item, true, nil
+		}
+		if len(items) < 500 {
+			return AssistantConversationItem{}, false, nil
+		}
+		after = items[len(items)-1].Sequence
+	}
+}
+
+func (s *encryptedStore) ListAssistantConversationItems(ctx context.Context, scope Scope, afterSequence int64, limit int) ([]AssistantConversationItem, error) {
+	items, err := s.inner.ListAssistantConversationItems(ctx, scope, afterSequence, limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		run := AssistantRun{ID: items[i].RunID}
+		if err := s.decryptAssistantRunBlob(scope, &run, "conversation:"+items[i].ID, &items[i].Payload); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
 }
 
 func (s *encryptedStore) DeleteProjectMessages(ctx context.Context, scope Scope) error {
@@ -857,7 +961,10 @@ func (s *encryptedStore) decryptAssistantRunBlobs(scope Scope, run *AssistantRun
 	if err := s.decryptAssistantRunBlob(scope, run, "checkpoint", &run.Checkpoint); err != nil {
 		return err
 	}
-	return s.decryptAssistantRunBlob(scope, run, "audit", &run.Audit)
+	if err := s.decryptAssistantRunBlob(scope, run, "audit", &run.Audit); err != nil {
+		return err
+	}
+	return s.decryptAssistantRunBlob(scope, run, "error", &run.Error)
 }
 
 func (s *encryptedStore) decryptAssistantRunBlob(scope Scope, run *AssistantRun, label string, value *json.RawMessage) error {
@@ -900,107 +1007,14 @@ func assistantRunAAD(scope Scope, run AssistantRun, label string) []byte {
 	}, "\x00"))
 }
 
-func (s *encryptedStore) encryptAssistantWorkItemGrant(scope Scope, item AssistantWorkItem, plaintext []byte) ([]byte, error) {
-	if len(plaintext) == 0 {
-		return nil, nil
-	}
-	var existing encryptedAssistantRunCheckpoint
-	if json.Unmarshal(plaintext, &existing) == nil && existing.Encrypted && existing.KeyID != "" && existing.Payload != "" {
-		return cloneRawMessage(plaintext), nil
-	}
-	aead := s.keys[s.active]
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := io.ReadFull(cryptoRand.Reader, nonce); err != nil {
-		return nil, fmt.Errorf("generate work item grant nonce: %w", err)
-	}
-	payload := append(nonce, aead.Seal(nil, nonce, plaintext, assistantWorkItemAAD(scope, item))...)
-	return json.Marshal(encryptedAssistantRunCheckpoint{Encrypted: true, KeyID: s.active, Payload: base64.RawStdEncoding.EncodeToString(payload)})
+func assistantRunEventBlobLabel(event AssistantRunEvent) string {
+	return fmt.Sprintf("event:%d:%s", event.Sequence, event.Type)
 }
 
-func (s *encryptedStore) decryptAssistantWorkItemGrant(scope Scope, item *AssistantWorkItem) error {
-	if item == nil || len(item.PlanGrant) == 0 {
+func (s *encryptedStore) decryptAssistantRunEvent(scope Scope, event *AssistantRunEvent) error {
+	if event == nil {
 		return nil
 	}
-	var envelope encryptedAssistantRunCheckpoint
-	if err := json.Unmarshal(item.PlanGrant, &envelope); err != nil || !envelope.Encrypted {
-		return nil
-	}
-	aead := s.keys[envelope.KeyID]
-	if aead == nil {
-		return fmt.Errorf("work item %q uses unknown encryption key %q", item.ID, envelope.KeyID)
-	}
-	payload, err := base64.RawStdEncoding.DecodeString(envelope.Payload)
-	if err != nil {
-		return fmt.Errorf("decode encrypted work item grant %q: %w", item.ID, err)
-	}
-	if len(payload) < aead.NonceSize() {
-		return fmt.Errorf("encrypted work item grant %q is too short", item.ID)
-	}
-	plaintext, err := aead.Open(nil, payload[:aead.NonceSize()], payload[aead.NonceSize():], assistantWorkItemAAD(scope, *item))
-	if err != nil {
-		return fmt.Errorf("decrypt work item grant %q: %w", item.ID, err)
-	}
-	item.PlanGrant = plaintext
-	return nil
+	run := AssistantRun{ID: event.RunID}
+	return s.decryptAssistantRunBlob(scope, &run, assistantRunEventBlobLabel(*event), &event.Payload)
 }
-
-func (s *encryptedStore) encryptAssistantWorkItemExecutionPlan(scope Scope, item AssistantWorkItem, plaintext []byte) ([]byte, error) {
-	if len(plaintext) == 0 {
-		return nil, nil
-	}
-	var existing encryptedAssistantRunCheckpoint
-	if json.Unmarshal(plaintext, &existing) == nil && existing.Encrypted && existing.KeyID != "" && existing.Payload != "" {
-		return cloneRawMessage(plaintext), nil
-	}
-	aead := s.keys[s.active]
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := io.ReadFull(cryptoRand.Reader, nonce); err != nil {
-		return nil, fmt.Errorf("generate work item execution plan nonce: %w", err)
-	}
-	payload := append(nonce, aead.Seal(nil, nonce, plaintext, assistantWorkItemExecutionPlanAAD(scope, item))...)
-	return json.Marshal(encryptedAssistantRunCheckpoint{Encrypted: true, KeyID: s.active, Payload: base64.RawStdEncoding.EncodeToString(payload)})
-}
-
-func (s *encryptedStore) decryptAssistantWorkItemExecutionPlan(scope Scope, item *AssistantWorkItem) error {
-	if item == nil || len(item.ExecutionPlan) == 0 {
-		return nil
-	}
-	var envelope encryptedAssistantRunCheckpoint
-	if err := json.Unmarshal(item.ExecutionPlan, &envelope); err != nil || !envelope.Encrypted {
-		return nil
-	}
-	aead := s.keys[envelope.KeyID]
-	if aead == nil {
-		return fmt.Errorf("work item %q execution plan uses unknown encryption key %q", item.ID, envelope.KeyID)
-	}
-	payload, err := base64.RawStdEncoding.DecodeString(envelope.Payload)
-	if err != nil {
-		return fmt.Errorf("decode encrypted work item execution plan %q: %w", item.ID, err)
-	}
-	if len(payload) < aead.NonceSize() {
-		return fmt.Errorf("encrypted work item execution plan %q is too short", item.ID)
-	}
-	plaintext, err := aead.Open(nil, payload[:aead.NonceSize()], payload[aead.NonceSize():], assistantWorkItemExecutionPlanAAD(scope, *item))
-	if err != nil {
-		return fmt.Errorf("decrypt work item execution plan %q: %w", item.ID, err)
-	}
-	item.ExecutionPlan = plaintext
-	return nil
-}
-
-func (s *encryptedStore) decryptAssistantWorkItem(scope Scope, item *AssistantWorkItem) error {
-	if err := s.decryptAssistantWorkItemGrant(scope, item); err != nil {
-		return err
-	}
-	return s.decryptAssistantWorkItemExecutionPlan(scope, item)
-}
-
-func assistantWorkItemAAD(scope Scope, item AssistantWorkItem) []byte {
-	return []byte(strings.Join([]string{scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, item.ID, "plan_grant"}, "\x00"))
-}
-
-func assistantWorkItemExecutionPlanAAD(scope Scope, item AssistantWorkItem) []byte {
-	return []byte(strings.Join([]string{scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, item.ID, "execution_plan"}, "\x00"))
-}
-
-var _ Store = (*encryptedStore)(nil)

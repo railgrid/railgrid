@@ -784,6 +784,25 @@ local_resource(
 )
 
 local_resource(
+    'app-studio-browser-worker',
+    cmd='APP_STUDIO_BROWSER_WORKER_IMAGE=kedge/app-studio-browser-worker:tilt make docker-build-app-studio-browser-worker',
+    serve_cmd='APP_STUDIO_BROWSER_WORKER_IMAGE=kedge/app-studio-browser-worker:tilt make run-app-studio-browser-worker',
+    deps=[
+        'Makefile',
+        'providers/app-studio/browser-worker/Dockerfile',
+        'providers/app-studio/browser-worker/package.json',
+        'providers/app-studio/browser-worker/package-lock.json',
+        'providers/app-studio/browser-worker/tsconfig.json',
+        'providers/app-studio/browser-worker/src',
+    ],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8090, path='/healthz'),
+    ),
+    labels=['providers-app-studio'],
+)
+
+local_resource(
     'app-studio',
     cmd='make build-app-studio-provider',
     # The tenant client needs the kcp front-proxy host+TLS (it drops the
@@ -815,6 +834,7 @@ local_resource(
     resource_deps=[
         'kedge-hub',
         'app-studio-db',
+        'app-studio-browser-worker',
         'dev-agent-image',
         'app-studio-preview-console-key',
     ],

@@ -26,6 +26,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 // projectAssistantToolDisclosureMinimal keeps the action feed opaque: product
@@ -138,6 +140,10 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 	}
 	if status == projectAssistantActionFeedStatusFailed || status == projectAssistantActionFeedStatusRejected {
 		item.Diagnostic = projectAssistantActionFeedDiagnostic(id, errText)
+		if projectToolBaseName(name) == projectToolInspectDevelopmentPreview && strings.TrimSpace(errText) == "" {
+			item.Diagnostic.Category = "runtime"
+			item.Diagnostic.Message = "Browser inspection did not verify the preview. Review the rendered, console, and assertion evidence."
+		}
 	}
 	if projectAssistantToolDisclosureMinimal {
 		return item
@@ -169,19 +175,19 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 			item.Count = count
 			item.Outcome = projectAssistantCountOutcome(count, "reference", "references")
 		}
-	case projectToolWriteFile, projectToolApplyPatch:
+	case projectToolApplyPatch:
 		item.Target = projectAssistantActionSafeTarget(projectAssistantActionArgumentField(args, arguments, "path", "path"))
 		item.Title = projectAssistantActionLifecycleTitle(status, "Updating file", "Updated file", "File update failed")
 		if status == projectAssistantActionFeedStatusSucceeded {
 			item.Outcome = projectAssistantMutationOutcome(summary)
 		}
-	case projectToolMkdir:
-		item.Target = projectAssistantActionSafeTarget(projectAssistantActionArgumentField(args, arguments, "path", "path"))
-		item.Title = projectAssistantActionLifecycleTitle(status, "Creating folder", "Created folder", "Folder creation failed")
 	case projectToolVerifyDevelopmentRuntime:
 		item.Title = projectAssistantActionLifecycleTitle(status, "Checking development preview", "Checked development preview", "Preview check failed")
 	case projectToolGetPreviewURL:
 		item.Title = projectAssistantActionLifecycleTitle(status, "Checking preview", "Checked preview", "Preview check failed")
+	case projectToolInspectDevelopmentPreview:
+		item.Target = projectAssistantActionSafeTarget(projectAssistantActionArgumentField(args, arguments, "path", "path"))
+		item.Title = projectAssistantActionLifecycleTitle(status, "Inspecting development preview", "Inspected development preview", "Preview inspection failed")
 	case projectToolCheckProjectReadiness:
 		item.Title = projectAssistantActionLifecycleTitle(status, "Checking project readiness", "Checked project readiness", "Readiness check failed")
 	case projectToolPrepareProjectDeployment:
@@ -256,16 +262,16 @@ func projectAssistantActionFeedItemKind(name string) string {
 	switch base := projectToolBaseName(name); {
 	case base == projectToolAskFollowUp:
 		return projectAssistantActionFeedItemClarify
-	case base == projectToolRequestProjectPlanApproval || base == projectToolPlanProjectChanges:
+	case base == projectToolPlanProjectChanges:
 		return projectAssistantActionFeedItemPlan
 	case base == projectToolCheckProjectReadiness || base == projectToolPrepareProjectDeployment ||
 		base == projectToolVerifyDevelopmentRuntime || base == projectToolGetRuntimeStatus ||
-		base == projectToolGetPreviewURL || base == projectToolGetRuntimeLogs ||
+		base == projectToolGetPreviewURL || base == projectToolInspectDevelopmentPreview || base == projectToolGetRuntimeLogs ||
 		base == projectToolRestartRuntime || base == projectToolSetRuntimeEnv:
 		return projectAssistantActionFeedItemRun
 	case base == projectToolCommitProjectFiles || base == projectToolCommitFiles:
 		return projectAssistantActionFeedItemCommit
-	case base == projectToolWriteFile || base == projectToolApplyPatch || base == projectToolMkdir:
+	case base == projectToolApplyPatch:
 		return projectAssistantActionFeedItemEdit
 	case base == projectToolLS || base == projectToolReadFile || base == projectToolGlob || base == projectToolGrep:
 		return projectAssistantActionFeedItemInspect
@@ -345,12 +351,12 @@ func projectAssistantActionFeedGrouping(item *projectAssistantActionFeedItem, ba
 	case projectToolGrep:
 		item.GroupKey = "inspect:search"
 		item.GroupTitle = "Searched project"
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	case projectToolApplyPatch:
 		item.GroupKey = "edit:files"
 		item.GroupTitle = "Updated files"
 	case projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment,
 		projectToolVerifyDevelopmentRuntime, projectToolGetRuntimeStatus,
-		projectToolGetPreviewURL, projectToolGetRuntimeLogs, projectToolRestartRuntime:
+		projectToolGetPreviewURL, projectToolInspectDevelopmentPreview, projectToolGetRuntimeLogs, projectToolRestartRuntime:
 		item.GroupKey = "run:checks"
 		item.GroupTitle = "Ran checks"
 	}
@@ -422,7 +428,30 @@ func projectAssistantActionSafeTarget(value string) string {
 
 func projectAssistantActionFeedDiagnostic(id, rawError string) *projectAssistantActionDiagnostic {
 	category := projectAssistantActionDiagnosticCategory(rawError)
-	message := map[string]string{
+	message := projectAssistantActionDiagnosticMessage(category, rawError)
+	sum := sha256.Sum256([]byte(id))
+	return &projectAssistantActionDiagnostic{
+		Category:    category,
+		Message:     message,
+		ReferenceID: "action-" + hex.EncodeToString(sum[:6]),
+	}
+}
+
+func projectAssistantActionDiagnosticMessage(category, raw string) string {
+	value := strings.ToLower(raw)
+	if category == "validation" {
+		switch {
+		case strings.Contains(value, string(workspace.PatchErrorContextNotFound)):
+			return "The file changed or the patch context did not match. App Studio will reread it before retrying."
+		case strings.Contains(value, string(workspace.PatchErrorContextAmbiguous)):
+			return "The patch matched more than one location and needs more surrounding context."
+		case strings.Contains(value, string(workspace.PatchErrorStrategyChange)):
+			return "That patch already failed against this workspace version and must be revised before retrying."
+		case strings.Contains(value, "numeric unified-diff hunk headers"):
+			return "The patch used line-number hunk headers, which this contextual editor does not accept."
+		}
+	}
+	return map[string]string{
 		"timeout":    "The action did not finish before its time limit.",
 		"permission": "App Studio did not have permission to complete this action.",
 		"validation": "The action could not run because its input was not valid.",
@@ -430,12 +459,6 @@ func projectAssistantActionFeedDiagnostic(id, rawError string) *projectAssistant
 		"provider":   "A connected provider could not complete this action.",
 		"unknown":    "App Studio could not complete this action.",
 	}[category]
-	sum := sha256.Sum256([]byte(id))
-	return &projectAssistantActionDiagnostic{
-		Category:    category,
-		Message:     message,
-		ReferenceID: "action-" + hex.EncodeToString(sum[:6]),
-	}
 }
 
 func projectAssistantActionDiagnosticCategory(raw string) string {
@@ -447,7 +470,14 @@ func projectAssistantActionDiagnosticCategory(raw string) string {
 		strings.Contains(value, "plan approval required"), strings.Contains(value, "execution plan revision required"):
 		return "permission"
 	case strings.Contains(value, "validation"), strings.Contains(value, "invalid"), strings.Contains(value, "malformed"),
-		strings.Contains(value, "required"), strings.Contains(value, "repository binding"):
+		strings.Contains(value, "required"), strings.Contains(value, "repository binding"),
+		strings.Contains(value, string(workspace.PatchErrorContextNotFound)),
+		strings.Contains(value, string(workspace.PatchErrorContextAmbiguous)),
+		strings.Contains(value, string(workspace.PatchErrorTargetExists)),
+		strings.Contains(value, string(workspace.PatchErrorTargetNotFound)),
+		strings.Contains(value, string(workspace.PatchErrorWorkspaceConflict)),
+		strings.Contains(value, string(workspace.PatchErrorNoChanges)),
+		strings.Contains(value, string(workspace.PatchErrorStrategyChange)):
 		return "validation"
 	case strings.Contains(value, "runtime"), strings.Contains(value, "preview"), strings.Contains(value, "process exited"), strings.Contains(value, "server did not"):
 		return "runtime"

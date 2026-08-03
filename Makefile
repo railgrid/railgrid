@@ -1,5 +1,5 @@
 .PHONY: sync-portalkit verify-portalkit
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-console-dev-key verify-app-studio-preview-console-dev-key app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal build-app-studio-browser-worker test-app-studio-browser-worker run-app-studio-browser-worker docker-build-app-studio-browser-worker codegen-app-studio-provider app-studio-preview-console-dev-key verify-app-studio-preview-console-dev-key app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -181,6 +181,23 @@ build-app-studio-provider-portal: ## Build the App Studio provider's micro-front
 
 build-app-studio-provider: build-app-studio-provider-portal ## Build the App Studio provider binary (portal embedded)
 	cd providers/app-studio && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/app-studio-provider .
+
+build-app-studio-browser-worker: ## Build the App Studio Playwright browser worker
+	cd providers/app-studio/browser-worker && npm ci --no-audit --no-fund && npm run build
+
+test-app-studio-browser-worker: ## Test the App Studio Playwright browser worker
+	cd providers/app-studio/browser-worker && npm ci --no-audit --no-fund && npm test
+
+run-app-studio-browser-worker: docker-build-app-studio-browser-worker ## Run the App Studio browser worker on localhost
+	-docker rm -f $(APP_STUDIO_BROWSER_WORKER_CONTAINER)
+	docker run --rm --init --name $(APP_STUDIO_BROWSER_WORKER_CONTAINER) --network host \
+		-e PORT=$(APP_STUDIO_BROWSER_WORKER_PORT) \
+		-e BROWSER_WORKER_CHROMIUM_SANDBOX=false \
+		-e BROWSER_WORKER_IGNORE_HTTPS_ERRORS=true \
+		$(APP_STUDIO_BROWSER_WORKER_IMAGE)
+
+docker-build-app-studio-browser-worker: ## Build the App Studio browser worker image
+	docker build --platform $(DOCKER_PLATFORM) -t $(APP_STUDIO_BROWSER_WORKER_IMAGE) providers/app-studio/browser-worker
 
 build-agents-provider-portal: ## Build the agents provider's micro-frontend (Vite + TS → portal/dist)
 	cd providers/agents/portal && npm install --no-audit --no-fund && npm run build
@@ -411,9 +428,15 @@ endif
 dev-create-workload: ## Create a demo Workload targeting dev edges
 	kubectl apply -f hack/dev/examples/workload-nginx.yaml
 
--include .env
--include .env.edge.$(TYPE)
-export
+# Export only variables declared by the optional dotenv files. A bare `export`
+# also exports recursive Make variables containing $(shell ...); GNU Make 4.4.1
+# can segfault while expanding those variables for Tilt's local subprocesses.
+ENV_FILES := $(wildcard .env .env.edge.$(TYPE))
+ifneq ($(strip $(ENV_FILES)),)
+include $(ENV_FILES)
+ENV_EXPORTS := $(shell sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*[:?+]?=.*/\2/p' $(ENV_FILES))
+export $(ENV_EXPORTS)
+endif
 
 dev-infra: $(KCP) $(DEX) certs ## Run infra only (kcp + Dex)
 	hack/scripts/dev-infra.sh
@@ -1092,6 +1115,10 @@ KROMC_PROVIDER_MANIFEST ?= providers/infrastructure/provider.yaml
 # checked-in manifest.yaml; the Helm chart's CatalogEntry is for in-cluster
 # self-registration via ConfigMap.
 APP_STUDIO_PORT ?= 8085
+APP_STUDIO_BROWSER_WORKER_PORT ?= 8090
+APP_STUDIO_BROWSER_WORKER_IMAGE ?= ghcr.io/faroshq/kedge/app-studio-browser-worker:$(VERSION)
+APP_STUDIO_BROWSER_WORKER_CONTAINER ?= kedge-app-studio-browser-worker
+APP_STUDIO_BROWSER_WORKER_URL ?= http://127.0.0.1:$(APP_STUDIO_BROWSER_WORKER_PORT)
 APP_STUDIO_HUB_URL ?= https://localhost:9443
 APP_STUDIO_TOKEN ?= $(STATIC_AUTH_TOKEN)
 APP_STUDIO_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
@@ -1306,6 +1333,7 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
+		APP_STUDIO_BROWSER_WORKER_URL="$${APP_STUDIO_BROWSER_WORKER_URL:-$(APP_STUDIO_BROWSER_WORKER_URL)}" \
 		APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY="$${APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY}" \
 		APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID="$${APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID}" \
 			$(BINDIR)/app-studio-provider; \
@@ -1320,6 +1348,7 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
+		APP_STUDIO_BROWSER_WORKER_URL="$${APP_STUDIO_BROWSER_WORKER_URL:-$(APP_STUDIO_BROWSER_WORKER_URL)}" \
 		APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY="$${APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY}" \
 		APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID="$${APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID}" \
 			$(BINDIR)/app-studio-provider; \
@@ -2032,7 +2061,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: verify-boilerplate verify-codegen verify-portalkit verify-app-studio-preview-console-dev-key vet lint build test ## Run all checks
+verify: verify-boilerplate verify-codegen verify-portalkit verify-app-studio-preview-console-dev-key test-app-studio-browser-worker vet lint build test ## Run all checks
 
 # --- Helm chart packaging ---
 

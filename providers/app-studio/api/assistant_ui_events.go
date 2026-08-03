@@ -82,7 +82,7 @@ type projectAssistantUIInterruptRequest struct {
 	Kind        string                             `json:"kind,omitempty"`
 	SurfaceID   string                             `json:"surfaceId,omitempty"`
 	Description string                             `json:"description,omitempty"`
-	Questions   []string                           `json:"questions,omitempty"`
+	Questions   []projectAssistantFollowUpQuestion `json:"questions,omitempty"`
 	Status      string                             `json:"status,omitempty"`
 	Action      *projectAssistantUIInterruptAction `json:"action,omitempty"`
 }
@@ -238,7 +238,7 @@ func projectAssistantUIInterruptRequestFromFollowUpCheckpoint(surfaceID string, 
 		Kind:        "follow_up",
 		SurfaceID:   surfaceID,
 		Description: followUp.Prompt,
-		Questions:   append([]string(nil), followUp.Questions...),
+		Questions:   cloneProjectAssistantFollowUpQuestions(followUp.Questions),
 		Status:      "pending",
 		Action: &projectAssistantUIInterruptAction{
 			RunID:              checkpoint.ID,

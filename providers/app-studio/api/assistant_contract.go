@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
@@ -54,16 +55,15 @@ type projectAssistantRunRequest struct {
 	MessageScope             store.Scope
 	LLM                      projectLLMSettings
 	History                  []store.Message
+	Conversation             []chatMessage
+	ConversationCheckpointed bool
 	MCPBaseURL               string
 	MCPInsecureSkipTLSVerify bool
 	ApprovalMode             store.AssistantApprovalMode
 	StreamCallbacks          projectAssistantStreamCallbacks
+	CollaborationMode        projectAssistantCollaborationMode
 	TurnProfile              projectAssistantTurnProfile
 	TurnPolicy               projectAssistantTurnPolicy
-	RequestedAction          string
-	ResolvedAction           string
-	ClassificationReason     string
-	ClassificationConfidence projectAssistantTurnConfidence
 	// InitialApprovedPlan is a run-local grant derived from the explicit
 	// prompt that created a fresh Project. It is never saved as a cross-turn
 	// plan grant; checkpoints retain it only while this initial run is active.
@@ -71,11 +71,68 @@ type projectAssistantRunRequest struct {
 	Continuation        *projectAssistantCheckpointState
 	AssistantRun        *store.AssistantRun
 	// executionAuthority is an App Studio-internal seam for focused engine
-	// tests. Production requests leave it nil and are bound to the Server's
-	// durable WorkItem authority below; it is deliberately not part of any
-	// HTTP, provider, or Eino contract.
+	// tests. Production requests leave it nil; it is deliberately not part of
+	// any HTTP, provider, or Eino contract.
 	executionAuthority projectAssistantExecutionAuthority
 	auditRecorder      *projectAssistantRunAuditRecorder
+	eventLedger        *projectAssistantRunEventLedger
+	// executionContext is the single request-scoped source used by both the
+	// model-facing context builder and executable tool wrappers. It prevents a
+	// refreshed Project/Repository view from being shown to the model while an
+	// older request copy is still used for dispatch.
+	executionContext *projectAssistantExecutionContext
+	// Steering carries user messages admitted into this durable run while the
+	// Eino loop is active. The supervisor persists each message before making it
+	// visible here; the loop drains it only at model-safe boundaries.
+	Steering     <-chan projectAssistantSteeringInput
+	SealSteering func() bool
+	// ActivateSteering rotates the public assistant segment only when the Eino
+	// loop has reached the model-safe boundary that consumes these queued inputs.
+	ActivateSteering func(context.Context, []projectAssistantSteeringInput) error
+}
+
+// projectAssistantExecutionContext binds one run's current sampling snapshot
+// to its executable tools. snapshotMu protects replacement between model-safe
+// boundaries; toolMu is a Codex-style parallel-safety gate where proven reads
+// share the read lock and every other call takes exclusive ownership.
+type projectAssistantExecutionContext struct {
+	snapshotMu sync.RWMutex
+	toolMu     sync.RWMutex
+	req        projectAssistantRunRequest
+}
+
+func projectAssistantRunRequestWithExecutionContext(req projectAssistantRunRequest) projectAssistantRunRequest {
+	if req.executionContext != nil {
+		return req
+	}
+	executionContext := &projectAssistantExecutionContext{}
+	req.executionContext = executionContext
+	executionContext.req = req
+	return req
+}
+
+func (r projectAssistantRunRequest) currentExecutionRequest() projectAssistantRunRequest {
+	if r.executionContext == nil {
+		return r
+	}
+	r.executionContext.snapshotMu.RLock()
+	defer r.executionContext.snapshotMu.RUnlock()
+	return r.executionContext.req
+}
+
+func (r projectAssistantRunRequest) publishExecutionRequest() {
+	if r.executionContext == nil {
+		return
+	}
+	r.executionContext.snapshotMu.Lock()
+	r.executionContext.req = r
+	r.executionContext.snapshotMu.Unlock()
+}
+
+type projectAssistantSteeringInput struct {
+	MessageID       string
+	ClientRequestID string
+	Content         string
 }
 
 type projectAssistantRunResult struct {
@@ -86,14 +143,17 @@ type projectAssistantRunResult struct {
 }
 
 type projectAssistantCompletionEvidence struct {
-	PlanDefined              bool     `json:"planDefined"`
-	PlanComplete             bool     `json:"planComplete"`
-	SourceMutationRevision   uint64   `json:"sourceMutationRevision,omitempty"`
-	VerifiedMutationRevision uint64   `json:"verifiedMutationRevision,omitempty"`
-	LatestMutationVerified   bool     `json:"latestMutationVerified"`
-	VerificationOutcome      string   `json:"verificationOutcome,omitempty"`
-	VerificationSummary      string   `json:"verificationSummary,omitempty"`
-	Blockers                 []string `json:"blockers,omitempty"`
+	PlanDefined               bool     `json:"planDefined"`
+	PlanComplete              bool     `json:"planComplete"`
+	SourceMutationRevision    uint64   `json:"sourceMutationRevision,omitempty"`
+	VerifiedMutationRevision  uint64   `json:"verifiedMutationRevision,omitempty"`
+	LatestMutationVerified    bool     `json:"latestMutationVerified"`
+	CommitRequired            bool     `json:"commitRequired,omitempty"`
+	CommittedMutationRevision uint64   `json:"committedMutationRevision,omitempty"`
+	LatestMutationCommitted   bool     `json:"latestMutationCommitted,omitempty"`
+	VerificationOutcome       string   `json:"verificationOutcome,omitempty"`
+	VerificationSummary       string   `json:"verificationSummary,omitempty"`
+	Blockers                  []string `json:"blockers,omitempty"`
 }
 
 type projectAssistantEvent struct {
@@ -143,10 +203,10 @@ type projectAssistantPermission struct {
 }
 
 type projectAssistantFollowUp struct {
-	ID         string   `json:"id"`
-	ToolCallID string   `json:"toolCallID,omitempty"`
-	Questions  []string `json:"questions,omitempty"`
-	Prompt     string   `json:"prompt,omitempty"`
+	ID         string                             `json:"id"`
+	ToolCallID string                             `json:"toolCallID,omitempty"`
+	Questions  []projectAssistantFollowUpQuestion `json:"questions,omitempty"`
+	Prompt     string                             `json:"prompt,omitempty"`
 }
 
 type projectAssistantCheckpoint struct {

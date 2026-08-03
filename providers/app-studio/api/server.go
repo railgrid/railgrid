@@ -50,11 +50,12 @@ type Server struct {
 	mcpInsecureSkipTLSVerify     bool
 	previewInsecureSkipTLSVerify bool
 	assistantEngine              projectAssistantEngine
-	assistantTurnRouter          projectAssistantTurnRouter
 	assistantRunManager          *projectAssistantRunManager
 	assistantSupervisor          *projectAssistantSupervisor
+	assistantProjectionLocks     map[string]*assistantThreadProjectionLockEntry
 	developmentSyncLocks         map[string]*sync.Mutex
-	developmentSyncAfterMutation func(identity, *aiv1alpha1.Project, string)
+	developmentSyncTails         map[string]chan struct{}
+	developmentSyncAfterMutation func(identity, *aiv1alpha1.Project, string) error
 	projectCreatePreflight       projectCreatePreflightGenerator
 	// developmentSyncFailures records the most recent post-mutation sync
 	// failure per project so verify_development_runtime can report it. A
@@ -64,12 +65,14 @@ type Server struct {
 	developmentSyncFailures map[string]string
 	// previewEdgeProbe + edgeReadyURLs implement the preview edge-readiness
 	// gate (see preview_edge.go). Nil probe → the real HTTPS probe.
-	previewEdgeProbe      func(context.Context, string) error
-	edgeReadyURLs         edgeReadyURLsCache
-	previewConsoleEnabled bool
-	previewConsoleStore   *previewConsoleStore
-	previewConsoleSigner  *previewConsoleCapabilitySigner
-	mu                    sync.Mutex
+	previewEdgeProbe            func(context.Context, string) error
+	edgeReadyURLs               edgeReadyURLsCache
+	previewConsoleEnabled       bool
+	previewConsoleStore         *previewConsoleStore
+	previewConsoleSigner        *previewConsoleCapabilitySigner
+	previewInspector            projectAssistantPreviewInspector
+	previewInspectionResolveURL func(context.Context, identity, *aiv1alpha1.Project) (string, error)
+	mu                          sync.Mutex
 }
 
 // New constructs a Server.
@@ -117,15 +120,6 @@ func (s *Server) projectAssistantEngine() projectAssistantEngine {
 	return s.assistantEngine
 }
 
-func (s *Server) projectAssistantTurnRouter() projectAssistantTurnRouter {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.assistantTurnRouter == nil {
-		return projectAssistantSemanticTurnRouter
-	}
-	return s.assistantTurnRouter
-}
-
 func (s *Server) projectAssistantRunManager() *projectAssistantRunManager {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -135,8 +129,8 @@ func (s *Server) projectAssistantRunManager() *projectAssistantRunManager {
 	return s.assistantRunManager
 }
 
-func (s *Server) developmentSyncLock(id identity, projectName string) *sync.Mutex {
-	key := id.orgUUID + "/" + id.workspaceUUID + "/" + projectName
+func (s *Server) developmentSyncLock(id identity, project *aiv1alpha1.Project) *sync.Mutex {
+	key := developmentSyncFailureKey(id, project)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.developmentSyncLocks == nil {
@@ -164,8 +158,18 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}", s.getProject).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}", s.patchProject).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}", s.deleteProject).Methods(http.MethodDelete)
-	r.HandleFunc("/api/projects/{project}/messages", s.listProjectMessages).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/messages", s.startProjectAssistantRun).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/threads", s.listProjectAssistantThreads).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/assistant/threads", s.createProjectAssistantThread).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}", s.patchProjectAssistantThread).Methods(http.MethodPatch)
+	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/items", s.listProjectAssistantThreadItems).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/events", s.streamProjectAssistantThreadEvents).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns", s.startProjectAssistantThreadTurn).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/reviews", s.startProjectAssistantThreadReview).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/active", s.activeProjectAssistantThreadTurn).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/steer", s.steerProjectAssistantThreadTurn).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/interrupt", s.interruptProjectAssistantThreadTurn).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/approval", s.respondProjectAssistantThreadTurn).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/input", s.respondProjectAssistantThreadTurn).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/template", s.putProjectTemplate).Methods(http.MethodPut)
 	r.HandleFunc("/api/projects/{project}/promotion", s.getProjectPromotion).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/checkpoints", s.getProjectCheckpoints).Methods(http.MethodGet)
@@ -179,16 +183,8 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/preview-console/sessions", s.createProjectPreviewConsoleSession).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/preview-console/sessions/{session}/events", s.appendProjectPreviewConsoleEvents).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/preview-console/sessions/{session}", s.deleteProjectPreviewConsoleSession).Methods(http.MethodDelete)
-	r.HandleFunc("/api/projects/{project}/assistant/{run}/resume", s.resumeProjectAssistant).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/{run}/stop", s.stopProjectAssistant).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/{run}/undo", s.undoProjectAssistantRun).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/approval-mode", s.getProjectAssistantApprovalMode).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/approval-mode", s.patchProjectAssistantApprovalMode).Methods(http.MethodPatch)
-	r.HandleFunc("/api/projects/{project}/assistant/work-items", s.listProjectAssistantWorkItems).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/work-items/{workItem}", s.getProjectAssistantWorkItem).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/work-items/{workItem}/cancel", s.cancelProjectAssistantWorkItem).Methods(http.MethodPost)
-	r.HandleFunc("/api/projects/{project}/assistant/runs/latest", s.latestProjectAssistantRun).Methods(http.MethodGet)
-	r.HandleFunc("/api/projects/{project}/assistant/{run}/stream", s.streamProjectAssistantSnapshots).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/memory", s.getProjectMemory).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/memory", s.patchProjectMemory).Methods(http.MethodPatch)
 }

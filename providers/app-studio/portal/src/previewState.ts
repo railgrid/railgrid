@@ -10,6 +10,12 @@ export interface DevelopmentPreviewDisplayPhaseState {
   authorizationError: string
 }
 
+export interface DevelopmentPreviewWakeState extends DevelopmentPreviewDisplayPhaseState {
+  needsAuthorization: boolean
+  authorizing: boolean
+  tokenExpiresAt: string
+}
+
 export function developmentPreviewDisplayPhase(state: DevelopmentPreviewDisplayPhaseState): string {
   if (state.authorizationError) return 'Error'
   if (state.previewURL) return 'Ready'
@@ -22,4 +28,15 @@ export function developmentPreviewSyncStatus(state: DevelopmentPreviewSyncState,
   if (state.authorizationError) return 'Synced project files. Preview authorization failed.'
   if (state.readinessMessage) return `Synced project files. ${state.readinessMessage}`
   return 'Synced project files. Preview is getting ready.'
+}
+
+export function developmentPreviewShouldRefreshOnWake(
+  state: DevelopmentPreviewWakeState,
+  nowMs: number,
+  renewalSkewMs: number,
+): boolean {
+  if (!state.needsAuthorization || state.authorizing) return false
+  if (!state.previewURL || state.authorizationError) return true
+  const expiresMs = Date.parse(state.tokenExpiresAt)
+  return Number.isFinite(expiresMs) && expiresMs <= nowMs + renewalSkewMs
 }

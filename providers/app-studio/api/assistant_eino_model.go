@@ -243,6 +243,7 @@ func projectEinoMessagesToChat(messages []*schema.Message) []chatMessage {
 			Name:       msg.Name,
 			ToolCallID: msg.ToolCallID,
 			ToolCalls:  projectEinoToolCallsToChat(msg.ToolCalls),
+			Extra:      projectAssistantDurableMessageExtra(msg.Extra),
 		})
 		if len(out) > 0 && msg.Role == schema.Tool && out[len(out)-1].Name == "" {
 			out[len(out)-1].Name = msg.ToolName
@@ -254,18 +255,21 @@ func projectEinoMessagesToChat(messages []*schema.Message) []chatMessage {
 func projectChatMessagesToEino(messages []chatMessage) ([]*schema.Message, error) {
 	out := make([]*schema.Message, 0, len(messages))
 	for _, msg := range messages {
+		var converted *schema.Message
 		switch schema.RoleType(msg.Role) {
 		case schema.System:
-			out = append(out, schema.SystemMessage(msg.Content))
+			converted = schema.SystemMessage(msg.Content)
 		case schema.User:
-			out = append(out, schema.UserMessage(msg.Content))
+			converted = schema.UserMessage(msg.Content)
 		case schema.Assistant:
-			out = append(out, schema.AssistantMessage(msg.Content, projectChatToolCallsToEino(msg.ToolCalls)))
+			converted = schema.AssistantMessage(msg.Content, projectChatToolCallsToEino(msg.ToolCalls))
 		case schema.Tool:
-			out = append(out, schema.ToolMessage(msg.Content, msg.ToolCallID, schema.WithToolName(msg.Name)))
+			converted = schema.ToolMessage(msg.Content, msg.ToolCallID, schema.WithToolName(msg.Name))
 		default:
 			return nil, fmt.Errorf("unsupported assistant message role %q", msg.Role)
 		}
+		converted.Extra = projectAssistantDurableMessageExtra(msg.Extra)
+		out = append(out, converted)
 	}
 	return out, nil
 }

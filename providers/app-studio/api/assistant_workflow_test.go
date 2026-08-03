@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,7 @@ import (
 	"time"
 
 	einotool "github.com/cloudwego/eino/components/tool"
+	einoschema "github.com/cloudwego/eino/schema"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -40,12 +42,72 @@ import (
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
+type projectAssistantFailingGraphTool struct {
+	calls *int
+	err   error
+}
+
+func (t projectAssistantFailingGraphTool) Info(context.Context) (*einoschema.ToolInfo, error) {
+	return &einoschema.ToolInfo{Name: "failing_graph_tool"}, nil
+}
+
+func (t projectAssistantFailingGraphTool) InvokableRun(context.Context, string, ...einotool.Option) (string, error) {
+	*t.calls++
+	return "", t.err
+}
+
+func TestProjectAssistantDurableGraphToolFailureIsExactModelFeedback(t *testing.T) {
+	ctx := context.Background()
+	messages, scope := newAssistantRunEventLedgerTestStore(t, "run-graph-failure")
+	calls := 0
+	backendErr := errors.New("workflow dependency unavailable")
+	spec := projectAssistantToolSpec{Name: "failing_graph_tool", Risk: projectAssistantToolRiskRead}
+	tool := projectAssistantDurableGraphTool{
+		InvokableTool: projectAssistantFailingGraphTool{calls: &calls, err: backendErr},
+		spec:          spec,
+		ledger:        newProjectAssistantRunEventLedger(messages, scope, "run-graph-failure"),
+	}
+	result, err := tool.invokableRun(ctx, "call-graph", `{}`)
+	if err != nil || result != "Tool call failed: workflow dependency unavailable" {
+		t.Fatalf("graph failure = (%q, %v), want model-visible feedback", result, err)
+	}
+
+	tool.ledger = newProjectAssistantRunEventLedger(messages, scope, "run-graph-failure")
+	replayed, err := tool.invokableRun(ctx, "call-graph", `{}`)
+	if err != nil || replayed != result {
+		t.Fatalf("graph failure replay = (%q, %v), want %q", replayed, err, result)
+	}
+	if calls != 1 {
+		t.Fatalf("graph backend calls = %d, want durable replay without redispatch", calls)
+	}
+	events := listAssistantRunEventLedgerEvents(t, messages, scope, "run-graph-failure")
+	if len(events) != 2 {
+		t.Fatalf("graph events = %#v, want call and failed result", events)
+	}
+	var payload projectAssistantRunToolResultPayload
+	if err := json.Unmarshal(events[1].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.Failed || payload.Result != result || payload.Error != backendErr.Error() {
+		t.Fatalf("durable graph failure = %#v", payload)
+	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestProjectAssistantWorkflowToolsAreEinoGraphTools(t *testing.T) {
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	req := projectAssistantRunRequest{
 		Identity:       identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"},
 		Project:        &aiv1alpha1.Project{},
-		WorkspaceScope: workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo"},
+		WorkspaceScope: workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"},
 		TurnProfile:    projectAssistantTurnProfileImplementation,
 		TurnPolicy:     projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
 	}
@@ -91,7 +153,7 @@ func TestProjectAssistantInspectDevelopmentTemplatesGraphToolFiltersAndBoundsCat
 		Identity:       identity{orgUUID: "org-a", workspaceUUID: "ws-1"},
 		Client:         asclient.NewFromDynamic(templateCatalogDynamicClient{items: []unstructured.Unstructured{*broken, *prodOnly, *withDev}}),
 		Project:        project,
-		WorkspaceScope: workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: project.Name},
+		WorkspaceScope: workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: project.Name, ProjectUID: "test-project-uid"},
 		TurnProfile:    projectAssistantTurnProfileImplementation,
 		TurnPolicy:     projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
 	}
@@ -150,7 +212,7 @@ func TestProjectAssistantInspectDevelopmentTemplatesGraphToolReturnsEveryEligibl
 		Identity:       identity{orgUUID: "org-a", workspaceUUID: "ws-1"},
 		Client:         asclient.NewFromDynamic(templateCatalogDynamicClient{items: templates}),
 		Project:        project,
-		WorkspaceScope: workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: project.Name},
+		WorkspaceScope: workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: project.Name, ProjectUID: "test-project-uid"},
 		TurnProfile:    projectAssistantTurnProfileImplementation,
 		TurnPolicy:     projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation),
 	}
@@ -454,9 +516,84 @@ func TestFormatInitialProjectRuntimeVerificationRequiresProcessEvidence(t *testi
 	}
 }
 
+func TestRuntimeVerificationRetriesOneFailedCurrentRevisionSync(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	project.UID = "project-uid-demo"
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1"}
+	state := newProjectEinoAssistantRunState()
+	revision := state.BeginDevelopmentSyncForNextMutation()
+	state.RecordSourceMutation()
+	state.CompleteDevelopmentSync(revision, fmt.Errorf("transient sync failure"))
+
+	var attempts atomic.Int32
+	server.developmentSyncAfterMutation = func(_ identity, _ *aiv1alpha1.Project, _ string) error {
+		attempts.Add(1)
+		return nil
+	}
+	initialize := initializeProjectAssistantRuntimeVerification(projectAssistantWorkflowRunContext{
+		Server:   server,
+		Project:  project,
+		Identity: id,
+		RunState: state,
+	})
+	result, err := initialize(context.Background(), &projectAssistantRuntimeVerificationToolInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DevelopmentSyncStatus != "succeeded" || result.DevelopmentSyncFailure != "" {
+		t.Fatalf("retry sync evidence = (%q, %q), want succeeded", result.DevelopmentSyncStatus, result.DevelopmentSyncFailure)
+	}
+	if attempts.Load() != 1 {
+		t.Fatalf("sync retry attempts = %d, want one", attempts.Load())
+	}
+	if checkpoint := state.CheckpointState(); checkpoint.DevelopmentSyncRetry != revision {
+		t.Fatalf("checkpoint retry revision = %d, want %d", checkpoint.DevelopmentSyncRetry, revision)
+	}
+}
+
+func TestRuntimeVerificationAwaitsPendingCurrentRevisionSync(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	revision := state.BeginDevelopmentSyncForNextMutation()
+	state.RecordSourceMutation()
+	initialize := initializeProjectAssistantRuntimeVerification(projectAssistantWorkflowRunContext{
+		RunState: state,
+	})
+
+	type outcome struct {
+		result *projectAssistantRuntimeVerificationContext
+		err    error
+	}
+	finished := make(chan outcome, 1)
+	go func() {
+		result, err := initialize(context.Background(), &projectAssistantRuntimeVerificationToolInput{})
+		finished <- outcome{result: result, err: err}
+	}()
+
+	select {
+	case got := <-finished:
+		t.Fatalf("verification returned before pending sync completed: result=%#v err=%v", got.result, got.err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	state.CompleteDevelopmentSync(revision, nil)
+	select {
+	case got := <-finished:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.result.DevelopmentSyncStatus != "succeeded" || got.result.DevelopmentSyncFailure != "" {
+			t.Fatalf("sync evidence = (%q, %q), want succeeded", got.result.DevelopmentSyncStatus, got.result.DevelopmentSyncFailure)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("verification did not resume after pending sync completed")
+	}
+}
+
 func TestFormatProjectAssistantRuntimeVerificationRejectsEmptyProcessLogs(t *testing.T) {
 	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
 		CheckedMutationRevision: 4,
+		DevelopmentSyncStatus:   "succeeded",
 		RequireProcessEvidence:  true,
 		Readiness:               &projectAssistantReadinessWorkflowResult{Status: "ready_to_verify"},
 		Runtime: &projectAssistantRuntimeWorkflowResult{
@@ -479,6 +616,7 @@ func TestFormatProjectAssistantRuntimeVerificationRejectsEmptyProcessLogs(t *tes
 func TestFormatProjectAssistantRuntimeVerificationAcceptsStructuredReadyProcessWithoutLogs(t *testing.T) {
 	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
 		CheckedMutationRevision: 5,
+		DevelopmentSyncStatus:   "succeeded",
 		RequireProcessEvidence:  true,
 		Readiness:               &projectAssistantReadinessWorkflowResult{Status: "ready_to_verify"},
 		Runtime: &projectAssistantRuntimeWorkflowResult{
@@ -662,6 +800,7 @@ func TestPollProjectAssistantProcessStatusMarksFirstWarmupTimeoutOperational(t *
 func TestFormatProjectAssistantRuntimeVerificationPromotesCleanRevisionToReady(t *testing.T) {
 	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
 		CheckedMutationRevision: 7,
+		DevelopmentSyncStatus:   "succeeded",
 		RequireProcessEvidence:  true,
 		Readiness:               &projectAssistantReadinessWorkflowResult{Status: "ready_to_verify"},
 		Runtime: &projectAssistantRuntimeWorkflowResult{
@@ -686,11 +825,21 @@ func TestFormatProjectAssistantRuntimeVerificationPromotesCleanRevisionToReady(t
 	if len(result.Blockers) != 0 {
 		t.Fatalf("blockers = %#v, want none", result.Blockers)
 	}
+	for _, want := range []string{
+		"operationally ready",
+		"synchronization, process and log health, and preview reachability only",
+		"application behavior and acceptance criteria were not independently verified",
+	} {
+		if !strings.Contains(result.Summary, want) {
+			t.Fatalf("summary = %q, want operational verification scope %q", result.Summary, want)
+		}
+	}
 }
 
 func TestFormatProjectAssistantRuntimeVerificationSeparatesRepositoryHandoffFromRuntime(t *testing.T) {
 	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
 		CheckedMutationRevision: 4,
+		DevelopmentSyncStatus:   "succeeded",
 		RequireProcessEvidence:  true,
 		Readiness: &projectAssistantReadinessWorkflowResult{
 			Status:     "needs_repository",
@@ -715,7 +864,8 @@ func TestFormatProjectAssistantRuntimeVerificationSeparatesRepositoryHandoffFrom
 	if len(result.Warnings) != 1 || len(result.Blockers) != 0 {
 		t.Fatalf("result = %#v, want one handoff warning and no runtime blockers", result)
 	}
-	if !strings.Contains(result.Summary, "runtime is ready") || !strings.Contains(result.Summary, "commit and CI") {
+	if !strings.Contains(result.Summary, "runtime is operationally ready") || !strings.Contains(result.Summary, "commit and CI") ||
+		!strings.Contains(result.Summary, "does not independently verify application behavior or acceptance criteria") {
 		t.Fatalf("summary = %q, want separate runtime and repository status", result.Summary)
 	}
 }
@@ -743,9 +893,10 @@ func TestFormatProjectAssistantRuntimeVerificationDoesNotHideProcessFailureBehin
 	}
 }
 
-func TestFormatProjectAssistantRuntimeVerificationRequiresReadyProjectState(t *testing.T) {
+func TestFormatProjectAssistantRuntimeVerificationTreatsProjectContextAsHandoffWarning(t *testing.T) {
 	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
 		CheckedMutationRevision: 2,
+		DevelopmentSyncStatus:   "succeeded",
 		Readiness:               &projectAssistantReadinessWorkflowResult{Status: "needs_workspace_context"},
 		Runtime: &projectAssistantRuntimeWorkflowResult{
 			Status:     "reachable",
@@ -756,11 +907,11 @@ func TestFormatProjectAssistantRuntimeVerificationRequiresReadyProjectState(t *t
 	if err != nil {
 		t.Fatalf("format runtime verification returned error: %v", err)
 	}
-	if result.Status != "not_ready" {
-		t.Fatalf("status = %q, want not_ready", result.Status)
+	if result.Status != "ready" {
+		t.Fatalf("status = %q, want ready", result.Status)
 	}
-	if len(result.Blockers) == 0 {
-		t.Fatalf("blockers = %#v, want readiness blocker", result.Blockers)
+	if len(result.Blockers) != 0 || len(result.Warnings) != 1 {
+		t.Fatalf("result = %#v, want one handoff warning and no operational blocker", result)
 	}
 }
 
@@ -790,7 +941,7 @@ func TestCollectProjectAssistantRuntimeReadinessRefreshesLiveRepositoryState(t *
 		codeConnectionObject("github"),
 	))
 	workspaces := workspace.NewFileStore(t.TempDir())
-	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: current.Name}
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: current.Name, ProjectUID: "test-project-uid"}
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "index.html", Content: "<main>ready</main>\n"}); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
@@ -858,7 +1009,7 @@ func TestProjectAssistantVerifyRuntimeGraphToolReturnsReadinessAndNoLogsWithoutB
 	project.Spec.DisplayName = "Demo"
 	project.Spec.Memory.Requirements = []string{"Show a working page"}
 	repo := &ProjectRepositoryView{Ref: "demo", Name: "demo", Status: projectRepositoryStatusReady}
-	resultRaw := invokeProjectAssistantWorkflowGraphTool(t, server, identity{orgUUID: "org-a", workspaceUUID: "ws-1"}, projectToolVerifyDevelopmentRuntime, project, repo, workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: project.Name}, map[string]any{})
+	resultRaw := invokeProjectAssistantWorkflowGraphTool(t, server, identity{orgUUID: "org-a", workspaceUUID: "ws-1"}, projectToolVerifyDevelopmentRuntime, project, repo, workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: project.Name, ProjectUID: "test-project-uid"}, map[string]any{})
 	var result projectAssistantRuntimeVerificationResult
 	if err := json.Unmarshal([]byte(resultRaw), &result); err != nil {
 		t.Fatalf("decode result: %v\n%s", err, resultRaw)
@@ -871,6 +1022,94 @@ func TestProjectAssistantVerifyRuntimeGraphToolReturnsReadinessAndNoLogsWithoutB
 	}
 	if result.Logs != nil {
 		t.Fatalf("logs = %#v, want no data-plane log call without binding", result.Logs)
+	}
+}
+
+func TestProjectAssistantVerifyRuntimeAlwaysCollectsWorkspaceEvidence(t *testing.T) {
+	workspaces := workspace.NewFileStore(t.TempDir())
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	project.UID = "test-project-uid-demo"
+	project.Spec.DisplayName = "Demo"
+	project.Spec.Memory.Requirements = []string{"Show a working page"}
+	scope := projectWorkspaceScope(id, project)
+	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{
+		Path:    "web/index.html",
+		Content: "<main>ready</main>\n",
+	}); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspaces, "", false)
+	repo := &ProjectRepositoryView{Ref: "demo", Name: "demo", Status: projectRepositoryStatusReady}
+
+	// Legacy or hallucinated file-list arguments must not disable evidence
+	// required by verification, even though they are no longer in the schema.
+	resultRaw := invokeProjectAssistantWorkflowGraphTool(
+		t,
+		server,
+		id,
+		projectToolVerifyDevelopmentRuntime,
+		project,
+		repo,
+		scope,
+		map[string]any{"includeFiles": false, "maxFiles": 1},
+	)
+	var result projectAssistantRuntimeVerificationResult
+	if err := json.Unmarshal([]byte(resultRaw), &result); err != nil {
+		t.Fatalf("decode result: %v\n%s", err, resultRaw)
+	}
+	if result.Readiness == nil || result.Readiness.Status != "ready_to_verify" {
+		t.Fatalf("readiness = %#v, want required workspace evidence", result.Readiness)
+	}
+	if !stringSliceContains(result.Readiness.Files, "web/index.html") {
+		t.Fatalf("readiness files = %#v, want bounded workspace evidence", result.Readiness.Files)
+	}
+}
+
+func TestProjectAssistantVerifyRuntimeSchemaDoesNotExposeWorkspaceEvidenceControls(t *testing.T) {
+	spec, ok := projectAssistantWorkflowToolSpec(projectToolVerifyDevelopmentRuntime)
+	if !ok {
+		t.Fatalf("%s tool missing", projectToolVerifyDevelopmentRuntime)
+	}
+	var parameters struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(spec.Parameters, &parameters); err != nil {
+		t.Fatalf("decode parameters: %v", err)
+	}
+	for _, name := range []string{"includeFiles", "maxFiles"} {
+		if _, exposed := parameters.Properties[name]; exposed {
+			t.Fatalf("%s schema exposes %q, which can disable required verification evidence", projectToolVerifyDevelopmentRuntime, name)
+		}
+	}
+	for _, name := range []string{"includeLogs", "tailLines"} {
+		if _, exposed := parameters.Properties[name]; !exposed {
+			t.Fatalf("%s schema is missing optional diagnostic control %q", projectToolVerifyDevelopmentRuntime, name)
+		}
+	}
+
+	graphTool, err := newProjectAssistantVerifyRuntimeGraphTool(projectAssistantWorkflowRunContext{})
+	if err != nil {
+		t.Fatalf("create graph tool: %v", err)
+	}
+	info, err := graphTool.Info(context.Background())
+	if err != nil {
+		t.Fatalf("read graph tool info: %v", err)
+	}
+	generated, err := info.ParamsOneOf.ToJSONSchema()
+	if err != nil {
+		t.Fatalf("generate graph tool schema: %v", err)
+	}
+	for _, name := range []string{"includeFiles", "maxFiles"} {
+		if _, exposed := generated.Properties.Get(name); exposed {
+			t.Fatalf("generated %s schema exposes %q", projectToolVerifyDevelopmentRuntime, name)
+		}
+	}
+	for _, name := range []string{"includeLogs", "tailLines"} {
+		if _, exposed := generated.Properties.Get(name); !exposed {
+			t.Fatalf("generated %s schema is missing %q", projectToolVerifyDevelopmentRuntime, name)
+		}
 	}
 }
 
@@ -899,7 +1138,7 @@ func TestProjectAssistantWorkflowRegisteredReadOnly(t *testing.T) {
 	if spec.Risk != projectAssistantToolRiskRead {
 		t.Fatalf("risk = %q, want read", spec.Risk)
 	}
-	if got := projectAssistantPermissionForTool(spec); got != projectAssistantPermissionAllow {
+	if got := projectAssistantPermissionForV2(spec, store.AssistantApprovalModeAlwaysAsk, nil, nil, false); got != projectAssistantPermissionAllow {
 		t.Fatalf("permission = %q, want allow", got)
 	}
 	if strings.TrimSpace(string(spec.Parameters)) == "" {
@@ -917,7 +1156,7 @@ func TestProjectAssistantReadinessWorkflowRegisteredReadOnly(t *testing.T) {
 	if spec.Risk != projectAssistantToolRiskRead {
 		t.Fatalf("risk = %q, want read", spec.Risk)
 	}
-	if got := projectAssistantPermissionForTool(spec); got != projectAssistantPermissionAllow {
+	if got := projectAssistantPermissionForV2(spec, store.AssistantApprovalModeAlwaysAsk, nil, nil, false); got != projectAssistantPermissionAllow {
 		t.Fatalf("permission = %q, want allow", got)
 	}
 	if strings.TrimSpace(string(spec.Parameters)) == "" {
@@ -935,7 +1174,7 @@ func TestProjectAssistantPrepareDeploymentWorkflowRegisteredReadOnly(t *testing.
 	if spec.Risk != projectAssistantToolRiskRead {
 		t.Fatalf("risk = %q, want read", spec.Risk)
 	}
-	if got := projectAssistantPermissionForTool(spec); got != projectAssistantPermissionAllow {
+	if got := projectAssistantPermissionForV2(spec, store.AssistantApprovalModeAlwaysAsk, nil, nil, false); got != projectAssistantPermissionAllow {
 		t.Fatalf("permission = %q, want allow", got)
 	}
 	if strings.TrimSpace(string(spec.Parameters)) == "" {
@@ -964,7 +1203,7 @@ func TestProjectAssistantRuntimeWorkflowToolsRegistered(t *testing.T) {
 			if spec.Risk != tt.wantRisk {
 				t.Fatalf("risk = %q, want %q", spec.Risk, tt.wantRisk)
 			}
-			if got := projectAssistantPermissionForTool(spec); got != tt.wantPerm {
+			if got := projectAssistantPermissionForV2(spec, store.AssistantApprovalModeAlwaysAsk, nil, nil, false); got != tt.wantPerm {
 				t.Fatalf("permission = %q, want %q", got, tt.wantPerm)
 			}
 			if got := projectAssistantToolBundleForSpec(spec); got != tt.wantBundle {
@@ -990,7 +1229,7 @@ func TestProjectAssistantWorkflowPlansFromMemoryRepositoryAndWorkspace(t *testin
 		Constraints:  []string{"avoid external queues"},
 	}
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
-	scope := projectWorkspaceScope(id, project.Name)
+	scope := projectWorkspaceScope(id, project)
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "src/App.tsx", Content: "export function App() { return null }\n"}); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
@@ -1018,8 +1257,8 @@ func TestProjectAssistantWorkflowPlansFromMemoryRepositoryAndWorkspace(t *testin
 		t.Fatalf("steps = %#v, want at least one deterministic next step", plan.Steps)
 	}
 	steps := strings.Join(plan.Steps, "\n")
-	if !strings.Contains(steps, "commit_project_files") || strings.Contains(steps, "Defer commit handoff") {
-		t.Fatalf("steps = %#v, want ready repository commit guidance", plan.Steps)
+	if strings.Contains(steps, "commit_project_files") || strings.Contains(steps, "Defer commit handoff") {
+		t.Fatalf("steps = %#v, want no manufactured commit obligation", plan.Steps)
 	}
 }
 
@@ -1032,7 +1271,7 @@ func TestProjectAssistantReadinessWorkflowReportsContextWithoutTrace(t *testing.
 	project.Spec.DisplayName = "Demo App"
 	project.Spec.Memory.Requirements = []string{"ship a tested build"}
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
-	scope := projectWorkspaceScope(id, project.Name)
+	scope := projectWorkspaceScope(id, project)
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "package.json", Content: `{"scripts":{"build":"vite build","test":"vitest"}}`}); err != nil {
 		t.Fatalf("WriteFile package.json returned error: %v", err)
 	}
@@ -1074,7 +1313,7 @@ func TestProjectAssistantPrepareDeploymentWorkflowReportsBuildAndRuntimeReadines
 	project.Spec.DisplayName = "Demo App"
 	project.Spec.Memory.Requirements = []string{"ship a tested build"}
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
-	scope := projectWorkspaceScope(id, project.Name)
+	scope := projectWorkspaceScope(id, project)
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "package.json", Content: `{"scripts":{"build":"vite build","test":"vitest"}}`}); err != nil {
 		t.Fatalf("WriteFile package.json returned error: %v", err)
 	}
@@ -1118,7 +1357,7 @@ func TestProjectAssistantPrepareDeploymentWorkflowReportsBlockers(t *testing.T) 
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
-	raw := invokeProjectAssistantWorkflowGraphTool(t, server, id, projectToolPrepareProjectDeployment, project, nil, projectWorkspaceScope(id, project.Name), map[string]any{"includeFiles": false})
+	raw := invokeProjectAssistantWorkflowGraphTool(t, server, id, projectToolPrepareProjectDeployment, project, nil, projectWorkspaceScope(id, project), map[string]any{"includeFiles": false})
 	var prepared projectAssistantDeploymentPreparationResult
 	if err := json.Unmarshal([]byte(raw), &prepared); err != nil {
 		t.Fatalf("workflow result is not JSON: %v\n%s", err, raw)
@@ -1138,7 +1377,7 @@ func TestProjectAssistantWorkflowDoesNotMutateWorkspace(t *testing.T) {
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
-	scope := projectWorkspaceScope(id, project.Name)
+	scope := projectWorkspaceScope(id, project)
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "README.md", Content: "# Demo\n"}); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
@@ -1163,7 +1402,7 @@ func TestProjectAssistantPrepareDeploymentWorkflowDoesNotMutateWorkspace(t *test
 	project.Name = "demo"
 	project.UID = "test-project-uid-demo"
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
-	scope := projectWorkspaceScope(id, project.Name)
+	scope := projectWorkspaceScope(id, project)
 	if _, err := workspaces.WriteFile(context.Background(), scope, workspace.WriteOptions{Path: "README.md", Content: "# Demo\n"}); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
@@ -1187,7 +1426,7 @@ func TestProjectAssistantRuntimeStatusAndPreviewWorkflowsReportNotConfiguredWith
 		t.Run(name, func(t *testing.T) {
 			id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
 			project := projectWithRepository("demo-repo", "demo", "github")
-			result := invokeProjectAssistantWorkflowGraphTool(t, server, id, name, project, nil, projectWorkspaceScope(id, project.Name), map[string]any{})
+			result := invokeProjectAssistantWorkflowGraphTool(t, server, id, name, project, nil, projectWorkspaceScope(id, project), map[string]any{})
 			var decoded map[string]any
 			if err := json.Unmarshal([]byte(result), &decoded); err != nil {
 				t.Fatalf("decode result: %v\n%s", err, result)
@@ -1280,7 +1519,7 @@ func TestProjectAssistantWorkflowBoundsLargeResultAsJSON(t *testing.T) {
 		project.Spec.Memory.Constraints = append(project.Spec.Memory.Constraints, strings.Repeat("constraint ", 80))
 	}
 	id := identity{tenantPath: "root:org-a:ws-1", orgUUID: "org-a", workspaceUUID: "ws-1"}
-	raw := invokeProjectAssistantWorkflowGraphTool(t, server, id, projectToolPlanProjectChanges, project, nil, projectWorkspaceScope(id, project.Name), map[string]any{"includeFiles": false})
+	raw := invokeProjectAssistantWorkflowGraphTool(t, server, id, projectToolPlanProjectChanges, project, nil, projectWorkspaceScope(id, project), map[string]any{"includeFiles": false})
 	if len(raw) > projectAssistantWorkflowMaxResultBytes {
 		t.Fatalf("workflow result length = %d, want <= %d", len(raw), projectAssistantWorkflowMaxResultBytes)
 	}

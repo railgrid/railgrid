@@ -18,6 +18,8 @@ package commitbundle
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 )
@@ -58,6 +60,46 @@ func TestFileStorePutGet(t *testing.T) {
 	}
 }
 
+func TestFileStorePutGetIncludesDeletions(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := store.Put(context.Background(), "root:acme", []File{
+		{Path: "src/new.ts", Content: "new\n"},
+		{Path: "src/old.ts", Delete: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := store.Get(context.Background(), "root:acme", ref.Name, ref.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Files) != 2 || bundle.Files[0].Delete || !bundle.Files[1].Delete {
+		t.Fatalf("bundle files = %#v", bundle.Files)
+	}
+	if bundle.Files[1].Content != "" || bundle.Files[1].Digest != "" || bundle.Files[1].Size != 0 {
+		t.Fatalf("delete entry contains file data: %#v", bundle.Files[1])
+	}
+	if len(ref.Files) != 2 || !ref.Files[1].Delete {
+		t.Fatalf("ref metadata = %#v", ref.Files)
+	}
+}
+
+func TestUpsertOnlyBundleDigestRemainsBackwardCompatible(t *testing.T) {
+	files := []BundleFile{{Path: "a.txt", Content: "a", Size: 1, Digest: digestBytes([]byte("a"))}}
+	h := sha256.New()
+	_, _ = h.Write([]byte("a.txt"))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte("a"))
+	_, _ = h.Write([]byte{0})
+	want := "sha256:" + hex.EncodeToString(h.Sum(nil))
+	if got := bundleDigest(files); got != want {
+		t.Fatalf("upsert-only digest = %q, want legacy %q", got, want)
+	}
+}
+
 func TestFileStoreRejectsInvalidInputs(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -67,6 +109,8 @@ func TestFileStoreRejectsInvalidInputs(t *testing.T) {
 		{name: "absolute", files: []File{{Path: "/etc/passwd", Content: "x"}}},
 		{name: "escape", files: []File{{Path: "../escape", Content: "x"}}},
 		{name: "duplicate", files: []File{{Path: "a.txt", Content: "x"}, {Path: "./a.txt", Content: "y"}}},
+		{name: "upsert-delete-conflict", files: []File{{Path: "a.txt", Content: "x"}, {Path: "./a.txt", Delete: true}}},
+		{name: "delete-with-content", files: []File{{Path: "a.txt", Content: "x", Delete: true}}},
 		{name: "too-large-file", files: []File{{Path: "big.txt", Content: strings.Repeat("x", MaxFileBytes+1)}}},
 	}
 	for _, tt := range tests {

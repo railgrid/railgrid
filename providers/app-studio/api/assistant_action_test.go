@@ -17,73 +17,104 @@ limitations under the License.
 package api
 
 import (
-	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/faroshq/provider-app-studio/store"
 )
 
-func TestCreateProjectMessageAssistantActionDefaultsToAuto(t *testing.T) {
-	action, err := (CreateProjectMessageRequest{}).assistantAction()
+func TestCreateProjectMessageCollaborationModeDefaultsToDefault(t *testing.T) {
+	mode, err := (CreateProjectMessageRequest{}).collaborationMode()
 	if err != nil {
-		t.Fatalf("assistantAction: %v", err)
+		t.Fatalf("collaborationMode: %v", err)
 	}
-	if action != projectAssistantActionAuto {
-		t.Fatalf("action = %q, want auto", action)
+	if mode != projectAssistantCollaborationModeDefault {
+		t.Fatalf("mode = %q, want default", mode)
 	}
 }
 
-func TestCreateProjectMessageAssistantActionValidatesBuildAndContinue(t *testing.T) {
+func TestCreateProjectMessageCollaborationModeAcceptsOnlyLegacyPublicModes(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		req  CreateProjectMessageRequest
-		want projectAssistantAction
+		want projectAssistantCollaborationMode
 		ok   bool
 	}{
-		{name: "auto", req: CreateProjectMessageRequest{AssistantAction: "auto"}, want: projectAssistantActionAuto, ok: true},
-		{name: "ask", req: CreateProjectMessageRequest{AssistantAction: "ask"}, want: projectAssistantActionAsk, ok: true},
-		{name: "build", req: CreateProjectMessageRequest{AssistantAction: "build"}, want: projectAssistantActionBuild, ok: true},
-		{name: "continue", req: CreateProjectMessageRequest{AssistantAction: "continue", WorkItemID: "wi-1", WorkItemRevision: 2}, want: projectAssistantActionContinue, ok: true},
-		{name: "continue requires item", req: CreateProjectMessageRequest{AssistantAction: "continue"}},
-		{name: "auto rejects selection", req: CreateProjectMessageRequest{AssistantAction: "auto", WorkItemID: "wi-1", WorkItemRevision: 1}},
-		{name: "build rejects selection", req: CreateProjectMessageRequest{AssistantAction: "build", WorkItemID: "wi-1", WorkItemRevision: 1}},
-		{name: "unknown", req: CreateProjectMessageRequest{AssistantAction: "mutate"}},
+		{name: "default", req: CreateProjectMessageRequest{CollaborationMode: "default"}, want: projectAssistantCollaborationModeDefault, ok: true},
+		{name: "plan", req: CreateProjectMessageRequest{CollaborationMode: "plan"}, want: projectAssistantCollaborationModePlan, ok: true},
+		{name: "review requires dedicated route", req: CreateProjectMessageRequest{CollaborationMode: "review"}},
+		{name: "unknown", req: CreateProjectMessageRequest{CollaborationMode: "adaptive"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := tc.req.assistantAction()
+			got, err := tc.req.collaborationMode()
 			if tc.ok {
 				if err != nil || got != tc.want {
-					t.Fatalf("assistantAction = %q, %v; want %q, nil", got, err, tc.want)
+					t.Fatalf("collaborationMode = %q, %v; want %q, nil", got, err, tc.want)
 				}
 				return
 			}
 			if err == nil {
-				t.Fatalf("assistantAction = %q, nil; want validation error", got)
+				t.Fatalf("collaborationMode = %q, nil; want validation error", got)
 			}
 		})
 	}
 }
 
-func TestAutoStartsAdaptiveRegardlessOfWording(t *testing.T) {
-	messages := store.NewMemoryStore()
-	server := NewWithWorkspace(nil, messages, nil, "", false)
-	scope := testProjectMessageScope("org-a", "workspace-a", "demo")
+func TestAssistantThreadTurnPublicModeRejectsReview(t *testing.T) {
+	for _, mode := range []string{"review", " REVIEW "} {
+		_, err := (assistantThreadTurnCreateRequest{CollaborationMode: store.AssistantRunMode(mode)}).publicAssistantThreadTurnMode()
+		if err == nil || !strings.Contains(err.Error(), projectAssistantReviewDedicatedRouteMessage) {
+			t.Fatalf("public thread mode %q error = %v, want dedicated-review validation", mode, err)
+		}
+	}
+	for _, mode := range []store.AssistantRunMode{store.AssistantRunModeDefault, store.AssistantRunModePlan} {
+		got, err := (assistantThreadTurnCreateRequest{CollaborationMode: mode}).publicAssistantThreadTurnMode()
+		if err != nil || got != mode {
+			t.Fatalf("public thread mode %q = %q, %v; want accepted", mode, got, err)
+		}
+	}
+}
 
-	started, err := server.startProjectAssistantAdaptiveRunDurably(
-		context.Background(),
-		scope,
-		"alice",
-		"I just tried to use the queue custom toast but it didnt work",
-		"auto-exact-wording-1",
-		func(store.AssistantRun, store.Message, bool) error { return nil },
-	)
-	if err != nil {
-		t.Fatal(err)
+func TestAssistantCollaborationModeForRunAcceptsPersistedReview(t *testing.T) {
+	got, ok := projectAssistantCollaborationModeForRun(store.AssistantRun{Mode: store.AssistantRunModeReview})
+	if !ok || got != projectAssistantCollaborationModeReview {
+		t.Fatalf("persisted review mode = %q, %v; want review, true", got, ok)
 	}
-	if started.Run.Mode != store.AssistantRunModeAdaptive {
-		t.Fatalf("run mode = %q, want adaptive", started.Run.Mode)
+}
+
+func TestCreateProjectMessageStrictDecoderRejectsUnknownFields(t *testing.T) {
+	for _, payload := range []string{
+		`{"content":"hello","clientRequestID":"request-1","assistantAction":"auto"}`,
+		`{"content":"hello","clientRequestID":"request-1","role":"user"}`,
+	} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest("POST", "/api/projects/demo/messages", strings.NewReader(payload))
+		var body CreateProjectMessageRequest
+		if decodeStrictJSON(recorder, request, &body) {
+			t.Fatalf("decodeStrictJSON accepted unknown field in %s", payload)
+		}
+		if recorder.Code != 400 {
+			t.Fatalf("status = %d, want 400", recorder.Code)
+		}
 	}
-	if started.Run.WorkItemID != "" {
-		t.Fatalf("work item = %q, want none before escalation", started.Run.WorkItemID)
+}
+
+func TestProjectAssistantResumeStrictDecoderRejectsClientMessageAndRetiredFields(t *testing.T) {
+	for _, payload := range []string{
+		`{"requestID":"permission-1","decision":"allow","assistantMessageID":"message-1"}`,
+		`{"requestID":"permission-1","decision":"allow","workItemID":"work-item-1"}`,
+		`{"requestID":"permission-1","decision":"allow","engineVersion":"engine-v1"}`,
+	} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest("POST", "/api/projects/demo/assistant/run-1/resume", strings.NewReader(payload))
+		var body projectAssistantResumeRequest
+		if decodeStrictJSON(recorder, request, &body) {
+			t.Fatalf("decodeStrictJSON accepted retired resume field in %s", payload)
+		}
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", recorder.Code)
+		}
 	}
 }

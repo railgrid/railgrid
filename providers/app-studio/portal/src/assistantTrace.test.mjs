@@ -29,36 +29,3 @@ test('interleaves adjacent action groups between progress prose', () => {
     { kind: 'actions', key: 'actions-2', items: [action('action-3', 5)] },
   ])
 })
-
-test('keeps legacy unsequenced actions visible before legacy prose', () => {
-  assert.deepEqual(buildAssistantTrace({
-    version: 1,
-    messages: ['Legacy progress update.'],
-    workedDurationMs: 1_000,
-  }, [action('legacy-action', undefined)]), [
-    { kind: 'actions', key: 'actions-legacy', items: [action('legacy-action', undefined)] },
-    { kind: 'progress', key: 'progress-0', message: 'Legacy progress update.' },
-  ])
-})
-
-test('falls back without losing content when any sequence is missing or collides', () => {
-  const progress = {
-    version: 1,
-    messages: ['First update.', 'Second update.'],
-    messageSequences: [1, 3],
-    workedDurationMs: 1_000,
-  }
-  assert.deepEqual(buildAssistantTrace(progress, [
-    action('sequenced', 2),
-    action('missing', undefined),
-  ]), [
-    { kind: 'actions', key: 'actions-legacy', items: [action('sequenced', 2), action('missing', undefined)] },
-    { kind: 'progress', key: 'progress-0', message: 'First update.' },
-    { kind: 'progress', key: 'progress-1', message: 'Second update.' },
-  ])
-  assert.deepEqual(buildAssistantTrace(progress, [action('collision', 3)]), [
-    { kind: 'actions', key: 'actions-legacy', items: [action('collision', 3)] },
-    { kind: 'progress', key: 'progress-0', message: 'First update.' },
-    { kind: 'progress', key: 'progress-1', message: 'Second update.' },
-  ])
-})

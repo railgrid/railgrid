@@ -19,6 +19,8 @@ package api
 import (
 	"context"
 	"encoding/gob"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -40,9 +42,10 @@ type projectEinoPermissionInterruptInfo struct {
 }
 
 type projectEinoPermissionInterruptState struct {
-	ToolCallID      string `json:"toolCallID,omitempty"`
-	ToolName        string `json:"toolName,omitempty"`
-	ArgumentsInJSON string `json:"argumentsInJSON,omitempty"`
+	ToolCallID            string `json:"toolCallID,omitempty"`
+	ToolName              string `json:"toolName,omitempty"`
+	ArgumentsInJSON       string `json:"argumentsInJSON,omitempty"`
+	CommitWorkspaceDigest string `json:"commitWorkspaceDigest,omitempty"`
 }
 
 type projectEinoPermissionResumeData struct {
@@ -51,18 +54,175 @@ type projectEinoPermissionResumeData struct {
 }
 
 type projectEinoFollowUpInterruptInfo struct {
-	ToolCallID string   `json:"toolCallID,omitempty"`
-	Questions  []string `json:"questions,omitempty"`
-	Prompt     string   `json:"prompt,omitempty"`
+	ToolCallID string                             `json:"toolCallID,omitempty"`
+	Questions  []projectAssistantFollowUpQuestion `json:"questions,omitempty"`
+	Prompt     string                             `json:"prompt,omitempty"`
 }
 
 type projectEinoFollowUpInterruptState struct {
-	ToolCallID string   `json:"toolCallID,omitempty"`
-	Questions  []string `json:"questions,omitempty"`
+	ToolCallID string                             `json:"toolCallID,omitempty"`
+	Questions  []projectAssistantFollowUpQuestion `json:"questions,omitempty"`
 }
 
 type projectEinoFollowUpResumeData struct {
-	Answer string `json:"answer,omitempty"`
+	Answers map[string]projectAssistantFollowUpAnswer `json:"answers,omitempty"`
+	Answer  string                                    `json:"answer,omitempty"`
+}
+
+type projectAssistantFollowUpQuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
+type projectAssistantFollowUpQuestion struct {
+	ID       string                                   `json:"id"`
+	Header   string                                   `json:"header,omitempty"`
+	Question string                                   `json:"question"`
+	IsOther  bool                                     `json:"isOther,omitempty"`
+	Options  []projectAssistantFollowUpQuestionOption `json:"options,omitempty"`
+}
+
+// UnmarshalJSON preserves resumability for checkpoints created before
+// follow-up questions adopted Codex's structured question contract.
+func (q *projectAssistantFollowUpQuestion) UnmarshalJSON(raw []byte) error {
+	var legacy string
+	if err := json.Unmarshal(raw, &legacy); err == nil {
+		*q = projectAssistantFollowUpQuestion{Question: strings.TrimSpace(legacy), IsOther: true}
+		return nil
+	}
+	type wire projectAssistantFollowUpQuestion
+	var decoded wire
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	*q = projectAssistantFollowUpQuestion(decoded)
+	return nil
+}
+
+type projectAssistantFollowUpAnswer struct {
+	Answers []string `json:"answers"`
+}
+
+func normalizeProjectAssistantFollowUpQuestions(questions []projectAssistantFollowUpQuestion) []projectAssistantFollowUpQuestion {
+	if len(questions) > 3 {
+		questions = questions[:3]
+	}
+	normalized := make([]projectAssistantFollowUpQuestion, 0, len(questions))
+	seen := map[string]struct{}{}
+	for index, question := range questions {
+		question.Question = strings.TrimSpace(question.Question)
+		if question.Question == "" {
+			continue
+		}
+		question.ID = strings.TrimSpace(question.ID)
+		if question.ID == "" {
+			question.ID = fmt.Sprintf("question_%d", index+1)
+		}
+		if _, exists := seen[question.ID]; exists {
+			question.ID = fmt.Sprintf("question_%d", index+1)
+		}
+		seen[question.ID] = struct{}{}
+		question.Header = strings.TrimSpace(question.Header)
+		question.IsOther = true
+		options := make([]projectAssistantFollowUpQuestionOption, 0, len(question.Options))
+		for _, option := range question.Options {
+			option.Label = strings.TrimSpace(option.Label)
+			option.Description = strings.TrimSpace(option.Description)
+			if option.Label != "" && option.Description != "" {
+				options = append(options, option)
+			}
+		}
+		if len(options) > 3 {
+			options = options[:3]
+		}
+		question.Options = options
+		normalized = append(normalized, question)
+	}
+	return normalized
+}
+
+func projectAssistantFollowUpQuestionsFromArguments(value any) ([]projectAssistantFollowUpQuestion, error) {
+	requireOptions := false
+	if items, ok := value.([]any); ok {
+		for _, item := range items {
+			if _, legacy := item.(string); !legacy {
+				requireOptions = true
+				break
+			}
+		}
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var questions []projectAssistantFollowUpQuestion
+	if err := json.Unmarshal(raw, &questions); err != nil {
+		return nil, err
+	}
+	questions = normalizeProjectAssistantFollowUpQuestions(questions)
+	if len(questions) == 0 {
+		return nil, fmt.Errorf("follow-up requires at least one question")
+	}
+	for _, question := range questions {
+		if (requireOptions && len(question.Options) < 2) || len(question.Options) == 1 {
+			return nil, fmt.Errorf("follow-up question %q requires two or three options", question.ID)
+		}
+	}
+	return questions, nil
+}
+
+func cloneProjectAssistantFollowUpQuestions(questions []projectAssistantFollowUpQuestion) []projectAssistantFollowUpQuestion {
+	cloned := make([]projectAssistantFollowUpQuestion, len(questions))
+	for index, question := range questions {
+		cloned[index] = question
+		cloned[index].Options = append([]projectAssistantFollowUpQuestionOption(nil), question.Options...)
+	}
+	return cloned
+}
+
+func cloneProjectAssistantFollowUpAnswers(answers map[string]projectAssistantFollowUpAnswer) map[string]projectAssistantFollowUpAnswer {
+	if len(answers) == 0 {
+		return nil
+	}
+	cloned := make(map[string]projectAssistantFollowUpAnswer, len(answers))
+	for id, answer := range answers {
+		cloned[id] = projectAssistantFollowUpAnswer{Answers: append([]string(nil), answer.Answers...)}
+	}
+	return cloned
+}
+
+func projectAssistantFollowUpResponse(
+	questions []projectAssistantFollowUpQuestion,
+	data *projectEinoFollowUpResumeData,
+) (map[string]projectAssistantFollowUpAnswer, error) {
+	questions = normalizeProjectAssistantFollowUpQuestions(questions)
+	if data == nil {
+		return nil, fmt.Errorf("follow-up answer is required")
+	}
+	answers := cloneProjectAssistantFollowUpAnswers(data.Answers)
+	if len(answers) == 0 {
+		legacy := strings.TrimSpace(data.Answer)
+		if legacy == "" {
+			return nil, fmt.Errorf("follow-up answer is required")
+		}
+		answers = make(map[string]projectAssistantFollowUpAnswer, len(questions))
+		for _, question := range questions {
+			answers[question.ID] = projectAssistantFollowUpAnswer{Answers: []string{legacy}}
+		}
+	}
+	normalized := make(map[string]projectAssistantFollowUpAnswer, len(questions))
+	for _, question := range questions {
+		answer, ok := answers[question.ID]
+		if !ok {
+			return nil, fmt.Errorf("answer for follow-up question %q is required", question.ID)
+		}
+		values := normalizeProjectAssistantStringList(answer.Answers)
+		if len(values) == 0 {
+			return nil, fmt.Errorf("answer for follow-up question %q is required", question.ID)
+		}
+		normalized[question.ID] = projectAssistantFollowUpAnswer{Answers: values}
+	}
+	return normalized, nil
 }
 
 func init() {
@@ -76,13 +236,13 @@ func init() {
 	schema.RegisterName[*projectEinoFollowUpResumeData]("faros_app_studio_eino_follow_up_resume_data")
 }
 
-func projectAssistantFollowUpPrompt(questions []string) string {
-	questions = normalizeProjectAssistantStringList(questions)
+func projectAssistantFollowUpPrompt(questions []projectAssistantFollowUpQuestion) string {
+	questions = normalizeProjectAssistantFollowUpQuestions(questions)
 	if len(questions) == 0 {
 		return "App Studio needs a little more information before continuing."
 	}
 	if len(questions) == 1 {
-		return strings.TrimSpace(questions[0])
+		return questions[0].Question
 	}
 	return "App Studio needs a little more information before continuing."
 }

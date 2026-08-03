@@ -104,6 +104,7 @@ type projectSandboxEnvRequest struct {
 // it returns a structured not-ready/blocked result so tools report it rather
 // than erroring the whole turn.
 func projectAssistantRuntimeCallContext(ctx context.Context, runCtx projectAssistantWorkflowRunContext) (*Server, identity, projectDevelopmentSyncTargetInfo, *projectAssistantRuntimeWorkflowResult) {
+	runCtx = runCtx.current()
 	if runCtx.Server == nil || runCtx.Client == nil || runCtx.Project == nil {
 		res, _ := projectAssistantRuntimeNotConfiguredResult("Runtime action is unavailable because no runtime client is configured for this run.")
 		return nil, identity{}, projectDevelopmentSyncTargetInfo{}, res
@@ -168,7 +169,7 @@ func newProjectAssistantVerifyRuntimeGraphTool(runCtx projectAssistantWorkflowRu
 	return graphtool.NewInvokableGraphTool(
 		workflow,
 		projectToolVerifyDevelopmentRuntime,
-		"Run post-edit verification in one read: project readiness, live runtime status, preview URL, runtime logs, and advisory browser-console health for supported browser apps.",
+		"Run post-edit operational verification in one read: current workspace synchronization, live process and log health, and preview reachability, with advisory browser-console evidence for supported browser apps. This does not independently verify rendered content, interactions, data flow, application behavior, or acceptance criteria.",
 		compose.WithGraphName("app-studio-verify-project-runtime"),
 	)
 }
@@ -176,6 +177,8 @@ func newProjectAssistantVerifyRuntimeGraphTool(runCtx projectAssistantWorkflowRu
 type projectAssistantRuntimeVerificationContext struct {
 	Args                    *projectAssistantRuntimeVerificationToolInput
 	CheckedMutationRevision uint64
+	DevelopmentSyncStatus   string
+	DevelopmentSyncFailure  string
 	Readiness               *projectAssistantReadinessWorkflowResult
 	RunContext              projectAssistantWorkflowRunContext
 	RuntimeInput            projectAssistantRuntimeWorkflowInput
@@ -187,19 +190,62 @@ type projectAssistantRuntimeVerificationContext struct {
 
 func initializeProjectAssistantRuntimeVerification(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeVerificationToolInput) (*projectAssistantRuntimeVerificationContext, error) {
 	return func(ctx context.Context, args *projectAssistantRuntimeVerificationToolInput) (*projectAssistantRuntimeVerificationContext, error) {
+		currentRunCtx := runCtx.current()
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		checkedMutationRevision := uint64(0)
 		requireProcessEvidence := false
-		if runCtx.RunState != nil {
-			checkedMutationRevision, _ = runCtx.RunState.SourceMutationRevisions()
+		if currentRunCtx.RunState != nil {
+			checkedMutationRevision, _ = currentRunCtx.RunState.SourceMutationRevisions()
 			requireProcessEvidence = checkedMutationRevision > 0
+		}
+		developmentSyncStatus := ""
+		developmentSyncFailure := ""
+		if checkedMutationRevision > 0 && currentRunCtx.RunState != nil {
+			developmentSyncStatus, developmentSyncFailure = currentRunCtx.RunState.DevelopmentSyncEvidence(checkedMutationRevision)
+			if developmentSyncStatus == "pending" {
+				developmentSyncStatus, developmentSyncFailure = currentRunCtx.RunState.WaitForDevelopmentSync(
+					ctx,
+					checkedMutationRevision,
+					projectSandboxSyncTimeout+time.Second,
+				)
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
+			if developmentSyncStatus == "failed" && currentRunCtx.Server != nil && currentRunCtx.Project != nil {
+				if retryRevision, claimed := currentRunCtx.RunState.ClaimDevelopmentSyncRetry(checkedMutationRevision); claimed {
+					scheduled := currentRunCtx.Server.scheduleDevelopmentSyncAfterMutationWithCompletion(
+						currentRunCtx.Identity,
+						currentRunCtx.Project,
+						projectActionWorkspaceSync,
+						func(syncErr error) { currentRunCtx.RunState.CompleteDevelopmentSync(retryRevision, syncErr) },
+					)
+					if !scheduled {
+						currentRunCtx.RunState.CompleteDevelopmentSync(retryRevision, errors.New("workspace synchronization retry was not scheduled"))
+					} else {
+						developmentSyncStatus, developmentSyncFailure = currentRunCtx.RunState.WaitForDevelopmentSync(
+							ctx,
+							retryRevision,
+							projectSandboxSyncTimeout+time.Second,
+						)
+						if err := ctx.Err(); err != nil {
+							return nil, err
+						}
+					}
+					if !scheduled {
+						developmentSyncStatus, developmentSyncFailure = currentRunCtx.RunState.DevelopmentSyncEvidence(checkedMutationRevision)
+					}
+				}
+			}
 		}
 		return &projectAssistantRuntimeVerificationContext{
 			Args:                    args,
 			CheckedMutationRevision: checkedMutationRevision,
-			RunContext:              runCtx,
+			DevelopmentSyncStatus:   developmentSyncStatus,
+			DevelopmentSyncFailure:  developmentSyncFailure,
+			RunContext:              currentRunCtx,
 			RequireProcessEvidence:  requireProcessEvidence,
 		}, nil
 	}
@@ -219,10 +265,10 @@ func collectProjectAssistantRuntimeReadiness(runCtx projectAssistantWorkflowRunC
 			return nil, err
 		}
 		input.RunContext = currentRunCtx
-		readinessInput, err := projectAssistantWorkflowInputFromTool(currentRunCtx, true)(ctx, &projectAssistantWorkflowToolInput{
-			IncludeFiles: runtimeVerificationIncludeFiles(input.Args),
-			MaxFiles:     runtimeVerificationMaxFiles(input.Args),
-		})
+		// Workspace presence is required verification evidence, not optional
+		// response decoration. Always collect the bounded default file list so a
+		// model argument cannot turn an existing workspace into a false negative.
+		readinessInput, err := projectAssistantWorkflowInputFromTool(currentRunCtx, true)(ctx, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -423,7 +469,7 @@ func projectAssistantLastSyncFailure(runCtx projectAssistantWorkflowRunContext) 
 	if runCtx.Server == nil || runCtx.Project == nil {
 		return ""
 	}
-	return runCtx.Server.lastDevelopmentSyncFailure(runCtx.Identity, runCtx.Project.Name)
+	return runCtx.Server.lastDevelopmentSyncFailure(runCtx.Identity, runCtx.Project)
 }
 
 func formatProjectAssistantRuntimeVerification(ctx context.Context, input *projectAssistantRuntimeVerificationContext) (*projectAssistantRuntimeVerificationResult, error) {
@@ -442,6 +488,34 @@ func formatProjectAssistantRuntimeVerification(ctx context.Context, input *proje
 		PreviewURL:              input.Runtime.PreviewURL,
 		Logs:                    input.Logs,
 		BrowserConsole:          input.BrowserConsole,
+	}
+	if input.CheckedMutationRevision > 0 {
+		switch strings.TrimSpace(input.DevelopmentSyncStatus) {
+		case "succeeded":
+		case "pending":
+			result.Status = "not_ready"
+			result.Summary = "The latest workspace mutation is still synchronizing to the development sandbox."
+			result.Blockers = []string{"workspace synchronization is still in progress for the checked mutation revision"}
+			return result, nil
+		case "failed":
+			result.Status = "not_ready"
+			result.Summary = "The development sandbox is not running the latest workspace code because synchronization failed."
+			reason := strings.TrimSpace(input.DevelopmentSyncFailure)
+			if reason == "" {
+				reason = "workspace synchronization failed for the checked mutation revision"
+			}
+			result.Blockers = []string{reason}
+			return result, nil
+		default:
+			result.Status = "not_ready"
+			result.Summary = "Positive workspace synchronization evidence is unavailable for the latest mutation."
+			reason := strings.TrimSpace(input.DevelopmentSyncFailure)
+			if reason == "" {
+				reason = "workspace synchronization completion was not observed for the checked mutation revision"
+			}
+			result.Blockers = []string{reason}
+			return result, nil
+		}
 	}
 	// A background sync that failed is the single most misleading state to
 	// verify in: the sandbox is healthy and serving, just not the code that was
@@ -479,7 +553,7 @@ func formatProjectAssistantRuntimeVerification(ctx context.Context, input *proje
 	if input.BrowserConsole != nil {
 		switch input.BrowserConsole.Status {
 		case "not_connected", "expired", "unsupported", "unavailable":
-			result.Warnings = append(result.Warnings, "Browser console evidence is unavailable; this advisory signal did not block runtime verification.")
+			result.Warnings = append(result.Warnings, "Browser console evidence is unavailable; this advisory signal did not block operational verification.")
 		}
 		if input.BrowserConsole.WarningCount > 0 {
 			result.Warnings = append(result.Warnings, fmt.Sprintf(
@@ -521,23 +595,19 @@ func formatProjectAssistantRuntimeVerification(ctx context.Context, input *proje
 		result.Status = "not_ready"
 		result.Summary = "The development runtime has no reachable preview URL."
 		result.Blockers = []string{"development preview URL is unavailable"}
-	} else if input.Readiness == nil || input.Readiness.Status != "ready_to_verify" {
-		if projectAssistantRepositoryHandoffProvisioning(input.Readiness) {
-			result.Status = "ready"
-			result.Summary = "The development runtime is ready. The Git repository is still becoming ready, so commit and CI handoff are pending."
-			result.Warnings = []string{"The repository handoff is still in progress; this does not mean the development preview failed."}
-		} else {
-			result.Status = "not_ready"
-			result.Summary = "The project is missing context required to finish verification."
-			if input.Readiness != nil && strings.TrimSpace(input.Readiness.Summary) != "" {
-				result.Blockers = []string{strings.TrimSpace(input.Readiness.Summary)}
-			} else {
-				result.Blockers = []string{"project readiness evidence is unavailable"}
-			}
-		}
 	} else {
 		result.Status = "ready"
-		result.Summary = "The development runtime is ready."
+		result.Summary = "The development runtime is operationally ready. This proves current synchronization, process and log health, and preview reachability only; application behavior and acceptance criteria were not independently verified."
+		if input.Readiness != nil && input.Readiness.Status != "ready_to_verify" {
+			warning := strings.TrimSpace(input.Readiness.Summary)
+			if warning == "" {
+				warning = "Project handoff context is incomplete; this does not mean the development preview failed."
+			}
+			result.Warnings = append(result.Warnings, warning)
+			if projectAssistantRepositoryHandoffProvisioning(input.Readiness) {
+				result.Summary = "The development runtime is operationally ready. The Git repository is still becoming ready, so commit and CI handoff are pending. Operational readiness does not independently verify application behavior or acceptance criteria."
+			}
+		}
 	}
 	return result, nil
 }
@@ -577,21 +647,6 @@ func runtimeVerificationShouldCollectLogs(args *projectAssistantRuntimeVerificat
 	default:
 		return true
 	}
-}
-
-func runtimeVerificationIncludeFiles(args *projectAssistantRuntimeVerificationToolInput) *bool {
-	if args != nil && args.IncludeFiles != nil {
-		return args.IncludeFiles
-	}
-	include := true
-	return &include
-}
-
-func runtimeVerificationMaxFiles(args *projectAssistantRuntimeVerificationToolInput) int {
-	if args == nil || args.MaxFiles <= 0 {
-		return 20
-	}
-	return args.MaxFiles
 }
 
 func runtimeVerificationIncludeLogs(args *projectAssistantRuntimeVerificationToolInput) bool {
@@ -725,6 +780,7 @@ func projectAssistantComponentHasProcessEvidence(
 
 func fetchProjectAssistantRuntimeLogs(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeLogsToolInput) (*projectAssistantRuntimeLogsResult, error) {
 	return func(ctx context.Context, args *projectAssistantRuntimeLogsToolInput) (*projectAssistantRuntimeLogsResult, error) {
+		currentRunCtx := runCtx.current()
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -735,7 +791,7 @@ func fetchProjectAssistantRuntimeLogs(runCtx projectAssistantWorkflowRunContext)
 		if tail > projectAssistantRuntimeLogsMaxTail {
 			tail = projectAssistantRuntimeLogsMaxTail
 		}
-		server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, runCtx)
+		server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, currentRunCtx)
 		if blocked != nil {
 			return &projectAssistantRuntimeLogsResult{
 				Status:    blocked.Status,
@@ -905,18 +961,39 @@ func newProjectAssistantRestartRuntimeGraphTool(runCtx projectAssistantWorkflowR
 	if err != nil {
 		return nil, err
 	}
-	if runCtx.ApprovalMode == store.AssistantApprovalModeAutoApprove {
-		return innerTool, nil
+	var approvedTool einotool.InvokableTool = innerTool
+	if runCtx.EventLedger != nil {
+		spec, ok := projectAssistantWorkflowToolSpec(projectToolRestartRuntime)
+		if !ok {
+			return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolRestartRuntime)
+		}
+		durable, err := newProjectAssistantDurableGraphTool(innerTool, spec, runCtx.EventLedger, runCtx.AdmitMutation)
+		if err != nil {
+			return nil, err
+		}
+		approvedTool = durable.(einotool.InvokableTool)
 	}
-	return approvaltool.InvokableApprovableTool{InvokableTool: innerTool}, nil
+	if !projectAssistantRuntimeGraphToolRequiresApproval(projectToolRestartRuntime, runCtx.ApprovalMode) {
+		return approvedTool, nil
+	}
+	return approvaltool.InvokableApprovableTool{InvokableTool: approvedTool}, nil
+}
+
+func projectAssistantRuntimeGraphToolRequiresApproval(name string, mode store.AssistantApprovalMode) bool {
+	spec, ok := projectAssistantWorkflowToolSpec(name)
+	if !ok {
+		return true
+	}
+	return projectAssistantPermissionForV2(spec, mode, nil, nil, false) == projectAssistantPermissionAsk
 }
 
 func restartProjectAssistantRuntime(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeRestartToolInput) (*projectAssistantRuntimeWorkflowResult, error) {
 	return func(ctx context.Context, input *projectAssistantRuntimeRestartToolInput) (*projectAssistantRuntimeWorkflowResult, error) {
+		currentRunCtx := runCtx.current()
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, runCtx)
+		server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, currentRunCtx)
 		if blocked != nil {
 			return blocked, nil
 		}
@@ -953,7 +1030,7 @@ func restartProjectAssistantRuntime(runCtx projectAssistantWorkflowRunContext) f
 				}, nil
 			}
 		}
-		return projectAssistantRuntimeActionResult(ctx, runCtx, "Runtime restart requested. The development process is restarting.", "Runtime restarted and is serving preview traffic."), nil
+		return projectAssistantRuntimeActionResult(ctx, currentRunCtx, "Runtime restart requested. The development process is restarting.", "Runtime restarted and is serving preview traffic."), nil
 	}
 }
 
@@ -995,14 +1072,27 @@ func newProjectAssistantSetRuntimeEnvGraphTool(runCtx projectAssistantWorkflowRu
 	if err != nil {
 		return nil, err
 	}
-	if runCtx.ApprovalMode == store.AssistantApprovalModeAutoApprove {
-		return innerTool, nil
+	var approvedTool einotool.InvokableTool = innerTool
+	if runCtx.EventLedger != nil {
+		spec, ok := projectAssistantWorkflowToolSpec(projectToolSetRuntimeEnv)
+		if !ok {
+			return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolSetRuntimeEnv)
+		}
+		durable, err := newProjectAssistantDurableGraphTool(innerTool, spec, runCtx.EventLedger, runCtx.AdmitMutation)
+		if err != nil {
+			return nil, err
+		}
+		approvedTool = durable.(einotool.InvokableTool)
 	}
-	return approvaltool.InvokableApprovableTool{InvokableTool: innerTool}, nil
+	if !projectAssistantRuntimeGraphToolRequiresApproval(projectToolSetRuntimeEnv, runCtx.ApprovalMode) {
+		return approvedTool, nil
+	}
+	return approvaltool.InvokableApprovableTool{InvokableTool: approvedTool}, nil
 }
 
 func setProjectAssistantRuntimeEnv(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeEnvToolInput) (*projectAssistantRuntimeWorkflowResult, error) {
 	return func(ctx context.Context, args *projectAssistantRuntimeEnvToolInput) (*projectAssistantRuntimeWorkflowResult, error) {
+		currentRunCtx := runCtx.current()
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -1019,7 +1109,7 @@ func setProjectAssistantRuntimeEnv(runCtx projectAssistantWorkflowRunContext) fu
 				NextSteps: nextSteps,
 			}, nil
 		}
-		server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, runCtx)
+		server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, currentRunCtx)
 		if blocked != nil {
 			return blocked, nil
 		}
@@ -1063,7 +1153,7 @@ func setProjectAssistantRuntimeEnv(runCtx projectAssistantWorkflowRunContext) fu
 				Runtime: &projectAssistantDeploymentRuntime{Status: "starting", Message: summary},
 			}, nil
 		}
-		return projectAssistantRuntimeActionResult(ctx, runCtx, summary+" The dev process is restarting to apply them.", summary+" The dev process restarted and is serving preview traffic."), nil
+		return projectAssistantRuntimeActionResult(ctx, currentRunCtx, summary+" The dev process is restarting to apply them.", summary+" The dev process restarted and is serving preview traffic."), nil
 	}
 }
 

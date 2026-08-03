@@ -113,7 +113,7 @@ func validateEinoScopeDirectories(store *FileStore, scope Scope) error {
 	if !info.IsDir() {
 		return errors.New("project workspace root is not a directory")
 	}
-	for _, component := range []string{scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName} {
+	for _, component := range []string{scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID} {
 		current = filepath.Join(current, component)
 		info, err := os.Lstat(current)
 		if os.IsNotExist(err) {

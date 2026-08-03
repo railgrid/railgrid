@@ -22,6 +22,7 @@ package commitbundle
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -56,6 +57,7 @@ func IsNotFound(err error) bool {
 type File struct {
 	Path    string
 	Content string
+	Delete  bool
 }
 
 // FileMeta is file metadata safe to expose in status.
@@ -63,6 +65,7 @@ type FileMeta struct {
 	Path   string `json:"path"`
 	Size   int64  `json:"size"`
 	Digest string `json:"digest"`
+	Delete bool   `json:"delete,omitempty"`
 }
 
 // BundleRef is returned after storing a bundle.
@@ -90,6 +93,7 @@ type BundleFile struct {
 	Content string `json:"content"`
 	Size    int64  `json:"size"`
 	Digest  string `json:"digest"`
+	Delete  bool   `json:"delete,omitempty"`
 }
 
 // Store persists and fetches immutable commit bundles.
@@ -293,9 +297,12 @@ func buildBundle(files []File) (Bundle, BundleRef, error) {
 			return Bundle{}, BundleRef{}, err
 		}
 		if _, ok := seen[path]; ok {
-			return Bundle{}, BundleRef{}, fmt.Errorf("duplicate file path %q", path)
+			return Bundle{}, BundleRef{}, fmt.Errorf("conflicting commit operation for path %q", path)
 		}
 		seen[path] = struct{}{}
+		if f.Delete && f.Content != "" {
+			return Bundle{}, BundleRef{}, fmt.Errorf("deleted file %q cannot include content", path)
+		}
 		size := int64(len([]byte(f.Content)))
 		if size > MaxFileBytes {
 			return Bundle{}, BundleRef{}, fmt.Errorf("file %q is too large: %d > %d bytes", path, size, MaxFileBytes)
@@ -304,11 +311,16 @@ func buildBundle(files []File) (Bundle, BundleRef, error) {
 		if total > MaxTotalBytes {
 			return Bundle{}, BundleRef{}, fmt.Errorf("bundle is too large: %d > %d bytes", total, MaxTotalBytes)
 		}
+		digest := ""
+		if !f.Delete {
+			digest = digestBytes([]byte(f.Content))
+		}
 		bundleFiles = append(bundleFiles, BundleFile{
 			Path:    path,
 			Content: f.Content,
 			Size:    size,
-			Digest:  digestBytes([]byte(f.Content)),
+			Digest:  digest,
+			Delete:  f.Delete,
 		})
 	}
 	sort.Slice(bundleFiles, func(i, j int) bool {
@@ -325,7 +337,7 @@ func buildBundle(files []File) (Bundle, BundleRef, error) {
 		Files:     make([]FileMeta, 0, len(bundleFiles)),
 	}
 	for _, f := range bundleFiles {
-		ref.Files = append(ref.Files, FileMeta{Path: f.Path, Size: f.Size, Digest: f.Digest})
+		ref.Files = append(ref.Files, FileMeta{Path: f.Path, Size: f.Size, Digest: f.Digest, Delete: f.Delete})
 	}
 	return bundle, ref, nil
 }
@@ -364,9 +376,26 @@ func validateBundleName(name string) error {
 
 func bundleDigest(files []BundleFile) string {
 	h := sha256.New()
+	hasDelete := false
+	for _, f := range files {
+		if f.Delete {
+			hasDelete = true
+			break
+		}
+	}
 	for _, f := range files {
 		_, _ = h.Write([]byte(f.Path))
 		_, _ = h.Write([]byte{0})
+		if hasDelete {
+			if f.Delete {
+				_, _ = h.Write([]byte{0})
+			} else {
+				_, _ = h.Write([]byte{1})
+			}
+			var size [8]byte
+			binary.BigEndian.PutUint64(size[:], uint64(len([]byte(f.Content))))
+			_, _ = h.Write(size[:])
+		}
 		_, _ = h.Write([]byte(f.Content))
 		_, _ = h.Write([]byte{0})
 	}

@@ -91,6 +91,8 @@ jobs:
             image: ${{ github.repository_owner }}/kedge-kuery-provider
           - name: app-studio
             image: ${{ github.repository_owner }}/kedge/app-studio-provider
+          - name: app-studio/browser-worker
+            image: ${{ github.repository_owner }}/kedge/app-studio-browser-worker
           - name: databricks
             image: ${{ github.repository_owner }}/kedge-databricks-provider
           - name: agents

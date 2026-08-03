@@ -196,4 +196,8 @@ type RepositoryCommitFileStatus struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=96
 	Digest string `json:"digest,omitempty"`
+
+	// Delete reports that this path was removed by the commit.
+	// +optional
+	Delete bool `json:"delete,omitempty"`
 }

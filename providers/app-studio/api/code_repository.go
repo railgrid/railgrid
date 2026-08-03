@@ -390,22 +390,28 @@ func projectRepositoryViewFromResources(ctx context.Context, p *aiv1alpha1.Proje
 			view.Message = fmt.Sprintf("Repository resource %q failed to reconcile.", ref)
 		}
 	}
-	view.Commits = projectRepositoryCommits(ctx, list, ref)
+	view.Commits, view.commitsErr = projectRepositoryCommits(ctx, list, ref)
 	return view
 }
 
-func projectRepositoryCommits(ctx context.Context, list codeResourceLister, repositoryRef string) []ProjectRepositoryCommitView {
+func projectRepositoryCommits(ctx context.Context, list codeResourceLister, repositoryRef string) ([]ProjectRepositoryCommitView, error) {
 	if list == nil || strings.TrimSpace(repositoryRef) == "" {
-		return nil
+		return nil, nil
 	}
 	selector := labels.SelectorFromSet(labels.Set{codeLabelRepository: repositoryRef}).String()
 	items, err := list(ctx, codeRepositoryCommitsGVR, metav1.ListOptions{LabelSelector: selector})
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("list repository commits: %w", err)
 	}
 	commits := make([]ProjectRepositoryCommitView, 0, len(items.Items))
 	for i := range items.Items {
-		view := projectRepositoryCommitView(&items.Items[i])
+		item := &items.Items[i]
+		labelRef := strings.TrimSpace(item.GetLabels()[codeLabelRepository])
+		specRef, _, _ := unstructured.NestedString(item.Object, "spec", "repositoryRef")
+		if labelRef != repositoryRef || strings.TrimSpace(specRef) != repositoryRef {
+			continue
+		}
+		view := projectRepositoryCommitView(item)
 		if view.Name != "" {
 			commits = append(commits, view)
 		}
@@ -416,7 +422,7 @@ func projectRepositoryCommits(ctx context.Context, list codeResourceLister, repo
 	if len(commits) > 20 {
 		commits = commits[:20]
 	}
-	return commits
+	return commits, nil
 }
 
 func projectRepositoryCommitView(obj *unstructured.Unstructured) ProjectRepositoryCommitView {

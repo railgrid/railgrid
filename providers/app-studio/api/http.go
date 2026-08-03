@@ -96,6 +96,16 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	return true
 }
 
+func decodeStrictJSON(w http.ResponseWriter, r *http.Request, out any) bool {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
+		return false
+	}
+	return true
+}
+
 // writeError turns a kube/client error into a sensible HTTP code.
 func writeError(w http.ResponseWriter, err error) {
 	switch {

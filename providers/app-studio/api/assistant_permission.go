@@ -18,6 +18,7 @@ package api
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/faroshq/provider-app-studio/store"
@@ -30,142 +31,151 @@ const (
 	projectAssistantPermissionAllow projectAssistantPermissionDecision = "allow"
 	projectAssistantPermissionAsk   projectAssistantPermissionDecision = "ask"
 	projectAssistantPermissionDeny  projectAssistantPermissionDecision = "deny"
-	// Replan is an internal headless-mode outcome. It rejects the attempted
-	// write, retires the stale plan envelope, and lets the next model
-	// iteration request a replacement plan. It is never a user decision.
-	projectAssistantPermissionReplan projectAssistantPermissionDecision = "replan"
 )
 
-func projectAssistantPermissionForTool(spec projectAssistantToolSpec) projectAssistantPermissionDecision {
-	return projectAssistantPermissionForToolWithPolicy(spec, false)
-}
-
-func projectAssistantPermissionForToolWithPolicy(spec projectAssistantToolSpec, autoApprove bool) projectAssistantPermissionDecision {
-	return projectAssistantPermissionForToolWithRunState(spec, autoApprove, nil, nil)
-}
-
-func projectAssistantPermissionForToolWithRunState(spec projectAssistantToolSpec, autoApprove bool, runState *projectEinoAssistantRunState, args map[string]any) projectAssistantPermissionDecision {
+func projectAssistantToolHasEffect(spec projectAssistantToolSpec) bool {
 	switch spec.Risk {
-	case projectAssistantToolRiskRead, projectAssistantToolRiskInput:
-		return projectAssistantPermissionAllow
-	case projectAssistantToolRiskPlan:
-		var proposedPlan projectAssistantApprovedPlan
-		if projectToolBaseName(spec.Name) == projectToolDefineInitialProjectPlan {
-			if runState == nil {
-				return projectAssistantPermissionDeny
-			}
-			activePlan := runState.ApprovedPlan()
-			if activePlan == nil || !activePlan.RunLocal {
-				return projectAssistantPermissionDeny
-			}
-			if _, err := projectAssistantInitialExecutionPlanFromArguments(activePlan.Goal, args); err != nil {
-				return projectAssistantPermissionDeny
-			}
-			return projectAssistantPermissionAllow
-		}
-		if projectToolBaseName(spec.Name) == projectToolRequestProjectPlanApproval {
-			var err error
-			proposedPlan, err = projectAssistantApprovedPlanFromArguments(args)
-			if err != nil {
-				return projectAssistantPermissionDeny
-			}
-		}
-		if autoApprove {
-			return projectAssistantPermissionAllow
-		}
-		if runState != nil && projectToolBaseName(spec.Name) == projectToolRequestProjectPlanApproval {
-			activePlan := runState.ApprovedPlan()
-			if projectAssistantApprovedPlanActive(activePlan) {
-				if projectAssistantApprovedPlanCoversPlan(activePlan, &proposedPlan) {
-					return projectAssistantPermissionAllow
-				}
-			}
-		}
-		return projectAssistantPermissionAsk
-	case projectAssistantToolRiskWrite:
-		if projectAssistantApprovedPlanAllowsWrite(runState.ApprovedPlan(), spec.Name, args) {
-			return projectAssistantPermissionAllow
-		}
-		if activePlan := runState.ApprovedPlan(); activePlan != nil &&
-			activePlan.RunLocal &&
-			activePlan.ApprovalTool == projectToolDefineInitialProjectPlan &&
-			projectAssistantPlanCanAuthorizeWriteTool(spec.Name) {
-			return projectAssistantPermissionReplan
-		}
-		if autoApprove {
-			if strings.TrimSpace(spec.Name) == projectToolSelectTemplate {
-				return projectAssistantPermissionAllow
-			}
-			if projectAssistantApprovedPlanActive(runState.ApprovedPlan()) &&
-				projectAssistantPlanCanAuthorizeWriteTool(spec.Name) {
-				return projectAssistantPermissionReplan
-			}
-			return projectAssistantPermissionDeny
-		}
-		return projectAssistantPermissionAsk
-	case projectAssistantToolRiskCommit:
-		return projectAssistantPermissionAsk
-	case projectAssistantToolRiskRuntime:
-		return projectAssistantPermissionAsk
+	case projectAssistantToolRiskPlan, projectAssistantToolRiskWrite, projectAssistantToolRiskRuntime, projectAssistantToolRiskCommit:
+		return true
 	default:
-		return projectAssistantPermissionDeny
+		return false
 	}
 }
 
-// projectAssistantPermissionForApprovalMode applies the user-selected,
-// run-scoped approval policy. Auto-approve removes user approval interrupts,
-// while retaining plan scope, argument validation, and deny-by-default behavior
-// for unknown tool risks.
-func projectAssistantPermissionForApprovalMode(
+// projectAssistantPermissionForV2 keeps collaboration mode, approval policy,
+// and tool risk independent. Default mode supplies mutation intent; the
+// approval preference decides whether an individual effect pauses. Workspace
+// and lifecycle validation still run at invocation time.
+func projectAssistantPermissionForV2(
 	spec projectAssistantToolSpec,
 	mode store.AssistantApprovalMode,
 	runState *projectEinoAssistantRunState,
 	args map[string]any,
+	templateBootstrapAllowed bool,
 ) projectAssistantPermissionDecision {
-	if mode == store.AssistantApprovalModeAlwaysAsk {
-		return projectAssistantPermissionForToolWithRunState(spec, false, runState, args)
-	}
-	if mode != store.AssistantApprovalModeAutoApprove {
-		return projectAssistantPermissionForToolWithRunState(spec, false, runState, args)
-	}
 	switch spec.Risk {
 	case projectAssistantToolRiskRead, projectAssistantToolRiskInput:
 		return projectAssistantPermissionAllow
 	case projectAssistantToolRiskPlan:
-		if projectToolBaseName(spec.Name) == projectToolDefineInitialProjectPlan {
-			activePlan := runState.ApprovedPlan()
-			if activePlan == nil || !activePlan.RunLocal {
-				return projectAssistantPermissionDeny
-			}
-			if _, err := projectAssistantInitialExecutionPlanFromArguments(activePlan.Goal, args); err != nil {
-				return projectAssistantPermissionDeny
-			}
-			return projectAssistantPermissionAllow
-		}
-		if projectToolBaseName(spec.Name) == projectToolRequestProjectPlanApproval {
-			if _, err := projectAssistantApprovedPlanFromArguments(args); err != nil {
-				return projectAssistantPermissionDeny
-			}
-		}
+		// Plans are presentation/progress state. They never confer authority.
 		return projectAssistantPermissionAllow
 	case projectAssistantToolRiskWrite:
-		if projectAssistantApprovedPlanAllowsWrite(runState.ApprovedPlan(), spec.Name, args) {
+		if mode == store.AssistantApprovalModeOnRequest || mode == store.AssistantApprovalModeAutoApprove {
 			return projectAssistantPermissionAllow
 		}
-		switch strings.TrimSpace(spec.Name) {
-		case projectToolSelectTemplate, projectToolHydrateWorkspace:
+		if mode == store.AssistantApprovalModeNever {
+			return projectAssistantPermissionDeny
+		}
+		return projectAssistantPermissionAsk
+	case projectAssistantToolRiskRuntime:
+		if projectAssistantOnRequestRequiresApproval(spec.Name) {
+			if mode == store.AssistantApprovalModeNever {
+				return projectAssistantPermissionDeny
+			}
+			return projectAssistantPermissionAsk
+		}
+		if mode == store.AssistantApprovalModeOnRequest || mode == store.AssistantApprovalModeAutoApprove || mode == store.AssistantApprovalModeNever {
 			return projectAssistantPermissionAllow
 		}
-		if projectAssistantApprovedPlanActive(runState.ApprovedPlan()) &&
-			projectAssistantPlanCanAuthorizeWriteTool(spec.Name) {
-			return projectAssistantPermissionReplan
+		return projectAssistantPermissionAsk
+	case projectAssistantToolRiskCommit:
+		if mode == store.AssistantApprovalModeNever {
+			return projectAssistantPermissionDeny
 		}
-		return projectAssistantPermissionDeny
-	case projectAssistantToolRiskCommit, projectAssistantToolRiskRuntime:
-		return projectAssistantPermissionAllow
+		if mode == store.AssistantApprovalModeAutoApprove {
+			return projectAssistantPermissionAllow
+		}
+		return projectAssistantPermissionAsk
 	default:
 		return projectAssistantPermissionDeny
 	}
+}
+
+func projectAssistantOnRequestRequiresApproval(name string) bool {
+	switch projectToolBaseName(name) {
+	case projectToolInfrastructureProvision, projectToolPrepareProjectDeployment:
+		return true
+	default:
+		return false
+	}
+}
+
+func projectAssistantPermissionDenialReason(
+	spec projectAssistantToolSpec,
+	runState *projectEinoAssistantRunState,
+	args map[string]any,
+	templateBootstrapAllowed bool,
+) string {
+	toolName := projectToolBaseName(spec.Name)
+	if toolName == projectToolApplyPatch {
+		paths, err := projectAssistantWriteTargetPaths(toolName, args)
+		if err != nil {
+			return "permission denied: invalid_patch_paths; recovery: repair the contextual patch syntax and retry"
+		}
+		if templateBootstrapAllowed {
+			return fmt.Sprintf(
+				"permission denied: template_not_bound; denied paths: %s; recovery: call select_project_template first, then define_initial_project_plan from the returned component contract before editing source",
+				strings.Join(paths, ", "),
+			)
+		}
+		approved := []string{}
+		if runState != nil {
+			if plan := runState.ApprovedPlan(); plan != nil {
+				if plan.AllowAllWrites {
+					approved = []string{"<project-workspace>"}
+				} else {
+					approved = append(approved, plan.TargetPaths...)
+				}
+			}
+		}
+		denied := make([]string, 0, len(paths))
+		for _, candidate := range paths {
+			covered := false
+			for _, allowed := range approved {
+				if allowed == "<project-workspace>" || projectAssistantPathWithinApprovedTarget(candidate, allowed) {
+					covered = true
+					break
+				}
+			}
+			if !covered {
+				denied = append(denied, candidate)
+			}
+		}
+		componentRoots := projectAssistantDevelopmentComponentRoots(runState)
+		return fmt.Sprintf(
+			"permission denied: path_outside_approved_scope; denied paths: %s; approved paths: %s; development component roots: %s; recovery: use the bound template component roots and request direct user approval if broader authority is required",
+			projectAssistantPermissionPathList(denied),
+			projectAssistantPermissionPathList(approved),
+			projectAssistantPermissionPathList(componentRoots),
+		)
+	}
+	return fmt.Sprintf("permission denied: unsupported_tool_risk; tool: %s; risk: %s", toolName, spec.Risk)
+}
+
+func projectAssistantDevelopmentComponentRoots(runState *projectEinoAssistantRunState) []string {
+	if runState == nil {
+		return nil
+	}
+	snapshot := runState.SessionSnapshot()
+	if snapshot == nil {
+		return nil
+	}
+	roots := make([]string, 0, len(snapshot.DevelopmentComponents))
+	for _, component := range snapshot.DevelopmentComponents {
+		root := strings.TrimSpace(component.WorkspacePath)
+		if root != "" {
+			roots = append(roots, root)
+		}
+	}
+	sort.Strings(roots)
+	return normalizeProjectAssistantStringList(roots)
+}
+
+func projectAssistantPermissionPathList(paths []string) string {
+	if len(paths) == 0 {
+		return "<none>"
+	}
+	return strings.Join(paths, ", ")
 }
 
 func projectAssistantApprovedPlanActive(plan *projectAssistantApprovedPlan) bool {
@@ -182,29 +192,36 @@ func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan,
 	}
 	toolName = strings.TrimSpace(toolName)
 	switch toolName {
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	case projectToolApplyPatch:
 	default:
 		return false
 	}
 	// Initial project creation is the only unbounded grant. It is derived from
 	// the user's create request and remains local to that Eino run.
 	if plan.AllowAllWrites {
-		_, err := projectAssistantWriteTargetPath(toolName, args)
+		_, err := projectAssistantWriteTargetPaths(toolName, args)
 		return plan.RunLocal && err == nil
 	}
 	if !projectAssistantApprovedPlanHasCapability(plan, projectAssistantCapabilityWorkspaceMutate) {
 		return false
 	}
-	targetPath, err := projectAssistantWriteTargetPath(toolName, args)
+	targetPaths, err := projectAssistantWriteTargetPaths(toolName, args)
 	if err != nil {
 		return false
 	}
-	for _, approved := range plan.TargetPaths {
-		if projectAssistantPathWithinApprovedTarget(targetPath, approved) {
-			return true
+	for _, targetPath := range targetPaths {
+		covered := false
+		for _, approved := range plan.TargetPaths {
+			if projectAssistantPathWithinApprovedTarget(targetPath, approved) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false
 		}
 	}
-	return false
+	return len(targetPaths) > 0
 }
 
 func projectAssistantApprovedPlanHasCapability(plan *projectAssistantApprovedPlan, capability string) bool {
@@ -220,77 +237,35 @@ func projectAssistantApprovedPlanHasCapability(plan *projectAssistantApprovedPla
 	return false
 }
 
-func projectAssistantApprovedPlanCoversPlan(existing, proposed *projectAssistantApprovedPlan) bool {
-	if !projectAssistantApprovedPlanActive(existing) || proposed == nil || len(proposed.TargetPaths) == 0 {
-		return false
-	}
-	if projectAssistantApprovedPlanHasCapability(proposed, projectAssistantCapabilityWorkspaceMutate) &&
-		!existing.AllowAllWrites &&
-		!projectAssistantApprovedPlanHasCapability(existing, projectAssistantCapabilityWorkspaceMutate) {
-		return false
-	}
-	if existing.AllowAllWrites {
-		return true
-	}
-	for _, requested := range proposed.TargetPaths {
-		covered := false
-		for _, approved := range existing.TargetPaths {
-			if projectAssistantApprovedTargetWithinApprovedTarget(requested, approved) {
-				covered = true
-				break
-			}
-		}
-		if !covered {
-			return false
-		}
-	}
-	return true
-}
-
-func projectAssistantApprovedTargetWithinApprovedTarget(requested, approved string) bool {
-	requestedDirectory := strings.HasSuffix(strings.TrimSpace(requested), "/")
-	approvedDirectory := strings.HasSuffix(strings.TrimSpace(approved), "/")
-	var err error
-	requested, err = projectAssistantCanonicalGrantTarget(requested, requestedDirectory)
-	if err != nil {
-		return false
-	}
-	approved, err = projectAssistantCanonicalGrantTarget(approved, approvedDirectory)
-	if err != nil {
-		return false
-	}
-	if requestedDirectory && !approvedDirectory {
-		return false
-	}
-	return requested == approved || (approvedDirectory && strings.HasPrefix(strings.TrimSuffix(requested, "/"), approved))
-}
-
 func projectAssistantPlanCanAuthorizeWriteTool(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	case projectToolApplyPatch:
 		return true
 	default:
 		return false
 	}
 }
 
-func projectAssistantDirectApprovalGrantsWritePlan(toolName string) bool {
+// projectAssistantWriteTargetPaths returns every workspace path a mutation can
+// affect. Contextual apply_patch payloads may add, delete, update, or move more
+// than one file, so authorization must cover the complete parsed set rather
+// than a representative path.
+func projectAssistantWriteTargetPaths(toolName string, args map[string]any) ([]string, error) {
 	switch strings.TrimSpace(toolName) {
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
-		return true
+	case projectToolApplyPatch:
+		if patch, ok := projectToolRawString(args["patch"]); ok && strings.TrimSpace(patch) != "" {
+			paths, err := workspace.PatchPaths(patch)
+			if err != nil {
+				return nil, err
+			}
+			if len(paths) == 0 {
+				return nil, fmt.Errorf("apply_patch must affect at least one workspace path")
+			}
+			return paths, nil
+		}
+		return nil, fmt.Errorf("apply_patch requires a contextual patch payload")
 	default:
-		return false
-	}
-}
-
-func projectAssistantWriteTargetPath(toolName string, args map[string]any) (string, error) {
-	switch strings.TrimSpace(toolName) {
-	case projectToolWriteFile, projectToolApplyPatch:
-		return projectAssistantCanonicalGrantTarget(projectToolString(args["path"]), false)
-	case projectToolMkdir:
-		return projectAssistantCanonicalGrantTarget(projectToolString(args["path"]), true)
-	default:
-		return "", fmt.Errorf("tool %q cannot use workspace mutation grants", toolName)
+		return nil, fmt.Errorf("tool %q cannot use workspace mutation grants", toolName)
 	}
 }
 

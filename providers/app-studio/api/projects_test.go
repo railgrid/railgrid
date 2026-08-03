@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -37,33 +38,21 @@ import (
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
-func TestProjectAssistantTurnDecisionForStreamStartUsesPrecomputedDecision(t *testing.T) {
-	want := projectAssistantTurnDecision{
-		Profile:              projectAssistantTurnProfileImplementation,
-		RequiresCurrentState: true,
-		RequestsMutation:     true,
-		Confidence:           projectAssistantTurnConfidenceHigh,
-	}
-	called := false
-	got, err := projectAssistantTurnDecisionForStreamStart(context.Background(), func(context.Context, projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error) {
-		called = true
-		return projectAssistantTurnDecision{}, nil
-	}, projectAssistantTurnRouteRequest{}, &projectAssistantStreamStart{TurnDecision: &want})
-	if err != nil {
-		t.Fatalf("projectAssistantTurnDecisionForStreamStart returned error: %v", err)
-	}
-	if called {
-		t.Fatal("stream start invoked the ordinary router despite a precomputed decision")
-	}
-	if got != want {
-		t.Fatalf("decision = %#v, want %#v", got, want)
-	}
-}
-
 func TestProjectInitialBootstrapPromptDigestDoesNotExposePrompt(t *testing.T) {
 	digest := projectInitialBootstrapPromptDigest("Build a todo app")
 	if digest == projectInitialBootstrapPromptDigest("Build an unbounded platform") || digest == "Build a todo app" {
 		t.Fatalf("prompt digest did not distinguish or conceal the creation prompt: %q", digest)
+	}
+}
+
+func TestWriteProjectErrorMapsPreflightOutageToRetryableBadGateway(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	writeProjectError(recorder, fmt.Errorf("%w: upstream returned 500", errProjectCreatePreflightUnavailable))
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusBadGateway, recorder.Body.String())
+	}
+	if recorder.Header().Get("Retry-After") != "2" || !strings.Contains(recorder.Body.String(), "temporarily unavailable") {
+		t.Fatalf("response headers/body = %#v %s", recorder.Header(), recorder.Body.String())
 	}
 }
 
@@ -397,7 +386,7 @@ func newProjectCreationTestDynamicClient(objects ...runtime.Object) *fake.FakeDy
 	)
 }
 
-func TestGenerateProjectAssistantStreamWithStartBypassesRouter(t *testing.T) {
+func TestGenerateProjectAssistantStreamWithStartUsesInitialCreationGrant(t *testing.T) {
 	messages := store.NewMemoryStore()
 	workspaces := workspace.NewFileStore(t.TempDir())
 	server := NewWithWorkspace(nil, messages, workspaces, "", false)
@@ -408,17 +397,16 @@ func TestGenerateProjectAssistantStreamWithStartBypassesRouter(t *testing.T) {
 	if err := appendProjectUserMessage(context.Background(), messages, testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name), "Build a todo app"); err != nil {
 		t.Fatalf("append user message: %v", err)
 	}
-	server.assistantTurnRouter = func(context.Context, projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error) {
-		t.Fatal("ordinary router should not run for a fresh stream preflight")
-		return projectAssistantTurnDecision{}, nil
-	}
 	engine := &capturingProjectAssistantEngine{}
 	server.assistantEngine = engine
 	settings := projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "test-model", APIKey: "test-key"}
 	client := asclient.NewFromDynamic(projectSettingsDynamicClient{secret: projectLLMSettingsSecret(settings)})
-	decision := projectAssistantTurnDecision{Profile: projectAssistantTurnProfileImplementation, RequestsMutation: true, Confidence: projectAssistantTurnConfidenceHigh}
-	start := &projectAssistantStreamStart{TurnDecision: &decision, InitialApprovedPlan: ptrProjectAssistantApprovedPlan(projectAssistantInitialCreationPlan())}
-	_, err := server.generateProjectAssistantStreamWithStart(httptest.NewRequest(http.MethodPost, "/", nil), id, client, project, projectAssistantStreamCallbacks{}, start)
+	start := &projectAssistantStreamStart{InitialApprovedPlan: ptrProjectAssistantApprovedPlan(projectAssistantInitialCreationPlan())}
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	request = request.WithContext(context.WithValue(request.Context(), projectAssistantSupervisorRunContextKey{}, store.AssistantRun{
+		ID: "run-initial", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusRunning,
+	}))
+	_, err := server.generateProjectAssistantStreamWithStart(request, id, client, project, projectAssistantStreamCallbacks{}, start)
 	if err != nil {
 		t.Fatalf("generateProjectAssistantStreamWithStart returned error: %v", err)
 	}
@@ -427,6 +415,50 @@ func TestGenerateProjectAssistantStreamWithStartBypassesRouter(t *testing.T) {
 	}
 	if engine.req.InitialApprovedPlan == nil {
 		t.Fatal("initial stream request omitted the run-local creation grant")
+	}
+}
+
+func TestReserveProjectExternalOperationRejectsActiveAssistant(t *testing.T) {
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, workspace.NewFileStore(t.TempDir()), "", false)
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", user: "alice"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	project.UID = "project-uid-demo"
+	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, project)
+	started, err := server.startProjectAssistantRunDurablyWithMode(
+		context.Background(),
+		scope,
+		id.user,
+		"fix the app",
+		"external-operation-gate",
+		store.AssistantRunModeDefault,
+		func(run store.AssistantRun, assistant store.Message, _ bool) error {
+			_, attachErr := server.projectAssistantSupervisor().Attach(scope, run, assistant)
+			return attachErr
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { server.projectAssistantSupervisor().Abort(scope, started.Run.ID) })
+
+	recorder := httptest.NewRecorder()
+	release, ok := server.reserveProjectExternalOperation(
+		recorder,
+		context.Background(),
+		id,
+		project,
+		"loading the workspace from git",
+	)
+	if release != nil {
+		release()
+	}
+	if ok || recorder.Code != http.StatusConflict {
+		t.Fatalf("operation reservation = (%t, %d, %q), want conflict", ok, recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "active assistant run") {
+		t.Fatalf("conflict body = %q, want active assistant run guidance", recorder.Body.String())
 	}
 }
 

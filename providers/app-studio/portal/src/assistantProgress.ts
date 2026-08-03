@@ -1,7 +1,7 @@
 export interface AssistantProgress {
   version: 1
   messages: string[]
-  messageSequences?: number[]
+  messageSequences: number[]
   workedDurationMs: number
 }
 
@@ -13,32 +13,30 @@ export function parseAssistantProgress(value: unknown): AssistantProgress | unde
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
   const item = value as Record<string, unknown>
   if (Object.keys(item).some((key) => !['version', 'messages', 'messageSequences', 'workedDurationMs'].includes(key))) return undefined
-  if (item.version !== 1 || !Array.isArray(item.messages)) return undefined
-  if (item.messages.length === 0 || item.messages.length > MAX_MESSAGES) return undefined
+  const rawMessages = item.messages === null ? [] : item.messages
+  if (item.version !== 1 || !Array.isArray(rawMessages)) return undefined
+  if (rawMessages.length > MAX_MESSAGES) return undefined
   if (!Number.isInteger(item.workedDurationMs) || (item.workedDurationMs as number) < 0 || (item.workedDurationMs as number) > MAX_DURATION_MS) return undefined
 
   const messages: string[] = []
-  for (const message of item.messages) {
+  for (const message of rawMessages) {
     if (typeof message !== 'string' || !message || message !== message.trim()) return undefined
     if (new TextEncoder().encode(message).length > MAX_MESSAGE_BYTES || /[\u0000-\u001f\u007f-\u009f]/u.test(message)) return undefined
     messages.push(message)
   }
-  let messageSequences: number[] | undefined
-  if (item.messageSequences !== undefined) {
-    if (!Array.isArray(item.messageSequences) || item.messageSequences.length !== messages.length) return undefined
-    let previous = 0
-    messageSequences = []
-    for (const sequence of item.messageSequences) {
-      if (!Number.isSafeInteger(sequence) || Number(sequence) < 1 || Number(sequence) > 10_000) return undefined
-      if (Number(sequence) <= previous) return undefined
-      previous = Number(sequence)
-      messageSequences.push(Number(sequence))
-    }
+  if (!Array.isArray(item.messageSequences) || item.messageSequences.length !== messages.length) return undefined
+  let previous = 0
+  const messageSequences: number[] = []
+  for (const sequence of item.messageSequences) {
+    if (!Number.isSafeInteger(sequence) || Number(sequence) < 1 || Number(sequence) > 10_000) return undefined
+    if (Number(sequence) <= previous) return undefined
+    previous = Number(sequence)
+    messageSequences.push(Number(sequence))
   }
   return {
     version: 1,
     messages,
-    ...(messageSequences ? { messageSequences } : {}),
+    messageSequences,
     workedDurationMs: item.workedDurationMs as number,
   }
 }

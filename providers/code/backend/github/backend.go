@@ -183,6 +183,11 @@ func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection
 	if err != nil {
 		return backend.RepositoryCommitResult{}, err
 	}
+	// Keep the caller's complete intent separate from the initial filtered
+	// entries. A ref race can change whether a deletion is effective, so the
+	// retry must evaluate the original deletion against the new branch base.
+	requestedEntries := entries
+	requestedFiles := files
 
 	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
 	if err != nil {
@@ -223,6 +228,21 @@ func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection
 			baseTree = parent.GetTree().GetSHA()
 		}
 	}
+	entries, files, err = filterNoopGitTreeDeletions(ctx, c, org, repo.Spec.Name, baseTree, entries, files)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, err
+	}
+	if len(entries) == 0 {
+		if parent == nil {
+			return backend.RepositoryCommitResult{}, errors.New("github: at least one effective file change is required")
+		}
+		return backend.RepositoryCommitResult{
+			CommitSHA: parent.GetSHA(),
+			CommitURL: commitURL(org, repo, parent),
+			Branch:    branch,
+			Files:     files,
+		}, nil
+	}
 	tree, resp, err := c.Git.CreateTree(ctx, org, repo.Spec.Name, baseTree, entries)
 	if err != nil {
 		return backend.RepositoryCommitResult{}, classify(resp, err)
@@ -260,7 +280,7 @@ func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection
 	}
 	if err != nil {
 		if isRecoverableRefRace(resp, err) {
-			if res, ok, retryErr := recoverOrRetryConcurrentCommit(ctx, c, org, repo, branch, commit.GetSHA(), input.IdempotencyKey, message, entries, files); retryErr != nil {
+			if res, ok, retryErr := recoverOrRetryConcurrentCommit(ctx, c, org, repo, branch, commit.GetSHA(), input.IdempotencyKey, message, requestedEntries, requestedFiles); retryErr != nil {
 				return backend.RepositoryCommitResult{}, retryErr
 			} else if ok {
 				return res, nil
@@ -274,6 +294,64 @@ func (b *Backend) CommitFiles(ctx context.Context, conn *codev1alpha1.Connection
 		Branch:    branch,
 		Files:     files,
 	}, nil
+}
+
+// filterNoopGitTreeDeletions removes deletion entries for paths that are not
+// present in the remote base tree. GitHub rejects such entries with 422, which
+// otherwise makes an initial commit fail when a local workspace deleted a
+// generated file before the repository had any commits.
+func filterNoopGitTreeDeletions(
+	ctx context.Context,
+	c *gogithub.Client,
+	org, repo, baseTree string,
+	entries []*gogithub.TreeEntry,
+	files []string,
+) ([]*gogithub.TreeEntry, []string, error) {
+	hasDeletion := false
+	for _, entry := range entries {
+		if entry != nil && entry.SHA == nil && entry.Content == nil {
+			hasDeletion = true
+			break
+		}
+	}
+	if !hasDeletion {
+		return entries, files, nil
+	}
+
+	present := map[string]struct{}{}
+	if baseTree != "" {
+		tree, resp, err := c.Git.GetTree(ctx, org, repo, baseTree, true)
+		if err != nil {
+			return nil, nil, classify(resp, err)
+		}
+		// A truncated recursive tree cannot prove absence. Preserve every
+		// deletion and let GitHub resolve it against the base tree.
+		if tree.GetTruncated() {
+			return entries, files, nil
+		}
+		for _, entry := range tree.Entries {
+			present[entry.GetPath()] = struct{}{}
+		}
+	}
+
+	filteredEntries := make([]*gogithub.TreeEntry, 0, len(entries))
+	filteredFiles := make([]string, 0, len(files))
+	for index, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		isDeletion := entry.SHA == nil && entry.Content == nil
+		if isDeletion {
+			if _, ok := present[entry.GetPath()]; !ok {
+				continue
+			}
+		}
+		filteredEntries = append(filteredEntries, entry)
+		if index < len(files) {
+			filteredFiles = append(filteredFiles, files[index])
+		}
+	}
+	return filteredEntries, filteredFiles, nil
 }
 
 func shouldReuseHeadCommit(parent *gogithub.Commit, tree *gogithub.Tree, baseTree string) bool {
@@ -293,6 +371,22 @@ func recoverOrRetryConcurrentCommit(ctx context.Context, c *gogithub.Client, org
 		baseTree = head.GetTree().GetSHA()
 	}
 	if concurrentHeadMatchesCommitRequest(head, attemptedCommitSHA, idempotencyKey) {
+		return backend.RepositoryCommitResult{
+			CommitSHA: head.GetSHA(),
+			CommitURL: commitURL(org, repo, head),
+			Branch:    branch,
+			Files:     files,
+		}, true, nil
+	}
+	// Re-evaluate the original request against the raced branch head. In
+	// particular, an originally-absent deletion must be retained when another
+	// writer added the path, while an originally-present deletion becomes a
+	// no-op when that writer removed it first.
+	entries, files, err = filterNoopGitTreeDeletions(ctx, c, org, repo.Spec.Name, baseTree, entries, files)
+	if err != nil {
+		return backend.RepositoryCommitResult{}, false, err
+	}
+	if len(entries) == 0 {
 		return backend.RepositoryCommitResult{
 			CommitSHA: head.GetSHA(),
 			CommitURL: commitURL(org, repo, head),
@@ -722,7 +816,7 @@ func packageInfo(p *gogithub.Package) backend.PackageInfo {
 }
 
 func gitTreeEntries(files []backend.RepositoryCommitFile) ([]*gogithub.TreeEntry, []string, error) {
-	byPath := map[string]string{}
+	byPath := map[string]backend.RepositoryCommitFile{}
 	for _, f := range files {
 		clean, err := cleanRepositoryPath(f.Path)
 		if err != nil {
@@ -731,7 +825,11 @@ func gitTreeEntries(files []backend.RepositoryCommitFile) ([]*gogithub.TreeEntry
 		if _, exists := byPath[clean]; exists {
 			return nil, nil, fmt.Errorf("github: duplicate file path %q", clean)
 		}
-		byPath[clean] = f.Content
+		if f.Delete && f.Content != "" {
+			return nil, nil, fmt.Errorf("github: deleted file %q cannot include content", clean)
+		}
+		f.Path = clean
+		byPath[clean] = f
 	}
 	paths := make([]string, 0, len(byPath))
 	for p := range byPath {
@@ -740,11 +838,20 @@ func gitTreeEntries(files []backend.RepositoryCommitFile) ([]*gogithub.TreeEntry
 	sort.Strings(paths)
 	entries := make([]*gogithub.TreeEntry, 0, len(paths))
 	for _, p := range paths {
+		file := byPath[p]
+		if file.Delete {
+			entries = append(entries, &gogithub.TreeEntry{
+				Path: gogithub.String(p),
+				Mode: gogithub.String("100644"),
+				Type: gogithub.String("blob"),
+			})
+			continue
+		}
 		entries = append(entries, &gogithub.TreeEntry{
 			Path:    gogithub.String(p),
 			Mode:    gogithub.String("100644"),
 			Type:    gogithub.String("blob"),
-			Content: gogithub.String(byPath[p]),
+			Content: gogithub.String(file.Content),
 		})
 	}
 	return entries, paths, nil

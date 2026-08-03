@@ -567,6 +567,11 @@ func (s *Server) putProjectTemplate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	release, ok := s.reserveProjectExternalOperation(w, r.Context(), id, p, "switching the development template")
+	if !ok {
+		return
+	}
+	defer release()
 	var req projectTemplateSelectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
@@ -581,10 +586,10 @@ func (s *Server) putProjectTemplate(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 		return
 	}
-	// Push the workspace into the fresh instance's components; failures are
-	// non-fatal (the instance may still be provisioning — the post-mutation
-	// sync hook and manual sync retry).
-	go s.syncDevelopmentAfterMutation(id, updated, "select_project_template")
+	// Push the workspace into the fresh instance through the per-project
+	// ordered queue. Failures are non-fatal because the instance may still be
+	// provisioning and operational verification will surface the blocker.
+	s.scheduleDevelopmentSyncAfterMutation(id, updated, projectToolSelectTemplate)
 
 	// Wire the CI build into the repository now that the project has a template
 	// (and, if bound, a repository). Best-effort: build setup can also be

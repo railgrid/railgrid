@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260614-fbb1248.repositorycommits.code.kedge.faros.sh
+  name: v260802-8d0bfc17.repositorycommits.code.kedge.faros.sh
 spec:
   group: code.kedge.faros.sh
   names:
@@ -192,6 +192,10 @@ spec:
                 description: RepositoryCommitFileStatus records metadata for one committed
                   file.
                 properties:
+                  delete:
+                    description: Delete reports that this path was removed by the
+                      commit.
+                    type: boolean
                   digest:
                     description: Digest is the file content digest, usually sha256:<hex>.
                     maxLength: 96

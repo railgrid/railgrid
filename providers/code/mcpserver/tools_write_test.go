@@ -70,6 +70,7 @@ func TestCommitFilesCreatesRepositoryCommitRequest(t *testing.T) {
 			{Path: "package.json", Content: `{"private":true}`},
 			{Path: "src/App.tsx", Content: "export default function App() { return null }"},
 		},
+		DeletePaths: []string{"src/legacy.ts"},
 	})
 	if err != nil {
 		t.Fatalf("commitFiles returned error: %v", err)
@@ -79,6 +80,9 @@ func TestCommitFilesCreatesRepositoryCommitRequest(t *testing.T) {
 	}
 	if out.CommitSHA != "" {
 		t.Fatalf("CommitSHA = %q, want empty before controller status", out.CommitSHA)
+	}
+	if strings.Join(out.DeletedPaths, ",") != "src/legacy.ts" {
+		t.Fatalf("deleted paths = %v", out.DeletedPaths)
 	}
 
 	created, err := dyn.Resource(repositoryCommitsGVR).Get(context.Background(), out.Name, metav1.GetOptions{})
@@ -103,8 +107,12 @@ func TestCommitFilesCreatesRepositoryCommitRequest(t *testing.T) {
 	if scope != "" {
 		t.Fatalf("RepositoryCommit spec exposed bundle scope %q", scope)
 	}
-	if _, err := store.Get(context.Background(), "logical-cluster", out.BundleRef, out.BundleDigest); err != nil {
+	bundle, err := store.Get(context.Background(), "logical-cluster", out.BundleRef, out.BundleDigest)
+	if err != nil {
 		t.Fatalf("logical-cluster bundle lookup returned error: %v", err)
+	}
+	if len(bundle.Files) != 3 || !bundle.Files[2].Delete || bundle.Files[2].Path != "src/legacy.ts" {
+		t.Fatalf("stored bundle = %#v", bundle.Files)
 	}
 	if _, err := store.Get(context.Background(), "root:acme", out.BundleRef, out.BundleDigest); err == nil {
 		t.Fatal("staging bundle was not cleaned up")

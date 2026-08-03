@@ -131,11 +131,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	files := make([]backend.RepositoryCommitFile, 0, len(bundle.Files))
 	fileStatus := make([]codev1alpha1.RepositoryCommitFileStatus, 0, len(bundle.Files))
 	for _, f := range bundle.Files {
-		files = append(files, backend.RepositoryCommitFile{Path: f.Path, Content: f.Content})
+		files = append(files, backend.RepositoryCommitFile{Path: f.Path, Content: f.Content, Delete: f.Delete})
 		fileStatus = append(fileStatus, codev1alpha1.RepositoryCommitFileStatus{
 			Path:   f.Path,
 			Size:   f.Size,
 			Digest: f.Digest,
+			Delete: f.Delete,
 		})
 	}
 	res, err := committer.CommitFiles(ctx, conn, cred, repo, backend.RepositoryCommitInput{

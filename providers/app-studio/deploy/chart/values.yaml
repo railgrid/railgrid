@@ -11,6 +11,26 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
+# Read-only Playwright worker used by the assistant to inspect the current
+# development preview. It runs as a localhost-only sidecar and creates a fresh
+# browser context for every request; it receives no kubeconfig or workspace PVC.
+browserWorker:
+  enabled: true
+  image:
+    repository: ghcr.io/faroshq/kedge/app-studio-browser-worker
+    tag: ""
+    pullPolicy: IfNotPresent
+  port: 8090
+  timeoutMs: 15000
+  ignoreHTTPSErrors: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
 serviceAccount:
   create: true
   name: ""

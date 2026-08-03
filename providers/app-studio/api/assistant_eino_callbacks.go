@@ -99,6 +99,9 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelOutput(ctx contex
 	if r.auditRecorder != nil && projectEinoAssistantMeaningfulModelChunk(modelOutput.Message) {
 		r.auditRecorder.recordModelResponseChunk(ctx, len(modelOutput.Message.ToolCalls) > 0)
 	}
+	if r.auditRecorder != nil {
+		_ = r.auditRecorder.recordModelResult(ctx, r.runState.CurrentModelCallOrdinal(), modelOutput.Message)
+	}
 	reply := projectEinoAssistantReplyFromMessage(modelOutput.Message)
 	if strings.TrimSpace(reply.Content) == "" && len(reply.ToolCalls) == 0 {
 		return
@@ -148,6 +151,20 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(
 		Content:   content.String(),
 		ToolCalls: projectEinoSortedToolCalls(toolCalls),
 	}
+	if r.auditRecorder != nil {
+		message := schema.AssistantMessage(reply.Content, nil)
+		for _, call := range reply.ToolCalls {
+			message.ToolCalls = append(message.ToolCalls, schema.ToolCall{
+				ID:   call.ID,
+				Type: call.Type,
+				Function: schema.FunctionCall{
+					Name:      call.Function.Name,
+					Arguments: call.Function.Arguments,
+				},
+			})
+		}
+		_ = r.auditRecorder.recordModelResult(ctx, r.runState.CurrentModelCallOrdinal(), message)
+	}
 	if strings.TrimSpace(reply.Content) == "" && len(reply.ToolCalls) == 0 {
 		return
 	}
@@ -165,6 +182,7 @@ func projectEinoAssistantMeaningfulModelChunk(msg *schema.Message) bool {
 func (r *projectEinoAssistantModelCallbackRecorder) recordModelError(ctx context.Context, modelErr error) {
 	if r.auditRecorder != nil {
 		r.auditRecorder.recordModelTransportError(ctx, modelErr)
+		r.auditRecorder.recordModelError()
 	}
 }
 

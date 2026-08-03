@@ -1,14 +1,15 @@
-import type { ProjectMessage } from './types'
+import type { ProjectAssistantRunMode, ProjectMessage } from './types'
 
 export interface AssistantRun {
   id: string
-  status: 'pending_permission' | 'pending_input' | 'running' | 'stopping' | 'completed' | 'aborted' | 'failed' | 'interrupted'
-  mode?: 'adaptive' | 'discussion' | 'new' | 'continue'
-  workItemID?: string
+  status: 'pending_permission' | 'pending_input' | 'running' | 'stopping' | 'completed' | 'failed' | 'interrupted' | 'aborted'
+  mode: ProjectAssistantRunMode
   revision: number
   activeMessageID: string
   clientRequestID?: string
   userMessageID?: string
+  error?: { message: string; errorInfo?: string }
+  abortReason?: 'interrupted' | 'replaced' | 'budget_limited' | 'iteration_limited'
 }
 
 export interface AssistantSnapshot {
@@ -19,9 +20,8 @@ export interface AssistantSnapshot {
 export interface AssistantRunStartRequest {
   content: string
   clientRequestID: string
-  assistantAction: 'auto' | 'ask' | 'build' | 'continue'
-  workItemID?: string
-  workItemRevision?: number
+  collaborationMode: ProjectAssistantRunMode
+  expectedRunID?: string
 }
 
 export interface ConversationState<TMessage extends ProjectMessage = ProjectMessage> {
@@ -52,33 +52,22 @@ export function firstProjectStartPlan(submission: PendingFirstProjectSubmission)
   }
 }
 
-export function assistantRunStartPayload(content: string, clientRequestID: string, assistantAction: 'auto' | 'ask' | 'build' = 'auto') {
-  return { content, clientRequestID, assistantAction }
+export function assistantRunStartPayload(content: string, clientRequestID: string, collaborationMode: ProjectAssistantRunMode = 'default') {
+  return { content, clientRequestID, collaborationMode }
 }
 
 export function assistantRunStartFingerprint(projectName: string, request: Omit<AssistantRunStartRequest, 'clientRequestID'>): string {
   return JSON.stringify([
     projectName,
     request.content,
-    request.assistantAction,
-    request.workItemID ?? '',
-    request.workItemRevision ?? 0,
+    request.collaborationMode,
+    request.expectedRunID ?? '',
   ])
 }
 
 export function assistantRunMatchesStartRequest(run: AssistantRun | undefined, request: AssistantRunStartRequest): boolean {
   if (!run || run.clientRequestID !== request.clientRequestID) return false
-  if ((run.workItemID ?? '') !== (request.workItemID ?? '')) return false
-  const expectedMode = request.assistantAction === 'continue'
-    ? 'continue'
-    : request.assistantAction === 'build'
-    ? 'new'
-    : request.assistantAction === 'ask'
-    ? 'discussion'
-    : 'adaptive'
-  // A creation prompt is submitted as an ordinary auto turn. The server may
-  // recognize its one-time bootstrap permit and persist it as a new run.
-  return run.mode === expectedMode || (request.assistantAction === 'auto' && run.mode === 'new')
+  return run.mode === request.collaborationMode
 }
 
 export function firstProjectSubmissionAccepted(submission: PendingFirstProjectSubmission, user: Pick<ProjectMessage, 'id' | 'content'> | undefined): boolean {
@@ -94,8 +83,47 @@ export function firstProjectSubmissionIsCurrent(submission: PendingFirstProjectS
 		(routeProject === submission.projectName || (!submission.projectName && routeProject === ''))
 }
 
-export function assistantRunTerminal(status: AssistantRun['status']): boolean {
-  return status === 'completed' || status === 'aborted' || status === 'failed' || status === 'interrupted'
+export function normalizeAssistantRunStatus(status: unknown): AssistantRun['status'] | undefined {
+  if (typeof status !== 'string') return undefined
+  const normalized = status.trim().toLowerCase()
+  switch (normalized) {
+    case 'pending_permission':
+    case 'pending_input':
+    case 'running':
+    case 'stopping':
+    case 'completed':
+    case 'failed':
+    case 'interrupted':
+    case 'aborted':
+      return normalized
+    default:
+      return undefined
+  }
+}
+
+export function assistantRunTerminal(status: unknown): boolean {
+  switch (normalizeAssistantRunStatus(status)) {
+    case 'completed':
+    case 'failed':
+    case 'interrupted':
+    case 'aborted':
+      return true
+    default:
+      return false
+  }
+}
+
+export function assistantRunRequiresLiveControls(run: AssistantRun | null | undefined): run is AssistantRun {
+  return Boolean(run && !assistantRunTerminal(run.status))
+}
+
+export function assistantRunCanImplementPlan(run: AssistantRun | null | undefined): run is AssistantRun {
+  return Boolean(
+    run &&
+    run.mode === 'plan' &&
+    normalizeAssistantRunStatus(run.status) === 'completed' &&
+    !run.error?.message?.trim(),
+  )
 }
 
 // Control hydration is deliberately separate from message merge: a reload may
@@ -133,8 +161,8 @@ export function acceptScopedConversationSnapshot(
 
 export function abortedConversationSnapshot(snapshot: AssistantSnapshot): AssistantSnapshot {
   return {
-    run: { ...snapshot.run, status: 'aborted', revision: snapshot.run.revision + 1 },
-    message: { ...snapshot.message, metadata: { ...snapshot.message.metadata, assistantStatus: 'Aborted', assistantProvisional: false } },
+    run: { ...snapshot.run, status: 'interrupted', revision: snapshot.run.revision + 1 },
+    message: { ...snapshot.message, metadata: { ...snapshot.message.metadata, assistantStatus: 'Interrupted', assistantProvisional: false } },
   }
 }
 

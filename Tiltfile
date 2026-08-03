@@ -312,6 +312,25 @@ local_resource(
 )
 
 local_resource(
+    'app-studio-browser-worker',
+    cmd='APP_STUDIO_BROWSER_WORKER_IMAGE=kedge/app-studio-browser-worker:tilt make docker-build-app-studio-browser-worker',
+    serve_cmd='APP_STUDIO_BROWSER_WORKER_IMAGE=kedge/app-studio-browser-worker:tilt make run-app-studio-browser-worker',
+    deps=[
+        'Makefile',
+        'providers/app-studio/browser-worker/Dockerfile',
+        'providers/app-studio/browser-worker/package.json',
+        'providers/app-studio/browser-worker/package-lock.json',
+        'providers/app-studio/browser-worker/tsconfig.json',
+        'providers/app-studio/browser-worker/src',
+    ],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8090, path='/healthz'),
+    ),
+    labels=['providers-app-studio'],
+)
+
+local_resource(
     'app-studio',
     cmd='make build-app-studio-provider',
     serve_cmd='make run-provider-app-studio',
@@ -324,6 +343,7 @@ local_resource(
         'providers/app-studio/client',
         'providers/app-studio/store',
         'providers/app-studio/tenant',
+        'providers/app-studio/workspace',
         'providers/app-studio/go.mod',
         'providers/app-studio/go.sum',
         'providers/app-studio/portal/src',
@@ -333,7 +353,7 @@ local_resource(
         'providers/app-studio/deploy/chart/values.yaml',
         'providers/app-studio/.env',
     ],
-    resource_deps=['hub', 'app-studio-db', 'dev-agent-image', 'app-studio-preview-console-key'],
+    resource_deps=['hub', 'app-studio-db', 'app-studio-browser-worker', 'dev-agent-image', 'app-studio-preview-console-key'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8085, path='/healthz'),

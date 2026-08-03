@@ -8,7 +8,23 @@ const { outputText } = ts.transpileModule(source, { compilerOptions: { module: t
 const state = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
 
 const message = (id, content) => ({ id, projectID: 'p', role: 'assistant', content, createdAt: '2026-01-01T00:00:00Z' })
-const snapshot = (revision, content, status = 'running') => ({ run: { id: 'run-1', status, revision, activeMessageID: 'a-1' }, message: message('a-1', content) })
+const snapshot = (revision, content, status = 'running') => ({ run: { id: 'run-1', mode: 'default', status, revision, activeMessageID: 'a-1' }, message: message('a-1', content) })
+
+test('assistantRunTerminal recognizes run and display forms of every closed outcome', () => {
+  for (const status of ['completed', 'failed', 'interrupted', 'aborted', 'Completed', 'Failed', 'Interrupted', 'Aborted']) {
+    assert.equal(state.assistantRunTerminal(status), true, status)
+  }
+  for (const status of ['running', 'stopping', 'pending_permission', 'pending_input', 'Working', undefined]) {
+    assert.equal(state.assistantRunTerminal(status), false, String(status))
+  }
+})
+
+test('normalizeAssistantRunStatus validates and normalizes persisted display statuses', () => {
+  assert.equal(state.normalizeAssistantRunStatus('Interrupted'), 'interrupted')
+  assert.equal(state.normalizeAssistantRunStatus(' pending_input '), 'pending_input')
+  assert.equal(state.normalizeAssistantRunStatus('Suspended'), undefined)
+  assert.equal(state.normalizeAssistantRunStatus(undefined), undefined)
+})
 
 test('mergeConversationSnapshot keeps the stable assistant message ID and rejects older or duplicate revisions', () => {
   const initial = { messages: [message('u-1', 'hello'), message('a-1', 'old')], runs: {} }
@@ -21,30 +37,46 @@ test('mergeConversationSnapshot keeps the stable assistant message ID and reject
   assert.strictEqual(duplicate, current)
 })
 
-test('an adaptive run can gain a work item mid-run and later suspend without duplicating its message', () => {
-  const adaptive = {
+test('steering appends a new assistant segment after the steered user item', () => {
+  const initial = {
+    messages: [
+      { ...message('u-1', 'build it'), role: 'user', createdAt: '2026-01-01T00:00:00.000000Z' },
+      { ...message('a-1', 'working'), createdAt: '2026-01-01T00:00:00.000001Z' },
+      { ...message('u-2', 'also add tests'), role: 'user', createdAt: '2026-01-01T00:00:01.000000Z' },
+    ],
+    runs: { 'run-1': { ...snapshot(1, 'working').run, revision: 1 } },
+  }
+  const steered = state.mergeConversationSnapshot(initial, {
+    run: { ...snapshot(2, 'continued').run, revision: 2, activeMessageID: 'a-2' },
+    message: { ...message('a-2', 'continued'), createdAt: '2026-01-01T00:00:01.000001Z' },
+  })
+
+  assert.deepEqual(steered.messages.map((item) => item.id), ['u-1', 'a-1', 'u-2', 'a-2'])
+})
+
+test('a collaboration mode remains fixed across revisions without duplicating its message', () => {
+  const startedSnapshot = {
     ...snapshot(1, 'Inspecting safely'),
-    run: { ...snapshot(1, 'Inspecting safely').run, mode: 'adaptive' },
+    run: { ...snapshot(1, 'Inspecting safely').run, mode: 'plan' },
   }
-  const promoted = {
-    ...snapshot(2, 'Action proposed'),
-    run: { ...snapshot(2, 'Action proposed').run, mode: 'new', workItemID: 'work-item-1' },
+  const revised = {
+    ...snapshot(2, 'Plan ready'),
+    run: { ...snapshot(2, 'Plan ready').run, mode: 'plan' },
   }
-  const suspended = {
-    ...snapshot(3, 'Continue when ready', 'interrupted'),
-    run: { ...snapshot(3, 'Continue when ready', 'interrupted').run, mode: 'new', workItemID: 'work-item-1' },
+  const completed = {
+    ...snapshot(3, 'Plan ready', 'completed'),
+    run: { ...snapshot(3, 'Plan ready', 'completed').run, mode: 'plan' },
   }
 
-  const started = state.mergeConversationSnapshot({ messages: [], runs: {} }, adaptive)
-  const withWorkItem = state.mergeConversationSnapshot(started, promoted)
-  const terminal = state.mergeConversationSnapshot(withWorkItem, suspended)
+  const started = state.mergeConversationSnapshot({ messages: [], runs: {} }, startedSnapshot)
+  const revisedState = state.mergeConversationSnapshot(started, revised)
+  const terminal = state.mergeConversationSnapshot(revisedState, completed)
 
-  assert.equal(withWorkItem.runs['run-1'].workItemID, 'work-item-1')
-  assert.equal(withWorkItem.runs['run-1'].mode, 'new')
-  assert.equal(terminal.runs['run-1'].status, 'interrupted')
-  assert.equal(terminal.runs['run-1'].workItemID, 'work-item-1')
+  assert.equal(revisedState.runs['run-1'].mode, 'plan')
+  assert.equal(terminal.runs['run-1'].status, 'completed')
+  assert.equal(terminal.runs['run-1'].mode, 'plan')
   assert.equal(terminal.messages.filter((item) => item.id === 'a-1').length, 1)
-  assert.equal(terminal.messages[0].content, 'Continue when ready')
+  assert.equal(terminal.messages[0].content, 'Plan ready')
 })
 
 test('first-project durable start replaces its optimistic user message without duplicating it', () => {
@@ -72,15 +104,15 @@ test('first-project retry reuses the created project and durable request identit
   const firstRun = state.firstProjectStartPlan(created)
   assert.deepEqual(
     state.assistantRunStartPayload(firstRun.content, firstRun.clientRequestID),
-    { content: 'ship it', clientRequestID: 'request-1', assistantAction: 'auto' },
+    { content: 'ship it', clientRequestID: 'request-1', collaborationMode: 'default' },
   )
   assert.deepEqual(
     state.assistantRunStartPayload('continue', 'request-2'),
-    { content: 'continue', clientRequestID: 'request-2', assistantAction: 'auto' },
+    { content: 'continue', clientRequestID: 'request-2', collaborationMode: 'default' },
   )
   assert.deepEqual(
-    state.assistantRunStartPayload('change the theme', 'request-3', 'build'),
-    { content: 'change the theme', clientRequestID: 'request-3', assistantAction: 'build' },
+    state.assistantRunStartPayload('plan a theme change', 'request-3', 'plan'),
+    { content: 'plan a theme change', clientRequestID: 'request-3', collaborationMode: 'plan' },
   )
   assert.equal(state.firstProjectSubmissionAccepted(created, { id: 'user-1', content: 'ship it' }), true)
   assert.equal(state.firstProjectSubmissionAccepted(created, { id: 'user-2', content: 'different' }), false)
@@ -94,21 +126,21 @@ test('first-project pending submission matches the project/message handoff into 
 })
 
 test('message retry identity is bound to the requested operation', () => {
-  const build = { content: 'ship it', assistantAction: 'build' }
-  const ask = { content: 'ship it', assistantAction: 'ask' }
-  const continuation = { content: 'ship it', assistantAction: 'continue', workItemID: 'work-1', workItemRevision: 3 }
-  assert.notEqual(state.assistantRunStartFingerprint('demo', build), state.assistantRunStartFingerprint('demo', ask))
-  assert.notEqual(state.assistantRunStartFingerprint('demo', build), state.assistantRunStartFingerprint('other', build))
-  assert.notEqual(state.assistantRunStartFingerprint('demo', continuation), state.assistantRunStartFingerprint('demo', { ...continuation, workItemRevision: 4 }))
+  const normal = { content: 'ship it', collaborationMode: 'default' }
+  const plan = { content: 'ship it', collaborationMode: 'plan' }
+  const review = { content: 'check it', collaborationMode: 'review' }
+  assert.notEqual(state.assistantRunStartFingerprint('demo', normal), state.assistantRunStartFingerprint('demo', plan))
+  assert.notEqual(state.assistantRunStartFingerprint('demo', plan), state.assistantRunStartFingerprint('demo', review))
+  assert.notEqual(state.assistantRunStartFingerprint('demo', normal), state.assistantRunStartFingerprint('other', normal))
+  assert.notEqual(state.assistantRunStartFingerprint('demo', normal), state.assistantRunStartFingerprint('demo', { ...normal, content: 'different' }))
 })
 
 test('conflict recovery only accepts the run created for the exact retry identity and operation', () => {
-  const request = { content: 'continue', clientRequestID: 'request-1', assistantAction: 'continue', workItemID: 'work-1', workItemRevision: 3 }
-  const run = { id: 'run-1', status: 'running', mode: 'continue', workItemID: 'work-1', revision: 1, activeMessageID: 'a-1', clientRequestID: 'request-1' }
+  const request = { content: 'continue', clientRequestID: 'request-1', collaborationMode: 'default' }
+  const run = { id: 'run-1', status: 'running', mode: 'default', revision: 1, activeMessageID: 'a-1', clientRequestID: 'request-1' }
   assert.equal(state.assistantRunMatchesStartRequest(run, request), true)
   assert.equal(state.assistantRunMatchesStartRequest({ ...run, clientRequestID: 'request-2' }, request), false)
-  assert.equal(state.assistantRunMatchesStartRequest({ ...run, mode: 'new' }, request), false)
-  assert.equal(state.assistantRunMatchesStartRequest({ ...run, workItemID: 'work-2' }, request), false)
+  assert.equal(state.assistantRunMatchesStartRequest({ ...run, mode: 'plan' }, request), false)
 })
 
 test('first-project generation rejects late replies after navigation and a new attempt has a fresh key', () => {
@@ -124,6 +156,22 @@ test('equal revision rehydrates active controls but an older active snapshot can
   const terminal = snapshot(5, 'done', 'completed')
   assert.equal(state.canHydrateConversationRun(active.run, active.run), true)
   assert.equal(state.canHydrateConversationRun(terminal.run, active.run), false)
+})
+
+test('nonterminal runs require live controls and terminal runs do not', () => {
+  const pending = snapshot(4, 'waiting', 'pending_input').run
+  const completed = { ...pending, status: 'completed' }
+
+  assert.equal(state.assistantRunRequiresLiveControls(pending), true)
+  assert.equal(state.assistantRunRequiresLiveControls(completed), false)
+})
+
+test('plan implementation requires a successful completed plan run', () => {
+  const completed = { ...snapshot(4, 'plan', 'completed').run, mode: 'plan' }
+  assert.equal(state.assistantRunCanImplementPlan(completed), true)
+  assert.equal(state.assistantRunCanImplementPlan({ ...completed, error: { message: 'provider failed' } }), false)
+  assert.equal(state.assistantRunCanImplementPlan({ ...completed, mode: 'default' }), false)
+  assert.equal(state.assistantRunCanImplementPlan({ ...completed, status: 'running' }), false)
 })
 
 test('a stale nonterminal snapshot is rejected and cannot be used to attach a subscription', () => {
@@ -164,11 +212,11 @@ test('a snapshot captured for a project is rejected after selection changes', ()
   assert.equal(result.accepted, false)
 })
 
-test('a successful abort snapshot immediately makes the run terminal and non-provisional', () => {
-  const stopped = state.abortedConversationSnapshot(snapshot(4, 'working'))
-  assert.equal(stopped.run.status, 'aborted')
+test('a successful stop snapshot immediately makes the run interrupted and non-provisional', () => {
+	const stopped = state.abortedConversationSnapshot(snapshot(4, 'working'))
+	assert.equal(stopped.run.status, 'interrupted')
   assert.equal(stopped.run.revision, 5)
-  assert.equal(stopped.message.metadata.assistantStatus, 'Aborted')
+	assert.equal(stopped.message.metadata.assistantStatus, 'Interrupted')
   assert.equal(stopped.message.metadata.assistantProvisional, false)
 })
 

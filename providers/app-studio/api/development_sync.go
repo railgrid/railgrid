@@ -13,6 +13,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path"
@@ -171,6 +172,14 @@ func (s *Server) syncProjectDevelopment(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	release, ok := s.reserveProjectExternalOperation(w, r.Context(), id, p, "manually synchronizing the development workspace")
+	if !ok {
+		return
+	}
+	defer release()
+	lock := s.developmentSyncLock(id, p)
+	lock.Lock()
+	defer lock.Unlock()
 	target, err := s.projectDevelopmentTarget(r.Context(), c, p, id)
 	if err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
@@ -213,7 +222,7 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	if s.workspaces == nil {
 		return nil, fmt.Errorf("project workspace store is not configured")
 	}
-	files, err := s.projectWorkspaceSyncFiles(ctx, projectWorkspaceScope(id, p.Name))
+	files, err := s.projectWorkspaceSyncFiles(ctx, projectWorkspaceScope(id, p))
 	if err != nil {
 		return nil, err
 	}
@@ -476,7 +485,7 @@ func (s *Server) projectAssistantPreviewRefreshNeeded(_ context.Context, _ works
 
 func shouldSyncDevelopmentAfterTool(name string) bool {
 	switch projectToolBaseName(name) {
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir, projectToolSelectTemplate, projectToolHydrateWorkspace:
+	case projectToolApplyPatch, projectToolSelectTemplate, projectActionWorkspaceSync, projectActionRestoreWorkspace:
 		return true
 	default:
 		return false
@@ -484,43 +493,81 @@ func shouldSyncDevelopmentAfterTool(name string) bool {
 }
 
 func (s *Server) scheduleDevelopmentSyncAfterMutation(id identity, p *aiv1alpha1.Project, name string) {
-	if s == nil || p == nil || !shouldSyncDevelopmentAfterTool(name) {
-		return
-	}
-	project := p.DeepCopy()
-	s.mu.Lock()
-	hook := s.developmentSyncAfterMutation
-	s.mu.Unlock()
-	if hook != nil {
-		hook(id, project, name)
-		return
-	}
-	go s.syncDevelopmentAfterMutation(id, project, name)
+	s.scheduleDevelopmentSyncAfterMutationWithCompletion(id, p, name, nil)
 }
 
-func (s *Server) syncDevelopmentAfterMutation(id identity, p *aiv1alpha1.Project, name string) {
+func (s *Server) scheduleDevelopmentSyncAfterMutationWithCompletion(
+	id identity,
+	p *aiv1alpha1.Project,
+	name string,
+	complete func(error),
+) bool {
+	if s == nil || p == nil || !shouldSyncDevelopmentAfterTool(name) {
+		return false
+	}
+	project := p.DeepCopy()
+	key := developmentSyncFailureKey(id, project)
+	s.mu.Lock()
+	hook := s.developmentSyncAfterMutation
+	if s.developmentSyncTails == nil {
+		s.developmentSyncTails = map[string]chan struct{}{}
+	}
+	previous := s.developmentSyncTails[key]
+	done := make(chan struct{})
+	s.developmentSyncTails[key] = done
+	s.mu.Unlock()
+	go func() {
+		if previous != nil {
+			<-previous
+		}
+		defer func() {
+			close(done)
+			s.mu.Lock()
+			if s.developmentSyncTails[key] == done {
+				delete(s.developmentSyncTails, key)
+			}
+			s.mu.Unlock()
+		}()
+		var err error
+		if hook != nil {
+			err = hook(id, project, name)
+		} else {
+			err = s.syncDevelopmentAfterMutation(id, project, name)
+		}
+		if complete != nil {
+			complete(err)
+		}
+	}()
+	return true
+}
+
+func (s *Server) syncDevelopmentAfterMutation(id identity, p *aiv1alpha1.Project, name string) error {
 	if s.gql == nil {
-		klog.V(2).Infof("development sandbox sync after %s skipped for project %s: tenant GraphQL client is not configured", projectToolBaseName(name), p.Name)
-		return
+		err := errors.New("tenant GraphQL client is not configured")
+		s.recordDevelopmentSyncFailure(id, p, fmt.Sprintf("the workspace sync after %s could not start: %v", projectToolBaseName(name), err))
+		klog.V(2).Infof("development sandbox sync after %s skipped for project %s: %v", projectToolBaseName(name), p.Name, err)
+		return err
 	}
 	c, err := s.clientFor(id)
 	if err != nil {
+		s.recordDevelopmentSyncFailure(id, p, fmt.Sprintf("the workspace sync after %s could not start: %v", projectToolBaseName(name), err))
 		klog.V(2).Infof("development sandbox sync after %s failed for project %s: %v", projectToolBaseName(name), p.Name, err)
-		return
+		return err
 	}
-	s.syncDevelopmentAfterMutationWithClient(c, id, p, name)
+	return s.syncDevelopmentAfterMutationWithClient(c, id, p, name)
 }
 
-func (s *Server) syncDevelopmentAfterMutationWithClient(c *asclient.Client, id identity, p *aiv1alpha1.Project, name string) {
-	lock := s.developmentSyncLock(id, p.Name)
+func (s *Server) syncDevelopmentAfterMutationWithClient(c *asclient.Client, id identity, p *aiv1alpha1.Project, name string) error {
+	lock := s.developmentSyncLock(id, p)
 	lock.Lock()
 	defer lock.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), projectSandboxSyncTimeout)
 	defer cancel()
 	target, err := s.projectDevelopmentTarget(ctx, c, p, id)
 	if err != nil {
+		s.recordDevelopmentSyncFailure(id, p, fmt.Sprintf("the workspace sync after %s could not resolve its development target: %v", projectToolBaseName(name), err))
 		klog.V(2).Infof("development sync after %s skipped for project %s: %v", projectToolBaseName(name), p.Name, err)
-		return
+		return err
 	}
 	if _, err := s.syncProjectDevelopmentTarget(ctx, c, id, p, target); err != nil {
 		// A failed post-mutation sync means the user's edit never reached the
@@ -528,21 +575,25 @@ func (s *Server) syncDevelopmentAfterMutationWithClient(c *asclient.Client, id i
 		// record it so the assistant's own verification reports it instead of
 		// silently diagnosing a stale sandbox.
 		klog.Warningf("development sync after %s failed for project %s: %v", projectToolBaseName(name), p.Name, err)
-		s.recordDevelopmentSyncFailure(id, p.Name, fmt.Sprintf("the last workspace sync after %s failed, so the development sandbox is still running the previous code: %v", projectToolBaseName(name), err))
-		return
+		s.recordDevelopmentSyncFailure(id, p, fmt.Sprintf("the last workspace sync after %s failed, so the development sandbox is still running the previous code: %v", projectToolBaseName(name), err))
+		return err
 	}
-	s.clearDevelopmentSyncFailure(id, p.Name)
+	s.clearDevelopmentSyncFailure(id, p)
+	return nil
 }
 
 // developmentSyncFailureKey scopes a recorded failure to one tenant's project,
 // matching developmentSyncLock's key.
-func developmentSyncFailureKey(id identity, projectName string) string {
-	return id.orgUUID + "/" + id.workspaceUUID + "/" + projectName
+func developmentSyncFailureKey(id identity, project *aiv1alpha1.Project) string {
+	if project == nil {
+		return id.orgUUID + "/" + id.workspaceUUID + "//"
+	}
+	return id.orgUUID + "/" + id.workspaceUUID + "/" + project.Name + "/" + string(project.UID)
 }
 
 // recordDevelopmentSyncFailure stores the reason the last background sync
 // failed. Overwrites any previous reason: only the latest matters.
-func (s *Server) recordDevelopmentSyncFailure(id identity, projectName, reason string) {
+func (s *Server) recordDevelopmentSyncFailure(id identity, project *aiv1alpha1.Project, reason string) {
 	if s == nil {
 		return
 	}
@@ -551,26 +602,26 @@ func (s *Server) recordDevelopmentSyncFailure(id identity, projectName, reason s
 	if s.developmentSyncFailures == nil {
 		s.developmentSyncFailures = map[string]string{}
 	}
-	s.developmentSyncFailures[developmentSyncFailureKey(id, projectName)] = reason
+	s.developmentSyncFailures[developmentSyncFailureKey(id, project)] = reason
 }
 
 // clearDevelopmentSyncFailure drops a recorded failure once a sync succeeds,
 // so a stale blocker never outlives the problem it described.
-func (s *Server) clearDevelopmentSyncFailure(id identity, projectName string) {
+func (s *Server) clearDevelopmentSyncFailure(id identity, project *aiv1alpha1.Project) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.developmentSyncFailures, developmentSyncFailureKey(id, projectName))
+	delete(s.developmentSyncFailures, developmentSyncFailureKey(id, project))
 }
 
 // lastDevelopmentSyncFailure returns the recorded failure for a project, if any.
-func (s *Server) lastDevelopmentSyncFailure(id identity, projectName string) string {
+func (s *Server) lastDevelopmentSyncFailure(id identity, project *aiv1alpha1.Project) string {
 	if s == nil {
 		return ""
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.developmentSyncFailures[developmentSyncFailureKey(id, projectName)]
+	return s.developmentSyncFailures[developmentSyncFailureKey(id, project)]
 }

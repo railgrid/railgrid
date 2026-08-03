@@ -68,7 +68,7 @@ func (s *Server) ensureProjectBuildConfig(ctx context.Context, id identity, p *a
 	if repoRef == "" || strings.TrimSpace(id.clusterID) == "" {
 		return nil, nil
 	}
-	scope := projectWorkspaceScope(id, p.Name)
+	scope := projectWorkspaceScope(id, p)
 	return s.reconcileProjectBuildConfig(ctx, id, scope, p, repoRef, s.mcpEndpoint(id.clusterID), httpReq, map[string]any{})
 }
 
@@ -318,7 +318,7 @@ func projectBuildWorkflowYAMLComponents(components []projectBuildComponent) stri
 		"          password: ${{ secrets.GITHUB_TOKEN }}",
 		"",
 		"      - name: Build and push image with Railpack",
-		"        uses: " + projectBuildRailpackAction,
+		"        uses: "+projectBuildRailpackAction,
 		"        with:",
 		"          context: ${{ matrix.context }}",
 		"          push: true",
@@ -336,4 +336,3 @@ func projectBuildWorkflowYAMLComponents(components []projectBuildComponent) stri
 func projectBuildYAMLQuote(v string) string {
 	return "\"" + strings.ReplaceAll(v, "\"", "\\\"") + "\""
 }
-

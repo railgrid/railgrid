@@ -57,7 +57,7 @@ func TestProjectAssistantApprovalModeIsCapturedPerRun(t *testing.T) {
 	}
 }
 
-func TestProjectAssistantApprovalModeDefaultsToAutoApprove(t *testing.T) {
+func TestProjectAssistantApprovalModeDefaultsToOnRequest(t *testing.T) {
 	ctx := context.Background()
 	messages := store.NewMemoryStore()
 	server := &Server{store: messages}
@@ -71,10 +71,10 @@ func TestProjectAssistantApprovalModeDefaultsToAutoApprove(t *testing.T) {
 	if err := server.captureProjectAssistantApprovalMode(ctx, scope, "alice", &run); err != nil {
 		t.Fatal(err)
 	}
-	if run.ApprovalMode != store.AssistantApprovalModeAutoApprove {
-		t.Fatalf("captured default approval mode = %q, want auto approve", run.ApprovalMode)
+	if run.ApprovalMode != store.AssistantApprovalModeOnRequest {
+		t.Fatalf("captured default approval mode = %q, want on request", run.ApprovalMode)
 	}
-	if got := projectAssistantApprovalModeFromRun(store.AssistantRun{}); got != store.AssistantApprovalModeAlwaysAsk {
-		t.Fatalf("legacy run default approval mode = %q, want conservative fallback", got)
+	if got := projectAssistantApprovalModeFromRun(store.AssistantRun{}); got != store.AssistantApprovalModeOnRequest {
+		t.Fatalf("legacy run default approval mode = %q, want on-request fallback", got)
 	}
 }

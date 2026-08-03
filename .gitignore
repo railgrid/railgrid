@@ -107,3 +107,4 @@ portal/tsconfig.tsbuildinfo
 # Agent harness artifacts
 .superpowers/
 docs/superpowers/
+agent_docs/

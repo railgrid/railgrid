@@ -29,6 +29,7 @@ type projectAssistantTurnKind string
 const (
 	projectAssistantTurnMessage projectAssistantTurnKind = "message"
 	projectAssistantTurnResume  projectAssistantTurnKind = "resume"
+	projectAssistantTurnSteer   projectAssistantTurnKind = "steer"
 )
 
 const projectAssistantRunHandoffTimeout = 10 * time.Second
@@ -42,19 +43,20 @@ var (
 // Eino TurnLoop checkpoint can persist queued work without serializing request,
 // client, workspace, or tenant-authority handles.
 type projectAssistantTurnItem struct {
-	Kind               projectAssistantTurnKind `json:"kind"`
-	OrgUUID            string                   `json:"orgUUID"`
-	WorkspaceUUID      string                   `json:"workspaceUUID"`
-	ProjectName        string                   `json:"projectName"`
-	ProjectUID         string                   `json:"projectUID,omitempty"`
-	User               string                   `json:"user,omitempty"`
-	RunID              string                   `json:"runID,omitempty"`
-	RequestID          string                   `json:"requestID,omitempty"`
-	AssistantMessageID string                   `json:"assistantMessageID,omitempty"`
-	Decision           string                   `json:"decision,omitempty"`
-	Answer             string                   `json:"answer,omitempty"`
-	EditedArguments    map[string]any           `json:"editedArguments,omitempty"`
-	CreatedAt          time.Time                `json:"createdAt"`
+	Kind               projectAssistantTurnKind                  `json:"kind"`
+	OrgUUID            string                                    `json:"orgUUID"`
+	WorkspaceUUID      string                                    `json:"workspaceUUID"`
+	ProjectName        string                                    `json:"projectName"`
+	ProjectUID         string                                    `json:"projectUID,omitempty"`
+	User               string                                    `json:"user,omitempty"`
+	RunID              string                                    `json:"runID,omitempty"`
+	RequestID          string                                    `json:"requestID,omitempty"`
+	AssistantMessageID string                                    `json:"assistantMessageID,omitempty"`
+	Decision           string                                    `json:"decision,omitempty"`
+	Answer             string                                    `json:"answer,omitempty"`
+	Answers            map[string]projectAssistantFollowUpAnswer `json:"answers,omitempty"`
+	EditedArguments    map[string]any                            `json:"editedArguments,omitempty"`
+	CreatedAt          time.Time                                 `json:"createdAt"`
 }
 
 func newProjectAssistantTurnItem(kind projectAssistantTurnKind, id identity, projectName string) projectAssistantTurnItem {

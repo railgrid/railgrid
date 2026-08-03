@@ -43,6 +43,7 @@ func TestMemoryStorePaginationAndCleanup(t *testing.T) {
 	}
 	if err := s.SaveAssistantRun(context.Background(), scope, AssistantRun{
 		ID:        "run-old",
+		Mode:      AssistantRunModeDefault,
 		Status:    AssistantRunStatusCompleted,
 		RequestID: "perm-old",
 		CreatedAt: base,
@@ -52,6 +53,7 @@ func TestMemoryStorePaginationAndCleanup(t *testing.T) {
 	}
 	if err := s.SaveAssistantRun(context.Background(), scope, AssistantRun{
 		ID:        "run-new",
+		Mode:      AssistantRunModeDefault,
 		Status:    AssistantRunStatusPendingPermission,
 		RequestID: "perm-new",
 		CreatedAt: base.Add(2 * time.Minute),
@@ -277,6 +279,7 @@ func TestEncryptedStoreEncryptsAssistantRunCheckpointAtRest(t *testing.T) {
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "customer-portal", ProjectUID: "project-1"}
 	run := AssistantRun{
 		ID:         "run-1",
+		Mode:       AssistantRunModeDefault,
 		Status:     AssistantRunStatusPendingPermission,
 		RequestID:  "perm-1",
 		Checkpoint: json.RawMessage(`{"tool":"write_file","content":"secret"}`),
@@ -336,7 +339,7 @@ func TestMemoryStoreProjectBootstrapPermitIsSingleUseAndBound(t *testing.T) {
 		t.Fatalf("deleted permit authorized=%t err=%v", authorized, err)
 	}
 	preference, err := s.GetAssistantApprovalPreference(ctx, scope, "actor-a")
-	if err != nil || preference.Mode != AssistantApprovalModeAutoApprove {
+	if err != nil || preference.Mode != AssistantApprovalModeOnRequest {
 		t.Fatalf("deleted preference=%#v err=%v", preference, err)
 	}
 }

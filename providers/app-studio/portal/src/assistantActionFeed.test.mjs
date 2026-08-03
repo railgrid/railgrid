@@ -16,12 +16,14 @@ const action = (overrides = {}) => ({
   title: 'Read project file',
   target: 'src/App.vue',
   severity: 'normal',
+  sequence: 1,
   ...overrides,
 })
 
 test('parses only the fresh allowlisted action feed contract', () => {
   assert.deepEqual(feed.parseAssistantActionFeed([action()]), [action()])
   assert.deepEqual(feed.parseAssistantActionFeed([action({ sequence: 2 })]), [action({ sequence: 2 })])
+  assert.deepEqual(feed.parseAssistantActionFeed([action({ sequence: undefined })]), [])
   assert.deepEqual(feed.parseAssistantActionFeed([action({ sequence: 0 })]), [])
   assert.deepEqual(feed.parseAssistantActionFeed([action({ sequence: 10_001 })]), [])
   assert.deepEqual(

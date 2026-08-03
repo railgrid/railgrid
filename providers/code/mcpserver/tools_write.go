@@ -69,7 +69,8 @@ type commitFilesInput struct {
 	RepositoryRef string            `json:"repositoryRef" jsonschema:"Name of the managed Repository CR to commit into"`
 	Message       string            `json:"message,omitempty" jsonschema:"Commit message; defaults to a generated update message"`
 	Branch        string            `json:"branch,omitempty" jsonschema:"Branch name; defaults to the Repository defaultBranch, then main"`
-	Files         []commitFileInput `json:"files" jsonschema:"Files to write in this commit"`
+	Files         []commitFileInput `json:"files,omitempty" jsonschema:"Files to write in this commit"`
+	DeletePaths   []string          `json:"deletePaths,omitempty" jsonschema:"Repository-relative file paths to delete in this commit"`
 }
 
 type addDeployKeyInput struct {
@@ -111,12 +112,14 @@ type commitFilesOutput struct {
 	CommitURL     string   `json:"commitURL,omitempty"`
 	Branch        string   `json:"branch,omitempty"`
 	Files         []string `json:"files,omitempty"`
+	DeletedPaths  []string `json:"deletedPaths,omitempty"`
 }
 
 func registerWriteTools(srv *mcp.Server, deps Deps, ident identity) {
 	no := false
 	yes := true
 	mutating := &mcp.ToolAnnotations{IdempotentHint: false, DestructiveHint: &no, OpenWorldHint: &yes}
+	commitMutating := &mcp.ToolAnnotations{IdempotentHint: false, DestructiveHint: &yes, OpenWorldHint: &yes}
 	destructive := &mcp.ToolAnnotations{DestructiveHint: &yes}
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -185,8 +188,8 @@ func registerWriteTools(srv *mcp.Server, deps Deps, ident identity) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "commit_files",
 		Title:       "Commit files to a repository",
-		Description: "Commit UTF-8 text files to a managed Repository. The tool stores a provider-owned source bundle, creates a RepositoryCommit request in your workspace, and reports the resulting commit status.",
-		Annotations: mutating,
+		Description: "Atomically write and delete files in a managed Repository. The tool stores a provider-owned source bundle, creates a RepositoryCommit request in your workspace, and reports the resulting commit status.",
+		Annotations: commitMutating,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in commitFilesInput) (*mcp.CallToolResult, commitFilesOutput, error) {
 		dyn, err := tenantClient(deps, ident)
 		if err != nil {
@@ -290,16 +293,19 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 	if in.RepositoryRef == "" {
 		return nil, commitFilesOutput{}, fmt.Errorf("repositoryRef is required")
 	}
-	if len(in.Files) == 0 {
-		return nil, commitFilesOutput{}, fmt.Errorf("at least one file is required")
+	if len(in.Files) == 0 && len(in.DeletePaths) == 0 {
+		return nil, commitFilesOutput{}, fmt.Errorf("at least one file or delete path is required")
 	}
 	repo, err := getRepository(ctx, dyn, in.RepositoryRef)
 	if err != nil {
 		return nil, commitFilesOutput{}, err
 	}
-	files := make([]commitbundle.File, 0, len(in.Files))
+	files := make([]commitbundle.File, 0, len(in.Files)+len(in.DeletePaths))
 	for _, f := range in.Files {
 		files = append(files, commitbundle.File{Path: f.Path, Content: f.Content})
+	}
+	for _, path := range in.DeletePaths {
+		files = append(files, commitbundle.File{Path: path, Delete: true})
 	}
 	bundle, err := bundles.Put(ctx, tenantScope, files)
 	if err != nil {
@@ -342,6 +348,7 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 		BundleRef:     bundle.Name,
 		BundleDigest:  bundle.Digest,
 		Files:         bundleFilePaths(bundle.Files),
+		DeletedPaths:  bundleDeletedPaths(bundle.Files),
 	}
 	waited, err := waitRepositoryCommit(ctx, dyn, created.GetName(), 75*time.Second)
 	if err != nil {
@@ -495,6 +502,16 @@ func bundleFilePaths(files []commitbundle.FileMeta) []string {
 	paths := make([]string, 0, len(files))
 	for _, f := range files {
 		paths = append(paths, f.Path)
+	}
+	return paths
+}
+
+func bundleDeletedPaths(files []commitbundle.FileMeta) []string {
+	paths := make([]string, 0)
+	for _, file := range files {
+		if file.Delete {
+			paths = append(paths, file.Path)
+		}
 	}
 	return paths
 }

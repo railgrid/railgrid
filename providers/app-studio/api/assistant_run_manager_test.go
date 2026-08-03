@@ -32,6 +32,16 @@ import (
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
+func projectAssistantRunManagerRequest(runID string) *http.Request {
+	request := httptest.NewRequest(http.MethodPost, "/", nil)
+	run := store.AssistantRun{
+		ID:     runID,
+		Mode:   store.AssistantRunModeDefault,
+		Status: store.AssistantRunStatusRunning,
+	}
+	return request.WithContext(context.WithValue(request.Context(), projectAssistantSupervisorRunContextKey{}, run))
+}
+
 func TestProjectAssistantRunManagerPreemptsActiveTurnForSameProject(t *testing.T) {
 	manager := newProjectAssistantRunManager()
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", user: "user@example.com"}
@@ -168,7 +178,7 @@ func TestGenerateProjectAssistantStreamPreemptsActiveProjectTurn(t *testing.T) {
 	firstErr := make(chan error, 1)
 	go func() {
 		_, err := server.generateProjectAssistantStream(
-			httptest.NewRequest(http.MethodPost, "/", nil),
+			projectAssistantRunManagerRequest("run-first"),
 			id,
 			client,
 			project,
@@ -183,7 +193,7 @@ func TestGenerateProjectAssistantStreamPreemptsActiveProjectTurn(t *testing.T) {
 	}
 
 	secondReply, err := server.generateProjectAssistantStream(
-		httptest.NewRequest(http.MethodPost, "/", nil),
+		projectAssistantRunManagerRequest("run-second"),
 		id,
 		client,
 		project,
@@ -232,7 +242,7 @@ func TestGenerateProjectAssistantStreamDoesNotStartAfterHandoffTimeout(t *testin
 	firstErr := make(chan error, 1)
 	go func() {
 		_, err := server.generateProjectAssistantStream(
-			httptest.NewRequest(http.MethodPost, "/", nil),
+			projectAssistantRunManagerRequest("run-first"),
 			id,
 			client,
 			project,
@@ -247,7 +257,7 @@ func TestGenerateProjectAssistantStreamDoesNotStartAfterHandoffTimeout(t *testin
 	}
 
 	_, err := server.generateProjectAssistantStream(
-		httptest.NewRequest(http.MethodPost, "/", nil),
+		projectAssistantRunManagerRequest("run-second"),
 		id,
 		client,
 		project,
@@ -289,7 +299,7 @@ func TestResumeProjectAssistantFinalizesClaimedRunAfterPreemption(t *testing.T) 
 			ID:   "call-write",
 			Type: "function",
 			Function: chatToolCallFunction{
-				Name:      projectToolWriteFile,
+				Name:      projectToolApplyPatch,
 				Arguments: `{"path":"src/App.tsx","content":"approved\n"}`,
 			},
 		}},
@@ -300,7 +310,7 @@ func TestResumeProjectAssistantFinalizesClaimedRunAfterPreemption(t *testing.T) 
 			InterruptID:   "interrupt-write",
 			InterruptType: projectAssistantInterruptTypePermission,
 			ToolCallID:    "call-write",
-			ToolName:      projectToolWriteFile,
+			ToolName:      projectToolApplyPatch,
 		},
 	}
 	rawCheckpoint, err := json.Marshal(state)
@@ -324,7 +334,7 @@ func TestResumeProjectAssistantFinalizesClaimedRunAfterPreemption(t *testing.T) 
 	}
 	run, err := messages.CreateAssistantRun(context.Background(), messageScope, userMessage, activeMessage, store.AssistantRun{
 		ID:              "run-resume",
-		Mode:            store.AssistantRunModeDiscussion,
+		Mode:            store.AssistantRunModePlan,
 		Status:          store.AssistantRunStatusPendingPermission,
 		ClientRequestID: "request-resume",
 		UserMessageID:   userMessage.ID,
@@ -363,7 +373,7 @@ func TestResumeProjectAssistantFinalizesClaimedRunAfterPreemption(t *testing.T) 
 	}
 
 	reply, err := server.generateProjectAssistantStream(
-		httptest.NewRequest(http.MethodPost, "/", nil),
+		projectAssistantRunManagerRequest("run-new"),
 		id,
 		client,
 		project,
@@ -387,8 +397,8 @@ func TestResumeProjectAssistantFinalizesClaimedRunAfterPreemption(t *testing.T) 
 	if err != nil {
 		t.Fatalf("GetAssistantRun returned error: %v", err)
 	}
-	if got.Status != store.AssistantRunStatusCompleted {
-		t.Fatalf("run status = %q, want completed after preempted resume cleanup", got.Status)
+	if got.Status != store.AssistantRunStatusFailed {
+		t.Fatalf("run status = %q, want failed after preempted resume cleanup", got.Status)
 	}
 	audit := decodeProjectAssistantRunAudit(t, got.Audit)
 	if len(audit.Decisions) != 1 || audit.Decisions[0].Actor != id.user || audit.Decisions[0].Reason != "preempted" {

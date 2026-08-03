@@ -5,17 +5,17 @@ import type {
   ListResponse,
   Project,
   ProjectHydrateResult,
-  ProjectAssistantRunStart,
-  ProjectAssistantWorkItem,
-  ProjectAssistantAbortResponse,
+  ProjectAssistantRunMode,
+  ProjectAssistantReviewTarget,
+  ProjectAssistantRunStatus,
   ProjectAssistantApprovalMode,
   ProjectAssistantApprovalPreference,
-  ProjectAssistantSnapshot,
-  ProjectAssistantUndoResponse,
+  ProjectAssistantThread,
+  ProjectAssistantThreadEvent,
+  ProjectAssistantThreadItem,
+  ProjectAssistantTurn,
   ProjectLLMSettings,
   ProjectMemory,
-  ProjectMessage,
-  ProjectMessagesPage,
   ProjectCheckpoints,
   ProjectPromotionReadiness,
   ProjectPromoteResult,
@@ -112,33 +112,31 @@ function isProjectAPIInitializingResponse(status: number, reason: string, messag
   )
 }
 
-async function requestAssistantSnapshotStream(
+async function requestAssistantThreadEventStream(
   ctx: KedgeContext | null,
   name: string,
-  runID: string,
-  afterRevision: number,
-  onSnapshot: (snapshot: ProjectAssistantSnapshot) => void,
+  threadID: string,
+  afterSequence: number,
+  onEvent: (event: ProjectAssistantThreadEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
   const headers = tenantHeaders({ token: ctx?.token })
   headers.Accept = 'text/event-stream'
-  headers['Last-Event-ID'] = String(afterRevision)
-  const res = await fetch(`${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/${encodeURIComponent(runID)}/stream?afterRevision=${encodeURIComponent(String(afterRevision))}`, {
+  headers['Last-Event-ID'] = String(afterSequence)
+  const res = await fetch(`${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/events?afterSequence=${encodeURIComponent(String(afterSequence))}`, {
     credentials: 'same-origin', headers, signal,
   })
-  if (!res.ok) throw new Error(`assistant stream failed: ${res.status} ${res.statusText}`)
-  if (!res.body) throw new Error('missing assistant stream body')
+  if (!res.ok) throw new Error(`assistant thread stream failed: ${res.status} ${res.statusText}`)
+  if (!res.body) throw new Error('missing assistant thread stream body')
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
   const flush = (raw: string) => {
-    let event = ''
     let data = ''
     for (const line of raw.split('\n')) {
-      if (line.startsWith('event:')) event = line.slice(6).trim()
       if (line.startsWith('data:')) data = data ? `${data}\n${line.slice(5).trimStart()}` : line.slice(5).trimStart()
     }
-    if (event === 'snapshot' && data) onSnapshot(JSON.parse(data) as ProjectAssistantSnapshot)
+    if (data) onEvent(JSON.parse(data) as ProjectAssistantThreadEvent)
   }
   try {
     for (;;) {
@@ -289,79 +287,58 @@ export const api = {
     return request<unknown>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/authorize-development-preview`)
   },
 
-  async listMessages(ctx: KedgeContext | null, name: string, cursor?: string): Promise<ProjectMessagesPage> {
-    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
-    const body = await request<ProjectMessagesPage>(
+  async listAssistantThreads(ctx: KedgeContext | null, name: string, includeArchived = false): Promise<ProjectAssistantThread[]> {
+    const page = await request<{ items: ProjectAssistantThread[] }>(
       ctx,
       'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/messages${query}`,
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads?includeArchived=${includeArchived}`,
     )
-    return body
+    return page.items ?? []
   },
 
-  async listAllMessages(ctx: KedgeContext | null, name: string): Promise<ProjectMessage[]> {
-    const items: ProjectMessage[] = []
-    let cursor: string | undefined
-    for (;;) {
-      const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''
-      const page = await request<ProjectMessagesPage>(
-        ctx,
-        'GET',
-        `${baseURL(ctx)}/${encodeURIComponent(name)}/messages${query}`,
-      )
-      items.push(...(page.items ?? []))
-      if (!page.nextCursor) break
-      cursor = page.nextCursor
-    }
-    return items
+  async createAssistantThread(ctx: KedgeContext | null, name: string, title?: string): Promise<ProjectAssistantThread> {
+    return request<ProjectAssistantThread>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads`, { title })
   },
 
-  async startAssistantRun(ctx: KedgeContext | null, name: string, body: { content: string; clientRequestID: string; assistantAction?: 'auto' | 'ask' | 'build' | 'continue'; workItemID?: string; workItemRevision?: number }): Promise<ProjectAssistantRunStart> {
-    return request<ProjectAssistantRunStart>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/messages`, body)
+  async patchAssistantThread(ctx: KedgeContext | null, name: string, threadID: string, patch: { title?: string; archived?: boolean }): Promise<ProjectAssistantThread> {
+    return request<ProjectAssistantThread>(ctx, 'PATCH', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}`, patch)
   },
 
-  async getLatestAssistantRun(ctx: KedgeContext | null, name: string): Promise<ProjectAssistantSnapshot | undefined> {
+  async listAssistantThreadItems(ctx: KedgeContext | null, name: string, threadID: string): Promise<ProjectAssistantThreadItem[]> {
+    const body = await request<{ items: ProjectAssistantThreadItem[] }>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/items`)
+    return body.items ?? []
+  },
+
+  async startAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string, body: { content: string; clientUserMessageID: string; collaborationMode: ProjectAssistantRunMode }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+    return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns`, body)
+  },
+
+  async startAssistantReview(ctx: KedgeContext | null, name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+    return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/reviews`, body)
+  },
+
+  async getActiveAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string): Promise<ProjectAssistantTurn | undefined> {
     const headers = tenantHeaders({ token: ctx?.token })
-    const res = await fetch(`${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/runs/latest`, { credentials: 'same-origin', headers })
+    const res = await fetch(`${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/active`, { credentials: 'same-origin', headers })
     if (res.status === 204) return undefined
-    if (!res.ok) throw new Error(`latest assistant run failed: ${res.status} ${res.statusText}`)
-    return res.json() as Promise<ProjectAssistantSnapshot>
+    if (!res.ok) throw new Error(`active assistant turn failed: ${res.status} ${res.statusText}`)
+    return res.json() as Promise<ProjectAssistantTurn>
   },
 
-  async streamAssistantRun(ctx: KedgeContext | null, name: string, runID: string, afterRevision: number, onSnapshot: (snapshot: ProjectAssistantSnapshot) => void, signal?: AbortSignal): Promise<void> {
-    return requestAssistantSnapshotStream(ctx, name, runID, afterRevision, onSnapshot, signal)
+  async steerAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string, turnID: string, body: { content: string; clientUserMessageID: string }): Promise<ProjectAssistantTurn> {
+    return request<ProjectAssistantTurn>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/steer`, body)
   },
 
-  async resumeAssistantRun(
-    ctx: KedgeContext | null,
-    name: string,
-    runID: string,
-    body: { requestID: string; decision?: 'allow' | 'deny'; answer?: string; assistantMessageID?: string },
-  ): Promise<ProjectAssistantSnapshot> {
-    return request<ProjectAssistantSnapshot>(
-      ctx,
-      'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/${encodeURIComponent(runID)}/resume`,
-      body,
-    )
+  async interruptAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string, turnID: string, clientRequestID: string): Promise<{ turnID: string; status: ProjectAssistantRunStatus }> {
+    return request<{ turnID: string; status: ProjectAssistantRunStatus }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/interrupt`, { clientRequestID })
   },
 
-  async stopAssistantRun(ctx: KedgeContext | null, name: string, runID: string, clientRequestID: string): Promise<ProjectAssistantAbortResponse> {
-    return request<ProjectAssistantAbortResponse>(
-      ctx,
-      'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/${encodeURIComponent(runID)}/stop`,
-      { clientRequestID },
-    )
+  async respondAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string, turnID: string, kind: 'approval' | 'input', body: { requestID: string; decision?: 'allow' | 'deny'; answer?: string; answers?: Record<string, { answers: string[] }> }): Promise<ProjectAssistantTurn> {
+    return request<ProjectAssistantTurn>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/${kind}`, body)
   },
 
-  async undoAssistantRun(ctx: KedgeContext | null, name: string, runID: string): Promise<ProjectAssistantUndoResponse> {
-    return request<ProjectAssistantUndoResponse>(
-      ctx,
-      'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/${encodeURIComponent(runID)}/undo`,
-      {},
-    )
+  async streamAssistantThread(ctx: KedgeContext | null, name: string, threadID: string, afterSequence: number, onEvent: (event: ProjectAssistantThreadEvent) => void, signal?: AbortSignal): Promise<void> {
+    return requestAssistantThreadEventStream(ctx, name, threadID, afterSequence, onEvent, signal)
   },
 
   async getAssistantApprovalMode(ctx: KedgeContext | null, name: string): Promise<ProjectAssistantApprovalPreference> {
@@ -382,19 +359,6 @@ export const api = {
       'PATCH',
       `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/approval-mode`,
       { mode },
-    )
-  },
-
-  async listAssistantWorkItems(ctx: KedgeContext | null, name: string): Promise<ProjectAssistantWorkItem[]> {
-    return request<ProjectAssistantWorkItem[]>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/work-items`)
-  },
-
-  async cancelAssistantWorkItem(ctx: KedgeContext | null, name: string, workItemID: string, revision: number, clientRequestID: string): Promise<ProjectAssistantWorkItem> {
-    return request<ProjectAssistantWorkItem>(
-      ctx,
-      'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/work-items/${encodeURIComponent(workItemID)}/cancel`,
-      { revision, clientRequestID },
     )
   },
 

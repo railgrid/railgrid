@@ -26,6 +26,7 @@ func TestMemoryStoreAssistantRunRoundTrip(t *testing.T) {
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-1"}
 	run := AssistantRun{
 		ID:         "run-1",
+		Mode:       AssistantRunModeDefault,
 		Status:     AssistantRunStatusPendingPermission,
 		RequestID:  "perm-1",
 		Checkpoint: json.RawMessage(`{"tool":"write_file"}`),

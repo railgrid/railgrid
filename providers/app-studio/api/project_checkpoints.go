@@ -122,7 +122,7 @@ func (s *Server) checkpointGit(repo *ProjectRepositoryView) projectCheckpoint {
 		cp.Reason = "No repository connected."
 		cp.Remediation = &projectCheckpointRemediation{
 			Kind:    projectCheckpointFixAuto,
-			Tool:    projectToolHydrateWorkspace,
+			Tool:    projectActionWorkspaceSync,
 			Message: "Connect a Git repository to hold the project's source.",
 		}
 		return cp
@@ -160,6 +160,11 @@ func (s *Server) checkpointCI(repo *ProjectRepositoryView, gitState string) proj
 	if gitState != projectCheckpointStateDone {
 		cp.State = projectCheckpointStateBlocked
 		cp.Reason = "Connect a repository before committing CI."
+		return cp
+	}
+	if repo != nil && repo.commitsErr != nil {
+		cp.State = projectCheckpointStateError
+		cp.Reason = "Could not read repository commit history."
 		return cp
 	}
 	if repo != nil {

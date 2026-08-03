@@ -162,6 +162,9 @@ func runServe() {
 			os.Getenv("KEDGE_HUB_INSECURE") == "true",
 	)
 	apiServer.SetPreviewInsecureSkipTLSVerify(os.Getenv("APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY") == "true")
+	if err := apiServer.ConfigurePreviewInspection(os.Getenv("APP_STUDIO_BROWSER_WORKER_URL")); err != nil {
+		log.Fatalf("browser worker: %v", err)
+	}
 	previewConsoleEnabled, previewConsoleSigningKey, previewConsoleSigningKeyID := previewConsoleEnvironmentConfig()
 	if err := apiServer.ConfigurePreviewConsole(
 		previewConsoleEnabled,

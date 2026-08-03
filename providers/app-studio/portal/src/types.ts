@@ -24,32 +24,80 @@ export interface ProjectMessage {
   createdAt: string
 }
 
-export type ProjectAssistantRunStatus = 'pending_permission' | 'pending_input' | 'running' | 'stopping' | 'completed' | 'aborted' | 'failed' | 'interrupted'
-export type ProjectAssistantRunMode = 'adaptive' | 'discussion' | 'new' | 'continue'
-export type ProjectAssistantWorkItemStatus = 'active' | 'suspended' | 'completed' | 'cancelled'
-export type ProjectAssistantApprovalMode = 'always_ask' | 'auto_approve'
+export type ProjectAssistantRunStatus = 'pending_permission' | 'pending_input' | 'running' | 'stopping' | 'completed' | 'failed' | 'interrupted' | 'aborted'
+export type ProjectAssistantAbortReason = 'interrupted' | 'replaced' | 'budget_limited' | 'iteration_limited'
+export type ProjectAssistantRunMode = 'default' | 'plan' | 'review'
+
+export interface ProjectAssistantReviewTarget {
+  type: 'current_workspace'
+  instructions?: string
+}
+export type ProjectAssistantApprovalMode = 'on_request' | 'always_ask' | 'never'
 
 export interface ProjectAssistantApprovalPreference {
   mode: ProjectAssistantApprovalMode
   updatedAt?: string
 }
 
-export interface ProjectAssistantWorkItem {
+export type ProjectAssistantThreadStatus = 'idle' | 'active' | 'archived'
+export type ProjectAssistantTurnStatus = 'in_progress' | 'completed' | 'interrupted' | 'failed'
+
+export interface ProjectAssistantThread {
   id: string
-  rootMessageID: string
-  createdBy: string
-  status: ProjectAssistantWorkItemStatus
-  statusReason?: string
-  revision: number
-  activeRunID?: string
+  title?: string
+  status: ProjectAssistantThreadStatus
   createdAt: string
   updatedAt: string
 }
 
+export interface ProjectAssistantTurn {
+  id: string
+  threadID: string
+  clientUserMessageID: string
+  mode: ProjectAssistantRunMode
+  approvalMode: ProjectAssistantApprovalMode
+  status: ProjectAssistantTurnStatus
+  createdAt: string
+  updatedAt: string
+  error?: { message?: string; errorInfo?: string }
+}
+
+export interface ProjectAssistantThreadEvent {
+  threadID: string
+  turnID?: string
+  sequence: number
+  type: string
+  itemID?: string
+  requestID?: string
+  payload?: Record<string, unknown>
+  createdAt: string
+}
+
+export interface ProjectAssistantThreadItem {
+  id: string
+  turnID?: string
+  type: 'userMessage' | 'agentMessage' | 'dynamicToolCall' | string
+  status: 'in_progress' | 'completed' | 'failed' | string
+  content?: string
+  data?: Record<string, unknown>
+  /**
+   * Assistant message segment that owns this item. The field was added after
+   * the first thread mirror shipped, so projections must retain their
+   * event-order fallback when it is absent on historical items.
+   */
+  assistantMessageID?: string
+  /** Run presentation fields are carried on agent messages (and mirrored on
+   * activity items for live/reload association). */
+  mode?: ProjectAssistantRunMode
+  revision?: number
+  error?: { message?: string; errorInfo?: string }
+  sequence: number
+  createdAt: string
+}
+
 export interface ProjectAssistantRun {
   id: string
-  workItemID?: string
-  mode?: ProjectAssistantRunMode
+  mode: ProjectAssistantRunMode
   approvalMode?: ProjectAssistantApprovalMode
   status: ProjectAssistantRunStatus
   revision: number
@@ -59,6 +107,8 @@ export interface ProjectAssistantRun {
   requestID?: string
   createdAt?: string
   updatedAt?: string
+  error?: { message: string; errorInfo?: string }
+  abortReason?: ProjectAssistantAbortReason
 }
 
 export interface ProjectAssistantSnapshot {
@@ -77,12 +127,6 @@ export interface ProjectAssistantAbortResponse {
   requestID: string
   status: ProjectAssistantRunStatus
   decision?: 'allow' | 'deny'
-}
-
-export interface ProjectAssistantUndoResponse {
-  runID: string
-  fileCount: number
-  message: ProjectMessage
 }
 
 export type ProjectAssistantActionKind = 'inspect' | 'clarify' | 'edit' | 'run' | 'commit' | 'plan' | 'other'
@@ -107,7 +151,7 @@ export interface ProjectAssistantActionFeedItem {
   severity: ProjectAssistantActionSeverity
   groupKey?: string
   groupTitle?: string
-  sequence?: number
+  sequence: number
   diagnostic?: ProjectAssistantActionDiagnostic
 }
 
@@ -158,7 +202,7 @@ export interface ProjectAssistantUIInterruptRequest {
   kind?: 'permission' | 'follow_up'
   surfaceId?: string
   description?: string
-  questions?: string[]
+  questions?: Array<ProjectAssistantFollowUpQuestion | string>
   status?: 'pending' | 'resolved'
   action?: {
     runId: string
@@ -167,10 +211,27 @@ export interface ProjectAssistantUIInterruptRequest {
   }
 }
 
+export interface ProjectAssistantFollowUpQuestion {
+  id: string
+  header?: string
+  question: string
+  isOther?: boolean
+  options?: ProjectAssistantFollowUpQuestionOption[]
+}
+
+export interface ProjectAssistantFollowUpQuestionOption {
+  label: string
+  description: string
+}
+
+export interface ProjectAssistantFollowUpAnswer {
+  answers: string[]
+}
+
 export interface ProjectAssistantResumeResponse {
   runID: string
   requestID: string
-  status: 'pending_permission' | 'pending_input' | 'running' | 'completed' | 'aborted'
+  status: 'pending_permission' | 'pending_input' | 'running' | 'completed' | 'failed' | 'interrupted' | 'aborted'
   decision?: 'allow' | 'deny'
   uiEvents?: ProjectAssistantUIEvent[]
   assistantMessage?: ProjectMessage

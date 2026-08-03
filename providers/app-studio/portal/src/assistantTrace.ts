@@ -33,27 +33,17 @@ export function buildAssistantTrace(
   progress: AssistantProgress,
   actions: ProjectAssistantActionFeedItem[],
 ): AssistantTraceBlock[] {
-  const messageSequences = progress.messageSequences ?? []
-  const allSequences = [
-    ...messageSequences,
-    ...actions.map((item) => item.sequence ?? 0),
-  ]
-  const chronological = messageSequences.length === progress.messages.length
-    && allSequences.every((sequence) => sequence > 0)
-    && new Set(allSequences).size === allSequences.length
-  if (!chronological) return legacyAssistantTrace(progress, actions)
-
   const ordered: OrderedTraceItem[] = [
     ...progress.messages.map((message, index): OrderedProgress => ({
       kind: 'progress',
       index,
-      sequence: messageSequences[index] ?? 0,
+      sequence: progress.messageSequences[index],
       message,
     })),
     ...actions.map((item, index): OrderedAction => ({
       kind: 'action',
       index,
-      sequence: item.sequence ?? 0,
+      sequence: item.sequence,
       item,
     })),
   ]
@@ -83,28 +73,8 @@ export function buildAssistantTrace(
   return blocks
 }
 
-function legacyAssistantTrace(
-  progress: AssistantProgress,
-  actions: ProjectAssistantActionFeedItem[],
-): AssistantTraceBlock[] {
-  return [
-    ...(actions.length > 0 ? [{
-      kind: 'actions' as const,
-      key: 'actions-legacy',
-      items: [...actions],
-    }] : []),
-    ...progress.messages.map((message, index) => ({
-      kind: 'progress' as const,
-      key: `progress-${index}`,
-      message,
-    })),
-  ]
-}
-
 function compareTraceItems(left: OrderedTraceItem, right: OrderedTraceItem): number {
   if (left.sequence !== right.sequence) {
-    if (left.sequence === 0) return -1
-    if (right.sequence === 0) return 1
     return left.sequence - right.sequence
   }
   if (left.kind !== right.kind) return left.kind === 'action' ? -1 : 1

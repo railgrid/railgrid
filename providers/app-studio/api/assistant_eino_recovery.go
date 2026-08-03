@@ -22,18 +22,246 @@ import (
 	"io"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	openaimodel "github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/middlewares/patchtoolcalls"
+	einomodel "github.com/cloudwego/eino/components/model"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"google.golang.org/genai"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+
+	"github.com/faroshq/provider-app-studio/workspace"
 )
+
+const (
+	projectEinoAssistantDefaultModelStreamIdleTimeout = 300 * time.Second
+	projectEinoAssistantDefaultModelMaxRetries        = 5
+	// Keep execution bounded even when settings bypass the HTTP/Secret parser.
+	// The normal App Studio configuration surface remains narrower, but retry
+	// policy must also be safe for internal callers that construct settings
+	// directly.
+	projectEinoAssistantMaxModelRetries = 100
+)
+
+type projectEinoAssistantModelTimeoutError struct {
+	Code     string
+	Duration time.Duration
+}
+
+func (e *projectEinoAssistantModelTimeoutError) Error() string {
+	timeout := projectEinoAssistantDefaultModelStreamIdleTimeout
+	if e != nil && e.Duration > 0 {
+		timeout = e.Duration
+	}
+	if e != nil && e.Code == "model_stream_idle_timeout" {
+		return "model_stream_idle_timeout: assistant model stream produced no new data for " + timeout.String()
+	}
+	return "model_first_response_timeout: assistant model produced no first response for " + timeout.String()
+}
+
+func (*projectEinoAssistantModelTimeoutError) Timeout() bool   { return true }
+func (*projectEinoAssistantModelTimeoutError) Temporary() bool { return true }
+
+type projectEinoAssistantIncompleteStreamError struct{}
+
+func (*projectEinoAssistantIncompleteStreamError) Error() string {
+	return "model_stream_incomplete: assistant model stream ended before a completion marker"
+}
+
+func (*projectEinoAssistantIncompleteStreamError) Unwrap() error { return io.ErrUnexpectedEOF }
+
+type projectEinoAssistantBoundedModel struct {
+	einomodel.BaseChatModel
+
+	firstResponseTimeout time.Duration
+	streamIdleTimeout    time.Duration
+	requireCompletion    bool
+}
+
+func projectEinoAssistantBoundModel(base einomodel.BaseChatModel, settings projectLLMSettings) einomodel.BaseChatModel {
+	if base == nil {
+		return nil
+	}
+	idleTimeout := settings.StreamIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = projectEinoAssistantDefaultModelStreamIdleTimeout
+	}
+	return &projectEinoAssistantBoundedModel{
+		BaseChatModel:        base,
+		firstResponseTimeout: idleTimeout,
+		streamIdleTimeout:    idleTimeout,
+		requireCompletion:    true,
+	}
+}
+
+func (m *projectEinoAssistantBoundedModel) Generate(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.Message, error) {
+	type result struct {
+		message *schema.Message
+		err     error
+	}
+	modelCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	resultCh := make(chan result)
+	go func() {
+		message, err := m.BaseChatModel.Generate(modelCtx, input, opts...)
+		select {
+		case resultCh <- result{message: message, err: err}:
+		case <-modelCtx.Done():
+		}
+	}()
+	timer := time.NewTimer(m.firstResponseTimeout)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+		return nil, &projectEinoAssistantModelTimeoutError{Code: "model_first_response_timeout", Duration: m.firstResponseTimeout}
+	case result := <-resultCh:
+		return result.message, result.err
+	}
+}
+
+func (m *projectEinoAssistantBoundedModel) Stream(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.StreamReader[*schema.Message], error) {
+	type result struct {
+		reader *schema.StreamReader[*schema.Message]
+		err    error
+	}
+	started := time.Now()
+	modelCtx, cancel := context.WithCancel(ctx)
+	resultCh := make(chan result)
+	go func() {
+		reader, err := m.BaseChatModel.Stream(modelCtx, input, opts...)
+		select {
+		case resultCh <- result{reader: reader, err: err}:
+		case <-modelCtx.Done():
+			if reader != nil {
+				reader.Close()
+			}
+		}
+	}()
+	timer := time.NewTimer(m.firstResponseTimeout)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		cancel()
+		return nil, ctx.Err()
+	case <-timer.C:
+		cancel()
+		return nil, &projectEinoAssistantModelTimeoutError{Code: "model_first_response_timeout", Duration: m.firstResponseTimeout}
+	case result := <-resultCh:
+		if result.err != nil {
+			cancel()
+			return nil, result.err
+		}
+		if result.reader == nil {
+			cancel()
+			return nil, errors.New("assistant model returned no response stream")
+		}
+		remaining := m.firstResponseTimeout - time.Since(started)
+		return projectEinoAssistantBoundedStream(
+			ctx,
+			modelCtx,
+			cancel,
+			result.reader,
+			remaining,
+			m.streamIdleTimeout,
+			m.requireCompletion,
+		), nil
+	}
+}
+
+func projectEinoAssistantBoundedStream(
+	ctx context.Context,
+	modelCtx context.Context,
+	cancel context.CancelFunc,
+	source *schema.StreamReader[*schema.Message],
+	firstResponseTimeout time.Duration,
+	idleTimeout time.Duration,
+	requireCompletion bool,
+) *schema.StreamReader[*schema.Message] {
+	reader, writer := schema.Pipe[*schema.Message](1)
+	go func() {
+		defer cancel()
+		defer source.Close()
+		defer writer.Close()
+		wait := firstResponseTimeout
+		first := true
+		completed := false
+		for {
+			if wait <= 0 {
+				writer.Send(nil, &projectEinoAssistantModelTimeoutError{Code: "model_first_response_timeout", Duration: firstResponseTimeout})
+				return
+			}
+			type receiveResult struct {
+				message *schema.Message
+				err     error
+			}
+			received := make(chan receiveResult)
+			go func() {
+				message, err := source.Recv()
+				select {
+				case received <- receiveResult{message: message, err: err}:
+				case <-modelCtx.Done():
+				}
+			}()
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				writer.Send(nil, ctx.Err())
+				return
+			case <-modelCtx.Done():
+				timer.Stop()
+				writer.Send(nil, modelCtx.Err())
+				return
+			case <-timer.C:
+				code := "model_stream_idle_timeout"
+				if first {
+					code = "model_first_response_timeout"
+				}
+				writer.Send(nil, &projectEinoAssistantModelTimeoutError{Code: code, Duration: wait})
+				return
+			case result := <-received:
+				timer.Stop()
+				if errors.Is(result.err, io.EOF) {
+					if requireCompletion && !completed {
+						writer.Send(nil, &projectEinoAssistantIncompleteStreamError{})
+					}
+					return
+				}
+				if result.err != nil {
+					writer.Send(nil, result.err)
+					return
+				}
+				if writer.Send(result.message, nil) {
+					return
+				}
+				if result.message != nil && result.message.ResponseMeta != nil &&
+					strings.TrimSpace(result.message.ResponseMeta.FinishReason) != "" {
+					completed = true
+				}
+				first = false
+				wait = idleTimeout
+			}
+		}
+	}()
+	return reader
+}
 
 var projectEinoAssistantSerializedCookiePattern = regexp.MustCompile(
 	`(?i)\\?["']\b(?:set-cookie|cookie)\b\\?["'][ \t]*:[ \t]*\\?["']`,
@@ -75,8 +303,7 @@ var projectEinoAssistantSecretPatterns = []struct {
 
 func projectEinoAssistantShouldRetryModelError(err error) bool {
 	if err == nil ||
-		errors.Is(err, context.Canceled) ||
-		errors.Is(err, context.DeadlineExceeded) {
+		errors.Is(err, context.Canceled) {
 		return false
 	}
 
@@ -111,11 +338,26 @@ func projectEinoAssistantRetryableHTTPStatus(status int) bool {
 }
 
 func projectEinoAssistantModelRetryConfig(
-	_ projectAssistantRunRequest,
+	req projectAssistantRunRequest,
 	_ *projectEinoAssistantRunState,
 ) *adk.ModelRetryConfig {
+	maxRetries := projectEinoAssistantModelMaxRetries(req.LLM)
+	baseBackoff := req.LLM.RetryBackoff
+	if baseBackoff <= 0 {
+		baseBackoff = 200 * time.Millisecond
+	}
 	return &adk.ModelRetryConfig{
-		MaxRetries: 2,
+		MaxRetries: maxRetries,
+		BackoffFunc: func(_ context.Context, attempt int) time.Duration {
+			if attempt < 1 {
+				attempt = 1
+			}
+			delay := baseBackoff * time.Duration(1<<min(attempt-1, 6))
+			if delay > 10*time.Second {
+				return 10 * time.Second
+			}
+			return delay
+		},
 		ShouldRetry: func(
 			ctx context.Context,
 			retryCtx *adk.RetryContext,
@@ -123,13 +365,17 @@ func projectEinoAssistantModelRetryConfig(
 			if retryCtx == nil || ctx.Err() != nil {
 				return &adk.RetryDecision{}
 			}
-			if retryCtx.OutputMessage == nil {
+			if retryCtx.Err != nil {
+				if retryCtx.RetryAttempt > maxRetries {
+					return &adk.RetryDecision{}
+				}
 				if !projectEinoAssistantShouldRetryModelError(retryCtx.Err) {
 					return &adk.RetryDecision{}
 				}
+				projectEinoAssistantPublishRetryAttempt(req.StreamCallbacks, retryCtx.RetryAttempt, maxRetries)
 				return &adk.RetryDecision{
 					Retry:        true,
-					RejectReason: "transient model provider failure",
+					RejectReason: "transport failure",
 				}
 			}
 			return &adk.RetryDecision{}
@@ -137,9 +383,41 @@ func projectEinoAssistantModelRetryConfig(
 	}
 }
 
+func projectEinoAssistantModelMaxRetries(settings projectLLMSettings) int {
+	maxRetries := settings.MaxRetries
+	if maxRetries == 0 && !settings.MaxRetriesConfigured {
+		return projectEinoAssistantDefaultModelMaxRetries
+	}
+	if maxRetries < 0 {
+		return 0
+	}
+	if maxRetries > projectEinoAssistantMaxModelRetries {
+		return projectEinoAssistantMaxModelRetries
+	}
+	return maxRetries
+}
+
 func projectEinoAssistantWillRetry(err error) bool {
 	var retryError *adk.WillRetryError
 	return errors.As(err, &retryError)
+}
+
+func projectEinoAssistantPublishRetryAttempt(
+	callbacks projectAssistantStreamCallbacks,
+	retryAttempt int,
+	maxRetries int,
+) {
+	if callbacks.OnStatus == nil {
+		return
+	}
+	callbacks.OnStatus(projectEinoAssistantReconnectStatus(retryAttempt, maxRetries))
+}
+
+func projectEinoAssistantReconnectStatus(retryAttempt, maxRetries int) string {
+	if retryAttempt < 1 {
+		retryAttempt = 1
+	}
+	return "Model connection was interrupted; reconnecting " + strconv.Itoa(retryAttempt) + "/" + strconv.Itoa(maxRetries)
 }
 
 type projectEinoAssistantSafeToolErrorMiddleware struct {
@@ -147,7 +425,6 @@ type projectEinoAssistantSafeToolErrorMiddleware struct {
 }
 
 var errProjectAssistantPlanRetirement = errors.New("assistant plan retirement failed")
-var errProjectAssistantPlanGrantPersistence = errors.New("assistant plan grant persistence failed")
 
 func (m *projectEinoAssistantSafeToolErrorMiddleware) WrapInvokableToolCall(
 	_ context.Context,
@@ -199,20 +476,73 @@ func (m *projectEinoAssistantSafeToolErrorMiddleware) WrapEnhancedInvokableToolC
 }
 
 func projectEinoAssistantSafeToolFailureResult(toolName string, err error) string {
+	const prefix = "Tool call failed: "
 	safeReason := projectEinoAssistantSafeErrorText(err)
 	recovery := ""
 	lowerReason := strings.ToLower(safeReason)
 	switch {
-	case toolName == projectToolWriteFile && strings.Contains(lowerReason, "create-only"):
-		recovery = " Recovery: do not retry write_file for this existing path. Use apply_patch with a small exact replacement."
-	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, "oldtext was not found"):
-		recovery = " Recovery: reread the relevant target section, copy a small unique exact oldText anchor, and retry apply_patch. Do not fall back to write_file."
-	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, "oldtext matched"):
-		recovery = " Recovery: add surrounding context so oldText is unique and retry apply_patch. Use replaceAll only when every match should change; do not fall back to write_file."
-	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, "patch made no changes"):
-		recovery = " Recovery: choose newText that implements the requested behavior and differs from oldText, then retry apply_patch. Do not verify an unchanged workspace."
+	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, "add file content cannot contain hunk headers or nested patch envelopes"):
+		recovery = " Recovery: return one outer *** Begin Patch / *** End Patch envelope. Put each Add File, Update File, or Delete File section directly inside it. Under Add File, emit only the new file content—no @@ lines and no nested Begin/End markers unless they are literal content lines prefixed with '+'. Every content line must begin with '+' (the parser strips it); encode literal marker-looking content as '+ *** Update File: example'."
+	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, "numeric unified-diff hunk headers are not supported"):
+		recovery = " Recovery: this tool treats text after @@ as a literal source anchor. Retry with exactly @@ or @@ followed by an exact class/function line copied from the file; never use line coordinates such as @@ -12,4 +12,5 @@."
+	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, string(workspace.PatchErrorContextNotFound)):
+		recovery = " Recovery: reread the named file around the failed hunk, then retry one contextual patch with current unchanged lines. A literal @@ anchor positions the hunk after that unchanged line and must not be repeated in the hunk body; use plain @@ when changing the first line or the anchor line itself."
+	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, string(workspace.PatchErrorContextAmbiguous)):
+		recovery = " Recovery: add more stable unchanged lines or an @@ class/function anchor so the failed hunk matches exactly one location."
+	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, string(workspace.PatchErrorNoChanges)):
+		recovery = " Recovery: revise the contextual patch so it makes the requested change; do not verify an unchanged workspace."
+	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, string(workspace.PatchErrorWorkspaceConflict)):
+		recovery = " Recovery: reread every affected existing file because workspace contents changed during the edit, then build a new contextual patch from current evidence."
+	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, string(workspace.PatchErrorStrategyChange)):
+		recovery = " Recovery: reread the affected current source and submit a materially different patch; the same patch will not be dispatched again at this workspace revision."
+	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, string(workspace.PatchErrorInvalidPatch)):
+		recovery = " Recovery: return one valid *** Begin Patch / *** End Patch envelope. Every Add File content line must begin with '+' (the parser strips it); encode literal marker-looking content as '+ *** Update File: example'. Start with Add File, Update File, or Delete File; for a move, put Move to immediately below Update File for the old path."
 	}
-	return truncateProjectToolInfo("Tool call failed: " + safeReason + recovery)
+	if recovery == "" {
+		return truncateProjectToolInfo(prefix + safeReason)
+	}
+	reasonLimit := projectToolInfoLimit - len(prefix) - len(recovery)
+	safeReason = projectEinoAssistantTruncateFailureReason(safeReason, reasonLimit)
+	return prefix + safeReason + recovery
+}
+
+func projectEinoAssistantPatchRecoveryInstruction(code workspace.PatchErrorCode) string {
+	switch code {
+	case workspace.PatchErrorContextNotFound:
+		return "Reread the named file around the failed hunk and build a new patch from the returned current source."
+	case workspace.PatchErrorContextAmbiguous:
+		return "Add stable unchanged lines or a literal class/function anchor so the hunk matches exactly one location."
+	case workspace.PatchErrorWorkspaceConflict:
+		return "Reread every affected existing file and rebuild the patch from current workspace contents."
+	case workspace.PatchErrorStrategyChange:
+		return "Reread the affected source and submit a materially different patch; this patch will not be dispatched again at the current revision."
+	case workspace.PatchErrorNoChanges:
+		return "Revise the patch so it makes the requested source change."
+	default:
+		return "Correct the patch using the typed error details before retrying."
+	}
+}
+
+func projectEinoAssistantTruncateFailureReason(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 {
+		return ""
+	}
+	if len(value) <= limit {
+		return value
+	}
+	if limit <= 3 {
+		return strings.Repeat(".", limit)
+	}
+	var out strings.Builder
+	for _, char := range value {
+		encoded := string(char)
+		if out.Len()+len(encoded) > limit-3 {
+			break
+		}
+		out.WriteString(encoded)
+	}
+	return strings.TrimSpace(out.String()) + "..."
 }
 
 func projectEinoAssistantPropagateToolError(err error) bool {
@@ -223,7 +553,6 @@ func projectEinoAssistantPropagateToolError(err error) bool {
 		errors.Is(err, context.DeadlineExceeded) ||
 		errors.Is(err, adk.ErrStreamCanceled) ||
 		errors.Is(err, errProjectAssistantPlanRetirement) ||
-		errors.Is(err, errProjectAssistantPlanGrantPersistence) ||
 		apierrors.IsForbidden(err) ||
 		apierrors.IsUnauthorized(err)
 }

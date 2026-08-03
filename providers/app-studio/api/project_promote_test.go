@@ -50,10 +50,10 @@ func TestProjectTemplateProdBindingFillsImagesAndForcesMode(t *testing.T) {
 	// User form values: production knobs, plus an attempt to override
 	// platform-owned fields that must be ignored.
 	values := map[string]any{
-		"frontendPort": float64(8080),
-		"backendPort":  float64(3000),
-		"name":         "attacker-name",
-		"kedgeMode":    "development",
+		"frontendPort":  float64(8080),
+		"backendPort":   float64(3000),
+		"name":          "attacker-name",
+		"kedgeMode":     "development",
 		"frontendImage": "ghcr.io/evil/x@sha256:ccc",
 	}
 	binding, err := projectTemplateProdBinding(p, applicationTemplateForPromote(), images, values)

@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -53,6 +54,9 @@ type projectAssistantToolSpec struct {
 	Description string
 	Parameters  json.RawMessage
 	Risk        projectAssistantToolRisk
+	// ParallelSafe is an explicit server-owned contract. The zero value is
+	// exclusive, and effectful tools remain exclusive even if misconfigured.
+	ParallelSafe bool
 }
 
 func (s projectAssistantToolSpec) chatTool() chatTool {
@@ -78,16 +82,16 @@ func projectAssistantToolBundleForSpec(spec projectAssistantToolSpec) projectAss
 	switch projectToolBaseName(spec.Name) {
 	case projectToolPlanProjectChanges, projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment, projectToolInspectDevelopmentTemplates, projectToolCheckProjectBuild, projectToolGetBuildLogs:
 		return projectAssistantToolBundleWorkflow
-	case projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolGetPreviewConsoleLogs,
+	case projectToolGetRuntimeStatus, projectToolGetPreviewURL, projectToolInspectDevelopmentPreview, projectToolGetPreviewConsoleLogs,
 		projectToolGetRuntimeLogs, projectToolVerifyDevelopmentRuntime, projectToolRestartRuntime, projectToolSetRuntimeEnv, projectToolPromoteProject, projectToolRebuildProject:
 		return projectAssistantToolBundleRuntime
 	case projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep:
 		return projectAssistantToolBundleWorkspaceRead
-	case projectToolWriteFile, projectToolApplyPatch, projectToolMkdir:
+	case projectToolApplyPatch:
 		return projectAssistantToolBundleEdit
 	case projectToolCommitProjectFiles, projectToolCommitFiles:
 		return projectAssistantToolBundleRepo
-	case projectToolAskFollowUp, projectToolRequestProjectPlanApproval, projectToolDefineInitialProjectPlan:
+	case projectToolAskFollowUp, projectToolDefineInitialProjectPlan:
 		return projectAssistantToolBundleCollaboration
 	// Template selection shapes the development ENVIRONMENT, not workspace
 	// files — it must be callable from the requirements-interview turns
@@ -114,19 +118,18 @@ func projectAssistantToolBundleForSpec(spec projectAssistantToolSpec) projectAss
 }
 
 type projectAssistantToolCallRequest struct {
-	Identity              identity
-	Project               *aiv1alpha1.Project
-	Repository            *ProjectRepositoryView
-	WorkspaceScope        workspace.Scope
-	ProjectRepositoryRef  string
-	MCPEndpoint           string
-	HTTPRequest           *http.Request
-	SessionSnapshot       *projectEinoAssistantSessionSnapshot
-	AssistantRunID        string
-	InitialBuild          bool
-	EnforceMutationSafety bool
-	ObservedReadFiles     []string
-	Arguments             map[string]any
+	Identity             identity
+	Project              *aiv1alpha1.Project
+	Repository           *ProjectRepositoryView
+	WorkspaceScope       workspace.Scope
+	ProjectRepositoryRef string
+	MCPEndpoint          string
+	HTTPRequest          *http.Request
+	SessionSnapshot      *projectEinoAssistantSessionSnapshot
+	AssistantRunID       string
+	InitialBuild         bool
+	RunState             *projectEinoAssistantRunState
+	Arguments            map[string]any
 }
 
 func refreshProjectToolSnapshot(current, updated *aiv1alpha1.Project) {
@@ -158,12 +161,19 @@ func (t projectAssistantToolFunc) Call(ctx context.Context, req projectAssistant
 }
 
 func projectAssistantToolJSONResult(out any, err error) (string, error) {
-	if err != nil {
-		return "", err
+	raw, encodeErr := json.Marshal(out)
+	if encodeErr != nil {
+		if err != nil {
+			return "", errors.Join(err, fmt.Errorf("encode local tool result: %w", encodeErr))
+		}
+		return "", fmt.Errorf("encode local tool result: %w", encodeErr)
 	}
-	raw, err := json.Marshal(out)
 	if err != nil {
-		return "", fmt.Errorf("encode local tool result: %w", err)
+		// Preserve a concrete partial result alongside its error. Contextual
+		// patch rollback can fail after changing files, and the execution layer
+		// must see those paths so it can invalidate stale reads and retain the
+		// actual durable dirty-workspace state.
+		return string(raw), err
 	}
 	return string(raw), nil
 }

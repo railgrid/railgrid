@@ -14,6 +14,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/store"
@@ -106,7 +107,7 @@ func TestSystemPromptCarriesComponentDirectoryContract(t *testing.T) {
 	p.Name = "demo"
 	p.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: "application"}
 
-	prompt := projectSystemPrompt(p, nil)
+	prompt := projectSystemPromptForMode(p, nil, projectAssistantCollaborationModeDefault, false)
 
 	for _, required := range []string{
 		"developmentComponents",
@@ -227,12 +228,13 @@ func TestDevelopmentSyncFailureSurfacesAsVerificationBlocker(t *testing.T) {
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1"}
 	project := &aiv1alpha1.Project{}
 	project.Name = "demo"
+	project.UID = "project-uid-demo"
 
-	if got := server.lastDevelopmentSyncFailure(id, project.Name); got != "" {
+	if got := server.lastDevelopmentSyncFailure(id, project); got != "" {
 		t.Fatalf("lastDevelopmentSyncFailure = %q, want empty before any failure", got)
 	}
 
-	server.recordDevelopmentSyncFailure(id, project.Name, "the last workspace sync after write_file failed: boom")
+	server.recordDevelopmentSyncFailure(id, project, "the last workspace sync after write_file failed: boom")
 	runCtx := projectAssistantWorkflowRunContext{Server: server, Project: project, Identity: id}
 	if got := projectAssistantLastSyncFailure(runCtx); !strings.Contains(got, "boom") {
 		t.Fatalf("projectAssistantLastSyncFailure = %q, want the recorded reason", got)
@@ -258,7 +260,7 @@ func TestDevelopmentSyncFailureSurfacesAsVerificationBlocker(t *testing.T) {
 
 	// A later successful sync must clear it, so the blocker never outlives the
 	// problem it described.
-	server.clearDevelopmentSyncFailure(id, project.Name)
+	server.clearDevelopmentSyncFailure(id, project)
 	result, err = formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
 		RunContext: runCtx,
 		Runtime: &projectAssistantRuntimeWorkflowResult{
@@ -273,6 +275,59 @@ func TestDevelopmentSyncFailureSurfacesAsVerificationBlocker(t *testing.T) {
 	for _, b := range result.Blockers {
 		if strings.Contains(b, "boom") {
 			t.Errorf("blockers = %v, want the cleared sync failure gone", result.Blockers)
+		}
+	}
+}
+
+func TestDevelopmentSyncSchedulingPreservesMutationOrder(t *testing.T) {
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1"}
+	project := &aiv1alpha1.Project{}
+	project.Name = "demo"
+	project.UID = "project-uid-demo"
+
+	firstEntered := make(chan struct{})
+	secondEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	server.developmentSyncAfterMutation = func(_ identity, _ *aiv1alpha1.Project, name string) error {
+		switch name {
+		case projectToolApplyPatch:
+			close(firstEntered)
+			<-releaseFirst
+		case projectToolSelectTemplate:
+			close(secondEntered)
+		}
+		return nil
+	}
+
+	firstDone := make(chan error, 1)
+	secondDone := make(chan error, 1)
+	if !server.scheduleDevelopmentSyncAfterMutationWithCompletion(id, project, projectToolApplyPatch, func(err error) { firstDone <- err }) {
+		t.Fatal("first development sync was not scheduled")
+	}
+	if !server.scheduleDevelopmentSyncAfterMutationWithCompletion(id, project, projectToolSelectTemplate, func(err error) { secondDone <- err }) {
+		t.Fatal("second development sync was not scheduled")
+	}
+
+	select {
+	case <-firstEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first development sync did not start")
+	}
+	select {
+	case <-secondEntered:
+		t.Fatal("second development sync overtook the first mutation")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(releaseFirst)
+	for name, done := range map[string]<-chan error{"first": firstDone, "second": secondDone} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s development sync: %v", name, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s development sync did not complete", name)
 		}
 	}
 }

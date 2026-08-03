@@ -27,8 +27,6 @@ import (
 
 	approvaltool "github.com/cloudwego/eino-examples/adk/common/tool"
 	"github.com/cloudwego/eino/adk"
-	"github.com/cloudwego/eino/adk/middlewares/dynamictool/toolsearch"
-	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/adk/prebuilt/deep"
 	einomodel "github.com/cloudwego/eino/components/model"
 	einotool "github.com/cloudwego/eino/components/tool"
@@ -40,12 +38,12 @@ import (
 )
 
 const (
-	projectEinoAssistantSummaryContextMessages  = 128
-	projectEinoAssistantSummaryContextTokens    = 24000
-	projectEinoAssistantClosingEvidenceMaxItems = 64
-	projectEinoAssistantSummaryInstruction      = "Summarize this App Studio project session for the next builder turn. Preserve user requirements, accepted plans, files touched or inspected, unresolved questions, repository/runtime state, and any constraints. Keep it concise and operational."
-	projectEinoAssistantDeepInstruction         = "Use only the currently exposed App Studio tools; do not assume shell, browser, host filesystem, or subagent access. " + projectAssistantBrowserConsoleTrustInstruction + "You still cannot see, screenshot, navigate, or interact with the browser. For a new project's initial build, first call define_initial_project_plan; this internal plan is auto-authorized and must include concrete acceptance criteria. Source mutations require an approved target-path grant and successful development verification before commit. For multi-step source work, use write_todos to keep the visible execution-plan progress current; never create todo.md or todos.md for execution tracking. Keep exactly one step in progress, mark every step complete only when its outcome is satisfied, never include secrets or raw tool data, and remember that todos track progress but grant no authority. Do not add repository commit or handoff as a todo step; App Studio enters a dedicated commit phase after runtime verification. Runtime, infrastructure, and repository effects use their exact tools and approval boundaries. Never tell the user to approve or authorize a phase unless you have actually called a permission-bearing tool and App Studio created a pending permission request. Repair defects found by verification inside the same objective; do not invent a next phase for unfinished work. Keep changes minimal and focused on the user's request. After initial project creation, write_file may create new paths but must not replace existing files; read each existing target in the current turn and use apply_patch for exact, localized changes. Treat successful whole-file writes as authoritative; do not reread them unless a later result shows a conflict or failure. Batch independent reads, inspect existing content before editing, and report blockers honestly instead of calling unrelated tools. Finish with a concise evidence-based result."
-	projectEinoAssistantNoOutputFallback        = "I couldn't produce a response for that turn. Please try again or rephrase the request, and I can continue from the current project context."
+	projectEinoAssistantClosingEvidenceMaxItems      = 64
+	projectEinoAssistantLiveContextPrefix            = "App Studio live request context (regenerated before every model sample):\n"
+	projectEinoAssistantProjectPromptPrefix          = "You are the assistant for a persistent Kedge Project workspace. "
+	projectEinoAssistantSessionSnapshotPrefix        = "Current project snapshot (authoritative for the start of this turn;"
+	projectAssistantContextualPatchFormatInstruction = "Use exactly one outer *** Begin Patch / *** End Patch envelope. Inside an Add File section, write only the new file content; every content line must begin with '+' and the parser strips that prefix. A leading '+' disambiguates literal lines that look like protocol markers (for example '+ *** Update File: example'). A hunk header must be exactly '@@' or '@@ <literal source line copied from the file>'. Never emit Git/unified-diff line coordinates such as '@@ -12,4 +12,5 @@' because text after '@@' is searched literally in the file. A literal anchor is an unchanged line that positions the hunk after that line; do not repeat the anchor in the hunk body. Use plain '@@' when changing the first line or the anchor line itself. Put multiple hunks for the same file in source order, from the earliest unchanged context to the latest. To rename or move a file, start an Update File section for the existing path and put '*** Move to: <new path>' immediately beneath it; Move to is not a standalone section. Valid edit example:\n*** Begin Patch\n*** Update File: src/App.jsx\n@@ function App() {\n-  const title = \"Old\";\n+  const title = \"New\";\n*** End Patch\nValid move example:\n*** Begin Patch\n*** Update File: src/old.jsx\n*** Move to: src/new.jsx\n*** End Patch\n"
+	projectEinoAssistantV2DeepInstruction            = "You are the App Studio project assistant. Use only the tools exposed in this turn; do not assume shell, browser, host filesystem, or subagent access. " + projectAssistantBrowserConsoleTrustInstruction + "Browser inspection is available only when inspect_development_preview is exposed; it is read-only and cannot click, type, press keys, or run arbitrary JavaScript. Static text and role assertions verify rendered state only; they never verify keyboard, click, form, or other interaction behavior. Describe such behavior as source-reviewed but not browser-exercised, and never say it is live, working, or independently verified from static assertions. The server-selected Default, Plan, or Review collaboration mode is fixed for this turn. Plan and Review are read-only. In Default, infer inspection versus action authority from the user's request, diagnose reported defects from current evidence before editing, and keep changes narrowly scoped. When the user asks you to change, build, or fix the project, persist until the request is handled end-to-end whenever feasible: do not stop at analysis or a partial fix, and carry the work through implementation, relevant verification, and a clear explanation unless the user pauses, redirects, or required authority or input is missing. Tool calls continue the turn; a final assistant message ends it. You may call independent tools together when their arguments do not depend on one another. The only source-mutation tool is apply_patch; read existing sources before patching them and preserve unrelated workspace state. " + projectAssistantContextualPatchFormatInstruction + "Delete File and Move to are supported within authorized workspace paths. Dirty files are workspace information, not an obligation to verify or commit. Use verify_development_runtime only when operational synchronization, process, log, or preview reachability evidence is relevant. After changing a dependency manifest, start command, or build/runtime configuration, restart the development runtime before verification because file synchronization does not reload process configuration. Never call commit_project_files unless the user explicitly asked to persist changes to the repository. Do not claim rendered content, interactions, data flow, application behavior, or acceptance criteria were independently verified unless inspect_development_preview actually observed them. Finish with the model response that directly answers the user; do not add status boilerplate."
 )
 
 var errProjectAssistantNoOutput = errors.New("assistant model produced no accepted output")
@@ -96,32 +94,17 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	if e.newTools == nil {
 		return projectAssistantRunResult{}, errors.New("eino tool factory is not configured")
 	}
+	if req.Workspace == nil && e.server != nil {
+		req.Workspace = e.server.workspaces
+	}
 
 	req.TurnPolicy = normalizeProjectAssistantTurnPolicy(req.TurnPolicy, req.TurnProfile)
 	req.TurnProfile = req.TurnPolicy.profile
 	runState := newProjectEinoAssistantRunState()
 	runState.SetTurnPolicy(req.TurnPolicy)
 	runState.SetProjectRepositoryRef(projectEinoAssistantProjectRepositoryRef(req))
-	if projectAssistantTurnProfileAllowsMutation(req.TurnProfile) {
-		authority := e.executionAuthority(req)
-		loaded, err := authority.Load(ctx)
-		if err != nil {
-			return projectAssistantRunResult{}, fmt.Errorf("load assistant execution authority: %w", err)
-		}
-		runState.SetApprovedPlanGrantRevision(loaded.GrantRevision)
-		if loaded.ApprovedPlan != nil {
-			runState.ApprovePlan(*loaded.ApprovedPlan)
-		}
-		if loaded.ExecutionPlan != nil {
-			runState.SetExecutionPlan(*loaded.ExecutionPlan, loaded.ExecutionPlanRevision)
-			runState.ApprovePlan(*loaded.ExecutionPlan)
-			if progress, ok := projectEinoAssistantLatestPlanProgress(req.History); ok {
-				runState.SetPlanProgress(progress)
-			}
-			if projectEinoAssistantHistoryHasSourceMutation(req.History) {
-				runState.RecordSourceMutation()
-			}
-		}
+	if projectAssistantTurnProfileAllowsMutation(runState.TurnPolicy().profile) {
+		e.resumeCurrentDevelopmentSync(req, runState)
 	}
 	// A fresh Project creation prompt is explicit authorization to build the
 	// initial source tree. Keep this grant run-local: it may survive an
@@ -130,10 +113,19 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	if req.InitialApprovedPlan != nil {
 		runState.ApprovePlan(*req.InitialApprovedPlan)
 	}
+	if e.server != nil && e.server.store != nil {
+		req.eventLedger = newProjectAssistantRunEventLedger(e.server.store, req.MessageScope, projectAssistantRunID(req))
+	}
+	if err := e.restoreProjectAssistantDirtyBundle(ctx, req, runState); err != nil {
+		return projectAssistantRunResult{}, err
+	}
 
 	checkpointID := newProjectAssistantRunID()
 	auditRecorder, err := e.startProjectAssistantRunAudit(ctx, &req, checkpointID)
 	if err != nil {
+		return projectAssistantRunResult{}, err
+	}
+	if err := projectEinoAssistantConfigureRolloutBudget(ctx, e.server, req, runState, auditRecorder); err != nil {
 		return projectAssistantRunResult{}, err
 	}
 	checkpointStore := newProjectEinoAssistantCheckpointStore()
@@ -192,38 +184,14 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 	if e.newTools == nil {
 		return projectAssistantRunResult{}, errors.New("eino tool factory is not configured")
 	}
+	if req.Workspace == nil && e.server != nil {
+		req.Workspace = e.server.workspaces
+	}
 
-	hasWorkItem := req.AssistantRun != nil && strings.TrimSpace(req.AssistantRun.WorkItemID) != ""
-	checkpointCarriesAuthority := state.ApprovedPlan != nil || strings.TrimSpace(state.ApprovedPlanGrantRevision) != "" ||
-		state.ExecutionPlan != nil || strings.TrimSpace(state.ExecutionPlanRevision) != ""
-	checkpointAllowsMutation := projectAssistantTurnProfileAllowsMutation(state.TurnPolicy.Profile)
-	if !hasWorkItem && (checkpointAllowsMutation || checkpointCarriesAuthority) {
-		return projectAssistantRunResult{}, store.ErrAssistantWorkItemConflict
-	}
-	var approvedPlan *projectAssistantApprovedPlan
-	var revision string
-	if hasWorkItem {
-		if e.server == nil && req.executionAuthority == nil {
-			return projectAssistantRunResult{}, errors.New("server is required to validate resumed assistant plan grant")
-		}
-		loaded, err := e.executionAuthority(req).Load(ctx)
-		if err != nil {
-			return projectAssistantRunResult{}, fmt.Errorf("validate resumed assistant plan grant: %w", err)
-		}
-		approvedPlan, revision = loaded.ApprovedPlan, loaded.GrantRevision
-		if strings.TrimSpace(state.ApprovedPlanGrantRevision) != revision {
-			return projectAssistantRunResult{}, fmt.Errorf("%w: checkpoint revision %q does not match WorkItem revision %q", errProjectAssistantCheckpointGrantStale, state.ApprovedPlanGrantRevision, revision)
-		}
-		if state.ApprovedPlan != nil && state.ApprovedPlan.RunLocal {
-			approvedPlan = cloneProjectAssistantApprovedPlan(state.ApprovedPlan)
-		}
-	}
 	runState := newProjectEinoAssistantRunState()
 	runState.RestoreCheckpointState(state)
-	runState.ClearApprovedPlan()
-	runState.SetApprovedPlanGrantRevision(revision)
-	if approvedPlan != nil {
-		runState.ApprovePlan(*approvedPlan)
+	if projectAssistantTurnProfileAllowsMutation(runState.TurnPolicy().profile) {
+		e.resumeCurrentDevelopmentSync(req, runState)
 	}
 	runState.SetProjectRepositoryRef(projectEinoAssistantProjectRepositoryRef(projectAssistantRunRequest{
 		Project:      req.Project,
@@ -231,21 +199,32 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 	}))
 	resumeRunReq := req
 	resumeRunReq.Continuation = &state
-	if req.AssistantRun != nil &&
-		strings.TrimSpace(req.AssistantRun.WorkItemID) != "" &&
-		runState.TurnPolicy().profile == projectAssistantTurnProfileAdaptive {
-		// WorkItem membership is the durable server-owned signal that this
-		// continuation is an implementation attempt. In particular, an Auto
-		// run is promoted before its plan checkpoint, while that checkpoint
-		// still contains the pre-promotion adaptive policy.
-		resumeRunReq.TurnPolicy = projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation)
+	if e.server != nil && e.server.store != nil {
+		resumeRunReq.eventLedger = newProjectAssistantRunEventLedger(e.server.store, req.MessageScope, projectAssistantRunID(req))
 	}
-	// The checkpoint restores the policy the run STARTED with; req.TurnPolicy
-	// carries the (optional) re-routed decision for this resume. Escalate-only
-	// merge: a "go for it" follow-up gains implementation tools, but an
-	// in-flight fix never loses tools to a chatty-looking reply.
-	resumeRunReq.TurnPolicy = escalateProjectAssistantTurnPolicy(runState.TurnPolicy(), resumeRunReq.TurnPolicy)
-	resumeRunReq.TurnProfile = resumeRunReq.TurnPolicy.profile
+	if err := e.restoreProjectAssistantDirtyBundle(ctx, resumeRunReq, runState); err != nil {
+		return projectAssistantRunResult{}, err
+	}
+	// Resume the exact sticky collaboration mode stored on the run. Prompt
+	// wording, checkpoint policy, and follow-up text cannot change it.
+	if req.AssistantRun == nil {
+		return projectAssistantRunResult{}, store.ErrAssistantRunConflict
+	}
+	mode, ok := projectAssistantCollaborationModeForRun(*req.AssistantRun)
+	if !ok {
+		return projectAssistantRunResult{}, store.ErrAssistantRunConflict
+	}
+	profile := projectAssistantTurnProfileImplementation
+	if projectAssistantCollaborationModeReadOnly(mode) {
+		profile = projectAssistantTurnProfileDebugging
+		runState.ClearApprovedPlan()
+		runState.ClearExecutionPlan()
+	} else if approved := runState.ApprovedPlan(); approved != nil && !approved.RunLocal {
+		runState.ClearApprovedPlan()
+	}
+	resumeRunReq.CollaborationMode = mode
+	resumeRunReq.TurnPolicy = projectAssistantTurnPolicyForProfile(profile)
+	resumeRunReq.TurnProfile = profile
 	runState.SetTurnPolicy(resumeRunReq.TurnPolicy)
 	checkpointStore := newProjectEinoAssistantCheckpointStoreWithCheckpoint(state.Eino.CheckpointID, state.Eino.Checkpoint)
 	turn := newProjectAssistantTurnItem(projectAssistantTurnResume, req.Identity, req.Project.Name)
@@ -253,13 +232,95 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 	turn.RequestID = strings.TrimSpace(resumeReq.RequestID)
 	turn.Decision = strings.TrimSpace(resumeReq.Decision)
 	turn.Answer = strings.TrimSpace(resumeReq.Answer)
+	turn.Answers = cloneProjectAssistantFollowUpAnswers(resumeReq.Answers)
 	turn.EditedArguments = cloneProjectAssistantToolArguments(resumeReq.EditedArguments)
 	auditRecorder, err := e.resumeProjectAssistantRunAudit(&resumeRunReq)
 	if err != nil {
 		return projectAssistantRunResult{}, err
 	}
+	if err := projectEinoAssistantConfigureRolloutBudget(ctx, e.server, resumeRunReq, runState, auditRecorder); err != nil {
+		return projectAssistantRunResult{}, err
+	}
 	result, runErr := e.runProjectAssistantTurnLoop(ctx, resumeRunReq, runState, checkpointStore, state.Eino.CheckpointID, []projectAssistantTurnItem{turn})
 	return result, e.finishProjectAssistantRunAudit(ctx, resumeRunReq, auditRecorder, runErr)
+}
+
+// restoreProjectAssistantDirtyBundle promotes project-scoped pending source
+// into the current run exactly once. A later turn can therefore synchronize,
+// verify, and commit an earlier turn's complete dirty bundle without inventing
+// a new edit or silently treating it as revision zero.
+func (e projectEinoAssistantEngine) restoreProjectAssistantDirtyBundle(
+	ctx context.Context,
+	req projectAssistantRunRequest,
+	runState *projectEinoAssistantRunState,
+) error {
+	if runState == nil || req.Workspace == nil || !projectAssistantTurnProfileAllowsMutation(runState.TurnPolicy().profile) {
+		return nil
+	}
+	if revision, _ := runState.SourceMutationRevisions(); revision > 0 {
+		return nil
+	}
+	if _, err := req.Workspace.ReconcileCommitSettlement(ctx, req.WorkspaceScope); err != nil {
+		return fmt.Errorf("restore project commit settlement: %w", err)
+	}
+	paths, err := req.Workspace.UncommittedPaths(ctx, req.WorkspaceScope)
+	if err != nil {
+		return fmt.Errorf("restore project dirty workspace bundle: %w", err)
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	for _, path := range paths {
+		runState.RecordSuccessfulMutationPath(path)
+	}
+	revision := runState.BeginDevelopmentSyncForNextMutation()
+	if e.server == nil || !e.server.scheduleDevelopmentSyncAfterMutationWithCompletion(
+		req.Identity,
+		req.Project,
+		projectActionWorkspaceSync,
+		func(syncErr error) { runState.CompleteDevelopmentSync(revision, syncErr) },
+	) {
+		runState.CompleteDevelopmentSync(revision, errors.New("workspace synchronization was not scheduled"))
+	}
+	runState.RecordSourceMutation()
+	return nil
+}
+
+func (e projectEinoAssistantEngine) resumeCurrentDevelopmentSync(
+	req projectAssistantRunRequest,
+	runState *projectEinoAssistantRunState,
+) {
+	if runState == nil {
+		return
+	}
+	revision, _ := runState.SourceMutationRevisions()
+	if revision == 0 {
+		return
+	}
+	status, _ := runState.DevelopmentSyncEvidence(revision)
+	switch status {
+	case "failed":
+		var claimed bool
+		revision, claimed = runState.ClaimDevelopmentSyncRetry(revision)
+		if !claimed {
+			return
+		}
+	case "unknown", "pending":
+		revision = runState.BeginDevelopmentSyncForCurrentMutation()
+	default:
+		return
+	}
+	if revision == 0 {
+		return
+	}
+	if e.server == nil || !e.server.scheduleDevelopmentSyncAfterMutationWithCompletion(
+		req.Identity,
+		req.Project,
+		projectActionWorkspaceSync,
+		func(syncErr error) { runState.CompleteDevelopmentSync(revision, syncErr) },
+	) {
+		runState.CompleteDevelopmentSync(revision, errors.New("workspace synchronization was not scheduled after assistant resume"))
+	}
 }
 
 func (e projectEinoAssistantEngine) startProjectAssistantRunAudit(
@@ -335,10 +396,70 @@ func (e projectEinoAssistantEngine) finishProjectAssistantRunAudit(
 func projectAssistantAuditScopeComplete(scope store.Scope) bool {
 	return strings.TrimSpace(scope.OrgUUID) != "" &&
 		strings.TrimSpace(scope.WorkspaceUUID) != "" &&
-		strings.TrimSpace(scope.ProjectName) != ""
+		strings.TrimSpace(scope.ProjectName) != "" &&
+		strings.TrimSpace(scope.ProjectUID) != ""
+}
+
+func projectEinoAssistantConfigureRolloutBudget(
+	ctx context.Context,
+	server *Server,
+	req projectAssistantRunRequest,
+	runState *projectEinoAssistantRunState,
+	recorder *projectAssistantRunAuditRecorder,
+) error {
+	if runState == nil {
+		return nil
+	}
+	restored := runState.RestoredRolloutBudget()
+	if restored == nil && recorder != nil {
+		restored = recorder.rolloutBudgetSnapshot()
+	}
+	if restored == nil && server != nil && server.store != nil {
+		var err error
+		restored, err = loadProjectAssistantConversationRolloutBudgetState(ctx, server.store, req.MessageScope)
+		if err != nil {
+			return fmt.Errorf("restore assistant conversation rollout budget: %w", err)
+		}
+	}
+	var persistReminder func(context.Context, *projectAssistantRolloutBudgetReminder) error
+	var persistState func(context.Context, projectAssistantRolloutBudgetState) error
+	if server != nil && server.store != nil {
+		runID := projectAssistantRunID(req)
+		persistReminder = func(ctx context.Context, reminder *projectAssistantRolloutBudgetReminder) error {
+			message := projectEinoAssistantRolloutBudgetMessage(reminder)
+			if message == nil {
+				return nil
+			}
+			itemID := fmt.Sprintf("rollout-budget-%s-%d-%d", runID, reminder.WindowID, reminder.ReminderIndex)
+			return appendProjectAssistantConversationMessage(
+				ctx,
+				server.store,
+				req.MessageScope,
+				runID,
+				itemID,
+				projectAssistantConversationRolloutBudget,
+				chatMessage{Role: "system", Content: message.Content},
+			)
+		}
+		persistState = func(ctx context.Context, state projectAssistantRolloutBudgetState) error {
+			return appendProjectAssistantConversationRolloutBudgetState(ctx, server.store, req.MessageScope, runID, state)
+		}
+	}
+	budget := newProjectEinoAssistantRolloutBudget(
+		projectAssistantRolloutBudgetTokens(),
+		restored,
+		recorder,
+		persistReminder,
+	)
+	if budget != nil {
+		budget.persistState = persistState
+	}
+	runState.SetRolloutBudget(budget)
+	return nil
 }
 
 func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) (adk.Agent, error) {
+	req = projectAssistantRunRequestWithExecutionContext(req)
 	tools, err := e.newTools(ctx, req, runState)
 	if err != nil {
 		return nil, err
@@ -347,13 +468,11 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 	if err != nil {
 		return nil, err
 	}
+	chatModel = projectEinoAssistantBoundModel(chatModel, req.LLM)
+	chatModel = projectEinoAssistantBudgetModel(chatModel, runState.RolloutBudget())
 	chatModel = &projectEinoAssistantTransientEvidenceModel{
 		BaseChatModel: chatModel,
 		runState:      runState,
-	}
-	staticTools, dynamicTools, err := projectEinoAssistantToolSearchSets(ctx, tools)
-	if err != nil {
-		return nil, err
 	}
 	var handlers []adk.ChatModelAgentMiddleware
 	patchToolCallsMiddleware, err := projectEinoAssistantPatchToolCallsMiddleware(ctx)
@@ -366,28 +485,11 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 		return nil, fmt.Errorf("create eino reduction middleware: %w", err)
 	}
 	handlers = append(handlers, reductionMiddleware)
-	summaryMiddleware, err := summarization.New(ctx, &summarization.Config{
-		Model: chatModel,
-		Trigger: &summarization.TriggerCondition{
-			ContextMessages: projectEinoAssistantSummaryContextMessages,
-			ContextTokens:   projectEinoAssistantSummaryContextTokens,
-		},
-		UserInstruction: projectEinoAssistantSummaryInstruction,
-		Finalize:        projectEinoAssistantFinalizeSummary,
-	})
+	summaryMiddleware, err := projectEinoAssistantCompactionMiddleware(ctx, chatModel, e.server, req, runState)
 	if err != nil {
-		return nil, fmt.Errorf("create eino summarization middleware: %w", err)
+		return nil, fmt.Errorf("create App Studio compaction middleware: %w", err)
 	}
 	handlers = append(handlers, summaryMiddleware)
-	if len(dynamicTools) > 0 {
-		searchMiddleware, err := toolsearch.New(ctx, &toolsearch.Config{
-			DynamicTools: dynamicTools,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("create eino tool search middleware: %w", err)
-		}
-		handlers = append(handlers, searchMiddleware)
-	}
 	var workspaceStore *workspace.FileStore
 	if e.server != nil {
 		workspaceStore = e.server.workspaces
@@ -399,6 +501,8 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 	if filesystemMiddleware != nil {
 		handlers = append(handlers, filesystemMiddleware)
 	}
+	// Validate and normalize each completed model response before dispatch.
+	handlers = append(handlers, projectEinoAssistantToolBatchAdmissionMiddleware(runState, req.executionContext))
 	// Eino makes the first registered tool wrapper outermost. Safe-error must
 	// therefore precede telemetry so telemetry observes backend errors before
 	// they are shaped for the model. Phase must also precede telemetry so a
@@ -406,35 +510,25 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 	handlers = append(handlers, &projectEinoAssistantSafeToolErrorMiddleware{
 		BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
 	})
-	// Phase filtering keeps the model's choices aligned with the durable
-	// approval -> mutate -> verify -> commit lifecycle. Invocation-time
-	// lifecycle checks remain a second, independent authorization boundary.
-	handlers = append(handlers, projectEinoAssistantPhaseMiddleware(req, runState))
-	handlers = append(handlers, projectEinoAssistantLifecycleMiddleware(req, runState))
+	handlers = append(handlers, projectEinoAssistantLifecycleMiddleware(req, runState, e.server))
 	if filesystemMiddleware != nil {
 		handlers = append(handlers, projectEinoAssistantFilesystemTelemetryMiddleware(req, runState))
 	}
 	toolsConfig := adk.ToolsConfig{
 		ToolsNodeConfig: compose.ToolsNodeConfig{
-			Tools:               staticTools,
-			UnknownToolsHandler: projectEinoUnknownToolHandler(req, runState),
-			// Build/Continue turns may batch writes and permission-bearing
-			// effects, so preserve ordering there. Read-only profiles expose no
-			// mutating tools and can safely execute independent reads in
-			// parallel.
-			ExecuteSequentially: projectAssistantTurnProfileAllowsMutation(req.TurnPolicy.profile) ||
-				projectAssistantInlinePromotionEnabled(req),
+			Tools:               tools,
+			UnknownToolsHandler: projectEinoUnknownToolHandler(e.server, req, runState),
+			// Preserve model batches. Eino executes calls concurrently and rejoins
+			// their results in model order; durable per-call admission remains in
+			// the tool ledger.
+			ExecuteSequentially: false,
 		},
 	}
 	agent, err := deep.New(ctx, &deep.Config{
-		Name:        "app-studio-project-assistant",
-		Description: "Runs App Studio project assistant turns.",
-		ChatModel:   chatModel,
-		// Keep Eino's native coding-agent instruction and add the narrow App
-		// Studio contract as an ordinary system message. Replacing the native
-		// instruction caused this provider to grow a second, history-derived
-		// agent protocol that fought the underlying loop.
-		Instruction:            "",
+		Name:                   "app-studio-project-assistant",
+		Description:            "Runs App Studio project assistant turns.",
+		ChatModel:              chatModel,
+		Instruction:            projectEinoAssistantV2DeepInstruction,
 		ToolsConfig:            toolsConfig,
 		MaxIteration:           projectAssistantDeepIterations(),
 		WithoutWriteTodos:      !projectEinoAssistantTurnUsesDeepTodos(req),
@@ -449,99 +543,7 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 }
 
 func projectEinoAssistantTurnUsesDeepTodos(req projectAssistantRunRequest) bool {
-	return projectAssistantTurnProfileAllowsMutation(req.TurnPolicy.profile) ||
-		projectAssistantInlinePromotionEnabled(req)
-}
-
-func projectEinoAssistantFinalizeSummary(ctx context.Context, originalMessages []*schema.Message, summary *schema.Message) ([]*schema.Message, error) {
-	if strings.TrimSpace(projectEinoAssistantSummaryText(summary)) == "" {
-		summary = schema.AssistantMessage(projectEinoAssistantFallbackSummary(originalMessages), nil)
-	}
-	return summarization.DefaultFinalize(ctx, originalMessages, summary)
-}
-
-func projectEinoAssistantSummaryText(msg *schema.Message) string {
-	if msg == nil || msg.Role != schema.Assistant {
-		return ""
-	}
-	var parts []string
-	for _, part := range msg.AssistantGenMultiContent {
-		if part.Type == schema.ChatMessagePartTypeText && strings.TrimSpace(part.Text) != "" {
-			parts = append(parts, strings.TrimSpace(part.Text))
-		}
-	}
-	if len(parts) > 0 {
-		return strings.Join(parts, "\n")
-	}
-	return strings.TrimSpace(msg.Content)
-}
-
-func projectEinoAssistantFallbackSummary(messages []*schema.Message) string {
-	const maxMessages = 12
-	var b strings.Builder
-	b.WriteString("Summary unavailable; preserving recent App Studio context.")
-	start := len(messages) - maxMessages
-	if start < 0 {
-		start = 0
-	}
-	for _, msg := range messages[start:] {
-		content := truncateProjectToolInfo(projectEinoAssistantMessageText(msg))
-		if content == "" {
-			continue
-		}
-		b.WriteString("\n- ")
-		b.WriteString(projectEinoAssistantMessageRole(msg))
-		b.WriteString(": ")
-		b.WriteString(content)
-	}
-	return b.String()
-}
-
-func projectEinoAssistantMessageText(msg *schema.Message) string {
-	if msg == nil {
-		return ""
-	}
-	switch msg.Role {
-	case schema.Assistant:
-		return projectEinoAssistantSummaryText(msg)
-	default:
-		return strings.TrimSpace(msg.Content)
-	}
-}
-
-func projectEinoAssistantMessageRole(msg *schema.Message) string {
-	if msg == nil {
-		return "message"
-	}
-	return strings.ToLower(string(msg.Role))
-}
-
-func projectEinoAssistantToolSearchSets(ctx context.Context, tools []einotool.BaseTool) ([]einotool.BaseTool, []einotool.BaseTool, error) {
-	staticTools := make([]einotool.BaseTool, 0, len(tools))
-	dynamicTools := make([]einotool.BaseTool, 0, len(tools))
-	for _, tool := range tools {
-		if tool == nil {
-			continue
-		}
-		info, err := tool.Info(ctx)
-		if err != nil {
-			return nil, nil, err
-		}
-		if projectEinoAssistantToolUsesSearch(info) {
-			dynamicTools = append(dynamicTools, tool)
-			continue
-		}
-		staticTools = append(staticTools, tool)
-	}
-	return staticTools, dynamicTools, nil
-}
-
-func projectEinoAssistantToolUsesSearch(info *schema.ToolInfo) bool {
-	if info == nil || info.Extra == nil {
-		return false
-	}
-	searchable, _ := info.Extra[projectEinoToolSearchableExtraKey].(bool)
-	return searchable
+	return req.CollaborationMode == projectAssistantCollaborationModeDefault
 }
 
 type projectEinoAssistantTurnOutcome struct {
@@ -567,7 +569,11 @@ func (e projectEinoAssistantEngine) runProjectAssistantTurnLoop(
 			if len(items) == 0 {
 				return nil, errors.New("eino turn loop received no work")
 			}
-			input, err := projectEinoAssistantInputMessages(loopCtx, req, runState)
+			steered := items[0].Kind == projectAssistantTurnSteer
+			if steered && e.server != nil {
+				runState.SetToolDiscovery(projectEinoAssistantDiscoverTools(loopCtx, e.server, req))
+			}
+			input, err := projectEinoAssistantInputMessages(loopCtx, req, runState, steered)
 			if err != nil {
 				return nil, err
 			}
@@ -646,15 +652,10 @@ func (e projectEinoAssistantEngine) runProjectAssistantTurnLoop(
 		return projectAssistantRunResult{}, e.saveProjectAssistantInterrupt(ctx, req, runState, checkpointStore, checkpointID, outcome.interrupt)
 	}
 	if exit.ExitReason != nil {
-		if ctx.Err() == nil && projectEinoAssistantBoundedExit(exit.ExitReason) {
-			outcome.result.Content = e.projectAssistantToolLoopFinalAnswer(ctx, req, runState)
-		}
 		return projectEinoAssistantResultWithCompletion(outcome.result, runState), exit.ExitReason
 	}
 	if !outcome.receivedOutput {
-		return projectEinoAssistantResultWithCompletion(projectAssistantRunResult{
-			Content: projectEinoAssistantBoundedClosingFallback("No usable assistant response was produced for this turn."),
-		}, runState), errProjectAssistantNoOutput
+		return projectEinoAssistantResultWithCompletion(outcome.result, runState), errProjectAssistantNoOutput
 	}
 	return projectEinoAssistantResultWithCompletion(outcome.result, runState), nil
 }
@@ -666,7 +667,7 @@ func projectEinoAssistantResultWithCompletion(
 	if runState == nil {
 		return result
 	}
-	result.InitialPlan, _ = runState.ExecutionPlan()
+	result.InitialPlan = runState.ExecutionPlan()
 	if result.InitialPlan != nil && strings.TrimSpace(result.InitialPlan.Goal) != "" {
 		result.InitialBuild = true
 	} else if authority := runState.ApprovedPlan(); authority != nil &&
@@ -676,7 +677,23 @@ func projectEinoAssistantResultWithCompletion(
 		result.InitialBuild = true
 	}
 	result.CompletionEvidence = runState.CompletionEvidence()
+	result.Content = projectEinoAssistantFinalContentWithEvidenceScope(result.Content, runState)
 	return result
+}
+
+func projectEinoAssistantFinalContentWithEvidenceScope(content string, runState *projectEinoAssistantRunState) string {
+	content = strings.TrimSpace(content)
+	if runState == nil || !runState.ReadOnlyPreviewInspectionObserved() {
+		return content
+	}
+	const note = "Verification scope: rendered state and accessibility assertions passed. Keyboard, click, and form behavior was source-reviewed but not exercised by the read-only preview inspector."
+	if strings.Contains(content, note) {
+		return content
+	}
+	if content == "" {
+		return note
+	}
+	return content + "\n\n" + note
 }
 
 func projectEinoAssistantResumeTurnItem(items []projectAssistantTurnItem) (projectAssistantTurnItem, []projectAssistantTurnItem, bool) {
@@ -714,10 +731,11 @@ func projectEinoAssistantResumeData(interruptType string, item projectAssistantT
 		return &approvaltool.ApprovalResult{Approved: false, DisapproveReason: &reason}, nil
 	case projectAssistantInterruptTypeFollowUp:
 		answer := strings.TrimSpace(item.Answer)
-		if answer == "" {
+		answers := cloneProjectAssistantFollowUpAnswers(item.Answers)
+		if answer == "" && len(answers) == 0 {
 			return nil, newValidationError("answer is required")
 		}
-		return &projectEinoFollowUpResumeData{Answer: answer}, nil
+		return &projectEinoFollowUpResumeData{Answer: answer, Answers: answers}, nil
 	default:
 		return nil, fmt.Errorf("unsupported eino interrupt type %q", interruptType)
 	}
@@ -776,6 +794,9 @@ func (e projectEinoAssistantEngine) collectProjectAssistantTurnEvents(
 			role = msg.Role
 		}
 		if msg != nil && role == schema.Assistant {
+			if len(msg.ToolCalls) > 0 {
+				continue
+			}
 			content := projectEinoAssistantSummaryText(msg)
 			if strings.TrimSpace(content) == "" {
 				continue
@@ -785,7 +806,28 @@ func (e projectEinoAssistantEngine) collectProjectAssistantTurnEvents(
 		}
 	}
 	if outcome.interrupt == nil {
-		tc.Loop.Stop()
+		if err := runState.RolloutBudget().ExhaustionError(); err != nil {
+			return err
+		}
+		drained, err := projectEinoAssistantDrainSteeringAtBoundary(eventCtx, req.Steering, runState, nil, req.ActivateSteering)
+		if err != nil {
+			return err
+		}
+		if drained == 0 && req.SealSteering != nil && !req.SealSteering() {
+			drained, err = projectEinoAssistantDrainSteeringAtBoundary(eventCtx, req.Steering, runState, nil, req.ActivateSteering)
+			if err != nil {
+				return err
+			}
+		}
+		if drained > 0 {
+			steer := newProjectAssistantTurnItem(projectAssistantTurnSteer, req.Identity, req.Project.Name)
+			steer.ProjectUID = req.MessageScope.ProjectUID
+			tc.Loop.Push(steer)
+			outcome.result.Content = ""
+			outcome.receivedOutput = false
+		} else {
+			tc.Loop.Stop()
+		}
 	}
 	return nil
 }
@@ -845,6 +887,9 @@ func projectEinoAssistantMessageOutput(
 		resetProvisional()
 		return nil, err
 	}
+	if len(msg.ToolCalls) > 0 {
+		resetProvisional()
+	}
 	projectEinoAssistantPublishAcceptedContent(output.Role, msg, streamCallbacks)
 	return msg, nil
 }
@@ -863,8 +908,7 @@ func projectEinoAssistantPublishAcceptedContent(
 	if role != schema.Assistant {
 		return
 	}
-	if len(message.ToolCalls) > 0 && streamCallbacks.OnProgress != nil {
-		streamCallbacks.OnProgress(message.Content)
+	if len(message.ToolCalls) > 0 {
 		return
 	}
 	if streamCallbacks.OnChunk != nil {
@@ -886,33 +930,6 @@ func projectEinoAssistantStreamText(msg *schema.Message) string {
 		}
 	}
 	return b.String()
-}
-
-func (e projectEinoAssistantEngine) projectAssistantToolLoopFinalAnswer(
-	ctx context.Context,
-	req projectAssistantRunRequest,
-	runState *projectEinoAssistantRunState,
-) string {
-	fallback := projectEinoAssistantBoundedClosingFallback(runState.ToolLoopFallback())
-	if e.newModel == nil {
-		return fallback
-	}
-	input, err := projectChatMessagesToEino(runState.ToolLoopFinalAnswerMessages())
-	if err != nil {
-		return fallback
-	}
-	chatModel, err := e.newModel(ctx, req, runState)
-	if err != nil {
-		return fallback
-	}
-	msg, err := chatModel.Generate(ctx, input, einomodel.WithToolChoice(schema.ToolChoiceForbidden))
-	if err != nil || msg == nil {
-		return fallback
-	}
-	if !projectEinoAssistantBoundedClosingBodyValid(msg.Content) || len(msg.ToolCalls) > 0 {
-		return fallback
-	}
-	return projectEinoAssistantBoundedClosingAnswer(msg.Content)
 }
 
 func (e projectEinoAssistantEngine) saveProjectAssistantInterrupt(
@@ -1107,23 +1124,21 @@ func projectEinoFollowUpInterruptInfoFromEvent(interrupted *adk.InterruptInfo) (
 	return nil, "", false
 }
 
-func projectEinoAssistantInputMessages(ctx context.Context, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) ([]adk.Message, error) {
+func projectEinoAssistantInputMessages(ctx context.Context, req projectAssistantRunRequest, runState *projectEinoAssistantRunState, continueRun bool) ([]adk.Message, error) {
 	var chatMessages []chatMessage
-	if req.Continuation != nil && len(req.Continuation.Messages) > 0 {
+	if continueRun && len(runState.ModelMessages()) > 0 {
+		chatMessages = runState.ModelMessages()
+	} else if req.Continuation != nil && len(req.Continuation.Messages) > 0 {
 		chatMessages = cloneChatMessages(req.Continuation.Messages)
+	} else if len(req.Conversation) > 0 {
+		chatMessages = cloneChatMessages(req.Conversation)
 	} else {
-		chatMessages = projectPromptMessagesForInitialPlan(req.Project, req.Repository, req.History, req.TurnProfile, req.InitialApprovedPlan != nil)
-		if snapshot, ok := projectEinoAssistantSessionContextMessage(ctx, req, runState); ok {
-			chatMessages = append(chatMessages, snapshot)
-		}
-		if prompt := runState.ToolPrompt(); prompt != "" {
-			chatMessages = append(chatMessages, chatMessage{Role: "system", Content: prompt})
-		}
+		chatMessages = appendProjectAssistantConversationHistory(nil, req.History)
 	}
-	chatMessages = append([]chatMessage{{
-		Role:    "system",
-		Content: projectEinoAssistantDeepInstruction,
-	}}, chatMessages...)
+	// Durable history and Eino resume state are conversational payload only.
+	// The lifecycle middleware reconstructs the authoritative project, session,
+	// and tool context immediately before every model sample.
+	chatMessages = projectEinoAssistantConversationPayload(chatMessages)
 	messages, err := projectChatMessagesToEino(chatMessages)
 	if err != nil {
 		return nil, err
@@ -1133,6 +1148,36 @@ func projectEinoAssistantInputMessages(ctx context.Context, req projectAssistant
 		input = append(input, msg)
 	}
 	return input, nil
+}
+
+func projectEinoAssistantConversationPayload(messages []chatMessage) []chatMessage {
+	payload := make([]chatMessage, 0, len(messages))
+	for _, message := range messages {
+		if projectEinoAssistantLiveContextMessage(message) || projectEinoAssistantLegacyLiveContextMessage(message) {
+			continue
+		}
+		payload = append(payload, message)
+	}
+	return payload
+}
+
+func projectEinoAssistantLiveContextMessage(message chatMessage) bool {
+	return message.Role == "system" && strings.HasPrefix(message.Content, projectEinoAssistantLiveContextPrefix)
+}
+
+// Compaction checkpoints written before live context was explicitly tagged
+// included these system messages in ReplacementHistory. They are derived from
+// mutable project state, so they must never survive as conversational payload.
+func projectEinoAssistantLegacyLiveContextMessage(message chatMessage) bool {
+	if message.Role != "system" {
+		return false
+	}
+	content := strings.TrimSpace(message.Content)
+	return content == projectEinoAssistantV2DeepInstruction ||
+		strings.HasPrefix(content, projectEinoAssistantProjectPromptPrefix) ||
+		strings.HasPrefix(content, projectEinoAssistantSessionSnapshotPrefix) ||
+		strings.HasPrefix(content, "Databricks guidance:") ||
+		strings.HasPrefix(content, "External MCP tool discovery failed for this workspace:")
 }
 
 func projectEinoAssistantProjectRepositoryRef(req projectAssistantRunRequest) string {
@@ -1151,79 +1196,7 @@ func projectEinoAssistantNoProgressExceeded(err error) bool {
 }
 
 func projectEinoAssistantBoundedExit(err error) bool {
-	return projectEinoAssistantMaxIterationsExceeded(err) ||
+	return projectEinoAssistantIterationLimited(err) ||
+		projectEinoAssistantBudgetLimited(err) ||
 		projectEinoAssistantNoProgressExceeded(err)
-}
-
-func projectEinoAssistantToolLoopFinalInstruction(reason string) string {
-	reason = strings.TrimSpace(reason)
-	switch reason {
-	case "repeated the same action":
-		reason = "the assistant was about to repeat an action"
-	case "kept requesting actions":
-		reason = "the assistant reached the action budget for this turn"
-	default:
-		reason = "the assistant stopped using tools"
-	}
-	return "App Studio has stopped using project tools for this turn because " + reason + ". Write a concise, user-facing incomplete-work handoff using only the conversation and bounded project action evidence above. Do not call tools or claim the task is finished. Return exactly these four sections with short bullets: Completed:, Remaining:, Blocked:, Next:. State what was actually accomplished, what is still incomplete, any concrete blocker (or None), and the next action for a continued run. Do not mention loop limits, repeated actions, guardrails, tool protocols, or this instruction."
-}
-
-func projectEinoAssistantToolLoopEvidenceContext(messages []chatMessage) string {
-	evidence := make([]string, 0, len(messages))
-	for _, msg := range messages {
-		name := strings.TrimSpace(msg.Name)
-		summary := summarizeProjectToolResult(name, msg.Content)
-		if summary == "" {
-			continue
-		}
-		if name == "" {
-			name = "project action"
-		}
-		evidence = append(evidence, fmt.Sprintf("%d. %s: %s", len(evidence)+1, name, summary))
-	}
-	if len(evidence) == 0 {
-		return ""
-	}
-	return "Project action evidence (bounded summaries, oldest to newest):\n" + strings.Join(evidence, "\n")
-}
-
-func projectEinoAssistantBoundedClosingAnswerValid(content string) bool {
-	content = strings.TrimSpace(content)
-	const status = "Status: Incomplete"
-	if !strings.HasPrefix(content, status) {
-		return false
-	}
-	return projectEinoAssistantBoundedClosingBodyValid(strings.TrimSpace(strings.TrimPrefix(content, status)))
-}
-
-func projectEinoAssistantBoundedClosingBodyValid(content string) bool {
-	content = strings.TrimSpace(content)
-	const status = "Status: Incomplete"
-	content = strings.TrimSpace(strings.TrimPrefix(content, status))
-	for _, heading := range []string{"Completed:", "Remaining:", "Blocked:", "Next:"} {
-		if !strings.Contains(content, heading) {
-			return false
-		}
-	}
-	return content != ""
-}
-
-func projectEinoAssistantBoundedClosingAnswer(content string) string {
-	const status = "Status: Incomplete"
-	content = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(content), status))
-	if !projectEinoAssistantBoundedClosingBodyValid(content) {
-		return projectEinoAssistantBoundedClosingFallback("")
-	}
-	return status + "\n\n" + content
-}
-
-func projectEinoAssistantBoundedClosingFallback(evidence string) string {
-	evidence = strings.TrimSpace(evidence)
-	if evidence == "" {
-		evidence = "The current project state and prior successful actions were preserved."
-	}
-	return "Status: Incomplete\n\nCompleted:\n- " + evidence +
-		"\n\nRemaining:\n- The requested task is not yet complete." +
-		"\n\nBlocked:\n- The current turn paused before completion." +
-		"\n\nNext:\n- Continue from the preserved project state and verify the remaining work."
 }

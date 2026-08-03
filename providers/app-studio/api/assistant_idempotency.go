@@ -29,37 +29,28 @@ import (
 )
 
 type projectAssistantStartIdentity struct {
-	Actor            string                 `json:"actor"`
-	Content          string                 `json:"content"`
-	Mode             store.AssistantRunMode `json:"mode"`
-	WorkItemID       string                 `json:"workItemID,omitempty"`
-	WorkItemRevision int64                  `json:"workItemRevision,omitempty"`
-	InitialBootstrap bool                   `json:"initialBootstrap,omitempty"`
+	Actor   string                 `json:"actor"`
+	Content string                 `json:"content"`
+	Mode    store.AssistantRunMode `json:"mode"`
 }
 
-type projectAssistantCancelReceipt struct {
-	Kind            string `json:"kind"`
-	ClientRequestID string `json:"clientRequestID"`
-	Digest          string `json:"digest"`
-}
-
-func projectAssistantStartRequestDigest(actor, content string, mode store.AssistantRunMode, workItemID string, workItemRevision int64, initialBootstrap ...bool) string {
+func projectAssistantStartRequestDigest(actor, content string, mode store.AssistantRunMode) string {
 	identity := projectAssistantStartIdentity{
-		Actor:            strings.TrimSpace(actor),
-		Content:          strings.TrimSpace(content),
-		Mode:             mode,
-		WorkItemID:       strings.TrimSpace(workItemID),
-		WorkItemRevision: workItemRevision,
-	}
-	if len(initialBootstrap) > 0 {
-		identity.InitialBootstrap = initialBootstrap[0]
+		Actor:   strings.TrimSpace(actor),
+		Content: strings.TrimSpace(content),
+		Mode:    mode,
 	}
 	raw, _ := json.Marshal(identity)
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }
 
-func bindProjectAssistantStartRequest(run *store.AssistantRun, actor, content, workItemID string, workItemRevision int64, initialBootstrap ...bool) error {
+func projectAssistantActorDigest(actor string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(actor)))
+	return hex.EncodeToString(sum[:])
+}
+
+func bindProjectAssistantStartRequest(run *store.AssistantRun, actor, content string) error {
 	if run == nil {
 		return fmt.Errorf("bind assistant start request: run is required")
 	}
@@ -72,7 +63,8 @@ func bindProjectAssistantStartRequest(run *store.AssistantRun, actor, content, w
 	if audit.Version == 0 {
 		audit.Version = projectAssistantAuditVersion
 	}
-	audit.StartRequestDigest = projectAssistantStartRequestDigest(actor, content, run.Mode, workItemID, workItemRevision, initialBootstrap...)
+	audit.StartRequestDigest = projectAssistantStartRequestDigest(actor, content, run.Mode)
+	audit.ActorDigest = projectAssistantActorDigest(actor)
 	raw, err := json.Marshal(audit)
 	if err != nil {
 		return fmt.Errorf("encode assistant run audit: %w", err)
@@ -81,24 +73,67 @@ func bindProjectAssistantStartRequest(run *store.AssistantRun, actor, content, w
 	return nil
 }
 
-func validateProjectAssistantStartReplay(run store.AssistantRun, actor, content string, mode store.AssistantRunMode, workItemID string, workItemRevision int64, initialBootstrap ...bool) error {
+func projectAssistantRunActorMatches(run store.AssistantRun, actor string) bool {
+	var audit projectAssistantRunAudit
+	return len(run.Audit) > 0 && json.Unmarshal(run.Audit, &audit) == nil &&
+		audit.ActorDigest != "" && audit.ActorDigest == projectAssistantActorDigest(actor)
+}
+
+func findProjectAssistantSteeringReceipt(
+	ctx context.Context,
+	messages store.Store,
+	scope store.Scope,
+	run store.AssistantRun,
+	actor string,
+	content string,
+	clientRequestID string,
+) (store.Message, bool, error) {
+	if messages == nil || !projectAssistantRunActorMatches(run, actor) {
+		return store.Message{}, false, fmt.Errorf("%w: assistant steering actor does not own the expected run", store.ErrAssistantRunConflict)
+	}
+	wantDigest := projectAssistantStartRequestDigest(actor, content, run.Mode)
+	for cursor := ""; ; {
+		page, err := messages.ListMessages(ctx, scope, 250, cursor)
+		if err != nil {
+			return store.Message{}, false, err
+		}
+		for _, message := range page.Items {
+			requestID, _ := message.Metadata[projectAssistantSteeringRequestMetadata].(string)
+			runID, _ := message.Metadata[projectAssistantSteeringRunMetadata].(string)
+			if requestID != clientRequestID || runID != run.ID {
+				continue
+			}
+			digest, _ := message.Metadata[projectAssistantSteeringDigestMetadata].(string)
+			if digest != wantDigest || message.ActorID != actor || message.Content != content {
+				return store.Message{}, false, fmt.Errorf("%w: steering request ID was already used for different input", store.ErrAssistantRunConflict)
+			}
+			return message, true, nil
+		}
+		if page.NextCursor == "" {
+			return store.Message{}, false, nil
+		}
+		cursor = page.NextCursor
+	}
+}
+
+func validateProjectAssistantStartReplay(run store.AssistantRun, actor, content string, mode store.AssistantRunMode) error {
 	var audit projectAssistantRunAudit
 	if len(run.Audit) == 0 || json.Unmarshal(run.Audit, &audit) != nil {
 		return fmt.Errorf("%w: client request identity is unavailable", store.ErrAssistantRunConflict)
 	}
-	expected := projectAssistantStartRequestDigest(actor, content, mode, workItemID, workItemRevision, initialBootstrap...)
+	expected := projectAssistantStartRequestDigest(actor, content, mode)
 	if audit.StartRequestDigest == "" || audit.StartRequestDigest != expected {
 		return fmt.Errorf("%w: client request ID was already used for different input", store.ErrAssistantRunConflict)
 	}
 	return nil
 }
 
-func (s *Server) recoverProjectAssistantStartReplay(ctx context.Context, scope store.Scope, createErr error, clientRequestID, actor, content string, mode store.AssistantRunMode, workItemID string, workItemRevision int64, initialBootstrap ...bool) (store.AssistantRun, bool) {
+func (s *Server) recoverProjectAssistantStartReplay(ctx context.Context, scope store.Scope, createErr error, clientRequestID, actor, content string, mode store.AssistantRunMode) (store.AssistantRun, bool) {
 	if !errors.Is(createErr, store.ErrAssistantRunConflict) {
 		return store.AssistantRun{}, false
 	}
 	prior, err := s.store.FindAssistantRunByClientRequestID(ctx, scope, clientRequestID)
-	if err != nil || validateProjectAssistantStartReplay(prior, actor, content, mode, workItemID, workItemRevision, initialBootstrap...) != nil {
+	if err != nil || validateProjectAssistantStartReplay(prior, actor, content, mode) != nil {
 		return store.AssistantRun{}, false
 	}
 	return prior, true
@@ -109,7 +144,7 @@ func bindProjectAssistantStopRequest(run *store.AssistantRun, actor, clientReque
 	if run == nil || strings.TrimSpace(actor) == "" || clientRequestID == "" {
 		return newValidationError("clientRequestID is required")
 	}
-	digest := projectAssistantStartRequestDigest(actor, run.ID, "stop", clientRequestID, 0)
+	digest := projectAssistantStartRequestDigest(actor, run.ID+":"+clientRequestID, "stop")
 	var audit projectAssistantRunAudit
 	if len(run.Audit) > 0 {
 		if err := json.Unmarshal(run.Audit, &audit); err != nil {
@@ -132,29 +167,5 @@ func bindProjectAssistantStopRequest(run *store.AssistantRun, actor, clientReque
 		return fmt.Errorf("encode assistant run audit: %w", err)
 	}
 	run.Audit = raw
-	return nil
-}
-
-func projectAssistantCancelRequestReceipt(actor, workItemID, clientRequestID string, revision int64) projectAssistantCancelReceipt {
-	return projectAssistantCancelReceipt{
-		Kind:            "cancel_receipt",
-		ClientRequestID: strings.TrimSpace(clientRequestID),
-		Digest:          projectAssistantStartRequestDigest(actor, clientRequestID, "cancel", workItemID, revision),
-	}
-}
-
-func encodeProjectAssistantCancelReceipt(receipt projectAssistantCancelReceipt) (json.RawMessage, error) {
-	return json.Marshal(receipt)
-}
-
-func validateProjectAssistantCancelReplay(item store.AssistantWorkItem, actor, clientRequestID string, revision int64) error {
-	var receipt projectAssistantCancelReceipt
-	if json.Unmarshal(item.CancellationReceipt, &receipt) != nil {
-		return fmt.Errorf("%w: cancellation request identity is unavailable", store.ErrAssistantWorkItemConflict)
-	}
-	expected := projectAssistantCancelRequestReceipt(actor, item.ID, clientRequestID, revision)
-	if receipt.Kind != expected.Kind || receipt.ClientRequestID != expected.ClientRequestID || receipt.Digest != expected.Digest {
-		return fmt.Errorf("%w: cancellation request ID was already used for different input", store.ErrAssistantWorkItemConflict)
-	}
 	return nil
 }

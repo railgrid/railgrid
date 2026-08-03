@@ -20,6 +20,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/faroshq/provider-app-studio/store"
+	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 func TestProjectAssistantActionFeedReadHidesExecutionMechanics(t *testing.T) {
@@ -97,6 +100,58 @@ func TestApplyProjectAssistantActionFeedUpdateRemovesInvisibleTerminalAction(t *
 	}
 }
 
+func TestFinalizeProjectAssistantActionFeedClosesOutstandingActions(t *testing.T) {
+	waiting := []projectAssistantActionFeedItem{{
+		ID:         "action-1",
+		Kind:       projectAssistantActionFeedItemRun,
+		Status:     projectAssistantActionFeedStatusWaiting,
+		Title:      "Restarting development runtime",
+		Severity:   projectAssistantActionFeedSeverityAttention,
+		Diagnostic: projectAssistantActionFeedDiagnostic("action-1", "old failure"),
+	}}
+	completed := finalizeProjectAssistantActionFeed(append([]projectAssistantActionFeedItem(nil), waiting...), store.AssistantRunStatusCompleted)
+	if len(completed) != 1 || completed[0].Status != projectAssistantActionFeedStatusSucceeded || completed[0].Title != "Ran checks" || completed[0].Severity != projectAssistantActionFeedSeverityNormal || completed[0].Diagnostic != nil {
+		t.Fatalf("completed actions = %#v, want a closed successful action", completed)
+	}
+	failed := finalizeProjectAssistantActionFeed(append([]projectAssistantActionFeedItem(nil), waiting...), store.AssistantRunStatusFailed)
+	if len(failed) != 1 || failed[0].Status != projectAssistantActionFeedStatusFailed || failed[0].Title != "Run failed" || failed[0].Severity != projectAssistantActionFeedSeverityError || failed[0].Diagnostic == nil {
+		t.Fatalf("failed actions = %#v, want a closed failed action", failed)
+	}
+}
+
+func TestProjectAssistantResumeToolCallDoesNotUseUnrelatedFallback(t *testing.T) {
+	events := []projectToolCallStreamEvent{{
+		ID:     "later-preview-call",
+		Name:   projectToolInspectDevelopmentPreview,
+		Status: "failed",
+	}}
+	if got := projectAssistantResumeToolCall(events, "approved-restart-call"); got != nil {
+		t.Fatalf("resume tool call = %#v, want no unrelated fallback", got)
+	}
+	if got := projectAssistantResumeToolNameWithFallback(nil, projectToolRestartRuntime); got != projectToolRestartRuntime {
+		t.Fatalf("resume tool name = %q, want checkpoint tool %q", got, projectToolRestartRuntime)
+	}
+}
+
+func TestProjectAssistantCheckpointToolIdentityFallsBackToCurrentToolCall(t *testing.T) {
+	state := projectAssistantCheckpointState{
+		CurrentIndex: 0,
+		ToolCalls: []chatToolCall{{
+			ID: "approved-restart-call",
+			Function: chatToolCallFunction{
+				Name: projectToolRestartRuntime,
+			},
+		}},
+		Eino: &projectAssistantEinoCheckpointState{},
+	}
+	if got := projectAssistantCheckpointToolCallID(state); got != "approved-restart-call" {
+		t.Fatalf("checkpoint tool call ID = %q, want generic checkpoint ID", got)
+	}
+	if got := projectAssistantCheckpointToolName(state); got != projectToolRestartRuntime {
+		t.Fatalf("checkpoint tool name = %q, want %q", got, projectToolRestartRuntime)
+	}
+}
+
 func TestProjectAssistantActionFeedUsesAllowlistedDiagnostics(t *testing.T) {
 	item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
 		ID:     "tool-with-secret-id-token",
@@ -130,6 +185,42 @@ func TestProjectAssistantActionDiagnosticClassifiesReplanAsPermission(t *testing
 	}
 }
 
+func TestProjectAssistantActionDiagnosticExplainsPatchRecoveryWithoutLeakingInput(t *testing.T) {
+	diagnostic := projectAssistantActionFeedDiagnostic(
+		"patch-call",
+		string(workspace.PatchErrorStrategyChange)+": secret source fragment",
+	)
+	if diagnostic == nil || diagnostic.Category != "validation" || !strings.Contains(diagnostic.Message, "must be revised") {
+		t.Fatalf("diagnostic = %#v", diagnostic)
+	}
+	if strings.Contains(diagnostic.Message, "secret source fragment") {
+		t.Fatalf("diagnostic leaked raw input: %#v", diagnostic)
+	}
+}
+
+func TestProjectAssistantActionDiagnosticClassifiesPatchContextFailures(t *testing.T) {
+	for _, failure := range []string{
+		string(workspace.PatchErrorContextNotFound) + ` path="src/App.jsx"`,
+		string(workspace.PatchErrorContextAmbiguous) + ` path="src/App.jsx"`,
+	} {
+		if got := projectAssistantActionDiagnosticCategory(failure); got != "validation" {
+			t.Fatalf("diagnostic category for %q = %q, want validation", failure, got)
+		}
+	}
+}
+
+func TestProjectAssistantActionFeedExplainsTypedPreviewFailure(t *testing.T) {
+	item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+		ID:     "inspect-call",
+		Name:   projectToolInspectDevelopmentPreview,
+		Status: "failed",
+	})
+	if item.Diagnostic == nil || item.Diagnostic.Category != "runtime" ||
+		!strings.Contains(item.Diagnostic.Message, "did not verify the preview") {
+		t.Fatalf("diagnostic = %#v", item.Diagnostic)
+	}
+}
+
 func TestProjectAssistantActionPublicIDIsStableAndRejectsEmptyInput(t *testing.T) {
 	first := projectAssistantActionPublicID("provider-call-1")
 	if first == "" || first != projectAssistantActionPublicID("provider-call-1") || first == "provider-call-1" {
@@ -147,7 +238,7 @@ func TestProjectAssistantActionFeedMinimalDisclosureHidesTargetAndOutcome(t *tes
 
 	item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
 		ID:        "write-1",
-		Name:      projectToolWriteFile,
+		Name:      projectToolApplyPatch,
 		Status:    "succeeded",
 		Arguments: "path src/App.vue; 42 bytes",
 		Summary:   "file updated",

@@ -17,6 +17,7 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -37,6 +38,7 @@ const (
 )
 
 const projectEinoAssistantMaxTrackedReads = 128
+const projectEinoAssistantMaxFailedPatchFingerprints = 32
 
 type projectAssistantApprovedPlan struct {
 	Goal               string    `json:"goal,omitempty"`
@@ -71,19 +73,29 @@ type projectEinoAssistantRunState struct {
 	toolPrompt                string
 	toolDiscovery             *projectEinoAssistantToolDiscovery
 	sessionSnapshot           *projectEinoAssistantSessionSnapshot
+	rolloutBudget             *projectEinoAssistantRolloutBudget
+	restoredRolloutBudget     *projectAssistantRolloutBudgetState
 	permissionBarrier         bool
 	approvedPlan              *projectAssistantApprovedPlan
-	approvedPlanGrantRevision string
 	executionPlan             *projectAssistantApprovedPlan
-	executionPlanRevision     string
 	planProgress              projectAssistantPlanSnapshot
 	sourceMutationRevision    uint64
 	verifiedMutationRevision  uint64
+	commitRequired            bool
+	committedMutationRevision uint64
+	commitAttemptedRevision   uint64
+	verifiedWorkspaceDigest   string
+	committedWorkspaceDigest  string
 	checkedMutationRevision   uint64
 	verificationAttempted     bool
 	verificationOutcome       string
 	verificationSummary       string
 	verificationBlockers      []string
+	developmentSyncRevision   uint64
+	developmentSyncStatus     string
+	developmentSyncFailure    string
+	developmentSyncRetry      uint64
+	developmentSyncChanged    chan struct{}
 	completedReadCalls        map[string]uint64
 	observedReadFilePaths     map[string]struct{}
 	successfulMutationPaths   map[string]struct{}
@@ -92,6 +104,7 @@ type projectEinoAssistantRunState struct {
 	repeatedActionToolName    string
 	repeatedActionCount       int
 	patchFailureCount         int
+	failedPatchFingerprints   map[string]uint64
 	patchRecoveryPath         string
 	patchRecoveryReadComplete bool
 	runtimeWarmupAttempts     int
@@ -101,12 +114,10 @@ type projectEinoAssistantRunState struct {
 	actionBatchMadeProgress   bool
 	modelCallOrdinal          int
 	transientToolResults      map[string]string
+	transientPreviewImages    map[string]projectEinoAssistantTransientPreviewImage
 	transientToolResultCount  uint64
-	// Progress suppression is intentionally run-local. Resuming after user
-	// approval or input starts a new visible work interval and may report the
-	// current phase again.
-	progressPhases      map[projectEinoAssistantPhase]bool
-	lastProgressMessage string
+	lastProgressMessage       string
+	deferSteeringOnce         bool
 }
 
 type projectEinoAssistantLineRange struct {
@@ -139,9 +150,41 @@ func newProjectEinoAssistantRunState() *projectEinoAssistantRunState {
 		readFileCoverage:        map[string][]projectEinoAssistantLineRange{},
 		successfulMutationPaths: map[string]struct{}{},
 		transientToolResults:    map[string]string{},
-		progressPhases:          map[projectEinoAssistantPhase]bool{},
-		turnPolicy:              projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDiscussion),
+		transientPreviewImages:  map[string]projectEinoAssistantTransientPreviewImage{},
+		developmentSyncChanged:  make(chan struct{}),
+		turnPolicy:              projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDebugging),
 	}
+}
+
+type projectEinoAssistantTransientPreviewImage struct {
+	Base64Data string
+	MIMEType   string
+}
+
+func (s *projectEinoAssistantRunState) RegisterTransientPreviewImage(result, base64Data, mimeType string) string {
+	persistent := projectEinoAssistantPersistentToolResult(projectToolInspectDevelopmentPreview, result)
+	if s == nil || strings.TrimSpace(base64Data) == "" || mimeType != "image/png" {
+		return persistent
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.transientToolResultCount++
+	digest := sha256.Sum256([]byte(fmt.Sprintf("preview\x00%d\x00%s", s.transientToolResultCount, base64Data)))
+	reference := hex.EncodeToString(digest[:16])
+	if s.transientPreviewImages == nil || len(s.transientPreviewImages) >= 4 {
+		s.transientPreviewImages = map[string]projectEinoAssistantTransientPreviewImage{}
+	}
+	s.transientPreviewImages[reference] = projectEinoAssistantTransientPreviewImage{Base64Data: base64Data, MIMEType: mimeType}
+	var placeholder map[string]any
+	if err := json.Unmarshal([]byte(persistent), &placeholder); err != nil {
+		placeholder = map[string]any{"status": "unavailable", "summary": "transient preview image omitted from persistence"}
+	}
+	placeholder["transientImageReference"] = reference
+	encoded, err := json.Marshal(placeholder)
+	if err != nil {
+		return persistent
+	}
+	return string(encoded)
 }
 
 func (s *projectEinoAssistantRunState) AcceptProgressMessage(message string) bool {
@@ -156,40 +199,6 @@ func (s *projectEinoAssistantRunState) AcceptProgressMessage(message string) boo
 	}
 	s.lastProgressMessage = message
 	return true
-}
-
-func (s *projectEinoAssistantRunState) ReserveProgressPhase(phase projectEinoAssistantPhase) bool {
-	if s == nil || phase == "" {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.progressPhases == nil {
-		s.progressPhases = map[projectEinoAssistantPhase]bool{}
-	}
-	if s.progressPhases[phase] {
-		return false
-	}
-	s.progressPhases[phase] = true
-	return true
-}
-
-func (s *projectEinoAssistantRunState) ReleaseProgressPhase(phase projectEinoAssistantPhase) {
-	if s == nil || phase == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.progressPhases, phase)
-}
-
-func (s *projectEinoAssistantRunState) ProgressReported(phase projectEinoAssistantPhase) bool {
-	if s == nil || phase == "" {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.progressPhases[phase]
 }
 
 func (s *projectEinoAssistantRunState) RegisterTransientToolResult(name, result string) string {
@@ -234,7 +243,7 @@ func (s *projectEinoAssistantRunState) ExpandTransientToolMessages(input []*sche
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.transientToolResults) == 0 {
+	if len(s.transientToolResults) == 0 && len(s.transientPreviewImages) == 0 {
 		return input
 	}
 
@@ -247,16 +256,30 @@ func (s *projectEinoAssistantRunState) ExpandTransientToolMessages(input []*sche
 		if strings.TrimSpace(toolName) == "" {
 			toolName = message.Name
 		}
-		if projectToolBaseName(toolName) != projectToolGetPreviewConsoleLogs {
-			continue
-		}
 		var placeholder struct {
-			TransientReference string `json:"transientReference"`
+			TransientReference      string `json:"transientReference"`
+			TransientImageReference string `json:"transientImageReference"`
 		}
 		if err := json.Unmarshal([]byte(message.Content), &placeholder); err != nil {
 			continue
 		}
-		result, ok := s.transientToolResults[strings.TrimSpace(placeholder.TransientReference)]
+		if projectToolBaseName(toolName) == projectToolGetPreviewConsoleLogs {
+			result, ok := s.transientToolResults[strings.TrimSpace(placeholder.TransientReference)]
+			if !ok {
+				continue
+			}
+			if expanded == nil {
+				expanded = append([]*schema.Message(nil), input...)
+			}
+			cloned := *message
+			cloned.Content = result
+			expanded[index] = &cloned
+			continue
+		}
+		if projectToolBaseName(toolName) != projectToolInspectDevelopmentPreview {
+			continue
+		}
+		preview, ok := s.transientPreviewImages[strings.TrimSpace(placeholder.TransientImageReference)]
 		if !ok {
 			continue
 		}
@@ -264,7 +287,11 @@ func (s *projectEinoAssistantRunState) ExpandTransientToolMessages(input []*sche
 			expanded = append([]*schema.Message(nil), input...)
 		}
 		cloned := *message
-		cloned.Content = result
+		data := preview.Base64Data
+		cloned.UserInputMultiContent = []schema.MessageInputPart{
+			{Type: schema.ChatMessagePartTypeText, Text: message.Content},
+			{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageInputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &data, MIMEType: preview.MIMEType}}},
+		}
 		expanded[index] = &cloned
 	}
 	if expanded == nil {
@@ -283,7 +310,7 @@ func (s *projectEinoAssistantRunState) SetTurnPolicy(policy projectAssistantTurn
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.turnPolicy = normalizeProjectAssistantTurnPolicy(policy, projectAssistantTurnProfileDiscussion)
+	s.turnPolicy = normalizeProjectAssistantTurnPolicy(policy, projectAssistantTurnProfileDebugging)
 }
 
 func (s *projectEinoAssistantRunState) TurnProfile() projectAssistantTurnProfile {
@@ -292,11 +319,11 @@ func (s *projectEinoAssistantRunState) TurnProfile() projectAssistantTurnProfile
 
 func (s *projectEinoAssistantRunState) TurnPolicy() projectAssistantTurnPolicy {
 	if s == nil {
-		return projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDiscussion)
+		return projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDebugging)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return normalizeProjectAssistantTurnPolicy(s.turnPolicy, projectAssistantTurnProfileDiscussion)
+	return normalizeProjectAssistantTurnPolicy(s.turnPolicy, projectAssistantTurnProfileDebugging)
 }
 
 func (s *projectEinoAssistantRunState) SetToolPrompt(prompt string) {
@@ -382,13 +409,20 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.turnPolicy = projectAssistantTurnPolicyForCheckpoint(state)
 	s.projectRepositoryRef = strings.TrimSpace(state.ProjectRepositoryRef)
 	s.approvedPlan = cloneProjectAssistantApprovedPlan(state.ApprovedPlan)
-	s.approvedPlanGrantRevision = strings.TrimSpace(state.ApprovedPlanGrantRevision)
 	s.executionPlan = cloneProjectAssistantApprovedPlan(state.ExecutionPlan)
-	s.executionPlanRevision = strings.TrimSpace(state.ExecutionPlanRevision)
 	s.planProgress = cloneProjectAssistantPlanSnapshot(state.PlanProgress)
 	s.sourceMutationRevision = state.SourceMutationRevision
 	s.checkedMutationRevision = state.CheckedMutationRevision
 	s.verifiedMutationRevision = state.VerifiedMutationRevision
+	s.developmentSyncRevision = state.DevelopmentSyncRevision
+	s.developmentSyncStatus = strings.TrimSpace(state.DevelopmentSyncStatus)
+	s.developmentSyncFailure = strings.TrimSpace(state.DevelopmentSyncFailure)
+	s.developmentSyncRetry = state.DevelopmentSyncRetry
+	s.commitRequired = state.CommitRequired
+	s.committedMutationRevision = state.CommittedMutationRevision
+	s.commitAttemptedRevision = state.CommitAttemptedRevision
+	s.verifiedWorkspaceDigest = strings.TrimSpace(state.VerifiedWorkspaceDigest)
+	s.committedWorkspaceDigest = strings.TrimSpace(state.CommittedWorkspaceDigest)
 	s.verificationAttempted = state.VerificationAttempted
 	s.verificationOutcome = strings.TrimSpace(state.VerificationOutcome)
 	s.verificationSummary = strings.TrimSpace(state.VerificationSummary)
@@ -397,14 +431,17 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.repeatedActionToolName = projectToolBaseName(state.RepeatedActionToolName)
 	s.repeatedActionCount = min(max(state.RepeatedActionCount, 0), projectEinoAssistantRepeatedActionLimit)
 	s.patchFailureCount = min(max(state.PatchFailureCount, 0), projectEinoAssistantRepeatedActionLimit)
+	s.failedPatchFingerprints = projectEinoAssistantRestoreFailedPatchFingerprints(
+		state.FailedPatchFingerprints,
+		s.sourceMutationRevision,
+	)
 	if recoveryPath, err := workspace.CleanProjectPath(state.PatchRecoveryPath); err == nil {
 		s.patchRecoveryPath = recoveryPath
 		s.patchRecoveryReadComplete = state.PatchRecoveryReadComplete
 	}
 	s.runtimeWarmupAttempts = min(max(state.RuntimeWarmupAttempts, 0), projectEinoAssistantRepeatedActionLimit)
-	// Legacy checkpoints counted every tool invocation and could therefore
-	// exhaust the guard within one model response. Start those checkpoints with
-	// a clean model-call counter rather than carrying forward false strikes.
+	// The durable counter tracks consecutive model calls without progress.
+	// Bound restored state so a malformed checkpoint cannot disable the guard.
 	s.noProgressModelCallCount = min(max(state.NoProgressModelCallCount, 0), projectEinoAssistantRepeatedActionLimit)
 	s.actionBatchModelCall = max(state.ActionBatchModelCall, 0)
 	s.actionBatchObserved = state.ActionBatchObserved
@@ -431,6 +468,35 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.observedReadFilePaths = projectEinoAssistantReadPathSet(state.ObservedReadFilePaths)
 	s.successfulMutationPaths = projectEinoAssistantReadPathSet(state.SuccessfulMutationPaths)
 	s.sessionSnapshot = cloneProjectEinoAssistantSessionSnapshot(state.SessionSnapshot)
+	s.restoredRolloutBudget = cloneProjectAssistantRolloutBudgetStatePtr(state.RolloutBudget)
+}
+
+func (s *projectEinoAssistantRunState) SetRolloutBudget(budget *projectEinoAssistantRolloutBudget) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rolloutBudget = budget
+	s.restoredRolloutBudget = nil
+}
+
+func (s *projectEinoAssistantRunState) RolloutBudget() *projectEinoAssistantRolloutBudget {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.rolloutBudget
+}
+
+func (s *projectEinoAssistantRunState) RestoredRolloutBudget() *projectAssistantRolloutBudgetState {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneProjectAssistantRolloutBudgetStatePtr(s.restoredRolloutBudget)
 }
 
 func (s *projectEinoAssistantRunState) ProjectRepositoryRef() string {
@@ -471,7 +537,7 @@ func (s *projectEinoAssistantRunState) ApprovedPlan() *projectAssistantApprovedP
 	return cloneProjectAssistantApprovedPlan(s.approvedPlan)
 }
 
-func (s *projectEinoAssistantRunState) SetExecutionPlan(plan projectAssistantApprovedPlan, revision string) {
+func (s *projectEinoAssistantRunState) SetExecutionPlan(plan projectAssistantApprovedPlan) {
 	if s == nil {
 		return
 	}
@@ -479,16 +545,25 @@ func (s *projectEinoAssistantRunState) SetExecutionPlan(plan projectAssistantApp
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.executionPlan = &normalized
-	s.executionPlanRevision = strings.TrimSpace(revision)
 }
 
-func (s *projectEinoAssistantRunState) ExecutionPlan() (*projectAssistantApprovedPlan, string) {
+func (s *projectEinoAssistantRunState) ClearExecutionPlan() {
 	if s == nil {
-		return nil, ""
+		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return cloneProjectAssistantApprovedPlan(s.executionPlan), s.executionPlanRevision
+	s.executionPlan = nil
+	s.planProgress = projectAssistantPlanSnapshot{}
+}
+
+func (s *projectEinoAssistantRunState) ExecutionPlan() *projectAssistantApprovedPlan {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneProjectAssistantApprovedPlan(s.executionPlan)
 }
 
 func (s *projectEinoAssistantRunState) SetPlanProgress(plan projectAssistantPlanSnapshot) {
@@ -522,7 +597,7 @@ func (s *projectEinoAssistantRunState) ExecutionPlanComplete() bool {
 	}
 	for index, step := range s.planProgress.Steps {
 		if step.Status != "completed" ||
-			strings.TrimSpace(step.Content) != strings.TrimSpace(s.executionPlan.Steps[index]) {
+			strings.TrimSpace(step.Content) != projectEinoAssistantTodoProgressLabel(s.executionPlan.Steps[index]) {
 			return false
 		}
 	}
@@ -543,7 +618,7 @@ func (s *projectEinoAssistantRunState) CompleteExecutionPlan() {
 	}
 	for _, content := range s.executionPlan.Steps {
 		completed.Steps = append(completed.Steps, projectAssistantPlanStep{
-			Content: strings.TrimSpace(content),
+			Content: projectEinoAssistantTodoProgressLabel(content),
 			Status:  "completed",
 		})
 	}
@@ -559,24 +634,6 @@ func (s *projectEinoAssistantRunState) ClearApprovedPlan() {
 	s.approvedPlan = nil
 }
 
-func (s *projectEinoAssistantRunState) SetApprovedPlanGrantRevision(revision string) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.approvedPlanGrantRevision = strings.TrimSpace(revision)
-}
-
-func (s *projectEinoAssistantRunState) ApprovedPlanGrantRevision() string {
-	if s == nil {
-		return ""
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.approvedPlanGrantRevision
-}
-
 func (s *projectEinoAssistantRunState) RecordSourceMutation() {
 	if s == nil {
 		return
@@ -584,6 +641,13 @@ func (s *projectEinoAssistantRunState) RecordSourceMutation() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sourceMutationRevision++
+	s.failedPatchFingerprints = nil
+	if s.developmentSyncRevision != s.sourceMutationRevision {
+		s.developmentSyncRevision = s.sourceMutationRevision
+		s.developmentSyncStatus = "unknown"
+		s.developmentSyncFailure = "positive workspace synchronization evidence is unavailable for this mutation"
+		s.signalDevelopmentSyncChangedLocked()
+	}
 	s.verifiedMutationRevision = 0
 	s.checkedMutationRevision = 0
 	s.verificationAttempted = false
@@ -591,8 +655,147 @@ func (s *projectEinoAssistantRunState) RecordSourceMutation() {
 	s.verificationSummary = ""
 	s.verificationBlockers = nil
 	s.runtimeWarmupAttempts = 0
+	s.verifiedWorkspaceDigest = ""
 	s.completedReadCalls = map[string]uint64{}
 	s.readFileCoverage = map[string][]projectEinoAssistantLineRange{}
+}
+
+func (s *projectEinoAssistantRunState) BeginDevelopmentSyncForNextMutation() uint64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	revision := s.sourceMutationRevision + 1
+	s.developmentSyncRevision = revision
+	s.developmentSyncStatus = "pending"
+	s.developmentSyncFailure = ""
+	s.signalDevelopmentSyncChangedLocked()
+	return revision
+}
+
+func (s *projectEinoAssistantRunState) BeginDevelopmentSyncForCurrentMutation() uint64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sourceMutationRevision == 0 {
+		return 0
+	}
+	s.developmentSyncRevision = s.sourceMutationRevision
+	s.developmentSyncStatus = "pending"
+	s.developmentSyncFailure = ""
+	s.signalDevelopmentSyncChangedLocked()
+	return s.sourceMutationRevision
+}
+
+func (s *projectEinoAssistantRunState) ClaimDevelopmentSyncRetry(revision uint64) (uint64, bool) {
+	if s == nil || revision == 0 {
+		return 0, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sourceMutationRevision != revision ||
+		s.developmentSyncRevision != revision ||
+		s.developmentSyncStatus != "failed" ||
+		s.developmentSyncRetry == revision {
+		return 0, false
+	}
+	s.developmentSyncRetry = revision
+	s.developmentSyncStatus = "pending"
+	s.developmentSyncFailure = ""
+	s.signalDevelopmentSyncChangedLocked()
+	return revision, true
+}
+
+func (s *projectEinoAssistantRunState) CompleteDevelopmentSync(revision uint64, syncErr error) {
+	if s == nil || revision == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.developmentSyncRevision != revision {
+		return
+	}
+	if syncErr != nil {
+		s.developmentSyncStatus = "failed"
+		s.developmentSyncFailure = strings.TrimSpace(syncErr.Error())
+		if s.developmentSyncFailure == "" {
+			s.developmentSyncFailure = "workspace synchronization failed"
+		}
+		s.signalDevelopmentSyncChangedLocked()
+		return
+	}
+	s.developmentSyncStatus = "succeeded"
+	s.developmentSyncFailure = ""
+	s.signalDevelopmentSyncChangedLocked()
+}
+
+func (s *projectEinoAssistantRunState) signalDevelopmentSyncChangedLocked() {
+	if s.developmentSyncChanged != nil {
+		close(s.developmentSyncChanged)
+	}
+	s.developmentSyncChanged = make(chan struct{})
+}
+
+// WaitForDevelopmentSync boundedly observes the current revision rather than
+// making verification race the background synchronization goroutine.
+func (s *projectEinoAssistantRunState) WaitForDevelopmentSync(
+	ctx context.Context,
+	revision uint64,
+	timeout time.Duration,
+) (string, string) {
+	if s == nil || revision == 0 || timeout <= 0 {
+		return s.DevelopmentSyncEvidence(revision)
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		s.mu.Lock()
+		status := strings.TrimSpace(s.developmentSyncStatus)
+		failure := strings.TrimSpace(s.developmentSyncFailure)
+		if s.developmentSyncRevision != revision {
+			status = "unknown"
+			failure = "positive workspace synchronization evidence is unavailable for this mutation"
+		}
+		if status == "" {
+			status = "unknown"
+		}
+		if status != "pending" {
+			s.mu.Unlock()
+			return status, failure
+		}
+		if s.developmentSyncChanged == nil {
+			s.developmentSyncChanged = make(chan struct{})
+		}
+		changed := s.developmentSyncChanged
+		s.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return s.DevelopmentSyncEvidence(revision)
+		case <-timer.C:
+			return s.DevelopmentSyncEvidence(revision)
+		case <-changed:
+		}
+	}
+}
+
+func (s *projectEinoAssistantRunState) DevelopmentSyncEvidence(revision uint64) (string, string) {
+	if s == nil || revision == 0 {
+		return "unknown", "positive workspace synchronization evidence is unavailable"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.developmentSyncRevision != revision {
+		return "unknown", "positive workspace synchronization evidence is unavailable for this mutation"
+	}
+	status := strings.TrimSpace(s.developmentSyncStatus)
+	if status == "" {
+		status = "unknown"
+	}
+	return status, strings.TrimSpace(s.developmentSyncFailure)
 }
 
 func (s *projectEinoAssistantRunState) RecordDevelopmentVerification(ready bool) {
@@ -634,13 +837,6 @@ func (s *projectEinoAssistantRunState) RecordDevelopmentVerificationResult(conte
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if payload.CheckedMutationRevision == 0 {
-		// Legacy live verifier implementations did not echo the revision. The
-		// result is still bound to the current revision at this synchronous
-		// lifecycle boundary. Restored legacy checkpoints remain unverified
-		// because they do not carry CheckedMutationRevision.
-		payload.CheckedMutationRevision = s.sourceMutationRevision
-	}
 	s.verificationAttempted = true
 	s.checkedMutationRevision = payload.CheckedMutationRevision
 	s.verificationSummary = strings.TrimSpace(payload.Summary)
@@ -679,32 +875,6 @@ func (s *projectEinoAssistantRunState) RecordDevelopmentVerificationResult(conte
 	s.verificationOutcome = status
 }
 
-func (s *projectEinoAssistantRunState) RewriteCompletionAsVerification(message *schema.Message) {
-	if s == nil || message == nil || len(message.ToolCalls) == 0 {
-		return
-	}
-	reply := projectEinoAssistantReplyFromMessage(message)
-	ensureProjectToolCallIDs(reply.ToolCalls)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.messages) > 0 {
-		last := s.messages[len(s.messages)-1]
-		if last.Role == "assistant" && len(last.ToolCalls) == 0 {
-			s.messages = s.messages[:len(s.messages)-1]
-		}
-	}
-	s.toolCalls = cloneProjectAssistantToolCalls(reply.ToolCalls)
-	for _, toolCall := range reply.ToolCalls {
-		signature := projectEinoAssistantToolCallSignature(toolCall.Function.Name, toolCall.Function.Arguments)
-		s.seenToolCalls[signature]++
-	}
-	s.messages = append(s.messages, chatMessage{
-		Role:      "assistant",
-		ToolCalls: cloneProjectAssistantToolCalls(reply.ToolCalls),
-	})
-	s.turn++
-}
-
 func (s *projectEinoAssistantRunState) CompletionEvidence() projectAssistantCompletionEvidence {
 	if s == nil {
 		return projectAssistantCompletionEvidence{}
@@ -718,7 +888,7 @@ func (s *projectEinoAssistantRunState) CompletionEvidence() projectAssistantComp
 	for index, step := range s.planProgress.Steps {
 		if !planComplete ||
 			step.Status != "completed" ||
-			strings.TrimSpace(step.Content) != strings.TrimSpace(s.executionPlan.Steps[index]) {
+			strings.TrimSpace(step.Content) != projectEinoAssistantTodoProgressLabel(s.executionPlan.Steps[index]) {
 			planComplete = false
 			break
 		}
@@ -733,14 +903,17 @@ func (s *projectEinoAssistantRunState) CompletionEvidence() projectAssistantComp
 		outcome = "not_run"
 	}
 	evidence := projectAssistantCompletionEvidence{
-		PlanDefined:              planDefined,
-		PlanComplete:             planComplete,
-		SourceMutationRevision:   s.sourceMutationRevision,
-		VerifiedMutationRevision: s.verifiedMutationRevision,
-		LatestMutationVerified:   latestVerified,
-		VerificationOutcome:      outcome,
-		VerificationSummary:      strings.TrimSpace(s.verificationSummary),
-		Blockers:                 append([]string(nil), s.verificationBlockers...),
+		PlanDefined:               planDefined,
+		PlanComplete:              planComplete,
+		SourceMutationRevision:    s.sourceMutationRevision,
+		VerifiedMutationRevision:  s.verifiedMutationRevision,
+		LatestMutationVerified:    latestVerified,
+		CommitRequired:            s.commitRequired,
+		CommittedMutationRevision: s.committedMutationRevision,
+		LatestMutationCommitted:   !s.commitRequired || (s.sourceMutationRevision > 0 && s.committedMutationRevision == s.sourceMutationRevision),
+		VerificationOutcome:       outcome,
+		VerificationSummary:       strings.TrimSpace(s.verificationSummary),
+		Blockers:                  append([]string(nil), s.verificationBlockers...),
 	}
 	if outcome == "provisioning" {
 		evidence.Blockers = append(evidence.Blockers, "runtime provisioning")
@@ -758,6 +931,99 @@ func (s *projectEinoAssistantRunState) SourceMutationVerified() bool {
 		s.verifiedMutationRevision == s.sourceMutationRevision
 }
 
+func (s *projectEinoAssistantRunState) ConfigureCommitRequirement(required bool) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.commitRequired = required
+	if !required {
+		s.committedMutationRevision = 0
+	}
+}
+
+func (s *projectEinoAssistantRunState) RecordSourceCommit(workspaceDigest string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	workspaceDigest = strings.TrimSpace(workspaceDigest)
+	if s.sourceMutationRevision > 0 && workspaceDigest != "" {
+		s.commitAttemptedRevision = s.sourceMutationRevision
+		s.committedMutationRevision = s.sourceMutationRevision
+		s.committedWorkspaceDigest = workspaceDigest
+		// Preserve a verification claim only when commit persisted the exact
+		// same workspace bundle. Otherwise fail closed instead of allowing two
+		// unrelated digests to appear as one completed state.
+		if s.verifiedWorkspaceDigest != workspaceDigest {
+			s.verifiedMutationRevision = 0
+			s.checkedMutationRevision = 0
+			s.verificationAttempted = false
+			s.verificationOutcome = ""
+			s.verificationSummary = ""
+			s.verificationBlockers = nil
+			s.verifiedWorkspaceDigest = ""
+		}
+	}
+}
+
+func (s *projectEinoAssistantRunState) RecordSourceCommitAttempt(revision uint64) {
+	if s == nil || revision == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if revision > s.commitAttemptedRevision {
+		s.commitAttemptedRevision = revision
+	}
+}
+
+func (s *projectEinoAssistantRunState) RecordVerifiedWorkspaceDigest(digest string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sourceMutationRevision > 0 && s.verifiedMutationRevision == s.sourceMutationRevision {
+		s.verifiedWorkspaceDigest = strings.TrimSpace(digest)
+	}
+}
+
+func (s *projectEinoAssistantRunState) VerifiedWorkspaceDigestMatches(digest string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sourceMutationRevision > 0 &&
+		s.verifiedMutationRevision == s.sourceMutationRevision &&
+		s.verifiedWorkspaceDigest != "" &&
+		s.verifiedWorkspaceDigest == strings.TrimSpace(digest)
+}
+
+func (s *projectEinoAssistantRunState) VerifiedWorkspaceDigest() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.verifiedWorkspaceDigest
+}
+
+func (s *projectEinoAssistantRunState) RecordVerificationBindingFailure(reason string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.verifiedMutationRevision = 0
+	s.verificationOutcome = "not_ready"
+	s.verificationBlockers = append(s.verificationBlockers, strings.TrimSpace(reason))
+	s.verifiedWorkspaceDigest = ""
+}
+
 func (s *projectEinoAssistantRunState) SourceMutationRevisions() (uint64, uint64) {
 	if s == nil {
 		return 0, 0
@@ -765,16 +1031,6 @@ func (s *projectEinoAssistantRunState) SourceMutationRevisions() (uint64, uint64
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sourceMutationRevision, s.verifiedMutationRevision
-}
-
-func (s *projectEinoAssistantRunState) NeedsCompletionVerification() bool {
-	if s == nil {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.sourceMutationRevision > 0 &&
-		s.checkedMutationRevision != s.sourceMutationRevision
 }
 
 func (s *projectEinoAssistantRunState) RepeatedCompletedRead(name, arguments string) bool {
@@ -867,6 +1123,21 @@ func (s *projectEinoAssistantRunState) ReopenReadFile(path string) {
 	delete(s.readFileCoverage, path)
 }
 
+func (s *projectEinoAssistantRunState) InvalidateObservedReadFile(path string) {
+	if s == nil {
+		return
+	}
+	path, err := workspace.CleanProjectPath(path)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completedReadCalls = map[string]uint64{}
+	delete(s.readFileCoverage, path)
+	delete(s.observedReadFilePaths, path)
+}
+
 func (s *projectEinoAssistantRunState) CompletedReadFilePaths() []string {
 	if s == nil {
 		return nil
@@ -950,6 +1221,72 @@ func (s *projectEinoAssistantRunState) RecordPatchResult(successful bool) {
 		return
 	}
 	s.patchFailureCount = min(s.patchFailureCount+1, projectEinoAssistantRepeatedActionLimit)
+}
+
+func (s *projectEinoAssistantRunState) PatchFingerprint(patch string) (string, uint64, bool) {
+	if s == nil {
+		return "", 0, false
+	}
+	normalized := strings.TrimSpace(strings.ReplaceAll(patch, "\r\n", "\n"))
+	digest := sha256.Sum256([]byte(normalized))
+	fingerprint := hex.EncodeToString(digest[:])
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	revision := s.sourceMutationRevision
+	failedRevision, found := s.failedPatchFingerprints[fingerprint]
+	return fingerprint, revision, found && failedRevision == revision
+}
+
+func (s *projectEinoAssistantRunState) RecordFailedPatchFingerprint(fingerprint string, revision uint64) {
+	if s == nil || strings.TrimSpace(fingerprint) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if revision != s.sourceMutationRevision {
+		return
+	}
+	if s.failedPatchFingerprints == nil {
+		s.failedPatchFingerprints = map[string]uint64{}
+	}
+	if _, exists := s.failedPatchFingerprints[fingerprint]; !exists && len(s.failedPatchFingerprints) >= projectEinoAssistantMaxFailedPatchFingerprints {
+		keys := make([]string, 0, len(s.failedPatchFingerprints))
+		for key := range s.failedPatchFingerprints {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		delete(s.failedPatchFingerprints, keys[0])
+	}
+	s.failedPatchFingerprints[fingerprint] = revision
+}
+
+func projectEinoAssistantRestoreFailedPatchFingerprints(values map[string]uint64, revision uint64) map[string]uint64 {
+	if len(values) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(values))
+	for fingerprint, failedRevision := range values {
+		fingerprint = strings.TrimSpace(fingerprint)
+		if len(fingerprint) != sha256.Size*2 || failedRevision != revision {
+			continue
+		}
+		if _, err := hex.DecodeString(fingerprint); err != nil {
+			continue
+		}
+		keys = append(keys, fingerprint)
+	}
+	sort.Strings(keys)
+	if len(keys) > projectEinoAssistantMaxFailedPatchFingerprints {
+		keys = keys[:projectEinoAssistantMaxFailedPatchFingerprints]
+	}
+	restored := make(map[string]uint64, len(keys))
+	for _, fingerprint := range keys {
+		restored[fingerprint] = revision
+	}
+	if len(restored) == 0 {
+		return nil
+	}
+	return restored
 }
 
 func (s *projectEinoAssistantRunState) StartPatchRecovery(path string) {
@@ -1098,6 +1435,15 @@ func (s *projectEinoAssistantRunState) NextModelCallOrdinal() int {
 	return s.modelCallOrdinal
 }
 
+func (s *projectEinoAssistantRunState) CurrentModelCallOrdinal() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.modelCallOrdinal
+}
+
 func (s *projectEinoAssistantRunState) RecordModelInput(messages []chatMessage) {
 	if s == nil {
 		return
@@ -1124,7 +1470,7 @@ func (s *projectEinoAssistantRunState) RecordAssistantReply(reply projectAssista
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(reply.ToolCalls) > 0 {
-		ensureProjectToolCallIDs(reply.ToolCalls)
+		ensureProjectToolCallIDs(reply.ToolCalls, s.modelCallOrdinal)
 		s.toolCalls = cloneProjectAssistantToolCalls(reply.ToolCalls)
 		for _, tc := range reply.ToolCalls {
 			sig := projectEinoAssistantToolCallSignature(tc.Function.Name, tc.Function.Arguments)
@@ -1146,6 +1492,48 @@ func (s *projectEinoAssistantRunState) RecordAssistantReply(reply projectAssista
 	}
 }
 
+func (s *projectEinoAssistantRunState) RecordSteeringInput(content string) {
+	if s == nil || strings.TrimSpace(content) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messages = append(s.messages, chatMessage{Role: "user", Content: strings.TrimSpace(content)})
+}
+
+// DeferSteeringOnceAfterCompaction preserves Codex's continuation ordering:
+// when a completed tool result forced the next model step, that continuation
+// gets the first request in the new context window. Persisted steering remains
+// queued for the following model-safe boundary.
+func (s *projectEinoAssistantRunState) DeferSteeringOnceAfterCompaction() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deferSteeringOnce = true
+}
+
+func (s *projectEinoAssistantRunState) TakeSteeringDeferral() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	deferred := s.deferSteeringOnce
+	s.deferSteeringOnce = false
+	return deferred
+}
+
+func (s *projectEinoAssistantRunState) ModelMessages() []chatMessage {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneChatMessages(s.messages)
+}
+
 func (s *projectEinoAssistantRunState) RecordToolMessage(msg chatMessage) {
 	if s == nil {
 		return
@@ -1159,6 +1547,29 @@ func (s *projectEinoAssistantRunState) RecordToolMessage(msg chatMessage) {
 	if len(s.toolEvidence) > projectEinoAssistantClosingEvidenceMaxItems {
 		s.toolEvidence = cloneChatMessages(s.toolEvidence[len(s.toolEvidence)-projectEinoAssistantClosingEvidenceMaxItems:])
 	}
+}
+
+func (s *projectEinoAssistantRunState) ReadOnlyPreviewInspectionObserved() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := len(s.toolEvidence) - 1; index >= 0; index-- {
+		message := s.toolEvidence[index]
+		if projectToolBaseName(message.Name) != projectToolInspectDevelopmentPreview {
+			continue
+		}
+		var evidence struct {
+			EvidenceScope       string `json:"evidenceScope"`
+			InteractionEvidence bool   `json:"interactionEvidence"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(message.Content)), &evidence) == nil &&
+			evidence.EvidenceScope == "rendered_state_only" && !evidence.InteractionEvidence {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *projectEinoAssistantRunState) PermissionBarrierActive() bool {
@@ -1208,6 +1619,10 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	rolloutBudget := cloneProjectAssistantRolloutBudgetStatePtr(s.restoredRolloutBudget)
+	if s.rolloutBudget != nil {
+		rolloutBudget = s.rolloutBudget.Snapshot()
+	}
 	return projectAssistantCheckpointState{
 		Messages:                  cloneChatMessages(s.messages),
 		LastToolMessages:          cloneChatMessages(s.lastToolMessages),
@@ -1217,12 +1632,19 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		ProjectRepositoryRef:      strings.TrimSpace(s.projectRepositoryRef),
 		TurnPolicy:                projectAssistantCheckpointTurnPolicyForPolicy(s.turnPolicy),
 		ApprovedPlan:              cloneProjectAssistantApprovedPlan(s.approvedPlan),
-		ApprovedPlanGrantRevision: strings.TrimSpace(s.approvedPlanGrantRevision),
 		ExecutionPlan:             cloneProjectAssistantApprovedPlan(s.executionPlan),
-		ExecutionPlanRevision:     strings.TrimSpace(s.executionPlanRevision),
 		PlanProgress:              cloneProjectAssistantPlanSnapshot(s.planProgress),
 		SourceMutationRevision:    s.sourceMutationRevision,
 		VerifiedMutationRevision:  s.verifiedMutationRevision,
+		DevelopmentSyncRevision:   s.developmentSyncRevision,
+		DevelopmentSyncStatus:     strings.TrimSpace(s.developmentSyncStatus),
+		DevelopmentSyncFailure:    strings.TrimSpace(s.developmentSyncFailure),
+		DevelopmentSyncRetry:      s.developmentSyncRetry,
+		CommitRequired:            s.commitRequired,
+		CommittedMutationRevision: s.committedMutationRevision,
+		CommitAttemptedRevision:   s.commitAttemptedRevision,
+		VerifiedWorkspaceDigest:   s.verifiedWorkspaceDigest,
+		CommittedWorkspaceDigest:  s.committedWorkspaceDigest,
 		CheckedMutationRevision:   s.checkedMutationRevision,
 		VerificationAttempted:     s.verificationAttempted,
 		VerificationOutcome:       strings.TrimSpace(s.verificationOutcome),
@@ -1232,6 +1654,7 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		RepeatedActionToolName:    s.repeatedActionToolName,
 		RepeatedActionCount:       s.repeatedActionCount,
 		PatchFailureCount:         s.patchFailureCount,
+		FailedPatchFingerprints:   projectEinoAssistantRestoreFailedPatchFingerprints(s.failedPatchFingerprints, s.sourceMutationRevision),
 		PatchRecoveryPath:         s.patchRecoveryPath,
 		PatchRecoveryReadComplete: s.patchRecoveryReadComplete,
 		RuntimeWarmupAttempts:     s.runtimeWarmupAttempts,
@@ -1245,7 +1668,16 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		ObservedReadFilePaths:     projectEinoAssistantObservedReadPaths(s.observedReadFilePaths),
 		SuccessfulMutationPaths:   projectEinoAssistantObservedReadPaths(s.successfulMutationPaths),
 		SessionSnapshot:           cloneProjectEinoAssistantSessionSnapshot(s.sessionSnapshot),
+		RolloutBudget:             rolloutBudget,
 	}
+}
+
+func cloneProjectAssistantRolloutBudgetStatePtr(state *projectAssistantRolloutBudgetState) *projectAssistantRolloutBudgetState {
+	if state == nil {
+		return nil
+	}
+	copy := cloneProjectAssistantRolloutBudgetState(*state)
+	return &copy
 }
 
 func projectEinoAssistantReadPathSet(paths []string) map[string]struct{} {
@@ -1351,47 +1783,6 @@ func projectEinoAssistantCheckpointReadCoverage(
 	return out
 }
 
-func projectEinoAssistantSanitizeSeenToolCalls(src map[string]int) map[string]int {
-	out := make(map[string]int, len(src))
-	for signature, count := range src {
-		if !strings.HasPrefix(signature, "sha256:") {
-			sum := sha256.Sum256([]byte(signature))
-			signature = "sha256:" + hex.EncodeToString(sum[:])
-		}
-		out[signature] += count
-	}
-	return out
-}
-
-func (s *projectEinoAssistantRunState) ToolLoopFallback() string {
-	if s == nil {
-		return projectToolLoopFallback(nil, "kept requesting actions")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return projectToolLoopFallback(cloneChatMessages(s.lastToolMessages), s.toolLoopReasonLocked())
-}
-
-func (s *projectEinoAssistantRunState) ToolLoopFinalAnswerMessages() []chatMessage {
-	if s == nil {
-		return []chatMessage{{Role: "system", Content: projectEinoAssistantToolLoopFinalInstruction("kept requesting actions")}}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	messages := make([]chatMessage, 0, len(s.messages)+2)
-	for _, msg := range s.messages {
-		if msg.Role == "tool" || len(msg.ToolCalls) > 0 {
-			break
-		}
-		messages = append(messages, cloneChatMessages([]chatMessage{msg})[0])
-	}
-	if evidence := projectEinoAssistantToolLoopEvidenceContext(s.toolEvidence); evidence != "" {
-		messages = append(messages, chatMessage{Role: "user", Content: evidence})
-	}
-	messages = append(messages, chatMessage{Role: "system", Content: projectEinoAssistantToolLoopFinalInstruction(s.toolLoopReasonLocked())})
-	return messages
-}
-
 func projectEinoAssistantCollectToolEvidence(messages []chatMessage) []chatMessage {
 	evidence := make([]chatMessage, 0, len(messages))
 	for _, msg := range messages {
@@ -1405,14 +1796,16 @@ func projectEinoAssistantCollectToolEvidence(messages []chatMessage) []chatMessa
 	return evidence
 }
 
-func (s *projectEinoAssistantRunState) toolLoopReasonLocked() string {
-	reason := "kept requesting actions"
-	for _, count := range s.seenToolCalls {
-		if count > 1 {
-			return "repeated the same action"
+func projectEinoAssistantSanitizeSeenToolCalls(src map[string]int) map[string]int {
+	out := make(map[string]int, len(src))
+	for signature, count := range src {
+		if !strings.HasPrefix(signature, "sha256:") {
+			sum := sha256.Sum256([]byte(signature))
+			signature = "sha256:" + hex.EncodeToString(sum[:])
 		}
+		out[signature] += count
 	}
-	return reason
+	return out
 }
 
 func cloneProjectAssistantApprovedPlan(src *projectAssistantApprovedPlan) *projectAssistantApprovedPlan {

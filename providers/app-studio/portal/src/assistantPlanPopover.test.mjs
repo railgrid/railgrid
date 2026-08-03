@@ -7,7 +7,7 @@ import { renderToString } from 'vue/server-renderer'
 
 let vite
 test.before(async () => {
-  vite = await createServer({ appType: 'custom', server: { middlewareMode: true } })
+  vite = await createServer({ appType: 'custom', server: { middlewareMode: true, hmr: false } })
 })
 test.after(async () => vite?.close())
 
@@ -45,8 +45,14 @@ test('keeps action details, assistant progress prose, working status, and plan d
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   assert.match(appSource, /<AssistantActionLog[\s\S]*v-if="hasAssistantResponseContent\(message\)"/)
   assert.match(appSource, /Worked for \{\{ assistantWorkedLabel\(message\) \}\}/)
+  assert.match(appSource, /function projectMessageAssistantStatus\(message:[\s\S]*normalizeAssistantRunStatus\(message\.metadata\?\.assistantStatus\)/)
+  assert.match(appSource, /function assistantProgressClosed\(message:[\s\S]*assistantRunTerminal\(projectMessageAssistantStatus\(message\)\)/)
+  assert.match(appSource, /v-if="message\.viewStatus === 'interrupted'"[\s\S]*role="status"[\s\S]*Interrupted before completion/)
+  assert.match(appSource, /v-if="message\.viewStatus === 'interrupted' && !message\.progress"[\s\S]*role="status"[\s\S]*Interrupted before completion/)
+  assert.match(appSource, /v-if="assistantProgressClosed\(message\)"/)
   assert.match(appSource, /:aria-expanded="assistantProgressExpanded\(message\)"/)
   assert.match(appSource, /parseAssistantProgress\(message\.metadata\?\.assistantProgress\)/)
+  assert.match(appSource, /rawItem\.data\?\.assistantProgress[\s\S]*assistantProgress: rawItem\.data\.assistantProgress/)
   assert.match(appSource, /v-if="message\.actionFeed\?\.length && !message\.progress"/)
   assert.match(appSource, /v-show="assistantProgressExpanded\(message\)"[\s\S]*v-for="\(traceBlock, traceIndex\) in assistantTraceBlocks\(message\)"[\s\S]*traceBlock\.kind === 'actions'[\s\S]*renderMessageContent\(traceBlock\.message, 'assistant'\)/)
   assert.match(appSource, /:message-id="`\$\{message\.id\}-trace-\$\{traceIndex\}`"/)
@@ -55,4 +61,48 @@ test('keeps action details, assistant progress prose, working status, and plan d
   assert.match(appSource, /if \(activePlanMessage\.value\) return 'Working'/)
   assert.match(appSource, /<AssistantPlanPopover[\s\S]*v-if="activePlanMessage"/)
   assert.doesNotMatch(appSource, /if \(activePlanMessage\.value\) return ''/)
+})
+
+test('offers an explicit Default-mode implementation turn after the latest completed plan', async () => {
+  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  assert.match(appSource, /function canImplementPlan\(message:[\s\S]*assistantRunCanImplementPlan\(run\)/)
+  assert.match(appSource, /function implementPlan\(message:[\s\S]*assistantIntent\.value = 'default'[\s\S]*prompt\.value = 'Implement the plan above\.'/)
+  assert.match(appSource, /v-if="canImplementPlan\(message\)"[\s\S]*Implement plan/)
+})
+
+test('an action-only terminal turn activates the collapsed combined disclosure', async () => {
+  const { parseAssistantProgress } = await vite.ssrLoadModule('/src/assistantProgress.ts')
+  const { buildAssistantTrace } = await vite.ssrLoadModule('/src/assistantTrace.ts')
+  const { assistantRunTerminal } = await vite.ssrLoadModule('/src/conversationResilience.ts')
+  const progress = parseAssistantProgress({
+    version: 1,
+    messages: null,
+    messageSequences: [],
+    workedDurationMs: 2_400,
+  })
+  assert.ok(progress)
+  assert.equal(assistantRunTerminal('completed'), true)
+  assert.deepEqual(buildAssistantTrace(progress, [{
+    id: 'read-1',
+    kind: 'inspect',
+    status: 'succeeded',
+    title: 'Read file',
+    severity: 'normal',
+    sequence: 1,
+  }]), [{
+    kind: 'actions',
+    key: 'actions-0',
+    items: [{
+      id: 'read-1',
+      kind: 'inspect',
+      status: 'succeeded',
+      title: 'Read file',
+      severity: 'normal',
+      sequence: 1,
+    }],
+  }])
+
+  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  assert.match(appSource, /<template v-if="message\.progress">[\s\S]*Worked for \{\{ assistantWorkedLabel\(message\) \}\}/)
+  assert.match(appSource, /function assistantProgressClosed\(message:[\s\S]*assistantRunTerminal\(projectMessageAssistantStatus\(message\)\)/)
 })

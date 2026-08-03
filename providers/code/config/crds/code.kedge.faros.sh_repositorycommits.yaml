@@ -199,6 +199,10 @@ spec:
                   description: RepositoryCommitFileStatus records metadata for one
                     committed file.
                   properties:
+                    delete:
+                      description: Delete reports that this path was removed by the
+                        commit.
+                      type: boolean
                     digest:
                       description: Digest is the file content digest, usually sha256:<hex>.
                       maxLength: 96

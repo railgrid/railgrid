@@ -13,7 +13,11 @@ const { outputText } = ts.transpileModule(source, {
   },
 })
 const moduleURL = `data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`
-const { developmentPreviewDisplayPhase, developmentPreviewSyncStatus } = await import(moduleURL)
+const {
+  developmentPreviewDisplayPhase,
+  developmentPreviewShouldRefreshOnWake,
+  developmentPreviewSyncStatus,
+} = await import(moduleURL)
 
 test('reports synced files without claiming preview refresh when route binding is missing', () => {
   assert.equal(
@@ -94,5 +98,69 @@ test('marks preview badge error when authorization failed', () => {
       authorizationError: 'preview authorization failed',
     }),
     'Error',
+  )
+})
+
+test('refreshes a pending sandbox when the browser wakes', () => {
+  assert.equal(
+    developmentPreviewShouldRefreshOnWake({
+      needsAuthorization: true,
+      authorizing: false,
+      previewURL: '',
+      authorizationError: '',
+      tokenExpiresAt: '',
+    }, Date.now(), 5 * 60 * 1000),
+    true,
+  )
+})
+
+test('refreshes an errored sandbox when the browser wakes', () => {
+  assert.equal(
+    developmentPreviewShouldRefreshOnWake({
+      needsAuthorization: true,
+      authorizing: false,
+      previewURL: '',
+      authorizationError: 'temporary gateway failure',
+      tokenExpiresAt: '',
+    }, Date.now(), 5 * 60 * 1000),
+    true,
+  )
+})
+
+test('does not reauthorize a ready tokenless template preview on every wake', () => {
+  assert.equal(
+    developmentPreviewShouldRefreshOnWake({
+      needsAuthorization: true,
+      authorizing: false,
+      previewURL: 'https://preview.example.com/',
+      authorizationError: '',
+      tokenExpiresAt: '',
+    }, Date.now(), 5 * 60 * 1000),
+    false,
+  )
+})
+
+test('refreshes an expiring signed preview token when the browser wakes', () => {
+  const now = Date.parse('2026-08-02T12:00:00Z')
+  assert.equal(
+    developmentPreviewShouldRefreshOnWake({
+      needsAuthorization: true,
+      authorizing: false,
+      previewURL: 'https://preview.example.com/',
+      authorizationError: '',
+      tokenExpiresAt: '2026-08-02T12:04:00Z',
+    }, now, 5 * 60 * 1000),
+    true,
+  )
+})
+
+test('authorization request failures only keep polling when transient', () => {
+  assert.match(
+    appSource,
+    /if \(developmentPreviewAuthorizationRetryable\(e\)\) \{\s*scheduleDevelopmentPreviewAuthorizationRetry\(projectName, key\)\s*\}/,
+  )
+  assert.match(
+    appSource,
+    /error\.status === 408 \|\| error\.status === 429 \|\| error\.status >= 500/,
   )
 })

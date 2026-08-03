@@ -54,6 +54,7 @@ type RepositoryResult struct {
 type RepositoryCommitFile struct {
 	Path    string
 	Content string
+	Delete  bool
 }
 
 // RepositoryCommitInput describes a single commit authored through a backend.

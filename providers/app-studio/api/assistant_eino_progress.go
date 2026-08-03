@@ -61,7 +61,7 @@ func projectEinoAssistantProgressEnabled(
 	runState *projectEinoAssistantRunState,
 ) bool {
 	return req.StreamCallbacks.OnProgress != nil &&
-		projectEinoAssistantPhaseLifecycleApplies(req, runState)
+		projectEinoAssistantProgressApplies(req, runState)
 }
 
 func (projectEinoAssistantProgressTool) Info(context.Context) (*schema.ToolInfo, error) {

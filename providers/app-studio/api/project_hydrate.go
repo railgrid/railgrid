@@ -101,7 +101,7 @@ func (s *Server) hydrateWorkspaceFromRepository(ctx context.Context, id identity
 		return projectHydrateResponse{}, fmt.Errorf("decode checkout result: %w", err)
 	}
 
-	scope := projectWorkspaceScope(id, p.Name)
+	scope := projectWorkspaceScope(id, p)
 	resp := projectHydrateResponse{
 		RepositoryRef: repositoryRef,
 		Ref:           checkout.Ref,
@@ -116,8 +116,9 @@ func (s *Server) hydrateWorkspaceFromRepository(ctx context.Context, id identity
 		resp.Written = append(resp.Written, f.Path)
 	}
 
-	// Push the hydrated tree into the live development environment.
-	go s.syncDevelopmentAfterMutation(id, p.DeepCopy(), projectToolHydrateWorkspace)
+	// Push the hydrated tree through the same per-project ordered queue used by
+	// assistant mutations so a later verification cannot overtake this sync.
+	s.scheduleDevelopmentSyncAfterMutation(id, p, projectActionWorkspaceSync)
 
 	return resp, nil
 }
@@ -166,6 +167,11 @@ func (s *Server) hydrateProjectWorkspace(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	release, ok := s.reserveProjectExternalOperation(w, r.Context(), id, p, "loading the workspace from git")
+	if !ok {
+		return
+	}
+	defer release()
 	if s.workspaces == nil {
 		// A server configuration gap, not an upstream failure — 503, not 502.
 		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "project workspace store is not configured")

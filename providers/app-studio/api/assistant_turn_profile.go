@@ -16,461 +16,99 @@ limitations under the License.
 
 package api
 
-import (
-	"context"
-	"encoding/json"
-	"strings"
+import "strings"
 
-	einomodel "github.com/cloudwego/eino/components/model"
-	einoschema "github.com/cloudwego/eino/schema"
-
-	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
-	"github.com/faroshq/provider-app-studio/store"
-)
-
+// projectAssistantTurnProfile is the internal tool policy derived from the
+// user-selected collaboration mode. It is not a semantic classification.
 type projectAssistantTurnProfile string
-type projectAssistantTurnConfidence string
 
 const (
-	projectAssistantTurnProfileDiscussion     projectAssistantTurnProfile = "discussion"
-	projectAssistantTurnProfileAdaptive       projectAssistantTurnProfile = "adaptive"
-	projectAssistantTurnProfileGuidance       projectAssistantTurnProfile = "guidance"
-	projectAssistantTurnProfileExploration    projectAssistantTurnProfile = "exploration"
 	projectAssistantTurnProfileDebugging      projectAssistantTurnProfile = "debugging"
-	projectAssistantTurnProfileDebugFix       projectAssistantTurnProfile = "debug_fix"
 	projectAssistantTurnProfileImplementation projectAssistantTurnProfile = "implementation"
 )
 
-const (
-	projectAssistantTurnConfidenceHigh   projectAssistantTurnConfidence = "high"
-	projectAssistantTurnConfidenceMedium projectAssistantTurnConfidence = "medium"
-	projectAssistantTurnConfidenceLow    projectAssistantTurnConfidence = "low"
-)
-
-const projectAssistantTurnClassifierSystemPrompt = `Classify the latest user turn for App Studio's project assistant.
-Return only one JSON object with these fields:
-- profile: one of "discussion", "guidance", "exploration", "debugging", "debug_fix", "implementation"
-- requires_current_state: boolean
-- requires_runtime_state: boolean
-- requests_mutation: boolean
-- confidence: one of "high", "medium", "low"
-
-Definitions:
-- discussion: conceptual, exploratory, or conversational; no current project state required.
-- guidance: recommendation, how-to, architecture, or design direction; no current project state required.
-- exploration: asks about current project, files, workspace, repository, runtime, or preview state without asking for a change.
-- debugging: asks to diagnose, explain, or inspect a problem without changing the app.
-- debug_fix: reports broken/problematic app behavior or asks to fix, solve, repair, resolve, or make it work, unless the user explicitly asks for diagnosis only.
-- implementation: asks to build, add, change, remove, update, deploy, provision, write code, or otherwise evolve the app.
-
-Do not call tools. Do not answer the user. Classify intent only.`
-
-type projectAssistantTurnDecision struct {
-	Profile              projectAssistantTurnProfile    `json:"profile"`
-	RequiresCurrentState bool                           `json:"requires_current_state"`
-	RequiresRuntimeState bool                           `json:"requires_runtime_state"`
-	RequestsMutation     bool                           `json:"requests_mutation"`
-	Confidence           projectAssistantTurnConfidence `json:"confidence"`
-}
-
 type projectAssistantTurnPolicy struct {
-	profile              projectAssistantTurnProfile
-	requiresRuntimeState bool
+	profile projectAssistantTurnProfile
 }
 
-type projectAssistantTurnRouteRequest struct {
-	LLM     projectLLMSettings
-	History []store.Message
+type projectAssistantModelCapabilities struct {
+	VisionToolResults bool
 }
 
-type projectAssistantTurnRouter func(context.Context, projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error)
-
-var projectAssistantMutationRequestKeywords = []string{
-	"build", "add", "change", "update", "implement", "write", "make the app", "create", "remove", "delete", "ship", "commit", "deploy", "provision",
-	"git", "push", "pull request", "branch", "merge",
-	"wire", "hook up", "set up", "setup", "configure", "connect", "integrate", "install", "refactor", "rename", "migrate", "enable", "disable",
-	"restart", "reload", "redeploy", "rebuild", "bounce",
-	"do it", "do that", "do this", "go for it", "go ahead", "proceed", "do whats needed", "do what's needed",
-	"dont stop", "don't stop", "keep going", "continue", "finish it", "get it done", "just do",
+// projectAssistantModelCapabilityCatalog is the typed App Studio equivalent
+// of Codex's model-catalog capability flags. Unknown models fail closed.
+var projectAssistantModelCapabilityCatalog = map[string]projectAssistantModelCapabilities{
+	"openai-compatible/gpt-5.4":             {VisionToolResults: true},
+	"google-ai-studio/gemini-2.5-pro":       {VisionToolResults: true},
+	"google-ai-studio/gemini-3-pro-preview": {VisionToolResults: true},
 }
 
-func classifyProjectAssistantTurnProfile(history []store.Message) projectAssistantTurnProfile {
-	return fallbackProjectAssistantTurnDecision(history).Profile
-}
-
-func classifyProjectAssistantTurnWithModel(ctx context.Context, model einomodel.BaseChatModel, history []store.Message, extraOpts ...einomodel.Option) (projectAssistantTurnDecision, error) {
-	fallback := fallbackProjectAssistantTurnDecision(history)
-	if model == nil {
-		return fallback, nil
+func projectAssistantCapabilitiesForModel(settings projectLLMSettings) projectAssistantModelCapabilities {
+	provider := strings.ToLower(strings.TrimSpace(settings.Provider))
+	if provider == "" {
+		provider = defaultProjectLLMProvider
 	}
-	opts := append([]einomodel.Option{einomodel.WithToolChoice(einoschema.ToolChoiceForbidden)}, extraOpts...)
-	msg, err := model.Generate(ctx, []*einoschema.Message{
-		einoschema.SystemMessage(projectAssistantTurnClassifierSystemPrompt),
-		einoschema.UserMessage(projectAssistantTurnClassifierUserPrompt(history)),
-	}, opts...)
-	if err != nil || msg == nil || len(msg.ToolCalls) > 0 {
-		return fallback, nil
-	}
-	decision, ok := parseProjectAssistantTurnDecision(msg.Content)
-	if !ok {
-		return fallback, nil
-	}
-	decision, ok = normalizeProjectAssistantTurnDecision(decision)
-	if !ok || decision.Confidence == projectAssistantTurnConfidenceLow {
-		return fallback, nil
-	}
-	decision = reconcileProjectAssistantTurnDecision(decision, fallback)
-	return decision, nil
-}
-
-func projectAssistantSemanticTurnRouter(ctx context.Context, req projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error) {
-	model, err := newProjectEinoChatModel(ctx, req.LLM)
-	if err != nil {
-		return fallbackProjectAssistantTurnDecision(req.History), nil
-	}
-	return classifyProjectAssistantTurnWithModel(ctx, model, req.History, projectTemperatureOptions(req.LLM.Model, 0)...)
-}
-
-func projectAssistantFallbackTurnRouter(_ context.Context, req projectAssistantTurnRouteRequest) (projectAssistantTurnDecision, error) {
-	return fallbackProjectAssistantTurnDecision(req.History), nil
-}
-
-// fallbackProjectAssistantTurnDecision classifies only the current user turn.
-// Durable Build and Continue requests already carry an explicit server-owned
-// mode; ordinary questions must not inherit mutation intent from older turns.
-func fallbackProjectAssistantTurnDecision(history []store.Message) projectAssistantTurnDecision {
-	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role != aiv1alpha1.ProjectMessageRoleUser {
-			continue
-		}
-		content := strings.TrimSpace(history[i].Content)
-		if content == "" {
-			continue
-		}
-		return fallbackProjectAssistantTurnDecisionForMessage(content)
-	}
-	return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileDiscussion)
-}
-
-func fallbackProjectAssistantTurnDecisionForMessage(content string) projectAssistantTurnDecision {
-	normalized := strings.ToLower(strings.TrimSpace(content))
-	if normalized == "" {
-		return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileDiscussion)
-	}
-	hasDebug := containsProjectAssistantTurnKeyword(normalized, []string{
-		"error", "failed", "failure", "failing", "bug", "broken", "not working", "doesn't work", "does not work",
-		"stack trace", "exception", "crash", "crashing", "issue", "problem", "wrong", "failed to fetch",
-		"didn't work", "didnt work", "didn't do anything", "didnt do anything", "doesn't do anything", "does not do anything", "does nothing",
-		"nothing happens", "unresponsive",
-	})
-	hasFix := containsProjectAssistantTurnKeyword(normalized, []string{
-		"fix", "solve", "repair", "resolve", "make it work", "make this work", "get it working",
-	})
-	diagnosisOnly := containsProjectAssistantTurnKeyword(normalized, []string{
-		"why", "diagnose", "diagnosis", "explain", "what's wrong", "what is wrong", "root cause",
-		"debug only", "do not change", "don't change", "without changing", "no changes", "read only", "read-only",
-	})
-	if hasFix {
-		return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileDebugFix)
-	}
-	if hasDebug {
-		if !diagnosisOnly {
-			return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileDebugFix)
-		}
-		return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileDebugging)
-	}
-	if containsProjectAssistantTurnKeyword(normalized, projectAssistantMutationRequestKeywords) {
-		return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileImplementation)
-	}
-	if containsProjectAssistantTurnKeyword(normalized, []string{
-		"what files", "which files", "show me", "current app", "current project", "in my app", "in this app",
-		"in my project", "workspace", "runtime", "preview", "repository", "codebase", "how is", "where is",
-	}) {
-		decision := fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileExploration)
-		decision.RequiresRuntimeState = containsProjectAssistantTurnKeyword(normalized, []string{"runtime", "preview"})
-		return decision
-	}
-	if containsProjectAssistantTurnKeyword(normalized, []string{
-		"how should", "what should", "recommend", "recommendation", "guidance", "advise", "advice", "best way",
-		"design", "architecture", "approach", "tradeoff", "trade-off", "strategy",
-	}) {
-		return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileGuidance)
-	}
-	return fallbackProjectAssistantTurnDecisionWithProfile(projectAssistantTurnProfileDiscussion)
-}
-
-func fallbackProjectAssistantTurnDecisionWithProfile(profile projectAssistantTurnProfile) projectAssistantTurnDecision {
-	profile = normalizeProjectAssistantTurnProfile(profile)
-	return projectAssistantTurnDecision{
-		Profile:              profile,
-		RequiresCurrentState: profile == projectAssistantTurnProfileExploration || profile == projectAssistantTurnProfileDebugging || profile == projectAssistantTurnProfileDebugFix || profile == projectAssistantTurnProfileImplementation,
-		RequiresRuntimeState: profile == projectAssistantTurnProfileDebugging || profile == projectAssistantTurnProfileDebugFix,
-		RequestsMutation:     profile == projectAssistantTurnProfileDebugFix || profile == projectAssistantTurnProfileImplementation,
-		Confidence:           projectAssistantTurnConfidenceMedium,
-	}
-}
-
-func projectAssistantTurnClassifierUserPrompt(history []store.Message) string {
-	for i := len(history) - 1; i >= 0; i-- {
-		msg := history[i]
-		if msg.Role != aiv1alpha1.ProjectMessageRoleUser {
-			continue
-		}
-		content := strings.TrimSpace(msg.Content)
-		if content == "" {
-			continue
-		}
-		return "Latest user turn:\n" + content
-	}
-	return "Latest user turn:\n"
-}
-
-func parseProjectAssistantTurnDecision(content string) (projectAssistantTurnDecision, bool) {
-	content = strings.TrimSpace(content)
-	if strings.HasPrefix(content, "```") {
-		content = strings.TrimPrefix(content, "```json")
-		content = strings.TrimPrefix(content, "```")
-		content = strings.TrimSuffix(content, "```")
-		content = strings.TrimSpace(content)
-	}
-	if start := strings.Index(content, "{"); start >= 0 {
-		if end := strings.LastIndex(content, "}"); end > start {
-			content = content[start : end+1]
-		}
-	}
-	var decision projectAssistantTurnDecision
-	if err := json.Unmarshal([]byte(content), &decision); err != nil {
-		return projectAssistantTurnDecision{}, false
-	}
-	return decision, true
-}
-
-func normalizeProjectAssistantTurnDecision(decision projectAssistantTurnDecision) (projectAssistantTurnDecision, bool) {
-	profile := normalizeProjectAssistantTurnProfile(decision.Profile)
-	if profile == projectAssistantTurnProfileDiscussion && decision.Profile != projectAssistantTurnProfileDiscussion {
-		return projectAssistantTurnDecision{}, false
-	}
-	decision.Profile = profile
-	switch decision.Confidence {
-	case projectAssistantTurnConfidenceHigh, projectAssistantTurnConfidenceMedium, projectAssistantTurnConfidenceLow:
-	default:
-		decision.Confidence = projectAssistantTurnConfidenceMedium
-	}
-	return decision, true
-}
-
-func reconcileProjectAssistantTurnDecision(decision projectAssistantTurnDecision, fallback projectAssistantTurnDecision) projectAssistantTurnDecision {
-	if fallback.RequestsMutation && !decision.RequestsMutation && projectAssistantTurnProfileAllowsMutation(fallback.Profile) {
-		fallback.Confidence = decision.Confidence
-		fallback.RequiresRuntimeState = fallback.RequiresRuntimeState || decision.RequiresRuntimeState
-		return fallback
-	}
-	if decision.RequestsMutation && !projectAssistantTurnProfileAllowsMutation(decision.Profile) {
-		if fallback.RequestsMutation && projectAssistantTurnProfileAllowsMutation(fallback.Profile) {
-			fallback.Confidence = decision.Confidence
-			return fallback
-		}
-		decision.Profile = projectAssistantTurnProfileImplementation
-		decision.RequiresCurrentState = true
-		return decision
-	}
-	if (decision.RequiresCurrentState || decision.RequiresRuntimeState) && !projectAssistantTurnProfileAllowsCurrentState(decision.Profile) {
-		if fallback.RequiresCurrentState && projectAssistantTurnProfileAllowsCurrentState(fallback.Profile) {
-			fallback.Confidence = decision.Confidence
-			fallback.RequiresRuntimeState = fallback.RequiresRuntimeState || decision.RequiresRuntimeState
-			return fallback
-		}
-		decision.Profile = projectAssistantTurnProfileExploration
-		decision.RequiresCurrentState = true
-		return decision
-	}
-	return decision
+	model := strings.ToLower(strings.TrimSpace(settings.Model))
+	return projectAssistantModelCapabilityCatalog[provider+"/"+model]
 }
 
 func projectAssistantTurnProfileAllowsMutation(profile projectAssistantTurnProfile) bool {
-	switch normalizeProjectAssistantTurnProfile(profile) {
-	case projectAssistantTurnProfileDebugFix, projectAssistantTurnProfileImplementation:
-		return true
-	default:
-		return false
-	}
-}
-
-func projectAssistantTurnProfileAllowsCurrentState(profile projectAssistantTurnProfile) bool {
-	switch normalizeProjectAssistantTurnProfile(profile) {
-	case projectAssistantTurnProfileExploration, projectAssistantTurnProfileDebugging, projectAssistantTurnProfileDebugFix, projectAssistantTurnProfileImplementation:
-		return true
-	default:
-		return false
-	}
+	return normalizeProjectAssistantTurnProfile(profile) == projectAssistantTurnProfileImplementation
 }
 
 func normalizeProjectAssistantTurnProfile(profile projectAssistantTurnProfile) projectAssistantTurnProfile {
-	switch profile {
-	case projectAssistantTurnProfileDiscussion,
-		projectAssistantTurnProfileAdaptive,
-		projectAssistantTurnProfileGuidance,
-		projectAssistantTurnProfileExploration,
-		projectAssistantTurnProfileDebugging,
-		projectAssistantTurnProfileDebugFix,
-		projectAssistantTurnProfileImplementation:
+	if profile == projectAssistantTurnProfileImplementation {
 		return profile
-	default:
-		return projectAssistantTurnProfileDiscussion
 	}
+	return projectAssistantTurnProfileDebugging
 }
 
 func projectAssistantTurnPolicyForProfile(profile projectAssistantTurnProfile) projectAssistantTurnPolicy {
 	return projectAssistantTurnPolicy{profile: normalizeProjectAssistantTurnProfile(profile)}
 }
 
-// projectAssistantInlinePromotionEnabled reports whether this run can cross
-// from adaptive inspection into implementation without an interrupt/resume
-// boundary. The underlying agent needs a stable implementation-capable catalog
-// for that transition, while phase filtering continues to control visibility
-// and invocation authority.
-func projectAssistantInlinePromotionEnabled(req projectAssistantRunRequest) bool {
-	policy := normalizeProjectAssistantTurnPolicy(req.TurnPolicy, req.TurnProfile)
-	return req.AssistantRun != nil &&
-		strings.TrimSpace(req.AssistantRun.ID) != "" &&
-		policy.profile == projectAssistantTurnProfileAdaptive &&
-		req.AssistantRun.ApprovalMode == store.AssistantApprovalModeAutoApprove &&
-		req.ApprovalMode == store.AssistantApprovalModeAutoApprove
-}
-
-func projectAssistantToolCatalogPolicy(req projectAssistantRunRequest) projectAssistantTurnPolicy {
-	policy := normalizeProjectAssistantTurnPolicy(req.TurnPolicy, req.TurnProfile)
-	if !projectAssistantInlinePromotionEnabled(req) {
-		return policy
-	}
-	policy.profile = projectAssistantTurnProfileImplementation
-	return policy
-}
-
 func projectAssistantCheckpointTurnPolicyForPolicy(policy projectAssistantTurnPolicy) projectAssistantCheckpointTurnPolicy {
-	policy = normalizeProjectAssistantTurnPolicy(policy, projectAssistantTurnProfileDiscussion)
-	return projectAssistantCheckpointTurnPolicy{
-		Profile:              policy.profile,
-		RequiresRuntimeState: policy.requiresRuntimeState,
-	}
+	policy = normalizeProjectAssistantTurnPolicy(policy, projectAssistantTurnProfileDebugging)
+	return projectAssistantCheckpointTurnPolicy{Profile: policy.profile}
 }
 
 func projectAssistantTurnPolicyForCheckpoint(state projectAssistantCheckpointState) projectAssistantTurnPolicy {
-	return normalizeProjectAssistantTurnPolicy(projectAssistantTurnPolicy{
-		profile:              state.TurnPolicy.Profile,
-		requiresRuntimeState: state.TurnPolicy.RequiresRuntimeState,
-	}, projectAssistantTurnProfileDiscussion)
-}
-
-func projectAssistantTurnPolicyForDecision(decision projectAssistantTurnDecision) projectAssistantTurnPolicy {
-	decision, ok := normalizeProjectAssistantTurnDecision(decision)
-	if !ok {
-		return projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDiscussion)
-	}
-	return projectAssistantTurnPolicy{
-		profile:              decision.Profile,
-		requiresRuntimeState: decision.RequiresRuntimeState,
-	}
+	return normalizeProjectAssistantTurnPolicy(projectAssistantTurnPolicy{profile: state.TurnPolicy.Profile}, projectAssistantTurnProfileDebugging)
 }
 
 func normalizeProjectAssistantTurnPolicy(policy projectAssistantTurnPolicy, fallbackProfile projectAssistantTurnProfile) projectAssistantTurnPolicy {
 	if strings.TrimSpace(string(policy.profile)) == "" {
-		return projectAssistantTurnPolicyForProfile(fallbackProfile)
+		policy.profile = fallbackProfile
 	}
-	return projectAssistantTurnPolicy{
-		profile:              normalizeProjectAssistantTurnProfile(policy.profile),
-		requiresRuntimeState: policy.requiresRuntimeState,
-	}
+	policy.profile = normalizeProjectAssistantTurnProfile(policy.profile)
+	return policy
 }
 
 func (p projectAssistantTurnPolicy) AllowsTool(spec projectAssistantToolSpec) bool {
-	switch normalizeProjectAssistantTurnProfile(p.profile) {
-	case projectAssistantTurnProfileDiscussion, projectAssistantTurnProfileGuidance:
-		return false
-	case projectAssistantTurnProfileAdaptive:
-		switch projectToolBaseName(spec.Name) {
-		case projectToolAskFollowUp, projectToolRequestProjectPlanApproval:
-			return true
-		}
-		switch projectAssistantToolBundleForSpec(spec) {
-		case projectAssistantToolBundleWorkspaceRead:
-			return spec.Risk == projectAssistantToolRiskRead
-		case projectAssistantToolBundleWorkflow:
-			return spec.Risk == projectAssistantToolRiskRead
-		case projectAssistantToolBundleRuntime:
-			return spec.Risk == projectAssistantToolRiskRead
-		default:
-			return false
-		}
-	case projectAssistantTurnProfileExploration:
-		switch projectAssistantToolBundleForSpec(spec) {
-		case projectAssistantToolBundleWorkflow, projectAssistantToolBundleWorkspaceRead:
-			return true
-		case projectAssistantToolBundleInfrastructure:
-			return spec.Risk == projectAssistantToolRiskRead
-		case projectAssistantToolBundleRuntime:
-			return p.requiresRuntimeState && spec.Risk == projectAssistantToolRiskRead
-		default:
-			return false
-		}
-	case projectAssistantTurnProfileDebugging:
-		switch projectAssistantToolBundleForSpec(spec) {
-		case projectAssistantToolBundleWorkflow, projectAssistantToolBundleWorkspaceRead:
-			return true
-		case projectAssistantToolBundleInfrastructure:
-			return spec.Risk == projectAssistantToolRiskRead
-		case projectAssistantToolBundleRuntime:
-			return spec.Risk == projectAssistantToolRiskRead
-		default:
-			return false
-		}
-	case projectAssistantTurnProfileDebugFix, projectAssistantTurnProfileImplementation:
+	if normalizeProjectAssistantTurnProfile(p.profile) == projectAssistantTurnProfileImplementation {
 		return true
+	}
+	if spec.Risk == projectAssistantToolRiskInput || spec.Risk == projectAssistantToolRiskPlan {
+		return true
+	}
+	switch projectAssistantToolBundleForSpec(spec) {
+	case projectAssistantToolBundleWorkflow, projectAssistantToolBundleWorkspaceRead:
+		return spec.Risk == projectAssistantToolRiskRead
+	case projectAssistantToolBundleInfrastructure, projectAssistantToolBundleRuntime:
+		return spec.Risk == projectAssistantToolRiskRead
 	default:
 		return false
 	}
 }
 
-// projectAssistantTurnProfileRank orders profiles by tool permissiveness so a
-// resumed run can escalate its policy but never silently downgrade mid-run.
-func projectAssistantTurnProfileRank(profile projectAssistantTurnProfile) int {
-	switch normalizeProjectAssistantTurnProfile(profile) {
-	case projectAssistantTurnProfileImplementation, projectAssistantTurnProfileDebugFix:
-		return 3
-	case projectAssistantTurnProfileDebugging:
-		return 2
-	case projectAssistantTurnProfileAdaptive, projectAssistantTurnProfileExploration:
-		return 1
-	default: // discussion, guidance, unknown
-		return 0
-	}
-}
-
-// escalateProjectAssistantTurnPolicy merges the run's saved policy with a
-// fresh routing decision, keeping the more permissive profile. A run that
-// began as a discussion question must gain tools when the user's follow-up is
-// an instruction ("go for it"); the reverse — losing tools because a
-// follow-up reads as chit-chat — would strand an in-flight fix.
-func escalateProjectAssistantTurnPolicy(current, next projectAssistantTurnPolicy) projectAssistantTurnPolicy {
-	merged := current
-	if projectAssistantTurnProfileRank(next.profile) > projectAssistantTurnProfileRank(current.profile) {
-		merged.profile = normalizeProjectAssistantTurnProfile(next.profile)
-	}
-	merged.requiresRuntimeState = current.requiresRuntimeState || next.requiresRuntimeState
-	return normalizeProjectAssistantTurnPolicy(merged, projectAssistantTurnProfileDiscussion)
-}
-
-func projectAssistantToolsForTurnProfile(tools []projectAssistantTool, profile projectAssistantTurnProfile) []projectAssistantTool {
-	return projectAssistantToolsForTurnPolicy(tools, projectAssistantTurnPolicyForProfile(profile))
+func projectAssistantToolCatalogPolicy(req projectAssistantRunRequest) projectAssistantTurnPolicy {
+	return normalizeProjectAssistantTurnPolicy(req.TurnPolicy, req.TurnProfile)
 }
 
 func projectAssistantToolsForTurnPolicy(tools []projectAssistantTool, policy projectAssistantTurnPolicy) []projectAssistantTool {
 	out := make([]projectAssistantTool, 0, len(tools))
 	for _, tool := range tools {
-		if tool == nil {
-			continue
-		}
-		if policy.AllowsTool(tool.Spec()) {
+		if tool != nil && policy.AllowsTool(tool.Spec()) {
 			out = append(out, tool)
 		}
 	}
@@ -480,39 +118,9 @@ func projectAssistantToolsForTurnPolicy(tools []projectAssistantTool, policy pro
 func projectAssistantToolSpecsForTurnPolicy(specs []projectAssistantToolSpec, policy projectAssistantTurnPolicy) []projectAssistantToolSpec {
 	out := make([]projectAssistantToolSpec, 0, len(specs))
 	for _, spec := range specs {
-		if strings.TrimSpace(spec.Name) == "" {
-			continue
-		}
-		if policy.AllowsTool(spec) {
+		if strings.TrimSpace(spec.Name) != "" && policy.AllowsTool(spec) {
 			out = append(out, spec)
 		}
 	}
 	return out
-}
-
-func containsProjectAssistantTurnKeyword(value string, keywords []string) bool {
-	for _, keyword := range keywords {
-		for offset := 0; offset <= len(value)-len(keyword); {
-			index := strings.Index(value[offset:], keyword)
-			if index < 0 {
-				break
-			}
-			index += offset
-			end := index + len(keyword)
-			leftBoundary := index == 0 || !projectAssistantTurnKeywordByte(value[index-1])
-			rightBoundary := end == len(value) || !projectAssistantTurnKeywordByte(value[end])
-			if leftBoundary && rightBoundary {
-				return true
-			}
-			offset = index + 1
-		}
-	}
-	return false
-}
-
-func projectAssistantTurnKeywordByte(value byte) bool {
-	return value >= 'a' && value <= 'z' ||
-		value >= 'A' && value <= 'Z' ||
-		value >= '0' && value <= '9' ||
-		value == '_'
 }
