@@ -94,17 +94,6 @@ func projectEinoAssistantPublishPlanProgress(
 	}
 }
 
-func projectEinoAssistantPublishCompletedExecutionPlan(
-	runState *projectEinoAssistantRunState,
-	callbacks projectAssistantStreamCallbacks,
-) {
-	if runState == nil {
-		return
-	}
-	runState.CompleteExecutionPlan()
-	projectEinoAssistantPublishPlanProgress(runState, callbacks, runState.PlanProgress())
-}
-
 func projectEinoAssistantPlanProgressStatus(plan projectAssistantPlanSnapshot) string {
 	completed := 0
 	for _, step := range plan.Steps {

@@ -49,6 +49,26 @@ func TestReloadRulesFromEnv(t *testing.T) {
 	}
 }
 
+func TestRunHealthcheckUsesContainerLocalTCPAddress(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := runHealthcheck(address); err != nil {
+		t.Fatalf("runHealthcheck(%q): %v", address, err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runHealthcheck(address); err == nil {
+		t.Fatalf("runHealthcheck(%q) succeeded after listener closed", address)
+	}
+	if err := runHealthcheck(""); err == nil {
+		t.Fatal("runHealthcheck accepted an empty address")
+	}
+}
+
 func TestMatchReloadRules(t *testing.T) {
 	rules := []reloadRule{
 		{Paths: []string{"package.json", "package-lock.json"}, Command: "npm install"},

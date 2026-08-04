@@ -37,7 +37,6 @@ type projectEinoAssistantLifecycle struct {
 	runState         *projectEinoAssistantRunState
 	server           *Server
 	req              projectAssistantRunRequest
-	initialBuild     bool
 	repositoryRef    string
 	workspace        *workspace.FileStore
 	workspaceScope   workspace.Scope
@@ -59,7 +58,6 @@ func projectEinoAssistantLifecycleMiddleware(
 		BaseChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
 		runState:                     runState,
 		req:                          req,
-		initialBuild:                 projectAssistantInitialBuildActive(req, runState),
 		repositoryRef:                projectEinoAssistantProjectRepositoryRef(req),
 		workspace:                    req.Workspace,
 		workspaceScope:               req.WorkspaceScope,
@@ -434,15 +432,6 @@ func (m *projectEinoAssistantLifecycle) WrapInvokableToolCall(
 						m.runState.RecordVerifiedWorkspaceDigest(digest)
 					}
 				}
-				if m.initialBuild && m.runState.SourceMutationVerified() {
-					m.completeExecutionPlan()
-				}
-			}
-		case name == projectToolInspectDevelopmentPreview && succeeded:
-			if m.initialBuild && m.runState != nil {
-				if revision, _ := m.runState.SourceMutationRevisions(); revision > 0 {
-					m.completeExecutionPlan()
-				}
 			}
 		}
 		if m.runState != nil && !projectEinoAssistantFilesystemReadTool(name) &&
@@ -452,13 +441,6 @@ func (m *projectEinoAssistantLifecycle) WrapInvokableToolCall(
 		}
 		return result, nil
 	}, nil
-}
-
-func (m *projectEinoAssistantLifecycle) completeExecutionPlan() {
-	if m == nil || m.runState == nil {
-		return
-	}
-	projectEinoAssistantPublishCompletedExecutionPlan(m.runState, m.req.StreamCallbacks)
 }
 
 func (m *projectEinoAssistantLifecycle) WrapEnhancedInvokableToolCall(

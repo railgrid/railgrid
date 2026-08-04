@@ -34,6 +34,10 @@ You may obtain a copy of the License at
 // into <dir> and exits — the init-container injection mode, which is what
 // lets the dev image stay a plain toolchain image with nothing kedge-specific
 // baked in.
+// Invoked as `kedge-dev-agent --healthcheck <address>` it performs a
+// container-local TCP health check and exits. This mode is used by the
+// runtime-supervisor and executor Kubernetes exec probes; it intentionally
+// does not load the coordinator configuration or expose a shell.
 package main
 
 import (
@@ -111,6 +115,17 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) >= 2 && os.Args[1] == "--healthcheck" {
+		if len(os.Args) != 3 {
+			log.Printf("healthcheck: one address is required")
+			os.Exit(1)
+		}
+		if err := runHealthcheck(os.Args[2]); err != nil {
+			log.Printf("healthcheck %s: %v", os.Args[2], err)
+			os.Exit(1)
+		}
+		return
+	}
 	cfg, err := configFromEnv()
 	if err != nil {
 		log.Fatalf("config: %v", err)
@@ -138,6 +153,24 @@ func main() {
 	if err := runCoordinator(ctx, cfg); err != nil {
 		log.Fatalf("coordinator: %v", err)
 	}
+}
+
+const healthcheckTimeout = time.Second
+
+// runHealthcheck verifies that an internal control listener is accepting TCP
+// connections from the current container. Callers provide a fixed loopback
+// address from the generated development deployment; no HTTP client, shell,
+// or pod-network address is involved.
+func runHealthcheck(address string) error {
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return errors.New("address is required")
+	}
+	conn, err := net.DialTimeout("tcp", address, healthcheckTimeout)
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
 
 func runRuntimeSupervisor(ctx context.Context, cfg *agentConfig) error {

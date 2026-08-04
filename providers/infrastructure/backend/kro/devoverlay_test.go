@@ -264,25 +264,56 @@ func assertSecureDevContainer(t *testing.T, container map[string]any, wantReadOn
 
 func assertDevProbes(t *testing.T, container map[string]any) {
 	t.Helper()
+	containerName, _ := container["name"].(string)
 	for _, name := range []string{"livenessProbe", "readinessProbe"} {
 		probe, ok := container[name].(map[string]any)
 		if !ok {
 			t.Errorf("%s has no %s", container["name"], name)
 			continue
 		}
-		if httpGet, ok := probe["httpGet"].(map[string]any); ok {
-			if httpGet["path"] != "/healthz" || numberValue(httpGet["port"]) == 0 {
-				t.Errorf("%s %s = %v", container["name"], name, probe)
+		switch containerName {
+		case "kedge-platform-coordinator":
+			httpGet, ok := probe["httpGet"].(map[string]any)
+			if !ok || httpGet["path"] != "/healthz" || numberValue(httpGet["port"]) != devAgentPort {
+				t.Errorf("%s %s = %v, want coordinator HTTP /healthz:%d probe", containerName, name, probe, devAgentPort)
 			}
-			continue
-		}
-		if tcpSocket, ok := probe["tcpSocket"].(map[string]any); ok {
-			if numberValue(tcpSocket["port"]) == 0 {
-				t.Errorf("%s %s = %v", container["name"], name, probe)
+			if _, ok := probe["exec"]; ok {
+				t.Errorf("%s %s unexpectedly has an exec probe: %v", containerName, name, probe)
 			}
-			continue
+		case "backend", "frontend":
+			assertDevExecProbeCommand(t, containerName, name, probe, devRuntimeAddress)
+		case "kedge-exec-runner":
+			assertDevExecProbeCommand(t, containerName, name, probe, devExecutorAddress)
+		default:
+			t.Errorf("unexpected container %q while checking %s", containerName, name)
 		}
-		t.Errorf("%s %s = %v", container["name"], name, probe)
+	}
+}
+
+func assertDevExecProbeCommand(t *testing.T, containerName, probeName string, probe map[string]any, address string) {
+	t.Helper()
+	execProbe, ok := probe["exec"].(map[string]any)
+	if !ok {
+		t.Errorf("%s %s = %v, want exec probe", containerName, probeName, probe)
+		return
+	}
+	command, _ := execProbe["command"].([]any)
+	want := []string{devAgentBinDir + "/kedge-dev-agent", "--healthcheck", address}
+	if len(command) != len(want) {
+		t.Errorf("%s %s command = %v, want %v", containerName, probeName, command, want)
+		return
+	}
+	for i, expected := range want {
+		if got, _ := command[i].(string); got != expected {
+			t.Errorf("%s %s command = %v, want %v", containerName, probeName, command, want)
+			break
+		}
+	}
+	if _, ok := probe["tcpSocket"]; ok {
+		t.Errorf("%s %s unexpectedly has a pod-IP tcpSocket probe: %v", containerName, probeName, probe)
+	}
+	if _, ok := probe["httpGet"]; ok {
+		t.Errorf("%s %s unexpectedly has an HTTP probe: %v", containerName, probeName, probe)
 	}
 }
 

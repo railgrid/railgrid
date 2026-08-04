@@ -366,8 +366,8 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	app["securityContext"] = devContainerSecurityContext(appReadOnlyRoot)
 	app["env"] = appendDevRuntimeEnv(app, comp, workingDir, appPort)
 	ensureContainerPort(app, "runtime", devRuntimePort)
-	app["livenessProbe"] = devTCPProbe(devRuntimePort, 1)
-	app["readinessProbe"] = devTCPProbe(devRuntimePort, 1)
+	app["livenessProbe"] = devExecProbe(devRuntimeAddress, 1)
+	app["readinessProbe"] = devExecProbe(devRuntimeAddress, 1)
 
 	// A production volume mount at workingDir is reused for all three
 	// containers. Otherwise the overlay creates the per-component workspace
@@ -444,8 +444,8 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 			map[string]any{"name": "kedge-dev-exec-tmp", "mountPath": "/tmp"},
 			map[string]any{"name": "kedge-dev-no-serviceaccount", "mountPath": devServiceAccountDir, "readOnly": true},
 		},
-		"livenessProbe":   devTCPProbe(devExecRunnerPort, 1),
-		"readinessProbe":  devTCPProbe(devExecRunnerPort, 1),
+		"livenessProbe":   devExecProbe(devExecutorAddress, 1),
+		"readinessProbe":  devExecProbe(devExecutorAddress, 1),
 		"securityContext": devContainerSecurityContext(true),
 	}
 	extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-dev-exec-tmp", "emptyDir": map[string]any{}})
@@ -576,10 +576,13 @@ func devHTTPProbe(port int64, initialDelay int64) map[string]any {
 	}
 }
 
-func devTCPProbe(port int64, initialDelay int64) map[string]any {
+// devExecProbe runs the injected static agent inside the target container.
+// Runtime-supervisor and executor listeners bind only to pod loopback, so a
+// kubelet tcpSocket probe against the pod IP would never reach them.
+func devExecProbe(address string, initialDelay int64) map[string]any {
 	return map[string]any{
-		"tcpSocket": map[string]any{
-			"port": port,
+		"exec": map[string]any{
+			"command": []any{devAgentBinDir + "/kedge-dev-agent", "--healthcheck", address},
 		},
 		"initialDelaySeconds": initialDelay,
 		"periodSeconds":       int64(5),

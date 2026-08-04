@@ -643,7 +643,10 @@ func TestInitialProjectPlanProgressBoundsLabelsForDurablePresentation(t *testing
 	runState := newProjectEinoAssistantRunState()
 	runState.SetExecutionPlan(plan)
 	runState.SetPlanProgress(progress)
-	runState.CompleteExecutionPlan()
+	runState.SetPlanProgress(projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{
+		{Content: projectEinoAssistantTodoProgressLabel(plan.Steps[0]), Status: "completed"},
+		{Content: projectEinoAssistantTodoProgressLabel(plan.Steps[1]), Status: "completed"},
+	}})
 	if !runState.ExecutionPlanComplete() || !runState.CompletionEvidence().PlanComplete {
 		t.Fatalf("bounded presentation labels broke execution-plan completion: %#v", runState.PlanProgress())
 	}
@@ -737,6 +740,51 @@ func TestEinoV2CommitSettlementClearsCompleteDirtyBundleAtToolBoundary(t *testin
 	}
 	if got := runState.CheckpointState().CommittedWorkspaceDigest; got != digest {
 		t.Fatalf("committed workspace digest = %q, want %q", got, digest)
+	}
+}
+
+func TestEinoV2SuccessfulCommitSettlementDoesNotAdvancePlanProgress(t *testing.T) {
+	ctx := context.Background()
+	workspaces := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
+	writeTestWorkspaceFiles(t, ctx, workspaces, scope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}})
+	if _, err := workspaces.AddUncommittedPaths(ctx, scope, []string{"src/App.tsx"}); err != nil {
+		t.Fatal(err)
+	}
+	plan := projectAssistantApprovedPlan{Steps: []string{"Implement the change", "Verify the result"}}
+	runState := newProjectEinoAssistantRunState()
+	runState.SetExecutionPlan(plan)
+	runState.SetPlanProgress(projectAssistantInitialPlanProgress(plan))
+	runState.RecordSourceMutation()
+	before := runState.PlanProgress()
+	planPublishes := 0
+	statusPublishes := 0
+	tool := projectEinoAssistantTool{
+		req: projectAssistantRunRequest{
+			Workspace:      workspaces,
+			WorkspaceScope: scope,
+			StreamCallbacks: projectAssistantStreamCallbacks{
+				OnPlan:   func(projectAssistantPlanSnapshot) { planPublishes++ },
+				OnStatus: func(string) { statusPublishes++ },
+			},
+		},
+		runState: runState,
+	}
+	digest, err := projectEinoAssistantWorkspaceDigest(ctx, workspaces, scope, []string{"src/App.tsx"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tool.recordV2CommitSettlement(ctx, projectAssistantToolSpec{Name: projectToolCommitProjectFiles, Risk: projectAssistantToolRiskCommit}, map[string]any{
+		"paths":           []any{"src/App.tsx"},
+		"workspaceDigest": digest,
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := runState.PlanProgress(); got.Steps[0].Status != before.Steps[0].Status || got.Steps[1].Status != before.Steps[1].Status {
+		t.Fatalf("successful commit advanced plan: got %#v, before %#v", got, before)
+	}
+	if planPublishes != 0 || statusPublishes != 0 {
+		t.Fatalf("successful commit published plan/status (%d/%d), want no checklist projection", planPublishes, statusPublishes)
 	}
 }
 

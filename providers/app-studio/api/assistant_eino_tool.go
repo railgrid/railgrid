@@ -659,7 +659,6 @@ func (t projectEinoAssistantTool) recoverV2CommitSettlement(
 			cancelSettlement()
 		}
 		t.runState.RecordSourceCommit(workspaceDigest)
-		projectEinoAssistantPublishCompletedExecutionPlan(t.runState, t.req.StreamCallbacks)
 		if settlementBlocker != "" {
 			// The repository effect and durable ledger outcome remain successful,
 			// so never expose a tool error that could provoke a second commit ID.

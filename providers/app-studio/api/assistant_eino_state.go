@@ -600,27 +600,6 @@ func (s *projectEinoAssistantRunState) ExecutionPlanComplete() bool {
 	return true
 }
 
-func (s *projectEinoAssistantRunState) CompleteExecutionPlan() {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.executionPlan == nil || len(s.executionPlan.Steps) == 0 {
-		return
-	}
-	completed := projectAssistantPlanSnapshot{
-		Steps: make([]projectAssistantPlanStep, 0, len(s.executionPlan.Steps)),
-	}
-	for _, content := range s.executionPlan.Steps {
-		completed.Steps = append(completed.Steps, projectAssistantPlanStep{
-			Content: projectEinoAssistantTodoProgressLabel(content),
-			Status:  "completed",
-		})
-	}
-	s.planProgress = completed
-}
-
 func (s *projectEinoAssistantRunState) ClearApprovedPlan() {
 	if s == nil {
 		return
