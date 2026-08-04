@@ -135,6 +135,14 @@ func projectEinoAssistantWorkspaceMutationTool(name string) bool {
 }
 
 func projectEinoAssistantSuccessfulWorkspaceMutationResult(name, content string) bool {
+	// Mutation-shaped JSON can carry a failed semantic disposition while still
+	// exposing a path (and no explicit changed=false). Consult the typed
+	// settlement adapter before treating the shape as source progress; the
+	// transport-error partial-mutation branch deliberately uses its separate
+	// HasChanges predicate so genuine post-write failures remain recoverable.
+	if projectAssistantToolResultDisposition(name, content, nil) != projectAssistantToolDispositionSucceeded {
+		return false
+	}
 	var result struct {
 		Operation string `json:"operation"`
 		Changed   *bool  `json:"changed"`

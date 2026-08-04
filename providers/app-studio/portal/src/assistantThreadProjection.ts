@@ -6,6 +6,11 @@ import type {
 } from './types'
 import { parseAssistantProgress } from './assistantProgress'
 
+interface AssistantProgressEntry {
+  message: string
+  sequence: number
+}
+
 function assistantStatusForItem(status: unknown): ProjectAssistantRunStatus {
   switch (typeof status === 'string' ? status.trim().toLowerCase() : '') {
     case 'completed':
@@ -36,6 +41,114 @@ function isCommentaryItem(item: ProjectAssistantThreadItem): boolean {
   return isAssistantItem(item) && item.phase === 'commentary'
 }
 
+type CommentaryProjectionItem = Pick<ProjectAssistantThreadItem, 'content' | 'sequence'> &
+  Partial<Pick<ProjectAssistantThreadItem, 'id' | 'assistantMessageID'>>
+
+/**
+ * Return the domain progress sequence, not the thread event cursor. The
+ * mirror assigns commentary IDs from the durable progress sequence, while
+ * `item.sequence` in a materialized thread (and often in an SSE payload) is
+ * the lifecycle event sequence. Using that cursor here makes item.started,
+ * item.completed, and reconnect replay look like separate progress entries.
+ */
+function commentarySequence(item: CommentaryProjectionItem): number {
+  const itemID = typeof item.id === 'string' ? item.id.trim() : ''
+  const ownerID = typeof item.assistantMessageID === 'string' ? item.assistantMessageID.trim() : ''
+  const prefix = ownerID ? `commentary-${ownerID}-` : 'commentary-'
+  if (itemID.startsWith(prefix)) {
+    const suffix = itemID.slice(prefix.length)
+    if (/^\d+$/u.test(suffix)) {
+      const sequence = Number(suffix)
+      if (Number.isSafeInteger(sequence) && sequence > 0) return sequence
+    }
+  }
+  // Historical records can omit assistantMessageID but retain the canonical
+  // commentary ID. Keep that ID-derived identity before considering any
+  // payload field; never fall back to an SSE event cursor.
+  const suffix = /-(\d+)$/u.exec(itemID)?.[1]
+  if (suffix) {
+    const sequence = Number(suffix)
+    if (Number.isSafeInteger(sequence) && sequence > 0) return sequence
+  }
+  return 0
+}
+
+function commentaryOwnerID(itemID: string): string {
+  const match = /^commentary-(.+)-(\d+)$/u.exec(itemID.trim())
+  return match?.[1]?.trim() || ''
+}
+
+function mergeAssistantProgressCommentary(
+  current: unknown,
+  commentary: CommentaryProjectionItem,
+): unknown {
+  const content = typeof commentary.content === 'string' ? commentary.content.trim() : ''
+  const sequence = commentarySequence(commentary)
+  if (!content || !sequence) return current
+
+  const progress = parseAssistantProgress(current)
+  const entries: AssistantProgressEntry[] = progress
+    ? progress.messages.map((message, index) => ({ message, sequence: progress.messageSequences[index] }))
+    : []
+  // Mirror restarts can replay the same commentary item. Replace a matching
+  // sequence, but retain identical prose at distinct sequence positions: each
+  // accepted report_progress event is a separate trace entry.
+  const sameSequence = entries.findIndex((entry) => entry.sequence === sequence)
+  if (sameSequence >= 0) entries[sameSequence] = { message: content, sequence }
+  else entries.push({ message: content, sequence })
+  entries.sort((left, right) => left.sequence - right.sequence)
+  // The server bounds progress to 32 entries. Retain the newest entries when
+  // a stale client snapshot and a live commentary item are merged locally.
+  const bounded = entries.slice(-32)
+  return {
+    version: 1,
+    messages: bounded.map((entry) => entry.message),
+    messageSequences: bounded.map((entry) => entry.sequence),
+    workedDurationMs: progress?.workedDurationMs ?? 0,
+  }
+}
+
+function mergeAssistantProgressValues(current: unknown, projected: unknown, projectedWinsConflicts = false): unknown {
+  const currentProgress = parseAssistantProgress(current)
+  const projectedProgress = parseAssistantProgress(projected)
+  if (!currentProgress) return projectedProgress ?? current
+  if (!projectedProgress) return currentProgress
+
+  const entries = new Map<number, string>()
+  currentProgress.messageSequences.forEach((sequence, index) => entries.set(sequence, currentProgress.messages[index]))
+  projectedProgress.messageSequences.forEach((sequence, index) => {
+    if (projectedWinsConflicts || !entries.has(sequence)) entries.set(sequence, projectedProgress.messages[index])
+  })
+  const ordered = [...entries.entries()].sort(([left], [right]) => left - right).slice(-32)
+  return {
+    version: 1,
+    messages: ordered.map(([, message]) => message),
+    messageSequences: ordered.map(([sequence]) => sequence),
+    workedDurationMs: Math.max(currentProgress.workedDurationMs, projectedProgress.workedDurationMs),
+  }
+}
+
+/**
+ * Add one typed commentary item to its owning assistant segment. Live stream
+ * consumers use this to render the same progress/action trace as reloads,
+ * without first inserting a temporary standalone assistant message.
+ */
+export function appendAssistantCommentaryToMessage(
+  message: ProjectMessage,
+  commentary: CommentaryProjectionItem,
+): ProjectMessage {
+  if (message.role !== 'assistant') return message
+  const assistantProgress = mergeAssistantProgressCommentary(message.metadata?.assistantProgress, commentary)
+  if (assistantProgress === message.metadata?.assistantProgress) return message
+  return {
+    ...message,
+    metadata: {
+      ...(message.metadata ?? {}),
+      assistantProgress,
+    },
+  }
+}
+
 /**
  * Typed commentary is streamed as its own thread item, while the owning
  * assistant message carries the same prose with trace sequence numbers. Once
@@ -46,22 +159,30 @@ function isCommentaryItem(item: ProjectAssistantThreadItem): boolean {
  * standalone commentary until its exact text is represented in the trace.
  */
 export function hideCommentaryRepresentedInTrace(messages: ProjectMessage[]): ProjectMessage[] {
-  const tracedProgressByOwner = new Map<string, Set<string>>()
+  const tracedProgressByOwner = new Map<string, ReturnType<typeof parseAssistantProgress>>()
   for (const message of messages) {
     if (message.role !== 'assistant' || message.metadata?.assistantPhase === 'commentary') continue
     const progress = parseAssistantProgress(message.metadata?.assistantProgress)
     if (!progress) continue
-    const traced = new Set(progress.messages)
-    tracedProgressByOwner.set(message.id, traced)
+    tracedProgressByOwner.set(message.id, progress)
     const assistantMessageID = typeof message.metadata?.assistantMessageID === 'string'
       ? message.metadata.assistantMessageID.trim()
       : ''
-    if (assistantMessageID) tracedProgressByOwner.set(assistantMessageID, traced)
+    if (assistantMessageID) tracedProgressByOwner.set(assistantMessageID, progress)
   }
   return messages.filter((message) => {
     if (message.role !== 'assistant' || message.metadata?.assistantPhase !== 'commentary') return true
     const ownerID = typeof message.metadata?.assistantMessageID === 'string' ? message.metadata.assistantMessageID.trim() : ''
-    return !ownerID || !tracedProgressByOwner.get(ownerID)?.has(message.content)
+    const progress = ownerID ? tracedProgressByOwner.get(ownerID) : undefined
+    if (!progress) return true
+    const commentarySequence = typeof message.metadata?.assistantCommentarySequence === 'number'
+      ? message.metadata.assistantCommentarySequence
+      : 0
+    if (commentarySequence > 0) {
+      const sequenceIndex = progress.messageSequences.indexOf(commentarySequence)
+      if (sequenceIndex >= 0) return progress.messages[sequenceIndex] !== message.content
+    }
+    return !progress.messages.includes(message.content)
   })
 }
 
@@ -70,7 +191,7 @@ function itemOwnMessageID(item: ProjectAssistantThreadItem): string {
 }
 
 function itemAssistantMessageID(item: ProjectAssistantThreadItem): string {
-  return item.assistantMessageID?.trim() || item.id
+  return item.assistantMessageID?.trim() || (isCommentaryItem(item) ? commentaryOwnerID(item.id) || item.id : item.id)
 }
 
 /**
@@ -131,6 +252,9 @@ export function mergeAssistantThreadMessages(current: ProjectMessage[], projecte
       : { ...(existing.metadata ?? {}), ...(next.metadata ?? {}) }
     if (existing.metadata?.assistantActionFeed || next.metadata?.assistantActionFeed) {
       metadata.assistantActionFeed = mergeActionFeeds(existing.metadata?.assistantActionFeed, next.metadata?.assistantActionFeed)
+    }
+    if (existing.metadata?.assistantProgress || next.metadata?.assistantProgress) {
+      metadata.assistantProgress = mergeAssistantProgressValues(existing.metadata?.assistantProgress, next.metadata?.assistantProgress, nextRevision > existingRevision)
     }
     const existingContentIsLivePrefix = existing.content.length >= next.content.length && existing.content.startsWith(next.content)
     return {
@@ -209,10 +333,34 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
       if (item.turnID) metadata.assistantTurnID = item.turnID
       if (item.mode) metadata.assistantMode = item.mode
       if (item.phase) metadata.assistantPhase = item.phase
+      if (isCommentaryItem(item)) {
+        const sequence = commentarySequence(item)
+        if (sequence > 0) metadata.assistantCommentarySequence = sequence
+      }
       if (item.error) metadata.assistantError = item.error
       if (item.data?.assistantProgress) metadata.assistantProgress = item.data.assistantProgress
+      const existingIndex = !isCommentaryItem(item) ? assistantByID.get(itemOwnMessageID(item)) : undefined
+      if (existingIndex !== undefined) {
+        const existing = result[existingIndex]
+        const existingMetadata = { ...(existing.metadata ?? {}) }
+        const mergedMetadata = { ...existingMetadata, ...metadata }
+        if (existingMetadata.assistantProgress || metadata.assistantProgress) {
+          mergedMetadata.assistantProgress = mergeAssistantProgressValues(existingMetadata.assistantProgress, metadata.assistantProgress, true)
+        }
+        result[existingIndex] = {
+          ...existing,
+          content: item.content || existing.content,
+          metadata: mergedMetadata,
+          createdAt: existing.createdAt || item.createdAt,
+        }
+        assistantByID.set(itemOwnMessageID(item), existingIndex)
+        assistantByID.set(itemAssistantMessageID(item), existingIndex)
+        if (item.turnID) latestAssistantByTurn.set(item.turnID, existingIndex)
+        continue
+      }
       const index = result.length
       assistantByID.set(itemOwnMessageID(item), index)
+      if (!isCommentaryItem(item)) assistantByID.set(itemAssistantMessageID(item), index)
       if (!isCommentaryItem(item) && item.turnID) latestAssistantByTurn.set(item.turnID, index)
     }
     result.push({
@@ -228,9 +376,23 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
   const precedingAssistantByTurn = new Map<string, number>()
   for (const item of ordered) {
     if (item.type === 'agentMessage') {
-      if (!isCommentaryItem(item)) {
-        const index = assistantByID.get(itemOwnMessageID(item))
-        if (index !== undefined && item.turnID) precedingAssistantByTurn.set(item.turnID, index)
+      const index = isCommentaryItem(item)
+        ? (item.assistantMessageID
+          ? assistantByID.get(item.assistantMessageID)
+          : item.turnID ? precedingAssistantByTurn.get(item.turnID) ?? latestAssistantByTurn.get(item.turnID) : undefined)
+        : assistantByID.get(itemOwnMessageID(item))
+      if (isCommentaryItem(item)) {
+        if (index !== undefined) {
+          const message = result[index]
+          const metadata = { ...(message.metadata ?? {}) }
+          const progress = mergeAssistantProgressCommentary(metadata.assistantProgress, item)
+          if (progress !== metadata.assistantProgress) {
+            metadata.assistantProgress = progress
+            result[index] = { ...message, metadata }
+          }
+        }
+      } else if (index !== undefined && item.turnID) {
+        precedingAssistantByTurn.set(item.turnID, index)
       }
       continue
     }

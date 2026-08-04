@@ -90,7 +90,7 @@ test('keeps terminal trace ordering and response surfaces after commentary colla
   const { buildAssistantTrace } = await vite.ssrLoadModule('/src/assistantTrace.ts')
   const items = [
     {
-      id: 'commentary-assistant-2-1', turnID: 'run-2', type: 'agentMessage', phase: 'commentary', status: 'completed',
+      id: 'commentary-assistant-2-2', turnID: 'run-2', type: 'agentMessage', phase: 'commentary', status: 'completed',
       assistantMessageID: 'assistant-2', content: 'I am mapping the project.', sequence: 2,
       createdAt: '2026-08-02T17:42:09Z',
     },
@@ -100,7 +100,7 @@ test('keeps terminal trace ordering and response surfaces after commentary colla
       createdAt: '2026-08-02T17:42:10Z',
     },
     {
-      id: 'commentary-assistant-2-2', turnID: 'run-2', type: 'agentMessage', phase: 'commentary', status: 'completed',
+      id: 'commentary-assistant-2-4', turnID: 'run-2', type: 'agentMessage', phase: 'commentary', status: 'completed',
       assistantMessageID: 'assistant-2', content: 'I found the edit seam.', sequence: 4,
       createdAt: '2026-08-02T17:42:11Z',
     },
@@ -190,6 +190,104 @@ test('uses the same interleaved trace for an active typed-commentary owner', asy
     { kind: 'progress', key: 'progress-1', message: 'I found the edit seam.' },
     { kind: 'actions', key: 'actions-1', items: [owner.metadata.assistantActionFeed[1]] },
   ])
+})
+
+test('materializes owner-start commentary and tool events into one canonical live trace', async () => {
+  const { assistantThreadItemsToMessages, hideCommentaryRepresentedInTrace } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const { buildAssistantTrace } = await vite.ssrLoadModule('/src/assistantTrace.ts')
+  const messages = assistantThreadItemsToMessages([
+    {
+      id: 'assistant-live', turnID: 'run-live', type: 'agentMessage', status: 'in_progress',
+      assistantMessageID: 'assistant-live', content: '', sequence: 1,
+      createdAt: '2026-08-02T17:42:09Z',
+    },
+    {
+      id: 'commentary-live-2', turnID: 'run-live', type: 'agentMessage', phase: 'commentary', status: 'completed',
+      assistantMessageID: 'assistant-live', content: 'I am checking the project.', sequence: 2,
+      createdAt: '2026-08-02T17:42:10Z',
+    },
+    {
+      id: 'tool-live-3', turnID: 'run-live', type: 'dynamicToolCall', status: 'completed',
+      assistantMessageID: 'assistant-live',
+      data: { id: 'call-live-3', kind: 'inspect', status: 'succeeded', title: 'Read project', severity: 'normal', sequence: 3 },
+      sequence: 3, createdAt: '2026-08-02T17:42:11Z',
+    },
+  ], 'demo')
+
+  const visible = hideCommentaryRepresentedInTrace(messages)
+  assert.deepEqual(visible.map(({ id }) => id), ['assistant-live'])
+  const owner = visible[0]
+  assert.deepEqual(owner.metadata.assistantProgress.messages, ['I am checking the project.'])
+  assert.deepEqual(buildAssistantTrace(owner.metadata.assistantProgress, owner.metadata.assistantActionFeed), [
+    { kind: 'progress', key: 'progress-0', message: 'I am checking the project.' },
+    { kind: 'actions', key: 'actions-0', items: [owner.metadata.assistantActionFeed[0]] },
+  ])
+})
+
+test('preserves repeated commentary prose at distinct sequence positions', async () => {
+  const { assistantThreadItemsToMessages, hideCommentaryRepresentedInTrace } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const messages = assistantThreadItemsToMessages([
+    {
+      id: 'assistant-repeat', turnID: 'run-repeat', type: 'agentMessage', status: 'in_progress',
+      assistantMessageID: 'assistant-repeat', content: '', sequence: 1,
+      createdAt: '2026-08-02T17:42:09Z',
+    },
+    {
+      id: 'commentary-repeat-2', turnID: 'run-repeat', type: 'agentMessage', phase: 'commentary', status: 'completed',
+      assistantMessageID: 'assistant-repeat', content: 'Checking again.', sequence: 2,
+      createdAt: '2026-08-02T17:42:10Z',
+    },
+    {
+      id: 'commentary-repeat-4', turnID: 'run-repeat', type: 'agentMessage', phase: 'commentary', status: 'completed',
+      assistantMessageID: 'assistant-repeat', content: 'Checking again.', sequence: 4,
+      createdAt: '2026-08-02T17:42:12Z',
+    },
+  ], 'demo')
+
+  const owner = messages.find(({ id }) => id === 'assistant-repeat')
+  assert.deepEqual(owner.metadata.assistantProgress.messages, ['Checking again.', 'Checking again.'])
+  assert.deepEqual(owner.metadata.assistantProgress.messageSequences, [2, 4])
+  assert.deepEqual(hideCommentaryRepresentedInTrace(messages).map(({ id }) => id), ['assistant-repeat'])
+})
+
+test('deduplicates commentary lifecycle cursors by the real item ID suffix', async () => {
+  const { assistantThreadItemsToMessages, hideCommentaryRepresentedInTrace } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const messages = assistantThreadItemsToMessages([
+    {
+      id: 'assistant-lifecycle', turnID: 'run-lifecycle', type: 'agentMessage', status: 'in_progress',
+      assistantMessageID: 'assistant-lifecycle', content: '', sequence: 1,
+      createdAt: '2026-08-02T17:42:09Z',
+    },
+    // The payload sequence is zero in the live lifecycle; these values model
+    // distinct SSE cursors after materialization. The item ID suffix is the
+    // durable progress identity and must remain the only trace key.
+    {
+      id: 'commentary-assistant-lifecycle-7', turnID: 'run-lifecycle', type: 'agentMessage', phase: 'commentary', status: 'in_progress',
+      assistantMessageID: 'assistant-lifecycle', content: 'Checking the project.', sequence: 12,
+      createdAt: '2026-08-02T17:42:10Z',
+    },
+    {
+      id: 'commentary-assistant-lifecycle-7', turnID: 'run-lifecycle', type: 'agentMessage', phase: 'commentary', status: 'completed',
+      assistantMessageID: 'assistant-lifecycle', content: 'Checking the project.', sequence: 13,
+      createdAt: '2026-08-02T17:42:10Z',
+    },
+    {
+      id: 'commentary-assistant-lifecycle-9', turnID: 'run-lifecycle', type: 'agentMessage', phase: 'commentary', status: 'completed',
+      assistantMessageID: 'assistant-lifecycle', content: 'Checking the project.', sequence: 14,
+      createdAt: '2026-08-02T17:42:11Z',
+    },
+    {
+      id: 'assistant-lifecycle', turnID: 'run-lifecycle', type: 'agentMessage', phase: 'final_answer', status: 'completed',
+      assistantMessageID: 'assistant-lifecycle', content: 'Done.', sequence: 15,
+      data: { assistantProgress: { version: 1, messages: ['Checking the project.'], messageSequences: [7], workedDurationMs: 900 } },
+      createdAt: '2026-08-02T17:42:12Z',
+    },
+  ], 'demo')
+
+  const owner = messages.find(({ id }) => id === 'assistant-lifecycle')
+  assert.deepEqual(owner.metadata.assistantProgress.messages, ['Checking the project.', 'Checking the project.'])
+  assert.deepEqual(owner.metadata.assistantProgress.messageSequences, [7, 9])
+  assert.deepEqual(hideCommentaryRepresentedInTrace(messages).map(({ id }) => id), ['assistant-lifecycle'])
 })
 
 test('keeps commentary visible until its owner trace contains the same prose', async () => {
@@ -422,4 +520,30 @@ test('retains the first replacement delta when a stale list projection arrives a
   const current = [{ id: 'assistant-2', projectID: 'demo', role: 'assistant', content: 'first replacement delta', metadata: { assistantRevision: 2 }, createdAt: '2026-08-02T17:42:09Z' }]
   const projected = [{ id: 'assistant-2', projectID: 'demo', role: 'assistant', content: '', metadata: { assistantRevision: 2 }, createdAt: '2026-08-02T17:42:09Z' }]
   assert.equal(mergeAssistantThreadMessages(current, projected)[0].content, 'first replacement delta')
+})
+
+test('stale thread refresh keeps newer live commentary progress and actions', async () => {
+  const { mergeAssistantThreadMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const current = [{
+    id: 'assistant-live', projectID: 'demo', role: 'assistant', content: '',
+    metadata: {
+      assistantRevision: 2,
+      assistantProgress: { version: 1, messages: ['Live update'], messageSequences: [4], workedDurationMs: 900 },
+      assistantActionFeed: [{ id: 'call-live', kind: 'run', status: 'running', title: 'Run checks', severity: 'normal', sequence: 5 }],
+    },
+    createdAt: '2026-08-02T17:42:09Z',
+  }]
+  const projected = [{
+    id: 'assistant-live', projectID: 'demo', role: 'assistant', content: '',
+    metadata: {
+      assistantRevision: 2,
+      assistantProgress: { version: 1, messages: [], messageSequences: [], workedDurationMs: 0 },
+      assistantActionFeed: [],
+    },
+    createdAt: '2026-08-02T17:42:09Z',
+  }]
+  const merged = mergeAssistantThreadMessages(current, projected)[0]
+  assert.deepEqual(merged.metadata.assistantProgress.messages, ['Live update'])
+  assert.deepEqual(merged.metadata.assistantProgress.messageSequences, [4])
+  assert.deepEqual(merged.metadata.assistantActionFeed.map(({ id }) => id), ['call-live'])
 })

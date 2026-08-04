@@ -26,6 +26,63 @@ test('normalizeAssistantRunStatus validates and normalizes persisted display sta
   assert.equal(state.normalizeAssistantRunStatus(undefined), undefined)
 })
 
+test('Q&A request and resolution reconcile one run before its terminal snapshot', () => {
+  const initial = snapshot(1, 'waiting').run
+  const requested = state.reconcileAssistantRunInterrupt(initial, 'input.requested', 'request-1')
+  assert.equal(requested.status, 'pending_input')
+  assert.equal(requested.requestID, 'request-1')
+  assert.equal(requested.revision, 2)
+
+  const resolved = state.reconcileAssistantRunInterrupt(requested, 'input.resolved', 'request-1')
+  assert.equal(resolved.status, 'running')
+  assert.equal(resolved.requestID, undefined)
+  assert.equal(resolved.revision, 3)
+
+  const completed = state.reconcileAssistantRunTerminal(resolved, 'completed')
+  assert.equal(completed.status, 'completed')
+  assert.equal(completed.revision, 4)
+  assert.equal(state.assistantRunRequiresLiveControls(completed), false)
+})
+
+test('replayed Q&A events are idempotent and terminal state cannot be reopened', () => {
+  const requested = state.reconcileAssistantRunInterrupt(snapshot(1, 'waiting').run, 'input.requested', 'request-1')
+  assert.strictEqual(state.reconcileAssistantRunInterrupt(requested, 'input.requested', 'request-1'), requested)
+  const completed = state.reconcileAssistantRunTerminal(requested, 'completed')
+  assert.strictEqual(state.reconcileAssistantRunInterrupt(completed, 'input.resolved', 'request-1'), completed)
+})
+
+test('a stale resolution cannot clear a newer pending Q&A request', () => {
+  const requestA = state.reconcileAssistantRunInterrupt(snapshot(1, 'waiting').run, 'input.requested', 'request-a')
+  const requestB = state.reconcileAssistantRunInterrupt(requestA, 'input.requested', 'request-b')
+  const staleResolution = state.reconcileAssistantRunInterrupt(requestB, 'input.resolved', 'request-a')
+
+  assert.strictEqual(staleResolution, requestB)
+  assert.equal(staleResolution.status, 'pending_input')
+  assert.equal(staleResolution.requestID, 'request-b')
+  assert.equal(staleResolution.revision, requestB.revision)
+})
+
+test('replayed resolution for an already-running request is idempotent', () => {
+  const requested = state.reconcileAssistantRunInterrupt(snapshot(1, 'waiting').run, 'input.requested', 'request-1')
+  const resolved = state.reconcileAssistantRunInterrupt(requested, 'input.resolved', 'request-1')
+  const replay = state.reconcileAssistantRunInterrupt(resolved, 'input.resolved', 'request-1')
+
+  assert.strictEqual(replay, resolved)
+  assert.equal(replay.status, 'running')
+  assert.equal(replay.requestID, undefined)
+  assert.equal(replay.revision, 3)
+})
+
+test('replayed request events without a request ID remain idempotent', () => {
+  const first = state.reconcileAssistantRunInterrupt(snapshot(1, 'waiting').run, 'input.requested')
+  const replay = state.reconcileAssistantRunInterrupt(first, 'input.requested')
+
+  assert.strictEqual(replay, first)
+  assert.equal(replay.status, 'pending_input')
+  assert.equal(replay.requestID, undefined)
+  assert.equal(replay.revision, 2)
+})
+
 test('mergeConversationSnapshot keeps the stable assistant message ID and rejects older or duplicate revisions', () => {
   const initial = { messages: [message('u-1', 'hello'), message('a-1', 'old')], runs: {} }
   const current = state.mergeConversationSnapshot(initial, snapshot(2, 'new'))

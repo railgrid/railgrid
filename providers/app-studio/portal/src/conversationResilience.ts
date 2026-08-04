@@ -9,6 +9,7 @@ export interface AssistantRun {
   clientRequestID?: string
   userMessageID?: string
   error?: { message: string; errorInfo?: string }
+  requestID?: string
   abortReason?: 'interrupted' | 'replaced' | 'budget_limited' | 'iteration_limited'
 }
 
@@ -124,6 +125,45 @@ export function assistantRunCanImplementPlan(run: AssistantRun | null | undefine
     normalizeAssistantRunStatus(run.status) === 'completed' &&
     !run.error?.message?.trim(),
   )
+}
+
+export type AssistantInterruptTransition = 'approval.requested' | 'input.requested' | 'approval.resolved' | 'input.resolved'
+
+/**
+ * Apply the durable Q&A/approval lifecycle to local run controls. Stream
+ * reconnects can replay a request or its resolution, so already-applied
+ * transitions are idempotent and do not manufacture revisions.
+ */
+export function reconcileAssistantRunInterrupt(
+  run: AssistantRun,
+  transition: AssistantInterruptTransition,
+  requestID = '',
+): AssistantRun {
+  if (assistantRunTerminal(run.status)) return run
+  const normalizedRequestID = requestID.trim()
+  const pendingStatus = transition === 'approval.requested'
+    ? 'pending_permission'
+    : transition === 'input.requested'
+    ? 'pending_input'
+    : undefined
+  if (pendingStatus) {
+    if (run.status === pendingStatus && run.requestID === (normalizedRequestID || undefined)) return run
+    return { ...run, status: pendingStatus, requestID: normalizedRequestID || undefined, revision: run.revision + 1 }
+  }
+  // A resolution for an older request must not reopen a newer pending
+  // request. Missing request IDs are also ambiguous while one is pending;
+  // retain the pending state until a matching durable resolution arrives.
+  if (run.requestID && run.requestID !== normalizedRequestID) return run
+  if (run.status === 'running' && !run.requestID) return run
+  return { ...run, status: 'running', requestID: undefined, revision: run.revision + 1 }
+}
+
+export function reconcileAssistantRunTerminal(
+  run: AssistantRun,
+  status: Extract<AssistantRun['status'], 'completed' | 'failed' | 'interrupted' | 'aborted'>,
+): AssistantRun {
+  if (run.status === status) return run
+  return { ...run, status, requestID: undefined, revision: run.revision + 1 }
 }
 
 // Control hydration is deliberately separate from message merge: a reload may

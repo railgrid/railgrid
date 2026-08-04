@@ -611,6 +611,12 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 		return "", err
 	}
 	successful := t.durableToolCallSucceeded(ctx, callID, spec.Name, modelResult)
+	if !successful && projectAssistantWorkspaceMutationTool(spec.Name) && t.runState != nil {
+		// Some provider mutations return a typed failed result without a
+		// transport error. Count that semantic failure at the same boundary as
+		// invoke errors.
+		t.runState.RecordMutationFailure(spec.Name, args)
+	}
 	if settlementErr := t.recordV2CommitSettlement(ctx, spec, args, successful); settlementErr != nil {
 		return "", settlementErr
 	}
@@ -1416,6 +1422,10 @@ func (t projectEinoAssistantTool) finishFailedMutationToolCall(callID, name stri
 	inputRecovery := projectAssistantValidatedMutationRecoveryOf(t.runState, args, name)
 	publicRecovery := ""
 	if t.runState != nil {
+		// Record the server-owned retry budget before publishing the failure. The
+		// lifecycle boundary observes this state after the tool result and stops
+		// before another model sample once the repair budget is exhausted.
+		t.runState.RecordMutationFailure(name, args)
 		publicRecovery = t.runState.RecordMutationRecoveryReferenceForMutation(callID, name, args)
 	} else {
 		publicRecovery = projectAssistantActionPublicID(callID)

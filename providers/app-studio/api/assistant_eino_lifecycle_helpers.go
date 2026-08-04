@@ -35,6 +35,12 @@ const (
 
 	projectEinoAssistantRepeatedActionWarnAt = 2
 	projectEinoAssistantRepeatedActionLimit  = 100
+
+	// A failed mutation gets one complete-reread repair attempt. If that
+	// repair also fails at the same source revision and canonical target, stop
+	// before asking the model for another sample.
+	projectEinoAssistantMutationRecoveryFailureLimit       = 2
+	projectEinoAssistantMaxTrackedMutationRecoveryAttempts = 128
 )
 
 type projectEinoAssistantNoProgressError struct {
@@ -43,11 +49,20 @@ type projectEinoAssistantNoProgressError struct {
 	Limit            int
 	SourceRevision   uint64
 	VerifiedRevision uint64
+	Target           string
+	RecoveryBlocked  bool
 }
 
 func (e *projectEinoAssistantNoProgressError) Error() string {
 	if e == nil {
 		return errProjectAssistantNoProgress.Error()
+	}
+	if e.RecoveryBlocked {
+		target := strings.TrimSpace(e.Target)
+		if target == "" {
+			target = "the same mutation target"
+		}
+		return fmt.Sprintf("%s: recovery_blocked after %d failed %s mutations for %s at source revision %d", errProjectAssistantNoProgress, e.Calls, projectToolBaseName(e.ToolName), target, e.SourceRevision)
 	}
 	if toolName := projectToolBaseName(e.ToolName); toolName != "" {
 		return fmt.Sprintf("%s: repeated %s %d times", errProjectAssistantNoProgress, toolName, e.Limit)
@@ -57,6 +72,38 @@ func (e *projectEinoAssistantNoProgressError) Error() string {
 
 func (e *projectEinoAssistantNoProgressError) Unwrap() error {
 	return errProjectAssistantNoProgress
+}
+
+// projectEinoAssistantRecoveryBlockedError is emitted by the lifecycle
+// boundary after the second failed mutation for one target/revision. It wraps
+// the existing no-progress sentinel so audit and terminal classification stay
+// compatible while callers can distinguish the recovery-specific reason.
+type projectEinoAssistantRecoveryBlockedError struct {
+	projectEinoAssistantNoProgressError
+}
+
+func newProjectEinoAssistantRecoveryBlockedError(
+	attempt projectAssistantMutationRecoveryAttempt,
+	verifiedRevision uint64,
+) error {
+	return &projectEinoAssistantRecoveryBlockedError{
+		projectEinoAssistantNoProgressError: projectEinoAssistantNoProgressError{
+			ToolName:         attempt.Operation,
+			Calls:            attempt.Failures,
+			Limit:            projectEinoAssistantMutationRecoveryFailureLimit,
+			SourceRevision:   attempt.SourceRevision,
+			VerifiedRevision: verifiedRevision,
+			Target:           attempt.Target,
+			RecoveryBlocked:  true,
+		},
+	}
+}
+
+func (e *projectEinoAssistantRecoveryBlockedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return &e.projectEinoAssistantNoProgressError
 }
 
 func projectEinoAssistantProgressApplies(req projectAssistantRunRequest, runState *projectEinoAssistantRunState) bool {

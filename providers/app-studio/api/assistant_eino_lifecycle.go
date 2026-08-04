@@ -95,6 +95,16 @@ func (m *projectEinoAssistantLifecycle) BeforeModelRewriteState(
 	if state == nil {
 		return ctx, state, nil
 	}
+	// A failed mutation gets one deterministic reread/repair attempt. Once the
+	// same canonical target fails again at the same source revision, terminate
+	// at this model boundary instead of sampling the model into an unbounded
+	// recovery loop. Read-only/Q&A turns and permission waits remain outside
+	// this implementation-only guard.
+	if projectEinoAssistantProgressApplies(m.req, m.runState) && !m.runState.PermissionBarrierActive() {
+		if err := m.runState.MutationRecoveryBlockedError(); err != nil {
+			return ctx, state, err
+		}
+	}
 	if err := m.refreshLiveRequestContext(ctx); err != nil {
 		return ctx, state, err
 	}

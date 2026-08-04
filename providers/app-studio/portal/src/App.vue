@@ -63,6 +63,7 @@ import {
 } from './assistantProgress'
 import { buildAssistantTrace, type AssistantTraceBlock } from './assistantTrace'
 import {
+  appendAssistantCommentaryToMessage,
   assistantThreadItemIdentity,
   assistantThreadItemToRun,
   assistantThreadItemsToMessages,
@@ -96,6 +97,8 @@ import {
   normalizeSnapshotMessage,
   orderConversationMessages,
   replaceOptimisticUserMessage,
+  reconcileAssistantRunInterrupt,
+  reconcileAssistantRunTerminal,
   type AssistantRun,
 } from './conversationResilience'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -433,7 +436,7 @@ const messagesRef = ref<HTMLDivElement | null>(null)
 const expandedMessageTimestampID = ref<string | null>(null)
 const expandedAssistantProgressIDs = ref<Set<string>>(new Set())
 const assistantDurationNowMs = ref(Date.now())
-const assistantWorkedDurationClock = new AssistantWorkedDurationClock()
+const assistantWorkedDurationClock = new AssistantWorkedDurationClock({ namespace: 'app-studio' })
 const assistantPlanAnnouncement = ref('')
 const promptRef = ref<HTMLTextAreaElement | null>(null)
 const workspaceRef = ref<HTMLDivElement | null>(null)
@@ -507,7 +510,7 @@ function projectAssistantThreadItems(
 
 function latestAssistantThreadRun(items: ProjectAssistantThreadItem[], turnID = ''): AssistantRun | undefined {
   const item = items
-    .filter((candidate) => candidate.type === 'agentMessage' && candidate.turnID && (!turnID || candidate.turnID === turnID))
+    .filter((candidate) => candidate.type === 'agentMessage' && candidate.phase !== 'commentary' && candidate.turnID && (!turnID || candidate.turnID === turnID))
     .reduce<ProjectAssistantThreadItem | undefined>((current, candidate) => {
       if (!current) return candidate
       const candidateRevision = typeof candidate.revision === 'number' && Number.isFinite(candidate.revision) ? candidate.revision : candidate.sequence
@@ -2085,7 +2088,14 @@ async function refreshSelectedProjectConversation(projectName: string) {
   if (!threads.some((thread) => thread.id === activeAssistantThreadID.value)) activeAssistantThreadID.value = threads[0]?.id ?? ''
   const threadItems = activeAssistantThreadID.value ? await api.listAssistantThreadItems(props.ctx, projectName, activeAssistantThreadID.value) : []
   activeAssistantThreadSequence = maxAssistantThreadSequence(threadItems)
-  messages.value = projectAssistantThreadItems(threadItems, projectName)
+  // A refresh can race the live stream. Merge the durable list into the live
+  // projection while this project/run is still active so a newer delta or
+  // commentary item is never rolled back to the request's earlier snapshot.
+  messages.value = projectAssistantThreadItems(
+    threadItems,
+    projectName,
+    messageStreaming.value && activeAssistantProject === projectName,
+  )
   projects.value = projectList
   await recoverAssistantConversation(projectName)
 }
@@ -2160,6 +2170,7 @@ function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName 
   const previousRun = assistantRunRevisions[normalized.run.id]
   const accepted = acceptScopedConversationSnapshot(selectedProject, activeAssistantProject, activeAssistantRun ?? previousRun, projectName, normalized.run, source, expectedRunID)
   if (!accepted.accepted) return accepted
+  observeAssistantWorkedDuration(normalized.message, normalized.run, projectName)
   const current = mergeConversationSnapshot(
     { messages: messages.value, runs: assistantRunRevisions },
     normalized,
@@ -2194,13 +2205,42 @@ function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName 
 
 async function recoverAssistantConversation(projectName: string): Promise<{ accepted: boolean; current: AssistantRun | undefined } | undefined> {
   if (selected.value?.name !== projectName || !activeAssistantThreadID.value) return undefined
+  const threadID = activeAssistantThreadID.value
   const expectedRunID = activeAssistantProject === projectName ? activeAssistantRun?.id ?? '' : ''
-  const turn = await api.getActiveAssistantTurn(props.ctx, projectName, activeAssistantThreadID.value)
-  if (!turn || selected.value?.name !== projectName) return undefined
-  const items = await api.listAssistantThreadItems(props.ctx, projectName, activeAssistantThreadID.value)
+  const turn = await api.getActiveAssistantTurn(props.ctx, projectName, threadID)
+  if (selected.value?.name !== projectName || activeAssistantThreadID.value !== threadID) return undefined
+  const items = await api.listAssistantThreadItems(props.ctx, projectName, threadID)
+  if (selected.value?.name !== projectName || activeAssistantThreadID.value !== threadID) return undefined
   activeAssistantThreadSequence = maxAssistantThreadSequence(items)
-  messages.value = projectAssistantThreadItems(items, projectName, true)
-  const assistantItem = [...items].reverse().find((item) => item.turnID === turn.id && item.type === 'agentMessage')
+  messages.value = projectAssistantThreadItems(items, projectName, Boolean(turn))
+  // A 204 means the stream may have missed its terminal event. The durable
+  // thread items are authoritative in that case: materialize their terminal
+  // owner, then clear every scoped live control so no stale spinner or input
+  // panel survives reload/reconnect.
+  if (!turn) {
+    const materializedRuns = assistantThreadItemsToRuns(items) as Record<string, AssistantRun>
+    for (const run of Object.values(materializedRuns)) {
+      if (!assistantRunTerminal(run.status)) continue
+      const terminalMessage = messages.value.find((candidate) => candidate.role === 'assistant' && (
+        candidate.id === run.activeMessageID || candidate.metadata?.assistantMessageID === run.activeMessageID
+      ))
+      if (terminalMessage) observeAssistantWorkedDuration(terminalMessage, run, projectName)
+    }
+    const priorRunID = activeAssistantRun?.id ?? ''
+    const materialized = priorRunID
+      ? materializedRuns[priorRunID]
+      : Object.values(materializedRuns).sort((left, right) => right.revision - left.revision)[0]
+    assistantRunController.disconnect()
+    activeAssistantSubscription?.abort()
+    activeAssistantSubscription = null
+    if (priorRunID) delete pendingAssistantStopRequestIDs[priorRunID]
+    activeAssistantRun = null
+    activeAssistantProject = ''
+    messageStreaming.value = false
+    conversationStatus.value = ''
+    return { accepted: false, current: materialized }
+  }
+  const assistantItem = [...items].reverse().find((item) => item.turnID === turn.id && item.type === 'agentMessage' && item.phase !== 'commentary')
   const userItem = [...items].reverse().find((item) => item.turnID === turn.id && item.type === 'userMessage')
   const message = assistantItem
     ? messages.value.find((candidate) => candidate.role === 'assistant' && (
@@ -2931,10 +2971,15 @@ function projectMessagesForConversation(source: ProjectMessageView[]): ProjectMe
 function assistantMessageIDForThreadItem(item: ProjectAssistantThreadItem, turnID = ''): string {
   const explicit = item.assistantMessageID?.trim()
   if (explicit) return explicit
+  if (item.phase === 'commentary') {
+    const derived = /^commentary-(.+)-(\d+)$/u.exec(item.id.trim())?.[1]?.trim()
+    if (derived) return derived
+  }
   if (item.type === 'agentMessage') return item.id
   const scopedTurnID = item.turnID || turnID
   const scoped = messages.value.filter((message) => {
     if (message.role !== 'assistant') return false
+    if (message.metadata?.assistantPhase === 'commentary') return false
     return !scopedTurnID || message.metadata?.assistantTurnID === scopedTurnID
   })
   return scoped[scoped.length - 1]?.id
@@ -2942,10 +2987,11 @@ function assistantMessageIDForThreadItem(item: ProjectAssistantThreadItem, turnI
 }
 
 function assistantMessageIndexForThreadItem(item: ProjectAssistantThreadItem, turnID = ''): number {
+  if (item.phase === 'commentary') return -1
   const messageID = assistantMessageIDForThreadItem(item, turnID)
   if (!messageID) return -1
   return messages.value.findIndex((message) =>
-    message.role === 'assistant' && (message.id === messageID || message.metadata?.assistantMessageID === messageID),
+    message.role === 'assistant' && message.metadata?.assistantPhase !== 'commentary' && (message.id === messageID || message.metadata?.assistantMessageID === messageID),
   )
 }
 
@@ -2989,37 +3035,58 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
     }
   } else if (rawItem?.id && (rawItem.type === 'userMessage' || rawItem.type === 'agentMessage')) {
     const role = rawItem.type === 'userMessage' ? 'user' : 'assistant'
-    const messageID = role === 'assistant' && rawItem.phase !== 'commentary'
-      ? assistantMessageIDForThreadItem(rawItem, event.turnID || runID)
-      : rawItem.id
-    const existing = messages.value.find((message) => message.id === messageID || message.id === rawItem.id)
-    const itemRun = role === 'assistant' ? assistantThreadItemToRun(rawItem) : undefined
-    const itemContent = rawItem.content ?? ''
-    const existingContent = existing?.content ?? ''
-    const metadata: Record<string, unknown> = {
-      ...(existing?.metadata ?? {}),
-      ...(role === 'assistant' ? {
-        assistantStatus: itemRun?.status ?? (rawItem.phase === 'commentary' && rawItem.status === 'completed' ? 'completed' : 'running'),
-        assistantMessageID: rawItem.assistantMessageID || messageID,
-        ...(rawItem.turnID ? { assistantTurnID: rawItem.turnID } : {}),
-        ...(itemRun ? { assistantMode: itemRun.mode, assistantRevision: itemRun.revision } : {}),
-        ...(rawItem.error ? { assistantError: rawItem.error } : {}),
-        ...(rawItem.phase ? { assistantPhase: rawItem.phase } : {}),
-      } : {}),
-      ...(role === 'assistant' && rawItem.data?.assistantProgress ? { assistantProgress: rawItem.data.assistantProgress } : {}),
+    if (role === 'assistant' && rawItem.phase === 'commentary') {
+      const assistantMessageID = assistantMessageIDForThreadItem(rawItem, event.turnID || runID)
+      if (assistantMessageID) {
+        let ownerIndex = messages.value.findIndex((message) =>
+          message.role === 'assistant' &&
+          message.metadata?.assistantPhase !== 'commentary' &&
+          (message.id === assistantMessageID || message.metadata?.assistantMessageID === assistantMessageID),
+        )
+        // A reconnect can deliver the commentary item before the owner start
+        // event. Create the owner placeholder, then append commentary to its
+        // canonical progress trace instead of rendering a second message.
+        if (ownerIndex < 0) ownerIndex = ensureAssistantMessage(projectName, assistantMessageID, event.turnID || runID)
+        const owner = messages.value[ownerIndex]
+        // The payload sequence is zero for commentary lifecycle items, while
+        // the event sequence is only an SSE cursor. `append...` derives the
+        // stable domain progress sequence from the canonical commentary ID.
+        const projectedOwner = toProjectMessageView(appendAssistantCommentaryToMessage(owner, rawItem))
+        messages.value = messages.value.map((message, index) => index === ownerIndex ? projectedOwner : message)
+      }
+    } else {
+      const messageID = role === 'assistant' && rawItem.phase !== 'commentary'
+        ? assistantMessageIDForThreadItem(rawItem, event.turnID || runID)
+        : rawItem.id
+      const existing = messages.value.find((message) => message.id === messageID || message.id === rawItem.id)
+      const itemRun = role === 'assistant' ? assistantThreadItemToRun(rawItem) : undefined
+      const itemContent = rawItem.content ?? ''
+      const existingContent = existing?.content ?? ''
+      const metadata: Record<string, unknown> = {
+        ...(existing?.metadata ?? {}),
+        ...(role === 'assistant' ? {
+          assistantStatus: itemRun?.status ?? (rawItem.phase === 'commentary' && rawItem.status === 'completed' ? 'completed' : 'running'),
+          assistantMessageID: rawItem.assistantMessageID || messageID,
+          ...(rawItem.turnID ? { assistantTurnID: rawItem.turnID } : {}),
+          ...(itemRun ? { assistantMode: itemRun.mode, assistantRevision: itemRun.revision } : {}),
+          ...(rawItem.error ? { assistantError: rawItem.error } : {}),
+          ...(rawItem.phase ? { assistantPhase: rawItem.phase } : {}),
+        } : {}),
+        ...(role === 'assistant' && rawItem.data?.assistantProgress ? { assistantProgress: rawItem.data.assistantProgress } : {}),
+      }
+      const projected = toProjectMessageView({
+        id: messageID,
+        projectID: projectName,
+        role,
+        content: existingContent.length >= itemContent.length && existingContent.startsWith(itemContent) ? existingContent : itemContent,
+        metadata,
+        createdAt: event.createdAt,
+      })
+      messages.value = existing
+        ? messages.value.map((message) => message.id === existing.id ? projected : message)
+        : [...messages.value, projected]
+      if (role === 'assistant') updateActiveRunFromAssistantItem(rawItem, runID)
     }
-    const projected = toProjectMessageView({
-      id: messageID,
-      projectID: projectName,
-      role,
-      content: existingContent.length >= itemContent.length && existingContent.startsWith(itemContent) ? existingContent : itemContent,
-      metadata,
-      createdAt: event.createdAt,
-    })
-    messages.value = existing
-      ? messages.value.map((message) => message.id === existing.id ? projected : message)
-      : [...messages.value, projected]
-    if (role === 'assistant') updateActiveRunFromAssistantItem(rawItem, runID)
   } else if (rawItem?.id && event.turnID) {
     const assistantIndex = assistantMessageIndexForThreadItem(rawItem, event.turnID)
     if (assistantIndex >= 0) {
@@ -3046,43 +3113,67 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
     const assistantMessageID = interrupt.action?.assistantMessageId
       || activeAssistantRun?.activeMessageID
     const index = assistantMessageID
-      ? messages.value.findIndex((message) => message.role === 'assistant' && (message.id === assistantMessageID || message.metadata?.assistantMessageID === assistantMessageID))
+      ? messages.value.findIndex((message) => message.role === 'assistant' && message.metadata?.assistantPhase !== 'commentary' && (message.id === assistantMessageID || message.metadata?.assistantMessageID === assistantMessageID))
       : lastAssistantMessageIndex(messages.value)
     if (index >= 0) {
       const next = [...messages.value]
       const message = next[index]
       next[index] = toProjectMessageView({ ...message, metadata: { ...(message.metadata ?? {}), assistantInterrupt: interrupt } })
       messages.value = next
-      if (activeAssistantRun?.id === runID) {
-        activeAssistantRun = {
-          ...activeAssistantRun,
-          status: event.type === 'approval.requested' ? 'pending_permission' : 'pending_input',
-          revision: activeAssistantRun.revision + 1,
-        }
-      }
+    }
+    if (activeAssistantRun?.id === runID) {
+      const currentRun = activeAssistantRun
+      const nextRun = reconcileAssistantRunInterrupt(
+        currentRun,
+        event.type,
+        interrupt.action?.requestId || event.requestID || '',
+      )
+      activeAssistantRun = nextRun
+      assistantRunRevisions[runID] = nextRun
+      assistantRunController.setRevision(nextRun.revision)
     }
   }
   if (event.type === 'approval.resolved' || event.type === 'input.resolved') {
+    const requestID = event.requestID || (typeof payload.requestID === 'string' ? payload.requestID : '')
     messages.value = messages.value.map((message) => message.role === 'assistant'
-      ? toProjectMessageView({ ...message, metadata: Object.fromEntries(Object.entries(message.metadata ?? {}).filter(([key]) => key !== 'assistantInterrupt')) })
+      ? toProjectMessageView({
+          ...message,
+          metadata: Object.fromEntries(Object.entries(message.metadata ?? {}).filter(([key, value]) => {
+            if (key !== 'assistantInterrupt') return true
+            if (!requestID) return false
+            const interrupt = value as ProjectAssistantUIInterruptRequest
+            return interrupt?.action?.requestId !== requestID
+          })),
+        })
       : message)
+    if (activeAssistantRun?.id === runID && !assistantRunTerminal(activeAssistantRun.status)) {
+      const currentRun = activeAssistantRun
+      const nextRun = reconcileAssistantRunInterrupt(currentRun, event.type, requestID)
+      activeAssistantRun = nextRun
+      assistantRunRevisions[runID] = nextRun
+      assistantRunController.setRevision(nextRun.revision)
+      messageStreaming.value = true
+      conversationStatus.value = 'Working'
+    }
   }
   if ((event.type === 'turn.completed' || event.type === 'turn.failed' || event.type === 'turn.interrupted') && activeAssistantRun?.id === runID) {
-    const status = event.type === 'turn.completed' ? 'completed' : event.type === 'turn.interrupted' ? 'interrupted' : 'failed'
-    const message = messages.value.find((candidate) => candidate.id === activeAssistantRun?.activeMessageID)
+    const status: 'completed' | 'failed' | 'interrupted' = event.type === 'turn.completed' ? 'completed' : event.type === 'turn.interrupted' ? 'interrupted' : 'failed'
+    const message = messages.value.find((candidate) => candidate.role === 'assistant' &&
+      candidate.metadata?.assistantPhase !== 'commentary' &&
+      (candidate.id === activeAssistantRun?.activeMessageID || candidate.metadata?.assistantMessageID === activeAssistantRun?.activeMessageID))
     if (message) {
       const rawError = message.metadata?.assistantError
       const error = activeAssistantRun.error || (rawError && typeof rawError === 'object' && typeof (rawError as { message?: unknown }).message === 'string'
         ? { message: (rawError as { message: string }).message, errorInfo: typeof (rawError as { errorInfo?: unknown }).errorInfo === 'string' ? (rawError as { errorInfo: string }).errorInfo : undefined }
         : undefined)
-      applyAssistantSnapshot({ run: { ...activeAssistantRun, status, revision: activeAssistantRun.revision + 1, error }, message }, projectName, 'stream')
+      applyAssistantSnapshot({ run: { ...reconcileAssistantRunTerminal(activeAssistantRun, status), error }, message }, projectName, 'stream')
     }
   }
 }
 
 function lastAssistantMessageIndex(source: ProjectMessageView[]): number {
   for (let index = source.length - 1; index >= 0; index--) {
-    if (source[index].role === 'assistant') return index
+    if (source[index].role === 'assistant' && source[index].metadata?.assistantPhase !== 'commentary') return index
   }
   return -1
 }
@@ -3152,15 +3243,25 @@ function assistantProgressRegionID(messageID: string): string {
   return `assistant-progress-${messageID}`
 }
 
-function assistantWorkedLabel(message: ProjectMessageView): string {
-  const status = assistantRunStatusForMessage(message)
-  const durationMs = assistantWorkedDurationClock.observe({
+function assistantDurationScope(projectName = selected.value?.name ?? ''): string {
+  return [props.ctx?.tenant, props.ctx?.subPath, projectName].filter(Boolean).join(':') || 'app-studio'
+}
+
+function observeAssistantWorkedDuration(message: ProjectMessage, run: { status?: AssistantRun['status'] }, projectName = selected.value?.name ?? ''): number {
+  const status = normalizeAssistantRunStatus(run.status)
+  return assistantWorkedDurationClock.observe({
     messageID: message.id,
-    snapshotDurationMs: message.progress?.workedDurationMs ?? 0,
+    scope: assistantDurationScope(projectName),
+    snapshotDurationMs: parseAssistantProgress(message.metadata?.assistantProgress)?.workedDurationMs ?? 0,
     nowMs: assistantDurationNowMs.value,
     ticking: status === 'running' || status === 'stopping',
     terminal: assistantRunTerminal(status),
   })
+}
+
+function assistantWorkedLabel(message: ProjectMessageView): string {
+  const status = assistantRunStatusForMessage(message)
+  const durationMs = observeAssistantWorkedDuration(message, { status })
   return formatAssistantWorkedDuration(durationMs)
 }
 

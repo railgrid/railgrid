@@ -90,3 +90,48 @@ test('advances active worked duration, freezes pauses, and trusts terminal snaps
   assert.equal(clock.observe({ ...observation, nowMs: 9_000, snapshotDurationMs: 44_000 }), 45_000)
   assert.equal(clock.observe({ ...observation, nowMs: 10_000, snapshotDurationMs: 44_700, terminal: true }), 44_700)
 })
+
+class MemoryStorage {
+  values = new Map()
+
+  getItem(key) { return this.values.get(key) ?? null }
+  setItem(key, value) { this.values.set(key, value) }
+  removeItem(key) { this.values.delete(key) }
+}
+
+test('persists an active duration across a same-tab hard refresh before the first snapshot', () => {
+  const storage = new MemoryStorage()
+  const observation = {
+    messageID: 'assistant-commentary-only',
+    scope: 'tenant-a:project-a',
+    snapshotDurationMs: 0,
+    ticking: true,
+    terminal: false,
+  }
+  const firstClock = new AssistantWorkedDurationClock({ storage, namespace: 'app-studio' })
+  assert.equal(firstClock.observe({ ...observation, nowMs: 1_000 }), 0)
+  assert.equal(firstClock.observe({ ...observation, nowMs: 6_000 }), 5_000)
+
+  // A hard refresh constructs a new clock, but session-scoped state keeps the
+  // running segment continuous while the server snapshot is still zero.
+  const reloadedClock = new AssistantWorkedDurationClock({ storage, namespace: 'app-studio' })
+  assert.equal(reloadedClock.observe({ ...observation, nowMs: 7_000 }), 6_000)
+})
+
+test('does not accrue through a pending pause, resumes from the frozen value, and cleans terminal state', () => {
+  const storage = new MemoryStorage()
+  const base = { messageID: 'assistant-paused', scope: 'tenant-a:project-a', terminal: false }
+  const clock = new AssistantWorkedDurationClock({ storage, namespace: 'app-studio' })
+  assert.equal(clock.observe({ ...base, snapshotDurationMs: 0, nowMs: 1_000, ticking: true }), 0)
+  assert.equal(clock.observe({ ...base, snapshotDurationMs: 0, nowMs: 4_000, ticking: true }), 3_000)
+  assert.equal(clock.observe({ ...base, snapshotDurationMs: 0, nowMs: 5_000, ticking: false }), 4_000)
+
+  const reloaded = new AssistantWorkedDurationClock({ storage, namespace: 'app-studio' })
+  assert.equal(reloaded.observe({ ...base, snapshotDurationMs: 0, nowMs: 20_000, ticking: false }), 4_000)
+  assert.equal(reloaded.observe({ ...base, snapshotDurationMs: 0, nowMs: 21_000, ticking: true }), 4_000)
+  assert.equal(reloaded.observe({ ...base, snapshotDurationMs: 0, nowMs: 25_000, ticking: true }), 8_000)
+
+  assert.equal(reloaded.observe({ ...base, snapshotDurationMs: 4_200, nowMs: 26_000, ticking: false, terminal: true }), 4_200)
+  const afterTerminal = new AssistantWorkedDurationClock({ storage, namespace: 'app-studio' })
+  assert.equal(afterTerminal.observe({ ...base, snapshotDurationMs: 0, nowMs: 27_000, ticking: true }), 0)
+})

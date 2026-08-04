@@ -83,6 +83,7 @@ type projectAssistantCheckpointState struct {
 	ObservedReadFilePaths            []string                                            `json:"observedReadFilePaths,omitempty"`
 	ReadFileVersions                 map[string]string                                   `json:"readFileVersions,omitempty"`
 	SuccessfulMutationPaths          []string                                            `json:"successfulMutationPaths,omitempty"`
+	MutationRecoveryAttempts         map[string]projectAssistantMutationRecoveryAttempt  `json:"mutationRecoveryAttempts,omitempty"`
 	MutationRecoveryRefs             []string                                            `json:"mutationRecoveryRefs,omitempty"`
 	MutationRecoveryIdentities       map[string]projectAssistantMutationRecoveryIdentity `json:"mutationRecoveryIdentities,omitempty"`
 	SessionSnapshot                  *projectEinoAssistantSessionSnapshot                `json:"sessionSnapshot,omitempty"`

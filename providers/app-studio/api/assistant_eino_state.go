@@ -99,6 +99,7 @@ type projectEinoAssistantRunState struct {
 	observedReadFilePaths            map[string]struct{}
 	readFileVersions                 map[string]string
 	successfulMutationPaths          map[string]struct{}
+	mutationRecoveryAttempts         map[string]projectAssistantMutationRecoveryAttempt
 	mutationRecoveryRefs             map[string]struct{}
 	mutationRecoveryIdentities       map[string]projectAssistantMutationRecoveryIdentity
 	readFileCoverage                 map[string][]projectEinoAssistantLineRange
@@ -132,6 +133,18 @@ type projectAssistantMutationRecoveryIdentity struct {
 	Target    string `json:"target"`
 }
 
+// projectAssistantMutationRecoveryAttempt is durable, server-owned retry
+// state for one canonical mutation target. It does not grant mutation
+// authority; it only bounds repeated failures at the same source revision.
+type projectAssistantMutationRecoveryAttempt struct {
+	Operation      string `json:"operation"`
+	Target         string `json:"target"`
+	SourceRevision uint64 `json:"sourceRevision"`
+	Failures       int    `json:"failures"`
+	Reread         bool   `json:"reread"`
+	Blocked        bool   `json:"blocked"`
+}
+
 type projectEinoAssistantLineRange struct {
 	start int
 	end   int
@@ -162,6 +175,7 @@ func newProjectEinoAssistantRunState() *projectEinoAssistantRunState {
 		readFileVersions:           map[string]string{},
 		readFileCoverage:           map[string][]projectEinoAssistantLineRange{},
 		successfulMutationPaths:    map[string]struct{}{},
+		mutationRecoveryAttempts:   map[string]projectAssistantMutationRecoveryAttempt{},
 		mutationRecoveryRefs:       map[string]struct{}{},
 		mutationRecoveryIdentities: map[string]projectAssistantMutationRecoveryIdentity{},
 		transientToolResults:       map[string]string{},
@@ -603,6 +617,7 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.observedReadFilePaths = projectEinoAssistantReadPathSet(state.ObservedReadFilePaths)
 	s.readFileVersions = projectEinoAssistantReadVersionMap(state.ReadFileVersions)
 	s.successfulMutationPaths = projectEinoAssistantReadPathSet(state.SuccessfulMutationPaths)
+	s.mutationRecoveryAttempts = projectEinoAssistantRestoreMutationRecoveryAttempts(state.MutationRecoveryAttempts)
 	s.mutationRecoveryRefs = projectEinoAssistantRecoveryReferenceSet(state.MutationRecoveryRefs)
 	s.mutationRecoveryIdentities = projectEinoAssistantRecoveryIdentitySnapshot(state.MutationRecoveryIdentities)
 	for ref := range s.mutationRecoveryIdentities {
@@ -761,6 +776,10 @@ func (s *projectEinoAssistantRunState) RecordSourceMutation() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sourceMutationRevision++
+	// A successful source mutation establishes progress for every prior
+	// recovery target. Keep no stale same-revision failure budget after the
+	// revision advances.
+	s.mutationRecoveryAttempts = map[string]projectAssistantMutationRecoveryAttempt{}
 	if s.developmentSyncRevision != s.sourceMutationRevision {
 		s.developmentSyncRevision = s.sourceMutationRevision
 		s.developmentSyncStatus = "unknown"
@@ -1226,6 +1245,10 @@ func (s *projectEinoAssistantRunState) InvalidateObservedReadFile(path string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.invalidateObservedReadFileLocked(path)
+}
+
+func (s *projectEinoAssistantRunState) invalidateObservedReadFileLocked(path string) {
 	s.completedReadCalls = map[string]uint64{}
 	delete(s.readFileCoverage, path)
 	delete(s.observedReadFilePaths, path)
@@ -1270,6 +1293,13 @@ func (s *projectEinoAssistantRunState) RecordObservedReadFileVersion(path, versi
 		}
 	}
 	s.readFileVersions[path] = strings.TrimSpace(version)
+	if attempt, ok := s.mutationRecoveryAttempts[path]; ok &&
+		attempt.SourceRevision == s.sourceMutationRevision && attempt.Failures > 0 && !attempt.Blocked {
+		// A complete read is the only evidence that authorizes a retry after a
+		// mutation failure. Partial reads never record a version here.
+		attempt.Reread = true
+		s.mutationRecoveryAttempts[path] = attempt
+	}
 	if s.observedReadFilePaths == nil {
 		s.observedReadFilePaths = map[string]struct{}{}
 	}
@@ -1317,6 +1347,10 @@ func (s *projectEinoAssistantRunState) RecordSuccessfulMutationPath(path string)
 		s.successfulMutationPaths = map[string]struct{}{}
 	}
 	s.successfulMutationPaths[path] = struct{}{}
+	// The path has made real mutation progress. Remove only the matching
+	// target's recovery budget; RecordSourceMutation clears all targets when
+	// the durable source revision advances.
+	delete(s.mutationRecoveryAttempts, path)
 }
 
 func (s *projectEinoAssistantRunState) SuccessfulMutationPaths() []string {
@@ -1326,6 +1360,114 @@ func (s *projectEinoAssistantRunState) SuccessfulMutationPaths() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return projectEinoAssistantObservedReadPaths(s.successfulMutationPaths)
+}
+
+// RecordMutationFailure records one failed workspace mutation at the current
+// source revision. A later complete read marks the target as eligible for one
+// deterministic repair attempt. The second failed attempt for the same
+// canonical target and revision is marked blocked; lifecycle checks turn that
+// marker into a typed terminal error before another model sample.
+func (s *projectEinoAssistantRunState) RecordMutationFailure(name string, args map[string]any) (projectAssistantMutationRecoveryAttempt, bool) {
+	if s == nil {
+		return projectAssistantMutationRecoveryAttempt{}, false
+	}
+	identity, ok := projectAssistantMutationRecoveryIdentityFromTool(name, args)
+	if !ok {
+		return projectAssistantMutationRecoveryAttempt{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mutationRecoveryAttempts == nil {
+		s.mutationRecoveryAttempts = map[string]projectAssistantMutationRecoveryAttempt{}
+	}
+	attempt := s.mutationRecoveryAttempts[identity.Target]
+	if attempt.Target == "" || attempt.SourceRevision != s.sourceMutationRevision ||
+		!projectAssistantMutationRecoveryIdentityCompatible(
+			projectAssistantMutationRecoveryIdentity{Operation: attempt.Operation, Target: attempt.Target},
+			identity,
+		) {
+		attempt = projectAssistantMutationRecoveryAttempt{
+			Operation:      identity.Operation,
+			Target:         identity.Target,
+			SourceRevision: s.sourceMutationRevision,
+		}
+	}
+	attempt.Operation = identity.Operation
+	attempt.Target = identity.Target
+	attempt.SourceRevision = s.sourceMutationRevision
+	attempt.Failures = min(max(attempt.Failures, 0)+1, projectEinoAssistantMutationRecoveryFailureLimit)
+	attempt.Reread = false
+	attempt.Blocked = attempt.Failures >= projectEinoAssistantMutationRecoveryFailureLimit
+	if _, exists := s.mutationRecoveryAttempts[identity.Target]; !exists &&
+		len(s.mutationRecoveryAttempts) >= projectEinoAssistantMaxTrackedMutationRecoveryAttempts {
+		// Keep blocked entries at the current revision forever. They are the
+		// terminal guard that prevents another model sample, so evicting one
+		// merely to admit a new target would reopen the recovery loop. Prefer
+		// stale entries, then unblocked entries, using a stable target tie-break.
+		if !s.evictMutationRecoveryAttemptLocked() {
+			// The existing current-revision blocked entries already provide the
+			// terminal guard. Do not grow the map or discard that evidence when
+			// this new target cannot be tracked within the bound.
+			s.invalidateObservedReadFileLocked(identity.Target)
+			return projectAssistantMutationRecoveryAttempt{}, false
+		}
+	}
+	s.mutationRecoveryAttempts[identity.Target] = attempt
+	// Never let a failed mutation reuse the expectedVersion from the prior
+	// attempt. The next write must carry evidence from a fresh complete read.
+	s.invalidateObservedReadFileLocked(identity.Target)
+	return attempt, attempt.Blocked
+}
+
+// evictMutationRecoveryAttemptLocked makes room for one new target while
+// preserving every blocked attempt at the current source revision. It must be
+// called with s.mu held and returns false when no safe entry can be evicted.
+func (s *projectEinoAssistantRunState) evictMutationRecoveryAttemptLocked() bool {
+	if len(s.mutationRecoveryAttempts) < projectEinoAssistantMaxTrackedMutationRecoveryAttempts {
+		return true
+	}
+	currentRevision := s.sourceMutationRevision
+	candidate := ""
+	candidateStale := false
+	for target, attempt := range s.mutationRecoveryAttempts {
+		stale := attempt.SourceRevision != currentRevision
+		if !stale && attempt.Blocked && attempt.Failures >= projectEinoAssistantMutationRecoveryFailureLimit {
+			continue
+		}
+		if candidate == "" ||
+			(stale && !candidateStale) ||
+			(stale == candidateStale && target < candidate) {
+			candidate = target
+			candidateStale = stale
+		}
+	}
+	if candidate == "" {
+		return false
+	}
+	delete(s.mutationRecoveryAttempts, candidate)
+	return true
+}
+
+func (s *projectEinoAssistantRunState) MutationRecoveryBlockedError() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var selected projectAssistantMutationRecoveryAttempt
+	for _, attempt := range s.mutationRecoveryAttempts {
+		if !attempt.Blocked || attempt.Failures < projectEinoAssistantMutationRecoveryFailureLimit ||
+			attempt.SourceRevision != s.sourceMutationRevision {
+			continue
+		}
+		if selected.Target == "" || attempt.Target < selected.Target {
+			selected = attempt
+		}
+	}
+	if selected.Target == "" {
+		return nil
+	}
+	return newProjectEinoAssistantRecoveryBlockedError(selected, s.verifiedMutationRevision)
 }
 
 // RecordMutationRecoveryReference records a server-generated public action ID
@@ -1742,6 +1884,7 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		ObservedReadFilePaths:            projectEinoAssistantObservedReadPaths(s.observedReadFilePaths),
 		ReadFileVersions:                 projectEinoAssistantCloneReadVersions(s.readFileVersions),
 		SuccessfulMutationPaths:          projectEinoAssistantObservedReadPaths(s.successfulMutationPaths),
+		MutationRecoveryAttempts:         projectEinoAssistantMutationRecoveryAttemptsSnapshot(s.mutationRecoveryAttempts),
 		MutationRecoveryRefs:             projectEinoAssistantRecoveryReferences(s.mutationRecoveryRefs),
 		MutationRecoveryIdentities:       projectEinoAssistantRecoveryIdentitySnapshot(s.mutationRecoveryIdentities),
 		SessionSnapshot:                  cloneProjectEinoAssistantSessionSnapshot(s.sessionSnapshot),
@@ -1790,6 +1933,71 @@ func projectEinoAssistantCloneReadVersions(versions map[string]string) map[strin
 	out := make(map[string]string, len(versions))
 	for path, version := range versions {
 		out[path] = version
+	}
+	return out
+}
+
+func projectEinoAssistantRestoreMutationRecoveryAttempts(
+	attempts map[string]projectAssistantMutationRecoveryAttempt,
+) map[string]projectAssistantMutationRecoveryAttempt {
+	if len(attempts) == 0 {
+		return map[string]projectAssistantMutationRecoveryAttempt{}
+	}
+	keys := make([]string, 0, len(attempts))
+	for key := range attempts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make(map[string]projectAssistantMutationRecoveryAttempt, min(len(keys), projectEinoAssistantMaxTrackedMutationRecoveryAttempts))
+	for _, rawKey := range keys {
+		if len(out) >= projectEinoAssistantMaxTrackedMutationRecoveryAttempts {
+			break
+		}
+		attempt := attempts[rawKey]
+		attempt.Operation = projectAssistantMutationRecoveryOperationFamily(attempt.Operation)
+		attempt.Target = strings.TrimSpace(attempt.Target)
+		if attempt.Target == "" {
+			attempt.Target = strings.TrimSpace(rawKey)
+		}
+		clean, err := workspace.CleanProjectPath(attempt.Target)
+		if err != nil || clean == "" || len([]byte(clean)) > 240 || attempt.Operation == "" {
+			continue
+		}
+		attempt.Target = clean
+		attempt.Failures = min(max(attempt.Failures, 0), projectEinoAssistantMutationRecoveryFailureLimit)
+		if attempt.Failures == 0 {
+			continue
+		}
+		attempt.Blocked = attempt.Blocked || attempt.Failures >= projectEinoAssistantMutationRecoveryFailureLimit
+		out[clean] = attempt
+	}
+	return out
+}
+
+func projectEinoAssistantMutationRecoveryAttemptsSnapshot(
+	attempts map[string]projectAssistantMutationRecoveryAttempt,
+) map[string]projectAssistantMutationRecoveryAttempt {
+	if len(attempts) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(attempts))
+	for key := range attempts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	out := make(map[string]projectAssistantMutationRecoveryAttempt, min(len(keys), projectEinoAssistantMaxTrackedMutationRecoveryAttempts))
+	for _, key := range keys {
+		if len(out) >= projectEinoAssistantMaxTrackedMutationRecoveryAttempts {
+			break
+		}
+		attempt := attempts[key]
+		if attempt.Target == "" || attempt.Failures <= 0 {
+			continue
+		}
+		out[key] = attempt
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
