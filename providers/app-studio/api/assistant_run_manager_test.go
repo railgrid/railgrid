@@ -299,8 +299,8 @@ func TestResumeProjectAssistantFinalizesClaimedRunAfterPreemption(t *testing.T) 
 			ID:   "call-write",
 			Type: "function",
 			Function: chatToolCallFunction{
-				Name:      projectToolApplyPatch,
-				Arguments: `{"path":"src/App.tsx","content":"approved\n"}`,
+				Name:      projectToolEditFile,
+				Arguments: `{"path":"src/App.tsx","oldString":"pending","newString":"approved\n"}`,
 			},
 		}},
 		CurrentIndex: 0,
@@ -310,7 +310,7 @@ func TestResumeProjectAssistantFinalizesClaimedRunAfterPreemption(t *testing.T) 
 			InterruptID:   "interrupt-write",
 			InterruptType: projectAssistantInterruptTypePermission,
 			ToolCallID:    "call-write",
-			ToolName:      projectToolApplyPatch,
+			ToolName:      projectToolEditFile,
 		},
 	}
 	rawCheckpoint, err := json.Marshal(state)

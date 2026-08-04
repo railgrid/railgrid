@@ -30,10 +30,10 @@ func TestAssistantRunEventLedgerPersistsCallBeforeResultInOrder(t *testing.T) {
 	ctx := context.Background()
 	messageStore, scope := newAssistantRunEventLedgerTestStore(t, "run-order")
 	ledger := newProjectAssistantRunEventLedger(messageStore, scope, "run-order")
-	spec := projectAssistantToolSpec{Name: projectToolApplyPatch, Risk: projectAssistantToolRiskWrite}
+	spec := projectAssistantToolSpec{Name: projectToolEditFile, Risk: projectAssistantToolRiskWrite}
 
-	decision, err := ledger.BeginToolCall(ctx, "call-patch", spec, map[string]any{
-		"patch": "*** Begin Patch\n*** End Patch",
+	decision, err := ledger.BeginToolCall(ctx, "call-edit", spec, map[string]any{
+		"path": "src/App.vue", "oldString": "old", "newString": "new",
 	})
 	if err != nil {
 		t.Fatalf("BeginToolCall: %v", err)
@@ -46,7 +46,7 @@ func TestAssistantRunEventLedgerPersistsCallBeforeResultInOrder(t *testing.T) {
 		t.Fatalf("events before dispatch = %#v, want one call event", events)
 	}
 
-	wantResult := `{"status":"applied","path":"src/App.vue"}`
+	wantResult := `{"operation":"edit_file","path":"src/App.vue"}`
 	outcome, err := ledger.FinishToolCall(ctx, decision.Token, wantResult, nil)
 	if err != nil {
 		t.Fatalf("FinishToolCall: %v", err)
@@ -67,10 +67,10 @@ func TestAssistantRunEventLedgerPersistsRequestBeforeValidationAndReplaysRejecti
 	ctx := context.Background()
 	messageStore, scope := newAssistantRunEventLedgerTestStore(t, "run-preflight-rejection")
 	ledger := newProjectAssistantRunEventLedger(messageStore, scope, "run-preflight-rejection")
-	spec := projectAssistantToolSpec{Name: projectToolApplyPatch, Risk: projectAssistantToolRiskWrite}
-	args := map[string]any{"patch": "not a contextual patch"}
+	spec := projectAssistantToolSpec{Name: projectToolEditFile, Risk: projectAssistantToolRiskWrite}
+	args := map[string]any{"path": "src/App.vue", "oldString": "old", "newString": "new"}
 
-	request, err := ledger.RecordToolRequest(ctx, "call-invalid-patch", spec, args)
+	request, err := ledger.RecordToolRequest(ctx, "call-invalid-edit", spec, args)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,8 +78,8 @@ func TestAssistantRunEventLedgerPersistsRequestBeforeValidationAndReplaysRejecti
 	if len(events) != 1 || events[0].Type != projectAssistantRunToolRequestEventType {
 		t.Fatalf("pre-validation events = %#v, want one durable request", events)
 	}
-	wantResult := "Tool call failed: invalid workspace approval scope: invalid_patch"
-	if _, err := ledger.FinishToolCall(ctx, request.Token, wantResult, errors.New("invalid_patch")); err != nil {
+	wantResult := "Tool call failed: stale_source"
+	if _, err := ledger.FinishToolCall(ctx, request.Token, wantResult, errors.New("stale_source")); err != nil {
 		t.Fatal(err)
 	}
 	events = listAssistantRunEventLedgerEvents(t, messageStore, scope, "run-preflight-rejection")
@@ -88,7 +88,7 @@ func TestAssistantRunEventLedgerPersistsRequestBeforeValidationAndReplaysRejecti
 	}
 
 	restarted := newProjectAssistantRunEventLedger(messageStore, scope, "run-preflight-rejection")
-	replay, err := restarted.RecordToolRequest(ctx, "call-invalid-patch", spec, args)
+	replay, err := restarted.RecordToolRequest(ctx, "call-invalid-edit", spec, args)
 	if err != nil || replay.Replay == nil || replay.Replay.Result != wantResult {
 		t.Fatalf("rejected request replay = %#v, err=%v", replay, err)
 	}
@@ -174,9 +174,9 @@ func TestAssistantToolPersistsFailureAndReturnsItToModel(t *testing.T) {
 	ctx := context.Background()
 	messageStore, scope := newAssistantRunEventLedgerTestStore(t, "run-model-failure")
 	ledger := newProjectAssistantRunEventLedger(messageStore, scope, "run-model-failure")
-	spec := projectAssistantToolSpec{Name: projectToolApplyPatch, Risk: projectAssistantToolRiskWrite}
-	args := map[string]any{"patch": "*** Begin Patch\n*** End Patch"}
-	decision, err := ledger.BeginToolCall(ctx, "call-patch", spec, args)
+	spec := projectAssistantToolSpec{Name: projectToolEditFile, Risk: projectAssistantToolRiskWrite}
+	args := map[string]any{"path": "src/App.vue", "oldString": "old", "newString": "new"}
+	decision, err := ledger.BeginToolCall(ctx, "call-edit", spec, args)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,19 +184,19 @@ func TestAssistantToolPersistsFailureAndReturnsItToModel(t *testing.T) {
 		req:      projectAssistantRunRequest{eventLedger: ledger},
 		runState: newProjectEinoAssistantRunState(),
 	}
-	wantResult := "Tool call failed: context_not_found: expected current source"
-	result, err := tool.finishDurableToolFailureForModel(ctx, decision, wantResult, errors.New("context_not_found: expected current source"))
+	wantResult := "Tool call failed: stale_source: expected current source"
+	result, err := tool.finishDurableToolFailureForModel(ctx, decision, wantResult, errors.New("stale_source: expected current source"))
 	if err != nil || result != wantResult {
 		t.Fatalf("finish failure = (%q, %v), want model-visible result", result, err)
 	}
 
 	restarted := newProjectAssistantRunEventLedger(messageStore, scope, "run-model-failure")
-	replay, err := restarted.BeginToolCall(ctx, "call-patch", spec, args)
+	replay, err := restarted.BeginToolCall(ctx, "call-edit", spec, args)
 	if err != nil || replay.Replay == nil || !replay.Replay.Failed {
 		t.Fatalf("durable failure replay = %#v, err=%v", replay, err)
 	}
 	tool.req.eventLedger = restarted
-	result, err = tool.replayDurableToolCall(ctx, "call-patch", spec, args, *replay.Replay)
+	result, err = tool.replayDurableToolCall(ctx, "call-edit", spec, args, *replay.Replay)
 	if err != nil || result != wantResult {
 		t.Fatalf("model failure replay = (%q, %v), want failed result returned to model", result, err)
 	}
@@ -207,17 +207,17 @@ func TestAssistantRunEventLedgerConversationCallFailureDoesNotAuthorizeEffect(t 
 	base, scope := newAssistantRunEventLedgerTestStore(t, "run-call-repair")
 	messageStore := &failingConversationItemStore{Store: base, failType: projectAssistantConversationToolCall, remaining: 1}
 	ledger := newProjectAssistantRunEventLedger(messageStore, scope, "run-call-repair")
-	spec := projectAssistantToolSpec{Name: projectToolApplyPatch, Risk: projectAssistantToolRiskWrite}
-	args := map[string]any{"patch": "*** Begin Patch\n*** End Patch"}
+	spec := projectAssistantToolSpec{Name: projectToolEditFile, Risk: projectAssistantToolRiskWrite}
+	args := map[string]any{"path": "src/App.vue", "oldString": "old", "newString": "new"}
 
-	if _, err := ledger.BeginToolCall(ctx, "call-patch", spec, args); err == nil {
+	if _, err := ledger.BeginToolCall(ctx, "call-edit", spec, args); err == nil {
 		t.Fatal("BeginToolCall succeeded despite conversation append failure")
 	}
 	if events := listAssistantRunEventLedgerEvents(t, base, scope, "run-call-repair"); len(events) != 0 {
 		t.Fatalf("failed conversation append authorized an effect: %#v", events)
 	}
 
-	decision, err := ledger.BeginToolCall(ctx, "call-patch", spec, args)
+	decision, err := ledger.BeginToolCall(ctx, "call-edit", spec, args)
 	if err != nil || !decision.ShouldDispatch() {
 		t.Fatalf("repaired BeginToolCall = %#v, err=%v; want dispatch", decision, err)
 	}
@@ -278,7 +278,7 @@ func TestAssistantRunEventLedgerRetriesIncompleteReadButFailsClosedForEffect(t *
 	ctx := context.Background()
 	messageStore, scope := newAssistantRunEventLedgerTestStore(t, "run-incomplete")
 	readSpec := projectAssistantToolSpec{Name: projectToolReadFile, Risk: projectAssistantToolRiskRead}
-	effectSpec := projectAssistantToolSpec{Name: projectToolApplyPatch, Risk: projectAssistantToolRiskWrite}
+	effectSpec := projectAssistantToolSpec{Name: projectToolEditFile, Risk: projectAssistantToolRiskWrite}
 
 	firstRead := newProjectAssistantRunEventLedger(messageStore, scope, "run-incomplete")
 	if _, err := firstRead.BeginToolCall(ctx, "call-read", readSpec, map[string]any{"path": "README.md"}); err != nil {
@@ -294,11 +294,11 @@ func TestAssistantRunEventLedgerRetriesIncompleteReadButFailsClosedForEffect(t *
 	}
 
 	firstEffect := newProjectAssistantRunEventLedger(messageStore, scope, "run-incomplete")
-	if _, err := firstEffect.BeginToolCall(ctx, "call-effect", effectSpec, map[string]any{"patch": "patch"}); err != nil {
+	if _, err := firstEffect.BeginToolCall(ctx, "call-effect", effectSpec, map[string]any{"path": "a", "oldString": "x", "newString": "y"}); err != nil {
 		t.Fatalf("begin effect: %v", err)
 	}
 	restartedEffect := newProjectAssistantRunEventLedger(messageStore, scope, "run-incomplete")
-	_, err = restartedEffect.BeginToolCall(ctx, "call-effect", effectSpec, map[string]any{"patch": "patch"})
+	_, err = restartedEffect.BeginToolCall(ctx, "call-effect", effectSpec, map[string]any{"path": "a", "oldString": "x", "newString": "y"})
 	if !errors.Is(err, errProjectAssistantRunIncompleteEffect) {
 		t.Fatalf("incomplete effect error = %v, want errProjectAssistantRunIncompleteEffect", err)
 	}

@@ -384,14 +384,6 @@ func (m *projectEinoAssistantLifecycle) WrapInvokableToolCall(
 	}
 	name := projectToolBaseName(toolCtx.Name)
 	return func(ctx context.Context, argumentsInJSON string, opts ...einotool.Option) (string, error) {
-		var planProgress projectAssistantPlanSnapshot
-		if name == projectEinoAssistantWriteTodosTool {
-			var planErr error
-			planProgress, planErr = projectEinoAssistantPlanProgressFromWriteTodos(argumentsInJSON)
-			if planErr != nil {
-				return "", planErr
-			}
-		}
 		result, err := endpoint(ctx, argumentsInJSON, opts...)
 		if err != nil {
 			if name == projectToolVerifyDevelopmentRuntime && m.runState != nil {
@@ -408,7 +400,11 @@ func (m *projectEinoAssistantLifecycle) WrapInvokableToolCall(
 		}
 		succeeded := m.toolCallSucceeded(ctx, name, result)
 		if name == projectEinoAssistantWriteTodosTool && succeeded {
-			projectEinoAssistantPublishPlanProgress(m.runState, m.req.StreamCallbacks, planProgress)
+			if planProgress, ok := m.settledPlanSnapshot(ctx); ok {
+				previousPlan := m.runState.PlanProgress()
+				projectEinoAssistantPublishPlanProgress(m.runState, m.req.StreamCallbacks, planProgress)
+				m.runState.QueuePlanProgressReminder(previousPlan, planProgress)
+			}
 		}
 		switch {
 		case name == projectToolVerifyDevelopmentRuntime:
@@ -490,6 +486,17 @@ func (m *projectEinoAssistantLifecycle) toolCallSucceeded(ctx context.Context, n
 		return err == nil && ok && outcome.Succeeded()
 	}
 	return projectAssistantToolResultDisposition(name, result, nil) == projectAssistantToolDispositionSucceeded
+}
+
+func (m *projectEinoAssistantLifecycle) settledPlanSnapshot(ctx context.Context) (projectAssistantPlanSnapshot, bool) {
+	if m == nil || m.req.eventLedger == nil {
+		return projectAssistantPlanSnapshot{}, false
+	}
+	outcome, ok, err := m.req.eventLedger.ToolCallOutcome(ctx, compose.GetToolCallID(ctx))
+	if err != nil || !ok || !outcome.Succeeded() || outcome.PlanSnapshot == nil {
+		return projectAssistantPlanSnapshot{}, false
+	}
+	return cloneProjectAssistantPlanSnapshot(*outcome.PlanSnapshot), true
 }
 
 func projectEinoAssistantCanonicalActionArguments(raw string) string {

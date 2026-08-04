@@ -18,6 +18,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,9 +31,9 @@ type projectEinoAssistantWriteTodosArguments struct {
 }
 
 type projectEinoAssistantWriteTodo struct {
-	Content    string `json:"content"`
-	ActiveForm string `json:"activeForm"`
-	Status     string `json:"status"`
+	Content    *string `json:"content"`
+	ActiveForm *string `json:"activeForm"`
+	Status     *string `json:"status"`
 }
 
 // projectEinoAssistantPlanProgressFromWriteTodos adapts Eino's model-authored
@@ -58,15 +59,21 @@ func projectEinoAssistantPlanProgressFromWriteTodos(argumentsInJSON string) (pro
 
 	plan := projectAssistantPlanSnapshot{Steps: make([]projectAssistantPlanStep, 0, len(arguments.Todos))}
 	for _, todo := range arguments.Todos {
-		content := projectEinoAssistantTodoProgressLabel(todo.Content)
+		if todo.Content == nil || todo.ActiveForm == nil || todo.Status == nil {
+			return projectAssistantPlanSnapshot{}, errors.New("plan steps require content, activeForm, and status")
+		}
+		content := projectEinoAssistantTodoProgressLabel(*todo.Content)
 		if strings.TrimSpace(content) == "" {
 			return projectAssistantPlanSnapshot{}, errors.New("plan steps require content")
 		}
-		activeForm := projectEinoAssistantTodoProgressLabel(todo.ActiveForm)
+		activeForm := projectEinoAssistantTodoProgressLabel(*todo.ActiveForm)
+		if strings.TrimSpace(activeForm) == "" {
+			return projectAssistantPlanSnapshot{}, errors.New("plan steps require activeForm")
+		}
 		plan.Steps = append(plan.Steps, projectAssistantPlanStep{
 			Content:    content,
 			ActiveForm: activeForm,
-			Status:     strings.TrimSpace(todo.Status),
+			Status:     strings.TrimSpace(*todo.Status),
 		})
 	}
 	if !projectAssistantPlanSnapshotValid(plan) {
@@ -92,6 +99,31 @@ func projectEinoAssistantPublishPlanProgress(
 		// engines without publishing a second, temporarily redundant snapshot.
 		callbacks.OnStatus(projectEinoAssistantPlanProgressStatus(plan))
 	}
+}
+
+// projectEinoAssistantHydratePlanProgress restores the latest successful
+// App-owned checklist projection after a process restart. The durable ledger
+// is authoritative over a stale checkpoint or message projection; when no
+// typed snapshot exists (including legacy ledgers), the caller's restored
+// run-state remains untouched.
+func projectEinoAssistantHydratePlanProgress(
+	ctx context.Context,
+	ledger *projectAssistantRunEventLedger,
+	runState *projectEinoAssistantRunState,
+	callbacks projectAssistantStreamCallbacks,
+) error {
+	if ledger == nil {
+		return nil
+	}
+	plan, ok, err := ledger.LatestPlanSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	projectEinoAssistantPublishPlanProgress(runState, callbacks, plan)
+	return nil
 }
 
 func projectEinoAssistantPlanProgressStatus(plan projectAssistantPlanSnapshot) string {

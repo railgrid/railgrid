@@ -63,9 +63,8 @@ func TestFileStoreSnapshotDirectoryIsReservedFromPublicOperations(t *testing.T) 
 	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: reservedPath, Content: "overwrite\n"}); err == nil {
 		t.Fatal("WriteFile accepted the reserved snapshot directory")
 	}
-	patch := "*** Begin Patch\n*** Add File: " + reservedPath + "\n+created\n*** End Patch"
-	if _, err := store.ApplyPatch(ctx, scope, PatchOptions{Patch: patch}); err == nil {
-		t.Fatal("ApplyPatch accepted the reserved snapshot directory")
+	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: reservedPath, Content: "created\n"}); err == nil {
+		t.Fatal("WriteFile accepted the reserved snapshot directory")
 	}
 	if err := writeTestFiles(ctx, store, scope, []File{{Path: "nested/" + workspaceSnapshotDirectory + "/entry.json", Content: "created\n"}}); err == nil {
 		t.Fatal("ApplyFiles accepted a nested reserved snapshot directory")

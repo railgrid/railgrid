@@ -32,6 +32,48 @@ test('renders the floating desktop capsule and accessible checklist', async () =
   assert.doesNotMatch(html, /border-t/)
 })
 
+test('renders a collapsed terminal inline disclosure with accessible immutable details', async () => {
+  const { default: AssistantPlanDisclosure } = await vite.ssrLoadModule('/src/AssistantPlanDisclosure.vue')
+  const html = await renderToString(createSSRApp(AssistantPlanDisclosure, {
+    messageId: 'assistant-failed',
+    status: 'failed',
+    plan: {
+      steps: [
+        { content: 'Inspect the quote form', status: 'completed' },
+        { content: 'Update the quote form', status: 'pending' },
+      ],
+    },
+  }))
+  assert.match(html, /Plan ended · 1 of 2 steps completed/)
+  assert.match(html, /aria-expanded="false"/)
+  assert.match(html, /aria-controls="app-studio-assistant-plan-details-assistant-failed"/)
+  assert.match(html, /data-plan-status="failed"/)
+  assert.match(html, /Inspect the quote form/)
+  assert.match(html, /Update the quote form/)
+})
+
+test('preserves terminal status and persisted counts for complete, partial, interrupted, and failed plans', async () => {
+  const { default: AssistantPlanDisclosure } = await vite.ssrLoadModule('/src/AssistantPlanDisclosure.vue')
+  const cases = [
+    { id: 'assistant-complete', status: 'completed', steps: [{ content: 'Inspect', status: 'completed' }], summary: 'Plan completed · 1 of 1 steps completed' },
+    { id: 'assistant-partial', status: 'completed', steps: [{ content: 'Inspect', status: 'completed' }, { content: 'Apply', status: 'pending' }], summary: 'Plan ended · 1 of 2 steps completed' },
+    { id: 'assistant-interrupted', status: 'interrupted', steps: [{ content: 'Inspect', status: 'completed' }, { content: 'Apply', status: 'in_progress' }], summary: 'Plan ended · 1 of 2 steps completed' },
+    { id: 'assistant-failed', status: 'failed', steps: [{ content: 'Inspect', status: 'completed' }, { content: 'Apply', status: 'pending' }], summary: 'Plan ended · 1 of 2 steps completed' },
+  ]
+
+  for (const testCase of cases) {
+    const html = await renderToString(createSSRApp(AssistantPlanDisclosure, {
+      messageId: testCase.id,
+      status: testCase.status,
+      plan: { steps: testCase.steps },
+    }))
+    assert.match(html, new RegExp(testCase.summary.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    assert.match(html, new RegExp(`data-plan-status="${testCase.status}"`))
+    assert.match(html, /aria-expanded="false"/)
+    assert.match(html, /aria-controls="app-studio-assistant-plan-details-/)
+  }
+})
+
 test('supports explicit collapse and releases the mobile sheet at the desktop breakpoint', async () => {
   const source = await readFile(new URL('./AssistantPlanPopover.vue', import.meta.url), 'utf8')
   assert.match(source, /if \(pinned\.value\) \{[\s\S]*dismissed\.value = true/)
@@ -45,8 +87,13 @@ test('keeps action details, assistant progress prose, working status, and plan d
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   assert.match(appSource, /<AssistantActionLog[\s\S]*v-if="hasAssistantResponseContent\(message\)"/)
   assert.match(appSource, /Worked for \{\{ assistantWorkedLabel\(message\) \}\}/)
+  assert.match(appSource, /Working for \{\{ assistantWorkedLabel\(message\) \}\}/)
+  assert.match(appSource, /function assistantProgressHeaderVisible\(message:[\s\S]*message\.progress \|\| \(assistantMessageOwnsActiveRun\(message\) && !assistantProgressClosed\(message\)\)/)
+  assert.match(appSource, /<template v-if="assistantProgressHeaderVisible\(message\)">/)
+  assert.match(appSource, /flex min-h-7 flex-wrap items-center gap-2 border-b border-border-subtle pb-1/)
+  assert.match(appSource, /assistantDurationTimer = window\.setInterval[\s\S]*assistantDurationNowMs\.value = Date\.now\(\)/)
   assert.match(appSource, /function projectMessageAssistantStatus\(message:[\s\S]*normalizeAssistantRunStatus\(message\.metadata\?\.assistantStatus\)/)
-  assert.match(appSource, /function assistantProgressClosed\(message:[\s\S]*assistantRunTerminal\(projectMessageAssistantStatus\(message\)\)/)
+  assert.match(appSource, /function assistantProgressClosed\(message:[\s\S]*assistantRunTerminal\(assistantRunStatusForMessage\(message\)\)/)
   assert.match(appSource, /v-if="message\.viewStatus === 'interrupted'"[\s\S]*role="status"[\s\S]*Interrupted before completion/)
   assert.match(appSource, /v-if="message\.viewStatus === 'interrupted' && !message\.progress"[\s\S]*role="status"[\s\S]*Interrupted before completion/)
   assert.match(appSource, /v-if="assistantProgressClosed\(message\)"/)
@@ -60,6 +107,7 @@ test('keeps action details, assistant progress prose, working status, and plan d
   assert.match(appSource, /v-if="conversationWorkingLabel"[\s\S]*role="status"/)
   assert.match(appSource, /if \(activePlanMessage\.value\) return 'Working'/)
   assert.match(appSource, /<AssistantPlanPopover[\s\S]*v-if="activePlanMessage"/)
+  assert.match(appSource, /<AssistantPlanDisclosure[\s\S]*assistantPlanTerminalStatusForMessage\(message\)/)
   assert.doesNotMatch(appSource, /if \(activePlanMessage\.value\) return ''/)
 })
 
@@ -103,6 +151,6 @@ test('an action-only terminal turn activates the collapsed combined disclosure',
   }])
 
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-  assert.match(appSource, /<template v-if="message\.progress">[\s\S]*Worked for \{\{ assistantWorkedLabel\(message\) \}\}/)
-  assert.match(appSource, /function assistantProgressClosed\(message:[\s\S]*assistantRunTerminal\(projectMessageAssistantStatus\(message\)\)/)
+  assert.match(appSource, /<template v-if="assistantProgressHeaderVisible\(message\)">[\s\S]*Worked for \{\{ assistantWorkedLabel\(message\) \}\}/)
+  assert.match(appSource, /function assistantProgressClosed\(message:[\s\S]*assistantRunTerminal\(assistantRunStatusForMessage\(message\)\)/)
 })

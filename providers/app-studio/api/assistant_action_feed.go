@@ -20,6 +20,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -53,6 +54,8 @@ const (
 	projectAssistantActionFeedStatusSkipped   = "skipped"
 	projectAssistantActionFeedStatusFailed    = "failed"
 	projectAssistantActionFeedStatusRejected  = "rejected"
+	projectAssistantActionFeedStatusRetrying  = "retrying"
+	projectAssistantActionFeedStatusRecovered = "recovered"
 )
 
 const (
@@ -73,6 +76,7 @@ type projectAssistantActionFeedItem struct {
 	GroupKey   string                            `json:"groupKey,omitempty"`
 	GroupTitle string                            `json:"groupTitle,omitempty"`
 	Sequence   int                               `json:"sequence,omitempty"`
+	RecoveryOf string                            `json:"recoveryOf,omitempty"`
 	Diagnostic *projectAssistantActionDiagnostic `json:"diagnostic,omitempty"`
 	Exec       *projectAssistantExecMetadata     `json:"exec,omitempty"`
 }
@@ -81,6 +85,10 @@ type projectAssistantActionDiagnostic struct {
 	Category    string `json:"category"`
 	Message     string `json:"message"`
 	ReferenceID string `json:"referenceID"`
+	Code        string `json:"code,omitempty"`
+	Operation   string `json:"operation,omitempty"`
+	Path        string `json:"path,omitempty"`
+	Guidance    string `json:"guidance,omitempty"`
 }
 
 func projectAssistantActionFeedItemFromToolCall(toolCall projectToolCallStreamEvent) projectAssistantActionFeedItem {
@@ -97,6 +105,22 @@ func projectAssistantActionFeedItemFromToolCall(toolCall projectToolCallStreamEv
 		permissionExec = toolCall.Permission.Exec
 	}
 	item.Exec = mergeProjectAssistantExecMetadata(permissionExec, toolCall.Exec)
+	if toolCall.Mutation != nil {
+		item.RecoveryOf = projectAssistantBoundedMutationField(toolCall.Mutation.RecoveryOf, 120)
+	}
+	if item.RecoveryOf == "" {
+		item.RecoveryOf = projectAssistantBoundedMutationField(toolCall.RecoveryOf, 120)
+	}
+	if (item.Status == projectAssistantActionFeedStatusFailed || item.Status == projectAssistantActionFeedStatusRejected) &&
+		projectAssistantWorkspaceMutationTool(toolCall.Name) {
+		item.Diagnostic = projectAssistantActionFeedMutationDiagnostic(toolCall.ID, toolCall.Name, toolCall.Mutation, toolCall.MutationError, toolCall.Error)
+	}
+	if projectToolBaseName(toolCall.Name) == projectToolInspectDevelopmentPreview {
+		projectAssistantApplyPreviewInspectionPresentation(&item, toolCall.ID, toolCall.PreviewInspection)
+	}
+	if toolCall.Mutation != nil && projectAssistantWorkspaceMutationTool(toolCall.Name) && !projectAssistantToolDisclosureMinimal {
+		item.Target = projectAssistantActionSafeTarget(projectAssistantMutationTargetFromResult(toolCall.Mutation, projectToolBaseName(toolCall.Name)))
+	}
 	item.Sequence = toolCall.Sequence
 	return item
 }
@@ -111,6 +135,14 @@ func projectAssistantActionFeedItemFromAssistantToolCall(toolCall projectAssista
 		toolCall.Error,
 	)
 	item.Exec = cloneProjectAssistantExecMetadata(toolCall.Exec)
+	item.RecoveryOf = projectAssistantBoundedMutationField(toolCall.RecoveryOf, 120)
+	if (item.Status == projectAssistantActionFeedStatusFailed || item.Status == projectAssistantActionFeedStatusRejected) &&
+		projectAssistantWorkspaceMutationTool(toolCall.Name) {
+		item.Diagnostic = projectAssistantActionFeedMutationDiagnostic(toolCall.ID, toolCall.Name, nil, nil, toolCall.Error)
+	}
+	if projectToolBaseName(toolCall.Name) == projectToolInspectDevelopmentPreview {
+		projectAssistantApplyPreviewInspectionPresentation(&item, toolCall.ID, projectAssistantPreviewInspectionActionFromText(string(toolCall.Result)))
+	}
 	return item
 }
 
@@ -185,9 +217,9 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 			item.Count = count
 			item.Outcome = projectAssistantCountOutcome(count, "reference", "references")
 		}
-	case projectToolApplyPatch:
-		item.Target = projectAssistantActionSafeTarget(projectAssistantActionArgumentField(args, arguments, "path", "path"))
-		item.Title = projectAssistantActionLifecycleTitle(status, "Updating file", "Updated file", "File update failed")
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
+		item.Target = projectAssistantActionSafeTarget(projectAssistantMutationTarget(args, arguments, base))
+		item.Title = projectAssistantActionLifecycleTitle(status, "Updating files", "Updated files", "File update failed")
 		if status == projectAssistantActionFeedStatusSucceeded {
 			item.Outcome = projectAssistantMutationOutcome(summary)
 		}
@@ -265,6 +297,224 @@ func projectAssistantMutationOutcome(summary string) string {
 	return strings.Join(counts, " ")
 }
 
+func projectAssistantMutationTarget(args map[string]any, summary, toolName string) string {
+	if toolName == projectToolMoveFile {
+		source := projectAssistantActionArgumentField(args, summary, "sourcePath", "source")
+		destination := projectAssistantActionArgumentField(args, summary, "destinationPath", "destination")
+		if source == "" {
+			return destination
+		}
+		if destination == "" {
+			return source
+		}
+		return source + " -> " + destination
+	}
+	return projectAssistantActionArgumentField(args, summary, "path", "path")
+}
+
+func projectAssistantValidatedMutationRecoveryOf(runState *projectEinoAssistantRunState, args map[string]any, toolName ...string) string {
+	if runState == nil || args == nil {
+		return ""
+	}
+	value := strings.TrimSpace(projectToolString(args["recoveryOf"]))
+	name := ""
+	if len(toolName) > 0 {
+		name = toolName[0]
+	}
+	if value == "" || len([]byte(value)) > 120 || name == "" ||
+		!runState.IsMutationRecoveryReferenceCompatible(value, name, args) {
+		return ""
+	}
+	return value
+}
+
+func projectAssistantMutationRecoveryIdentityFromTool(name string, args map[string]any) (projectAssistantMutationRecoveryIdentity, bool) {
+	operation := projectToolBaseName(name)
+	family := projectAssistantMutationRecoveryOperationFamily(operation)
+	if family == "" || args == nil {
+		return projectAssistantMutationRecoveryIdentity{}, false
+	}
+	key := "path"
+	if operation == projectToolMoveFile {
+		key = "sourcePath"
+	}
+	rawTarget := projectToolString(args[key])
+	if rawTarget == "" {
+		return projectAssistantMutationRecoveryIdentity{}, false
+	}
+	target, err := workspace.CleanProjectPath(rawTarget)
+	if err != nil || len([]byte(target)) > 240 {
+		return projectAssistantMutationRecoveryIdentity{}, false
+	}
+	return projectAssistantMutationRecoveryIdentity{Operation: family, Target: target}, true
+}
+
+func projectAssistantMutationRecoveryOperationFamily(operation string) string {
+	switch projectToolBaseName(operation) {
+	case "create", projectToolCreateFile:
+		return "create"
+	case "edit", projectToolReplaceFile, projectToolEditFile:
+		return "edit"
+	case "delete", projectToolDeleteFile:
+		return "delete"
+	case "move", projectToolMoveFile:
+		return "move"
+	default:
+		return ""
+	}
+}
+
+func projectAssistantMutationRecoveryIdentityCompatible(prior, current projectAssistantMutationRecoveryIdentity) bool {
+	if prior.Target == "" || current.Target == "" || prior.Target != current.Target {
+		return false
+	}
+	if prior.Operation == current.Operation {
+		return true
+	}
+	// A create that reports target_exists may be repaired by replacing or
+	// editing the existing file. The reverse direction is not accepted.
+	return prior.Operation == "create" && current.Operation == "edit"
+}
+
+func projectAssistantMutationFailureFromError(name string, args map[string]any, invokeErr error, recoveryOf string) projectAssistantMutationFailure {
+	operation := projectToolBaseName(name)
+	if !projectAssistantWorkspaceMutationTool(operation) {
+		operation = "mutation"
+	}
+	code := "mutation_failed"
+	path := projectAssistantMutationFailurePath(operation, args)
+	var mutationErr *workspace.MutationError
+	if errors.As(invokeErr, &mutationErr) && mutationErr != nil {
+		code = string(mutationErr.Code)
+		if clean, err := workspace.CleanProjectPath(mutationErr.Path); err == nil {
+			path = projectAssistantActionSafeTarget(clean)
+		}
+	}
+	return projectAssistantMutationFailure{
+		Code:       projectAssistantBoundedMutationField(code, 64),
+		Operation:  projectAssistantBoundedMutationField(operation, 64),
+		Path:       projectAssistantBoundedMutationField(path, 240),
+		Guidance:   projectAssistantBoundedMutationField(projectAssistantMutationRecoveryGuidance(operation, code), 320),
+		RecoveryOf: projectAssistantBoundedMutationField(recoveryOf, 120),
+	}
+}
+
+func projectAssistantMutationFailurePath(operation string, args map[string]any) string {
+	if args == nil {
+		return ""
+	}
+	if operation == projectToolMoveFile {
+		if source := projectToolString(args["sourcePath"]); source != "" {
+			if clean, err := workspace.CleanProjectPath(source); err == nil {
+				return clean
+			}
+		}
+		return ""
+	}
+	path := projectToolString(args["path"])
+	if clean, err := workspace.CleanProjectPath(path); err == nil {
+		return clean
+	}
+	return ""
+}
+
+func projectAssistantBoundedMutationField(value string, maxBytes int) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len([]byte(value)) <= maxBytes {
+		return value
+	}
+	raw := []byte(value)[:maxBytes]
+	for len(raw) > 0 && !utf8.Valid(raw) {
+		raw = raw[:len(raw)-1]
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+func projectAssistantMutationRecoveryGuidance(operation, code string) string {
+	switch {
+	case operation == projectToolCreateFile && code == string(workspace.MutationErrorTargetExists):
+		return "The create target already exists. Read the complete file, then retry with replace_file and its current expectedVersion, or choose a different path."
+	case operation == projectToolMoveFile && code == string(workspace.MutationErrorTargetExists):
+		return "The move destination already exists. Read the current workspace and choose a different destination; do not overwrite it implicitly."
+	case (operation == projectToolReplaceFile || operation == projectToolEditFile) && code == string(workspace.MutationErrorStale):
+		return "The source is stale. Read the complete current file, then retry with its current expectedVersion; edit_file also needs an exact current oldString."
+	case (operation == projectToolDeleteFile || operation == projectToolMoveFile) && code == string(workspace.MutationErrorTargetNotFound):
+		return "The source file is missing. Re-read the workspace and retry only with an existing source path."
+	case operation == projectToolEditFile && code == string(workspace.MutationErrorAmbiguous):
+		return "The edit matched multiple locations. Re-read the file and provide a narrower exact oldString, or set replaceAll when every match should change."
+	case code == string(workspace.MutationErrorConflict):
+		return "The workspace changed during the mutation. Re-read the affected file and retry against the current version."
+	case code == string(workspace.MutationErrorVersionRequired):
+		return "Read the complete current file and pass its opaque version as expectedVersion before retrying."
+	case code == string(workspace.MutationErrorNoChanges):
+		return "The requested mutation would not change the file; reread the current content and choose a meaningful update."
+	default:
+		return "Reread the current workspace state and retry the bounded mutation only after confirming the target and expectedVersion."
+	}
+}
+
+// projectAssistantAttachMutationRecoveryOf adds the validated presentation
+// correlation to a server-generated mutation result. It is intentionally a
+// no-op for non-mutation or malformed results, and never changes the mutation
+// operation itself.
+func projectAssistantAttachMutationRecoveryOf(name, result, recoveryOf string) string {
+	if !projectAssistantWorkspaceMutationTool(name) {
+		return result
+	}
+	decoded := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &decoded); err != nil {
+		return result
+	}
+	if operation := projectToolString(decoded["operation"]); operation != "" && operation != projectToolBaseName(name) {
+		return result
+	}
+	if _, ok := decoded["status"]; ok && strings.EqualFold(projectToolString(decoded["status"]), "failed") {
+		return result
+	}
+	if recoveryOf = projectAssistantBoundedMutationField(recoveryOf, 120); recoveryOf != "" {
+		decoded["recoveryOf"] = recoveryOf
+	} else {
+		// Tool output is not allowed to mint or smuggle a correlation ref. Only
+		// the run-state validation above may reattach one to a result.
+		delete(decoded, "recoveryOf")
+	}
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		return result
+	}
+	return string(encoded)
+}
+
+// projectAssistantMutationTargetFromResult prefers the normalized path(s)
+// returned by the workspace store over model-supplied argument summaries.
+// This keeps action projections server-derived even when the original input
+// used a path alias such as "./src/app.tsx".
+func projectAssistantMutationTargetFromResult(mutation *projectAssistantMutation, toolName string) string {
+	if mutation == nil {
+		return ""
+	}
+	if toolName == projectToolMoveFile {
+		source := projectAssistantCanonicalMutationResultPath(mutation.PreviousPath)
+		destination := projectAssistantCanonicalMutationResultPath(mutation.Path)
+		if source == "" {
+			return destination
+		}
+		if destination == "" {
+			return source
+		}
+		return source + " -> " + destination
+	}
+	return projectAssistantCanonicalMutationResultPath(mutation.Path)
+}
+
+func projectAssistantCanonicalMutationResultPath(raw string) string {
+	clean, err := workspace.CleanProjectPath(raw)
+	if err != nil {
+		return ""
+	}
+	return projectAssistantActionSafeTarget(clean)
+}
+
 func projectAssistantActionPublicID(id string) string {
 	if strings.TrimSpace(id) == "" {
 		return ""
@@ -286,7 +536,7 @@ func projectAssistantActionFeedItemKind(name string) string {
 		return projectAssistantActionFeedItemRun
 	case base == projectToolCommitProjectFiles || base == projectToolCommitFiles:
 		return projectAssistantActionFeedItemCommit
-	case base == projectToolApplyPatch:
+	case base == projectToolCreateFile || base == projectToolReplaceFile || base == projectToolEditFile || base == projectToolDeleteFile || base == projectToolMoveFile:
 		return projectAssistantActionFeedItemEdit
 	case base == projectToolLS || base == projectToolReadFile || base == projectToolGlob || base == projectToolGrep:
 		return projectAssistantActionFeedItemInspect
@@ -307,6 +557,10 @@ func projectAssistantActionFeedItemStatus(status string) string {
 		return projectAssistantActionFeedStatusRejected
 	case "skipped":
 		return projectAssistantActionFeedStatusSkipped
+	case projectAssistantActionFeedStatusRetrying:
+		return projectAssistantActionFeedStatusRetrying
+	case projectAssistantActionFeedStatusRecovered:
+		return projectAssistantActionFeedStatusRecovered
 	default:
 		return projectAssistantActionFeedStatusSucceeded
 	}
@@ -314,7 +568,7 @@ func projectAssistantActionFeedItemStatus(status string) string {
 
 func projectAssistantActionFeedItemSeverity(status string) string {
 	switch status {
-	case projectAssistantActionFeedStatusWaiting:
+	case projectAssistantActionFeedStatusWaiting, projectAssistantActionFeedStatusRetrying:
 		return projectAssistantActionFeedSeverityAttention
 	case projectAssistantActionFeedStatusFailed, projectAssistantActionFeedStatusRejected:
 		return projectAssistantActionFeedSeverityError
@@ -344,6 +598,10 @@ func projectAssistantActionFeedItemTitle(kind, status string) string {
 
 func projectAssistantActionLifecycleTitle(status, active, succeeded, failed string) string {
 	switch status {
+	case projectAssistantActionFeedStatusRetrying:
+		return "Retrying file update"
+	case projectAssistantActionFeedStatusRecovered:
+		return "Recovered file update"
 	case projectAssistantActionFeedStatusRunning, projectAssistantActionFeedStatusWaiting:
 		return active
 	case projectAssistantActionFeedStatusFailed, projectAssistantActionFeedStatusRejected:
@@ -366,7 +624,7 @@ func projectAssistantActionFeedGrouping(item *projectAssistantActionFeedItem, ba
 	case projectToolGrep:
 		item.GroupKey = "inspect:search"
 		item.GroupTitle = "Searched project"
-	case projectToolApplyPatch:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
 		item.GroupKey = "edit:files"
 		item.GroupTitle = "Updated files"
 	case projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment,
@@ -452,18 +710,176 @@ func projectAssistantActionFeedDiagnostic(id, rawError string) *projectAssistant
 	}
 }
 
+func projectAssistantApplyPreviewInspectionPresentation(item *projectAssistantActionFeedItem, id string, preview *projectAssistantPreviewInspectionAction) {
+	if item == nil || preview == nil {
+		return
+	}
+	diagnostic := projectAssistantActionFeedDiagnostic(id, "")
+	diagnostic.Operation = projectToolInspectDevelopmentPreview
+	switch preview.FailureKind {
+	case "assertion":
+		item.Title = "Preview assertions did not match"
+		item.Severity = projectAssistantActionFeedSeverityAttention
+		diagnostic.Category = "validation"
+		diagnostic.Code = "preview_assertion_mismatch"
+		if preview.AssertionCount > 0 && preview.FailedAssertionCount > 0 && preview.FailedAssertionCount <= preview.AssertionCount {
+			diagnostic.Message = fmt.Sprintf("%d of %d preview assertions did not match.", preview.FailedAssertionCount, preview.AssertionCount)
+		} else {
+			diagnostic.Message = "One or more preview assertions did not match."
+		}
+		diagnostic.Guidance = "Review the rendered accessibility evidence, correct the preview or assertion, and inspect again."
+	case "application":
+		item.Title = "Preview rendered with application errors"
+		item.Severity = projectAssistantActionFeedSeverityError
+		diagnostic.Category = "runtime"
+		diagnostic.Code = "preview_application_error"
+		diagnostic.Message = "The preview rendered, but the browser detected application errors."
+		diagnostic.Guidance = "Review the browser console and failed document or script requests."
+	case "navigation":
+		item.Title = "Preview could not be opened"
+		item.Severity = projectAssistantActionFeedSeverityError
+		diagnostic.Category = "runtime"
+		diagnostic.Code = "preview_navigation_failed"
+		diagnostic.Message = "The browser could not open the development preview."
+		diagnostic.Guidance = "Confirm the preview is ready and reachable, then inspect again."
+	case "worker_unavailable":
+		item.Title = "Preview inspection unavailable"
+		item.Status = projectAssistantActionFeedStatusFailed
+		item.Severity = projectAssistantActionFeedSeverityError
+		diagnostic.Category = "runtime"
+		diagnostic.Code = "preview_worker_unavailable"
+		diagnostic.Message = "The browser inspection service was unavailable."
+		diagnostic.Guidance = "Restore the browser inspection service, then inspect again."
+	case "not_current":
+		item.Title = "Waiting for the latest preview"
+		item.Status = projectAssistantActionFeedStatusWaiting
+		item.Severity = projectAssistantActionFeedSeverityAttention
+		diagnostic.Category = "runtime"
+		diagnostic.Code = "preview_not_current"
+		diagnostic.Message = "The latest workspace changes had not reached the development preview yet."
+		diagnostic.Guidance = "Wait for synchronization to finish, then inspect again."
+	default:
+		return
+	}
+	item.Diagnostic = diagnostic
+}
+
+func projectAssistantActionFeedMutationDiagnostic(id, name string, mutation *projectAssistantMutation, failure *projectAssistantMutationFailure, rawError string) *projectAssistantActionDiagnostic {
+	operation := projectToolBaseName(name)
+	code := ""
+	path := ""
+	guidance := ""
+	if mutation != nil {
+		operation = projectAssistantBoundedMutationField(mutation.Operation, 64)
+		path = projectAssistantBoundedMutationField(mutation.Path, 240)
+	}
+	if failure != nil {
+		if failure.Code != "" {
+			code = projectAssistantBoundedMutationField(failure.Code, 64)
+		}
+		if failure.Operation != "" {
+			operation = projectAssistantBoundedMutationField(failure.Operation, 64)
+		}
+		if failure.Path != "" {
+			path = projectAssistantBoundedMutationField(failure.Path, 240)
+		}
+		guidance = projectAssistantBoundedMutationField(failure.Guidance, 320)
+	}
+	if code == "" {
+		code = projectAssistantMutationErrorCode(rawError)
+	}
+	if guidance == "" {
+		guidance = projectAssistantMutationRecoveryGuidance(operation, code)
+	}
+	if path == "" {
+		path = projectAssistantMutationErrorPath(rawError)
+	}
+	base := projectAssistantActionFeedDiagnostic(id, rawError)
+	if base == nil {
+		return nil
+	}
+	base.Code = projectAssistantBoundedMutationField(code, 64)
+	base.Operation = projectAssistantBoundedMutationField(operation, 64)
+	base.Path = projectAssistantBoundedMutationField(path, 240)
+	base.Guidance = projectAssistantBoundedMutationField(guidance, 320)
+	if message := projectAssistantMutationDiagnosticMessage(operation, code); message != "" {
+		base.Message = message
+	}
+	return base
+}
+
+func projectAssistantMutationDiagnosticMessage(operation, code string) string {
+	switch {
+	case operation == projectToolCreateFile && code == string(workspace.MutationErrorTargetExists):
+		return "The create target already exists."
+	case operation == projectToolMoveFile && code == string(workspace.MutationErrorTargetExists):
+		return "The move destination already exists."
+	case (operation == projectToolReplaceFile || operation == projectToolEditFile) && code == string(workspace.MutationErrorStale):
+		return "The file changed before this update was applied."
+	case (operation == projectToolDeleteFile || operation == projectToolMoveFile) && code == string(workspace.MutationErrorTargetNotFound):
+		return "The source file no longer exists."
+	case operation == projectToolEditFile && code == string(workspace.MutationErrorAmbiguous):
+		return "The requested text matched multiple locations."
+	case code == string(workspace.MutationErrorConflict):
+		return "The workspace changed during this mutation."
+	case code == string(workspace.MutationErrorVersionRequired):
+		return "This mutation needs the file's current version."
+	case code == string(workspace.MutationErrorNoChanges):
+		return "The requested update would not change the file."
+	case code == string(workspace.MutationErrorInvalid):
+		return "The mutation input was invalid."
+	case code == "mutation_failed":
+		return "The file mutation could not be completed."
+	default:
+		return ""
+	}
+}
+
+func projectAssistantMutationErrorCode(raw string) string {
+	value := strings.ToLower(raw)
+	for _, code := range []workspace.MutationErrorCode{
+		workspace.MutationErrorInvalid,
+		workspace.MutationErrorTargetExists,
+		workspace.MutationErrorTargetNotFound,
+		workspace.MutationErrorVersionRequired,
+		workspace.MutationErrorStale,
+		workspace.MutationErrorAmbiguous,
+		workspace.MutationErrorNoChanges,
+		workspace.MutationErrorConflict,
+	} {
+		if strings.Contains(value, string(code)) {
+			return string(code)
+		}
+	}
+	return ""
+}
+
+func projectAssistantMutationErrorPath(raw string) string {
+	const marker = `path "`
+	start := strings.Index(raw, marker)
+	if start < 0 {
+		return ""
+	}
+	start += len(marker)
+	end := strings.Index(raw[start:], `"`)
+	if end < 0 {
+		return ""
+	}
+	path, err := workspace.CleanProjectPath(raw[start : start+end])
+	if err != nil {
+		return ""
+	}
+	return projectAssistantActionSafeTarget(path)
+}
+
 func projectAssistantActionDiagnosticMessage(category, raw string) string {
 	value := strings.ToLower(raw)
 	if category == "validation" {
 		switch {
-		case strings.Contains(value, string(workspace.PatchErrorContextNotFound)):
-			return "The file changed or the patch context did not match. App Studio will reread it before retrying."
-		case strings.Contains(value, string(workspace.PatchErrorContextAmbiguous)):
-			return "The patch matched more than one location and needs more surrounding context."
-		case strings.Contains(value, string(workspace.PatchErrorStrategyChange)):
-			return "That patch already failed against this workspace version and must be revised before retrying."
-		case strings.Contains(value, "numeric unified-diff hunk headers"):
-			return "The patch used line-number hunk headers, which this contextual editor does not accept."
+		case strings.Contains(value, string(workspace.MutationErrorStale)):
+			return "The file changed or the requested source text was not present. App Studio will reread it before retrying."
+		case strings.Contains(value, string(workspace.MutationErrorAmbiguous)):
+			return "The requested source text matched more than one location; provide a narrower exact string or explicitly replace all."
 		}
 	}
 	return map[string]string{
@@ -486,13 +902,12 @@ func projectAssistantActionDiagnosticCategory(raw string) string {
 		return "permission"
 	case strings.Contains(value, "validation"), strings.Contains(value, "invalid"), strings.Contains(value, "malformed"),
 		strings.Contains(value, "required"), strings.Contains(value, "repository binding"),
-		strings.Contains(value, string(workspace.PatchErrorContextNotFound)),
-		strings.Contains(value, string(workspace.PatchErrorContextAmbiguous)),
-		strings.Contains(value, string(workspace.PatchErrorTargetExists)),
-		strings.Contains(value, string(workspace.PatchErrorTargetNotFound)),
-		strings.Contains(value, string(workspace.PatchErrorWorkspaceConflict)),
-		strings.Contains(value, string(workspace.PatchErrorNoChanges)),
-		strings.Contains(value, string(workspace.PatchErrorStrategyChange)):
+		strings.Contains(value, string(workspace.MutationErrorStale)),
+		strings.Contains(value, string(workspace.MutationErrorAmbiguous)),
+		strings.Contains(value, string(workspace.MutationErrorTargetExists)),
+		strings.Contains(value, string(workspace.MutationErrorTargetNotFound)),
+		strings.Contains(value, string(workspace.MutationErrorConflict)),
+		strings.Contains(value, string(workspace.MutationErrorNoChanges)):
 		return "validation"
 	case strings.Contains(value, "runtime"), strings.Contains(value, "preview"), strings.Contains(value, "process exited"), strings.Contains(value, "server did not"):
 		return "runtime"

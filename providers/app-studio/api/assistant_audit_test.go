@@ -46,14 +46,14 @@ func TestProjectAssistantRunAuditIsBoundedAndSanitized(t *testing.T) {
 
 	recorder.recordToolAt(projectToolCallStreamEvent{
 		ID:        "call-write",
-		Name:      projectToolApplyPatch,
+		Name:      projectToolEditFile,
 		Status:    "requested",
 		Arguments: "path src/App.tsx; 123 bytes",
 		Summary:   "source=do-not-store",
 	}, started.Add(time.Second))
 	recorder.recordToolAt(projectToolCallStreamEvent{
 		ID:        "call-write",
-		Name:      projectToolApplyPatch,
+		Name:      projectToolEditFile,
 		Status:    "succeeded",
 		Arguments: "path src/App.tsx; 123 bytes",
 		Summary:   "source=do-not-store",
@@ -156,10 +156,10 @@ func TestProjectAssistantRunAuditRecordsModelCallShapeWithoutPayloads(t *testing
 		5,
 		&remaining,
 		[]*schema.ToolInfo{
-			{Name: projectToolApplyPatch},
+			{Name: projectToolEditFile},
 			{Name: projectEinoAssistantWriteTodosTool},
 		},
-		[]*schema.ToolInfo{{Name: projectToolApplyPatch}},
+		[]*schema.ToolInfo{{Name: projectToolEditFile}},
 	)
 	recorder.recordModelResult(
 		context.Background(),
@@ -202,7 +202,7 @@ func TestProjectAssistantRunAuditRecordsModelCallShapeWithoutPayloads(t *testing
 		call.Outcome != "tool_calls" {
 		t.Fatalf("model call = %#v", call)
 	}
-	wantVisible := []string{projectToolApplyPatch, projectEinoAssistantWriteTodosTool}
+	wantVisible := []string{projectToolEditFile, projectEinoAssistantWriteTodosTool}
 	if strings.Join(call.VisibleTools, ",") != strings.Join(wantVisible, ",") {
 		t.Fatalf("visible tools = %#v, want %#v", call.VisibleTools, wantVisible)
 	}
@@ -633,17 +633,17 @@ func TestProjectAssistantMutationPercentPathsAreNotCanonicalDecoded(t *testing.T
 	const path = "src/literal%3Bsegment.tsx"
 	const arguments = "path " + path
 
-	if got := projectAssistantAuditToolPath(projectToolApplyPatch, arguments); got != path {
+	if got := projectAssistantAuditToolPath(projectToolEditFile, arguments); got != path {
 		t.Fatalf("mutation audit path = %q, want literal %q", got, path)
 	}
 	action := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
 		ID:        "write",
-		Name:      projectToolApplyPatch,
+		Name:      projectToolEditFile,
 		Status:    "succeeded",
 		Arguments: arguments,
-		Summary:   "write_file",
+		Summary:   "create_file",
 	})
-	if action.Title != "Updated file" || action.Target != path {
+	if action.Title != "Updated files" || action.Target != path {
 		t.Fatalf("mutation action = %#v, want literal percent target", action)
 	}
 }
@@ -723,7 +723,7 @@ func TestProjectAssistantPermissionAuditDoesNotPersistRawPayloads(t *testing.T) 
 		Decision:        projectAssistantPermissionAllow,
 		Actor:           "user@example.test",
 		ToolCallID:      "call-1",
-		ToolName:        projectToolApplyPatch,
+		ToolName:        projectToolEditFile,
 		EditedArguments: map[string]any{"path": "src/App.tsx", "content": "secret-source"},
 		Result:          `{"content":"secret-result"}`,
 		Error:           "secret-error",
@@ -755,7 +755,7 @@ func TestProjectAssistantPermissionAuditKeepsOnlyRecentDecisions(t *testing.T) {
 			RequestID:  "perm-" + strconv.Itoa(i),
 			Decision:   projectAssistantPermissionAllow,
 			ToolCallID: "call-" + strconv.Itoa(i),
-			ToolName:   projectToolApplyPatch,
+			ToolName:   projectToolEditFile,
 			ResolvedAt: time.Date(2026, 7, 26, 12, 0, 0, i, time.UTC),
 		})
 		if err != nil {
@@ -805,7 +805,7 @@ func TestCompleteClaimedProjectAssistantRunAfterResumeErrorFinalizesAudit(t *tes
 		ToolCalls: []chatToolCall{{
 			ID: "call-1",
 			Function: chatToolCallFunction{
-				Name: projectToolApplyPatch,
+				Name: projectToolEditFile,
 			},
 		}},
 	}

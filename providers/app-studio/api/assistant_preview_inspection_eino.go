@@ -80,11 +80,12 @@ func (t *projectEinoAssistantEnhancedPreviewTool) InvokableRun(ctx context.Conte
 				text = `{"status":"unavailable","failureKind":"artifact_unavailable","summary":"Preview inspection evidence is unavailable on replay."}`
 			}
 			helper.emitToolCall(projectToolCallStreamEvent{
-				ID:        callID,
-				Name:      spec.Name,
-				Status:    projectPreviewInspectionEventStatus(decision.Replay.Disposition),
-				Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
-				Summary:   summarizeProjectToolResult(spec.Name, text),
+				ID:                callID,
+				Name:              spec.Name,
+				Status:            projectPreviewInspectionEventStatus(decision.Replay.Disposition),
+				Arguments:         summarizeProjectToolArgumentsMap(spec.Name, args),
+				Summary:           summarizeProjectToolResult(spec.Name, text),
+				PreviewInspection: projectAssistantPreviewInspectionActionFromText(text),
 			})
 			return projectAssistantPreviewInspectionToolResult(text, "", ""), nil
 		}
@@ -122,11 +123,12 @@ func (t *projectEinoAssistantEnhancedPreviewTool) InvokableRun(ctx context.Conte
 		textResult = outcome.Result
 	}
 	helper.emitToolCall(projectToolCallStreamEvent{
-		ID:        callID,
-		Name:      spec.Name,
-		Status:    projectPreviewInspectionEventStatus(disposition),
-		Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
-		Summary:   summarizeProjectToolResult(spec.Name, textResult),
+		ID:                callID,
+		Name:              spec.Name,
+		Status:            projectPreviewInspectionEventStatus(disposition),
+		Arguments:         summarizeProjectToolArgumentsMap(spec.Name, args),
+		Summary:           summarizeProjectToolResult(spec.Name, textResult),
+		PreviewInspection: projectAssistantPreviewInspectionActionFromResult(result),
 	})
 	imageBase64, imageMIME := "", ""
 	if result.Screenshot != nil {
@@ -151,11 +153,12 @@ func (t *projectEinoAssistantEnhancedPreviewTool) failureResult(ctx context.Cont
 	_ = json.Unmarshal([]byte(rawArgs), &args)
 	helper := projectEinoAssistantTool{server: t.server, tool: t.tool, req: t.req, runState: t.runState}
 	helper.emitToolCall(projectToolCallStreamEvent{
-		ID:        callID,
-		Name:      spec.Name,
-		Status:    "failed",
-		Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
-		Error:     projectEinoAssistantSafeErrorText(invokeErr),
+		ID:                callID,
+		Name:              spec.Name,
+		Status:            "failed",
+		Arguments:         summarizeProjectToolArgumentsMap(spec.Name, args),
+		Error:             projectEinoAssistantSafeErrorText(invokeErr),
+		PreviewInspection: projectAssistantPreviewInspectionActionFromToolResult(spec.Name, modelResult),
 	})
 	return projectAssistantPreviewInspectionToolResult(modelResult, "", ""), nil
 }

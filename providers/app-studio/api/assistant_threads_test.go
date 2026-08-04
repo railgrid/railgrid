@@ -71,10 +71,41 @@ func TestAssistantThreadAgentMessageCarriesRunTerminalContract(t *testing.T) {
 			if item.AssistantMessageID != run.ActiveMessageID || item.Mode != run.Mode || item.Revision != run.Revision || item.Status != test.wantStatus {
 				t.Fatalf("item = %#v, want segment metadata/status", item)
 			}
+			if item.Phase != "final_answer" {
+				t.Fatalf("terminal item phase = %q, want final_answer", item.Phase)
+			}
 			if test.wantError != (len(item.Error) > 0) {
 				t.Fatalf("item error = %s, wantError=%v", item.Error, test.wantError)
 			}
 		})
+	}
+}
+
+func TestMaterializeAssistantThreadItemsPreservesTypedCommentaryAndTerminalPhase(t *testing.T) {
+	events := []store.AssistantThreadEvent{
+		{TurnID: "turn-commentary", Sequence: 1, Type: assistantThreadEventItemStarted, ItemID: "assistant-commentary", Payload: []byte(`{"item":{"id":"assistant-commentary","turnID":"turn-commentary","type":"agentMessage","status":"in_progress"}}`)},
+		{TurnID: "turn-commentary", Sequence: 2, Type: assistantThreadEventItemStarted, ItemID: "commentary-assistant-commentary-1", Payload: []byte(`{"item":{"id":"commentary-assistant-commentary-1","turnID":"turn-commentary","type":"agentMessage","phase":"commentary","status":"in_progress","content":"I found the relevant files.","assistantMessageID":"assistant-commentary"}}`)},
+		{TurnID: "turn-commentary", Sequence: 3, Type: assistantThreadEventItemCompleted, ItemID: "commentary-assistant-commentary-1", Payload: []byte(`{"item":{"id":"commentary-assistant-commentary-1","turnID":"turn-commentary","type":"agentMessage","phase":"commentary","status":"completed","content":"I found the relevant files.","assistantMessageID":"assistant-commentary"}}`)},
+		{TurnID: "turn-commentary", Sequence: 4, Type: assistantThreadEventItemCompleted, ItemID: "assistant-commentary", Payload: []byte(`{"item":{"id":"assistant-commentary","turnID":"turn-commentary","type":"agentMessage","phase":"final_answer","status":"completed","content":"Here is the answer.","assistantMessageID":"assistant-commentary"}}`)},
+	}
+	items := materializeAssistantThreadItems(events)
+	if len(items) != 2 {
+		t.Fatalf("materialized items = %#v, want commentary and terminal", items)
+	}
+	var commentary, terminal *assistantThreadItem
+	for index := range items {
+		switch items[index].Phase {
+		case "commentary":
+			commentary = &items[index]
+		case "final_answer":
+			terminal = &items[index]
+		}
+	}
+	if commentary == nil || commentary.Content != "I found the relevant files." || commentary.AssistantMessageID != "assistant-commentary" {
+		t.Fatalf("commentary item = %#v", commentary)
+	}
+	if terminal == nil || terminal.Content != "Here is the answer." || terminal.Status != "completed" {
+		t.Fatalf("terminal item = %#v", terminal)
 	}
 }
 

@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Check, ChevronUp, ClipboardList, Loader2, Square, X } from 'lucide-vue-next'
+import { ChevronUp, ClipboardList, X } from 'lucide-vue-next'
 import {
   assistantPlanProgress,
-  assistantPlanStepStatusLabel,
   assistantPlanSummary,
   type AssistantPlan,
 } from './assistantPlan'
+import AssistantPlanSteps from './AssistantPlanSteps.vue'
 
 const props = defineProps<{ messageId: string; plan: AssistantPlan }>()
 const rootRef = ref<HTMLElement | null>(null)
@@ -187,20 +187,7 @@ onBeforeUnmount(() => {
       <div :id="titleID" class="px-2 pb-1.5 pt-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
         {{ progress.completed }} of {{ progress.total }} steps
       </div>
-      <ol class="grid gap-0.5">
-        <li
-          v-for="(step, index) in plan.steps"
-          :key="`${messageId}-desktop-step-${index}`"
-          class="flex min-h-8 min-w-0 items-center gap-2 rounded-lg px-2 text-[12px] leading-5"
-          :class="step.status === 'in_progress' ? 'bg-accent-subtle text-text-primary' : 'text-text-secondary'"
-        >
-          <Check v-if="step.status === 'completed'" class="h-3.5 w-3.5 shrink-0 text-success" :stroke-width="2" />
-          <Loader2 v-else-if="step.status === 'in_progress'" class="h-3.5 w-3.5 shrink-0 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
-          <Square v-else class="h-3 w-3 shrink-0 text-text-muted" :stroke-width="1.75" />
-          <span class="sr-only">{{ assistantPlanStepStatusLabel(step.status) }}:</span>
-          <span class="min-w-0">{{ step.content }}</span>
-        </li>
-      </ol>
+      <AssistantPlanSteps :message-id="`${messageId}-desktop`" :plan="plan" />
     </div>
     <button
       ref="desktopTriggerRef"
@@ -254,20 +241,7 @@ onBeforeUnmount(() => {
             <X class="h-4 w-4" :stroke-width="1.75" />
           </button>
         </header>
-        <ol class="min-h-0 overflow-auto p-3">
-          <li
-            v-for="(step, index) in plan.steps"
-            :key="`${messageId}-mobile-step-${index}`"
-            class="flex min-h-11 min-w-0 items-center gap-3 rounded-xl px-3 text-[13px] leading-5"
-            :class="step.status === 'in_progress' ? 'bg-accent-subtle text-text-primary' : 'text-text-secondary'"
-          >
-            <Check v-if="step.status === 'completed'" class="h-4 w-4 shrink-0 text-success" :stroke-width="2" />
-            <Loader2 v-else-if="step.status === 'in_progress'" class="h-4 w-4 shrink-0 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
-            <Square v-else class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
-            <span class="sr-only">{{ assistantPlanStepStatusLabel(step.status) }}:</span>
-            <span>{{ step.content }}</span>
-          </li>
-        </ol>
+        <AssistantPlanSteps :message-id="`${messageId}-mobile`" :plan="plan" mobile />
       </section>
     </div>
   </Teleport>

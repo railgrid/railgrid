@@ -39,52 +39,60 @@ func writeTestWorkspaceFiles(t *testing.T, ctx context.Context, workspaces *work
 	}
 }
 
-func TestAssistantApplyPatchUsesLiveWorkspaceAndReturnsDiff(t *testing.T) {
+func TestAssistantEditFileUsesLiveWorkspaceAndReturnsDiff(t *testing.T) {
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
 	writeTestWorkspaceFiles(t, context.Background(), workspaces, scope, []workspace.File{{
 		Path:    "src/app.js",
 		Content: "const theme = 'light'\n",
 	}})
-	patch, ok := projectAssistantLocalToolRegistry(&Server{workspaces: workspaces}).Get(projectToolApplyPatch)
+	edit, ok := projectAssistantLocalToolRegistry(&Server{workspaces: workspaces}).Get(projectToolEditFile)
 	if !ok {
-		t.Fatal("apply_patch tool was not registered")
+		t.Fatal("edit_file tool was not registered")
 	}
 	req := projectAssistantToolCallRequest{
 		WorkspaceScope: scope,
 		AssistantRunID: "run-1",
-		Arguments: map[string]any{
-			"patch": "*** Begin Patch\n*** Update File: src/app.js\n@@\n-const theme = 'light'\n+const theme = 'dark'\n*** End Patch",
-		},
+		RunState:       newProjectEinoAssistantRunState(),
+		Arguments:      map[string]any{"path": "src/app.js", "oldString": "const theme = 'light'", "newString": "const theme = 'dark'"},
 	}
-	result, err := patch.Call(context.Background(), req)
+	read, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "src/app.js"})
 	if err != nil {
-		t.Fatalf("patch returned error: %v", err)
+		t.Fatal(err)
+	}
+	req.RunState.RecordObservedReadFileVersion(read.Path, read.Version)
+	req.Arguments["expectedVersion"] = read.Version
+	result, err := edit.Call(context.Background(), req)
+	if err != nil {
+		t.Fatalf("edit returned error: %v", err)
 	}
 	var decoded workspace.MutationResult
 	if err := json.Unmarshal([]byte(result), &decoded); err != nil {
 		t.Fatalf("decode mutation result: %v", err)
 	}
 	if decoded.Path != "src/app.js" || decoded.Additions != 1 || decoded.Deletions != 1 ||
-		decoded.Replacements != 1 || !strings.Contains(decoded.Patch, "+++ b/src/app.js") {
+		decoded.Replacements != 1 || !strings.Contains(decoded.Diff, "+++ b/src/app.js") {
 		t.Fatalf("mutation result = %#v", decoded)
 	}
-	mutation := projectAssistantMutationFromResult(projectToolApplyPatch, result)
+	mutation := projectAssistantMutationFromResult(projectToolEditFile, result)
 	if mutation == nil || mutation.Additions != 1 || mutation.Deletions != 1 || mutation.Replacements != 1 {
 		t.Fatalf("mutation trace = %#v", mutation)
 	}
-	if !strings.Contains(mutation.Patch, "+++ b/src/app.js") || mutation.PatchTruncated {
-		t.Fatalf("mutation patch = %#v", mutation)
+	if !strings.Contains(mutation.Diff, "+++ b/src/app.js") || mutation.DiffTruncated {
+		t.Fatalf("mutation diff = %#v", mutation)
 	}
-	summary := summarizeProjectToolResult(projectToolApplyPatch, result)
+	summary := summarizeProjectToolResult(projectToolEditFile, result)
 	item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
-		ID:        "patch-1",
-		Name:      projectToolApplyPatch,
+		ID:        "edit-1",
+		Name:      projectToolEditFile,
 		Status:    "succeeded",
-		Arguments: `{"patch":"*** Begin Patch\\n*** Update File: src/app.js\\n..."}`,
+		Arguments: `{"path":"./src/app.js","oldString":"...","newString":"..."}`,
 		Summary:   summary,
 		Mutation:  mutation,
 	})
+	if item.Target != "src/app.js" {
+		t.Fatalf("action target = %q, want server-normalized mutation path", item.Target)
+	}
 	if item.Outcome != "+1 -1" || strings.Contains(item.Outcome, "const theme") {
 		t.Fatalf("action outcome = %q, want counts only", item.Outcome)
 	}

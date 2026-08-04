@@ -38,23 +38,24 @@ const (
 // be restarted after a process or persistence failure without emitting an
 // already committed delta, item, request, plan, or terminal event.
 type assistantThreadMirrorState struct {
-	lastContent     string
-	activeMessageID string
-	actionStatuses  map[string]string
-	openMessages    map[string]struct{}
-	messageStarted  map[string]bool
-	messageContent  map[string]string
-	messageCreated  map[string]time.Time
-	messageMode     map[string]store.AssistantRunMode
-	messageRevision map[string]int64
-	lastPlan        string
-	lastRequestID   string
-	lastRequestType string
-	lastSequence    int64
-	reconstructed   bool
-	needsReload     bool
-	terminalItem    bool
-	terminalEvent   bool
+	lastContent        string
+	activeMessageID    string
+	actionStatuses     map[string]string
+	commentaryStatuses map[string]string
+	openMessages       map[string]struct{}
+	messageStarted     map[string]bool
+	messageContent     map[string]string
+	messageCreated     map[string]time.Time
+	messageMode        map[string]store.AssistantRunMode
+	messageRevision    map[string]int64
+	lastPlan           string
+	lastRequestID      string
+	lastRequestType    string
+	lastSequence       int64
+	reconstructed      bool
+	needsReload        bool
+	terminalItem       bool
+	terminalEvent      bool
 }
 
 // assistantThreadDynamicToolItemID scopes a provider action ID to the
@@ -71,15 +72,16 @@ func (s *Server) loadAssistantThreadMirrorState(ctx context.Context, scope store
 		return assistantThreadMirrorState{}, err
 	}
 	state := assistantThreadMirrorState{
-		activeMessageID: activeMessageID,
-		actionStatuses:  map[string]string{},
-		openMessages:    map[string]struct{}{},
-		messageStarted:  map[string]bool{},
-		messageContent:  map[string]string{},
-		messageCreated:  map[string]time.Time{},
-		messageMode:     map[string]store.AssistantRunMode{},
-		messageRevision: map[string]int64{},
-		reconstructed:   true,
+		activeMessageID:    activeMessageID,
+		actionStatuses:     map[string]string{},
+		commentaryStatuses: map[string]string{},
+		openMessages:       map[string]struct{}{},
+		messageStarted:     map[string]bool{},
+		messageContent:     map[string]string{},
+		messageCreated:     map[string]time.Time{},
+		messageMode:        map[string]store.AssistantRunMode{},
+		messageRevision:    map[string]int64{},
+		reconstructed:      true,
 	}
 	durableActiveMessageID := ""
 	for _, event := range events {
@@ -110,8 +112,11 @@ func (s *Server) loadAssistantThreadMirrorState(ctx context.Context, scope store
 				}
 			}
 			if envelopeDecoded && envelope.Item.Type == assistantThreadEventAssistantMessage {
-				if event.Type == assistantThreadEventItemStarted || event.Type == assistantThreadEventItemDelta {
+				if envelope.Item.Phase != "commentary" && (event.Type == assistantThreadEventItemStarted || event.Type == assistantThreadEventItemDelta) {
 					durableActiveMessageID = messageID
+				}
+				if envelope.Item.Phase == "commentary" && (event.Type == assistantThreadEventItemStarted || event.Type == assistantThreadEventItemCompleted) {
+					state.commentaryStatuses[messageID] = envelope.Item.Status
 				}
 				if envelope.Item.Mode != "" {
 					state.messageMode[messageID] = envelope.Item.Mode
@@ -127,7 +132,9 @@ func (s *Server) loadAssistantThreadMirrorState(ctx context.Context, scope store
 				switch event.Type {
 				case assistantThreadEventItemStarted:
 					state.messageStarted[messageID] = true
-					state.openMessages[messageID] = struct{}{}
+					if envelope.Item.Phase != "commentary" {
+						state.openMessages[messageID] = struct{}{}
+					}
 				case assistantThreadEventItemCompleted:
 					state.messageContent[messageID] = envelope.Item.Content
 					delete(state.openMessages, messageID)
@@ -319,8 +326,15 @@ func (s *Server) closeStaleAssistantThreadMessages(ctx context.Context, scope st
 	if state.messageRevision == nil {
 		state.messageRevision = map[string]int64{}
 	}
+	if state.commentaryStatuses == nil {
+		state.commentaryStatuses = map[string]string{}
+	}
 	stale := make([]string, 0, len(state.openMessages))
 	for messageID := range state.openMessages {
+		if _, commentary := state.commentaryStatuses[messageID]; commentary {
+			delete(state.openMessages, messageID)
+			continue
+		}
 		if messageID != "" && messageID != activeMessageID {
 			stale = append(stale, messageID)
 		}
@@ -375,6 +389,108 @@ func (s *Server) closeStaleAssistantThreadMessages(ctx context.Context, scope st
 		}
 		delete(state.openMessages, messageID)
 		state.messageStarted[messageID] = true
+	}
+	return nil
+}
+
+// assistantThreadCommentaryItemID is derived from the owning assistant
+// segment and the server-assigned progress trace sequence. The sequence is
+// stable across coalesced snapshots and mirror restarts, while including the
+// segment prevents a steered turn from reusing an earlier commentary ID.
+func assistantThreadCommentaryItemID(activeMessageID string, sequence, index int) string {
+	if sequence <= 0 {
+		sequence = index + 1
+	}
+	return fmt.Sprintf("commentary-%s-%d", strings.TrimSpace(activeMessageID), sequence)
+}
+
+// projectAssistantThreadCommentaryItems mirrors accepted report_progress
+// messages as ordinary agentMessage items with phase=commentary. The legacy
+// assistantProgress snapshot remains useful for worked duration and old
+// clients, but its prose is never promoted to the terminal assistant item.
+// item.started and item.completed are emitted together at this durable mirror
+// boundary so live consumers and reload materialization observe the same item.
+func (s *Server) projectAssistantThreadCommentaryItems(
+	ctx context.Context,
+	scope store.Scope,
+	threadID string,
+	turn store.AssistantTurn,
+	run store.AssistantRun,
+	state *assistantThreadMirrorState,
+	message store.Message,
+	activeMessageID string,
+) error {
+	if state == nil {
+		return errors.New("assistant thread mirror state is required")
+	}
+	progress, ok := projectAssistantProgressSnapshotFromMetadata(message.Metadata[projectAssistantMetadataProgress])
+	if !ok || len(progress.Messages) == 0 || strings.TrimSpace(activeMessageID) == "" {
+		return nil
+	}
+	if state.commentaryStatuses == nil {
+		state.commentaryStatuses = map[string]string{}
+	}
+	mode := run.Mode
+	if mode == "" {
+		mode = turn.Mode
+	}
+	for index, content := range progress.Messages {
+		sequence := 0
+		if index < len(progress.MessageSequences) {
+			sequence = progress.MessageSequences[index]
+		}
+		itemID := assistantThreadCommentaryItemID(activeMessageID, sequence, index)
+		status := state.commentaryStatuses[itemID]
+		if status == "completed" || status == "failed" {
+			continue
+		}
+		createdAt := message.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now().UTC()
+		}
+		item := assistantThreadItem{
+			ID:                 itemID,
+			TurnID:             turn.ID,
+			Type:               assistantThreadEventAssistantMessage,
+			Phase:              "commentary",
+			Status:             "in_progress",
+			Content:            content,
+			AssistantMessageID: activeMessageID,
+			Mode:               mode,
+			Revision:           run.Revision,
+			CreatedAt:          createdAt,
+		}
+		startedPayload, err := json.Marshal(map[string]any{"item": item})
+		if err != nil {
+			return fmt.Errorf("encode assistant thread commentary item: %w", err)
+		}
+		if status == "" {
+			if _, err := s.appendAssistantThreadMirrorEvent(ctx, scope, state, store.AssistantThreadEvent{
+				ThreadID: threadID,
+				TurnID:   turn.ID,
+				Type:     assistantThreadEventItemStarted,
+				ItemID:   itemID,
+				Payload:  startedPayload,
+			}); err != nil {
+				return fmt.Errorf("persist assistant thread commentary start %q: %w", itemID, err)
+			}
+			state.commentaryStatuses[itemID] = "in_progress"
+		}
+		item.Status = "completed"
+		completedPayload, err := json.Marshal(map[string]any{"item": item})
+		if err != nil {
+			return fmt.Errorf("encode assistant thread commentary completion: %w", err)
+		}
+		if _, err := s.appendAssistantThreadMirrorEvent(ctx, scope, state, store.AssistantThreadEvent{
+			ThreadID: threadID,
+			TurnID:   turn.ID,
+			Type:     assistantThreadEventItemCompleted,
+			ItemID:   itemID,
+			Payload:  completedPayload,
+		}); err != nil {
+			return fmt.Errorf("persist assistant thread commentary completion %q: %w", itemID, err)
+		}
+		state.commentaryStatuses[itemID] = "completed"
 	}
 	return nil
 }
@@ -486,6 +602,9 @@ func (s *Server) projectAssistantThreadSnapshot(ctx context.Context, scope store
 	if state.messageRevision == nil {
 		state.messageRevision = map[string]int64{}
 	}
+	if state.commentaryStatuses == nil {
+		state.commentaryStatuses = map[string]string{}
+	}
 	if err := s.closeStaleAssistantThreadMessages(ctx, scope, threadID, turn.ID, activeMessageID, state); err != nil {
 		return err
 	}
@@ -520,6 +639,9 @@ func (s *Server) projectAssistantThreadSnapshot(ctx context.Context, scope store
 		state.messageMode[activeMessageID] = item.Mode
 		state.messageRevision[activeMessageID] = item.Revision
 		state.openMessages[activeMessageID] = struct{}{}
+	}
+	if err := s.projectAssistantThreadCommentaryItems(ctx, scope, threadID, turn, snapshot.Run, state, snapshot.Message, activeMessageID); err != nil {
+		return err
 	}
 	if state.actionStatuses == nil {
 		state.actionStatuses = map[string]string{}

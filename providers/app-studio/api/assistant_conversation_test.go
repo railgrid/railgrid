@@ -122,8 +122,8 @@ func TestAppendProjectAssistantConversationCompactionPersistsVersionedReplacemen
 	replacement := []chatMessage{
 		{Role: "system", Content: "preserved system instruction"},
 		{Role: "user", Content: projectAssistantConversationSummaryPrefix + "\nstylesheet created"},
-		{Role: "assistant", ToolCalls: []chatToolCall{{ID: "call-before", Type: "function", Function: chatToolCallFunction{Name: "apply_patch", Arguments: `{}`}}}},
-		{Role: "tool", Name: "apply_patch", ToolCallID: "call-before", Content: `{"operation":"apply_patch"}`},
+		{Role: "assistant", ToolCalls: []chatToolCall{{ID: "call-before", Type: "function", Function: chatToolCallFunction{Name: "edit_file", Arguments: `{}`}}}},
+		{Role: "tool", Name: "edit_file", ToolCallID: "call-before", Content: `{"operation":"edit_file"}`},
 	}
 	checkpoint := projectAssistantConversationCompactionCheckpoint{
 		Version:                         projectAssistantConversationCheckpointV1,

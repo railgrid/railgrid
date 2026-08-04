@@ -87,6 +87,7 @@ type assistantThreadItem struct {
 	ID                 string                 `json:"id"`
 	TurnID             string                 `json:"turnID,omitempty"`
 	Type               string                 `json:"type"`
+	Phase              string                 `json:"phase,omitempty"`
 	Status             string                 `json:"status"`
 	Content            string                 `json:"content,omitempty"`
 	Data               json.RawMessage        `json:"data,omitempty"`
@@ -124,6 +125,7 @@ func assistantThreadAgentMessageItem(turn store.AssistantTurn, run store.Assista
 		ID:                 run.ActiveMessageID,
 		TurnID:             turn.ID,
 		Type:               assistantThreadEventAssistantMessage,
+		Phase:              assistantThreadAgentMessagePhase(status),
 		Status:             status,
 		Content:            content,
 		AssistantMessageID: run.ActiveMessageID,
@@ -135,6 +137,20 @@ func assistantThreadAgentMessageItem(turn store.AssistantTurn, run store.Assista
 		item.Error = append(json.RawMessage(nil), run.Error...)
 	}
 	return assistantThreadItemWithMessagePresentation(item, metadata)
+}
+
+// assistantThreadAgentMessagePhase distinguishes model-authored progress from
+// the terminal response in the durable thread contract. In-progress segment
+// placeholders intentionally omit the phase: their content is still a
+// progressive snapshot and has not been committed as either commentary or a
+// final answer yet.
+func assistantThreadAgentMessagePhase(status string) string {
+	switch status {
+	case "completed", "failed", "interrupted":
+		return "final_answer"
+	default:
+		return ""
+	}
 }
 
 func (s *Server) createProjectAssistantThread(w http.ResponseWriter, r *http.Request) {
@@ -650,6 +666,9 @@ func (s *Server) reconcileProjectAssistantThreadTurn(ctx context.Context, scope 
 		}
 		state.lastRequestID, state.lastRequestType = "", ""
 	}
+	if err := s.projectAssistantThreadCommentaryItems(ctx, scope, turn.ThreadID, turn, run, &state, message, run.ActiveMessageID); err != nil {
+		return err
+	}
 	if !state.terminalItem {
 		item := assistantThreadAgentMessageItem(turn, run, assistantThreadRunItemStatus(run.Status), message.Content, message.CreatedAt, message.Metadata)
 		payload, _ := json.Marshal(map[string]any{"item": item})
@@ -841,15 +860,25 @@ func materializeAssistantThreadItems(events []store.AssistantThreadEvent) []assi
 		if items[index].Type == assistantThreadEventAssistantMessage && items[index].Mode == "" {
 			items[index].Mode = turnModes[items[index].TurnID]
 		}
-		if terminalStatus, terminal := terminalTurns[items[index].TurnID]; terminal && items[index].Status == "in_progress" {
-			switch items[index].Type {
-			case "approval", "input":
-				items[index].Status = "completed"
-			case assistantThreadEventAssistantMessage:
-				items[index].Status = terminalStatus
-				if terminalStatus == "failed" && len(items[index].Error) == 0 {
-					items[index].Error = append(json.RawMessage(nil), terminalTurnErrors[items[index].TurnID]...)
+		if terminalStatus, terminal := terminalTurns[items[index].TurnID]; terminal {
+			if items[index].Status == "in_progress" {
+				switch items[index].Type {
+				case "approval", "input":
+					items[index].Status = "completed"
+				case assistantThreadEventAssistantMessage:
+					if items[index].Phase == "commentary" {
+						items[index].Status = "completed"
+					} else {
+						items[index].Status = terminalStatus
+						if terminalStatus == "failed" && len(items[index].Error) == 0 {
+							items[index].Error = append(json.RawMessage(nil), terminalTurnErrors[items[index].TurnID]...)
+						}
+					}
 				}
+			}
+			if items[index].Type == assistantThreadEventAssistantMessage && items[index].Phase == "" &&
+				(items[index].Status == "completed" || items[index].Status == "failed" || items[index].Status == "interrupted") {
+				items[index].Phase = "final_answer"
 			}
 		}
 	}

@@ -41,6 +41,7 @@ export interface ProjectAssistantApprovalPreference {
 
 export type ProjectAssistantThreadStatus = 'idle' | 'active' | 'archived'
 export type ProjectAssistantTurnStatus = 'in_progress' | 'completed' | 'interrupted' | 'failed'
+export type ProjectAssistantMessagePhase = 'commentary' | 'final_answer'
 
 export interface ProjectAssistantThread {
   id: string
@@ -77,6 +78,7 @@ export interface ProjectAssistantThreadItem {
   id: string
   turnID?: string
   type: 'userMessage' | 'agentMessage' | 'dynamicToolCall' | string
+  phase?: ProjectAssistantMessagePhase
   status: 'in_progress' | 'completed' | 'failed' | string
   content?: string
   data?: Record<string, unknown>
@@ -123,7 +125,7 @@ export interface ProjectAssistantRunStart {
 }
 
 export type ProjectAssistantActionKind = 'inspect' | 'clarify' | 'edit' | 'run' | 'commit' | 'plan' | 'other'
-export type ProjectAssistantActionStatus = 'running' | 'waiting' | 'succeeded' | 'skipped' | 'failed' | 'rejected'
+export type ProjectAssistantActionStatus = 'running' | 'waiting' | 'succeeded' | 'skipped' | 'failed' | 'rejected' | 'retrying' | 'recovered'
 export type ProjectAssistantActionSeverity = 'normal' | 'attention' | 'error'
 export type ProjectAssistantDiagnosticCategory = 'timeout' | 'permission' | 'validation' | 'runtime' | 'provider' | 'unknown'
 
@@ -131,6 +133,10 @@ export interface ProjectAssistantActionDiagnostic {
   category: ProjectAssistantDiagnosticCategory
   message: string
   referenceID: string
+  code?: string
+  operation?: string
+  path?: string
+  guidance?: string
 }
 
 /** Server-owned, bounded disclosure for the live development exec tool. */
@@ -165,6 +171,7 @@ export interface ProjectAssistantActionFeedItem {
   groupKey?: string
   groupTitle?: string
   sequence: number
+  recoveryOf?: string
   diagnostic?: ProjectAssistantActionDiagnostic
   exec?: ProjectAssistantExecDisclosure
 }

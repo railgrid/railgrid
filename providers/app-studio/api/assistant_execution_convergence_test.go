@@ -48,7 +48,7 @@ func TestProjectAssistantExecutionGateSerializesEffectsAgainstReads(t *testing.T
 	effect, err := middleware.WrapInvokableToolCall(context.Background(), func(context.Context, string, ...einotool.Option) (string, error) {
 		close(effectStarted)
 		return "effect", nil
-	}, &adk.ToolContext{Name: projectToolApplyPatch})
+	}, &adk.ToolContext{Name: projectToolEditFile})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1515,7 +1515,7 @@ func projectAssistantWorkflowSteps(memory aiv1alpha1.ProjectMemory, repository *
 		steps = append(steps, "Clarify the project requirements before mutating workspace files.")
 	}
 	if len(files) > 0 {
-		steps = append(steps, "Inspect the listed workspace files before writing or patching source.")
+		steps = append(steps, "Inspect the listed workspace files before writing or editing source.")
 	} else {
 		steps = append(steps, "List the workspace files before editing an existing project.")
 	}

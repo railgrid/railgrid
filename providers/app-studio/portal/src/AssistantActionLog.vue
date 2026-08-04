@@ -20,29 +20,43 @@ const summary = computed(() => summarizeAssistantActions(rows.value))
 const panelID = `app-studio-assistant-actions-${props.messageId.replace(/[^a-zA-Z0-9_-]/g, '-')}`
 
 function isBusy(status: ProjectAssistantActionStatus): boolean {
-  return status === 'running'
+  return status === 'running' || status === 'retrying'
 }
 
 function isWaiting(status: ProjectAssistantActionStatus): boolean {
   return status === 'waiting'
 }
 
-function isError(status: ProjectAssistantActionStatus): boolean {
-  return status === 'failed' || status === 'rejected'
+function isError(status: ProjectAssistantActionStatus, severity: ProjectAssistantActionFeedItem['severity']): boolean {
+  return (status === 'failed' || status === 'rejected') && severity === 'error'
 }
 
-function iconClasses(status: ProjectAssistantActionStatus): string {
-  if (isBusy(status)) return 'border-accent/20 bg-accent/10 text-accent'
-  if (isWaiting(status)) return 'border-warning/30 bg-warning-subtle text-warning'
-  if (isError(status)) return 'border-danger/30 bg-danger-subtle text-danger'
-  return 'border-border-subtle bg-surface-raised text-success'
+function isAttention(status: ProjectAssistantActionStatus, severity: ProjectAssistantActionFeedItem['severity']): boolean {
+  return isWaiting(status) || severity === 'attention'
+}
+
+function isRecovered(status: ProjectAssistantActionStatus): boolean {
+  return status === 'recovered'
+}
+
+function iconClasses(item: ProjectAssistantActionFeedItem): string {
+  if (isBusy(item.status)) return 'border-accent/20 bg-accent/10 text-accent'
+  if (isAttention(item.status, item.severity)) return 'border-warning/30 bg-warning-subtle text-warning'
+  if (isError(item.status, item.severity)) return 'border-danger/30 bg-danger-subtle text-danger'
+  return isRecovered(item.status)
+    ? 'border-success/30 bg-success-subtle text-success'
+    : 'border-border-subtle bg-surface-raised text-success'
 }
 
 async function copyDiagnostic(item: typeof rows.value[number]) {
   if (!item.diagnostic) return
   const text = [
     `category: ${item.diagnostic.category}`,
+    ...(item.diagnostic.code ? [`code: ${item.diagnostic.code}`] : []),
+    ...(item.diagnostic.operation ? [`operation: ${item.diagnostic.operation}`] : []),
+    ...(item.diagnostic.path ? [`path: ${item.diagnostic.path}`] : []),
     `message: ${item.diagnostic.message}`,
+    ...(item.diagnostic.guidance ? [`guidance: ${item.diagnostic.guidance}`] : []),
     `referenceID: ${item.diagnostic.referenceID}`,
   ].join('\n')
   try {
@@ -76,11 +90,11 @@ async function copyDiagnostic(item: typeof rows.value[number]) {
           v-for="item in rows.slice(0, 4)"
           :key="`${item.id}-summary-icon`"
           class="flex h-5 w-5 items-center justify-center rounded-full border"
-          :class="iconClasses(item.status)"
+          :class="iconClasses(item)"
         >
           <Loader2 v-if="isBusy(item.status)" class="h-3 w-3 animate-spin motion-reduce:animate-none" :stroke-width="2" />
-          <Square v-else-if="isWaiting(item.status)" class="h-2.5 w-2.5 fill-current" :stroke-width="2" />
-          <X v-else-if="isError(item.status)" class="h-3 w-3" :stroke-width="2" />
+          <Square v-else-if="isAttention(item.status, item.severity)" class="h-2.5 w-2.5 fill-current" :stroke-width="2" />
+          <X v-else-if="isError(item.status, item.severity)" class="h-3 w-3" :stroke-width="2" />
           <Check v-else class="h-3 w-3" :stroke-width="2" />
         </span>
       </span>
@@ -108,21 +122,23 @@ async function copyDiagnostic(item: typeof rows.value[number]) {
             class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
             :class="isBusy(item.status)
               ? 'text-accent'
-              : isWaiting(item.status)
+              : isAttention(item.status, item.severity)
                 ? 'text-warning'
-                : isError(item.status)
+                : isError(item.status, item.severity)
                   ? 'text-danger'
-                  : 'text-success'"
+                  : isRecovered(item.status)
+                    ? 'text-success'
+                    : 'text-success'"
           >
             <Loader2 v-if="isBusy(item.status)" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="2" />
-            <Square v-else-if="isWaiting(item.status)" class="h-3 w-3 fill-current" :stroke-width="2" />
-            <X v-else-if="isError(item.status)" class="h-3.5 w-3.5" :stroke-width="2" />
+            <Square v-else-if="isAttention(item.status, item.severity)" class="h-3 w-3 fill-current" :stroke-width="2" />
+            <X v-else-if="isError(item.status, item.severity)" class="h-3.5 w-3.5" :stroke-width="2" />
             <Check v-else class="h-3.5 w-3.5" :stroke-width="2" />
           </span>
-          <span class="sr-only">{{ assistantActionStatusLabel(item.status) }}:</span>
+          <span class="sr-only">{{ assistantActionStatusLabel(item.status, item.severity) }}:</span>
           <span class="min-w-0 truncate font-medium text-text-primary">{{ item.title }}</span>
           <span v-if="item.target" class="min-w-0 truncate font-mono text-[11px] text-text-muted">{{ item.target }}</span>
-          <span v-if="item.outcome" class="ml-auto shrink-0 truncate text-[11px]" :class="isError(item.status) ? 'text-danger' : 'text-text-muted'">
+          <span v-if="item.outcome" class="ml-auto shrink-0 truncate text-[11px]" :class="isError(item.status, item.severity) ? 'text-danger' : 'text-text-muted'">
             {{ item.outcome }}
           </span>
           <button
@@ -145,11 +161,24 @@ async function copyDiagnostic(item: typeof rows.value[number]) {
         <div
           v-if="item.diagnostic && openDiagnosticID === item.id"
           :id="`${panelID}-${item.id}-diagnostic`"
-          class="mb-2 ml-7 rounded-lg border border-danger/20 bg-danger-subtle/40 p-2.5 text-[11px] leading-5 text-text-secondary"
+          class="mb-2 ml-7 rounded-lg border p-2.5 text-[11px] leading-5 text-text-secondary"
+          :class="item.severity === 'attention' ? 'border-warning/20 bg-warning-subtle/40' : 'border-danger/20 bg-danger-subtle/40'"
         >
           <dl class="grid grid-cols-[auto_1fr] gap-x-3">
             <dt class="font-medium text-text-muted">Category</dt><dd>{{ item.diagnostic.category }}</dd>
+            <template v-if="item.diagnostic.code">
+              <dt class="font-medium text-text-muted">Code</dt><dd class="font-mono">{{ item.diagnostic.code }}</dd>
+            </template>
+            <template v-if="item.diagnostic.operation">
+              <dt class="font-medium text-text-muted">Operation</dt><dd class="font-mono">{{ item.diagnostic.operation }}</dd>
+            </template>
+            <template v-if="item.diagnostic.path">
+              <dt class="font-medium text-text-muted">Path</dt><dd class="font-mono">{{ item.diagnostic.path }}</dd>
+            </template>
             <dt class="font-medium text-text-muted">Message</dt><dd>{{ item.diagnostic.message }}</dd>
+            <template v-if="item.diagnostic.guidance">
+              <dt class="font-medium text-text-muted">Recovery</dt><dd>{{ item.diagnostic.guidance }}</dd>
+            </template>
             <dt class="font-medium text-text-muted">Reference</dt><dd class="font-mono">{{ item.diagnostic.referenceID }}</dd>
           </dl>
           <button

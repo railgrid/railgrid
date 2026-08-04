@@ -38,7 +38,6 @@ const (
 )
 
 const projectEinoAssistantMaxTrackedReads = 128
-const projectEinoAssistantMaxFailedPatchFingerprints = 32
 
 type projectAssistantApprovedPlan struct {
 	Goal               string    `json:"goal,omitempty"`
@@ -62,62 +61,75 @@ type projectEinoAssistantRunState struct {
 	mu         sync.Mutex
 	callbackMu sync.Mutex
 
-	messages                  []chatMessage
-	lastToolMessages          []chatMessage
-	toolEvidence              []chatMessage
-	toolCalls                 []chatToolCall
-	seenToolCalls             map[string]int
-	turn                      int
-	turnPolicy                projectAssistantTurnPolicy
-	projectRepositoryRef      string
-	toolPrompt                string
-	toolDiscovery             *projectEinoAssistantToolDiscovery
-	sessionSnapshot           *projectEinoAssistantSessionSnapshot
-	rolloutBudget             *projectEinoAssistantRolloutBudget
-	restoredRolloutBudget     *projectAssistantRolloutBudgetState
-	permissionBarrier         bool
-	approvedPlan              *projectAssistantApprovedPlan
-	executionPlan             *projectAssistantApprovedPlan
-	planProgress              projectAssistantPlanSnapshot
-	sourceMutationRevision    uint64
-	verifiedMutationRevision  uint64
-	commitRequired            bool
-	committedMutationRevision uint64
-	commitAttemptedRevision   uint64
-	verifiedWorkspaceDigest   string
-	committedWorkspaceDigest  string
-	checkedMutationRevision   uint64
-	verificationAttempted     bool
-	verificationOutcome       string
-	verificationSummary       string
-	verificationBlockers      []string
-	developmentSyncRevision   uint64
-	developmentSyncStatus     string
-	developmentSyncFailure    string
-	developmentSyncRetry      uint64
-	developmentSyncChanged    chan struct{}
-	completedReadCalls        map[string]uint64
-	observedReadFilePaths     map[string]struct{}
-	successfulMutationPaths   map[string]struct{}
-	readFileCoverage          map[string][]projectEinoAssistantLineRange
-	repeatedActionSignature   string
-	repeatedActionToolName    string
-	repeatedActionCount       int
-	patchFailureCount         int
-	failedPatchFingerprints   map[string]uint64
-	patchRecoveryPath         string
-	patchRecoveryReadComplete bool
-	runtimeWarmupAttempts     int
-	noProgressModelCallCount  int
-	actionBatchModelCall      int
-	actionBatchObserved       bool
-	actionBatchMadeProgress   bool
-	modelCallOrdinal          int
-	transientToolResults      map[string]string
-	transientPreviewImages    map[string]projectEinoAssistantTransientPreviewImage
-	transientToolResultCount  uint64
-	lastProgressMessage       string
-	deferSteeringOnce         bool
+	messages                         []chatMessage
+	lastToolMessages                 []chatMessage
+	toolEvidence                     []chatMessage
+	toolCalls                        []chatToolCall
+	seenToolCalls                    map[string]int
+	turn                             int
+	turnPolicy                       projectAssistantTurnPolicy
+	projectRepositoryRef             string
+	toolPrompt                       string
+	toolDiscovery                    *projectEinoAssistantToolDiscovery
+	sessionSnapshot                  *projectEinoAssistantSessionSnapshot
+	rolloutBudget                    *projectEinoAssistantRolloutBudget
+	restoredRolloutBudget            *projectAssistantRolloutBudgetState
+	permissionBarrier                bool
+	approvedPlan                     *projectAssistantApprovedPlan
+	executionPlan                    *projectAssistantApprovedPlan
+	planProgress                     projectAssistantPlanSnapshot
+	sourceMutationRevision           uint64
+	verifiedMutationRevision         uint64
+	commitRequired                   bool
+	committedMutationRevision        uint64
+	commitAttemptedRevision          uint64
+	verifiedWorkspaceDigest          string
+	committedWorkspaceDigest         string
+	checkedMutationRevision          uint64
+	verificationAttempted            bool
+	verificationOutcome              string
+	verificationSummary              string
+	verificationBlockers             []string
+	developmentSyncRevision          uint64
+	developmentSyncStatus            string
+	developmentSyncFailure           string
+	developmentSyncRetry             uint64
+	developmentSyncChanged           chan struct{}
+	completedReadCalls               map[string]uint64
+	observedReadFilePaths            map[string]struct{}
+	readFileVersions                 map[string]string
+	successfulMutationPaths          map[string]struct{}
+	mutationRecoveryRefs             map[string]struct{}
+	mutationRecoveryIdentities       map[string]projectAssistantMutationRecoveryIdentity
+	readFileCoverage                 map[string][]projectEinoAssistantLineRange
+	repeatedActionSignature          string
+	repeatedActionToolName           string
+	repeatedActionCount              int
+	runtimeWarmupAttempts            int
+	noProgressModelCallCount         int
+	actionBatchModelCall             int
+	actionBatchObserved              bool
+	actionBatchMadeProgress          bool
+	modelCallOrdinal                 int
+	transientToolResults             map[string]string
+	transientPreviewImages           map[string]projectEinoAssistantTransientPreviewImage
+	transientToolResultCount         uint64
+	lastProgressMessage              string
+	acceptedProgressCount            int
+	lastAcceptedProgressModelCall    int
+	progressReminder                 *projectEinoAssistantProgressReminder
+	progressReminderAttempts         int
+	progressReminderSilenceTriggered bool
+	deferSteeringOnce                bool
+}
+
+// projectAssistantMutationRecoveryIdentity is server-owned metadata for a
+// failed mutation action reference. It is persisted only in the run
+// checkpoint and never grants mutation authority. Target is the canonical
+// logical path; move_file references its source path rather than destination.
+type projectAssistantMutationRecoveryIdentity struct {
+	Operation string `json:"operation"`
+	Target    string `json:"target"`
 }
 
 type projectEinoAssistantLineRange struct {
@@ -145,14 +157,17 @@ func (s *projectEinoAssistantRunState) EmitToolCall(
 
 func newProjectEinoAssistantRunState() *projectEinoAssistantRunState {
 	return &projectEinoAssistantRunState{
-		seenToolCalls:           map[string]int{},
-		completedReadCalls:      map[string]uint64{},
-		readFileCoverage:        map[string][]projectEinoAssistantLineRange{},
-		successfulMutationPaths: map[string]struct{}{},
-		transientToolResults:    map[string]string{},
-		transientPreviewImages:  map[string]projectEinoAssistantTransientPreviewImage{},
-		developmentSyncChanged:  make(chan struct{}),
-		turnPolicy:              projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDebugging),
+		seenToolCalls:              map[string]int{},
+		completedReadCalls:         map[string]uint64{},
+		readFileVersions:           map[string]string{},
+		readFileCoverage:           map[string][]projectEinoAssistantLineRange{},
+		successfulMutationPaths:    map[string]struct{}{},
+		mutationRecoveryRefs:       map[string]struct{}{},
+		mutationRecoveryIdentities: map[string]projectAssistantMutationRecoveryIdentity{},
+		transientToolResults:       map[string]string{},
+		transientPreviewImages:     map[string]projectEinoAssistantTransientPreviewImage{},
+		developmentSyncChanged:     make(chan struct{}),
+		turnPolicy:                 projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDebugging),
 	}
 }
 
@@ -198,7 +213,120 @@ func (s *projectEinoAssistantRunState) AcceptProgressMessage(message string) boo
 		return false
 	}
 	s.lastProgressMessage = message
+	if s.acceptedProgressCount < projectEinoAssistantProgressReminderMaxAcceptedCount {
+		s.acceptedProgressCount++
+	}
+	s.lastAcceptedProgressModelCall = s.modelCallOrdinal
+	// An accepted update satisfies every reminder that was queued before this
+	// tool call. In particular, a concurrent write_todos/verification call in
+	// the same model batch must not leave a stale reminder for the next sample.
+	s.progressReminder = nil
+	s.progressReminderAttempts = 0
+	s.progressReminderSilenceTriggered = false
 	return true
+}
+
+func (s *projectEinoAssistantRunState) AcceptedProgressCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.acceptedProgressCount
+}
+
+func (s *projectEinoAssistantRunState) queueProgressReminderLocked(reminder projectEinoAssistantProgressReminder) bool {
+	if !projectEinoAssistantProgressReminderKindValid(reminder.Kind) || s.progressReminder != nil {
+		return false
+	}
+	if reminder.Kind == projectEinoAssistantProgressReminderVerification &&
+		s.acceptedProgressCount > 0 && s.lastAcceptedProgressModelCall == s.modelCallOrdinal {
+		return false
+	}
+	reminder.Detail = strings.TrimSpace(reminder.Detail)
+	s.progressReminder = &reminder
+	s.progressReminderAttempts = 0
+	return true
+}
+
+func (s *projectEinoAssistantRunState) QueueProgressReminder(kind, detail string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.queueProgressReminderLocked(projectEinoAssistantProgressReminder{
+		Kind:   strings.TrimSpace(kind),
+		Detail: strings.TrimSpace(detail),
+	})
+}
+
+func (s *projectEinoAssistantRunState) QueuePlanProgressReminder(previous, next projectAssistantPlanSnapshot) bool {
+	if s == nil || !projectEinoAssistantPlanPhaseTransition(previous, next) {
+		return false
+	}
+	active := ""
+	for _, step := range next.Steps {
+		if step.Status == "in_progress" {
+			active = strings.TrimSpace(step.ActiveForm)
+			if active == "" {
+				active = strings.TrimSpace(step.Content)
+			}
+			break
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.acceptedProgressCount > 0 && s.lastAcceptedProgressModelCall == s.modelCallOrdinal {
+		return false
+	}
+	return s.queueProgressReminderLocked(projectEinoAssistantProgressReminder{
+		Kind:   projectEinoAssistantProgressReminderPlan,
+		Detail: active,
+	})
+}
+
+func (s *projectEinoAssistantRunState) QueueVerificationProgressReminder(detail string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.queueProgressReminderLocked(projectEinoAssistantProgressReminder{
+		Kind:   projectEinoAssistantProgressReminderVerification,
+		Detail: strings.TrimSpace(detail),
+	})
+}
+
+func (s *projectEinoAssistantRunState) TakeProgressReminder(available bool) (projectEinoAssistantProgressReminder, bool) {
+	if s == nil {
+		return projectEinoAssistantProgressReminder{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !available || s.permissionBarrier || s.progressReminder == nil {
+		if !available || s.permissionBarrier {
+			s.progressReminder = nil
+			s.progressReminderAttempts = 0
+		}
+		return projectEinoAssistantProgressReminder{}, false
+	}
+	reminder := *s.progressReminder
+	s.progressReminderAttempts++
+	if s.progressReminderAttempts >= projectEinoAssistantProgressReminderMaxAttempts {
+		s.progressReminder = nil
+		s.progressReminderAttempts = 0
+	}
+	return reminder, true
+}
+
+func (s *projectEinoAssistantRunState) progressReminderPending() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.progressReminder != nil
 }
 
 func (s *projectEinoAssistantRunState) RegisterTransientToolResult(name, result string) string {
@@ -426,15 +554,6 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.repeatedActionSignature = projectEinoAssistantSanitizeActionSignature(state.RepeatedActionSignature)
 	s.repeatedActionToolName = projectToolBaseName(state.RepeatedActionToolName)
 	s.repeatedActionCount = min(max(state.RepeatedActionCount, 0), projectEinoAssistantRepeatedActionLimit)
-	s.patchFailureCount = min(max(state.PatchFailureCount, 0), projectEinoAssistantRepeatedActionLimit)
-	s.failedPatchFingerprints = projectEinoAssistantRestoreFailedPatchFingerprints(
-		state.FailedPatchFingerprints,
-		s.sourceMutationRevision,
-	)
-	if recoveryPath, err := workspace.CleanProjectPath(state.PatchRecoveryPath); err == nil {
-		s.patchRecoveryPath = recoveryPath
-		s.patchRecoveryReadComplete = state.PatchRecoveryReadComplete
-	}
 	s.runtimeWarmupAttempts = min(max(state.RuntimeWarmupAttempts, 0), projectEinoAssistantRepeatedActionLimit)
 	// The durable counter tracks consecutive model calls without progress.
 	// Bound restored state so a malformed checkpoint cannot disable the guard.
@@ -443,6 +562,26 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.actionBatchObserved = state.ActionBatchObserved
 	s.actionBatchMadeProgress = state.ActionBatchMadeProgress
 	s.modelCallOrdinal = max(state.ModelCallOrdinal, 0)
+	s.acceptedProgressCount = min(max(state.AcceptedProgressCount, 0), projectEinoAssistantProgressReminderMaxAcceptedCount)
+	s.lastAcceptedProgressModelCall = max(state.LastAcceptedProgressModelCall, 0)
+	s.progressReminderSilenceTriggered = state.ProgressReminderSilenceTriggered
+	if kind := strings.TrimSpace(state.ProgressReminderKind); projectEinoAssistantProgressReminderKindValid(kind) {
+		attempts := min(max(state.ProgressReminderAttempts, 0), projectEinoAssistantProgressReminderMaxAttempts)
+		if attempts >= projectEinoAssistantProgressReminderMaxAttempts {
+			s.progressReminder = nil
+			s.progressReminderAttempts = 0
+		} else {
+			s.progressReminder = &projectEinoAssistantProgressReminder{Kind: kind}
+			s.progressReminderAttempts = attempts
+		}
+	} else {
+		s.progressReminder = nil
+		s.progressReminderAttempts = 0
+		s.progressReminderSilenceTriggered = false
+	}
+	if s.lastAcceptedProgressModelCall > s.modelCallOrdinal {
+		s.lastAcceptedProgressModelCall = 0
+	}
 	if s.actionBatchModelCall > s.modelCallOrdinal {
 		s.actionBatchModelCall = 0
 		s.actionBatchObserved = false
@@ -462,7 +601,16 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.completedReadCalls = projectEinoAssistantSanitizeCompletedReads(state.CompletedReadCalls)
 	s.readFileCoverage = projectEinoAssistantRestoreReadCoverage(state.ReadFileCoverage)
 	s.observedReadFilePaths = projectEinoAssistantReadPathSet(state.ObservedReadFilePaths)
+	s.readFileVersions = projectEinoAssistantReadVersionMap(state.ReadFileVersions)
 	s.successfulMutationPaths = projectEinoAssistantReadPathSet(state.SuccessfulMutationPaths)
+	s.mutationRecoveryRefs = projectEinoAssistantRecoveryReferenceSet(state.MutationRecoveryRefs)
+	s.mutationRecoveryIdentities = projectEinoAssistantRecoveryIdentitySnapshot(state.MutationRecoveryIdentities)
+	for ref := range s.mutationRecoveryIdentities {
+		if s.mutationRecoveryRefs == nil {
+			s.mutationRecoveryRefs = map[string]struct{}{}
+		}
+		s.mutationRecoveryRefs[ref] = struct{}{}
+	}
 	s.sessionSnapshot = cloneProjectEinoAssistantSessionSnapshot(state.SessionSnapshot)
 	s.restoredRolloutBudget = cloneProjectAssistantRolloutBudgetStatePtr(state.RolloutBudget)
 }
@@ -513,14 +661,11 @@ func (s *projectEinoAssistantRunState) ApprovePlan(plan projectAssistantApproved
 	defer s.mu.Unlock()
 	s.approvedPlan = &normalized
 	// Approval closes the inspection phase. Let the mutation phase perform one
-	// fresh, bounded read of approved existing targets so exact patch anchors
-	// survive model-context reduction across the phase transition.
+	// fresh, bounded read of approved existing targets before ordinary edits.
 	s.completedReadCalls = map[string]uint64{}
 	s.readFileCoverage = map[string][]projectEinoAssistantLineRange{}
+	s.readFileVersions = map[string]string{}
 	s.successfulMutationPaths = map[string]struct{}{}
-	s.patchFailureCount = 0
-	s.patchRecoveryPath = ""
-	s.patchRecoveryReadComplete = false
 	s.runtimeWarmupAttempts = 0
 }
 
@@ -616,7 +761,6 @@ func (s *projectEinoAssistantRunState) RecordSourceMutation() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sourceMutationRevision++
-	s.failedPatchFingerprints = nil
 	if s.developmentSyncRevision != s.sourceMutationRevision {
 		s.developmentSyncRevision = s.sourceMutationRevision
 		s.developmentSyncStatus = "unknown"
@@ -794,6 +938,12 @@ func (s *projectEinoAssistantRunState) RecordDevelopmentVerification(ready bool)
 		return
 	}
 	s.verifiedMutationRevision = 0
+	if !ready {
+		s.queueProgressReminderLocked(projectEinoAssistantProgressReminder{
+			Kind:   projectEinoAssistantProgressReminderVerification,
+			Detail: "runtime verification did not pass",
+		})
+	}
 }
 
 func (s *projectEinoAssistantRunState) RecordDevelopmentVerificationResult(content string) {
@@ -837,6 +987,10 @@ func (s *projectEinoAssistantRunState) RecordDevelopmentVerificationResult(conte
 				s.sourceMutationRevision,
 			),
 		)
+		s.queueProgressReminderLocked(projectEinoAssistantProgressReminder{
+			Kind:   projectEinoAssistantProgressReminderVerification,
+			Detail: "verification is stale for the current workspace revision",
+		})
 		return
 	}
 	if status == "ready" {
@@ -845,9 +999,19 @@ func (s *projectEinoAssistantRunState) RecordDevelopmentVerificationResult(conte
 			s.verificationBlockers,
 			"verification returned a non-canonical ready status",
 		)
+		s.queueProgressReminderLocked(projectEinoAssistantProgressReminder{
+			Kind:   projectEinoAssistantProgressReminderVerification,
+			Detail: "verification returned an unavailable status",
+		})
 		return
 	}
 	s.verificationOutcome = status
+	if status != "ready" {
+		s.queueProgressReminderLocked(projectEinoAssistantProgressReminder{
+			Kind:   projectEinoAssistantProgressReminderVerification,
+			Detail: strings.TrimSpace(payload.Summary),
+		})
+	}
 }
 
 func (s *projectEinoAssistantRunState) CompletionEvidence() projectAssistantCompletionEvidence {
@@ -985,6 +1149,10 @@ func (s *projectEinoAssistantRunState) RecordVerificationBindingFailure(reason s
 	s.verificationOutcome = "not_ready"
 	s.verificationBlockers = append(s.verificationBlockers, strings.TrimSpace(reason))
 	s.verifiedWorkspaceDigest = ""
+	s.queueProgressReminderLocked(projectEinoAssistantProgressReminder{
+		Kind:   projectEinoAssistantProgressReminderVerification,
+		Detail: strings.TrimSpace(reason),
+	})
 }
 
 func (s *projectEinoAssistantRunState) SourceMutationRevisions() (uint64, uint64) {
@@ -1061,6 +1229,7 @@ func (s *projectEinoAssistantRunState) InvalidateObservedReadFile(path string) {
 	s.completedReadCalls = map[string]uint64{}
 	delete(s.readFileCoverage, path)
 	delete(s.observedReadFilePaths, path)
+	delete(s.readFileVersions, path)
 }
 
 func (s *projectEinoAssistantRunState) RecordObservedReadFile(path string) {
@@ -1077,6 +1246,47 @@ func (s *projectEinoAssistantRunState) RecordObservedReadFile(path string) {
 		s.observedReadFilePaths = map[string]struct{}{}
 	}
 	s.observedReadFilePaths[path] = struct{}{}
+}
+
+// RecordObservedReadFileVersion records complete read evidence for one path.
+// A version is intentionally stored separately from path presence so a
+// partial/range read can never authorize a stale-sensitive mutation.
+func (s *projectEinoAssistantRunState) RecordObservedReadFileVersion(path, version string) {
+	if s == nil || strings.TrimSpace(version) == "" {
+		return
+	}
+	path, err := workspace.CleanProjectPath(path)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readFileVersions == nil {
+		s.readFileVersions = map[string]string{}
+	}
+	if len(s.readFileVersions) >= projectEinoAssistantMaxTrackedReads {
+		if _, exists := s.readFileVersions[path]; !exists {
+			return
+		}
+	}
+	s.readFileVersions[path] = strings.TrimSpace(version)
+	if s.observedReadFilePaths == nil {
+		s.observedReadFilePaths = map[string]struct{}{}
+	}
+	s.observedReadFilePaths[path] = struct{}{}
+}
+
+func (s *projectEinoAssistantRunState) ReadFileVersion(path string) string {
+	if s == nil {
+		return ""
+	}
+	path, err := workspace.CleanProjectPath(path)
+	if err != nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.TrimSpace(s.readFileVersions[path])
 }
 
 func (s *projectEinoAssistantRunState) ObservedReadFilePaths() []string {
@@ -1118,85 +1328,95 @@ func (s *projectEinoAssistantRunState) SuccessfulMutationPaths() []string {
 	return projectEinoAssistantObservedReadPaths(s.successfulMutationPaths)
 }
 
-func (s *projectEinoAssistantRunState) PatchFingerprint(patch string) (string, uint64, bool) {
+// RecordMutationRecoveryReference records a server-generated public action ID
+// that belongs to this run. A model-supplied recoveryOf value is accepted only
+// when it is present in this set; paths are deliberately never used as a
+// fallback correlation key.
+func (s *projectEinoAssistantRunState) RecordMutationRecoveryReference(callID string) string {
+	return s.recordMutationRecoveryReference(callID, projectAssistantMutationRecoveryIdentity{}, false)
+}
+
+// RecordMutationRecoveryReferenceForMutation records a failed mutation action
+// reference together with its server-derived operation family and canonical
+// logical target. The identity is presentation-only and does not alter
+// authorization or the mutation itself.
+func (s *projectEinoAssistantRunState) RecordMutationRecoveryReferenceForMutation(callID, name string, args map[string]any) string {
+	identity, ok := projectAssistantMutationRecoveryIdentityFromTool(name, args)
+	return s.recordMutationRecoveryReference(callID, identity, ok)
+}
+
+func (s *projectEinoAssistantRunState) recordMutationRecoveryReference(callID string, identity projectAssistantMutationRecoveryIdentity, hasIdentity bool) string {
 	if s == nil {
-		return "", 0, false
+		return ""
 	}
-	normalized := strings.TrimSpace(strings.ReplaceAll(patch, "\r\n", "\n"))
-	digest := sha256.Sum256([]byte(normalized))
-	fingerprint := hex.EncodeToString(digest[:])
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	revision := s.sourceMutationRevision
-	failedRevision, found := s.failedPatchFingerprints[fingerprint]
-	return fingerprint, revision, found && failedRevision == revision
-}
-
-func (s *projectEinoAssistantRunState) RecordFailedPatchFingerprint(fingerprint string, revision uint64) {
-	if s == nil || strings.TrimSpace(fingerprint) == "" {
-		return
+	ref := projectAssistantActionPublicID(callID)
+	if ref == "" {
+		return ""
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if revision != s.sourceMutationRevision {
-		return
+	if s.mutationRecoveryRefs == nil {
+		s.mutationRecoveryRefs = map[string]struct{}{}
 	}
-	if s.failedPatchFingerprints == nil {
-		s.failedPatchFingerprints = map[string]uint64{}
+	if len(s.mutationRecoveryRefs) >= 128 {
+		s.mutationRecoveryRefs = map[string]struct{}{}
+		s.mutationRecoveryIdentities = map[string]projectAssistantMutationRecoveryIdentity{}
 	}
-	if _, exists := s.failedPatchFingerprints[fingerprint]; !exists && len(s.failedPatchFingerprints) >= projectEinoAssistantMaxFailedPatchFingerprints {
-		keys := make([]string, 0, len(s.failedPatchFingerprints))
-		for key := range s.failedPatchFingerprints {
-			keys = append(keys, key)
+	s.mutationRecoveryRefs[ref] = struct{}{}
+	if hasIdentity {
+		if s.mutationRecoveryIdentities == nil {
+			s.mutationRecoveryIdentities = map[string]projectAssistantMutationRecoveryIdentity{}
 		}
-		sort.Strings(keys)
-		delete(s.failedPatchFingerprints, keys[0])
+		s.mutationRecoveryIdentities[ref] = identity
 	}
-	s.failedPatchFingerprints[fingerprint] = revision
+	return ref
 }
 
-func projectEinoAssistantRestoreFailedPatchFingerprints(values map[string]uint64, revision uint64) map[string]uint64 {
-	if len(values) == 0 {
+func (s *projectEinoAssistantRunState) IsMutationRecoveryReference(ref string) bool {
+	if s == nil {
+		return false
+	}
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.mutationRecoveryRefs[ref]
+	return ok
+}
+
+// IsMutationRecoveryReferenceCompatible validates both the server-issued
+// reference and the retry's operation family/canonical target. No path-only
+// fallback is permitted when the reference is absent or lacks identity.
+func (s *projectEinoAssistantRunState) IsMutationRecoveryReferenceCompatible(ref, name string, args map[string]any) bool {
+	if s == nil {
+		return false
+	}
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return false
+	}
+	current, ok := projectAssistantMutationRecoveryIdentityFromTool(name, args)
+	if !ok {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prior, ok := s.mutationRecoveryIdentities[ref]
+	if !ok {
+		return false
+	}
+	return projectAssistantMutationRecoveryIdentityCompatible(prior, current)
+}
+
+func (s *projectEinoAssistantRunState) MutationRecoveryReferences() []string {
+	if s == nil {
 		return nil
 	}
-	keys := make([]string, 0, len(values))
-	for fingerprint, failedRevision := range values {
-		fingerprint = strings.TrimSpace(fingerprint)
-		if len(fingerprint) != sha256.Size*2 || failedRevision != revision {
-			continue
-		}
-		if _, err := hex.DecodeString(fingerprint); err != nil {
-			continue
-		}
-		keys = append(keys, fingerprint)
-	}
-	sort.Strings(keys)
-	if len(keys) > projectEinoAssistantMaxFailedPatchFingerprints {
-		keys = keys[:projectEinoAssistantMaxFailedPatchFingerprints]
-	}
-	restored := make(map[string]uint64, len(keys))
-	for _, fingerprint := range keys {
-		restored[fingerprint] = revision
-	}
-	if len(restored) == 0 {
-		return nil
-	}
-	return restored
-}
-
-func (s *projectEinoAssistantRunState) RecordPatchRecoveryRead(path string) {
-	if s == nil {
-		return
-	}
-	path, err := workspace.CleanProjectPath(path)
-	if err != nil {
-		return
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if path == s.patchRecoveryPath {
-		s.patchRecoveryReadComplete = true
-	}
+	return projectEinoAssistantRecoveryReferences(s.mutationRecoveryRefs)
 }
 
 func (s *projectEinoAssistantRunState) RuntimeWarmupAttempts() int {
@@ -1206,15 +1426,6 @@ func (s *projectEinoAssistantRunState) RuntimeWarmupAttempts() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.runtimeWarmupAttempts
-}
-
-func (s *projectEinoAssistantRunState) PatchFailureCount() int {
-	if s == nil {
-		return 0
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.patchFailureCount
 }
 
 func (s *projectEinoAssistantRunState) RecordCompletedAction(name, arguments string, madeProgress bool) {
@@ -1269,6 +1480,23 @@ func (s *projectEinoAssistantRunState) NextModelCallOrdinal() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.modelCallOrdinal++
+	if !s.progressReminderSilenceTriggered {
+		if s.acceptedProgressCount == 0 {
+			if s.modelCallOrdinal >= projectEinoAssistantProgressReminderSilenceModelCalls {
+				s.queueProgressReminderLocked(projectEinoAssistantProgressReminder{
+					Kind:   projectEinoAssistantProgressReminderSilence,
+					Detail: "several model calls have passed without an accepted progress update",
+				})
+				s.progressReminderSilenceTriggered = true
+			}
+		} else if s.modelCallOrdinal-s.lastAcceptedProgressModelCall >= projectEinoAssistantProgressReminderSilenceModelCalls {
+			s.queueProgressReminderLocked(projectEinoAssistantProgressReminder{
+				Kind:   projectEinoAssistantProgressReminderSilence,
+				Detail: "several model calls have passed without an accepted progress update",
+			})
+			s.progressReminderSilenceTriggered = true
+		}
+	}
 	return s.modelCallOrdinal
 }
 
@@ -1460,52 +1688,64 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 	if s.rolloutBudget != nil {
 		rolloutBudget = s.rolloutBudget.Snapshot()
 	}
+	progressReminderKind := ""
+	if s.progressReminder != nil {
+		progressReminderKind = s.progressReminder.Kind
+	}
+	progressReminderAttempts := 0
+	if s.progressReminder != nil {
+		progressReminderAttempts = min(max(s.progressReminderAttempts, 0), projectEinoAssistantProgressReminderMaxAttempts-1)
+	}
 	return projectAssistantCheckpointState{
-		Messages:                  cloneChatMessages(s.messages),
-		LastToolMessages:          cloneChatMessages(s.lastToolMessages),
-		ToolCalls:                 cloneProjectAssistantToolCalls(s.toolCalls),
-		SeenToolCalls:             projectEinoAssistantSanitizeSeenToolCalls(s.seenToolCalls),
-		Turn:                      s.turn,
-		ProjectRepositoryRef:      strings.TrimSpace(s.projectRepositoryRef),
-		TurnPolicy:                projectAssistantCheckpointTurnPolicyForPolicy(s.turnPolicy),
-		ApprovedPlan:              cloneProjectAssistantApprovedPlan(s.approvedPlan),
-		ExecutionPlan:             cloneProjectAssistantApprovedPlan(s.executionPlan),
-		PlanProgress:              cloneProjectAssistantPlanSnapshot(s.planProgress),
-		SourceMutationRevision:    s.sourceMutationRevision,
-		VerifiedMutationRevision:  s.verifiedMutationRevision,
-		DevelopmentSyncRevision:   s.developmentSyncRevision,
-		DevelopmentSyncStatus:     strings.TrimSpace(s.developmentSyncStatus),
-		DevelopmentSyncFailure:    strings.TrimSpace(s.developmentSyncFailure),
-		DevelopmentSyncRetry:      s.developmentSyncRetry,
-		CommitRequired:            s.commitRequired,
-		CommittedMutationRevision: s.committedMutationRevision,
-		CommitAttemptedRevision:   s.commitAttemptedRevision,
-		VerifiedWorkspaceDigest:   s.verifiedWorkspaceDigest,
-		CommittedWorkspaceDigest:  s.committedWorkspaceDigest,
-		CheckedMutationRevision:   s.checkedMutationRevision,
-		VerificationAttempted:     s.verificationAttempted,
-		VerificationOutcome:       strings.TrimSpace(s.verificationOutcome),
-		VerificationSummary:       strings.TrimSpace(s.verificationSummary),
-		VerificationBlockers:      append([]string(nil), s.verificationBlockers...),
-		RepeatedActionSignature:   s.repeatedActionSignature,
-		RepeatedActionToolName:    s.repeatedActionToolName,
-		RepeatedActionCount:       s.repeatedActionCount,
-		PatchFailureCount:         s.patchFailureCount,
-		FailedPatchFingerprints:   projectEinoAssistantRestoreFailedPatchFingerprints(s.failedPatchFingerprints, s.sourceMutationRevision),
-		PatchRecoveryPath:         s.patchRecoveryPath,
-		PatchRecoveryReadComplete: s.patchRecoveryReadComplete,
-		RuntimeWarmupAttempts:     s.runtimeWarmupAttempts,
-		NoProgressModelCallCount:  s.noProgressModelCallCount,
-		ActionBatchModelCall:      s.actionBatchModelCall,
-		ActionBatchObserved:       s.actionBatchObserved,
-		ActionBatchMadeProgress:   s.actionBatchMadeProgress,
-		ModelCallOrdinal:          s.modelCallOrdinal,
-		CompletedReadCalls:        projectEinoAssistantCloneCompletedReads(s.completedReadCalls),
-		ReadFileCoverage:          projectEinoAssistantCheckpointReadCoverage(s.readFileCoverage),
-		ObservedReadFilePaths:     projectEinoAssistantObservedReadPaths(s.observedReadFilePaths),
-		SuccessfulMutationPaths:   projectEinoAssistantObservedReadPaths(s.successfulMutationPaths),
-		SessionSnapshot:           cloneProjectEinoAssistantSessionSnapshot(s.sessionSnapshot),
-		RolloutBudget:             rolloutBudget,
+		Messages:                         cloneChatMessages(s.messages),
+		LastToolMessages:                 cloneChatMessages(s.lastToolMessages),
+		ToolCalls:                        cloneProjectAssistantToolCalls(s.toolCalls),
+		SeenToolCalls:                    projectEinoAssistantSanitizeSeenToolCalls(s.seenToolCalls),
+		Turn:                             s.turn,
+		ProjectRepositoryRef:             strings.TrimSpace(s.projectRepositoryRef),
+		TurnPolicy:                       projectAssistantCheckpointTurnPolicyForPolicy(s.turnPolicy),
+		ApprovedPlan:                     cloneProjectAssistantApprovedPlan(s.approvedPlan),
+		ExecutionPlan:                    cloneProjectAssistantApprovedPlan(s.executionPlan),
+		PlanProgress:                     cloneProjectAssistantPlanSnapshot(s.planProgress),
+		SourceMutationRevision:           s.sourceMutationRevision,
+		VerifiedMutationRevision:         s.verifiedMutationRevision,
+		DevelopmentSyncRevision:          s.developmentSyncRevision,
+		DevelopmentSyncStatus:            strings.TrimSpace(s.developmentSyncStatus),
+		DevelopmentSyncFailure:           strings.TrimSpace(s.developmentSyncFailure),
+		DevelopmentSyncRetry:             s.developmentSyncRetry,
+		CommitRequired:                   s.commitRequired,
+		CommittedMutationRevision:        s.committedMutationRevision,
+		CommitAttemptedRevision:          s.commitAttemptedRevision,
+		VerifiedWorkspaceDigest:          s.verifiedWorkspaceDigest,
+		CommittedWorkspaceDigest:         s.committedWorkspaceDigest,
+		CheckedMutationRevision:          s.checkedMutationRevision,
+		VerificationAttempted:            s.verificationAttempted,
+		VerificationOutcome:              strings.TrimSpace(s.verificationOutcome),
+		VerificationSummary:              strings.TrimSpace(s.verificationSummary),
+		VerificationBlockers:             append([]string(nil), s.verificationBlockers...),
+		RepeatedActionSignature:          s.repeatedActionSignature,
+		RepeatedActionToolName:           s.repeatedActionToolName,
+		RepeatedActionCount:              s.repeatedActionCount,
+		RuntimeWarmupAttempts:            s.runtimeWarmupAttempts,
+		NoProgressModelCallCount:         s.noProgressModelCallCount,
+		ActionBatchModelCall:             s.actionBatchModelCall,
+		ActionBatchObserved:              s.actionBatchObserved,
+		ActionBatchMadeProgress:          s.actionBatchMadeProgress,
+		ModelCallOrdinal:                 s.modelCallOrdinal,
+		AcceptedProgressCount:            s.acceptedProgressCount,
+		LastAcceptedProgressModelCall:    s.lastAcceptedProgressModelCall,
+		ProgressReminderKind:             progressReminderKind,
+		ProgressReminderAttempts:         progressReminderAttempts,
+		ProgressReminderSilenceTriggered: s.progressReminderSilenceTriggered,
+		CompletedReadCalls:               projectEinoAssistantCloneCompletedReads(s.completedReadCalls),
+		ReadFileCoverage:                 projectEinoAssistantCheckpointReadCoverage(s.readFileCoverage),
+		ObservedReadFilePaths:            projectEinoAssistantObservedReadPaths(s.observedReadFilePaths),
+		ReadFileVersions:                 projectEinoAssistantCloneReadVersions(s.readFileVersions),
+		SuccessfulMutationPaths:          projectEinoAssistantObservedReadPaths(s.successfulMutationPaths),
+		MutationRecoveryRefs:             projectEinoAssistantRecoveryReferences(s.mutationRecoveryRefs),
+		MutationRecoveryIdentities:       projectEinoAssistantRecoveryIdentitySnapshot(s.mutationRecoveryIdentities),
+		SessionSnapshot:                  cloneProjectEinoAssistantSessionSnapshot(s.sessionSnapshot),
+		RolloutBudget:                    rolloutBudget,
 	}
 }
 
@@ -1528,12 +1768,104 @@ func projectEinoAssistantReadPathSet(paths []string) map[string]struct{} {
 	return out
 }
 
+func projectEinoAssistantReadVersionMap(versions map[string]string) map[string]string {
+	out := make(map[string]string, min(len(versions), projectEinoAssistantMaxTrackedReads))
+	for rawPath, rawVersion := range versions {
+		if len(out) >= projectEinoAssistantMaxTrackedReads {
+			break
+		}
+		path, err := workspace.CleanProjectPath(rawPath)
+		if err != nil || strings.TrimSpace(rawVersion) == "" || len([]byte(rawVersion)) > workspace.MaxFileVersionBytes {
+			continue
+		}
+		out[path] = strings.TrimSpace(rawVersion)
+	}
+	return out
+}
+
+func projectEinoAssistantCloneReadVersions(versions map[string]string) map[string]string {
+	if len(versions) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(versions))
+	for path, version := range versions {
+		out[path] = version
+	}
+	return out
+}
+
 func projectEinoAssistantObservedReadPaths(paths map[string]struct{}) []string {
 	out := make([]string, 0, len(paths))
 	for path := range paths {
 		out = append(out, path)
 	}
 	sort.Strings(out)
+	return out
+}
+
+func projectEinoAssistantRecoveryIdentitySnapshot(in map[string]projectAssistantMutationRecoveryIdentity) map[string]projectAssistantMutationRecoveryIdentity {
+	if len(in) == 0 {
+		return nil
+	}
+	refs := make([]string, 0, len(in))
+	for ref := range in {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+	out := make(map[string]projectAssistantMutationRecoveryIdentity, min(len(refs), 128))
+	for _, rawRef := range refs {
+		if len(out) >= 128 {
+			break
+		}
+		ref := strings.TrimSpace(rawRef)
+		if ref == "" || len([]byte(ref)) > 120 {
+			continue
+		}
+		identity := in[rawRef]
+		identity.Operation = projectAssistantBoundedMutationField(identity.Operation, 32)
+		identity.Target = strings.TrimSpace(identity.Target)
+		if len([]byte(identity.Target)) > 240 || projectAssistantMutationRecoveryOperationFamily(identity.Operation) == "" || identity.Target == "" {
+			continue
+		}
+		if clean, err := workspace.CleanProjectPath(identity.Target); err == nil {
+			identity.Target = clean
+		} else {
+			continue
+		}
+		out[ref] = identity
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func projectEinoAssistantRecoveryReferences(refs map[string]struct{}) []string {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(refs))
+	for ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref != "" {
+			out = append(out, ref)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func projectEinoAssistantRecoveryReferenceSet(refs []string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if ref != "" && len(ref) <= 120 {
+			out[ref] = struct{}{}
+		}
+		if len(out) >= 128 {
+			break
+		}
+	}
 	return out
 }
 

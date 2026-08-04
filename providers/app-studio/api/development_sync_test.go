@@ -253,7 +253,7 @@ func TestDevelopmentSyncFailureSurfacesAsVerificationBlocker(t *testing.T) {
 		t.Fatalf("lastDevelopmentSyncFailure = %q, want empty before any failure", got)
 	}
 
-	server.recordDevelopmentSyncFailure(id, project, "the last workspace sync after write_file failed: boom")
+	server.recordDevelopmentSyncFailure(id, project, "the last workspace sync after create_file failed: boom")
 	runCtx := projectAssistantWorkflowRunContext{Server: server, Project: project, Identity: id}
 	if got := projectAssistantLastSyncFailure(runCtx); !strings.Contains(got, "boom") {
 		t.Fatalf("projectAssistantLastSyncFailure = %q, want the recorded reason", got)
@@ -310,7 +310,7 @@ func TestDevelopmentSyncSchedulingPreservesMutationOrder(t *testing.T) {
 	releaseFirst := make(chan struct{})
 	server.developmentSyncAfterMutation = func(_ identity, _ *aiv1alpha1.Project, name string) error {
 		switch name {
-		case projectToolApplyPatch:
+		case projectToolEditFile:
 			close(firstEntered)
 			<-releaseFirst
 		case projectToolSelectTemplate:
@@ -321,7 +321,7 @@ func TestDevelopmentSyncSchedulingPreservesMutationOrder(t *testing.T) {
 
 	firstDone := make(chan error, 1)
 	secondDone := make(chan error, 1)
-	if !server.scheduleDevelopmentSyncAfterMutationWithCompletion(id, project, projectToolApplyPatch, func(err error) { firstDone <- err }) {
+	if !server.scheduleDevelopmentSyncAfterMutationWithCompletion(id, project, projectToolEditFile, func(err error) { firstDone <- err }) {
 		t.Fatal("first development sync was not scheduled")
 	}
 	if !server.scheduleDevelopmentSyncAfterMutationWithCompletion(id, project, projectToolSelectTemplate, func(err error) { secondDone <- err }) {

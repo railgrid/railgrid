@@ -12,7 +12,7 @@ const { outputText } = ts.transpileModule(source, {
   },
 })
 const moduleURL = `data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`
-const { formatAssistantWorkedDuration, parseAssistantProgress } = await import(moduleURL)
+const { AssistantWorkedDurationClock, formatAssistantWorkedDuration, parseAssistantProgress } = await import(moduleURL)
 
 test('parses the bounded versioned assistant progress contract', () => {
   assert.deepEqual(parseAssistantProgress({
@@ -70,4 +70,23 @@ test('formats Codex-style worked durations', () => {
   assert.equal(formatAssistantWorkedDuration(200), '1s')
   assert.equal(formatAssistantWorkedDuration(83_400), '1m 23s')
   assert.equal(formatAssistantWorkedDuration(3_780_000), '1h 3m')
+})
+
+test('advances active worked duration, freezes pauses, and trusts terminal snapshots', () => {
+  const clock = new AssistantWorkedDurationClock()
+  const observation = {
+    messageID: 'assistant-1',
+    snapshotDurationMs: 42_000,
+    nowMs: 1_000,
+    ticking: true,
+    terminal: false,
+  }
+
+  assert.equal(clock.observe(observation), 42_000)
+  assert.equal(clock.observe({ ...observation, nowMs: 2_000 }), 43_000)
+  assert.equal(clock.observe({ ...observation, nowMs: 2_500, ticking: false }), 43_500)
+  assert.equal(clock.observe({ ...observation, nowMs: 8_000, ticking: false }), 43_500)
+  assert.equal(clock.observe({ ...observation, nowMs: 8_000, snapshotDurationMs: 44_000, ticking: true }), 44_000)
+  assert.equal(clock.observe({ ...observation, nowMs: 9_000, snapshotDurationMs: 44_000 }), 45_000)
+  assert.equal(clock.observe({ ...observation, nowMs: 10_000, snapshotDurationMs: 44_700, terminal: true }), 44_700)
 })

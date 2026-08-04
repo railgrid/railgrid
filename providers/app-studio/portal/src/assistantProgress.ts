@@ -5,6 +5,73 @@ export interface AssistantProgress {
   workedDurationMs: number
 }
 
+interface AssistantWorkedDurationClockState {
+  snapshotDurationMs: number
+  displayedDurationMs: number
+  segmentBaseMs: number
+  observedAtMs: number
+  ticking: boolean
+}
+
+export interface AssistantWorkedDurationObservation {
+  messageID: string
+  snapshotDurationMs: number
+  nowMs: number
+  ticking: boolean
+  terminal: boolean
+}
+
+/**
+ * Advances a persisted worked-duration snapshot between server updates without
+ * counting permission/input pauses or carrying client estimates into the
+ * terminal value. A changed snapshot is authoritative and starts a new local
+ * timing segment, which prevents reconnects from double-counting elapsed time.
+ */
+export class AssistantWorkedDurationClock {
+  private readonly states = new Map<string, AssistantWorkedDurationClockState>()
+
+  observe(observation: AssistantWorkedDurationObservation): number {
+    const snapshotDurationMs = Math.max(0, observation.snapshotDurationMs)
+    const nowMs = Number.isFinite(observation.nowMs) ? observation.nowMs : Date.now()
+    if (observation.terminal) {
+      this.states.delete(observation.messageID)
+      return snapshotDurationMs
+    }
+
+    let state = this.states.get(observation.messageID)
+    if (!state) {
+      state = {
+        snapshotDurationMs,
+        displayedDurationMs: snapshotDurationMs,
+        segmentBaseMs: snapshotDurationMs,
+        observedAtMs: nowMs,
+        ticking: observation.ticking,
+      }
+      this.states.set(observation.messageID, state)
+      return state.displayedDurationMs
+    }
+
+    if (state.ticking) {
+      state.displayedDurationMs = state.segmentBaseMs + Math.max(0, nowMs - state.observedAtMs)
+    }
+    if (state.snapshotDurationMs !== snapshotDurationMs) {
+      state.snapshotDurationMs = snapshotDurationMs
+      state.displayedDurationMs = snapshotDurationMs
+      state.segmentBaseMs = snapshotDurationMs
+      state.observedAtMs = nowMs
+    } else if (observation.ticking !== state.ticking) {
+      state.segmentBaseMs = state.displayedDurationMs
+      state.observedAtMs = nowMs
+    }
+    state.ticking = observation.ticking
+    return state.displayedDurationMs
+  }
+
+  clear(): void {
+    this.states.clear()
+  }
+}
+
 const MAX_MESSAGES = 32
 const MAX_MESSAGE_BYTES = 600
 const MAX_DURATION_MS = 7 * 24 * 60 * 60 * 1000

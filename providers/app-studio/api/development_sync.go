@@ -578,7 +578,8 @@ func (s *Server) projectAssistantPreviewRefreshNeeded(_ context.Context, _ works
 
 func shouldSyncDevelopmentAfterTool(name string) bool {
 	switch projectToolBaseName(name) {
-	case projectToolApplyPatch, projectToolSelectTemplate, projectActionWorkspaceSync, projectActionRestoreWorkspace:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile,
+		projectToolSelectTemplate, projectActionWorkspaceSync, projectActionRestoreWorkspace:
 		return true
 	default:
 		return false

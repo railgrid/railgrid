@@ -261,6 +261,40 @@ func TestProjectAssistantEnhancedPreviewInspectionReturnsImageWithoutPersistingB
 	}
 }
 
+func TestProjectAssistantTextPreviewInspectionProjectsFailureForLiveAndReplay(t *testing.T) {
+	h := newProjectAssistantV2ToolHarness(t, "text-preview-presentation")
+	result := `{"status":"failed","failureKind":"assertion","assertions":[{"kind":"text_present","text":"Pen Sales","passed":true},{"kind":"text_present","text":"Loading pens","passed":false}]}`
+	backend := projectAssistantToolFunc{
+		spec: projectAssistantToolSpec{Name: projectToolInspectDevelopmentPreview, Risk: projectAssistantToolRiskRead},
+		call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
+			return result, nil
+		},
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		events := []projectToolCallStreamEvent{}
+		req := h.req
+		req.StreamCallbacks.OnToolCall = func(event projectToolCallStreamEvent) {
+			events = append(events, event)
+		}
+		tool := projectEinoAssistantTool{server: h.server, tool: backend, req: req, runState: newProjectEinoAssistantRunState()}
+		if _, err := tool.invokeAllowedTool(context.Background(), "call-text-preview", backend.Spec(), map[string]any{"path": "/"}); err != nil {
+			t.Fatalf("attempt %d: %v", attempt+1, err)
+		}
+		terminal := events[len(events)-1]
+		if terminal.Status != "failed" || terminal.PreviewInspection == nil {
+			t.Fatalf("attempt %d terminal event = %#v", attempt+1, terminal)
+		}
+		if terminal.PreviewInspection.FailureKind != "assertion" || terminal.PreviewInspection.AssertionCount != 2 || terminal.PreviewInspection.FailedAssertionCount != 1 {
+			t.Fatalf("attempt %d preview metadata = %#v", attempt+1, terminal.PreviewInspection)
+		}
+		action := projectAssistantActionFeedItemFromToolCall(terminal)
+		if action.Title != "Preview assertions did not match" || action.Severity != projectAssistantActionFeedSeverityAttention || action.Diagnostic == nil || action.Diagnostic.Code != "preview_assertion_mismatch" {
+			t.Fatalf("attempt %d action = %#v", attempt+1, action)
+		}
+	}
+}
+
 func TestProjectAssistantModelCapabilitiesFailClosed(t *testing.T) {
 	if projectAssistantCapabilitiesForModel(projectLLMSettings{Provider: defaultProjectLLMProvider, Model: "unknown-model"}).VisionToolResults {
 		t.Fatal("unknown model was granted image tool results")

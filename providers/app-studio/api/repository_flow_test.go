@@ -114,7 +114,11 @@ func TestProjectToolAllowlistSeparatesWorkspaceAndGitTools(t *testing.T) {
 		"set_runtime_env",
 		"exec_command",
 		"ask_follow_up",
-		"apply_patch",
+		"create_file",
+		"replace_file",
+		"edit_file",
+		"delete_file",
+		"move_file",
 		"commit_project_files",
 	} {
 		if !projectLocalToolAllowed(name) {
@@ -155,8 +159,10 @@ func TestProjectAssistantCanonicalWorkspaceReadSurface(t *testing.T) {
 			t.Fatalf("legacy read tool %q remains in App Studio registry", legacy)
 		}
 	}
-	if !registry.Has(projectToolApplyPatch) {
-		t.Fatalf("App Studio mutation tool %q is missing", projectToolApplyPatch)
+	for _, mutation := range []string{projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile} {
+		if !registry.Has(mutation) {
+			t.Fatalf("App Studio mutation tool %q is missing", mutation)
+		}
 	}
 	followUp, ok := registry.Get(projectToolAskFollowUp)
 	if !ok {
@@ -192,7 +198,12 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 	want := []string{
 		"define_initial_project_plan",
 		"ask_follow_up",
-		"apply_patch",
+		"read_file",
+		"create_file",
+		"replace_file",
+		"edit_file",
+		"delete_file",
+		"move_file",
 		"select_project_template",
 		"get_project_checkpoints",
 		"check_project_build",
@@ -217,21 +228,21 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 	}
 
 	all := projectChatToolNames(registry.ChatTools(true))
-	wantAll := append([]string(nil), want[:9]...)
+	wantAll := append([]string(nil), want[:14]...)
 	wantAll = append(wantAll, "commit_project_files")
-	wantAll = append(wantAll, want[9:]...)
+	wantAll = append(wantAll, want[14:]...)
 	if strings.Join(all, ",") != strings.Join(wantAll, ",") {
 		t.Fatalf("tool names with commit bridge = %v, want %v", all, wantAll)
 	}
 	if !registry.Has(" COMMIT_PROJECT_FILES ") {
 		t.Fatal("registry should match tool names case-insensitively")
 	}
-	tool, ok := registry.Get("apply_patch")
+	tool, ok := registry.Get(projectToolEditFile)
 	if !ok {
-		t.Fatal("apply_patch missing from registry")
+		t.Fatal("edit_file missing from registry")
 	}
 	if got := tool.Spec().Risk; got != projectAssistantToolRiskWrite {
-		t.Fatalf("apply_patch risk = %q, want %q", got, projectAssistantToolRiskWrite)
+		t.Fatalf("edit_file risk = %q, want %q", got, projectAssistantToolRiskWrite)
 	}
 }
 
@@ -469,7 +480,7 @@ func TestProjectAssistantWorkspaceInspectPromptUsesCanonicalReads(t *testing.T) 
 	prompt := projectSystemPromptForMode(project, repository, projectAssistantCollaborationModeDefault, false)
 	for _, want := range []string{
 		"Use the current project snapshot first, then bounded reads and searches",
-		"The only source-mutation tool is apply_patch",
+		"The source-mutation tools are create_file, replace_file, edit_file, delete_file, and move_file",
 		"use verify_development_runtime only when that evidence is relevant",
 		"Never call commit_project_files unless the user explicitly requested repository persistence",
 	} {
@@ -487,12 +498,33 @@ func TestProjectAssistantWorkspaceInspectPromptUsesCanonicalReads(t *testing.T) 
 			t.Fatalf("prompt should not direct file inspection through provider-code tool %q:\n%s", unwanted, prompt)
 		}
 	}
-	if !strings.Contains(prompt, "use report_progress when it is available") ||
-		!strings.Contains(prompt, "brief natural-language progress updates") ||
-		!strings.Contains(prompt, "meaningful phase finishes") ||
-		!strings.Contains(prompt, "use it as the authoritative live checklist") ||
-		!strings.Contains(prompt, "Before moving to the next step, mark the finished step completed") ||
-		!strings.Contains(prompt, "Do not name tools, expose hidden reasoning") ||
+	if !strings.Contains(prompt, "## User-visible progress") ||
+		!strings.Contains(prompt, "report_progress is the only way to provide mid-turn commentary") ||
+		!strings.Contains(prompt, "normal assistant response is the terminal final answer") ||
+		!strings.Contains(prompt, "Before the first substantial action group, call report_progress once") ||
+		!strings.Contains(prompt, "approximately 60 seconds") ||
+		!strings.Contains(prompt, "completing a meaningful plan phase") ||
+		!strings.Contains(prompt, "new evidence changes the approach") ||
+		!strings.Contains(prompt, "you encounter a blocker") ||
+		!strings.Contains(prompt, "before and after lengthy verification") ||
+		!strings.Contains(prompt, "Skip progress for trivial reads") ||
+		!strings.Contains(prompt, "does not end or interrupt the turn") ||
+		!strings.Contains(prompt, "If report_progress is unavailable, continue without it") ||
+		!strings.Contains(prompt, "one or two concise sentences") ||
+		!strings.Contains(prompt, "use it as the sole authority for checklist state in non-trivial Default mode work") ||
+		!strings.Contains(prompt, "report_progress is only user-facing commentary; it never updates or replaces the checklist") ||
+		!strings.Contains(prompt, "Every model-authored checklist change must be a full-list write_todos update") ||
+		!strings.Contains(prompt, "Immediately after defining or receiving a plan, write the full list with evidence-grounded statuses") ||
+		!strings.Contains(prompt, "Before moving to another phase, write the full list again; mark a step completed only when current direct evidence supports it") ||
+		!strings.Contains(prompt, "For blocked or unfinished work, use pending (a non-complete status) and never invent a blocked status") ||
+		!strings.Contains(prompt, "After verification changes completion evidence, immediately write the full list again") ||
+		!strings.Contains(prompt, "Immediately before the terminal response, write the full list one final time") ||
+		!strings.Contains(prompt, "Runtime readiness, HTTP 200, and preview reachability are evidence only for those narrow conditions") ||
+		!strings.Contains(prompt, "cannot alone complete implementation or application-behavior steps") ||
+		!strings.Contains(prompt, "Do not infer broader completion from them or any other indirect status") ||
+		!strings.Contains(prompt, "Do not name tools in user-visible progress, expose hidden reasoning") ||
+		!strings.Contains(prompt, "raw arguments, raw results, logs, or secrets") ||
+		!strings.Contains(prompt, "do not repeat the plan, checklist, or status UI") ||
 		!strings.Contains(prompt, "Do not narrate each tool call") {
 		t.Fatalf("prompt missing milestone and per-tool narration guidance:\n%s", prompt)
 	}
@@ -598,11 +630,7 @@ func TestSummarizeProjectToolArgumentsWorkspaceReadTools(t *testing.T) {
 			args: `{"includeFiles":true,"maxFiles":12}`,
 			want: []string{"includeFiles true", "maxFiles 12"},
 		},
-		{
-			name: "apply_patch",
-			args: `{"patch":"*** Begin Patch\n*** Update File: src/App.tsx\n@@\n-old\n+new\n*** End Patch"}`,
-			want: []string{"1 path(s): src/App.tsx"},
-		},
+		{name: "edit_file", args: `{"path":"src/App.tsx","oldString":"secret-ish","newString":"new"}`, want: []string{"path src/App.tsx"}},
 		{
 			name: "commit_project_files",
 			args: `{"repositoryRef":"demo","message":"Update app","paths":["src/App.tsx"]}`,
@@ -620,7 +648,7 @@ func TestSummarizeProjectToolArgumentsWorkspaceReadTools(t *testing.T) {
 			if (tt.name == projectToolGlob || tt.name == projectToolGrep) && !strings.HasPrefix(got, "path src; ") {
 				t.Fatalf("summary = %q, want real path first", got)
 			}
-			if tt.name == "apply_patch" && strings.Contains(got, "secret-ish") {
+			if tt.name == "edit_file" && strings.Contains(got, "secret-ish") {
 				t.Fatalf("summary leaked content: %q", got)
 			}
 		})
@@ -652,9 +680,9 @@ func TestSummarizeProjectToolResultWorkspaceReadTools(t *testing.T) {
 		})
 	}
 
-	mutationResult := `{"operation":"apply_patch","path":"src/App.tsx","additions":2,"deletions":1,"replacements":1,"patch":"secret-ish body"}`
-	got := summarizeProjectToolResult("apply_patch", mutationResult)
-	for _, want := range []string{"apply_patch", "src/App.tsx", "+2", "-1", "1 replacement(s)"} {
+	mutationResult := `{"operation":"edit_file","path":"src/App.tsx","additions":2,"deletions":1,"replacements":1,"diff":"secret-ish body"}`
+	got := summarizeProjectToolResult("edit_file", mutationResult)
+	for _, want := range []string{"edit_file", "src/App.tsx", "+2", "-1", "1 replacement(s)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("summary = %q, want %q", got, want)
 		}
@@ -941,23 +969,21 @@ func TestCallProjectMCPToolTreatsIsErrorAsFailure(t *testing.T) {
 	}
 }
 
-func TestProjectLocalToolRunsContextualPatch(t *testing.T) {
+func TestProjectLocalToolRunsCreateFile(t *testing.T) {
 	workspaces := workspace.NewFileStore(t.TempDir())
 	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}
 	server := NewWithWorkspace(nil, nil, workspaces, "", false)
 
-	tool, ok := server.projectAssistantToolRegistry().Get(projectToolApplyPatch)
+	tool, ok := server.projectAssistantToolRegistry().Get(projectToolCreateFile)
 	if !ok {
-		t.Fatalf("%s missing from registry", projectToolApplyPatch)
+		t.Fatalf("%s missing from registry", projectToolCreateFile)
 	}
 	if _, err := tool.Call(context.Background(), projectAssistantToolCallRequest{
 		WorkspaceScope: scope,
 		HTTPRequest:    httptest.NewRequest(http.MethodPost, "/", nil),
-		Arguments: map[string]any{
-			"patch": projectAssistantTestAddPatch("src/App.tsx"),
-		},
+		Arguments:      map[string]any{"path": "src/App.tsx", "content": "test\n"},
 	}); err != nil {
-		t.Fatalf("%s returned error: %v", projectToolApplyPatch, err)
+		t.Fatalf("%s returned error: %v", projectToolCreateFile, err)
 	}
 	read, err := workspaces.ReadFile(context.Background(), scope, workspace.ReadOptions{Path: "src/App.tsx"})
 	if err != nil {
@@ -1905,7 +1931,11 @@ func TestCommitProjectWorkspaceFilesSendsDeletedPaths(t *testing.T) {
 		{Path: "src/old.ts", Content: "old\n"},
 		{Path: "src/new.ts", Content: "new\n"},
 	})
-	if _, err := workspaces.ApplyPatch(ctx, scope, workspace.PatchOptions{Patch: "*** Begin Patch\n*** Delete File: src/old.ts\n*** End Patch"}); err != nil {
+	readOld, err := workspaces.ReadFile(ctx, scope, workspace.ReadOptions{Path: "src/old.ts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspaces.DeleteFile(ctx, scope, workspace.DeleteOptions{Path: "src/old.ts", ExpectedVersion: readOld.Version}); err != nil {
 		t.Fatal(err)
 	}
 	server := NewWithWorkspace(nil, nil, workspaces, mcp.URL, false)

@@ -822,14 +822,6 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 	callbackMu.Unlock()
 	state.initialBuild = state.initialBuild || result.InitialBuild
 	reply := result.Content
-	if result.CompletionEvidence.PlanComplete && state.plan != nil {
-		completed := cloneProjectAssistantPlanSnapshot(*state.plan)
-		for index := range completed.Steps {
-			completed.Steps[index].Status = "completed"
-			completed.Steps[index].ActiveForm = ""
-		}
-		state.plan = &completed
-	}
 	engineCompleted := err == nil
 	finalContent := s.projectAssistantRunTerminalContent(
 		ctx,

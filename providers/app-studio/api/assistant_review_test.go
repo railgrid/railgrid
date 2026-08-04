@@ -78,9 +78,6 @@ func TestAssistantReviewModeIsReadOnlyAndFindingOriented(t *testing.T) {
 	if len(filtered) != 1 || filtered[0].Spec().Name != "read" {
 		t.Fatalf("review tools = %#v, want only read", filtered)
 	}
-	if projectEinoAssistantTurnUsesDeepTodos(projectAssistantRunRequest{CollaborationMode: projectAssistantCollaborationModeReview}) {
-		t.Fatal("review execution enabled implementation todos")
-	}
 }
 
 func newAssistantReviewHTTPTest(t *testing.T) (*mux.Router, *store.MemoryStore, store.Scope, *initialProjectBootstrapCaptureEngine) {

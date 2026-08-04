@@ -74,9 +74,8 @@ func TestFileStoreProjectUIDIsolatesRecreatedProjectSource(t *testing.T) {
 	if err := writeTestFiles(ctx, store, oldScope, []File{{Path: "src/App.tsx", Content: "old before\n"}}); err != nil {
 		t.Fatalf("seed old project: %v", err)
 	}
-	if _, err := store.ApplyPatch(ctx, oldScope, PatchOptions{
-		Patch: singleLineUpdatePatch("src/App.tsx", "old before", "old after"),
-	}); err != nil {
+	oldVersion := testFileVersion(t, ctx, store, oldScope, "src/App.tsx")
+	if _, err := store.EditFile(ctx, oldScope, EditOptions{Path: "src/App.tsx", OldString: "old before", NewString: "old after", ExpectedVersion: oldVersion}); err != nil {
 		t.Fatalf("mutate old project: %v", err)
 	}
 	if _, err := store.ReadFile(ctx, newScope, ReadOptions{Path: "src/App.tsx"}); !errors.Is(err, fs.ErrNotExist) {
@@ -86,9 +85,8 @@ func TestFileStoreProjectUIDIsolatesRecreatedProjectSource(t *testing.T) {
 	if err := writeTestFiles(ctx, store, newScope, []File{{Path: "src/App.tsx", Content: "new before\n"}}); err != nil {
 		t.Fatalf("seed new project: %v", err)
 	}
-	if _, err := store.ApplyPatch(ctx, newScope, PatchOptions{
-		Patch: singleLineUpdatePatch("src/App.tsx", "new before", "new after"),
-	}); err != nil {
+	newVersion := testFileVersion(t, ctx, store, newScope, "src/App.tsx")
+	if _, err := store.EditFile(ctx, newScope, EditOptions{Path: "src/App.tsx", OldString: "new before", NewString: "new after", ExpectedVersion: newVersion}); err != nil {
 		t.Fatalf("mutate new project: %v", err)
 	}
 
@@ -221,13 +219,12 @@ func TestFileStoreMutatesWorkspaceFiles(t *testing.T) {
 		t.Fatalf("write result = %#v", write)
 	}
 
-	patch, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
-		Patch: singleLineUpdatePatch("src/components/App.tsx", "  return <h1>Hello</h1>", "  return <h1>Kedge</h1>"),
-	})
+	version := testFileVersion(t, context.Background(), store, scope, "src/components/App.tsx")
+	patch, err := store.EditFile(context.Background(), scope, EditOptions{Path: "src/components/App.tsx", OldString: "  return <h1>Hello</h1>", NewString: "  return <h1>Kedge</h1>", ExpectedVersion: version})
 	if err != nil {
-		t.Fatalf("ApplyPatch returned error: %v", err)
+		t.Fatalf("EditFile returned error: %v", err)
 	}
-	if patch.Operation != "apply_patch" || patch.Replacements != 1 {
+	if patch.Operation != "edit_file" || patch.Replacements != 1 {
 		t.Fatalf("patch result = %#v", patch)
 	}
 	read, err := store.ReadFile(context.Background(), scope, ReadOptions{Path: "src/components/App.tsx"})
@@ -255,10 +252,8 @@ func TestFileStoreMutationValidation(t *testing.T) {
 	}); err == nil {
 		t.Fatal("WriteFile returned nil error for NUL content")
 	}
-	if _, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
-		Patch: singleLineUpdatePatch("missing.txt", "x", "y"),
-	}); err == nil {
-		t.Fatal("ApplyPatch returned nil error for missing file")
+	if _, err := store.EditFile(context.Background(), scope, EditOptions{Path: "missing.txt", OldString: "x", NewString: "y", ExpectedVersion: "sha256:test"}); err == nil {
+		t.Fatal("EditFile returned nil error for missing file")
 	}
 }
 
@@ -273,7 +268,7 @@ func TestFileStoreWriteAndStructuredDiff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
-	if result.Additions != 1 || result.Deletions != 0 || !strings.Contains(result.Patch, "+++ b/src/app.js") {
+	if result.Additions != 1 || result.Deletions != 0 || !strings.Contains(result.Diff, "+++ b/src/app.js") {
 		t.Fatalf("create diff = %#v", result)
 	}
 	overwrite, err := store.WriteFile(context.Background(), scope, WriteOptions{
@@ -284,20 +279,19 @@ func TestFileStoreWriteAndStructuredDiff(t *testing.T) {
 		t.Fatalf("overwrite WriteFile returned error: %v", err)
 	}
 	if overwrite.Additions != 1 || overwrite.Deletions != 1 ||
-		!strings.Contains(overwrite.Patch, "-const theme = 'light'") ||
-		!strings.Contains(overwrite.Patch, "+const theme = 'contrast'") {
+		!strings.Contains(overwrite.Diff, "-const theme = 'light'") ||
+		!strings.Contains(overwrite.Diff, "+const theme = 'contrast'") {
 		t.Fatalf("overwrite diff = %#v", overwrite)
 	}
 
-	patch, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
-		Patch: singleLineUpdatePatch("src/app.js", "const theme = 'contrast'", "const theme = 'dark'"),
-	})
+	version := testFileVersion(t, context.Background(), store, scope, "src/app.js")
+	patch, err := store.EditFile(context.Background(), scope, EditOptions{Path: "src/app.js", OldString: "const theme = 'contrast'", NewString: "const theme = 'dark'", ExpectedVersion: version})
 	if err != nil {
-		t.Fatalf("ApplyPatch returned error: %v", err)
+		t.Fatalf("EditFile returned error: %v", err)
 	}
 	if patch.Replacements != 1 || patch.Additions != 1 || patch.Deletions != 1 ||
-		!strings.Contains(patch.Patch, "-const theme = 'contrast'") ||
-		!strings.Contains(patch.Patch, "+const theme = 'dark'") {
+		!strings.Contains(patch.Diff, "-const theme = 'contrast'") ||
+		!strings.Contains(patch.Diff, "+const theme = 'dark'") {
 		t.Fatalf("patch diff = %#v", patch)
 	}
 }
@@ -317,10 +311,9 @@ func TestFileStoreMutationsPreserveExistingFileMode(t *testing.T) {
 		t.Fatalf("Chmod returned error: %v", err)
 	}
 
-	if _, err := store.ApplyPatch(context.Background(), scope, PatchOptions{
-		Patch: singleLineUpdatePatch("start.sh", "echo light", "echo dark"),
-	}); err != nil {
-		t.Fatalf("ApplyPatch returned error: %v", err)
+	version := testFileVersion(t, context.Background(), store, scope, "start.sh")
+	if _, err := store.EditFile(context.Background(), scope, EditOptions{Path: "start.sh", OldString: "echo light", NewString: "echo dark", ExpectedVersion: version}); err != nil {
+		t.Fatalf("EditFile returned error: %v", err)
 	}
 	info, err := os.Stat(target)
 	if err != nil {
@@ -400,8 +393,4 @@ func writeTestFiles(ctx context.Context, store *FileStore, scope Scope, files []
 		}
 	}
 	return nil
-}
-
-func singleLineUpdatePatch(filePath, before, after string) string {
-	return fmt.Sprintf("*** Begin Patch\n*** Update File: %s\n@@\n-%s\n+%s\n*** End Patch", filePath, before, after)
 }

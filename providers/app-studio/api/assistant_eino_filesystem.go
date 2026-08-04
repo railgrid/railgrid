@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -46,7 +47,7 @@ Usage:
 - The ls tool returns all files and directories in the specified project directory.
 - Use it for exploring the project and finding the right file when the relevant path is not already known.
 - If a prior result or the task already identifies a relevant file, read that file directly instead of listing its directory first.`
-	projectEinoFilesystemReadDescription = `Reads a project-relative file from the current App Studio project.
+	projectEinoFilesystemReadDescription = `Reads a project-relative file from the current App Studio project. The App Studio read_file tool returns structured JSON with bounded content, a complete flag, and an opaque version when the requested range contains the complete file.
 
 Usage:
 - The file_path parameter must be project-relative.
@@ -56,9 +57,9 @@ Usage:
 - For files larger than the cap, search first and use pagination with offset and a meaningful positive limit, normally 500-1000 lines, to avoid context overflow.
 - Always specify a positive limit. Omitted or non-positive limits default to 2000 lines; continue with explicit offset and limit values for later ranges.
 - Offset is a one-based line number and limit is the number of lines to return.
-- Results include line numbers starting at 1.
+- Structured results include exact selected content, path, byte size, and complete-read version metadata when the request covered the whole file.
 - You can call multiple tools in a single response. Batch independent reads of potentially useful files.
-- Always make sure an existing file has been read before editing it.`
+- Before replacing, editing, deleting, or moving an existing file, perform one complete read and pass its returned version as expectedVersion. Partial reads do not authorize mutation.`
 	projectEinoFilesystemGlobDescription = `Fast file pattern matching for the current App Studio project.
 - Pattern and the optional path are project-relative.
 - Supports glob patterns like "**/*.js" or "src/**/*.ts".
@@ -110,9 +111,11 @@ func projectEinoAssistantFilesystemMiddleware(
 		return nil, fmt.Errorf("create scoped read-only backend: %w", err)
 	}
 	return einofilesystem.New(ctx, &einofilesystem.MiddlewareConfig{
-		Backend:            backend,
-		LsToolConfig:       &einofilesystem.ToolConfig{Desc: &projectEinoFilesystemLSDescription},
-		ReadFileToolConfig: &einofilesystem.ToolConfig{Desc: &projectEinoFilesystemReadDescription},
+		Backend:      backend,
+		LsToolConfig: &einofilesystem.ToolConfig{Desc: &projectEinoFilesystemLSDescription},
+		// App Studio registers its own structured read_file tool so the model
+		// receives an opaque complete-read version alongside source content.
+		ReadFileToolConfig: &einofilesystem.ToolConfig{Disable: true, Desc: &projectEinoFilesystemReadDescription},
 		GlobToolConfig:     &einofilesystem.ToolConfig{Desc: &projectEinoFilesystemGlobDescription},
 		GrepToolConfig:     &einofilesystem.ToolConfig{Desc: &projectEinoFilesystemGrepDescription},
 		WriteFileToolConfig: &einofilesystem.ToolConfig{
@@ -256,9 +259,18 @@ func (m *projectEinoAssistantFilesystemTelemetry) WrapInvokableToolCall(
 		}
 		if m.runState != nil {
 			m.runState.RecordCompletedRead(name, canonicalArguments)
+			if projectToolBaseName(name) == projectToolReadFile {
+				var readEvidence struct {
+					Path     string `json:"path"`
+					Version  string `json:"version"`
+					Complete bool   `json:"complete"`
+				}
+				if json.Unmarshal([]byte(result), &readEvidence) == nil && readEvidence.Complete && strings.TrimSpace(readEvidence.Version) != "" {
+					m.runState.RecordObservedReadFileVersion(readEvidence.Path, readEvidence.Version)
+				}
+			}
 			if hasReadRange {
 				m.runState.RecordObservedReadFile(readPath)
-				m.runState.RecordPatchRecoveryRead(readPath)
 				first, last, returnedLines := projectEinoAssistantReturnedReadRange(result)
 				requestedLines := readEnd - readStart + 1
 				if returnedLines >= 0 && returnedLines < requestedLines {

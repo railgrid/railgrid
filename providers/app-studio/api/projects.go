@@ -156,17 +156,54 @@ type projectToolCallStreamEvent struct {
 	FollowUp   *projectAssistantFollowUp     `json:"followUp,omitempty"`
 	Checkpoint *projectAssistantCheckpoint   `json:"checkpoint,omitempty"`
 	Mutation   *projectAssistantMutation     `json:"mutation,omitempty"`
-	Sequence   int                           `json:"sequence,omitempty"`
+	// RecoveryOf is a server-validated presentation correlation to a prior
+	// failed mutation action. It never participates in workspace authorization
+	// or mutation semantics.
+	RecoveryOf string `json:"recoveryOf,omitempty"`
+	// MutationError carries bounded operation-aware failure metadata for the
+	// action feed. The model-facing result contains the same fields in a typed
+	// envelope; this copy keeps live/reload projections deterministic.
+	MutationError *projectAssistantMutationFailure `json:"mutationError,omitempty"`
+	// PreviewInspection carries bounded failure classification for truthful
+	// live and reload action-feed presentation. It never contains page output.
+	PreviewInspection *projectAssistantPreviewInspectionAction `json:"previewInspection,omitempty"`
+	Sequence          int                                      `json:"sequence,omitempty"`
 }
 
 type projectAssistantMutation struct {
-	Path           string   `json:"path,omitempty"`
-	Paths          []string `json:"paths,omitempty"`
-	Additions      int      `json:"additions,omitempty"`
-	Deletions      int      `json:"deletions,omitempty"`
-	Replacements   int      `json:"replacements,omitempty"`
-	Patch          string   `json:"patch,omitempty"`
-	PatchTruncated bool     `json:"patchTruncated,omitempty"`
+	Operation     string   `json:"operation,omitempty"`
+	Changed       bool     `json:"changed,omitempty"`
+	Path          string   `json:"path,omitempty"`
+	PreviousPath  string   `json:"previousPath,omitempty"`
+	Paths         []string `json:"paths,omitempty"`
+	Additions     int      `json:"additions,omitempty"`
+	Deletions     int      `json:"deletions,omitempty"`
+	Replacements  int      `json:"replacements,omitempty"`
+	Diff          string   `json:"diff,omitempty"`
+	DiffTruncated bool     `json:"diffTruncated,omitempty"`
+	RecoveryOf    string   `json:"recoveryOf,omitempty"`
+}
+
+// projectAssistantMutationFailure is the bounded, server-owned failure
+// contract for typed workspace mutations. Operation/path/guidance are
+// presentation metadata; recoveryOf is only a correlation to another action.
+type projectAssistantMutationFailure struct {
+	Code       string `json:"code"`
+	Operation  string `json:"operation"`
+	Path       string `json:"path,omitempty"`
+	Guidance   string `json:"guidance"`
+	RecoveryOf string `json:"recoveryOf,omitempty"`
+}
+
+type projectAssistantMutationFailureResult struct {
+	Status     string                          `json:"status"`
+	Code       string                          `json:"code"`
+	Operation  string                          `json:"operation"`
+	Path       string                          `json:"path,omitempty"`
+	Guidance   string                          `json:"guidance"`
+	RecoveryOf string                          `json:"recoveryOf,omitempty"`
+	Message    string                          `json:"message"`
+	Error      projectAssistantMutationFailure `json:"error"`
 }
 
 const projectAPIInitializingMessage = "App Studio is still initializing for this workspace. Try again shortly."
@@ -871,9 +908,18 @@ func projectAssistantStoredContent(reply, streamed string) string {
 
 func projectAssistantToolCallsRequireDevelopmentSync(toolCalls []projectToolCallStreamEvent) bool {
 	for _, toolCall := range toolCalls {
-		if toolCall.Status == "succeeded" && shouldSyncDevelopmentAfterTool(toolCall.Name) {
-			return true
+		if toolCall.Status != "succeeded" || !shouldSyncDevelopmentAfterTool(toolCall.Name) {
+			continue
 		}
+		// Ordinary workspace tools report whether the operation changed source.
+		// A successful idempotent write is still a successful tool call, but it
+		// must not trigger a source sync or preview refresh. Keep treating a
+		// missing mutation projection as changed for older durable transitions;
+		// newly emitted mutation results always include Changed explicitly.
+		if projectAssistantWorkspaceMutationTool(toolCall.Name) && toolCall.Mutation != nil && !toolCall.Mutation.Changed {
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -1029,7 +1075,8 @@ func projectAssistantMessageMetadata(status string, toolCalls []projectToolCallS
 }
 
 func projectAssistantActionFeedFromToolCalls(events []projectToolCallStreamEvent) []projectAssistantActionFeedItem {
-	return filterProjectAssistantActionFeedItems(projectAssistantActionFeedUpdatesFromToolCalls(events))
+	actions := projectAssistantActionFeedUpdatesFromToolCalls(events)
+	return filterProjectAssistantActionFeedItems(reconcileProjectAssistantMutationRecovery(actions))
 }
 
 func projectAssistantActionFeedUpdatesFromToolCalls(events []projectToolCallStreamEvent) []projectAssistantActionFeedItem {
@@ -1068,7 +1115,7 @@ func projectAssistantActionFeedFromMetadata(raw any) []projectAssistantActionFee
 		return nil
 	}
 	if typed, ok := raw.([]projectAssistantActionFeedItem); ok {
-		return filterProjectAssistantActionFeedItems(typed)
+		return filterProjectAssistantActionFeedItems(reconcileProjectAssistantMutationRecovery(typed))
 	}
 	data, err := json.Marshal(raw)
 	if err != nil {
@@ -1078,7 +1125,7 @@ func projectAssistantActionFeedFromMetadata(raw any) []projectAssistantActionFee
 	if err := json.Unmarshal(data, &out); err != nil {
 		return nil
 	}
-	return filterProjectAssistantActionFeedItems(out)
+	return filterProjectAssistantActionFeedItems(reconcileProjectAssistantMutationRecovery(out))
 }
 
 func filterProjectAssistantActionFeedItems(items []projectAssistantActionFeedItem) []projectAssistantActionFeedItem {
@@ -1143,7 +1190,7 @@ func upsertProjectAssistantActionFeedItem(actions []projectAssistantActionFeedIt
 
 func applyProjectAssistantActionFeedUpdate(actions []projectAssistantActionFeedItem, action projectAssistantActionFeedItem) []projectAssistantActionFeedItem {
 	if projectAssistantActionFeedItemVisible(action) {
-		return upsertProjectAssistantActionFeedItem(actions, action)
+		return filterProjectAssistantActionFeedItems(reconcileProjectAssistantMutationRecovery(upsertProjectAssistantActionFeedItem(actions, action)))
 	}
 	filtered := actions[:0]
 	for _, existing := range actions {
@@ -1185,6 +1232,9 @@ func mergeProjectAssistantActionFeedItem(existing, next projectAssistantActionFe
 	if next.Sequence == 0 {
 		next.Sequence = existing.Sequence
 	}
+	if next.RecoveryOf == "" {
+		next.RecoveryOf = existing.RecoveryOf
+	}
 	if next.Diagnostic == nil {
 		next.Diagnostic = existing.Diagnostic
 	}
@@ -1192,11 +1242,75 @@ func mergeProjectAssistantActionFeedItem(existing, next projectAssistantActionFe
 	return next
 }
 
+// reconcileProjectAssistantMutationRecovery updates only an explicitly linked
+// prior failed mutation. It never infers a relationship from matching paths;
+// missing, malformed, or cross-run references are cleared and ignored.
+func reconcileProjectAssistantMutationRecovery(actions []projectAssistantActionFeedItem) []projectAssistantActionFeedItem {
+	if len(actions) == 0 {
+		return actions
+	}
+	byID := make(map[string]int, len(actions))
+	for index := range actions {
+		if actions[index].ID != "" {
+			byID[actions[index].ID] = index
+		}
+	}
+	for index := range actions {
+		action := &actions[index]
+		if action.RecoveryOf == "" {
+			continue
+		}
+		priorIndex, ok := byID[action.RecoveryOf]
+		if !ok || priorIndex == index {
+			action.RecoveryOf = ""
+			continue
+		}
+		prior := &actions[priorIndex]
+		if prior.Kind != projectAssistantActionFeedItemEdit ||
+			(prior.Status != projectAssistantActionFeedStatusFailed && prior.Status != projectAssistantActionFeedStatusRetrying) {
+			action.RecoveryOf = ""
+			continue
+		}
+		switch action.Status {
+		case projectAssistantActionFeedStatusRunning, projectAssistantActionFeedStatusWaiting:
+			prior.Status = projectAssistantActionFeedStatusRetrying
+			prior.Severity = projectAssistantActionFeedSeverityAttention
+			prior.Title = projectAssistantActionFeedItemTitle(prior.Kind, prior.Status)
+		case projectAssistantActionFeedStatusSucceeded:
+			prior.Status = projectAssistantActionFeedStatusRecovered
+			prior.Severity = projectAssistantActionFeedSeverityNormal
+			prior.Title = projectAssistantActionFeedItemTitle(prior.Kind, prior.Status)
+		case projectAssistantActionFeedStatusFailed, projectAssistantActionFeedStatusRejected:
+			// A linked retry that terminates unsuccessfully must not leave the
+			// original action looking active. Keep its original diagnostic and
+			// reference so the failed repair remains explainable.
+			prior.Status = projectAssistantActionFeedStatusFailed
+			prior.Severity = projectAssistantActionFeedSeverityError
+			prior.Title = projectAssistantActionFeedItemTitle(prior.Kind, prior.Status)
+		}
+	}
+	return actions
+}
+
 // finalizeProjectAssistantActionFeed closes lifecycle entries left open by an
 // interrupted engine segment. A terminal turn must never publish an action as
 // still running or waiting for approval.
 func finalizeProjectAssistantActionFeed(actions []projectAssistantActionFeedItem, runStatus store.AssistantRunStatus) []projectAssistantActionFeedItem {
 	for i := range actions {
+		if actions[i].Status == projectAssistantActionFeedStatusRetrying {
+			if assistantRunTerminal(runStatus) {
+				// A terminal run without a successful linked retry is still a
+				// failed mutation. Preserve the original diagnostic/reference;
+				// only synthesize one when legacy metadata had none.
+				actions[i].Status = projectAssistantActionFeedStatusFailed
+				actions[i].Severity = projectAssistantActionFeedSeverityError
+				if actions[i].Diagnostic == nil {
+					actions[i].Diagnostic = projectAssistantActionFeedDiagnostic(actions[i].ID, "")
+				}
+				actions[i].Title = projectAssistantActionFeedItemTitle(actions[i].Kind, actions[i].Status)
+			}
+			continue
+		}
 		if actions[i].Status != projectAssistantActionFeedStatusRunning && actions[i].Status != projectAssistantActionFeedStatusWaiting {
 			continue
 		}
@@ -1309,6 +1423,15 @@ func mergeProjectToolCallStreamEvent(existing, next projectToolCallStreamEvent) 
 	}
 	if next.Mutation == nil {
 		next.Mutation = existing.Mutation
+	}
+	if next.RecoveryOf == "" {
+		next.RecoveryOf = existing.RecoveryOf
+	}
+	if next.MutationError == nil {
+		next.MutationError = existing.MutationError
+	}
+	if next.PreviewInspection == nil {
+		next.PreviewInspection = existing.PreviewInspection
 	}
 	return next
 }

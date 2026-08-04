@@ -627,10 +627,10 @@ func TestFileStoreUnifiedDeleteRejectsOversizedTarget(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "large.txt"), []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err = store.ApplyPatch(ctx, scope, PatchOptions{Patch: "*** Begin Patch\n*** Delete File: large.txt\n*** End Patch"})
-	var patchErr *PatchError
-	if !errors.As(err, &patchErr) || patchErr.Code != PatchErrorInvalidPatch {
-		t.Fatalf("oversized delete error = %v (%T), want invalid_patch", err, err)
+	_, err = store.DeleteFile(ctx, scope, DeleteOptions{Path: "large.txt", ExpectedVersion: "sha256:test"})
+	var mutationErr *MutationError
+	if !errors.As(err, &mutationErr) || mutationErr.Code != MutationErrorInvalid {
+		t.Fatalf("oversized delete error = %v (%T), want invalid_mutation", err, err)
 	}
 	if _, err := store.ReadFile(ctx, scope, ReadOptions{Path: "large.txt", MaxBytes: MaxWriteBytes}); err != nil {
 		t.Fatalf("oversized target disappeared after rejected delete: %v", err)

@@ -131,12 +131,28 @@ New assistant runs use one sticky collaboration mode: `Default`, `Plan`, or
 durable read-only turn over the `current_workspace` target; clients start one
 with `POST .../assistant/threads/{thread}/reviews` and may provide bounded review
 instructions. It reports evidence-backed findings and is never an automatic
-completion gate. `Default` follows the user's request directly and can use the
-current evidence tools and one contextual `apply_patch` source-mutation tool.
-The semantic action router, WorkItem promotion flow, phase-driven inner loop,
-whole-file write tools, and model-facing workspace hydration tool have been
-removed. The portal's explicit **Implement plan** action starts a fresh Default
-turn rather than silently changing the mode of a running turn.
+completion gate. `Default` follows the user's request directly and exposes the
+current evidence tools plus these source-mutation tools: `create_file`,
+`replace_file`, `edit_file`, `delete_file`, and `move_file`. `read_file` returns
+bounded structured data; only a complete read carries the opaque `version`
+needed for a mutation, while partial reads are inspection-only. `create_file`
+is always create-only: it never replaces an existing file and has no
+phase-dependent or initial-build variant. `replace_file` atomically replaces a
+whole file and requires the exact `expectedVersion` from a complete same-turn
+read. `edit_file` performs exact `oldString`/`newString` replacement (with an
+explicit `replaceAll` option) and, like `delete_file` and `move_file`, requires
+that complete same-turn read plus its `expectedVersion`; move destinations must
+be unused. Paths are normalized and authorized by the server, and stale,
+ambiguous, partial, or otherwise invalid mutations fail without changing the
+file. There is no patch grammar and no backwards-compatibility alias. Mutation
+failures use bounded structured typed metadata (code, operation, path, and
+guidance); an optional server-issued `recoveryOf` only correlates a retry in
+the activity feed, is presentation-only, and never grants authority or
+substitutes for a fresh read. Retrying and recovered feed entries retain the
+durable evidence of the original failure. The semantic action router, WorkItem
+promotion flow, phase-driven inner loop, and model-facing workspace hydration
+tool have been removed. The portal's explicit **Implement plan** action starts
+a fresh Default turn rather than silently changing the mode of a running turn.
 
 The Thread/Turn/Item cutover intentionally starts with no canonical threads.
 Pre-cutover assistant history is not projected into the new public transcript.
@@ -169,14 +185,12 @@ the latest persisted compaction plus subsequent conversation evidence instead
 of dropping tool results. Reasoning, secrets, and transient preview-console
 payloads are not stored there.
 
-Source edits use contextual Add/Update/Delete patches. Moves are represented as
-an add/update of the destination plus deletion of the source. The repository
+Source mutations produce bounded server-generated diffs and structured
+operation/path metadata for the audit and action projections. The repository
 commit bridge carries the complete atomic upsert/delete bundle to provider-code.
-Failed contextual patches reopen only the affected read coverage so the model
-can reread current source and retry without rediscovering unrelated evidence.
-If rollback after an I/O failure is incomplete, the actual remaining paths are
+If a mutation fails after an I/O failure, the actual remaining paths are
 reported as a partial failure and retained in the durable dirty-path set; stale
-reads for those paths are invalidated before another edit. Dirty paths are
+reads for those paths are invalidated before another mutation. Dirty paths are
 workspace information, not a hidden verification or commit obligation.
 Repository commits use the complete server-owned durable dirty bundle,
 including paths from earlier turns; the model supplies commit prose rather

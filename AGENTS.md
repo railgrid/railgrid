@@ -101,6 +101,21 @@ demand — never `go install` them globally.
 `make lint`/`make test`. Lint/test them from their own directory, e.g.
 `cd providers/kuery && go build ./... && go test ./...`.
 
+### Agent build cache and temporary storage
+
+- Reuse the environment-provided `GOCACHE`, `GOTMPDIR`, and `TMPDIR` for normal
+  builds and tests. They are shared, disk-backed paths that are safe for
+  concurrent Go processes.
+- Never override `GOCACHE`, `GOTMPDIR`, or `TMPDIR` with a path under `/tmp`;
+  `/tmp` is a capacity-limited tmpfs on development machines.
+- Use `go test -count=1` when fresh test execution is required. This bypasses
+  Go's test-result cache and does not require recompiling dependencies into a
+  fresh build cache.
+- Create a fresh `GOCACHE` only when explicitly validating cold-cache behavior
+  or investigating cache corruption. Place it below
+  `$CODEX_BUILD_CACHE_ROOT/fresh`, run that build sequentially, and remove only
+  that task-owned directory after the command finishes.
+
 ---
 
 ## 4. Codegen pipeline (how APIs become CRDs and kcp schemas)

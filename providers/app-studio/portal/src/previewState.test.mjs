@@ -147,3 +147,29 @@ test('authorization request failures only keep polling when transient', () => {
     /error\.status === 408 \|\| error\.status === 429 \|\| error\.status >= 500/,
   )
 })
+
+test('terminal preview refresh hydrates the selected project before authorizing', () => {
+  assert.match(
+    appSource,
+    /normalized\.message\.metadata\?\.previewRefreshNeeded === true\)\s*\{\s*void refreshDevelopmentPreviewFrame\('Preview refreshed', \{ refreshProject: true \}\)/,
+  )
+  assert.match(
+    appSource,
+    /if \(options\.refreshProject\) \{\s*try \{\s*if \(!await developmentPreviewRefreshController\.hydrateProject\(projectName\)\) return[\s\S]*?if \(!developmentBinding\.value\) \{\s*await authorizeDevelopmentPreview\(\)/,
+  )
+})
+
+test('preview project hydration ignores late results and deduplicates authorization', () => {
+  assert.match(
+    appSource,
+    /developmentPreviewComponentMounted = false[\s\S]*?developmentPreviewRefreshController\.dispose\(\)/,
+  )
+  assert.match(
+    appSource,
+    /developmentPreviewRefreshController\.hydrateProject\(projectName\)/,
+  )
+  assert.match(
+    appSource,
+    /developmentPreviewRefreshController\.authorize\([\s\S]*?key[\s\S]*?authorizeDevelopmentPreviewRequest\(projectName, key\)/,
+  )
+})

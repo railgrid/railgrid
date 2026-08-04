@@ -81,8 +81,8 @@ func (s *FileStore) readMutationTarget(ctx context.Context, scope Scope, clean s
 
 // readMutationTargetLimited reads one regular workspace file while bounding
 // the amount of content retained in memory. A non-zero limit rejects the file
-// once the limit is exceeded; this is used by unified patches, including
-// Delete File, so a deletion cannot force an unbounded snapshot/read.
+// once the limit is exceeded, so a mutation cannot force an unbounded
+// snapshot/read.
 func (s *FileStore) readMutationTargetLimited(ctx context.Context, scope Scope, clean string, limit int) ([]byte, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
@@ -354,7 +354,7 @@ func (s *FileStore) restoreFileState(ctx context.Context, scope Scope, clean str
 
 func (s *FileStore) restoreFileStateWithMode(ctx context.Context, scope Scope, clean string, content []byte, existed bool, mode fs.FileMode) error {
 	if existed {
-		if err := s.writePatchFile(ctx, scope, clean, content, mode, false); err != nil {
+		if err := s.writeMutationFile(ctx, scope, clean, content, mode, false); err != nil {
 			return err
 		}
 		if mode == 0 {

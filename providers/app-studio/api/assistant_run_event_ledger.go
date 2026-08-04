@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -56,10 +57,11 @@ type projectAssistantRunEventLedger struct {
 	scope store.Scope
 	runID string
 
-	mu           sync.Mutex
-	loaded       bool
-	lastSequence int64
-	calls        map[string]*projectAssistantRunToolCallState
+	mu                 sync.Mutex
+	loaded             bool
+	lastSequence       int64
+	calls              map[string]*projectAssistantRunToolCallState
+	latestPlanSnapshot *projectAssistantPlanSnapshot
 }
 
 type projectAssistantRunToolCallState struct {
@@ -99,10 +101,11 @@ func (d projectAssistantRunToolCallDecision) ShouldDispatch() bool {
 // projectAssistantRunToolCallOutcome preserves the exact model-visible values.
 // Failed distinguishes a successful empty result from an error with empty text.
 type projectAssistantRunToolCallOutcome struct {
-	Result      string
-	Error       string
-	Failed      bool
-	Disposition projectAssistantToolDisposition
+	Result       string
+	Error        string
+	Failed       bool
+	Disposition  projectAssistantToolDisposition
+	PlanSnapshot *projectAssistantPlanSnapshot
 }
 
 type projectAssistantToolDisposition string
@@ -131,10 +134,11 @@ type projectAssistantRunToolCallPayload struct {
 }
 
 type projectAssistantRunToolResultPayload struct {
-	Result      string                          `json:"result"`
-	Error       string                          `json:"error"`
-	Failed      bool                            `json:"failed"`
-	Disposition projectAssistantToolDisposition `json:"disposition,omitempty"`
+	Result       string                          `json:"result"`
+	Error        string                          `json:"error"`
+	Failed       bool                            `json:"failed"`
+	Disposition  projectAssistantToolDisposition `json:"disposition,omitempty"`
+	PlanSnapshot *projectAssistantPlanSnapshot   `json:"planSnapshot,omitempty"`
 }
 
 func newProjectAssistantRunEventLedger(
@@ -430,6 +434,28 @@ func (l *projectAssistantRunEventLedger) FinishToolCall(
 	result string,
 	invokeErr error,
 ) (projectAssistantRunToolCallOutcome, error) {
+	return l.finishToolCall(ctx, token, result, invokeErr, nil)
+}
+
+// FinishToolCallWithPlan atomically settles a write_todos result together with
+// the sanitized App-owned projection used by lifecycle/replay consumers.
+func (l *projectAssistantRunEventLedger) FinishToolCallWithPlan(
+	ctx context.Context,
+	token projectAssistantRunToolCallToken,
+	result string,
+	invokeErr error,
+	plan *projectAssistantPlanSnapshot,
+) (projectAssistantRunToolCallOutcome, error) {
+	return l.finishToolCall(ctx, token, result, invokeErr, plan)
+}
+
+func (l *projectAssistantRunEventLedger) finishToolCall(
+	ctx context.Context,
+	token projectAssistantRunToolCallToken,
+	result string,
+	invokeErr error,
+	plan *projectAssistantPlanSnapshot,
+) (projectAssistantRunToolCallOutcome, error) {
 	outcome := projectAssistantRunToolCallOutcome{
 		Result:      result,
 		Disposition: projectAssistantToolResultDisposition(token.ToolName, result, invokeErr),
@@ -437,6 +463,19 @@ func (l *projectAssistantRunEventLedger) FinishToolCall(
 	if invokeErr != nil {
 		outcome.Error = invokeErr.Error()
 		outcome.Failed = true
+	}
+	if plan != nil && projectToolBaseName(token.ToolName) != projectEinoAssistantWriteTodosTool {
+		return projectAssistantRunToolCallOutcome{}, errors.New("assistant run tool plan snapshot is only valid for write_todos")
+	}
+	if plan != nil && !outcome.Succeeded() {
+		return projectAssistantRunToolCallOutcome{}, errors.New("assistant run tool plan snapshot requires a successful result")
+	}
+	if outcome.Succeeded() && plan != nil {
+		if !projectAssistantPlanSnapshotValid(*plan) {
+			return projectAssistantRunToolCallOutcome{}, errors.New("assistant run tool plan snapshot is invalid")
+		}
+		copy := cloneProjectAssistantPlanSnapshot(*plan)
+		outcome.PlanSnapshot = &copy
 	}
 	if l == nil || l.store == nil || strings.TrimSpace(l.runID) == "" {
 		return projectAssistantRunToolCallOutcome{}, fmt.Errorf("assistant run tool ledger is not configured")
@@ -474,10 +513,11 @@ func (l *projectAssistantRunEventLedger) FinishToolCall(
 			return persisted, nil
 		}
 		payload, err := json.Marshal(projectAssistantRunToolResultPayload{
-			Result:      outcome.Result,
-			Error:       outcome.Error,
-			Failed:      outcome.Failed,
-			Disposition: outcome.Disposition,
+			Result:       outcome.Result,
+			Error:        outcome.Error,
+			Failed:       outcome.Failed,
+			Disposition:  outcome.Disposition,
+			PlanSnapshot: outcome.PlanSnapshot,
 		})
 		if err != nil {
 			return projectAssistantRunToolCallOutcome{}, fmt.Errorf("encode assistant run tool result event: %w", err)
@@ -700,10 +740,14 @@ func (l *projectAssistantRunEventLedger) applyEventLocked(event store.AssistantR
 			return fmt.Errorf("%w: invalid tool result payload at sequence %d", errProjectAssistantRunToolLedgerCorrupt, event.Sequence)
 		}
 		outcome := projectAssistantRunToolCallOutcome{
-			Result:      payload.Result,
-			Error:       payload.Error,
-			Failed:      payload.Failed,
-			Disposition: payload.Disposition,
+			Result:       payload.Result,
+			Error:        payload.Error,
+			Failed:       payload.Failed,
+			Disposition:  payload.Disposition,
+			PlanSnapshot: payload.PlanSnapshot,
+		}
+		if outcome.PlanSnapshot != nil && !projectAssistantPlanSnapshotValid(*outcome.PlanSnapshot) {
+			return fmt.Errorf("%w: invalid plan snapshot at sequence %d", errProjectAssistantRunToolLedgerCorrupt, event.Sequence)
 		}
 		// Events written before typed settlement are read compatibly, but every
 		// newly written result persists the semantic disposition explicitly.
@@ -714,16 +758,52 @@ func (l *projectAssistantRunEventLedger) applyEventLocked(event store.AssistantR
 			}
 			outcome.Disposition = projectAssistantToolResultDisposition(toolName, outcome.Result, invokeErr)
 		}
-		if state.Outcome != nil && *state.Outcome != outcome {
+		if outcome.PlanSnapshot != nil {
+			if projectToolBaseName(toolName) != projectEinoAssistantWriteTodosTool || outcome.Failed || !outcome.Succeeded() {
+				return fmt.Errorf("%w: invalid plan snapshot tool result at sequence %d", errProjectAssistantRunToolLedgerCorrupt, event.Sequence)
+			}
+		}
+		if state.Outcome != nil && !reflect.DeepEqual(*state.Outcome, outcome) {
 			return fmt.Errorf("%w: call %q has conflicting durable results", errProjectAssistantRunToolLedgerCorrupt, callID)
 		}
 		state.Outcome = &outcome
+		copy := cloneProjectAssistantPlanSnapshotIfPresent(outcome.PlanSnapshot)
+		if copy != nil {
+			l.latestPlanSnapshot = copy
+		}
 	}
 	// Advance only after the complete event has validated and been applied.
 	// A corrupt durable event must remain the next event on every refresh so
 	// this ledger fails closed instead of silently skipping past it.
 	l.lastSequence = event.Sequence
 	return nil
+}
+
+// LatestPlanSnapshot reconstructs the latest successful App-owned write_todos
+// projection from the durable run ledger. It intentionally refreshes the
+// append-only event stream before returning and clones the result so callers
+// can hydrate a new run state without sharing ledger memory.
+func (l *projectAssistantRunEventLedger) LatestPlanSnapshot(ctx context.Context) (projectAssistantPlanSnapshot, bool, error) {
+	if l == nil {
+		return projectAssistantPlanSnapshot{}, false, nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.refreshLocked(ctx); err != nil {
+		return projectAssistantPlanSnapshot{}, false, err
+	}
+	if l.latestPlanSnapshot == nil {
+		return projectAssistantPlanSnapshot{}, false, nil
+	}
+	return cloneProjectAssistantPlanSnapshot(*l.latestPlanSnapshot), true, nil
+}
+
+func cloneProjectAssistantPlanSnapshotIfPresent(plan *projectAssistantPlanSnapshot) *projectAssistantPlanSnapshot {
+	if plan == nil {
+		return nil
+	}
+	copy := cloneProjectAssistantPlanSnapshot(*plan)
+	return &copy
 }
 
 func (l *projectAssistantRunEventLedger) SettledToolCall(

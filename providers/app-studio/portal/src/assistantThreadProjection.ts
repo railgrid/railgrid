@@ -4,6 +4,7 @@ import type {
   ProjectAssistantThreadItem,
   ProjectMessage,
 } from './types'
+import { parseAssistantProgress } from './assistantProgress'
 
 function assistantStatusForItem(status: unknown): ProjectAssistantRunStatus {
   switch (typeof status === 'string' ? status.trim().toLowerCase() : '') {
@@ -29,6 +30,43 @@ function assistantStatusForItem(status: unknown): ProjectAssistantRunStatus {
 
 function isAssistantItem(item: ProjectAssistantThreadItem): boolean {
   return item.type === 'agentMessage'
+}
+
+function isCommentaryItem(item: ProjectAssistantThreadItem): boolean {
+  return isAssistantItem(item) && item.phase === 'commentary'
+}
+
+/**
+ * Typed commentary is streamed as its own thread item, while the owning
+ * assistant message carries the same prose with trace sequence numbers. Once
+ * that durable progress snapshot is present, render only the owner so active
+ * and terminal turns share the same interleaved progress/action timeline.
+ *
+ * If the owner snapshot is briefly behind the commentary item, retain the
+ * standalone commentary until its exact text is represented in the trace.
+ */
+export function hideCommentaryRepresentedInTrace(messages: ProjectMessage[]): ProjectMessage[] {
+  const tracedProgressByOwner = new Map<string, Set<string>>()
+  for (const message of messages) {
+    if (message.role !== 'assistant' || message.metadata?.assistantPhase === 'commentary') continue
+    const progress = parseAssistantProgress(message.metadata?.assistantProgress)
+    if (!progress) continue
+    const traced = new Set(progress.messages)
+    tracedProgressByOwner.set(message.id, traced)
+    const assistantMessageID = typeof message.metadata?.assistantMessageID === 'string'
+      ? message.metadata.assistantMessageID.trim()
+      : ''
+    if (assistantMessageID) tracedProgressByOwner.set(assistantMessageID, traced)
+  }
+  return messages.filter((message) => {
+    if (message.role !== 'assistant' || message.metadata?.assistantPhase !== 'commentary') return true
+    const ownerID = typeof message.metadata?.assistantMessageID === 'string' ? message.metadata.assistantMessageID.trim() : ''
+    return !ownerID || !tracedProgressByOwner.get(ownerID)?.has(message.content)
+  })
+}
+
+function itemOwnMessageID(item: ProjectAssistantThreadItem): string {
+  return item.id.trim()
 }
 
 function itemAssistantMessageID(item: ProjectAssistantThreadItem): string {
@@ -123,7 +161,7 @@ export function mergeAssistantThreadMessages(current: ProjectMessage[], projecte
 export function assistantThreadItemsToRuns(items: ProjectAssistantThreadItem[]): Record<string, ProjectAssistantRun> {
   const latestByTurn = new Map<string, ProjectAssistantThreadItem>()
   for (const item of items) {
-    if (!item.turnID || !isAssistantItem(item)) continue
+    if (!item.turnID || !isAssistantItem(item) || isCommentaryItem(item)) continue
     const previous = latestByTurn.get(item.turnID)
     if (!previous || itemRevision(item) > itemRevision(previous) || (itemRevision(item) === itemRevision(previous) && item.sequence > previous.sequence)) {
       latestByTurn.set(item.turnID, item)
@@ -139,7 +177,7 @@ export function assistantThreadItemsToRuns(items: ProjectAssistantThreadItem[]):
 }
 
 export function assistantThreadItemToRun(item: ProjectAssistantThreadItem): ProjectAssistantRun | undefined {
-  if (!item.turnID || !isAssistantItem(item)) return undefined
+  if (!item.turnID || !isAssistantItem(item) || isCommentaryItem(item)) return undefined
   const errorMessage = item.error?.message?.trim()
   return {
     id: item.turnID,
@@ -170,14 +208,15 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
       metadata.assistantRevision = itemRevision(item)
       if (item.turnID) metadata.assistantTurnID = item.turnID
       if (item.mode) metadata.assistantMode = item.mode
+      if (item.phase) metadata.assistantPhase = item.phase
       if (item.error) metadata.assistantError = item.error
       if (item.data?.assistantProgress) metadata.assistantProgress = item.data.assistantProgress
       const index = result.length
-      assistantByID.set(itemAssistantMessageID(item), index)
-      if (item.turnID) latestAssistantByTurn.set(item.turnID, index)
+      assistantByID.set(itemOwnMessageID(item), index)
+      if (!isCommentaryItem(item) && item.turnID) latestAssistantByTurn.set(item.turnID, index)
     }
     result.push({
-      id: item.id,
+      id: itemOwnMessageID(item),
       projectID: projectName,
       role,
       content: item.content ?? '',
@@ -189,8 +228,10 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
   const precedingAssistantByTurn = new Map<string, number>()
   for (const item of ordered) {
     if (item.type === 'agentMessage') {
-      const index = assistantByID.get(itemAssistantMessageID(item))
-      if (index !== undefined && item.turnID) precedingAssistantByTurn.set(item.turnID, index)
+      if (!isCommentaryItem(item)) {
+        const index = assistantByID.get(itemOwnMessageID(item))
+        if (index !== undefined && item.turnID) precedingAssistantByTurn.set(item.turnID, index)
+      }
       continue
     }
     if (!item.turnID || item.type === 'userMessage') continue
@@ -216,6 +257,7 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
     }
     result[index] = { ...message, metadata }
   }
+
   return result
 }
 

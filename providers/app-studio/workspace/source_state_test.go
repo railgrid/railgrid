@@ -105,6 +105,16 @@ func TestFileStoreSourceRevisionAdvancesForSourceMutationsOnly(t *testing.T) {
 	if got, _ := store.SourceRevision(ctx, scope); got != 2 {
 		t.Fatalf("revision after no-op write = %d, want unchanged 2", got)
 	}
+	result, err := store.WriteFile(ctx, scope, WriteOptions{Path: "app.txt", Content: "one\n"})
+	if err != nil {
+		t.Fatalf("identical direct write: %v", err)
+	}
+	if result.Changed {
+		t.Fatal("identical direct write reported changed=true")
+	}
+	if got, _ := store.SourceRevision(ctx, scope); got != 2 {
+		t.Fatalf("revision after identical direct write = %d, want unchanged 2", got)
+	}
 	if _, err := store.AddUncommittedPaths(ctx, scope, []string{"app.txt"}); err != nil {
 		t.Fatal(err)
 	}
@@ -117,11 +127,12 @@ func TestFileStoreSourceRevisionAdvancesForSourceMutationsOnly(t *testing.T) {
 	if got, _ := store.SourceRevision(ctx, scope); got != 3 {
 		t.Fatalf("revision after direct hydrate-style write = %d, want 3", got)
 	}
-	if _, err := store.ApplyPatch(ctx, scope, PatchOptions{Patch: "*** Begin Patch\n*** Update File: app.txt\n@@\n-one\n+two\n*** End Patch"}); err != nil {
+	version := testFileVersion(t, ctx, store, scope, "app.txt")
+	if _, err := store.EditFile(ctx, scope, EditOptions{Path: "app.txt", OldString: "one", NewString: "two", ExpectedVersion: version}); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := store.SourceRevision(ctx, scope); got != 4 {
-		t.Fatalf("revision after patch = %d, want 4", got)
+		t.Fatalf("revision after edit = %d, want 4", got)
 	}
 	if err := store.ClearUncommittedPaths(ctx, scope); err != nil {
 		t.Fatal(err)
@@ -225,7 +236,8 @@ func TestFileStoreCommitSettlementTracksDeletedPath(t *testing.T) {
 	if err := writeTestFiles(ctx, store, scope, []File{{Path: "src/old.ts", Content: "old\n"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ApplyPatch(ctx, scope, PatchOptions{Patch: "*** Begin Patch\n*** Delete File: src/old.ts\n*** End Patch"}); err != nil {
+	version := testFileVersion(t, ctx, store, scope, "src/old.ts")
+	if _, err := store.DeleteFile(ctx, scope, DeleteOptions{Path: "src/old.ts", ExpectedVersion: version}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.AddUncommittedPaths(ctx, scope, []string{"src/old.ts"}); err != nil {
@@ -245,7 +257,14 @@ func TestFileStoreCommitSettlementTracksDeletedPath(t *testing.T) {
 	if upsertDigest == digest {
 		t.Fatal("deleted path digest collided with sentinel-like file content")
 	}
-	if _, err := store.ApplyPatch(ctx, scope, PatchOptions{Patch: "*** Begin Patch\n*** Delete File: src/old.ts\n*** End Patch"}); err != nil {
+	version, err = func() (string, error) {
+		file, readErr := store.ReadFile(ctx, scope, ReadOptions{Path: "src/old.ts"})
+		return file.Version, readErr
+	}()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteFile(ctx, scope, DeleteOptions{Path: "src/old.ts", ExpectedVersion: version}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.RecordCommitSettlement(ctx, scope, digest, []string{"src/old.ts"}); err != nil {

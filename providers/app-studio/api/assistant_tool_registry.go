@@ -155,9 +155,25 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		},
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
-				Name:        projectToolApplyPatch,
-				Description: "Apply one atomic contextual patch to project-relative UTF-8 files. The patch must start with '*** Begin Patch' and end with '*** End Patch'. Start sections with '*** Add File: <path>', '*** Update File: <path>', or '*** Delete File: <path>'. Every Add File content line must begin with '+'; the parser strips that prefix. To add literal marker-looking content, encode it as '+ *** Update File: example'. A move is an Update File section with '*** Move to: <new path>' immediately below it. " + projectAssistantContextualPatchFormatInstruction + "Hunk lines start with space (context), '-' (remove), or '+' (add). Include at least three stable surrounding context lines when needed to make every match unique. Independently matchable hunks are normalized into source order, but emitting them in source order gives the clearest failures for truly stale context. Parent directories are created automatically. A multi-file patch is fully preflighted before any mutation.",
-				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"patch":{"type":"string","minLength":1,"maxLength":%d,"description":"Contextual patch envelope using only project-relative paths. Every Add File content line must begin with '+'; the parser strips that prefix. For a move, use Update File for the old path followed immediately by Move to for the new path; Move to cannot stand alone. Hunk headers are exactly '@@' or '@@ <literal source line>'; numeric unified-diff coordinates are forbidden."}},"required":["patch"],"additionalProperties":false}`, workspace.MaxUnifiedPatchBytes)),
+				Name:         projectToolReadFile,
+				Description:  "Read one bounded project-relative UTF-8 file. A complete read returns an opaque version; pass that exact version as expectedVersion to replace_file, edit_file, delete_file, or move_file. Partial reads are inspection-only and do not authorize mutation.",
+				Parameters:   json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"file_path":{"type":"string","minLength":1,"maxLength":%d},"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":2000}},"required":["file_path"],"additionalProperties":false}`, workspace.MaxProjectPathBytes)),
+				Risk:         projectAssistantToolRiskRead,
+				ParallelSafe: true,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
+					return "", err
+				}
+				return projectAssistantReadFileTool(ctx, s.workspaces, req)
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
+				Name:        projectToolCreateFile,
+				Description: "Create one new bounded UTF-8 project-relative file. Creation is always create-only; if the target exists, use replace_file with the complete read version or edit_file with an exact oldString and expectedVersion.",
+				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":%d},"content":{"type":"string","maxLength":%d},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["path","content"],"additionalProperties":false}`, workspace.MaxProjectPathBytes, workspace.MaxWriteBytes)),
 				Risk:        projectAssistantToolRiskWrite,
 			},
 			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
@@ -165,12 +181,103 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				if err != nil {
 					return "", err
 				}
-				patch, _ := projectToolRawString(req.Arguments["patch"])
-				if err := workspace.ValidateCommittablePatch(patch); err != nil {
+				path, ok := projectToolRawString(req.Arguments["path"])
+				if !ok || strings.TrimSpace(path) == "" {
+					return "", errors.New("create_file requires path")
+				}
+				content, ok := projectToolRawString(req.Arguments["content"])
+				if !ok {
+					return "", errors.New("create_file requires content")
+				}
+				return projectAssistantToolJSONResult(s.workspaces.CreateFile(ctx, req.WorkspaceScope, workspace.CreateOptions{Path: path, Content: content}))
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
+				Name:        projectToolReplaceFile,
+				Description: "Replace one complete bounded UTF-8 project-relative file atomically. The current file must have been completely read during this turn; expectedVersion must exactly match that read, otherwise the replacement is rejected as stale.",
+				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":%d},"content":{"type":"string","maxLength":%d},"expectedVersion":{"type":"string","minLength":1,"maxLength":%d},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["path","content","expectedVersion"],"additionalProperties":false}`, workspace.MaxProjectPathBytes, workspace.MaxWriteBytes, workspace.MaxFileVersionBytes)),
+				Risk:        projectAssistantToolRiskWrite,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
 					return "", err
 				}
-				return projectAssistantToolJSONResult(s.workspaces.ApplyPatch(ctx, req.WorkspaceScope, workspace.PatchOptions{
-					Patch: patch,
+				path, _ := projectToolRawString(req.Arguments["path"])
+				expectedVersion, _ := projectToolRawString(req.Arguments["expectedVersion"])
+				if err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, path, expectedVersion); err != nil {
+					return "", err
+				}
+				content, _ := projectToolRawString(req.Arguments["content"])
+				return projectAssistantToolJSONResult(s.workspaces.ReplaceFile(ctx, req.WorkspaceScope, workspace.ReplaceOptions{Path: path, Content: content, ExpectedVersion: expectedVersion}))
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
+				Name:        projectToolEditFile,
+				Description: "Replace an exact string in one existing UTF-8 project file. The current file must have been completely read during this turn and expectedVersion must match that read. oldString must match exactly once unless replaceAll is true; stale or ambiguous matches fail without changing the file.",
+				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":%d},"oldString":{"type":"string","minLength":1,"maxLength":%d},"newString":{"type":"string","maxLength":%d},"replaceAll":{"type":"boolean"},"expectedVersion":{"type":"string","minLength":1,"maxLength":%d},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["path","oldString","newString","expectedVersion"],"additionalProperties":false}`, workspace.MaxProjectPathBytes, workspace.MaxWriteBytes, workspace.MaxWriteBytes, workspace.MaxFileVersionBytes)),
+				Risk:        projectAssistantToolRiskWrite,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
+					return "", err
+				}
+				path, _ := projectToolRawString(req.Arguments["path"])
+				expectedVersion, _ := projectToolRawString(req.Arguments["expectedVersion"])
+				if err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, path, expectedVersion); err != nil {
+					return "", err
+				}
+				oldString, _ := projectToolRawString(req.Arguments["oldString"])
+				newString, _ := projectToolRawString(req.Arguments["newString"])
+				replaceAll, _ := req.Arguments["replaceAll"].(bool)
+				return projectAssistantToolJSONResult(s.workspaces.EditFile(ctx, req.WorkspaceScope, workspace.EditOptions{
+					Path: path, OldString: oldString, NewString: newString, ReplaceAll: replaceAll, ExpectedVersion: expectedVersion,
+				}))
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
+				Name:        projectToolDeleteFile,
+				Description: "Delete one existing project-relative file. The current file must have been completely read during this turn and expectedVersion must match that read; stale, missing, or unsafe targets fail closed.",
+				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":%d},"expectedVersion":{"type":"string","minLength":1,"maxLength":%d},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["path","expectedVersion"],"additionalProperties":false}`, workspace.MaxProjectPathBytes, workspace.MaxFileVersionBytes)),
+				Risk:        projectAssistantToolRiskWrite,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
+					return "", err
+				}
+				path, _ := projectToolRawString(req.Arguments["path"])
+				expectedVersion, _ := projectToolRawString(req.Arguments["expectedVersion"])
+				if err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, path, expectedVersion); err != nil {
+					return "", err
+				}
+				return projectAssistantToolJSONResult(s.workspaces.DeleteFile(ctx, req.WorkspaceScope, workspace.DeleteOptions{Path: path, ExpectedVersion: expectedVersion}))
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
+				Name:        projectToolMoveFile,
+				Description: "Move one existing project-relative file to a new project-relative path. The source must have been completely read during this turn and expectedVersion must match that read; the destination must not exist.",
+				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"sourcePath":{"type":"string","minLength":1,"maxLength":%d},"destinationPath":{"type":"string","minLength":1,"maxLength":%d},"expectedVersion":{"type":"string","minLength":1,"maxLength":%d},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["sourcePath","destinationPath","expectedVersion"],"additionalProperties":false}`, workspace.MaxProjectPathBytes, workspace.MaxProjectPathBytes, workspace.MaxFileVersionBytes)),
+				Risk:        projectAssistantToolRiskWrite,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
+					return "", err
+				}
+				sourcePath, _ := projectToolRawString(req.Arguments["sourcePath"])
+				expectedVersion, _ := projectToolRawString(req.Arguments["expectedVersion"])
+				if err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, sourcePath, expectedVersion); err != nil {
+					return "", err
+				}
+				destinationPath, _ := projectToolRawString(req.Arguments["destinationPath"])
+				return projectAssistantToolJSONResult(s.workspaces.MoveFile(ctx, req.WorkspaceScope, workspace.MoveOptions{
+					SourcePath: sourcePath, DestinationPath: destinationPath, ExpectedVersion: expectedVersion,
 				}))
 			},
 		},
@@ -379,6 +486,59 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		})
 	}
 	return newProjectAssistantToolRegistry(tools...)
+}
+
+// projectAssistantReadFileTool is App Studio's structured read boundary. The
+// Eino filesystem middleware remains useful for glob/grep/ls, but its native
+// read result has no metadata channel for an opaque version. Keeping read_file
+// here makes the complete-read/version contract explicit and bounded.
+func projectAssistantReadFileTool(ctx context.Context, files *workspace.FileStore, req projectAssistantToolCallRequest) (string, error) {
+	if files == nil {
+		return "", errors.New("project workspace store is not configured")
+	}
+	rawPath, ok := projectToolRawString(req.Arguments["file_path"])
+	if !ok || strings.TrimSpace(rawPath) == "" {
+		return "", errors.New("read_file requires file_path")
+	}
+	offset := projectEinoAssistantPositiveJSONInt(req.Arguments["offset"], 1)
+	limit := projectEinoAssistantPositiveJSONInt(req.Arguments["limit"], 2000)
+	if offset < 1 || limit < 1 || limit > 2000 {
+		return "", errors.New("read_file offset must be positive and limit must be between 1 and 2000")
+	}
+	file, err := files.ReadFile(ctx, req.WorkspaceScope, workspace.ReadOptions{Path: rawPath, MaxBytes: workspace.MaxReadMaxBytes})
+	if err != nil {
+		return "", err
+	}
+	result := struct {
+		Path      string `json:"path"`
+		Content   string `json:"content"`
+		Size      int64  `json:"size"`
+		Version   string `json:"version,omitempty"`
+		Complete  bool   `json:"complete"`
+		Truncated bool   `json:"truncated,omitempty"`
+		Binary    bool   `json:"binary,omitempty"`
+		Offset    int    `json:"offset"`
+		Limit     int    `json:"limit"`
+	}{Path: file.Path, Size: file.Size, Truncated: file.Truncated, Binary: file.Binary, Offset: offset, Limit: limit}
+	if !file.Binary {
+		lines := strings.Split(file.Content, "\n")
+		start := offset - 1
+		if start < len(lines) {
+			end := start + limit
+			if end > len(lines) {
+				end = len(lines)
+			}
+			result.Content = strings.Join(lines[start:end], "\n")
+		}
+		result.Complete = !file.Truncated && offset == 1 && limit >= len(lines)
+	}
+	if result.Complete {
+		result.Version = file.Version
+		if req.RunState != nil && result.Version != "" {
+			req.RunState.RecordObservedReadFileVersion(result.Path, result.Version)
+		}
+	}
+	return projectAssistantToolJSONResult(result, nil)
 }
 
 func projectAssistantToolServer(server *Server) (*Server, error) {

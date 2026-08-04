@@ -30,6 +30,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/faroshq/provider-app-studio/store"
+	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 const (
@@ -98,17 +99,18 @@ const (
 )
 
 type projectAssistantAuditTool struct {
-	ID             string `json:"id,omitempty"`
-	Name           string `json:"name"`
-	Path           string `json:"path,omitempty"`
-	Status         string `json:"status"`
-	Summary        string `json:"summary,omitempty"`
-	Additions      int    `json:"additions,omitempty"`
-	Deletions      int    `json:"deletions,omitempty"`
-	Replacements   int    `json:"replacements,omitempty"`
-	Patch          string `json:"patch,omitempty"`
-	PatchTruncated bool   `json:"patchTruncated,omitempty"`
-	AtOffsetMS     int64  `json:"atOffsetMs"`
+	ID            string `json:"id,omitempty"`
+	Name          string `json:"name"`
+	Path          string `json:"path,omitempty"`
+	Status        string `json:"status"`
+	Summary       string `json:"summary,omitempty"`
+	Additions     int    `json:"additions,omitempty"`
+	Deletions     int    `json:"deletions,omitempty"`
+	Replacements  int    `json:"replacements,omitempty"`
+	Diff          string `json:"diff,omitempty"`
+	DiffTruncated bool   `json:"diffTruncated,omitempty"`
+	RecoveryOf    string `json:"recoveryOf,omitempty"`
+	AtOffsetMS    int64  `json:"atOffsetMs"`
 }
 
 type projectAssistantAuditModelCall struct {
@@ -208,7 +210,7 @@ func (r *projectAssistantRunAuditRecorder) recordToolAt(event projectToolCallStr
 	entry := projectAssistantAuditTool{
 		ID:         projectAssistantAuditString(event.ID, projectAssistantAuditMaxSummaryLen),
 		Name:       projectAssistantAuditString(projectToolBaseName(event.Name), projectAssistantAuditMaxSummaryLen),
-		Path:       projectAssistantAuditToolPath(event.Name, event.Arguments),
+		Path:       projectAssistantAuditToolPathForEvent(event),
 		Status:     projectAssistantAuditString(event.Status, projectAssistantAuditMaxSummaryLen),
 		Summary:    projectAssistantAuditToolEventSummary(event),
 		AtOffsetMS: projectAssistantAuditOffsetMS(r.started, at),
@@ -217,8 +219,12 @@ func (r *projectAssistantRunAuditRecorder) recordToolAt(event projectToolCallStr
 		entry.Additions = event.Mutation.Additions
 		entry.Deletions = event.Mutation.Deletions
 		entry.Replacements = event.Mutation.Replacements
-		entry.Patch = event.Mutation.Patch
-		entry.PatchTruncated = event.Mutation.PatchTruncated
+		entry.Diff = event.Mutation.Diff
+		entry.DiffTruncated = event.Mutation.DiffTruncated
+		entry.RecoveryOf = projectAssistantAuditString(event.Mutation.RecoveryOf, projectAssistantAuditMaxSummaryLen)
+	}
+	if entry.RecoveryOf == "" {
+		entry.RecoveryOf = projectAssistantAuditString(event.RecoveryOf, projectAssistantAuditMaxSummaryLen)
 	}
 
 	r.mu.Lock()
@@ -683,16 +689,24 @@ func projectAssistantAuditToolPath(name, arguments string) string {
 	rawName := strings.TrimSpace(name)
 	base := projectToolBaseName(rawName)
 	switch base {
-	case projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep, projectToolApplyPatch:
+	case projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep,
+		projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
 	default:
 		return ""
 	}
 	for _, part := range strings.Split(arguments, ";") {
 		part = strings.TrimSpace(part)
-		if !strings.HasPrefix(part, "path ") {
+		path := ""
+		switch {
+		case strings.HasPrefix(part, "path "):
+			path = strings.TrimSpace(strings.TrimPrefix(part, "path "))
+		case strings.HasPrefix(part, "source ") && base == projectToolMoveFile:
+			path = strings.TrimSpace(strings.TrimPrefix(part, "source "))
+		case strings.HasPrefix(part, "destination ") && base == projectToolMoveFile:
+			path = strings.TrimSpace(strings.TrimPrefix(part, "destination "))
+		default:
 			continue
 		}
-		path := strings.TrimSpace(strings.TrimPrefix(part, "path "))
 		if path == "" || strings.ContainsAny(path, "\r\n\x00") {
 			return ""
 		}
@@ -706,6 +720,21 @@ func projectAssistantAuditToolPath(name, arguments string) string {
 		return projectAssistantAuditString(path, projectAssistantAuditMaxPathBytes)
 	}
 	return ""
+}
+
+func projectAssistantAuditToolPathForEvent(event projectToolCallStreamEvent) string {
+	if event.Mutation != nil && projectAssistantWorkspaceMutationTool(event.Name) {
+		base := projectToolBaseName(event.Name)
+		path := event.Mutation.Path
+		if base == projectToolMoveFile && event.Mutation.PreviousPath != "" {
+			path = event.Mutation.PreviousPath
+		}
+		clean, err := workspace.CleanProjectPath(path)
+		if err == nil {
+			return projectAssistantAuditString(clean, projectAssistantAuditMaxPathBytes)
+		}
+	}
+	return projectAssistantAuditToolPath(event.Name, event.Arguments)
 }
 
 func projectAssistantAuditToolSummary(name, status string) string {

@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -69,6 +70,10 @@ type projectAssistantV2ToolHarness struct {
 }
 
 func newProjectAssistantV2ToolHarness(t *testing.T, requestID string) projectAssistantV2ToolHarness {
+	return newProjectAssistantV2ToolHarnessWithApprovalMode(t, requestID, "")
+}
+
+func newProjectAssistantV2ToolHarnessWithApprovalMode(t *testing.T, requestID string, approvalMode store.AssistantApprovalMode) projectAssistantV2ToolHarness {
 	t.Helper()
 	ctx := context.Background()
 	messages := store.NewMemoryStore()
@@ -77,6 +82,11 @@ func newProjectAssistantV2ToolHarness(t *testing.T, requestID string) projectAss
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "test-project-uid-demo"}}
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-1", user: "alice"}
 	scope := testProjectMessageScope(id.orgUUID, id.workspaceUUID, project.Name)
+	if strings.TrimSpace(string(approvalMode)) != "" {
+		if _, err := messages.SetAssistantApprovalPreference(ctx, scope, store.AssistantApprovalPreference{ActorID: id.user, Mode: approvalMode}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	started, err := server.startProjectAssistantRunDurablyWithMode(
 		ctx,
 		scope,
@@ -109,17 +119,17 @@ func TestEinoV2MutationReplayDispatchesExactlyOnce(t *testing.T) {
 	h := newProjectAssistantV2ToolHarness(t, "v2-replay")
 	var calls int
 	backend := projectAssistantToolFunc{
-		spec: projectAssistantToolSpec{Name: projectToolApplyPatch, Risk: projectAssistantToolRiskWrite},
+		spec: projectAssistantToolSpec{Name: projectToolEditFile, Risk: projectAssistantToolRiskWrite},
 		call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
 			calls++
-			return `{"operation":"apply_patch","paths":["src/App.tsx"],"additions":1}`, nil
+			return `{"operation":"edit_file","paths":["src/App.tsx"],"additions":1}`, nil
 		},
 	}
 	runState := newProjectEinoAssistantRunState()
 	tool := projectEinoAssistantTool{server: h.server, tool: backend, req: h.req, runState: runState}
-	args := map[string]any{"patch": "*** Begin Patch\n*** Add File: src/App.tsx\n+ok\n*** End Patch"}
+	args := map[string]any{"path": "src/App.tsx", "oldString": "old", "newString": "new"}
 	for attempt := 0; attempt < 2; attempt++ {
-		if _, err := tool.invokeAllowedTool(context.Background(), "call-patch", backend.Spec(), args); err != nil {
+		if _, err := tool.invokeAllowedTool(context.Background(), "call-edit", backend.Spec(), args); err != nil {
 			t.Fatalf("attempt %d: %v", attempt+1, err)
 		}
 	}
@@ -138,78 +148,27 @@ func TestEinoV2MutationReplayDispatchesExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestEinoV2RejectsIdenticalFailedPatchAtSameRevision(t *testing.T) {
-	h := newProjectAssistantV2ToolHarness(t, "v2-failed-patch-fingerprint")
-	var calls int
+func TestEinoV2IdempotentReplaceDoesNotAdvanceMutationState(t *testing.T) {
+	h := newProjectAssistantV2ToolHarness(t, "v2-idempotent-replace")
 	backend := projectAssistantToolFunc{
-		spec: projectAssistantToolSpec{Name: projectToolApplyPatch, Risk: projectAssistantToolRiskWrite},
+		spec: projectAssistantToolSpec{Name: projectToolReplaceFile, Risk: projectAssistantToolRiskWrite},
 		call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
-			calls++
-			return "", &workspace.PatchError{
-				Code:            workspace.PatchErrorContextNotFound,
-				Path:            "src/App.tsx",
-				Hunk:            1,
-				Message:         "expected source was not found",
-				ExpectedContext: "old",
-				ActualContext:   "current",
-			}
+			return `{"operation":"replace_file","changed":false,"path":"src/App.tsx"}`, nil
 		},
 	}
 	runState := newProjectEinoAssistantRunState()
+	runState.RecordObservedReadFile("src/App.tsx")
 	tool := projectEinoAssistantTool{server: h.server, tool: backend, req: h.req, runState: runState}
-	args := map[string]any{"patch": "*** Begin Patch\n*** Update File: src/App.tsx\n@@\n-old\n+new\n*** End Patch"}
-
-	first, err := tool.invokeAllowedTool(context.Background(), "call-first", backend.Spec(), args)
-	if err != nil {
+	if _, err := tool.invokeAllowedTool(context.Background(), "call-replace", backend.Spec(), map[string]any{
+		"path": "src/App.tsx", "content": "unchanged", "expectedVersion": "sha256:test",
+	}); err != nil {
 		t.Fatal(err)
 	}
-	var firstResult struct {
-		Status string               `json:"status"`
-		Error  workspace.PatchError `json:"error"`
+	if revision, _ := runState.SourceMutationRevisions(); revision != 0 {
+		t.Fatalf("idempotent write manufactured source mutation revision %d", revision)
 	}
-	if err := json.Unmarshal([]byte(first), &firstResult); err != nil {
-		t.Fatalf("decode first failure: %v; result=%q", err, first)
-	}
-	if firstResult.Status != "failed" || firstResult.Error.Code != workspace.PatchErrorContextNotFound || firstResult.Error.SourceMutationRevision != 0 {
-		t.Fatalf("first result = %#v", firstResult)
-	}
-	if !strings.Contains(first, `"sourceMutationRevision":0`) {
-		t.Fatalf("first result omitted the current source mutation revision: %s", first)
-	}
-
-	checkpoint := runState.CheckpointState()
-	restored := newProjectEinoAssistantRunState()
-	restored.RestoreCheckpointState(checkpoint)
-	tool.runState = restored
-	secondArgs := map[string]any{"patch": strings.ReplaceAll(projectToolString(args["patch"]), "\n", "\r\n") + "\r\n"}
-	second, err := tool.invokeAllowedTool(context.Background(), "call-second", backend.Spec(), secondArgs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var secondResult struct {
-		Status string               `json:"status"`
-		Error  workspace.PatchError `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(second), &secondResult); err != nil {
-		t.Fatalf("decode duplicate failure: %v; result=%q", err, second)
-	}
-	if secondResult.Error.Code != workspace.PatchErrorStrategyChange || calls != 1 {
-		t.Fatalf("second result = %#v, backend calls = %d; want strategy change without redispatch", secondResult, calls)
-	}
-
-	changedArgs := map[string]any{"patch": strings.Replace(projectToolString(args["patch"]), "+new", "+different", 1)}
-	if _, err := tool.invokeAllowedTool(context.Background(), "call-changed", backend.Spec(), changedArgs); err != nil {
-		t.Fatal(err)
-	}
-	if calls != 2 {
-		t.Fatalf("backend calls after changed patch = %d, want 2", calls)
-	}
-	restored.RecordSourceMutation()
-	if _, err := tool.invokeAllowedTool(context.Background(), "call-new-revision", backend.Spec(), args); err != nil {
-		t.Fatal(err)
-	}
-	if calls != 3 {
-		t.Fatalf("backend calls after revision advance = %d, want 3", calls)
+	if got := strings.Join(runState.ObservedReadFilePaths(), ","); got != "src/App.tsx" {
+		t.Fatalf("idempotent write invalidated observed read path %q", got)
 	}
 }
 
@@ -217,13 +176,18 @@ func TestEinoV2MoveTracksSourceAndDestinationAsDirty(t *testing.T) {
 	h := newProjectAssistantV2ToolHarness(t, "v2-move-dirty-paths")
 	ctx := context.Background()
 	writeTestWorkspaceFiles(t, ctx, h.workspaces, h.req.WorkspaceScope, []workspace.File{{Path: "src/old.ts", Content: "old\n"}})
-	backend, ok := h.server.projectAssistantToolRegistry().Get(projectToolApplyPatch)
+	backend, ok := h.server.projectAssistantToolRegistry().Get(projectToolMoveFile)
 	if !ok {
-		t.Fatal("apply_patch missing")
+		t.Fatal("move_file missing")
 	}
 	runState := newProjectEinoAssistantRunState()
+	read, err := h.workspaces.ReadFile(ctx, h.req.WorkspaceScope, workspace.ReadOptions{Path: "src/old.ts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runState.RecordObservedReadFileVersion(read.Path, read.Version)
 	tool := projectEinoAssistantTool{server: h.server, tool: backend, req: h.req, runState: runState}
-	args := map[string]any{"patch": "*** Begin Patch\n*** Update File: src/old.ts\n*** Move to: src/new.ts\n@@\n-old\n+new\n*** End Patch"}
+	args := map[string]any{"sourcePath": "src/old.ts", "destinationPath": "src/new.ts", "expectedVersion": read.Version}
 	if _, err := tool.invokeAllowedTool(ctx, "call-move", backend.Spec(), args); err != nil {
 		t.Fatal(err)
 	}
@@ -233,6 +197,9 @@ func TestEinoV2MoveTracksSourceAndDestinationAsDirty(t *testing.T) {
 	}
 	if got := strings.Join(dirty, ","); got != "src/new.ts,src/old.ts" {
 		t.Fatalf("dirty paths = %q", got)
+	}
+	if got := runState.ObservedReadFilePaths(); len(got) != 0 {
+		t.Fatalf("observed reads after successful move = %#v, want invalidated", got)
 	}
 	if _, err := h.workspaces.WorkspaceDigest(ctx, h.req.WorkspaceScope, dirty); err != nil {
 		t.Fatalf("digest moved workspace: %v", err)
@@ -269,8 +236,8 @@ func (m *projectAssistantIncompleteThenCompleteModel) Stream(
 			ID:   "partial-call",
 			Type: "function",
 			Function: schema.FunctionCall{
-				Name:      projectToolApplyPatch,
-				Arguments: `{"patch":`,
+				Name:      projectToolEditFile,
+				Arguments: `{"path":`,
 			},
 		}})
 	}
@@ -359,10 +326,10 @@ func TestEinoV2DoesNotDispatchToolFromRejectedIncompleteResponse(t *testing.T) {
 	}
 	backendCalls := 0
 	backend := projectAssistantToolFunc{
-		spec: projectAssistantToolSpec{Name: projectToolApplyPatch, Risk: projectAssistantToolRiskWrite},
+		spec: projectAssistantToolSpec{Name: projectToolEditFile, Risk: projectAssistantToolRiskWrite},
 		call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
 			backendCalls++
-			return `{"operation":"apply_patch","paths":["src/App.tsx"]}`, nil
+			return `{"operation":"edit_file","paths":["src/App.tsx"]}`, nil
 		},
 	}
 	engine := projectEinoAssistantEngine{
@@ -437,52 +404,6 @@ func TestEinoV2RecoversIncompleteChatCompletionLikeCodex(t *testing.T) {
 	}
 	if !foundReconnect {
 		t.Fatalf("statuses = %#v, want reconnect 1/5", statuses)
-	}
-}
-
-func TestEinoV2PartialPatchRollbackTracksActualDeltaOnce(t *testing.T) {
-	h := newProjectAssistantV2ToolHarness(t, "v2-partial-patch")
-	actual := workspace.MutationResult{
-		Operation: "apply_patch", Path: "src/App.tsx", Paths: []string{"src/App.tsx"}, Additions: 1, Deletions: 1,
-	}
-	var calls int
-	backend := projectAssistantToolFunc{
-		spec: projectAssistantToolSpec{Name: projectToolApplyPatch, Risk: projectAssistantToolRiskWrite},
-		call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
-			calls++
-			return projectAssistantToolJSONResult(actual, &workspace.PatchError{
-				Code: workspace.PatchErrorApplyFailed, Path: "src/theme.css",
-				Message: "patch application failed; rollback was incomplete", ActualChanges: []workspace.MutationResult{actual},
-			})
-		},
-	}
-	runState := newProjectEinoAssistantRunState()
-	runState.RecordObservedReadFile("src/App.tsx")
-	tool := projectEinoAssistantTool{server: h.server, tool: backend, req: h.req, runState: runState}
-	args := map[string]any{"patch": "*** Begin Patch\n*** Update File: src/App.tsx\n@@\n-old\n+new\n*** End Patch"}
-	result, err := tool.invokeAllowedTool(context.Background(), "call-partial", backend.Spec(), args)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(result), &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if projectToolString(decoded["status"]) != "partial_failure" || !strings.Contains(projectToolString(decoded["message"]), "remain changed") {
-		t.Fatalf("partial result = %#v", decoded)
-	}
-	if current, verified := runState.SourceMutationRevisions(); current != 1 || verified != 0 {
-		t.Fatalf("source revisions = (%d, %d), want (1, 0)", current, verified)
-	}
-	if got := strings.Join(runState.SuccessfulMutationPaths(), ","); got != "src/App.tsx" {
-		t.Fatalf("changed paths = %q, want src/App.tsx", got)
-	}
-	if got := runState.ObservedReadFilePaths(); len(got) != 0 {
-		t.Fatalf("stale read coverage = %#v, want invalidated", got)
-	}
-	replayed, err := tool.invokeAllowedTool(context.Background(), "call-partial", backend.Spec(), args)
-	if err != nil || replayed != result || calls != 1 {
-		t.Fatalf("replay = (%q, %v), calls=%d; want exact durable result and one dispatch", replayed, err, calls)
 	}
 }
 
@@ -1037,16 +958,20 @@ func TestEinoV2UsesPriorUncommittedPathsWithoutRestoringMutationRevision(t *test
 
 func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 	ctx := context.Background()
-	h := newProjectAssistantV2ToolHarness(t, "v2-resume-run-local-grant")
+	h := newProjectAssistantV2ToolHarnessWithApprovalMode(t, "v2-resume-run-local-grant", store.AssistantApprovalModeAlwaysAsk)
 	writeTestWorkspaceFiles(t, ctx, h.workspaces, h.req.WorkspaceScope, []workspace.File{{
 		Path: "src/App.tsx",
 		Content: `export function App() {
   const greeting = "hello";
   const audience = "world";
   return greeting + " " + audience;
-}
-`,
+		}
+		`,
 	}})
+	current, err := h.workspaces.ReadFile(ctx, h.req.WorkspaceScope, workspace.ReadOptions{Path: "src/App.tsx"})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	grant := normalizeProjectAssistantApprovedPlan(projectAssistantApprovedPlan{
 		Goal:               "Update the app greeting",
@@ -1080,7 +1005,7 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
 		{Message: toolCall("call-runtime-before-resume", projectToolRestartRuntime, `{}`)},
 		{Message: toolCall("call-read-after-resume", projectToolReadFile, `{"file_path":"src/App.tsx","offset":1,"limit":200}`)},
-		{Message: toolCall("call-patch-after-resume", projectToolApplyPatch, `{"patch":"*** Begin Patch\n*** Update File: src/App.tsx\n@@\n export function App() {\n-  const greeting = \"hello\";\n+  const greeting = \"hello again\";\n   const audience = \"world\";\n   return greeting + \" \" + audience;\n }\n*** End Patch"}`)},
+		{Message: toolCall("call-edit-after-resume", projectToolEditFile, fmt.Sprintf(`{"path":"src/App.tsx","oldString":"  const greeting = \"hello\";","newString":"  const greeting = \"hello again\";","expectedVersion":%q}`, current.Version))},
 		{Message: toolCall("call-runtime-after-patch", projectToolRestartRuntime, `{}`)},
 	}}
 	var runtimeCalls int
@@ -1095,9 +1020,13 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 			return `{"status":"ready"}`, nil
 		},
 	}
-	patchTool, ok := h.server.projectAssistantToolRegistry().Get(projectToolApplyPatch)
+	patchTool, ok := h.server.projectAssistantToolRegistry().Get(projectToolEditFile)
 	if !ok {
-		t.Fatalf("%s missing from registry", projectToolApplyPatch)
+		t.Fatalf("%s missing from registry", projectToolEditFile)
+	}
+	readTool, ok := h.server.projectAssistantToolRegistry().Get(projectToolReadFile)
+	if !ok {
+		t.Fatalf("%s missing from registry", projectToolReadFile)
 	}
 	engine := projectEinoAssistantEngine{
 		server: h.server,
@@ -1107,12 +1036,13 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 		newTools: func(_ context.Context, req projectAssistantRunRequest, state *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
 			return []einotool.BaseTool{
 				newProjectEinoAssistantServerTool(h.server, runtimeTool, req, state),
+				newProjectEinoAssistantServerTool(h.server, readTool, req, state),
 				newProjectEinoAssistantServerTool(h.server, patchTool, req, state),
 			}, nil
 		},
 	}
 
-	_, err := engine.StreamProjectAssistant(ctx, h.req)
+	_, err = engine.StreamProjectAssistant(ctx, h.req)
 	var firstPermission *projectAssistantPermissionRequiredError
 	if !errors.As(err, &firstPermission) {
 		t.Fatalf("StreamProjectAssistant error = %v, want permission interrupt", err)
@@ -1151,8 +1081,8 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 	if !errors.As(err, &secondPermission) {
 		t.Fatalf("ResumeProjectAssistant error = %v, want second permission interrupt", err)
 	}
-	if secondPermission.ToolName != projectToolApplyPatch {
-		t.Fatalf("resumed permission tool = %q, want %q", secondPermission.ToolName, projectToolApplyPatch)
+	if secondPermission.ToolName != projectToolEditFile {
+		t.Fatalf("resumed permission tool = %q, want %q", secondPermission.ToolName, projectToolEditFile)
 	}
 	if runtimeCalls != 1 {
 		t.Fatalf("approved runtime calls = %d, want one", runtimeCalls)

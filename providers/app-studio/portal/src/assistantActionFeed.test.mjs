@@ -31,6 +31,66 @@ test('parses only the fresh allowlisted action feed contract', () => {
   assert.deepEqual(feed.parseAssistantActionFeed([action({ arguments: 'offset=200 limit=50' })]), [])
 })
 
+test('parses retrying and recovered mutation linkage with bounded diagnostics', () => {
+  const prior = action({
+    id: 'feed-prior',
+    kind: 'edit',
+    status: 'failed',
+    title: 'Edit failed',
+    severity: 'error',
+    diagnostic: {
+      category: 'validation',
+      message: 'The source is stale.',
+      referenceID: 'action-prior',
+      code: 'stale_source',
+      operation: 'edit_file',
+      path: 'src/App.vue',
+      guidance: 'Read the complete current file and retry with its version.',
+    },
+  })
+  const retrying = action({
+    id: 'feed-retry',
+    kind: 'edit',
+    status: 'retrying',
+    title: 'Retrying file update',
+    severity: 'attention',
+    recoveryOf: prior.id,
+  })
+  const recovered = action({
+    id: 'feed-recovered',
+    kind: 'edit',
+    status: 'recovered',
+    title: 'Recovered file update',
+    severity: 'normal',
+    recoveryOf: prior.id,
+  })
+
+  const parsed = feed.parseAssistantActionFeed([prior, retrying, recovered])
+  assert.equal(parsed.length, 3)
+  assert.equal(parsed[1].status, 'retrying')
+  assert.equal(parsed[1].recoveryOf, prior.id)
+  assert.equal(parsed[2].status, 'recovered')
+  assert.equal(parsed[2].recoveryOf, prior.id)
+  assert.deepEqual(parsed[0].diagnostic, prior.diagnostic)
+  assert.equal(feed.assistantActionStatusLabel('retrying'), 'Retrying')
+  assert.equal(feed.assistantActionStatusLabel('recovered'), 'Recovered')
+})
+
+test('rejects malformed recovery linkage and diagnostic fields', () => {
+  assert.deepEqual(feed.parseAssistantActionFeed([action({ recoveryOf: 'x'.repeat(121) })]), [])
+  assert.deepEqual(feed.parseAssistantActionFeed([action({ recoveryOf: 42 })]), [])
+  assert.deepEqual(feed.parseAssistantActionFeed([action({
+    status: 'failed',
+    severity: 'error',
+    diagnostic: {
+      category: 'validation',
+      message: 'The source is stale.',
+      referenceID: 'action-1',
+      operation: { name: 'edit_file' },
+    },
+  })]), [])
+})
+
 test('parses bounded exec disclosures and rejects unknown execution metadata', () => {
   const exec = {
     component: 'backend',

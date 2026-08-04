@@ -13,11 +13,11 @@ export interface AssistantActionLogItem extends ProjectAssistantActionFeedItem {
 }
 
 const kinds = new Set<ProjectAssistantActionKind>(['inspect', 'clarify', 'edit', 'run', 'commit', 'plan', 'other'])
-const statuses = new Set<ProjectAssistantActionStatus>(['running', 'waiting', 'succeeded', 'skipped', 'failed', 'rejected'])
+const statuses = new Set<ProjectAssistantActionStatus>(['running', 'waiting', 'succeeded', 'skipped', 'failed', 'rejected', 'retrying', 'recovered'])
 const severities = new Set<ProjectAssistantActionSeverity>(['normal', 'attention', 'error'])
 const diagnosticCategories = new Set<ProjectAssistantDiagnosticCategory>(['timeout', 'permission', 'validation', 'runtime', 'provider', 'unknown'])
-const itemKeys = new Set(['id', 'kind', 'status', 'title', 'target', 'outcome', 'count', 'severity', 'groupKey', 'groupTitle', 'sequence', 'diagnostic', 'exec'])
-const diagnosticKeys = new Set(['category', 'message', 'referenceID'])
+const itemKeys = new Set(['id', 'kind', 'status', 'title', 'target', 'outcome', 'count', 'severity', 'groupKey', 'groupTitle', 'sequence', 'recoveryOf', 'diagnostic', 'exec'])
+const diagnosticKeys = new Set(['category', 'message', 'referenceID', 'code', 'operation', 'path', 'guidance'])
 const textEncoder = new TextEncoder()
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -38,11 +38,19 @@ function parseDiagnostic(value: unknown): ProjectAssistantActionDiagnostic | und
   if (!isRecord(value) || !hasOnlyKeys(value, diagnosticKeys)) return undefined
   if (!diagnosticCategories.has(value.category as ProjectAssistantDiagnosticCategory)
     || !boundedString(value.message, 240, true)
-    || !boundedString(value.referenceID, 120, true)) return undefined
+    || !boundedString(value.referenceID, 120, true)
+    || !boundedString(value.code ?? '', 64)
+    || !boundedString(value.operation ?? '', 64)
+    || !boundedString(value.path ?? '', 240)
+    || !boundedString(value.guidance ?? '', 320)) return undefined
   return {
     category: value.category as ProjectAssistantDiagnosticCategory,
     message: value.message,
     referenceID: value.referenceID,
+    ...(value.code ? { code: value.code as string } : {}),
+    ...(value.operation ? { operation: value.operation as string } : {}),
+    ...(value.path ? { path: value.path as string } : {}),
+    ...(value.guidance ? { guidance: value.guidance as string } : {}),
   }
 }
 
@@ -57,6 +65,7 @@ function parseFeedItem(value: unknown): ProjectAssistantActionFeedItem | undefin
     || !boundedString(value.outcome ?? '', 240)
     || !boundedString(value.groupKey ?? '', 80)
     || !boundedString(value.groupTitle ?? '', 160)
+    || !boundedString(value.recoveryOf ?? '', 120)
     || !Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1 || Number(value.sequence) > 10_000
     || (value.count !== undefined && (!Number.isSafeInteger(value.count) || Number(value.count) < 1 || Number(value.count) > 10_000))) {
     return undefined
@@ -77,6 +86,7 @@ function parseFeedItem(value: unknown): ProjectAssistantActionFeedItem | undefin
     ...(value.groupKey ? { groupKey: value.groupKey as string } : {}),
     ...(value.groupTitle ? { groupTitle: value.groupTitle as string } : {}),
     sequence: value.sequence as number,
+    ...(value.recoveryOf ? { recoveryOf: value.recoveryOf as string } : {}),
     ...(diagnostic ? { diagnostic } : {}),
     ...(exec ? { exec } : {}),
   }
@@ -151,7 +161,8 @@ export function summarizeAssistantActions(items: AssistantActionLogItem[]): stri
   return labels.length > 3 ? `${visible} · ${labels.length - 3} more` : visible
 }
 
-export function assistantActionStatusLabel(status: ProjectAssistantActionStatus): string {
+export function assistantActionStatusLabel(status: ProjectAssistantActionStatus, severity?: ProjectAssistantActionSeverity): string {
+  if (status === 'failed' && severity === 'attention') return 'Needs attention'
   switch (status) {
     case 'running':
       return 'In progress'
@@ -163,6 +174,10 @@ export function assistantActionStatusLabel(status: ProjectAssistantActionStatus)
       return 'Skipped'
     case 'rejected':
       return 'Rejected'
+    case 'retrying':
+      return 'Retrying'
+    case 'recovered':
+      return 'Recovered'
     default:
       return 'Failed'
   }

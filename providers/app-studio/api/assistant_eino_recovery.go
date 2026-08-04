@@ -481,22 +481,12 @@ func projectEinoAssistantSafeToolFailureResult(toolName string, err error) strin
 	recovery := ""
 	lowerReason := strings.ToLower(safeReason)
 	switch {
-	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, "add file content cannot contain hunk headers or nested patch envelopes"):
-		recovery = " Recovery: return one outer *** Begin Patch / *** End Patch envelope. Put each Add File, Update File, or Delete File section directly inside it. Under Add File, emit only the new file content—no @@ lines and no nested Begin/End markers unless they are literal content lines prefixed with '+'. Every content line must begin with '+' (the parser strips it); encode literal marker-looking content as '+ *** Update File: example'."
-	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, "numeric unified-diff hunk headers are not supported"):
-		recovery = " Recovery: this tool treats text after @@ as a literal source anchor. Retry with exactly @@ or @@ followed by an exact class/function line copied from the file; never use line coordinates such as @@ -12,4 +12,5 @@."
-	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, string(workspace.PatchErrorContextNotFound)):
-		recovery = " Recovery: reread the named file around the failed hunk, then retry one contextual patch with current unchanged lines. A literal @@ anchor positions the hunk after that unchanged line and must not be repeated in the hunk body; use plain @@ when changing the first line or the anchor line itself."
-	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, string(workspace.PatchErrorContextAmbiguous)):
-		recovery = " Recovery: add more stable unchanged lines or an @@ class/function anchor so the failed hunk matches exactly one location."
-	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, string(workspace.PatchErrorNoChanges)):
-		recovery = " Recovery: revise the contextual patch so it makes the requested change; do not verify an unchanged workspace."
-	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, string(workspace.PatchErrorWorkspaceConflict)):
-		recovery = " Recovery: reread every affected existing file because workspace contents changed during the edit, then build a new contextual patch from current evidence."
-	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, string(workspace.PatchErrorStrategyChange)):
-		recovery = " Recovery: reread the affected current source and submit a materially different patch; the same patch will not be dispatched again at this workspace revision."
-	case toolName == projectToolApplyPatch && strings.Contains(lowerReason, string(workspace.PatchErrorInvalidPatch)):
-		recovery = " Recovery: return one valid *** Begin Patch / *** End Patch envelope. Every Add File content line must begin with '+' (the parser strips it); encode literal marker-looking content as '+ *** Update File: example'. Start with Add File, Update File, or Delete File; for a move, put Move to immediately below Update File for the old path."
+	case projectAssistantWorkspaceMutationTool(toolName) && strings.Contains(lowerReason, string(workspace.MutationErrorStale)):
+		recovery = " Recovery: reread the current file and retry edit_file with an exact current oldString."
+	case projectAssistantWorkspaceMutationTool(toolName) && strings.Contains(lowerReason, string(workspace.MutationErrorAmbiguous)):
+		recovery = " Recovery: reread the current file and provide a narrower oldString, or explicitly set replaceAll when every match should change."
+	case projectAssistantWorkspaceMutationTool(toolName) && strings.Contains(lowerReason, string(workspace.MutationErrorConflict)):
+		recovery = " Recovery: reread the affected file paths and retry against the current workspace state."
 	}
 	if recovery == "" {
 		return truncateProjectToolInfo(prefix + safeReason)
@@ -504,23 +494,6 @@ func projectEinoAssistantSafeToolFailureResult(toolName string, err error) strin
 	reasonLimit := projectToolInfoLimit - len(prefix) - len(recovery)
 	safeReason = projectEinoAssistantTruncateFailureReason(safeReason, reasonLimit)
 	return prefix + safeReason + recovery
-}
-
-func projectEinoAssistantPatchRecoveryInstruction(code workspace.PatchErrorCode) string {
-	switch code {
-	case workspace.PatchErrorContextNotFound:
-		return "Reread the named file around the failed hunk and build a new patch from the returned current source."
-	case workspace.PatchErrorContextAmbiguous:
-		return "Add stable unchanged lines or a literal class/function anchor so the hunk matches exactly one location."
-	case workspace.PatchErrorWorkspaceConflict:
-		return "Reread every affected existing file and rebuild the patch from current workspace contents."
-	case workspace.PatchErrorStrategyChange:
-		return "Reread the affected source and submit a materially different patch; this patch will not be dispatched again at the current revision."
-	case workspace.PatchErrorNoChanges:
-		return "Revise the patch so it makes the requested source change."
-	default:
-		return "Correct the patch using the typed error details before retrying."
-	}
 }
 
 func projectEinoAssistantTruncateFailureReason(value string, limit int) string {
@@ -685,7 +658,7 @@ func projectEinoAssistantSkipHorizontalSpace(value string, index int) int {
 	return index
 }
 
-func projectEinoAssistantPatchToolCallsMiddleware(
+func projectEinoAssistantToolCallsMiddleware(
 	ctx context.Context,
 ) (adk.ChatModelAgentMiddleware, error) {
 	return patchtoolcalls.New(ctx, &patchtoolcalls.Config{

@@ -156,7 +156,7 @@ func TestProjectEinoAssistantCompactionToolOnlyResponsePersistsInertCheckpoint(t
 	model := &projectEinoAssistantCompactionTestModel{response: schema.AssistantMessage("", []schema.ToolCall{{
 		ID: "must-not-dispatch",
 		Function: schema.FunctionCall{
-			Name:      "apply_patch",
+			Name:      "edit_file",
 			Arguments: `{"patch":"must not persist"}`,
 		},
 	}})}
@@ -605,7 +605,7 @@ func TestProjectEinoAssistantMutationEvidencePreservesToolContinuationOrdering(t
 	}
 	messages := []*schema.Message{
 		schema.AssistantMessage("", []schema.ToolCall{{ID: "mutation-1"}}),
-		schema.ToolMessage(`{"operation":"apply_patch"}`, "mutation-1"),
+		schema.ToolMessage(`{"operation":"edit_file"}`, "mutation-1"),
 		evidence,
 	}
 	if !projectEinoAssistantLastNonSystemMessageIsTool(messages) {

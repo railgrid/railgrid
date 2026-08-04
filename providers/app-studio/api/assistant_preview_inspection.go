@@ -101,6 +101,51 @@ type projectAssistantPreviewInspectionResult struct {
 	Screenshot          *projectAssistantPreviewInspectionScreenshot       `json:"screenshot,omitempty"`
 }
 
+// projectAssistantPreviewInspectionAction carries only bounded, server-owned
+// presentation metadata into the durable action feed. Browser snapshots,
+// console output, network URLs, titles, and assertion text are deliberately
+// excluded because preview content is untrusted application data.
+type projectAssistantPreviewInspectionAction struct {
+	FailureKind          string `json:"failureKind,omitempty"`
+	AssertionCount       int    `json:"assertionCount,omitempty"`
+	FailedAssertionCount int    `json:"failedAssertionCount,omitempty"`
+}
+
+func projectAssistantPreviewInspectionActionFromResult(result projectAssistantPreviewInspectionResult) *projectAssistantPreviewInspectionAction {
+	failureKind := strings.TrimSpace(result.FailureKind)
+	switch failureKind {
+	case "assertion", "application", "navigation", "worker_unavailable", "not_current":
+	default:
+		return nil
+	}
+	action := &projectAssistantPreviewInspectionAction{FailureKind: failureKind}
+	if failureKind != "assertion" {
+		return action
+	}
+	action.AssertionCount = len(result.Assertions)
+	for _, assertion := range result.Assertions {
+		if !assertion.Passed {
+			action.FailedAssertionCount++
+		}
+	}
+	return action
+}
+
+func projectAssistantPreviewInspectionActionFromText(raw string) *projectAssistantPreviewInspectionAction {
+	var result projectAssistantPreviewInspectionResult
+	if json.Unmarshal([]byte(strings.TrimSpace(raw)), &result) != nil {
+		return nil
+	}
+	return projectAssistantPreviewInspectionActionFromResult(result)
+}
+
+func projectAssistantPreviewInspectionActionFromToolResult(name, raw string) *projectAssistantPreviewInspectionAction {
+	if projectToolBaseName(name) != projectToolInspectDevelopmentPreview {
+		return nil
+	}
+	return projectAssistantPreviewInspectionActionFromText(raw)
+}
+
 type httpProjectAssistantPreviewInspector struct {
 	baseURL string
 	client  *http.Client

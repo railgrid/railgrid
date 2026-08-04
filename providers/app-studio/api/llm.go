@@ -124,7 +124,11 @@ const (
 	projectToolExecCommand                    = "exec_command"
 	projectToolAskFollowUp                    = "ask_follow_up"
 	projectToolDefineInitialProjectPlan       = "define_initial_project_plan"
-	projectToolApplyPatch                     = "apply_patch"
+	projectToolCreateFile                     = "create_file"
+	projectToolReplaceFile                    = "replace_file"
+	projectToolEditFile                       = "edit_file"
+	projectToolDeleteFile                     = "delete_file"
+	projectToolMoveFile                       = "move_file"
 	projectToolSelectTemplate                 = "select_project_template"
 	projectActionWorkspaceSync                = "workspace_sync"
 	projectActionRestoreWorkspace             = "restore_workspace"
@@ -942,12 +946,19 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 			return truncateProjectToolInfo(fmt.Sprintf("%d question(s): %s", len(labels), summarizeProjectToolList(labels, 3)))
 		}
 		return ""
-	case projectToolApplyPatch:
-		patch, _ := projectToolRawString(args["patch"])
-		if paths, err := workspace.PatchPaths(patch); err == nil && len(paths) > 0 {
-			return truncateProjectToolInfo(fmt.Sprintf("%d path(s): %s", len(paths), summarizeProjectToolList(paths, 5)))
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile:
+		if path := projectToolString(args["path"]); path != "" {
+			return truncateProjectToolInfo("path " + path)
 		}
-		return "contextual patch"
+	case projectToolMoveFile:
+		parts := []string{}
+		if path := projectToolString(args["sourcePath"]); path != "" {
+			parts = append(parts, "source "+path)
+		}
+		if path := projectToolString(args["destinationPath"]); path != "" {
+			parts = append(parts, "destination "+path)
+		}
+		return truncateProjectToolInfo(strings.Join(parts, "; "))
 	}
 	raw, err := json.Marshal(args)
 	if err != nil {
@@ -1032,7 +1043,7 @@ func summarizeProjectToolResult(name, result string) string {
 			if answer := projectToolString(decoded["answer"]); answer != "" {
 				return truncateProjectToolInfo("answered: " + answer)
 			}
-		case projectToolApplyPatch:
+		case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
 			return summarizeWorkspaceMutationResult(decoded)
 		}
 		if message := projectToolString(decoded["message"]); message != "" {
@@ -2098,11 +2109,22 @@ func appendProjectAssistantConversationHistory(messages []chatMessage, history [
 func projectSystemPromptForMode(p *aiv1alpha1.Project, repository *ProjectRepositoryView, collaborationMode projectAssistantCollaborationMode, initialBuild bool) string {
 	var b strings.Builder
 	b.WriteString("You are the assistant for a persistent Kedge Project workspace. ")
-	b.WriteString("Help the user reason about and build the application represented by this Project. ")
-	b.WriteString("For longer tool-driven work, use report_progress when it is available to keep the user oriented with brief natural-language progress updates: one when you begin, then only when a meaningful phase finishes, new evidence changes the approach, you encounter a blocker, or a longer verification begins. Continue working after each update. If report_progress is unavailable, continue without it. ")
-	b.WriteString("When write_todos is available, use it as the authoritative live checklist for non-trivial work. Before starting a step, mark exactly one step in_progress. Before moving to the next step, mark the finished step completed and the next step in_progress; when all work is done, mark every step completed. Keep the checklist current while acting instead of waiting until the final response. ")
-	b.WriteString("Keep each update to one or two sentences, grounded in evidence already available, and explain the outcome or next direction. ")
-	b.WriteString("Do not name tools, expose hidden reasoning, raw arguments, or raw results, repeat the plan or status UI, or narrate routine calls. ")
+	b.WriteString("Help the user reason about and build the application represented by this Project.\n\n")
+	b.WriteString("## User-visible progress\n\n")
+	b.WriteString("For every non-trivial tool-driven task, keep the user oriented while you work. report_progress is the only way to provide mid-turn commentary to the user; the normal assistant response is the terminal final answer and should summarize the result, evidence, and limitations.\n")
+	b.WriteString("- Before the first substantial action group, call report_progress once.\n")
+	b.WriteString("- Call it again after completing a meaningful plan phase, when new evidence changes the approach, when you encounter a blocker, or before and after lengthy verification.\n")
+	b.WriteString("- During active work, do not leave the user without an update for more than approximately 60 seconds.\n")
+	b.WriteString("- Each update must state one concrete completed outcome and the next direction or blocker in one or two concise sentences. Ground it only in evidence already available.\n")
+	b.WriteString("- Calling report_progress does not end or interrupt the turn. Continue working afterward.\n")
+	b.WriteString("- Skip progress for trivial reads and routine calls. If report_progress is unavailable, continue without it.\n\n")
+	b.WriteString("When write_todos is available, use it as the sole authority for checklist state in non-trivial Default mode work. report_progress is only user-facing commentary; it never updates or replaces the checklist. Every model-authored checklist change must be a full-list write_todos update:\n")
+	b.WriteString("- Immediately after defining or receiving a plan, write the full list with evidence-grounded statuses and exactly one current step in_progress.\n")
+	b.WriteString("- Before moving to another phase, write the full list again; mark a step completed only when current direct evidence supports it. For blocked or unfinished work, use pending (a non-complete status) and never invent a blocked status.\n")
+	b.WriteString("- After verification changes completion evidence, immediately write the full list again.\n")
+	b.WriteString("- Immediately before the terminal response, write the full list one final time.\n")
+	b.WriteString("Runtime readiness, HTTP 200, and preview reachability are evidence only for those narrow conditions; they cannot alone complete implementation or application-behavior steps. Do not infer broader completion from them or any other indirect status. Keep the checklist current while acting; report_progress never substitutes for write_todos.\n\n")
+	b.WriteString("Do not name tools in user-visible progress, expose hidden reasoning, raw arguments, raw results, logs, or secrets; do not repeat the plan, checklist, or status UI, or narrate routine calls. ")
 	b.WriteString("Do not narrate each tool call or say what tool you will call next in assistant prose; App Studio shows detailed tool progress through its status and tool summary UI. ")
 	b.WriteString("Do not claim that you changed files or deployed resources unless a tool result or other evidence supports it. ")
 	b.WriteString("Diagnostic constitution: every conclusion about the current app requires current evidence. Characterize the reported symptom and expected behavior, then locate the boundary where observed and expected behavior diverge. Keep workspace state, workspace synchronization, runtime operational health, and application behavior as separate claims. After a repair, rerun the original observation when the available tools can observe it. If application behavior cannot be observed, state that limitation and do not claim it or the acceptance criteria were verified. ")

@@ -38,12 +38,11 @@ import (
 )
 
 const (
-	projectEinoAssistantClosingEvidenceMaxItems      = 64
-	projectEinoAssistantLiveContextPrefix            = "App Studio live request context (regenerated before every model sample):\n"
-	projectEinoAssistantProjectPromptPrefix          = "You are the assistant for a persistent Kedge Project workspace. "
-	projectEinoAssistantSessionSnapshotPrefix        = "Current project snapshot (authoritative for the start of this turn;"
-	projectAssistantContextualPatchFormatInstruction = "Use exactly one outer *** Begin Patch / *** End Patch envelope. Inside an Add File section, write only the new file content; every content line must begin with '+' and the parser strips that prefix. A leading '+' disambiguates literal lines that look like protocol markers (for example '+ *** Update File: example'). A hunk header must be exactly '@@' or '@@ <literal source line copied from the file>'. Never emit Git/unified-diff line coordinates such as '@@ -12,4 +12,5 @@' because text after '@@' is searched literally in the file. A literal anchor is an unchanged line that positions the hunk after that line; do not repeat the anchor in the hunk body. Use plain '@@' when changing the first line or the anchor line itself. Put multiple hunks for the same file in source order, from the earliest unchanged context to the latest. To rename or move a file, start an Update File section for the existing path and put '*** Move to: <new path>' immediately beneath it; Move to is not a standalone section. Valid edit example:\n*** Begin Patch\n*** Update File: src/App.jsx\n@@ function App() {\n-  const title = \"Old\";\n+  const title = \"New\";\n*** End Patch\nValid move example:\n*** Begin Patch\n*** Update File: src/old.jsx\n*** Move to: src/new.jsx\n*** End Patch\n"
-	projectEinoAssistantV2DeepInstruction            = "You are the App Studio project assistant. Use only the tools exposed in this turn; do not assume shell, browser, host filesystem, or subagent access. " + projectAssistantBrowserConsoleTrustInstruction + "Browser inspection is available only when inspect_development_preview is exposed; it is read-only and cannot click, type, press keys, or run arbitrary JavaScript. Static text and role assertions verify rendered state only; they never verify keyboard, click, form, or other interaction behavior. Describe such behavior as source-reviewed but not browser-exercised, and never say it is live, working, or independently verified from static assertions. The server-selected Default, Plan, or Review collaboration mode is fixed for this turn. Plan and Review are read-only. In Default, infer inspection versus action authority from the user's request, diagnose reported defects from current evidence before editing, and keep changes narrowly scoped. When the user asks you to change, build, or fix the project, persist until the request is handled end-to-end whenever feasible: do not stop at analysis or a partial fix, and carry the work through implementation, relevant verification, and a clear explanation unless the user pauses, redirects, or required authority or input is missing. Tool calls continue the turn; a final assistant message ends it. You may call independent tools together when their arguments do not depend on one another. The only source-mutation tool is apply_patch; read existing sources before patching them and preserve unrelated workspace state. " + projectAssistantContextualPatchFormatInstruction + "Delete File and Move to are supported within authorized workspace paths. Dirty files are workspace information, not an obligation to verify or commit. Use verify_development_runtime only when operational synchronization, process, log, or preview reachability evidence is relevant. After changing a dependency manifest, start command, or build/runtime configuration, restart the development runtime before verification because file synchronization does not reload process configuration. Never call commit_project_files unless the user explicitly asked to persist changes to the repository. Do not claim rendered content, interactions, data flow, application behavior, or acceptance criteria were independently verified unless inspect_development_preview actually observed them. Finish with the model response that directly answers the user; do not add status boilerplate."
+	projectEinoAssistantClosingEvidenceMaxItems = 64
+	projectEinoAssistantLiveContextPrefix       = "App Studio live request context (regenerated before every model sample):\n"
+	projectEinoAssistantProjectPromptPrefix     = "You are the assistant for a persistent Kedge Project workspace. "
+	projectEinoAssistantSessionSnapshotPrefix   = "Current project snapshot (authoritative for the start of this turn;"
+	projectEinoAssistantV2DeepInstruction       = "You are the App Studio project assistant. Use only the tools exposed in this turn; do not assume shell, browser, host filesystem, or subagent access. " + projectAssistantBrowserConsoleTrustInstruction + "Browser inspection is available only when inspect_development_preview is exposed; it is read-only and cannot click, type, press keys, or run arbitrary JavaScript. Static text and role assertions verify rendered state only; they never verify keyboard, click, form, or other interaction behavior. Describe such behavior as source-reviewed but not browser-exercised, and never say it is live, working, or independently verified from static assertions. The server-selected Default, Plan, or Review collaboration mode is fixed for this turn. Plan and Review are read-only. In Default, infer inspection versus action authority from the user's request, diagnose reported defects from current evidence before editing, and keep changes narrowly scoped. When the user asks you to change, build, or fix the project, persist until the request is handled end-to-end whenever feasible: do not stop at analysis or a partial fix, and carry the work through implementation, relevant verification, and a clear explanation unless the user pauses, redirects, or required authority or input is missing. Tool calls continue the turn; a final assistant message ends it. You may call independent tools together when their arguments do not depend on one another. The only source-mutation tools are create_file, replace_file, edit_file, delete_file, and move_file. create_file is always create-only. Before replacing, editing, deleting, or moving an existing file, call read_file with a complete bounded read and pass its returned opaque version as expectedVersion; stale or incomplete reads fail closed. " + "Delete and move are supported only within server-approved workspace paths. Dirty files are workspace information, not an obligation to verify or commit. Use verify_development_runtime only when operational synchronization, process, log, or preview reachability evidence is relevant. After changing a dependency manifest, start command, or build/runtime configuration, restart the development runtime before verification because file synchronization does not reload process configuration. Never call commit_project_files unless the user explicitly asked to persist changes to the repository. Do not claim rendered content, interactions, data flow, or acceptance criteria were independently verified unless inspect_development_preview actually observed them. Finish with the model response that directly answers the user; do not add status boilerplate."
 )
 
 var errProjectAssistantNoOutput = errors.New("assistant model produced no accepted output")
@@ -116,6 +115,9 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	if e.server != nil && e.server.store != nil {
 		req.eventLedger = newProjectAssistantRunEventLedger(e.server.store, req.MessageScope, projectAssistantRunID(req))
 	}
+	if err := projectEinoAssistantHydratePlanProgress(ctx, req.eventLedger, runState, req.StreamCallbacks); err != nil {
+		return projectAssistantRunResult{}, fmt.Errorf("restore durable assistant plan progress: %w", err)
+	}
 	if err := e.restoreProjectAssistantDirtyBundle(ctx, req, runState); err != nil {
 		return projectAssistantRunResult{}, err
 	}
@@ -170,6 +172,9 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 	resumeRunReq.Continuation = &state
 	if e.server != nil && e.server.store != nil {
 		resumeRunReq.eventLedger = newProjectAssistantRunEventLedger(e.server.store, req.MessageScope, projectAssistantRunID(req))
+	}
+	if err := projectEinoAssistantHydratePlanProgress(ctx, resumeRunReq.eventLedger, runState, resumeRunReq.StreamCallbacks); err != nil {
+		return projectAssistantRunResult{}, fmt.Errorf("restore durable assistant plan progress: %w", err)
 	}
 	if err := e.restoreProjectAssistantDirtyBundle(ctx, resumeRunReq, runState); err != nil {
 		return projectAssistantRunResult{}, err
@@ -443,12 +448,17 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 		BaseChatModel: chatModel,
 		runState:      runState,
 	}
-	var handlers []adk.ChatModelAgentMiddleware
-	patchToolCallsMiddleware, err := projectEinoAssistantPatchToolCallsMiddleware(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("create eino patch tool calls middleware: %w", err)
+	chatModel = &projectEinoAssistantProgressReminderModel{
+		BaseChatModel: chatModel,
+		req:           req,
+		runState:      runState,
 	}
-	handlers = append(handlers, patchToolCallsMiddleware)
+	var handlers []adk.ChatModelAgentMiddleware
+	toolCallsMiddleware, err := projectEinoAssistantToolCallsMiddleware(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("create eino tool calls middleware: %w", err)
+	}
+	handlers = append(handlers, toolCallsMiddleware)
 	reductionMiddleware, err := projectEinoAssistantReductionMiddleware(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("create eino reduction middleware: %w", err)
@@ -494,13 +504,16 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 		},
 	}
 	agent, err := deep.New(ctx, &deep.Config{
-		Name:                   "app-studio-project-assistant",
-		Description:            "Runs App Studio project assistant turns.",
-		ChatModel:              chatModel,
-		Instruction:            projectEinoAssistantV2DeepInstruction,
-		ToolsConfig:            toolsConfig,
-		MaxIteration:           projectAssistantDeepIterations(),
-		WithoutWriteTodos:      !projectEinoAssistantTurnUsesDeepTodos(req),
+		Name:         "app-studio-project-assistant",
+		Description:  "Runs App Studio project assistant turns.",
+		ChatModel:    chatModel,
+		Instruction:  projectEinoAssistantV2DeepInstruction,
+		ToolsConfig:  toolsConfig,
+		MaxIteration: projectAssistantDeepIterations(),
+		// App Studio owns write_todos so its request, admission, result, and
+		// replay all pass through the durable run ledger. Do not also install
+		// Deep's framework middleware: that path only mutates Eino session state.
+		WithoutWriteTodos:      true,
 		WithoutGeneralSubAgent: true,
 		Handlers:               handlers,
 		ModelRetryConfig:       projectEinoAssistantModelRetryConfig(req, runState),
@@ -509,10 +522,6 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 		return nil, fmt.Errorf("create eino assistant agent: %w", err)
 	}
 	return agent, nil
-}
-
-func projectEinoAssistantTurnUsesDeepTodos(req projectAssistantRunRequest) bool {
-	return req.CollaborationMode == projectAssistantCollaborationModeDefault
 }
 
 type projectEinoAssistantTurnOutcome struct {

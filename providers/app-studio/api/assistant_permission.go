@@ -17,6 +17,8 @@ limitations under the License.
 package api
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -40,6 +42,41 @@ func projectAssistantToolHasEffect(spec projectAssistantToolSpec) bool {
 	default:
 		return false
 	}
+}
+
+// projectAssistantRequireMutationRead enforces the complete same-turn read
+// boundary for mutations that operate on an existing file. The expected
+// version must be one returned by read_file in this run; path-only evidence is
+// insufficient because it cannot prove which bytes the model observed.
+func projectAssistantRequireMutationRead(ctx context.Context, req projectAssistantToolCallRequest, workspaces *workspace.FileStore, rawPath string, expectedVersions ...string) error {
+	expectedVersion := ""
+	if len(expectedVersions) > 0 {
+		expectedVersion = expectedVersions[0]
+	}
+	path, err := workspace.CleanProjectPath(rawPath)
+	if err != nil {
+		return fmt.Errorf("mutation path is invalid: %w", err)
+	}
+	if workspaces == nil {
+		return errors.New("project workspace store is not configured")
+	}
+	if strings.TrimSpace(expectedVersion) == "" {
+		return fmt.Errorf("mutation of %q requires expectedVersion from a complete same-turn read", path)
+	}
+	exists, err := workspaces.FileExists(ctx, req.WorkspaceScope, path)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if req.RunState == nil {
+		return fmt.Errorf("mutation of existing file %q requires a same-turn read", path)
+	}
+	if observed := req.RunState.ReadFileVersion(path); observed == strings.TrimSpace(expectedVersion) {
+		return nil
+	}
+	return fmt.Errorf("mutation of existing file %q requires a complete same-turn read matching expectedVersion", path)
 }
 
 // projectAssistantPermissionForV2 keeps collaboration mode, approval policy,
@@ -114,10 +151,10 @@ func projectAssistantPermissionDenialReason(
 	templateBootstrapAllowed bool,
 ) string {
 	toolName := projectToolBaseName(spec.Name)
-	if toolName == projectToolApplyPatch {
+	if projectAssistantWorkspaceMutationTool(toolName) {
 		paths, err := projectAssistantWriteTargetPaths(toolName, args)
 		if err != nil {
-			return "permission denied: invalid_patch_paths; recovery: repair the contextual patch syntax and retry"
+			return "permission denied: invalid mutation paths; recovery: provide bounded project-relative paths and retry"
 		}
 		if templateBootstrapAllowed {
 			return fmt.Sprintf(
@@ -199,8 +236,11 @@ func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan,
 	}
 	toolName = strings.TrimSpace(toolName)
 	switch toolName {
-	case projectToolApplyPatch:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
 	default:
+		return false
+	}
+	if err := projectAssistantValidateWorkspaceMutationArguments(toolName, args); err != nil {
 		return false
 	}
 	// Initial project creation is the only unbounded grant. It is derived from
@@ -231,6 +271,73 @@ func projectAssistantApprovedPlanAllowsWrite(plan *projectAssistantApprovedPlan,
 	return len(targetPaths) > 0
 }
 
+// projectAssistantValidateWorkspaceMutationArguments keeps the grant and
+// execution boundaries fail-closed even when a caller bypasses model schema
+// validation. It validates only bounded argument shape; the workspace store
+// remains authoritative for file content and target state.
+func projectAssistantValidateWorkspaceMutationArguments(toolName string, args map[string]any) error {
+	allowed := map[string]struct{}{}
+	switch strings.TrimSpace(toolName) {
+	case projectToolCreateFile:
+		allowed = map[string]struct{}{"path": {}, "content": {}, "recoveryOf": {}}
+	case projectToolReplaceFile:
+		allowed = map[string]struct{}{"path": {}, "content": {}, "expectedVersion": {}, "recoveryOf": {}}
+	case projectToolEditFile:
+		allowed = map[string]struct{}{"path": {}, "oldString": {}, "newString": {}, "replaceAll": {}, "expectedVersion": {}, "recoveryOf": {}}
+	case projectToolDeleteFile:
+		allowed = map[string]struct{}{"path": {}, "expectedVersion": {}, "recoveryOf": {}}
+	case projectToolMoveFile:
+		allowed = map[string]struct{}{"sourcePath": {}, "destinationPath": {}, "expectedVersion": {}, "recoveryOf": {}}
+	default:
+		return fmt.Errorf("tool %q cannot use workspace mutation arguments", toolName)
+	}
+	for key := range args {
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("unexpected mutation argument %q", key)
+		}
+	}
+	if _, err := projectAssistantWriteTargetPaths(toolName, args); err != nil {
+		return err
+	}
+	if toolName != projectToolCreateFile {
+		expectedVersion, ok := projectToolRawString(args["expectedVersion"])
+		if !ok || strings.TrimSpace(expectedVersion) == "" {
+			return fmt.Errorf("%s requires expectedVersion", toolName)
+		}
+		if len([]byte(expectedVersion)) > workspace.MaxFileVersionBytes {
+			return fmt.Errorf("%s expectedVersion is too large", toolName)
+		}
+	}
+	switch strings.TrimSpace(toolName) {
+	case projectToolCreateFile, projectToolReplaceFile:
+		content, ok := projectToolRawString(args["content"])
+		if !ok {
+			return fmt.Errorf("%s requires content", toolName)
+		}
+		if len([]byte(content)) > workspace.MaxWriteBytes {
+			return fmt.Errorf("%s content is too large", toolName)
+		}
+	case projectToolEditFile:
+		oldString, oldOK := projectToolRawString(args["oldString"])
+		newString, newOK := projectToolRawString(args["newString"])
+		if !oldOK || oldString == "" {
+			return fmt.Errorf("%s requires oldString", toolName)
+		}
+		if !newOK {
+			return fmt.Errorf("%s requires newString", toolName)
+		}
+		if len([]byte(oldString)) > workspace.MaxWriteBytes || len([]byte(newString)) > workspace.MaxWriteBytes {
+			return fmt.Errorf("%s replacement strings are too large", toolName)
+		}
+		if value, ok := args["replaceAll"]; ok {
+			if _, ok := value.(bool); !ok {
+				return fmt.Errorf("%s replaceAll must be boolean", toolName)
+			}
+		}
+	}
+	return nil
+}
+
 func projectAssistantApprovedPlanHasCapability(plan *projectAssistantApprovedPlan, capability string) bool {
 	if plan == nil {
 		return false
@@ -244,24 +351,47 @@ func projectAssistantApprovedPlanHasCapability(plan *projectAssistantApprovedPla
 	return false
 }
 
-// projectAssistantWriteTargetPaths returns every workspace path a mutation can
-// affect. Contextual apply_patch payloads may add, delete, update, or move more
-// than one file, so authorization must cover the complete parsed set rather
-// than a representative path.
+func projectAssistantWorkspaceMutationTool(name string) bool {
+	switch projectToolBaseName(name) {
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
+		return true
+	default:
+		return false
+	}
+}
+
+// projectAssistantWriteTargetPaths returns every server-normalized workspace
+// path a narrow mutation can affect. Both endpoints of a move are authorized.
 func projectAssistantWriteTargetPaths(toolName string, args map[string]any) ([]string, error) {
 	switch strings.TrimSpace(toolName) {
-	case projectToolApplyPatch:
-		if patch, ok := projectToolRawString(args["patch"]); ok && strings.TrimSpace(patch) != "" {
-			paths, err := workspace.PatchPaths(patch)
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile:
+		path, ok := projectToolRawString(args["path"])
+		if !ok || strings.TrimSpace(path) == "" {
+			return nil, fmt.Errorf("%s requires path", toolName)
+		}
+		clean, err := workspace.CleanProjectPath(path)
+		if err != nil {
+			return nil, err
+		}
+		return []string{clean}, nil
+	case projectToolMoveFile:
+		source, sourceOK := projectToolRawString(args["sourcePath"])
+		destination, destinationOK := projectToolRawString(args["destinationPath"])
+		if !sourceOK || !destinationOK || strings.TrimSpace(source) == "" || strings.TrimSpace(destination) == "" {
+			return nil, fmt.Errorf("move_file requires sourcePath and destinationPath")
+		}
+		paths := make([]string, 0, 2)
+		for _, raw := range []string{source, destination} {
+			clean, err := workspace.CleanProjectPath(raw)
 			if err != nil {
 				return nil, err
 			}
-			if len(paths) == 0 {
-				return nil, fmt.Errorf("apply_patch must affect at least one workspace path")
-			}
-			return paths, nil
+			paths = append(paths, clean)
 		}
-		return nil, fmt.Errorf("apply_patch requires a contextual patch payload")
+		if paths[0] == paths[1] {
+			return nil, fmt.Errorf("move_file sourcePath and destinationPath must differ")
+		}
+		return paths, nil
 	default:
 		return nil, fmt.Errorf("tool %q cannot use workspace mutation grants", toolName)
 	}

@@ -60,8 +60,8 @@ func TestProjectEinoAssistantToolBatchAdmissionPreservesModelCalls(t *testing.T)
 func TestProjectEinoAssistantToolBatchAdmissionAllowsMixedAndRepeatedActions(t *testing.T) {
 	calls := []schema.ToolCall{
 		projectEinoAssistantToolCallForAdmissionTest("read", projectToolReadFile, `{"file_path":"a"}`),
-		projectEinoAssistantToolCallForAdmissionTest("patch-1", projectToolApplyPatch, `{"path":"a","oldText":"x","newText":"y"}`),
-		projectEinoAssistantToolCallForAdmissionTest("patch-2", projectToolApplyPatch, `{"path":"a","oldText":"x","newText":"y"}`),
+		projectEinoAssistantToolCallForAdmissionTest("edit-1", projectToolEditFile, `{"path":"a","oldString":"x","newString":"y"}`),
+		projectEinoAssistantToolCallForAdmissionTest("edit-2", projectToolEditFile, `{"path":"a","oldString":"x","newString":"y"}`),
 		projectEinoAssistantToolCallForAdmissionTest("commit", projectToolCommitProjectFiles, `{"paths":["a"]}`),
 	}
 	normalized, err := projectEinoAssistantNormalizeToolBatch(calls, 2)

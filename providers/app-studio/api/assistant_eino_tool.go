@@ -40,7 +40,7 @@ const (
 
 var errProjectAssistantInitialPlanPersistence = errors.New("persist initial project execution plan")
 
-const projectAssistantMutationPatchMaxBytes = 16 << 10
+const projectAssistantMutationDiffMaxBytes = 16 << 10
 
 type projectEinoAssistantToolDiscovery struct {
 	IncludeCommitBridge      bool
@@ -83,9 +83,15 @@ func projectEinoAssistantToolsForDiscovery(
 	localTools := projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(registry.Tools(discovery.IncludeCommitBridge), catalogPolicy), req.CollaborationMode)
 	localTools = projectEinoAssistantFilterPreviewInspection(localTools, discovery.IncludePreviewInspection)
 	mcpTools := projectAssistantToolsForCollaborationMode(projectAssistantToolsForTurnPolicy(discovery.MCPTools, catalogPolicy), req.CollaborationMode)
-	out := make([]einotool.BaseTool, 0, len(localTools)+len(mcpTools)+1)
+	out := make([]einotool.BaseTool, 0, len(localTools)+len(mcpTools)+2)
 	if projectEinoAssistantProgressEnabled(req, runState) {
 		out = append(out, newProjectEinoAssistantProgressTool(req, runState))
+	}
+	if req.CollaborationMode == projectAssistantCollaborationModeDefault {
+		// Deep's built-in write_todos middleware is disabled in newAgent. Keep
+		// exactly one App-owned copy in Default so it follows the durable tool
+		// ledger and remains absent from read-only collaboration modes.
+		out = append(out, newProjectEinoAssistantWriteTodosTool(server, req, runState))
 	}
 	graphTools, err := newProjectAssistantGraphWorkflowTools(ctx, projectAssistantWorkflowRunContextForRequest(server, req, runState), catalogPolicy)
 	if err != nil {
@@ -297,6 +303,16 @@ func (t projectEinoAssistantTool) InvokableRun(ctx context.Context, argumentsInJ
 	if requestDecision.Replay != nil {
 		return t.replayDurableToolCall(ctx, callID, spec, args, *requestDecision.Replay)
 	}
+	var planSnapshot *projectAssistantPlanSnapshot
+	if projectToolBaseName(spec.Name) == projectEinoAssistantWriteTodosTool {
+		plan, planErr := projectEinoAssistantPlanProgressFromWriteTodos(argumentsInJSON)
+		if planErr != nil {
+			reason := "invalid plan update: " + truncateProjectToolInfo(planErr.Error())
+			failed := t.finishFailedToolCall(callID, spec.Name, argumentsInJSON, reason)
+			return t.finishDurableToolFailureForModel(ctx, requestDecision, failed, errors.New(reason))
+		}
+		planSnapshot = &plan
+	}
 	if argumentErr != nil {
 		reason := "invalid arguments: " + truncateProjectToolInfo(argumentErr.Error())
 		failed := t.finishFailedToolCall(callID, spec.Name, argumentsInJSON, reason)
@@ -397,7 +413,7 @@ func (t projectEinoAssistantTool) InvokableRun(ctx context.Context, argumentsInJ
 				t.req.auditRecorder.recordAutomaticApproval(callID, spec.Name, t.req.Identity.user, t.req.ApprovalMode)
 			}
 		}
-		return t.invokeAllowedTool(ctx, callID, spec, args)
+		return t.invokeAllowedToolWithPlan(ctx, callID, spec, args, planSnapshot)
 	case projectAssistantPermissionAsk:
 		if !t.runState.TryStartPermissionBarrier() {
 			return projectEinoPermissionBarrierToolResult(), nil
@@ -448,8 +464,25 @@ func (t projectEinoAssistantTool) currentDiscoveryTool() (projectAssistantTool, 
 }
 
 func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID string, spec projectAssistantToolSpec, args map[string]any) (string, error) {
+	return t.invokeAllowedToolWithPlan(ctx, callID, spec, args, nil)
+}
+
+func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
+	ctx context.Context,
+	callID string,
+	spec projectAssistantToolSpec,
+	args map[string]any,
+	planSnapshot *projectAssistantPlanSnapshot,
+) (string, error) {
 	if cause := context.Cause(ctx); cause != nil {
 		return "", cause
+	}
+	if planSnapshot == nil && projectToolBaseName(spec.Name) == projectEinoAssistantWriteTodosTool {
+		plan, err := projectEinoAssistantPlanProgressFromWriteTodos(projectEinoToolArgumentsString(args))
+		if err != nil {
+			return "", err
+		}
+		planSnapshot = &plan
 	}
 	if err := t.admitMutation(ctx, spec); err != nil {
 		return "", err
@@ -463,22 +496,6 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 	}
 	if ledgerDecision.Replay != nil {
 		return t.replayDurableToolCall(ctx, callID, spec, args, *ledgerDecision.Replay)
-	}
-	patchFingerprint := ""
-	patchRevision := uint64(0)
-	if projectToolBaseName(spec.Name) == projectToolApplyPatch {
-		patch, _ := projectToolRawString(args["patch"])
-		var duplicate bool
-		patchFingerprint, patchRevision, duplicate = t.runState.PatchFingerprint(patch)
-		if duplicate {
-			patchErr := &workspace.PatchError{
-				Code:                   workspace.PatchErrorStrategyChange,
-				Message:                "this identical patch already failed against the current workspace revision; reread the affected file and submit a materially different patch",
-				SourceMutationRevision: patchRevision,
-			}
-			failed := t.finishFailedPatchToolCall(callID, spec.Name, args, patchErr, patchRevision)
-			return t.finishDurableToolFailureForModel(ctx, ledgerDecision, failed, patchErr)
-		}
 	}
 	if projectEinoAssistantCommitTool(spec.Name) {
 		if err := t.validateV2CommitWorkspace(ctx, args); err != nil {
@@ -499,12 +516,7 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 		result, err := t.invokeInitialProjectPlanTool(ctx, callID, spec, args)
 		return t.finishDurableToolCall(ctx, ledgerDecision, result, err)
 	}
-	if t.req.ToolPort == nil {
-		modelResult, durableErr := t.finishDurableToolCall(ctx, ledgerDecision, "", errors.New("App Studio tool port is not configured"))
-		_ = t.recordV2CommitSettlement(ctx, spec, args, false)
-		return modelResult, durableErr
-	}
-	result, err := t.req.ToolPort.Invoke(ctx, t.tool, projectAssistantToolCallRequest{
+	callRequest := projectAssistantToolCallRequest{
 		Identity:             t.req.Identity,
 		Project:              t.req.Project,
 		Repository:           t.req.Repository,
@@ -516,13 +528,32 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 		InitialBuild:         projectAssistantInitialBuildActive(t.req, t.runState),
 		RunState:             t.runState,
 		Arguments:            args,
-	})
+	}
+	var result string
+	if projectToolBaseName(spec.Name) == projectEinoAssistantWriteTodosTool {
+		// This is the one App-owned framework replacement. It is already a
+		// normal projectAssistantTool, but must not depend on the HTTP/MCP port.
+		result, err = t.tool.Call(ctx, callRequest)
+	} else {
+		if t.req.ToolPort == nil {
+			modelResult, durableErr := t.finishDurableToolCall(ctx, ledgerDecision, "", errors.New("App Studio tool port is not configured"))
+			_ = t.recordV2CommitSettlement(ctx, spec, args, false)
+			return modelResult, durableErr
+		}
+		result, err = t.req.ToolPort.Invoke(ctx, t.tool, callRequest)
+	}
+	// recoveryOf is presentation-only. Accept it only when this run previously
+	// issued the referenced failed action, then carry it into the typed mutation
+	// result and subsequent event projection without affecting the workspace
+	// call or authorization decision.
+	inputRecovery := projectAssistantValidatedMutationRecoveryOf(t.runState, args, spec.Name)
+	result = projectAssistantAttachMutationRecoveryOf(spec.Name, result, inputRecovery)
 	if err != nil {
 		if projectEinoAssistantWorkspaceMutationResultHasChanges(spec.Name, result) {
-			// A contextual patch can fail after an I/O error and still leave a
-			// partial delta when rollback is incomplete. Treat the observed delta
-			// as a real source mutation even though the requested patch failed.
-			t.invalidateV2PartialPatchReads(spec, args)
+			// A mutation can fail after an I/O error and still leave an observed
+			// delta when the process stops after the durable write. Treat the
+			// observed delta as real source state even though the request failed.
+			t.invalidateV2PartialMutationReads(spec, args)
 			if recordErr := t.recordV2WorkspaceMutation(ctx, spec.Name, result); recordErr != nil {
 				return t.finishDurableToolCall(ctx, ledgerDecision, result, recordErr)
 			}
@@ -535,13 +566,14 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 				return "", durableErr
 			}
 			t.emitToolCall(projectToolCallStreamEvent{
-				ID:        callID,
-				Name:      spec.Name,
-				Status:    "failed",
-				Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
-				Summary:   summarizeProjectToolResult(spec.Name, modelResult),
-				Exec:      projectAssistantExecMetadataForToolArguments(spec.Name, args, modelResult, "failed"),
-				Mutation:  projectAssistantMutationFromResult(spec.Name, modelResult),
+				ID:         callID,
+				Name:       spec.Name,
+				Status:     "failed",
+				Arguments:  summarizeProjectToolArgumentsMap(spec.Name, args),
+				Summary:    summarizeProjectToolResult(spec.Name, modelResult),
+				Exec:       projectAssistantExecMetadataForToolArguments(spec.Name, args, modelResult, "failed"),
+				Mutation:   projectAssistantMutationFromResult(spec.Name, modelResult),
+				RecoveryOf: inputRecovery,
 			})
 			t.recordToolMessage(callID, spec.Name, modelResult)
 			t.appendBuilderEvent(projectBuilderEventWorkspaceChanged)
@@ -552,14 +584,7 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 			_ = t.recordV2CommitSettlement(ctx, spec, args, false)
 			return modelResult, durableErr
 		}
-		failed := ""
-		var patchErr *workspace.PatchError
-		if projectToolBaseName(spec.Name) == projectToolApplyPatch && errors.As(err, &patchErr) {
-			t.runState.RecordFailedPatchFingerprint(patchFingerprint, patchRevision)
-			failed = t.finishFailedPatchToolCall(callID, spec.Name, args, patchErr, patchRevision)
-		} else {
-			failed = t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), err.Error())
-		}
+		failed := t.finishFailedMutationToolCall(callID, spec.Name, args, err)
 		modelResult, durableErr := t.finishDurableToolFailureForModel(ctx, ledgerDecision, failed, err)
 		_ = t.recordV2CommitSettlement(ctx, spec, args, false)
 		return modelResult, durableErr
@@ -578,7 +603,10 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 			t.server.scheduleDevelopmentSyncAfterMutation(t.req.Identity, t.req.Project, spec.Name)
 		}
 	}
-	modelResult, err = t.finishDurableToolCall(ctx, ledgerDecision, modelResult, nil)
+	if planSnapshot != nil && projectAssistantToolResultDisposition(spec.Name, modelResult, nil) != projectAssistantToolDispositionSucceeded {
+		planSnapshot = nil
+	}
+	modelResult, err = t.finishDurableToolCallWithPlan(ctx, ledgerDecision, modelResult, nil, planSnapshot)
 	if err != nil {
 		return "", err
 	}
@@ -591,13 +619,15 @@ func (t projectEinoAssistantTool) invokeAllowedTool(ctx context.Context, callID 
 		status = "failed"
 	}
 	t.emitToolCall(projectToolCallStreamEvent{
-		ID:        callID,
-		Name:      spec.Name,
-		Status:    status,
-		Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
-		Summary:   summarizeProjectToolResult(spec.Name, modelResult),
-		Exec:      projectAssistantExecMetadataForToolArguments(spec.Name, args, modelResult, status),
-		Mutation:  projectAssistantMutationFromSuccessfulResult(spec.Name, modelResult, successful),
+		ID:                callID,
+		Name:              spec.Name,
+		Status:            status,
+		Arguments:         summarizeProjectToolArgumentsMap(spec.Name, args),
+		Summary:           summarizeProjectToolResult(spec.Name, modelResult),
+		Exec:              projectAssistantExecMetadataForToolArguments(spec.Name, args, modelResult, status),
+		Mutation:          projectAssistantMutationFromSuccessfulResult(spec.Name, modelResult, successful),
+		RecoveryOf:        inputRecovery,
+		PreviewInspection: projectAssistantPreviewInspectionActionFromToolResult(spec.Name, result),
 	})
 	t.recordToolMessage(callID, spec.Name, modelResult)
 	if spec.Risk == projectAssistantToolRiskWrite && successful {
@@ -675,10 +705,26 @@ func (t projectEinoAssistantTool) finishDurableToolCall(
 	result string,
 	invokeErr error,
 ) (string, error) {
+	return t.finishDurableToolCallWithPlan(ctx, decision, result, invokeErr, nil)
+}
+
+func (t projectEinoAssistantTool) finishDurableToolCallWithPlan(
+	ctx context.Context,
+	decision projectAssistantRunToolCallDecision,
+	result string,
+	invokeErr error,
+	plan *projectAssistantPlanSnapshot,
+) (string, error) {
 	if t.req.eventLedger == nil || !decision.ShouldDispatch() {
 		return "", errors.New("assistant run event ledger dispatch token is missing")
 	}
-	outcome, err := t.req.eventLedger.FinishToolCall(ctx, decision.Token, result, invokeErr)
+	var outcome projectAssistantRunToolCallOutcome
+	var err error
+	if plan == nil {
+		outcome, err = t.req.eventLedger.FinishToolCall(ctx, decision.Token, result, invokeErr)
+	} else {
+		outcome, err = t.req.eventLedger.FinishToolCallWithPlan(ctx, decision.Token, result, invokeErr, plan)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -725,6 +771,8 @@ func (t projectEinoAssistantTool) replayDurableToolCall(
 ) (string, error) {
 	result, err := outcome.InvokeResult()
 	successful := outcome.Succeeded()
+	inputRecovery := projectAssistantValidatedMutationRecoveryOf(t.runState, args, spec.Name)
+	result = projectAssistantAttachMutationRecoveryOf(spec.Name, result, inputRecovery)
 	// Replay is also a post-effect recovery boundary. If the external commit
 	// was durably settled before process loss, repair only idempotent local
 	// state; do not count a replay as another completed model action.
@@ -742,13 +790,15 @@ func (t projectEinoAssistantTool) replayDurableToolCall(
 		status = "failed"
 	}
 	t.emitToolCall(projectToolCallStreamEvent{
-		ID:        callID,
-		Name:      spec.Name,
-		Status:    status,
-		Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
-		Summary:   summarizeProjectToolResult(spec.Name, result),
-		Exec:      projectAssistantExecMetadataForToolArguments(spec.Name, args, result, status),
-		Mutation:  projectAssistantMutationFromSuccessfulResult(spec.Name, result, successful),
+		ID:                callID,
+		Name:              spec.Name,
+		Status:            status,
+		Arguments:         summarizeProjectToolArgumentsMap(spec.Name, args),
+		Summary:           summarizeProjectToolResult(spec.Name, result),
+		Exec:              projectAssistantExecMetadataForToolArguments(spec.Name, args, result, status),
+		Mutation:          projectAssistantMutationFromSuccessfulResult(spec.Name, result, successful),
+		RecoveryOf:        inputRecovery,
+		PreviewInspection: projectAssistantPreviewInspectionActionFromToolResult(spec.Name, result),
 	})
 	t.recordToolMessage(callID, spec.Name, result)
 	if spec.Risk == projectAssistantToolRiskWrite && successful {
@@ -767,15 +817,11 @@ func (t projectEinoAssistantTool) durableToolCallSucceeded(ctx context.Context, 
 	return projectAssistantToolResultDisposition(name, result, nil) == projectAssistantToolDispositionSucceeded
 }
 
-func (t projectEinoAssistantTool) invalidateV2PartialPatchReads(spec projectAssistantToolSpec, args map[string]any) {
-	if t.runState == nil || projectToolBaseName(spec.Name) != projectToolApplyPatch {
+func (t projectEinoAssistantTool) invalidateV2PartialMutationReads(spec projectAssistantToolSpec, args map[string]any) {
+	if t.runState == nil || !projectAssistantWorkspaceMutationTool(spec.Name) {
 		return
 	}
-	patch, ok := projectToolRawString(args["patch"])
-	if !ok || strings.TrimSpace(patch) == "" {
-		return
-	}
-	paths, err := workspace.PatchReadPaths(patch)
+	paths, err := projectAssistantWriteTargetPaths(spec.Name, args)
 	if err != nil {
 		return
 	}
@@ -788,7 +834,10 @@ func (t projectEinoAssistantTool) recordV2WorkspaceMutation(ctx context.Context,
 	if t.runState == nil {
 		return nil
 	}
-	paths := t.recordV2SuccessfulMutationPaths(result)
+	if mutation := projectAssistantMutationFromResult(name, result); mutation == nil || !mutation.Changed {
+		return nil
+	}
+	paths := t.recordV2SuccessfulMutationPaths(name, result)
 	var persistErr error
 	if len(paths) > 0 && t.req.Workspace != nil {
 		if _, err := t.req.Workspace.AddUncommittedPaths(ctx, t.req.WorkspaceScope, paths); err != nil {
@@ -811,15 +860,21 @@ func (t projectEinoAssistantTool) recordV2WorkspaceMutation(ctx context.Context,
 	return persistErr
 }
 
-func (t projectEinoAssistantTool) recordV2SuccessfulMutationPaths(result string) []string {
+func (t projectEinoAssistantTool) recordV2SuccessfulMutationPaths(name, result string) []string {
 	if t.runState == nil {
 		return nil
 	}
-	mutation := projectAssistantMutationFromResult(projectToolApplyPatch, result)
+	mutation := projectAssistantMutationFromResult(name, result)
 	if mutation == nil {
 		return nil
 	}
+	if !mutation.Changed {
+		return nil
+	}
 	candidates := append(append([]string(nil), mutation.Paths...), mutation.Path)
+	if mutation.PreviousPath != "" {
+		candidates = append(candidates, mutation.PreviousPath)
+	}
 	pathSet := make(map[string]struct{}, len(candidates))
 	for _, path := range candidates {
 		clean, err := workspace.CleanProjectPath(path)
@@ -828,6 +883,7 @@ func (t projectEinoAssistantTool) recordV2SuccessfulMutationPaths(result string)
 		}
 		pathSet[clean] = struct{}{}
 		t.runState.RecordSuccessfulMutationPath(clean)
+		t.runState.InvalidateObservedReadFile(clean)
 	}
 	paths := make([]string, 0, len(pathSet))
 	for path := range pathSet {
@@ -840,6 +896,9 @@ func (t projectEinoAssistantTool) recordV2SuccessfulMutationPaths(result string)
 func projectEinoAssistantWorkspaceMutationResultHasChanges(name, result string) bool {
 	mutation := projectAssistantMutationFromResult(name, result)
 	if mutation == nil {
+		return false
+	}
+	if !mutation.Changed {
 		return false
 	}
 	if strings.TrimSpace(mutation.Path) != "" {
@@ -860,7 +919,7 @@ func projectEinoAssistantPartialMutationResult(result string, invokeErr error) s
 	}
 	decoded["status"] = "partial_failure"
 	decoded["error"] = projectEinoAssistantSafeErrorText(invokeErr)
-	decoded["message"] = "The patch failed and rollback was incomplete. The listed paths remain changed; reread their current contents before another edit."
+	decoded["message"] = "The file mutation failed after a partial write. The listed paths remain changed; reread their current contents before another edit."
 	raw, err := json.Marshal(decoded)
 	if err != nil {
 		return result
@@ -968,38 +1027,54 @@ func projectEinoAssistantPersistentToolResult(name, result string) string {
 
 func projectAssistantMutationFromResult(name, result string) *projectAssistantMutation {
 	switch projectToolBaseName(name) {
-	case projectToolApplyPatch:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
 	default:
 		return nil
 	}
 	var decoded struct {
+		Operation    string   `json:"operation"`
+		Changed      *bool    `json:"changed"`
+		Status       string   `json:"status"`
 		Path         string   `json:"path"`
+		PreviousPath string   `json:"previousPath"`
 		Paths        []string `json:"paths"`
 		Additions    int      `json:"additions"`
 		Deletions    int      `json:"deletions"`
 		Replacements int      `json:"replacements"`
-		Patch        string   `json:"patch"`
+		Diff         string   `json:"diff"`
+		RecoveryOf   string   `json:"recoveryOf"`
 	}
 	if err := json.Unmarshal([]byte(result), &decoded); err != nil {
 		return nil
 	}
-	patch, truncated := projectAssistantBoundedMutationPatch(decoded.Patch)
+	if decoded.Operation != "" && decoded.Operation != projectToolBaseName(name) {
+		return nil
+	}
+	changed := !strings.EqualFold(strings.TrimSpace(decoded.Status), "failed")
+	if decoded.Changed != nil {
+		changed = *decoded.Changed
+	}
+	diff, truncated := projectAssistantBoundedMutationDiff(decoded.Diff)
 	return &projectAssistantMutation{
-		Path:           decoded.Path,
-		Paths:          append([]string(nil), decoded.Paths...),
-		Additions:      decoded.Additions,
-		Deletions:      decoded.Deletions,
-		Replacements:   decoded.Replacements,
-		Patch:          patch,
-		PatchTruncated: truncated,
+		Operation:     decoded.Operation,
+		Changed:       changed,
+		Path:          decoded.Path,
+		PreviousPath:  decoded.PreviousPath,
+		Paths:         append([]string(nil), decoded.Paths...),
+		Additions:     decoded.Additions,
+		Deletions:     decoded.Deletions,
+		Replacements:  decoded.Replacements,
+		Diff:          diff,
+		DiffTruncated: truncated,
+		RecoveryOf:    projectAssistantBoundedMutationField(decoded.RecoveryOf, 120),
 	}
 }
 
-func projectAssistantBoundedMutationPatch(patch string) (string, bool) {
-	if len([]byte(patch)) <= projectAssistantMutationPatchMaxBytes {
-		return patch, false
+func projectAssistantBoundedMutationDiff(diff string) (string, bool) {
+	if len([]byte(diff)) <= projectAssistantMutationDiffMaxBytes {
+		return diff, false
 	}
-	raw := []byte(patch)[:projectAssistantMutationPatchMaxBytes]
+	raw := []byte(diff)[:projectAssistantMutationDiffMaxBytes]
 	for len(raw) > 0 && !utf8.Valid(raw) {
 		raw = raw[:len(raw)-1]
 	}
@@ -1333,31 +1408,52 @@ func (t projectEinoAssistantTool) finishFailedToolCall(callID, name, rawArgs, re
 	return result
 }
 
-func (t projectEinoAssistantTool) finishFailedPatchToolCall(
-	callID, name string,
-	args map[string]any,
-	patchErr *workspace.PatchError,
-	revision uint64,
-) string {
-	if patchErr == nil {
-		return t.finishFailedToolCall(callID, name, projectEinoToolArgumentsString(args), "patch failed")
+func (t projectEinoAssistantTool) finishFailedMutationToolCall(callID, name string, args map[string]any, invokeErr error) string {
+	if invokeErr == nil {
+		return t.finishFailedToolCall(callID, name, projectEinoToolArgumentsString(args), "mutation failed")
 	}
-	safe := *patchErr
-	safe.SourceMutationRevision = revision
+	safeError := projectEinoAssistantSafeErrorText(invokeErr)
+	inputRecovery := projectAssistantValidatedMutationRecoveryOf(t.runState, args, name)
+	publicRecovery := ""
+	if t.runState != nil {
+		publicRecovery = t.runState.RecordMutationRecoveryReferenceForMutation(callID, name, args)
+	} else {
+		publicRecovery = projectAssistantActionPublicID(callID)
+	}
+	failure := projectAssistantMutationFailureFromError(name, args, invokeErr, publicRecovery)
+	encodedFailure := projectAssistantMutationFailureResult{
+		Status:     "failed",
+		Code:       failure.Code,
+		Operation:  failure.Operation,
+		Path:       failure.Path,
+		Guidance:   failure.Guidance,
+		RecoveryOf: publicRecovery,
+		Message:    "Tool call failed: " + safeError,
+		Error:      failure,
+	}
 	t.emitToolCall(projectToolCallStreamEvent{
-		ID:        callID,
-		Name:      name,
-		Status:    "failed",
-		Arguments: summarizeProjectToolArgumentsMap(name, args),
-		Error:     projectEinoAssistantSafeErrorText(&safe),
+		ID:         callID,
+		Name:       name,
+		Status:     "failed",
+		Arguments:  summarizeProjectToolArgumentsMap(name, args),
+		Error:      safeError,
+		RecoveryOf: inputRecovery,
+		Mutation: &projectAssistantMutation{
+			Operation:  failure.Operation,
+			Path:       failure.Path,
+			RecoveryOf: inputRecovery,
+		},
+		MutationError: &projectAssistantMutationFailure{
+			Code:       failure.Code,
+			Operation:  failure.Operation,
+			Path:       failure.Path,
+			Guidance:   failure.Guidance,
+			RecoveryOf: inputRecovery,
+		},
 	})
-	payload, err := json.Marshal(map[string]any{
-		"status":   "failed",
-		"error":    safe,
-		"recovery": projectEinoAssistantPatchRecoveryInstruction(safe.Code),
-	})
+	payload, err := json.Marshal(encodedFailure)
 	if err != nil {
-		return t.finishFailedToolCall(callID, name, projectEinoToolArgumentsString(args), safe.Error())
+		return t.finishFailedToolCall(callID, name, projectEinoToolArgumentsString(args), encodedFailure.Message)
 	}
 	result := string(payload)
 	t.recordToolMessage(callID, name, result)
@@ -1553,9 +1649,8 @@ func projectAssistantValidateGrantBearingToolArguments(spec projectAssistantTool
 		// run-local initial-build authority. Argument shape is validated here.
 		_, err := projectAssistantInitialExecutionPlanFromArguments(activeGoal, args)
 		return err
-	case projectToolApplyPatch:
-		_, err := projectAssistantWriteTargetPaths(spec.Name, args)
-		return err
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
+		return projectAssistantValidateWorkspaceMutationArguments(spec.Name, args)
 	default:
 		return nil
 	}

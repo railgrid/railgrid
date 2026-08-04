@@ -87,7 +87,7 @@ func projectAssistantToolBundleForSpec(spec projectAssistantToolSpec) projectAss
 		return projectAssistantToolBundleRuntime
 	case projectToolLS, projectToolReadFile, projectToolGlob, projectToolGrep:
 		return projectAssistantToolBundleWorkspaceRead
-	case projectToolApplyPatch:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
 		return projectAssistantToolBundleEdit
 	case projectToolCommitProjectFiles, projectToolCommitFiles:
 		return projectAssistantToolBundleRepo
@@ -169,10 +169,10 @@ func projectAssistantToolJSONResult(out any, err error) (string, error) {
 		return "", fmt.Errorf("encode local tool result: %w", encodeErr)
 	}
 	if err != nil {
-		// Preserve a concrete partial result alongside its error. Contextual
-		// patch rollback can fail after changing files, and the execution layer
-		// must see those paths so it can invalidate stale reads and retain the
-		// actual durable dirty-workspace state.
+		// Preserve a concrete partial result alongside its error. A filesystem
+		// mutation can fail after changing files, and the execution layer must
+		// see those paths so it can invalidate stale reads and retain the actual
+		// durable dirty-workspace state.
 		return string(raw), err
 	}
 	return string(raw), nil

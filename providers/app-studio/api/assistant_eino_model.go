@@ -64,6 +64,48 @@ func (m *projectEinoAssistantTransientEvidenceModel) Stream(
 	return m.BaseChatModel.Stream(ctx, m.runState.ExpandTransientToolMessages(input), opts...)
 }
 
+// projectEinoAssistantProgressReminderModel adds a queued progress nudge only
+// to the input slice handed to the provider model. Eino's agent state,
+// callback-recorded conversation, and checkpoint payload all retain the
+// original input; the reminder is therefore advisory and ephemeral.
+type projectEinoAssistantProgressReminderModel struct {
+	einomodel.BaseChatModel
+	req      projectAssistantRunRequest
+	runState *projectEinoAssistantRunState
+}
+
+func (m *projectEinoAssistantProgressReminderModel) reminderInput(input []*schema.Message) []*schema.Message {
+	if m == nil || m.runState == nil {
+		return input
+	}
+	available := projectEinoAssistantProgressEnabled(m.req, m.runState)
+	reminder, ok := m.runState.TakeProgressReminder(available)
+	if !ok {
+		return input
+	}
+	message := schema.SystemMessage(projectEinoAssistantProgressReminderInstruction(reminder))
+	withReminder := make([]*schema.Message, 0, len(input)+1)
+	withReminder = append(withReminder, input...)
+	withReminder = append(withReminder, message)
+	return withReminder
+}
+
+func (m *projectEinoAssistantProgressReminderModel) Generate(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.Message, error) {
+	return m.BaseChatModel.Generate(ctx, m.reminderInput(input), opts...)
+}
+
+func (m *projectEinoAssistantProgressReminderModel) Stream(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.StreamReader[*schema.Message], error) {
+	return m.BaseChatModel.Stream(ctx, m.reminderInput(input), opts...)
+}
+
 func newProjectEinoChatModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {
 	if err := normalizeProjectLLMSettings(&settings); err != nil {
 		return nil, err

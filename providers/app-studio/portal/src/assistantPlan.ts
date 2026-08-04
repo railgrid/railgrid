@@ -22,6 +22,8 @@ export interface AssistantPlanProgress {
   activeLabel: string
 }
 
+export type AssistantPlanTerminalStatus = 'completed' | 'interrupted' | 'failed'
+
 const maxPlanSteps = 50
 const maxPlanLabelBytes = 120
 const textEncoder = new TextEncoder()
@@ -86,6 +88,17 @@ export function assistantPlanSummary(plan: AssistantPlan): string {
   if (completed === total) return progress
   const building = `Building · ${progress}`
   return activeLabel ? `${building} · ${activeLabel}` : building
+}
+
+/**
+ * Render the compact label used after the owning assistant turn has ended.
+ * The plan snapshot is deliberately the only source for the step counts: a
+ * failed or interrupted run can still leave a partially completed plan.
+ */
+export function assistantPlanTerminalSummary(plan: AssistantPlan, status: AssistantPlanTerminalStatus): string {
+  const { completed, total } = assistantPlanProgress(plan)
+  const label = status === 'completed' && completed === total ? 'Plan completed' : 'Plan ended'
+  return `${label} · ${completed} of ${total} steps completed`
 }
 
 export function assistantPlanStepStatusLabel(status: AssistantPlanStepStatus): string {

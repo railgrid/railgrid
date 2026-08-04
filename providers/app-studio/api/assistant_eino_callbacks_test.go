@@ -76,14 +76,14 @@ func TestProjectEinoAssistantModelCallbackRecordsStreamedToolCalls(t *testing.T)
 			ID:    "call-write",
 			Type:  "function",
 			Function: schema.FunctionCall{
-				Name:      projectToolApplyPatch,
+				Name:      projectToolEditFile,
 				Arguments: `{"path":`,
 			},
 		}})},
 		&einomodel.CallbackOutput{Message: schema.AssistantMessage("", []schema.ToolCall{{
 			Index: &index,
 			Function: schema.FunctionCall{
-				Arguments: `"src/App.tsx","content":"hi"}`,
+				Arguments: `"src/App.tsx","oldString":"old","newString":"hi"}`,
 			},
 		}})},
 	})
@@ -103,7 +103,7 @@ func TestProjectEinoAssistantModelCallbackRecordsStreamedToolCalls(t *testing.T)
 		t.Fatalf("tool calls = %#v, want one merged tool call", state.ToolCalls)
 	}
 	call := state.ToolCalls[0]
-	if call.ID != "call-write" || call.Function.Name != projectToolApplyPatch || call.Function.Arguments != `{"path":"src/App.tsx","content":"hi"}` {
+	if call.ID != "call-write" || call.Function.Name != projectToolEditFile || call.Function.Arguments != `{"path":"src/App.tsx","oldString":"old","newString":"hi"}` {
 		t.Fatalf("tool call = %#v, want merged streamed function call", call)
 	}
 	var audit projectAssistantRunAudit

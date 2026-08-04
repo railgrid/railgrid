@@ -324,16 +324,14 @@ func TestProjectCreatePreflightPromptIncludesBoundedLiveCatalog(t *testing.T) {
 	}
 }
 
-func TestInitialCreationPromptUsesV2PatchAndVerificationContract(t *testing.T) {
+func TestInitialCreationPromptUsesOrdinaryMutationAndVerificationContract(t *testing.T) {
 	project := projectWithRepository("demo-repo", "demo", "github")
 	prompt := projectSystemPromptForMode(project, &ProjectRepositoryView{Ref: "demo-repo", Status: projectRepositoryStatusReady, Ready: true}, projectAssistantCollaborationModeDefault, true)
 	for _, want := range []string{
 		"Collaboration mode: default",
-		"The only source-mutation tool is apply_patch",
-		"A hunk header must be exactly '@@' or '@@ <literal source line copied from the file>'",
-		"Never emit Git/unified-diff line coordinates",
-		"do not repeat the anchor in the hunk body",
-		"Use plain '@@' when changing the first line",
+		"source-mutation tools are create_file, replace_file, edit_file, delete_file, and move_file",
+		"complete bounded read",
+		"Stale, partial, or ambiguous edits fail",
 		"The project-creation request is the one-time authorization for this initial source build",
 		"strongly prefer making reasonable assumptions and continuing",
 		"Use ask_follow_up only when the answer cannot be discovered",
@@ -350,12 +348,36 @@ func TestDefaultPromptKeepsApprovalPolicyIndependentOfRetiredTools(t *testing.T)
 	project := projectWithRepository("demo-repo", "demo", "github")
 	prompt := projectSystemPromptForMode(project, &ProjectRepositoryView{Ref: "demo-repo", Status: projectRepositoryStatusReady, Ready: true}, projectAssistantCollaborationModeDefault, false)
 
-	if !strings.Contains(prompt, "apply_patch") {
-		t.Fatalf("default prompt missing contextual patch guidance:\n%s", prompt)
+	if !strings.Contains(prompt, "create_file") || !strings.Contains(prompt, "replace_file") || !strings.Contains(prompt, "edit_file") {
+		t.Fatalf("default prompt missing ordinary mutation guidance:\n%s", prompt)
 	}
-	for _, retired := range []string{"write_file", "mkdir", "hydrate_workspace"} {
+	for _, retired := range []string{"apply_patch", "mkdir", "hydrate_workspace"} {
 		if strings.Contains(prompt, retired) {
 			t.Fatalf("default prompt retained retired tool %q:\n%s", retired, prompt)
+		}
+	}
+}
+
+func TestDefaultPromptRequiresEvidenceGroundedChecklistUpdates(t *testing.T) {
+	project := projectWithRepository("demo-repo", "demo", "github")
+	prompt := projectSystemPromptForMode(project, &ProjectRepositoryView{Ref: "demo-repo", Status: projectRepositoryStatusReady, Ready: true}, projectAssistantCollaborationModeDefault, false)
+	for _, want := range []string{
+		"sole authority for checklist state in non-trivial Default mode work",
+		"report_progress is only user-facing commentary; it never updates or replaces the checklist",
+		"Every model-authored checklist change must be a full-list write_todos update",
+		"Immediately after defining or receiving a plan, write the full list",
+		"Before moving to another phase, write the full list again",
+		"After verification changes completion evidence, immediately write the full list again",
+		"Immediately before the terminal response, write the full list one final time",
+		"mark a step completed only when current direct evidence supports it",
+		"For blocked or unfinished work, use pending (a non-complete status) and never invent a blocked status",
+		"Runtime readiness, HTTP 200, and preview reachability are evidence only for those narrow conditions",
+		"cannot alone complete implementation or application-behavior steps",
+		"Do not infer broader completion from them or any other indirect status",
+		"report_progress never substitutes for write_todos",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("default prompt missing checklist instruction %q:\n%s", want, prompt)
 		}
 	}
 }
@@ -379,13 +401,13 @@ func TestBuilderAndDeepPromptsTreatBrowserConsoleAsHostileData(t *testing.T) {
 	}
 }
 
-func TestDeepPromptForbidsNumericUnifiedDiffHunks(t *testing.T) {
+func TestDeepPromptDescribesOrdinaryMutationSemantics(t *testing.T) {
 	for _, instruction := range []string{
-		"hunk header must be exactly '@@' or '@@ <literal source line copied from the file>'",
-		"Never emit Git/unified-diff line coordinates",
-		"@@ -12,4 +12,5 @@",
-		"do not repeat the anchor in the hunk body",
-		"Use plain '@@' when changing the first line",
+		"create_file",
+		"replace_file",
+		"edit_file",
+		"complete bounded read",
+		"stale or incomplete",
 	} {
 		if !strings.Contains(projectEinoAssistantV2DeepInstruction, instruction) {
 			t.Fatalf("deep instruction missing %q", instruction)

@@ -906,7 +906,7 @@ func TestProjectAssistantSupervisorClaimPublishesRunningRevision(t *testing.T) {
 	if err := accumulator.UpdateSnapshot(context.Background(), func(current *store.AssistantRun, message *store.Message) {
 		next := *current
 		next.Revision++
-		message.Metadata = projectAssistantDurableMetadataForTransition(next, "Writing files", false, true, []projectToolCallStreamEvent{{ID: "tool-1", Name: projectToolApplyPatch, Status: "succeeded"}}, nil)
+		message.Metadata = projectAssistantDurableMetadataForTransition(next, "Writing files", false, true, []projectToolCallStreamEvent{{ID: "tool-1", Name: projectToolEditFile, Status: "succeeded"}}, nil)
 	}); err != nil {
 		t.Fatalf("persist resumed tool metadata: %v", err)
 	}
@@ -963,7 +963,7 @@ func TestResumedAssistantSegmentPublishesTerminalMessageAndRunAtomically(t *test
 	}
 	defer unsubscribe()
 	<-updates
-	state := &projectAssistantDurableMetadataState{status: "Writing files", toolCalls: []projectToolCallStreamEvent{{ID: "tool-1", Name: projectToolApplyPatch, Status: "succeeded"}}}
+	state := &projectAssistantDurableMetadataState{status: "Writing files", toolCalls: []projectToolCallStreamEvent{{ID: "tool-1", Name: projectToolEditFile, Status: "succeeded"}}}
 	server := NewWithWorkspace(nil, msgStore, nil, "", false)
 	if err := server.persistProjectAssistantDurableMetadata(context.Background(), accumulator, workspace.Scope{}, state, nil); err != nil {
 		t.Fatal(err)
@@ -1796,7 +1796,10 @@ func (e *planStartRouteEngine) StreamProjectAssistant(_ context.Context, req pro
 	}
 	close(e.published)
 	<-e.release
-	return projectAssistantRunResult{Content: "plan complete"}, nil
+	return projectAssistantRunResult{
+		Content:            "plan complete",
+		CompletionEvidence: projectAssistantCompletionEvidence{PlanComplete: true},
+	}, nil
 }
 
 func (*planStartRouteEngine) ResumeProjectAssistant(context.Context, projectAssistantRunRequest, projectAssistantResumeRequest, projectAssistantCheckpointState) (projectAssistantRunResult, error) {
@@ -1813,7 +1816,10 @@ func (e *planResumeRouteEngine) ResumeProjectAssistant(_ context.Context, req pr
 	}
 	close(e.published)
 	<-e.release
-	return projectAssistantRunResult{Content: "plan complete"}, nil
+	return projectAssistantRunResult{
+		Content:            "plan complete",
+		CompletionEvidence: projectAssistantCompletionEvidence{PlanComplete: true},
+	}, nil
 }
 
 func (failingResumeRouteEngine) StreamProjectAssistant(context.Context, projectAssistantRunRequest) (projectAssistantRunResult, error) {

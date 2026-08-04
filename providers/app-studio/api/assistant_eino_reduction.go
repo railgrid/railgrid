@@ -92,7 +92,7 @@ func projectEinoAssistantRewriteWorkspaceMutations(
 	messages = append(messages, schema.AssistantMessage("", compactedCalls))
 	messages = append(messages, compactedResponses...)
 	evidence := schema.UserMessage(
-		projectEinoAssistantWorkspaceMutationEvidencePrefix + " " + strings.Join(summaries, "; ") + ". Treat these completed results as authoritative; reread only after a conflict, failed patch, or later mutation.",
+		projectEinoAssistantWorkspaceMutationEvidencePrefix + " " + strings.Join(summaries, "; ") + ". Treat these completed results as authoritative; reread only after a conflict, failed mutation, or later mutation.",
 	)
 	evidence.Extra = map[string]any{
 		projectEinoAssistantSyntheticMessageKindKey: projectEinoAssistantWorkspaceMutationEvidenceKind,
@@ -127,7 +127,7 @@ func projectEinoAssistantSuccessfulWorkspaceMutationGroup(toolCallMessage *schem
 
 func projectEinoAssistantWorkspaceMutationTool(name string) bool {
 	switch projectToolBaseName(name) {
-	case projectToolApplyPatch:
+	case projectToolCreateFile, projectToolReplaceFile, projectToolEditFile, projectToolDeleteFile, projectToolMoveFile:
 		return true
 	default:
 		return false
@@ -135,11 +135,17 @@ func projectEinoAssistantWorkspaceMutationTool(name string) bool {
 }
 
 func projectEinoAssistantSuccessfulWorkspaceMutationResult(name, content string) bool {
-	result := map[string]any{}
+	var result struct {
+		Operation string `json:"operation"`
+		Changed   *bool  `json:"changed"`
+	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &result); err != nil {
 		return false
 	}
-	return projectToolString(result["operation"]) == projectToolBaseName(name)
+	if result.Operation != projectToolBaseName(name) {
+		return false
+	}
+	return result.Changed == nil || *result.Changed
 }
 
 func projectEinoAssistantOriginalToolMessageGroup(toolCallMessage *schema.Message, toolResponseMessages []*schema.Message) []*schema.Message {

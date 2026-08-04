@@ -141,7 +141,7 @@ func TestProjectAssistantDurableMetadataTracksEveryTransition(t *testing.T) {
 		{Content: "Verify preview", ActiveForm: "Verifying preview", Status: "in_progress"},
 	}}
 	metadata := projectAssistantDurableMetadataForTransition(run, "Writing files", true, false, []projectToolCallStreamEvent{{
-		ID: "tool-1", Name: projectToolApplyPatch, Status: "running", Arguments: `{"path":"src/App.tsx"}`,
+		ID: "tool-1", Name: projectToolEditFile, Status: "running", Arguments: `{"path":"src/App.tsx"}`,
 	}}, &plan)
 	if got := metadata[projectAssistantMetadataRevision]; got != int64(2) {
 		t.Fatalf("revision = %#v, want current run revision", got)
@@ -162,7 +162,7 @@ func TestProjectAssistantDurableMetadataTracksEveryTransition(t *testing.T) {
 	run.Status = store.AssistantRunStatusCompleted
 	run.Revision = 5
 	metadata = projectAssistantDurableMetadataForTransition(run, "Completed", false, true, []projectToolCallStreamEvent{{
-		ID: "tool-1", Name: projectToolApplyPatch, Status: "succeeded", Arguments: `{"path":"src/App.tsx"}`,
+		ID: "tool-1", Name: projectToolEditFile, Status: "succeeded", Arguments: `{"path":"src/App.tsx"}`,
 	}}, &plan)
 	if got := metadata[projectAssistantMetadataRevision]; got != int64(5) {
 		t.Fatalf("terminal revision = %#v, want 5", got)
@@ -399,7 +399,7 @@ func TestProjectAssistantProgressSnapshotOrdersProseAndActionLifecycle(t *testin
 	}
 	state.upsertToolCall(projectToolCallStreamEvent{
 		ID:     "call-write",
-		Name:   projectToolApplyPatch,
+		Name:   projectToolEditFile,
 		Status: "succeeded",
 	})
 
@@ -441,7 +441,7 @@ func TestProjectAssistantProgressSnapshotContinuesOrderingAfterResume(t *testing
 	}
 	state.upsertToolCall(projectToolCallStreamEvent{
 		ID:     "call-new",
-		Name:   projectToolApplyPatch,
+		Name:   projectToolEditFile,
 		Status: "succeeded",
 	})
 
@@ -607,7 +607,7 @@ func TestProjectAssistantDurableMetadataSurvivesStatusToolProvisionalAndTerminal
 		}
 	}
 	persist(nil)
-	toolCalls = []projectToolCallStreamEvent{{ID: "tool-1", Name: projectToolApplyPatch, Status: "running"}}
+	toolCalls = []projectToolCallStreamEvent{{ID: "tool-1", Name: projectToolEditFile, Status: "running"}}
 	persist(nil)
 	provisional = true
 	persist(nil)

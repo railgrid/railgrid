@@ -302,6 +302,146 @@ func TestProjectAssistantThreadSnapshotScopesReusedActionIDPerSegment(t *testing
 	}
 }
 
+func TestProjectAssistantThreadSnapshotMirrorsAcceptedProgressAsTypedCommentary(t *testing.T) {
+	inner := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, inner, nil, "", false)
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	now := time.Now().UTC()
+	thread := store.AssistantThread{ID: "thread-commentary", ActorID: "alice", CreatedAt: now, UpdatedAt: now}
+	if _, err := inner.CreateAssistantThread(context.Background(), scope, thread, nil); err != nil {
+		t.Fatal(err)
+	}
+	turn := store.AssistantTurn{ID: "turn-commentary", ThreadID: thread.ID, Mode: store.AssistantRunModeDefault}
+	run := store.AssistantRun{ID: turn.ID, ActiveMessageID: "assistant-commentary", Revision: 4, Status: store.AssistantRunStatusRunning}
+	snapshot := projectAssistantRunSnapshot{Run: run, Message: store.Message{
+		ID:        run.ActiveMessageID,
+		CreatedAt: now,
+		Metadata: map[string]any{projectAssistantMetadataProgress: projectAssistantProgressSnapshot{
+			Version: 1, Messages: []string{"I found the files.", "The change is ready."}, MessageSequences: []int{2, 5},
+		}},
+	}}
+	state := assistantThreadMirrorState{}
+	if err := server.projectAssistantThreadSnapshot(context.Background(), scope, thread.ID, turn, run, &state, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	events, err := inner.ListAssistantThreadEvents(context.Background(), scope, thread.ID, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wantID := range []string{"commentary-assistant-commentary-2", "commentary-assistant-commentary-5"} {
+		if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventItemStarted, wantID); got != 1 {
+			t.Fatalf("commentary %s started events = %d, want one", wantID, got)
+		}
+		if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventItemCompleted, wantID); got != 1 {
+			t.Fatalf("commentary %s completed events = %d, want one", wantID, got)
+		}
+	}
+	before := len(events)
+	if err := server.projectAssistantThreadSnapshot(context.Background(), scope, thread.ID, turn, run, &state, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	events, err = inner.ListAssistantThreadEvents(context.Background(), scope, thread.ID, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != before {
+		t.Fatalf("repeated progress appended duplicate events: before=%d after=%d", before, len(events))
+	}
+	items := materializeAssistantThreadItems(events)
+	commentaryCount := 0
+	for _, item := range items {
+		if item.Phase == "commentary" {
+			commentaryCount++
+			if item.Status != "completed" || item.AssistantMessageID != run.ActiveMessageID {
+				t.Fatalf("commentary item = %#v", item)
+			}
+		}
+	}
+	if commentaryCount != 2 {
+		t.Fatalf("materialized commentary items = %#v, want two", items)
+	}
+}
+
+func TestProjectAssistantThreadSnapshotCompletesPartialCommentaryAfterMirrorRestart(t *testing.T) {
+	ctx := context.Background()
+	inner := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, inner, nil, "", false)
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	now := time.Now().UTC()
+	threadID := "thread-commentary-restart"
+	turnID := "turn-commentary-restart"
+	activeMessageID := "assistant-commentary-restart"
+	commentaryID := "commentary-assistant-commentary-restart-3"
+	if _, err := inner.CreateAssistantThread(ctx, scope, store.AssistantThread{ID: threadID, ActorID: "alice", CreatedAt: now, UpdatedAt: now}, nil); err != nil {
+		t.Fatal(err)
+	}
+	started := assistantThreadItem{
+		ID:                 commentaryID,
+		TurnID:             turnID,
+		Type:               assistantThreadEventAssistantMessage,
+		Phase:              "commentary",
+		Status:             "in_progress",
+		Content:            "Checking the implementation.",
+		AssistantMessageID: activeMessageID,
+		CreatedAt:          now,
+	}
+	payload, err := json.Marshal(map[string]any{"item": started})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inner.AppendAssistantThreadEvent(ctx, scope, store.AssistantThreadEvent{
+		ThreadID: threadID,
+		TurnID:   turnID,
+		Type:     assistantThreadEventItemStarted,
+		ItemID:   commentaryID,
+		Payload:  payload,
+	}, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	turn := store.AssistantTurn{ID: turnID, ThreadID: threadID, Mode: store.AssistantRunModeDefault}
+	run := store.AssistantRun{ID: turnID, ActiveMessageID: activeMessageID, Revision: 2, Status: store.AssistantRunStatusRunning}
+	snapshot := projectAssistantRunSnapshot{Run: run, Message: store.Message{
+		ID:        activeMessageID,
+		CreatedAt: now,
+		Metadata: map[string]any{projectAssistantMetadataProgress: projectAssistantProgressSnapshot{
+			Version: 1, Messages: []string{"Checking the implementation."}, MessageSequences: []int{3},
+		}},
+	}}
+	state, err := server.loadAssistantThreadMirrorState(ctx, scope, threadID, activeMessageID, turnID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.commentaryStatuses[commentaryID]; got != "in_progress" {
+		t.Fatalf("reloaded partial commentary status = %q, want in_progress", got)
+	}
+	if err := server.projectAssistantThreadSnapshot(ctx, scope, threadID, turn, run, &state, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	events, err := inner.ListAssistantThreadEvents(ctx, scope, threadID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventItemStarted, commentaryID); got != 1 {
+		t.Fatalf("partial commentary started events = %d, want one", got)
+	}
+	if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventItemCompleted, commentaryID); got != 1 {
+		t.Fatalf("partial commentary completed events = %d, want one", got)
+	}
+	before := len(events)
+	state = assistantThreadMirrorState{}
+	if err := server.projectAssistantThreadSnapshot(ctx, scope, threadID, turn, run, &state, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	events, err = inner.ListAssistantThreadEvents(ctx, scope, threadID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != before {
+		t.Fatalf("restarted partial commentary appended duplicates: before=%d after=%d", before, len(events))
+	}
+}
+
 func TestProjectAssistantThreadMirrorRetriesTransientProjectionFailure(t *testing.T) {
 	inner := store.NewMemoryStore()
 	failing := &failingAssistantThreadProjectionStore{Store: inner, appendFailures: 1}
