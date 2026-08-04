@@ -70,7 +70,7 @@ development:
       startCommand: "npm run dev"
       port: frontend                # named port kept from the prod graph
       reload:
-        strategy: process           # process | command | container
+        strategy: process           # process | container
         rules:
           - paths: ["package.json", "package-lock.json"]
             command: "npm install"  # run before process restart
@@ -114,10 +114,12 @@ controller-owned today). `development` is only valid when the Template declares
 a `development` block.
 
 **Rendering.** When `kedgeMode: development`, each declared component's
-workload is rendered with: the dev image + dev agent in place of the user
-image/command, a **per-component workspace PVC** mounted at `workingDir`, a
-per-component control port/Service, and the instance-wide control-token
-Secret. Everything else in the graph is untouched. How the overlay is
+workload is rendered with a **platform coordinator**, an **app runtime
+supervisor**, and a **stateless executor**. It also receives a
+**per-component workspace PVC** mounted at `workingDir`, a separate
+**per-component platform-state PVC** mounted at `/kedge/state` for the
+coordinator, a per-component control Service, and the instance-wide control
+token Secret. Everything else in the graph is untouched. How the overlay is
 produced is an infra-internal decision (§6.1) — the Template author writes
 the `development` block, not two graphs. Rules the overlay must obey:
 
@@ -129,11 +131,28 @@ the `development` block, not two graphs. Rules the overlay must obey:
   Postgres PVC are the Template's own business and untouched). Development
   code PVCs are synthesized by the overlay rather than embedded in each
   production graph.
-- **Everything except image and command is preserved.** The dev container
-  keeps the production container's env (e.g. `DATABASE_URL` from the
+- **Container authorities are split.** The coordinator owns the public,
+  token-authenticated control contract and durable session/idempotency state on
+  `/kedge/state`, but has no app environment or secrets. The runtime supervisor
+  keeps the production app environment/secrets and starts, restarts, and
+  reloads the app, but has no platform token or platform-state mount. The
+  stateless executor verifies the synchronized workspace revision/SHA-256 digest
+  and runs typed argv, but has no platform token, platform-state mount, app
+  environment/secrets, or service-account credentials.
+- **The public and internal ports are distinct.** The component Service keeps
+  the token-authenticated control contract on `7070` (control) and `7071` (exec).
+  Coordinator-to-runtime control binds to pod loopback `7072`, and
+  coordinator-to-executor control binds to pod loopback `7073`.
+- **The pod is non-root by construction.** The coordinator, runtime supervisor,
+  and executor run as UID/GID `1000`, with `allowPrivilegeEscalation: false` and
+  all capabilities dropped. The pod uses seccomp `RuntimeDefault`,
+  `fsGroup: 1000`, and `shareProcessNamespace: false`.
+- **Everything else in the app container is preserved.** The runtime supervisor
+  keeps the production container's env (for example `DATABASE_URL` from the
   credentials Secret), ports, and volume wiring — a dev backend must reach the
-  instance's real Postgres exactly as the prod one would. Probes are relaxed
-  to the dev agent's readiness.
+  instance's real Postgres exactly as the prod one would. The coordinator uses
+  HTTP health checks, while the runtime supervisor and stateless executor use
+  internal TCP readiness checks.
 - **Routing is identical in both modes.** The dev overlay keeps the
   production HTTPRoute rules verbatim (`/` → frontend, `/api` → backend): the
   gateway does the tier split, so dev servers never need per-toolchain proxy
@@ -141,21 +160,27 @@ the `development` block, not two graphs. Rules the overlay must obey:
 
 ## 2. The dev agent (infra-owned)
 
-`providers/infrastructure/dev-agent/main.go` (sync/restart/logs/env over
-`:7070`) is the standalone **`kedge-dev-agent`** static binary. In
-dev mode every declared component runs it as PID 1 wrapping the component's
-`startCommand`:
+`providers/infrastructure/dev-agent/main.go` is the standalone
+**`kedge-dev-agent`** static binary. In dev mode every declared component runs
+the binary in three roles:
 
 - Injected via an **init container** that copies the agent binary from a
   platform image into a shared `emptyDir` — so `devImage` can be *any*
   toolchain image (node, python, go, jdk) with no kedge-specific baking.
-- Serves the same control verbs per component: `/sync`, `/restart`, `/logs`,
-  `/env`, and revision-bound `/exec`. The exec endpoint reuses the live
-  component workspace and therefore has the development container's authority;
-  see `docs/app-studio-sandboxed-exec.md`. Executes the Template-declared reload
-  rules (§1) on sync: match changed paths → run rule command → restart process.
+- The coordinator serves `/sync`, `/restart`, `/logs`, `/env`, and
+  revision-bound `/exec` on the public Service's `7070`/`7071` ports. It holds
+  the `X-Sandbox-Control-Token` and durable platform state.
+- The runtime supervisor starts and supervises the component app process on
+  internal loopback `7072`, retaining the app's environment and secrets.
+- The stateless executor runs typed argv after revision/SHA-256 verification on
+  internal loopback `7073`; it has no platform token, platform-state mount, app
+  environment/secrets, or service-account credentials. See
+  `docs/app-studio-sandboxed-exec.md`.
+- Executes the Template-declared reload rules (§1) on sync: match changed paths
+  → run rule command → restart the process. With `strategy: container`, the
+  runtime supervisor container is restarted; the coordinator is not restarted.
 - Auth stays the per-instance control token (`X-Sandbox-Control-Token`),
-  shared across the instance's components.
+  presented at the public control boundary.
 
 The platform dev images (`${kedge.devImage.*}`) are plain toolchain images the
 infrastructure provider curates and pins. They keep the dev agent separate from
@@ -185,6 +210,7 @@ dataPlane:
         sync:    { port: control, upstreamPath: /sync,    methods: [POST] }
         restart: { port: control, upstreamPath: /restart, methods: [POST] }
         log:     { port: control, upstreamPath: /logs,    methods: [GET], stream: true }
+        exec:    { port: exec,    upstreamPath: /exec,    methods: [POST] }
     backend:
       ...
 ```
@@ -199,8 +225,7 @@ POST …/dataplane/clusters/{ws}/applications/{name}/restart      (all component
 
 The generic resolver, namespace confinement, token injection, and
 authorize-as-caller flow are implemented. Instance-level verbs may fan out to
-all components (`restart` restarts every dev process); no legacy fixed-runner
-compatibility path remains.
+all components (`restart` restarts every dev process).
 
 The backend publishes per-component status refs
 (`status.components.<name>.{controlServiceRef,ready}`) alongside the existing
@@ -325,7 +350,7 @@ assistant hints) after hydration.
 | Phase | Deliverable | Risk |
 |---|---|---|
 | **0** | **DONE.** API: `Template.spec.development`, `dataPlane.components`, reserved `kedgeMode` schema injection; resolver + validation + unit tests. Development-capable templates carry the component and data-plane contract. | Low — additive |
-| **1** | **DONE, e2e-validated on kind** (`TestE2EDevelopmentMode`, runs in the Infrastructure Template E2E workflow). `kedge-dev-agent` extracted (`providers/infrastructure/dev-agent/`, `--install` injection, reload rules, `KEDGE_DEV_*` env with `SANDBOX_*` fallback); `${kedge.devImage.*}` / `${kedge.devAgentImage}` tokens (env `KEDGE_DEV_IMAGE_<TOOLCHAIN>` / `KEDGE_DEV_AGENT_IMAGE`, chart + operator wired); backend-synthesized dev overlay (`backend/kro/devoverlay.go`); per-component data-plane URLs; `application` Template development block (node/node v1) + component dataPlane + CEL images-optional-in-dev rule. Both flagged kro assumptions validated live: `includeWhen` on two same-named Deployment variants is accepted and mode-splits correctly, and status expressions referencing mode-excluded resources stay unset in production and resolve in development. (Two apply-time gotchas the e2e caught, now handled in the overlay: env values need `${string(...)}` around int-typed CEL, and overlay ports/mounts must dedupe against what the workload already declares.) | ~~High~~ validated |
+| **1** | **DONE, e2e-validated on kind** (`TestE2EDevelopmentMode`, runs in the Infrastructure Template E2E workflow). `kedge-dev-agent` extracted (`providers/infrastructure/dev-agent/`, `--install` injection, reload rules, `KEDGE_DEV_*` configuration); `${kedge.devImage.*}` / `${kedge.devAgentImage}` tokens (env `KEDGE_DEV_IMAGE_<TOOLCHAIN>` / `KEDGE_DEV_AGENT_IMAGE`, chart + operator wired); backend-synthesized dev overlay (`backend/kro/devoverlay.go`); per-component data-plane URLs; `application` Template development block (node/node v1) + component dataPlane + CEL images-optional-in-dev rule. Both flagged kro assumptions validated live: `includeWhen` on two same-named Deployment variants is accepted and mode-splits correctly, and status expressions referencing mode-excluded resources stay unset in production and resolve in development. (Two apply-time gotchas the e2e caught, now handled in the overlay: env values need `${string(...)}` around int-typed CEL, and overlay ports/mounts must dedupe against what the workload already declares.) | ~~High~~ validated |
 | **2** | **Core DONE** (portal catalog UI + creation-flow polish outstanding). `Project.spec.template` names the backing Template; selection (PUT `/api/projects/{p}/template`, assistant tool `select_project_template`) reads the Template live from the tenant catalog, tears the old dev instance down, and generates the dev binding (`kedgeMode: development`). Sync/logs/restart/env route per component (workspacePath prefix → `…/components/<c>/<verb>`); template previews use the instance's own `status.url`. The assistant prompt carries the bound Template (or interview guidance when none). The old fixed-runner creation default was removed (2026-07-04): new projects have no development environment until a Template is bound — by the assistant interview, the portal picker, or `PUT /template`. `select_project_template` sits in the workflow tool bundle so interview-profile turns can actually call it. | Medium |
 | **3** | **Core DONE** (repo-import-at-creation UX outstanding). Code provider: `RepositoryCheckout` CR + controller (the CommitBundle flow in reverse; GitHub `RepositoryReader` reads the text tree via commit→tree→blobs, binary/oversized files skipped and reported) + `checkout_repository` MCP tool returning files inline and reclaiming the bundle. App Studio: `POST /api/projects/{p}/hydrate-workspace` reads the project repository through `code__checkout_repository`, writes the tree into the workspace (overwrite semantics), and triggers a development sync — making git the recoverable source of truth for template switches and lost workspaces. Repository import: `CreateProjectRequest.existingRepositoryRef` adopts an existing Code Repository (claim + release semantics — an adopted repository is never deleted with the project) and hydrates the workspace from it at creation; the `hydrate_workspace` assistant tool covers recovery and post-switch re-hydration. Remaining: portal import/catalog UI. | Medium |
 | **4** | **DONE (2026-07-04).** All legacy sandbox-runner paths deleted outright (no migration, per the no-compat decision): the sandbox-runner template/image/Makefile targets/CI workflow, App Studio's sandbox target resolution and binding special-cases, the signed preview-URL flow and the whole preview-gateway stack (`previewgateway`/`previewtoken` packages, `preview-gateway` subcommand, chart workloads, Tilt wiring), and the `${kedge.sandboxPreviewBaseDomain}` token. Templates are the only development path; previews are the instance's own URL. `DefaultNodeDevImage` is now plain `node:22-bookworm` (agent injected). Existing sandbox projects are recreated — code lives in git. Remaining: BYO-compute validation with a dev-mode template on a second infra provider. | Low |

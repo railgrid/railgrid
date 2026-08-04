@@ -291,11 +291,6 @@ func normalizeExecPath(value string) (string, error) {
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
 		return "", fmt.Errorf("escapes the workspace")
 	}
-	for _, component := range strings.Split(clean, "/") {
-		if component == ".kedge-platform" {
-			return "", fmt.Errorf("uses reserved platform metadata directory")
-		}
-	}
 	return clean, nil
 }
 

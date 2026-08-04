@@ -38,12 +38,12 @@ import (
 //     ${schema.spec.kedgeMode != "development"} appended.
 //   - A dev variant of the workload is synthesized (same Kubernetes name, so
 //     the production Service selectors keep routing) with includeWhen
-//     == "development": the container's image swaps to the resolved
-//     ${kedge.devImage.*} value and its command to the injected dev agent;
-//     env, ports, volumes, service account, selectors are preserved so the
-//     dev process sees exactly what production would (DATABASE_URL et al).
-//   - A per-component RWO workspace PVC and a per-component control Service
-//     (agent port 7070) are added.
+//     == "development". It contains three deliberately separate processes:
+//     a platform coordinator, the production-authority app runtime, and a
+//     stateless executor. Only the app keeps the production container's env,
+//     mounts, and service-account contract.
+//   - A per-component RWO workspace PVC, a separate fixed-size platform-state
+//     PVC, and a per-component control Service are added.
 //
 // Once per template, an instance-wide control-token Secret + generator Job
 // (the sandbox-runner pattern) is added, and the RGD status is extended with
@@ -51,10 +51,18 @@ import (
 // dataPlane components can resolve.
 
 const (
-	// devAgentPort is the control port the kedge-dev-agent serves on, in every
-	// dev-mode component (same port the sandbox runner used).
-	devAgentPort = 7070
-	devExecPort  = 7071
+	// The first two ports are public and are part of the existing data-plane
+	// Service contract. The latter two are private sidecar ports: the
+	// coordinator reaches the runtime supervisor and stateless executor over
+	// the pod network.
+	devAgentPort         = 7070
+	devExecPort          = 7071
+	devRuntimePort       = 7072
+	devExecRunnerPort    = 7073
+	devPlatformStateDir  = "/kedge/state"
+	devRuntimeAddress    = "127.0.0.1:7072"
+	devExecutorAddress   = "127.0.0.1:7073"
+	devServiceAccountDir = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 	// devAgentBinDir is where the injector init container installs the agent
 	// binary and the dev container executes it from.
@@ -65,9 +73,10 @@ const (
 	devModeCondition  = `${schema.spec.kedgeMode == "development"}`
 	prodModeCondition = `${schema.spec.kedgeMode != "development"}`
 
-	// devWorkspaceSize is the per-component workspace PVC size. Deliberately a
-	// constant for now — a knob here would be tenant-facing API surface.
-	devWorkspaceSize = "1Gi"
+	// PVC sizes are deliberately constants for now — knobs here would be
+	// tenant-facing API surface.
+	devWorkspaceSize     = "1Gi"
+	devPlatformStateSize = "1Gi"
 )
 
 // applyDevOverlay extends simpleSpec (kedgeMode field), the resource graph,
@@ -209,7 +218,7 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 		return nil, "", fmt.Errorf("workload %q declares no metadata.name", workloadID)
 	}
 
-	for _, id := range []string{name + "DevWorkspace", name + "DevDeployment", name + "DevControlService"} {
+	for _, id := range []string{name + "DevWorkspace", name + "DevPlatformState", name + "DevDeployment", name + "DevControlService"} {
 		if _, taken := byID[id]; taken {
 			return nil, "", fmt.Errorf("graph already declares resource id %q (reserved for the dev overlay)", id)
 		}
@@ -232,6 +241,7 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 		previewConsoleVerificationJWKS,
 		workingDir,
 		pvcName,
+		"${schema.spec.name}-dev-"+name+"-platform-state",
 	)
 	if err != nil {
 		return nil, "", err
@@ -260,6 +270,23 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 			},
 		})
 	}
+	out = append(out, map[string]any{
+		"id":          name + "DevPlatformState",
+		"includeWhen": []any{devModeCondition},
+		"template": map[string]any{
+			"apiVersion": "v1",
+			"kind":       "PersistentVolumeClaim",
+			"metadata": map[string]any{
+				"name":      "${schema.spec.name}-dev-" + name + "-platform-state",
+				"namespace": namespace,
+				"labels":    labels,
+			},
+			"spec": map[string]any{
+				"accessModes": []any{"ReadWriteOnce"},
+				"resources":   map[string]any{"requests": map[string]any{"storage": devPlatformStateSize}},
+			},
+		},
+	})
 
 	controlService := map[string]any{
 		"id":          name + "DevControlService",
@@ -288,16 +315,13 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 	return append(out, controlService), namespace, nil
 }
 
-// synthesizeDevDeployment deep-copies the production workload and rewrites it
-// into the dev variant: dev image + injected agent as the container command,
-// everything else (env, ports, volumes, service account, selector labels)
-// preserved so the dev process sees exactly the production wiring. Overlay
-// additions dedupe against what the workload already declares — a container
-// that already exposes the agent port or mounts workingDir//tmp keeps its own
-// wiring (server-side apply rejects duplicate port/mountPath entries; caught
-// by the dev-mode e2e on sandbox-runner). mountedWorkspace reports whether the
-// overlay added the workspace mount (and so needs the per-component PVC).
-func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopmentComponent, prodTemplate map[string]any, devImage, agentImage, previewConsoleVerificationJWKS, workingDir, pvcName string) (dev, selector map[string]any, mountedWorkspace bool, err error) {
+// synthesizeDevDeployment deep-copies the production workload and turns it
+// into a three-container development pod. The app container is the only
+// container that inherits production authority; the coordinator and executor
+// are built from scratch with their own mounts and minimal environments.
+// mountedWorkspace reports whether the overlay added the workspace mount (and
+// so needs the per-component workspace PVC).
+func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopmentComponent, prodTemplate map[string]any, devImage, agentImage, previewConsoleVerificationJWKS, workingDir, pvcName, statePVCName string) (dev, selector map[string]any, mountedWorkspace bool, err error) {
 	tmplCopy, err := deepCopyMap(prodTemplate)
 	if err != nil {
 		return nil, nil, false, err
@@ -307,7 +331,7 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	if spec == nil {
 		return nil, nil, false, fmt.Errorf("workload has no spec")
 	}
-	// One dev process, one PVC; Recreate avoids the RWO rolling-update
+	// One dev pod, one workspace PVC; Recreate avoids the RWO rolling-update
 	// deadlock (the new pod can't mount until the old one releases).
 	spec["replicas"] = int64(1)
 	spec["strategy"] = map[string]any{"type": "Recreate"}
@@ -320,43 +344,35 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	}
 	containers, _ := podSpec["containers"].([]any)
 	if len(containers) != 1 {
-		return nil, nil, false, fmt.Errorf("workload has %d containers; the dev overlay supports exactly one", len(containers))
+		return nil, nil, false, fmt.Errorf("workload has %d containers; the dev overlay supports exactly one production container", len(containers))
 	}
-	container, _ := containers[0].(map[string]any)
-	if container == nil {
+	app, _ := containers[0].(map[string]any)
+	if app == nil {
 		return nil, nil, false, fmt.Errorf("workload container is malformed")
 	}
 
-	container["image"] = devImage
-	container["command"] = []any{devAgentBinDir + "/kedge-dev-agent"}
-	delete(container, "args")
-	container["workingDir"] = workingDir
-	// Dev servers can take minutes to first-boot (dependency install); the
-	// data-plane proxy probes readiness out of band.
-	delete(container, "livenessProbe")
-	delete(container, "readinessProbe")
-	delete(container, "startupProbe")
-	container["securityContext"] = map[string]any{
-		"allowPrivilegeEscalation": false,
-		"capabilities":             map[string]any{"drop": []any{"ALL"}, "add": []any{"SETGID"}},
+	appPort := firstContainerPort(app)
+	app["image"] = devImage
+	app["command"] = []any{devAgentBinDir + "/kedge-dev-agent", "--runtime-supervisor"}
+	delete(app, "args")
+	app["workingDir"] = workingDir
+	delete(app, "livenessProbe")
+	delete(app, "readinessProbe")
+	delete(app, "startupProbe")
+	appReadOnlyRoot := false
+	if existingSecurity, _ := app["securityContext"].(map[string]any); existingSecurity != nil {
+		appReadOnlyRoot, _ = existingSecurity["readOnlyRootFilesystem"].(bool)
 	}
+	app["securityContext"] = devContainerSecurityContext(appReadOnlyRoot)
+	app["env"] = appendDevRuntimeEnv(app, comp, workingDir, appPort)
+	ensureContainerPort(app, "runtime", devRuntimePort)
+	app["livenessProbe"] = devTCPProbe(devRuntimePort, 1)
+	app["readinessProbe"] = devTCPProbe(devRuntimePort, 1)
 
-	env, _ := container["env"].([]any)
-	env = append(env, devAgentEnv(comp, workingDir, container)...)
-	container["env"] = env
-
-	if !hasContainerPort(container, devAgentPort) {
-		ports, _ := container["ports"].([]any)
-		container["ports"] = append(ports, map[string]any{"name": "kedge-control", "containerPort": int64(devAgentPort)})
-	}
-
-	// Workspace and /tmp are conservative: a mountPath that is a ${...}
-	// expression (sandbox-runner mounts its PVC at ${schema.spec.workingDir})
-	// can't be compared statically, so it counts as already covering the path
-	// — the preserve rule again, and server-side apply would reject the
-	// resolved duplicate anyway. The agent-bin mount is exact-match only: it
-	// must always be injected or there is no agent to run.
-	mounts, _ := container["volumeMounts"].([]any)
+	// A production volume mount at workingDir is reused for all three
+	// containers. Otherwise the overlay creates the per-component workspace
+	// PVC. Runtime-only mounts are deliberately separate for each container.
+	mounts, _ := app["volumeMounts"].([]any)
 	var extraVolumes []any
 	if !hasMountPath(mounts, workingDir, true) {
 		mountedWorkspace = true
@@ -368,8 +384,8 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 		extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-dev-agent-bin", "emptyDir": map[string]any{}})
 	}
 	if !hasMountPath(mounts, "/tmp", true) {
-		mounts = append(mounts, map[string]any{"name": "kedge-dev-tmp", "mountPath": "/tmp"})
-		extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-dev-tmp", "emptyDir": map[string]any{}})
+		mounts = append(mounts, map[string]any{"name": "kedge-dev-runtime-tmp", "mountPath": "/tmp"})
+		extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-dev-runtime-tmp", "emptyDir": map[string]any{}})
 	}
 	workspaceMount := mountForPath(mounts, workingDir, true)
 	if workspaceMount == nil {
@@ -379,64 +395,76 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	if agentBinMount == nil {
 		return nil, nil, false, fmt.Errorf("development agent-bin mount is unavailable")
 	}
-	metadataMount := protectedMetadataMount(workspaceMount, workingDir)
-	mounts = append(mounts, metadataMount)
-	container["volumeMounts"] = mounts
+	app["volumeMounts"] = mounts
 
-	workerWorkspaceMount := copyVolumeMount(workspaceMount, workingDir)
-	workerMetadataMount := protectedMetadataMount(workspaceMount, workingDir)
-	worker := map[string]any{
-		"name":            "kedge-exec-worker",
+	workspaceForSidecar := copyVolumeMount(workspaceMount, workingDir)
+	stateVolume := map[string]any{"name": "kedge-dev-platform-state", "persistentVolumeClaim": map[string]any{"claimName": statePVCName}}
+	noServiceAccountVolume := map[string]any{"name": "kedge-dev-no-serviceaccount", "emptyDir": map[string]any{}}
+	extraVolumes = append(extraVolumes, stateVolume, noServiceAccountVolume)
+
+	coordinator := map[string]any{
+		"name":            "kedge-platform-coordinator",
+		"image":           agentImage,
+		"imagePullPolicy": "IfNotPresent",
+		// No mode flag selects the finalized default coordinator mode. The
+		// coordinator owns the public :7070/:7071 servers and KEDGE_DEV_STATE_DIR.
+		"command": []any{"/kedge-dev-agent"},
+		"ports": []any{
+			map[string]any{"name": "control", "containerPort": int64(devAgentPort)},
+			map[string]any{"name": "exec", "containerPort": int64(devExecPort)},
+		},
+		"env": devCoordinatorEnv(comp, workingDir),
+		"volumeMounts": []any{
+			workspaceForSidecar,
+			map[string]any{"name": "kedge-dev-platform-state", "mountPath": devPlatformStateDir},
+			map[string]any{"name": "kedge-dev-coordinator-tmp", "mountPath": "/tmp"},
+			map[string]any{"name": "kedge-dev-no-serviceaccount", "mountPath": devServiceAccountDir, "readOnly": true},
+		},
+		"livenessProbe":   devHTTPProbe(devAgentPort, 0),
+		"readinessProbe":  devHTTPProbe(devAgentPort, 0),
+		"securityContext": devContainerSecurityContext(true),
+	}
+	extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-dev-coordinator-tmp", "emptyDir": map[string]any{}})
+
+	executor := map[string]any{
+		"name":            "kedge-exec-runner",
 		"image":           devImage,
 		"imagePullPolicy": "IfNotPresent",
-		"command":         []any{devAgentBinDir + "/kedge-dev-agent", "--exec-worker"},
+		"command":         []any{devAgentBinDir + "/kedge-dev-agent", "--executor"},
 		"workingDir":      workingDir,
-		"ports":           []any{map[string]any{"name": "kedge-exec", "containerPort": int64(devExecPort)}},
+		"ports":           []any{map[string]any{"name": "exec-runner", "containerPort": int64(devExecRunnerPort)}},
 		"env": []any{
 			map[string]any{"name": "KEDGE_DEV_WORKDIR", "value": workingDir},
-			map[string]any{"name": "KEDGE_DEV_CONTROL_TOKEN", "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "${kedgeDevControlSecret.metadata.name}", "key": "token"}}},
-			map[string]any{"name": "HOME", "value": "/tmp/kedge-home"},
+			map[string]any{"name": "HOME", "value": "/tmp/kedge-exec-home"},
+			map[string]any{"name": "TMPDIR", "value": "/tmp"},
 		},
 		"volumeMounts": []any{
-			workerWorkspaceMount,
-			workerMetadataMount,
+			copyVolumeMount(workspaceMount, workingDir),
 			map[string]any{"name": agentBinMount["name"], "mountPath": devAgentBinDir, "readOnly": true},
-			map[string]any{"name": "kedge-exec-tmp", "mountPath": "/tmp"},
-			map[string]any{"name": "kedge-exec-no-serviceaccount", "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount", "readOnly": true},
+			map[string]any{"name": "kedge-dev-exec-tmp", "mountPath": "/tmp"},
+			map[string]any{"name": "kedge-dev-no-serviceaccount", "mountPath": devServiceAccountDir, "readOnly": true},
 		},
-		"securityContext": map[string]any{
-			"runAsNonRoot":             true,
-			"runAsUser":                int64(1001),
-			"runAsGroup":               int64(1000),
-			"allowPrivilegeEscalation": false,
-			"readOnlyRootFilesystem":   true,
-			"capabilities":             map[string]any{"drop": []any{"ALL"}, "add": []any{"SETUID", "SETGID"}},
-		},
+		"livenessProbe":   devTCPProbe(devExecRunnerPort, 1),
+		"readinessProbe":  devTCPProbe(devExecRunnerPort, 1),
+		"securityContext": devContainerSecurityContext(true),
 	}
-	containers = append(containers, worker)
-	podSpec["containers"] = containers
-	extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-exec-tmp", "emptyDir": map[string]any{}})
-	extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-exec-no-serviceaccount", "emptyDir": map[string]any{}})
+	extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-dev-exec-tmp", "emptyDir": map[string]any{}})
+	podSpec["containers"] = []any{coordinator, app, executor}
 
 	initContainer := map[string]any{
-		"name":  "kedge-dev-agent",
+		"name":  "kedge-dev-agent-installer",
 		"image": agentImage,
 		// The default-for-:latest Always policy would force a registry pull
 		// even when the image is side-loaded (kind/local dev) and fail the pod
 		// if the registry copy is missing. Production pins digests via
 		// KEDGE_DEV_AGENT_IMAGE, where IfNotPresent is equivalent.
 		"imagePullPolicy": "IfNotPresent",
-		"command":         []any{"/kedge-dev-agent", "--install", devAgentBinDir, "--prepare-workspace", workingDir},
+		"command":         []any{"/kedge-dev-agent", "--install", devAgentBinDir},
 		"volumeMounts": []any{
 			map[string]any{"name": "kedge-dev-agent-bin", "mountPath": devAgentBinDir},
-			copyVolumeMount(workspaceMount, workingDir),
+			map[string]any{"name": "kedge-dev-no-serviceaccount", "mountPath": devServiceAccountDir, "readOnly": true},
 		},
-		"securityContext": map[string]any{
-			"allowPrivilegeEscalation": false,
-			"runAsNonRoot":             false,
-			"runAsUser":                int64(0),
-			"capabilities":             map[string]any{"drop": []any{"ALL"}, "add": []any{"CHOWN"}},
-		},
+		"securityContext": devContainerSecurityContext(true),
 	}
 	if previewConsoleVerificationJWKS != "" {
 		initContainer["env"] = []any{map[string]any{
@@ -451,13 +479,12 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	volumes, _ := podSpec["volumes"].([]any)
 	podSpec["volumes"] = append(volumes, extraVolumes...)
 
-	// The workspace PVC must be writable by the non-root dev process.
 	podSpec["securityContext"] = map[string]any{
-		"runAsNonRoot":       true,
-		"runAsUser":          int64(1000),
-		"runAsGroup":         int64(1000),
-		"fsGroup":            int64(1000),
-		"supplementalGroups": []any{int64(2000)},
+		"runAsNonRoot":   true,
+		"runAsUser":      int64(1000),
+		"runAsGroup":     int64(1000),
+		"fsGroup":        int64(1000),
+		"seccompProfile": map[string]any{"type": "RuntimeDefault"},
 	}
 	podSpec["shareProcessNamespace"] = false
 
@@ -496,17 +523,81 @@ func copyVolumeMount(source map[string]any, mountPath string) map[string]any {
 	return result
 }
 
-func protectedMetadataMount(workspaceMount map[string]any, workingDir string) map[string]any {
-	result := map[string]any{"name": workspaceMount["name"], "mountPath": workingDir + "/.kedge-platform"}
-	switch {
-	case workspaceMount["subPath"] != nil:
-		result["subPath"] = strings.TrimSuffix(workspaceMount["subPath"].(string), "/") + "/.kedge-platform"
-	case workspaceMount["subPathExpr"] != nil:
-		result["subPathExpr"] = strings.TrimSuffix(workspaceMount["subPathExpr"].(string), "/") + "/.kedge-platform"
-	default:
-		result["subPath"] = ".kedge-platform"
+func devContainerSecurityContext(readOnlyRootFilesystem bool) map[string]any {
+	return map[string]any{
+		"runAsNonRoot":             true,
+		"runAsUser":                int64(1000),
+		"runAsGroup":               int64(1000),
+		"allowPrivilegeEscalation": false,
+		"readOnlyRootFilesystem":   readOnlyRootFilesystem,
+		"capabilities":             map[string]any{"drop": []any{"ALL"}},
 	}
-	return result
+}
+
+func devCoordinatorEnv(comp infrav1alpha1.TemplateDevelopmentComponent, workingDir string) []any {
+	env := []any{
+		map[string]any{"name": "KEDGE_DEV_WORKDIR", "value": workingDir},
+		map[string]any{"name": "KEDGE_DEV_STATE_DIR", "value": devPlatformStateDir},
+		map[string]any{"name": "KEDGE_DEV_RUNTIME_URL", "value": "http://" + devRuntimeAddress},
+		map[string]any{"name": "KEDGE_DEV_EXECUTOR_URL", "value": "http://" + devExecutorAddress},
+	}
+	if comp.Reload != nil {
+		if comp.Reload.Strategy != "" {
+			env = append(env, map[string]any{"name": "KEDGE_DEV_RELOAD_STRATEGY", "value": comp.Reload.Strategy})
+		}
+		if len(comp.Reload.Rules) > 0 {
+			rules, _ := json.Marshal(comp.Reload.Rules)
+			env = append(env, map[string]any{"name": "KEDGE_DEV_RELOAD_RULES", "value": string(rules)})
+		}
+	}
+	return append(env, map[string]any{
+		"name": "KEDGE_DEV_CONTROL_TOKEN",
+		"valueFrom": map[string]any{
+			"secretKeyRef": map[string]any{"name": "${kedgeDevControlSecret.metadata.name}", "key": "token"},
+		},
+	})
+}
+
+// devHTTPProbe uses the agent's immediate health endpoint. The generous
+// failure threshold keeps a slow image pull or dependency install from
+// removing the pod while the public Service still publishes not-ready
+// addresses so initial synchronization can proceed.
+func devHTTPProbe(port int64, initialDelay int64) map[string]any {
+	return map[string]any{
+		"httpGet": map[string]any{
+			"path": "/healthz",
+			"port": port,
+		},
+		"initialDelaySeconds": initialDelay,
+		"periodSeconds":       int64(5),
+		"timeoutSeconds":      int64(2),
+		"failureThreshold":    int64(12),
+		"successThreshold":    int64(1),
+	}
+}
+
+func devTCPProbe(port int64, initialDelay int64) map[string]any {
+	return map[string]any{
+		"tcpSocket": map[string]any{
+			"port": port,
+		},
+		"initialDelaySeconds": initialDelay,
+		"periodSeconds":       int64(5),
+		"timeoutSeconds":      int64(2),
+		"failureThreshold":    int64(12),
+		"successThreshold":    int64(1),
+	}
+}
+
+// ensureContainerPort adds a fixed private port only when the production
+// container did not already declare it. CEL-expression ports are intentionally
+// not considered equal to a fixed port because they resolve per instance.
+func ensureContainerPort(container map[string]any, name string, port int64) {
+	if hasContainerPort(container, port) {
+		return
+	}
+	ports, _ := container["ports"].([]any)
+	container["ports"] = append(ports, map[string]any{"name": name, "containerPort": port})
 }
 
 // hasContainerPort reports whether the container already declares the numeric
@@ -551,18 +642,16 @@ func hasMountPath(mounts []any, path string, matchExpressions bool) bool {
 	return false
 }
 
-// devAgentEnv is the agent's contract: where the code lives, what to run, the
-// port the dev server must bind, the declared reload procedure, and the
-// control token. Cache/HOME point into the tmp emptyDir so read-only-rootfs
-// toolchains work; they're only added when the production container doesn't
-// set them itself.
-func devAgentEnv(comp infrav1alpha1.TemplateDevelopmentComponent, workingDir string, container map[string]any) []any {
+// appendDevRuntimeEnv preserves the production container's environment and
+// adds only the runtime-supervisor contract. Platform credentials are removed
+// from a copied production container so an old overlay cannot leak them into
+// the app process; the coordinator is the sole token consumer.
+func appendDevRuntimeEnv(container map[string]any, comp infrav1alpha1.TemplateDevelopmentComponent, workingDir, port string) []any {
 	env := []any{
 		map[string]any{"name": "KEDGE_DEV_WORKDIR", "value": workingDir},
 		map[string]any{"name": "KEDGE_DEV_START_COMMAND", "value": comp.StartCommand},
-		map[string]any{"name": "KEDGE_DEV_DROP_CHILD_GROUPS", "value": "true"},
 	}
-	if port := firstContainerPort(container); port != "" {
+	if port != "" {
 		env = append(env, map[string]any{"name": "KEDGE_DEV_PORT", "value": port})
 	}
 	if comp.Reload != nil {
@@ -575,14 +664,8 @@ func devAgentEnv(comp infrav1alpha1.TemplateDevelopmentComponent, workingDir str
 			env = append(env, map[string]any{"name": "KEDGE_DEV_RELOAD_RULES", "value": string(rules)})
 		}
 	}
-	env = append(env, map[string]any{
-		"name": "KEDGE_DEV_CONTROL_TOKEN",
-		"valueFrom": map[string]any{
-			"secretKeyRef": map[string]any{"name": "${kedgeDevControlSecret.metadata.name}", "key": "token"},
-		},
-	})
 	for _, e := range []struct{ name, value string }{
-		{"HOME", "/tmp/kedge-home"},
+		{"HOME", "/tmp/kedge-runtime-home"},
 		{"NPM_CONFIG_CACHE", "/tmp/kedge-cache/npm"},
 		{"XDG_CACHE_HOME", "/tmp/kedge-cache"},
 	} {
@@ -590,7 +673,30 @@ func devAgentEnv(comp infrav1alpha1.TemplateDevelopmentComponent, workingDir str
 			env = append(env, map[string]any{"name": e.name, "value": e.value})
 		}
 	}
-	return env
+
+	// Replace values in the platform-reserved namespace while retaining all
+	// user/application environment entries, including secretKeyRef values and
+	// envFrom on the app container.
+	reserved := map[string]bool{
+		"KEDGE_DEV_CONTROL_TOKEN": true,
+	}
+	for _, raw := range env {
+		entry, _ := raw.(map[string]any)
+		if name, _ := entry["name"].(string); name != "" {
+			reserved[name] = true
+		}
+	}
+	existing, _ := container["env"].([]any)
+	filtered := make([]any, 0, len(existing)+len(env))
+	for _, raw := range existing {
+		entry, _ := raw.(map[string]any)
+		name, _ := entry["name"].(string)
+		if reserved[name] {
+			continue
+		}
+		filtered = append(filtered, raw)
+	}
+	return append(filtered, env...)
 }
 
 // synthesizeControlToken is the instance-wide control-token Secret + one-shot

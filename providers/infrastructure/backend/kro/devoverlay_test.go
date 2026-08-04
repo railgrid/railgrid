@@ -62,10 +62,12 @@ func devTestTemplate(t *testing.T) *infrav1alpha1.Template {
 						"template": {
 							"metadata": {"labels": {"app": "${schema.spec.name}-backend"}},
 							"spec": {
+								"serviceAccountName": "production-runtime",
 								"containers": [{
 									"name": "backend",
 									"image": "${schema.spec.backendImage}",
 									"env": [{"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": "${dbCredentials.metadata.name}", "key": "uri"}}}],
+									"envFrom": [{"configMapRef": {"name": "backend-config"}}],
 									"ports": [{"containerPort": "${schema.spec.backendPort}"}]
 								}]
 							}
@@ -133,6 +135,157 @@ func rgdResources(t *testing.T, rgd *unstructured.Unstructured) map[string]map[s
 	return byID
 }
 
+func namedContainer(t *testing.T, containers []any, name string) map[string]any {
+	t.Helper()
+	for _, raw := range containers {
+		container, _ := raw.(map[string]any)
+		if got, _ := container["name"].(string); got == name {
+			return container
+		}
+	}
+	t.Fatalf("container %q missing from %v", name, containers)
+	return nil
+}
+
+func assertCommand(t *testing.T, container map[string]any, want ...string) {
+	t.Helper()
+	command, _ := container["command"].([]any)
+	if len(command) != len(want) {
+		t.Fatalf("%s command = %v, want %v", container["name"], command, want)
+	}
+	for i, expected := range want {
+		if got, _ := command[i].(string); got != expected {
+			t.Fatalf("%s command = %v, want %v", container["name"], command, want)
+		}
+	}
+}
+
+func numberValue(value any) int64 {
+	switch value := value.(type) {
+	case int:
+		return int64(value)
+	case int32:
+		return int64(value)
+	case int64:
+		return value
+	case float64:
+		return int64(value)
+	case json.Number:
+		parsed, _ := value.Int64()
+		return parsed
+	default:
+		return 0
+	}
+}
+
+func hasTestContainerPort(container map[string]any, want int64) bool {
+	ports, _ := container["ports"].([]any)
+	for _, raw := range ports {
+		port, _ := raw.(map[string]any)
+		if numberValue(port["containerPort"]) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func testEnv(container map[string]any, name string) (map[string]any, bool) {
+	env, _ := container["env"].([]any)
+	for _, raw := range env {
+		entry, _ := raw.(map[string]any)
+		if got, _ := entry["name"].(string); got == name {
+			return entry, true
+		}
+	}
+	return nil, false
+}
+
+func hasTestEnv(container map[string]any, name string) bool {
+	_, ok := testEnv(container, name)
+	return ok
+}
+
+func testEnvValue(container map[string]any, name string) (string, bool) {
+	entry, ok := testEnv(container, name)
+	if !ok {
+		return "", false
+	}
+	value, ok := entry["value"].(string)
+	return value, ok
+}
+
+func testMount(t *testing.T, container map[string]any, path string) map[string]any {
+	t.Helper()
+	mount, ok := findMount(container, path)
+	if !ok {
+		t.Fatalf("%s has no volume mount at %s", container["name"], path)
+	}
+	return mount
+}
+
+func findMount(container map[string]any, path string) (map[string]any, bool) {
+	mounts, _ := container["volumeMounts"].([]any)
+	for _, raw := range mounts {
+		mount, _ := raw.(map[string]any)
+		if got, _ := mount["mountPath"].(string); got == path {
+			return mount, true
+		}
+	}
+	return nil, false
+}
+
+func hasTestMount(container map[string]any, path string) bool {
+	_, ok := findMount(container, path)
+	return ok
+}
+
+func assertSecureDevContainer(t *testing.T, container map[string]any, wantReadOnlyRoot bool) {
+	t.Helper()
+	security, ok := container["securityContext"].(map[string]any)
+	if !ok {
+		t.Fatalf("%s has no securityContext", container["name"])
+	}
+	if security["runAsNonRoot"] != true || numberValue(security["runAsUser"]) != 1000 || numberValue(security["runAsGroup"]) != 1000 || security["allowPrivilegeEscalation"] != false || security["readOnlyRootFilesystem"] != wantReadOnlyRoot {
+		t.Errorf("%s securityContext = %v", container["name"], security)
+	}
+	capabilities, ok := security["capabilities"].(map[string]any)
+	if !ok || len(capabilities) != 1 {
+		t.Errorf("%s capabilities = %v, want only drop ALL", container["name"], security["capabilities"])
+		return
+	}
+	dropped, _ := capabilities["drop"].([]any)
+	if len(dropped) != 1 || dropped[0] != "ALL" {
+		t.Errorf("%s dropped capabilities = %v", container["name"], dropped)
+	}
+	if _, hasAdd := capabilities["add"]; hasAdd {
+		t.Errorf("%s adds capabilities = %v", container["name"], capabilities)
+	}
+}
+
+func assertDevProbes(t *testing.T, container map[string]any) {
+	t.Helper()
+	for _, name := range []string{"livenessProbe", "readinessProbe"} {
+		probe, ok := container[name].(map[string]any)
+		if !ok {
+			t.Errorf("%s has no %s", container["name"], name)
+			continue
+		}
+		if httpGet, ok := probe["httpGet"].(map[string]any); ok {
+			if httpGet["path"] != "/healthz" || numberValue(httpGet["port"]) == 0 {
+				t.Errorf("%s %s = %v", container["name"], name, probe)
+			}
+			continue
+		}
+		if tcpSocket, ok := probe["tcpSocket"].(map[string]any); ok {
+			if numberValue(tcpSocket["port"]) == 0 {
+				t.Errorf("%s %s = %v", container["name"], name, probe)
+			}
+			continue
+		}
+		t.Errorf("%s %s = %v", container["name"], name, probe)
+	}
+}
+
 func TestDevOverlayGatesProdWorkloadsAndAddsDevVariants(t *testing.T) {
 	rgd, err := buildRGD(devTestTemplate(t), devTestTokens())
 	if err != nil {
@@ -155,8 +308,8 @@ func TestDevOverlayGatesProdWorkloadsAndAddsDevVariants(t *testing.T) {
 
 	// Dev variants + per-component PVC + control Service + instance token infra.
 	for _, id := range []string{
-		"backendDevDeployment", "backendDevWorkspace", "backendDevControlService",
-		"frontendDevDeployment", "frontendDevWorkspace", "frontendDevControlService",
+		"backendDevDeployment", "backendDevWorkspace", "backendDevPlatformState", "backendDevControlService",
+		"frontendDevDeployment", "frontendDevWorkspace", "frontendDevPlatformState", "frontendDevControlService",
 		"kedgeDevControlSecret", "kedgeDevTokenJob",
 	} {
 		res, ok := byID[id]
@@ -176,7 +329,7 @@ func TestDevOverlayGatesProdWorkloadsAndAddsDevVariants(t *testing.T) {
 	}
 }
 
-func TestDevOverlayDevDeploymentShape(t *testing.T) {
+func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	tokens := devTestTokens()
 	tokens[previewConsoleVerificationJWKSConfigKey] = `{"keys":[{"kid":"current","kty":"EC"}]}`
 	rgd, err := buildRGD(devTestTemplate(t), tokens)
@@ -184,128 +337,180 @@ func TestDevOverlayDevDeploymentShape(t *testing.T) {
 		t.Fatalf("buildRGD: %v", err)
 	}
 	byID := rgdResources(t, rgd)
+	dep := byID["backendDevDeployment"]["template"].(map[string]any)
+	spec, _, _ := nestedMap(dep, "spec")
+	podSpec, _, _ := nestedMap(spec, "template", "spec")
 
-	raw, _ := json.Marshal(byID["backendDevDeployment"]["template"])
-	tmplJSON := string(raw)
-	var dep map[string]any
-	_ = json.Unmarshal(raw, &dep)
-
-	// Same Kubernetes name as the prod workload — Services keep routing.
 	name, _, _ := nestedString(dep, "metadata", "name")
 	if name != "${schema.spec.name}-backend" {
 		t.Errorf("dev deployment name = %q, want the prod workload name", name)
 	}
-
-	spec, _ := dep["spec"].(map[string]any)
-	if r, ok := spec["replicas"].(float64); !ok || r != 1 {
+	if numberValue(spec["replicas"]) != 1 {
 		t.Errorf("dev deployment replicas = %v, want 1", spec["replicas"])
 	}
-	if st, _, _ := nestedString(spec, "strategy", "type"); st != "Recreate" {
-		t.Errorf("dev deployment strategy = %q, want Recreate", st)
+	if strategy, _, _ := nestedString(spec, "strategy", "type"); strategy != "Recreate" {
+		t.Errorf("dev deployment strategy = %q, want Recreate", strategy)
 	}
 
-	podSpec, _, _ := nestedMap(spec, "template", "spec")
 	containers, _ := podSpec["containers"].([]any)
-	c, _ := containers[0].(map[string]any)
-
-	if img, _ := c["image"].(string); img != "docker.io/library/python:3.12" {
-		t.Errorf("dev container image = %q, want the resolved python dev image", img)
+	if len(containers) != 3 {
+		t.Fatalf("containers = %d, want coordinator + app + executor", len(containers))
 	}
-	cmd, _ := c["command"].([]any)
-	if len(cmd) != 1 || cmd[0] != devAgentBinDir+"/kedge-dev-agent" {
-		t.Errorf("dev container command = %v, want the injected agent", cmd)
-	}
+	coordinator := namedContainer(t, containers, "kedge-platform-coordinator")
+	app := namedContainer(t, containers, "backend")
+	executor := namedContainer(t, containers, "kedge-exec-runner")
 
-	// Production env preserved (DATABASE_URL secret ref), agent env appended.
-	for _, want := range []string{
-		`"DATABASE_URL"`, `"${dbCredentials.metadata.name}"`,
-		`"KEDGE_DEV_START_COMMAND"`, `"uvicorn main:app --reload"`,
-		`"KEDGE_DEV_PORT"`, `"${string(schema.spec.backendPort)}"`,
-		`"KEDGE_DEV_RELOAD_RULES"`, `requirements.txt`,
-		`"KEDGE_DEV_CONTROL_TOKEN"`, `"${kedgeDevControlSecret.metadata.name}"`,
-	} {
-		if !strings.Contains(tmplJSON, want) {
-			t.Errorf("dev deployment lacks %s", want)
+	if image, _ := coordinator["image"].(string); image != tokens[devAgentImageToken] {
+		t.Errorf("coordinator image = %q, want agent image %q", image, tokens[devAgentImageToken])
+	}
+	assertCommand(t, coordinator, "/kedge-dev-agent")
+	for _, port := range []int64{devAgentPort, devExecPort} {
+		if !hasTestContainerPort(coordinator, port) {
+			t.Errorf("coordinator does not expose port %d", port)
 		}
 	}
+	if hasTestContainerPort(app, devAgentPort) || hasTestContainerPort(app, devExecPort) || hasTestContainerPort(executor, devAgentPort) || hasTestContainerPort(executor, devExecPort) {
+		t.Error("public control/exec ports leaked onto a non-coordinator container")
+	}
 
-	// Probes dropped; agent installed via init container; workspace mounted.
-	for _, banned := range []string{"livenessProbe", "readinessProbe"} {
-		if strings.Contains(tmplJSON, banned) {
-			t.Errorf("dev deployment still carries %s", banned)
+	if image, _ := app["image"].(string); image != "docker.io/library/python:3.12" {
+		t.Errorf("app image = %q, want resolved dev image", image)
+	}
+	assertCommand(t, app, devAgentBinDir+"/kedge-dev-agent", "--runtime-supervisor")
+	if !hasTestContainerPort(app, devRuntimePort) {
+		t.Errorf("app does not expose internal runtime port %d", devRuntimePort)
+	}
+	if !hasTestEnv(app, "DATABASE_URL") || !hasTestEnv(app, "KEDGE_DEV_START_COMMAND") || !hasTestEnv(app, "KEDGE_DEV_RELOAD_RULES") {
+		t.Error("app lost production or runtime-supervisor environment")
+	}
+	if hasTestEnv(app, "KEDGE_DEV_CONTROL_TOKEN") {
+		t.Error("control token is present on app")
+	}
+
+	if image, _ := executor["image"].(string); image != "docker.io/library/python:3.12" {
+		t.Errorf("executor image = %q, want resolved dev image", image)
+	}
+	assertCommand(t, executor, devAgentBinDir+"/kedge-dev-agent", "--executor")
+	if !hasTestContainerPort(executor, devExecRunnerPort) {
+		t.Errorf("executor does not expose internal port %d", devExecRunnerPort)
+	}
+	for _, c := range []map[string]any{coordinator, app, executor} {
+		containerName, _ := c["name"].(string)
+		if hasTestEnv(c, "DATABASE_URL") && containerName != "backend" {
+			t.Error("production database environment leaked from app")
+		}
+		if hasTestEnv(c, "KEDGE_DEV_CONTROL_TOKEN") && containerName != "kedge-platform-coordinator" {
+			t.Error("control token leaked from coordinator")
+		}
+		assertDevProbes(t, c)
+	}
+	assertSecureDevContainer(t, coordinator, true)
+	assertSecureDevContainer(t, app, false)
+	assertSecureDevContainer(t, executor, true)
+
+	if value, ok := testEnvValue(coordinator, "KEDGE_DEV_STATE_DIR"); !ok || value != devPlatformStateDir {
+		t.Errorf("coordinator state directory = %q, want %q", value, devPlatformStateDir)
+	}
+	if value, ok := testEnvValue(coordinator, "KEDGE_DEV_RUNTIME_URL"); !ok || value != "http://"+devRuntimeAddress {
+		t.Errorf("coordinator runtime address = %q, want %q", value, devRuntimeAddress)
+	}
+	if value, ok := testEnvValue(coordinator, "KEDGE_DEV_EXECUTOR_URL"); !ok || value != "http://"+devExecutorAddress {
+		t.Errorf("coordinator executor address = %q, want %q", value, devExecutorAddress)
+	}
+	if !hasTestEnv(coordinator, "KEDGE_DEV_RELOAD_STRATEGY") || !hasTestEnv(coordinator, "KEDGE_DEV_RELOAD_RULES") {
+		t.Error("coordinator lacks the template reload contract")
+	}
+	tokenEnv, ok := testEnv(coordinator, "KEDGE_DEV_CONTROL_TOKEN")
+	if !ok {
+		t.Fatal("coordinator has no control-token environment")
+	}
+	if secret, _, _ := nestedMap(tokenEnv, "valueFrom", "secretKeyRef"); secret["name"] != "${kedgeDevControlSecret.metadata.name}" {
+		t.Errorf("coordinator control token source = %v", secret)
+	}
+
+	workspaceMounts := []map[string]any{
+		testMount(t, coordinator, "/workspace"),
+		testMount(t, app, "/workspace"),
+		testMount(t, executor, "/workspace"),
+	}
+	for _, mount := range workspaceMounts[1:] {
+		if mount["name"] != workspaceMounts[0]["name"] {
+			t.Errorf("workspace mount is not shared: %v vs %v", workspaceMounts[0], mount)
 		}
 	}
+	stateMount := testMount(t, coordinator, devPlatformStateDir)
+	if stateMount["name"] != "kedge-dev-platform-state" {
+		t.Errorf("coordinator state mount = %v", stateMount)
+	}
+	if _, ok := findMount(executor, devPlatformStateDir); ok {
+		t.Error("executor mounts platform state")
+	}
+	if _, ok := findMount(app, devPlatformStateDir); ok {
+		t.Error("app mounts platform state")
+	}
+	coordSA := testMount(t, coordinator, devServiceAccountDir)
+	execSA := testMount(t, executor, devServiceAccountDir)
+	if coordSA["name"] != "kedge-dev-no-serviceaccount" || execSA["name"] != "kedge-dev-no-serviceaccount" {
+		t.Errorf("service-account masks = %v, %v", coordSA, execSA)
+	}
+	if _, ok := findMount(app, devServiceAccountDir); ok {
+		t.Error("app service-account mount was masked")
+	}
+	if testMount(t, coordinator, "/tmp")["name"] == testMount(t, app, "/tmp")["name"] || testMount(t, app, "/tmp")["name"] == testMount(t, executor, "/tmp")["name"] {
+		t.Error("tmp volume is shared between containers")
+	}
+
+	podSecurity, _, _ := nestedMap(podSpec, "securityContext")
+	if numberValue(podSecurity["fsGroup"]) != 1000 || podSecurity["seccompProfile"].(map[string]any)["type"] != "RuntimeDefault" {
+		t.Errorf("pod security context = %v", podSecurity)
+	}
+	if podSpec["shareProcessNamespace"] != false || podSecurity["supplementalGroups"] != nil {
+		t.Errorf("pod process/group isolation = %v / %v", podSpec["shareProcessNamespace"], podSecurity["supplementalGroups"])
+	}
+
 	inits, _ := podSpec["initContainers"].([]any)
 	if len(inits) != 1 {
-		t.Fatalf("dev deployment initContainers = %d, want 1 (agent injector)", len(inits))
+		t.Fatalf("initContainers = %d, want one agent installer", len(inits))
 	}
-	init, _ := inits[0].(map[string]any)
-	initEnv, _ := init["env"].([]any)
-	if len(initEnv) != 1 {
-		t.Fatalf("agent injector env = %v, want the public verification JWKS", initEnv)
+	installer, _ := inits[0].(map[string]any)
+	assertCommand(t, installer, "/kedge-dev-agent", "--install", devAgentBinDir)
+	assertSecureDevContainer(t, installer, true)
+	if _, ok := findMount(installer, devPlatformStateDir); ok {
+		t.Error("agent installer mounts platform state")
 	}
-	if name, _, _ := nestedString(initEnv[0].(map[string]any), "name"); name != "KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS" {
-		t.Errorf("agent injector env name = %q", name)
-	}
-	if value, _, _ := nestedString(initEnv[0].(map[string]any), "value"); value != tokens[previewConsoleVerificationJWKSConfigKey] {
-		t.Errorf("agent injector JWKS = %q, want configured public JWKS", value)
-	}
-	if !strings.Contains(tmplJSON, `"claimName":"${schema.spec.name}-dev-backend"`) {
-		t.Error("dev deployment does not mount the per-component workspace PVC")
+	if !hasTestMount(installer, devAgentBinDir) {
+		t.Error("agent installer does not mount /kedge/bin")
 	}
 
-	// Control service selects the prod workload labels.
-	svcRaw, _ := json.Marshal(byID["backendDevControlService"]["template"])
-	if !strings.Contains(string(svcRaw), `"app":"${schema.spec.name}-backend"`) {
-		t.Errorf("control service selector does not match the workload labels: %s", svcRaw)
+	encoded, _ := json.Marshal(dep)
+	for _, forbidden := range []string{".kedge-platform", "KEDGE_DEV_DROP_CHILD_GROUPS", "SETUID", "SETGID", "CHOWN", "--exec-worker"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Errorf("dev deployment contains removed legacy wiring %q", forbidden)
+		}
+	}
+
+	state := byID["backendDevPlatformState"]["template"].(map[string]any)
+	stateSpec := state["spec"].(map[string]any)
+	if stateSpec["accessModes"].([]any)[0] != "ReadWriteOnce" || stateSpec["resources"].(map[string]any)["requests"].(map[string]any)["storage"] != devPlatformStateSize {
+		t.Errorf("platform state PVC spec = %v", stateSpec)
+	}
+
+	svc := byID["backendDevControlService"]["template"].(map[string]any)
+	serviceSpec := svc["spec"].(map[string]any)
+	ports := serviceSpec["ports"].([]any)
+	if len(ports) != 2 || ports[0].(map[string]any)["name"] != "control" || numberValue(ports[0].(map[string]any)["port"]) != devAgentPort || numberValue(ports[0].(map[string]any)["targetPort"]) != devAgentPort || ports[1].(map[string]any)["name"] != "exec" || numberValue(ports[1].(map[string]any)["port"]) != devExecPort || numberValue(ports[1].(map[string]any)["targetPort"]) != devExecPort {
+		t.Errorf("public control Service ports = %v", ports)
+	}
+	if serviceSpec["publishNotReadyAddresses"] != true {
+		t.Error("control Service no longer publishes addresses during early sync")
+	}
+	selector, _, _ := nestedMap(serviceSpec, "selector")
+	if selector["app"] != "${schema.spec.name}-backend" {
+		t.Errorf("control Service selector = %v", selector)
 	}
 }
 
-func TestDevOverlayExecWorkerIsolationAndServicePort(t *testing.T) {
-	rgd, err := buildRGD(devTestTemplate(t), devTestTokens())
-	if err != nil {
-		t.Fatal(err)
-	}
-	byID := rgdResources(t, rgd)
-	dep := byID["backendDevDeployment"]["template"].(map[string]any)
-	podSpec, _, _ := nestedMap(dep, "spec", "template", "spec")
-	if podSpec["shareProcessNamespace"] != false {
-		t.Fatalf("shareProcessNamespace = %v, want false", podSpec["shareProcessNamespace"])
-	}
-	containers := podSpec["containers"].([]any)
-	if len(containers) != 2 {
-		t.Fatalf("containers = %d, want app + exec worker", len(containers))
-	}
-	worker := containers[1].(map[string]any)
-	raw, _ := json.Marshal(worker)
-	workerJSON := string(raw)
-	for _, want := range []string{
-		`"name":"kedge-exec-worker"`, `"image":"docker.io/library/python:3.12"`,
-		`"--exec-worker"`, `"containerPort":7071`, `"mountPath":"/tmp"`,
-		`"mountPath":"/var/run/secrets/kubernetes.io/serviceaccount"`,
-		`"mountPath":"/workspace/.kedge-platform"`, `"subPath":".kedge-platform"`,
-		`"SETUID"`, `"SETGID"`,
-	} {
-		if !strings.Contains(workerJSON, want) {
-			t.Errorf("worker lacks %s: %s", want, workerJSON)
-		}
-	}
-	for _, forbidden := range []string{"DATABASE_URL", "envFrom", "dbCredentials", "kedge-dev-tmp"} {
-		if strings.Contains(workerJSON, forbidden) {
-			t.Errorf("worker copied application authority %q: %s", forbidden, workerJSON)
-		}
-	}
-	appJSON, _ := json.Marshal(containers[0])
-	if !strings.Contains(string(appJSON), `"KEDGE_DEV_DROP_CHILD_GROUPS"`) || !strings.Contains(string(appJSON), `"subPath":".kedge-platform"`) {
-		t.Fatalf("app control container lacks protected metadata/drop-group wiring: %s", appJSON)
-	}
-	svcRaw, _ := json.Marshal(byID["backendDevControlService"]["template"])
-	if !strings.Contains(string(svcRaw), `"name":"exec","port":7071,"targetPort":7071`) {
-		t.Fatalf("control Service lacks exec port: %s", svcRaw)
-	}
-}
-
-func TestDevOverlayProtectedMetadataTracksPreservedWorkspaceSubPath(t *testing.T) {
+func TestDevOverlaySharedWorkspaceSubPathHasSeparatePlatformState(t *testing.T) {
 	tmpl := devTestTemplate(t)
 	var backend map[string]any
 	if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &backend); err != nil {
@@ -331,14 +536,22 @@ func TestDevOverlayProtectedMetadataTracksPreservedWorkspaceSubPath(t *testing.T
 	byID := rgdResources(t, rgd)
 	dep := byID["backendDevDeployment"]["template"].(map[string]any)
 	devPod, _, _ := nestedMap(dep, "spec", "template", "spec")
-	for _, rawContainer := range devPod["containers"].([]any) {
-		encoded, _ := json.Marshal(rawContainer)
-		if !strings.Contains(string(encoded), `"mountPath":"/workspace/.kedge-platform","name":"existing-workspace","subPath":"components/backend/.kedge-platform"`) {
-			t.Fatalf("container metadata subPath does not follow preserved workspace subPath: %s", encoded)
+	containers := devPod["containers"].([]any)
+	for _, rawContainer := range containers {
+		container, _ := rawContainer.(map[string]any)
+		mount := testMount(t, container, "/workspace")
+		if mount["name"] != "existing-workspace" || mount["subPath"] != "components/backend" {
+			t.Fatalf("workspace mount was not shared with its existing subPath: %v", mount)
+		}
+		if _, ok := findMount(container, "/workspace/.kedge-platform"); ok {
+			t.Fatalf("legacy platform subPath mount remains: %v", container)
 		}
 	}
 	if _, generated := byID["backendDevWorkspace"]; generated {
 		t.Fatal("overlay generated a second workspace PVC for preserved subPath mount")
+	}
+	if _, generated := byID["backendDevPlatformState"]; !generated {
+		t.Fatal("overlay did not generate platform-state PVC for preserved workspace mount")
 	}
 }
 

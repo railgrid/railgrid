@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,12 +26,10 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -68,73 +67,87 @@ type execSessionRecord struct {
 	UpdatedAt   time.Time        `json:"updatedAt"`
 }
 
-type execWorker struct {
-	workspace string
-	token     string
-	recordDir string
-	exit      func(int)
-	protected bool
-
-	mu      sync.Mutex
-	active  map[string]context.CancelFunc
-	runSlot chan struct{}
+type execDispatcher interface {
+	Execute(context.Context, persistentExecRequest) (execResponse, error)
 }
 
-func runExecWorker() error {
-	cfg, err := configFromEnv()
-	if err != nil {
-		return err
-	}
-	if err := enableChildSubreaper(); err != nil {
-		return err
-	}
-	if os.Getpid() != 1 {
-		log.Printf("WARNING: exec-worker is pid %d; production isolation requires container PID 1", os.Getpid())
-	}
-	worker, err := newExecWorker(cfg.WorkDir, cfg.ControlToken, true)
-	if err != nil {
-		return err
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	server := &http.Server{Addr: defaultExecAddr, Handler: worker, ReadHeaderTimeout: 10 * time.Second}
-	go func() {
-		log.Printf("kedge exec-worker listening on %s (workdir=%s)", defaultExecAddr, cfg.WorkDir)
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("exec-worker server: %v", err)
-			stop()
-		}
-	}()
-	<-ctx.Done()
-	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	return server.Shutdown(shutdown)
+type httpExecDispatcher struct {
+	url    string
+	client *http.Client
 }
 
-func newExecWorker(workspace, token string, requireProtected bool) (*execWorker, error) {
-	workspace = strings.TrimSpace(workspace)
-	if workspace == "" || strings.TrimSpace(token) == "" {
-		return nil, errors.New("exec worker requires workspace and control token")
+func (d *httpExecDispatcher) Execute(ctx context.Context, req persistentExecRequest) (execResponse, error) {
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return execResponse{}, err
 	}
-	recordDir := filepath.Join(workspace, platformMetadataDir, "exec-sessions")
-	if requireProtected {
-		if err := validateProtectedPlatformState(workspace); err != nil {
-			return nil, err
-		}
-	} else if err := os.MkdirAll(recordDir, 0o770); err != nil {
-		return nil, fmt.Errorf("create exec session directory: %w", err)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, d.url, bytes.NewReader(raw))
+	if err != nil {
+		return execResponse{}, err
 	}
-	w := &execWorker{
-		workspace: workspace, token: token, recordDir: recordDir, exit: os.Exit,
-		protected: requireProtected, active: map[string]context.CancelFunc{}, runSlot: make(chan struct{}, 1),
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := d.client.Do(httpReq)
+	if err != nil {
+		return execResponse{}, fmt.Errorf("dispatch stateless execution: %w", err)
 	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, execRequestMaxBytes))
+	if err != nil {
+		return execResponse{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return execResponse{}, fmt.Errorf("stateless executor rejected request: %s", strings.TrimSpace(string(body)))
+	}
+	var result execResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return execResponse{}, fmt.Errorf("decode stateless executor response: %w", err)
+	}
+	return result, nil
+}
+
+// execCoordinator owns all durable execution authority. The executor receives
+// one already-authorized argv request and has no token, sessions, or state.
+type execCoordinator struct {
+	workspace    string
+	stateDir     string
+	recordDir    string
+	token        string
+	dispatcher   execDispatcher
+	mutationMu   *sync.Mutex
+	writeSession func(execSessionRecord) error
+	exit         func(int)
+	logf         func(string, ...any)
+	mu           sync.Mutex
+	active       map[string]context.CancelFunc
+}
+
+func newExecCoordinator(workspace, stateDir, token string, dispatcher execDispatcher, mutationMu *sync.Mutex) (*execCoordinator, error) {
+	prepared, err := prepareCoordinatorState(stateDir, workspace)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(token) == "" {
+		return nil, errors.New("exec coordinator control token is required")
+	}
+	if dispatcher == nil {
+		return nil, errors.New("stateless executor dispatcher is required")
+	}
+	if mutationMu == nil {
+		mutationMu = &sync.Mutex{}
+	}
+	w := &execCoordinator{
+		workspace: workspace, stateDir: prepared, recordDir: filepath.Join(prepared, stateSessionsDir),
+		token: token, dispatcher: dispatcher, mutationMu: mutationMu, active: map[string]context.CancelFunc{},
+		exit: os.Exit, logf: log.Printf,
+	}
+	w.writeSession = w.writeRecord
 	if err := w.recoverSessions(); err != nil {
 		return nil, err
 	}
 	return w, nil
 }
 
-func (w *execWorker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
+func (w *execCoordinator) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/exec" {
 		http.NotFound(rw, r)
 		return
@@ -165,10 +178,8 @@ func (w *execWorker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
-	var (
-		result workerExecResult
-		err    error
-	)
+	var result workerExecResult
+	var err error
 	switch req.Action {
 	case "start":
 		result, err = w.start(req)
@@ -216,7 +227,7 @@ func validateWorkerIdentity(req workerExecRequest) error {
 	return nil
 }
 
-func (w *execWorker) start(req workerExecRequest) (workerExecResult, error) {
+func (w *execCoordinator) start(req workerExecRequest) (workerExecResult, error) {
 	if err := validatePersistentExecRequest(req.persistentExecRequest); err != nil {
 		return workerExecResult{}, &workerHTTPError{status: http.StatusBadRequest, message: err.Error()}
 	}
@@ -225,11 +236,11 @@ func (w *execWorker) start(req workerExecRequest) (workerExecResult, error) {
 	if err := w.gcLocked(time.Now()); err != nil {
 		return workerExecResult{}, err
 	}
-	byRequest, requestFound, err := w.findByRequest(req.CallerKey, req.RequestID)
+	byRequest, found, err := w.findByRequest(req.CallerKey, req.RequestID)
 	if err != nil {
 		return workerExecResult{}, err
 	}
-	if requestFound {
+	if found {
 		if byRequest.Fingerprint != req.Fingerprint {
 			return workerExecResult{}, &workerHTTPError{status: http.StatusConflict, message: "idempotency key was already used for a different execution request"}
 		}
@@ -253,14 +264,14 @@ func (w *execWorker) start(req workerExecRequest) (workerExecResult, error) {
 		return workerExecResult{}, err
 	}
 	if count >= execSessionCapacity {
-		return workerExecResult{}, &workerHTTPError{status: http.StatusServiceUnavailable, message: "exec-worker session capacity is exhausted"}
+		return workerExecResult{}, &workerHTTPError{status: http.StatusServiceUnavailable, message: "exec coordinator session capacity is exhausted"}
 	}
 	now := time.Now().UTC()
-	record := execSessionRecord{
-		SessionID: req.SessionID, RequestID: req.RequestID, CallerKey: req.CallerKey, Fingerprint: req.Fingerprint,
-		Result: workerExecResult{SessionID: req.SessionID, RequestID: req.RequestID, State: "queued"}, CreatedAt: now, UpdatedAt: now,
-	}
-	if err := w.writeRecord(record); err != nil {
+	record := execSessionRecord{SessionID: req.SessionID, RequestID: req.RequestID, CallerKey: req.CallerKey, Fingerprint: req.Fingerprint,
+		Result: workerExecResult{SessionID: req.SessionID, RequestID: req.RequestID, State: "queued"}, CreatedAt: now, UpdatedAt: now}
+	// Durability precedes dispatch: after this write, restart recovery can prove
+	// the command must fail rather than accidentally run it a second time.
+	if err := w.persistRecord(record); err != nil {
 		return workerExecResult{}, err
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -269,7 +280,7 @@ func (w *execWorker) start(req workerExecRequest) (workerExecResult, error) {
 	return record.Result, nil
 }
 
-func (w *execWorker) poll(req workerExecRequest) (workerExecResult, error) {
+func (w *execCoordinator) poll(req workerExecRequest) (workerExecResult, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	record, err := w.boundRecord(req)
@@ -279,7 +290,7 @@ func (w *execWorker) poll(req workerExecRequest) (workerExecResult, error) {
 	return record.Result, nil
 }
 
-func (w *execWorker) cancel(req workerExecRequest) (workerExecResult, error) {
+func (w *execCoordinator) cancel(req workerExecRequest) (workerExecResult, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	record, err := w.boundRecord(req)
@@ -294,13 +305,13 @@ func (w *execWorker) cancel(req workerExecRequest) (workerExecResult, error) {
 	}
 	record.Result.State = "canceled"
 	record.UpdatedAt = time.Now().UTC()
-	if err := w.writeRecord(record); err != nil {
+	if err := w.persistRecord(record); err != nil {
 		return workerExecResult{}, err
 	}
 	return record.Result, nil
 }
 
-func (w *execWorker) boundRecord(req workerExecRequest) (execSessionRecord, error) {
+func (w *execCoordinator) boundRecord(req workerExecRequest) (execSessionRecord, error) {
 	record, found, err := w.readRecord(req.SessionID)
 	if err != nil {
 		return execSessionRecord{}, err
@@ -317,109 +328,129 @@ func (w *execWorker) boundRecord(req workerExecRequest) (execSessionRecord, erro
 	return record, nil
 }
 
-func (w *execWorker) run(ctx context.Context, req workerExecRequest) {
-	select {
-	case w.runSlot <- struct{}{}:
-		defer func() { <-w.runSlot }()
-	case <-ctx.Done():
-		w.finish(req.SessionID, workerExecResult{State: "canceled"}, nil)
+func (w *execCoordinator) run(ctx context.Context, req workerExecRequest) {
+	// One coordinator-owned boundary covers validation in the stateless
+	// executor and the complete command lifetime. Sync holds this same lock
+	// through reload/restart, so neither mutation can interleave.
+	w.mutationMu.Lock()
+	defer w.mutationMu.Unlock()
+	if ctx.Err() != nil {
+		w.finish(req.SessionID, workerExecResult{State: "canceled"}, ctx.Err())
 		return
 	}
-	lock, err := acquireWorkspaceMutationLock(ctx, w.workspace, w.protected)
+	running, err := w.setRunning(req.SessionID)
 	if err != nil {
-		state := "failed"
-		if errors.Is(err, context.Canceled) {
-			state = "canceled"
-		}
-		w.finish(req.SessionID, workerExecResult{State: state, Stderr: err.Error()}, nil)
+		w.clearActive(req.SessionID)
+		w.fatalPersistence(req.SessionID, err)
 		return
 	}
-	defer func() { _ = lock.Close() }()
-	if !w.setRunning(req.SessionID) {
+	if !running {
+		w.clearActive(req.SessionID)
 		return
 	}
-	req.persistentExecRequest.DropCredentials = true
-	response, runErr := runPersistentExec(ctx, w.workspace, req.persistentExecRequest)
-	result := workerResultFromExec(response, runErr)
-	fatalCleanup := execCleanupRequiresWorkerExit(runErr)
-	w.finish(req.SessionID, result, runErr)
-	if fatalCleanup {
-		w.exit(1)
-	}
+	response, runErr := w.dispatcher.Execute(ctx, req.persistentExecRequest)
+	w.finish(req.SessionID, workerResultFromExec(response, runErr), runErr)
 }
 
-func execCleanupRequiresWorkerExit(err error) bool {
-	return errors.Is(err, errExecCleanupUnproven)
-}
-
-func (w *execWorker) setRunning(sessionID string) bool {
+func (w *execCoordinator) setRunning(sessionID string) (bool, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	record, found, err := w.readRecord(sessionID)
-	if err != nil || !found || workerTerminal(record.Result.State) {
-		return false
+	if err != nil {
+		return false, fmt.Errorf("read queued execution session: %w", err)
+	}
+	if !found {
+		return false, errors.New("durable queued execution record disappeared")
+	}
+	if workerTerminal(record.Result.State) {
+		return false, nil
 	}
 	record.Result.State = "running"
 	record.UpdatedAt = time.Now().UTC()
-	return w.writeRecord(record) == nil
+	if err := w.persistRecord(record); err != nil {
+		return false, fmt.Errorf("persist running execution session: %w", err)
+	}
+	return true, nil
 }
 
-func (w *execWorker) finish(sessionID string, result workerExecResult, runErr error) {
+func (w *execCoordinator) clearActive(sessionID string) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	defer delete(w.active, sessionID)
+	delete(w.active, sessionID)
+	w.mu.Unlock()
+}
+
+func (w *execCoordinator) finish(sessionID string, result workerExecResult, runErr error) {
+	w.mu.Lock()
 	record, found, err := w.readRecord(sessionID)
-	if err != nil || !found || record.Result.State == "canceled" {
+	if err != nil || !found {
+		delete(w.active, sessionID)
+		w.mu.Unlock()
+		if err == nil {
+			err = errors.New("durable execution record disappeared")
+		}
+		w.fatalPersistence(sessionID, err)
 		return
 	}
-	result.SessionID = record.SessionID
-	result.RequestID = record.RequestID
+	if workerTerminal(record.Result.State) {
+		delete(w.active, sessionID)
+		w.mu.Unlock()
+		return
+	}
+	result.SessionID, result.RequestID = record.SessionID, record.RequestID
 	if runErr != nil && result.Stderr == "" {
 		result.Stderr = runErr.Error()
 	}
 	record.Result = result
 	record.UpdatedAt = time.Now().UTC()
-	if err := w.writeRecord(record); err != nil {
-		log.Printf("persist exec completion %s: %v", sessionID, err)
-		w.exit(1)
+	err = w.persistRecord(record)
+	delete(w.active, sessionID)
+	w.mu.Unlock()
+	if err != nil {
+		w.fatalPersistence(sessionID, err)
 	}
 }
 
+func (w *execCoordinator) persistRecord(record execSessionRecord) error {
+	return w.writeSession(record)
+}
+
+func (w *execCoordinator) fatalPersistence(sessionID string, err error) {
+	w.logf("FATAL: persist execution session %s: %v", sessionID, err)
+	w.exit(1)
+}
+
 func workerResultFromExec(response execResponse, err error) workerExecResult {
-	state := "failed"
-	switch {
-	case response.Cancelled:
+	state := "succeeded"
+	if response.Cancelled || errors.Is(err, context.Canceled) {
 		state = "canceled"
-	case response.TimedOut:
+	} else if response.TimedOut {
 		state = "timed_out"
-	case err == nil && response.Phase == "completed" && response.ExitCode == 0:
-		state = "succeeded"
+	} else if err != nil || response.ExitCode != 0 {
+		state = "failed"
 	}
 	exitCode := int32(response.ExitCode)
-	result := workerExecResult{
-		State: state, ExitCode: &exitCode, Stdout: response.Stdout, Stderr: response.Stderr,
-		Truncated: response.StdoutTruncated || response.StderrTruncated,
-	}
-	if err != nil {
-		result.Stderr = strings.TrimSpace(result.Stderr + "\n" + err.Error())
+	result := workerExecResult{State: state, ExitCode: &exitCode, Stdout: response.Stdout, Stderr: response.Stderr,
+		Truncated: response.StdoutTruncated || response.StderrTruncated}
+	if err != nil && result.Stderr == "" {
+		result.Stderr = err.Error()
 	}
 	return result
 }
 
 func workerTerminal(state string) bool {
 	switch state {
-	case "succeeded", "failed", "canceled", "timed_out":
+	case "succeeded", "failed", "timed_out", "canceled":
 		return true
 	default:
 		return false
 	}
 }
 
-func (w *execWorker) recordPath(sessionID string) string {
+func (w *execCoordinator) recordPath(sessionID string) string {
 	return filepath.Join(w.recordDir, sessionID+".json")
 }
 
-func (w *execWorker) readRecord(sessionID string) (execSessionRecord, bool, error) {
+func (w *execCoordinator) readRecord(sessionID string) (execSessionRecord, bool, error) {
 	raw, err := os.ReadFile(w.recordPath(sessionID))
 	if errors.Is(err, os.ErrNotExist) {
 		return execSessionRecord{}, false, nil
@@ -434,12 +465,12 @@ func (w *execWorker) readRecord(sessionID string) (execSessionRecord, bool, erro
 	return record, true, nil
 }
 
-func (w *execWorker) writeRecord(record execSessionRecord) (retErr error) {
+func (w *execCoordinator) writeRecord(record execSessionRecord) (retErr error) {
 	raw, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(w.recordDir, ".session-*")
+	tmp, err := os.CreateTemp(w.recordDir, ".session-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -450,7 +481,7 @@ func (w *execWorker) writeRecord(record execSessionRecord) (retErr error) {
 			_ = os.Remove(tmpName)
 		}
 	}()
-	if err := tmp.Chmod(0o660); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
 		return err
 	}
 	if _, err := tmp.Write(raw); err != nil {
@@ -466,16 +497,14 @@ func (w *execWorker) writeRecord(record execSessionRecord) (retErr error) {
 		return err
 	}
 	dir, err := os.Open(w.recordDir)
-	if err == nil {
-		err = dir.Sync()
-		_ = dir.Close()
+	if err != nil {
+		return err
 	}
-	return err
+	defer func() { _ = dir.Close() }()
+	return dir.Sync()
 }
 
-func (w *execWorker) recoverSessions() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+func (w *execCoordinator) recoverSessions() error {
 	entries, err := os.ReadDir(w.recordDir)
 	if err != nil {
 		return err
@@ -491,9 +520,9 @@ func (w *execWorker) recoverSessions() error {
 		}
 		if found && !workerTerminal(record.Result.State) {
 			record.Result.State = "failed"
-			record.Result.Stderr = "execution interrupted by exec-worker restart; command was not redispatched"
+			record.Result.Stderr = "execution interrupted by coordinator restart; command was not redispatched"
 			record.UpdatedAt = time.Now().UTC()
-			if err := w.writeRecord(record); err != nil {
+			if err := w.persistRecord(record); err != nil {
 				return err
 			}
 		}
@@ -501,7 +530,7 @@ func (w *execWorker) recoverSessions() error {
 	return w.gcLocked(time.Now())
 }
 
-func (w *execWorker) gcLocked(now time.Time) error {
+func (w *execCoordinator) gcLocked(now time.Time) error {
 	entries, err := os.ReadDir(w.recordDir)
 	if err != nil {
 		return err
@@ -520,7 +549,7 @@ func (w *execWorker) gcLocked(now time.Time) error {
 			return err
 		}
 		if found && workerTerminal(record.Result.State) {
-			terminal = append(terminal, terminalRecord{path: w.recordPath(record.SessionID), at: record.UpdatedAt})
+			terminal = append(terminal, terminalRecord{w.recordPath(record.SessionID), record.UpdatedAt})
 		}
 	}
 	sort.Slice(terminal, func(i, j int) bool { return terminal[i].at.Before(terminal[j].at) })
@@ -534,7 +563,7 @@ func (w *execWorker) gcLocked(now time.Time) error {
 	return nil
 }
 
-func (w *execWorker) recordCount() (int, error) {
+func (w *execCoordinator) recordCount() (int, error) {
 	entries, err := os.ReadDir(w.recordDir)
 	if err != nil {
 		return 0, err
@@ -548,7 +577,7 @@ func (w *execWorker) recordCount() (int, error) {
 	return count, nil
 }
 
-func (w *execWorker) findByRequest(callerKey, requestID string) (execSessionRecord, bool, error) {
+func (w *execCoordinator) findByRequest(callerKey, requestID string) (execSessionRecord, bool, error) {
 	entries, err := os.ReadDir(w.recordDir)
 	if err != nil {
 		return execSessionRecord{}, false, err

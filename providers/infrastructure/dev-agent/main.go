@@ -8,38 +8,27 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Command kedge-dev-agent is the in-pod control process for development-mode
-// components of any infrastructure Template (docs/app-studio-template-sandboxes.md §2).
-// It generalizes the sandbox-runner control process: where the runner was
-// welded into one template's node-shaped image, the agent is a static binary
-// an init container installs into ANY toolchain image (node, python, go, …) —
-// the dev overlay synthesized by the kro backend runs it as the component's
-// command, wrapping the Template-declared start command.
+// Command kedge-dev-agent provides three capability-separated modes for
+// development components. Default mode is the trusted coordinator: it serves
+// authenticated public control on :7070 and execution sessions on :7071,
+// owns workspace sync serialization, and stores durable records only beneath
+// KEDGE_DEV_STATE_DIR. --runtime-supervisor is the unprivileged app-container
+// process supervisor. --executor is an unprivileged stateless direct-argv
+// executor. The two internal modes bind loopback-only narrow APIs and receive
+// neither the public control token nor coordinator state.
 //
-// It does two things:
+// The public control contract remains:
 //
-//  1. Supervises the component's dev process (KEDGE_DEV_START_COMMAND) in the
-//     workspace, captures stdout/stderr into a ring buffer, and executes the
-//     Template-declared reload procedure on file sync: match changed paths
-//     against KEDGE_DEV_RELOAD_RULES (run "npm install" when package.json
-//     changed), then restart per KEDGE_DEV_RELOAD_STRATEGY.
-//
-//  2. Serves the HTTP control API on :7070 the infrastructure provider's
-//     data-plane handler proxies component verbs to
-//     (…/components/<name>/{sync,restart,env,log}):
-//
-//     GET  /healthz  liveness; no auth.
-//     POST /sync     write/delete workspace files; restart: ""|"auto"|"always".
-//     POST /restart  stop + start the dev process.
-//     POST /env      set non-secret env for the dev process; optional restart.
-//     GET  /logs     current dev-process attempt output (text/plain).
-//     GET  /status   current child-process and declared-port readiness (JSON).
+//	GET  /healthz  liveness; no auth.
+//	POST /sync     write/delete workspace files; restart: ""|"auto"|"always".
+//	POST /restart  stop + start the dev process.
+//	POST /env      set non-secret env for the dev process; optional restart.
+//	GET  /logs     current dev-process attempt output (text/plain).
+//	GET  /status   current child-process and declared-port readiness (JSON).
 //
 // Every endpoint except /healthz requires X-Sandbox-Control-Token (constant-
 // time compared against KEDGE_DEV_CONTROL_TOKEN, read once then cleared).
-// File writes are confined to the workdir via os.Root. SANDBOX_* names are
-// accepted as env fallbacks so the binary can also replace the sandbox-runner
-// entrypoint during its retirement window.
+// File writes are confined to the workdir via os.Root.
 //
 // Invoked as `kedge-dev-agent --install <dir>` it copies its own executable
 // into <dir> and exits — the init-container injection mode, which is what
@@ -79,10 +68,12 @@ import (
 )
 
 const (
-	defaultControlAddr = ":7070"
-	defaultExecAddr    = ":7071"
-	controlTokenHeader = "X-Sandbox-Control-Token"
-	agentBinaryName    = "kedge-dev-agent"
+	defaultControlAddr  = ":7070"
+	defaultExecAddr     = ":7071"
+	defaultRuntimeAddr  = "127.0.0.1:7072"
+	defaultExecutorAddr = "127.0.0.1:7073"
+	controlTokenHeader  = "X-Sandbox-Control-Token"
+	agentBinaryName     = "kedge-dev-agent"
 
 	previewConsolePluginName = "preview-console-plugin.mjs"
 	previewConsoleJWKSName   = "preview-console-jwks.json"
@@ -108,24 +99,15 @@ type agentConfig struct {
 	ReloadStrategy       string // "process" (default) | "container"
 	ReloadRules          []reloadRule
 	AllowInsecureControl bool
-	DropChildGroups      bool
+	StateDir             string
+	RuntimeURL           string
+	ExecutorURL          string
 }
 
 func main() {
 	if len(os.Args) >= 3 && os.Args[1] == "--install" {
 		if err := installSelf(os.Args[2]); err != nil {
 			log.Fatalf("install: %v", err)
-		}
-		if len(os.Args) >= 5 && os.Args[3] == "--prepare-workspace" {
-			if err := preparePlatformState(os.Args[4]); err != nil {
-				log.Fatalf("prepare workspace: %v", err)
-			}
-		}
-		return
-	}
-	if len(os.Args) >= 2 && os.Args[1] == "--exec-worker" {
-		if err := runExecWorker(); err != nil {
-			log.Fatalf("exec worker: %v", err)
 		}
 		return
 	}
@@ -135,28 +117,105 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	srv := newAgentServer(ctx, cfg)
+	if len(os.Args) >= 2 && os.Args[1] == "--runtime-supervisor" {
+		cfg.ControlToken = ""
+		cfg.StateDir = ""
+		if err := runRuntimeSupervisor(ctx, cfg); err != nil {
+			log.Fatalf("runtime supervisor: %v", err)
+		}
+		return
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "--executor" {
+		cfg.ControlToken = ""
+		cfg.StateDir = ""
+		cfg.StartCommand = ""
+		cfg.ReloadRules = nil
+		if err := runStatelessExecutor(ctx, cfg); err != nil {
+			log.Fatalf("stateless executor: %v", err)
+		}
+		return
+	}
+	if err := runCoordinator(ctx, cfg); err != nil {
+		log.Fatalf("coordinator: %v", err)
+	}
+}
+
+func runRuntimeSupervisor(ctx context.Context, cfg *agentConfig) error {
+	logs := newRingLog(500)
+	supervisor := newSupervisor(ctx, cfg, logs)
 	if cfg.StartCommand != "" {
-		if err := srv.supervisor.start(ctx); err != nil {
+		if err := supervisor.start(ctx); err != nil {
 			log.Printf("initial process start failed: %v", err)
 		}
 	}
-	httpSrv := &http.Server{
-		Addr:              defaultControlAddr,
-		Handler:           srv,
-		ReadHeaderTimeout: 10 * time.Second,
+	srv := &http.Server{Addr: defaultRuntimeAddr, Handler: newRuntimeSupervisorServer(supervisor, logs, nil), ReadHeaderTimeout: 10 * time.Second}
+	return serveUntilDone(ctx, srv, func() { _ = supervisor.stop() })
+}
+
+func runStatelessExecutor(ctx context.Context, cfg *agentConfig) error {
+	srv := &http.Server{Addr: defaultExecutorAddr, Handler: &statelessExecutor{workspace: cfg.WorkDir, exit: os.Exit}, ReadHeaderTimeout: 10 * time.Second}
+	return serveUntilDone(ctx, srv, nil)
+}
+
+func runCoordinator(ctx context.Context, cfg *agentConfig) error {
+	if strings.TrimSpace(cfg.StateDir) == "" {
+		return errors.New("KEDGE_DEV_STATE_DIR is required in coordinator mode")
 	}
-	go func() {
-		log.Printf("kedge-dev-agent control listening on %s (workdir=%s)", defaultControlAddr, cfg.WorkDir)
-		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("server: %v", err)
-		}
-	}()
-	<-ctx.Done()
+	mutationMu := &sync.Mutex{}
+	runtime := &httpRuntimeClient{baseURL: cfg.RuntimeURL, client: &http.Client{Timeout: 3 * time.Minute}}
+	control := newCoordinatorServer(cfg, runtime, mutationMu)
+	execCoordinator, err := newExecCoordinator(cfg.WorkDir, cfg.StateDir, cfg.ControlToken,
+		&httpExecDispatcher{url: strings.TrimRight(cfg.ExecutorURL, "/") + "/internal/exec", client: &http.Client{}}, mutationMu)
+	if err != nil {
+		return err
+	}
+	controlSrv := &http.Server{Addr: defaultControlAddr, Handler: control, ReadHeaderTimeout: 10 * time.Second}
+	execSrv := &http.Server{Addr: defaultExecAddr, Handler: execCoordinator, ReadHeaderTimeout: 10 * time.Second}
+	errCh := make(chan error, 2)
+	for _, srv := range []*http.Server{controlSrv, execSrv} {
+		go func(server *http.Server) {
+			err := server.ListenAndServe()
+			if errors.Is(err, http.ErrServerClosed) {
+				err = nil
+			}
+			errCh <- err
+		}(srv)
+	}
+	var serveErr error
+	select {
+	case <-ctx.Done():
+	case err := <-errCh:
+		serveErr = err
+	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = srv.supervisor.stop()
-	_ = httpSrv.Shutdown(shutdown)
+	_ = controlSrv.Shutdown(shutdown)
+	_ = execSrv.Shutdown(shutdown)
+	return serveErr
+}
+
+func serveUntilDone(ctx context.Context, srv *http.Server, cleanup func()) error {
+	errCh := make(chan error, 1)
+	go func() {
+		err := srv.ListenAndServe()
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		errCh <- err
+	}()
+	select {
+	case <-ctx.Done():
+	case err := <-errCh:
+		if err != nil {
+			return err
+		}
+	}
+	if cleanup != nil {
+		cleanup()
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return srv.Shutdown(shutdown)
 }
 
 // installSelf atomically installs the agent executable, the platform-owned
@@ -315,25 +374,15 @@ func normalizePreviewConsoleJWKS(raw []byte) ([]byte, error) {
 	}{Keys: keys})
 }
 
-// envOr reads the first non-empty of the KEDGE_DEV_* name and its SANDBOX_*
-// fallback (compatibility with the sandbox-runner contract during retirement).
-func envOr(primary, fallback string) string {
-	if v := strings.TrimSpace(os.Getenv(primary)); v != "" {
-		return v
-	}
-	return strings.TrimSpace(os.Getenv(fallback))
-}
-
 func configFromEnv() (*agentConfig, error) {
-	workdir := envOr("KEDGE_DEV_WORKDIR", "SANDBOX_WORKDIR")
+	workdir := strings.TrimSpace(os.Getenv("KEDGE_DEV_WORKDIR"))
 	if workdir == "" {
 		workdir = "/workspace"
 	}
-	token := envOr("KEDGE_DEV_CONTROL_TOKEN", "SANDBOX_CONTROL_TOKEN")
+	token := strings.TrimSpace(os.Getenv("KEDGE_DEV_CONTROL_TOKEN"))
 	_ = os.Unsetenv("KEDGE_DEV_CONTROL_TOKEN")
-	_ = os.Unsetenv("SANDBOX_CONTROL_TOKEN")
 
-	strategy := strings.ToLower(envOr("KEDGE_DEV_RELOAD_STRATEGY", ""))
+	strategy := strings.ToLower(strings.TrimSpace(os.Getenv("KEDGE_DEV_RELOAD_STRATEGY")))
 	switch strategy {
 	case "", "process":
 		strategy = "process"
@@ -347,17 +396,26 @@ func configFromEnv() (*agentConfig, error) {
 		return nil, err
 	}
 
-	insecure := envOr("KEDGE_DEV_ALLOW_INSECURE_CONTROL", "SANDBOX_ALLOW_INSECURE_CONTROL")
-	return &agentConfig{
+	insecure := strings.TrimSpace(os.Getenv("KEDGE_DEV_ALLOW_INSECURE_CONTROL"))
+	cfg := &agentConfig{
 		WorkDir:              workdir,
-		StartCommand:         envOr("KEDGE_DEV_START_COMMAND", "SANDBOX_START_COMMAND"),
-		Port:                 envOr("KEDGE_DEV_PORT", "SANDBOX_PORT"),
+		StartCommand:         strings.TrimSpace(os.Getenv("KEDGE_DEV_START_COMMAND")),
+		Port:                 strings.TrimSpace(os.Getenv("KEDGE_DEV_PORT")),
 		ControlToken:         token,
 		ReloadStrategy:       strategy,
 		ReloadRules:          rules,
 		AllowInsecureControl: strings.EqualFold(insecure, "true"),
-		DropChildGroups:      strings.EqualFold(os.Getenv("KEDGE_DEV_DROP_CHILD_GROUPS"), "true"),
-	}, nil
+		StateDir:             strings.TrimSpace(os.Getenv("KEDGE_DEV_STATE_DIR")),
+		RuntimeURL:           strings.TrimSpace(os.Getenv("KEDGE_DEV_RUNTIME_URL")),
+		ExecutorURL:          strings.TrimSpace(os.Getenv("KEDGE_DEV_EXECUTOR_URL")),
+	}
+	if cfg.RuntimeURL == "" {
+		cfg.RuntimeURL = "http://" + defaultRuntimeAddr
+	}
+	if cfg.ExecutorURL == "" {
+		cfg.ExecutorURL = "http://" + defaultExecutorAddr
+	}
+	return cfg, nil
 }
 
 func reloadRulesFromEnv(raw string) ([]reloadRule, error) {
@@ -464,13 +522,26 @@ type agentServer struct {
 	config     *agentConfig
 	supervisor *supervisor
 	logs       *ringLog
-	execMu     sync.Mutex
+	runtime    runtimeOperations
+	mutationMu *sync.Mutex
 }
 
 func newAgentServer(ctx context.Context, cfg *agentConfig) *agentServer {
 	logs := newRingLog(500)
-	s := &agentServer{config: cfg, logs: logs}
+	s := &agentServer{config: cfg, logs: logs, mutationMu: &sync.Mutex{}}
 	s.supervisor = newSupervisor(ctx, cfg, logs)
+	s.runtime = &localRuntime{supervisor: s.supervisor, logs: logs}
+	s.initMux()
+	return s
+}
+
+func newCoordinatorServer(cfg *agentConfig, runtime runtimeOperations, mutationMu *sync.Mutex) *agentServer {
+	s := &agentServer{config: cfg, runtime: runtime, mutationMu: mutationMu}
+	s.initMux()
+	return s
+}
+
+func (s *agentServer) initMux() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/sync", s.handleSync)
@@ -479,7 +550,6 @@ func newAgentServer(ctx context.Context, cfg *agentConfig) *agentServer {
 	mux.HandleFunc("/logs", s.handleLogs)
 	mux.HandleFunc("/status", s.handleStatus)
 	s.mux = mux
-	return s
 }
 
 func (s *agentServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -498,14 +568,8 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeControl(w, r) {
 		return
 	}
-	s.execMu.Lock()
-	defer s.execMu.Unlock()
-	workspaceLock, err := acquireWorkspaceMutationLock(r.Context(), s.config.WorkDir, s.config.DropChildGroups)
-	if err != nil {
-		http.Error(w, "lock workspace: "+err.Error(), http.StatusRequestTimeout)
-		return
-	}
-	defer func() { _ = workspaceLock.Close() }()
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
 	var req syncRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<20)).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
@@ -678,10 +742,14 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 	// first (dependency installs), then restart per policy/strategy.
 	touched := append(append([]string{}, changed...), deleted...)
 	ruleCommands := matchReloadRules(s.config.ReloadRules, touched)
-	restartNeeded := s.shouldRestartAfterSync(req.Restart, len(ruleCommands) > 0, len(s.config.ReloadRules) > 0, touched)
+	restartNeeded, err := s.shouldRestartAfterSync(r.Context(), req.Restart, len(ruleCommands) > 0, len(s.config.ReloadRules) > 0, touched)
+	if err != nil {
+		http.Error(w, "runtime status: "+err.Error(), http.StatusBadGateway)
+		return
+	}
 	if restartNeeded && len(ruleCommands) > 0 {
 		resp.ReloadRuns = ruleCommands
-		if err := s.supervisor.runReloadCommands(r.Context(), ruleCommands); err != nil {
+		if err := s.runtime.Reload(r.Context(), ruleCommands); err != nil {
 			// Keep the sync result; surface the reload failure for the caller
 			// (the dev process keeps running against the old dependencies).
 			resp.ReloadError = err.Error()
@@ -691,17 +759,17 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 	if restartNeeded {
 		if s.config.ReloadStrategy == "container" {
-			// The declared escape hatch: let the pod restart the container.
+			// The runtime supervisor lives in the app container. Ask that narrow
+			// internal authority to exit; the coordinator must remain available.
+			if err := s.runtime.ExitContainer(r.Context()); err != nil {
+				http.Error(w, "restart container: "+err.Error(), http.StatusBadGateway)
+				return
+			}
 			resp.Restarted = true
 			writeJSON(w, http.StatusOK, resp)
-			go func() {
-				time.Sleep(200 * time.Millisecond)
-				log.Print("reload strategy container: exiting for container restart")
-				os.Exit(0)
-			}()
 			return
 		}
-		if err := s.supervisor.restart(r.Context()); err != nil {
+		if err := s.runtime.Restart(r.Context()); err != nil {
 			http.Error(w, "restart: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -893,27 +961,31 @@ func verifyWorkspaceManifest(root *os.Root, manifest workspaceManifest) error {
 // unconditionally; "auto" restarts when a reload rule fired, when the process
 // isn't running, or — for templates that declare no rules — when the legacy
 // startup-affecting heuristic matches (the sandbox-runner behavior).
-func (s *agentServer) shouldRestartAfterSync(policy string, ruleFired, rulesDeclared bool, touched []string) bool {
+func (s *agentServer) shouldRestartAfterSync(ctx context.Context, policy string, ruleFired, rulesDeclared bool, touched []string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(policy)) {
 	case "always":
-		return true
+		return true, nil
 	case "auto":
-		if !s.supervisor.hasCommand() {
-			return false
+		status, err := s.runtime.Status(ctx)
+		if err != nil {
+			return false, err
 		}
-		if !s.supervisor.isRunning() || ruleFired {
-			return true
+		if !status.Configured {
+			return false, nil
+		}
+		if !status.Running || ruleFired {
+			return true, nil
 		}
 		if !rulesDeclared {
 			for _, p := range touched {
 				if isStartupAffectingPath(p) {
-					return true
+					return true, nil
 				}
 			}
 		}
-		return false
+		return false, nil
 	default:
-		return false
+		return false, nil
 	}
 }
 
@@ -957,7 +1029,7 @@ func (s *agentServer) handleRestart(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeControl(w, r) {
 		return
 	}
-	if err := s.supervisor.restart(r.Context()); err != nil {
+	if err := s.runtime.Restart(r.Context()); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -977,14 +1049,14 @@ func (s *agentServer) handleEnv(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	applied, err := s.supervisor.setEnv(req.Env)
+	applied, err := s.runtime.SetEnv(r.Context(), req.Env)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	restarted := false
 	if req.Restart {
-		if err := s.supervisor.restart(r.Context()); err != nil {
+		if err := s.runtime.Restart(r.Context()); err != nil {
 			http.Error(w, "restart: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -998,7 +1070,12 @@ func (s *agentServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = io.WriteString(w, strings.Join(s.logs.lines(), "\n"))
+	logs, err := s.runtime.Logs(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	_, _ = io.WriteString(w, logs)
 }
 
 type processStatusResponse struct {
@@ -1010,6 +1087,234 @@ type processStatusResponse struct {
 	PortReachable           bool   `json:"portReachable,omitempty"`
 }
 
+type runtimeOperations interface {
+	Restart(context.Context) error
+	ExitContainer(context.Context) error
+	Reload(context.Context, []string) error
+	SetEnv(context.Context, map[string]string) ([]string, error)
+	Logs(context.Context) (string, error)
+	Status(context.Context) (processStatusResponse, error)
+}
+
+type localRuntime struct {
+	supervisor *supervisor
+	logs       *ringLog
+}
+
+func (r *localRuntime) Restart(ctx context.Context) error { return r.supervisor.restart(ctx) }
+func (r *localRuntime) ExitContainer(context.Context) error {
+	return errors.New("container exit is unavailable in the in-process runtime adapter")
+}
+func (r *localRuntime) Reload(ctx context.Context, commands []string) error {
+	return r.supervisor.runReloadCommands(ctx, commands)
+}
+func (r *localRuntime) SetEnv(_ context.Context, env map[string]string) ([]string, error) {
+	return r.supervisor.setEnv(env)
+}
+func (r *localRuntime) Logs(context.Context) (string, error) {
+	return strings.Join(r.logs.lines(), "\n"), nil
+}
+func (r *localRuntime) Status(context.Context) (processStatusResponse, error) {
+	return r.supervisor.status(), nil
+}
+
+type httpRuntimeClient struct {
+	baseURL string
+	client  *http.Client
+}
+
+func (c *httpRuntimeClient) call(ctx context.Context, method, operation string, requestBody, responseBody any) error {
+	var body io.Reader
+	if requestBody != nil {
+		raw, err := json.Marshal(requestBody)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.baseURL, "/")+"/internal/"+operation, body)
+	if err != nil {
+		return err
+	}
+	if requestBody != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("runtime supervisor %s: %w", operation, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("runtime supervisor %s rejected request: %s", operation, strings.TrimSpace(string(raw)))
+	}
+	if responseBody != nil && len(raw) != 0 {
+		if err := json.Unmarshal(raw, responseBody); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *httpRuntimeClient) Restart(ctx context.Context) error {
+	return c.call(ctx, http.MethodPost, "restart", struct{}{}, nil)
+}
+func (c *httpRuntimeClient) ExitContainer(ctx context.Context) error {
+	return c.call(ctx, http.MethodPost, "exit", struct{}{}, nil)
+}
+func (c *httpRuntimeClient) Reload(ctx context.Context, commands []string) error {
+	return c.call(ctx, http.MethodPost, "reload", map[string]any{"commands": commands}, nil)
+}
+func (c *httpRuntimeClient) SetEnv(ctx context.Context, env map[string]string) ([]string, error) {
+	var response struct {
+		Applied []string `json:"applied"`
+	}
+	err := c.call(ctx, http.MethodPost, "env", map[string]any{"env": env}, &response)
+	return response.Applied, err
+}
+func (c *httpRuntimeClient) Logs(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.baseURL, "/")+"/internal/logs", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 512<<10))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("runtime supervisor logs: %s", strings.TrimSpace(string(raw)))
+	}
+	return string(raw), nil
+}
+func (c *httpRuntimeClient) Status(ctx context.Context) (processStatusResponse, error) {
+	var status processStatusResponse
+	err := c.call(ctx, http.MethodGet, "status", nil, &status)
+	return status, err
+}
+
+func newRuntimeSupervisorServer(supervisor *supervisor, logs *ringLog, exit func(int)) http.Handler {
+	if exit == nil {
+		exit = os.Exit
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/internal/restart", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := supervisor.restart(r.Context()); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"restarted": true})
+	})
+	mux.HandleFunc("/internal/exit", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct{}
+		if err := decodeBoundedJSON(w, r, 1024, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"exiting": true})
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			log.Print("reload strategy container: exiting runtime supervisor")
+			exit(0)
+		}()
+	})
+	mux.HandleFunc("/internal/reload", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Commands []string `json:"commands"`
+		}
+		if err := decodeBoundedJSON(w, r, 64<<10, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if len(req.Commands) == 0 || len(req.Commands) > 32 {
+			http.Error(w, "reload requires 1 to 32 commands", http.StatusBadRequest)
+			return
+		}
+		for _, command := range req.Commands {
+			if strings.TrimSpace(command) == "" || len(command) > 4096 {
+				http.Error(w, "reload command is empty or too large", http.StatusBadRequest)
+				return
+			}
+		}
+		if err := supervisor.runReloadCommands(r.Context(), req.Commands); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"reloaded": true})
+	})
+	mux.HandleFunc("/internal/env", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Env map[string]string `json:"env"`
+		}
+		if err := decodeBoundedJSON(w, r, 64<<10, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		applied, err := supervisor.setEnv(req.Env)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"applied": applied})
+	})
+	mux.HandleFunc("/internal/logs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, strings.Join(logs.lines(), "\n"))
+	})
+	mux.HandleFunc("/internal/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		writeJSON(w, http.StatusOK, supervisor.status())
+	})
+	return mux
+}
+
+func decodeBoundedJSON(w http.ResponseWriter, r *http.Request, limit int64, target any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("invalid JSON body: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("request body must contain one JSON object")
+	}
+	return nil
+}
+
 func (s *agentServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1018,7 +1323,12 @@ func (s *agentServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeControl(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.supervisor.status())
+	status, err := s.runtime.Status(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *agentServer) authorizeControl(w http.ResponseWriter, r *http.Request) bool {
@@ -1063,9 +1373,6 @@ func cleanWorkspacePath(raw string) (string, error) {
 	if clean == workspaceManifestName {
 		return "", fmt.Errorf("path %q is reserved for the platform sync manifest", raw)
 	}
-	if clean == platformMetadataDir || strings.HasPrefix(clean, platformMetadataDir+"/") {
-		return "", fmt.Errorf("path %q is reserved for platform metadata", raw)
-	}
 	return clean, nil
 }
 
@@ -1085,9 +1392,9 @@ type supervisor struct {
 
 const maxRuntimeEnvKeys = 32
 
-// reservedEnvPrefixes protect the agent's own control plane (and the legacy
-// sandbox names) from being overridden through /env or child env merging.
-var reservedEnvPrefixes = []string{"KEDGE_DEV_", "SANDBOX_"}
+// reservedEnvPrefixes protect the agent's own control plane from being
+// overridden through /env or child env merging.
+var reservedEnvPrefixes = []string{"KEDGE_DEV_"}
 
 func hasReservedEnvPrefix(name string) bool {
 	return slices.ContainsFunc(reservedEnvPrefixes, func(p string) bool {
@@ -1198,9 +1505,6 @@ func (s *supervisor) runReloadCommands(ctx context.Context, commands []string) e
 		cmd := exec.CommandContext(ctx, "/bin/sh", "-lc", command)
 		cmd.Dir = s.config.WorkDir
 		cmd.Env = mergeChildEnv(os.Environ(), childEnv, s.config.Port)
-		if s.config.DropChildGroups {
-			cmd.SysProcAttr = platformChildProcAttr(false)
-		}
 		out, err := cmd.CombinedOutput()
 		for line := range strings.SplitSeq(strings.TrimRight(string(out), "\n"), "\n") {
 			if line != "" {
@@ -1273,9 +1577,6 @@ func (s *supervisor) startLocked(ctx context.Context) error {
 	cmd.Dir = s.config.WorkDir
 	cmd.Env = mergeChildEnv(os.Environ(), s.customEnv, s.config.Port)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if s.config.DropChildGroups {
-		cmd.SysProcAttr = platformChildProcAttr(true)
-	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -1308,7 +1609,8 @@ func (s *supervisor) startLocked(ctx context.Context) error {
 func sanitizedChildEnv(env []string) []string {
 	out := make([]string, 0, len(env))
 	for _, entry := range env {
-		if strings.HasPrefix(entry, "KEDGE_DEV_CONTROL_TOKEN=") || strings.HasPrefix(entry, "SANDBOX_CONTROL_TOKEN=") {
+		name, _, _ := strings.Cut(entry, "=")
+		if hasReservedEnvPrefix(name) {
 			continue
 		}
 		out = append(out, entry)
@@ -1318,9 +1620,8 @@ func sanitizedChildEnv(env []string) []string {
 
 // mergeChildEnv layers custom runtime env over the sanitized process
 // environment. Reserved-prefix names are skipped so custom env cannot touch
-// the control plane. When the component declares a dev port, PORT and
-// SANDBOX_PORT are exported for the child (unless already set) — the common
-// conventions dev servers and the legacy vite shim respect.
+// the control plane. When the component declares a dev port, PORT is exported
+// for the child unless already set.
 func mergeChildEnv(base []string, custom map[string]string, devPort string) []string {
 	out := sanitizedChildEnv(base)
 	index := make(map[string]int, len(out))
@@ -1341,7 +1642,6 @@ func mergeChildEnv(base []string, custom map[string]string, devPort string) []st
 	}
 	if devPort = strings.TrimSpace(devPort); devPort != "" {
 		set("PORT", devPort, false)
-		set("SANDBOX_PORT", devPort, false)
 	}
 	names := make([]string, 0, len(custom))
 	for name := range custom {

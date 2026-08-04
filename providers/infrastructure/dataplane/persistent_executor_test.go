@@ -32,7 +32,7 @@ import (
 type persistentRuntimeRoundTripper struct {
 	mu                sync.Mutex
 	request           *http.Request
-	records           map[string]execWorkerRequest
+	records           map[string]execCoordinatorRequest
 	lostFirstResponse bool
 	calls             int
 }
@@ -42,7 +42,7 @@ func (t *persistentRuntimeRoundTripper) RoundTrip(r *http.Request) (*http.Respon
 	if err != nil {
 		return nil, err
 	}
-	var request execWorkerRequest
+	var request execCoordinatorRequest
 	if err := json.Unmarshal(raw, &request); err != nil {
 		return nil, err
 	}
@@ -51,7 +51,7 @@ func (t *persistentRuntimeRoundTripper) RoundTrip(r *http.Request) (*http.Respon
 	t.calls++
 	t.request = r.Clone(r.Context())
 	if t.records == nil {
-		t.records = map[string]execWorkerRequest{}
+		t.records = map[string]execCoordinatorRequest{}
 	}
 	if request.Action == ExecActionStart {
 		if previous, found := t.records[request.SessionID]; found && previous.Fingerprint != request.Fingerprint {

@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -488,7 +489,7 @@ func TestStatusReportsCurrentAttemptAndDeclaredPortReadiness(t *testing.T) {
 
 func TestEnvRejectsReservedAndSecretNames(t *testing.T) {
 	srv := newTestAgent(t, &agentConfig{})
-	for _, name := range []string{"KEDGE_DEV_PORT", "SANDBOX_PORT", "API_TOKEN", "MY_SECRET"} {
+	for _, name := range []string{"KEDGE_DEV_PORT", "API_TOKEN", "MY_SECRET"} {
 		if _, err := srv.supervisor.setEnv(map[string]string{name: "v"}); err == nil {
 			t.Errorf("setEnv(%s) accepted, want rejection", name)
 		}
@@ -499,20 +500,101 @@ func TestEnvRejectsReservedAndSecretNames(t *testing.T) {
 }
 
 func TestMergeChildEnvPortConventions(t *testing.T) {
-	out := mergeChildEnv([]string{"PATH=/bin", "KEDGE_DEV_CONTROL_TOKEN=x"}, map[string]string{"FOO": "bar"}, "8080")
+	out := mergeChildEnv([]string{"PATH=/bin", "KEDGE_DEV_CONTROL_TOKEN=x", "KEDGE_DEV_STATE_DIR=/state"}, map[string]string{"FOO": "bar"}, "8080")
 	joined := strings.Join(out, "\n")
-	for _, want := range []string{"PORT=8080", "SANDBOX_PORT=8080", "FOO=bar", "PATH=/bin"} {
+	for _, want := range []string{"PORT=8080", "FOO=bar", "PATH=/bin"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("child env lacks %s: %v", want, out)
 		}
 	}
-	if strings.Contains(joined, "KEDGE_DEV_CONTROL_TOKEN") {
-		t.Errorf("control token leaked into child env: %v", out)
+	if strings.Contains(joined, "KEDGE_DEV_") {
+		t.Errorf("coordinator/runtime configuration leaked into child env: %v", out)
 	}
 	// An explicit PORT wins over the convention.
 	out = mergeChildEnv([]string{"PORT=9999"}, nil, "8080")
 	if !slices.Contains(out, "PORT=9999") || slices.Contains(out, "PORT=8080") {
 		t.Errorf("explicit PORT overridden: %v", out)
+	}
+}
+
+func TestRuntimeSupervisorInternalAPIIsNarrowAndBounded(t *testing.T) {
+	workdir := t.TempDir()
+	logs := newRingLog(10)
+	supervisor := newSupervisor(t.Context(), &agentConfig{WorkDir: workdir, StartCommand: "sleep 60"}, logs)
+	server := newRuntimeSupervisorServer(supervisor, logs, nil)
+	defer func() { _ = supervisor.stop() }()
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+		want   int
+	}{
+		{http.MethodGet, "/exec", "", http.StatusNotFound},
+		{http.MethodPost, "/internal/reload", `{"commands":[]}`, http.StatusBadRequest},
+		{http.MethodPost, "/internal/env", `{"env":{"API_TOKEN":"secret"}}`, http.StatusBadRequest},
+		{http.MethodPost, "/internal/restart", `{}`, http.StatusOK},
+		{http.MethodGet, "/internal/status", "", http.StatusOK},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("%s %s = %d body=%s, want %d", tc.method, tc.path, rec.Code, rec.Body.String(), tc.want)
+		}
+	}
+}
+
+func TestContainerReloadExitsRuntimeSupervisorAndKeepsCoordinatorAlive(t *testing.T) {
+	workdir := t.TempDir()
+	logs := newRingLog(10)
+	supervisor := newSupervisor(t.Context(), &agentConfig{WorkDir: workdir}, logs)
+	exited := make(chan int, 1)
+	runtimeServer := httptest.NewServer(newRuntimeSupervisorServer(supervisor, logs, func(code int) { exited <- code }))
+	defer runtimeServer.Close()
+	runtime := &httpRuntimeClient{baseURL: runtimeServer.URL, client: runtimeServer.Client()}
+	coordinator := newCoordinatorServer(&agentConfig{
+		WorkDir: workdir, ControlToken: "test-token", ReloadStrategy: "container",
+	}, runtime, &sync.Mutex{})
+
+	recorder, response := doSync(t, coordinator, syncRequest{
+		Files: []syncFile{{Path: "main.go", Content: "package main\n"}}, Restart: "always",
+	})
+	if recorder.Code != http.StatusOK || !response.Restarted {
+		t.Fatalf("container sync = status %d response %+v body=%s", recorder.Code, response, recorder.Body.String())
+	}
+	healthRequest := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	healthResponse := httptest.NewRecorder()
+	coordinator.ServeHTTP(healthResponse, healthRequest)
+	if healthResponse.Code != http.StatusOK {
+		t.Fatalf("coordinator health after runtime exit request = %d", healthResponse.Code)
+	}
+	select {
+	case code := <-exited:
+		if code != 0 {
+			t.Fatalf("runtime exit code = %d, want 0", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime supervisor did not exit after acknowledgement")
+	}
+}
+
+func TestConfigSeparatesCoordinatorSecretsFromProcessEnvironment(t *testing.T) {
+	t.Setenv("KEDGE_DEV_CONTROL_TOKEN", "top-secret")
+	t.Setenv("KEDGE_DEV_STATE_DIR", t.TempDir())
+	cfg, err := configFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ControlToken != "top-secret" || cfg.StateDir == "" {
+		t.Fatalf("coordinator config = %+v", cfg)
+	}
+	if _, present := os.LookupEnv("KEDGE_DEV_CONTROL_TOKEN"); present {
+		t.Fatal("control token remains in process environment")
+	}
+	env := strings.Join(mergeChildEnv(os.Environ(), nil, ""), "\n")
+	if strings.Contains(env, "KEDGE_DEV_STATE_DIR") || strings.Contains(env, "top-secret") {
+		t.Fatalf("runtime child environment contains coordinator state or secret: %s", env)
 	}
 }
 

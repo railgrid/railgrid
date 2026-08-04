@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -72,22 +73,33 @@ type execResponse struct {
 // deliberately absent: /sync owns the persistent workspace and this endpoint
 // verifies the platform-applied revision/digest before launching argv.
 type persistentExecRequest struct {
-	Argv            []string `json:"argv"`
-	WorkDir         string   `json:"workDir,omitempty"`
-	TimeoutMS       int      `json:"timeoutMs,omitempty"`
-	MaxOutputBytes  int      `json:"maxOutputBytes,omitempty"`
-	SourceRevision  uint64   `json:"sourceRevision"`
-	SourceDigest    string   `json:"sourceDigest"`
-	DropCredentials bool     `json:"-"`
+	Argv           []string `json:"argv"`
+	WorkDir        string   `json:"workDir,omitempty"`
+	TimeoutMS      int      `json:"timeoutMs,omitempty"`
+	MaxOutputBytes int      `json:"maxOutputBytes,omitempty"`
+	SourceRevision uint64   `json:"sourceRevision"`
+	SourceDigest   string   `json:"sourceDigest"`
 }
 
-func (s *agentServer) handlePersistentExec(w http.ResponseWriter, r *http.Request) {
+type statelessExecutor struct {
+	workspace string
+	execute   func(context.Context, string, persistentExecRequest) (execResponse, error)
+	exit      func(int)
+	failed    atomic.Bool
+}
+
+func (s *statelessExecutor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/internal/exec" {
+		http.NotFound(w, r)
+		return
+	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.authorizeExec(w, r) {
+	if s.failed.Load() {
+		http.Error(w, "executor is unavailable after an unproven process cleanup", http.StatusServiceUnavailable)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, execRequestMaxBytes)
@@ -103,20 +115,46 @@ func (s *agentServer) handlePersistentExec(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "request body must contain one JSON object", http.StatusBadRequest)
 		return
 	}
-	s.execMu.Lock()
-	defer s.execMu.Unlock()
-	result, err := runPersistentExec(r.Context(), s.config.WorkDir, req)
+	execute := s.execute
+	if execute == nil {
+		execute = runPersistentExec
+	}
+	result, err := execute(r.Context(), s.workspace, req)
 	if err != nil {
 		// Revision/digest mismatch is a conflict: the caller must wait for the
 		// authoritative sync evidence rather than retrying the same command.
 		status := http.StatusBadRequest
-		if strings.Contains(err.Error(), "source revision") || strings.Contains(err.Error(), "source digest") || strings.Contains(err.Error(), "workspace manifest") {
+		if errors.Is(err, errExecCleanupUnproven) {
+			status = http.StatusInternalServerError
+		} else if strings.Contains(err.Error(), "source revision") || strings.Contains(err.Error(), "source digest") || strings.Contains(err.Error(), "workspace manifest") {
 			status = http.StatusConflict
 		}
 		http.Error(w, err.Error(), status)
+		if errors.Is(err, errExecCleanupUnproven) {
+			s.failStop()
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// failStop makes cleanup uncertainty terminal for this executor. Continuing to
+// accept commands after an execution may have escaped would violate the one-at-
+// a-time process boundary; the pod restart restores a clean PID namespace.
+func (s *statelessExecutor) failStop() {
+	if !s.failed.CompareAndSwap(false, true) {
+		return
+	}
+	exit := s.exit
+	if exit == nil {
+		exit = os.Exit
+	}
+	go func() {
+		// Give the HTTP server a brief opportunity to flush the cleanup failure
+		// to the coordinator before terminating the executor process.
+		time.Sleep(10 * time.Millisecond)
+		exit(1)
+	}()
 }
 
 func runPersistentExec(parent context.Context, workspace string, req persistentExecRequest) (execResponse, error) {
@@ -183,9 +221,6 @@ func runPersistentExec(parent context.Context, workspace string, req persistentE
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if req.DropCredentials {
-		cmd.SysProcAttr = platformChildProcAttr(true)
-	}
 	cmd.WaitDelay = 2 * time.Second
 	if err := enableChildSubreaper(); err != nil {
 		return execResponse{}, fmt.Errorf("enable child subreaper: %w", err)
@@ -276,22 +311,6 @@ func validatePersistentExecRequest(req persistentExecRequest) error {
 	return nil
 }
 
-// authorizeExec never honors AllowInsecureControl. The executor is a
-// high-authority endpoint and must remain authenticated even in local agent
-// development modes where the legacy control API may be intentionally open.
-func (s *agentServer) authorizeExec(w http.ResponseWriter, r *http.Request) bool {
-	if s == nil || s.config == nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return false
-	}
-	token := strings.TrimSpace(s.config.ControlToken)
-	if token == "" || !subtleConstantTimeCompare(r.Header.Get(controlTokenHeader), token) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return false
-	}
-	return true
-}
-
 func cleanExecPath(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || strings.ContainsRune(raw, '\x00') || strings.ContainsRune(raw, '\\') {
@@ -305,7 +324,7 @@ func cleanExecPath(raw string) (string, error) {
 			return "", errExecPathEscape
 		}
 		switch strings.ToLower(part) {
-		case ".git", "node_modules", ".assistant-snapshots", platformMetadataDir:
+		case ".git", "node_modules", ".assistant-snapshots":
 			return "", fmt.Errorf("workspace path contains reserved component %q", part)
 		}
 	}

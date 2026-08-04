@@ -67,6 +67,11 @@ os.putenv('KCP_IMAGE_TAG', kcp_image_tag)
 # owns the wiring and reconciles drift on its own.
 os.putenv('KCP_TOKEN_AUTH_SECRET', 'kcp-static-tokens')
 
+# This stack does not run the optional KCP contrib dashboard. The upstream
+# Tiltfile enables it by default and otherwise expects a separate
+# contrib-dashboard checkout.
+os.putenv('KCP_PORTAL_ENABLED', 'false')
+
 kcp_tilt = os.path.join(kcp_dir, 'contrib', 'tilt', 'Tiltfile.static')
 if not os.path.exists(kcp_tilt):
     fail('expected upstream kcp Tiltfile at %s — is --kcp-dir pointing at a kcp checkout?' % kcp_tilt)
@@ -82,6 +87,26 @@ existing = str(local('kind get clusters', quiet=True, echo_off=True)).split('\n'
 if cluster_name not in existing:
     print('creating kind cluster %s' % cluster_name)
     local('kind create cluster --name %s' % cluster_name, quiet=False)
+
+# Provider binaries run on the host while the hub runs in kind. Docker Desktop
+# and OrbStack provide host.docker.internal to containers themselves. Native
+# Linux Docker does not, so derive the gateway for the node's kind network and
+# inject it into the hub pod below. Keep this dynamic because Docker network
+# subnets can vary.
+docker_operating_system = str(local(
+    "docker info --format '{{.OperatingSystem}}'",
+    quiet=True,
+    echo_off=True,
+)).strip().lower()
+host_docker_internal_override_ip = ''
+if 'docker desktop' not in docker_operating_system and 'orbstack' not in docker_operating_system:
+    host_docker_internal_override_ip = str(local(
+        "docker inspect %s-control-plane --format '{{with index .NetworkSettings.Networks \"kind\"}}{{.Gateway}}{{end}}'" % cluster_name,
+        quiet=True,
+        echo_off=True,
+    )).strip()
+    if not host_docker_internal_override_ip:
+        fail('native Linux Docker requires host.docker.internal, but the gateway for the kind network on %s-control-plane could not be determined' % cluster_name)
 
 # Host-accessible kubeconfig for the kind cluster (uses 127.0.0.1:<random>).
 # Used by `make dev-kro-up-into` so it knows which cluster to helm-install
@@ -177,6 +202,22 @@ metadata:
 # Envoy gateway ClusterIP that *.kcp.localhost resolves to (see kcp's
 # gateway.yaml addresses + the hostAliases in its shard/front-proxy manifests).
 gateway_ip = '10.96.2.2'
+
+hub_host_aliases = [
+    # Make *.kcp.localhost resolve to the Envoy gateway from the hub pod,
+    # so the operator-issued kubeconfigs work in-cluster unchanged.
+    'hostAliases[0].ip=%s' % gateway_ip,
+    'hostAliases[0].hostnames[0]=kcp.localhost',
+    'hostAliases[0].hostnames[1]=root.kcp.localhost',
+    'hostAliases[0].hostnames[2]=theseus.kcp.localhost',
+]
+if host_docker_internal_override_ip:
+    hub_host_aliases += [
+        # Provider processes listen on the host. Native Linux Docker needs the
+        # kind network gateway for host.docker.internal.
+        'hostAliases[1].ip=%s' % host_docker_internal_override_ip,
+        'hostAliases[1].hostnames[0]=host.docker.internal',
+    ]
 
 # --- portal: build the SPA + provider micro-frontends into dist dirs ---
 # These dist dirs are embedded into the hub binary below (-tags portal_embed)
@@ -422,13 +463,7 @@ k8s_yaml(helm(
         # in the portal iframe — allow the local apps domain on the envoy
         # port-forward. (preview.localhost was the deleted preview-gateway.)
         'hub.portalFrameSources={https://*.%s:%s}' % (app_base_domain, app_studio_preview_public_port),
-        # Make *.kcp.localhost resolve to the Envoy gateway from the hub pod,
-        # so the operator-issued kubeconfigs work in-cluster unchanged.
-        'hostAliases[0].ip=%s' % gateway_ip,
-        'hostAliases[0].hostnames[0]=kcp.localhost',
-        'hostAliases[0].hostnames[1]=root.kcp.localhost',
-        'hostAliases[0].hostnames[2]=theseus.kcp.localhost',
-    ],
+    ] + hub_host_aliases,
 ))
 
 k8s_resource(

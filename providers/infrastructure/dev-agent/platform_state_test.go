@@ -17,35 +17,64 @@ limitations under the License.
 package main
 
 import (
+	"errors"
 	"net/http"
-	"strings"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
 
-func TestProtectedPlatformStateFailsClosedWhenMountIsMissing(t *testing.T) {
+func TestCoordinatorStateIsRequiredAndIndependentFromWorkspace(t *testing.T) {
 	workspace := t.TempDir()
-	if _, err := acquireWorkspaceMutationLock(t.Context(), workspace, true); err == nil {
-		t.Fatal("protected lock acquisition recreated missing platform state")
+	for _, stateDir := range []string{"", workspace, filepath.Join(workspace, "state")} {
+		if _, err := prepareCoordinatorState(stateDir, workspace); err == nil {
+			t.Fatalf("state directory %q was accepted", stateDir)
+		}
 	}
-	if _, err := newExecWorker(workspace, "token", true); err == nil || !strings.Contains(err.Error(), "protected platform state") {
-		t.Fatalf("protected worker startup error = %v, want missing protected state rejection", err)
+	parentState := t.TempDir()
+	if _, err := prepareCoordinatorState(parentState, filepath.Join(parentState, "workspace")); err == nil {
+		t.Fatal("state directory containing the workspace was accepted")
 	}
-	if _, err := acquireWorkspaceMutationLock(t.Context(), workspace, false); err != nil {
-		t.Fatalf("unprotected unit fixture lock: %v", err)
+	stateDir := t.TempDir()
+	if err := os.Chmod(stateDir, 0o770); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := acquireWorkspaceMutationLock(t.Context(), workspace, true); err == nil {
-		t.Fatal("protected lock acquisition accepted caller-owned replacement state")
-	}
-}
-
-func TestSyncUsesPVCBackedMutationLockAndRejectsPlatformMetadata(t *testing.T) {
-	workspace := t.TempDir()
-	server := newTestAgent(t, &agentConfig{WorkDir: workspace, ControlToken: "test-token"})
-	lock, err := acquireWorkspaceMutationLock(t.Context(), workspace, false)
+	prepared, err := prepareCoordinatorState(stateDir, workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if prepared == workspace {
+		t.Fatal("coordinator state aliases workspace")
+	}
+	if _, err := os.Stat(filepath.Join(prepared, stateSessionsDir)); err != nil {
+		t.Fatal(err)
+	}
+	rootInfo, err := os.Stat(prepared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootInfo.Mode().Perm() != 0o770 {
+		t.Fatalf("fsGroup-style mount mode changed to %o", rootInfo.Mode().Perm())
+	}
+	sessionsInfo, err := os.Stat(filepath.Join(prepared, stateSessionsDir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessionsInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("coordinator-owned sessions mode = %o", sessionsInfo.Mode().Perm())
+	}
+	if _, err := os.Stat(filepath.Join(workspace, ".kedge-platform")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workspace platform state exists: %v", err)
+	}
+}
+
+func TestSyncUsesCoordinatorMutationLock(t *testing.T) {
+	workspace := t.TempDir()
+	server := newTestAgent(t, &agentConfig{WorkDir: workspace, ControlToken: "test-token"})
+	server.mutationMu = &sync.Mutex{}
+	server.mutationMu.Lock()
 	done := make(chan int, 1)
 	go func() {
 		recorder, _ := doSync(t, server, syncRequest{Files: []syncFile{{Path: "main.go", Content: "package main\n"}}})
@@ -53,23 +82,19 @@ func TestSyncUsesPVCBackedMutationLockAndRejectsPlatformMetadata(t *testing.T) {
 	}()
 	select {
 	case status := <-done:
-		t.Fatalf("sync completed with %d while exec lock was held", status)
+		t.Fatalf("sync completed with %d while mutation lock was held", status)
 	case <-time.After(50 * time.Millisecond):
 	}
-	if err := lock.Close(); err != nil {
-		t.Fatal(err)
-	}
+	server.mutationMu.Unlock()
 	select {
 	case status := <-done:
 		if status != http.StatusOK {
-			t.Fatalf("sync status = %d after lock release", status)
+			t.Fatalf("sync status = %d", status)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("sync did not resume after workspace lock release")
+		t.Fatal("sync did not resume after lock release")
 	}
-
-	recorder, _ := doSync(t, server, syncRequest{Files: []syncFile{{Path: platformMetadataDir + "/forged.json", Content: "{}"}}})
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("platform metadata sync status = %d, want 400", recorder.Code)
+	if _, err := os.Stat(filepath.Join(workspace, ".kedge-platform")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sync created workspace platform state: %v", err)
 	}
 }

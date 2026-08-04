@@ -30,6 +30,28 @@ runtime-cluster credential, serves control operations and preview proxying. App
 Studio acts as the requesting tenant user; it does not hold a kubeconfig or
 service credential for the infrastructure provider's runtime cluster.
 
+## Development component topology
+
+Each development component pod has three non-root containers. The public,
+token-authenticated App Studio → Infrastructure control contract remains on the
+component Service's `7070` control port and `7071` exec port, using
+`X-Sandbox-Control-Token`. The coordinator owns that contract and durable
+session/idempotency state on a separate per-component platform-state PVC
+mounted at `/kedge/state`; it has no app environment or secrets.
+
+The app runtime supervisor owns the app environment/secrets and starts or
+restarts the app, but has no platform token or platform-state mount. The
+stateless executor verifies workspace source revision and SHA-256 digest before
+running typed argv; it has no platform token, platform-state mount, app
+environment/secrets, or service-account credentials. Their internal control
+surfaces bind only to pod loopback: runtime supervisor `7072`, executor `7073`.
+
+All three containers run as UID/GID `1000`, with
+`allowPrivilegeEscalation: false` and all capabilities dropped. The pod uses
+seccomp `RuntimeDefault`, `fsGroup: 1000`, and `shareProcessNamespace: false`.
+When a Template declares `reload.strategy: container`, the runtime supervisor
+container is restarted; the coordinator remains running.
+
 ## Development data plane
 
 For a Project with `spec.template`, App Studio reads the Template and resolves
@@ -76,6 +98,7 @@ certificate verification.
 App Studio should depend only on the published capabilities it needs:
 
 - component-aware `sync`
+- bounded, revision/digest-checked `exec`
 - `restart`, `log`, `env`, and `process` data-plane verbs where the Template
   declares them
 - instance status from the tenant API

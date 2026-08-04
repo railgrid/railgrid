@@ -30,20 +30,22 @@ caller-authorized data-plane `exec` capability.
    control Service's `exec` port, and forwards the lifecycle request with the
    instance control token. Infrastructure provider replicas retain no local
    execution-session state.
-6. A dedicated `kedge-exec-worker` container owns durable, caller-bound session
-   records on the component PVC. It re-hashes the actual managed source files,
-   runs the direct argv only when the persistent workspace exactly matches the
-   expected revision and digest, and returns bounded stdout, stderr, exit
-   state, and truncation metadata.
+6. The platform coordinator owns the durable, caller-bound session and
+   idempotency records on the separate per-component platform-state PVC at
+   `/kedge/state`. It forwards an already-authorized execution request to the
+   stateless executor over pod loopback. The executor re-hashes the actual
+   managed source files, runs typed argv only when the workspace exactly
+   matches the expected revision and SHA-256 digest, and returns bounded
+   stdout, stderr, exit state, and truncation metadata.
 
 Start, poll, and cancel are caller-bound and idempotent per assistant run and
-tool call. The worker binds each idempotency key to the request fingerprint and
-persists terminal results, so a lost Start response or a different provider
-replica cannot dispatch the command twice. A worker restart marks an unfinished
-record interrupted rather than redispatching it. App Studio separately records
-the effect through its durable run-event ledger. In `always_ask`, approval
-checkpoints register the typed exec input so a second approved command can
-resume after the first one.
+tool call. The coordinator binds each idempotency key to the request fingerprint
+and persists terminal results, so a lost Start response or a different provider
+replica cannot dispatch the command twice. Coordinator recovery marks an
+unfinished record interrupted rather than redispatching it. App Studio
+separately records the effect through its durable run-event ledger. In
+`always_ask`, approval checkpoints register the typed exec input so a second
+approved command can resume after the first one.
 
 ## One development workspace
 
@@ -74,12 +76,10 @@ watcher. A future runtime-to-FileStore feature must be a separate approved,
 bounded change-set operation with baseline hashes and conflict handling.
 
 The source manifest is an integrity and convergence record, not an authorization
-boundary. Worker session records and the cross-container workspace lock live in
-a separate protected metadata directory mounted back over
-`<workspace>/.kedge-platform`; command children cannot traverse, replace, or
-rename that mount. The source manifest is still revalidated against actual
-managed files before execution, so a runtime mutation causes a revision/digest
-mismatch until the next authoritative sync repairs it.
+boundary. Execution session records live on the coordinator's separate
+platform-state PVC, not in the application workspace. The manifest is still
+revalidated against actual managed files before execution, so a runtime mutation
+causes a revision/digest mismatch until the next authoritative sync repairs it.
 
 ## Template opt-in and request limits
 
@@ -118,19 +118,30 @@ can already launch one.
 
 Persistent exec uses the selected component's development image and persistent
 workspace, so commands see the real toolchain, installed dependencies, caches,
-and runtime-created files. Execution does not occur in the application
-container. The dedicated worker has its own PID namespace and container cgroup,
-its own `/tmp`, a minimal environment, no copied application mounts or secret
-environment, and a masked service-account credential path. It shares the Pod
-network because it remains part of the live development environment.
+and runtime-created files. Execution occurs in the component's separate
+stateless executor container, not in the runtime supervisor container.
 
-The worker runs command children as the workspace UID with supplemental platform
-groups removed. It is container PID 1 and reaps every remaining process in its
-namespace after success, timeout, or cancellation, including descendants that
-create a new session. If cleanup cannot be proven, the worker exits so the
-container runtime tears down the entire worker cgroup. Development overlays
-force `shareProcessNamespace: false`; the command cannot join the application's
-PID namespace.
+The three containers have deliberately separate authorities:
+
+| Container | Owns | Does not receive |
+|---|---|---|
+| platform coordinator | public control and exec endpoints, the instance control token, and durable session/idempotency state on `/kedge/state` | application environment or secrets |
+| app runtime supervisor | the application environment and secrets; starts, restarts, and reloads the app process | the platform control token and platform-state PVC |
+| stateless executor | typed argv execution after workspace revision/SHA-256 verification | the platform control token, platform-state PVC, application environment/secrets, and service-account credentials |
+
+The App Studio → Infrastructure control contract remains token-authenticated on
+the component Service's public ports `7070` (control) and `7071` (exec), using
+`X-Sandbox-Control-Token`. The runtime supervisor's internal control surface
+binds only to pod loopback on `127.0.0.1:7072`; the executor's internal surface
+binds only to pod loopback on `127.0.0.1:7073`. The coordinator is the only
+container exposed through the public Service for these platform operations.
+
+All three containers run as UID/GID `1000`, with
+`allowPrivilegeEscalation: false` and all Linux capabilities dropped. The pod
+uses seccomp `RuntimeDefault`, `fsGroup: 1000`, and
+`shareProcessNamespace: false`. The executor has its own `/tmp` and a masked
+service-account path; it shares only the component workspace needed for the
+command and the injected agent binary.
 
 This is a development sandbox boundary, not a host or network sandbox. A command
 can mutate the derived workspace and reach services allowed by the development
@@ -140,32 +151,27 @@ Pod's network policy. The safety controls are:
 - explicit per-template exec opt-in and provider-owned target resolution;
 - exact command-scope disclosure when `always_ask` is selected, with fail-closed
   denial under `never`;
-- direct argv, confined relative cwd, bounded time/output, container-bounded
-  process-tree cleanup, and PVC-lock-serialized workspace operations;
+- direct typed argv, confined relative cwd, bounded time/output, and
+  container-bounded process-tree cleanup;
 - revision/digest verification immediately before execution;
 - durable caller/fingerprint-bound idempotency outside provider process memory;
 - no App Studio, application secret mount, or runtime service-account credential
-  in the worker; and
+  in the executor; and
 - no automatic runtime-to-FileStore writeback.
 
 Do not describe this mode as network-denied or as stronger than its Pod network
 policy. Runtime namespaces should use development-scoped identities and
 least-privilege network access. Application credentials remain available to the
-application container but are intentionally not copied into the worker.
+runtime supervisor but are intentionally not copied into the executor.
 
-## Single execution path
+## Execution topology
 
-Infrastructure supports only persistent execution through the selected live
-development component's dedicated worker. There is no executor mode selector,
-disposable source-staging pod, or compatibility path that can silently switch a
-project back to a second workspace. The data-plane handler fails closed when
-the live component control target or exec worker is unavailable.
-
-This keeps command execution on the development Service proxy and control-secret
-path used by sync, logs, and restart, but gives execution a separate named
-Service port and container boundary. It does not need separate executor-Pod
-lifecycle, source upload, or executor-image configuration: the worker uses the
-component's development image and the injected development-agent binary.
+The component Service proxy and control-secret path used by sync, logs, and
+restart also carries exec on its separate named port. The coordinator owns the
+request lifecycle and durable records; the stateless executor uses the
+component's development image and injected development-agent binary to run the
+command in the persistent workspace. The data-plane handler fails closed when
+the live component control target is unavailable.
 
 Stateful PTY sessions, package-registry policy controls, and approved
 runtime-to-FileStore change sets remain separate future capabilities.

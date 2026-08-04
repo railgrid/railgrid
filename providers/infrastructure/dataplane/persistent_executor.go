@@ -40,7 +40,7 @@ const (
 
 var executionGroupResource = schema.GroupResource{Group: "infrastructure.kedge.faros.sh", Resource: "executions"}
 
-type execWorkerRequest struct {
+type execCoordinatorRequest struct {
 	Action         ExecAction `json:"action"`
 	SessionID      string     `json:"sessionID"`
 	RequestID      string     `json:"requestID"`
@@ -54,9 +54,9 @@ type execWorkerRequest struct {
 	SourceDigest   string     `json:"sourceDigest,omitempty"`
 }
 
-// PersistentExecutor is intentionally stateless. The dedicated component
-// exec-worker owns idempotency, sessions, cancellation, and durable results on
-// the component PVC; any provider replica can forward any lifecycle action.
+// PersistentExecutor is intentionally stateless. The component coordinator
+// owns idempotency, sessions, cancellation, and durable results on its private
+// platform-state PVC; any provider replica can forward any lifecycle action.
 type PersistentExecutor struct {
 	runtime Runtime
 }
@@ -77,7 +77,7 @@ func (e *PersistentExecutor) Start(ctx context.Context, call ExecCall) (ExecResu
 		return ExecResult{}, err
 	}
 	limits, _ := limitsForCapability(call.Capability)
-	request := execWorkerRequest{
+	request := execCoordinatorRequest{
 		Action: ExecActionStart, SessionID: execSessionID(call), RequestID: call.Request.RequestID,
 		CallerKey: call.CallerKey, Fingerprint: fingerprint, Argv: call.Request.Argv,
 		WorkDir: call.Request.Workdir, TimeoutMS: int(execTimeoutSeconds(call)) * 1000,
@@ -99,13 +99,13 @@ func (e *PersistentExecutor) lifecycle(ctx context.Context, call ExecCall, actio
 	if err := validatePersistentExecTarget(call); err != nil {
 		return ExecResult{}, err
 	}
-	return e.execute(ctx, call.ControlTarget, execWorkerRequest{
+	return e.execute(ctx, call.ControlTarget, execCoordinatorRequest{
 		Action: action, SessionID: strings.TrimSpace(call.Request.SessionID),
 		RequestID: strings.TrimSpace(call.Request.RequestID), CallerKey: call.CallerKey,
 	})
 }
 
-func (e *PersistentExecutor) execute(ctx context.Context, target ResolvedTarget, input execWorkerRequest) (ExecResult, error) {
+func (e *PersistentExecutor) execute(ctx context.Context, target ResolvedTarget, input execCoordinatorRequest) (ExecResult, error) {
 	transport, err := e.runtime.Transport()
 	if err != nil {
 		return ExecResult{}, fmt.Errorf("runtime transport unavailable: %w", err)
@@ -120,7 +120,7 @@ func (e *PersistentExecutor) execute(ctx context.Context, target ResolvedTarget,
 	}
 	payload, err := json.Marshal(input)
 	if err != nil {
-		return ExecResult{}, fmt.Errorf("encode exec-worker request: %w", err)
+		return ExecResult{}, fmt.Errorf("encode exec coordinator request: %w", err)
 	}
 	client := &http.Client{Transport: transport}
 	var lastErr error
@@ -142,25 +142,25 @@ func (e *PersistentExecutor) execute(ctx context.Context, target ResolvedTarget,
 		req.Header.Set(controlTokenHeader, token)
 		resp, err := client.Do(req)
 		if err != nil {
-			lastErr = fmt.Errorf("exec-worker request: %w", err)
+			lastErr = fmt.Errorf("exec coordinator request: %w", err)
 			continue
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, persistentExecAgentBodyLimit))
 		_ = resp.Body.Close()
 		if readErr != nil {
-			lastErr = fmt.Errorf("read exec-worker response: %w", readErr)
+			lastErr = fmt.Errorf("read exec coordinator response: %w", readErr)
 			continue
 		}
 		if resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
-			lastErr = fmt.Errorf("exec-worker temporarily unavailable: %s", strings.TrimSpace(string(body)))
+			lastErr = fmt.Errorf("exec coordinator temporarily unavailable: %s", strings.TrimSpace(string(body)))
 			continue
 		}
 		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-			return ExecResult{}, execWorkerStatusError(resp.StatusCode, input.SessionID, strings.TrimSpace(string(body)))
+			return ExecResult{}, execCoordinatorStatusError(resp.StatusCode, input.SessionID, strings.TrimSpace(string(body)))
 		}
 		var result ExecResult
 		if err := json.Unmarshal(body, &result); err != nil {
-			lastErr = fmt.Errorf("decode exec-worker response: %w", err)
+			lastErr = fmt.Errorf("decode exec coordinator response: %w", err)
 			continue
 		}
 		return result, nil
@@ -168,11 +168,11 @@ func (e *PersistentExecutor) execute(ctx context.Context, target ResolvedTarget,
 	return ExecResult{}, lastErr
 }
 
-func execWorkerStatusError(status int, sessionID, message string) error {
+func execCoordinatorStatusError(status int, sessionID, message string) error {
 	if len(message) > 2048 {
 		message = message[:2048] + "..."
 	}
-	cause := fmt.Errorf("exec-worker: %s", message)
+	cause := fmt.Errorf("exec coordinator: %s", message)
 	switch status {
 	case http.StatusForbidden, http.StatusUnauthorized:
 		return apierrors.NewForbidden(executionGroupResource, sessionID, cause)
