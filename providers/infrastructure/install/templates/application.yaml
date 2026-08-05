@@ -23,8 +23,8 @@ spec:
   # gate so "Provision → see it working" needs zero external setup (demo/dev).
   sampleValues:
     name: demo
-    frontendImage: ghcr.io/faroshq/kedge-infrastructure-example-frontend:latest
-    backendImage: ghcr.io/faroshq/kedge-infrastructure-example-backend:latest
+    webImage: ghcr.io/faroshq/kedge-scaffold-application/web:v0.1.2
+    apiImage: ghcr.io/faroshq/kedge-scaffold-application/api:v0.1.2
     database:
       version: "16"
     oidc:
@@ -48,8 +48,8 @@ spec:
       sandbox image and can execute nothing else. Everything below headed
       "IMAGES" applies to production images only.
 
-      PRODUCTION MODE — YOU SUPPLY exactly two container images — frontendImage
-      and backendImage —
+      PRODUCTION MODE — YOU SUPPLY exactly two container images — webImage
+      and apiImage —
       and nothing else app-side. The platform provisions Postgres, injects the DB
       connection, path-routes one URL to both tiers, and (in byo mode) authenticates
       in front; you do NOT create the database, Secrets, Services, or routes. This
@@ -62,7 +62,7 @@ spec:
         • Stateless — no local/persistent disk; ALL state lives in Postgres. Pods
           may be restarted or scaled (the *Replicas inputs).
 
-      BACKEND (backendImage) — the platform routes `/api/*` to it:
+      BACKEND (apiImage) — the platform routes `/api/*` to it:
         • Env DATABASE_URL is injected — a PostgreSQL URI of the form
           `postgres://appuser:<password>@<host>:5432/appdb`. Connect from this env
           ONLY (never read a Kubernetes Secret). The URI has NO sslmode and the
@@ -74,15 +74,15 @@ spec:
           your schema / run migrations on startup, idempotently.
         • Postgres may not be ready the moment you start (it boots alongside you) —
           RETRY the initial connection instead of exiting.
-        • Listen on backendPort (input, default 8080). Serve your routes under the
+        • Listen on apiPort (input, default 8080). Serve your routes under the
           `/api/` prefix; the path is PRESERVED (you receive e.g. `/api/items`, not
           `/items`). A readiness endpoint that pings the DB is recommended.
         • The HTTP API shape (routes, JSON) is YOUR design — you also build the
           frontend that calls it; the only platform constraint is the `/api` prefix.
 
-      FRONTEND (frontendImage) — the platform routes `/` to it:
-        • Listen on frontendPort (input, default 8080); serve the UI on `/`.
-          $PORT (= frontendPort) is injected, so an app that honors $PORT binds
+      FRONTEND (webImage) — the platform routes `/` to it:
+        • Listen on webPort (input, default 8080); serve the UI on `/`.
+          $PORT (= webPort) is injected, so an app that honors $PORT binds
           the right port automatically.
         • Call the backend from the BROWSER at `/api/*` on the SAME origin (e.g.
           `fetch("/api/items")`). There is NO separate backend host/URL — do not
@@ -94,36 +94,43 @@ spec:
           (set oidc.issuerURL + oidc.clientID; client secret via prerequisites).
         • platform — kedge SSO; NOT yet supported.
 
-      DEVELOPMENT MODE (provision with kedgeMode: development): both image
-      inputs are ignored (and may be omitted) — each tier runs in a
-      platform-managed Node.js sandbox image against its own workspace directory
-      (frontend → web/, backend → api/), with Postgres and DATABASE_URL exactly
-      as in production. Push source with the dev_sync tool (hot reload, no image
-      builds; files are routed by those directories), read dev-server logs with
-      dev_logs, and preview on the instance's status.url.
+      COMPONENTS: this template has exactly two — "web" (the UI, its files
+      live in web/) and "api" (the server, its files live in api/). A
+      component's name IS its directory: tools that take a component
+      (dev_sync, dev_logs, dev_restart) always want "web" or "api", never a
+      path or a tier nickname.
 
-        • BOTH TIERS MUST BE WRITTEN IN NODE.JS/JAVASCRIPT/TYPESCRIPT. The
+      DEVELOPMENT MODE (provision with kedgeMode: development): both image
+      inputs are ignored (and may be omitted) — each component runs in a
+      platform-managed Node.js sandbox image against its own directory, with
+      Postgres and DATABASE_URL exactly as in production. Push source with the
+      dev_sync tool (hot reload, no image builds; files are routed by those
+      directories), read dev-server logs with dev_logs, and preview on the
+      instance's status.url.
+
+        • BOTH COMPONENTS MUST BE WRITTEN IN NODE.JS/JAVASCRIPT/TYPESCRIPT. The
           sandbox image contains the Node toolchain and NOTHING ELSE — no Go,
           Python, Ruby, Java, or .NET compiler or interpreter is installed. Go
           source, a Python app, or any other stack placed in web/ or api/ cannot
           run there however correct it is: the start command finds nothing to
           launch and the tier silently never listens on its port.
         • api/ MUST contain a package.json whose "dev" or "start" script starts
-          the server on $PORT (the backend is started with
-          `npm run dev || npm start`). Without that file nothing runs.
+          the server on $PORT (the api component is started
+          with `npm run dev || npm start`). Without that file nothing runs.
         • web/ MUST contain a package.json for a vite-based frontend (started
           with `npm run dev`, falling back to `npx vite`).
         • A Dockerfile is for the PRODUCTION image build only — it is never
           built or executed in development mode, so adding one does NOT make
           another language runnable in the sandbox.
-        • If the app genuinely requires a non-Node backend, this template cannot
+        • If the app genuinely requires a non-Node api component, this template cannot
           develop it: say so and pick a template whose development toolchain
           matches, rather than writing source the sandbox cannot execute.
 
-      INPUTS you set when provisioning: frontendImage, backendImage (required
-      in production mode; omit in development mode); name, frontendPort,
-      backendPort, frontendReplicas, backendReplicas, frontendEnv, backendEnv
-      (per-tier env-var maps; not for secrets), database.version, oidc.*. The
+      INPUTS you set when provisioning: webImage, apiImage (default to
+      the scaffold hello-world images — supply your own to run real code; omit
+      in development mode); name, webPort,
+      apiPort, webReplicas, apiReplicas, webEnv, apiEnv
+      (per-component env-var maps; not for secrets), database.version, oidc.*. The
       platform stamps spec.expose.fqdn and spec.credentialsSecretName — do not
       set those. All except name, kedgeMode, and database.version can be
       changed later with update_instance.
@@ -132,8 +139,8 @@ spec:
     outputs:
       - "status.url — the public HTTPS URL the app is served on (status.host = bare hostname)."
       - "status.redirectURL — the OIDC redirect/callback URL to register with your IdP (byo mode)."
-      - "Per-tier readiness: status.frontendReady / backendReady / databaseReady / oauthReady (ready replica counts)."
-      - "The backend's DATABASE_URL env is sourced from Secret '<name>-db-credentials' (key 'uri') in the instance namespace — informational; the image just reads the DATABASE_URL env, it never reads the Secret."
+      - "Per-component readiness: status.webReady / apiReady / databaseReady / oauthReady (ready replica counts)."
+      - "The api component's DATABASE_URL env is sourced from Secret '<name>-db-credentials' (key 'uri') in the instance namespace — informational; the image just reads the DATABASE_URL env, it never reads the Secret."
   # ── Portal presentation ───────────────────────────────────────────────
   # Tells the portal how to render this template's instances instead of the
   # default raw-JSON values dump. Field values are dot-paths or ${…}-interpolated
@@ -175,9 +182,9 @@ spec:
       - title: Readiness
         fields:
           - label: Frontend
-            path: status.frontendReady
+            path: status.webReady
           - label: Backend
-            path: status.backendReady
+            path: status.apiReady
           - label: Database
             path: status.databaseReady
   instanceCRD:
@@ -205,19 +212,20 @@ spec:
         description: "Logical name; used as the resource-name prefix in the tenant namespace and the default hostname prefix."
 
       # ── Frontend tier (the only tier exposed, behind oauth2-proxy) ──
-      frontendImage:
+      webImage:
         type: string
-        description: "Container image for the public-facing frontend. Required in production mode; ignored (and may be omitted) when kedgeMode is development — dev mode runs the platform dev image against the project workspace."
-      frontendPort:
+        default: ghcr.io/faroshq/kedge-scaffold-application/web:v0.1.2
+        description: "Container image for the public-facing frontend. Defaults to the scaffold hello-world (same tag as development.scaffold.ref) so provisioning with no images runs a working app — replace with your own image to ship real code. Ignored when kedgeMode is development — dev mode runs the platform dev image against the project workspace."
+      webPort:
         type: integer
         default: 8080
         description: "Port the frontend container listens on."
-      frontendReplicas:
+      webReplicas:
         type: integer
         default: 1
         minimum: 1
         maximum: 10
-      frontendEnv:
+      webEnv:
         type: object
         additionalProperties:
           type: string
@@ -225,18 +233,19 @@ spec:
         description: "Environment variables for the frontend container, injected via a ConfigMap + envFrom (updatable in place). Platform-set vars (PORT) win on name conflicts. Values are stored world-readable — not for secrets."
 
       # ── Backend tier (internal; reachable only via cluster DNS) ──
-      backendImage:
+      apiImage:
         type: string
-        description: "Container image for the internal backend/API tier. Required in production mode; ignored (and may be omitted) when kedgeMode is development."
-      backendPort:
+        default: ghcr.io/faroshq/kedge-scaffold-application/api:v0.1.2
+        description: "Container image for the internal backend/API tier. Defaults to the scaffold hello-world (same tag as development.scaffold.ref) so provisioning with no images runs a working app — replace with your own image to ship real code. Ignored when kedgeMode is development."
+      apiPort:
         type: integer
         default: 8080
-      backendReplicas:
+      apiReplicas:
         type: integer
         default: 1
         minimum: 1
         maximum: 10
-      backendEnv:
+      apiEnv:
         type: object
         additionalProperties:
           type: string
@@ -315,8 +324,8 @@ spec:
     # tier images for platform dev images, so a dev-only project needs none.
     # Enforced on the kcp-side CRD; kedgeMode defaults to "production".
     x-kubernetes-validations:
-      - rule: "(has(self.kedgeMode) && self.kedgeMode == 'development') || (has(self.frontendImage) && has(self.backendImage))"
-        message: "frontendImage and backendImage are required in production mode"
+      - rule: "(has(self.kedgeMode) && self.kedgeMode == 'development') || (has(self.webImage) && has(self.apiImage))"
+        message: "webImage and apiImage are required in production mode"
 
   # ── Development mode (docs/app-studio-template-sandboxes.md) ──────────
   # Declares how instances run when provisioned with kedgeMode: development:
@@ -335,26 +344,35 @@ spec:
   # platform preview-console plugin when trusted keys are installed. Missing
   # plugin/config fails open and leaves the ordinary preview intact.
   development:
+    # Starter source new projects are seeded from: a working web+api+Postgres
+    # hello-world honoring the full platform contract (PORT, same-origin
+    # /api/*, DATABASE_URL with startup retry, dev+start scripts). Locked by
+    # git tag: changing the scaffold repo does nothing until a new tag is cut
+    # AND this ref (plus the sampleValues image tags above) is bumped to
+    # match. Without this block a new project gets an EMPTY sandbox.
+    scaffold:
+      repository: https://github.com/faroshq/kedge-scaffold-application
+      ref: v0.1.2
     components:
-      frontend:
+      web:
         workspacePath: web
-        imageInput: frontendImage
+        imageInput: webImage
         devImage: "${kedge.devImage.node}"
         workingDir: /workspace
         startCommand: "SHIM=.kedge-vite.config.mjs; printf '%s' 'ZXhwb3J0IGRlZmF1bHQgYXN5bmMgKGVudikgPT4gewogIGNvbnN0IGZvcmNlZCA9IHsgc2VydmVyOiB7IGhvc3Q6IHRydWUsIGFsbG93ZWRIb3N0czogdHJ1ZSB9IH0KICB0cnkgewogICAgY29uc3QgeyBkZWZhdWx0OiBwcmV2aWV3Q29uc29sZVBsdWdpbiB9ID0gYXdhaXQgaW1wb3J0KCdmaWxlOi8vL2tlZGdlL2Jpbi9wcmV2aWV3LWNvbnNvbGUtcGx1Z2luLm1qcycpCiAgICBmb3JjZWQucGx1Z2lucyA9IFtwcmV2aWV3Q29uc29sZVBsdWdpbigpXQogIH0gY2F0Y2ggKGUpIHsKICAgIC8vIE9wdGlvbmFsIGluc3RydW1lbnRhdGlvbiBpcyBkaXNhYmxlZCBvciB1bmF2YWlsYWJsZS4KICB9CiAgbGV0IGxvYWRDb25maWdGcm9tRmlsZSwgbWVyZ2VDb25maWcKICB0cnkgewogICAgKHsgbG9hZENvbmZpZ0Zyb21GaWxlLCBtZXJnZUNvbmZpZyB9ID0gYXdhaXQgaW1wb3J0KCd2aXRlJykpCiAgfSBjYXRjaCAoZSkgewogICAgcmV0dXJuIGZvcmNlZAogIH0KICBsZXQgYmFzZSA9IHt9CiAgdHJ5IHsKICAgIGNvbnN0IGxvYWRlZCA9IGF3YWl0IGxvYWRDb25maWdGcm9tRmlsZShlbnYsIHVuZGVmaW5lZCwgcHJvY2Vzcy5jd2QoKSkKICAgIGlmIChsb2FkZWQgJiYgbG9hZGVkLmNvbmZpZykgYmFzZSA9IGxvYWRlZC5jb25maWcKICB9IGNhdGNoIChlKSB7CiAgICBjb25zb2xlLmVycm9yKCdba2VkZ2VdIGNvdWxkIG5vdCBsb2FkIHByb2plY3Qgdml0ZSBjb25maWc6JywgZSkKICB9CiAgcmV0dXJuIG1lcmdlQ29uZmlnKGJhc2UsIGZvcmNlZCkKfQo=' | base64 -d > $SHIM; grep -qxF $SHIM .gitignore 2>/dev/null || echo $SHIM >> .gitignore; if [ -f package.json ]; then (npm run dev -- --host 0.0.0.0 --port $PORT --config $SHIM || npm run dev -- --host 0.0.0.0 --port $PORT || npm start); else npx --yes vite --host 0.0.0.0 --port $PORT --config $SHIM || npx --yes vite --host 0.0.0.0 --port $PORT; fi"
-        port: frontend
+        port: web
         reload:
           strategy: process
           rules:
             - paths: ["package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml"]
               command: "npm install --no-audit --no-fund"
-      backend:
+      api:
         workspacePath: api
-        imageInput: backendImage
+        imageInput: apiImage
         devImage: "${kedge.devImage.node}"
         workingDir: /workspace
         startCommand: "npm run dev || npm start"
-        port: backend
+        port: api
         reload:
           strategy: process
           rules:
@@ -363,7 +381,7 @@ spec:
 
   # ── Data plane (development mode) ─────────────────────────────────────
   # Per-component control verbs, served as
-  # …/applications/<name>/components/{frontend,backend}/{sync,restart,log,env,process,exec}.
+  # …/applications/<name>/components/{web,api}/{sync,restart,log,env,process,exec}.
   # The status paths they resolve through (status.components.*, controlSecretRef,
   # runtimeNamespace) are published by the synthesized dev overlay, so in
   # production mode these verbs answer 409 instance-not-ready — the data plane
@@ -375,65 +393,65 @@ spec:
       status:
         fromStatus: true
     components:
-      frontend:
+      web:
         exec:
           maxTimeoutSeconds: 120
           maxOutputBytes: 262144
         endpoints:
           sync:
-            servicePath: status.components.frontend.controlServiceRef
+            servicePath: status.components.web.controlServiceRef
             port: control
             upstreamPath: /sync
             methods: ["POST"]
           restart:
-            servicePath: status.components.frontend.controlServiceRef
+            servicePath: status.components.web.controlServiceRef
             port: control
             upstreamPath: /restart
             methods: ["POST"]
           env:
-            servicePath: status.components.frontend.controlServiceRef
+            servicePath: status.components.web.controlServiceRef
             port: control
             upstreamPath: /env
             methods: ["POST"]
           log:
-            servicePath: status.components.frontend.controlServiceRef
+            servicePath: status.components.web.controlServiceRef
             port: control
             upstreamPath: /logs
             methods: ["GET"]
             stream: true
           process:
-            servicePath: status.components.frontend.controlServiceRef
+            servicePath: status.components.web.controlServiceRef
             port: control
             upstreamPath: /status
             methods: ["GET"]
-      backend:
+      api:
         exec:
           maxTimeoutSeconds: 120
           maxOutputBytes: 262144
         endpoints:
           sync:
-            servicePath: status.components.backend.controlServiceRef
+            servicePath: status.components.api.controlServiceRef
             port: control
             upstreamPath: /sync
             methods: ["POST"]
           restart:
-            servicePath: status.components.backend.controlServiceRef
+            servicePath: status.components.api.controlServiceRef
             port: control
             upstreamPath: /restart
             methods: ["POST"]
           env:
-            servicePath: status.components.backend.controlServiceRef
+            servicePath: status.components.api.controlServiceRef
             port: control
             upstreamPath: /env
             methods: ["POST"]
           log:
-            servicePath: status.components.backend.controlServiceRef
+            servicePath: status.components.api.controlServiceRef
             port: control
             upstreamPath: /logs
             methods: ["GET"]
             stream: true
           process:
-            servicePath: status.components.backend.controlServiceRef
+            servicePath: status.components.api.controlServiceRef
             port: control
             upstreamPath: /status
             methods: ["GET"]
@@ -613,41 +631,41 @@ spec:
       # need no CEL list synthesis; explicit container env (PORT, DATABASE_URL)
       # wins over envFrom on name conflicts, so platform vars can't be
       # clobbered.
-      - id: backendEnvMap
+      - id: apiEnvMap
         template:
           apiVersion: v1
           kind: ConfigMap
           metadata:
-            name: ${schema.spec.name}-backend-env
+            name: ${schema.spec.name}-api-env
             namespace: default
-          data: ${schema.spec.backendEnv}
-      - id: backendDeployment
+          data: ${schema.spec.apiEnv}
+      - id: apiDeployment
         template:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: ${schema.spec.name}-backend
+            name: ${schema.spec.name}-api
             namespace: default
           spec:
-            replicas: ${schema.spec.backendReplicas}
+            replicas: ${schema.spec.apiReplicas}
             selector:
               matchLabels:
-                app: ${schema.spec.name}-backend
+                app: ${schema.spec.name}-api
             template:
               metadata:
                 labels:
-                  app: ${schema.spec.name}-backend
+                  app: ${schema.spec.name}-api
               spec:
                 containers:
-                  - name: backend
-                    image: ${schema.spec.backendImage}
+                  - name: api
+                    image: ${schema.spec.apiImage}
                     env:
                       # Bind the exposed port. Railpack/12-factor images read
                       # $PORT; without it they fall back to a framework default
-                      # (e.g. Node 3000) and nothing listens on backendPort, so
+                      # (e.g. Node 3000) and nothing listens on apiPort, so
                       # the Service/route get no backend and the edge 502s.
                       - name: PORT
-                        value: ${string(schema.spec.backendPort)}
+                        value: ${string(schema.spec.apiPort)}
                       # Full connection string incl. password — sourced from
                       # the Secret, never templated in clear.
                       - name: DATABASE_URL
@@ -657,81 +675,81 @@ spec:
                             key: uri
                     envFrom:
                       - configMapRef:
-                          name: ${backendEnvMap.metadata.name}
+                          name: ${apiEnvMap.metadata.name}
                     ports:
-                      - containerPort: ${schema.spec.backendPort}
-      - id: backendService
+                      - containerPort: ${schema.spec.apiPort}
+      - id: apiService
         template:
           apiVersion: v1
           kind: Service
           metadata:
-            name: ${schema.spec.name}-backend
+            name: ${schema.spec.name}-api
             namespace: default
           spec:
             type: ClusterIP
             selector:
-              app: ${schema.spec.name}-backend
+              app: ${schema.spec.name}-api
             ports:
-              - port: ${schema.spec.backendPort}
-                targetPort: ${schema.spec.backendPort}
+              - port: ${schema.spec.apiPort}
+                targetPort: ${schema.spec.apiPort}
 
       # ───────────────────── Frontend tier ─────────────────────
-      - id: frontendEnvMap
+      - id: webEnvMap
         template:
           apiVersion: v1
           kind: ConfigMap
           metadata:
-            name: ${schema.spec.name}-frontend-env
+            name: ${schema.spec.name}-web-env
             namespace: default
-          data: ${schema.spec.frontendEnv}
-      - id: frontendDeployment
+          data: ${schema.spec.webEnv}
+      - id: webDeployment
         template:
           apiVersion: apps/v1
           kind: Deployment
           metadata:
-            name: ${schema.spec.name}-frontend
+            name: ${schema.spec.name}-web
             namespace: default
           spec:
-            replicas: ${schema.spec.frontendReplicas}
+            replicas: ${schema.spec.webReplicas}
             selector:
               matchLabels:
-                app: ${schema.spec.name}-frontend
+                app: ${schema.spec.name}-web
             template:
               metadata:
                 labels:
-                  app: ${schema.spec.name}-frontend
+                  app: ${schema.spec.name}-web
               spec:
                 containers:
-                  - name: frontend
-                    image: ${schema.spec.frontendImage}
+                  - name: web
+                    image: ${schema.spec.webImage}
                     # UI only — it calls the backend from the browser at
                     # /api/* on the same origin (the exposure layer routes /api
                     # to the backend), so no BACKEND_URL / server-side proxy.
-                    # $PORT (= frontendPort) is injected so Railpack/12-factor
+                    # $PORT (= webPort) is injected so Railpack/12-factor
                     # images bind the exposed port instead of a framework
                     # default (e.g. Node 3000) — otherwise the edge 502s.
                     env:
                       - name: PORT
-                        value: ${string(schema.spec.frontendPort)}
+                        value: ${string(schema.spec.webPort)}
                     envFrom:
                       - configMapRef:
-                          name: ${frontendEnvMap.metadata.name}
+                          name: ${webEnvMap.metadata.name}
                     ports:
-                      - containerPort: ${schema.spec.frontendPort}
-      - id: frontendService
+                      - containerPort: ${schema.spec.webPort}
+      - id: webService
         template:
           apiVersion: v1
           kind: Service
           metadata:
-            name: ${schema.spec.name}-frontend
+            name: ${schema.spec.name}-web
             namespace: default
           spec:
             type: ClusterIP
             selector:
-              app: ${schema.spec.name}-frontend
+              app: ${schema.spec.name}-web
             ports:
-              - port: ${schema.spec.frontendPort}
-                targetPort: ${schema.spec.frontendPort}
+              - port: ${schema.spec.webPort}
+                targetPort: ${schema.spec.webPort}
 
       # ───────────────────── oauth2-proxy (the gate) ─────────────────────
       # Cookie secret, generated in-graph (32 random bytes, base64). The
@@ -850,8 +868,8 @@ spec:
                       # the longest matching path prefix. This is the byo-mode
                       # equivalent of the /api HTTPRoute used in mode=none, and
                       # keeps the backend authenticated (never exposed directly).
-                      - --upstream=http://${schema.spec.name}-backend:${string(schema.spec.backendPort)}/api/
-                      - --upstream=http://${schema.spec.name}-frontend:${string(schema.spec.frontendPort)}
+                      - --upstream=http://${schema.spec.name}-api:${string(schema.spec.apiPort)}/api/
+                      - --upstream=http://${schema.spec.name}-web:${string(schema.spec.webPort)}
                       - --http-address=0.0.0.0:4180
                       - --scope=${schema.spec.oidc.scopes}
                       # v1: allow any successfully-authenticated user. In
@@ -927,8 +945,8 @@ spec:
                   # Single-quoted: the CEL ternary contains ": " which YAML
                   # would otherwise read as a mapping. kro resolves the ${...}
                   # expression regardless of YAML scalar type.
-                  - name: '${schema.spec.oidc.mode == "none" ? schema.spec.name + "-frontend" : schema.spec.name + "-oauth"}'
-                    port: '${schema.spec.oidc.mode == "none" ? schema.spec.frontendPort : 4180}'
+                  - name: '${schema.spec.oidc.mode == "none" ? schema.spec.name + "-web" : schema.spec.name + "-oauth"}'
+                    port: '${schema.spec.oidc.mode == "none" ? schema.spec.webPort : 4180}'
 
       # In mode=none there is no oauth2-proxy to path-route, so a second
       # HTTPRoute adds /api → backend alongside the "/" → frontend rule above
@@ -959,8 +977,8 @@ spec:
                       type: PathPrefix
                       value: /api
                 backendRefs:
-                  - name: ${schema.spec.name}-backend
-                    port: ${schema.spec.backendPort}
+                  - name: ${schema.spec.name}-api
+                    port: ${schema.spec.apiPort}
     # Projected onto the instance in the tenant's kcp workspace. url/host are
     # read from the HTTPRoute (this kro fork forbids ${schema.*} in status —
     # status may reference resources only — so we source the controller-stamped
@@ -976,8 +994,8 @@ spec:
       url: ${"https://" + httpRoute.spec.hostnames[0] + "${kedge.appPublicPort}"}
       host: ${httpRoute.spec.hostnames[0]}
       redirectURL: ${"https://" + httpRoute.spec.hostnames[0] + "${kedge.appPublicPort}" + "/oauth2/callback"}
-      frontendReady: ${frontendDeployment.status.readyReplicas}
-      backendReady: ${backendDeployment.status.readyReplicas}
+      webReady: ${webDeployment.status.readyReplicas}
+      apiReady: ${apiDeployment.status.readyReplicas}
       databaseReady: ${dbStatefulSet.status.readyReplicas}
       oauthReady: ${oauthDeployment.status.readyReplicas}
       dbConnectionSecretRef:

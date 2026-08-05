@@ -161,10 +161,265 @@ describe('run detail', () => {
     expect(resolveInbox).toHaveBeenCalledWith('i7', 'approve')
   })
 
-  it('links delegated child runs', async () => {
-    const api = stubApi({ getRun: () => Promise.resolve(detail({ children: [run({ id: 'c1', agent: 'researcher' })] })) })
+  it('links child runs, distinguishing spawned workers from delegations', async () => {
+    const api = stubApi({
+      getRun: () =>
+        Promise.resolve(
+          detail({
+            children: [
+              run({ id: 'c1', agent: 'researcher' }),
+              run({ id: 'c2', agent: 'scout', trigger: 'spawn' }),
+            ],
+          }),
+        ),
+    })
     const el = await mount<RunDetailView>('agents-run-detail', { store: makeStore(api), api, runID: 'r5' })
-    expect(text(el)).toContain('Delegated runs')
+    expect(text(el)).toContain('Child runs')
     expect(text(el)).toContain('researcher')
+    // A fan-out's workers are labelled as such — one spawned worker here.
+    expect(text(el)).toContain('1 spawned worker')
+    expect(text(el)).toContain('delegated')
+    expect(text(el)).toContain('worker')
+  })
+
+  it('shows the run answer and its sources', async () => {
+    const api = stubApi({
+      getRun: () =>
+        Promise.resolve(
+          detail({ output: 'The answer is 42.', sources: ['https://a.example/x', 'https://b.example/y'] }),
+        ),
+    })
+    const el = await mount<RunDetailView>('agents-run-detail', { store: makeStore(api), api, runID: 'r5' })
+    expect(text(el)).toContain('The answer is 42.')
+    const links = [...el.querySelectorAll('.agents-runsources a')] as HTMLAnchorElement[]
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['https://a.example/x', 'https://b.example/y'])
+  })
+
+  it('shows the error and any partial output for a failed run', async () => {
+    const api = stubApi({
+      getRun: () => Promise.resolve(detail({ phase: 'Failed', message: 'model unavailable', output: 'got this far' })),
+    })
+    const el = await mount<RunDetailView>('agents-run-detail', { store: makeStore(api), api, runID: 'r5' })
+    expect(text(el)).toContain('model unavailable')
+    expect(text(el)).toContain('Partial output')
+    expect(text(el)).toContain('got this far')
+  })
+})
+
+// Watching a fan-out is the point of the run tree: without live child updates a
+// user fires a research pass and sees nothing until it is over.
+describe('live fan-out view', () => {
+  // Local fixtures: the ones above live inside another describe block.
+  const detail = (over: Record<string, unknown> = {}) => ({
+    id: 'r5',
+    agent: 'scout',
+    trigger: 'chat',
+    class: 'interactive',
+    phase: 'Running',
+    inputTokens: 0,
+    outputTokens: 0,
+    usdMicros: 0,
+    createdAt: new Date().toISOString(),
+    input: 'research it',
+    steps: [],
+    children: [],
+    ...over,
+  })
+  const child = (over: Record<string, unknown> = {}) => ({
+    id: 'c1',
+    agent: 'researcher',
+    trigger: 'spawn',
+    class: 'background',
+    phase: 'Running',
+    inputTokens: 0,
+    outputTokens: 0,
+    usdMicros: 0,
+    createdAt: new Date().toISOString(),
+    ...over,
+  })
+
+  it('picks up a worker it has never seen, from parentRunID alone', async () => {
+    let children: unknown[] = []
+    const getRun = vi.fn().mockImplementation(() => Promise.resolve(detail({ children })))
+    const api = stubApi({ getRun })
+    const el = await mount<RunDetailView>('agents-run-detail', { store: makeStore(api), api, runID: 'r5' })
+    await settle(el, 4)
+    expect(text(el)).not.toContain('researcher')
+
+    // A worker starts. The view has never loaded it, so matching on already-known
+    // children would miss it entirely — parentRunID is what makes it appear.
+    children = [child()]
+    el.store.dispatchEvent(
+      new CustomEvent('server', { detail: { type: 'run', data: { id: 'c1', parentRunID: 'r5', phase: 'Running' } } }),
+    )
+    await settle(el, 4)
+    expect(text(el)).toContain('researcher')
+  })
+
+  it('ignores a child of some other run', async () => {
+    const getRun = vi.fn().mockResolvedValue(detail({}))
+    const api = stubApi({ getRun })
+    const el = await mount<RunDetailView>('agents-run-detail', { store: makeStore(api), api, runID: 'r5' })
+    await settle(el, 4)
+    const before = getRun.mock.calls.length
+
+    el.store.dispatchEvent(
+      new CustomEvent('server', { detail: { type: 'run', data: { id: 'z9', parentRunID: 'other-run', phase: 'Running' } } }),
+    )
+    await settle(el, 4)
+    expect(getRun.mock.calls.length).toBe(before)
+  })
+
+  it('separates running from queued, so a queued worker does not look stuck', async () => {
+    const api = stubApi({
+      getRun: () =>
+        Promise.resolve(
+          detail({
+            children: [
+              child({ id: 'c1', phase: 'Running' }),
+              child({ id: 'c2', phase: 'Running' }),
+              child({ id: 'c3', phase: 'Pending' }),
+              child({ id: 'c4', phase: 'Succeeded' }),
+              child({ id: 'c5', phase: 'Failed' }),
+            ],
+          }),
+        ),
+    })
+    const el = await mount<RunDetailView>('agents-run-detail', { store: makeStore(api), api, runID: 'r5' })
+    await settle(el, 4)
+    const summary = text(el.querySelector('.agents-child-summary')!)
+    expect(summary).toContain('2 running')
+    expect(summary).toContain('1 queued')
+    expect(summary).toContain('1 done')
+    expect(summary).toContain('1 failed')
+    // Work is still in flight, so the view says it will keep updating.
+    expect(summary).toContain('updates as they finish')
+    expect(el.querySelector('.agents-child-summary .agents-spinner')).toBeTruthy()
+  })
+
+  it('drops the in-flight affordance once everything has finished', async () => {
+    const api = stubApi({
+      getRun: () =>
+        Promise.resolve(detail({ children: [child({ id: 'c1', phase: 'Succeeded' }), child({ id: 'c2', phase: 'Succeeded' })] })),
+    })
+    const el = await mount<RunDetailView>('agents-run-detail', { store: makeStore(api), api, runID: 'r5' })
+    await settle(el, 4)
+    const summary = text(el.querySelector('.agents-child-summary')!)
+    expect(summary).toContain('2 done')
+    expect(summary).not.toContain('running')
+    expect(el.querySelector('.agents-child-summary .agents-spinner')).toBeNull()
+  })
+
+  it('counts approval-gated workers separately from failures', async () => {
+    const api = stubApi({
+      getRun: () => Promise.resolve(detail({ children: [child({ id: 'c1', phase: 'PendingApproval' })] })),
+    })
+    const el = await mount<RunDetailView>('agents-run-detail', { store: makeStore(api), api, runID: 'r5' })
+    await settle(el, 4)
+    const summary = text(el.querySelector('.agents-child-summary')!)
+    expect(summary).toContain('awaiting approval')
+    expect(summary).not.toContain('failed')
+  })
+})
+
+// "Where is it in the UI?" — with zero workers the fan-out section used to
+// render nothing at all, so "not configured", "model chose not to" and "feature
+// missing" were indistinguishable.
+describe('fan-out visibility with no workers', () => {
+  const detailNoKids = () => ({
+    id: 'r5', agent: 'scout', trigger: 'chat', class: 'interactive', phase: 'Succeeded',
+    inputTokens: 0, outputTokens: 0, usdMicros: 0, createdAt: new Date().toISOString(),
+    input: 'research it', steps: [] as unknown[], children: [] as unknown[],
+  })
+
+  async function mountWith(families: string[], steps: unknown[] = []) {
+    const api = stubApi({ getRun: () => Promise.resolve({ ...detailNoKids(), steps }) })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout', { tools: { interactive: { families } } })]
+    const el = await mount<RunDetailView>('agents-run-detail', { store, api, runID: 'r5' })
+    await settle(el, 4)
+    return el
+  }
+
+  it('stays quiet when the agent cannot fan out at all', async () => {
+    const el = await mountWith(['core', 'web'])
+    expect(text(el)).not.toContain('Child runs')
+  })
+
+  it('says so when fan-out was available but unused', async () => {
+    const el = await mountWith(['core', 'web', 'spawn'])
+    expect(text(el)).toContain('Child runs')
+    expect(text(el)).toContain('answered this request directly')
+  })
+
+  it('flags the broken case: spawn was called but produced no workers', async () => {
+    const el = await mountWith(['core', 'web', 'spawn'], [
+      { id: 's1', tool: 'spawn', outcome: 'error', error: 'limit', at: new Date().toISOString() },
+    ])
+    expect(text(el)).toContain('no worker runs were recorded')
+  })
+})
+
+// The complaint: open a running run and the view sits frozen — no steps, no
+// clock, nothing — until it suddenly completes. Runs publish an event when they
+// start and when they finish and nothing in between, so subscribing alone is not
+// enough; the view has to poll while the run is live.
+describe('live run detail', () => {
+  const base = (over: Record<string, unknown> = {}) => ({
+    id: 'r5', agent: 'scout', trigger: 'channel', class: 'interactive', phase: 'Running',
+    inputTokens: 0, outputTokens: 0, usdMicros: 0,
+    createdAt: new Date(Date.now() - 90_000).toISOString(),
+    startedAt: new Date(Date.now() - 90_000).toISOString(),
+    input: 'do the research', steps: [] as unknown[], children: [] as unknown[],
+    ...over,
+  })
+
+  it('shows a moving elapsed time instead of a dash while running', async () => {
+    const api = stubApi({ getRun: () => Promise.resolve(base()) })
+    const el = await mount<RunDetailView>('agents-run-detail', { store: makeStore(api), api, runID: 'r5' })
+    await settle(el, 4)
+    // 90s in: the duration cell must show real elapsed time, not "—".
+    expect(text(el)).toContain('1m')
+    expect(el.querySelector('.agents-elapsed')).toBeTruthy()
+  })
+
+  it('polls while the run is live and stops once it settles', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      let phase = 'Running'
+      const getRun = vi.fn().mockImplementation(() => Promise.resolve(base({ phase })))
+      const api = stubApi({ getRun })
+      const el = await mount<RunDetailView>('agents-run-detail', { store: makeStore(api), api, runID: 'r5' })
+      await settle(el, 4)
+      const afterMount = getRun.mock.calls.length
+
+      await vi.advanceTimersByTimeAsync(7000)
+      const whileLive = getRun.mock.calls.length
+      expect(whileLive).toBeGreaterThan(afterMount) // it polled
+
+      phase = 'Succeeded'
+      await vi.advanceTimersByTimeAsync(4000)
+      const atSettle = getRun.mock.calls.length
+      await vi.advanceTimersByTimeAsync(15000)
+      // Once terminal, polling stops — a finished run must not keep hitting the API.
+      expect(getRun.mock.calls.length).toBe(atSettle)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not poll a run that was already finished when opened', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    try {
+      const getRun = vi.fn().mockResolvedValue(base({ phase: 'Succeeded', durationMS: 1234 }))
+      const api = stubApi({ getRun })
+      const el = await mount<RunDetailView>('agents-run-detail', { store: makeStore(api), api, runID: 'r5' })
+      await settle(el, 4)
+      const n = getRun.mock.calls.length
+      await vi.advanceTimersByTimeAsync(20000)
+      expect(getRun.mock.calls.length).toBe(n)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

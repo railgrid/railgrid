@@ -45,8 +45,11 @@ func (s *Server) MCPHandler() http.Handler {
 				Version: "0.1.0",
 				Title:   "kedge agents provider",
 			}, &mcp.ServerOptions{
-				Instructions: "This MCP endpoint is the full configuration surface for the AI " +
-					"agents hosted in your kedge tenant workspace — everything the portal's " +
+				Instructions: "This MCP endpoint both RUNS and CONFIGURES the AI agents hosted in " +
+					"your kedge tenant workspace. To delegate work: run_agent(agent, task) hands an " +
+					"agent a task and returns its answer (pass wait for it inline, or poll get_run); " +
+					"get_run reads a run's answer, sources, tool steps and sub-agent runs; list_runs " +
+					"finds runs in flight. Everything else is configuration — everything the portal's " +
 					"settings screens can do. Agents: list_agents / get_agent / create_agent / " +
 					"update_agent / delete_agent (settings, prompts, autonomy, tool grants, " +
 					"channels, budgets, limits). Schedules: list_schedules / create_schedule / " +
@@ -171,7 +174,7 @@ type updateAgentInput struct {
 	TimeoutSeconds         *int32          `json:"timeoutSeconds,omitempty" jsonschema:"Wall-clock budget for one run in seconds; 0 uses the provider default"`
 	Delegates              *[]string       `json:"delegates,omitempty" jsonschema:"Names of other agents this agent may spawn as sub-agents; replaces the whole list"`
 	Channels               *[]channelInput `json:"channels,omitempty" jsonschema:"Messaging channel bindings (name + connectionRef + primary); replaces the whole list"`
-	InteractiveFamilies    *[]string       `json:"interactiveFamilies,omitempty" jsonschema:"Built-in tool families for interactive runs (core, web, github, mcp, files, edges); replaces the list, core is always kept"`
+	InteractiveFamilies    *[]string       `json:"interactiveFamilies,omitempty" jsonschema:"Built-in tool families for interactive runs (core, web, github, mcp, files, edges, spawn); replaces the list, core is always kept"`
 	BackgroundFamilies     *[]string       `json:"backgroundFamilies,omitempty" jsonschema:"Built-in tool families for background runs; replaces the list, core is always kept"`
 	InteractiveToolsets    *[]string       `json:"interactiveToolsets,omitempty" jsonschema:"Shared Toolset names linked for interactive runs; replaces the whole list"`
 	BackgroundToolsets     *[]string       `json:"backgroundToolsets,omitempty" jsonschema:"Shared Toolset names linked for background runs; replaces the whole list"`
@@ -272,8 +275,10 @@ type deleteScheduleOutput struct {
 
 func (s *Server) registerMCPTools(srv *mcp.Server, r *http.Request) {
 	// The rest of the configuration surface (triggers, toolsets, connections,
-	// credentials, agent lifecycle, discovery) lives in mcp_config.go.
+	// credentials, agent lifecycle, discovery) lives in mcp_config.go; running an
+	// agent and reading runs back live in mcp_runs.go.
 	s.registerConfigMCPTools(srv, r)
+	s.registerRunMCPTools(srv, r)
 
 	yes := true
 	no := false

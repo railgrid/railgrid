@@ -141,7 +141,7 @@ type createToolsetInput struct {
 	Name            string   `json:"name" jsonschema:"Lowercase toolset name, e.g. ops-tools"`
 	DisplayName     string   `json:"displayName,omitempty" jsonschema:"Human-readable name"`
 	Description     string   `json:"description,omitempty" jsonschema:"What this bundle is for"`
-	Families        []string `json:"families,omitempty" jsonschema:"Built-in tool families: core, web, github, mcp, files, edges"`
+	Families        []string `json:"families,omitempty" jsonschema:"Built-in tool families: core, web, github, mcp, files, edges, spawn"`
 	Connections     []string `json:"connections,omitempty" jsonschema:"Connection names whose tools this bundle grants"`
 	RequireApproval []string `json:"requireApproval,omitempty" jsonschema:"Tool-name patterns that must be approved before running; \"*\" gates everything"`
 }
@@ -213,6 +213,7 @@ var toolFamilyDocs = []toolFamilyInfo{
 	{"mcp", "Tools from any mcp Connection the agent is granted."},
 	{"files", "Read/write files in the agent's workspace."},
 	{"edges", "Kubernetes clusters and SSH servers connected as edges. Interactive runs only."},
+	{"spawn", "spawn/join: fan out to scoped workers (this agent on sub-tasks, fresh context, a subset of its other granted families) and collect their answers. The basis of a research pass; costs count against the agent's own budget."},
 }
 
 // --- run now ---

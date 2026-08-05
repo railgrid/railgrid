@@ -34,6 +34,13 @@ const (
 
 const projectEinoAssistantReductionContextTokens int64 = 12000
 
+// projectEinoAssistantCompactedToolCallPreamble keeps the rewritten tool-call
+// message non-empty. The OpenAI wire encoder drops an empty content field
+// entirely, and several OpenAI-compatible providers reject the resulting
+// assistant message with "expected a string, got null" — which would then fail
+// every subsequent request in the session, since the rewrite is durable.
+const projectEinoAssistantCompactedToolCallPreamble = "Applying workspace mutations."
+
 // projectEinoAssistantReductionMiddleware removes large historical workspace
 // mutation payloads before they force the more expensive session summarizer,
 // while retaining compact tool-result evidence for phase derivation and
@@ -89,7 +96,7 @@ func projectEinoAssistantRewriteWorkspaceMutations(
 		))
 	}
 	messages := make([]*schema.Message, 0, len(compactedResponses)+2)
-	messages = append(messages, schema.AssistantMessage("", compactedCalls))
+	messages = append(messages, schema.AssistantMessage(projectEinoAssistantCompactedToolCallPreamble, compactedCalls))
 	messages = append(messages, compactedResponses...)
 	evidence := schema.UserMessage(
 		projectEinoAssistantWorkspaceMutationEvidencePrefix + " " + strings.Join(summaries, "; ") + ". Treat these completed results as authoritative; reread only after a conflict, failed mutation, or later mutation.",

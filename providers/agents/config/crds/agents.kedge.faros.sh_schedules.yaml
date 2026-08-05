@@ -28,7 +28,7 @@ spec:
       type: string
     - jsonPath: .status.nextRun
       name: NextRun
-      type: date
+      type: string
     - jsonPath: .spec.suspend
       name: Suspended
       type: boolean

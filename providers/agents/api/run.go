@@ -125,9 +125,29 @@ type taskRun struct {
 	SourceName  string // schedule/trigger/connection that fired this run
 	ParentRunID string
 
+	// IdempotencyKey is the caller's de-duplication token for an API-invoked run.
+	// Carried here because executeTask rewrites the run record from scratch and
+	// would otherwise drop what the pre-write stored.
+	IdempotencyKey string
+
 	// NotifyChannel is the agent-channel role a paused/resumed background run
 	// delivers to (recorded in the checkpoint for resume delivery).
 	NotifyChannel string
+	// ReplyTarget pins the exact chat a channel conversation came from, so the
+	// answer goes back where the question was asked.
+	ReplyTarget string
+	// DeliveryKind marks a channel conversation ("channel") so a run that dies
+	// can be reported in the chat rather than to the agent's notify channel.
+	DeliveryKind string
+
+	// Callback, when set, is POSTed the run's outcome once it finishes. Delivery,
+	// not execution — consumed by the detached-start helpers. See api/callback.go.
+	Callback *runCallback
+
+	// Worker, when non-nil, marks this run as a spawned sub-agent worker and
+	// carries the constraints its parent imposed (depth, narrowed families,
+	// approval class, tool-turn budget). See api/spawn.go.
+	Worker *workerRun
 
 	// ApproveTool/ApproveArgs pre-authorize exactly one tool call — the resume
 	// path sets them after the user approved the gated call.
@@ -153,6 +173,22 @@ type taskRun struct {
 	OnTool      func(engine.ToolEvent)
 }
 
+// delivery describes where this run's answer should go, for the run record. A
+// worker or a delegated child reports to its parent in memory and has no channel
+// of its own, so it records none.
+func (r taskRun) delivery() *store.RunDelivery {
+	if r.Worker != nil || r.Trigger == agentsv1alpha1.RunTriggerDelegation {
+		return nil
+	}
+	if r.SourceName == "" && r.ReplyTarget == "" && r.NotifyChannel == "" {
+		return nil
+	}
+	return &store.RunDelivery{
+		SourceName: r.SourceName, ReplyTarget: r.ReplyTarget,
+		NotifyChannel: r.NotifyChannel, Kind: r.DeliveryKind,
+	}
+}
+
 // executeTask runs one agent turn against a task prompt, persisting the
 // transcript (including tool steps) and run record. It is the shared execution
 // path for chat, run-now, background fires, channel messages, and delegation.
@@ -165,7 +201,14 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		return runResult{}, err
 	}
 
-	model, err := s.buildChatModelCtx(ctx, run.Creds, agent)
+	// Workers resolve the "background" model purpose (falling back to chat), so a
+	// fan-out of ten sub-tasks can run on a cheap model while the parent — which
+	// does the synthesis — keeps the strong one.
+	purpose := llm.PurposeChat
+	if run.Worker != nil {
+		purpose = llm.PurposeBackground
+	}
+	model, err := s.buildModelForPurpose(ctx, run.Creds, agent, purpose)
 	if err != nil {
 		return runResult{}, err
 	}
@@ -205,11 +248,24 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 	if v := int(agent.Spec.Limits.MaxToolTurns); v > 0 {
 		maxIters = min(v, 32)
 	}
+	// A worker works one sub-task on a budget its parent chose, which is shorter
+	// than the agent's own per-run allowance.
+	if run.Worker != nil {
+		maxIters = run.Worker.MaxToolTurns
+	}
+
+	// Fold the session's older messages into a summary when replaying them all
+	// would crowd the model's window. Must happen BEFORE the turn is assembled —
+	// the point is to be under the limit when the request goes out.
+	modelName := s.modelNameForPurpose(ctx, run.Creds, agent, purpose)
+	s.maybeCompactSession(ctx, run, sessionID, modelName)
 
 	// Assemble the turn before persisting the task message — LoadRecentMessages
 	// has no notion of "current run", so appending first would replay the task
 	// into history and the model would see it twice.
-	msgs := s.assembleTurnCtx(ctx, scope, agent, sessionID, run.Task, run.Trigger, mcpInstructions)
+	// Derived from the toolset that was actually built, not from the grant: a
+	// depth-limited worker has no spawn tool and must not be told to fan out.
+	msgs := s.assembleTurnCtx(ctx, run, sessionID, mcpInstructions, hasToolNamed(toolset, "spawn"))
 
 	_ = s.store.AppendMessage(ctx, scope, store.Message{
 		ID: uuid.NewString(), AgentName: agent.Name, SessionID: sessionID, RunID: runID,
@@ -217,12 +273,21 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 	})
 	_ = s.store.SaveRun(ctx, scope, store.Run{
 		ID: runID, AgentName: agent.Name, SessionID: sessionID, Trigger: run.Trigger,
-		ParentRunID: run.ParentRunID,
-		Phase:       store.RunPhaseRunning, Input: run.Task, CreatedAt: now, UpdatedAt: now, StartedAt: &now,
+		ParentRunID: run.ParentRunID, IdempotencyKey: run.IdempotencyKey,
+		Delivery: run.delivery(),
+		Phase:    store.RunPhaseRunning, Input: run.Task, CreatedAt: now, UpdatedAt: now, StartedAt: &now,
 	})
-	s.publishRunEvent(scope, runID, agent.Name, run.Trigger, store.RunPhaseRunning)
+	s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseRunning})
 
-	res, err := s.engine.StreamTurnWithTools(ctx, model, msgs, toolset, maxIters, s.runCallbacks(ctx, run, sessionID))
+	cb := s.runCallbacks(ctx, run, sessionID)
+	// Periodic checkpoints make a long run recoverable: if this replica dies, the
+	// sweep (api/sweep.go) resumes from the last one instead of losing the work.
+	cb.OnCheckpoint = s.checkpointRecorder(ctx, run, sessionID)
+	res, err := s.engine.StreamTurnWithTools(ctx, model, msgs, toolset, engine.TurnConfig{
+		MaxIters:            maxIters,
+		ContextBudgetTokens: turnContextBudget(modelName),
+		CheckpointEvery:     checkpointEveryIterations,
+	}, cb)
 	end := time.Now().UTC()
 	if err != nil {
 		phase := store.RunPhaseFailed
@@ -231,16 +296,17 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		if ctx.Err() != nil {
 			phase = store.RunPhaseAborted
 		}
-		s.finishRun(ctx, scope, runID, phase, err.Error(), engine.Usage{}, 0, end)
-		s.publishRunEvent(scope, runID, agent.Name, run.Trigger, phase)
+		s.finishRun(ctx, scope, runID, runOutcome{Phase: phase, Message: err.Error()}, end)
+		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
 		return runResult{RunID: runID}, err
 	}
 
 	// Estimate cost from the catalog so budgets enforce dollars (not just
 	// tokens) and the Models dashboard can show spend. Cost is attributed to the
-	// agent's primary model; unknown models cost 0 rather than a fabricated
-	// number.
-	costMicros := llm.CostMicros(s.primaryModelName(ctx, run.Creds, agent), res.Usage.InputTokens, res.Usage.OutputTokens)
+	// model this run actually used — a worker on the cheap background model must
+	// not be billed at the chat model's rate; unknown models cost 0 rather than a
+	// fabricated number.
+	costMicros := llm.CostMicros(modelName, res.Usage.InputTokens, res.Usage.OutputTokens)
 	_, _ = s.store.AddUsage(ctx, scope, agent.Name, res.Usage.InputTokens, res.Usage.OutputTokens, costMicros, end, 30*24*time.Hour)
 
 	// Paused on an approval gate: persist the checkpoint and stop here — the
@@ -260,7 +326,7 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 			stored.UpdatedAt = end
 			_ = s.store.SaveRun(ctx, scope, stored)
 		}
-		s.publishRunEvent(scope, runID, agent.Name, run.Trigger, store.RunPhasePendingApproval)
+		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhasePendingApproval})
 		out := runResult{RunID: runID, Content: res.Content,
 			Pending: &pendingInfo{InboxID: res.Interrupt.RequestID, Tool: res.Interrupt.Tool, Args: res.Interrupt.Args}}
 		out.Usage.InputTokens = res.Usage.InputTokens
@@ -273,8 +339,16 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		ID: uuid.NewString(), AgentName: agent.Name, SessionID: sessionID, RunID: runID,
 		Role: "assistant", Content: res.Content, CreatedAt: end,
 	})
-	s.finishRun(ctx, scope, runID, store.RunPhaseSucceeded, "", res.Usage, costMicros, end)
-	s.publishRunEvent(scope, runID, agent.Name, run.Trigger, store.RunPhaseSucceeded)
+	// The answer goes on the run record too, so a programmatic reader (the parent
+	// of a spawned worker, GET /api/runs/{id}) finds the result where it found the
+	// phase instead of having to locate the session and dig out its last message.
+	body, sources := splitSources(res.Content)
+	fin := runOutcome{
+		Phase: store.RunPhaseSucceeded, Usage: res.Usage, CostMicros: costMicros,
+		Output: body, Sources: sources,
+	}
+	s.finishRun(ctx, scope, runID, fin, end)
+	s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseSucceeded})
 
 	out := runResult{RunID: runID, Content: res.Content}
 	out.Usage.InputTokens = res.Usage.InputTokens
@@ -307,12 +381,25 @@ func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id id
 	ctx := context.WithoutCancel(r.Context())
 	_ = s.store.SaveRun(ctx, scope, store.Run{
 		ID: runID, AgentName: agent.Name, SessionID: tr.SessionID, Trigger: tr.Trigger,
-		Phase: store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
+		IdempotencyKey: tr.IdempotencyKey,
+		Phase:          store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
 	})
 	go func() {
 		res, err := s.executeTask(ctx, tr)
 		if err != nil || res.Pending != nil {
-			return // outcome is on the run record; approvals resume separately
+			// The outcome is on the run record (approvals resume separately), but a
+			// caller that asked to be told must hear about a failure or a pause too —
+			// otherwise it waits forever for a callback that never comes.
+			s.deliverRunCallback(ctx, scope, runID, tr.Callback)
+			return
+		}
+		// An API-invoked run answers its caller, which polls, waits, or named a
+		// callback. Pushing to the agent's channel as well would message the user
+		// about work they did not ask to hear about; run-now for a schedule/trigger
+		// is the opposite — its whole point is the channel delivery.
+		if tr.Trigger == agentsv1alpha1.RunTriggerAPI {
+			s.deliverRunCallback(ctx, scope, runID, tr.Callback)
+			return
 		}
 		s.deliverToNotifyChannel(ctx, c, agent, tr.NotifyChannel, tr.SourceName, res.Content)
 	}()
@@ -355,56 +442,135 @@ func (s *Server) runCallbacks(ctx context.Context, run taskRun, sessionID string
 	}
 }
 
-// finishRun stamps a run's terminal phase, usage, and timestamps, and clears
-// any checkpoint.
-func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string, phase store.RunPhase, msg string, usage engine.Usage, costMicros int64, end time.Time) {
+// runOutcome is what a run ended with. Message carries the failure reason (or
+// "" on success); Output/Sources carry the answer, so a caller reading the run
+// record gets the result and not just the phase.
+type runOutcome struct {
+	Phase      store.RunPhase
+	Message    string
+	Usage      engine.Usage
+	CostMicros int64
+	Output     string
+	Sources    []string
+}
+
+// finishRun stamps a run's terminal phase, result, usage, and timestamps, and
+// clears any checkpoint.
+func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time) {
 	stored, err := s.store.GetRun(ctx, scope, runID)
 	if err != nil {
 		return
 	}
-	stored.Phase = phase
-	stored.Message = msg
+	stored.Phase = out.Phase
+	stored.Message = out.Message
 	stored.Checkpoint = nil
-	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
-		stored.InputTokens = usage.InputTokens
-		stored.OutputTokens = usage.OutputTokens
+	if out.Output != "" {
+		stored.Output = safeTruncate(out.Output, maxStoredOutput)
 	}
-	if costMicros > 0 {
-		stored.USDMicros = costMicros
+	if len(out.Sources) > 0 {
+		stored.Sources = out.Sources
+	}
+	if out.Usage.InputTokens > 0 || out.Usage.OutputTokens > 0 {
+		stored.InputTokens = out.Usage.InputTokens
+		stored.OutputTokens = out.Usage.OutputTokens
+	}
+	if out.CostMicros > 0 {
+		stored.USDMicros = out.CostMicros
 	}
 	stored.UpdatedAt = end
 	stored.FinishedAt = &end
 	_ = s.store.SaveRun(ctx, scope, stored)
 }
 
+// runEvent is one run lifecycle change pushed to /api/events subscribers. A
+// struct rather than positional arguments: id, agent, trigger and parentRunID
+// are all strings, and transposing two of them would be invisible at the call
+// site and wrong on the wire.
+type runEvent struct {
+	ID      string
+	Agent   string
+	Trigger string
+	// ParentRunID lets a client watching a run recognize a child it has not seen
+	// before. Without it the run-detail view could only refresh for children it
+	// already knew about, so a worker spawned after the page opened stayed
+	// invisible until a manual reload.
+	ParentRunID string
+	Phase       store.RunPhase
+}
+
 // publishRunEvent pushes a run lifecycle change to /api/events subscribers.
-func (s *Server) publishRunEvent(scope store.Scope, runID, agent, trigger string, phase store.RunPhase) {
-	s.events.publish(store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}, "run", map[string]any{
-		"id": runID, "agent": agent, "trigger": trigger, "phase": string(phase),
-	})
+func (s *Server) publishRunEvent(scope store.Scope, ev runEvent) {
+	payload := map[string]any{
+		"id": ev.ID, "agent": ev.Agent, "trigger": ev.Trigger, "phase": string(ev.Phase),
+	}
+	if ev.ParentRunID != "" {
+		payload["parentRunID"] = ev.ParentRunID
+	}
+	s.events.publish(store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}, "run", payload)
+}
+
+// memoryNoteClip bounds one injected note's body, and memoryNoteLimit how many
+// notes are injected (spec.memory.maxNotes, capped). Shared with the compaction
+// estimator so it measures the same injection this assembles.
+const memoryNoteClip = 500
+
+func memoryNoteLimit(agent *agentsv1alpha1.Agent) int {
+	if v := int(agent.Spec.Memory.MaxNotes); v > 0 {
+		return min(v, 100)
+	}
+	return 20
 }
 
 // assembleTurnCtx builds the message list (system prompt + recent history +
 // task) using a context rather than an *http.Request, so background callers
 // (scheduler) can reuse it.
-func (s *Server) assembleTurnCtx(ctx context.Context, scope store.Scope, agent *agentsv1alpha1.Agent, sessionID, task, trigger, mcpInstructions string) []engine.Message {
+// hasToolNamed reports whether the assembled toolset contains a tool.
+func hasToolNamed(ts []engine.Tool, name string) bool {
+	for _, t := range ts {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) assembleTurnCtx(ctx context.Context, run taskRun, sessionID, mcpInstructions string, fanOut bool) []engine.Message {
+	scope, agent, task, trigger := run.Scope, run.Agent, run.Task, run.Trigger
 	var msgs []engine.Message
+	// A worker gets a fixed sub-agent preamble above the agent's persona: it is
+	// the same agent, but answering one scoped question as data rather than
+	// holding a conversation.
+	if run.Worker != nil {
+		msgs = append(msgs, engine.Message{Role: engine.RoleSystem,
+			Content: workerPreamble(agent.Name, run.Worker.ParentTask)})
+	}
 	if sp := agent.Spec.SystemPrompt; sp != "" {
 		msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: sp})
+	}
+	if fanOut && run.Worker == nil {
+		msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: fanOutGuidance})
+	}
+	if run.Worker != nil {
+		if instr := strings.TrimSpace(run.Worker.Instructions); instr != "" {
+			msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: "Guidance for this sub-task:\n\n" + instr})
+		}
+		// A worker runs on a fresh session with no history, and gets no memory
+		// injection: the parent owns recall and synthesis, and ten workers each
+		// carrying the agent's whole note pile is cost without benefit.
+		if mi := strings.TrimSpace(mcpInstructions); mi != "" {
+			msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: "Guidance from connected tools/services:\n\n" + mi})
+		}
+		return append(msgs, engine.Message{Role: engine.RoleUser, Content: task})
 	}
 	// Long-term memory: auto-inject the agent's saved notes so recall does not
 	// depend on the model remembering to call memory_list. spec.memory.enabled
 	// defaults to true; maxNotes bounds the injection.
 	if agent.Spec.Memory.Enabled == nil || *agent.Spec.Memory.Enabled {
-		maxNotes := 20
-		if v := int(agent.Spec.Memory.MaxNotes); v > 0 {
-			maxNotes = min(v, 100)
-		}
-		if notes, err := s.store.ListMemories(ctx, scope, maxNotes); err == nil && len(notes) > 0 {
+		if notes, err := s.store.ListMemories(ctx, scope, memoryNoteLimit(agent)); err == nil && len(notes) > 0 {
 			var b strings.Builder
 			b.WriteString("Long-term notes you saved earlier (use memory_save to add or update):\n")
 			for _, n := range notes {
-				fmt.Fprintf(&b, "- %s: %s\n", n.Title, safeTruncate(n.Body, 500))
+				fmt.Fprintf(&b, "- %s: %s\n", n.Title, safeTruncate(n.Body, memoryNoteClip))
 			}
 			msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: b.String()})
 		}
@@ -416,7 +582,14 @@ func (s *Server) assembleTurnCtx(ctx context.Context, scope store.Scope, agent *
 	if mi := strings.TrimSpace(mcpInstructions); mi != "" {
 		msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: "Guidance from connected tools/services:\n\n" + mi})
 	}
-	history, _ := s.store.LoadRecentMessages(ctx, scope, sessionID, chatHistoryLimit)
+	// History, with any compaction summary standing in for the older messages it
+	// covers (see api/compact.go). Without compaction this is just the last-N
+	// window it always was.
+	sc := s.loadSessionContext(ctx, scope, sessionID, chatHistoryLimit)
+	if sc.Summary != nil {
+		msgs = append(msgs, summaryMessage(*sc.Summary))
+	}
+	history := sc.Messages
 	for _, m := range history {
 		switch m.Role {
 		case "assistant":
@@ -438,7 +611,7 @@ func (s *Server) assembleTurnCtx(ctx context.Context, scope store.Scope, agent *
 	// schedule can see what it already posted and not repeat itself. That pile
 	// can outweigh the one persona line at the top, so re-assert it after
 	// history to keep the agent in character.
-	if sp := agent.Spec.SystemPrompt; sp != "" && !isInteractive(trigger) && len(history) > 0 {
+	if sp := agent.Spec.SystemPrompt; sp != "" && !isInteractive(trigger) && (len(history) > 0 || sc.Summary != nil) {
 		msgs = append(msgs, engine.Message{Role: engine.RoleSystem, Content: "Reminder — your persona and standing instructions still apply to this reply:\n\n" + sp})
 	}
 	msgs = append(msgs, engine.Message{Role: engine.RoleUser, Content: task})

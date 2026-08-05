@@ -181,6 +181,10 @@ export interface RunStep {
 
 export interface RunDetail extends RunSummary {
   input?: string
+  // The run's answer, kept on the run record so a reader doesn't have to go to
+  // the session transcript for it.
+  output?: string
+  sources?: string[]
   pending?: { inboxID: string; tool: string; args: string }
   steps: RunStep[]
   children?: RunSummary[]
@@ -314,6 +318,10 @@ export interface AgentCreate {
   budgetTokens?: number
   budgetUSD?: string
   channels?: AgentChannel[]
+  // Tool families granted at creation, so a preset hands over a usable agent
+  // instead of one the user still has to wire up.
+  interactiveFamilies?: string[]
+  backgroundFamilies?: string[]
 }
 
 // AgentPatch is the pointer-patch DTO of PUT /api/agents/{name}: every key is

@@ -315,43 +315,52 @@ kedge-provider-agents .agents-dialog-ic {
   background: var(--color-accent-subtle, rgba(109, 79, 224, 0.12)); color: var(--color-accent, #6d4fe0);
 }
 
-/* --- activity: filters, phase chips, approvals --- */
-kedge-provider-agents .agents-filters { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
-kedge-provider-agents .agents-filter { display: flex; flex-direction: column; gap: 3px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-text-muted, #889); }
-kedge-provider-agents .agents-filter .agents-seg button { text-transform: none; letter-spacing: 0; }
-kedge-provider-agents .agents-filter select { font-size: 13px; text-transform: none; letter-spacing: 0; color: var(--color-text-primary, inherit); }
-kedge-provider-agents .agents-filter-refresh { margin-left: auto; font-size: 12.5px; }
-kedge-provider-agents .agents-phase {
-  padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap;
-  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.06)); color: var(--color-text-secondary, currentColor);
+/* --- capability toggles (create wizard) --- */
+kedge-provider-agents .agents-cap-fs { margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 8px; }
+kedge-provider-agents .agents-cap-fs legend {
+  padding: 0; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--color-text-muted, #889);
 }
-kedge-provider-agents .agents-phase-running { background: var(--color-accent-subtle, rgba(109, 79, 224, 0.14)); color: var(--color-accent, #6d4fe0); }
-kedge-provider-agents .agents-phase-ok { background: var(--color-success-surface, rgba(16, 185, 129, 0.14)); color: var(--color-success, #10b981); }
-kedge-provider-agents .agents-phase-failed { background: var(--color-danger-surface, rgba(239, 68, 68, 0.12)); color: var(--color-danger, #ef4444); }
-kedge-provider-agents .agents-phase-approval { background: var(--color-warning-surface, rgba(234, 179, 8, 0.18)); color: var(--color-warning, #d97706); }
-kedge-provider-agents .agents-approvals {
-  display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 13px;
-  background: var(--color-warning-surface, rgba(234, 179, 8, 0.1));
-  border: 1px solid var(--color-warning-border, rgba(234, 179, 8, 0.35));
+kedge-provider-agents .agents-cap {
+  display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 9px; cursor: pointer;
+  font-size: 13px; border: 1px solid var(--color-border-default, rgba(0, 0, 0, 0.12));
 }
-kedge-provider-agents .agents-approvals h4 { margin: 0; display: inline-flex; align-items: center; gap: 6px; color: var(--color-warning, #d97706); }
-kedge-provider-agents .agents-approval-row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; justify-content: space-between; }
-kedge-provider-agents .agents-approval-body { flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-kedge-provider-agents .agents-approval-prompt { font-size: 13.5px; overflow-wrap: anywhere; }
-kedge-provider-agents .agents-approval-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
-kedge-provider-agents .agents-approval-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+kedge-provider-agents .agents-cap:hover { background: var(--color-surface-hover, rgba(0, 0, 0, 0.04)); }
+kedge-provider-agents .agents-cap:has(input:checked) {
+  border-color: var(--color-accent, #6d4fe0); background: var(--color-accent-subtle, rgba(109, 79, 224, 0.1));
+}
+kedge-provider-agents .agents-cap input { flex: none; }
+kedge-provider-agents .agents-cap strong { font-weight: 620; }
+kedge-provider-agents .agents-cap .muted { font-size: 12px; }
 
-/* --- run detail --- */
-kedge-provider-agents .agents-runmeta { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
-kedge-provider-agents .agents-runmeta-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-kedge-provider-agents .agents-runmeta-k { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted, #889); }
-kedge-provider-agents .agents-runmeta-v { font-size: 13px; overflow-wrap: anywhere; }
-kedge-provider-agents .agents-runinput { display: flex; flex-direction: column; gap: 4px; }
-kedge-provider-agents .agents-runinput pre, kedge-provider-agents .agents-kv pre, kedge-provider-agents .agents-approval-args {
-  margin: 0; padding: 9px 11px; border-radius: 9px; font-family: var(--agents-mono); font-size: 11.5px;
-  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto;
-  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.05)); color: var(--color-text-secondary, inherit);
+/* Inline caution inside a fieldset — a config that is valid but cannot work. */
+kedge-provider-agents .agents-warn-inline {
+  display: flex; align-items: flex-start; gap: 6px; margin-top: 8px; padding: 7px 9px; border-radius: 8px;
+  background: var(--color-warning-surface, rgba(234, 179, 8, 0.14));
+  border: 1px solid var(--color-warning-border, rgba(234, 179, 8, 0.35));
+  color: var(--color-warning-text, inherit);
 }
+
+/* Live tally above a run's children: what the fan-out is doing right now. */
+kedge-provider-agents .agents-child-summary {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  margin: 0 0 10px; font-size: 12.5px; color: var(--color-text-secondary, inherit);
+}
+kedge-provider-agents .agents-child-summary.is-live { color: var(--color-text-primary, inherit); font-weight: 550; }
+kedge-provider-agents .agents-spinner {
+  width: 11px; height: 11px; flex: none; border-radius: 50%;
+  border: 2px solid var(--color-accent-subtle, rgba(109, 79, 224, 0.25));
+  border-top-color: var(--color-accent, #6d4fe0);
+  animation: agents-spin 0.8s linear infinite;
+}
+@keyframes agents-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  kedge-provider-agents .agents-spinner { animation: none; }
+}
+
+kedge-provider-agents .agents-runsources { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
+kedge-provider-agents .agents-runsources ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+kedge-provider-agents .agents-runsources a { font-size: 12px; overflow-wrap: anywhere; }
 kedge-provider-agents .agents-kv pre.err { color: var(--color-danger, #ef4444); }
 kedge-provider-agents .agents-kv { display: flex; flex-direction: column; gap: 3px; }
 kedge-provider-agents .agents-kv > span { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-text-muted, #889); }
@@ -534,6 +543,14 @@ kedge-provider-agents .agents-warn-banner {
   background: var(--color-warning-surface, rgba(234, 179, 8, 0.14)); color: var(--color-warning-text, inherit);
   border: 1px solid var(--color-warning-border, rgba(234, 179, 8, 0.35));
 }
+/* A run still working with nobody attached — informational, not a warning. */
+kedge-provider-agents .agents-orphan-banner {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  font-size: 13px; padding: 8px 12px; border-radius: 8px;
+  background: var(--color-accent-subtle, rgba(109, 79, 224, 0.1)); color: var(--color-text-secondary, inherit);
+  border: 1px solid var(--color-accent-border, rgba(109, 79, 224, 0.3));
+}
+kedge-provider-agents .agents-orphan-text { flex: 1 1 220px; min-width: 0; }
 
 /* --- agent config: tool grants + channel editor --- */
 kedge-provider-agents .agents-wire-fs { border: 1px solid var(--color-border-default, #d9e0ec); border-radius: 10px; padding: 11px 13px; display: flex; flex-direction: column; gap: 7px; }

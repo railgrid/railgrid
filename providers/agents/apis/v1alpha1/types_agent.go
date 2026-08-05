@@ -228,7 +228,9 @@ type AgentToolPolicy struct {
 // to a trigger class.
 type ToolGrant struct {
 	// Families names built-in tool families to enable: "core", "web",
-	// "github", "mcp", "files", "edges".
+	// "github", "mcp", "files", "edges", "spawn". "spawn" lets a run fan out to
+	// scoped workers (the same agent on sub-tasks, with a subset of this grant)
+	// and join their answers — the basis of a research pass.
 	// +optional
 	Families []string `json:"families,omitempty"`
 
@@ -275,6 +277,20 @@ type AgentLimits struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
+
+	// MaxSpawnsPerRun caps how many scoped workers one run may start with the
+	// "spawn" tool. Zero uses the provider default (10); the provider caps it at
+	// 20 regardless.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxSpawnsPerRun int32 `json:"maxSpawnsPerRun,omitempty"`
+
+	// MaxConcurrentSpawns caps how many spawned workers execute at the same
+	// time; the rest queue. Zero uses the provider default (4); the provider caps
+	// it at 8 regardless.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxConcurrentSpawns int32 `json:"maxConcurrentSpawns,omitempty"`
 }
 
 // AgentBudget caps spend over a rolling window.

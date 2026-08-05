@@ -151,3 +151,13 @@ func (r *runRegistry) cancel(runID string) bool {
 	}
 	return ok
 }
+
+// has reports whether a run is executing on THIS replica. The recovery sweep
+// uses it to leave live work alone: a run can sit inside one slow tool call for
+// far longer than the staleness grace period without being stranded.
+func (r *runRegistry) has(runID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.m[runID]
+	return ok
+}

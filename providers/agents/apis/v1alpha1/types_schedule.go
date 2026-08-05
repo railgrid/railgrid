@@ -40,7 +40,7 @@ const (
 // +kubebuilder:printcolumn:name="Agent",type=string,JSONPath=".spec.agentRef"
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=".spec.type"
 // +kubebuilder:printcolumn:name="Schedule",type=string,JSONPath=".spec.schedule"
-// +kubebuilder:printcolumn:name="NextRun",type=date,JSONPath=".status.nextRun"
+// +kubebuilder:printcolumn:name="NextRun",type=string,JSONPath=".status.nextRun"
 // +kubebuilder:printcolumn:name="Suspended",type=boolean,JSONPath=".spec.suspend"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 

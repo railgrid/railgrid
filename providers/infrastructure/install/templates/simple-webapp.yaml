@@ -142,6 +142,13 @@ spec:
   # loads the platform preview-console plugin when trusted keys are installed.
   # A missing plugin/config fails open and leaves the ordinary preview intact.
   development:
+    # Starter source new projects are seeded from: a single-app Vite
+    # hello-world honoring the platform contract (PORT, 0.0.0.0, dev+start
+    # scripts). Tag-locked — bump this ref together with the sampleValues
+    # image tag. Without this block a new project gets an EMPTY sandbox.
+    scaffold:
+      repository: https://github.com/faroshq/kedge-scaffold-simple-webapp
+      ref: v0.1.2
     components:
       app:
         workspacePath: .

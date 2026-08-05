@@ -1,0 +1,758 @@
+/* Vibe Studio — namespaced under the custom element tag (light DOM: the
+   portal's :root variables cascade in, so theming is inherited).
+
+   Two voices, one page: the conversation is soft (rounded bubbles, sentence
+   case, the portal's sans); the machine's work is precise (the build ledger —
+   monospace rows, hairline spine, real durations). Everything else stays
+   quiet so those two registers carry the identity. */
+
+/* Full-bleed provider: the portal frame gives us the whole content area
+   (overflow hidden, no padding). Home/wizard views self-center to a readable
+   measure; the studio uses the full width. */
+kedge-provider-vibe-studio {
+  display: block;
+  height: 100%;
+  padding: 1rem 1.25rem;
+  box-sizing: border-box;
+  overflow-y: auto;
+  font-family: var(--font-sans, system-ui, sans-serif);
+  color: var(--text-1, #1a1a1a);
+  --vibe-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --vibe-accent: var(--accent-1, #4457ff);
+  --vibe-border: var(--border-1, #e2e4ec);
+  --vibe-surface: var(--surface-1, #fff);
+  --vibe-surface-2: var(--surface-2, #f1f2f7);
+  --vibe-muted: var(--text-2, #5b6070);
+}
+
+/* Every view uses the full provider canvas. */
+kedge-provider-vibe-studio .vibe-shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+kedge-provider-vibe-studio .vibe-main {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── header ─────────────────────────────────────────────────────────── */
+
+kedge-provider-vibe-studio .vibe-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+kedge-provider-vibe-studio .vibe-head h1 {
+  font-size: 1.15rem;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+
+kedge-provider-vibe-studio .head-status {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--vibe-muted);
+}
+
+kedge-provider-vibe-studio .head-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+kedge-provider-vibe-studio .head-dot.ok { background: #2e9e5b; }
+kedge-provider-vibe-studio .head-dot.bad { background: #c8402e; }
+kedge-provider-vibe-studio .head-dot.wait { background: #d9a514; }
+
+kedge-provider-vibe-studio .head-link {
+  color: var(--vibe-accent);
+  text-decoration: none;
+}
+
+kedge-provider-vibe-studio .phase-chip {
+  font-size: 0.72rem;
+  padding: 0.12rem 0.6rem;
+  border-radius: 999px;
+  background: var(--vibe-surface-2);
+  border: 1px solid var(--vibe-border);
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+kedge-provider-vibe-studio .vibe-error {
+  background: #fdf1f1;
+  border: 1px solid #e5b5b5;
+  color: #8c1d1d;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+}
+
+/* ── shared chrome ──────────────────────────────────────────────────── */
+
+kedge-provider-vibe-studio .panel {
+  background: var(--vibe-surface);
+  border: 1px solid var(--vibe-border);
+  border-radius: 12px;
+  padding: 1.25rem;
+}
+
+kedge-provider-vibe-studio .panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+}
+
+kedge-provider-vibe-studio .muted { color: var(--vibe-muted); font-size: 0.9rem; }
+kedge-provider-vibe-studio .pad { padding: 1rem; }
+
+kedge-provider-vibe-studio textarea,
+kedge-provider-vibe-studio input[type='text'] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--vibe-border);
+  border-radius: 10px;
+  font: inherit;
+  background: var(--vibe-surface);
+  color: inherit;
+  margin: 0.5rem 0;
+  resize: none;
+}
+
+kedge-provider-vibe-studio textarea:focus-visible,
+kedge-provider-vibe-studio input[type='text']:focus-visible,
+kedge-provider-vibe-studio button:focus-visible {
+  outline: 2px solid var(--vibe-accent);
+  outline-offset: 1px;
+}
+
+kedge-provider-vibe-studio button {
+  padding: 0.5rem 1.1rem;
+  border-radius: 10px;
+  border: none;
+  background: var(--vibe-accent);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+kedge-provider-vibe-studio button:disabled { opacity: 0.5; cursor: default; }
+
+kedge-provider-vibe-studio button.ghost,
+kedge-provider-vibe-studio .btnlike {
+  background: transparent;
+  color: inherit;
+  border: 1px solid var(--vibe-border);
+  padding: 0.3rem 0.7rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+
+kedge-provider-vibe-studio .row { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem; }
+kedge-provider-vibe-studio .row.end { justify-content: flex-end; }
+kedge-provider-vibe-studio .row input[type='text'] { flex: 1; margin: 0; }
+
+kedge-provider-vibe-studio .spinner {
+  width: 22px;
+  height: 22px;
+  border: 2.5px solid var(--vibe-border);
+  border-top-color: var(--vibe-accent);
+  border-radius: 50%;
+  animation: vibe-spin 0.8s linear infinite;
+}
+
+kedge-provider-vibe-studio .spinner.tiny { width: 12px; height: 12px; border-width: 2px; }
+
+@keyframes vibe-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  kedge-provider-vibe-studio .spinner { animation-duration: 2.4s; }
+}
+
+kedge-provider-vibe-studio .center-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 2.5rem 1.25rem;
+}
+
+/* ── home ───────────────────────────────────────────────────────────── */
+
+kedge-provider-vibe-studio .section-label {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--vibe-muted);
+  margin: 1.5rem 0 0.6rem;
+}
+
+kedge-provider-vibe-studio .project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 0.75rem;
+}
+
+kedge-provider-vibe-studio .project-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  align-items: flex-start;
+  text-align: left;
+  background: var(--vibe-surface);
+  border: 1px solid var(--vibe-border);
+  border-radius: 12px;
+  padding: 0.9rem 1rem;
+  color: inherit;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+kedge-provider-vibe-studio .project-card:hover {
+  border-color: var(--vibe-accent);
+  transform: translateY(-1px);
+}
+
+kedge-provider-vibe-studio .project-title {
+  font-weight: 600;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+kedge-provider-vibe-studio .project-meta {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  font-size: 0.8rem;
+  flex-wrap: wrap;
+}
+
+kedge-provider-vibe-studio .project-live {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: #2e9e5b;
+}
+
+/* ── models menu + pickers ──────────────────────────────────────────── */
+
+kedge-provider-vibe-studio .home-tabs {
+  border-bottom: 1px solid var(--vibe-border);
+  padding: 0 0 0.5rem;
+  margin-bottom: 1rem;
+}
+
+kedge-provider-vibe-studio .nav-hint {
+  font-size: 0.78rem;
+  color: var(--vibe-muted);
+  margin-left: 0.5rem;
+}
+
+kedge-provider-vibe-studio .model-form .field {
+  display: grid;
+  grid-template-columns: 8rem 1fr;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.4rem 0;
+}
+
+kedge-provider-vibe-studio .model-form .field span {
+  font-size: 0.85rem;
+  color: var(--vibe-muted);
+}
+
+kedge-provider-vibe-studio .model-form .field input { margin: 0; }
+
+kedge-provider-vibe-studio .chat-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0.9rem 0.7rem;
+  font-size: 0.78rem;
+}
+
+kedge-provider-vibe-studio .model-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+kedge-provider-vibe-studio select {
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.2rem 0.4rem;
+  border-radius: 8px;
+  border: 1px solid var(--vibe-border);
+  background: var(--vibe-surface);
+  color: inherit;
+}
+
+/* ── resource table (kedge portal idiom) ────────────────────────────── */
+
+kedge-provider-vibe-studio table.res-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--vibe-surface);
+  border: 1px solid var(--vibe-border);
+  border-radius: 12px;
+  overflow: hidden;
+  font-size: 0.88rem;
+}
+
+kedge-provider-vibe-studio .res-table th {
+  text-align: left;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--vibe-muted);
+  font-weight: 600;
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid var(--vibe-border);
+}
+
+kedge-provider-vibe-studio .res-table td {
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid var(--vibe-border);
+  vertical-align: middle;
+}
+
+kedge-provider-vibe-studio .res-table tbody tr:last-child td { border-bottom: none; }
+
+kedge-provider-vibe-studio .res-row { cursor: pointer; }
+kedge-provider-vibe-studio .res-row:hover { background: var(--vibe-surface-2); }
+kedge-provider-vibe-studio .res-row.stale { opacity: 0.6; }
+
+kedge-provider-vibe-studio .res-name { font-weight: 600; }
+kedge-provider-vibe-studio .res-sub { font-weight: 400; font-size: 0.75rem; color: var(--vibe-muted); }
+
+kedge-provider-vibe-studio .res-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
+kedge-provider-vibe-studio .res-actions .ghost { margin-left: 0.35rem; }
+kedge-provider-vibe-studio .ghost.danger { color: #a82c2c; border-color: #e0b4b4; }
+kedge-provider-vibe-studio .ghost.danger:hover { background: #fdf1f1; }
+
+kedge-provider-vibe-studio .status-badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  padding: 0.12rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--vibe-border);
+  background: var(--vibe-surface-2);
+}
+
+kedge-provider-vibe-studio .status-badge.ok { background: #e6f6ec; border-color: #b5dfc4; color: #1d6b3c; }
+kedge-provider-vibe-studio .status-badge.warn { background: #fdf6e3; border-color: #e8d49a; color: #7a5d10; }
+
+/* ── wizard ─────────────────────────────────────────────────────────── */
+
+kedge-provider-vibe-studio fieldset.question {
+  border: 1px solid var(--vibe-border);
+  border-radius: 10px;
+  margin: 0.75rem 0;
+  padding: 0.75rem 1rem;
+}
+
+kedge-provider-vibe-studio .option { display: block; padding: 0.25rem 0; }
+kedge-provider-vibe-studio .rec { color: var(--vibe-accent); font-size: 0.8rem; }
+kedge-provider-vibe-studio .custom-text { width: auto; margin-left: 0.4rem; }
+
+kedge-provider-vibe-studio dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  margin: 0.75rem 0;
+}
+
+kedge-provider-vibe-studio dt { font-weight: 600; font-size: 0.85rem; color: var(--vibe-muted); }
+kedge-provider-vibe-studio dd { margin: 0; font-size: 0.9rem; overflow-wrap: anywhere; }
+
+/* ── checkpoints ────────────────────────────────────────────────────── */
+
+kedge-provider-vibe-studio ul.checkpoints { list-style: none; margin: 0.5rem 0; padding: 0; }
+
+kedge-provider-vibe-studio .cp {
+  display: grid;
+  grid-template-columns: 18px max-content 1fr;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.35rem 0;
+}
+
+kedge-provider-vibe-studio .cp-icon { font-size: 0.8rem; text-align: center; }
+kedge-provider-vibe-studio .cp-icon.ok { color: #2e9e5b; }
+kedge-provider-vibe-studio .cp-icon.bad { color: #c8402e; }
+kedge-provider-vibe-studio .cp-icon.warn { color: #d9a514; }
+kedge-provider-vibe-studio .cp-icon.idle { color: var(--vibe-muted); }
+kedge-provider-vibe-studio .cp-name { font-weight: 600; font-size: 0.85rem; }
+kedge-provider-vibe-studio .cp-reason { font-size: 0.8rem; }
+
+/* ── studio layout ──────────────────────────────────────────────────── */
+
+kedge-provider-vibe-studio .studio-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, 34rem) 1fr;
+  gap: 1rem;
+  align-items: stretch;
+  height: 100%;
+  min-height: 480px;
+}
+
+@media (max-width: 900px) {
+  kedge-provider-vibe-studio .studio-grid { grid-template-columns: 1fr; height: auto; }
+  kedge-provider-vibe-studio .chat-pane { height: 60vh; }
+  kedge-provider-vibe-studio .side-pane { height: 70vh; }
+}
+
+kedge-provider-vibe-studio .chat-pane,
+kedge-provider-vibe-studio .side-pane {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ── chat ───────────────────────────────────────────────────────────── */
+
+kedge-provider-vibe-studio .chat-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+
+kedge-provider-vibe-studio .chat-empty { margin: auto; text-align: center; max-width: 34ch; }
+
+kedge-provider-vibe-studio .bubble-row { display: flex; flex-direction: column; align-items: flex-start; }
+kedge-provider-vibe-studio .bubble-row.user { align-items: flex-end; }
+
+kedge-provider-vibe-studio .bubble {
+  max-width: 88%;
+  padding: 0.55rem 0.85rem;
+  border-radius: 14px;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+kedge-provider-vibe-studio .bubble-row.user .bubble {
+  background: var(--vibe-accent);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+kedge-provider-vibe-studio .bubble-row.assistant .bubble {
+  background: var(--vibe-surface-2);
+  border-bottom-left-radius: 4px;
+}
+
+kedge-provider-vibe-studio .stamp {
+  font-size: 0.68rem;
+  color: var(--vibe-muted);
+  margin-top: 0.15rem;
+  padding: 0 0.3rem;
+}
+
+kedge-provider-vibe-studio .bubble pre.code {
+  background: var(--vibe-surface);
+  border: 1px solid var(--vibe-border);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  margin: 0.4rem 0;
+  font-family: var(--vibe-mono);
+  font-size: 0.78rem;
+  overflow-x: auto;
+}
+
+kedge-provider-vibe-studio .bubble code {
+  background: rgba(0, 0, 0, 0.07);
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+  font-family: var(--vibe-mono);
+  font-size: 0.85em;
+}
+
+kedge-provider-vibe-studio .bubble-row.user .bubble code { background: rgba(255, 255, 255, 0.2); }
+
+/* ── the build ledger ───────────────────────────────────────────────── */
+
+kedge-provider-vibe-studio .ledger {
+  align-self: stretch;
+  margin: 0.1rem 0 0.1rem 0.25rem;
+  border-left: 2px solid var(--vibe-border);
+  padding-left: 0.85rem;
+  font-family: var(--vibe-mono);
+}
+
+kedge-provider-vibe-studio .ledger summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--vibe-muted);
+  user-select: none;
+  list-style: none;
+}
+
+kedge-provider-vibe-studio .ledger summary::-webkit-details-marker { display: none; }
+
+kedge-provider-vibe-studio .ledger[open] summary { color: inherit; }
+
+kedge-provider-vibe-studio .ledger ul { list-style: none; margin: 0.35rem 0 0; padding: 0; }
+
+kedge-provider-vibe-studio .ledger-row {
+  display: grid;
+  grid-template-columns: 14px minmax(7ch, max-content) 1fr max-content;
+  gap: 0.6rem;
+  font-size: 0.76rem;
+  padding: 0.14rem 0;
+  color: var(--vibe-muted);
+}
+
+kedge-provider-vibe-studio .ledger-row .ledger-mark { color: #2e9e5b; }
+kedge-provider-vibe-studio .ledger-row.failed { color: #8c1d1d; }
+kedge-provider-vibe-studio .ledger-row.failed .ledger-mark { color: #c8402e; }
+kedge-provider-vibe-studio .ledger-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+kedge-provider-vibe-studio .ledger-error {
+  font-size: 0.72rem;
+  color: #8c1d1d;
+  padding: 0 0 0.25rem 1.4rem;
+  overflow-wrap: anywhere;
+}
+kedge-provider-vibe-studio .ledger-dur { font-variant-numeric: tabular-nums; }
+
+kedge-provider-vibe-studio .tool-chip {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-family: var(--vibe-mono);
+  padding: 0.1rem 0.55rem;
+  margin: 0.15rem 0;
+  border-radius: 999px;
+  background: var(--vibe-surface);
+  border: 1px solid var(--vibe-border);
+  color: var(--vibe-muted);
+}
+
+/* ── thinking strip + input ─────────────────────────────────────────── */
+
+kedge-provider-vibe-studio .thinking {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 1rem;
+  border-top: 1px dashed var(--vibe-border);
+  font-size: 0.8rem;
+  color: var(--vibe-muted);
+}
+
+kedge-provider-vibe-studio .thinking-partial {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+kedge-provider-vibe-studio .thinking-time { font-variant-numeric: tabular-nums; font-family: var(--vibe-mono); }
+
+kedge-provider-vibe-studio .chat-input {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  padding: 0.7rem 0.9rem;
+  border-top: 1px solid var(--vibe-border);
+}
+
+kedge-provider-vibe-studio .chat-input textarea {
+  flex: 1;
+  margin: 0;
+  max-height: 140px;
+  line-height: 1.4;
+}
+
+kedge-provider-vibe-studio .chat-input button {
+  width: 2.4rem;
+  height: 2.4rem;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 1.05rem;
+  flex-shrink: 0;
+}
+
+/* ── right pane tabs ────────────────────────────────────────────────── */
+
+kedge-provider-vibe-studio .tabs {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--vibe-border);
+}
+
+kedge-provider-vibe-studio .tab {
+  background: transparent;
+  color: var(--vibe-muted);
+  border: none;
+  border-radius: 8px;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.85rem;
+}
+
+kedge-provider-vibe-studio .tab.active {
+  background: var(--vibe-surface-2);
+  color: inherit;
+  font-weight: 600;
+}
+
+kedge-provider-vibe-studio .tab-actions { margin-left: auto; display: flex; gap: 0.35rem; }
+
+kedge-provider-vibe-studio .tab-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+kedge-provider-vibe-studio .tab-placeholder {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.8rem;
+  max-width: 32ch;
+  text-align: center;
+}
+
+kedge-provider-vibe-studio iframe.preview {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: #fff;
+}
+
+/* ── code tab ───────────────────────────────────────────────────────── */
+
+kedge-provider-vibe-studio .code-split {
+  display: grid;
+  grid-template-columns: minmax(160px, 15rem) 1fr;
+  flex: 1;
+  min-height: 0;
+}
+
+kedge-provider-vibe-studio .file-tree {
+  border-right: 1px solid var(--vibe-border);
+  overflow-y: auto;
+  padding: 0.5rem 0;
+}
+
+kedge-provider-vibe-studio .file-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: inherit;
+  border: none;
+  border-radius: 0;
+  padding: 0.28rem 0.9rem;
+  font-family: var(--vibe-mono);
+  font-size: 0.76rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+kedge-provider-vibe-studio .file-row:hover { background: var(--vibe-surface-2); }
+kedge-provider-vibe-studio .file-row.active { background: var(--vibe-surface-2); font-weight: 600; }
+
+kedge-provider-vibe-studio .file-view { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+kedge-provider-vibe-studio .file-head {
+  padding: 0.5rem 0.9rem;
+  border-bottom: 1px solid var(--vibe-border);
+  font-size: 0.78rem;
+}
+
+kedge-provider-vibe-studio .file-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+kedge-provider-vibe-studio .file-head code { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+kedge-provider-vibe-studio .file-state { font-size: 0.72rem; white-space: nowrap; }
+kedge-provider-vibe-studio .file-head button { padding: 0.2rem 0.7rem; font-size: 0.78rem; }
+
+kedge-provider-vibe-studio .editor-mount {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+kedge-provider-vibe-studio .editor-mount .cm-editor { height: 100%; }
+kedge-provider-vibe-studio .editor-mount .cm-editor.cm-focused { outline: none; }
+
+kedge-provider-vibe-studio .code-body {
+  flex: 1;
+  margin: 0;
+  padding: 0.9rem;
+  overflow: auto;
+  font-family: var(--vibe-mono);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  tab-size: 2;
+}
+
+/* ── status tab facts ───────────────────────────────────────────────── */
+
+kedge-provider-vibe-studio dl.facts { margin-top: 1rem; }
+
+/* ── ship panel (promotion) ─────────────────────────────────────────── */
+
+kedge-provider-vibe-studio .ship {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--vibe-border);
+}
+kedge-provider-vibe-studio .ship h3 { margin: 0 0 0.25rem; font-size: 0.95rem; }
+kedge-provider-vibe-studio .ship p.muted { margin: 0 0 0.75rem; }
+kedge-provider-vibe-studio .ship-field {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr;
+  align-items: center;
+  gap: 0.15rem 0.5rem;
+  margin-bottom: 0.5rem;
+}
+kedge-provider-vibe-studio .ship-field span {
+  font-family: var(--vibe-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.8rem;
+}
+kedge-provider-vibe-studio .ship-field input { margin: 0; width: 100%; }
+kedge-provider-vibe-studio .ship .row { flex-wrap: wrap; }
+kedge-provider-vibe-studio .ship-msg {
+  margin: 0.6rem 0 0;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  background: var(--vibe-surface-2);
+  font-size: 0.85rem;
+}
+
+kedge-provider-vibe-studio .ship-origin {
+  grid-column: 2;
+  font-style: normal;
+  font-size: 0.75rem;
+  opacity: 0.65;
+}
+kedge-provider-vibe-studio .ship-origin.ok { color: var(--vibe-accent); opacity: 0.9; }

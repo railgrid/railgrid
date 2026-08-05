@@ -28,4 +28,9 @@ const (
 	RunTriggerAPI        = "api"
 	RunTriggerChannel    = "channel"
 	RunTriggerDelegation = "delegation"
+	// RunTriggerSpawn marks a scoped worker run started by the "spawn" tool: the
+	// same agent, a fresh context, a narrowed toolset, and a parent to report
+	// back to. Distinct from delegation, which hands work to a *different*
+	// configured agent.
+	RunTriggerSpawn = "spawn"
 )

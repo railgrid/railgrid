@@ -81,7 +81,7 @@ func TestSeedTemplatesDecodeAndValidate(t *testing.T) {
 func TestPreviewConsolePluginIsLimitedToBuiltInViteComponents(t *testing.T) {
 	want := map[string]string{
 		"simple-webapp": "app",
-		"application":   "frontend",
+		"application":   "web",
 	}
 	found := map[string]bool{}
 	references := 0

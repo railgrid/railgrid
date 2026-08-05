@@ -27,9 +27,16 @@ import (
 )
 
 const (
-	webFetchMaxBody   = 200 * 1024
+	webFetchMaxBody = 1024 * 1024
+	// webFetchMaxReturn is the default readable-text budget: enough to answer a
+	// question from a page, small enough not to dominate a chat context.
 	webFetchMaxReturn = 12000
-	braveSearchURL    = "https://api.search.brave.com/res/v1/web/search"
+	// webFetchHardMaxReturn is the ceiling a caller may raise the budget to with
+	// maxChars. Research work summarizes a long source into a small finding, so
+	// reading it in full is worth the tokens once; chat is not, which is why the
+	// default stays low and this is opt-in per call.
+	webFetchHardMaxReturn = 64 * 1024
+	braveSearchURL        = "https://api.search.brave.com/res/v1/web/search"
 
 	// Search backends a websearch Connection can speak, selected by
 	// spec.config["provider"].
@@ -84,6 +91,17 @@ func newHTTPClient(allowPrivate bool) *http.Client {
 // guardedHTTPClient is the default: public destinations only.
 var guardedHTTPClient = newHTTPClient(false)
 
+// ConfiguredEndpointHTTPClient returns the shared client for destinations a
+// CALLER configured, as opposed to ones a model chose: private addresses are
+// reachable, link-local (cloud instance metadata) is not. See dialGuard for why
+// the two trust levels differ.
+//
+// Exported for run-completion callbacks, whose URL comes from an authenticated,
+// authorized caller — the same trust level as a Connection's baseURL, and
+// commonly an in-cluster Service, which the public-only client would refuse.
+// Exported rather than reimplemented so there stays exactly one dial guard.
+func ConfiguredEndpointHTTPClient() *http.Client { return configuredHTTPClient }
+
 // configuredHTTPClient serves endpoints the user configured on a Connection —
 // a self-hosted search backend, which is commonly an in-cluster Service or a
 // loopback address in local development.
@@ -111,18 +129,22 @@ func Web(d Deps) []engine.Tool {
 			Desc: "Fetch a public web page over HTTP(S) and return its readable text (truncated). Private/internal addresses are blocked.",
 			Params: map[string]engine.Param{
 				"url": {Type: "string", Desc: "absolute http(s) URL", Required: true},
+				"maxChars": {Type: "integer", Desc: fmt.Sprintf(
+					"how much readable text to return (default %d, max %d). Raise it when you need the whole source — a long article or reference page you are going to summarize.",
+					webFetchMaxReturn, webFetchHardMaxReturn)},
 			},
 			Exec: func(ctx context.Context, argsJSON string) (string, error) {
 				args, err := parseArgs(argsJSON)
 				if err != nil {
 					return "", err
 				}
-				return webFetch(ctx, argString(args, "url"))
+				return webFetch(ctx, argString(args, "url"), argInt(args, "maxChars"))
 			},
 		},
 		{
 			Name: "web_search",
-			Desc: "Search the web and return the top results (title, URL, snippet). Follow up with web_fetch to read a result in full. Requires a websearch connection in this workspace.",
+			Desc: "Search the web and return the top results (title, URL, snippet). Follow up with web_fetch to read a result in full. Requires a websearch connection in this workspace." +
+				searchFanOutHint(d),
 			Params: map[string]engine.Param{
 				"query": {Type: "string", Desc: "search query", Required: true},
 			},
@@ -137,11 +159,33 @@ func Web(d Deps) []engine.Tool {
 	}
 }
 
-func webFetch(ctx context.Context, raw string) (string, error) {
+// fetchReturnBudget resolves how much readable text one fetch returns: the
+// caller's request, defaulted and capped.
+func fetchReturnBudget(maxChars int) int {
+	if maxChars <= 0 {
+		return webFetchMaxReturn
+	}
+	return min(maxChars, webFetchHardMaxReturn)
+}
+
+// searchFanOutHint steers a multi-part request toward the spawn tool when the
+// caller has it. Without this the two tools compete for the same job and the
+// model reliably picks the cheaper-looking one — a sequence of searches in a
+// single turn, which is both slower and shallower than a fan-out.
+func searchFanOutHint(d Deps) string {
+	if d.Spawn == nil {
+		return ""
+	}
+	return " If the request has several independent parts, do NOT search them one after another here: " +
+		"spawn a worker per part and join the results instead."
+}
+
+func webFetch(ctx context.Context, raw string, maxChars int) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return "", fmt.Errorf("url must be an absolute http(s) URL")
 	}
+	maxChars = fetchReturnBudget(maxChars)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return "", err
@@ -160,7 +204,7 @@ func webFetch(ctx context.Context, raw string) (string, error) {
 	if strings.Contains(resp.Header.Get("Content-Type"), "html") {
 		text = htmlToText(text)
 	}
-	return fmt.Sprintf("HTTP %d %s\n\n%s", resp.StatusCode, u.String(), clip(text, webFetchMaxReturn)), nil
+	return fmt.Sprintf("HTTP %d %s\n\n%s", resp.StatusCode, u.String(), clip(text, maxChars)), nil
 }
 
 var (

@@ -25,6 +25,14 @@ export class RunDetailView extends StoreElement {
   @state() private expanded = new Set<string>()
 
   private loadedFor = ''
+  // A live run publishes an event when it starts and when it finishes, and
+  // nothing in between — so an event subscription alone leaves this view frozen
+  // for the whole run. Poll while it is live: it is also the only thing that
+  // works when the run executes on another replica, since the event bus is
+  // in-process.
+  private pollHandle = 0
+  private tickHandle = 0
+  @state() private now = Date.now()
 
   connectedCallback(): void {
     super.connectedCallback()
@@ -33,7 +41,33 @@ export class RunDetailView extends StoreElement {
 
   disconnectedCallback(): void {
     this.store?.removeEventListener('server', this.onServerEvent as EventListener)
+    this.stopLive()
     super.disconnectedCallback()
+  }
+
+  // syncLive starts or stops the pollers to match the run's phase, so a finished
+  // run costs nothing and a live one always shows its own progress.
+  private syncLive(r: Run | null): void {
+    const live = !!r && LIVE_PHASES.has(r.phase)
+    if (!live) {
+      this.stopLive()
+      return
+    }
+    if (!this.pollHandle) {
+      this.pollHandle = window.setInterval(() => void this.load(), 3000)
+    }
+    if (!this.tickHandle) {
+      // Separate, faster tick purely for the elapsed-time readout: a clock that
+      // does not move is the clearest possible signal that a page is dead.
+      this.tickHandle = window.setInterval(() => (this.now = Date.now()), 1000)
+    }
+  }
+
+  private stopLive(): void {
+    if (this.pollHandle) window.clearInterval(this.pollHandle)
+    if (this.tickHandle) window.clearInterval(this.tickHandle)
+    this.pollHandle = 0
+    this.tickHandle = 0
   }
 
   protected willUpdate(): void {
@@ -47,9 +81,14 @@ export class RunDetailView extends StoreElement {
 
   private onServerEvent = (e: Event): void => {
     const ev = (e as CustomEvent<ServerEvent>).detail
-    // Refresh on this run's own transitions and on its children's (a delegation
-    // finishing changes what the timeline shows).
-    if (ev.type === 'run' && (ev.data.id === this.runID || this.run?.children?.some((c) => c.id === ev.data.id))) void this.load()
+    // Refresh on this run's own transitions and on any child's. Matching
+    // parentRunID — not just children already loaded — is what makes a worker
+    // appear the moment it starts rather than on the next manual reload.
+    const mine =
+      ev.data.id === this.runID ||
+      ev.data.parentRunID === this.runID ||
+      this.run?.children?.some((c) => c.id === ev.data.id)
+    if (ev.type === 'run' && mine) void this.load()
     if (ev.type === 'inbox' && ev.data.runID === this.runID) void this.load()
   }
 
@@ -64,6 +103,7 @@ export class RunDetailView extends StoreElement {
     } catch (e) {
       this.error = (e as Error).message
     }
+    this.syncLive(this.run)
   }
 
   private toggle(id: string): void {
@@ -136,7 +176,18 @@ export class RunDetailView extends StoreElement {
         ${cell('trigger', html`<span class="mono">${r.trigger}</span> <span class="muted">(${r.class})</span>`)}
         ${r.sessionID ? cell('session', html`<span class="mono">${r.sessionID}</span>`) : nothing}
         ${cell('started', fmtTime(r.startedAt || r.createdAt))}
-        ${cell('duration', r.durationMS ? fmtDuration(r.durationMS) : '—')}
+        ${cell(
+          'duration',
+          r.durationMS
+            ? fmtDuration(r.durationMS)
+            : LIVE_PHASES.has(r.phase)
+              ? html`<span class="agents-elapsed"
+                  ><span class="agents-spinner" aria-hidden="true"></span>${fmtDuration(
+                    Math.max(0, this.now - new Date(r.startedAt || r.createdAt).getTime()),
+                  )}</span
+                >`
+              : '—',
+        )}
         ${cell('usage', `${fmtTokens(r.inputTokens)} in · ${fmtTokens(r.outputTokens)} out · ${fmtUSD(r.usdMicros)}`)}
         ${r.attempt && r.attempt > 1 ? cell('attempt', String(r.attempt)) : nothing}
         ${r.parentRunID
@@ -168,11 +219,30 @@ export class RunDetailView extends StoreElement {
   }
 
   private output(r: Run): TemplateResult | typeof nothing {
-    if (!r.message) return nothing
     const failed = r.phase === 'Failed' || r.phase === 'Aborted'
+    // The answer lives on the run record; message carries the failure reason. A
+    // failed run can have both (it produced text, then broke).
+    if (failed && r.message) {
+      return html`<section class="agents-panel">
+        <h3>${icon('x')} Error</h3>
+        <div class="agents-err" role="alert">${r.message}</div>
+        ${r.output ? html`<h3>${icon('message')} Partial output</h3>
+            <div class="agents-body">${renderMarkdown(r.output)}</div>` : nothing}
+      </section>`
+    }
+    const body = r.output || r.message
+    if (!body) return nothing
     return html`<section class="agents-panel">
-      <h3>${failed ? html`${icon('x')} Error` : html`${icon('message')} Output`}</h3>
-      ${failed ? html`<div class="agents-err" role="alert">${r.message}</div>` : html`<div class="agents-body">${renderMarkdown(r.message)}</div>`}
+      <h3>${icon('message')} Output</h3>
+      <div class="agents-body">${renderMarkdown(body)}</div>
+      ${r.sources?.length
+        ? html`<div class="agents-runsources">
+            <span class="agents-runmeta-k">sources</span>
+            <ul>
+              ${r.sources.map((s) => html`<li><a href=${s} target="_blank" rel="noopener noreferrer">${s}</a></li>`)}
+            </ul>
+          </div>`
+        : nothing}
     </section>`
   }
 
@@ -211,14 +281,72 @@ export class RunDetailView extends StoreElement {
     </li>`
   }
 
+  // fanOutGranted reports whether this run could have spawned workers at all,
+  // read from the agent's grant for the run's own class. Without it an empty
+  // fan-out section is unreadable: "no workers" and "fan-out was never available"
+  // look identical, and that is exactly the question a user has.
+  private fanOutGranted(r: Run): boolean {
+    const tools = this.store.agent(r.agent)?.spec?.tools
+    const fams = (r.class === 'interactive' ? tools?.interactive : tools?.background)?.families || []
+    return fams.includes('spawn')
+  }
+
   private childRuns(r: Run): TemplateResult | typeof nothing {
-    if (!r.children?.length) return nothing
+    const granted = this.fanOutGranted(r)
+    if (!r.children?.length) {
+      // Say something whenever fan-out was on the table, so a run that could have
+      // used it and did not is a fact rather than an absence.
+      if (!granted) return nothing
+      const tried = r.steps.some((s) => s.tool === 'spawn')
+      return html`<section class="agents-panel">
+        <h3>${icon('corner-down-right')} Child runs <span class="muted">(0)</span></h3>
+        <p class="agents-hint">
+          ${tried
+            ? html`${icon('circle')} This run called <span class="mono">spawn</span> but no worker runs were recorded — check the
+                steps above for the error it came back with.`
+            : html`${icon('circle')} Research fan-out is enabled and the agent was told how to use it, but it answered this request
+                directly rather than splitting it up. That is the right call for a narrow question — a fan-out you do not need is just
+                slower. For a request with genuinely independent parts, phrasing them explicitly ("compare X, Y and Z") makes the split
+                obvious.`}
+        </p>
+      </section>`
+    }
+    // Children are spawned workers and delegations alike, so the heading names
+    // the relationship rather than one of the two mechanisms.
+    const kids = r.children
+    const workers = kids.filter((c) => c.trigger === 'spawn').length
+    // A fan-out runs a few workers at a time and queues the rest, so "running"
+    // and "queued" are different facts: without the split, a queued worker is
+    // indistinguishable from one that is stuck.
+    const running = kids.filter((c) => c.phase === 'Running').length
+    const queued = kids.filter((c) => c.phase === 'Pending').length
+    const done = kids.filter((c) => c.phase === 'Succeeded').length
+    const problems = kids.filter((c) => c.phase === 'Failed' || c.phase === 'Aborted').length
+    const waiting = kids.filter((c) => c.phase === 'PendingApproval').length
+    const parts = [
+      running ? `${running} running` : '',
+      queued ? `${queued} queued` : '',
+      waiting ? `${waiting} awaiting approval` : '',
+      done ? `${done} done` : '',
+      problems ? `${problems} failed` : '',
+    ].filter(Boolean)
+
     return html`<section class="agents-panel">
-      <h3>${icon('corner-down-right')} Delegated runs</h3>
+      <h3>
+        ${icon('corner-down-right')} Child runs <span class="muted">(${kids.length})</span>
+        ${workers ? html`<span class="muted">· ${workers} spawned worker${workers === 1 ? '' : 's'}</span>` : nothing}
+      </h3>
+      <p class="agents-child-summary ${running + queued > 0 ? 'is-live' : ''}">
+        ${running + queued > 0 ? html`<span class="agents-spinner" aria-hidden="true"></span>` : nothing}
+        ${parts.join(' · ')}
+        ${running + queued > 0
+          ? html`<span class="muted">— this updates as they finish</span>`
+          : nothing}
+      </p>
       <div class="agents-tablewrap">
         <table class="agents-table">
           <thead>
-            <tr><th>Agent</th><th>Input</th><th>Phase</th><th>Duration</th><th>Usage</th></tr>
+            <tr><th>Agent</th><th>Kind</th><th>Input</th><th>Phase</th><th>Duration</th><th>Usage</th></tr>
           </thead>
           <tbody>
             ${r.children.map((c: RunSummary) => html`<tr class="agents-run-row" tabindex="0" role="link" aria-label="Open run ${c.id}"
@@ -231,6 +359,7 @@ export class RunDetailView extends StoreElement {
               }}
             >
               <td><strong>${c.agent}</strong></td>
+              <td class="muted mono">${c.trigger === 'spawn' ? 'worker' : 'delegated'}</td>
               <td class="agents-cell-task muted">${c.inputPreview || '—'}</td>
               <td>${phaseChip(c.phase)}</td>
               <td class="muted">${c.durationMS ? fmtDuration(c.durationMS) : '—'}</td>

@@ -45,8 +45,47 @@ var httpClient = &http.Client{Timeout: 15 * time.Second}
 
 // Send delivers m to its channel. Returns an error describing any delivery
 // failure (surfaced to the user on a "test" send).
+// messageLimit is the largest message one backend accepts. 0 means no practical
+// limit (email), so the text is sent whole.
+func messageLimit(typ string) int {
+	switch typ {
+	case "discord":
+		return 2000
+	case "telegram":
+		return 4096
+	case "slack":
+		return 3000
+	default:
+		return 0
+	}
+}
+
+// Send delivers text to a chat backend, splitting it across several messages
+// when it exceeds what that backend accepts.
+//
+// Splitting rather than truncating: an agent's answer can run far past any chat
+// limit — a research report is tens of thousands of characters — and cutting it
+// at the limit silently discards almost all of the work, with nothing to tell the
+// reader more existed. Parts go in order and stop at the first failure, so a
+// partial delivery is still a prefix of the real answer rather than a mix.
 func Send(ctx context.Context, m Message) error {
-	switch strings.TrimSpace(m.Type) {
+	typ := strings.TrimSpace(m.Type)
+	parts := chunkMessage(m.Text, messageLimit(typ))
+	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		one := m
+		one.Text = part
+		if err := sendOne(ctx, typ, one); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func sendOne(ctx context.Context, typ string, m Message) error {
+	switch typ {
 	case "telegram":
 		return sendTelegram(ctx, m)
 	case "slack":
@@ -66,16 +105,13 @@ func Send(ctx context.Context, m Message) error {
 //   - Webhook: Target is an incoming-webhook URL → post directly (outbound
 //     notify only, no token).
 //
-// Discord caps message content at 2000 chars.
+// Discord caps message content at 2000 chars; Send has already split the text
+// into pieces that fit, so this posts exactly what it is given.
 func sendDiscord(ctx context.Context, m Message) error {
 	if m.Target == "" {
 		return fmt.Errorf("discord needs a bot token + channel id, or an incoming-webhook URL")
 	}
-	text := m.Text
-	if len(text) > 2000 {
-		text = text[:2000]
-	}
-	body, _ := json.Marshal(map[string]string{"content": text})
+	body, _ := json.Marshal(map[string]string{"content": m.Text})
 
 	var req *http.Request
 	var err error

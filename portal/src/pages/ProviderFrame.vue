@@ -40,7 +40,9 @@ onMounted(() => {
 })
 
 const entry = computed(() => providers.byName(props.providerName))
-const isFullBleedProvider = computed(() => props.providerName === 'app-studio')
+const isFullBleedProvider = computed(() =>
+  ['app-studio', 'vibe-studio'].includes(props.providerName),
+)
 
 // On entry resolve OR provider switch, (re)load the script and mount.
 watch(

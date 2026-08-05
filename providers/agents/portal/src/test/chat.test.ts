@@ -229,3 +229,95 @@ describe('transcript rehydration', () => {
     expect(listMessages.mock.calls[0][2] ?? 200).toBeGreaterThanOrEqual(200)
   })
 })
+
+// A run outlives the stream that started it, so reopening a chat can find work
+// still in flight. Saying so is what stops the reply looking lost — and stops the
+// user re-asking and paying for the same research twice.
+describe('a run still working with nobody attached', () => {
+  const runRow = (over: Record<string, unknown> = {}) => ({
+    id: 'r-live',
+    agent: 'scout',
+    sessionID: 's1',
+    trigger: 'chat',
+    class: 'interactive',
+    phase: 'Running',
+    inputTokens: 0,
+    outputTokens: 0,
+    usdMicros: 0,
+    createdAt: new Date().toISOString(),
+    ...over,
+  })
+
+  async function mountWith(phase: string, extra: Record<string, unknown> = {}) {
+    const listRuns = vi.fn().mockResolvedValue({ items: [runRow({ phase })] })
+    const api = stubApi({ listMessages: () => Promise.resolve([]), listRuns, ...extra })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const el = await mount<AgentChat>('agents-agent-chat', { store, api, name: 'scout' })
+    await settle(el, 4)
+    return { el, api, listRuns }
+  }
+
+  it('announces a Running run and offers the run view', async () => {
+    const { el } = await mountWith('Running')
+    const banner = el.querySelector('.agents-orphan-banner')
+    expect(banner).toBeTruthy()
+    expect(text(banner!)).toContain('still working')
+    expect(text(banner!)).toContain('View progress')
+  })
+
+  it('counts a run waiting on approval as still working', async () => {
+    const { el } = await mountWith('PendingApproval')
+    expect(el.querySelector('.agents-orphan-banner')).toBeTruthy()
+  })
+
+  it('says nothing when the session has no live run', async () => {
+    const { el } = await mountWith('Succeeded')
+    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+  })
+
+  it('can stop the run, which clears the banner', async () => {
+    const cancelRun = vi.fn().mockResolvedValue({ id: 'r-live', cancelling: true })
+    const { el } = await mountWith('Running', { cancelRun })
+    const stop = [...el.querySelectorAll('.agents-orphan-banner button')].find((b) => b.textContent?.includes('Stop it')) as HTMLButtonElement
+    stop.click()
+    await settle(el, 4)
+    expect(cancelRun).toHaveBeenCalledWith('r-live')
+    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+  })
+
+  it('clears the banner and reloads the transcript when the run finishes', async () => {
+    const listMessages = vi.fn().mockResolvedValue([])
+    // Running while the banner is up, terminal once it has finished — the
+    // re-check after the reload has to agree, or the banner would reappear.
+    let phase = 'Running'
+    const listRuns = vi.fn().mockImplementation(() => Promise.resolve({ items: [runRow({ phase })] }))
+    const api = stubApi({ listMessages, listRuns })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const el = await mount<AgentChat>('agents-agent-chat', { store, api, name: 'scout' })
+    await settle(el, 4)
+    expect(el.querySelector('.agents-orphan-banner')).toBeTruthy()
+    const before = listMessages.mock.calls.length
+    phase = 'Succeeded'
+
+    el.store.dispatchEvent(
+      new CustomEvent('server', { detail: { type: 'run', data: { id: 'r-live', phase: 'Succeeded' } } }),
+    )
+    await settle(el, 4)
+
+    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(listMessages.mock.calls.length).toBeGreaterThan(before)
+  })
+
+  it('a lookup failure never breaks the transcript', async () => {
+    const listRuns = vi.fn().mockRejectedValue(new Error('unavailable'))
+    const api = stubApi({ listMessages: () => Promise.resolve([{ id: '1', role: 'user', content: 'hi' }]), listRuns })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const el = await mount<AgentChat>('agents-agent-chat', { store, api, name: 'scout' })
+    await settle(el, 4)
+    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(text(el)).toContain('hi')
+  })
+})

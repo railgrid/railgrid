@@ -107,6 +107,13 @@ type createAgentRequest struct {
 	// Channels binds named messaging channels to the agent (primary + secondary
 	// + …).
 	Channels []channelInput `json:"channels,omitempty"`
+	// InteractiveFamilies / BackgroundFamilies grant built-in tool families at
+	// creation. Present so a preset can hand over a ready-to-use agent — a
+	// research agent needs "web" and "spawn" to do the thing it was created for,
+	// and making the user find the Tools section afterwards is how a capability
+	// stays undiscovered. Unknown names are dropped; core is always granted.
+	InteractiveFamilies []string `json:"interactiveFamilies,omitempty"`
+	BackgroundFamilies  []string `json:"backgroundFamilies,omitempty"`
 }
 
 // channelInput is the REST shape of an agent channel binding.
@@ -236,6 +243,12 @@ func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, r
 	if req.BudgetTokens > 0 || strings.TrimSpace(req.BudgetUSD) != "" {
 		a.Spec.Budget = &agentsv1alpha1.AgentBudget{Window: "month", TokenLimit: req.BudgetTokens, USDLimit: strings.TrimSpace(req.BudgetUSD)}
 	}
+	if len(req.InteractiveFamilies) > 0 {
+		a.Spec.Tools.Interactive.Families = normalizeFamilies(req.InteractiveFamilies)
+	}
+	if len(req.BackgroundFamilies) > 0 {
+		a.Spec.Tools.Background.Families = normalizeFamilies(req.BackgroundFamilies)
+	}
 	if len(req.Channels) > 0 {
 		chans, err := normalizeChannels(req.Channels)
 		if err != nil {
@@ -250,7 +263,7 @@ func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, r
 }
 
 // knownToolFamilies are the grantable built-in families (core is always on).
-var knownToolFamilies = map[string]bool{"core": true, "web": true, "github": true, "mcp": true, "edges": true, "files": true}
+var knownToolFamilies = map[string]bool{"core": true, "web": true, "github": true, "mcp": true, "edges": true, "files": true, "spawn": true}
 
 // normalizeFamilies keeps only recognized families, always includes core, and
 // de-duplicates — so the stored grant is clean regardless of UI input.
@@ -549,8 +562,22 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	// The run's lifetime is deliberately decoupled from this stream. A research
+	// fan-out or a long tool chain can outlast the browser tab that started it,
+	// and cancelling the work because the reader went away loses minutes of real
+	// spend for no reason. So: writes stop when the client disappears, but the run
+	// keeps going, finishes, and lands in the session transcript and on the run
+	// record — where reopening the chat, or GET /api/runs/{id}, will find it.
+	//
+	// The user can still stop it deliberately: executeTask registers the run for
+	// POST /api/runs/{id}/cancel.
+	runCtx, clientGone := detachedStreamContext(r)
+
 	seq := 0
 	sse := func(event string, payload any) {
+		if clientGone() {
+			return
+		}
 		seq++
 		b, _ := json.Marshal(payload)
 		fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", seq, event, b)
@@ -562,7 +589,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	runID := uuid.NewString()
 	sse("start", map[string]string{"runID": runID, "sessionID": req.SessionID})
 
-	res, err := s.executeTask(r.Context(), taskRun{
+	res, err := s.executeTask(runCtx, taskRun{
 		Creds: c, CR: clientCR{c}, Scope: id.scope(name), Agent: agent,
 		RunID:     runID,
 		SessionID: req.SessionID, Task: req.Message, Trigger: agentsv1alpha1.RunTriggerChat,
@@ -641,11 +668,21 @@ func (s *Server) edgesEndpoint(clusterID string) string {
 // errNoCredential signals that an agent has no model credential assigned.
 var errNoCredential = errors.New("this agent has no model credential assigned — pick one on the Models tab")
 
-// buildChatModelCtx resolves the agent's assigned named model credential and
-// builds the Eino model from it. Agents reference a credential by name in
-// spec.models["chat"]; the credential is its own Secret (kedge-agents-model-<name>).
+// buildChatModelCtx builds the model for an ordinary (chat-purpose) run.
 func (s *Server) buildChatModelCtx(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent) (einomodel.BaseChatModel, error) {
-	primary := strings.TrimSpace(agent.Spec.Models["chat"])
+	return s.buildModelForPurpose(ctx, creds, agent, llm.PurposeChat)
+}
+
+// buildModelForPurpose resolves the agent's named model credential for a run
+// purpose and builds the Eino model from it. Agents reference a credential by
+// name in spec.models[purpose]; the credential is its own Secret
+// (kedge-agents-model-<name>). A purpose the agent did not map falls back to
+// "chat", so mapping only "chat" keeps working everywhere.
+func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent, purpose string) (einomodel.BaseChatModel, error) {
+	primary := strings.TrimSpace(agent.Spec.Models[purpose])
+	if primary == "" {
+		primary = strings.TrimSpace(agent.Spec.Models[llm.PurposeChat])
+	}
 	if primary == "" {
 		return nil, errNoCredential
 	}
@@ -691,7 +728,17 @@ func (s *Server) buildChatModelCtx(ctx context.Context, creds llm.SecretGetter, 
 // for cost attribution. Best-effort: returns "" when unresolvable (cost then
 // falls back to 0 rather than erroring the run).
 func (s *Server) primaryModelName(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent) string {
-	name := strings.TrimSpace(agent.Spec.Models["chat"])
+	return s.modelNameForPurpose(ctx, creds, agent, llm.PurposeChat)
+}
+
+// modelNameForPurpose resolves the model id behind a run purpose, following the
+// same purpose → chat fallback as buildModelForPurpose so cost attribution and
+// context-window sizing name the model that will actually be called.
+func (s *Server) modelNameForPurpose(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent, purpose string) string {
+	name := strings.TrimSpace(agent.Spec.Models[purpose])
+	if name == "" {
+		name = strings.TrimSpace(agent.Spec.Models[llm.PurposeChat])
+	}
 	if name == "" {
 		return ""
 	}

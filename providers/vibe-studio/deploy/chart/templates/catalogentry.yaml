@@ -1,0 +1,71 @@
+{{- if .Values.catalogEntry.enabled -}}
+# CatalogEntry registers this provider with the kedge hub for routing + the
+# portal Enable flow. It is a kcp resource, so it MUST NOT be applied to the
+# hosting cluster: the chart renders it into a ConfigMap that the init
+# container mounts and applies into the provider workspace via the provider
+# kubeconfig (KEDGE_CATALOGENTRY_FILE -> sdkinstall.Bootstrap).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vibe-studio.fullname" . }}-catalogentry
+  labels:
+    {{- include "vibe-studio.labels" . | nindent 4 }}
+data:
+  catalogentry.yaml: |
+    apiVersion: providers.kedge.faros.sh/v1alpha1
+    kind: CatalogEntry
+    metadata:
+      name: vibe-studio
+    spec:
+      displayName: "Vibe Studio"
+      description: "Wizard-first app builder: describe your app, get a template-grounded live sandbox, vibe, then ship."
+      vendor: "kedge"
+      version: {{ .Chart.AppVersion | quote }}
+      category: "Build"
+      iconURL: "/ui/providers/vibe-studio/icon.svg"
+      ui:
+        url: "http://{{ include "vibe-studio.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+        indexPath: "/"
+      backend:
+        url: "http://{{ include "vibe-studio.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
+        healthPath: "/healthz"
+      apiExport:
+        name: "vibe.kedge.faros.sh"
+        permissionClaims:
+          - resource: applications
+            group: infrastructure.kedge.faros.sh
+            verbs: [get, list, watch, create, update, patch, delete]
+            tenantScoped: true
+          - resource: simplewebapps
+            group: infrastructure.kedge.faros.sh
+            verbs: [get, list, watch, create, update, patch, delete]
+            tenantScoped: true
+          - resource: workers
+            group: infrastructure.kedge.faros.sh
+            verbs: [get, list, watch, create, update, patch, delete]
+            tenantScoped: true
+          # Web search: every project binds a private searxng instance so the
+          # assistant can look things up instead of asking the user to paste.
+          - resource: searxngs
+            group: infrastructure.kedge.faros.sh
+            verbs: [get, list, watch, create, update, patch, delete]
+            tenantScoped: true
+          - resource: repositories
+            group: code.kedge.faros.sh
+            verbs: [get, list, watch, create, update, patch]
+            tenantScoped: true
+          - resource: serviceaccounts
+            verbs: [get, list, watch, create, delete]
+            tenantScoped: true
+          - resource: secrets
+            verbs: [get, list, watch, create, update, delete]
+            tenantScoped: true
+          - resource: clusterroles
+            group: rbac.authorization.k8s.io
+            verbs: [get, list, watch, create, update, delete]
+            tenantScoped: true
+          - resource: clusterrolebindings
+            group: rbac.authorization.k8s.io
+            verbs: [get, list, watch, create, update, delete]
+            tenantScoped: true
+{{- end }}

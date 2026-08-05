@@ -80,9 +80,107 @@ func projectAssistantConversationForRun(
 ) ([]chatMessage, bool) {
 	checkpointed := projection.compactionCheckpoint != nil
 	if checkpointed {
-		return cloneChatMessages(projection.messages), true
+		return normalizeProjectAssistantToolCallPairing(cloneChatMessages(projection.messages)), true
 	}
-	return mergeProjectAssistantLegacyConversation(projection.messages, recent), false
+	return normalizeProjectAssistantToolCallPairing(mergeProjectAssistantLegacyConversation(projection.messages, recent)), false
+}
+
+// projectAssistantUnsettledToolResult answers a tool call that never settled,
+// so an interrupted run still replays as a complete tool group.
+const projectAssistantUnsettledToolResult = `{"status":"unavailable","summary":"tool result unavailable: the assistant run was interrupted before this call settled"}`
+
+// normalizeProjectAssistantToolCallPairing rebuilds a replayable tool-call
+// structure from the durable item stream. Parallel tool calls are persisted one
+// item per call and their results are appended as each call settles, so the
+// stream legitimately interleaves a second call between the first call and its
+// result. Providers reject that outright — "tool_call_id ... not found in
+// 'tool_calls' of previous message" — and because the stream is append-only,
+// every later turn on the thread fails the same way. Consecutive calls are
+// merged back into the single assistant message the model actually produced,
+// each call is answered immediately after it, and results that no longer have a
+// call are dropped because they cannot be sent at all.
+func normalizeProjectAssistantToolCallPairing(messages []chatMessage) []chatMessage {
+	results := make(map[string]chatMessage, len(messages))
+	for _, message := range messages {
+		if !strings.EqualFold(strings.TrimSpace(message.Role), "tool") {
+			continue
+		}
+		id := strings.TrimSpace(message.ToolCallID)
+		if id == "" {
+			continue
+		}
+		if _, ok := results[id]; !ok {
+			results[id] = message
+		}
+	}
+
+	normalized := make([]chatMessage, 0, len(messages))
+	answered := make(map[string]bool, len(results))
+	for index := 0; index < len(messages); index++ {
+		message := messages[index]
+		role := strings.TrimSpace(message.Role)
+		if strings.EqualFold(role, "tool") {
+			// Results are emitted with the call group they answer.
+			continue
+		}
+		if !strings.EqualFold(role, "assistant") || len(message.ToolCalls) == 0 {
+			normalized = append(normalized, message)
+			continue
+		}
+		group := message
+		group.ToolCalls = append([]chatToolCall(nil), message.ToolCalls...)
+		for index+1 < len(messages) {
+			next := messages[index+1]
+			if !strings.EqualFold(strings.TrimSpace(next.Role), "assistant") || len(next.ToolCalls) == 0 {
+				break
+			}
+			group.ToolCalls = append(group.ToolCalls, next.ToolCalls...)
+			group.Content = joinProjectAssistantToolCallContent(group.Content, next.Content)
+			index++
+		}
+		calls := make([]chatToolCall, 0, len(group.ToolCalls))
+		answers := make([]chatMessage, 0, len(group.ToolCalls))
+		for _, call := range group.ToolCalls {
+			id := strings.TrimSpace(call.ID)
+			if id == "" || answered[id] {
+				continue
+			}
+			answered[id] = true
+			calls = append(calls, call)
+			result, ok := results[id]
+			if !ok {
+				result = chatMessage{
+					Role:       "tool",
+					Name:       call.Function.Name,
+					ToolCallID: id,
+					Content:    projectAssistantUnsettledToolResult,
+				}
+			}
+			answers = append(answers, result)
+		}
+		if len(calls) == 0 {
+			// Nothing answerable survives; keep any prose the turn carried.
+			if strings.TrimSpace(group.Content) != "" {
+				group.ToolCalls = nil
+				normalized = append(normalized, group)
+			}
+			continue
+		}
+		group.ToolCalls = calls
+		normalized = append(normalized, group)
+		normalized = append(normalized, answers...)
+	}
+	return normalized
+}
+
+func joinProjectAssistantToolCallContent(existing, addition string) string {
+	if strings.TrimSpace(existing) == "" {
+		return addition
+	}
+	if strings.TrimSpace(addition) == "" {
+		return existing
+	}
+	return existing + "\n\n" + addition
 }
 
 func appendProjectAssistantConversationMessage(ctx context.Context, messageStore store.Store, scope store.Scope, runID, itemID, itemType string, message chatMessage) error {

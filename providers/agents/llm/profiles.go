@@ -51,6 +51,14 @@ const (
 	// DefaultProfile is used when an agent does not map a purpose to a profile.
 	DefaultProfile = "chat"
 
+	// Run purposes an agent may map to a model credential in spec.models.
+	// PurposeChat is the interactive/strong model and the fallback for every
+	// other purpose; PurposeBackground is the cheap model used for scoped
+	// sub-agent workers; PurposeCompaction summarizes long sessions.
+	PurposeChat       = "chat"
+	PurposeBackground = "background"
+	PurposeCompaction = "compaction"
+
 	ProviderOpenAICompatible = "openai-compatible"
 	ProviderGoogle           = "google"
 )

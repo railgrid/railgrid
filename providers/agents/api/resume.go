@@ -48,19 +48,43 @@ type resumeDeps struct {
 // Detached from the resolving request: runs on its own context with the run's
 // own timeout. Errors are recorded on the run, not returned to the resolver.
 func (s *Server) resumeApprovedRun(scope store.Scope, item store.InboxItem, rd resumeDeps, approve bool, note string) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	agentScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, AgentName: item.AgentName}
+	s.resumeRun(context.Background(), agentScope, item.RunID, rd, resumeIntent{
+		Approval: true, Approve: approve, Note: note,
+		FromPhase: store.RunPhasePendingApproval,
+	})
+}
+
+// resumeIntent distinguishes the two reasons a checkpointed run continues.
+//
+// An approval resume answers one specific gated call, so it must find the run in
+// PendingApproval and it carries the user's verdict. A recovery resume picks up a
+// run its replica dropped: the checkpoint holds no pending call (see
+// engine.Callbacks.OnCheckpoint), so there is no verdict to apply and the loop
+// simply re-asks the model.
+type resumeIntent struct {
+	Approval  bool
+	Approve   bool
+	Note      string
+	FromPhase store.RunPhase
+}
+
+// resumeRun rehydrates a checkpointed run and continues its loop. Shared by the
+// approval path and the recovery sweep.
+func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID string, rd resumeDeps, intent resumeIntent) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), time.Hour)
 	defer cancel()
 
-	agentScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, AgentName: item.AgentName}
-	run, err := s.store.GetRun(ctx, agentScope, item.RunID)
+	run, err := s.store.GetRun(ctx, agentScope, runID)
 	if err != nil {
-		log.Printf("resume: run %s: %v", item.RunID, err)
+		log.Printf("resume: run %s: %v", runID, err)
 		return
 	}
-	if run.Phase != store.RunPhasePendingApproval || len(run.Checkpoint) == 0 {
+	if run.Phase != intent.FromPhase || len(run.Checkpoint) == 0 {
 		log.Printf("resume: run %s is %s (not resumable)", run.ID, run.Phase)
 		return
 	}
+	approve, note := intent.Approve, intent.Note
 	var ck runCheckpoint
 	if err := json.Unmarshal(run.Checkpoint, &ck); err != nil {
 		log.Printf("resume: run %s checkpoint corrupt: %v", run.ID, err)
@@ -71,7 +95,7 @@ func (s *Server) resumeApprovedRun(scope store.Scope, item store.InboxItem, rd r
 		log.Printf("resume: run %s: %v", run.ID, err)
 		return
 	}
-	s.publishRunEvent(agentScope, run.ID, run.AgentName, run.Trigger, store.RunPhaseRunning)
+	s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseRunning})
 
 	agent, err := rd.CR.GetAgent(ctx, run.AgentName)
 	if err != nil {
@@ -92,7 +116,9 @@ func (s *Server) resumeApprovedRun(scope store.Scope, item store.InboxItem, rd r
 		EdgesEndpoint: rd.EdgesEndpoint, HubToken: rd.HubToken, EdgesInsecure: rd.EdgesInsecure,
 		ClusterID: rd.ClusterID,
 	}
-	if approve {
+	// Only an approval resume pre-authorizes a call. A recovery checkpoint has no
+	// pending call at all, so there is nothing to grant.
+	if intent.Approval && approve {
 		tr.ApproveTool, tr.ApproveArgs, tr.approveUsed = ck.Tool, ck.Args, &used
 	}
 	s.liveRuns.register(run.ID, cancel)
@@ -109,7 +135,16 @@ func (s *Server) resumeApprovedRun(scope store.Scope, item store.InboxItem, rd r
 	if v := int(agent.Spec.Limits.MaxToolTurns); v > 0 {
 		maxIters = min(v, 32)
 	}
-	res, err := s.engine.ResumeTurnWithTools(ctx, model, ck.Engine, toolset, maxIters, approve, note, s.runCallbacks(ctx, tr, run.SessionID))
+	modelName := s.primaryModelName(ctx, rd.Creds, agent)
+	cb := s.runCallbacks(ctx, tr, run.SessionID)
+	// A resumed run keeps checkpointing, so a replica that dies again picks up
+	// from where the resume got to rather than from the original snapshot.
+	cb.OnCheckpoint = s.checkpointRecorder(ctx, tr, run.SessionID)
+	res, err := s.engine.ResumeTurnWithTools(ctx, model, ck.Engine, toolset, engine.TurnConfig{
+		MaxIters:            maxIters,
+		ContextBudgetTokens: turnContextBudget(modelName),
+		CheckpointEvery:     checkpointEveryIterations,
+	}, approve, note, cb)
 	end := time.Now().UTC()
 	if err != nil {
 		s.failResume(ctx, agentScope, run, err)
@@ -121,7 +156,6 @@ func (s *Server) resumeApprovedRun(scope store.Scope, item store.InboxItem, rd r
 	// paused — only the delta is added here.
 	deltaIn := max(res.Usage.InputTokens-ck.Engine.Usage.InputTokens, 0)
 	deltaOut := max(res.Usage.OutputTokens-ck.Engine.Usage.OutputTokens, 0)
-	modelName := s.primaryModelName(ctx, rd.Creds, agent)
 	costMicros := llm.CostMicros(modelName, res.Usage.InputTokens, res.Usage.OutputTokens)
 	_, _ = s.store.AddUsage(ctx, agentScope, agent.Name, deltaIn, deltaOut,
 		llm.CostMicros(modelName, deltaIn, deltaOut), end, 30*24*time.Hour)
@@ -139,7 +173,7 @@ func (s *Server) resumeApprovedRun(scope store.Scope, item store.InboxItem, rd r
 			stored.UpdatedAt = end
 			_ = s.store.SaveRun(ctx, agentScope, stored)
 		}
-		s.publishRunEvent(agentScope, run.ID, agent.Name, run.Trigger, store.RunPhasePendingApproval)
+		s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhasePendingApproval})
 		return
 	}
 
@@ -147,8 +181,12 @@ func (s *Server) resumeApprovedRun(scope store.Scope, item store.InboxItem, rd r
 		ID: uuid.NewString(), AgentName: agent.Name, SessionID: run.SessionID, RunID: run.ID,
 		Role: "assistant", Content: res.Content, CreatedAt: end,
 	})
-	s.finishRun(ctx, agentScope, run.ID, store.RunPhaseSucceeded, "", res.Usage, costMicros, end)
-	s.publishRunEvent(agentScope, run.ID, agent.Name, run.Trigger, store.RunPhaseSucceeded)
+	body, sources := splitSources(res.Content)
+	s.finishRun(ctx, agentScope, run.ID, runOutcome{
+		Phase: store.RunPhaseSucceeded, Usage: res.Usage, CostMicros: costMicros,
+		Output: body, Sources: sources,
+	}, end)
+	s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseSucceeded})
 
 	// Deliver the continuation where the run's output was headed: channel runs
 	// reply on their source connection, background runs notify their channel
@@ -169,8 +207,8 @@ func (s *Server) resumeApprovedRun(scope store.Scope, item store.InboxItem, rd r
 
 func (s *Server) failResume(ctx context.Context, scope store.Scope, run store.Run, err error) {
 	log.Printf("resume: run %s failed: %v", run.ID, err)
-	s.finishRun(ctx, scope, run.ID, store.RunPhaseFailed, err.Error(), engine.Usage{}, 0, time.Now().UTC())
-	s.publishRunEvent(scope, run.ID, run.AgentName, run.Trigger, store.RunPhaseFailed)
+	s.finishRun(ctx, scope, run.ID, runOutcome{Phase: store.RunPhaseFailed, Message: err.Error()}, time.Now().UTC())
+	s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseFailed})
 }
 
 // sendToConnection delivers text through a named messaging connection using

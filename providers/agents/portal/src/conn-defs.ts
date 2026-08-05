@@ -114,8 +114,25 @@ export function channelInbound(c: Pick<Connection, 'spec' | 'status'>): InboundS
 // it. Families are never edited directly — they're derived from the wired tools
 // so the UI has just one concept: the Tool object.
 const TOOL_FAMILY: Record<string, string> = { mcp: 'mcp', github: 'github', websearch: 'web', edges: 'edges' }
-export function familiesForConns(names: string[], connType: (name: string) => string | undefined): string[] {
+
+// Families that are NOT derived from a connection — they are capabilities of the
+// agent itself, toggled directly. Because familiesForConns rebuilds the list
+// from scratch on every tool grant, these have to be carried over explicitly or
+// wiring a tool would silently switch them off.
+//
+// "web" belongs here even though a websearch Connection also implies it:
+// web_fetch needs no connection whatsoever (it reads public URLs), so an agent
+// can usefully have web without one — and a preset that grants web would
+// otherwise lose it the moment the user wired any tool.
+export const STANDALONE_FAMILIES = ['spawn', 'web'] as const
+
+export function familiesForConns(
+  names: string[],
+  connType: (name: string) => string | undefined,
+  current: string[] = [],
+): string[] {
   const fams = new Set<string>(['core'])
+  for (const f of STANDALONE_FAMILIES) if (current.includes(f)) fams.add(f)
   for (const n of names) {
     const t = connType(n)
     const f = t && TOOL_FAMILY[t]

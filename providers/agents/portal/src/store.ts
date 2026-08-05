@@ -41,6 +41,10 @@ export interface ServerEvent {
     phase?: string
     state?: string
     runID?: string
+    // Set on a run event when the run is a child (a spawned worker or a
+    // delegation), so a view watching the parent can pick up a child it has not
+    // loaded yet.
+    parentRunID?: string
     tool?: string
     failed?: boolean
   }
@@ -87,8 +91,10 @@ export class AppStore extends EventTarget {
     return this.connections.data.find((c) => c.metadata.name === name)?.spec.type
   }
   // families derived from a list of tool-connection names (never hand-picked).
-  familiesFor(names: string[]): string[] {
-    return familiesForConns(names, (n) => this.connectionType(n))
+  // `current` carries over the families that aren't connection-derived (spawn),
+  // which this list would otherwise drop.
+  familiesFor(names: string[], current: string[] = []): string[] {
+    return familiesForConns(names, (n) => this.connectionType(n), current)
   }
   toolConnections(): Connection[] {
     return this.connections.data.filter((c) => CONN_CATEGORY[c.spec.type] === 'tool')

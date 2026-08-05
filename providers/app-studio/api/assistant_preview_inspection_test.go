@@ -245,10 +245,22 @@ func TestProjectAssistantEnhancedPreviewInspectionReturnsImageWithoutPersistingB
 		t.Fatal("screenshot bytes entered durable tool history")
 	}
 	expanded := base.(*projectEinoAssistantEnhancedPreviewTool).runState.ExpandTransientToolMessages([]*schema.Message{toolMessage})
-	if len(expanded) != 1 || len(expanded[0].UserInputMultiContent) != 2 {
-		t.Fatalf("transient model message = %#v", expanded)
+	// The screenshot rides a trailing user message: image parts are not
+	// accepted on tool messages, and a tool message carrying both text content
+	// and multi-content parts fails to serialize at all.
+	if len(expanded) != 2 {
+		t.Fatalf("transient model messages = %#v", expanded)
 	}
-	image := expanded[0].UserInputMultiContent[1].Image
+	if expanded[0].Role != schema.Tool || len(expanded[0].UserInputMultiContent) != 0 {
+		t.Fatalf("transient tool message = %#v", expanded[0])
+	}
+	if strings.Contains(expanded[0].Content, "transientImageReference") {
+		t.Fatalf("transient reference leaked into the model tool result: %s", expanded[0].Content)
+	}
+	if expanded[1].Role != schema.User || expanded[1].Content != "" || len(expanded[1].UserInputMultiContent) != 2 {
+		t.Fatalf("transient image message = %#v", expanded[1])
+	}
+	image := expanded[1].UserInputMultiContent[1].Image
 	if image == nil || image.Base64Data == nil || *image.Base64Data != "aGVsbG8=" {
 		t.Fatalf("transient image = %#v", image)
 	}

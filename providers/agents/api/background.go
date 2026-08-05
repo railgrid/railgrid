@@ -405,6 +405,12 @@ func (b *background) loop(ctx context.Context) {
 	if b.ready() && b.discord != nil {
 		b.discord.reconcile(ctx)
 	}
+	// Recover runs a previous process left in flight before doing anything else:
+	// a restarted deploy should pick its work back up, not sit on rows stuck in
+	// Running until someone notices.
+	if b.ready() {
+		b.server.sweepStaleRuns(ctx, b.resumeRecoveredRun, b.notifyStrandedRun)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -419,11 +425,75 @@ func (b *background) loop(ctx context.Context) {
 			}
 			b.tick(ctx)
 			b.refreshOAuthTokens(ctx)
+			// Catches runs stranded by a crash of ANOTHER replica, and any this
+			// process could not recover at startup.
+			b.server.sweepStaleRuns(ctx, b.resumeRecoveredRun, b.notifyStrandedRun)
 			if b.discord != nil {
 				b.discord.reconcile(ctx)
 			}
 		}
 	}
+}
+
+// notifyStrandedRun delivers the sweep's "this did not finish" message to
+// wherever the run's answer was headed: the chat a channel conversation came
+// from, or the agent channel a schedule/trigger reports to. The background
+// executor's half of recovery reporting — it owns the tenant access.
+func (b *background) notifyStrandedRun(ctx context.Context, sr store.ScopedRun, clusterID, text string) error {
+	d := sr.Run.Delivery
+	if d == nil {
+		return nil
+	}
+	dyn, err := b.scoped(ctx, clusterID)
+	if err != nil {
+		return fmt.Errorf("workspace %s: %w", clusterID, err)
+	}
+	// A channel conversation is answered in the chat it came from; anything else
+	// goes to the agent's configured channel.
+	if d.Kind == string(executor.KindChannel) && d.SourceName != "" {
+		b.replyToChannelTarget(ctx, dyn, d.SourceName, d.ReplyTarget, text)
+		return nil
+	}
+	au, err := dyn.Resource(agentsclient.AgentGVR).Get(ctx, sr.Run.AgentName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	agent, err := fromU[agentsv1alpha1.Agent](au)
+	if err != nil {
+		return err
+	}
+	b.notify(ctx, dyn, agent, d.NotifyChannel, text)
+	return nil
+}
+
+// resumeRecoveredRun continues a run the sweep found stranded. It is the
+// background executor's half of recovery: the sweep owns the policy (what counts
+// as stale, when to give up), this owns the tenant access — the agent's own
+// ServiceAccount through the APIExport virtual workspace, exactly as a scheduled
+// run executes. No user token, so no edges family, same as any background run.
+func (b *background) resumeRecoveredRun(ctx context.Context, sr store.ScopedRun, clusterID string) error {
+	dyn, err := b.scoped(ctx, clusterID)
+	if err != nil {
+		return fmt.Errorf("workspace %s: %w", clusterID, err)
+	}
+	// Count the attempt before resuming, so a run that kills the provider on every
+	// resume still walks toward maxRecoveryAttempts instead of looping forever.
+	if stored, gerr := b.server.store.GetRun(ctx, sr.Scope, sr.Run.ID); gerr == nil {
+		stored.Attempt++
+		stored.UpdatedAt = time.Now().UTC()
+		if serr := b.server.store.SaveRun(ctx, sr.Scope, stored); serr != nil {
+			return fmt.Errorf("recording the resume attempt: %w", serr)
+		}
+	}
+	rd := resumeDeps{
+		Creds: vwSecrets{dyn}, CR: vwCR{dyn}, ClusterID: clusterID,
+		HubToken: b.agentToken(ctx, dyn, clusterID, sr.Run.AgentName),
+	}
+	// Detached: the resume outlives this tick, and its own timeout bounds it.
+	go b.server.resumeRun(context.WithoutCancel(ctx), sr.Scope, sr.Run.ID, rd, resumeIntent{
+		FromPhase: store.RunPhaseRunning,
+	})
+	return nil
 }
 
 func (b *background) tick(ctx context.Context) {
@@ -602,6 +672,24 @@ func (b *background) updateStatus(ctx context.Context, clusterID string, u *unst
 
 // handle executes one background job: load the agent via the VW, run the task
 // through the shared executeTask path, update source status, notify.
+// channelErrorText renders a run failure for someone reading a chat.
+//
+// A cancellation is a person's decision, not a crash, and the error it leaves
+// behind is whatever call happened to be in flight — "Post
+// https://api.openai.com/v1/chat/completions: context canceled" says nothing to
+// the reader and reads like the agent broke. A run that exceeded its own time
+// budget is likewise not a fault to report verbatim. Everything else is a real
+// error and is passed through, because hiding those is worse.
+func channelErrorText(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "⏹️ Stopped before it finished."
+	case errors.Is(err, context.DeadlineExceeded):
+		return "⏱️ That ran past its time limit and was stopped. A narrower request, or a higher timeout on this agent, should get through."
+	}
+	return "⚠️ " + err.Error()
+}
+
 func (b *background) handle(ctx context.Context, job executor.Job) error {
 	dyn, err := b.scoped(ctx, job.ClusterID)
 	if err != nil {
@@ -622,6 +710,11 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		Creds: vwSecrets{dyn}, CR: vwCR{dyn}, Scope: scope, Agent: agent,
 		SessionID: job.SessionID, Task: job.Task, Trigger: job.Trigger, SourceName: job.SourceName,
 		NotifyChannel: job.NotifyChannel,
+		// Recorded on the run so a crash mid-flight can still be reported to
+		// whoever is waiting — the goroutine that knows this is the thing a
+		// restart destroys.
+		ReplyTarget:  job.ReplyTarget,
+		DeliveryKind: string(job.Kind),
 		// There is no user to act as here, so the run acts as the AGENT's own
 		// ServiceAccount. Failing to mint one is not fatal: the run proceeds
 		// without instance-backed tools, exactly as it did before, rather than
@@ -649,11 +742,14 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	// the user is standing in — not the notify connection.
 	if job.Kind == executor.KindChannel {
 		if runErr != nil {
-			b.replyToChannelTarget(ctx, dyn, job.SourceName, job.ReplyTarget, "⚠️ "+runErr.Error())
+			b.replyToChannelTarget(ctx, dyn, job.SourceName, job.ReplyTarget, channelErrorText(runErr))
 			return runErr
 		}
 		if out := strings.TrimSpace(res.Content); out != "" {
-			b.replyToChannelTarget(ctx, dyn, job.SourceName, job.ReplyTarget, truncate(out, 3500))
+			// No cap here: the channel layer splits a long answer across messages,
+			// and clipping first would discard most of a research report before it
+			// ever had the chance.
+			b.replyToChannelTarget(ctx, dyn, job.SourceName, job.ReplyTarget, out)
 		}
 		return nil
 	}
@@ -662,7 +758,8 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	// The destination is the schedule/trigger's channel (job.NotifyChannel),
 	// else the agent's primary channel.
 	if runErr != nil {
-		b.notify(ctx, dyn, agent, job.NotifyChannel, fmt.Sprintf("⚠️ %s %q failed: %v", job.Kind, job.SourceName, runErr))
+		b.notify(ctx, dyn, agent, job.NotifyChannel,
+			fmt.Sprintf("%s %q: %s", job.Kind, job.SourceName, channelErrorText(runErr)))
 		return runErr
 	}
 	out := strings.TrimSpace(res.Content)
@@ -670,7 +767,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		return nil
 	}
 	if out != "" {
-		b.notify(ctx, dyn, agent, job.NotifyChannel, fmt.Sprintf("[%s] %s", job.SourceName, truncate(out, 3500)))
+		b.notify(ctx, dyn, agent, job.NotifyChannel, fmt.Sprintf("[%s] %s", job.SourceName, out))
 	}
 	return nil
 }

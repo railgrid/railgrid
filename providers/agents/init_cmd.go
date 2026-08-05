@@ -52,8 +52,21 @@ func runInitCmd(ctx context.Context) error {
 		// the tenant workspace and acts as the calling user; the claim lets it
 		// read/write those Secrets. Tenant scoping is expressed in the
 		// CatalogEntry's permissionClaims (manifest.yaml).
+		//
+		// MUST stay in sync with manifest.yaml and the chart's
+		// catalogentry.yaml: the CatalogEntry drives what tenants accept on
+		// their APIBinding, but the virtual workspace authorizes against the
+		// claims on the APIExport written here — a claim missing on either
+		// side is denied.
 		Claims: []sdkinstall.PermissionClaim{
 			{Resource: "secrets", Verbs: []string{"get", "list", "watch", "create", "update", "delete"}},
+			// Per-agent identity for background runs (api/agentidentity.go):
+			// the agent's ServiceAccount, its read-instances ClusterRole and
+			// binding. Create-only so the provider can never widen a grant it
+			// once made.
+			{Resource: "serviceaccounts", Verbs: []string{"get", "create"}},
+			{Group: "rbac.authorization.k8s.io", Resource: "clusterroles", Verbs: []string{"get", "create"}},
+			{Group: "rbac.authorization.k8s.io", Resource: "clusterrolebindings", Verbs: []string{"get", "create"}},
 		},
 		CatalogEntryFile: catalogEntryFile,
 	}); err != nil {

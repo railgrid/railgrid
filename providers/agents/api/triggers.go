@@ -45,7 +45,9 @@ func (s *Server) deliverToNotifyChannel(ctx context.Context, c *agentsclient.Cli
 		Token:  s.connectionTokenCtx(ctx, c, connName),
 		Target: conn.Spec.Channel,
 		Config: conn.Spec.Config,
-		Text:   truncate(msg, 3500),
+		// Uncapped: channels.Send splits a long answer across messages, so
+		// clipping here would throw most of it away first.
+		Text: msg,
 	})
 }
 

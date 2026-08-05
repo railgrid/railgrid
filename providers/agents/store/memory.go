@@ -21,13 +21,17 @@ import (
 // is the fallback when no database URL is configured; production uses Postgres.
 type MemoryStore struct {
 	mu        sync.Mutex
-	messages  map[string][]Message  // key: scope|session
-	runs      map[string]Run        // key: scope|runID
-	memories  map[string]Memory     // key: scope|memoryID
-	inbox     map[string]InboxItem  // key: scope|itemID
-	toolCalls map[string][]ToolCall // key: scope
-	usage     map[string]Usage      // key: scope|agent|windowStart
-	tenants   map[string]TenantRef  // key: clusterID
+	messages  map[string][]Message      // key: scope|session
+	runs      map[string]Run            // key: scope|runID
+	memories  map[string]Memory         // key: scope|memoryID
+	inbox     map[string]InboxItem      // key: scope|itemID
+	toolCalls map[string][]ToolCall     // key: scope
+	usage     map[string]Usage          // key: scope|agent|windowStart
+	tenants   map[string]TenantRef      // key: clusterID
+	summaries map[string]SessionSummary // key: scope|session
+	// runScopes remembers each run's scope so ListUnfinishedRuns can report it,
+	// mirroring the org/workspace columns the Postgres rows carry.
+	runScopes map[string]Scope // key: scope|runID
 }
 
 // NewMemoryStore returns an empty in-memory store.
@@ -40,7 +44,87 @@ func NewMemoryStore() *MemoryStore {
 		toolCalls: map[string][]ToolCall{},
 		usage:     map[string]Usage{},
 		tenants:   map[string]TenantRef{},
+		summaries: map[string]SessionSummary{},
+		runScopes: map[string]Scope{},
 	}
+}
+
+func (m *MemoryStore) FindClusterForScope(_ context.Context, orgUUID, workspaceUUID string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for clusterID, ref := range m.tenants {
+		if ref.OrgUUID == orgUUID && ref.WorkspaceUUID == workspaceUUID {
+			return clusterID, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func (m *MemoryStore) PutSessionSummary(_ context.Context, scope Scope, s SessionSummary) error {
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(s.SessionID) == "" {
+		return fmt.Errorf("session ID is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.summaries[sessionKey(scope, s.SessionID)] = s
+	return nil
+}
+
+func (m *MemoryStore) GetSessionSummary(_ context.Context, scope Scope, sessionID string) (SessionSummary, bool, error) {
+	if err := scope.withAgent(); err != nil {
+		return SessionSummary{}, false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.summaries[sessionKey(scope, sessionID)]
+	return s, ok, nil
+}
+
+func (m *MemoryStore) FindRunByIdempotencyKey(_ context.Context, scope Scope, key string) (Run, bool, error) {
+	if err := scope.withAgent(); err != nil {
+		return Run{}, false, err
+	}
+	if strings.TrimSpace(key) == "" {
+		return Run{}, false, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, run := range m.runs {
+		if run.IdempotencyKey == key && run.AgentName == scope.AgentName && hasPrefix(k, tenantKey(scope)+"|") {
+			return run, true, nil
+		}
+	}
+	return Run{}, false, nil
+}
+
+func (m *MemoryStore) ListUnfinishedRuns(_ context.Context, phases []RunPhase, updatedBefore time.Time, limit int) ([]ScopedRun, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	want := map[RunPhase]bool{}
+	for _, p := range phases {
+		want[p] = true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []ScopedRun
+	for key, run := range m.runs {
+		if len(want) > 0 && !want[run.Phase] {
+			continue
+		}
+		if !run.UpdatedAt.Before(updatedBefore) {
+			continue
+		}
+		out = append(out, ScopedRun{Scope: m.runScopes[key], Run: run})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Run.UpdatedAt.Before(out[j].Run.UpdatedAt) })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 func (m *MemoryStore) SaveTenantRef(_ context.Context, clusterID string, ref TenantRef) error {
@@ -196,6 +280,9 @@ func (m *MemoryStore) DeleteSession(_ context.Context, scope Scope, sessionID st
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.messages, sessionKey(scope, sessionID))
+	// The summary stands for messages that no longer exist; keeping it would
+	// replay a wiped conversation back into the model after "/new".
+	delete(m.summaries, sessionKey(scope, sessionID))
 	return nil
 }
 
@@ -208,7 +295,9 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.runs[tenantKey(scope)+"|"+run.ID] = run
+	key := tenantKey(scope) + "|" + run.ID
+	m.runs[key] = run
+	m.runScopes[key] = scope
 	return nil
 }
 
@@ -517,9 +606,15 @@ func (m *MemoryStore) DeleteAgentData(_ context.Context, scope Scope, agentName 
 			delete(m.messages, k)
 		}
 	}
+	for k := range m.summaries {
+		if hasPrefix(k, msgPrefix) {
+			delete(m.summaries, k)
+		}
+	}
 	for k, run := range m.runs {
 		if run.AgentName == agentName && hasPrefix(k, tk+"|") {
 			delete(m.runs, k)
+			delete(m.runScopes, k)
 		}
 	}
 	for k, mem := range m.memories {

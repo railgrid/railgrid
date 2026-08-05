@@ -13,7 +13,7 @@
 // `delete<Kind>` mutations — no field schema needs to be known ahead of time.
 
 import { load as yamlLoad } from 'js-yaml'
-import type { ErrorResponse, Instance, JSONSchema, Template, TemplateView } from './types'
+import type { ErrorResponse, Instance, JSONSchema, Template, TemplateExposure, TemplateView } from './types'
 import { columnsNeedInstanceData } from './view'
 
 const GROUP = 'infrastructure.kedge.faros.sh'
@@ -153,6 +153,7 @@ function templateFromGQL(name: string, spec: Record<string, unknown>): Template 
     description: (spec.description as string) ?? '',
     category: spec.category as string | undefined,
     cloud: spec.cloud as string | undefined,
+    exposure: spec.exposure as TemplateExposure | undefined,
     version: spec.version as string | undefined,
     iconURL: spec.iconURL as string | undefined,
     kind: instanceCRD.kind ?? '',
@@ -238,13 +239,17 @@ let sampleValuesSupported: boolean | null = null
 // older CRD has no such field and rejects the whole query if we select it, so we
 // probe optimistically and drop it on that specific error. null = not yet probed.
 let viewSupported: boolean | null = null
+// exposure gets the same optimistic-probe treatment; without it the catalog
+// pill degrades to the 'internal' default rather than the query failing.
+let exposureSupported: boolean | null = null
 
-// templateSpec is the shared Template spec selection set. sampleValues/view are
-// omitted once we've learned the gateway doesn't expose them.
+// templateSpec is the shared Template spec selection set. sampleValues/view/
+// exposure are omitted once we've learned the gateway doesn't expose them.
 function templateSpec(): string {
   const sv = sampleValuesSupported === false ? '' : ' sampleValues'
   const vw = viewSupported === false ? '' : ' view'
-  return `displayName description category version iconURL backend instanceCRD { group version resource kind } schema${sv}${vw}`
+  const ex = exposureSupported === false ? '' : ' exposure'
+  return `displayName description category version iconURL backend instanceCRD { group version resource kind } schema${sv}${vw}${ex}`
 }
 
 // templateQuery runs a Template query built from templateSpec(), retrying when
@@ -263,6 +268,10 @@ async function templateQuery<T>(make: (spec: string) => string, variables: Recor
       }
       if (viewSupported !== false && msg.includes('view')) {
         viewSupported = false
+        continue
+      }
+      if (exposureSupported !== false && msg.includes('exposure')) {
+        exposureSupported = false
         continue
       }
       throw e

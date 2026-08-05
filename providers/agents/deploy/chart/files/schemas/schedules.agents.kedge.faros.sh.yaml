@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260724-50c73a4.schedules.agents.kedge.faros.sh
+  name: v260801-3863009e.schedules.agents.kedge.faros.sh
 spec:
   group: agents.kedge.faros.sh
   names:
@@ -25,7 +25,7 @@ spec:
       type: string
     - jsonPath: .status.nextRun
       name: NextRun
-      type: date
+      type: string
     - jsonPath: .spec.suspend
       name: Suspended
       type: boolean

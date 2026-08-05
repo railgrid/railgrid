@@ -9,6 +9,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -80,6 +81,22 @@ func bearerToken(r *http.Request) string {
 		return strings.TrimSpace(auth[len(p):])
 	}
 	return ""
+}
+
+// detachedStreamContext splits a streaming request in two: a context for the
+// WORK, which survives the client hanging up, and a predicate reporting whether
+// the client is still there to write to.
+//
+// Streaming handlers otherwise couple the two, so closing a tab cancels the run
+// behind it. That is right for a cheap read and wrong for anything that spends
+// real money or minutes — the result is already durable (transcript + run
+// record), so the only thing a disconnect should stop is the writing.
+//
+// Callers must consult clientGone before every write; nothing here prevents a
+// write to a dead connection.
+func detachedStreamContext(r *http.Request) (runCtx context.Context, clientGone func() bool) {
+	reqCtx := r.Context()
+	return context.WithoutCancel(reqCtx), func() bool { return reqCtx.Err() != nil }
 }
 
 // statusResponse is the error envelope the portal expects.

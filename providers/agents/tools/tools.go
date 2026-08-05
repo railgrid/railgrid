@@ -60,6 +60,45 @@ type Deps struct {
 	// Injected by the api layer (it owns run execution); nil disables the
 	// delegate tool.
 	Delegate func(ctx context.Context, targetAgent, task string) (string, error)
+
+	// Spawn starts a scoped worker — this same agent on a sub-task, with a fresh
+	// context and a narrowed toolset — and returns its task id without waiting.
+	// Join collects the results. Both are injected by the api layer (it owns run
+	// execution); nil on either disables both tools.
+	Spawn func(ctx context.Context, req SpawnRequest) (taskID string, err error)
+	Join  func(ctx context.Context, taskIDs []string, timeoutSeconds int) (string, error)
+
+	// SpawnPolicy describes the limits and grantable tool families the spawn tool
+	// advertises to the model, so its description matches what it will accept.
+	SpawnPolicy SpawnPolicy
+}
+
+// SpawnRequest is one worker the model asked for.
+type SpawnRequest struct {
+	// Task is the self-contained sub-task the worker works on.
+	Task string
+	// Instructions is extra guidance folded into the worker's system context.
+	Instructions string
+	// Families names the tool families the worker should get. The api layer
+	// intersects this with what the calling run itself holds — a worker can never
+	// reach anything its parent could not.
+	Families []string
+	// MaxToolTurns bounds the worker's own tool-call loop.
+	MaxToolTurns int
+}
+
+// SpawnPolicy is the advertised spawn envelope for one run.
+type SpawnPolicy struct {
+	// Families a worker may be granted (already narrowed to the parent's grant).
+	Families []string
+	// DefaultFamilies is what a worker gets when the model names none.
+	DefaultFamilies []string
+	// MaxPerRun caps spawns in this run; MaxConcurrent caps simultaneous workers.
+	MaxPerRun     int
+	MaxConcurrent int
+	// DefaultToolTurns / MaxToolTurns bound a worker's own loop.
+	DefaultToolTurns int
+	MaxToolTurns     int
 }
 
 // DataPlane is what a tool needs to reach a tenant workload provisioned by the
@@ -164,6 +203,35 @@ func argInt(args map[string]any, key string) int {
 		return n
 	}
 	return 0
+}
+
+// argStringSlice reads a string-array argument, tolerating the two shapes
+// models emit instead of a JSON array: a single bare string, and a
+// comma-separated string. Blanks are dropped; absent yields nil.
+func argStringSlice(args map[string]any, key string) []string {
+	var out []string
+	add := func(s string) {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	switch v := args[key].(type) {
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				add(s)
+			}
+		}
+	case []string:
+		for _, s := range v {
+			add(s)
+		}
+	case string:
+		for _, s := range strings.Split(v, ",") {
+			add(s)
+		}
+	}
+	return out
 }
 
 // argBool reads a boolean argument, tolerating the "true"/"false" strings some

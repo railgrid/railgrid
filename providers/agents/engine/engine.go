@@ -106,6 +106,14 @@ type Callbacks struct {
 	OnToolStart func(id, name, args string)
 	// OnTool fires when a tool call completes (or fails).
 	OnTool func(ToolEvent)
+	// OnCheckpoint offers a resumable snapshot of the loop, every
+	// TurnConfig.CheckpointEvery iterations, at a point where no tool call is
+	// half-executed. The caller persists it so a crash or restart mid-run can
+	// continue from here instead of losing the work. Pending is always empty in
+	// these snapshots: resuming re-asks the model rather than re-running tools,
+	// which costs one model call and keeps resume free of any assumption that
+	// tools are safe to repeat.
+	OnCheckpoint func(Checkpoint)
 }
 
 func (c Callbacks) delta(s string) {
@@ -124,6 +132,28 @@ func (c Callbacks) tool(ev ToolEvent) {
 	if c.OnTool != nil {
 		c.OnTool(ev)
 	}
+}
+
+func (c Callbacks) checkpoint(ck Checkpoint) {
+	if c.OnCheckpoint != nil {
+		c.OnCheckpoint(ck)
+	}
+}
+
+// TurnConfig bounds one turn. Zero values mean "provider default", so a caller
+// can pass just the fields it cares about.
+type TurnConfig struct {
+	// MaxIters caps tool-call rounds. <=0 becomes 1.
+	MaxIters int
+	// ContextBudgetTokens caps the estimated size of the wire conversation. When
+	// the conversation grows past it, the OLDEST tool observations are clipped in
+	// place (see trimConversation) — the mechanism that keeps one turn with large
+	// tool results, e.g. a research fan-out joining many workers, from exceeding
+	// the model's window. 0 disables trimming.
+	ContextBudgetTokens int
+	// CheckpointEvery is how many iterations pass between OnCheckpoint offers.
+	// 0 disables periodic checkpointing.
+	CheckpointEvery int
 }
 
 // Usage reports token consumption for a completed turn, when the provider
@@ -151,7 +181,7 @@ func New() *Engine { return &Engine{} }
 
 // StreamTurn runs one assistant turn (no tools) and streams content deltas.
 func (e *Engine) StreamTurn(ctx context.Context, model einomodel.BaseChatModel, msgs []Message, onDelta func(string)) (Result, error) {
-	return e.StreamTurnWithTools(ctx, model, msgs, nil, 1, Callbacks{OnDelta: onDelta})
+	return e.StreamTurnWithTools(ctx, model, msgs, nil, TurnConfig{MaxIters: 1}, Callbacks{OnDelta: onDelta})
 }
 
 // StreamTurnWithTools runs an assistant turn with a tool-call loop: the model
@@ -164,7 +194,7 @@ func (e *Engine) StreamTurnWithTools(
 	model einomodel.BaseChatModel,
 	msgs []Message,
 	tools []Tool,
-	maxIters int,
+	cfg TurnConfig,
 	cb Callbacks,
 ) (Result, error) {
 	active, byName, err := e.bindTools(model, tools)
@@ -175,12 +205,17 @@ func (e *Engine) StreamTurnWithTools(
 	if len(in) == 0 {
 		return Result{}, errors.New("engine: no messages to send")
 	}
-	if maxIters <= 0 {
-		maxIters = 1
-	}
 	var content strings.Builder
 	var usage Usage
-	return e.loop(ctx, active, byName, in, maxIters, 0, &content, &usage, nil, nil, cb)
+	return e.loop(ctx, active, byName, in, cfg.normalized(), 0, &content, &usage, nil, nil, cb)
+}
+
+// normalized applies the defaults so the loop can read cfg without guarding.
+func (c TurnConfig) normalized() TurnConfig {
+	if c.MaxIters <= 0 {
+		c.MaxIters = 1
+	}
+	return c
 }
 
 // ResumeTurnWithTools continues a checkpointed turn after the user decided on
@@ -192,7 +227,7 @@ func (e *Engine) ResumeTurnWithTools(
 	model einomodel.BaseChatModel,
 	ck Checkpoint,
 	tools []Tool,
-	maxIters int,
+	cfg TurnConfig,
 	approve bool,
 	denyNote string,
 	cb Callbacks,
@@ -205,15 +240,18 @@ func (e *Engine) ResumeTurnWithTools(
 	if len(in) == 0 {
 		return Result{}, errors.New("engine: checkpoint has no messages")
 	}
-	if maxIters <= 0 || maxIters <= ck.Iter {
-		maxIters = ck.Iter + 1
+	cfg = cfg.normalized()
+	// A resume must be able to take at least one more step, even when the
+	// checkpoint already sits at the configured limit.
+	if cfg.MaxIters <= ck.Iter {
+		cfg.MaxIters = ck.Iter + 1
 	}
 	var content strings.Builder
 	content.WriteString(ck.Content)
 	usage := ck.Usage
 	pending := ck.Pending
 	dec := &decision{approve: approve, note: denyNote}
-	return e.loop(ctx, active, byName, in, maxIters, ck.Iter, &content, &usage, pending, dec, cb)
+	return e.loop(ctx, active, byName, in, cfg, ck.Iter, &content, &usage, pending, dec, cb)
 }
 
 // decision is the user's verdict on the FIRST pending call of a resumed turn.
@@ -258,15 +296,29 @@ func (e *Engine) loop(
 	active einomodel.BaseChatModel,
 	byName map[string]Tool,
 	in []*schema.Message,
-	maxIters, startIter int,
+	cfg TurnConfig,
+	startIter int,
 	content *strings.Builder,
 	usage *Usage,
 	pending []PendingCall,
 	dec *decision,
 	cb Callbacks,
 ) (Result, error) {
-	for iter := startIter; iter < maxIters; iter++ {
+	for iter := startIter; iter < cfg.MaxIters; iter++ {
 		if len(pending) == 0 {
+			// Keep the conversation inside its budget before asking the model —
+			// this is where a turn carrying large tool results gets trimmed.
+			trimConversation(in, cfg.ContextBudgetTokens)
+			// Offer a resumable snapshot: no tool call is in flight here, so the
+			// checkpoint is coherent and resuming just re-asks the model.
+			if cb.OnCheckpoint != nil && cfg.CheckpointEvery > 0 && iter > startIter && (iter-startIter)%cfg.CheckpointEvery == 0 {
+				cb.checkpoint(Checkpoint{
+					Messages: checkpointMessages(in),
+					Content:  content.String(),
+					Usage:    *usage,
+					Iter:     iter,
+				})
+			}
 			full, err := e.streamOnce(ctx, active, in, content, usage, cb.OnDelta)
 			if err != nil {
 				return Result{}, err

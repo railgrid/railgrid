@@ -51,6 +51,11 @@ sync_group() {
 sync_group "$TS_SRC" TS_PORTALS TS_FILES
 sync_group "$VUE_SRC" VUE_PORTALS VUE_FILES
 
+# vibe-studio's vanilla-TS portal only consumes tenant.ts (no icons/modal).
+VIBE_PORTALS=("providers/vibe-studio/portal")
+VIBE_FILES=(tenant.ts)
+sync_group "$TS_SRC" VIBE_PORTALS VIBE_FILES
+
 # tenant.ts is plain TS (no framework) and shared by hub-proxy portals of BOTH
 # kinds, so the vanilla canonical is also vendored into the Vue portals.
 for p in "${VUE_PORTALS[@]}"; do

@@ -38,7 +38,7 @@ func TestInterruptCheckpointsTheTurn(t *testing.T) {
 	res, err := New().StreamTurnWithTools(context.Background(), m,
 		[]Message{{Role: RoleUser, Content: "weather in vilnius?"}},
 		[]Tool{gatedTool("get_weather", &executed)},
-		8, Callbacks{})
+		TurnConfig{MaxIters: 8}, Callbacks{})
 	if err != nil {
 		t.Fatalf("interrupt must not be an error: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestResumeApprovedExecutesAndContinues(t *testing.T) {
 	paused, err := New().StreamTurnWithTools(context.Background(), m,
 		[]Message{{Role: RoleUser, Content: "weather in vilnius?"}},
 		[]Tool{gatedTool("get_weather", &executed)},
-		8, Callbacks{})
+		TurnConfig{MaxIters: 8}, Callbacks{})
 	if err != nil || paused.Interrupt == nil {
 		t.Fatalf("setup: %v %+v", err, paused)
 	}
@@ -99,7 +99,7 @@ func TestResumeApprovedExecutesAndContinues(t *testing.T) {
 	}
 	var events []ToolEvent
 	res, err := New().ResumeTurnWithTools(context.Background(), m, paused.Interrupt.Checkpoint,
-		[]Tool{approvedTool}, 8, true, "", Callbacks{OnTool: func(ev ToolEvent) { events = append(events, ev) }})
+		[]Tool{approvedTool}, TurnConfig{MaxIters: 8}, true, "", Callbacks{OnTool: func(ev ToolEvent) { events = append(events, ev) }})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestResumeDeniedFeedsRefusalBack(t *testing.T) {
 	paused, err := New().StreamTurnWithTools(context.Background(), m,
 		[]Message{{Role: RoleUser, Content: "weather in vilnius?"}},
 		[]Tool{gatedTool("get_weather", &executed)},
-		8, Callbacks{})
+		TurnConfig{MaxIters: 8}, Callbacks{})
 	if err != nil || paused.Interrupt == nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestResumeDeniedFeedsRefusalBack(t *testing.T) {
 		},
 	}
 	res, err := New().ResumeTurnWithTools(context.Background(), m, paused.Interrupt.Checkpoint,
-		[]Tool{tool}, 8, false, "not allowed in prod", Callbacks{})
+		[]Tool{tool}, TurnConfig{MaxIters: 8}, false, "not allowed in prod", Callbacks{})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}

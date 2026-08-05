@@ -17,7 +17,9 @@ limitations under the License.
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -139,7 +141,81 @@ func newProjectEinoOpenAIChatModel(ctx context.Context, settings projectLLMSetti
 	if err != nil {
 		return nil, fmt.Errorf("create native Eino OpenAI chat model: %w", err)
 	}
-	return model, nil
+	return &projectEinoAssistantOpenAIPayloadModel{BaseChatModel: model}, nil
+}
+
+// projectEinoAssistantOpenAIPayloadModel repairs the serialized chat completion
+// request before it leaves the process. The OpenAI wire encoder tags content
+// with omitempty, so any message without text — an assistant message that only
+// carries tool calls, most commonly — is sent with no content field at all.
+// OpenAI itself accepts that; several OpenAI-compatible providers read the
+// missing key as null and reject the request with "Invalid value for 'content':
+// expected a string, got null".
+type projectEinoAssistantOpenAIPayloadModel struct {
+	einomodel.BaseChatModel
+}
+
+func (m *projectEinoAssistantOpenAIPayloadModel) Generate(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.Message, error) {
+	return m.BaseChatModel.Generate(ctx, input, projectEinoAssistantOpenAIPayloadOptions(opts)...)
+}
+
+func (m *projectEinoAssistantOpenAIPayloadModel) Stream(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.StreamReader[*schema.Message], error) {
+	return m.BaseChatModel.Stream(ctx, input, projectEinoAssistantOpenAIPayloadOptions(opts)...)
+}
+
+func projectEinoAssistantOpenAIPayloadOptions(opts []einomodel.Option) []einomodel.Option {
+	normalized := make([]einomodel.Option, 0, len(opts)+1)
+	normalized = append(normalized, opts...)
+	return append(normalized, openaimodel.WithRequestPayloadModifier(projectEinoAssistantBackfillMessageContent))
+}
+
+// projectEinoAssistantBackfillMessageContent gives every message an explicit
+// string content. The payload is rewritten only when a message is missing the
+// field or carries an explicit null; anything unparseable is forwarded
+// untouched so a malformed body still surfaces the provider's own error.
+func projectEinoAssistantBackfillMessageContent(_ context.Context, _ []*schema.Message, rawBody []byte) ([]byte, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		return rawBody, nil
+	}
+	rawMessages, ok := payload["messages"]
+	if !ok {
+		return rawBody, nil
+	}
+	var messages []map[string]json.RawMessage
+	if err := json.Unmarshal(rawMessages, &messages); err != nil {
+		return rawBody, nil
+	}
+	changed := false
+	for _, message := range messages {
+		content, ok := message["content"]
+		if ok && !bytes.Equal(bytes.TrimSpace(content), []byte("null")) {
+			continue
+		}
+		message["content"] = json.RawMessage(`""`)
+		changed = true
+	}
+	if !changed {
+		return rawBody, nil
+	}
+	encodedMessages, err := json.Marshal(messages)
+	if err != nil {
+		return rawBody, nil
+	}
+	payload["messages"] = encodedMessages
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return rawBody, nil
+	}
+	return encoded, nil
 }
 
 // projectModelSupportsTemperature reports whether the given model accepts a

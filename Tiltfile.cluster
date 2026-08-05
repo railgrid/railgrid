@@ -375,20 +375,63 @@ spec:
     app_studio_preview_tls_secret,
 )))
 
+# Preview/apps ingress tunnel — serves BOTH sandbox previews
+# (*.preview.localhost) and template app URLs (*.apps.127.0.0.1.sslip.io) off
+# the one envoy Gateway, so it is grouped with vibe-studio (the current
+# builder; app-studio is being retired and the two never run together).
+#
+# Pin the context: the user's ambient kubectl context drifts (kcp workspace
+# contexts), and against those this loop never finds the envoy service.
+#
+# Self-healing, because two independent stale-state failures were observed
+# after a kind-cluster pod restart: (1) the forward keeps pointing at a dead
+# pod, and (2) the envoy proxy comes back without programming its listener,
+# so connections reset even through a fresh forward. The loop probes the
+# tunnel and, after repeated failures, restarts the forward and bounces the
+# proxy pod to force a clean xDS fetch.
+#
+# The probe MUST send SNI. Both listeners are hostname-scoped HTTPS, so envoy
+# builds only per-SNI filter chains; a TLS hello without a matching server name
+# matches nothing and envoy RSTs. kubectl port-forward treats that peer reset as
+# fatal and tears down the whole forward ("error: lost connection to pod"), so a
+# bare https://127.0.0.1:10443/ probe kills the tunnel it is meant to watch —
+# and then bounces a perfectly healthy envoy pod every 45s. Hence --resolve.
 local_resource(
-    'app-studio-preview-port-forward',
+    'vibe-studio-preview-port-forward',
     cmd='true',
     serve_cmd='''
 set -eu
+CTX=%s
+GW=app-studio-preview
+PROBE_HOST=tilt-probe.%s
 while true; do
-  svc="$(kubectl get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=app-studio-preview -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-  if [ -n "$svc" ]; then
-    exec kubectl -n envoy-gateway-system port-forward "svc/$svc" 10443:10443
-  fi
-  sleep 2
+  svc="$(kubectl --context "$CTX" get svc -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=$GW -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [ -z "$svc" ]; then sleep 2; continue; fi
+  kubectl --context "$CTX" -n envoy-gateway-system port-forward "svc/$svc" 10443:10443 &
+  pf=$!
+  fails=0
+  while kill -0 $pf 2>/dev/null; do
+    sleep 15
+    # Any HTTP answer (404 included) means the listener is programmed.
+    if curl -sk --max-time 5 -o /dev/null \
+         --resolve "$PROBE_HOST:10443:127.0.0.1" "https://$PROBE_HOST:10443/"; then
+      fails=0
+    else
+      fails=$((fails+1))
+      echo "preview tunnel unhealthy ($fails/3)"
+      if [ $fails -ge 3 ]; then
+        echo "restarting forward and bouncing the envoy proxy pod"
+        kubectl --context "$CTX" delete pod -n envoy-gateway-system -l gateway.envoyproxy.io/owning-gateway-name=$GW --wait=false 2>/dev/null || true
+        kill $pf 2>/dev/null || true
+        break
+      fi
+    fi
+  done
+  wait $pf 2>/dev/null || true
+  sleep 3
 done
-'''.strip(),
-    labels=['providers-app-studio'],
+'''.strip() % (k8s_context(), app_studio_preview_base_domain),
+    labels=['providers-vibe-studio'],
 )
 
 # --- kcp kubeconfig → in-cluster Secret the chart mounts ---
@@ -533,6 +576,7 @@ kubectl create secret generic kcp-static-tokens -n default \
 #   providers-code         — git repository manager (port :8083)
 #   providers-kuery        — fleet query engine (port :8084)
 #   providers-agents       — long-running personal AI agents (port :8087)
+#   providers-vibe-studio  — wizard-first app builder (port :8089)
 #
 # Each provider has three resources:
 #   <name>            build + serve; auto-restarts on src change
@@ -581,6 +625,7 @@ KUERY_REWRITE_CMD, KUERY_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/ku
 DATABRICKS_REWRITE_CMD, DATABRICKS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/databricks/manifest.yaml')
 AGENTS_REWRITE_CMD, AGENTS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/agents/manifest.yaml')
 EDGES_REWRITE_CMD, EDGES_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/edges/manifest.yaml')
+VIBE_STUDIO_REWRITE_CMD, VIBE_STUDIO_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/vibe-studio/manifest.yaml')
 
 # --- providers-quickstart ---
 local_resource(
@@ -793,6 +838,96 @@ local_resource(
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     labels=['providers-agents'],
+)
+
+# --- providers-vibe-studio ---
+# Wizard-first app builder (docs/vibe-studio-design.md). Phase 0: event store
+# + scripted engine. Standalone: only hard deps are the hub and the durable
+# store (local Postgres container via vibe-studio-db).
+local_resource(
+    'vibe-studio-db',
+    cmd='make vibe-studio-db-up',
+    deps=[
+        'providers/vibe-studio/.env',
+    ],
+    labels=['providers-vibe-studio'],
+)
+
+local_resource(
+    'vibe-studio',
+    cmd='make build-vibe-studio-provider',
+    serve_cmd='make run-provider-vibe-studio',
+    deps=[
+        'providers/vibe-studio/main.go',
+        'providers/vibe-studio/assets.go',
+        'providers/vibe-studio/init_cmd.go',
+        'providers/vibe-studio/controller_manager.go',
+        'providers/vibe-studio/api',
+        'providers/vibe-studio/apis',
+        'providers/vibe-studio/client',
+        'providers/vibe-studio/controller',
+        'providers/vibe-studio/engine',
+        'providers/vibe-studio/scheme',
+        'providers/vibe-studio/session',
+        'providers/vibe-studio/store',
+        'providers/vibe-studio/tenant',
+        'providers/vibe-studio/go.mod',
+        'providers/vibe-studio/portal/src',
+        'providers/vibe-studio/portal/package.json',
+        'providers/vibe-studio/portal/vite.config.ts',
+        'providers/vibe-studio/.env',
+    ],
+    resource_deps=['kedge-hub', 'vibe-studio-db'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=8089, path='/healthz'),
+    ),
+    labels=['providers-vibe-studio'],
+)
+
+local_resource(
+    'vibe-studio-register',
+    cmd=('{rewrite} && VIBE_STUDIO_KCP_KUBECONFIG={kc} ' +
+         'VIBE_STUDIO_KCP_SERVER={sv} VIBE_STUDIO_MANIFEST={mf} ' +
+         'make install-provider-vibe-studio').format(
+             rewrite=VIBE_STUDIO_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=VIBE_STUDIO_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-vibe-studio'],
+)
+
+local_resource(
+    'vibe-studio-init',
+    cmd=('VIBE_STUDIO_KCP_KUBECONFIG={kc} VIBE_STUDIO_KCP_SERVER={sv} ' +
+         'make init-provider-vibe-studio').format(
+             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub', 'vibe-studio-register'],
+    labels=['providers-vibe-studio'],
+)
+
+local_resource(
+    'vibe-studio-unregister',
+    cmd=('{rewrite} && VIBE_STUDIO_KCP_KUBECONFIG={kc} ' +
+         'VIBE_STUDIO_KCP_SERVER={sv} VIBE_STUDIO_MANIFEST={mf} ' +
+         'make uninstall-provider-vibe-studio').format(
+             rewrite=VIBE_STUDIO_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
+             sv=KCP_ADMIN_SERVER, mf=VIBE_STUDIO_MANIFEST_REWRITTEN),
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kedge-hub'],
+    labels=['providers-vibe-studio'],
+)
+
+local_resource(
+    'vibe-studio-db-down',
+    cmd='make vibe-studio-db-down',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['providers-vibe-studio'],
 )
 
 # --- providers-app-studio ---

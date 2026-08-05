@@ -17,6 +17,12 @@ export class AgentCreateWizard extends StoreElement {
   @state() private modelCredential = ''
   @state() private systemPrompt = ''
   @state() private channel = ''
+  // Capabilities, not a preset: the same two toggles the Config pane shows, so
+  // there is one vocabulary for "what can this agent do" whether you are creating
+  // it or editing it. Each carries its own behaviour (the provider injects the
+  // fan-out mechanics with the grant), so ticking one is all that is needed.
+  @state() private web = false
+  @state() private fanOut = false
   @state() private errors: Record<string, string> = {}
 
   firstUpdated(): void {
@@ -34,10 +40,14 @@ export class AgentCreateWizard extends StoreElement {
     this.errors = errors
     if (Object.keys(errors).length) return
 
-    const body: AgentCreate = { name, displayName: name, modelCredential: this.modelCredential }
+    let body: AgentCreate = { name, displayName: name, modelCredential: this.modelCredential }
     const prompt = this.systemPrompt.trim()
     if (prompt) body.systemPrompt = prompt
     if (this.channel) body.channels = [{ name: 'primary', connectionRef: this.channel, primary: true }]
+    const fams = ['core']
+    if (this.web) fams.push('web')
+    if (this.fanOut) fams.push('spawn')
+    if (fams.length > 1) body.interactiveFamilies = fams
     this.dispatchEvent(new CustomEvent<AgentCreate>('agents-create', { detail: body }))
   }
 
@@ -97,7 +107,8 @@ export class AgentCreateWizard extends StoreElement {
         </label>
 
         <label>
-          System prompt <span class="agents-hint">optional — persona and standing instructions</span>
+          System prompt
+          <span class="agents-hint">optional — persona and standing instructions, not mechanics</span>
           <textarea
             rows="3"
             placeholder="You are a concise assistant that…"
@@ -113,6 +124,22 @@ export class AgentCreateWizard extends StoreElement {
             ${channels.map((c) => html`<option value=${c.metadata.name} ?selected=${c.metadata.name === this.channel}>${c.spec.displayName || c.metadata.name} (${c.spec.type})</option>`)}
           </select>
         </label>
+
+        <fieldset class="agents-cap-fs">
+          <legend>Can do <span class="agents-hint">— changeable later</span></legend>
+          <label class="agents-cap">
+            <input type="checkbox" .checked=${this.web} @change=${(e: Event) => (this.web = (e.target as HTMLInputElement).checked)} />
+            <span><strong>Read the web</strong> <span class="muted">— fetch pages; search needs a websearch tool</span></span>
+          </label>
+          <label class="agents-cap">
+            <input
+              type="checkbox"
+              .checked=${this.fanOut}
+              @change=${(e: Event) => (this.fanOut = (e.target as HTMLInputElement).checked)}
+            />
+            <span><strong>Research fan-out</strong> <span class="muted">— work independent parts in parallel</span></span>
+          </label>
+        </fieldset>
 
         <div class="agents-form-actions">
           <button type="submit">${icon('check')} Create agent</button>

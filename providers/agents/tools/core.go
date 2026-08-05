@@ -24,6 +24,106 @@ import (
 	"github.com/faroshq/provider-agents/store"
 )
 
+// Spawn returns the spawn family: fan-out to scoped workers (this same agent on
+// a sub-task, fresh context, narrowed toolset) and collect their answers. It is
+// what turns one run into a research pass — decompose, spawn a worker per
+// sub-topic, join, synthesize. Empty when the api layer did not inject the
+// closures (no spawn grant, or the depth limit is already reached).
+func Spawn(d Deps) []engine.Tool {
+	if d.Spawn == nil || d.Join == nil {
+		return nil
+	}
+	p := d.SpawnPolicy
+	return []engine.Tool{
+		{
+			Name: "spawn",
+			Desc: fmt.Sprintf(
+				"Start a worker on one self-contained sub-task and return immediately with its task id; call join to collect the answers. "+
+					"PREFER THIS over investigating several things yourself one at a time. If a request has independent parts — "+
+					"different topics, competitors, regions, time periods, options to compare — spawn one worker per part instead of "+
+					"running a sequence of searches in this turn. Two reasons it is better: the workers run at the same time (%d at once), "+
+					"and each gets its own context and tool budget, so each part is investigated properly instead of sharing this one turn "+
+					"between all of them. "+
+					"A worker is you, with a fresh context (it cannot see this conversation — put everything it needs in the task) and only "+
+					"the tools you grant it. It returns a written answer with its sources. Up to %d workers per run. "+
+					"Do NOT use it for a single narrow lookup — answer that yourself. "+
+					"Do the synthesis yourself: a worker reports findings, it does not decide.",
+				p.MaxConcurrent, p.MaxPerRun),
+			// A raw schema rather than Params: the tools array needs an item type.
+			JSONSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"task": map[string]any{
+						"type":        "string",
+						"description": "the self-contained sub-task, including every fact and constraint the worker needs — it starts with no other context",
+					},
+					"instructions": map[string]any{
+						"type":        "string",
+						"description": "optional extra guidance on how to work the task or shape the answer",
+					},
+					"tools": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string", "enum": p.Families},
+						"description": "tool families for the worker. Available: " + strings.Join(p.Families, ", ") + ". Default: " + strings.Join(p.DefaultFamilies, ", "),
+					},
+					"maxToolTurns": map[string]any{
+						"type": "integer",
+						"description": fmt.Sprintf("how many tool-call rounds the worker may take (default %d, max %d). Raise it for a broad sub-topic, lower it for a single lookup.",
+							p.DefaultToolTurns, p.MaxToolTurns),
+					},
+				},
+				"required": []any{"task"},
+			},
+			Exec: func(ctx context.Context, argsJSON string) (string, error) {
+				args, err := parseArgs(argsJSON)
+				if err != nil {
+					return "", err
+				}
+				task := strings.TrimSpace(argString(args, "task"))
+				if task == "" {
+					return "", fmt.Errorf("task is required")
+				}
+				id, err := d.Spawn(ctx, SpawnRequest{
+					Task:         task,
+					Instructions: strings.TrimSpace(argString(args, "instructions")),
+					Families:     argStringSlice(args, "tools"),
+					MaxToolTurns: argInt(args, "maxToolTurns"),
+				})
+				if err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("started worker %s. Spawn any other independent sub-tasks now, then call join to collect the results.", id), nil
+			},
+		},
+		{
+			Name: "join",
+			Desc: "Wait for spawned workers and return their answers. Call it once, after starting every independent sub-task, so the workers run in parallel. " +
+				"A worker that has not finished in time is reported as still running and can be collected by calling join again — it is not lost.",
+			JSONSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"taskIds": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "task ids from spawn. Omit to collect every worker you started that you have not collected yet.",
+					},
+					"timeoutSeconds": map[string]any{
+						"type":        "integer",
+						"description": "how long to wait for the workers (default 300, max 900)",
+					},
+				},
+			},
+			Exec: func(ctx context.Context, argsJSON string) (string, error) {
+				args, err := parseArgs(argsJSON)
+				if err != nil {
+					return "", err
+				}
+				return d.Join(ctx, argStringSlice(args, "taskIds"), argInt(args, "timeoutSeconds"))
+			},
+		},
+	}
+}
+
 // Core returns the core family: the agent managing itself — durable memory,
 // self-scheduling (cron + one-shot wakeups), proactive notify, asking the
 // user a question via the inbox, and (when configured) delegating a scoped

@@ -1,5 +1,5 @@
 .PHONY: sync-portalkit verify-portalkit
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal build-app-studio-browser-worker test-app-studio-browser-worker run-app-studio-browser-worker docker-build-app-studio-browser-worker codegen-app-studio-provider app-studio-preview-console-dev-key verify-app-studio-preview-console-dev-key app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal build-app-studio-browser-worker test-app-studio-browser-worker run-app-studio-browser-worker docker-build-app-studio-browser-worker codegen-app-studio-provider app-studio-preview-console-dev-key verify-app-studio-preview-console-dev-key app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-vibe-studio-provider build-vibe-studio-provider-portal vibe-studio-db-up vibe-studio-db-down run-provider-vibe-studio install-provider-vibe-studio init-provider-vibe-studio uninstall-provider-vibe-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -204,6 +204,12 @@ build-agents-provider-portal: ## Build the agents provider's micro-frontend (Vit
 
 build-agents-provider: build-agents-provider-portal ## Build the agents provider binary (portal embedded)
 	cd providers/agents && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/agents-provider .
+
+build-vibe-studio-provider-portal: ## Build the vibe-studio provider's micro-frontend (Vite + TS → portal/dist)
+	cd providers/vibe-studio/portal && npm install --no-audit --no-fund && npm run build
+
+build-vibe-studio-provider: build-vibe-studio-provider-portal ## Build the vibe-studio provider binary (portal embedded)
+	cd providers/vibe-studio && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/vibe-studio-provider .
 
 build-code-provider-portal: ## Build the code provider's micro-frontend (Vite + Vue → portal/dist)
 	cd providers/code/portal && npm install --no-audit --no-fund && npm run build
@@ -1495,6 +1501,132 @@ uninstall-provider-agents: ## Delete the agents CatalogEntry + Provider
 		--server=$(AGENTS_KCP_SERVER)/clusters/root:kedge:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(AGENTS_MANIFEST) -f $(AGENTS_PROVIDER_MANIFEST)
+
+## --- vibe-studio provider dev targets (mirror agents) ---
+# Wizard-first app builder (docs/vibe-studio-design.md). Phase 0: event store
+# + scripted engine; no LLM, no runtime kubeconfig at serve time.
+
+VIBE_STUDIO_PORT ?= 8089
+VIBE_STUDIO_HUB_URL ?= https://localhost:9443
+VIBE_STUDIO_TOKEN ?= $(STATIC_AUTH_TOKEN)
+VIBE_STUDIO_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
+VIBE_STUDIO_KCP_SERVER ?= https://localhost:6443
+VIBE_STUDIO_WORKSPACE_PATH ?= root:kedge:providers:vibe-studio
+VIBE_STUDIO_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/vibe-studio-provider.kubeconfig
+VIBE_STUDIO_SCHEMAS_DIR ?= providers/vibe-studio/deploy/chart/files/schemas
+VIBE_STUDIO_MANIFEST ?= providers/vibe-studio/manifest.yaml
+VIBE_STUDIO_PROVIDER_MANIFEST ?= providers/vibe-studio/provider.yaml
+# Durable store: dev runs use a local Postgres container by default (mirrors
+# agents). Set VIBE_STUDIO_IN_MEMORY_STORE=true for a non-durable quick run.
+VIBE_STUDIO_IN_MEMORY_STORE ?=
+VIBE_STUDIO_DEV_DATABASE_URL ?= postgres://vibestudio:vibestudio@localhost:55435/vibestudio?sslmode=disable
+VIBE_STUDIO_POSTGRES_CONTAINER ?= kedge-vibe-studio-postgres
+VIBE_STUDIO_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
+VIBE_STUDIO_POSTGRES_PORT ?= 55435
+VIBE_STUDIO_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/vibe-studio-postgres
+
+## Start/reuse a local Postgres container for the vibe-studio event store.
+## Skips when VIBE_STUDIO_IN_MEMORY_STORE=true or VIBE_STUDIO_DATABASE_URL
+## points elsewhere.
+vibe-studio-db-up:
+	@set -a; [ -f providers/vibe-studio/.env ] && . ./providers/vibe-studio/.env || true; set +a; \
+	if [ "$${VIBE_STUDIO_IN_MEMORY_STORE:-$(VIBE_STUDIO_IN_MEMORY_STORE)}" = "true" ]; then \
+		echo "vibe-studio: in-memory store — skipping Postgres"; exit 0; fi; \
+	if [ -n "$${VIBE_STUDIO_DATABASE_URL:-}" ]; then \
+		echo "vibe-studio: external VIBE_STUDIO_DATABASE_URL set — skipping dev Postgres"; exit 0; fi; \
+	if docker ps --format '{{.Names}}' | grep -q '^$(VIBE_STUDIO_POSTGRES_CONTAINER)$$'; then \
+		echo "vibe-studio postgres already running on :$(VIBE_STUDIO_POSTGRES_PORT)"; exit 0; fi; \
+	if docker ps -a --format '{{.Names}}' | grep -q '^$(VIBE_STUDIO_POSTGRES_CONTAINER)$$'; then \
+		docker start $(VIBE_STUDIO_POSTGRES_CONTAINER); exit 0; fi; \
+	mkdir -p $(VIBE_STUDIO_POSTGRES_DATA_DIR); \
+	docker run -d --name $(VIBE_STUDIO_POSTGRES_CONTAINER) \
+		-e POSTGRES_USER=vibestudio -e POSTGRES_PASSWORD=vibestudio -e POSTGRES_DB=vibestudio \
+		-p $(VIBE_STUDIO_POSTGRES_PORT):5432 \
+		-v "$(abspath $(VIBE_STUDIO_POSTGRES_DATA_DIR)):/var/lib/postgresql/data" \
+		$(VIBE_STUDIO_POSTGRES_IMAGE)
+
+vibe-studio-db-down: ## Stop and remove the vibe-studio dev Postgres container
+	-docker rm -f $(VIBE_STUDIO_POSTGRES_CONTAINER)
+
+run-provider-vibe-studio: build-vibe-studio-provider vibe-studio-db-up ## Run the vibe-studio provider (requires: make run-hub-embedded-static + make install-provider-vibe-studio + make init-provider-vibe-studio)
+	@echo "Starting vibe-studio provider on :$(VIBE_STUDIO_PORT)"
+	@echo "  hub:   $(VIBE_STUDIO_HUB_URL)"
+	@# Auto-source providers/vibe-studio/.env (gitignored) for local overrides.
+	set -a; [ -f providers/vibe-studio/.env ] && . ./providers/vibe-studio/.env || true; set +a; \
+	VIBE_STUDIO_IN_MEMORY_STORE="$${VIBE_STUDIO_IN_MEMORY_STORE:-$(VIBE_STUDIO_IN_MEMORY_STORE)}"; \
+	if [ "$$VIBE_STUDIO_IN_MEMORY_STORE" = "true" ]; then \
+		echo "  store: in-memory (non-durable)"; VIBE_STUDIO_DATABASE_URL=; \
+	else \
+		VIBE_STUDIO_DATABASE_URL="$${VIBE_STUDIO_DATABASE_URL:-$(VIBE_STUDIO_DEV_DATABASE_URL)}"; \
+		echo "  store: $$VIBE_STUDIO_DATABASE_URL"; \
+	fi; \
+	PORT=$(VIBE_STUDIO_PORT) \
+	KEDGE_HUB_URL=$(VIBE_STUDIO_HUB_URL) \
+	KEDGE_HUB_TOKEN=$(VIBE_STUDIO_TOKEN) \
+	KEDGE_HUB_INSECURE=true \
+	KEDGE_PROVIDER_NAME=vibe-studio \
+	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(VIBE_STUDIO_PROVIDER_KUBECONFIG)" "$(VIBE_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+	VIBE_STUDIO_DATABASE_URL="$$VIBE_STUDIO_DATABASE_URL" \
+		$(BINDIR)/vibe-studio-provider
+
+install-provider-vibe-studio: ## Apply vibe-studio Provider + CatalogEntry into root:kedge:providers
+	@test -f $(VIBE_STUDIO_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(VIBE_STUDIO_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	kubectl --kubeconfig=$(VIBE_STUDIO_KCP_KUBECONFIG) \
+		--server=$(VIBE_STUDIO_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--insecure-skip-tls-verify \
+		apply -f $(VIBE_STUDIO_PROVIDER_MANIFEST) -f $(VIBE_STUDIO_MANIFEST)
+
+init-provider-vibe-studio: build-vibe-studio-provider ## Bootstrap vibe-studio APIExport + write dev provider kubeconfig
+	@test -f $(VIBE_STUDIO_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(VIBE_STUDIO_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	@echo "Reading provider-token from $(VIBE_STUDIO_WORKSPACE_PATH) and writing $(VIBE_STUDIO_PROVIDER_KUBECONFIG)"
+	@TOKEN=$$(kubectl --kubeconfig=$(VIBE_STUDIO_KCP_KUBECONFIG) \
+		--server=$(VIBE_STUDIO_KCP_SERVER)/clusters/$(VIBE_STUDIO_WORKSPACE_PATH) \
+		--insecure-skip-tls-verify \
+		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
+	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
+	mkdir -p $(KCP_DATA_DIR); \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
+		"$(VIBE_STUDIO_KCP_SERVER)/clusters/$(VIBE_STUDIO_WORKSPACE_PATH)" "$$TOKEN" \
+		> $(VIBE_STUDIO_PROVIDER_KUBECONFIG)
+	@echo "Running vibe-studio-provider init (creates APIExport + schemas + endpoint slice + bind grant + instance claims)"
+	@# The instance permission claims need the infrastructure APIExport's
+	@# identityHash. Auto-discover it in dev; VIBE_STUDIO_INFRA_IDENTITY_HASH
+	@# in the environment wins (prod supplies it via Helm).
+	INFRA_HASH=$${VIBE_STUDIO_INFRA_IDENTITY_HASH:-$$(kubectl --kubeconfig=$(VIBE_STUDIO_KCP_KUBECONFIG) \
+		--server=$(VIBE_STUDIO_KCP_SERVER)/clusters/root:kedge:providers:infrastructure \
+		--insecure-skip-tls-verify \
+		get apiexport infrastructure.providers.kedge.faros.sh -o jsonpath='{.status.identityHash}' 2>/dev/null)}; \
+	if [ -z "$$INFRA_HASH" ]; then echo "WARNING: could not discover the infrastructure APIExport identityHash — instance claims will be hash-less"; fi; \
+	CODE_HASH=$${VIBE_STUDIO_CODE_IDENTITY_HASH:-$$(kubectl --kubeconfig=$(VIBE_STUDIO_KCP_KUBECONFIG) \
+		--server=$(VIBE_STUDIO_KCP_SERVER)/clusters/root:kedge:providers:code \
+		--insecure-skip-tls-verify \
+		get apiexport code.providers.kedge.faros.sh -o jsonpath='{.status.identityHash}' 2>/dev/null)}; \
+	if [ -z "$$CODE_HASH" ]; then echo "WARNING: could not discover the code APIExport identityHash — the repositories claim will be hash-less"; fi; \
+	KEDGE_PROVIDER_KUBECONFIG=$(VIBE_STUDIO_PROVIDER_KUBECONFIG) \
+	VIBE_STUDIO_WORKSPACE_PATH=$(VIBE_STUDIO_WORKSPACE_PATH) \
+	KEDGE_SCHEMAS_DIR=$(VIBE_STUDIO_SCHEMAS_DIR) \
+	VIBE_STUDIO_INFRA_IDENTITY_HASH="$$INFRA_HASH" \
+	VIBE_STUDIO_CODE_IDENTITY_HASH="$$CODE_HASH" \
+		$(BINDIR)/vibe-studio-provider init
+
+uninstall-provider-vibe-studio: ## Delete the vibe-studio CatalogEntry + Provider
+	@test -f $(VIBE_STUDIO_KCP_KUBECONFIG) || { \
+		echo "kubeconfig not found at $(VIBE_STUDIO_KCP_KUBECONFIG)"; \
+		echo "start the hub first with: make run-hub-embedded-static"; \
+		exit 1; \
+	}
+	-kubectl --kubeconfig=$(VIBE_STUDIO_KCP_KUBECONFIG) \
+		--server=$(VIBE_STUDIO_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--insecure-skip-tls-verify \
+		delete -f $(VIBE_STUDIO_MANIFEST) -f $(VIBE_STUDIO_PROVIDER_MANIFEST)
 
 # --- Dev agent image (template-native development mode) ---
 # The static control binary an init container injects into any dev-mode

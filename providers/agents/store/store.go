@@ -79,14 +79,31 @@ const (
 // JSON payload (Eino interrupt/resume state) so the store needs no knowledge of
 // chat/tool types. ParentRunID links sub-agent runs for delegation lineage.
 type Run struct {
-	ID           string          `json:"id"`
-	AgentName    string          `json:"agentName"`
-	SessionID    string          `json:"sessionID,omitempty"`
-	Trigger      string          `json:"trigger"`
-	ParentRunID  string          `json:"parentRunID,omitempty"`
-	Phase        RunPhase        `json:"phase"`
-	Attempt      int             `json:"attempt,omitempty"`
-	Input        string          `json:"input,omitempty"`
+	ID          string   `json:"id"`
+	AgentName   string   `json:"agentName"`
+	SessionID   string   `json:"sessionID,omitempty"`
+	Trigger     string   `json:"trigger"`
+	ParentRunID string   `json:"parentRunID,omitempty"`
+	Phase       RunPhase `json:"phase"`
+	Attempt     int      `json:"attempt,omitempty"`
+	Input       string   `json:"input,omitempty"`
+	// Output is the run's final answer. Kept on the run record (not only as a
+	// transcript row) so a programmatic caller — the parent of a spawned worker,
+	// or GET /api/runs/{id} — reads the result where it read the phase, instead
+	// of having to locate the run's session and dig the last message out of it.
+	Output string `json:"output,omitempty"`
+	// Sources are the URLs a run reported relying on, parsed from the trailing
+	// "Sources:" block a worker is asked to emit. Nil when it named none.
+	Sources []string `json:"sources,omitempty"`
+	// IdempotencyKey is a caller-supplied de-duplication token, unique per
+	// (org, workspace, agent). An at-least-once caller retrying a delivery gets
+	// the original run back instead of a second one doing the same work twice.
+	IdempotencyKey string `json:"idempotencyKey,omitempty"`
+	// Delivery records where this run's answer was headed. Persisted because the
+	// goroutine that knew is exactly what a crash destroys: without it, a run that
+	// dies mid-flight can never tell the person waiting in a channel that it is
+	// not coming, and they wait forever.
+	Delivery     *RunDelivery    `json:"delivery,omitempty"`
 	Message      string          `json:"message,omitempty"`
 	Checkpoint   json.RawMessage `json:"checkpoint,omitempty"`
 	InputTokens  int64           `json:"inputTokens,omitempty"`
@@ -96,6 +113,43 @@ type Run struct {
 	UpdatedAt    time.Time       `json:"updatedAt"`
 	StartedAt    *time.Time      `json:"startedAt,omitempty"`
 	FinishedAt   *time.Time      `json:"finishedAt,omitempty"`
+}
+
+// RunDelivery is where a run's output goes: the connection to answer on, the
+// exact chat within it, and the agent-channel role for unattended runs.
+type RunDelivery struct {
+	// SourceName is the schedule, trigger, or channel connection that started it.
+	SourceName string `json:"sourceName,omitempty"`
+	// ReplyTarget pins the exact chat inside the source connection (the Discord
+	// channel or Telegram chat the message came from), so the answer lands where
+	// the question was asked rather than on the connection's default target.
+	ReplyTarget string `json:"replyTarget,omitempty"`
+	// NotifyChannel is the agent-channel role an unattended run reports to.
+	NotifyChannel string `json:"notifyChannel,omitempty"`
+	// Kind distinguishes a channel conversation (answer in the chat) from a
+	// schedule/trigger (notify the configured channel).
+	Kind string `json:"kind,omitempty"`
+}
+
+// SessionSummary is a compacted stand-in for the older part of one session's
+// transcript. A long-lived session (a channel conversation, a schedule that
+// replies turn after turn) eventually exceeds the model's context window; rather
+// than truncating and silently forgetting, the provider summarizes everything up
+// to ThroughAt and replays the summary in place of those messages.
+//
+// One row per (scope, session): compacting again folds the previous summary into
+// the new one, so the row always describes the whole prefix of the session.
+type SessionSummary struct {
+	SessionID string `json:"sessionID"`
+	Summary   string `json:"summary"`
+	// ThroughAt is the CreatedAt of the newest message folded in. Messages at or
+	// before it are represented by Summary and are not replayed.
+	ThroughAt time.Time `json:"throughAt"`
+	// MessageCount is how many messages the summary stands for, for display and
+	// for deciding whether compaction is making progress.
+	MessageCount int       `json:"messageCount"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 // Memory is a long-term note the agent writes and later recalls.
@@ -194,6 +248,14 @@ type RunPage struct {
 	NextCursor string `json:"nextCursor,omitempty"`
 }
 
+// ScopedRun pairs a run with the tenant it belongs to. Only the recovery sweep
+// uses it: every other read already knows its scope from the request, but a
+// restart has to discover both.
+type ScopedRun struct {
+	Scope Scope
+	Run   Run
+}
+
 // Session summarizes one chat thread of an agent: its ID, activity bounds,
 // message count, and a short preview taken from the first user message. It
 // backs the portal's session picker.
@@ -241,8 +303,15 @@ type Store interface {
 	LoadRecentMessages(ctx context.Context, scope Scope, sessionID string, limit int) ([]Message, error)
 	// ListSessions returns the agent's chat sessions, most-recently-active first.
 	ListSessions(ctx context.Context, scope Scope, limit int) ([]Session, error)
-	// DeleteSession wipes one session's transcript (the "/new" channel command).
+	// DeleteSession wipes one session's transcript (the "/new" channel command),
+	// including any compaction summary for it.
 	DeleteSession(ctx context.Context, scope Scope, sessionID string) error
+
+	// Compaction. PutSessionSummary upserts the summary standing in for a
+	// session's older messages; GetSessionSummary reports ok=false when the
+	// session has never been compacted.
+	PutSessionSummary(ctx context.Context, scope Scope, s SessionSummary) error
+	GetSessionSummary(ctx context.Context, scope Scope, sessionID string) (SessionSummary, bool, error)
 
 	// Runs (durable, resumable).
 	SaveRun(ctx context.Context, scope Scope, run Run) error
@@ -253,6 +322,10 @@ type Store interface {
 	ListRuns(ctx context.Context, scope Scope, limit int) ([]Run, error)
 	// QueryRuns lists runs newest-first with filters and cursor pagination.
 	QueryRuns(ctx context.Context, scope Scope, q RunQuery) (RunPage, error)
+	// FindRunByIdempotencyKey returns the run a caller already started under this
+	// key, so a retried request is answered with the original run rather than
+	// starting the same work again. Scope must name the agent.
+	FindRunByIdempotencyKey(ctx context.Context, scope Scope, key string) (Run, bool, error)
 
 	// Long-term memory.
 	PutMemory(ctx context.Context, scope Scope, m Memory) error
@@ -274,6 +347,16 @@ type Store interface {
 	// Tenant mapping (cluster ID → org/workspace scope) for background runs.
 	SaveTenantRef(ctx context.Context, clusterID string, ref TenantRef) error
 	GetTenantRef(ctx context.Context, clusterID string) (TenantRef, bool, error)
+	// FindClusterForScope is the reverse mapping: which logical cluster backs
+	// this org/workspace. The recovery sweep needs it because a stored run knows
+	// its scope but not the cluster whose virtual workspace can resume it.
+	FindClusterForScope(ctx context.Context, orgUUID, workspaceUUID string) (string, bool, error)
+
+	// Recovery. ListUnfinishedRuns returns runs left in a non-terminal phase
+	// across EVERY tenant — the one query that deliberately ignores Scope,
+	// because a restart has to find work it has no request context for. Ordered
+	// oldest-first so the longest-stranded run is handled first.
+	ListUnfinishedRuns(ctx context.Context, phases []RunPhase, updatedBefore time.Time, limit int) ([]ScopedRun, error)
 
 	// Retention / teardown.
 	DeleteAgentData(ctx context.Context, scope Scope, agentName string) error

@@ -14,10 +14,14 @@ import { icon } from '../ui/icon'
 import { errorState } from '../ui/states'
 import { toast } from '../ui/toast'
 import { confirmModal } from '../portalkit/modal'
-import { sessionLabel, type ChatMessage, type SessionMeta, type ToolCall, type TranscriptMessage } from '../types'
+import { sessionLabel, type ChatMessage, type RunSummary, type SessionMeta, type ToolCall, type TranscriptMessage } from '../types'
 import type { ServerEvent } from '../store'
 
 import './chat-message'
+
+// Phases that mean "still working", for spotting a run this view is not attached
+// to. PendingApproval counts: it is waiting on the user, not finished.
+const LIVE_RUN_PHASES = new Set(['Pending', 'Running', 'PendingApproval'])
 
 interface StartData {
   runID: string
@@ -62,6 +66,10 @@ export class AgentChat extends StoreElement {
   @state() private streaming = false
   @state() private loadError: string | null = null
   @state() private draft = ''
+  // A run in this session that is still working without us watching it — the
+  // stream was closed (tab shut, navigation) but the run outlived it. Surfaced so
+  // the answer does not look lost, and so the user does not re-ask and pay twice.
+  @state() private orphanRun: RunSummary | null = null
 
   private loadedFor = ''
   private abort: AbortController | null = null
@@ -120,9 +128,14 @@ export class AgentChat extends StoreElement {
   // reload the transcript when its run reaches a terminal phase.
   private onServerEvent = (e: Event): void => {
     const ev = (e as CustomEvent<ServerEvent>).detail
-    if (ev.type !== 'run' || !ev.data.id || ev.data.id !== this.liveRunID) return
+    if (ev.type !== 'run' || !ev.data.id) return
+    // Either the run this view started (resumed out of band after an approval) or
+    // one it merely found still working — both land their reply in the transcript.
+    const watched = ev.data.id === this.liveRunID || ev.data.id === this.orphanRun?.id
+    if (!watched) return
     if (ev.data.phase === 'Succeeded' || ev.data.phase === 'Failed' || ev.data.phase === 'Aborted') {
-      this.liveRunID = ''
+      if (ev.data.id === this.liveRunID) this.liveRunID = ''
+      if (ev.data.id === this.orphanRun?.id) this.orphanRun = null
       void this.loadMessages(this.sessionID)
     }
   }
@@ -189,6 +202,39 @@ export class AgentChat extends StoreElement {
       this.atBottom = true
     } catch (e) {
       this.loadError = (e as Error).message
+    }
+    void this.findOrphanRun(session)
+  }
+
+  // cancelOrphan stops a run this view is not attached to. The run registry only
+  // cancels on the replica executing it; elsewhere the API stamps it Aborted, so
+  // either way the banner clears.
+  private async cancelOrphan(): Promise<void> {
+    const run = this.orphanRun
+    if (!run) return
+    try {
+      await this.api.cancelRun(run.id)
+      this.orphanRun = null
+      toast('ok', 'Stopping the run…')
+    } catch (e) {
+      toast('error', `Could not stop it: ${(e as Error).message}`)
+    }
+  }
+
+  // findOrphanRun looks for a run still executing in this session. Runs outlive
+  // the stream that started them, so one can be mid-flight with nobody attached;
+  // without this the transcript just looks like the reply never came.
+  private async findOrphanRun(session: string): Promise<void> {
+    if (this.streaming) {
+      this.orphanRun = null
+      return
+    }
+    try {
+      const page = await this.api.listRuns({ agent: this.name, session, limit: 5 })
+      this.orphanRun = page.items.find((r) => LIVE_RUN_PHASES.has(r.phase)) ?? null
+    } catch {
+      // Best-effort: a failed lookup must not break the transcript view.
+      this.orphanRun = null
     }
   }
 
@@ -448,6 +494,21 @@ export class AgentChat extends StoreElement {
         : html`<div class="agents-warn-banner">
             No model assigned — pick a model credential in the Config pane to start chatting.
           </div>`}
+      ${this.orphanRun && !this.streaming
+        ? html`<div class="agents-orphan-banner" role="status">
+            <span>${icon('clock')}</span>
+            <span class="agents-orphan-text">
+              This chat has a run still working — it kept going after the stream closed. Its reply will appear here when it finishes.
+            </span>
+            <button
+              class="agents-linkbtn"
+              @click=${() => this.navigate({ kind: 'run', id: this.orphanRun!.id })}
+            >
+              View progress
+            </button>
+            <button class="secondary" @click=${() => void this.cancelOrphan()}>Stop it</button>
+          </div>`
+        : nothing}
       ${this.loadError ? errorState(this.loadError, () => void this.loadMessages(this.sessionID)) : nothing}
       <div class="agents-log" aria-live="polite" aria-busy=${this.streaming ? 'true' : 'false'} @scroll=${(e: Event) => this.onScroll(e)}>
         ${this.messages.length

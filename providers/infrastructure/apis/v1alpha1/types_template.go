@@ -262,8 +262,13 @@ type TemplateDevelopment struct {
 	// the graph resource with id "frontend"). Components not listed here run
 	// exactly as declared in production mode — a dev sandbox keeps its real
 	// database. Keys must match ^[a-z][a-z0-9-]*$.
+	//
+	// ONE NAME RULE (see TemplateDevelopmentComponent.WorkspacePath): a
+	// component's directory must be its own name, so agents, sync routing,
+	// and data-plane verbs all address it by one word.
 	// +required
 	// +kubebuilder:validation:MinProperties=1
+	// +kubebuilder:validation:XValidation:rule="self.all(k, !has(self[k].workspacePath) || self[k].workspacePath == k || self[k].workspacePath == '.')",message="workspacePath must equal the component name (or \".\" for a single root component)"
 	Components map[string]TemplateDevelopmentComponent `json:"components"`
 
 	// Scaffold optionally names starter code for a fresh project built on
@@ -279,12 +284,19 @@ type TemplateDevelopment struct {
 // graph in development mode.
 type TemplateDevelopmentComponent struct {
 	// WorkspacePath is the project workspace / repository subdirectory whose
-	// files belong to this component ("." for a single-component template).
-	// App Studio routes file sync by these prefixes, and the scaffold follows
-	// this layout. Relative, no leading slash, no "..".
-	// +required
+	// files belong to this component. Builders route file sync by these
+	// prefixes, and the scaffold follows this layout.
+	//
+	// ONE NAME RULE: it MUST equal the component's own key (the map key is
+	// the component name), so a component is never addressed by two
+	// different words. Divergence caused repeated bugs — sync routing and
+	// log/restart calls that named the directory instead of the component —
+	// so the map-level CEL rule on Components rejects it. The single
+	// exception is "." for a template whose one component owns the whole
+	// workspace root. Omitting it defaults to the component name.
+	// +optional
 	// +kubebuilder:validation:MaxLength=256
-	WorkspacePath string `json:"workspacePath"`
+	WorkspacePath string `json:"workspacePath,omitempty"`
 
 	// DevImage is the platform-managed toolchain image the component's
 	// workload runs in development mode, in place of the user-supplied

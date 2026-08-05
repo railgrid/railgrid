@@ -190,6 +190,8 @@ type projectEinoAssistantTransientPreviewImage struct {
 	MIMEType   string
 }
 
+const projectEinoAssistantPreviewImageIntro = "Screenshot captured by the preceding development preview inspection."
+
 func (s *projectEinoAssistantRunState) RegisterTransientPreviewImage(result, base64Data, mimeType string) string {
 	persistent := projectEinoAssistantPersistentToolResult(projectToolInspectDevelopmentPreview, result)
 	if s == nil || strings.TrimSpace(base64Data) == "" || mimeType != "image/png" {
@@ -389,9 +391,23 @@ func (s *projectEinoAssistantRunState) ExpandTransientToolMessages(input []*sche
 		return input
 	}
 
-	var expanded []*schema.Message
-	for index, message := range input {
+	expanded := make([]*schema.Message, 0, len(input))
+	var pendingImages []*schema.Message
+	changed := false
+	// A tool group must reach the provider unbroken: every tool message
+	// answering an assistant tool-call message has to precede any other role.
+	// Screenshots therefore queue up and flush once the group closes.
+	flushImages := func() {
+		if len(pendingImages) == 0 {
+			return
+		}
+		expanded = append(expanded, pendingImages...)
+		pendingImages = nil
+	}
+	for _, message := range input {
 		if message == nil || message.Role != schema.Tool {
+			flushImages()
+			expanded = append(expanded, message)
 			continue
 		}
 		toolName := message.ToolName
@@ -403,43 +419,73 @@ func (s *projectEinoAssistantRunState) ExpandTransientToolMessages(input []*sche
 			TransientImageReference string `json:"transientImageReference"`
 		}
 		if err := json.Unmarshal([]byte(message.Content), &placeholder); err != nil {
+			expanded = append(expanded, message)
 			continue
 		}
-		if projectToolBaseName(toolName) == projectToolGetPreviewConsoleLogs {
+		switch projectToolBaseName(toolName) {
+		case projectToolGetPreviewConsoleLogs:
 			result, ok := s.transientToolResults[strings.TrimSpace(placeholder.TransientReference)]
 			if !ok {
+				expanded = append(expanded, message)
 				continue
-			}
-			if expanded == nil {
-				expanded = append([]*schema.Message(nil), input...)
 			}
 			cloned := *message
 			cloned.Content = result
-			expanded[index] = &cloned
-			continue
+			expanded = append(expanded, &cloned)
+			changed = true
+		case projectToolInspectDevelopmentPreview:
+			preview, ok := s.transientPreviewImages[strings.TrimSpace(placeholder.TransientImageReference)]
+			if !ok {
+				expanded = append(expanded, message)
+				continue
+			}
+			cloned := *message
+			cloned.Content = projectEinoAssistantPreviewResultWithoutImageReference(message.Content)
+			expanded = append(expanded, &cloned)
+			pendingImages = append(pendingImages, projectEinoAssistantPreviewImageMessage(preview))
+			changed = true
+		default:
+			expanded = append(expanded, message)
 		}
-		if projectToolBaseName(toolName) != projectToolInspectDevelopmentPreview {
-			continue
-		}
-		preview, ok := s.transientPreviewImages[strings.TrimSpace(placeholder.TransientImageReference)]
-		if !ok {
-			continue
-		}
-		if expanded == nil {
-			expanded = append([]*schema.Message(nil), input...)
-		}
-		cloned := *message
-		data := preview.Base64Data
-		cloned.UserInputMultiContent = []schema.MessageInputPart{
-			{Type: schema.ChatMessagePartTypeText, Text: message.Content},
-			{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageInputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &data, MIMEType: preview.MIMEType}}},
-		}
-		expanded[index] = &cloned
 	}
-	if expanded == nil {
+	flushImages()
+	if !changed {
 		return input
 	}
 	return expanded
+}
+
+// projectEinoAssistantPreviewImageMessage carries an inspected preview
+// screenshot on its own user message. Image parts are not accepted on tool
+// messages, so the tool result stays textual and the screenshot follows the
+// tool group it belongs to.
+func projectEinoAssistantPreviewImageMessage(preview projectEinoAssistantTransientPreviewImage) *schema.Message {
+	data := preview.Base64Data
+	message := schema.UserMessage("")
+	message.UserInputMultiContent = []schema.MessageInputPart{
+		{Type: schema.ChatMessagePartTypeText, Text: projectEinoAssistantPreviewImageIntro},
+		{Type: schema.ChatMessagePartTypeImageURL, Image: &schema.MessageInputImage{MessagePartCommon: schema.MessagePartCommon{Base64Data: &data, MIMEType: preview.MIMEType}}},
+	}
+	return message
+}
+
+// projectEinoAssistantPreviewResultWithoutImageReference drops the transient
+// bookkeeping key from the durable tool result; the screenshot it pointed at is
+// attached to the model input directly.
+func projectEinoAssistantPreviewResultWithoutImageReference(content string) string {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return content
+	}
+	if _, ok := payload["transientImageReference"]; !ok {
+		return content
+	}
+	delete(payload, "transientImageReference")
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return content
+	}
+	return string(encoded)
 }
 
 func (s *projectEinoAssistantRunState) SetTurnPolicy(policy projectAssistantTurnPolicy) {

@@ -127,7 +127,7 @@ func TestStreamTurnWithTools_ExecutesToolAndContinues(t *testing.T) {
 				return "sunny, 24C", nil
 			},
 		}},
-		8, Callbacks{OnTool: func(ev ToolEvent) { toolEvents = append(toolEvents, ev) }})
+		TurnConfig{MaxIters: 8}, Callbacks{OnTool: func(ev ToolEvent) { toolEvents = append(toolEvents, ev) }})
 	if err != nil {
 		t.Fatalf("StreamTurnWithTools: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestStreamTurnWithTools_ExecRichFeedsImageAsUserMessage(t *testing.T) {
 				return Observation{Images: []ToolImage{{MIMEType: "image/jpeg", Data: png}}}, nil
 			},
 		}},
-		8, Callbacks{})
+		TurnConfig{MaxIters: 8}, Callbacks{})
 	if err != nil {
 		t.Fatalf("StreamTurnWithTools: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestStreamTurnWithTools_UnknownToolReportsError(t *testing.T) {
 	_, err := New().StreamTurnWithTools(context.Background(), m,
 		[]Message{{Role: RoleUser, Content: "hi"}},
 		[]Tool{{Name: "other_tool", Desc: "x", Exec: func(context.Context, string) (string, error) { return "", nil }}},
-		8, Callbacks{OnTool: func(ev ToolEvent) { evs = append(evs, ev) }})
+		TurnConfig{MaxIters: 8}, Callbacks{OnTool: func(ev ToolEvent) { evs = append(evs, ev) }})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

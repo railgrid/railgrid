@@ -14,9 +14,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 // PostgresStore is the durable production Store. Schema is created/updated by
@@ -75,6 +76,8 @@ var agentsSchema = []string{
 		phase TEXT NOT NULL,
 		attempt INT NOT NULL DEFAULT 0,
 		input TEXT NOT NULL DEFAULT '',
+		output TEXT NOT NULL DEFAULT '',
+		sources JSONB,
 		message TEXT NOT NULL DEFAULT '',
 		checkpoint JSONB,
 		input_tokens BIGINT NOT NULL DEFAULT 0,
@@ -85,6 +88,17 @@ var agentsSchema = []string{
 		started_at TIMESTAMPTZ,
 		finished_at TIMESTAMPTZ
 	)`,
+	// Runs predating the result-on-the-run-record change carry neither column;
+	// migrate in place (idempotent).
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS output TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS sources JSONB`,
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS idempotency_key TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS delivery JSONB`,
+	// Partial unique index: at most one run per (tenant, agent, key), while the
+	// overwhelming majority of runs carry no key at all and are unconstrained.
+	`CREATE UNIQUE INDEX IF NOT EXISTS agents_runs_idempotency_idx
+		ON agents_runs (org_uuid, workspace_uuid, agent_name, idempotency_key)
+		WHERE idempotency_key <> ''`,
 	`CREATE INDEX IF NOT EXISTS agents_runs_scope_idx
 		ON agents_runs (org_uuid, workspace_uuid, created_at DESC)`,
 	`CREATE TABLE IF NOT EXISTS agents_memories (
@@ -158,6 +172,25 @@ var agentsSchema = []string{
 		workspace_uuid TEXT NOT NULL,
 		updated_at TIMESTAMPTZ NOT NULL
 	)`,
+	// Reverse lookup (org, workspace) → cluster, for the recovery sweep.
+	`CREATE INDEX IF NOT EXISTS agents_tenants_scope_idx
+		ON agents_tenants (org_uuid, workspace_uuid)`,
+	`CREATE TABLE IF NOT EXISTS agents_session_summaries (
+		org_uuid TEXT NOT NULL,
+		workspace_uuid TEXT NOT NULL,
+		agent_name TEXT NOT NULL,
+		session_id TEXT NOT NULL,
+		summary TEXT NOT NULL,
+		through_at TIMESTAMPTZ NOT NULL,
+		message_count INT NOT NULL DEFAULT 0,
+		created_at TIMESTAMPTZ NOT NULL,
+		updated_at TIMESTAMPTZ NOT NULL,
+		PRIMARY KEY (org_uuid, workspace_uuid, agent_name, session_id)
+	)`,
+	// The sweep scans by phase + staleness across all tenants, so this index is
+	// the one that keeps it from being a full table scan as run history grows.
+	`CREATE INDEX IF NOT EXISTS agents_runs_phase_updated_idx
+		ON agents_runs (phase, updated_at)`,
 }
 
 func (p *PostgresStore) EnsureSchema(ctx context.Context) error {
@@ -324,11 +357,59 @@ func (p *PostgresStore) DeleteSession(ctx context.Context, scope Scope, sessionI
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
-	_, err := p.db.ExecContext(ctx, `
+	if _, err := p.db.ExecContext(ctx, `
 		DELETE FROM agents_messages
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID); err != nil {
+		return err
+	}
+	// The summary stands for messages that no longer exist; keeping it would
+	// replay a wiped conversation back into the model after "/new".
+	_, err := p.db.ExecContext(ctx, `
+		DELETE FROM agents_session_summaries
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID)
 	return err
+}
+
+func (p *PostgresStore) PutSessionSummary(ctx context.Context, scope Scope, s SessionSummary) error {
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(s.SessionID) == "" {
+		return fmt.Errorf("session ID is required")
+	}
+	_, err := p.db.ExecContext(ctx, `
+		INSERT INTO agents_session_summaries
+			(org_uuid, workspace_uuid, agent_name, session_id, summary, through_at, message_count, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT (org_uuid, workspace_uuid, agent_name, session_id) DO UPDATE SET
+			summary=EXCLUDED.summary, through_at=EXCLUDED.through_at,
+			message_count=EXCLUDED.message_count, updated_at=EXCLUDED.updated_at`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, s.SessionID,
+		s.Summary, s.ThroughAt.UTC(), s.MessageCount, s.CreatedAt.UTC(), s.UpdatedAt.UTC())
+	return err
+}
+
+func (p *PostgresStore) GetSessionSummary(ctx context.Context, scope Scope, sessionID string) (SessionSummary, bool, error) {
+	if err := scope.withAgent(); err != nil {
+		return SessionSummary{}, false, err
+	}
+	out := SessionSummary{SessionID: sessionID}
+	row := p.db.QueryRowContext(ctx, `
+		SELECT summary, through_at, message_count, created_at, updated_at
+		FROM agents_session_summaries
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID)
+	err := row.Scan(&out.Summary, &out.ThroughAt, &out.MessageCount, &out.CreatedAt, &out.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SessionSummary{}, false, nil
+	}
+	if err != nil {
+		return SessionSummary{}, false, err
+	}
+	out.ThroughAt, out.CreatedAt, out.UpdatedAt = out.ThroughAt.UTC(), out.CreatedAt.UTC(), out.UpdatedAt.UTC()
+	return out, true, nil
 }
 
 // ---- runs ---------------------------------------------------------------------
@@ -340,30 +421,45 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 	if run.ID == "" {
 		return fmt.Errorf("run ID is required")
 	}
-	_, err := p.db.ExecContext(ctx, `
+	sources, err := marshalJSONB(run.Sources)
+	if err != nil {
+		return err
+	}
+	var delivery any
+	if run.Delivery != nil {
+		if delivery, err = marshalJSONB(run.Delivery); err != nil {
+			return err
+		}
+	}
+	_, err = p.db.ExecContext(ctx, `
 		INSERT INTO agents_runs
 			(id, org_uuid, workspace_uuid, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt,
-			 input, message, checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+			 input, output, sources, idempotency_key, delivery, message, checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
 		ON CONFLICT (id) DO UPDATE SET
 			phase=EXCLUDED.phase, attempt=EXCLUDED.attempt, message=EXCLUDED.message,
+			output=EXCLUDED.output, sources=EXCLUDED.sources, delivery=EXCLUDED.delivery,
 			checkpoint=EXCLUDED.checkpoint, input_tokens=EXCLUDED.input_tokens,
 			output_tokens=EXCLUDED.output_tokens, usd_micros=EXCLUDED.usd_micros,
 			updated_at=EXCLUDED.updated_at, started_at=EXCLUDED.started_at, finished_at=EXCLUDED.finished_at`,
 		run.ID, scope.OrgUUID, scope.WorkspaceUUID, run.AgentName, run.SessionID, run.Trigger, run.ParentRunID,
-		string(run.Phase), run.Attempt, run.Input, run.Message, nullBytes(run.Checkpoint),
+		string(run.Phase), run.Attempt, run.Input, run.Output, sources, run.IdempotencyKey, delivery, run.Message, nullBytes(run.Checkpoint),
 		run.InputTokens, run.OutputTokens, run.USDMicros,
 		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt))
 	return err
 }
+
+// runColumns is the run SELECT list, shared by every read path so a schema
+// change cannot drift one query out of step with scanRun.
+const runColumns = `id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, output, sources, idempotency_key, delivery, message,
+		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at`
 
 func (p *PostgresStore) GetRun(ctx context.Context, scope Scope, id string) (Run, error) {
 	if err := scope.validate(); err != nil {
 		return Run{}, err
 	}
 	row := p.db.QueryRowContext(ctx, `
-		SELECT id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, message,
-		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at
+		SELECT `+runColumns+`
 		FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`,
 		scope.OrgUUID, scope.WorkspaceUUID, id)
 	run, err := scanRun(row)
@@ -399,8 +495,7 @@ func (p *PostgresStore) ListRuns(ctx context.Context, scope Scope, limit int) ([
 		limit = 100
 	}
 	q := `
-		SELECT id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, message,
-		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at
+		SELECT ` + runColumns + `
 		FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2`
 	args := []any{scope.OrgUUID, scope.WorkspaceUUID}
 	if scope.AgentName != "" {
@@ -437,8 +532,7 @@ func (p *PostgresStore) QueryRuns(ctx context.Context, scope Scope, q RunQuery) 
 		return RunPage{}, err
 	}
 	qs := `
-		SELECT id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, message,
-		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at
+		SELECT ` + runColumns + `
 		FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2`
 	args := []any{scope.OrgUUID, scope.WorkspaceUUID}
 	add := func(clause string, v any) {
@@ -488,18 +582,39 @@ func (p *PostgresStore) QueryRuns(ctx context.Context, scope Scope, q RunQuery) 
 
 type rowScanner interface{ Scan(dest ...any) error }
 
-func scanRun(r rowScanner) (Run, error) {
+func scanRun(r rowScanner) (Run, error) { return scanScopedRun(r, nil) }
+
+// scanScopedRun scans the runColumns list, optionally preceded by org_uuid and
+// workspace_uuid into sc — the shape ListUnfinishedRuns selects, since it reads
+// across tenants and needs each row's scope. A nil sc means the plain column
+// list, keeping one scanner for both.
+func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	var run Run
 	var phase string
-	var checkpoint []byte
+	var checkpoint, sources, delivery []byte
 	var started, finished sql.NullTime
-	if err := r.Scan(&run.ID, &run.AgentName, &run.SessionID, &run.Trigger, &run.ParentRunID, &phase, &run.Attempt,
-		&run.Input, &run.Message, &checkpoint, &run.InputTokens, &run.OutputTokens, &run.USDMicros,
-		&run.CreatedAt, &run.UpdatedAt, &started, &finished); err != nil {
+	dest := []any{}
+	if sc != nil {
+		dest = append(dest, &sc.OrgUUID, &sc.WorkspaceUUID)
+	}
+	dest = append(dest, &run.ID, &run.AgentName, &run.SessionID, &run.Trigger, &run.ParentRunID, &phase, &run.Attempt,
+		&run.Input, &run.Output, &sources, &run.IdempotencyKey, &delivery, &run.Message, &checkpoint, &run.InputTokens, &run.OutputTokens, &run.USDMicros,
+		&run.CreatedAt, &run.UpdatedAt, &started, &finished)
+	if err := r.Scan(dest...); err != nil {
 		return Run{}, err
 	}
 	run.Phase = RunPhase(phase)
 	run.Checkpoint = checkpoint
+	if len(sources) > 0 {
+		if err := json.Unmarshal(sources, &run.Sources); err != nil {
+			return Run{}, fmt.Errorf("decode run sources: %w", err)
+		}
+	}
+	if len(delivery) > 0 {
+		if err := json.Unmarshal(delivery, &run.Delivery); err != nil {
+			return Run{}, fmt.Errorf("decode run delivery: %w", err)
+		}
+	}
 	if started.Valid {
 		t := started.Time.UTC()
 		run.StartedAt = &t
@@ -767,13 +882,95 @@ func (p *PostgresStore) GetTenantRef(ctx context.Context, clusterID string) (Ten
 	return ref, true, nil
 }
 
+func (p *PostgresStore) FindClusterForScope(ctx context.Context, orgUUID, workspaceUUID string) (string, bool, error) {
+	if strings.TrimSpace(orgUUID) == "" || strings.TrimSpace(workspaceUUID) == "" {
+		return "", false, fmt.Errorf("org and workspace are required")
+	}
+	var clusterID string
+	// Newest mapping wins: a workspace is served by one cluster, but a stale row
+	// can survive a re-provision, and the recent one is the live one.
+	row := p.db.QueryRowContext(ctx, `
+		SELECT cluster_id FROM agents_tenants
+		WHERE org_uuid=$1 AND workspace_uuid=$2
+		ORDER BY updated_at DESC LIMIT 1`, orgUUID, workspaceUUID)
+	err := row.Scan(&clusterID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return clusterID, true, nil
+}
+
+func (p *PostgresStore) FindRunByIdempotencyKey(ctx context.Context, scope Scope, key string) (Run, bool, error) {
+	if err := scope.withAgent(); err != nil {
+		return Run{}, false, err
+	}
+	if strings.TrimSpace(key) == "" {
+		return Run{}, false, nil
+	}
+	row := p.db.QueryRowContext(ctx, `
+		SELECT `+runColumns+`
+		FROM agents_runs
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND idempotency_key=$4`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, key)
+	run, err := scanRun(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Run{}, false, nil
+	}
+	if err != nil {
+		return Run{}, false, err
+	}
+	return run, true, nil
+}
+
+// ---- recovery -------------------------------------------------------------------------
+
+func (p *PostgresStore) ListUnfinishedRuns(ctx context.Context, phases []RunPhase, updatedBefore time.Time, limit int) ([]ScopedRun, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	names := make([]string, 0, len(phases))
+	for _, ph := range phases {
+		names = append(names, string(ph))
+	}
+	// Cross-tenant by design (see the Store interface): a restart has to find
+	// stranded work it has no request scope for.
+	qs := `
+		SELECT org_uuid, workspace_uuid, ` + runColumns + `
+		FROM agents_runs WHERE updated_at < $1`
+	args := []any{updatedBefore.UTC()}
+	if len(names) > 0 {
+		qs += ` AND phase = ANY($2)`
+		args = append(args, pq.Array(names))
+	}
+	qs += fmt.Sprintf(` ORDER BY updated_at ASC LIMIT %d`, limit)
+	rows, err := p.db.QueryContext(ctx, qs, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ScopedRun
+	for rows.Next() {
+		var sc Scope
+		run, err := scanScopedRun(rows, &sc)
+		if err != nil {
+			return nil, err
+		}
+		sc.AgentName = run.AgentName
+		out = append(out, ScopedRun{Scope: sc, Run: run})
+	}
+	return out, rows.Err()
+}
+
 // ---- teardown -------------------------------------------------------------------------
 
 func (p *PostgresStore) DeleteAgentData(ctx context.Context, scope Scope, agentName string) error {
 	if err := scope.validate(); err != nil {
 		return err
 	}
-	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage"} {
+	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries"} {
 		if _, err := p.db.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3`, table),
 			scope.OrgUUID, scope.WorkspaceUUID, agentName); err != nil {
@@ -792,6 +989,11 @@ func marshalJSONB(v any) (any, error) {
 		return nil, nil
 	}
 	if m, ok := v.(map[string]any); ok && len(m) == 0 {
+		return nil, nil
+	}
+	// A nil slice inside a non-nil interface is not caught above; it would be
+	// stored as a literal JSON null rather than SQL NULL.
+	if l, ok := v.([]string); ok && len(l) == 0 {
 		return nil, nil
 	}
 	b, err := json.Marshal(v)

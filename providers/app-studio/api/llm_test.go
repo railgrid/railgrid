@@ -109,8 +109,14 @@ func TestNewProjectEinoAssistantModelFactoryUsesNativeOpenAIModel(t *testing.T) 
 	if err != nil {
 		t.Fatalf("newProjectEinoAssistantModelFactory returned error: %v", err)
 	}
-	if got := reflect.TypeOf(model).String(); !strings.Contains(got, "openai.ChatModel") {
-		t.Fatalf("model type = %s, want native Eino OpenAI chat model", got)
+	// The native model is wrapped so every request payload carries an explicit
+	// content string for providers that reject a missing one.
+	payloadModel, ok := model.(*projectEinoAssistantOpenAIPayloadModel)
+	if !ok {
+		t.Fatalf("model type = %T, want payload-normalizing wrapper", model)
+	}
+	if got := reflect.TypeOf(payloadModel.BaseChatModel).String(); !strings.Contains(got, "openai.ChatModel") {
+		t.Fatalf("wrapped model type = %s, want native Eino OpenAI chat model", got)
 	}
 }
 

@@ -30,9 +30,13 @@ import (
 
 // Trigger classes: interactive runs have a human watching; background runs do
 // not and get a smaller default tool surface (design rule 5).
+// An API-invoked run is deliberately NOT interactive even though its caller
+// supplies a user token: nobody is present to answer an approval gate, so it is
+// held to the same narrower grant as a schedule. A caller that needs more widens
+// spec.tools.background.
 func isInteractive(trigger string) bool {
 	switch trigger {
-	case agentsv1alpha1.RunTriggerChat, agentsv1alpha1.RunTriggerAPI, agentsv1alpha1.RunTriggerChannel:
+	case agentsv1alpha1.RunTriggerChat, agentsv1alpha1.RunTriggerChannel:
 		return true
 	}
 	return false
@@ -59,6 +63,12 @@ func defaultFamilies(_ bool) []string {
 func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun) ([]engine.Tool, string, func()) {
 	trigger := run.Trigger
 	interactive := isInteractive(trigger)
+	// A worker inherits its parent's approval class rather than its own trigger's:
+	// spawn is unattended, but a worker of an interactive chat run should be gated
+	// by the same rules the human's own run was.
+	if run.Worker != nil {
+		interactive = isInteractive(run.Worker.ClassTrigger)
+	}
 
 	// Sub-agent delegation: only for top-level runs (depth 1 — a delegated
 	// run cannot delegate further) on agents with an allow-list. The closure
@@ -133,6 +143,28 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	if len(families) == 0 {
 		families = defaultFamilies(interactive)
 	}
+	// A worker's grant was decided by its parent (already intersected with the
+	// parent's own families), so it replaces the agent's spec-level grant rather
+	// than adding to it.
+	if run.Worker != nil {
+		families = run.Worker.Families
+	}
+
+	// Fan-out to scoped workers. Wired only when granted and the tree is not
+	// already at its depth limit — a depth-2 worker gets no spawn tool, the same
+	// way a delegated run gets no delegate tool.
+	var spawner *spawnCoordinator
+	if slices.Contains(families, "spawn") && spawnDepth(run) < maxSpawnDepth {
+		grantable := grantableWorkerFamilies(families)
+		spawner = &spawnCoordinator{
+			exec: s.executeTask, runCtx: ctx, parent: run, depth: spawnDepth(run), families: grantable,
+			tasks: map[string]*spawnTask{},
+		}
+		policy := spawnPolicyFor(deps.Agent, grantable)
+		spawner.maxPerRun, spawner.maxConcurrent = policy.MaxPerRun, policy.MaxConcurrent
+		spawner.sem = make(chan struct{}, policy.MaxConcurrent)
+		deps.Spawn, deps.Join, deps.SpawnPolicy = spawner.spawn, spawner.join, policy
+	}
 
 	var out []engine.Tool
 	if slices.Contains(families, "core") {
@@ -141,6 +173,7 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	if slices.Contains(families, "web") {
 		out = append(out, tools.Web(deps)...)
 	}
+	out = append(out, tools.Spawn(deps)...)
 
 	// Connection-backed families: dial each granted mcp/github connection and
 	// expose its discovered tools. Failures degrade (logged, family absent)
@@ -174,10 +207,12 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	// Edges: the hub's aggregate MCP endpoint (kube clusters + SSH servers)
 	// dialed as the calling user. This is a base-layer capability provided by
 	// the hub, not a wired-in provider tool — it is always enabled, never opt-in.
-	// It is naturally interactive-only: it acts as the calling user, and only
-	// interactive runs carry a user token (background runs leave HubToken
-	// empty), so the token check scopes it without a family gate.
-	if run.EdgesEndpoint != "" && run.HubToken != "" {
+	// Interactive-only, and now checked rather than assumed: it acts as the
+	// calling user, which is only meaningful while a human is present to see what
+	// it does. That used to fall out of background runs carrying no token, but an
+	// API-invoked run carries the caller's token (it needs one for the data plane)
+	// while being unattended — so the class is the gate.
+	if interactive && run.EdgesEndpoint != "" && run.HubToken != "" {
 		sess, err := tools.ConnectMCPEndpoint(ctx, run.EdgesEndpoint, run.HubToken, "edges", run.EdgesInsecure)
 		if err != nil {
 			log.Printf("toolset: edges MCP unavailable: %v", err)
@@ -185,6 +220,13 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 			sessions = append(sessions, sess)
 			out = append(out, sess.Tools...)
 		}
+	}
+
+	// Drop the tools a worker never gets: self-management and human-facing ones
+	// (see workerExcludedTools). Done here rather than in the tools package so
+	// the whole worker policy reads in one place.
+	if run.Worker != nil {
+		out = slices.DeleteFunc(out, func(t engine.Tool) bool { return workerExcludedTools[t.Name] })
 	}
 
 	// Approval gating + audit wrap every tool.
@@ -200,6 +242,13 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	}
 
 	closer := func() {
+		// Wait for spawned workers before tearing down: they run on this run's
+		// context and write into its tree, so the run is not over while one is
+		// still going. Workers the model never joined are bounded by the run's own
+		// timeout, which is already the deadline for everything here.
+		if spawner != nil {
+			spawner.wait()
+		}
 		for _, sess := range sessions {
 			sess.Close()
 		}
@@ -356,6 +405,9 @@ func toolNeedsApproval(name string, patterns []string) bool {
 const (
 	maxStoredArgs   = 16 * 1024
 	maxStoredResult = 64 * 1024
+	// maxStoredOutput bounds a run's persisted answer. Generous: this is the
+	// deliverable of a research run, and it is read back by API callers.
+	maxStoredOutput = 256 * 1024
 )
 
 // approvalGrant pre-authorizes exactly one call of one tool with exact

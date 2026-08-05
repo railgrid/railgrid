@@ -3,10 +3,13 @@
 
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentConfig } from '../views/agent-config'
+import type { AgentCreateWizard } from '../views/agent-create'
 import type { AgentPatch } from '../types'
 import '../views/agent-config'
+import '../views/agent-create'
+import { familiesForConns } from '../conn-defs'
 import { clearToasts, subscribeToasts } from '../ui/toast'
-import { agentFixture, makeStore, mount, settle, stubApi } from './helpers'
+import { agentFixture, makeStore, mount, settle, stubApi, text } from './helpers'
 
 async function mountConfig(spec: Record<string, unknown> = {}) {
   const patchAgent = vi.fn().mockImplementation((_n: string, body: AgentPatch) => Promise.resolve({ metadata: { name: 'scout' }, spec: body }))
@@ -114,5 +117,182 @@ describe('connection test feedback', () => {
     const failure = raised.find((m) => m.startsWith('error:'))
     expect(failure).toContain('Test of “tg” failed')
     expect(failure).toContain('blocked by the user')
+  })
+})
+
+// Research fan-out is a capability of the agent, not a wired connection. That
+// makes it the one family a user picks directly — and the one that the
+// derive-families-from-connections rule would silently drop.
+describe('research fan-out grant', () => {
+  const spawnRow = (el: AgentConfig): HTMLInputElement[] => {
+    const fs = [...el.querySelectorAll('fieldset')].find((f) => f.textContent?.includes('Built-in capabilities'))!
+    // Rows are [web linked, web background, spawn linked, spawn background].
+    return [...fs.querySelectorAll<HTMLInputElement>('input[type=checkbox]')].slice(2)
+  }
+
+  it('grants and revokes spawn for interactive runs', async () => {
+    const { el, patchAgent } = await mountConfig({ tools: { interactive: { families: ['core', 'web'] } } })
+    const [linked] = spawnRow(el)
+    expect(linked.checked).toBe(false)
+
+    linked.checked = true
+    linked.dispatchEvent(new Event('change'))
+    await settle(el, 4)
+    expect(patchAgent.mock.calls[0][1].interactiveFamilies).toEqual(expect.arrayContaining(['core', 'web', 'spawn']))
+  })
+
+  it('turning it off also clears the background grant', async () => {
+    const { el, patchAgent } = await mountConfig({
+      tools: { interactive: { families: ['core', 'spawn'] }, background: { families: ['core', 'spawn'] } },
+    })
+    const [linked] = spawnRow(el)
+    expect(linked.checked).toBe(true)
+
+    linked.checked = false
+    linked.dispatchEvent(new Event('change'))
+    await settle(el, 4)
+    const patch = patchAgent.mock.calls[0][1]
+    expect(patch.interactiveFamilies).not.toContain('spawn')
+    expect(patch.backgroundFamilies).not.toContain('spawn')
+  })
+
+  // The trap: familiesForConns rebuilds the list from scratch on every tool
+  // grant, so without carrying spawn over, wiring a tool would switch fan-out
+  // off behind the user's back.
+  it('survives a rebuild of families from connections', () => {
+    const connType = (n: string) => (n === 'gh' ? 'github' : undefined)
+    const rebuilt = familiesForConns(['gh'], connType, ['core', 'spawn'])
+    expect(rebuilt).toContain('spawn')
+    expect(rebuilt).toContain('github')
+    expect(rebuilt).toContain('core')
+  })
+
+  it('does not invent spawn when it was never granted', () => {
+    expect(familiesForConns(['gh'], () => 'github', ['core'])).not.toContain('spawn')
+    expect(familiesForConns([], () => undefined)).toEqual(['core'])
+  })
+})
+
+// The config that looks configured but cannot work: spawn granted, web not.
+// Workers inherit a SUBSET of the parent's tools, so they would get none — a
+// fan-out that answers from the model alone, at fan-out cost.
+describe('web + fan-out capability warnings', () => {
+  const capsFieldset = (el: AgentConfig) =>
+    [...el.querySelectorAll('fieldset')].find((f) => f.textContent?.includes('Built-in capabilities'))!
+
+  it('warns when spawn is on but web is not', async () => {
+    const { el } = await mountConfig({ tools: { interactive: { families: ['core', 'spawn'] } } })
+    const warn = capsFieldset(el).querySelector('.agents-warn-inline')
+    expect(warn).toBeTruthy()
+    expect(warn!.textContent).toContain('no web access')
+  })
+
+  it('says nothing once web is granted too', async () => {
+    const { el } = await mountConfig({ tools: { interactive: { families: ['core', 'web', 'spawn'] } } })
+    expect(capsFieldset(el).querySelector('.agents-warn-inline')).toBeNull()
+  })
+
+  it('grants web directly — web_fetch needs no connection', async () => {
+    const { el, patchAgent } = await mountConfig({ tools: { interactive: { families: ['core'] } } })
+    const [webLinked] = [...capsFieldset(el).querySelectorAll<HTMLInputElement>('input[type=checkbox]')]
+    expect(webLinked.checked).toBe(false)
+    webLinked.checked = true
+    webLinked.dispatchEvent(new Event('change'))
+    await settle(el, 4)
+    expect(patchAgent.mock.calls[0][1].interactiveFamilies).toContain('web')
+  })
+
+  it('keeps web across a rebuild of families from connections', () => {
+    // Without this, wiring any tool would silently drop a preset-granted web.
+    const rebuilt = familiesForConns(['gh'], () => 'github', ['core', 'web', 'spawn'])
+    expect(rebuilt).toContain('web')
+    expect(rebuilt).toContain('spawn')
+  })
+})
+
+// Creating an agent asks what it can DO, not which template it is. There is no
+// "research agent" kind: fan-out is a capability any agent can have, and it
+// carries its own behaviour, so the create form and the Config pane use the same
+// two toggles and the same words.
+describe('agent creation capabilities', () => {
+  async function mountCreate() {
+    const api = stubApi({})
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'main', model: 'gpt-5' }] as never
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api })
+    await settle(el, 3)
+    return el
+  }
+
+  const caps = (el: AgentCreateWizard) => [...el.querySelectorAll<HTMLInputElement>('.agents-cap input[type=checkbox]')]
+
+  it('offers capabilities, not agent templates', async () => {
+    const el = await mountCreate()
+    expect(text(el)).not.toContain('Research agent')
+    expect(text(el)).not.toContain('Blank agent')
+    expect(text(el)).toContain('Read the web')
+    expect(text(el)).toContain('Research fan-out')
+    expect(caps(el)).toHaveLength(2)
+  })
+
+  // The form is terse, so the surviving signal that behaviour is not the user's
+  // job is the prompt field's own label. If that ever goes back to asking for
+  // mechanics, the capability has stopped being self-sufficient.
+  it('asks the prompt for persona, not mechanics', async () => {
+    const el = await mountCreate()
+    expect(text(el)).toContain('not mechanics')
+  })
+
+  it('puts capabilities last, after the fields you must fill in', async () => {
+    const el = await mountCreate()
+    const body = text(el)
+    // Name and model are required; capabilities are optional extras and should
+    // not lead the form.
+    expect(body.indexOf('Can do')).toBeGreaterThan(body.indexOf('Model credential'))
+    expect(body.indexOf('Can do')).toBeGreaterThan(body.indexOf('Primary channel'))
+  })
+
+  it('sends only the families that were ticked', async () => {
+    const el = await mountCreate()
+    let sent: Record<string, unknown> | null = null
+    el.addEventListener('agents-create', (e) => (sent = (e as CustomEvent).detail))
+
+    const nameInput = el.querySelector<HTMLInputElement>('input[name=name]')!
+    nameInput.value = 'scout'
+    nameInput.dispatchEvent(new Event('input'))
+    const sel = el.querySelector<HTMLSelectElement>('select')!
+    sel.value = 'main'
+    sel.dispatchEvent(new Event('change'))
+
+    const [web, fanOut] = caps(el)
+    web.checked = true
+    web.dispatchEvent(new Event('change'))
+    fanOut.checked = true
+    fanOut.dispatchEvent(new Event('change'))
+    await settle(el, 3)
+
+    el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit'))
+    await settle(el, 3)
+
+    expect(sent).toBeTruthy()
+    expect(sent!.interactiveFamilies).toEqual(['core', 'web', 'spawn'])
+    // No prompt is invented on the user's behalf.
+    expect(sent!.systemPrompt).toBeUndefined()
+  })
+
+  it('omits families entirely when nothing is ticked', async () => {
+    const el = await mountCreate()
+    let sent: Record<string, unknown> | null = null
+    el.addEventListener('agents-create', (e) => (sent = (e as CustomEvent).detail))
+    const nameInput = el.querySelector<HTMLInputElement>('input[name=name]')!
+    nameInput.value = 'plain'
+    nameInput.dispatchEvent(new Event('input'))
+    const sel = el.querySelector<HTMLSelectElement>('select')!
+    sel.value = 'main'
+    sel.dispatchEvent(new Event('change'))
+    await settle(el, 3)
+    el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit'))
+    await settle(el, 3)
+    expect(sent!.interactiveFamilies).toBeUndefined()
   })
 })

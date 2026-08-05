@@ -120,3 +120,35 @@ func CostMicros(model string, inTokens, outTokens int64) int64 {
 	}
 	return int64(cost + 0.5) // round to nearest micro-USD
 }
+
+// DefaultContextWindow is assumed for a model the catalog does not know. Every
+// model the provider realistically talks to is at least this large, so it is a
+// safe floor: guessing low means compaction triggers earlier than strictly
+// necessary, which costs a summarization call — guessing high, or refusing to
+// guess, means a run dies on a context-length error instead.
+const DefaultContextWindow = 128000
+
+// ContextWindowFor returns the model's context window in tokens, falling back to
+// DefaultContextWindow for unknown ids.
+func ContextWindowFor(model string) int {
+	if mi, ok := LookupModel(model); ok && mi.ContextWindow > 0 {
+		return mi.ContextWindow
+	}
+	return DefaultContextWindow
+}
+
+// EstimateTokens approximates the token count of a string.
+//
+// It is deliberately a heuristic, not a tokenizer: the provider talks to any
+// OpenAI-compatible endpoint, so the real tokenizer varies per model and
+// vendoring one per family would be a large dependency for a decision — "are we
+// near the window?" — that only needs to be roughly right. Four bytes per token
+// is the usual rule of thumb for English prose and slightly over-counts code and
+// JSON, which errs toward compacting early. Callers must treat the result as an
+// estimate and leave real headroom.
+func EstimateTokens(s string) int {
+	if s == "" {
+		return 0
+	}
+	return (len(s) + 3) / 4
+}

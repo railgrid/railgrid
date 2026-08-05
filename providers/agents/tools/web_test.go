@@ -254,3 +254,62 @@ func TestDataPlaneSearchRequest(t *testing.T) {
 		}
 	})
 }
+
+// A research worker reads a whole source once and summarizes it; chat does not.
+// The default therefore stays small and raising it is per-call and capped.
+func TestFetchReturnBudget(t *testing.T) {
+	tests := []struct {
+		name    string
+		request int
+		want    int
+	}{
+		{"unset uses the chat-sized default", 0, webFetchMaxReturn},
+		{"negative is treated as unset", -1, webFetchMaxReturn},
+		{"a request within the cap is honored", 40000, 40000},
+		{"an over-large request is capped", 10_000_000, webFetchHardMaxReturn},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fetchReturnBudget(tc.request); got != tc.want {
+				t.Fatalf("fetchReturnBudget(%d) = %d, want %d", tc.request, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWebFetchAdvertisesMaxChars(t *testing.T) {
+	for _, tool := range Web(Deps{}) {
+		if tool.Name != "web_fetch" {
+			continue
+		}
+		if _, ok := tool.Params["maxChars"]; !ok {
+			t.Fatalf("web_fetch must advertise maxChars so a worker can ask for a full read; params = %v", tool.Params)
+		}
+		return
+	}
+	t.Fatal("web family has no web_fetch tool")
+}
+
+// web_search and spawn compete for the same job on a multi-part request, and a
+// model picks the cheaper-looking one. The search tool therefore points at spawn
+// — but only when the caller actually has it.
+func TestSearchFanOutHint(t *testing.T) {
+	withSpawn := Deps{Spawn: func(context.Context, SpawnRequest) (string, error) { return "", nil }}
+	if got := searchFanOutHint(withSpawn); !strings.Contains(got, "spawn a worker per part") {
+		t.Fatalf("expected a fan-out hint, got %q", got)
+	}
+	if got := searchFanOutHint(Deps{}); got != "" {
+		t.Fatalf("no spawn tool means no hint to give, got %q", got)
+	}
+
+	// And the hint has to reach the tool description the model reads.
+	for _, tool := range Web(withSpawn) {
+		if tool.Name == "web_search" {
+			if !strings.Contains(tool.Desc, "spawn a worker per part") {
+				t.Fatalf("web_search description is missing the hint: %s", tool.Desc)
+			}
+			return
+		}
+	}
+	t.Fatal("web family has no web_search tool")
+}

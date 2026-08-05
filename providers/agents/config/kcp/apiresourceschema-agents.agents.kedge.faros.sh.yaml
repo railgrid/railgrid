@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260730-4d9a8444.agents.agents.kedge.faros.sh
+  name: v260802-57900880.agents.agents.kedge.faros.sh
 spec:
   group: agents.kedge.faros.sh
   names:
@@ -144,6 +144,22 @@ spec:
             limits:
               description: Limits bounds a single run.
               properties:
+                maxConcurrentSpawns:
+                  description: |-
+                    MaxConcurrentSpawns caps how many spawned workers execute at the same
+                    time; the rest queue. Zero uses the provider default (4); the provider caps
+                    it at 8 regardless.
+                  format: int32
+                  minimum: 0
+                  type: integer
+                maxSpawnsPerRun:
+                  description: |-
+                    MaxSpawnsPerRun caps how many scoped workers one run may start with the
+                    "spawn" tool. Zero uses the provider default (10); the provider caps it at
+                    20 regardless.
+                  format: int32
+                  minimum: 0
+                  type: integer
                 maxToolTurns:
                   description: |-
                     MaxToolTurns caps tool-call iterations in one run. Zero uses the provider
@@ -220,7 +236,9 @@ spec:
                     families:
                       description: |-
                         Families names built-in tool families to enable: "core", "web",
-                        "github", "mcp", "files", "edges".
+                        "github", "mcp", "files", "edges", "spawn". "spawn" lets a run fan out to
+                        scoped workers (the same agent on sub-tasks, with a subset of this grant)
+                        and join their answers — the basis of a research pass.
                       items:
                         type: string
                       type: array
@@ -254,7 +272,9 @@ spec:
                     families:
                       description: |-
                         Families names built-in tool families to enable: "core", "web",
-                        "github", "mcp", "files", "edges".
+                        "github", "mcp", "files", "edges", "spawn". "spawn" lets a run fan out to
+                        scoped workers (the same agent on sub-tasks, with a subset of this grant)
+                        and join their answers — the basis of a research pass.
                       items:
                         type: string
                       type: array

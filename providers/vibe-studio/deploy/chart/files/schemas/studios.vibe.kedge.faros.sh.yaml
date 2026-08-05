@@ -1,0 +1,76 @@
+# APIResourceSchema for the vibe-studio Studio CRD — the workspace's studio:
+# the services every project in it shares, and settings that apply across them.
+# Singleton, named "default".
+#
+# kcp PRUNES anything this schema does not declare: a field added to the Go
+# type but not here is silently dropped on write. Keep the two in step.
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260802-001.studios.vibe.kedge.faros.sh
+spec:
+  group: vibe.kedge.faros.sh
+  names:
+    kind: Studio
+    listKind: StudioList
+    plural: studios
+    singular: studio
+    shortNames:
+      - vstudio
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Search
+          type: string
+          jsonPath: .status.search.phase
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        description: Studio is the workspace's vibe-studio installation — shared services and cross-project settings.
+        type: object
+        properties:
+          apiVersion: { type: string }
+          kind: { type: string }
+          metadata: { type: object }
+          spec:
+            type: object
+            properties:
+              search:
+                description: The workspace's web-search backend. Its zero value is the intended configuration — enabled, small.
+                type: object
+                properties:
+                  disabled:
+                    type: boolean
+                    description: Turns web search off for every project in this workspace.
+                  size:
+                    type: string
+                    enum: [small, medium, large]
+                  resourceRef:
+                    description: The fully-resolved instance the reconciler creates, written by the API from the searxng Template's instanceCRD.
+                    type: object
+                    properties:
+                      name: { type: string, minLength: 1, maxLength: 253 }
+                      apiVersion: { type: string, minLength: 1, maxLength: 253 }
+                      kind: { type: string, minLength: 1, maxLength: 253 }
+                      resource: { type: string, minLength: 1, maxLength: 253 }
+          status:
+            type: object
+            properties:
+              phase: { type: string }
+              updatedAt: { type: string, format: date-time }
+              search:
+                type: object
+                properties:
+                  instance: { type: string }
+                  resource: { type: string }
+                  phase: { type: string }
+                  reason: { type: string, maxLength: 2048 }

@@ -11,6 +11,7 @@ package store
 import (
 	"context"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -36,16 +37,40 @@ func openTestPostgres(t *testing.T) *PostgresStore {
 	return ps
 }
 
-// pgScope returns a unique scope per test run so tests don't collide on a
-// shared database.
-func pgScope() Scope {
-	return Scope{OrgUUID: "org-" + uuid.NewString()[:8], WorkspaceUUID: "ws-" + uuid.NewString()[:8], AgentName: "helper"}
+// pgScope returns a unique scope per test and deletes everything it wrote when
+// the test ends.
+//
+// The cleanup is not hygiene, it is correctness of the environment: the DSN
+// commonly points at the developer's live dev database (that is the whole point
+// of AGENTS_TEST_POSTGRES_DSN), so rows left behind show up as phantom agents and
+// stranded runs in the portal — and the recovery sweep then dutifully marks them
+// Failed, which looks exactly like a real outage.
+func pgScope(t *testing.T, ps *PostgresStore) Scope {
+	t.Helper()
+	sc := Scope{OrgUUID: "org-" + uuid.NewString()[:8], WorkspaceUUID: "ws-" + uuid.NewString()[:8], AgentName: "helper"}
+	t.Cleanup(func() { purgeTestScope(t, ps, sc.OrgUUID) })
+	return sc
+}
+
+// purgeTestScope removes every row an org wrote. Keyed on org_uuid alone so it
+// also catches the extra agents and workspaces a test invents under its own org.
+func purgeTestScope(t *testing.T, ps *PostgresStore, orgUUID string) {
+	t.Helper()
+	ctx := context.Background()
+	for _, table := range []string{
+		"agents_messages", "agents_runs", "agents_memories", "agents_inbox",
+		"agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_tenants",
+	} {
+		if _, err := ps.db.ExecContext(ctx, "DELETE FROM "+table+" WHERE org_uuid=$1", orgUUID); err != nil {
+			t.Logf("cleanup: %s for %s: %v", table, orgUUID, err)
+		}
+	}
 }
 
 func TestPostgres_MessagesRoundTripAndPagination(t *testing.T) {
 	ps := openTestPostgres(t)
 	ctx := context.Background()
-	sc := pgScope()
+	sc := pgScope(t, ps)
 	base := time.Now().UTC().Truncate(time.Millisecond)
 
 	for i := range 5 {
@@ -83,7 +108,7 @@ func TestPostgres_MessagesRoundTripAndPagination(t *testing.T) {
 func TestPostgres_RunSaveClaimAndUsage(t *testing.T) {
 	ps := openTestPostgres(t)
 	ctx := context.Background()
-	sc := pgScope()
+	sc := pgScope(t, ps)
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
 	runID := uuid.NewString()
@@ -112,12 +137,42 @@ func TestPostgres_RunSaveClaimAndUsage(t *testing.T) {
 	if err != nil || u.InputTokens != 110 || u.USDMicros != 2300 {
 		t.Fatalf("usage rollup: %v %+v", err, u)
 	}
+
+	// The run's answer and its sources are read back from the run record — the
+	// contract a programmatic caller (or a worker's parent) depends on.
+	stored := runs[0]
+	stored.Phase = RunPhaseSucceeded
+	stored.Output = "the answer"
+	stored.Sources = []string{"https://a.example/x", "https://b.example/y"}
+	stored.UpdatedAt = now
+	if err := ps.SaveRun(ctx, sc, stored); err != nil {
+		t.Fatalf("save with output: %v", err)
+	}
+	got, err := ps.GetRun(ctx, sc, runID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Output != "the answer" {
+		t.Fatalf("output = %q, want it persisted on the run", got.Output)
+	}
+	if !slices.Equal(got.Sources, []string{"https://a.example/x", "https://b.example/y"}) {
+		t.Fatalf("sources = %v", got.Sources)
+	}
+	// A run with no sources must round-trip as nil, not as a JSON null that
+	// later fails to decode.
+	stored.Sources = nil
+	if err := ps.SaveRun(ctx, sc, stored); err != nil {
+		t.Fatalf("save without sources: %v", err)
+	}
+	if got, err = ps.GetRun(ctx, sc, runID); err != nil || got.Sources != nil {
+		t.Fatalf("sources should clear to nil: %v %v", err, got.Sources)
+	}
 }
 
 func TestPostgres_InboxMemoryTenantRefTeardown(t *testing.T) {
 	ps := openTestPostgres(t)
 	ctx := context.Background()
-	sc := pgScope()
+	sc := pgScope(t, ps)
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
 	// Inbox add + resolve with payload round-trip.
@@ -167,4 +222,166 @@ func TestPostgres_InboxMemoryTenantRefTeardown(t *testing.T) {
 	if len(mems) != 0 {
 		t.Fatalf("memories not deleted: %d", len(mems))
 	}
+}
+
+// Compaction and recovery both add cross-cutting store surface: a summary keyed
+// per session, a reverse tenant lookup, and the one query that ignores Scope.
+func TestPostgres_CompactionAndRecovery(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	sc := pgScope(t, ps)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	t.Run("session summary upserts and clears with the session", func(t *testing.T) {
+		sess := "chat-" + uuid.NewString()
+		if _, ok, err := ps.GetSessionSummary(ctx, sc, sess); err != nil || ok {
+			t.Fatalf("expected no summary yet: ok=%v err=%v", ok, err)
+		}
+		first := SessionSummary{
+			SessionID: sess, Summary: "earlier talk", ThroughAt: now.Add(-time.Hour),
+			MessageCount: 6, CreatedAt: now, UpdatedAt: now,
+		}
+		if err := ps.PutSessionSummary(ctx, sc, first); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := ps.GetSessionSummary(ctx, sc, sess)
+		if err != nil || !ok {
+			t.Fatalf("get: ok=%v err=%v", ok, err)
+		}
+		if got.Summary != "earlier talk" || got.MessageCount != 6 || !got.ThroughAt.Equal(first.ThroughAt) {
+			t.Fatalf("round-trip mismatch: %+v", got)
+		}
+
+		// Compacting again replaces the row rather than adding a second one.
+		second := first
+		second.Summary, second.MessageCount, second.ThroughAt = "merged record", 14, now
+		if err := ps.PutSessionSummary(ctx, sc, second); err != nil {
+			t.Fatal(err)
+		}
+		got, _, err = ps.GetSessionSummary(ctx, sc, sess)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Summary != "merged record" || got.MessageCount != 14 {
+			t.Fatalf("upsert did not replace the row: %+v", got)
+		}
+
+		// "/new" wipes the transcript, so the summary standing in for it must go.
+		if err := ps.DeleteSession(ctx, sc, sess); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, _ := ps.GetSessionSummary(ctx, sc, sess); ok {
+			t.Fatal("DeleteSession must clear the summary too")
+		}
+	})
+
+	t.Run("reverse tenant lookup finds the cluster for a workspace", func(t *testing.T) {
+		cluster := "cluster-" + uuid.NewString()
+		if err := ps.SaveTenantRef(ctx, cluster, TenantRef{
+			OrgUUID: sc.OrgUUID, WorkspaceUUID: sc.WorkspaceUUID, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := ps.FindClusterForScope(ctx, sc.OrgUUID, sc.WorkspaceUUID)
+		if err != nil || !ok {
+			t.Fatalf("find: ok=%v err=%v", ok, err)
+		}
+		if got == "" {
+			t.Fatal("expected a cluster id")
+		}
+		if _, ok, _ := ps.FindClusterForScope(ctx, "nope", "nope"); ok {
+			t.Fatal("an unmapped workspace must report not-found, not a stale cluster")
+		}
+	})
+
+	t.Run("idempotency keys are unique per agent and ignore keyless runs", func(t *testing.T) {
+		key := "k-" + uuid.NewString()
+		first := uuid.NewString()
+		if err := ps.SaveRun(ctx, sc, Run{
+			ID: first, AgentName: sc.AgentName, Phase: RunPhaseRunning, IdempotencyKey: key,
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		got, found, err := ps.FindRunByIdempotencyKey(ctx, sc, key)
+		if err != nil || !found || got.ID != first {
+			t.Fatalf("lookup: found=%v id=%q err=%v", found, got.ID, err)
+		}
+
+		// The partial unique index refuses a second run under the same key, so a
+		// racing retry cannot create duplicate work even if it passes the read check.
+		if err := ps.SaveRun(ctx, sc, Run{
+			ID: uuid.NewString(), AgentName: sc.AgentName, Phase: RunPhaseRunning, IdempotencyKey: key,
+			CreatedAt: now, UpdatedAt: now,
+		}); err == nil {
+			t.Fatal("a second run with the same key must be rejected by the unique index")
+		}
+
+		// Keyless runs are unconstrained — the index is partial, or every run
+		// without a key would collide with every other.
+		for range 3 {
+			if err := ps.SaveRun(ctx, sc, Run{
+				ID: uuid.NewString(), AgentName: sc.AgentName, Phase: RunPhaseRunning,
+				CreatedAt: now, UpdatedAt: now,
+			}); err != nil {
+				t.Fatalf("keyless run rejected: %v", err)
+			}
+		}
+
+		// Another agent may reuse the key for its own work.
+		other := Scope{OrgUUID: sc.OrgUUID, WorkspaceUUID: sc.WorkspaceUUID, AgentName: "other-" + uuid.NewString()[:6]}
+		if err := ps.SaveRun(ctx, other, Run{
+			ID: uuid.NewString(), AgentName: other.AgentName, Phase: RunPhaseRunning, IdempotencyKey: key,
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("the same key under a different agent must be allowed: %v", err)
+		}
+		if _, found, _ := ps.FindRunByIdempotencyKey(ctx, sc, key); !found {
+			t.Fatal("the original run should still be the match for its own agent")
+		}
+	})
+
+	t.Run("unfinished runs come back with their scope, oldest first", func(t *testing.T) {
+		old, newer := uuid.NewString(), uuid.NewString()
+		terminal := uuid.NewString()
+		mk := func(id string, phase RunPhase, age time.Duration) {
+			at := now.Add(-age)
+			if err := ps.SaveRun(ctx, sc, Run{
+				ID: id, AgentName: sc.AgentName, Trigger: "chat", Phase: phase,
+				CreatedAt: at, UpdatedAt: at,
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		mk(old, RunPhaseRunning, 5*time.Hour)
+		mk(newer, RunPhaseRunning, 4*time.Hour)
+		mk(terminal, RunPhaseSucceeded, 5*time.Hour)
+
+		got, err := ps.ListUnfinishedRuns(ctx,
+			[]RunPhase{RunPhaseRunning, RunPhasePending}, now.Add(-3*time.Hour), 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var seen []string
+		for _, sr := range got {
+			if sr.Run.ID == old || sr.Run.ID == newer {
+				seen = append(seen, sr.Run.ID)
+				if sr.Scope.OrgUUID != sc.OrgUUID || sr.Scope.WorkspaceUUID != sc.WorkspaceUUID {
+					t.Fatalf("run %s lost its scope: %+v", sr.Run.ID, sr.Scope)
+				}
+				if sr.Scope.AgentName != sc.AgentName {
+					t.Fatalf("run %s scope should name its agent, got %q", sr.Run.ID, sr.Scope.AgentName)
+				}
+			}
+			if sr.Run.ID == terminal {
+				t.Fatal("a Succeeded run is not unfinished")
+			}
+			if sr.Run.Phase != RunPhaseRunning && sr.Run.Phase != RunPhasePending {
+				t.Fatalf("phase filter leaked %s", sr.Run.Phase)
+			}
+		}
+		if len(seen) != 2 || seen[0] != old {
+			t.Fatalf("got %v, want the older run first", seen)
+		}
+	})
 }

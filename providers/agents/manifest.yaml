@@ -73,3 +73,19 @@ spec:
         group: rbac.authorization.k8s.io
         verbs: ["get", "create"]
         tenantScoped: true
+      # Service-to-service invocation (api/s2s.go). A caller that is not a human
+      # — another provider, a job — presents its own ServiceAccount token instead
+      # of a user's, so the provider authenticates and authorizes it itself:
+      # TokenReview to resolve the identity, SubjectAccessReview to check it may
+      # run this agent, both on the APIExport virtual workspace scoped to the
+      # target cluster (kcp#4279 / kcp#4280). tenantScoped: the VW confines each
+      # review to the tenant's OWN workspace and cannot reach beyond it, so this
+      # is bounded. Built-in review APIs: no identityHash, verb create only.
+      - group: authentication.k8s.io
+        resource: tokenreviews
+        verbs: [create]
+        tenantScoped: true
+      - group: authorization.k8s.io
+        resource: subjectaccessreviews
+        verbs: [create]
+        tenantScoped: true

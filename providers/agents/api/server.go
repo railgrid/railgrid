@@ -77,7 +77,10 @@ type Server struct {
 	// capabilities caches what the hub's aggregate tool endpoint federates for
 	// a workspace, so the portal can hide flows the tenant cannot perform.
 	capabilities *capabilityCache
-	started      time.Time
+	// s2sAuth memoizes service-to-service authorization decisions so a long wait
+	// does not re-run TokenReview + SubjectAccessReview on every poll.
+	s2sAuth *s2sAuthCache
+	started time.Time
 }
 
 // New constructs the server and opens the durable store: Postgres when a
@@ -116,6 +119,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		events:       newEventBus(),
 		liveRuns:     newRunRegistry(),
 		capabilities: newCapabilityCache(),
+		s2sAuth:      newS2SAuthCache(),
 		started:      time.Now().UTC(),
 	}, nil
 }
@@ -154,12 +158,27 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/agents/{name}/sessions/{session}", s.deleteSession)
 	mux.HandleFunc("GET /api/agents/{name}/messages", s.listMessages)
 	mux.HandleFunc("POST /api/agents/{name}/chat", s.chat)
+	// Programmatic invocation: hand an agent an ad-hoc task with no stream to hold
+	// open and no pre-created Schedule/Trigger. See api/invoke.go.
+	mux.HandleFunc("POST /api/agents/{name}/runs", s.invokeAgentRun)
 
 	// Runs: the Activity feed and per-run trace (steps from the tool-call
 	// audit), plus cancellation of live runs.
 	mux.HandleFunc("GET /api/runs", s.listRuns)
 	mux.HandleFunc("GET /api/runs/{id}", s.getRun)
+	// Long-poll a run to a settled phase. Store-polled, so it answers correctly
+	// whichever replica is executing the run.
+	mux.HandleFunc("GET /api/runs/{id}/wait", s.waitRunHandler)
 	mux.HandleFunc("POST /api/runs/{id}/cancel", s.cancelRun)
+
+	// Service-to-service: callers that are not a signed-in user (another provider,
+	// a job) present their own ServiceAccount token and name the target workspace
+	// in the path. The provider authenticates and authorizes them itself — these
+	// routes deliberately do NOT use the hub's X-Kedge-* identity headers, which
+	// only exist for users. See api/s2s.go.
+	mux.HandleFunc("POST /s2s/clusters/{cluster}/agents/{name}/runs", s.s2sInvoke)
+	mux.HandleFunc("GET /s2s/clusters/{cluster}/runs/{id}", s.s2sGetRun)
+	mux.HandleFunc("GET /s2s/clusters/{cluster}/runs/{id}/wait", s.s2sGetRun)
 
 	// Server-push events (SSE): run phases, inbox items — keeps the portal
 	// live without polling.
