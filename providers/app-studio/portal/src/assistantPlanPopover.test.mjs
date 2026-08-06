@@ -32,48 +32,6 @@ test('renders the floating desktop capsule and accessible checklist', async () =
   assert.doesNotMatch(html, /border-t/)
 })
 
-test('renders a collapsed terminal inline disclosure with accessible immutable details', async () => {
-  const { default: AssistantPlanDisclosure } = await vite.ssrLoadModule('/src/AssistantPlanDisclosure.vue')
-  const html = await renderToString(createSSRApp(AssistantPlanDisclosure, {
-    messageId: 'assistant-failed',
-    status: 'failed',
-    plan: {
-      steps: [
-        { content: 'Inspect the quote form', status: 'completed' },
-        { content: 'Update the quote form', status: 'pending' },
-      ],
-    },
-  }))
-  assert.match(html, /Plan ended · 1 of 2 steps completed/)
-  assert.match(html, /aria-expanded="false"/)
-  assert.match(html, /aria-controls="app-studio-assistant-plan-details-assistant-failed"/)
-  assert.match(html, /data-plan-status="failed"/)
-  assert.match(html, /Inspect the quote form/)
-  assert.match(html, /Update the quote form/)
-})
-
-test('preserves terminal status and persisted counts for complete, partial, interrupted, and failed plans', async () => {
-  const { default: AssistantPlanDisclosure } = await vite.ssrLoadModule('/src/AssistantPlanDisclosure.vue')
-  const cases = [
-    { id: 'assistant-complete', status: 'completed', steps: [{ content: 'Inspect', status: 'completed' }], summary: 'Plan completed · 1 of 1 steps completed' },
-    { id: 'assistant-partial', status: 'completed', steps: [{ content: 'Inspect', status: 'completed' }, { content: 'Apply', status: 'pending' }], summary: 'Plan ended · 1 of 2 steps completed' },
-    { id: 'assistant-interrupted', status: 'interrupted', steps: [{ content: 'Inspect', status: 'completed' }, { content: 'Apply', status: 'in_progress' }], summary: 'Plan ended · 1 of 2 steps completed' },
-    { id: 'assistant-failed', status: 'failed', steps: [{ content: 'Inspect', status: 'completed' }, { content: 'Apply', status: 'pending' }], summary: 'Plan ended · 1 of 2 steps completed' },
-  ]
-
-  for (const testCase of cases) {
-    const html = await renderToString(createSSRApp(AssistantPlanDisclosure, {
-      messageId: testCase.id,
-      status: testCase.status,
-      plan: { steps: testCase.steps },
-    }))
-    assert.match(html, new RegExp(testCase.summary.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
-    assert.match(html, new RegExp(`data-plan-status="${testCase.status}"`))
-    assert.match(html, /aria-expanded="false"/)
-    assert.match(html, /aria-controls="app-studio-assistant-plan-details-/)
-  }
-})
-
 test('supports explicit collapse and releases the mobile sheet at the desktop breakpoint', async () => {
   const source = await readFile(new URL('./AssistantPlanPopover.vue', import.meta.url), 'utf8')
   assert.match(source, /if \(pinned\.value\) \{[\s\S]*dismissed\.value = true/)
@@ -94,8 +52,9 @@ test('keeps action details, assistant progress prose, working status, and plan d
   assert.match(appSource, /assistantDurationTimer = window\.setInterval[\s\S]*assistantDurationNowMs\.value = Date\.now\(\)/)
   assert.match(appSource, /function projectMessageAssistantStatus\(message:[\s\S]*normalizeAssistantRunStatus\(message\.metadata\?\.assistantStatus\)/)
   assert.match(appSource, /function assistantProgressClosed\(message:[\s\S]*assistantRunTerminal\(assistantRunStatusForMessage\(message\)\)/)
-  assert.match(appSource, /v-if="message\.viewStatus === 'interrupted'"[\s\S]*role="status"[\s\S]*Interrupted before completion/)
-  assert.match(appSource, /v-if="message\.viewStatus === 'interrupted' && !message\.progress"[\s\S]*role="status"[\s\S]*Interrupted before completion/)
+  assert.match(appSource, /message\.viewStatus === 'interrupted'[\s\S]*text-warning\/80[\s\S]*<span>Interrupted<\/span>/)
+  assert.match(appSource, /v-if="message\.viewStatus === 'interrupted' && !message\.progress"[\s\S]*role="status"[\s\S]*Interrupted/)
+  assert.doesNotMatch(appSource, /Interrupted before completion/)
   assert.match(appSource, /v-if="assistantProgressClosed\(message\)"/)
   assert.match(appSource, /:aria-expanded="assistantProgressExpanded\(message\)"/)
   assert.match(appSource, /parseAssistantProgress\(message\.metadata\?\.assistantProgress\)/)
@@ -105,10 +64,35 @@ test('keeps action details, assistant progress prose, working status, and plan d
   assert.match(appSource, /:message-id="`\$\{message\.id\}-trace-\$\{traceIndex\}`"/)
   assert.match(appSource, /activeAssistantRun\?\.activeMessageID === message\.id \? 'status'[\s\S]*aria-live="messageStreaming && activeAssistantRun\?\.activeMessageID === message\.id \? 'polite'/)
   assert.match(appSource, /v-if="conversationWorkingLabel"[\s\S]*role="status"/)
-  assert.match(appSource, /if \(activePlanMessage\.value\) return 'Working'/)
+  const workingStatus = appSource.match(/<div\s+v-if="conversationWorkingLabel"[\s\S]*?<\/div>\s*<\/div>/)?.[0] ?? ''
+  assert.match(workingStatus, /animate-pulse/)
+  assert.doesNotMatch(workingStatus, /Loader2|animate-spin/)
+  assert.match(workingStatus, /\{\{ conversationWorkingLabel \}\}/)
+  assert.match(workingStatus, /rounded-full/)
+  assert.match(workingStatus, /animation-delay:120ms/)
+  assert.match(workingStatus, /animation-delay:240ms/)
+  assert.match(appSource, /if \(activePlanMessage\.value\) return 'Running'/)
+  assert.match(appSource, /status === 'running' \|\| status === 'working'[\s\S]*return 'Running'/)
+  assert.match(workingStatus, /conversation-running-ripple/)
+  assert.doesNotMatch(workingStatus, /animate-pulse font-medium/)
   assert.match(appSource, /<AssistantPlanPopover[\s\S]*v-if="activePlanMessage"/)
-  assert.match(appSource, /<AssistantPlanDisclosure[\s\S]*assistantPlanTerminalStatusForMessage\(message\)/)
+  assert.doesNotMatch(appSource, /AssistantPlanDisclosure/)
+  assert.doesNotMatch(appSource, /Plan ended/)
+  assert.doesNotMatch(appSource, /Plan completed/)
   assert.doesNotMatch(appSource, /if \(activePlanMessage\.value\) return ''/)
+})
+
+test('keeps the active plan step spinner rotating until its status changes', async () => {
+  const source = await readFile(new URL('./AssistantPlanSteps.vue', import.meta.url), 'utf8')
+  assert.match(source, /v-else-if="step\.status === 'in_progress'"[\s\S]*animate-spin/)
+  assert.doesNotMatch(source, /motion-reduce:animate-none/)
+})
+
+test('renders the running label with a Codex-style gradient ripple', async () => {
+  const style = await readFile(new URL('./style.css', import.meta.url), 'utf8')
+  assert.match(style, /@keyframes app-studio-running-ripple/)
+  assert.match(style, /\.conversation-running-ripple[\s\S]*linear-gradient[\s\S]*background-clip: text[\s\S]*animation: app-studio-running-ripple 1\.65s linear infinite/)
+  assert.match(style, /prefers-reduced-motion: reduce[\s\S]*\.conversation-running-ripple[\s\S]*animation: none/)
 })
 
 test('offers an explicit Default-mode implementation turn after the latest completed plan', async () => {

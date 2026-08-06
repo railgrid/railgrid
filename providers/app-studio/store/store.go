@@ -181,6 +181,15 @@ type Store interface {
 	GetAssistantThread(ctx context.Context, scope Scope, threadID string) (AssistantThread, error)
 	ListAssistantThreads(ctx context.Context, scope Scope, actorID string, includeArchived bool, limit int, cursor string) (AssistantThreadPage, error)
 	UpdateAssistantThread(ctx context.Context, scope Scope, thread AssistantThread) (AssistantThread, error)
+	// SetAssistantThreadTitleIfEmpty atomically claims an untitled, unarchived
+	// thread for an actor and appends the supplied projection event in the same
+	// transaction. Encryption wrappers protect both the title and event payload.
+	SetAssistantThreadTitleIfEmpty(ctx context.Context, scope Scope, threadID, actorID, title string, event AssistantThreadEvent) (AssistantThread, bool, error)
+	// DeleteAssistantThread removes the thread and its canonical transcript. The
+	// actor and complete scope are part of the operation so ownership cannot be
+	// bypassed by a stale or incorrectly-scoped handler. Active turns reject the
+	// deletion atomically.
+	DeleteAssistantThread(ctx context.Context, scope Scope, threadID, actorID string) error
 	// UpdateAssistantThreadWithEvent commits a thread projection change and its
 	// canonical event in one store transaction. expectedSequence protects the
 	// append-only stream from a concurrent writer.

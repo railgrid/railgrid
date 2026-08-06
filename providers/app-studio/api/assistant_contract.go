@@ -24,6 +24,7 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
+	appskills "github.com/faroshq/provider-app-studio/skills"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
@@ -64,6 +65,8 @@ type projectAssistantRunRequest struct {
 	CollaborationMode        projectAssistantCollaborationMode
 	TurnProfile              projectAssistantTurnProfile
 	TurnPolicy               projectAssistantTurnPolicy
+	SkillSnapshot            *appskills.Snapshot
+	SelectedSkills           []projectAssistantSkillReceipt
 	// InitialApprovedPlan is a run-local grant derived from the explicit
 	// prompt that created a fresh Project. It is never saved as a cross-turn
 	// plan grant; checkpoints retain it only while this initial run is active.

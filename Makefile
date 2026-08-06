@@ -1551,6 +1551,9 @@ vibe-studio-db-down: ## Stop and remove the vibe-studio dev Postgres container
 run-provider-vibe-studio: build-vibe-studio-provider vibe-studio-db-up ## Run the vibe-studio provider (requires: make run-hub-embedded-static + make install-provider-vibe-studio + make init-provider-vibe-studio)
 	@echo "Starting vibe-studio provider on :$(VIBE_STUDIO_PORT)"
 	@echo "  hub:   $(VIBE_STUDIO_HUB_URL)"
+	@# Keep the provider-scoped kubeconfig path stable across init ordering. The
+	@# controller retry loop tolerates the file being absent until init writes it;
+	@# selecting an existing fallback would pin this process to stale credentials.
 	@# Auto-source providers/vibe-studio/.env (gitignored) for local overrides.
 	set -a; [ -f providers/vibe-studio/.env ] && . ./providers/vibe-studio/.env || true; set +a; \
 	VIBE_STUDIO_IN_MEMORY_STORE="$${VIBE_STUDIO_IN_MEMORY_STORE:-$(VIBE_STUDIO_IN_MEMORY_STORE)}"; \
@@ -1565,7 +1568,7 @@ run-provider-vibe-studio: build-vibe-studio-provider vibe-studio-db-up ## Run th
 	KEDGE_HUB_TOKEN=$(VIBE_STUDIO_TOKEN) \
 	KEDGE_HUB_INSECURE=true \
 	KEDGE_PROVIDER_NAME=vibe-studio \
-	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(VIBE_STUDIO_PROVIDER_KUBECONFIG)" "$(VIBE_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$(VIBE_STUDIO_PROVIDER_KUBECONFIG)} \
 	VIBE_STUDIO_DATABASE_URL="$$VIBE_STUDIO_DATABASE_URL" \
 		$(BINDIR)/vibe-studio-provider
 

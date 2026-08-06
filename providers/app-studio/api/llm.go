@@ -449,6 +449,11 @@ func (s *Server) generateProjectAssistantResultWithStart(
 	if start != nil && start.InitialApprovedPlan != nil {
 		req.InitialApprovedPlan = cloneProjectAssistantApprovedPlan(start.InitialApprovedPlan)
 	}
+	if start != nil && start.SkillSnapshot != nil {
+		snapshot := *start.SkillSnapshot
+		req.SkillSnapshot = &snapshot
+		req.SelectedSkills = cloneProjectAssistantSkillReceipts(start.SelectedSkills)
+	}
 	result, err := s.projectAssistantEngine().StreamProjectAssistant(ctx, req)
 	if err != nil {
 		if projectEinoAssistantBoundedExit(err) {
@@ -859,6 +864,10 @@ func summarizeProjectToolArgumentsMap(name string, args map[string]any) string {
 		return ""
 	}
 	switch projectToolBaseName(name) {
+	case projectToolLoadSkill:
+		return summarizeProjectCanonicalToolKeyValues(args, []string{"id"})
+	case projectToolReadSkillResource:
+		return summarizeProjectCanonicalToolKeyValues(args, []string{"id", "path", "offset", "limit"})
 	case projectToolCommitFiles, projectToolCommitProjectFiles:
 		parts := []string{}
 		if repo := projectToolString(args["repositoryRef"]); repo != "" {
@@ -973,6 +982,10 @@ func summarizeProjectToolResult(name, result string) string {
 		return ""
 	}
 	switch projectToolBaseName(name) {
+	case projectToolLoadSkill:
+		return "skill loaded"
+	case projectToolReadSkillResource:
+		return "skill resource read"
 	case projectToolReadFile:
 		return "file read"
 	case projectToolLS, projectToolGlob:

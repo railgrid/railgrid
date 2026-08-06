@@ -50,14 +50,17 @@ type Server struct {
 	mcpInsecureSkipTLSVerify     bool
 	previewInsecureSkipTLSVerify bool
 	assistantEngine              projectAssistantEngine
-	assistantRunManager          *projectAssistantRunManager
-	assistantSupervisor          *projectAssistantSupervisor
-	assistantProjectionLocks     map[string]*assistantThreadProjectionLockEntry
-	assistantThreadMirrors       map[string]struct{}
-	developmentSyncLocks         map[string]*sync.Mutex
-	developmentSyncTails         map[string]chan struct{}
-	developmentSyncAfterMutation func(identity, *aiv1alpha1.Project, string) error
-	projectCreatePreflight       projectCreatePreflightGenerator
+	// assistantThreadTitleGenerator is a test seam for the detached, one-shot
+	// title request. Production leaves it nil and uses the connected project LLM.
+	assistantThreadTitleGenerator func(context.Context, *asclient.Client, string) (string, error)
+	assistantRunManager           *projectAssistantRunManager
+	assistantSupervisor           *projectAssistantSupervisor
+	assistantProjectionLocks      map[string]*assistantThreadProjectionLockEntry
+	assistantThreadMirrors        map[string]struct{}
+	developmentSyncLocks          map[string]*sync.Mutex
+	developmentSyncTails          map[string]chan struct{}
+	developmentSyncAfterMutation  func(identity, *aiv1alpha1.Project, string) error
+	projectCreatePreflight        projectCreatePreflightGenerator
 	// developmentSyncFailures records the most recent post-mutation sync
 	// failure per project so verify_development_runtime can report it. A
 	// failed background sync means the assistant's edits never reached the
@@ -160,8 +163,18 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}", s.patchProject).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}", s.deleteProject).Methods(http.MethodDelete)
 	r.HandleFunc("/api/projects/{project}/assistant/threads", s.listProjectAssistantThreads).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/assistant/skills", s.getProjectAssistantSkills).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/assistant/skills/detail", s.getProjectAssistantSkillDetailByID).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/assistant/skills/project", s.createProjectAssistantSkill).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/skills/project/import", s.importProjectAssistantSkill).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/skills/activation", s.setProjectAssistantSkillActivation).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/skills/project/{packageName:.*}/export", s.exportProjectAssistantSkill).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/assistant/skills/project/{packageName:.*}", s.getProjectAssistantSkillDetail).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/assistant/skills/project/{packageName:.*}", s.updateProjectAssistantSkill).Methods(http.MethodPut)
+	r.HandleFunc("/api/projects/{project}/assistant/skills/project/{packageName:.*}", s.deleteProjectAssistantSkill).Methods(http.MethodDelete)
 	r.HandleFunc("/api/projects/{project}/assistant/threads", s.createProjectAssistantThread).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}", s.patchProjectAssistantThread).Methods(http.MethodPatch)
+	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}", s.deleteProjectAssistantThread).Methods(http.MethodDelete)
 	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/items", s.listProjectAssistantThreadItems).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/events", s.streamProjectAssistantThreadEvents).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns", s.startProjectAssistantThreadTurn).Methods(http.MethodPost)

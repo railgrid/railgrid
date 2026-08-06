@@ -481,6 +481,9 @@ func projectEinoAssistantCanonicalCompactionContext(
 		if prompt := runState.ToolPrompt(); prompt != "" {
 			contextMessages = append(contextMessages, chatMessage{Role: "system", Content: prompt})
 		}
+		if prompt := runState.SkillPrompt(); prompt != "" {
+			contextMessages = append(contextMessages, chatMessage{Role: "system", Content: prompt})
+		}
 	}
 	messages, err := projectChatMessagesToEino(contextMessages)
 	if err != nil {

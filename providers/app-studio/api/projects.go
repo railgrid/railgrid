@@ -37,6 +37,7 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
+	appskills "github.com/faroshq/provider-app-studio/skills"
 	"github.com/faroshq/provider-app-studio/store"
 )
 
@@ -893,6 +894,8 @@ func appendProjectUserMessage(ctx context.Context, msgStore store.Store, scope s
 
 type projectAssistantStreamStart struct {
 	InitialApprovedPlan *projectAssistantApprovedPlan
+	SkillSnapshot       *appskills.Snapshot
+	SelectedSkills      []projectAssistantSkillReceipt
 }
 
 func ptrProjectAssistantApprovedPlan(plan projectAssistantApprovedPlan) *projectAssistantApprovedPlan {

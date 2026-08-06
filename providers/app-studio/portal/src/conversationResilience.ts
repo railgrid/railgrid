@@ -23,6 +23,7 @@ export interface AssistantRunStartRequest {
   clientRequestID: string
   collaborationMode: ProjectAssistantRunMode
   expectedRunID?: string
+  skills?: string[]
 }
 
 export interface ConversationState<TMessage extends ProjectMessage = ProjectMessage> {
@@ -63,6 +64,7 @@ export function assistantRunStartFingerprint(projectName: string, request: Omit<
     request.content,
     request.collaborationMode,
     request.expectedRunID ?? '',
+    request.skills ?? [],
   ])
 }
 

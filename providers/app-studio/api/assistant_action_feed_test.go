@@ -47,6 +47,114 @@ func TestProjectAssistantActionFeedReadHidesExecutionMechanics(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantActionFeedSkillsAreVisibleWithLifecycleTitles(t *testing.T) {
+	tests := []struct {
+		name      string
+		tool      string
+		active    string
+		succeeded string
+		failed    string
+	}{
+		{
+			name:      "load skill",
+			tool:      projectToolLoadSkill,
+			active:    "Loading skill",
+			succeeded: "Loaded skill",
+			failed:    "Skill load failed",
+		},
+		{
+			name:      "read skill resource",
+			tool:      projectToolReadSkillResource,
+			active:    "Reading skill resource",
+			succeeded: "Read skill resource",
+			failed:    "Skill resource read failed",
+		},
+	}
+	statuses := []struct {
+		rawStatus string
+		status    string
+		title     string
+	}{
+		{rawStatus: "running", status: projectAssistantActionFeedStatusRunning},
+		{rawStatus: "succeeded", status: projectAssistantActionFeedStatusSucceeded},
+		{rawStatus: "failed", status: projectAssistantActionFeedStatusFailed},
+		{rawStatus: "rejected", status: projectAssistantActionFeedStatusRejected},
+		{rawStatus: "permission_required", status: projectAssistantActionFeedStatusWaiting},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, status := range statuses {
+				status.title = tt.active
+				if status.status == projectAssistantActionFeedStatusSucceeded {
+					status.title = tt.succeeded
+				}
+				if status.status == projectAssistantActionFeedStatusFailed || status.status == projectAssistantActionFeedStatusRejected {
+					status.title = tt.failed
+				}
+				event := projectToolCallStreamEvent{
+					ID:        tt.name + "-" + status.rawStatus,
+					Name:      tt.tool,
+					Status:    status.rawStatus,
+					Arguments: "id project:alpha; path private/resource.md; offset 12; limit 34",
+				}
+				item := projectAssistantActionFeedItemFromToolCall(event)
+				if item.Kind != projectAssistantActionFeedItemInspect || item.Status != status.status || item.Title != status.title {
+					t.Fatalf("item = %#v, want inspect %s/%s", item, status.status, status.title)
+				}
+				feed := projectAssistantActionFeedFromToolCalls([]projectToolCallStreamEvent{event})
+				if len(feed) != 1 || feed[0].ID != item.ID {
+					t.Fatalf("feed = %#v, want visible skill action", feed)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectAssistantActionFeedSkillsExposeOnlyQualifiedID(t *testing.T) {
+	for _, tool := range []string{projectToolLoadSkill, projectToolReadSkillResource} {
+		t.Run(tool, func(t *testing.T) {
+			item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+				ID:        "privacy-" + tool,
+				Name:      tool,
+				Status:    "succeeded",
+				Arguments: "id project:alpha; path private/resource.md; offset 12; limit 34",
+				Summary:   "skill loaded; instruction body; resource result content; package/path sha256:private-digest",
+			})
+			if item.Target != "project:alpha" {
+				t.Fatalf("item target = %q, want public qualified skill ID", item.Target)
+			}
+			data, err := json.Marshal(item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{
+				"private/resource.md", "instruction body", "resource result content", "package/path", "sha256:private-digest",
+				"path", "offset", "limit", "content", "digest", "arguments",
+			} {
+				if strings.Contains(string(data), forbidden) {
+					t.Fatalf("item JSON = %s, must not contain %q", data, forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectAssistantActionFeedSkillMinimalDisclosureHidesTarget(t *testing.T) {
+	previous := projectAssistantToolDisclosureMinimal
+	projectAssistantToolDisclosureMinimal = true
+	t.Cleanup(func() { projectAssistantToolDisclosureMinimal = previous })
+
+	item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+		ID:        "minimal-skill",
+		Name:      projectToolLoadSkill,
+		Status:    "succeeded",
+		Arguments: "id project:alpha; path private/resource.md",
+	})
+	if item.Kind != projectAssistantActionFeedItemInspect || item.Target != "" || item.Outcome != "" {
+		t.Fatalf("minimal skill item = %#v, want inspect presentation without target/outcome", item)
+	}
+}
+
 func TestProjectAssistantActionFeedPreservesSkippedRead(t *testing.T) {
 	item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
 		ID:        "read-skipped",

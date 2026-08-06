@@ -114,6 +114,18 @@ test('opens publishing once and activates it when requested again', () => {
   assert.equal(twice.activeTabID, 'publishing')
 })
 
+test('opens project settings as a closeable built-in tab', () => {
+  const settings = openWorkbenchBuiltInTab(createDefaultWorkbenchState(), 'settings')
+  assert.equal(settings.activeTabID, 'settings')
+  assert.deepEqual(settings.tabs.find((tab) => tab.id === 'settings'), {
+    id: 'settings',
+    kind: 'settings',
+    title: 'Project Settings',
+    subtitle: 'Manage project details, repository status, and model configuration',
+    closeable: true,
+  })
+})
+
 test('review is a closeable built-in tab without being forced open by default', () => {
   const defaultState = createDefaultWorkbenchState()
   const withReview = openWorkbenchBuiltInTab(defaultState, 'review')
@@ -127,6 +139,22 @@ test('review is a closeable built-in tab without being forced open by default', 
     closeable: true,
   })
   assert.equal(closedReview.tabs.some((tab) => tab.id === 'review'), false)
+})
+
+test('threads is a closeable built-in tab that opens from the launcher catalog', () => {
+  const withThreads = openWorkbenchBuiltInTab(createDefaultWorkbenchState(), 'threads')
+  const closedThreads = closeWorkbenchTab(withThreads, 'threads')
+
+  assert.deepEqual(withThreads.tabs[withThreads.tabs.length - 1], {
+    id: 'threads',
+    kind: 'threads',
+    title: 'Threads',
+    subtitle: 'Manage assistant conversations for this project',
+    closeable: true,
+  })
+  assert.equal(withThreads.activeTabID, 'threads')
+  assert.equal(closedThreads.tabs.some((tab) => tab.id === 'threads'), false)
+  assert.equal(closedThreads.activeTabID, 'launcher')
 })
 
 test('reorders tabs by moving the dragged tab before the target tab while preserving active tab', () => {

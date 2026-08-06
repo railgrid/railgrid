@@ -205,6 +205,12 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 		}
 		item.Target = projectAssistantActionSafeTarget(path)
 		item.Title = projectAssistantActionLifecycleTitle(status, "Reading file", "Read file", "File read failed")
+	case projectToolLoadSkill:
+		item.Target = projectAssistantSkillActionTarget(args, arguments)
+		item.Title = projectAssistantActionLifecycleTitle(status, "Loading skill", "Loaded skill", "Skill load failed")
+	case projectToolReadSkillResource:
+		item.Target = projectAssistantSkillActionTarget(args, arguments)
+		item.Title = projectAssistantActionLifecycleTitle(status, "Reading skill resource", "Read skill resource", "Skill resource read failed")
 	case projectToolLS, projectToolGlob:
 		item.Title = projectAssistantActionLifecycleTitle(status, "Reading project files", "Read project files", "Project inspection failed")
 		if count, ok := projectAssistantSummaryCount(summary, "path(s)"); ok {
@@ -538,7 +544,8 @@ func projectAssistantActionFeedItemKind(name string) string {
 		return projectAssistantActionFeedItemCommit
 	case base == projectToolCreateFile || base == projectToolReplaceFile || base == projectToolEditFile || base == projectToolDeleteFile || base == projectToolMoveFile:
 		return projectAssistantActionFeedItemEdit
-	case base == projectToolLS || base == projectToolReadFile || base == projectToolGlob || base == projectToolGrep:
+	case base == projectToolLS || base == projectToolReadFile || base == projectToolGlob || base == projectToolGrep ||
+		base == projectToolLoadSkill || base == projectToolReadSkillResource:
 		return projectAssistantActionFeedItemInspect
 	default:
 		return projectAssistantActionFeedItemOther
@@ -648,6 +655,22 @@ func projectAssistantActionArgumentField(args map[string]any, summary, rawKey, s
 		return value
 	}
 	return projectAssistantSummaryField(summary, summaryKey)
+}
+
+func projectAssistantSkillActionTarget(args map[string]any, summary string) string {
+	id := projectAssistantActionArgumentField(args, summary, "id", "id")
+	if args == nil {
+		decoded, ok := unescapeProjectCanonicalToolSummaryValue(id)
+		if !ok {
+			return ""
+		}
+		id = decoded
+	}
+	colon := strings.IndexByte(id, ':')
+	if colon <= 0 || colon == len(id)-1 {
+		return ""
+	}
+	return projectAssistantActionSafeTarget(id)
 }
 
 func projectAssistantSummaryField(summary, field string) string {

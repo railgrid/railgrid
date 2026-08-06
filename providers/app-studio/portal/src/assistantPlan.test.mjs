@@ -17,7 +17,6 @@ const {
   assistantPlanProgress,
   assistantPlanStepStatusLabel,
   assistantPlanSummary,
-  assistantPlanTerminalSummary,
   parseAssistantPlan,
 } = await import(moduleURL)
 
@@ -128,27 +127,6 @@ test('summarizes completed progress without a trailing separator', () => {
       ],
     }),
     '3 of 3 steps',
-  )
-})
-
-test('summarizes terminal plans from the persisted snapshot for complete and partial runs', () => {
-  assert.equal(
-    assistantPlanTerminalSummary({
-      steps: [
-        { content: 'Inspect the quote form', status: 'completed' },
-        { content: 'Update the quote form', status: 'completed' },
-      ],
-    }, 'completed'),
-    'Plan completed · 2 of 2 steps completed',
-  )
-  assert.equal(
-    assistantPlanTerminalSummary({
-      steps: [
-        { content: 'Inspect the quote form', status: 'completed' },
-        { content: 'Update the quote form', status: 'pending' },
-      ],
-    }, 'failed'),
-    'Plan ended · 1 of 2 steps completed',
   )
 })
 

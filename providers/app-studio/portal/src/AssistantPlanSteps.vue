@@ -31,7 +31,7 @@ const itemClass = () => props.mobile
       <Loader2
         v-else-if="step.status === 'in_progress'"
         :class="mobile ? 'h-4 w-4' : 'h-3.5 w-3.5'"
-        class="shrink-0 animate-spin text-accent motion-reduce:animate-none"
+        class="shrink-0 animate-spin text-accent"
         :stroke-width="1.75"
         aria-hidden="true"
       />

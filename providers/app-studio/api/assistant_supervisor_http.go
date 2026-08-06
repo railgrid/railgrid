@@ -154,6 +154,11 @@ func appendProjectAssistantStreamBlock(content *strings.Builder, block string) s
 // hands the run to a server-owned worker. It deliberately accepts no response
 // writer and never derives execution from the caller's request context.
 func (s *Server) startProjectAssistantRunDurablyWithMode(ctx context.Context, scope store.Scope, actor, content, clientRequestID string, mode store.AssistantRunMode, start func(store.AssistantRun, store.Message, bool) error) (projectAssistantDurableStartResult, error) {
+	return s.startProjectAssistantRunDurablyWithModeAndSkills(ctx, scope, actor, content, clientRequestID, mode, projectAssistantDurableSkillSelection{}, start)
+}
+
+func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Context, scope store.Scope, actor, content, clientRequestID string, mode store.AssistantRunMode, selection projectAssistantDurableSkillSelection, start func(store.AssistantRun, store.Message, bool) error) (projectAssistantDurableStartResult, error) {
+	skills := selection.IDs
 	content = strings.TrimSpace(content)
 	clientRequestID = strings.TrimSpace(clientRequestID)
 	actor = strings.TrimSpace(actor)
@@ -167,7 +172,7 @@ func (s *Server) startProjectAssistantRunDurablyWithMode(ctx context.Context, sc
 		return projectAssistantDurableStartResult{}, err
 	}
 	if prior, err := s.store.FindAssistantRunByClientRequestID(ctx, scope, clientRequestID); err == nil {
-		if err := validateProjectAssistantStartReplay(prior, actor, content, mode); err != nil {
+		if err := validateProjectAssistantStartReplayWithSkills(prior, actor, content, mode, skills); err != nil {
 			return projectAssistantDurableStartResult{}, err
 		}
 		return projectAssistantDurableStartResult{Run: prior}, nil
@@ -193,19 +198,22 @@ func (s *Server) startProjectAssistantRunDurablyWithMode(ctx context.Context, sc
 	if err := s.captureProjectAssistantApprovalMode(ctx, scope, actor, &run); err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}
-	if err := bindProjectAssistantStartRequest(&run, actor, content); err != nil {
+	if err := bindProjectAssistantStartRequestWithSkills(&run, actor, content, skills); err != nil {
+		return projectAssistantDurableStartResult{}, err
+	}
+	if err := bindProjectAssistantStartSkillAudit(&run, selection); err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}
 	assistant.Metadata = projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil)
 	created, err := s.store.CreateAssistantRun(ctx, scope, user, assistant, run)
 	if err != nil {
-		if prior, ok := s.recoverProjectAssistantStartReplay(ctx, scope, err, clientRequestID, actor, content, mode); ok {
+		if prior, ok := s.recoverProjectAssistantStartReplayWithSkills(ctx, scope, err, clientRequestID, actor, content, mode, skills); ok {
 			return projectAssistantDurableStartResult{Run: prior}, nil
 		}
 		return projectAssistantDurableStartResult{}, err
 	}
 	if created.ID != run.ID {
-		if err := validateProjectAssistantStartReplay(created, actor, content, mode); err != nil {
+		if err := validateProjectAssistantStartReplayWithSkills(created, actor, content, mode, skills); err != nil {
 			return projectAssistantDurableStartResult{}, err
 		}
 		return projectAssistantDurableStartResult{Run: created}, nil

@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	appskills "github.com/faroshq/provider-app-studio/skills"
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
@@ -71,6 +73,10 @@ type projectEinoAssistantRunState struct {
 	projectRepositoryRef             string
 	toolPrompt                       string
 	toolDiscovery                    *projectEinoAssistantToolDiscovery
+	skillSnapshot                    *appskills.Snapshot
+	catalogDigest                    string
+	selectedSkillReceipts            map[string]projectAssistantSkillReceipt
+	loadedSkillReceipts              map[string]projectAssistantSkillReceipt
 	sessionSnapshot                  *projectEinoAssistantSessionSnapshot
 	rolloutBudget                    *projectEinoAssistantRolloutBudget
 	restoredRolloutBudget            *projectAssistantRolloutBudgetState
@@ -171,6 +177,8 @@ func (s *projectEinoAssistantRunState) EmitToolCall(
 func newProjectEinoAssistantRunState() *projectEinoAssistantRunState {
 	return &projectEinoAssistantRunState{
 		seenToolCalls:              map[string]int{},
+		selectedSkillReceipts:      map[string]projectAssistantSkillReceipt{},
+		loadedSkillReceipts:        map[string]projectAssistantSkillReceipt{},
 		completedReadCalls:         map[string]uint64{},
 		readFileVersions:           map[string]string{},
 		readFileCoverage:           map[string][]projectEinoAssistantLineRange{},
@@ -183,6 +191,116 @@ func newProjectEinoAssistantRunState() *projectEinoAssistantRunState {
 		developmentSyncChanged:     make(chan struct{}),
 		turnPolicy:                 projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDebugging),
 	}
+}
+
+func (s *projectEinoAssistantRunState) ConfigureSkillSnapshot(snapshot appskills.Snapshot, selected, loaded []projectAssistantSkillReceipt) error {
+	if s == nil {
+		return errors.New("assistant run state is unavailable")
+	}
+	selectedMap := make(map[string]projectAssistantSkillReceipt, len(selected))
+	loadedMap := make(map[string]projectAssistantSkillReceipt, len(selected)+len(loaded))
+	validate := func(receipt projectAssistantSkillReceipt) error {
+		entry, err := snapshot.Get(receipt.ID)
+		if err != nil || !entry.Enabled || entry.QualifiedName != receipt.ID || entry.Name != receipt.Name || entry.Scope != receipt.Scope || entry.PackagePath != receipt.PackagePath || entry.Digest != receipt.Digest || entry.ContentDigest != receipt.ContentDigest {
+			projectAssistantSkillMetric("drift", "detected")
+			return errProjectAssistantSkillCatalogDrift
+		}
+		return nil
+	}
+	for _, receipt := range selected {
+		if err := validate(receipt); err != nil {
+			return err
+		}
+		selectedMap[receipt.ID] = receipt
+		loadedMap[receipt.ID] = receipt
+	}
+	for _, receipt := range loaded {
+		if err := validate(receipt); err != nil {
+			return err
+		}
+		loadedMap[receipt.ID] = receipt
+	}
+	if len(selectedMap) > projectAssistantMaxSkills || len(loadedMap) > projectAssistantMaxSkills {
+		return errors.New("assistant skill receipt limit exceeded")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snapshotCopy := snapshot
+	s.skillSnapshot = &snapshotCopy
+	s.catalogDigest = snapshot.CatalogDigest
+	s.selectedSkillReceipts = selectedMap
+	s.loadedSkillReceipts = loadedMap
+	return nil
+}
+
+func (s *projectEinoAssistantRunState) SkillPrompt() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.skillSnapshot == nil {
+		return ""
+	}
+	loaded := make([]projectAssistantSkillReceipt, 0, len(s.loadedSkillReceipts))
+	for _, receipt := range s.loadedSkillReceipts {
+		loaded = append(loaded, receipt)
+	}
+	return projectAssistantSkillsPrompt(*s.skillSnapshot, cloneProjectAssistantSkillReceipts(loaded))
+}
+
+func (s *projectEinoAssistantRunState) LoadSkill(id string) (appskills.Entry, error) {
+	if s == nil {
+		return appskills.Entry{}, errors.New("assistant run state is unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.skillSnapshot == nil {
+		projectAssistantSkillMetric("load", "rejected")
+		return appskills.Entry{}, errors.New("assistant skill catalog is unavailable")
+	}
+	entry, err := s.skillSnapshot.Get(id)
+	if err != nil || !entry.Enabled || entry.QualifiedName != id {
+		projectAssistantSkillMetric("load", "rejected")
+		return appskills.Entry{}, appskills.ErrSkillNotFound
+	}
+	receipt := projectAssistantSkillReceiptForEntry(entry)
+	if s.loadedSkillReceipts == nil {
+		s.loadedSkillReceipts = map[string]projectAssistantSkillReceipt{}
+	}
+	if _, loaded := s.loadedSkillReceipts[id]; !loaded && len(s.loadedSkillReceipts) >= projectAssistantMaxSkills {
+		projectAssistantSkillMetric("load", "rejected")
+		return appskills.Entry{}, errors.New("assistant skill load limit exceeded")
+	}
+	s.loadedSkillReceipts[id] = receipt
+	projectAssistantSkillMetric("load", "success")
+	return entry, nil
+}
+
+func (s *projectEinoAssistantRunState) ReadSkillResource(ctx context.Context, id, resourcePath string, opts appskills.ResourceReadOptions) (appskills.ResourceReadResult, error) {
+	if s == nil {
+		return appskills.ResourceReadResult{}, errors.New("assistant run state is unavailable")
+	}
+	s.mu.Lock()
+	if s.skillSnapshot == nil {
+		s.mu.Unlock()
+		projectAssistantSkillMetric("resource", "rejected")
+		return appskills.ResourceReadResult{}, errors.New("assistant skill catalog is unavailable")
+	}
+	if _, ok := s.loadedSkillReceipts[id]; !ok {
+		s.mu.Unlock()
+		projectAssistantSkillMetric("resource", "rejected")
+		return appskills.ResourceReadResult{}, errors.New("skill must be loaded before reading its resources")
+	}
+	snapshot := *s.skillSnapshot
+	s.mu.Unlock()
+	result, err := snapshot.ReadResource(ctx, id, resourcePath, opts)
+	if err != nil {
+		projectAssistantSkillMetric("resource", "failure")
+		return appskills.ResourceReadResult{}, err
+	}
+	projectAssistantSkillMetric("resource", "success")
+	return result, nil
 }
 
 type projectEinoAssistantTransientPreviewImage struct {
@@ -586,6 +704,16 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	defer s.mu.Unlock()
 	s.messages = cloneChatMessages(state.Messages)
 	s.lastToolMessages = cloneChatMessages(state.LastToolMessages)
+	s.catalogDigest = strings.TrimSpace(state.CatalogDigest)
+	s.selectedSkillReceipts = make(map[string]projectAssistantSkillReceipt, len(state.SelectedSkillReceipts))
+	s.loadedSkillReceipts = make(map[string]projectAssistantSkillReceipt, len(state.LoadedSkillReceipts)+len(state.SelectedSkillReceipts))
+	for _, receipt := range state.SelectedSkillReceipts {
+		s.selectedSkillReceipts[receipt.ID] = receipt
+		s.loadedSkillReceipts[receipt.ID] = receipt
+	}
+	for _, receipt := range state.LoadedSkillReceipts {
+		s.loadedSkillReceipts[receipt.ID] = receipt
+	}
 	s.toolEvidence = projectEinoAssistantCollectToolEvidence(s.messages)
 	s.toolCalls = cloneProjectAssistantToolCalls(state.ToolCalls)
 	s.seenToolCalls = projectEinoAssistantSanitizeSeenToolCalls(state.SeenToolCalls)
@@ -1884,9 +2012,20 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 	if s.progressReminder != nil {
 		progressReminderAttempts = min(max(s.progressReminderAttempts, 0), projectEinoAssistantProgressReminderMaxAttempts-1)
 	}
+	selectedSkillReceipts := make([]projectAssistantSkillReceipt, 0, len(s.selectedSkillReceipts))
+	for _, receipt := range s.selectedSkillReceipts {
+		selectedSkillReceipts = append(selectedSkillReceipts, receipt)
+	}
+	loadedSkillReceipts := make([]projectAssistantSkillReceipt, 0, len(s.loadedSkillReceipts))
+	for _, receipt := range s.loadedSkillReceipts {
+		loadedSkillReceipts = append(loadedSkillReceipts, receipt)
+	}
 	return projectAssistantCheckpointState{
 		Messages:                         cloneChatMessages(s.messages),
 		LastToolMessages:                 cloneChatMessages(s.lastToolMessages),
+		CatalogDigest:                    s.catalogDigest,
+		SelectedSkillReceipts:            cloneProjectAssistantSkillReceipts(selectedSkillReceipts),
+		LoadedSkillReceipts:              cloneProjectAssistantSkillReceipts(loadedSkillReceipts),
 		ToolCalls:                        cloneProjectAssistantToolCalls(s.toolCalls),
 		SeenToolCalls:                    projectEinoAssistantSanitizeSeenToolCalls(s.seenToolCalls),
 		Turn:                             s.turn,

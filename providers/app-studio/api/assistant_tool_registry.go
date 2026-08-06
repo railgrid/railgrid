@@ -130,7 +130,7 @@ func (s *Server) projectAssistantToolRegistry() projectAssistantToolRegistry {
 }
 
 func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegistry {
-	tools := []projectAssistantTool{
+	tools := append(projectAssistantSkillTools(),
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolDefineInitialProjectPlan,
@@ -467,7 +467,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				return server.inspectProjectDevelopmentPreview(ctx, req)
 			},
 		},
-	}
+	)
 	if _, _, enabled := server.previewConsoleDependencies(); enabled {
 		tools = append(tools, projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{

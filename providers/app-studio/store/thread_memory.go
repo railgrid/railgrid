@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -141,6 +142,130 @@ func (s *MemoryStore) UpdateAssistantThread(_ context.Context, scope Scope, thre
 	prepared.CreatedAt = existing.CreatedAt
 	s.assistantThreads[scope][prepared.ID] = prepared
 	return prepared, nil
+}
+
+func (s *MemoryStore) SetAssistantThreadTitleIfEmpty(_ context.Context, scope Scope, threadID, actorID, title string, event AssistantThreadEvent) (AssistantThread, bool, error) {
+	if err := scope.validate(); err != nil {
+		return AssistantThread{}, false, err
+	}
+	threadID, actorID, title = strings.TrimSpace(threadID), strings.TrimSpace(actorID), strings.TrimSpace(title)
+	if threadID == "" || actorID == "" {
+		return AssistantThread{}, false, fmt.Errorf("assistant thread id and actor are required")
+	}
+	if title == "" {
+		return AssistantThread{}, false, fmt.Errorf("assistant thread title is required")
+	}
+	event.ThreadID = threadID
+	preparedEvent, err := prepareAssistantThreadEvent(event)
+	if err != nil {
+		return AssistantThread{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	thread, ok := s.assistantThreads[scope][threadID]
+	if !ok {
+		return AssistantThread{}, false, ErrAssistantThreadNotFound
+	}
+	if thread.ActorID != actorID {
+		return AssistantThread{}, false, ErrAssistantThreadConflict
+	}
+	if thread.Status == AssistantThreadStatusArchived || strings.TrimSpace(thread.Title) != "" {
+		return thread, false, nil
+	}
+	if len(preparedEvent.Payload) == 0 || string(preparedEvent.Payload) == "{}" {
+		preparedEvent.Payload, err = json.Marshal(map[string]any{"thread": AssistantThread{ID: thread.ID, Title: title, Status: thread.Status, ActorID: thread.ActorID, CreatedAt: thread.CreatedAt, UpdatedAt: time.Now().UTC()}})
+		if err != nil {
+			return AssistantThread{}, false, err
+		}
+	}
+	thread.Title = title
+	thread.UpdatedAt = time.Now().UTC()
+	s.assistantThreads[scope][threadID] = thread
+	preparedEvent.Sequence = int64(len(s.threadEvents[scope][threadID])) + 1
+	s.threadEvents[scope][threadID] = append(s.threadEvents[scope][threadID], cloneAssistantThreadEvent(preparedEvent))
+	return thread, true, nil
+}
+
+func (s *MemoryStore) DeleteAssistantThread(_ context.Context, scope Scope, threadID, actorID string) error {
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	threadID, actorID = strings.TrimSpace(threadID), strings.TrimSpace(actorID)
+	if threadID == "" || actorID == "" {
+		return fmt.Errorf("assistant thread id and actor are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	thread, ok := s.assistantThreads[scope][threadID]
+	if !ok {
+		return ErrAssistantThreadNotFound
+	}
+	if thread.ActorID != actorID {
+		return ErrAssistantThreadConflict
+	}
+	turns := s.assistantTurns[scope][threadID]
+	for _, turn := range turns {
+		if !assistantTurnStatusTerminal(turn.Status) {
+			return ErrAssistantThreadActive
+		}
+	}
+	// A durable turn uses its turn ID as the assistant run ID. Remove the
+	// project-scoped run, run-event, conversation-item, and message rows that
+	// would otherwise outlive the canonical thread transcript.
+	if len(turns) > 0 {
+		messageIDs := map[string]struct{}{}
+		for turnID := range turns {
+			if run, ok := s.assistantRuns[scope][turnID]; ok {
+				if run.UserMessageID != "" {
+					messageIDs[run.UserMessageID] = struct{}{}
+				}
+				if run.ActiveMessageID != "" {
+					messageIDs[run.ActiveMessageID] = struct{}{}
+				}
+				delete(s.assistantRuns[scope], turnID)
+				delete(s.assistantEvents[scope], turnID)
+			}
+		}
+		for messageID := range messageIDs {
+			delete(s.messages[scope], messageID)
+		}
+		if items := s.conversationItems[scope]; len(items) > 0 {
+			filtered := items[:0]
+			for _, item := range items {
+				if _, ok := turns[item.RunID]; ok {
+					continue
+				}
+				filtered = append(filtered, item)
+			}
+			if len(filtered) == 0 {
+				delete(s.conversationItems, scope)
+			} else {
+				s.conversationItems[scope] = filtered
+			}
+		}
+	}
+	delete(s.assistantTurns[scope], threadID)
+	delete(s.threadEvents[scope], threadID)
+	delete(s.assistantThreads[scope], threadID)
+	if len(s.assistantThreads[scope]) == 0 {
+		delete(s.assistantThreads, scope)
+	}
+	if len(s.assistantTurns[scope]) == 0 {
+		delete(s.assistantTurns, scope)
+	}
+	if len(s.threadEvents[scope]) == 0 {
+		delete(s.threadEvents, scope)
+	}
+	if len(s.assistantRuns[scope]) == 0 {
+		delete(s.assistantRuns, scope)
+	}
+	if len(s.assistantEvents[scope]) == 0 {
+		delete(s.assistantEvents, scope)
+	}
+	if len(s.messages[scope]) == 0 {
+		delete(s.messages, scope)
+	}
+	return nil
 }
 
 func (s *MemoryStore) UpdateAssistantThreadWithEvent(_ context.Context, scope Scope, thread AssistantThread, event AssistantThreadEvent, expectedSequence int64) (AssistantThread, AssistantThreadEvent, error) {

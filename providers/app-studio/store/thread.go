@@ -24,6 +24,7 @@ import (
 
 var ErrAssistantThreadNotFound = errors.New("assistant thread not found")
 var ErrAssistantThreadConflict = errors.New("assistant thread conflict")
+var ErrAssistantThreadActive = errors.New("assistant thread has an active turn")
 var ErrAssistantTurnNotFound = errors.New("assistant turn not found")
 var ErrAssistantTurnConflict = errors.New("assistant turn conflict")
 var ErrAssistantThreadEventConflict = errors.New("assistant thread event conflict")

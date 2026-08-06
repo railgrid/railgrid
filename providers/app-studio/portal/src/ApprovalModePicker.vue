@@ -74,47 +74,47 @@ onBeforeUnmount(() => {
       role="dialog"
       aria-modal="false"
       aria-label="How should App Studio actions be approved?"
-      class="fixed inset-x-3 bottom-3 z-50 overflow-hidden rounded-2xl border border-border-default bg-surface-overlay p-2 shadow-2xl md:absolute md:inset-x-auto md:bottom-10 md:left-0 md:w-[430px]"
+      class="fixed inset-x-2 bottom-2 z-50 max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-xl border border-border-default bg-surface-overlay p-1.5 shadow-xl md:absolute md:inset-x-auto md:bottom-9 md:left-0 md:max-h-[min(28rem,calc(100dvh-7rem))] md:w-[360px]"
     >
-      <div class="flex items-center justify-between gap-3 px-2 pb-1 pt-0.5">
+      <div class="flex items-center justify-between gap-2 px-1.5 py-1">
         <span class="text-[11px] text-text-muted">How should App Studio actions be approved?</span>
       </div>
       <button
         type="button"
         :aria-pressed="mode === 'on_request'"
-        class="flex w-full items-start gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-surface-hover"
+        class="flex w-full items-start gap-2 rounded-lg px-1.5 py-1.5 text-left transition hover:bg-surface-hover"
         @click="choose('on_request')"
       >
-        <ShieldCheck class="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" />
+        <ShieldCheck class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" />
         <span class="min-w-0 flex-1">
-          <span class="block text-[13px] font-medium text-text-primary">Ask when needed</span>
-          <span class="mt-0.5 block text-[12px] leading-4 text-text-muted">Allow routine workspace actions; bounded compiler, test, and lint commands run automatically, while consequential external effects still ask.</span>
+          <span class="block text-[12px] font-medium text-text-primary">Ask when needed</span>
+          <span class="mt-0.5 block text-[11px] leading-4 text-text-muted">Run routine workspace, build, test, and lint actions automatically. Ask before consequential external effects.</span>
         </span>
         <Check v-if="mode === 'on_request'" class="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" />
       </button>
       <button
         type="button"
         :aria-pressed="mode === 'always_ask'"
-        class="flex w-full items-start gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-surface-hover"
+        class="flex w-full items-start gap-2 rounded-lg px-1.5 py-1.5 text-left transition hover:bg-surface-hover"
         @click="choose('always_ask')"
       >
-        <Hand class="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" />
+        <Hand class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" />
         <span class="min-w-0 flex-1">
-          <span class="block text-[13px] font-medium text-text-primary">Always ask</span>
-          <span class="mt-0.5 block text-[12px] leading-4 text-text-muted">Ask before every action that changes state or invokes an external operation.</span>
+          <span class="block text-[12px] font-medium text-text-primary">Always ask</span>
+          <span class="mt-0.5 block text-[11px] leading-4 text-text-muted">Ask before actions that change state or invoke external operations.</span>
         </span>
         <Check v-if="mode === 'always_ask'" class="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" />
       </button>
       <button
         type="button"
         :aria-pressed="mode === 'never'"
-        class="flex w-full items-start gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-surface-hover"
+        class="flex w-full items-start gap-2 rounded-lg px-1.5 py-1.5 text-left transition hover:bg-surface-hover"
         @click="choose('never')"
       >
-        <ShieldX class="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" />
+        <ShieldX class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" />
         <span class="min-w-0 flex-1">
-          <span class="block text-[13px] font-medium text-text-primary">Never allow</span>
-          <span class="mt-0.5 block text-[12px] leading-4 text-text-muted">Keep the assistant read-only and reject actions that require approval.</span>
+          <span class="block text-[12px] font-medium text-text-primary">Never allow</span>
+          <span class="mt-0.5 block text-[11px] leading-4 text-text-muted">Keep the assistant read-only and reject actions requiring approval.</span>
         </span>
         <Check v-if="mode === 'never'" class="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" />
       </button>

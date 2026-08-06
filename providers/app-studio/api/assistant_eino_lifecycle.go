@@ -261,6 +261,9 @@ func (m *projectEinoAssistantLifecycle) rewriteLiveContext(ctx context.Context, 
 	if prompt := m.runState.ToolPrompt(); prompt != "" {
 		contextMessages = append(contextMessages, chatMessage{Role: "system", Content: projectEinoAssistantLiveContextPrefix + prompt})
 	}
+	if prompt := m.runState.SkillPrompt(); prompt != "" {
+		contextMessages = append(contextMessages, chatMessage{Role: "system", Content: projectEinoAssistantLiveContextPrefix + prompt})
+	}
 	digestParts := make([]string, 0, len(contextMessages))
 	for _, message := range contextMessages {
 		digestParts = append(digestParts, message.Role+"\x00"+message.Content)

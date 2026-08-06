@@ -1,10 +1,40 @@
 import type {
+  ProjectAssistantSkill,
   ProjectAssistantRun,
   ProjectAssistantRunStatus,
   ProjectAssistantThreadItem,
   ProjectMessage,
 } from './types'
 import { parseAssistantProgress } from './assistantProgress'
+
+export const MAX_ASSISTANT_SKILLS = 8
+
+/**
+ * Keep only the bounded, public skill view persisted on a user thread item.
+ * Skill bodies never belong in the message projection or its UI metadata.
+ */
+export function projectAssistantSkills(value: unknown): ProjectAssistantSkill[] {
+  if (!Array.isArray(value)) return []
+  const skills: ProjectAssistantSkill[] = []
+  const seenIDs = new Set<string>()
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== 'object') continue
+    const raw = candidate as Record<string, unknown>
+    const id = typeof raw.id === 'string' ? raw.id.trim() : ''
+    const name = typeof raw.name === 'string' ? raw.name.trim() : ''
+    const description = typeof raw.description === 'string' ? raw.description : ''
+    const scope = typeof raw.scope === 'string' ? raw.scope.trim() : ''
+    if (!id || !name || !scope || seenIDs.has(id)) continue
+    seenIDs.add(id)
+    skills.push({ id, name, description, scope })
+    if (skills.length >= MAX_ASSISTANT_SKILLS) break
+  }
+  return skills
+}
+
+export function assistantSkillsFromThreadItem(item: ProjectAssistantThreadItem): ProjectAssistantSkill[] {
+  return projectAssistantSkills(item.data?.skills)
+}
 
 interface AssistantProgressEntry {
   message: string
@@ -326,6 +356,10 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
     if (item.type !== 'userMessage' && item.type !== 'agentMessage') continue
     const role = item.type === 'userMessage' ? 'user' : 'assistant'
     const metadata: Record<string, unknown> = {}
+    if (role === 'user') {
+      const assistantSkills = assistantSkillsFromThreadItem(item)
+      if (assistantSkills.length) metadata.assistantSkills = assistantSkills
+    }
     if (role === 'assistant') {
       metadata.assistantStatus = assistantStatusForItem(item.status)
       metadata.assistantMessageID = itemAssistantMessageID(item)

@@ -60,3 +60,33 @@ kedge-provider-app-studio *::before,
 kedge-provider-app-studio *::after {
   box-sizing: border-box;
 }
+
+@keyframes app-studio-running-ripple {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+kedge-provider-app-studio .conversation-running-ripple {
+  color: transparent;
+  background-image: linear-gradient(
+    90deg,
+    var(--color-text-muted) 0%,
+    var(--color-text-secondary) 35%,
+    var(--color-text-primary) 50%,
+    var(--color-text-secondary) 65%,
+    var(--color-text-muted) 100%
+  );
+  background-position: 100% 0;
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: app-studio-running-ripple 1.65s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  kedge-provider-app-studio .conversation-running-ripple {
+    color: var(--color-text-secondary);
+    background: none;
+    animation: none;
+  }
+}

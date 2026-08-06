@@ -1,4 +1,4 @@
-export type WorkbenchBuiltInTab = 'preview' | 'review' | 'providers' | 'publishing' | 'launcher'
+export type WorkbenchBuiltInTab = 'preview' | 'review' | 'providers' | 'publishing' | 'settings' | 'skills' | 'threads' | 'launcher'
 export type WorkbenchTabKind = WorkbenchBuiltInTab | 'provider'
 
 export interface WorkbenchProviderToolRef {
@@ -49,6 +49,27 @@ const builtInTabs: Record<WorkbenchBuiltInTab, WorkbenchTabDescriptor> = {
     id: 'publishing',
     kind: 'publishing',
     title: 'Publish & Promote',
+    closeable: true,
+  },
+  settings: {
+    id: 'settings',
+    kind: 'settings',
+    title: 'Project Settings',
+    subtitle: 'Manage project details, repository status, and model configuration',
+    closeable: true,
+  },
+  skills: {
+    id: 'skills',
+    kind: 'skills',
+    title: 'Skills',
+    subtitle: 'Browse and manage assistant skills',
+    closeable: true,
+  },
+  threads: {
+    id: 'threads',
+    kind: 'threads',
+    title: 'Threads',
+    subtitle: 'Manage assistant conversations for this project',
     closeable: true,
   },
   launcher: {

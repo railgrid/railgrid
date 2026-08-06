@@ -177,6 +177,12 @@ func newProjectAssistantRunAuditRecorder(
 	if audit.Profile == "" {
 		audit.Profile = req.TurnProfile
 	}
+	if audit.CatalogDigest == "" && req.SkillSnapshot != nil {
+		audit.CatalogDigest = projectAssistantAuditString(req.SkillSnapshot.CatalogDigest, projectAssistantAuditMaxSummaryLen)
+	}
+	if len(audit.SelectedSkills) == 0 && len(req.SelectedSkills) > 0 {
+		audit.SelectedSkills = cloneProjectAssistantSkillReceipts(req.SelectedSkills)
+	}
 	recorder := &projectAssistantRunAuditRecorder{
 		run:     run,
 		started: audit.StartedAt,

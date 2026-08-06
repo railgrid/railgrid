@@ -32,13 +32,19 @@ type projectAssistantStartIdentity struct {
 	Actor   string                 `json:"actor"`
 	Content string                 `json:"content"`
 	Mode    store.AssistantRunMode `json:"mode"`
+	Skills  []string               `json:"skills,omitempty"`
 }
 
 func projectAssistantStartRequestDigest(actor, content string, mode store.AssistantRunMode) string {
+	return projectAssistantStartRequestDigestWithSkills(actor, content, mode, nil)
+}
+
+func projectAssistantStartRequestDigestWithSkills(actor, content string, mode store.AssistantRunMode, skills []string) string {
 	identity := projectAssistantStartIdentity{
 		Actor:   strings.TrimSpace(actor),
 		Content: strings.TrimSpace(content),
 		Mode:    mode,
+		Skills:  projectAssistantCanonicalSkillIDs(skills),
 	}
 	raw, _ := json.Marshal(identity)
 	sum := sha256.Sum256(raw)
@@ -51,6 +57,10 @@ func projectAssistantActorDigest(actor string) string {
 }
 
 func bindProjectAssistantStartRequest(run *store.AssistantRun, actor, content string) error {
+	return bindProjectAssistantStartRequestWithSkills(run, actor, content, nil)
+}
+
+func bindProjectAssistantStartRequestWithSkills(run *store.AssistantRun, actor, content string, skills []string) error {
 	if run == nil {
 		return fmt.Errorf("bind assistant start request: run is required")
 	}
@@ -63,7 +73,7 @@ func bindProjectAssistantStartRequest(run *store.AssistantRun, actor, content st
 	if audit.Version == 0 {
 		audit.Version = projectAssistantAuditVersion
 	}
-	audit.StartRequestDigest = projectAssistantStartRequestDigest(actor, content, run.Mode)
+	audit.StartRequestDigest = projectAssistantStartRequestDigestWithSkills(actor, content, run.Mode, skills)
 	audit.ActorDigest = projectAssistantActorDigest(actor)
 	raw, err := json.Marshal(audit)
 	if err != nil {
@@ -117,11 +127,15 @@ func findProjectAssistantSteeringReceipt(
 }
 
 func validateProjectAssistantStartReplay(run store.AssistantRun, actor, content string, mode store.AssistantRunMode) error {
+	return validateProjectAssistantStartReplayWithSkills(run, actor, content, mode, nil)
+}
+
+func validateProjectAssistantStartReplayWithSkills(run store.AssistantRun, actor, content string, mode store.AssistantRunMode, skills []string) error {
 	var audit projectAssistantRunAudit
 	if len(run.Audit) == 0 || json.Unmarshal(run.Audit, &audit) != nil {
 		return fmt.Errorf("%w: client request identity is unavailable", store.ErrAssistantRunConflict)
 	}
-	expected := projectAssistantStartRequestDigest(actor, content, mode)
+	expected := projectAssistantStartRequestDigestWithSkills(actor, content, mode, skills)
 	if audit.StartRequestDigest == "" || audit.StartRequestDigest != expected {
 		return fmt.Errorf("%w: client request ID was already used for different input", store.ErrAssistantRunConflict)
 	}
@@ -129,11 +143,15 @@ func validateProjectAssistantStartReplay(run store.AssistantRun, actor, content 
 }
 
 func (s *Server) recoverProjectAssistantStartReplay(ctx context.Context, scope store.Scope, createErr error, clientRequestID, actor, content string, mode store.AssistantRunMode) (store.AssistantRun, bool) {
+	return s.recoverProjectAssistantStartReplayWithSkills(ctx, scope, createErr, clientRequestID, actor, content, mode, nil)
+}
+
+func (s *Server) recoverProjectAssistantStartReplayWithSkills(ctx context.Context, scope store.Scope, createErr error, clientRequestID, actor, content string, mode store.AssistantRunMode, skills []string) (store.AssistantRun, bool) {
 	if !errors.Is(createErr, store.ErrAssistantRunConflict) {
 		return store.AssistantRun{}, false
 	}
 	prior, err := s.store.FindAssistantRunByClientRequestID(ctx, scope, clientRequestID)
-	if err != nil || validateProjectAssistantStartReplay(prior, actor, content, mode) != nil {
+	if err != nil || validateProjectAssistantStartReplayWithSkills(prior, actor, content, mode, skills) != nil {
 		return store.AssistantRun{}, false
 	}
 	return prior, true

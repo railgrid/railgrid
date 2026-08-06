@@ -196,6 +196,8 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 	registry := projectAssistantLocalToolRegistry(nil)
 	got := projectChatToolNames(registry.ChatTools(false))
 	want := []string{
+		"load_skill",
+		"read_skill_resource",
 		"define_initial_project_plan",
 		"ask_follow_up",
 		"read_file",
@@ -228,9 +230,9 @@ func TestProjectAssistantToolRegistryListsLocalToolsInOrder(t *testing.T) {
 	}
 
 	all := projectChatToolNames(registry.ChatTools(true))
-	wantAll := append([]string(nil), want[:14]...)
+	wantAll := append([]string(nil), want[:16]...)
 	wantAll = append(wantAll, "commit_project_files")
-	wantAll = append(wantAll, want[14:]...)
+	wantAll = append(wantAll, want[16:]...)
 	if strings.Join(all, ",") != strings.Join(wantAll, ",") {
 		t.Fatalf("tool names with commit bridge = %v, want %v", all, wantAll)
 	}

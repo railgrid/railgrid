@@ -18,10 +18,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	appskills "github.com/faroshq/provider-app-studio/skills"
 	"github.com/faroshq/provider-app-studio/store"
 )
 
@@ -1061,7 +1063,8 @@ func TestProjectAssistantStartFailureCompensatesAndRepairsCanonicalTurn(t *testi
 		t.Fatal(err)
 	}
 	startErr := errors.New("canonical turn startup failed")
-	started, err := server.startProjectAssistantRunDurablyWithMode(context.Background(), scope, "alice", "build it", "client-repair", store.AssistantRunModeDefault, func(store.AssistantRun, store.Message, bool) error {
+	selection := projectAssistantDurableSkillSelection{IDs: []string{"project:alpha"}, CatalogDigest: "catalog-digest", Receipts: []projectAssistantSkillReceipt{{ID: "project:alpha", Name: "alpha", Description: "Alpha guidance", Scope: appskills.ScopeProject, PackagePath: "alpha", Digest: "skill-digest", ContentDigest: "content-digest"}}}
+	started, err := server.startProjectAssistantRunDurablyWithModeAndSkills(context.Background(), scope, "alice", "build it", "client-repair", store.AssistantRunModeDefault, selection, func(store.AssistantRun, store.Message, bool) error {
 		return startErr
 	})
 	if !errors.Is(err, startErr) {
@@ -1091,6 +1094,10 @@ func TestProjectAssistantStartFailureCompensatesAndRepairsCanonicalTurn(t *testi
 	}
 	if got := countAssistantThreadMirrorTestEvents(events, assistantThreadEventTurnFailed, ""); got != 1 {
 		t.Fatalf("repaired terminal events = %d, want one: %#v", got, events)
+	}
+	items := materializeAssistantThreadItems(events)
+	if len(items) == 0 || !strings.Contains(string(items[0].Data), `"id":"project:alpha"`) || strings.Contains(string(items[0].Data), "skill-digest") {
+		t.Fatalf("repaired user item skill data = %#v", items)
 	}
 }
 

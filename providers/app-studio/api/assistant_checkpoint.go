@@ -45,6 +45,9 @@ type projectAssistantCheckpointState struct {
 	ForceTextAnswer                  bool                                                `json:"forceTextAnswer,omitempty"`
 	RepeatedToolLoop                 bool                                                `json:"repeatedToolLoop,omitempty"`
 	LastToolMessages                 []chatMessage                                       `json:"lastToolMessages,omitempty"`
+	CatalogDigest                    string                                              `json:"catalogDigest,omitempty"`
+	SelectedSkillReceipts            []projectAssistantSkillReceipt                      `json:"selectedSkillReceipts,omitempty"`
+	LoadedSkillReceipts              []projectAssistantSkillReceipt                      `json:"loadedSkillReceipts,omitempty"`
 	ApprovedPlan                     *projectAssistantApprovedPlan                       `json:"approvedPlan,omitempty"`
 	ExecutionPlan                    *projectAssistantApprovedPlan                       `json:"executionPlan,omitempty"`
 	PlanProgress                     projectAssistantPlanSnapshot                        `json:"planProgress,omitempty"`
@@ -139,6 +142,8 @@ type projectAssistantRunAudit struct {
 	Version            int                                 `json:"version,omitempty"`
 	StartRequestDigest string                              `json:"startRequestDigest,omitempty"`
 	ActorDigest        string                              `json:"actorDigest,omitempty"`
+	CatalogDigest      string                              `json:"catalogDigest,omitempty"`
+	SelectedSkills     []projectAssistantSkillReceipt      `json:"selectedSkills,omitempty"`
 	StopRequestID      string                              `json:"stopRequestID,omitempty"`
 	StopRequestDigest  string                              `json:"stopRequestDigest,omitempty"`
 	Provider           string                              `json:"provider,omitempty"`

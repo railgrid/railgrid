@@ -944,4 +944,5 @@ func (s *Server) previewConsoleMetrics(w http.ResponseWriter, _ *http.Request) {
 		metrics.Dropped,
 		metrics.Redacted,
 	)
+	writeProjectAssistantSkillMetrics(w)
 }

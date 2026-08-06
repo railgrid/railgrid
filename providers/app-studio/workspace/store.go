@@ -160,6 +160,11 @@ func fileVersion(content []byte) string {
 type FileStore struct {
 	root       string
 	mutationMu sync.Mutex
+	// managedTransactionHook is a package-test seam. It is called immediately
+	// before each staged managed-file change is committed, while mutationMu is
+	// held, so tests can deterministically exercise rollback after a later
+	// operation fails. Production callers leave it nil.
+	managedTransactionHook func(ManagedFileChange) error
 	// migrationMu serializes the one-time compatibility transition from the
 	// pre-ProjectUID layout. It is intentionally separate from mutationMu so
 	// path resolution can safely migrate data before a caller takes the
@@ -476,7 +481,7 @@ func (s *FileStore) walkFiles(ctx context.Context, dir string, visit func(FileIn
 			return err
 		}
 		name := d.Name()
-		if d.IsDir() && (name == ".git" || name == "node_modules" || strings.EqualFold(name, workspaceSnapshotDirectory)) {
+		if d.IsDir() && (name == ".git" || name == "node_modules" || strings.EqualFold(name, workspaceSnapshotDirectory) || strings.HasPrefix(name, workspaceTempFilePrefix)) {
 			return filepath.SkipDir
 		}
 		if !d.IsDir() && strings.HasPrefix(name, workspaceTempFilePrefix) {

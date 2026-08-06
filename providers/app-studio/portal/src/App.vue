@@ -5,6 +5,7 @@ import {
   AppWindow,
   ArrowLeft,
   ArrowRight,
+  ArrowUp,
   BarChart3,
   Braces,
   Check,
@@ -24,6 +25,7 @@ import {
   Send,
   Settings2,
   Square,
+  Plug,
   TriangleAlert,
   Trash2,
   Users,
@@ -53,7 +55,6 @@ import {
   assistantPlanProgress,
   parseAssistantPlan,
   type AssistantPlan,
-  type AssistantPlanTerminalStatus,
 } from './assistantPlan'
 import {
   AssistantWorkedDurationClock,
@@ -64,6 +65,7 @@ import {
 import { buildAssistantTrace, type AssistantTraceBlock } from './assistantTrace'
 import {
   appendAssistantCommentaryToMessage,
+  assistantSkillsFromThreadItem,
   assistantThreadItemIdentity,
   assistantThreadItemToRun,
   assistantThreadItemsToMessages,
@@ -71,9 +73,15 @@ import {
   hideCommentaryRepresentedInTrace,
   mergeAssistantThreadMessages,
   maxAssistantThreadSequence,
+  projectAssistantSkills,
 } from './assistantThreadProjection'
+import {
+  persistAssistantThreadFocus,
+  restoreAssistantThreadFocus,
+} from './assistantThreadFocus'
 import AssistantPlanPopover from './AssistantPlanPopover.vue'
-import AssistantPlanDisclosure from './AssistantPlanDisclosure.vue'
+import SkillsWorkbench from './SkillsWorkbench.vue'
+import ThreadsWorkbench from './ThreadsWorkbench.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
 import ResponseModePicker, { type AssistantResponseMode } from './ResponseModePicker.vue'
 import PreviewActionsMenu from './PreviewActionsMenu.vue'
@@ -133,6 +141,8 @@ import type {
   ProjectAssistantSnapshot,
   ProjectAssistantApprovalMode,
   ProjectAssistantActionFeedItem,
+  ProjectAssistantSkill,
+  ProjectAssistantSkillsResponse,
   ProjectAssistantThread,
   ProjectAssistantThreadEvent,
   ProjectAssistantThreadItem,
@@ -144,7 +154,6 @@ import type {
   ProjectProviderBinding,
   ProjectLLMSettings,
   ProjectMessage,
-  ProjectRepositoryCommit,
   ProjectPromotionReadiness,
   ProjectCheckpoint,
   ProviderItem,
@@ -154,6 +163,16 @@ const props = defineProps<{
   ctx: KedgeContext | null
   navigate: (path: string) => void
 }>()
+
+function assistantThreadFocusScope(projectName: string) {
+  return {
+    tenant: props.ctx?.tenant,
+    orgUUID: props.ctx?.orgUUID,
+    workspaceUUID: props.ctx?.workspaceUUID,
+    userSub: props.ctx?.user?.userId || props.ctx?.user?.sub || props.ctx?.user?.email,
+    project: projectName,
+  }
+}
 
 interface ProviderTool extends WorkbenchProviderToolRef {
   provider: ProviderItem
@@ -227,7 +246,6 @@ const GOOGLE_CLOUD_BASE_URL = 'https://aiplatform.googleapis.com'
 const CREATE_PROJECT_ROUTE = '~new'
 const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
 const CODE_CONNECTIONS_URL = '/ui/providers/code/connections'
-const CODE_REPOSITORIES_URL = '/ui/providers/code/repositories'
 const PUBLISHING_DOMAIN_SUFFIX = '.kedge.app'
 const DEVELOPMENT_PREVIEW_AUTH_RETRY_MS = 2000
 const PROJECT_TOOL_CATEGORIES = new Set(['developer', 'workloads'])
@@ -330,6 +348,14 @@ const selected = ref<Project | null>(null)
 const messages = ref<ProjectMessageView[]>([])
 const assistantThreads = ref<ProjectAssistantThread[]>([])
 const activeAssistantThreadID = ref('')
+const threadMutationBusy = ref(false)
+const threadError = ref<string | null>(null)
+const assistantSkills = ref<ProjectAssistantSkill[]>([])
+const assistantSkillsLoading = ref(false)
+const assistantSkillsError = ref<string | null>(null)
+const assistantSkillsWarnings = ref<string[]>([])
+let assistantSkillsLoadSerial = 0
+
 const conversationMessages = computed(() => projectMessagesForConversation(messages.value))
 const pendingApproval = computed<PendingApprovalView | null>(() => {
   const currentMessages = messages.value
@@ -452,6 +478,7 @@ let landingPlaceholderIndex = 0
 let developmentPreviewAuthorizationSerial = 0
 let developmentPreviewAuthorizationRetryTimer: number | undefined
 let developmentPreviewComponentMounted = true
+let assistantThreadRequestSerial = 0
 const developmentPreviewRefreshController = new DevelopmentPreviewRefreshController<Project>({
   isMounted: () => developmentPreviewComponentMounted,
   selectedProjectName: () => selected.value?.name,
@@ -483,6 +510,48 @@ function clearPendingFirstProjectSubmission() {
   projectCreateGeneration++
   pendingFirstProjectSubmission = null
 }
+
+function resetAssistantSkillsState() {
+  assistantSkillsLoadSerial++
+  assistantSkills.value = []
+  assistantSkillsLoading.value = false
+  assistantSkillsError.value = null
+  assistantSkillsWarnings.value = []
+}
+
+function applyAssistantSkillsCatalog(skills: ProjectAssistantSkill[]) {
+  assistantSkills.value = skills
+}
+
+function applyAssistantSkillsCatalogResponse(response: ProjectAssistantSkillsResponse) {
+  applyAssistantSkillsCatalog(response.skills)
+  assistantSkillsWarnings.value = response.warnings ?? []
+}
+
+async function loadAssistantSkills(projectName: string) {
+  if (!projectName || !props.ctx?.token || isCreateRoute.value || selected.value?.name !== projectName || selected.value.phase === 'Creating') return
+  const serial = ++assistantSkillsLoadSerial
+  assistantSkillsLoading.value = true
+  assistantSkillsError.value = null
+  try {
+    const catalog = await api.listAssistantSkills(props.ctx, projectName)
+    if (
+      serial !== assistantSkillsLoadSerial ||
+      selected.value?.name !== projectName ||
+      isCreateRoute.value
+    ) return
+    applyAssistantSkillsCatalog(catalog.skills)
+    assistantSkillsWarnings.value = catalog.warnings ?? []
+  } catch (e) {
+    if (serial !== assistantSkillsLoadSerial || selected.value?.name !== projectName || isCreateRoute.value) return
+    // Skill discovery is intentionally scoped to the Skills workbench. A
+    // stale or unavailable catalog must never make the project composer unusable.
+    assistantSkillsError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (serial === assistantSkillsLoadSerial) assistantSkillsLoading.value = false
+  }
+}
+
 const assistantRunRevisions: Record<string, AssistantRun> = {}
 
 function hydrateAssistantRuns(items: ProjectAssistantThreadItem[]) {
@@ -615,6 +684,7 @@ const canSendPrompt = computed(() =>
   !approvalModeLoading.value &&
   !approvalModeSaving.value,
 )
+const threadActionsDisabled = computed(() => messageStreaming.value || busy.value || threadMutationBusy.value)
 const settingsProject = computed(() => (isAppStudioLandingRoute.value ? null : selected.value))
 const settingsTitle = computed(() => (settingsProject.value ? 'Project settings' : 'LLM settings'))
 const settingsDescription = computed(() =>
@@ -643,22 +713,21 @@ watch(activePlanMessage, (current, previous) => {
     return
   }
   if (!previous || !lastPlanAnnouncementKey) return
-  const progress = assistantPlanProgress(previous.plan)
-  assistantPlanAnnouncement.value = progress.completed === progress.total
-    ? `Plan completed. ${progress.total} of ${progress.total} steps.`
-    : `Plan ended. ${progress.completed} of ${progress.total} steps completed.`
+  assistantPlanAnnouncement.value = ''
   lastPlanAnnouncementKey = ''
 })
 const conversationWorkingLabel = computed(() => {
-  const lastAssistant = [...messages.value].reverse().find((message) => message.role === 'assistant')
   if (activeAssistantRun?.status === 'stopping') return 'Stopping'
   if (activeAssistantRun?.status === 'pending_permission') return 'Waiting for approval'
   if (activeAssistantRun?.status === 'pending_input') return 'Waiting for your answer'
-  if (activePlanMessage.value) return 'Working'
-  if (conversationStatus.value) return conversationStatus.value
+  if (activePlanMessage.value) return 'Running'
+  if (conversationStatus.value) {
+    const status = conversationStatus.value.trim().toLowerCase()
+    if (status === 'running' || status === 'working') return 'Running'
+    return conversationStatus.value
+  }
   if (!messageStreaming.value) return ''
-  if (lastAssistant?.content.trim()) return 'Working'
-  return 'Working'
+  return 'Running'
 })
 const gitConnectionCreateReady = computed(() => gitConnectionReady(createReadiness.value))
 const createReadinessChecking = computed(() => createReadinessLoading.value || (!!props.ctx?.token && createReadiness.value === null && !createReadinessError.value))
@@ -837,6 +906,7 @@ const providerTools = computed<ProviderTool[]>(() => {
 const activeWorkbenchTab = computed<WorkbenchTabDescriptor | null>(() => {
   return workbench.value.tabs.find((tab) => tab.id === workbench.value.activeTabID) ?? workbench.value.tabs[0] ?? null
 })
+const settingsInWorkbench = computed(() => !!settingsProject.value && activeWorkbenchTab.value?.kind === 'settings')
 
 const activeProviderToolRef = computed(() => {
   const tab = activeWorkbenchTab.value
@@ -884,11 +954,32 @@ const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
     builtInTab: 'publishing',
   },
   {
+    id: 'builtin:settings',
+    title: 'Project Settings',
+    subtitle: 'Manage project details, repository status, and model configuration',
+    icon: Settings2,
+    builtInTab: 'settings',
+  },
+  {
     id: 'builtin:review',
     title: 'Review',
     subtitle: hasPendingReview.value ? 'Resolve pending approvals and follow-up questions' : 'Inspect approvals and follow-up requests',
     icon: ClipboardList,
     builtInTab: 'review',
+  },
+  {
+    id: 'builtin:threads',
+    title: 'Threads',
+    subtitle: 'Switch conversations, rename threads, or start a new one',
+    icon: MessageSquare,
+    builtInTab: 'threads',
+  },
+  {
+    id: 'builtin:skills',
+    title: 'Skills',
+    subtitle: 'Browse, inspect, and manage assistant skills for this project',
+    icon: Plug,
+    builtInTab: 'skills',
   },
 ])
 
@@ -1072,6 +1163,16 @@ watch(
     developmentPreviewAuthorizationKey.value = ''
     clearDevelopmentPreviewAuthorizationRetry()
     developmentPreviewFrameKey.value += 1
+  },
+)
+
+watch(
+  () => [selected.value?.name ?? '', props.ctx?.token ?? '', isCreateRoute.value] as const,
+  ([projectName, _token, createRoute]) => {
+    resetAssistantSkillsState()
+    if (projectName && !createRoute && selected.value?.phase !== 'Creating') {
+      void loadAssistantSkills(projectName)
+    }
   },
 )
 
@@ -1519,6 +1620,12 @@ watch(
     } else {
       clearPromotionPoll()
     }
+    if (kind === 'settings' && settingsProject.value) {
+      syncProjectSettingsForm()
+      showSettings.value = true
+    } else if (settingsProject.value) {
+      showSettings.value = false
+    }
   },
 )
 
@@ -1790,7 +1897,7 @@ async function saveLLMSettings() {
         : isGoogleGeminiProvider.value
           ? 'LLM settings saved. Add a Gemini API key before chatting.'
         : 'LLM settings saved. Add an API key before chatting.'
-    if (settings.configured) showSettings.value = false
+    if (settings.configured && !settingsInWorkbench.value) showSettings.value = false
   } catch (e) {
     llmStatus.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -1888,14 +1995,17 @@ async function createProjectAndStartConversation(content: string) {
     }
 
     const startPlan = firstProjectStartPlan(submission)
-    const thread = await api.createAssistantThread(props.ctx, projectName, startPlan.content.slice(0, 72))
+    const thread = await api.createAssistantThread(props.ctx, projectName)
+    if (!current()) return
     assistantThreads.value = [thread]
     activeAssistantThreadID.value = thread.id
+    persistAssistantThreadFocus(assistantThreadFocusScope(projectName), thread.id)
     const canonical = await api.startAssistantTurn(props.ctx, projectName, thread.id, {
       content: startPlan.content,
       clientUserMessageID: startPlan.clientRequestID,
       collaborationMode: 'default',
     })
+    replaceAssistantThread(canonical.thread)
     const items = await api.listAssistantThreadItems(props.ctx, projectName, thread.id)
     activeAssistantThreadSequence = maxAssistantThreadSequence(items)
     const projected = assistantThreadItemsToMessages(items, projectName)
@@ -1963,8 +2073,12 @@ async function createProjectAndStartConversation(content: string) {
   }
 }
 
-function openSettings() {
+async function openSettings() {
   syncProjectSettingsForm()
+  if (settingsProject.value) {
+    openBuiltInWorkbenchTab('settings')
+    await nextTick()
+  }
   showSettings.value = true
 }
 
@@ -2015,11 +2129,13 @@ async function saveProjectSettings() {
 
 async function openProject(name: string, updateURL = true) {
   if (!name) return
+  const assistantThreadLoadSerial = ++assistantThreadRequestSerial
   const approvalRequestSerial = ++approvalModeLoadSerial
   approvalModeSaveSerial += 1
   approvalModeLoading.value = true
   approvalModeSaving.value = false
   approvalModeError.value = null
+  threadError.value = null
   if (selected.value?.name !== name) {
     assistantRunController.disconnect()
     activeAssistantSubscription?.abort()
@@ -2039,11 +2155,12 @@ async function openProject(name: string, updateURL = true) {
         return null
       }),
     ])
-    if (approvalRequestSerial !== approvalModeLoadSerial) return
+    if (approvalRequestSerial !== approvalModeLoadSerial || assistantThreadLoadSerial !== assistantThreadRequestSerial) return
     selected.value = project
     assistantThreads.value = threads
-    activeAssistantThreadID.value = threads[0]?.id ?? ''
+    activeAssistantThreadID.value = restoreAssistantThreadFocus(assistantThreadFocusScope(name), threads)
     const threadItems = activeAssistantThreadID.value ? await api.listAssistantThreadItems(props.ctx, name, activeAssistantThreadID.value) : []
+    if (assistantThreadLoadSerial !== assistantThreadRequestSerial || selected.value?.name !== name) return
     activeAssistantThreadSequence = maxAssistantThreadSequence(threadItems)
     messages.value = projectAssistantThreadItems(threadItems, name)
     approvalMode.value = preference?.mode ?? 'on_request'
@@ -2077,16 +2194,23 @@ async function selectApprovalMode(mode: ProjectAssistantApprovalMode) {
 
 async function refreshSelectedProjectConversation(projectName: string) {
   if (!projectName || selected.value?.name !== projectName) return
+  const assistantThreadLoadSerial = ++assistantThreadRequestSerial
   const [project, threads, projectList] = await Promise.all([
     api.getProject(props.ctx, projectName),
     api.listAssistantThreads(props.ctx, projectName),
     api.listProjects(props.ctx),
   ])
-  if (selected.value?.name !== projectName) return
+  if (assistantThreadLoadSerial !== assistantThreadRequestSerial || selected.value?.name !== projectName) return
   selected.value = project
   assistantThreads.value = threads
-  if (!threads.some((thread) => thread.id === activeAssistantThreadID.value)) activeAssistantThreadID.value = threads[0]?.id ?? ''
+  threadError.value = null
+  const currentThreadID = threads.some((thread) => thread.id === activeAssistantThreadID.value)
+    ? activeAssistantThreadID.value
+    : restoreAssistantThreadFocus(assistantThreadFocusScope(projectName), threads)
+  activeAssistantThreadID.value = currentThreadID
+  persistAssistantThreadFocus(assistantThreadFocusScope(projectName), currentThreadID)
   const threadItems = activeAssistantThreadID.value ? await api.listAssistantThreadItems(props.ctx, projectName, activeAssistantThreadID.value) : []
+  if (assistantThreadLoadSerial !== assistantThreadRequestSerial || selected.value?.name !== projectName) return
   activeAssistantThreadSequence = maxAssistantThreadSequence(threadItems)
   // A refresh can race the live stream. Merge the durable list into the live
   // projection while this project/run is still active so a newer delta or
@@ -2104,31 +2228,137 @@ function selectAssistantResponseMode(mode: AssistantResponseMode) {
   assistantIntent.value = mode
 }
 
+function replaceAssistantThread(thread: ProjectAssistantThread) {
+  const index = assistantThreads.value.findIndex((candidate) => candidate.id === thread.id)
+  assistantThreads.value = index < 0
+    ? [thread, ...assistantThreads.value]
+    : assistantThreads.value.map((candidate, candidateIndex) => candidateIndex === index ? thread : candidate)
+}
+
+function updateAssistantThreadFromEvent(threadID: string, patch: Partial<ProjectAssistantThread>) {
+  if (!threadID) return
+  const existing = assistantThreads.value.find((thread) => thread.id === threadID)
+  if (!existing) return
+  replaceAssistantThread({ ...existing, ...patch })
+}
+
 async function selectAssistantThread(threadID: string) {
   const projectName = selected.value?.name
-  if (!projectName || !threadID || threadID === activeAssistantThreadID.value || messageStreaming.value) return
+  if (!projectName || !threadID || messageStreaming.value || busy.value) return
+  if (threadID === activeAssistantThreadID.value) {
+    persistAssistantThreadFocus(assistantThreadFocusScope(projectName), threadID)
+    return
+  }
+  const assistantThreadLoadSerial = ++assistantThreadRequestSerial
   assistantRunController.disconnect()
   activeAssistantSubscription?.abort()
   activeAssistantRun = null
   activeAssistantProject = ''
   activeAssistantThreadID.value = threadID
-  const items = await api.listAssistantThreadItems(props.ctx, projectName, threadID)
-  activeAssistantThreadSequence = maxAssistantThreadSequence(items)
-  messages.value = projectAssistantThreadItems(items, projectName)
-  messageStreaming.value = false
+  persistAssistantThreadFocus(assistantThreadFocusScope(projectName), threadID)
+  threadError.value = null
+  try {
+    const items = await api.listAssistantThreadItems(props.ctx, projectName, threadID)
+    if (assistantThreadLoadSerial !== assistantThreadRequestSerial || selected.value?.name !== projectName || activeAssistantThreadID.value !== threadID) return
+    activeAssistantThreadSequence = maxAssistantThreadSequence(items)
+    messages.value = projectAssistantThreadItems(items, projectName)
+    messageStreaming.value = false
+  } catch (e) {
+    if (assistantThreadLoadSerial === assistantThreadRequestSerial && selected.value?.name === projectName && activeAssistantThreadID.value === threadID) {
+      threadError.value = e instanceof Error ? e.message : String(e)
+    }
+  }
 }
 
 async function createAssistantThread() {
   const projectName = selected.value?.name
-  if (!projectName || messageStreaming.value) return
-  const thread = await api.createAssistantThread(props.ctx, projectName)
-  assistantThreads.value = [thread, ...assistantThreads.value]
-  activeAssistantThreadID.value = thread.id
-  activeAssistantThreadSequence = 1
-  messages.value = []
-  activeAssistantRun = null
-  activeAssistantProject = ''
-  assistantRunController.disconnect()
+  if (!projectName || threadActionsDisabled.value) return
+  const assistantThreadLoadSerial = ++assistantThreadRequestSerial
+  threadMutationBusy.value = true
+  threadError.value = null
+  try {
+    const thread = await api.createAssistantThread(props.ctx, projectName)
+    if (assistantThreadLoadSerial !== assistantThreadRequestSerial || selected.value?.name !== projectName) return
+    assistantThreads.value = [thread, ...assistantThreads.value]
+    activeAssistantThreadID.value = thread.id
+    persistAssistantThreadFocus(assistantThreadFocusScope(projectName), thread.id)
+    activeAssistantThreadSequence = 1
+    messages.value = []
+    activeAssistantRun = null
+    activeAssistantProject = ''
+    assistantRunController.disconnect()
+  } catch (e) {
+    if (assistantThreadLoadSerial === assistantThreadRequestSerial && selected.value?.name === projectName) {
+      threadError.value = e instanceof Error ? e.message : String(e)
+    }
+  } finally {
+    threadMutationBusy.value = false
+  }
+}
+
+async function renameAssistantThread(threadID: string, title: string) {
+  const projectName = selected.value?.name
+  const normalizedTitle = title.trim()
+  if (!projectName || !threadID || !normalizedTitle || threadActionsDisabled.value) return
+  threadMutationBusy.value = true
+  threadError.value = null
+  try {
+    const thread = await api.patchAssistantThread(props.ctx, projectName, threadID, { title: normalizedTitle })
+    if (selected.value?.name !== projectName) return
+    replaceAssistantThread(thread)
+  } catch (e) {
+    if (selected.value?.name === projectName) threadError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    threadMutationBusy.value = false
+  }
+}
+
+async function deleteAssistantThread(threadID: string) {
+  const projectName = selected.value?.name
+  if (!projectName || !threadID || threadActionsDisabled.value) return
+  const deletedIndex = assistantThreads.value.findIndex((thread) => thread.id === threadID)
+  if (deletedIndex < 0) return
+  const wasActive = activeAssistantThreadID.value === threadID
+  const remaining = assistantThreads.value.filter((thread) => thread.id !== threadID)
+  const nextThread = remaining[Math.min(deletedIndex, Math.max(remaining.length - 1, 0))]
+  const requestSerial = ++assistantThreadRequestSerial
+  threadMutationBusy.value = true
+  threadError.value = null
+  try {
+    await api.deleteAssistantThread(props.ctx, projectName, threadID)
+    if (requestSerial !== assistantThreadRequestSerial || selected.value?.name !== projectName) return
+    assistantThreads.value = remaining
+    if (!wasActive) return
+
+    assistantRunController.disconnect()
+    activeAssistantSubscription?.abort()
+    activeAssistantRun = null
+    activeAssistantProject = ''
+    messageStreaming.value = false
+    messages.value = []
+    if (nextThread) {
+      await selectAssistantThread(nextThread.id)
+      return
+    }
+
+    // Keep the composer usable after deleting the final thread. Creating this
+    // blank thread intentionally omits a title so the backend's asynchronous
+    // title generation remains the only source of automatic names.
+    const replacement = await api.createAssistantThread(props.ctx, projectName)
+    if (requestSerial !== assistantThreadRequestSerial || selected.value?.name !== projectName) return
+    assistantThreads.value = [replacement]
+    activeAssistantThreadID.value = replacement.id
+    persistAssistantThreadFocus(assistantThreadFocusScope(projectName), replacement.id)
+    activeAssistantThreadSequence = 1
+    activeAssistantRun = null
+    messages.value = []
+  } catch (e) {
+    if (requestSerial === assistantThreadRequestSerial && selected.value?.name === projectName) {
+      threadError.value = e instanceof Error ? e.message : String(e)
+    }
+  } finally {
+    threadMutationBusy.value = false
+  }
 }
 
 function assistantRunForMessage(messageID: string): AssistantRun | undefined {
@@ -2629,6 +2859,9 @@ function workbenchTabIcon(tab: WorkbenchTabDescriptor): Component {
   if (tab.kind === 'review') return ClipboardList
   if (tab.kind === 'providers') return PanelRight
   if (tab.kind === 'publishing') return Globe
+  if (tab.kind === 'settings') return Settings2
+  if (tab.kind === 'skills') return Plug
+  if (tab.kind === 'threads') return MessageSquare
   if (tab.kind === 'launcher') return Plus
   return Wrench
 }
@@ -2736,9 +2969,10 @@ async function sendMessage() {
     } else {
       let thread = assistantThreads.value.find((candidate) => candidate.id === activeAssistantThreadID.value)
       if (!thread) {
-        thread = await api.createAssistantThread(props.ctx, projectName, content.slice(0, 72))
+        thread = await api.createAssistantThread(props.ctx, projectName)
         assistantThreads.value = [thread, ...assistantThreads.value]
         activeAssistantThreadID.value = thread.id
+        persistAssistantThreadFocus(assistantThreadFocusScope(projectName), thread.id)
       }
       const canonical = startOperation.collaborationMode === 'review'
         ? await api.startAssistantReview(props.ctx, projectName, thread.id, {
@@ -2750,6 +2984,7 @@ async function sendMessage() {
             clientUserMessageID: clientRequestID,
             collaborationMode: startOperation.collaborationMode,
           })
+      replaceAssistantThread(canonical.thread)
       const items = await api.listAssistantThreadItems(props.ctx, projectName, thread.id)
       activeAssistantThreadSequence = maxAssistantThreadSequence(items)
       const userItem = [...items].reverse().find((item) => item.turnID === canonical.turn.id && item.type === 'userMessage')
@@ -3019,6 +3254,24 @@ function updateActiveRunFromAssistantItem(item: ProjectAssistantThreadItem, runI
 function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectName: string, runID: string) {
   const payload = event.payload ?? {}
   const rawItem = payload.item as ProjectAssistantThreadItem | undefined
+  const rawThread = payload.thread as Partial<ProjectAssistantThread> | undefined
+  const eventThreadID = typeof rawThread?.id === 'string' && rawThread.id
+    ? rawThread.id
+    : event.threadID
+  if (event.type === 'thread.updated' || event.type === 'thread.title.updated' || rawThread?.title !== undefined || typeof payload.title === 'string') {
+    const title = typeof rawThread?.title === 'string'
+      ? rawThread.title
+      : typeof payload.title === 'string'
+        ? payload.title
+        : undefined
+    if (title !== undefined) {
+      updateAssistantThreadFromEvent(eventThreadID, {
+        ...(title ? { title } : { title: undefined }),
+        ...(typeof rawThread?.status === 'string' ? { status: rawThread.status as ProjectAssistantThread['status'] } : {}),
+        ...(typeof rawThread?.updatedAt === 'string' ? { updatedAt: rawThread.updatedAt } : {}),
+      })
+    }
+  }
   if (event.type === 'item.delta' && event.itemID) {
     const delta = typeof payload.delta === 'string' ? payload.delta : ''
     if (delta) {
@@ -3062,8 +3315,10 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
       const itemRun = role === 'assistant' ? assistantThreadItemToRun(rawItem) : undefined
       const itemContent = rawItem.content ?? ''
       const existingContent = existing?.content ?? ''
+      const userAssistantSkills = role === 'user' ? assistantSkillsFromThreadItem(rawItem) : []
       const metadata: Record<string, unknown> = {
         ...(existing?.metadata ?? {}),
+        ...(userAssistantSkills.length ? { assistantSkills: userAssistantSkills } : {}),
         ...(role === 'assistant' ? {
           assistantStatus: itemRun?.status ?? (rawItem.phase === 'commentary' && rawItem.status === 'completed' ? 'completed' : 'running'),
           assistantMessageID: rawItem.assistantMessageID || messageID,
@@ -3272,30 +3527,6 @@ function assistantTraceBlocks(message: ProjectMessageView): AssistantTraceBlock[
 
 function projectMessagePlan(message: ProjectMessage): AssistantPlan | undefined {
   return parseAssistantPlan(message.metadata?.assistantPlan)
-}
-
-function assistantPlanTerminalStatusForMessage(message: ProjectMessageView): AssistantPlanTerminalStatus | undefined {
-  if (!message.plan) return undefined
-
-  let status = projectMessageAssistantStatus(message)
-  const activeRun = activeAssistantRun
-  const activeOwner = Boolean(activeRun && (
-    activeRun.activeMessageID === message.id ||
-    message.metadata?.assistantMessageID === activeRun.activeMessageID
-  ))
-  if (!assistantRunTerminal(status) && activeOwner && activeRun) status = activeRun.status
-
-  switch (status) {
-    case 'completed':
-      return 'completed'
-    case 'failed':
-      return 'failed'
-    case 'interrupted':
-    case 'aborted':
-      return 'interrupted'
-    default:
-      return undefined
-  }
 }
 
 function projectMessageViewStatus(message: ProjectMessage): ProjectMessageViewStatus | undefined {
@@ -3524,6 +3755,10 @@ function renderMessageContent(content: string, role: ProjectMessage['role']): st
   return assistantMarkdown.render(normalizeAssistantMarkdown(content))
 }
 
+function assistantSkillsForMessage(message: ProjectMessageView): ProjectAssistantSkill[] {
+  return projectAssistantSkills(message.metadata?.assistantSkills)
+}
+
 function assistantSurfaceCards(message: ProjectMessageView): ProjectAssistantSurfaceCard[] {
   const surface = message.surface
   if (!surface) return []
@@ -3621,61 +3856,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
   return value === MISSING_CODE_CONNECTION_ERROR
 }
 
-function codeConnectionURL(connectionRef?: string | null): string {
-  return connectionRef ? `${CODE_CONNECTIONS_URL}/${encodeURIComponent(connectionRef)}` : CODE_CONNECTIONS_URL
-}
-
-function codeRepositoryURL(repositoryRef?: string | null): string {
-  return repositoryRef ? `${CODE_REPOSITORIES_URL}/${encodeURIComponent(repositoryRef)}` : CODE_REPOSITORIES_URL
-}
-
-function repositoryStatusLabel(repository: Project['repository']): string {
-  switch (repository?.status) {
-    case 'Ready':
-      return 'Ready'
-    case 'RepositoryMissing':
-      return 'Repository missing'
-    case 'ConnectionMissing':
-      return 'Connection missing'
-    case 'Unavailable':
-      return 'Status unavailable'
-    case 'Failed':
-      return 'Failed'
-    case 'Provisioning':
-      return 'Provisioning'
-    default:
-      return repository?.ready ? 'Ready' : 'Provisioning'
-  }
-}
-
-function repositoryCommitPhaseLabel(commit: ProjectRepositoryCommit): string {
-  switch (commit.phase) {
-    case 'Succeeded':
-      return 'Committed'
-    case 'Failed':
-      return 'Failed'
-    case 'Running':
-      return 'Running'
-    case 'Pending':
-      return 'Pending'
-    default:
-      return commit.phase || 'Unknown'
-  }
-}
-
-function shortCommitSHA(sha?: string | null): string {
-  if (!sha) return ''
-  return sha.length > 12 ? sha.slice(0, 12) : sha
-}
-
-function repositoryCommitTime(commit: ProjectRepositoryCommit): string {
-  return formatRelativeTime(commit.completedAt || commit.createdAt, 'always')
-}
-
-function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
-  const count = commit.fileCount ?? 0
-  return `${count} ${count === 1 ? 'file' : 'files'}`
-}
 </script>
 
 <template>
@@ -3808,15 +3988,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 <div class="mt-1 line-clamp-2 min-h-[34px] text-[12px] leading-[17px] text-text-muted">
                   {{ project.description || project.name }}
                 </div>
-                <div class="mt-3 flex items-center gap-2 text-[12px] text-text-muted">
-                  <StatusBadge :status="project.phase || 'Ready'" />
-                  <StatusBadge
-                    v-if="project.repository"
-                    :status="repositoryStatusLabel(project.repository)"
-                    :title="project.repository.message || repositoryStatusLabel(project.repository)"
-                  />
-                  <span>{{ projectTimestamp(project) }}</span>
-                </div>
+                <div class="mt-3 text-[12px] text-text-muted">{{ projectTimestamp(project) }}</div>
               </div>
             </button>
             <button
@@ -4051,45 +4223,6 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             </template>
           </div>
         </div>
-        <select
-          v-if="assistantThreads.length"
-          :value="activeAssistantThreadID"
-          class="hidden h-8 max-w-40 rounded-lg border border-border-subtle bg-surface px-2 text-[11px] text-text-secondary lg:block"
-          :disabled="messageStreaming"
-          aria-label="Assistant thread"
-          @change="selectAssistantThread(($event.target as HTMLSelectElement).value)"
-        >
-          <option v-for="thread in assistantThreads" :key="thread.id" :value="thread.id">
-            {{ thread.title || 'New thread' }}
-          </option>
-        </select>
-        <button
-          type="button"
-          class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border-subtle text-text-muted transition hover:bg-surface-hover hover:text-text-primary disabled:opacity-50"
-          :disabled="messageStreaming"
-          title="New assistant thread"
-          aria-label="New assistant thread"
-          @click="createAssistantThread"
-        >
-          <Plus class="h-4 w-4" :stroke-width="1.75" />
-        </button>
-        <div v-if="checkpoints.length" class="hidden shrink-0 items-center gap-1.5 sm:flex">
-          <CheckpointChip
-            v-for="cp in checkpoints"
-            :key="cp.key"
-            :checkpoint="cp"
-            @act="actOnCheckpoint"
-          />
-        </div>
-        <button
-          type="button"
-          class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle transition hover:bg-surface-hover"
-          :class="llmSettings?.configured ? 'text-success' : 'text-text-muted hover:text-text-primary'"
-          :title="llmSettings?.configured ? 'LLM settings configured' : 'Configure LLM settings'"
-          @click="openSettings"
-        >
-          <Settings2 class="h-4 w-4" :stroke-width="1.75" />
-        </button>
       </header>
 
       <div v-if="error" class="mx-3 mt-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
@@ -4177,6 +4310,22 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                   class="rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 text-[13px] leading-5 text-text-primary shadow-sm"
                   v-html="renderMessageContent(message.content, message.role)"
                 />
+                <div
+                  v-if="assistantSkillsForMessage(message).length"
+                  class="flex max-w-full flex-wrap justify-end gap-1.5"
+                  aria-label="Skills used for this turn"
+                >
+                  <span
+                    v-for="skill in assistantSkillsForMessage(message)"
+                    :key="skill.id"
+                    class="inline-flex max-w-full items-center gap-1 rounded-full border border-border-subtle bg-surface-raised px-2 py-1 text-[10px] text-text-secondary"
+                    :title="`${skill.name} · ${skill.scope}`"
+                  >
+                    <Plug class="h-3 w-3 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
+                    <span class="max-w-40 truncate font-medium text-text-primary">{{ skill.name }}</span>
+                    <span class="max-w-24 truncate text-text-muted">{{ skill.scope }}</span>
+                  </span>
+                </div>
                 <div class="group/timestamp relative max-w-full">
                   <button
                     type="button"
@@ -4207,10 +4356,15 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                       class="inline-flex items-center gap-1.5 rounded-md py-0.5 text-[12px] font-medium text-text-muted transition hover:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                       :aria-expanded="assistantProgressExpanded(message)"
                       :aria-controls="assistantProgressRegionID(message.id)"
-                      :aria-label="`Worked for ${assistantWorkedLabel(message)}. ${assistantProgressExpanded(message) ? 'Hide' : 'Show'} task details.`"
+                      :aria-label="`Worked for ${assistantWorkedLabel(message)}.${message.viewStatus === 'interrupted' ? ' Interrupted.' : ''} ${assistantProgressExpanded(message) ? 'Hide' : 'Show'} task details.`"
                       @click="toggleAssistantProgress(message.id)"
                     >
                       <span>Worked for {{ assistantWorkedLabel(message) }}</span>
+                      <span v-if="message.viewStatus === 'interrupted'" class="inline-flex items-center gap-1 text-warning/80" title="The assistant stopped before completing this turn">
+                        <span class="text-text-muted" aria-hidden="true">·</span>
+                        <TriangleAlert class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
+                        <span>Interrupted</span>
+                      </span>
                       <ChevronRight
                         class="h-3.5 w-3.5 transition-transform"
                         :class="assistantProgressExpanded(message) ? 'rotate-90' : ''"
@@ -4218,16 +4372,6 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                         aria-hidden="true"
                       />
                     </button>
-                    <span
-                      v-if="message.viewStatus === 'interrupted'"
-                      class="inline-flex items-center gap-1.5 rounded-md border border-warning/30 bg-warning-subtle px-2 py-1 text-[11px] font-medium text-warning"
-                      role="status"
-                      aria-live="polite"
-                      aria-atomic="true"
-                    >
-                      <TriangleAlert class="h-3 w-3" :stroke-width="2" aria-hidden="true" />
-                      Interrupted before completion
-                    </span>
                     <span
                       v-if="!assistantProgressClosed(message)"
                       class="py-0.5 text-[12px] font-medium text-text-muted"
@@ -4267,13 +4411,6 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                   :message-id="message.id"
                   :items="message.actionFeed"
                 />
-                <AssistantPlanDisclosure
-                  v-if="message.plan && assistantPlanTerminalStatusForMessage(message)"
-                  :key="`${message.id}-plan-disclosure`"
-                  :message-id="message.id"
-                  :plan="message.plan"
-                  :status="assistantPlanTerminalStatusForMessage(message)!"
-                />
                 <div
                   v-if="hasAssistantResponseContent(message)"
                   :class="assistantMarkdownClass"
@@ -4300,13 +4437,14 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 </button>
                 <div
                   v-if="message.viewStatus === 'interrupted' && !message.progress"
-                  class="mt-2 inline-flex items-center gap-1.5 rounded-md border border-warning/30 bg-warning-subtle px-2 py-1 text-[11px] font-medium text-warning"
+                  class="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-text-muted"
                   role="status"
                   aria-live="polite"
                   aria-atomic="true"
+                  title="The assistant stopped before completing this turn"
                 >
-                  <TriangleAlert class="h-3 w-3" :stroke-width="2" aria-hidden="true" />
-                  Interrupted before completion
+                  <TriangleAlert class="h-3 w-3 text-warning/80" :stroke-width="1.75" aria-hidden="true" />
+                  Interrupted
                 </div>
               </div>
             </div>
@@ -4318,8 +4456,10 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               aria-atomic="true"
             >
               <div class="flex min-w-0 items-center gap-2 py-1 text-[13px] leading-6 text-text-muted">
-                <Loader2 class="h-3.5 w-3.5 shrink-0 animate-spin text-accent" :stroke-width="1.75" />
-                <span class="font-medium text-text-secondary">{{ conversationWorkingLabel }}</span>
+                <span
+                  class="font-medium text-text-secondary"
+                  :class="conversationWorkingLabel === 'Running' ? 'conversation-running-ripple' : undefined"
+                >{{ conversationWorkingLabel }}</span>
                 <span class="flex items-center gap-0.5 text-text-muted" aria-hidden="true">
                   <span class="h-1 w-1 animate-pulse rounded-full bg-current"></span>
                   <span class="h-1 w-1 animate-pulse rounded-full bg-current [animation-delay:120ms]"></span>
@@ -4500,7 +4640,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             <button
               v-if="messageStreaming && !prompt.trim() && activeAssistantRun?.status !== 'stopping'"
               type="button"
-              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-md border border-danger/30 bg-danger-subtle text-danger transition hover:bg-danger-subtle/80"
+              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-full border border-danger/30 bg-danger-subtle text-danger transition hover:bg-danger-subtle/80"
               title="Stop generating"
               aria-label="Stop generating"
               @click="cancelMessageStream"
@@ -4511,7 +4651,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               v-else-if="activeAssistantRun?.status === 'stopping'"
               type="button"
               disabled
-              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface-hover text-text-muted"
+              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-full border border-border-subtle bg-surface-hover text-text-muted"
               title="Stopping"
               aria-label="Stopping"
             >
@@ -4519,12 +4659,12 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             </button>
             <button
               v-else
-              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-md border border-accent/30 bg-accent/10 text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-full bg-text-primary text-surface transition hover:opacity-90 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100"
               :disabled="busy || !canSendPrompt"
               :title="llmSettings?.configured ? 'Send' : 'Configure LLM settings before sending'"
               :aria-label="llmSettings?.configured ? 'Send' : 'Configure LLM settings before sending'"
             >
-              <Send class="h-4 w-4" :stroke-width="2" />
+              <ArrowUp class="h-4 w-4" :stroke-width="2" />
             </button>
           </div>
         </form>
@@ -4782,6 +4922,54 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
       </div>
 
       <div
+        v-else-if="activeWorkbenchTab?.kind === 'skills'"
+        class="min-h-0 flex-1 overflow-auto p-3"
+        role="tabpanel"
+        :id="workbenchTabPanelID(activeWorkbenchTab)"
+        :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
+      >
+        <SkillsWorkbench
+          :ctx="props.ctx"
+          :project-name="selected?.name || ''"
+          :skills="assistantSkills"
+          :loading="assistantSkillsLoading"
+          :error="assistantSkillsError"
+          :warnings="assistantSkillsWarnings"
+          @catalog-updated="applyAssistantSkillsCatalogResponse"
+        />
+      </div>
+
+      <div
+        v-else-if="activeWorkbenchTab?.kind === 'threads'"
+        class="min-h-0 flex-1 overflow-auto p-3"
+        role="tabpanel"
+        :id="workbenchTabPanelID(activeWorkbenchTab)"
+        :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
+      >
+        <ThreadsWorkbench
+          :threads="assistantThreads"
+          :active-thread-i-d="activeAssistantThreadID"
+          :disabled="threadActionsDisabled"
+          :busy="threadMutationBusy"
+          :error="threadError"
+          @select="selectAssistantThread"
+          @create="createAssistantThread"
+          @rename="renameAssistantThread"
+          @delete="deleteAssistantThread"
+        />
+      </div>
+
+      <div
+        v-else-if="activeWorkbenchTab?.kind === 'settings'"
+        class="min-h-0 flex-1 overflow-hidden"
+        role="tabpanel"
+        :id="workbenchTabPanelID(activeWorkbenchTab)"
+        :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
+      >
+        <div id="app-studio-project-settings-host" class="h-full min-h-0 overflow-hidden" />
+      </div>
+
+      <div
         v-else-if="activeWorkbenchTab?.kind === 'publishing'"
         class="min-h-0 flex-1 overflow-auto p-3"
         role="tabpanel"
@@ -4789,6 +4977,21 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
       >
         <div class="grid gap-3">
+          <section class="flex flex-wrap items-center gap-2 rounded-md border border-border-subtle bg-surface p-3" aria-label="Project lifecycle">
+            <div class="mr-auto min-w-36">
+              <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Project lifecycle</div>
+              <div class="mt-0.5 text-[11px] text-text-secondary">Template, source, build, and production readiness</div>
+            </div>
+            <div v-if="checkpoints.length" class="flex flex-wrap items-center gap-1.5">
+              <CheckpointChip
+                v-for="cp in checkpoints"
+                :key="cp.key"
+                :checkpoint="cp"
+                @act="actOnCheckpoint"
+              />
+            </div>
+          </section>
+
           <section class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3">
             <div class="flex min-w-0 items-start justify-between gap-2">
               <div class="min-w-0">
@@ -5174,13 +5377,20 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
     </section>
   </div>
 
-  <Teleport to="body">
+  <Teleport :to="settingsInWorkbench ? '#app-studio-project-settings-host' : 'body'">
     <div
       v-if="showSettings"
-      class="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 px-4 py-6 backdrop-blur-sm"
+      :class="settingsInWorkbench
+        ? 'h-full min-h-0'
+        : 'fixed inset-0 z-[100] flex items-center justify-center bg-black/50 px-4 py-6 backdrop-blur-sm'"
       @click.self="closeSettings"
     >
-      <div class="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-border-subtle bg-surface-raised shadow-2xl">
+      <div
+        class="flex w-full flex-col overflow-hidden bg-surface-raised"
+        :class="settingsInWorkbench
+          ? 'h-full min-h-0'
+          : 'max-h-[90vh] max-w-2xl rounded-xl border border-border-subtle shadow-2xl'"
+      >
         <header class="flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3">
           <div class="min-w-0">
             <div class="flex items-center gap-2">
@@ -5192,6 +5402,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
             </p>
           </div>
           <button
+            v-if="!settingsInWorkbench"
             type="button"
             class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
             title="Close"
@@ -5230,98 +5441,6 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
                 :disabled="projectSettingsSaving"
               />
             </label>
-            <section class="grid gap-2 rounded-md border border-border-subtle bg-surface px-3 py-2.5">
-              <div class="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">
-                <GitBranch class="h-3.5 w-3.5" :stroke-width="1.75" />
-                Code
-              </div>
-              <dl v-if="settingsProject.repository" class="grid gap-2 text-[12px] sm:grid-cols-[112px_minmax(0,1fr)]">
-                <dt class="text-text-muted">Repository</dt>
-                <dd class="min-w-0">
-                  <a
-                    :href="codeRepositoryURL(settingsProject.repository.ref)"
-                    class="inline-flex min-w-0 max-w-full items-center gap-1 font-mono text-text-primary underline underline-offset-2 hover:text-accent"
-                  >
-                    <span class="truncate">{{ settingsProject.repository.name || settingsProject.repository.ref }}</span>
-                  </a>
-                </dd>
-                <dt class="text-text-muted">Connection</dt>
-                <dd class="min-w-0">
-                  <a
-                    v-if="settingsProject.repository.connectionRef"
-                    :href="codeConnectionURL(settingsProject.repository.connectionRef)"
-                    class="inline-flex min-w-0 max-w-full items-center gap-1 font-mono text-text-primary underline underline-offset-2 hover:text-accent"
-                  >
-                    <span class="truncate">{{ settingsProject.repository.connectionRef }}</span>
-                  </a>
-                  <span v-else class="text-text-muted">Not recorded</span>
-                </dd>
-                <dt class="text-text-muted">Status</dt>
-                <dd>
-                  <StatusBadge :status="repositoryStatusLabel(settingsProject.repository)" />
-                </dd>
-                <template v-if="settingsProject.repository.message">
-                  <dt class="text-text-muted">Notice</dt>
-                  <dd class="text-text-secondary">{{ settingsProject.repository.message }}</dd>
-                </template>
-                <template v-if="settingsProject.repository.htmlURL">
-                  <dt class="text-text-muted">Git URL</dt>
-                  <dd class="min-w-0">
-                    <a
-                      :href="settingsProject.repository.htmlURL"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      class="inline-flex min-w-0 max-w-full items-center gap-1 font-mono text-text-primary underline underline-offset-2 hover:text-accent"
-                    >
-                      <span class="truncate">{{ settingsProject.repository.htmlURL }}</span>
-                      <ExternalLink class="h-3 w-3 shrink-0" :stroke-width="1.75" />
-                    </a>
-                  </dd>
-                </template>
-              </dl>
-              <div v-if="settingsProject.repository?.commits?.length" class="grid gap-2 border-t border-border-subtle pt-3">
-                <div class="flex items-center justify-between gap-2">
-                  <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Commits</div>
-                  <div class="text-[11px] text-text-muted">{{ settingsProject.repository.commits.length }} recent</div>
-                </div>
-                <div class="grid gap-1.5">
-                  <div
-                    v-for="commit in settingsProject.repository.commits"
-                    :key="commit.name"
-                    class="grid gap-1 rounded-md px-2 py-1.5 transition hover:bg-surface-hover"
-                  >
-                    <div class="flex min-w-0 items-center gap-2">
-                      <StatusBadge :status="repositoryCommitPhaseLabel(commit)" />
-                      <a
-                        v-if="commit.commitURL"
-                        :href="commit.commitURL"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        class="inline-flex min-w-0 items-center gap-1 font-mono text-[12px] text-text-primary underline underline-offset-2 hover:text-accent"
-                      >
-                        <span class="truncate">{{ shortCommitSHA(commit.commitSHA) || commit.name }}</span>
-                        <ExternalLink class="h-3 w-3 shrink-0" :stroke-width="1.75" />
-                      </a>
-                      <span v-else class="min-w-0 truncate font-mono text-[12px] text-text-primary">
-                        {{ shortCommitSHA(commit.commitSHA) || commit.name }}
-                      </span>
-                    </div>
-                    <div class="min-w-0 truncate text-[12px] text-text-secondary">
-                      {{ commit.message || 'Repository commit' }}
-                    </div>
-                    <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-text-muted">
-                      <span v-if="commit.branch" class="font-mono">{{ commit.branch }}</span>
-                      <span>{{ repositoryCommitFilesLabel(commit) }}</span>
-                      <span>{{ repositoryCommitTime(commit) }}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div v-else-if="settingsProject.repository" class="border-t border-border-subtle pt-3 text-[12px] text-text-muted">
-                No commits recorded yet.
-              </div>
-              <div v-else class="text-[12px] text-text-muted">No repository is linked to this project.</div>
-            </section>
             <div
               v-if="projectSettingsError || projectSettingsStatus"
               class="rounded-md border px-3 py-2 text-[12px]"
@@ -5474,6 +5593,7 @@ function repositoryCommitFilesLabel(commit: ProjectRepositoryCommit): string {
               </button>
               <div class="flex items-center gap-2">
                 <button
+                  v-if="!settingsInWorkbench"
                   type="button"
                   class="inline-flex h-9 items-center justify-center rounded-md border border-border-subtle px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
                   @click="closeSettings"

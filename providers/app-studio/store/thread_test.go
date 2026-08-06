@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -306,5 +307,101 @@ func TestMemoryStoreDeleteProjectMessagesRemovesCanonicalAssistantTranscript(t *
 	}
 	if created.Sequence != 1 {
 		t.Fatalf("sequence after project deletion = %d, want reset to 1", created.Sequence)
+	}
+}
+
+func TestMemoryStoreDeleteAssistantThreadEnforcesOwnershipAndActiveTurns(t *testing.T) {
+	ctx := context.Background()
+	memory := NewMemoryStore()
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	thread, err := memory.CreateAssistantThread(ctx, scope, AssistantThread{ID: "thread-owned", ActorID: "alice"}, []AssistantThreadEvent{{Type: "thread.created"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.DeleteAssistantThread(ctx, scope, thread.ID, "bob"); !errors.Is(err, ErrAssistantThreadConflict) {
+		t.Fatalf("wrong-actor delete error = %v, want ownership conflict", err)
+	}
+	if _, err := memory.GetAssistantThread(ctx, scope, thread.ID); err != nil {
+		t.Fatalf("thread after wrong-actor delete = %v", err)
+	}
+	turn, err := memory.CreateAssistantTurn(ctx, scope, AssistantTurn{ID: "turn-owned", ThreadID: thread.ID, ActorID: "alice", ClientUserMessageID: "client-owned"}, []AssistantThreadEvent{{Type: "turn.started"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.DeleteAssistantThread(ctx, scope, thread.ID, "alice"); !errors.Is(err, ErrAssistantThreadActive) {
+		t.Fatalf("active delete error = %v, want active conflict", err)
+	}
+	turn.Status = AssistantTurnStatusCompleted
+	turn.UpdatedAt = time.Now().UTC()
+	if err := memory.SaveAssistantTurn(ctx, scope, turn); err != nil {
+		t.Fatal(err)
+	}
+	if err := memory.DeleteAssistantThread(ctx, scope, thread.ID, "alice"); err != nil {
+		t.Fatalf("terminal delete error = %v", err)
+	}
+	if _, err := memory.GetAssistantThread(ctx, scope, thread.ID); !errors.Is(err, ErrAssistantThreadNotFound) {
+		t.Fatalf("thread after delete = %v, want not found", err)
+	}
+	if _, err := memory.GetAssistantTurn(ctx, scope, thread.ID, turn.ID); !errors.Is(err, ErrAssistantTurnNotFound) {
+		t.Fatalf("turn after delete = %v, want not found", err)
+	}
+	if _, err := memory.ListAssistantThreadEvents(ctx, scope, thread.ID, 0, 20); !errors.Is(err, ErrAssistantThreadNotFound) {
+		t.Fatalf("events after delete = %v, want not found", err)
+	}
+}
+
+func TestMemoryStoreSetAssistantThreadTitleIfEmptyIsCompareAndSet(t *testing.T) {
+	ctx := context.Background()
+	memory := NewMemoryStore()
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	thread, err := memory.CreateAssistantThread(ctx, scope, AssistantThread{ID: "thread-title-cas", ActorID: "alice"}, []AssistantThreadEvent{{Type: "thread.created"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, changed, err := memory.SetAssistantThreadTitleIfEmpty(ctx, scope, thread.ID, "alice", "Generated project title", AssistantThreadEvent{Type: "thread.updated"})
+	if err != nil || !changed || updated.Title != "Generated project title" {
+		t.Fatalf("first title CAS = %#v changed=%t err=%v", updated, changed, err)
+	}
+	updated, changed, err = memory.SetAssistantThreadTitleIfEmpty(ctx, scope, thread.ID, "alice", "Stale model title", AssistantThreadEvent{Type: "thread.updated"})
+	if err != nil || changed || updated.Title != "Generated project title" {
+		t.Fatalf("second title CAS = %#v changed=%t err=%v", updated, changed, err)
+	}
+	events, err := memory.ListAssistantThreadEvents(ctx, scope, thread.ID, 0, 20)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("title events = %#v err=%v, want created+updated", events, err)
+	}
+	var payload struct {
+		Thread AssistantThread `json:"thread"`
+	}
+	if err := json.Unmarshal(events[1].Payload, &payload); err != nil || payload.Thread.Title != "Generated project title" {
+		t.Fatalf("title event payload = %s err=%v", events[1].Payload, err)
+	}
+}
+
+func TestEncryptedStoreSetAssistantThreadTitleIfEmptyProtectsTitleAndEvent(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	wrapper, err := NewEncryptedStore(base, testEncryptionKeys(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "uid"}
+	thread, err := wrapper.CreateAssistantThread(ctx, scope, AssistantThread{ID: "thread-encrypted-title", ActorID: "alice"}, []AssistantThreadEvent{{Type: "thread.created"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := wrapper.SetAssistantThreadTitleIfEmpty(ctx, scope, thread.ID, "alice", "Private generated title", AssistantThreadEvent{Type: "thread.updated"}); err != nil || !changed {
+		t.Fatalf("encrypted title CAS changed=%t err=%v", changed, err)
+	}
+	raw, err := base.GetAssistantThread(ctx, scope, thread.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(raw.Title, "Private generated title") {
+		t.Fatalf("encrypted title persisted plaintext: %q", raw.Title)
+	}
+	events, err := wrapper.ListAssistantThreadEvents(ctx, scope, thread.ID, 0, 10)
+	if err != nil || len(events) != 2 || !bytes.Contains(events[1].Payload, []byte("Private generated title")) {
+		t.Fatalf("decrypted title event = %#v err=%v", events, err)
 	}
 }

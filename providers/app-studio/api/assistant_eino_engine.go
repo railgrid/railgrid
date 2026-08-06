@@ -101,6 +101,18 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	req.TurnProfile = req.TurnPolicy.profile
 	runState := newProjectEinoAssistantRunState()
 	runState.SetTurnPolicy(req.TurnPolicy)
+	if req.SkillSnapshot == nil && e.server != nil {
+		snapshot, err := e.server.projectAssistantSkillSnapshot(ctx, req.WorkspaceScope)
+		if err != nil {
+			return projectAssistantRunResult{}, err
+		}
+		req.SkillSnapshot = &snapshot
+	}
+	if req.SkillSnapshot != nil {
+		if err := runState.ConfigureSkillSnapshot(*req.SkillSnapshot, req.SelectedSkills, nil); err != nil {
+			return projectAssistantRunResult{}, err
+		}
+	}
 	runState.SetProjectRepositoryRef(projectEinoAssistantProjectRepositoryRef(req))
 	if projectAssistantTurnProfileAllowsMutation(runState.TurnPolicy().profile) {
 		e.resumeCurrentDevelopmentSync(req, runState)
@@ -149,6 +161,10 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 	if state.Eino == nil || len(state.Eino.Checkpoint) == 0 || strings.TrimSpace(state.Eino.CheckpointID) == "" || strings.TrimSpace(state.Eino.InterruptID) == "" {
 		return projectAssistantRunResult{}, errors.New("eino checkpoint is required")
 	}
+	if err := projectAssistantValidateSkillCheckpointProvenance(state); err != nil {
+		projectAssistantSkillMetric("drift", "detected")
+		return projectAssistantRunResult{}, err
+	}
 	if e.newModel == nil {
 		return projectAssistantRunResult{}, errors.New("eino model factory is not configured")
 	}
@@ -161,6 +177,25 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 
 	runState := newProjectEinoAssistantRunState()
 	runState.RestoreCheckpointState(state)
+	hasSkillCheckpoint := state.CatalogDigest != "" || len(state.SelectedSkillReceipts) > 0 || len(state.LoadedSkillReceipts) > 0
+	if e.server == nil && hasSkillCheckpoint {
+		return projectAssistantRunResult{}, errors.New("assistant skill catalog is unavailable")
+	}
+	if e.server != nil {
+		skillSnapshot, err := e.server.projectAssistantSkillSnapshot(ctx, req.WorkspaceScope)
+		if err != nil {
+			return projectAssistantRunResult{}, err
+		}
+		if state.CatalogDigest != "" && skillSnapshot.CatalogDigest != state.CatalogDigest {
+			projectAssistantSkillMetric("drift", "detected")
+			return projectAssistantRunResult{}, errProjectAssistantSkillCatalogDrift
+		}
+		if err := runState.ConfigureSkillSnapshot(skillSnapshot, state.SelectedSkillReceipts, state.LoadedSkillReceipts); err != nil {
+			return projectAssistantRunResult{}, err
+		}
+		req.SkillSnapshot = &skillSnapshot
+		req.SelectedSkills = cloneProjectAssistantSkillReceipts(state.SelectedSkillReceipts)
+	}
 	if projectAssistantTurnProfileAllowsMutation(runState.TurnPolicy().profile) {
 		e.resumeCurrentDevelopmentSync(req, runState)
 	}

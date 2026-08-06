@@ -70,45 +70,45 @@ onBeforeUnmount(() => {
       role="dialog"
       aria-modal="false"
       aria-label="How should App Studio respond?"
-      class="fixed inset-x-3 bottom-3 z-50 max-h-[calc(100dvh-1.5rem)] overflow-y-auto rounded-2xl border border-border-default bg-surface-overlay p-2 shadow-2xl md:absolute md:inset-x-auto md:bottom-10 md:left-0 md:max-h-[min(32rem,calc(100dvh-8rem))] md:w-[430px]"
+      class="fixed inset-x-2 bottom-2 z-50 max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-xl border border-border-default bg-surface-overlay p-1.5 shadow-xl md:absolute md:inset-x-auto md:bottom-9 md:left-0 md:max-h-[min(28rem,calc(100dvh-7rem))] md:w-[360px]"
     >
-      <div class="px-2 pb-1 pt-0.5 text-[11px] text-text-muted">How should App Studio respond?</div>
+      <div class="px-1.5 py-1 text-[11px] text-text-muted">How should App Studio respond?</div>
       <button
         type="button"
         :aria-pressed="mode === 'default'"
-        class="flex w-full items-start gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-surface-hover"
+        class="flex w-full items-start gap-2 rounded-lg px-1.5 py-1.5 text-left transition hover:bg-surface-hover"
         @click="chooseMode('default')"
       >
-        <Sparkles class="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" />
+        <Sparkles class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" />
         <span class="min-w-0 flex-1">
-          <span class="block text-[13px] font-medium text-text-primary">Default</span>
-          <span class="mt-0.5 block text-[12px] leading-4 text-text-muted">Answer, inspect, or make requested changes using current evidence.</span>
+          <span class="block text-[12px] font-medium text-text-primary">Default</span>
+          <span class="mt-0.5 block text-[11px] leading-4 text-text-muted">Answer, inspect, or make requested changes using current evidence.</span>
         </span>
         <Check v-if="mode === 'default'" class="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" />
       </button>
       <button
         type="button"
         :aria-pressed="mode === 'plan'"
-        class="flex w-full items-start gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-surface-hover"
+        class="flex w-full items-start gap-2 rounded-lg px-1.5 py-1.5 text-left transition hover:bg-surface-hover"
         @click="chooseMode('plan')"
       >
-        <ClipboardList class="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" />
+        <ClipboardList class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" />
         <span class="min-w-0 flex-1">
-          <span class="block text-[13px] font-medium text-text-primary">Plan</span>
-          <span class="mt-0.5 block text-[12px] leading-4 text-text-muted">Investigate and produce a plan without changing the project.</span>
+          <span class="block text-[12px] font-medium text-text-primary">Plan</span>
+          <span class="mt-0.5 block text-[11px] leading-4 text-text-muted">Investigate and produce a plan without changing the project.</span>
         </span>
         <Check v-if="mode === 'plan'" class="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" />
       </button>
       <button
         type="button"
         :aria-pressed="mode === 'review'"
-        class="flex w-full items-start gap-3 rounded-xl px-2 py-2 text-left transition hover:bg-surface-hover"
+        class="flex w-full items-start gap-2 rounded-lg px-1.5 py-1.5 text-left transition hover:bg-surface-hover"
         @click="chooseMode('review')"
       >
-        <SearchCheck class="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" />
+        <SearchCheck class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" />
         <span class="min-w-0 flex-1">
-          <span class="block text-[13px] font-medium text-text-primary">Review</span>
-          <span class="mt-0.5 block text-[12px] leading-4 text-text-muted">Inspect the current workspace and report prioritized findings without changing it.</span>
+          <span class="block text-[12px] font-medium text-text-primary">Review</span>
+          <span class="mt-0.5 block text-[11px] leading-4 text-text-muted">Inspect the current workspace and report prioritized findings without changing it.</span>
         </span>
         <Check v-if="mode === 'review'" class="mt-0.5 h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" />
       </button>

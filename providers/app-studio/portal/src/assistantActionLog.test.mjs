@@ -23,7 +23,11 @@ test('renders a compact bounded log without execution mechanics', async () => {
   assert.match(html, /2 actions/)
   assert.match(html, /aria-expanded="false"/)
   assert.match(html, /aria-controls="app-studio-assistant-actions-assistant-1"/)
+  assert.match(html, /Inspected the project/)
+  assert.match(html, /Ran commands and checks/)
+  assert.doesNotMatch(html, /action-chain-fade/)
   assert.doesNotMatch(html, /tool call|tool result|args:|offset|limit|read_file/)
+  assert.doesNotMatch(html, /rounded-xl border border-border-subtle bg-surface/)
 })
 
 test('renders only allowlisted structured failure diagnostics', async () => {
@@ -40,9 +44,14 @@ test('renders only allowlisted structured failure diagnostics', async () => {
       diagnostic: { category: 'timeout', message: 'Preview readiness timed out.', referenceID: 'run-2' },
     }],
   }))
-  assert.match(html, /Technical details/)
+  assert.match(html, /Details/)
+  assert.match(html, /aria-expanded="true"/)
+  assert.match(html, /text-danger/)
+  assert.match(html, /max-h-\[min\(40vh,320px\)\]/)
+  assert.match(html, /overflow-auto/)
   assert.match(html, /Failed:/)
-  assert.doesNotMatch(html, /aria-controls="app-studio-assistant-actions-assistant-2-failed-1-diagnostic"/)
+  assert.match(html, /aria-controls="app-studio-assistant-actions-assistant-2-failed-1-diagnostic"/)
+  assert.match(html, /inline-flex h-7[^>]*aria-expanded="false"[^>]*failed-1-diagnostic/)
   assert.doesNotMatch(html, /rawError|arguments/)
 })
 
@@ -86,4 +95,43 @@ test('renders retrying and recovered lifecycle labels without exposing correlati
   assert.match(html, /Retrying:/)
   assert.match(html, /Recovered:/)
   assert.doesNotMatch(html, /prior-1/)
+})
+
+test('keeps active work visible with semantic group labels', async () => {
+  const { default: AssistantActionLog } = await vite.ssrLoadModule('/src/AssistantActionLog.vue')
+  const html = await renderToString(createSSRApp(AssistantActionLog, {
+    messageId: 'assistant-active',
+    items: [
+      { id: 'search-1', kind: 'inspect', status: 'running', title: 'Searching project files', target: 'src', severity: 'normal' },
+      { id: 'search-2', kind: 'inspect', status: 'succeeded', title: 'Searched for App.vue', target: 'src/App.vue', severity: 'normal' },
+    ],
+  }))
+  assert.match(html, /aria-expanded="true"/)
+  assert.match(html, /Inspecting the project/)
+  assert.match(html, /Searching project files/)
+  assert.match(html, /Searched for App.vue/)
+  assert.match(html, /animate-spin/)
+})
+
+test('aligns group headers and child actions while bounding long call chains with a fade', async () => {
+  const { default: AssistantActionLog } = await vite.ssrLoadModule('/src/AssistantActionLog.vue')
+  const html = await renderToString(createSSRApp(AssistantActionLog, {
+    messageId: 'assistant-long-chain',
+    items: Array.from({ length: 8 }, (_, index) => ({
+      id: `read-${index}`,
+      kind: 'inspect',
+      status: index === 7 ? 'running' : 'succeeded',
+      title: `Read file ${index + 1}`,
+      target: `src/file-${index + 1}.ts`,
+      groupKey: 'inspect:files',
+      groupTitle: 'Read files',
+      severity: 'normal',
+    })),
+  }))
+  assert.match(html, /action-chain-fade max-h-\[240px\] overflow-y-auto pb-7 pr-1/)
+  assert.doesNotMatch(html, /assistant-long-chain-inspect-\d+" class="ml-5/)
+  assert.doesNotMatch(html, /class="mt-1 grid max-h-\[min\(40vh,320px\)\]/)
+  assert.doesNotMatch(html, /max-h-\[min\(40vh,320px\)\] gap-1.5/)
+  assert.match(html, /Read file 8/)
+  assert.match(html, /Read files/)
 })

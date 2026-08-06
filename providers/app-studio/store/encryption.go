@@ -213,6 +213,40 @@ func (s *encryptedStore) UpdateAssistantThread(ctx context.Context, scope Scope,
 	return updated, nil
 }
 
+func (s *encryptedStore) SetAssistantThreadTitleIfEmpty(ctx context.Context, scope Scope, threadID, actorID, title string, event AssistantThreadEvent) (AssistantThread, bool, error) {
+	prepared, err := prepareAssistantThread(AssistantThread{ID: threadID, ActorID: actorID, Title: title})
+	if err != nil {
+		return AssistantThread{}, false, err
+	}
+	prepared, err = s.encryptAssistantThread(scope, prepared)
+	if err != nil {
+		return AssistantThread{}, false, err
+	}
+	event.ThreadID = prepared.ID
+	if len(event.Payload) == 0 || string(event.Payload) == "{}" {
+		event.Payload, err = json.Marshal(map[string]any{"thread": map[string]any{"id": prepared.ID, "title": title}})
+		if err != nil {
+			return AssistantThread{}, false, err
+		}
+	}
+	encryptedEvent, err := s.encryptAssistantThreadEvent(scope, event)
+	if err != nil {
+		return AssistantThread{}, false, err
+	}
+	updated, changed, err := s.inner.SetAssistantThreadTitleIfEmpty(ctx, scope, prepared.ID, prepared.ActorID, prepared.Title, encryptedEvent)
+	if err != nil {
+		return AssistantThread{}, false, err
+	}
+	if err := s.decryptAssistantThread(scope, &updated); err != nil {
+		return AssistantThread{}, false, err
+	}
+	return updated, changed, nil
+}
+
+func (s *encryptedStore) DeleteAssistantThread(ctx context.Context, scope Scope, threadID, actorID string) error {
+	return s.inner.DeleteAssistantThread(ctx, scope, threadID, actorID)
+}
+
 func (s *encryptedStore) UpdateAssistantThreadWithEvent(ctx context.Context, scope Scope, thread AssistantThread, event AssistantThreadEvent, expectedSequence int64) (AssistantThread, AssistantThreadEvent, error) {
 	var err error
 	thread, err = prepareAssistantThread(thread)

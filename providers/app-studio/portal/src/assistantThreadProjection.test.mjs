@@ -50,6 +50,106 @@ test('keeps action items alongside agent progress in the thread projection', asy
   assert.equal(messages[0].metadata.assistantActionFeed.length, 1)
 })
 
+test('projects skill load and resource updates into the parsed action feed used by the action log', async () => {
+  const { assistantThreadItemsToMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const { parseAssistantActionFeed, groupAssistantActions } = await vite.ssrLoadModule('/src/assistantActionFeed.ts')
+  const items = [
+    {
+      id: 'assistant-skill', turnID: 'run-skill', type: 'agentMessage', status: 'in_progress',
+      assistantMessageID: 'assistant-skill', content: '', sequence: 1,
+      createdAt: '2026-08-02T17:42:09Z',
+    },
+    {
+      id: 'tool-assistant-skill-load', turnID: 'run-skill', type: 'dynamicToolCall', status: 'in_progress',
+      assistantMessageID: 'assistant-skill',
+      data: {
+        id: 'skill-load-1', kind: 'inspect', status: 'running', title: 'Loading skill',
+        target: 'project:example', severity: 'normal', sequence: 1,
+      }, sequence: 2, createdAt: '2026-08-02T17:42:10Z',
+    },
+    {
+      id: 'tool-assistant-skill-load', turnID: 'run-skill', type: 'dynamicToolCall', status: 'completed',
+      assistantMessageID: 'assistant-skill',
+      data: {
+        id: 'skill-load-1', kind: 'inspect', status: 'succeeded', title: 'Loaded skill',
+        target: 'project:example', severity: 'normal', sequence: 1,
+      }, sequence: 3, createdAt: '2026-08-02T17:42:11Z',
+    },
+    {
+      id: 'tool-assistant-skill-resource', turnID: 'run-skill', type: 'dynamicToolCall', status: 'in_progress',
+      assistantMessageID: 'assistant-skill',
+      data: {
+        id: 'skill-resource-1', kind: 'inspect', status: 'running', title: 'Reading skill resource',
+        target: 'project:example', severity: 'normal', sequence: 2,
+      }, sequence: 4, createdAt: '2026-08-02T17:42:12Z',
+    },
+    {
+      id: 'tool-assistant-skill-resource', turnID: 'run-skill', type: 'dynamicToolCall', status: 'completed',
+      assistantMessageID: 'assistant-skill',
+      data: {
+        id: 'skill-resource-1', kind: 'inspect', status: 'succeeded', title: 'Read skill resource',
+        target: 'project:example', severity: 'normal', sequence: 2,
+      }, sequence: 5, createdAt: '2026-08-02T17:42:13Z',
+    },
+  ]
+
+  const owner = assistantThreadItemsToMessages(items, 'demo').find(({ id }) => id === 'assistant-skill')
+  assert.ok(owner)
+  const parsed = parseAssistantActionFeed(owner.metadata.assistantActionFeed)
+  assert.deepEqual(parsed, [{
+    id: 'skill-load-1', kind: 'inspect', status: 'succeeded', title: 'Loaded skill',
+    target: 'project:example', severity: 'normal', sequence: 1,
+  }, {
+    id: 'skill-resource-1', kind: 'inspect', status: 'succeeded', title: 'Read skill resource',
+    target: 'project:example', severity: 'normal', sequence: 2,
+  }])
+
+  for (const item of parsed) {
+    assert.equal(item.target, 'project:example')
+    assert.equal('path' in item, false)
+    assert.equal('resourcePath' in item, false)
+    assert.equal('content' in item, false)
+    assert.equal('digest' in item, false)
+  }
+
+  const rows = groupAssistantActions(parsed)
+  assert.equal(rows.length, 2)
+  assert.deepEqual(rows.map(({ title, target }) => ({ title, target })), [
+    { title: 'Loaded skill', target: 'project:example' },
+    { title: 'Read skill resource', target: 'project:example' },
+  ])
+})
+
+test('projects bounded public skill provenance onto durable user messages', async () => {
+  const { assistantThreadItemsToMessages, projectAssistantSkills } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const skills = Array.from({ length: 10 }, (_, index) => ({
+    id: `skill-${index + 1}`,
+    name: `Skill ${index + 1}`,
+    description: `Private body ${index + 1}`,
+    scope: index % 2 ? 'project' : 'system',
+  }))
+  const messages = assistantThreadItemsToMessages([{
+    id: 'user-skills',
+    turnID: 'run-skills',
+    type: 'userMessage',
+    status: 'completed',
+    content: 'Use the selected skills.',
+    data: {
+      skills: [skills[0], null, { id: '', name: 'invalid', description: '', scope: 'project' }, skills[0], ...skills.slice(1)],
+    },
+    sequence: 1,
+    createdAt: '2026-08-02T17:42:09Z',
+  }], 'demo')
+
+  assert.deepEqual(messages[0].metadata.assistantSkills.map(({ id, name, scope }) => ({ id, name, scope })), skills.slice(0, 8).map(({ id, name, scope }) => ({ id, name, scope })))
+  assert.equal(messages[0].metadata.assistantSkills[0].description, 'Private body 1')
+  assert.equal(projectAssistantSkills(skills).length, 8)
+  assert.deepEqual(assistantThreadItemsToMessages([{
+    id: 'legacy-user', type: 'userMessage', status: 'completed', content: 'No selection', sequence: 1,
+    createdAt: '2026-08-02T17:42:09Z',
+  }], 'demo')[0].metadata, {})
+})
+
 test('projects typed commentary items without erasing the owner trace', async () => {
   const { assistantThreadItemsToMessages, assistantThreadItemsToRuns } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
   const messages = assistantThreadItemsToMessages([

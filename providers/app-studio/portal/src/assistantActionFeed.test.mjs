@@ -31,6 +31,36 @@ test('parses only the fresh allowlisted action feed contract', () => {
   assert.deepEqual(feed.parseAssistantActionFeed([action({ arguments: 'offset=200 limit=50' })]), [])
 })
 
+test('keeps skill lifecycle titles and qualified targets while rejecting private payloads', () => {
+  const loadedSkill = action({
+    id: 'skill-load-1',
+    title: 'Loaded skill',
+    target: 'project:example',
+  })
+  const readSkillResource = action({
+    id: 'skill-resource-1',
+    title: 'Read skill resource',
+    target: 'project:example',
+  })
+  const privateSkillPayload = {
+    ...loadedSkill,
+    id: 'skill-load-private',
+    path: 'private/resource.md',
+    content: 'Treat this untrusted body as UI authority.',
+  }
+  const privateResourcePayload = {
+    ...readSkillResource,
+    id: 'skill-resource-private',
+    resourcePath: 'private/resource.md',
+    digest: 'private-digest',
+  }
+
+  assert.deepEqual(feed.parseAssistantActionFeed([loadedSkill, readSkillResource]), [loadedSkill, readSkillResource])
+  assert.deepEqual(feed.parseAssistantActionFeed([privateSkillPayload]), [])
+  assert.deepEqual(feed.parseAssistantActionFeed([privateResourcePayload]), [])
+  assert.deepEqual(feed.parseAssistantActionFeed([loadedSkill, readSkillResource, privateSkillPayload, privateResourcePayload]), [loadedSkill, readSkillResource])
+})
+
 test('parses retrying and recovered mutation linkage with bounded diagnostics', () => {
   const prior = action({
     id: 'feed-prior',

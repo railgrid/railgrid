@@ -785,6 +785,11 @@ func (t projectEinoAssistantTool) replayDurableToolCall(
 	if settlementErr := t.recoverV2CommitSettlement(ctx, spec, args, successful); settlementErr != nil {
 		return "", settlementErr
 	}
+	if successful && projectToolBaseName(spec.Name) == projectToolLoadSkill && t.runState != nil {
+		if _, loadErr := t.runState.LoadSkill(strings.TrimSpace(projectToolString(args["id"]))); loadErr != nil {
+			return "", loadErr
+		}
+	}
 	if err != nil {
 		if !outcome.Failed || strings.TrimSpace(outcome.Result) == "" {
 			return result, err

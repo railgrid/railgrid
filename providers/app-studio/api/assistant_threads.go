@@ -29,6 +29,7 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
+	appskills "github.com/faroshq/provider-app-studio/skills"
 	"github.com/faroshq/provider-app-studio/store"
 )
 
@@ -67,6 +68,7 @@ type assistantThreadTurnCreateRequest struct {
 	Content             string                 `json:"content"`
 	ClientUserMessageID string                 `json:"clientUserMessageID"`
 	CollaborationMode   store.AssistantRunMode `json:"collaborationMode,omitempty"`
+	Skills              []string               `json:"skills,omitempty"`
 }
 
 type assistantThreadTurnStartResponse struct {
@@ -210,6 +212,19 @@ func (s *Server) patchProjectAssistantThread(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusOK, updated)
 }
 
+func (s *Server) deleteProjectAssistantThread(w http.ResponseWriter, r *http.Request) {
+	_, id, project, thread, ok := s.requireOwnedAssistantThread(w, r)
+	if !ok {
+		return
+	}
+	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, project)
+	if err := s.store.DeleteAssistantThread(r.Context(), scope, thread.ID, id.user); err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) listProjectAssistantThreadItems(w http.ResponseWriter, r *http.Request) {
 	_, id, project, thread, ok := s.requireOwnedAssistantThread(w, r)
 	if !ok {
@@ -264,8 +279,13 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		request.CollaborationMode = store.AssistantRunModeDefault
 	}
 	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, project)
+	generateThreadTitle := s.assistantThreadTitleNeedsGeneration(r.Context(), scope, thread)
+	skillIDs, err := projectAssistantValidateRequestedSkillIDs(request.Skills)
+	if err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
+	}
 	initialBootstrap := false
-	var err error
 	if request.CollaborationMode != store.AssistantRunModeReview {
 		initialBootstrap, err = s.consumeProjectInitialBootstrap(
 			r.Context(),
@@ -282,19 +302,42 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 	if initialBootstrap {
 		request.CollaborationMode = store.AssistantRunModeDefault
 	}
+	replay := false
+	if prior, replayErr := s.store.FindAssistantRunByClientRequestID(r.Context(), scope, request.ClientUserMessageID); replayErr == nil {
+		if replayErr = validateProjectAssistantStartReplayWithSkills(prior, id.user, request.Content, request.CollaborationMode, skillIDs); replayErr != nil {
+			s.writeAssistantThreadError(w, replayErr)
+			return
+		}
+		replay = true
+	} else if !errors.Is(replayErr, store.ErrAssistantRunNotFound) {
+		s.writeAssistantThreadError(w, replayErr)
+		return
+	}
+	var skillSnapshot appskills.Snapshot
+	var selectedSkills []projectAssistantSkillReceipt
+	if !replay {
+		skillSnapshot, err = s.projectAssistantSkillSnapshot(r.Context(), projectWorkspaceScope(id, project))
+		if err == nil {
+			selectedSkills, err = projectAssistantSelectedSkillReceipts(skillSnapshot, skillIDs)
+		}
+	}
+	if err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
+	}
 	var canonicalTurn store.AssistantTurn
-	started, err := s.startProjectAssistantRunDurablyWithMode(r.Context(), scope, id.user, request.Content, request.ClientUserMessageID, request.CollaborationMode,
+	started, err := s.startProjectAssistantRunDurablyWithModeAndSkills(r.Context(), scope, id.user, request.Content, request.ClientUserMessageID, request.CollaborationMode, projectAssistantDurableSkillSelection{IDs: skillIDs, CatalogDigest: skillSnapshot.CatalogDigest, Receipts: selectedSkills},
 		func(created store.AssistantRun, assistant store.Message, transcriptEmpty bool) error {
-			var start *projectAssistantStreamStart
+			start := &projectAssistantStreamStart{SkillSnapshot: &skillSnapshot, SelectedSkills: cloneProjectAssistantSkillReceipts(selectedSkills)}
 			if initialBootstrap && transcriptEmpty {
 				plan := projectAssistantInitialCreationPlan(request.Content)
-				start = &projectAssistantStreamStart{InitialApprovedPlan: cloneProjectAssistantApprovedPlan(&plan)}
+				start.InitialApprovedPlan = cloneProjectAssistantApprovedPlan(&plan)
 			}
 			now := time.Now().UTC()
 			canonicalTurn = store.AssistantTurn{ID: created.ID, ThreadID: thread.ID, ActorID: id.user, ClientUserMessageID: request.ClientUserMessageID,
 				Mode: created.Mode, ApprovalMode: created.ApprovalMode, Status: store.AssistantTurnStatusInProgress, CreatedAt: now, UpdatedAt: now}
 			turnPayload, _ := json.Marshal(map[string]any{"turn": canonicalTurn})
-			userItem := assistantThreadItem{ID: created.UserMessageID, TurnID: created.ID, Type: assistantThreadEventUserMessage, Status: "completed", Content: request.Content, CreatedAt: now}
+			userItem := assistantThreadItem{ID: created.UserMessageID, TurnID: created.ID, Type: assistantThreadEventUserMessage, Status: "completed", Content: request.Content, Data: projectAssistantThreadSkillData(selectedSkills), CreatedAt: now}
 			userPayload, _ := json.Marshal(map[string]any{"item": userItem})
 			assistantItem := assistantThreadAgentMessageItem(canonicalTurn, created, "in_progress", "", now, nil)
 			assistantPayload, _ := json.Marshal(map[string]any{"item": assistantItem})
@@ -307,6 +350,9 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 				return createErr
 			}
 			canonicalTurn = createdTurn
+			if generateThreadTitle {
+				s.startAssistantThreadTitleGeneration(c, scope, id, thread, request.Content)
+			}
 			if err := s.projectAssistantSupervisor().Start(r.Context(), scope, created, assistant, func(ctx context.Context, accumulator *projectAssistantSnapshotAccumulator) {
 				s.runProjectAssistantWorker(ctx, accumulator, r, id, c, project, created, start)
 			}); err != nil {
@@ -377,7 +423,7 @@ func (s *Server) repairProjectAssistantThreadTurn(ctx context.Context, scope sto
 		UpdatedAt:           now,
 	}
 	turnPayload, _ := json.Marshal(map[string]any{"turn": turn})
-	userItem := assistantThreadItem{ID: user.ID, TurnID: turn.ID, Type: assistantThreadEventUserMessage, Status: "completed", Content: user.Content, CreatedAt: user.CreatedAt}
+	userItem := assistantThreadItem{ID: user.ID, TurnID: turn.ID, Type: assistantThreadEventUserMessage, Status: "completed", Content: user.Content, Data: projectAssistantThreadSkillData(projectAssistantSkillReceiptsFromRunAudit(run)), CreatedAt: user.CreatedAt}
 	userPayload, _ := json.Marshal(map[string]any{"item": userItem})
 	assistantItem := assistantThreadAgentMessageItem(turn, run, "in_progress", assistant.Content, assistant.CreatedAt, assistant.Metadata)
 	assistantPayload, _ := json.Marshal(map[string]any{"item": assistantItem})
@@ -714,7 +760,7 @@ func (s *Server) writeAssistantThreadError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrAssistantThreadNotFound), errors.Is(err, store.ErrAssistantTurnNotFound):
 		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
-	case errors.Is(err, store.ErrAssistantThreadConflict), errors.Is(err, store.ErrAssistantTurnConflict), errors.Is(err, store.ErrAssistantRunConflict):
+	case errors.Is(err, store.ErrAssistantThreadConflict), errors.Is(err, store.ErrAssistantThreadActive), errors.Is(err, store.ErrAssistantTurnConflict), errors.Is(err, store.ErrAssistantRunConflict):
 		writeStatus(w, http.StatusConflict, "Conflict", err.Error())
 	default:
 		writeProjectError(w, err)

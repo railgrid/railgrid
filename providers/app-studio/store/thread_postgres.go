@@ -17,6 +17,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -165,6 +166,169 @@ func (s *PostgresStore) UpdateAssistantThread(ctx context.Context, scope Scope, 
 	}
 	prepared.CreatedAt = prepared.CreatedAt.UTC()
 	return prepared, nil
+}
+
+func (s *PostgresStore) SetAssistantThreadTitleIfEmpty(ctx context.Context, scope Scope, threadID, actorID, title string, event AssistantThreadEvent) (AssistantThread, bool, error) {
+	if s == nil || s.db == nil {
+		return AssistantThread{}, false, errors.New("postgres store is nil")
+	}
+	if err := scope.validate(); err != nil {
+		return AssistantThread{}, false, err
+	}
+	threadID, actorID, title = strings.TrimSpace(threadID), strings.TrimSpace(actorID), strings.TrimSpace(title)
+	if threadID == "" || actorID == "" {
+		return AssistantThread{}, false, errors.New("assistant thread id and actor are required")
+	}
+	if title == "" {
+		return AssistantThread{}, false, errors.New("assistant thread title is required")
+	}
+	event.ThreadID = threadID
+	preparedEvent, err := prepareAssistantThreadEvent(event)
+	if err != nil {
+		return AssistantThread{}, false, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AssistantThread{}, false, fmt.Errorf("begin set assistant thread title: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, assistantThreadLockKey(scope, threadID)); err != nil {
+		return AssistantThread{}, false, fmt.Errorf("lock assistant thread title: %w", err)
+	}
+	thread := AssistantThread{ID: threadID}
+	var status string
+	if err := tx.QueryRowContext(ctx, `SELECT title,status,actor_id,created_at,updated_at
+		FROM app_studio_assistant_threads
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5
+		FOR UPDATE`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID).
+		Scan(&thread.Title, &status, &thread.ActorID, &thread.CreatedAt, &thread.UpdatedAt); errors.Is(err, sql.ErrNoRows) {
+		return AssistantThread{}, false, ErrAssistantThreadNotFound
+	} else if err != nil {
+		return AssistantThread{}, false, fmt.Errorf("load assistant thread title: %w", err)
+	}
+	thread.Status = AssistantThreadStatus(status)
+	thread.CreatedAt, thread.UpdatedAt = thread.CreatedAt.UTC(), thread.UpdatedAt.UTC()
+	if thread.ActorID != actorID {
+		return AssistantThread{}, false, ErrAssistantThreadConflict
+	}
+	if thread.Status == AssistantThreadStatusArchived || strings.TrimSpace(thread.Title) != "" {
+		if err := tx.Commit(); err != nil {
+			return AssistantThread{}, false, fmt.Errorf("commit unchanged assistant thread title: %w", err)
+		}
+		return thread, false, nil
+	}
+	thread.Title = title
+	thread.UpdatedAt = time.Now().UTC()
+	if len(preparedEvent.Payload) == 0 || string(preparedEvent.Payload) == "{}" {
+		preparedEvent.Payload, err = json.Marshal(map[string]any{"thread": AssistantThread{ID: thread.ID, Title: title, Status: thread.Status, ActorID: thread.ActorID, CreatedAt: thread.CreatedAt, UpdatedAt: thread.UpdatedAt}})
+		if err != nil {
+			return AssistantThread{}, false, fmt.Errorf("encode assistant thread title event: %w", err)
+		}
+	}
+	if err := tx.QueryRowContext(ctx, `UPDATE app_studio_assistant_threads SET title=$6,updated_at=$7
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5 AND actor_id=$8
+			AND title='' AND status <> 'archived'
+		RETURNING created_at`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID, thread.Title, thread.UpdatedAt, actorID).Scan(&thread.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return thread, false, nil
+		}
+		return AssistantThread{}, false, fmt.Errorf("set assistant thread title: %w", err)
+	}
+	thread.CreatedAt = thread.CreatedAt.UTC()
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence),0) FROM app_studio_assistant_thread_events
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID).Scan(&preparedEvent.Sequence); err != nil {
+		return AssistantThread{}, false, fmt.Errorf("read assistant thread title event sequence: %w", err)
+	}
+	preparedEvent.Sequence++
+	if _, err := tx.ExecContext(ctx, `INSERT INTO app_studio_assistant_thread_events (
+		org_uuid,workspace_uuid,project_name,project_uid,thread_id,turn_id,sequence,event_type,item_id,request_id,payload,created_at
+	) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID,
+		preparedEvent.ThreadID, preparedEvent.TurnID, preparedEvent.Sequence, preparedEvent.Type, preparedEvent.ItemID, preparedEvent.RequestID, preparedEvent.Payload, preparedEvent.CreatedAt); err != nil {
+		return AssistantThread{}, false, fmt.Errorf("append assistant thread title event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return AssistantThread{}, false, fmt.Errorf("commit assistant thread title: %w", err)
+	}
+	return thread, true, nil
+}
+
+func (s *PostgresStore) DeleteAssistantThread(ctx context.Context, scope Scope, threadID, actorID string) error {
+	if s == nil || s.db == nil {
+		return errors.New("postgres store is nil")
+	}
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	threadID, actorID = strings.TrimSpace(threadID), strings.TrimSpace(actorID)
+	if threadID == "" || actorID == "" {
+		return errors.New("assistant thread id and actor are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete assistant thread: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, assistantThreadLockKey(scope, threadID)); err != nil {
+		return fmt.Errorf("lock assistant thread deletion: %w", err)
+	}
+	var owner string
+	if err := tx.QueryRowContext(ctx, `SELECT actor_id FROM app_studio_assistant_threads
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5
+		FOR UPDATE`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID).Scan(&owner); errors.Is(err, sql.ErrNoRows) {
+		return ErrAssistantThreadNotFound
+	} else if err != nil {
+		return fmt.Errorf("load assistant thread for deletion: %w", err)
+	}
+	if owner != actorID {
+		return ErrAssistantThreadConflict
+	}
+	var active bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM app_studio_assistant_turns
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5 AND status='in_progress'
+	)`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID).Scan(&active); err != nil {
+		return fmt.Errorf("check active assistant thread turn: %w", err)
+	}
+	if active {
+		return ErrAssistantThreadActive
+	}
+	turns := `SELECT turn_id FROM app_studio_assistant_turns
+		WHERE org_uuid=$5 AND workspace_uuid=$6 AND project_name=$7 AND project_uid=$8 AND thread_id=$9`
+	if _, err := tx.ExecContext(ctx, `DELETE FROM app_studio_messages AS message
+		USING app_studio_assistant_runs AS run
+		WHERE run.org_uuid=$1 AND run.workspace_uuid=$2 AND run.project_name=$3 AND run.project_uid=$4
+		  AND run.run_id IN (`+turns+`)
+		  AND message.org_uuid=run.org_uuid AND message.workspace_uuid=run.workspace_uuid
+		  AND message.project_name=run.project_name AND message.project_uid=run.project_uid
+		  AND (message.message_id=run.user_message_id OR message.message_id=run.active_message_id)`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID); err != nil {
+		return fmt.Errorf("delete assistant thread messages: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM app_studio_assistant_conversation_items
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4
+		  AND run_id IN (`+turns+`)`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID); err != nil {
+		return fmt.Errorf("delete assistant thread conversation items: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM app_studio_assistant_runs
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4
+		  AND run_id IN (`+turns+`)`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID); err != nil {
+		return fmt.Errorf("delete assistant thread runs: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM app_studio_assistant_threads
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND project_name=$3 AND project_uid=$4 AND thread_id=$5 AND actor_id=$6`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, threadID, actorID); err != nil {
+		return fmt.Errorf("delete assistant thread: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete assistant thread: %w", err)
+	}
+	return nil
 }
 
 func (s *PostgresStore) UpdateAssistantThreadWithEvent(ctx context.Context, scope Scope, thread AssistantThread, event AssistantThreadEvent, expectedSequence int64) (AssistantThread, AssistantThreadEvent, error) {

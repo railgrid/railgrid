@@ -1,7 +1,9 @@
 export interface KedgeContext {
   token?: string | null
-  user?: { email?: string; sub?: string } | null
+  user?: { email?: string; sub?: string; userId?: string } | null
   tenant?: string | null
+  orgUUID?: string | null
+  workspaceUUID?: string | null
   theme?: 'light' | 'dark' | 'system'
   basePath?: string
   subPath?: string
@@ -37,6 +39,65 @@ export type ProjectAssistantApprovalMode = 'on_request' | 'always_ask' | 'never'
 export interface ProjectAssistantApprovalPreference {
   mode: ProjectAssistantApprovalMode
   updatedAt?: string
+}
+
+/** An installed assistant skill exposed through the project catalog. */
+export interface ProjectAssistantSkill {
+  id: string
+  name: string
+  description: string
+  scope: string
+  /** Skills can be disabled without removing or modifying their content. */
+  enabled?: boolean
+  /** Bundled skill content is read-only; project skill content may be managed through the API. */
+  editable?: boolean
+  /** Stable project package identity (never use a qualified ID as a route). */
+  packageName?: string
+  version?: string
+  digest?: string
+  contentDigest?: string
+  resources?: ProjectAssistantSkillResource[]
+  status?: string
+}
+
+export interface ProjectAssistantSkillResource {
+  path: string
+  size?: number
+  digest?: string
+  content?: string
+}
+
+export interface ProjectAssistantSkillDetail extends ProjectAssistantSkill {
+  instructions?: string
+  /** Some older/provisional responses call the author-visible body content. */
+  content?: string
+  authorInstructions?: string
+}
+
+export interface ProjectAssistantSkillPackageResource {
+  path: string
+  content: string
+}
+
+export interface ProjectAssistantSkillPackage {
+  packageName: string
+  name: string
+  description: string
+  instructions: string
+  resources: ProjectAssistantSkillPackageResource[]
+}
+
+export interface ProjectAssistantSkillExport {
+  filename?: string
+  content?: string
+  package?: ProjectAssistantSkillPackage
+}
+
+/** Catalog returned by GET /api/projects/{project}/assistant/skills. */
+export interface ProjectAssistantSkillsResponse {
+  skills: ProjectAssistantSkill[]
+  catalogDigest?: string
+  warnings?: string[]
 }
 
 export type ProjectAssistantThreadStatus = 'idle' | 'active' | 'archived'

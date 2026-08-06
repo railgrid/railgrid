@@ -41,6 +41,54 @@ service-account escalation.
 | Deploy | `deploy/chart/` — Helm chart (Deployment, Service, CatalogEntry) |
 | CI (mirror) | `.github/workflows/{image,chart}.yaml` — publish the image + chart to GHCR (run only in the mirror) |
 
+## Skills
+
+The project portal includes a first-class **Skills** workbench. It presents the
+installed catalog as a searchable grid, marks enabled skills, and opens a
+focused detail view with author-visible instructions, supporting-resource
+metadata, and an Enable or Disable action. The portal intentionally does not
+offer skill creation, import, editing, export, or deletion. Bundled skill
+content is read-only; project packages live under `.agents/skills`, with
+activation metadata in `.agents/skills/.kedge-catalog.json`.
+
+Every package must contain a `SKILL.md` whose YAML frontmatter includes the
+required `name` and `description` fields. Skill bodies and supporting resources
+are untrusted guidance: they cannot grant tools, permissions, models, approval
+bypasses, or override system/tool policy. App Studio reads only bundled and
+project sources; there is no remote skill registry.
+
+For each `Default`, `Plan`, or `Review` turn, catalog discovery exposes metadata
+for enabled skills and the model selectively invokes the assistant's native
+durable read tools: `load_skill` loads one qualified skill and
+`read_skill_resource` reads a bounded package-relative resource only after that
+skill is loaded. Those invocations appear in the same action pane as other tool
+calls, using lifecycle labels such as `Loading skill` and `Loaded skill` while
+showing only the qualified skill ID.
+
+Skill selections are pinned to a catalog digest with bounded digest/content
+receipts. Skill lifecycle, selection, load, resource, and drift metrics use
+fixed outcome labels and do not include skill IDs, package paths, tenant IDs,
+request bodies, or resource paths.
+
+The HTTP surface is:
+
+```text
+GET    /api/projects/{project}/assistant/skills                         catalog metadata
+GET    /api/projects/{project}/assistant/skills/detail?id={qualifiedID} author-visible detail
+POST   /api/projects/{project}/assistant/skills/project                 create
+POST   /api/projects/{project}/assistant/skills/project/import          import
+GET    /api/projects/{project}/assistant/skills/project/{packageName}   inspect
+PUT    /api/projects/{project}/assistant/skills/project/{packageName}   edit
+DELETE /api/projects/{project}/assistant/skills/project/{packageName}   delete
+GET    /api/projects/{project}/assistant/skills/project/{packageName}/export export
+POST   /api/projects/{project}/assistant/skills/activation              enable/disable
+```
+
+The project lifecycle endpoints remain available for programmatic management,
+but they are not currently exposed as portal authoring controls. Turn and
+review requests continue to accept an optional `skills` field for API clients;
+the portal no longer presents a per-turn selector or sends that field.
+
 ## Configuration
 
 Environment variables consumed by the binary:
