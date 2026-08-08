@@ -422,24 +422,25 @@ onUnmounted(() => {
  * whole subtree picks these up.
  */
 .terminal-dock {
-  --color-surface: #0b0c11;
-  --color-surface-raised: #12131b;
-  --color-surface-overlay: #181926;
-  --color-surface-hover: #1e1f2e;
-  --color-border-subtle: rgba(255, 255, 255, 0.06);
-  --color-border-default: rgba(255, 255, 255, 0.1);
-  --color-accent: #7c5bf5;
-  --color-accent-hover: #9b85f7;
-  --color-accent-subtle: rgba(124, 91, 245, 0.12);
-  --color-text-primary: #eeeef3;
-  --color-text-secondary: #7e7e96;
-  --color-text-muted: #565870;
-  --color-success: #34d399;
-  --color-success-subtle: rgba(52, 211, 153, 0.12);
-  --color-warning: #fbbf24;
-  --color-warning-subtle: rgba(251, 191, 36, 0.12);
-  --color-danger: #f87171;
-  --color-danger-subtle: rgba(248, 113, 113, 0.12);
+  --color-surface: #0a0b12;
+  --color-surface-raised: #111320;
+  --color-surface-overlay: #171927;
+  --color-surface-hover: #1e2033;
+  --color-border-subtle: rgba(255, 255, 255, 0.07);
+  --color-border-default: rgba(255, 255, 255, 0.11);
+  --color-accent: #8b6bff;
+  --color-accent-hover: #a18aff;
+  --color-accent-subtle: rgba(139, 107, 255, 0.14);
+  --color-accent-glow: rgba(139, 107, 255, 0.3);
+  --color-text-primary: #e9e9f2;
+  --color-text-secondary: #8a8ca6;
+  --color-text-muted: #5d5f78;
+  --color-success: #2fd6a0;
+  --color-success-subtle: rgba(47, 214, 160, 0.12);
+  --color-warning: #f0a63a;
+  --color-warning-subtle: rgba(240, 166, 58, 0.12);
+  --color-danger: #ff5d5d;
+  --color-danger-subtle: rgba(255, 93, 93, 0.12);
 }
 
 .terminal-pane.hidden-pane {

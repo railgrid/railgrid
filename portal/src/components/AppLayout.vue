@@ -382,7 +382,7 @@ watchEffect(() => {
           <Hexagon class="h-3.5 w-3.5 text-accent" :stroke-width="2.5" />
         </div>
         <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">KEDGE</span>
-        <div class="flex items-center gap-0.5 rounded-full border border-success/20 bg-success-subtle px-1.5 py-px">
+        <div class="flex items-center gap-0.5 rounded-sm border border-success/20 bg-success-subtle px-1.5 py-px">
           <Zap class="h-2 w-2 text-success" :stroke-width="2.5" fill="currentColor" />
           <span class="text-[7px] font-semibold uppercase tracking-widest text-success">Live</span>
         </div>
@@ -409,7 +409,7 @@ watchEffect(() => {
         :key="item.to"
         :to="item.to"
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
-        :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+        :class="isActive(item.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
       >
         <component :is="item.icon" class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
         <span>{{ item.label }}</span>
@@ -430,7 +430,7 @@ watchEffect(() => {
           <router-link
             :to="item.to"
             class="flex items-center gap-2.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
-            :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+            :class="isActive(item.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
           >
             <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 flex-shrink-0 object-contain" />
             <Puzzle v-else class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
@@ -441,7 +441,7 @@ watchEffect(() => {
             :key="'c-' + child.to"
             :to="child.to"
             class="flex items-center gap-2 rounded-xl py-1.5 pr-3 pl-8 text-[11px] font-medium transition-all duration-200"
-            :class="isActive(child.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+            :class="isActive(child.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
           >
             <Dot class="h-3.5 w-3.5 flex-shrink-0 -ml-1" :stroke-width="3" />
             <span>{{ child.label }}</span>
@@ -462,7 +462,7 @@ watchEffect(() => {
           <router-link
             :to="item.to"
             class="flex items-center gap-2.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
-            :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+            :class="isActive(item.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
           >
             <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 flex-shrink-0 object-contain" />
             <Puzzle v-else class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
@@ -473,7 +473,7 @@ watchEffect(() => {
             :key="'uc-' + child.to"
             :to="child.to"
             class="flex items-center gap-2 rounded-xl py-1.5 pr-3 pl-8 text-[11px] font-medium transition-all duration-200"
-            :class="isActive(child.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+            :class="isActive(child.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
           >
             <Dot class="h-3.5 w-3.5 flex-shrink-0 -ml-1" :stroke-width="3" />
             <span>{{ child.label }}</span>
@@ -489,7 +489,7 @@ watchEffect(() => {
       <router-link
         :to="providersHeaderItem.to"
         class="flex items-center gap-2.5 rounded-xl px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider transition-all duration-200"
-        :class="isActive(providersHeaderItem.to, true) ? 'bg-accent/15 text-accent' : 'text-text-muted/80 hover:bg-surface-overlay/50 hover:text-text-secondary'"
+        :class="isActive(providersHeaderItem.to, true) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted/80 hover:bg-surface-overlay/50 hover:text-text-secondary'"
       >
         <Puzzle class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
         <span>{{ providersHeaderItem.label }}</span>
@@ -514,7 +514,7 @@ watchEffect(() => {
       <router-link
         to="/mcp"
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
-        :class="isActive('/mcp') ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+        :class="isActive('/mcp') ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
       >
         <Plug class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
         <span>MCP Access</span>
@@ -525,7 +525,7 @@ watchEffect(() => {
       <router-link
         to="/tenant"
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
-        :class="isActive('/tenant') ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+        :class="isActive('/tenant') ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
       >
         <Settings class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
         <span>Settings</span>
@@ -537,7 +537,7 @@ watchEffect(() => {
         v-if="adminStore.isAdmin"
         to="/bonkers"
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
-        :class="isActive('/bonkers') ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+        :class="isActive('/bonkers') ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
       >
         <ShieldAlert class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
         <span>Platform admin</span>
@@ -608,7 +608,7 @@ watchEffect(() => {
           <Hexagon class="h-3 w-3 text-accent" :stroke-width="2.5" />
         </div>
         <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">KEDGE</span>
-        <div class="flex items-center gap-0.5 rounded-full border border-success/20 bg-success-subtle px-1.5 py-px">
+        <div class="flex items-center gap-0.5 rounded-sm border border-success/20 bg-success-subtle px-1.5 py-px">
           <Zap class="h-2 w-2 text-success" :stroke-width="2.5" fill="currentColor" />
           <span class="text-[8px] font-semibold uppercase tracking-widest text-success">Live</span>
         </div>
@@ -646,7 +646,7 @@ watchEffect(() => {
           :key="item.to"
           :to="item.to"
           class="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl px-2.5 py-1 text-[11px] font-medium transition-all duration-200"
-          :class="isActive(item.to) ? 'bg-accent/15 text-accent' : 'text-text-muted hover:bg-surface-overlay/40 hover:text-text-secondary'"
+          :class="isActive(item.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/40 hover:text-text-secondary'"
           :title="item.label"
         >
           <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 shrink-0 object-contain" />
@@ -695,7 +695,7 @@ watchEffect(() => {
       </span>
       <button
         v-if="auth.user"
-        class="flex items-center gap-1 rounded-full border border-border-subtle bg-surface-overlay/50 px-2 py-1 backdrop-blur transition-colors hover:border-accent/40"
+        class="flex items-center gap-1 rounded-sm border border-border-subtle bg-surface-overlay/50 px-2 py-1 backdrop-blur transition-colors hover:border-accent/40"
         title="Show your identity (email / user ID)"
         @click="showProfileModal = true"
       >
@@ -781,7 +781,7 @@ watchEffect(() => {
             <Hexagon class="h-3 w-3 text-accent" :stroke-width="2.5" />
           </div>
           <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">KEDGE</span>
-          <div class="flex items-center gap-0.5 rounded-full border border-success/20 bg-success-subtle px-1.5 py-px">
+          <div class="flex items-center gap-0.5 rounded-sm border border-success/20 bg-success-subtle px-1.5 py-px">
             <Zap class="h-2 w-2 text-success" :stroke-width="2.5" fill="currentColor" />
             <span class="text-[8px] font-semibold uppercase tracking-widest text-success">Live</span>
           </div>
@@ -810,7 +810,7 @@ watchEffect(() => {
             :key="item.to"
             :to="item.to"
             class="island-nav flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl px-2.5 py-1 text-[11px] font-medium transition-all duration-200"
-            :class="isActive(item.to) ? 'active bg-accent/15 text-accent' : 'text-text-muted hover:text-text-secondary'"
+            :class="isActive(item.to) ? 'active bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:text-text-secondary'"
             :title="item.label"
           >
             <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 shrink-0 object-contain" />
@@ -852,7 +852,7 @@ watchEffect(() => {
         </span>
         <button
           v-if="auth.user"
-          class="flex items-center gap-1 rounded-full border border-border-subtle bg-surface-overlay/50 px-2 py-1 backdrop-blur transition-colors hover:border-accent/40"
+          class="flex items-center gap-1 rounded-sm border border-border-subtle bg-surface-overlay/50 px-2 py-1 backdrop-blur transition-colors hover:border-accent/40"
           title="Show your identity (email / user ID)"
           @click="showProfileModal = true"
         >

@@ -341,6 +341,7 @@ local_resource(
         'providers/app-studio/assets.go',
         'providers/app-studio/api',
         'providers/app-studio/apis',
+        'providers/app-studio/scaffold',
         'providers/app-studio/client',
         'providers/app-studio/store',
         'providers/app-studio/tenant',

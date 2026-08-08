@@ -290,7 +290,7 @@ function rel(ts?: string): string {
             </div>
           </div>
           <button
-            class="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-[12px] font-medium text-white transition-all hover:opacity-90"
+            class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-[12px] font-medium text-white shadow-[0_0_16px_var(--color-accent-glow)] transition-all hover:bg-accent-hover"
             @click="showCreate = !showCreate"
           >
             <Plus class="h-3.5 w-3.5" :stroke-width="2" /> New server
@@ -317,7 +317,7 @@ function rel(ts?: string): string {
             </label>
             <div class="flex justify-end gap-2">
               <button class="rounded-lg border border-border-subtle px-3 py-2 text-[12px] text-text-secondary hover:bg-surface-hover" @click="showCreate = false">Cancel</button>
-              <button class="rounded-lg bg-accent px-3 py-2 text-[12px] font-medium text-white hover:opacity-90 disabled:opacity-40" :disabled="busy || !draft.name.trim()" @click="create">Create</button>
+              <button class="rounded-md bg-accent px-3 py-2 text-[12px] font-medium text-white shadow-[0_0_16px_var(--color-accent-glow)] hover:bg-accent-hover disabled:opacity-40" :disabled="busy || !draft.name.trim()" @click="create">Create</button>
             </div>
           </div>
         </section>

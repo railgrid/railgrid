@@ -51,7 +51,7 @@ const admin = useAdminStore()
                 {{ ws.displayName || '—' }}
                 <span
                   v-if="ws.deletionRequestedAt"
-                  class="ml-1 text-[10px] uppercase text-red-500"
+                  class="ml-1 text-[10px] uppercase text-danger"
                   >deleting</span
                 >
               </td>

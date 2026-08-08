@@ -10,6 +10,7 @@ import {
   Braces,
   Check,
   ClipboardList,
+  FileCode,
   ChevronRight,
   ExternalLink,
   Folder,
@@ -81,10 +82,12 @@ import {
 } from './assistantThreadFocus'
 import AssistantPlanPopover from './AssistantPlanPopover.vue'
 import SkillsWorkbench from './SkillsWorkbench.vue'
+import CodeExplorer from './CodeExplorer.vue'
 import ThreadsWorkbench from './ThreadsWorkbench.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
 import ResponseModePicker, { type AssistantResponseMode } from './ResponseModePicker.vue'
 import PreviewActionsMenu from './PreviewActionsMenu.vue'
+import NewProjectWizard from './NewProjectWizard.vue'
 import {
   ConversationRunController,
   abortedConversationSnapshot,
@@ -959,6 +962,13 @@ const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
     subtitle: 'Manage project details, repository status, and model configuration',
     icon: Settings2,
     builtInTab: 'settings',
+  },
+  {
+    id: 'builtin:code',
+    title: 'Code',
+    subtitle: 'Browse the live development workspace files',
+    icon: FileCode,
+    builtInTab: 'code',
   },
   {
     id: 'builtin:review',
@@ -1928,8 +1938,26 @@ async function clearLLMKey() {
 async function createProjectFromPrompt() {
   const content = prompt.value.trim()
   if (!content) return
+  // Blueprint-first: submitting the intake opens the confirmation step
+  // (template + starter code) rather than creating one-shot. The actual
+  // create runs from the blueprint via onWizardCreate, which re-checks setup.
+  wizardOpen.value = true
+}
+
+// The mini creation wizard: an opt-in confirm step (blueprint → template +
+// scaffold preview → create) over the same create path. The one-shot prompt
+// entry above still works unchanged; the wizard just supplies a confirmed
+// template/name before kicking off.
+const wizardOpen = ref(false)
+
+async function onWizardCreate(payload: { prompt: string; templateName?: string; displayName?: string }) {
+  wizardOpen.value = false
+  prompt.value = payload.prompt
   if (!await ensureCreateSetupReady()) return
-  await createProjectAndStartConversation(content)
+  await createProjectAndStartConversation(payload.prompt, {
+    templateName: payload.templateName,
+    displayName: payload.displayName,
+  })
 }
 
 async function ensureCreateSetupReady(): Promise<boolean> {
@@ -1941,7 +1969,10 @@ async function ensureCreateSetupReady(): Promise<boolean> {
   return false
 }
 
-async function createProjectAndStartConversation(content: string) {
+async function createProjectAndStartConversation(
+  content: string,
+  createOverrides?: { templateName?: string; displayName?: string },
+) {
   const retry = pendingFirstProjectSubmission?.projectName && pendingFirstProjectSubmission.content === content
   let submission = retry
     ? pendingFirstProjectSubmission!
@@ -1980,10 +2011,17 @@ async function createProjectAndStartConversation(content: string) {
     // naming setup. Once the Project exists, the first turn uses the same
     // server-owned start/subscribe contract as every later message.
     if (firstProjectStartPlan(submission).createProject) {
-      const created = await api.createProject(props.ctx, {
+      // Stream creation so each step is visible — including "Attaching
+      // scaffold to <template>", the moment the project opens on its starter
+      // code. A wizard-confirmed template pins the choice; otherwise infer.
+      const created = await api.createProjectStream(props.ctx, {
         description: description || undefined,
         prompt: content,
-        inferDevelopmentTemplate: true,
+        templateName: createOverrides?.templateName,
+        displayName: createOverrides?.displayName,
+        inferDevelopmentTemplate: !createOverrides?.templateName,
+      }, (message) => {
+        if (current()) conversationStatus.value = message
       })
       if (!current()) return
       projectName = created.name
@@ -2856,6 +2894,7 @@ function workbenchTabButtonClass(tab: WorkbenchTabDescriptor): string {
 
 function workbenchTabIcon(tab: WorkbenchTabDescriptor): Component {
   if (tab.kind === 'preview') return AppWindow
+  if (tab.kind === 'code') return FileCode
   if (tab.kind === 'review') return ClipboardList
   if (tab.kind === 'providers') return PanelRight
   if (tab.kind === 'publishing') return Globe
@@ -4020,7 +4059,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </div>
 
             <form class="mx-auto mt-7 max-w-[860px]" @submit.prevent="createProjectFromPrompt">
-              <div class="flex min-h-[154px] flex-col rounded-lg border border-border-subtle bg-surface-raised shadow-sm">
+              <div v-if="!wizardOpen" class="flex min-h-[154px] flex-col rounded-lg border border-border-subtle bg-surface-raised shadow-sm">
                 <textarea
                   ref="promptRef"
                   v-model="prompt"
@@ -4047,7 +4086,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       </button>
                     </span>
                     <span v-if="!createSetupVisible" class="text-[12px] text-text-muted">
-                      The first message will create the project and start the conversation.
+                      Next you'll confirm the template and starter code, then create.
                     </span>
                   </div>
                   <button
@@ -4056,10 +4095,23 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     :disabled="busy || !canStartProjectFromPrompt"
                     :title="createPromptSubmitTitle"
                   >
-                    <Plus class="h-4 w-4" :stroke-width="2" />
-                    Create and send
+                    Continue
+                    <ArrowRight class="h-4 w-4" :stroke-width="2" />
                   </button>
                 </div>
+              </div>
+              <div
+                v-if="wizardOpen"
+                class="mx-auto mt-4 max-w-[860px] rounded-lg border border-border-subtle bg-surface-raised p-4 text-left shadow-sm"
+              >
+                <NewProjectWizard
+                  :ctx="props.ctx"
+                  :initial-prompt="prompt"
+                  :disabled="busy || !canStartProjectFromPrompt"
+                  :disabled-reason="createPromptSubmitTitle"
+                  @create="onWizardCreate"
+                  @cancel="wizardOpen = false"
+                />
               </div>
               <div
                 v-if="createSetupVisible"
@@ -4318,7 +4370,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <span
                     v-for="skill in assistantSkillsForMessage(message)"
                     :key="skill.id"
-                    class="inline-flex max-w-full items-center gap-1 rounded-full border border-border-subtle bg-surface-raised px-2 py-1 text-[10px] text-text-secondary"
+                    class="inline-flex max-w-full items-center gap-1 rounded-sm border border-border-subtle bg-surface-raised px-2 py-1 text-[10px] text-text-secondary"
                     :title="`${skill.name} · ${skill.scope}`"
                   >
                     <Plug class="h-3 w-3 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
@@ -4640,7 +4692,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <button
               v-if="messageStreaming && !prompt.trim() && activeAssistantRun?.status !== 'stopping'"
               type="button"
-              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-full border border-danger/30 bg-danger-subtle text-danger transition hover:bg-danger-subtle/80"
+              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-md border border-danger/30 bg-danger-subtle text-danger transition hover:bg-danger-subtle/80"
               title="Stop generating"
               aria-label="Stop generating"
               @click="cancelMessageStream"
@@ -4651,7 +4703,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               v-else-if="activeAssistantRun?.status === 'stopping'"
               type="button"
               disabled
-              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-full border border-border-subtle bg-surface-hover text-text-muted"
+              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface-hover text-text-muted"
               title="Stopping"
               aria-label="Stopping"
             >
@@ -4659,7 +4711,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </button>
             <button
               v-else
-              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-full bg-text-primary text-surface transition hover:opacity-90 disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100"
+              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-md bg-accent text-white shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none"
               :disabled="busy || !canSendPrompt"
               :title="llmSettings?.configured ? 'Send' : 'Configure LLM settings before sending'"
               :aria-label="llmSettings?.configured ? 'Send' : 'Configure LLM settings before sending'"
@@ -4922,6 +4974,16 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       </div>
 
       <div
+        v-else-if="activeWorkbenchTab?.kind === 'code'"
+        class="min-h-0 flex-1 overflow-hidden"
+        role="tabpanel"
+        :id="workbenchTabPanelID(activeWorkbenchTab)"
+        :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
+      >
+        <CodeExplorer :ctx="props.ctx" :project-name="selected?.name || ''" />
+      </div>
+
+      <div
         v-else-if="activeWorkbenchTab?.kind === 'skills'"
         class="min-h-0 flex-1 overflow-auto p-3"
         role="tabpanel"
@@ -5065,7 +5127,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 <span class="flex min-w-0 items-center gap-2">
                   <span
                     class="inline-block h-2 w-2 shrink-0 rounded-full"
-                    :class="component.built ? 'bg-emerald-500' : 'bg-amber-500'"
+                    :class="component.built ? 'bg-success' : 'bg-warning'"
                   />
                   <span class="font-medium text-text-primary">{{ component.name }}</span>
                 </span>
@@ -5078,7 +5140,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
           <section
             v-if="productionBinding"
-            class="grid gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3"
+            class="grid gap-2 rounded-md border border-success/30 bg-success-subtle p-3"
           >
             <div class="flex min-w-0 items-start justify-between gap-2">
               <div class="min-w-0">
@@ -5382,7 +5444,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       v-if="showSettings"
       :class="settingsInWorkbench
         ? 'h-full min-h-0'
-        : 'fixed inset-0 z-[100] flex items-center justify-center bg-black/50 px-4 py-6 backdrop-blur-sm'"
+        : 'fixed inset-0 z-[100] flex items-center justify-center bg-surface/60 px-4 py-6 backdrop-blur-sm'"
       @click.self="closeSettings"
     >
       <div
@@ -5475,7 +5537,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 <div class="flex h-10 min-w-0 rounded-md border border-border-subtle bg-surface p-0.5">
                   <button
                     type="button"
-                    class="flex min-w-0 flex-1 items-center justify-center rounded-[5px] px-2 text-[12px] font-medium transition"
+                    class="flex min-w-0 flex-1 items-center justify-center rounded-md px-2 text-[12px] font-medium transition"
                     :class="!isGoogleGeminiProvider ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
                     :disabled="llmSaving"
                     @click="selectLLMProvider(OPENAI_COMPATIBLE_PROVIDER)"
@@ -5484,7 +5546,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   </button>
                   <button
                     type="button"
-                    class="flex min-w-0 flex-1 items-center justify-center rounded-[5px] px-2 text-[12px] font-medium transition"
+                    class="flex min-w-0 flex-1 items-center justify-center rounded-md px-2 text-[12px] font-medium transition"
                     :class="isGoogleGeminiProvider ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
                     :disabled="llmSaving"
                     @click="selectLLMProvider(GOOGLE_AI_STUDIO_PROVIDER)"
@@ -5498,7 +5560,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 >
                   <button
                     type="button"
-                    class="flex min-w-0 flex-1 items-center justify-center rounded-[5px] px-2 text-[12px] font-medium transition"
+                    class="flex min-w-0 flex-1 items-center justify-center rounded-md px-2 text-[12px] font-medium transition"
                     :class="llmCredentialMode === 'api-key' ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
                     :disabled="llmSaving"
                     @click="llmCredentialMode = 'api-key'"
@@ -5507,7 +5569,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   </button>
                   <button
                     type="button"
-                    class="flex min-w-0 flex-1 items-center justify-center rounded-[5px] px-2 text-[12px] font-medium transition"
+                    class="flex min-w-0 flex-1 items-center justify-center rounded-md px-2 text-[12px] font-medium transition"
                     :class="llmCredentialMode === 'service-account-json' ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
                     :disabled="llmSaving"
                     @click="llmCredentialMode = 'service-account-json'"

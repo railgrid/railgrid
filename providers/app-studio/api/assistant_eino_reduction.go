@@ -69,35 +69,25 @@ func projectEinoAssistantRewriteWorkspaceMutations(
 	}
 
 	summaries := make([]string, 0, len(toolCallMessage.ToolCalls))
-	compactedCalls := make([]schema.ToolCall, 0, len(toolCallMessage.ToolCalls))
-	compactedResponses := make([]*schema.Message, 0, len(toolCallMessage.ToolCalls))
 	for index, toolCall := range toolCallMessage.ToolCalls {
 		summary := summarizeProjectToolResult(toolCall.Function.Name, toolResponseMessages[index].Content)
 		if summary == "" {
 			return projectEinoAssistantOriginalToolMessageGroup(toolCallMessage, toolResponseMessages), nil
 		}
 		summaries = append(summaries, summary)
-		compactedCall := toolCall
-		compactedCall.Function.Arguments = `{}`
-		compactedCall.Extra = nil
-		compactedCalls = append(compactedCalls, compactedCall)
-		compactedResult, err := json.Marshal(struct {
-			Operation string `json:"operation"`
-		}{
-			Operation: projectToolBaseName(toolCall.Function.Name),
-		})
-		if err != nil {
-			return nil, err
-		}
-		compactedResponses = append(compactedResponses, schema.ToolMessage(
-			string(compactedResult),
-			toolCall.ID,
-			schema.WithToolName(toolCall.Function.Name),
-		))
 	}
-	messages := make([]*schema.Message, 0, len(compactedResponses)+2)
-	messages = append(messages, schema.AssistantMessage(projectEinoAssistantCompactedToolCallPreamble, compactedCalls))
-	messages = append(messages, compactedResponses...)
+	// Collapse the successful-mutation group into natural-language evidence and
+	// DROP the tool-call objects entirely. The earlier code kept each call but
+	// blanked its arguments to "{}", which trains the model: a compacted
+	// history full of replace_file({}) / edit_file({}) success examples is a
+	// few-shot lesson to omit arguments, and the model then emits real
+	// mutation calls with empty args that fail validation ("requires path").
+	// Evidence text conveys the outcome without leaving a malformed call to
+	// imitate. A plain assistant marker keeps role alternation intact without
+	// any tool-call object.
+	messages := []*schema.Message{
+		schema.AssistantMessage(projectEinoAssistantCompactedToolCallPreamble, nil),
+	}
 	evidence := schema.UserMessage(
 		projectEinoAssistantWorkspaceMutationEvidencePrefix + " " + strings.Join(summaries, "; ") + ". Treat these completed results as authoritative; reread only after a conflict, failed mutation, or later mutation.",
 	)

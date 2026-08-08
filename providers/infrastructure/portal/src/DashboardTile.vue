@@ -270,7 +270,7 @@ function styleFor(phase: string) {
           <span>Health</span>
           <span class="font-mono tabular-nums">{{ stats.healthPct }}%</span>
         </div>
-        <div class="h-1.5 overflow-hidden rounded-full bg-surface-overlay">
+        <div class="h-1.5 overflow-hidden rounded-xs bg-surface-overlay">
           <div class="h-full bg-success transition-all" :style="{ width: stats.healthPct + '%' }" />
         </div>
       </div>

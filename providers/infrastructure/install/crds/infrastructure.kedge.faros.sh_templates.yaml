@@ -449,15 +449,21 @@ spec:
                         workspacePath:
                           description: |-
                             WorkspacePath is the project workspace / repository subdirectory whose
-                            files belong to this component ("." for a single-component template).
-                            App Studio routes file sync by these prefixes, and the scaffold follows
-                            this layout. Relative, no leading slash, no "..".
+                            files belong to this component. Builders route file sync by these
+                            prefixes, and the scaffold follows this layout.
+
+                            ONE NAME RULE: it MUST equal the component's own key (the map key is
+                            the component name), so a component is never addressed by two
+                            different words. Divergence caused repeated bugs — sync routing and
+                            log/restart calls that named the directory instead of the component —
+                            so the map-level CEL rule on Components rejects it. The single
+                            exception is "." for a template whose one component owns the whole
+                            workspace root. Omitting it defaults to the component name.
                           maxLength: 256
                           type: string
                       required:
                       - devImage
                       - startCommand
-                      - workspacePath
                       type: object
                     description: |-
                       Components maps a component name to its development behavior. Each key
@@ -466,8 +472,17 @@ spec:
                       the graph resource with id "frontend"). Components not listed here run
                       exactly as declared in production mode — a dev sandbox keeps its real
                       database. Keys must match ^[a-z][a-z0-9-]*$.
+
+                      ONE NAME RULE (see TemplateDevelopmentComponent.WorkspacePath): a
+                      component's directory must be its own name, so agents, sync routing,
+                      and data-plane verbs all address it by one word.
                     minProperties: 1
                     type: object
+                    x-kubernetes-validations:
+                    - message: workspacePath must equal the component name (or "."
+                        for a single root component)
+                      rule: self.all(k, !has(self[k].workspacePath) || self[k].workspacePath
+                        == k || self[k].workspacePath == '.')
                   scaffold:
                     description: |-
                       Scaffold optionally names starter code for a fresh project built on
@@ -498,6 +513,7 @@ spec:
                 maxLength: 128
                 type: string
               exposure:
+                default: internal
                 description: |-
                   Exposure declares whether instances of this template are reachable from
                   outside the platform. It is a statement ABOUT the resource graph, not a
@@ -507,8 +523,10 @@ spec:
                   status field, and an agent stops polling status.url forever for an
                   instance that will never have one.
 
-                  Defaults to ExposureInternal when empty, which is the safe reading: a
-                  template that never said it publishes anything is assumed not to.
+                  The API server defaults it to "internal", which is the safe reading: a
+                  template that never said it publishes anything is assumed not to. Because
+                  the default is stamped at admission, readers see a concrete value and
+                  never need to interpret an empty field.
                 enum:
                 - internal
                 - optional

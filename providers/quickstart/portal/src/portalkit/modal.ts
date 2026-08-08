@@ -33,28 +33,32 @@ function ensureStyles(): void {
   s.id = STYLE_ID
   s.textContent = `
 .pk-modal-overlay { position: fixed; inset: 0; z-index: 2147483000; display: grid; place-items: center; padding: 24px;
-  background: color-mix(in srgb, var(--color-text-primary, #0b1220) 40%, transparent); backdrop-filter: blur(2px);
+  background: color-mix(in srgb, var(--color-surface, #0a0b12) 60%, transparent); backdrop-filter: blur(2px);
   animation: pk-fade .14s ease; }
-.pk-modal { width: min(440px, 100%); border-radius: 16px; overflow: hidden;
-  background: var(--color-surface-raised, #fff); color: var(--color-text-primary, #10151f);
-  border: 1px solid var(--color-border-default, rgba(0,0,0,.12)); box-shadow: 0 24px 70px rgba(10,20,40,.42);
-  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; animation: pk-rise .18s cubic-bezier(.2,.8,.3,1); }
+.pk-modal { width: min(440px, 100%); border-radius: 6px; overflow: hidden;
+  /* Fallbacks are the DARK-BASE token values — dark is the system default. */
+  background: var(--color-surface-raised, #111320); color: var(--color-text-primary, #e9e9f2);
+  border: 1px solid var(--color-border-default, rgba(255,255,255,.11));
+  box-shadow: 0 1px 2px rgba(0,0,0,.4), 0 24px 70px rgba(0,0,0,.55);
+  font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif); font-size: 14px; line-height: 1.5;
+  animation: pk-rise .18s cubic-bezier(.2,.8,.3,1); }
 .pk-modal-head { display: flex; align-items: center; gap: 11px; padding: 18px 20px 4px; }
-.pk-modal-ic { width: 34px; height: 34px; flex: none; display: grid; place-items: center; border-radius: 10px;
-  background: var(--color-accent-subtle, rgba(109,79,224,.12)); color: var(--color-accent, #6d4fe0); }
-.pk-modal.danger .pk-modal-ic { background: var(--color-danger-surface, rgba(239,68,68,.12)); color: var(--color-danger, #ef4444); }
+.pk-modal-ic { width: 34px; height: 34px; flex: none; display: grid; place-items: center; border-radius: 6px;
+  background: var(--color-accent-subtle, rgba(139,107,255,.14)); color: var(--color-accent, #8b6bff); }
+.pk-modal.danger .pk-modal-ic { background: var(--color-danger-surface, rgba(255,93,93,.12)); color: var(--color-danger, #ff5d5d); }
 .pk-modal-ic svg { width: 20px; height: 20px; }
 .pk-modal-title { margin: 0; font-size: 16px; font-weight: 650; }
-.pk-modal-body { padding: 6px 20px 4px 65px; color: var(--color-text-secondary, #4a5568); white-space: pre-wrap; overflow-wrap: anywhere; }
+.pk-modal-body { padding: 6px 20px 4px 65px; color: var(--color-text-secondary, #8a8ca6); white-space: pre-wrap; overflow-wrap: anywhere; }
 .pk-modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 20px 20px; }
-.pk-modal-btn { padding: 8px 16px; border-radius: 9px; border: 0; cursor: pointer; font: inherit; font-weight: 600; font-size: 13.5px; }
-.pk-modal-btn.cancel { background: var(--color-surface-overlay, rgba(0,0,0,.05)); color: var(--color-text-secondary, #4a5568);
-  border: 1px solid var(--color-border-default, transparent); }
-.pk-modal-btn.cancel:hover { background: var(--color-surface-hover, rgba(0,0,0,.08)); color: var(--color-text-primary, #10151f); }
-.pk-modal-btn.confirm { background: var(--color-accent, #6d4fe0); color: #fff; }
-.pk-modal-btn.confirm:hover { background: var(--color-accent-hover, #5b3fd0); }
-.pk-modal.danger .pk-modal-btn.confirm { background: var(--color-danger, #ef4444); }
-.pk-modal.danger .pk-modal-btn.confirm:hover { background: var(--color-danger-hover, #dc2626); }
+.pk-modal-btn { padding: 8px 16px; border-radius: 4px; border: 0; cursor: pointer; font: inherit; font-weight: 600; font-size: 13.5px; }
+.pk-modal-btn.cancel { background: var(--color-surface-overlay, #171927); color: var(--color-text-secondary, #8a8ca6);
+  border: 1px solid var(--color-border-default, rgba(255,255,255,.11)); }
+.pk-modal-btn.cancel:hover { background: var(--color-surface-hover, #1e2033); color: var(--color-text-primary, #e9e9f2); }
+.pk-modal-btn.confirm { background: var(--color-accent, #8b6bff); color: #fff;
+  box-shadow: 0 0 16px var(--color-accent-glow, rgba(139,107,255,.3)); }
+.pk-modal-btn.confirm:hover { background: var(--color-accent-hover, #a18aff); }
+.pk-modal.danger .pk-modal-btn.confirm { background: var(--color-danger, #ff5d5d); box-shadow: none; }
+.pk-modal.danger .pk-modal-btn.confirm:hover { background: var(--color-danger-hover, #ff7676); }
 @keyframes pk-fade { from { opacity: 0; } }
 @keyframes pk-rise { from { opacity: 0; transform: translateY(10px) scale(.98); } }
 @media (prefers-reduced-motion: reduce) { .pk-modal-overlay, .pk-modal { animation: none; } }

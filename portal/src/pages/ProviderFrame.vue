@@ -219,7 +219,7 @@ onBeforeUnmount(() => {
               {{ entry.displayName }}
             </h1>
             <span
-              class="rounded-full px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider"
+              class="rounded-sm px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider"
               :class="entry.ready
                 ? 'border border-success/30 bg-success-subtle text-success'
                 : 'border border-border-default bg-surface-overlay text-text-muted'"

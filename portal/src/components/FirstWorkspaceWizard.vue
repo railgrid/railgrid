@@ -101,7 +101,7 @@ async function handleCreate() {
           </router-link>
           <button
             type="button"
-            class="group flex items-center gap-2 rounded-xl bg-accent px-4 py-2.5 text-[12px] font-semibold text-white transition-all hover:bg-accent-hover hover:shadow-lg hover:shadow-accent/20 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40"
+            class="group flex items-center gap-2 rounded-md bg-accent px-4 py-2.5 text-[12px] font-semibold text-white shadow-[0_0_16px_var(--color-accent-glow)] transition-all hover:bg-accent-hover active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40"
             :disabled="!canSubmit"
             @click="handleCreate"
           >

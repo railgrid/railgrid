@@ -86,7 +86,7 @@ async function remove(name: string) {
         />
       </div>
       <button
-        class="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+        class="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white shadow-[0_0_16px_var(--color-accent-glow)] hover:bg-accent-hover disabled:opacity-50"
         :disabled="busy || !newName.trim()"
         @click="create"
       >
@@ -112,15 +112,15 @@ async function remove(name: string) {
           <td class="py-1.5 pr-4">
             <span
               v-if="p.builtin"
-              class="rounded-full border border-border-default/40 bg-surface-overlay/50 px-2 py-px text-[10px] text-text-muted"
+              class="rounded-sm border border-border-default/40 bg-surface-overlay/50 px-2 py-px text-[10px] text-text-muted"
             >core</span>
             <span
               v-if="p.onboarded"
-              class="ml-1 rounded-full border border-success/30 bg-success-subtle px-2 py-px text-[10px] text-success"
+              class="ml-1 rounded-sm border border-success/30 bg-success-subtle px-2 py-px text-[10px] text-success"
             >provisioned</span>
             <span
               v-if="p.registered"
-              class="ml-1 rounded-full border border-accent/30 bg-accent/10 px-2 py-px text-[10px] text-accent"
+              class="ml-1 rounded-sm border border-accent/30 bg-accent/10 px-2 py-px text-[10px] text-accent"
             >registered</span>
             <span v-if="!p.onboarded && !p.registered && !p.builtin" class="text-[11px] text-text-muted">—</span>
           </td>

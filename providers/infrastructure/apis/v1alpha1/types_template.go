@@ -115,9 +115,12 @@ type TemplateSpec struct {
 	// status field, and an agent stops polling status.url forever for an
 	// instance that will never have one.
 	//
-	// Defaults to ExposureInternal when empty, which is the safe reading: a
-	// template that never said it publishes anything is assumed not to.
+	// The API server defaults it to "internal", which is the safe reading: a
+	// template that never said it publishes anything is assumed not to. Because
+	// the default is stamped at admission, readers see a concrete value and
+	// never need to interpret an empty field.
 	// +optional
+	// +kubebuilder:default=internal
 	// +kubebuilder:validation:Enum=internal;optional;public
 	Exposure TemplateExposure `json:"exposure,omitempty"`
 
@@ -419,10 +422,11 @@ const (
 	ExposurePublic TemplateExposure = "public"
 )
 
-// ExposureClass returns the template's exposure class, defaulting an unset
-// value to ExposureInternal. Read through this rather than the field: seed
-// templates authored before the field existed, and treating those as public
-// would be the wrong way to be wrong.
+// ExposureClass returns the template's exposure class. The CRD defaults the
+// field to "internal" at admission, so API-served objects always carry a
+// value; this helper covers Templates that never passed through the API
+// server (embedded seed YAML parsed directly, tests), where treating an
+// unset field as public would be the wrong way to be wrong.
 func (s TemplateSpec) ExposureClass() TemplateExposure {
 	if s.Exposure == "" {
 		return ExposureInternal

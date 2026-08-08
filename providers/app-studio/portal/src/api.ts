@@ -25,6 +25,9 @@ import type {
   ProjectPromotionReadiness,
   ProjectPromoteResult,
   ProviderItem,
+  ProjectPlan,
+  ProjectFileList,
+  ProjectFileContent,
 } from './types'
 import type { ProjectCreateReadiness } from './createReadiness'
 import type { PreviewConsoleEvent, PreviewConsoleSession } from './previewConsole'
@@ -329,6 +332,111 @@ export const api = {
     },
   ): Promise<Project> {
     return request<Project>(ctx, 'POST', baseURL(ctx), body)
+  },
+
+  // createProjectStream creates a project over SSE, surfacing each creation
+  // step (Planning, Configuring repository, Attaching scaffold to <template>,
+  // …) via onStatus, and resolves with the created Project. Same inputs as
+  // createProject; the caller starts the first assistant turn afterward.
+  async createProjectStream(
+    ctx: KedgeContext | null,
+    body: {
+      displayName?: string
+      description?: string
+      prompt?: string
+      templateName?: string
+      inferDevelopmentTemplate?: boolean
+      connectionRef?: string
+      existingRepositoryRef?: string
+    },
+    onStatus: (message: string) => void,
+    signal?: AbortSignal,
+  ): Promise<Project> {
+    const headers = tenantHeaders({ token: ctx?.token })
+    headers.Accept = 'text/event-stream'
+    headers['Content-Type'] = 'application/json'
+    const res = await fetch(`${baseURL(ctx)}/stream`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    })
+    if (!res.ok || !res.body) throw new Error(`project create stream failed: ${res.status} ${res.statusText}`)
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let created: Project | null = null
+    let failure: string | null = null
+    const handle = (raw: string) => {
+      let event = 'message'
+      let data = ''
+      for (const line of raw.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) data = data ? `${data}\n${line.slice(5).trimStart()}` : line.slice(5).trimStart()
+      }
+      if (!data) return
+      if (event === 'status') {
+        const parsed = JSON.parse(data) as { message?: string }
+        if (parsed.message) onStatus(parsed.message)
+      } else if (event === 'created') {
+        created = JSON.parse(data) as Project
+      } else if (event === 'error') {
+        failure = (JSON.parse(data) as { message?: string }).message ?? 'project creation failed'
+      }
+    }
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        for (;;) {
+          const sep = buffer.indexOf('\n\n')
+          if (sep < 0) break
+          handle(buffer.slice(0, sep))
+          buffer = buffer.slice(sep + 2)
+        }
+      }
+    } finally {
+      reader.releaseLock()
+    }
+    if (failure) throw new Error(failure)
+    if (!created) throw new Error('project creation stream ended without a project')
+    return created
+  },
+
+  // planProject returns a creation blueprint (proposed name, recommended
+  // template, whether starter code will be attached) WITHOUT creating —
+  // the wizard's confirm step. See ProjectPlan in the backend.
+  async planProject(
+    ctx: KedgeContext | null,
+    body: { prompt?: string; templateName?: string },
+  ): Promise<ProjectPlan> {
+    return request<ProjectPlan>(ctx, 'POST', `${baseURL(ctx)}/plan`, body)
+  },
+
+  // reseedScaffold re-attaches the template's starter code to an empty
+  // workspace (retry after a failed seed, or seed a legacy project).
+  async reseedScaffold(
+    ctx: KedgeContext | null,
+    name: string,
+  ): Promise<{ template: string; scaffold: { repository: string; ref?: string }; seeded: number }> {
+    return request(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/scaffold`, {})
+  },
+
+  // listProjectFiles returns the live dev workspace file tree (flat, sorted
+  // paths with sizes) for the code explorer.
+  async listProjectFiles(ctx: KedgeContext | null, name: string): Promise<ProjectFileList> {
+    return request<ProjectFileList>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/files`)
+  },
+
+  // readProjectFile returns one workspace file's bounded content.
+  async readProjectFile(ctx: KedgeContext | null, name: string, path: string): Promise<ProjectFileContent> {
+    return request<ProjectFileContent>(
+      ctx,
+      'GET',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/files/content?path=${encodeURIComponent(path)}`,
+    )
   },
 
   async listDevelopmentTemplates(ctx: KedgeContext | null): Promise<DevelopmentTemplate[]> {

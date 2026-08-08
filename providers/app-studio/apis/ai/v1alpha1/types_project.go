@@ -154,6 +154,13 @@ type ProjectRepositoryBinding struct {
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	ConnectionRef string `json:"connectionRef,omitempty"`
+
+	// Adopted marks a binding built from an EXISTING Repository CR
+	// (repository import). The Project reconciler creates the Repository CR
+	// for non-adopted bindings only — an adopted repository is never
+	// (re)created on the project's behalf.
+	// +optional
+	Adopted bool `json:"adopted,omitempty"`
 }
 
 // ProjectMemory is the MVP project memory document.

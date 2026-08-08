@@ -93,8 +93,9 @@ func templateFromUnstructured(u *unstructured.Unstructured) kro.Template {
 	if group == "" {
 		group = templateGroup
 	}
-	// Absent means internal: a template that never declared exposure is
-	// assumed not to publish. Mirrors TemplateSpec.ExposureClass().
+	// The CRD defaults exposure to internal at admission, so API-served
+	// objects always carry a value; this guard covers objects that predate
+	// the default or bypassed admission. Mirrors TemplateSpec.ExposureClass().
 	if exposure == "" {
 		exposure = string(infrav1alpha1.ExposureInternal)
 	}

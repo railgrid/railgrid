@@ -377,8 +377,9 @@ spec:
 
 # Preview/apps ingress tunnel — serves BOTH sandbox previews
 # (*.preview.localhost) and template app URLs (*.apps.127.0.0.1.sslip.io) off
-# the one envoy Gateway, so it is grouped with vibe-studio (the current
-# builder; app-studio is being retired and the two never run together).
+# the ONE envoy Gateway named app-studio-preview. app-studio and vibe-studio
+# both attach their previews to this single gateway, so there is exactly one
+# forward for both — named for the gateway it serves.
 #
 # Pin the context: the user's ambient kubectl context drifts (kcp workspace
 # contexts), and against those this loop never finds the envoy service.
@@ -397,7 +398,7 @@ spec:
 # bare https://127.0.0.1:10443/ probe kills the tunnel it is meant to watch —
 # and then bounces a perfectly healthy envoy pod every 45s. Hence --resolve.
 local_resource(
-    'vibe-studio-preview-port-forward',
+    'app-studio-preview-port-forward',
     cmd='true',
     serve_cmd='''
 set -eu
@@ -975,21 +976,21 @@ local_resource(
 local_resource(
     'app-studio',
     cmd='make build-app-studio-provider',
-    # The tenant client needs the kcp front-proxy host+TLS (it drops the
-    # credential and acts as the caller). In the in-cluster hub flow the
-    # provider runs on the host, so point it at the operator-issued admin
-    # kubeconfig (kcp.localhost:8443). Development previews are the template
-    # instance's own public URL (docs/app-studio-template-sandboxes.md) — no
-    # preview-gateway env.
-    serve_cmd=('KEDGE_PROVIDER_KUBECONFIG={kc} ' +
-               'make run-provider-app-studio').format(
-                   kc=KCP_ADMIN_KUBECONFIG),
+    # The controller manager watches the APIExportEndpointSlice in the
+    # PROVIDER workspace, so the serve kubeconfig must be the
+    # workspace-scoped one init writes (.kcp/app-studio-provider.kubeconfig —
+    # the Makefile pins it, same as vibe-studio). Pointing this at the admin
+    # /clusters/root kubeconfig makes the reconcilers watch an empty
+    # workspace and silently never engage. Development previews are the
+    # template instance's own public URL — no preview-gateway env.
+    serve_cmd='make run-provider-app-studio',
     deps=[
         'providers/app-studio/main.go',
         'providers/app-studio/heartbeat.go',
         'providers/app-studio/assets.go',
         'providers/app-studio/api',
         'providers/app-studio/apis',
+        'providers/app-studio/scaffold',
         'providers/app-studio/client',
         'providers/app-studio/store',
         'providers/app-studio/tenant',

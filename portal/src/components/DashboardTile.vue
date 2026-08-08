@@ -222,7 +222,7 @@ onBeforeUnmount(() => {
         </span>
         <span
           v-if="provider.category"
-          class="rounded-full border border-border-subtle px-2 py-0.5 uppercase tracking-wide"
+          class="rounded-sm border border-border-subtle px-2 py-0.5 uppercase tracking-wide"
         >{{ provider.category }}</span>
         <span v-if="provider.version" class="font-mono">v{{ provider.version }}</span>
       </div>

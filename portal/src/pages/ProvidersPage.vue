@@ -211,7 +211,7 @@ function dependencyNotice(p: ProviderDTO): string {
           </div>
           <div class="flex flex-wrap items-center gap-1.5">
             <button
-              class="rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors"
+              class="rounded-sm border px-2.5 py-1 text-[11px] font-medium transition-colors"
               :class="
                 selectedCategory === null
                   ? 'border-accent/40 bg-accent/10 text-accent'
@@ -224,7 +224,7 @@ function dependencyNotice(p: ProviderDTO): string {
             <button
               v-for="chip in categoryChips"
               :key="chip.name"
-              class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors"
+              class="inline-flex items-center gap-1 rounded-sm border px-2.5 py-1 text-[11px] font-medium transition-colors"
               :class="
                 selectedCategory === chip.name
                   ? 'border-accent/40 bg-accent/10 text-accent'
@@ -260,7 +260,7 @@ function dependencyNotice(p: ProviderDTO): string {
               <div class="flex items-center gap-2">
                 <h2 class="truncate text-sm font-semibold text-text-primary">{{ p.displayName }}</h2>
                 <span
-                  class="rounded-full px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider"
+                  class="rounded-sm px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider"
                   :class="
                     !p.ready
                       ? 'border border-border-default bg-surface-overlay text-text-muted'

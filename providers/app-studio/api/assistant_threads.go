@@ -156,7 +156,7 @@ func assistantThreadAgentMessagePhase(status string) string {
 }
 
 func (s *Server) createProjectAssistantThread(w http.ResponseWriter, r *http.Request) {
-	_, id, project, ok := s.requireProjectWithClient(w, r)
+	c, id, project, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
@@ -176,6 +176,9 @@ func (s *Server) createProjectAssistantThread(w http.ResponseWriter, r *http.Req
 		s.writeAssistantThreadError(w, err)
 		return
 	}
+	// Control-plane projection: the Session reconciler mirrors this thread's
+	// state and purges it from the store if the CR is deleted.
+	s.ensureSessionCR(r.Context(), c, id, project, created.ID, id.user)
 	writeJSON(w, http.StatusCreated, created)
 }
 
@@ -213,7 +216,7 @@ func (s *Server) patchProjectAssistantThread(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) deleteProjectAssistantThread(w http.ResponseWriter, r *http.Request) {
-	_, id, project, thread, ok := s.requireOwnedAssistantThread(w, r)
+	c, id, project, thread, ok := s.requireOwnedAssistantThread(w, r)
 	if !ok {
 		return
 	}
@@ -222,6 +225,9 @@ func (s *Server) deleteProjectAssistantThread(w http.ResponseWriter, r *http.Req
 		s.writeAssistantThreadError(w, err)
 		return
 	}
+	// Fast-path removal of the projection; the Session reconciler also
+	// deletes projections whose store row is gone.
+	s.deleteSessionCR(r.Context(), c, thread.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

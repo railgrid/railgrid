@@ -305,10 +305,10 @@ function friendlyError(error: unknown, fallback: string): string {
 
     </section>
 
-    <div v-if="selectedSkill" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/35 p-4 backdrop-blur-[2px]" @mousedown.self="closeSkillDetail">
-        <section class="flex max-h-[min(860px,calc(100vh-2rem))] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border-default bg-surface-raised shadow-2xl" role="dialog" aria-modal="true" :aria-labelledby="`skill-detail-title-${selectedSkill.id}`">
+    <div v-if="selectedSkill" class="fixed inset-0 z-[100] flex items-center justify-center bg-surface/60 p-4 backdrop-blur-[2px]" @mousedown.self="closeSkillDetail">
+        <section class="flex max-h-[min(860px,calc(100vh-2rem))] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border-default bg-surface-raised shadow-2xl" role="dialog" aria-modal="true" :aria-labelledby="`skill-detail-title-${selectedSkill.id}`">
           <header class="flex items-start gap-4 px-6 pb-5 pt-6">
-            <span class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-border-subtle bg-accent-subtle text-accent">
+            <span class="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-border-subtle bg-accent-subtle text-accent">
               <Plug class="h-7 w-7" :stroke-width="1.5" aria-hidden="true" />
             </span>
             <div class="min-w-0 flex-1 pt-0.5">
@@ -323,12 +323,12 @@ function friendlyError(error: unknown, fallback: string): string {
               role="switch"
               :aria-checked="selectedSkill.enabled !== false"
               :aria-label="selectedSkill.enabled === false ? 'Enable skill' : 'Disable skill'"
-              class="relative mt-1 h-7 w-12 shrink-0 rounded-full transition disabled:cursor-not-allowed disabled:opacity-60"
+              class="relative mt-1 h-7 w-12 shrink-0 rounded-sm transition disabled:cursor-not-allowed disabled:opacity-60"
               :class="selectedSkill.enabled === false ? 'bg-border-default' : 'bg-accent'"
               :disabled="actionBusy"
               @click="toggleSelectedSkill"
             >
-              <span class="absolute top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-all" :class="selectedSkill.enabled === false ? 'left-1' : 'left-6'" />
+              <span class="absolute top-1 h-5 w-5 rounded-xs bg-text-primary shadow-sm transition-all" :class="selectedSkill.enabled === false ? 'left-1' : 'left-6'" />
             </button>
             <button type="button" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-muted transition hover:bg-surface-hover hover:text-text-primary" aria-label="Close skill details" @click="closeSkillDetail">
               <X class="h-5 w-5" :stroke-width="1.75" />
@@ -339,7 +339,7 @@ function friendlyError(error: unknown, fallback: string): string {
             <div v-if="detailLoading" class="flex min-h-48 items-center justify-center gap-2 text-[12px] text-text-muted" role="status"><Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" /> Loading skill…</div>
             <div v-else class="grid gap-4">
               <div v-if="detailError" class="rounded-xl border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">{{ detailError }}</div>
-              <div class="rounded-2xl border border-border-subtle bg-surface p-5">
+              <div class="rounded-xl border border-border-subtle bg-surface p-5">
                 <pre v-if="detailInstructions" class="whitespace-pre-wrap font-sans text-[13px] leading-6 text-text-secondary">{{ detailInstructions }}</pre>
                 <div v-else class="text-[12px] text-text-muted">No author-visible instructions were provided for this skill.</div>
               </div>

@@ -180,6 +180,17 @@ func (m *projectAssistantRunManager) Begin(ctx context.Context, item projectAssi
 	return runCtx, finish
 }
 
+// busy reports whether a turn is active for the key.
+func (m *projectAssistantRunManager) busy(key projectAssistantRunKey) bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, active := m.active[key]
+	return active
+}
+
 func (m *projectAssistantRunManager) activeCount() int {
 	if m == nil {
 		return 0

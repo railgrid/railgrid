@@ -44,39 +44,47 @@ func projectAssistantToolHasEffect(spec projectAssistantToolSpec) bool {
 	}
 }
 
-// projectAssistantRequireMutationRead enforces the complete same-turn read
-// boundary for mutations that operate on an existing file. The expected
-// version must be one returned by read_file in this run; path-only evidence is
-// insufficient because it cannot prove which bytes the model observed.
-func projectAssistantRequireMutationRead(ctx context.Context, req projectAssistantToolCallRequest, workspaces *workspace.FileStore, rawPath string, expectedVersions ...string) error {
+// projectAssistantRequireMutationRead enforces read-before-edit and returns
+// the AUTHORITATIVE expectedVersion the caller must pass to the workspace
+// mutation. For an existing file this is the version recorded by a complete
+// same-turn read — NOT whatever token the model supplied. Models routinely
+// fabricate a git-blob-style hash instead of echoing the opaque version from
+// their read result, and correcting them in the error text does not reliably
+// work (observed: the model ignores the exact value and re-sends its bogus
+// hash until the recovery guard blocks the run). The safety the version
+// exists for is preserved: a complete read must have happened this turn, and
+// the workspace layer still rejects the returned version if the file changed
+// on disk since that read (a genuine stale/concurrent conflict).
+func projectAssistantRequireMutationRead(ctx context.Context, req projectAssistantToolCallRequest, workspaces *workspace.FileStore, rawPath string, expectedVersions ...string) (string, error) {
 	expectedVersion := ""
 	if len(expectedVersions) > 0 {
-		expectedVersion = expectedVersions[0]
+		expectedVersion = strings.TrimSpace(expectedVersions[0])
 	}
 	path, err := workspace.CleanProjectPath(rawPath)
 	if err != nil {
-		return fmt.Errorf("mutation path is invalid: %w", err)
+		return "", fmt.Errorf("mutation path is invalid: %w", err)
 	}
 	if workspaces == nil {
-		return errors.New("project workspace store is not configured")
-	}
-	if strings.TrimSpace(expectedVersion) == "" {
-		return fmt.Errorf("mutation of %q requires expectedVersion from a complete same-turn read", path)
+		return "", errors.New("project workspace store is not configured")
 	}
 	exists, err := workspaces.FileExists(ctx, req.WorkspaceScope, path)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if !exists {
-		return nil
+		// Create-style mutation of a non-existent path — no prior version.
+		return expectedVersion, nil
 	}
 	if req.RunState == nil {
-		return fmt.Errorf("mutation of existing file %q requires a same-turn read", path)
+		return "", fmt.Errorf("mutation of existing file %q requires a same-turn read", path)
 	}
-	if observed := req.RunState.ReadFileVersion(path); observed == strings.TrimSpace(expectedVersion) {
-		return nil
+	observed := req.RunState.ReadFileVersion(path)
+	if observed == "" {
+		return "", fmt.Errorf("mutation of existing file %q requires a complete same-turn read first: call read_file at offset 1 covering the whole file (a partial or ranged read does not authorize an edit)", path)
 	}
-	return fmt.Errorf("mutation of existing file %q requires a complete same-turn read matching expectedVersion", path)
+	// A complete read happened this turn — authorize the mutation using that
+	// read's version, whatever the model passed.
+	return observed, nil
 }
 
 // projectAssistantPermissionForV2 keeps collaboration mode, approval policy,

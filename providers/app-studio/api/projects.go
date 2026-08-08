@@ -306,6 +306,9 @@ func (s *Server) createProjectFromRequest(ctx context.Context, c *asclient.Clien
 }
 
 func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *asclient.Client, id identity, req CreateProjectRequest, onStatus projectCreationStatusFunc, httpReq *http.Request, preflight *projectCreatePreflight) (*aiv1alpha1.Project, error) {
+	// Shared services: make sure the workspace's Studio exists so the search
+	// backend is warm before the assistant's first turn. Best-effort.
+	s.ensureStudio(ctx, c, id)
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
 	req.Description = strings.TrimSpace(req.Description)
 	req.Prompt = strings.TrimSpace(req.Prompt)
@@ -339,7 +342,13 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 	if preflight != nil {
 		req.DisplayName = preflight.Naming.DisplayName
 		repoBase = preflight.Naming.RepositoryName
-	} else if req.Prompt != "" {
+	} else if req.Prompt != "" && !(req.DisplayName != "" && selectedTemplate != nil) {
+		// Skip inference when the caller already committed both a name and a
+		// template — the wizard's blueprint step (POST /api/projects/plan)
+		// already ran the preflight, so re-running it here would double the
+		// LLM round-trip (a visible stall on "Planning project") and clobber
+		// the name the user just confirmed. Only infer when something is
+		// genuinely missing.
 		if err := emitProjectCreationStatus(onStatus, "Planning project"); err != nil {
 			return nil, err
 		}
@@ -399,6 +408,14 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 	p := &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
+			// Bridge to the workspace/store keyspace: the Project reconciler
+			// only knows the cluster, but workspace scopes are keyed by the
+			// org/workspace UUIDs the hub derives from the tenant path.
+			// Commit convergence reads these back.
+			Annotations: map[string]string{
+				"ai.kedge.faros.sh/org-uuid":       id.orgUUID,
+				"ai.kedge.faros.sh/workspace-uuid": id.workspaceUUID,
+			},
 		},
 		Spec: defaultProjectSpec(name, req.DisplayName, req.Description, repoPlan.projectBinding()),
 		Status: aiv1alpha1.ProjectStatus{
@@ -429,6 +446,8 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 		}
 	}
 	if repoPlan.Adopted {
+		// Adoption stays caller-side: it claims an EXISTING Repository CR,
+		// which needs the importing user's view and immediate feedback.
 		if err := emitProjectCreationStatus(onStatus, "Importing repository"); err != nil {
 			s.cleanupCreatedProjectSetup(ctx, c, id, created)
 			return nil, err
@@ -437,21 +456,22 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 			s.cleanupCreatedProjectSetup(ctx, c, id, created)
 			return nil, err
 		}
-	} else {
-		if err := emitProjectCreationStatus(onStatus, "Creating repository"); err != nil {
-			s.cleanupCreatedProjectSetup(ctx, c, id, created)
-			return nil, err
-		}
-		if err := s.createProjectRepository(ctx, c, created.Name, repoPlan); err != nil {
-			s.cleanupCreatedProjectSetup(ctx, c, id, created)
-			return nil, err
-		}
-	}
-	created, err = s.reconcileProjectLiveBindings(ctx, c, created, id)
-	if err != nil {
+	} else if err := emitProjectCreationStatus(onStatus, "Creating repository"); err != nil {
+		// Non-adopted repositories are created by the Project reconciler
+		// converging spec.repository (autoInit creates the repo on the git
+		// host) — no inline creation here.
 		s.cleanupCreatedProjectSetup(ctx, c, id, created)
 		return nil, err
 	}
+	// Wizard step: attach the template's scaffold so the project opens on a
+	// runnable placeholder. Skipped for adopted repos (they hydrate from the
+	// imported tree below). Best-effort — never fails creation.
+	if !repoPlan.Adopted && selectedTemplate != nil {
+		s.emitScaffoldSeed(ctx, id, created, *selectedTemplate, onStatus, c)
+	}
+	// Instances are provisioned by the Project reconciler converging the spec
+	// just written; the immediate response reports them Pending and the
+	// status mirror catches up.
 	updated, err := touchProjectStatus(ctx, c, created)
 	if err != nil {
 		s.cleanupCreatedProjectSetup(ctx, c, id, created)
@@ -697,10 +717,8 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer releaseAssistantReservation()
-	if err := s.deleteProjectProviderResources(r.Context(), c, p, id); err != nil {
-		writeProjectError(w, err)
-		return
-	}
+	// Instances are torn down by the Project reconciler's finalizer when the
+	// CR below is deleted (ownerReferences cover the no-controller case).
 	// Repositories deliberately SURVIVE project deletion — git is the durable
 	// source of truth, and deleting a workspace UI concept must never destroy
 	// the user's code. Deletion only releases the claim on a repository this

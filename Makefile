@@ -282,6 +282,10 @@ codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 	./$(KCP_APIGEN_GEN) --input-dir providers/app-studio/config/crds --output-dir providers/app-studio/config/kcp
 	cp providers/app-studio/config/kcp/apiresourceschema-projects.ai.kedge.faros.sh.yaml \
 	   providers/app-studio/deploy/chart/files/schemas/projects.ai.kedge.faros.sh.yaml
+	cp providers/app-studio/config/kcp/apiresourceschema-sessions.ai.kedge.faros.sh.yaml \
+	   providers/app-studio/deploy/chart/files/schemas/sessions.ai.kedge.faros.sh.yaml
+	cp providers/app-studio/config/kcp/apiresourceschema-studios.ai.kedge.faros.sh.yaml \
+	   providers/app-studio/deploy/chart/files/schemas/studios.ai.kedge.faros.sh.yaml
 	./hack/ensure-boilerplate.sh
 
 codegen-databricks-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the Databricks provider's local API (+ manifest + chart schemas)
@@ -1322,6 +1326,12 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 	@echo "  token: $(APP_STUDIO_TOKEN)"
 	@# Auto-source providers/app-studio/.env (gitignored) so local store/LLM
 	@# overrides reach Tilt and make without a manual export. See .env.example.
+	@# The kubeconfig path is pinned (not picked from existing files): the
+	@# controller manager watches the APIExportEndpointSlice in the PROVIDER
+	@# workspace, so only the workspace-scoped kubeconfig init writes works —
+	@# an admin /clusters/root kubeconfig makes the reconcilers watch an empty
+	@# workspace and silently never engage. The retry loop tolerates the file
+	@# being absent until init writes it.
 	set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
 	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \
 	APP_STUDIO_IN_MEMORY_MESSAGE_STORE="$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-$(APP_STUDIO_IN_MEMORY_MESSAGE_STORE)}"; \
@@ -1335,7 +1345,7 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
 		KEDGE_HUB_INSECURE=true \
 		KEDGE_PROVIDER_NAME=app-studio \
-		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_PROVIDER_KUBECONFIG)" "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
 		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
@@ -1350,7 +1360,7 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
 		KEDGE_HUB_INSECURE=true \
 		KEDGE_PROVIDER_NAME=app-studio \
-		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(APP_STUDIO_PROVIDER_KUBECONFIG)" "$(APP_STUDIO_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
 		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
@@ -1394,10 +1404,25 @@ init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIE
 	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
 		"$(APP_STUDIO_KCP_SERVER)/clusters/$(APP_STUDIO_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(APP_STUDIO_PROVIDER_KUBECONFIG)
-	@echo "Running app-studio-provider init (creates APIExport + schemas + endpoint slice + bind grant)"
+	@echo "Running app-studio-provider init (creates APIExport + schemas + endpoint slice + bind grant + instance claims)"
+	@# The instance permission claims need the infrastructure APIExport's
+	@# identityHash. Auto-discover it in dev; APP_STUDIO_INFRA_IDENTITY_HASH
+	@# in the environment wins (prod supplies it via Helm).
+	INFRA_HASH=$${APP_STUDIO_INFRA_IDENTITY_HASH:-$$(kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
+		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:providers:infrastructure \
+		--insecure-skip-tls-verify \
+		get apiexport infrastructure.providers.kedge.faros.sh -o jsonpath='{.status.identityHash}' 2>/dev/null)}; \
+	if [ -z "$$INFRA_HASH" ]; then echo "WARNING: could not discover the infrastructure APIExport identityHash — instance claims will be hash-less"; fi; \
+	CODE_HASH=$${APP_STUDIO_CODE_IDENTITY_HASH:-$$(kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
+		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:providers:code \
+		--insecure-skip-tls-verify \
+		get apiexport code.providers.kedge.faros.sh -o jsonpath='{.status.identityHash}' 2>/dev/null)}; \
+	if [ -z "$$CODE_HASH" ]; then echo "WARNING: could not discover the code APIExport identityHash — the repositories claim will be hash-less"; fi; \
 	KEDGE_PROVIDER_KUBECONFIG=$(APP_STUDIO_PROVIDER_KUBECONFIG) \
 	APP_STUDIO_WORKSPACE_PATH=$(APP_STUDIO_WORKSPACE_PATH) \
 	KEDGE_SCHEMAS_DIR=$(APP_STUDIO_SCHEMAS_DIR) \
+	APP_STUDIO_INFRA_IDENTITY_HASH="$$INFRA_HASH" \
+	APP_STUDIO_CODE_IDENTITY_HASH="$$CODE_HASH" \
 		$(BINDIR)/app-studio-provider init
 
 ## Delete the App Studio CatalogEntry. Useful while iterating on the chart.

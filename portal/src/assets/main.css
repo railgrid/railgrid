@@ -16,9 +16,20 @@
 @source "../../../providers/infrastructure/portal/src/**/*.{vue,ts}";
 
 /*
- * Theme tokens. LIGHT is the base (in @theme) and is what renders in every
- * degraded path (JS off, matchMedia missing). DARK is an override applied by
- * theme.ts toggling `html.dark`. Exactly one of `.light`/`.dark` is always set.
+ * Theme tokens — "Violet Circuit". DARK is the base (in @theme) and is what
+ * renders in every degraded path (JS off, matchMedia missing). LIGHT is an
+ * override applied by theme.ts toggling `html.light`. Exactly one of
+ * `.light`/`.dark` is always set.
+ *
+ * The radius scale is deliberately sharpened: Tailwind's default --radius-*
+ * values are overridden here so every scattered `rounded-md/lg/xl` utility in
+ * the portal AND the light-DOM providers compiles to the sharp scale without
+ * per-component edits. Law: cards 6px, controls 4px, tags 3px. Never add a
+ * softer radius back locally.
+ *
+ * Glow-means-alive: only live/active things emit light (active nav, primary
+ * buttons, focus rings, the live dot). --color-accent-glow is the single
+ * source of glow strength; light theme dials it down.
  *
  * NOTE: no Tailwind `dark:` variant is used anywhere in the portal or the
  * providers. If one is ever introduced, add:
@@ -31,49 +42,72 @@
   --font-display: "Archivo Variable", "Instrument Sans Variable", ui-sans-serif, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
-  /* ── Light (base) ── */
-  --color-surface: #f5f6fa;
-  --color-surface-raised: #ffffff;
-  --color-surface-overlay: #eef0f6;
-  --color-surface-hover: #e9e9f2;
-  --color-border-subtle: #ecebf4;
-  --color-border-default: #e5e4f0;
-  --color-accent: #6d4fe0;
-  --color-accent-hover: #5a3fd4;
-  --color-accent-subtle: rgba(109, 79, 224, 0.08);
-  --color-accent-glow: rgba(109, 79, 224, 0.14);
-  --color-text-primary: #111322;
-  --color-text-secondary: #5a5d72;
-  --color-text-muted: #9092a9;
-  --color-success: #0fa36b;
-  --color-success-subtle: #e7f8f0;
-  --color-warning: #c77d0a;
-  --color-warning-subtle: #fdf3e2;
-  --color-danger: #dc3d43;
-  --color-danger-subtle: #fdebec;
+  /* ── Sharp radius scale (overrides Tailwind defaults globally) ── */
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --radius-xl: 6px;
+  --radius-2xl: 8px;
+  --radius-3xl: 12px;
+
+  /* ── Dark (base) ── */
+  --color-surface: #0a0b12;
+  --color-surface-raised: #111320;
+  --color-surface-overlay: #171927;
+  --color-surface-hover: #1e2033;
+  --color-border-subtle: rgba(255, 255, 255, 0.07);
+  --color-border-default: rgba(255, 255, 255, 0.11);
+  --color-accent: #8b6bff;
+  --color-accent-hover: #a18aff;
+  --color-accent-subtle: rgba(139, 107, 255, 0.14);
+  --color-accent-glow: rgba(139, 107, 255, 0.3);
+  --color-text-primary: #e9e9f2;
+  --color-text-secondary: #8a8ca6;
+  --color-text-muted: #5d5f78;
+  --color-success: #2fd6a0;
+  --color-success-subtle: rgba(47, 214, 160, 0.12);
+  --color-success-border: rgba(47, 214, 160, 0.3);
+  --color-warning: #f0a63a;
+  --color-warning-subtle: rgba(240, 166, 58, 0.12);
+  --color-danger: #ff5d5d;
+  --color-danger-subtle: rgba(255, 93, 93, 0.12);
+  --color-danger-hover: #ff7676;
+  /* Aliases some provider stylesheets and the portalkit reference. Kept as
+   * real tokens so no var() ever falls through to a stale literal. */
+  --color-danger-surface: rgba(255, 93, 93, 0.12);
+  --color-surface-base: #0a0b12;
+  --color-text-error: #ff5d5d;
+  --color-on-accent: #ffffff;
 }
 
-/* ── Dark override (flat ink, no glass) ── */
-html.dark {
-  --color-surface: #0b0c11;
-  --color-surface-raised: #12131b;
-  --color-surface-overlay: #181926;
-  --color-surface-hover: #1e1f2e;
-  --color-border-subtle: rgba(255, 255, 255, 0.06);
-  --color-border-default: rgba(255, 255, 255, 0.1);
-  --color-accent: #7c5bf5;
-  --color-accent-hover: #9b85f7;
-  --color-accent-subtle: rgba(124, 91, 245, 0.12);
-  --color-accent-glow: rgba(124, 91, 245, 0.2);
-  --color-text-primary: #eeeef3;
-  --color-text-secondary: #7e7e96;
-  --color-text-muted: #565870;
-  --color-success: #34d399;
-  --color-success-subtle: rgba(52, 211, 153, 0.12);
-  --color-warning: #fbbf24;
-  --color-warning-subtle: rgba(251, 191, 36, 0.12);
-  --color-danger: #f87171;
-  --color-danger-subtle: rgba(248, 113, 113, 0.12);
+/* ── Light override (sharpened light — same shapes, glow becomes shadow) ── */
+html.light {
+  --color-surface: #f1f1f6;
+  --color-surface-raised: #ffffff;
+  --color-surface-overlay: #eaeaf2;
+  --color-surface-hover: #e3e3ee;
+  --color-border-subtle: #e7e6f1;
+  --color-border-default: #dfdeeb;
+  --color-accent: #6b48e8;
+  --color-accent-hover: #5a38d6;
+  --color-accent-subtle: rgba(107, 72, 232, 0.1);
+  --color-accent-glow: rgba(107, 72, 232, 0.18);
+  --color-text-primary: #14152a;
+  --color-text-secondary: #565975;
+  --color-text-muted: #8d8fa6;
+  --color-success: #0c9c66;
+  --color-success-subtle: #e5f6ef;
+  --color-success-border: rgba(12, 156, 102, 0.3);
+  --color-warning: #c07508;
+  --color-warning-subtle: #fdf2e0;
+  --color-danger: #d63a40;
+  --color-danger-subtle: #fcebec;
+  --color-danger-hover: #bf2f35;
+  --color-danger-surface: #fcebec;
+  --color-surface-base: #f1f1f6;
+  --color-text-error: #d63a40;
+  --color-on-accent: #ffffff;
 }
 
 body {
@@ -81,6 +115,9 @@ body {
   color: var(--color-text-primary);
   font-family: var(--font-sans);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  /* Native checkboxes/radios/progress across the host AND every light-DOM
+   * provider pick up the brand violet instead of the OS default blue. */
+  accent-color: var(--color-accent);
 }
 
 /*
@@ -102,11 +139,11 @@ body {
  * 120px over the 240px tile; lines spaced 48px).
  * ────────────────────────────────────────────────────────────────────────── */
 .contour-grid {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='none' stroke='%236d4fe0' stroke-opacity='0.06' stroke-width='1'%3E%3Cpath d='M0 24 Q30 12 60 24 T120 24 T180 24 T240 24'/%3E%3Cpath d='M0 72 Q30 84 60 72 T120 72 T180 72 T240 72'/%3E%3Cpath d='M0 120 Q30 108 60 120 T120 120 T180 120 T240 120'/%3E%3Cpath d='M0 168 Q30 180 60 168 T120 168 T180 168 T240 168'/%3E%3Cpath d='M0 216 Q30 204 60 216 T120 216 T180 216 T240 216'/%3E%3C/g%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='none' stroke='%238b6bff' stroke-opacity='0.05' stroke-width='1'%3E%3Cpath d='M0 24 Q30 12 60 24 T120 24 T180 24 T240 24'/%3E%3Cpath d='M0 72 Q30 84 60 72 T120 72 T180 72 T240 72'/%3E%3Cpath d='M0 120 Q30 108 60 120 T120 120 T180 120 T240 120'/%3E%3Cpath d='M0 168 Q30 180 60 168 T120 168 T180 168 T240 168'/%3E%3Cpath d='M0 216 Q30 204 60 216 T120 216 T180 216 T240 216'/%3E%3C/g%3E%3C/svg%3E");
   background-size: 240px 240px;
 }
-html.dark .contour-grid {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='none' stroke='%237c5bf5' stroke-opacity='0.05' stroke-width='1'%3E%3Cpath d='M0 24 Q30 12 60 24 T120 24 T180 24 T240 24'/%3E%3Cpath d='M0 72 Q30 84 60 72 T120 72 T180 72 T240 72'/%3E%3Cpath d='M0 120 Q30 108 60 120 T120 120 T180 120 T240 120'/%3E%3Cpath d='M0 168 Q30 180 60 168 T120 168 T180 168 T240 168'/%3E%3Cpath d='M0 216 Q30 204 60 216 T120 216 T180 216 T240 216'/%3E%3C/g%3E%3C/svg%3E");
+html.light .contour-grid {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='none' stroke='%236b48e8' stroke-opacity='0.06' stroke-width='1'%3E%3Cpath d='M0 24 Q30 12 60 24 T120 24 T180 24 T240 24'/%3E%3Cpath d='M0 72 Q30 84 60 72 T120 72 T180 72 T240 72'/%3E%3Cpath d='M0 120 Q30 108 60 120 T120 120 T180 120 T240 120'/%3E%3Cpath d='M0 168 Q30 180 60 168 T120 168 T180 168 T240 168'/%3E%3Cpath d='M0 216 Q30 204 60 216 T120 216 T180 216 T240 216'/%3E%3C/g%3E%3C/svg%3E");
 }
 /* Fade the pattern out toward the bottom for hero tops. */
 .contour-grid-fade {
@@ -155,13 +192,13 @@ html.dark .contour-grid {
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border-default);
   box-shadow:
-    0 1px 2px rgba(17, 19, 34, 0.04),
-    0 8px 24px rgba(17, 19, 34, 0.08);
-}
-html.dark .island {
-  box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.4),
     0 8px 24px rgba(0, 0, 0, 0.5);
+}
+html.light .island {
+  box-shadow:
+    0 1px 2px rgba(20, 21, 42, 0.04),
+    0 8px 24px rgba(20, 21, 42, 0.08);
 }
 
 /* ── Island nav item ── */
@@ -182,12 +219,12 @@ html.dark .island {
   height: 4px;
   border-radius: 50%;
   background: var(--color-accent);
+  box-shadow: 0 0 8px var(--color-accent-glow);
 }
 
-/* ── Progress / divider line (flat, accent) ── */
+/* ── Progress / divider line (flat, accent, square-ended) ── */
 .energy-line {
   background: var(--color-accent);
-  border-radius: 9999px;
 }
 
 /* ── Bento grid ── */
@@ -232,7 +269,7 @@ html.dark .island {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--color-accent) 15%, transparent);
-  border-radius: 10px;
+  border-radius: 9999px; /* true capsule on the 4px thumb */
 }
 ::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--color-accent) 30%, transparent);

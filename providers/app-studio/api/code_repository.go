@@ -98,6 +98,7 @@ func (p projectRepositoryPlan) projectBinding() *aiv1alpha1.ProjectRepositoryBin
 		RepositoryRef: p.Ref,
 		Name:          p.Name,
 		ConnectionRef: p.ConnectionRef,
+		Adopted:       p.Adopted,
 	}
 }
 
@@ -281,33 +282,6 @@ func repositoryName(ctx context.Context, c *asclient.Client, requested, displayN
 		}
 	}
 	return dns1123LabelWithSuffix(base, uuid.NewString()[:8]), nil
-}
-
-func (s *Server) createProjectRepository(ctx context.Context, c *asclient.Client, projectName string, plan projectRepositoryPlan) error {
-	repo := &unstructured.Unstructured{}
-	repo.SetAPIVersion(codeSchemeGroupVersion.String())
-	repo.SetKind("Repository")
-	repo.SetName(plan.Ref)
-	repo.SetLabels(map[string]string{
-		projectRepositoryProjectLabel: projectName,
-	})
-	repo.SetAnnotations(map[string]string{
-		projectRepositoryProjectAnnotation: projectName,
-	})
-	repo.Object["spec"] = map[string]any{
-		"connectionRef": plan.ConnectionRef,
-		"name":          plan.Name,
-		"visibility":    "private",
-		"description":   plan.Description,
-		"autoInit":      true,
-	}
-	if _, err := c.Resource(codeRepositoryResource, "").Create(ctx, repo, metav1.CreateOptions{}); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			return newValidationError(fmt.Sprintf("Code repository %q already exists", plan.Ref))
-		}
-		return codeProviderRequestError("create Code repository", err)
-	}
-	return nil
 }
 
 func projectRepositoryView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) *ProjectRepositoryView {

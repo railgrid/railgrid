@@ -17,8 +17,10 @@
  *     .k-input, .k-eyebrow, .k-kpi. They live in portal/src/assets/kedge-ui.css
  *     and reach this element through the light DOM, so use them instead of
  *     re-deriving the styling here; local rules should cover only
- *     edges-specific layout. Recipe shapes: cards/tables = 12px radius,
- *     controls = 8px, table headers = 10px/600 uppercase muted, rows = 13px.
+ *     edges-specific layout. Recipe shapes: cards/tables = 6px radius,
+ *     controls = 4px, badges = square 3px mono tags, table headers =
+ *     10px/600 uppercase muted, rows = 13px. Only primary buttons, input
+ *     focus and active nav glow (--color-accent-glow) — nothing else.
  */
 
 kedge-provider-edges {
@@ -38,7 +40,7 @@ kedge-provider-edges .header-actions { display: flex; gap: 8px; }
 /* ── Buttons ── */
 kedge-provider-edges .btn {
   display: inline-flex; align-items: center; gap: 6px;
-  padding: 7px 12px; border: 1px solid var(--color-border-default); border-radius: 8px;
+  padding: 7px 12px; border: 1px solid var(--color-border-default); border-radius: 4px;
   background: var(--color-surface-overlay); color: var(--color-text-primary);
   font-size: 12px; font-weight: 500; cursor: pointer;
   transition: border-color .15s, background .15s, opacity .15s;
@@ -46,23 +48,23 @@ kedge-provider-edges .btn {
 kedge-provider-edges .btn:hover { border-color: color-mix(in srgb, var(--color-accent) 30%, transparent); background: var(--color-surface-hover); }
 kedge-provider-edges .btn:disabled { opacity: .4; cursor: default; }
 kedge-provider-edges .btn:disabled:hover { border-color: var(--color-border-default); background: var(--color-surface-overlay); }
-kedge-provider-edges .btn.primary { background: var(--color-accent); border-color: transparent; color: #fff; }
-kedge-provider-edges .btn.primary:hover { background: var(--color-accent); opacity: .9; }
+kedge-provider-edges .btn.primary { background: var(--color-accent); border-color: transparent; color: #fff; box-shadow: 0 0 16px var(--color-accent-glow); }
+kedge-provider-edges .btn.primary:hover { background: var(--color-accent-hover); box-shadow: 0 0 22px var(--color-accent-glow); }
 kedge-provider-edges .btn.danger:hover { border-color: color-mix(in srgb, var(--color-danger) 30%, transparent); background: var(--color-danger-subtle); color: var(--color-danger); }
 
 /* ── Icon buttons ── */
-kedge-provider-edges .icon { display: inline-flex; align-items: center; justify-content: center; background: none; border: none; color: var(--color-text-muted); cursor: pointer; padding: 5px; border-radius: 8px; transition: color .15s, background .15s; }
+kedge-provider-edges .icon { display: inline-flex; align-items: center; justify-content: center; background: none; border: none; color: var(--color-text-muted); cursor: pointer; padding: 5px; border-radius: 4px; transition: color .15s, background .15s; }
 kedge-provider-edges .icon:hover { color: var(--color-text-primary); background: var(--color-surface-hover); }
 kedge-provider-edges .icon.danger:hover { color: var(--color-danger); background: var(--color-danger-subtle); }
 
 /* ── Inputs & labels ── */
 kedge-provider-edges .input {
   width: 100%; box-sizing: border-box; padding: 8px 12px;
-  border: 1px solid var(--color-border-default); border-radius: 8px;
+  border: 1px solid var(--color-border-default); border-radius: 4px;
   background: var(--color-surface-overlay); color: var(--color-text-primary);
-  font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; transition: border-color .15s;
+  font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; transition: border-color .15s, box-shadow .15s;
 }
-kedge-provider-edges .input:focus { outline: none; border-color: var(--color-accent); }
+kedge-provider-edges .input:focus { outline: none; border-color: var(--color-accent); box-shadow: 0 0 0 3px var(--color-accent-subtle), 0 0 14px var(--color-accent-glow); }
 kedge-provider-edges .input::placeholder { color: var(--color-text-muted); }
 kedge-provider-edges .lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .15em; color: var(--color-text-muted); }
 /* Labelled form field: label stacked above its control with a small gap. */
@@ -70,7 +72,7 @@ kedge-provider-edges .fld { display: flex; flex-direction: column; gap: 5px; }
 kedge-provider-edges select.input { appearance: none; -webkit-appearance: none; cursor: pointer; }
 
 /* ── Cards ── */
-kedge-provider-edges .wiz-card { border: 1px solid var(--color-border-subtle); background: var(--color-surface-raised); border-radius: 16px; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+kedge-provider-edges .wiz-card { border: 1px solid var(--color-border-subtle); background: var(--color-surface-raised); border-radius: 6px; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
 kedge-provider-edges .wiz-card.center { align-items: center; text-align: center; }
 kedge-provider-edges .wiz-card h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--color-text-primary); }
 
@@ -86,24 +88,24 @@ kedge-provider-edges .wiz-actions { display: flex; justify-content: flex-end; ga
 
 /* ── Type picker (radio cards) ── */
 kedge-provider-edges .types { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-kedge-provider-edges .type { display: flex; align-items: center; gap: 8px; padding: 12px; border: 1px solid var(--color-border-subtle); border-radius: 10px; background: var(--color-surface-overlay); color: var(--color-text-primary); cursor: pointer; text-align: left; transition: border-color .15s, background .15s; }
+kedge-provider-edges .type { display: flex; align-items: center; gap: 8px; padding: 12px; border: 1px solid var(--color-border-subtle); border-radius: 6px; background: var(--color-surface-overlay); color: var(--color-text-primary); cursor: pointer; text-align: left; transition: border-color .15s, background .15s; }
 kedge-provider-edges .type:hover { border-color: color-mix(in srgb, var(--color-accent) 30%, transparent); }
 kedge-provider-edges .type.sel { border-color: var(--color-accent); background: var(--color-accent-subtle); }
 kedge-provider-edges .type b { display: block; font-size: 12px; font-weight: 600; }
 kedge-provider-edges .type small { color: var(--color-text-secondary); font-size: 10px; }
 
 /* ── Code snippets ── */
-kedge-provider-edges .snippet { border: 1px solid var(--color-border-subtle); border-radius: 12px; padding: 12px; background: var(--color-surface-raised); }
+kedge-provider-edges .snippet { border: 1px solid var(--color-border-subtle); border-radius: 6px; padding: 12px; background: var(--color-surface-raised); }
 kedge-provider-edges .snippet-head { display: flex; justify-content: space-between; align-items: center; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--color-text-muted); margin-bottom: 8px; }
-kedge-provider-edges .snippet pre { margin: 0; overflow-x: auto; background: var(--color-surface-overlay); border-radius: 8px; padding: 12px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; line-height: 1.6; color: var(--color-text-secondary); }
+kedge-provider-edges .snippet pre { margin: 0; overflow-x: auto; background: var(--color-surface-overlay); border-radius: 4px; padding: 12px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px; line-height: 1.6; color: var(--color-text-secondary); }
 kedge-provider-edges .copy { display: inline-flex; align-items: center; gap: 4px; background: none; border: none; color: var(--color-text-muted); cursor: pointer; font-size: 10px; font-weight: 500; }
 kedge-provider-edges .copy:hover { color: var(--color-accent); }
 kedge-provider-edges .copy:disabled { opacity: .4; cursor: default; }
 
 /* ── Banners / callouts ── */
-kedge-provider-edges .waiting { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--color-accent) 20%, transparent); background: var(--color-accent-subtle); border-radius: 10px; color: var(--color-text-secondary); }
-kedge-provider-edges .banner.warn { border: 1px solid color-mix(in srgb, var(--color-warning) 30%, transparent); background: var(--color-warning-subtle); color: var(--color-warning); padding: 10px 12px; border-radius: 10px; font-size: 12px; }
-kedge-provider-edges .banner.error { border: 1px solid color-mix(in srgb, var(--color-danger) 30%, transparent); background: var(--color-danger-subtle); color: var(--color-danger); padding: 10px 12px; border-radius: 10px; margin-bottom: 14px; font-size: 12px; }
+kedge-provider-edges .waiting { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--color-accent) 20%, transparent); background: var(--color-accent-subtle); border-radius: 6px; color: var(--color-text-secondary); }
+kedge-provider-edges .banner.warn { border: 1px solid color-mix(in srgb, var(--color-warning) 30%, transparent); background: var(--color-warning-subtle); color: var(--color-warning); padding: 10px 12px; border-radius: 6px; font-size: 12px; }
+kedge-provider-edges .banner.error { border: 1px solid color-mix(in srgb, var(--color-danger) 30%, transparent); background: var(--color-danger-subtle); color: var(--color-danger); padding: 10px 12px; border-radius: 6px; margin-bottom: 14px; font-size: 12px; }
 
 /* ── Misc text ── */
 kedge-provider-edges .row { display: flex; align-items: center; gap: 8px; }
@@ -120,7 +122,7 @@ kedge-provider-edges .empty-title { margin-top: 12px; font-weight: 600; color: v
 kedge-provider-edges .empty code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; color: var(--color-text-primary); background: var(--color-surface-overlay); padding: 1px 5px; border-radius: 4px; }
 
 /* ── Table (mirrors portal ResourceTable card) ── */
-kedge-provider-edges .edges-table-wrap { overflow: hidden; border: 1px solid var(--color-border-subtle); border-radius: 16px; background: var(--color-surface-raised); }
+kedge-provider-edges .edges-table-wrap { overflow: hidden; border: 1px solid var(--color-border-subtle); border-radius: 6px; background: var(--color-surface-raised); }
 kedge-provider-edges .edges-table { width: 100%; border-collapse: collapse; }
 kedge-provider-edges .edges-table th { text-align: left; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .15em; color: var(--color-text-muted); padding: 12px 20px; border-bottom: 1px solid var(--color-border-subtle); }
 kedge-provider-edges .edges-table td { padding: 12px 20px; border-bottom: 1px solid var(--color-border-subtle); color: var(--color-text-secondary); font-size: 13px; }
@@ -130,15 +132,15 @@ kedge-provider-edges .edges-table tr.clickable:hover td { background: color-mix(
 kedge-provider-edges .name { font-weight: 500; color: var(--color-text-primary); }
 kedge-provider-edges .actions { text-align: right; }
 
-/* ── Pills & status badges (mirror portal StatusBadge tones) ── */
-kedge-provider-edges .pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; background: var(--color-surface-overlay); border: 1px solid var(--color-border-default); color: var(--color-text-secondary); font-size: 11px; font-weight: 500; }
-kedge-provider-edges .status { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
+/* ── Tags & status badges (square mono tags, mirror portal .k-badge) ── */
+kedge-provider-edges .pill { display: inline-flex; align-items: center; gap: 5px; padding: 2.5px 8px; border-radius: 3px; background: var(--color-surface-overlay); border: 1px solid color-mix(in srgb, currentColor 35%, transparent); color: var(--color-text-secondary); font-family: var(--font-mono); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+kedge-provider-edges .status { display: inline-flex; align-items: center; gap: 5px; padding: 2.5px 8px; border-radius: 3px; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); font-family: var(--font-mono); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
 kedge-provider-edges .status.ok { background: var(--color-success-subtle); color: var(--color-success); }
 kedge-provider-edges .status.down { background: var(--color-warning-subtle); color: var(--color-warning); }
 
 /* ── Detail view ── */
 kedge-provider-edges .detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 8px; }
-kedge-provider-edges .field { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--color-border-subtle); border-radius: 12px; background: var(--color-surface-raised); }
+kedge-provider-edges .field { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; padding: 12px 14px; border: 1px solid var(--color-border-subtle); border-radius: 6px; background: var(--color-surface-raised); }
 kedge-provider-edges .field .lbl { margin-bottom: 2px; }
 kedge-provider-edges .field > span:not(.lbl):not(.status) { font-size: 13px; color: var(--color-text-primary); }
 kedge-provider-edges .section { margin-top: 24px; }
@@ -158,14 +160,14 @@ kedge-provider-edges .es-msg { flex: 1; }
 
 /* EdgeService cards (server edge detail: discovered host services). */
 kedge-provider-edges .svc-cards { display: flex; flex-direction: column; gap: 10px; }
-kedge-provider-edges .svc-card { border: 1px solid var(--color-border-default); border-radius: 10px; padding: 12px 14px; background: var(--color-surface-overlay); }
+kedge-provider-edges .svc-card { border: 1px solid var(--color-border-default); border-radius: 6px; padding: 12px 14px; background: var(--color-surface-overlay); }
 kedge-provider-edges .svc-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 kedge-provider-edges .svc-title { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13px; color: var(--color-text-primary); }
 kedge-provider-edges .svc-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--color-text-secondary); }
-kedge-provider-edges .svc-meta .pill.ok-pill { background: var(--color-success-subtle); border-color: transparent; color: var(--color-success); }
+kedge-provider-edges .svc-meta .pill.ok-pill { background: var(--color-success-subtle); color: var(--color-success); }
 kedge-provider-edges .svc-connect { margin-top: 10px; }
-kedge-provider-edges .svc-input { width: 100%; padding: 7px 10px; border: 1px solid var(--color-border-default); border-radius: 8px; background: var(--color-surface-base); color: var(--color-text-primary); font-size: 12px; box-sizing: border-box; margin-bottom: 8px; }
-kedge-provider-edges .svc-input:focus { outline: none; border-color: var(--color-accent); }
+kedge-provider-edges .svc-input { width: 100%; padding: 7px 10px; border: 1px solid var(--color-border-default); border-radius: 4px; background: var(--color-surface-base); color: var(--color-text-primary); font-size: 12px; box-sizing: border-box; margin-bottom: 8px; }
+kedge-provider-edges .svc-input:focus { outline: none; border-color: var(--color-accent); box-shadow: 0 0 0 3px var(--color-accent-subtle), 0 0 14px var(--color-accent-glow); }
 kedge-provider-edges .muted.small { font-size: 11px; margin-top: 6px; }
 kedge-provider-edges .svc-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 10px 0; }
 kedge-provider-edges .svc-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--color-text-secondary); }
@@ -173,17 +175,17 @@ kedge-provider-edges .svc-form .svc-input { margin-bottom: 0; }
 kedge-provider-edges .svc-form select.svc-input { appearance: auto; }
 
 /* --- Marketplace (Workloads page) --------------------------------------- */
-kedge-provider-edges .market { border: 1px solid var(--color-border-subtle); border-radius: 16px; margin-bottom: 16px; overflow: hidden; background: var(--color-surface-raised); }
+kedge-provider-edges .market { border: 1px solid var(--color-border-subtle); border-radius: 6px; margin-bottom: 16px; overflow: hidden; background: var(--color-surface-raised); }
 kedge-provider-edges .market-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; cursor: pointer; }
 kedge-provider-edges .market-head h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--color-text-primary); }
 kedge-provider-edges .market-body { padding: 4px 16px 16px; border-top: 1px solid var(--color-border-subtle); }
 kedge-provider-edges .market-cat { margin-top: 14px; }
 kedge-provider-edges .market-cat-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--color-text-muted); margin-bottom: 8px; }
 kedge-provider-edges .market-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
-kedge-provider-edges .market-card { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--color-border-subtle); border-radius: 10px; padding: 12px; background: var(--color-surface-overlay); }
+kedge-provider-edges .market-card { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--color-border-subtle); border-radius: 6px; padding: 12px; background: var(--color-surface-overlay); }
 kedge-provider-edges .market-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 kedge-provider-edges .market-name { font-weight: 600; font-size: 13px; color: var(--color-text-primary); }
 kedge-provider-edges .market-desc { margin: 0; font-size: 12px; color: var(--color-text-secondary); min-height: 32px; }
 kedge-provider-edges .market-meta { font-size: 11px; }
-kedge-provider-edges .chip { font-size: 10px; padding: 1px 8px; border-radius: 999px; background: var(--color-surface-hover); color: var(--color-text-muted); white-space: nowrap; }
+kedge-provider-edges .chip { font-family: var(--font-mono); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; padding: 2.5px 8px; border-radius: 3px; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); background: var(--color-surface-hover); color: var(--color-text-muted); white-space: nowrap; }
 kedge-provider-edges .btn.sm { padding: 4px 10px; font-size: 12px; align-self: flex-start; }

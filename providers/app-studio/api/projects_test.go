@@ -33,6 +33,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/faroshq/provider-app-studio/bindings"
 	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/workspace"
@@ -87,13 +88,18 @@ func TestCreateProjectPreflightTemplateCreatesBindingAndInstance(t *testing.T) {
 	if binding.ResourceRef == nil || binding.ResourceRef.Name != created.Name+"-dev" {
 		t.Fatalf("created binding = %+v, want %s-dev", binding, created.Name)
 	}
-	applicationGVR := schema.GroupVersionResource{
-		Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Resource: "applications",
+	// Instances are materialized by the Project reconciler, not the handler.
+	// The write contract here is a self-contained binding: the desired
+	// instance must be derivable from the spec alone.
+	want, gvr, err := bindings.Desired(created, binding)
+	if err != nil {
+		t.Fatalf("binding is not self-contained: %v", err)
 	}
-	if _, err := client.Resource(providerBindingResource(applicationGVR, "Application"), "").Get(
-		context.Background(), created.Name+"-dev", metav1.GetOptions{},
-	); err != nil {
-		t.Fatalf("development instance was not reconciled: %v", err)
+	if gvr.Resource != "applications" || gvr.Group != "infrastructure.kedge.faros.sh" {
+		t.Fatalf("binding GVR = %v, want applications.infrastructure.kedge.faros.sh", gvr)
+	}
+	if want.GetName() != created.Name+"-dev" {
+		t.Fatalf("desired instance name = %q, want %s-dev", want.GetName(), created.Name)
 	}
 }
 
@@ -146,13 +152,17 @@ func TestCreateProjectLivePathListsCatalogCallsPreflightOnceAndCreatesInstance(t
 	if created.Spec.Template == nil || created.Spec.Template.Name != "application" {
 		t.Fatalf("created template = %+v, want application", created.Spec.Template)
 	}
-	applicationGVR := schema.GroupVersionResource{
-		Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Resource: "applications",
+	// Instances are materialized by the Project reconciler, not the handler:
+	// assert the spec-only contract (a self-contained development binding).
+	if len(created.Spec.Environments) != 1 || len(created.Spec.Environments[0].Bindings) != 1 {
+		t.Fatalf("created environments = %+v, want one development binding", created.Spec.Environments)
 	}
-	if _, err := client.Resource(providerBindingResource(applicationGVR, "Application"), "").Get(
-		context.Background(), created.Name+"-dev", metav1.GetOptions{},
-	); err != nil {
-		t.Fatalf("development instance was not reconciled: %v", err)
+	want, gvr, err := bindings.Desired(created, created.Spec.Environments[0].Bindings[0])
+	if err != nil {
+		t.Fatalf("binding is not self-contained: %v", err)
+	}
+	if gvr.Resource != "applications" || want.GetName() != created.Name+"-dev" {
+		t.Fatalf("desired instance = %s/%s, want applications/%s-dev", gvr.Resource, want.GetName(), created.Name)
 	}
 }
 

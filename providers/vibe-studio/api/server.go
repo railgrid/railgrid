@@ -28,6 +28,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -738,7 +740,9 @@ func (s *Server) ensureSessionCR(scope store.Scope, auth callerAuth, id, intent 
 	sess := &vibev1alpha1.Session{}
 	sess.Name = id
 	sess.Annotations = map[string]string{vibev1alpha1.SessionTenantAnnotation: scope.Tenant}
-	sess.Spec = vibev1alpha1.SessionSpec{Intent: intent}
+	// A pasted brief can run past the spec bound; the store keeps the full
+	// text, so clamping the mirror costs nothing and keeps the CR valid.
+	sess.Spec = vibev1alpha1.SessionSpec{Intent: clampBytes(intent, 4096)}
 	created, err := cl.ApplySession(ctx, sess)
 	if err != nil {
 		log.Printf("create session CR %s: %v", id, err)
@@ -878,9 +882,11 @@ func (s *Server) applyProject(ctx context.Context, cl *client.Client, sessionID 
 			}
 		}
 	}
+	// The blueprint is model-written, so title and summary can run past the
+	// CR's length bounds; clamp rather than fail the whole provision.
 	p.Spec = vibev1alpha1.ProjectSpec{
-		DisplayName: firstNonEmpty(bp.Title, "New app"),
-		Description: bp.Summary,
+		DisplayName: clampBytes(firstNonEmpty(bp.Title, "New app"), 128),
+		Description: clampBytes(bp.Summary, 2048),
 		Repository:  repoBinding,
 		Development: development,
 		Template:    &vibev1alpha1.ProjectTemplateSpec{Name: bp.Template.Name},
@@ -937,6 +943,19 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// clampBytes trims s to at most max bytes without splitting a rune, so a
+// long model-written string still satisfies a kubebuilder MaxLength bound.
+func clampBytes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return strings.TrimRightFunc(s[:cut], unicode.IsSpace)
 }
 
 // projectName derives a DNS-safe, unique CR name from the blueprint title and

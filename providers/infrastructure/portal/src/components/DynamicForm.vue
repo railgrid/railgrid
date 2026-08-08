@@ -144,8 +144,8 @@ function coerce(t: string, raw: string | boolean): unknown {
 
 <style scoped>
 .dynform-group {
-  border: 1px solid #8883;
-  border-radius: 0.4rem;
+  border: 1px solid var(--color-border-subtle, #8883);
+  border-radius: 6px;
   padding: 0.5rem 0.8rem 0.2rem;
   margin: 0.4rem 0;
 }

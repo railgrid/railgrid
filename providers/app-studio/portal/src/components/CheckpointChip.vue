@@ -37,7 +37,7 @@ const title = computed(() => {
     type="button"
     :disabled="!actionable"
     :title="title"
-    class="inline-flex items-center gap-1.5 rounded-full border border-current/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors duration-150"
+    class="inline-flex items-center gap-1.5 rounded-sm border border-current/35 px-2 py-[2.5px] font-mono text-[10px] font-semibold uppercase tracking-[0.06em] transition-colors duration-150"
     :class="[config.bg, config.text, actionable ? 'cursor-pointer hover:brightness-110' : 'cursor-default']"
     @click="actionable && emit('act', checkpoint)"
   >

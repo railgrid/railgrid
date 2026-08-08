@@ -82,7 +82,7 @@ function handleOIDCLogin() {
     <!-- Left decorative panel (hidden on small) -->
     <div class="hidden flex-1 items-center justify-center lg:flex">
       <div class="relative">
-        <div class="relative flex h-72 w-72 flex-col items-center justify-center rounded-3xl border border-border-default bg-surface-raised shadow-sm">
+        <div class="relative flex h-72 w-72 flex-col items-center justify-center rounded-xl border border-border-default bg-surface-raised shadow-sm">
           <div class="relative flex h-20 w-20 items-center justify-center rounded-xl border border-border-default bg-surface-overlay">
             <Hexagon class="h-10 w-10 text-accent" :stroke-width="1.5" />
           </div>
@@ -122,7 +122,7 @@ function handleOIDCLogin() {
             <!-- OIDC -->
             <button
               v-if="auth.authMode === 'both' || auth.authMode === 'oidc'"
-              class="group flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-[13px] font-semibold text-white transition-all duration-200 hover:bg-accent-hover active:scale-[0.98]"
+              class="group flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-[13px] font-semibold text-white shadow-[0_0_16px_var(--color-accent-glow)] transition-all duration-200 hover:bg-accent-hover active:scale-[0.98]"
               @click="handleOIDCLogin"
             >
               <ShieldCheck class="h-4 w-4 transition-transform duration-200 group-hover:scale-110" :stroke-width="2" />

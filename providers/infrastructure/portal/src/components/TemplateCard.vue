@@ -7,13 +7,14 @@ defineEmits<{ (e: 'select', name: string): void }>()
 
 // Say up front whether this thing will have a URL. Users otherwise provision,
 // wait, and go looking for a link that is never coming — and 'public' is the
-// unremarkable case, so only the other two are worth a pill.
+// unremarkable case, so only the other two get an icon. The icon alone marks
+// "not (necessarily) public"; the tooltip carries the actual explanation.
 const exposure = computed(() => {
   switch (props.template.exposure || 'internal') {
     case 'internal':
-      return { label: 'internal', title: 'No public URL. Reached from inside the platform, authorized per caller.' }
+      return { kind: 'internal' as const, title: 'Internal — no public URL. Reached from inside the platform, authorized per caller.' }
     case 'optional':
-      return { label: 'internal by default', title: 'No public URL unless this instance asks for one — and then only behind an OIDC gate.' }
+      return { kind: 'optional' as const, title: 'Internal by default — no public URL unless the instance asks for one, and then only behind an OIDC gate.' }
     default:
       return null
   }
@@ -25,7 +26,18 @@ const exposure = computed(() => {
     <div class="template-card-head">
       <div class="template-card-title">{{ template.displayName || template.name }}</div>
       <span v-if="template.cloud" class="cloud-pill">{{ template.cloud }}</span>
-      <span v-if="exposure" class="exposure-pill" :title="exposure.title">{{ exposure.label }}</span>
+      <span v-if="exposure" class="exposure-icon" :title="exposure.title" :aria-label="exposure.title" role="img">
+        <!-- internal: closed padlock — never public -->
+        <svg v-if="exposure.kind === 'internal'" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3.5" y="7" width="9" height="6.5" rx="1" />
+          <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
+        </svg>
+        <!-- optional: dashed globe — may be published if the instance asks -->
+        <svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="8" cy="8" r="6" stroke-dasharray="2.4 2" />
+          <path d="M2.5 8h11M8 2.2c-3.2 3.4-3.2 8.2 0 11.6M8 2.2c3.2 3.4 3.2 8.2 0 11.6" />
+        </svg>
+      </span>
     </div>
     <p class="template-card-desc">{{ template.description }}</p>
     <div class="template-card-foot">
@@ -36,12 +48,18 @@ const exposure = computed(() => {
 </template>
 
 <style scoped>
-.exposure-pill {
-  font-size: 0.75rem;
-  padding: 0.1rem 0.45rem;
-  border-radius: 999px;
-  border: 1px solid var(--border, #d0d7de);
-  color: var(--muted, #57606a);
-  white-space: nowrap;
+.exposure-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  color: var(--color-text-muted, #5d5f78);
+  cursor: help;
+}
+.exposure-icon svg {
+  width: 14px;
+  height: 14px;
 }
 </style>

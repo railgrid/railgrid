@@ -148,10 +148,14 @@ func runServe() {
 	}
 	defer closeStore()
 
+	// One workspace store instance, shared by the HTTP layer and the Project
+	// reconciler's commit convergence (same PVC, same settlement ledger).
+	workspaces := openWorkspaceStore()
+
 	apiServer := api.NewWithWorkspaceContext(ctx,
 		gqlClient,
 		msgStore,
-		openWorkspaceStore(),
+		workspaces,
 		os.Getenv("KEDGE_HUB_URL"),
 		// The MCP virtual-workspace endpoint lives on the same hub host as the
 		// GraphQL client above, so it must honor the standard KEDGE_HUB_INSECURE
@@ -197,6 +201,47 @@ func runServe() {
 	}()
 
 	go runHeartbeat(ctx)
+
+	// Deterministic lifecycle: the Project reconciler converges instances
+	// across every tenant workspace. Opt-in via KEDGE_PROVIDER_KUBECONFIG.
+	//
+	// Started in a retry loop because ordering is not guaranteed: the
+	// provider frequently comes up before `init` has created its workspace,
+	// APIExport, and endpoint slice (fresh cluster, first deploy), and a
+	// one-shot start would leave the provider serving HTTP with no
+	// controller — silently, forever.
+	go func() {
+		deps := controllerDeps{
+			Workspace:   workspaces,
+			Busy:        apiServer.AssistantBusy,
+			Store:       msgStore,
+			HubBase:     strings.TrimRight(os.Getenv("KEDGE_HUB_URL"), "/"),
+			HubInsecure: os.Getenv("KEDGE_HUB_INSECURE") == "true",
+		}
+		for attempt := 1; ; attempt++ {
+			// A missing kubeconfig is retried, not fatal: on a fresh stack
+			// the provider comes up before `init` has written the
+			// workspace-scoped kubeconfig, and giving up here would leave
+			// the provider serving HTTP with no controller — silently,
+			// forever (the exact failure mode this loop exists to prevent).
+			kcpConfig, err := loadProviderConfig()
+			if err == nil {
+				if err = startControllerManager(ctx, kcpConfig, deps); err == nil {
+					return
+				}
+			}
+			if errors.Is(err, errControllerDisabled) {
+				log.Printf("controller manager disabled: no kubeconfig in scope")
+				return
+			}
+			log.Printf("controller manager not ready (attempt %d): %v; retrying in 15s", attempt, err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(15 * time.Second):
+			}
+		}
+	}()
 
 	<-ctx.Done()
 	log.Printf("shutting down")

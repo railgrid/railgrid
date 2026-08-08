@@ -20,7 +20,7 @@ TS_PORTALS=(
   "providers/kuery/portal"
   "providers/quickstart/portal"
 )
-TS_FILES=(icons.ts modal.ts tenant.ts)
+TS_FILES=(icons.ts modal.ts tenant.ts toast.ts)
 
 # Vue SFC portals + files.
 VUE_SRC="$ROOT/provider-sdk/portalkit-vue"
@@ -56,9 +56,10 @@ VIBE_PORTALS=("providers/vibe-studio/portal")
 VIBE_FILES=(tenant.ts)
 sync_group "$TS_SRC" VIBE_PORTALS VIBE_FILES
 
-# tenant.ts is plain TS (no framework) and shared by hub-proxy portals of BOTH
-# kinds, so the vanilla canonical is also vendored into the Vue portals.
+# tenant.ts and toast.ts are plain TS (no framework) and shared by portals of
+# BOTH kinds, so the vanilla canonicals are also vendored into the Vue portals.
 for p in "${VUE_PORTALS[@]}"; do
   cp "$TS_SRC/tenant.ts" "$ROOT/$p/src/portalkit/tenant.ts"
-  echo "synced tenant.ts -> $p/src/portalkit"
+  cp "$TS_SRC/toast.ts" "$ROOT/$p/src/portalkit/toast.ts"
+  echo "synced tenant.ts, toast.ts -> $p/src/portalkit"
 done

@@ -83,7 +83,7 @@ onBeforeUnmount(() => {
       <button
         v-if="templates.length > 0"
         type="button"
-        class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+        class="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
         :disabled="disabled || templateBusy"
         :aria-expanded="templatesOpen"
         @click="templatesOpen = !templatesOpen"
@@ -99,7 +99,7 @@ onBeforeUnmount(() => {
           v-for="template in templates"
           :key="template.name"
           type="button"
-          class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] transition hover:bg-surface-hover disabled:cursor-default"
+          class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition hover:bg-surface-hover disabled:cursor-default"
           :class="template.name === currentTemplate ? 'text-text-primary' : 'text-text-secondary'"
           :disabled="disabled || templateBusy || template.name === currentTemplate"
           :aria-current="template.name === currentTemplate ? 'true' : undefined"
@@ -112,7 +112,7 @@ onBeforeUnmount(() => {
 
       <button
         type="button"
-        class="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+        class="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
         :disabled="disabled || hydrateDisabled || hydrateBusy"
         @click="loadFromGit"
       >

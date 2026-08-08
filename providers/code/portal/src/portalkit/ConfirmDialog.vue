@@ -75,19 +75,26 @@ watch(
   display: grid;
   place-items: center;
   padding: 24px;
-  background: color-mix(in srgb, var(--color-text-primary, #0b1220) 40%, transparent);
+  /* Scrim derives from the SURFACE, not text — a text-derived scrim inverts
+     to near-white under the dark-default theme. */
+  background: color-mix(in srgb, var(--color-surface, #0a0b12) 60%, transparent);
   backdrop-filter: blur(2px);
   animation: pk-fade 0.14s ease;
 }
 .pk-modal {
   width: min(440px, 100%);
   padding: 22px 22px 18px;
-  border-radius: 16px;
-  background: var(--color-surface-raised, #fff);
-  color: var(--color-text-primary, #10151f);
-  border: 1px solid var(--color-border-default, rgba(0, 0, 0, 0.12));
-  box-shadow: 0 24px 70px rgba(10, 20, 40, 0.42);
-  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  border-radius: 6px;
+  /* Fallbacks are the DARK-BASE token values — dark is the system default. */
+  background: var(--color-surface-raised, #111320);
+  color: var(--color-text-primary, #e9e9f2);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 24px 70px rgba(0, 0, 0, 0.55);
+  font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+  font-size: 14px;
+  line-height: 1.5;
   animation: pk-rise 0.18s cubic-bezier(0.2, 0.8, 0.3, 1);
 }
 .pk-title {
@@ -97,7 +104,7 @@ watch(
 }
 .pk-message {
   margin: 0 0 6px;
-  color: var(--color-text-secondary, #4a5568);
+  color: var(--color-text-secondary, #8a8ca6);
   overflow-wrap: anywhere;
 }
 .pk-actions {
@@ -108,7 +115,7 @@ watch(
 }
 .pk-btn {
   padding: 8px 16px;
-  border-radius: 9px;
+  border-radius: 4px;
   border: 0;
   cursor: pointer;
   font: inherit;
@@ -116,26 +123,28 @@ watch(
   font-size: 13.5px;
 }
 .pk-btn.cancel {
-  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.05));
-  color: var(--color-text-secondary, #4a5568);
-  border: 1px solid var(--color-border-default, transparent);
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-secondary, #8a8ca6);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
 }
 .pk-btn.cancel:hover {
-  background: var(--color-surface-hover, rgba(0, 0, 0, 0.08));
-  color: var(--color-text-primary, #10151f);
+  background: var(--color-surface-hover, #1e2033);
+  color: var(--color-text-primary, #e9e9f2);
 }
 .pk-btn.confirm {
-  background: var(--color-accent, #6d4fe0);
+  background: var(--color-accent, #8b6bff);
   color: #fff;
+  box-shadow: 0 0 16px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
 }
 .pk-btn.confirm:hover {
-  background: var(--color-accent-hover, #5b3fd0);
+  background: var(--color-accent-hover, #a18aff);
 }
 .pk-btn.confirm.danger {
-  background: var(--color-danger, #ef4444);
+  background: var(--color-danger, #ff5d5d);
+  box-shadow: none;
 }
 .pk-btn.confirm.danger:hover {
-  background: var(--color-danger-hover, #dc2626);
+  background: var(--color-danger-hover, #ff7676);
 }
 @keyframes pk-fade {
   from {

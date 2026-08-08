@@ -22,7 +22,7 @@ kedge-provider-databricks .tabs {
 
 kedge-provider-databricks .tabs button {
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 4px;
   background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
@@ -41,6 +41,7 @@ kedge-provider-databricks .tabs button:hover {
 kedge-provider-databricks .tabs button.active {
   background: var(--color-accent-subtle);
   border-color: var(--color-accent);
+  box-shadow: 0 0 14px var(--color-accent-glow);
   color: var(--color-accent);
 }
 
@@ -78,7 +79,7 @@ kedge-provider-databricks .page-meta {
 kedge-provider-databricks .panel {
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border-subtle);
-  border-radius: 12px;
+  border-radius: 6px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -114,7 +115,7 @@ kedge-provider-databricks button.secondary,
 kedge-provider-databricks button.danger,
 kedge-provider-databricks button.icon-button {
   align-items: center;
-  border-radius: 8px;
+  border-radius: 4px;
   cursor: pointer;
   display: inline-flex;
   font: inherit;
@@ -127,6 +128,7 @@ kedge-provider-databricks button.icon-button {
 kedge-provider-databricks button.primary {
   background: var(--color-accent);
   border: 1px solid var(--color-accent);
+  box-shadow: 0 0 16px var(--color-accent-glow);
   color: var(--color-on-accent, var(--color-surface));
   min-height: 32px;
   padding: 6px 14px;
@@ -134,6 +136,7 @@ kedge-provider-databricks button.primary {
 
 kedge-provider-databricks button.primary:hover {
   background: var(--color-accent-hover);
+  box-shadow: 0 0 22px var(--color-accent-glow);
 }
 
 kedge-provider-databricks button.secondary {
@@ -266,7 +269,7 @@ kedge-provider-databricks input,
 kedge-provider-databricks select {
   background: var(--color-surface-overlay);
   border: 1px solid var(--color-border-default);
-  border-radius: 8px;
+  border-radius: 4px;
   color: var(--color-text-primary);
   font: inherit;
   font-size: 13px;
@@ -278,7 +281,7 @@ kedge-provider-databricks select {
 
 kedge-provider-databricks .form input,
 kedge-provider-databricks .form select {
-  border-radius: 6px;
+  border-radius: 4px;
   font-size: 12px;
   min-height: 32px;
   padding: 6px 10px;
@@ -287,7 +290,7 @@ kedge-provider-databricks .form select {
 kedge-provider-databricks input:focus,
 kedge-provider-databricks select:focus {
   border-color: var(--color-accent);
-  box-shadow: 0 0 0 2px var(--color-accent-subtle);
+  box-shadow: 0 0 0 3px var(--color-accent-subtle), 0 0 14px var(--color-accent-glow);
 }
 
 kedge-provider-databricks input:disabled {
@@ -348,7 +351,7 @@ kedge-provider-databricks .row-message {
 
 kedge-provider-databricks .error,
 kedge-provider-databricks .warning {
-  border-radius: 8px;
+  border-radius: 6px;
   font-size: 12px;
   margin: 0;
   padding: 8px 10px;
@@ -373,7 +376,7 @@ kedge-provider-databricks .empty {
 kedge-provider-databricks .resource-table {
   background: color-mix(in srgb, var(--color-surface-raised) 80%, transparent);
   border: 1px solid var(--color-border-subtle);
-  border-radius: 16px;
+  border-radius: 6px;
   overflow: hidden;
 }
 
@@ -508,14 +511,15 @@ kedge-provider-databricks .resource-table-empty-label {
 
 kedge-provider-databricks .status-badge {
   align-items: center;
-  border: 1px solid color-mix(in srgb, currentColor 10%, transparent);
-  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-radius: 3px;
   display: inline-flex;
-  font-size: 11px;
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 10px;
   font-weight: 600;
   gap: 6px;
-  letter-spacing: 0.04em;
-  padding: 4px 10px;
+  letter-spacing: 0.06em;
+  padding: 2.5px 8px;
   text-transform: uppercase;
   transition: background-color 0.15s ease, color 0.15s ease;
 }
@@ -633,7 +637,7 @@ kedge-provider-databricks .conditions-muted {
 .databricks-modal {
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border-subtle);
-  border-radius: 16px;
+  border-radius: 6px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
   max-width: 28rem;
   padding: 24px;
@@ -657,7 +661,7 @@ kedge-provider-databricks .conditions-muted {
   align-items: center;
   background: var(--color-danger-subtle);
   border: 1px solid color-mix(in srgb, var(--color-danger) 20%, transparent);
-  border-radius: 12px;
+  border-radius: 6px;
   display: flex;
   flex-shrink: 0;
   height: 36px;
@@ -689,7 +693,7 @@ kedge-provider-databricks .conditions-muted {
   align-items: center;
   background: transparent;
   border: none;
-  border-radius: 8px;
+  border-radius: 4px;
   color: var(--color-text-muted);
   cursor: pointer;
   display: flex;
@@ -721,7 +725,7 @@ kedge-provider-databricks .conditions-muted {
 
 .databricks-modal-cancel,
 .databricks-modal-confirm {
-  border-radius: 8px;
+  border-radius: 4px;
   cursor: pointer;
   font: inherit;
   font-size: 12px;

@@ -180,7 +180,7 @@ onBeforeUnmount(() => {
     <div
       v-show="desktopOpen"
       :id="panelID"
-      class="absolute bottom-full right-0 mb-2 w-[min(320px,calc(100vw-2rem))] max-h-[min(50vh,360px)] overflow-auto rounded-2xl border border-border-subtle bg-surface-raised p-2 shadow-2xl"
+      class="absolute bottom-full right-0 mb-2 w-[min(320px,calc(100vw-2rem))] max-h-[min(50vh,360px)] overflow-auto rounded-xl border border-border-subtle bg-surface-raised p-2 shadow-2xl"
       role="region"
       :aria-labelledby="titleID"
     >
@@ -192,7 +192,7 @@ onBeforeUnmount(() => {
     <button
       ref="desktopTriggerRef"
       type="button"
-      class="inline-flex min-h-11 max-w-[min(360px,calc(100vw-2rem))] items-center gap-2 rounded-full border border-border-subtle bg-surface-raised/95 px-3 text-[12px] text-text-secondary shadow-lg backdrop-blur transition hover:border-accent/30 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 motion-reduce:transition-none"
+      class="inline-flex min-h-11 max-w-[min(360px,calc(100vw-2rem))] items-center gap-2 rounded-md border border-border-subtle bg-surface-raised/95 px-3 text-[12px] text-text-secondary shadow-lg backdrop-blur transition hover:border-accent/30 hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 motion-reduce:transition-none"
       :aria-expanded="desktopOpen"
       :aria-controls="panelID"
       @click="togglePinned"
@@ -207,7 +207,7 @@ onBeforeUnmount(() => {
     <button
       ref="mobileTriggerRef"
       type="button"
-      class="inline-flex min-h-11 max-w-full items-center gap-2 rounded-full border border-border-subtle bg-surface-raised px-3 text-[12px] text-text-secondary shadow-sm md:hidden"
+      class="inline-flex min-h-11 max-w-full items-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-3 text-[12px] text-text-secondary shadow-sm md:hidden"
       :aria-expanded="mobileOpen"
       :aria-controls="mobilePanelID"
       @click="openMobile"

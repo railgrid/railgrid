@@ -836,7 +836,7 @@ function fmtDate(s?: string | null): string {
                   <span class="truncate text-sm text-text-primary">{{ w.displayName || w.uuid }}</span>
                   <span
                     v-if="w.deletionRequestedAt"
-                    class="rounded-full border border-warning/30 bg-warning-subtle px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-warning"
+                    class="rounded-sm border border-warning/30 bg-warning-subtle px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-warning"
                   >Deleting</span>
                 </div>
                 <div v-else class="flex items-center gap-2">
@@ -1145,7 +1145,7 @@ function fmtDate(s?: string | null): string {
                 <div class="flex flex-wrap items-center gap-2">
                   <span class="truncate text-sm text-text-primary">{{ s.displayName }}</span>
                   <span
-                    class="rounded-full border border-border-default/50 bg-surface-overlay px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-text-muted"
+                    class="rounded-sm border border-border-default/50 bg-surface-overlay px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-text-muted"
                   >{{ s.role }}</span>
                 </div>
                 <div class="font-mono text-[10px] text-text-muted">{{ s.uuid }}</div>

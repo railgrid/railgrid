@@ -98,21 +98,21 @@ func TestProjectEinoAssistantRewrittenMutationCallKeepsContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
+	// The compaction must NOT leave any tool-call objects behind: keeping them
+	// with emptied arguments taught the model to emit mutation calls with no
+	// arguments (replace_file({}) → "requires path"). The outcome is retained
+	// as natural-language evidence instead.
+	sawEvidence := false
 	for _, message := range rewritten {
-		if message.Role != schema.Assistant {
-			continue
+		if len(message.ToolCalls) != 0 {
+			t.Fatalf("compacted history still carries tool-call objects the model can imitate: %#v", message)
 		}
-		found = true
-		if len(message.ToolCalls) == 0 {
-			t.Fatalf("rewritten assistant message lost its tool calls: %#v", message)
-		}
-		if message.Content == "" {
-			t.Fatal("rewritten assistant tool-call message has empty content")
+		if message.Role == schema.User && message.Content != "" {
+			sawEvidence = true
 		}
 	}
-	if !found {
-		t.Fatalf("rewritten messages = %#v", rewritten)
+	if !sawEvidence {
+		t.Fatalf("compacted mutation outcome was not preserved as evidence: %#v", rewritten)
 	}
 }
 

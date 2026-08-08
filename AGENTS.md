@@ -405,6 +405,13 @@ multi-shard stack used by the `tiltcluster` e2e suite.
 
 ## 8. UI & design standards (portal + provider micro-frontends)
 
+> Full system reference: [`docs/design-book.md`](docs/design-book.md) — tokens
+> for both themes, the radius law, component recipes, sanctioned exceptions,
+> build-to-this specs for components that don't exist yet (tooltips, toasts,
+> pagination, dropzones, ⌘K palette, …), and the pre-merge review checklist.
+> Before building ANY new component type, check the design book §10 for its
+> spec. This section is the enforcement summary.
+
 **All UI must be standardized.** The main portal and every provider
 micro-frontend render inside the same DOM (`<kedge-provider-{name}>` custom
 elements), so they share one stylesheet and must look like one product. Do **not**
@@ -420,36 +427,55 @@ be added to that list or its classes won't compile.
 
 ### Design tokens — use these, never raw hex/grays
 
-Both dark (default) and light themes are defined as CSS variables; reference them
-through the Tailwind color names, never hardcode colors.
+The design system is **"Violet Circuit"**: near-black violet-tinted dark ground
+by default, hairline borders, sharp corners, a single violet accent that *glows*
+only on live/active things. **Dark is the base** (defined in `@theme` in
+`main.css`); light is the `html.light` override. Both are complete CSS-variable
+palettes; reference them through the Tailwind color names, never hardcode colors.
 
 | Token (class) | Purpose |
 |---------------|---------|
-| `surface`, `surface-raised`, `surface-overlay`, `surface-hover` | Background layers (page → card → popover → hover) |
-| `border-subtle`, `border-default` | Hairline borders |
-| `accent`, `accent-hover`, `accent-subtle`, `accent-glow` | Brand purple (`#7c5bf5`); primary actions, focus, links |
+| `surface`, `surface-raised`, `surface-overlay`, `surface-hover` | Background layers (page → card → popover → hover); dark base `#0a0b12` → `#111320` → … |
+| `border-subtle`, `border-default` | Hairline borders (white-alpha in dark, solid in light) |
+| `accent`, `accent-hover`, `accent-subtle`, `accent-glow` | Brand violet (`#8b6bff` dark / `#6b48e8` light); primary actions, focus, links. `accent-glow` is the ONLY glow source |
 | `text-primary`, `text-secondary`, `text-muted` | Text hierarchy |
 | `success`, `warning`, `danger` (+ `-subtle` variants) | Status / semantic |
 
 Theme switches via `html.dark` / `html.light` (applied pre-paint in
-`index.html`); never assume a fixed background. Glass surfaces use the `.glass`
-utility (`backdrop-blur` + translucent bg), backgrounds use `.dot-grid` /
-`.cross-grid` / `.noise`.
+`index.html`; **dark is the default and the hard fallback**); never assume a
+fixed background. Signature background texture is `.contour-grid` (+
+`.contour-grid-fade`), used sparingly on login/hero/empty states. Other global
+utilities: `.island` (floating dock card), `.shimmer` (skeletons),
+`.stagger-item` (entry animation), `.live-dot` (opacity pulse — never delete,
+providers depend on it).
+
+**Glow-means-alive:** only active nav items, primary buttons, focus rings and
+the live dot emit light (`box-shadow` from `var(--color-accent-glow)`). Nothing
+decorative glows. If you add a glow to something that is not
+live/active/focused, you are off-system.
 
 ### Typography
 
-- **Font:** Tailwind's default system sans stack (no custom web font is loaded —
-  don't add one). Body uses `antialiased`.
-- **Mono:** use `font-mono` for identifiers, names, tokens, URLs, YAML, and any
-  technical/copyable value (it's used heavily — keep doing it).
+- **Fonts (self-hosted via `@fontsource`, imported in `portal/src/main.ts`):**
+  `font-sans` = Instrument Sans Variable (body), `font-display` = Archivo
+  Variable used through the `.type-display` utility (width-expanded titles, KPI
+  numerals, the KEDGE wordmark), `font-mono` = IBM Plex Mono. Don't add other
+  faces.
+- **Mono:** use `font-mono` for identifiers, names, tokens, URLs, YAML, badges,
+  and any technical/copyable value (it's used heavily — keep doing it).
 - **Type scale (px, explicit):** `text-[10px]` / `text-[11px]` for labels and
   table headers (uppercase, `tracking-wide`), `text-[12px]`–`text-[13px]` for
   body/table cells, `text-[14px]`–`text-[18px]` for headings. Weights:
   `font-medium` (labels/buttons), `font-semibold` (headings/badges),
   `font-bold` sparingly.
-- **Radius scale:** `rounded-lg` (buttons, inputs, small controls),
-  `rounded-xl` (icon tiles, nested boxes), `rounded-2xl` (cards, modals, tables),
-  `rounded-full` (pills/badges/dots).
+- **Radius law (sharp — the whole point):** cards / tables / modals **6px**,
+  controls (buttons, inputs, selects) **4px**, badges/tags **3px, square**.
+  `main.css` overrides Tailwind's `--radius-*` scale globally
+  (`xs`2 / `sm`3 / `md`4 / `lg`6 / `xl`6 / `2xl`8 / `3xl`12), so existing
+  `rounded-md/lg/xl` utilities land on-system automatically — never re-declare
+  a softer radius locally, and never use `rounded-full` / `9999px` on anything
+  that isn't a true circle (dot, avatar, spinner). **No pills.** Pill-shaped
+  chips are the old system; new chips are square mono tags (see `.k-badge`).
 
 ### Component standards — reuse, don't reinvent
 
@@ -461,7 +487,7 @@ Prefer them; never hand-roll a native `window.confirm/alert` or a bespoke copy.
 |------|-----------|------------------|---------|
 | **Confirm / destructive action** | `confirmDialog()` from `portalkit/confirm.ts` (+ one `<ConfirmDialog />` from `portalkit/ConfirmDialog.vue` mounted at the app root) | `confirmModal()` from `portalkit/modal.ts` | Promise-based; `await confirmDialog({ title, message?, confirmLabel?, danger? })` → `true/false`. **Never** `window.confirm/alert` — CI-free but reviewer-enforced. |
 | **Table / list** | `portalkit/ResourceTable.vue` | — | uppercase `text-[10px]` headers, `text-[13px]` cells, built-in loading/error/empty states; named slots per column. |
-| **Status / phase** | `portalkit/StatusBadge.vue` | — | Pill + dot; `ready` pulses. `ready/active`→success, `pending`→warning, `terminating`/disconnected→danger. |
+| **Status / phase** | `portalkit/StatusBadge.vue` | — | Square mono tag + dot (3px radius, `k-badge` recipe); `ready` pulses. `ready/active`→success, `pending`→warning, `terminating`/disconnected→danger. |
 | **Icons** | `lucide-vue-next` (`h-4 w-4`, `:stroke-width="1.75"`) | `ic('name')` from `portalkit/icons.ts` | Vanilla portals get an inline SVG string; **no emoji anywhere**. |
 | **Tenant headers / basePath** | `portalkit/tenant.ts` (`readTenant`, `tenantHeaders`, `serviceBase`) | same | Security-critical; must match the hub proxy — see §5.7. |
 | Wizard / multi-step | `FirstEdgeWizard.vue`, `FirstWorkspaceWizard.vue` | — | |
@@ -510,12 +536,18 @@ invent a look. It is bound by the same design system, enforced by these rules:
   not a baked-in translucent hex.
 - **Namespace every selector** under the element tag (e.g.
   `kedge-provider-edges .btn { … }`) so the styles cannot leak into the host.
-- **Match the same recipes** as the shared components, not approximations:
-  buttons/inputs `rounded-lg` (8px); cards/tables the `rounded-2xl` (16px)
-  `surface-raised` card with a `border-subtle` hairline; table headers
-  `10px`/`600` uppercase `letter-spacing:.15em` `text-muted`; rows `13px`
-  `text-secondary` with an accent-tinted hover; status pills mirror
-  `StatusBadge` tones (`*-subtle` bg + solid token text).
+- **Match the same recipes** as the shared components, not approximations —
+  the canonical recipes are the `k-*` classes in `portal/src/assets/kedge-ui.css`
+  (`k-card`, `k-table`, `k-badge`, `k-btn`, `k-input`, `k-eyebrow`/`k-kpi`),
+  which cascade into every light-DOM provider; prefer using them directly. If
+  you must hand-roll: buttons/inputs 4px radius; cards/tables 6px
+  `surface-raised` with a `border-subtle` hairline; table headers `10px`/`600`
+  uppercase `letter-spacing:.15em` `text-muted`; rows `13px` `text-secondary`
+  with an accent-tinted hover; status tags are **square** (3px) mono uppercase
+  with `*-subtle` bg, solid token text, and a
+  `color-mix(in srgb, currentColor 35%, transparent)` hairline border — never
+  pills. Primary buttons get `box-shadow: 0 0 16px var(--color-accent-glow)`;
+  input focus gets the accent ring + glow; nothing else glows.
 
 **Canonical reference:** [`providers/edges/portal/src/style.css`](providers/edges/portal/src/style.css)
 carries the full contract in its header comment — copy that file's approach for any

@@ -51,10 +51,49 @@ spec:
 
   apiExport:
     name: "ai.kedge.faros.sh"
-    # App Studio stores per-workspace LLM credentials in a Secret in the
-    # tenant workspace; the claim lets the provider read/write it as the
-    # calling user.
+    # Keep in sync with init_cmd.go (APIExport claims) and
+    # deploy/chart/templates/catalogentry.yaml — the hub writes these into the
+    # tenant APIBinding at Enable time; a claim missing here is silently
+    # denied at reconcile.
     permissionClaims:
+      # Infrastructure instances the Project reconciler lifecycles from a
+      # project's live bindings.
+      - resource: applications
+        group: infrastructure.kedge.faros.sh
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+        tenantScoped: true
+      - resource: simplewebapps
+        group: infrastructure.kedge.faros.sh
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+        tenantScoped: true
+      - resource: workers
+        group: infrastructure.kedge.faros.sh
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+        tenantScoped: true
+      # Web search: the Studio reconciler provisions one shared searxng
+      # instance per workspace so the assistant can look things up.
+      - resource: searxngs
+        group: infrastructure.kedge.faros.sh
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+        tenantScoped: true
+      # Repository CRs the Project reconciler creates (git backing).
+      - resource: repositories
+        group: code.kedge.faros.sh
+        verbs: ["get", "list", "watch", "create", "update", "patch"]
+        tenantScoped: true
+      # Per-project ServiceAccount identity for reconciler commits, plus
+      # per-workspace LLM credential Secrets.
+      - resource: serviceaccounts
+        verbs: ["get", "list", "watch", "create", "delete"]
+        tenantScoped: true
       - resource: secrets
+        verbs: ["get", "list", "watch", "create", "update", "delete"]
+        tenantScoped: true
+      - resource: clusterroles
+        group: rbac.authorization.k8s.io
+        verbs: ["get", "list", "watch", "create", "update", "delete"]
+        tenantScoped: true
+      - resource: clusterrolebindings
+        group: rbac.authorization.k8s.io
         verbs: ["get", "list", "watch", "create", "update", "delete"]
         tenantScoped: true

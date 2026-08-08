@@ -134,6 +134,8 @@ const (
 	projectActionRestoreWorkspace             = "restore_workspace"
 	projectToolCommitProjectFiles             = "commit_project_files"
 	projectToolCommitFiles                    = "commit_files"
+	projectToolWebSearch                      = "web_search"
+	projectToolWebFetch                       = "web_fetch"
 	projectToolCodeCommitFiles                = "code__commit_files"
 	projectToolInfrastructureListTemplates    = "infrastructure__list_templates"
 	projectToolInfrastructureDescribeTemplate = "infrastructure__describe_template"
@@ -2158,6 +2160,9 @@ func projectSystemPromptForMode(p *aiv1alpha1.Project, repository *ProjectReposi
 			"Its toolchain is the ONLY runtime installed in that component's sandbox image and its startCommand is exactly what the sandbox executes: write each component in its declared toolchain, including that toolchain's manifest at the component root (node → package.json with a dev or start script binding $PORT, go → go.mod, python → requirements.txt or pyproject.toml, ruby → Gemfile). Source in any other language cannot run there no matter how correct it is — the image has no compiler or interpreter for it, the start command finds nothing to launch, and the component silently never listens. A Dockerfile does NOT change this: it is used only for the production image build, never for the development sandbox. If the user asks for a stack the bound template's toolchain cannot run, say so and either use the declared toolchain or bind a different template — do not write it anyway. " +
 			"This template is the app's ENVIRONMENT CONTRACT: before reasoning about what infrastructure, backing services, or environment variables the app has, call infrastructure__describe_template on THIS template and treat its agent.usage / agent.outputs as authoritative. " +
 			"Backing services the template declares (for example a managed database) exist for the development instance too, with the same injected environment (for example DATABASE_URL) — do not conclude a declared service is missing just because the app code does not use it yet, and do not provision a separate instance of a service the bound template already provides.\n")
+		if initialBuild {
+			b.WriteString("STARTER CODE IS ALREADY PRESENT: this project was created from the " + strings.TrimSpace(p.Spec.Template.Name) + " template and its runnable starter code is already in the workspace under the component directories — the workspace is NOT empty. Build ON it: customize the existing files rather than recreating the app from scratch. Prefer editing existing files over creating new ones, and never create_file a path that already exists. Because these files exist, editing them requires a version: before you replace, edit, move, or delete ANY existing file, first do ONE COMPLETE read of it (read_file at offset 1 covering the whole file, not a partial range) — a partial, ranged, or truncated read does NOT record a usable version and the mutation will fail with an update error. Start by reading the component manifests and entry files (for example each component's package.json and its server/entry and main UI file) completely, then edit them.\n")
+		}
 	} else {
 		b.WriteString("- Development template: NONE — the project has no development environment, running process, or preview. If an authorized implementation requires runnable source, inspect the development templates once, choose a template whose declared component toolchains match the application, and bind it before writing runtime source. Template selection is independent of repository provisioning; repository state gates commits only. Inspection-only requests and Plan mode do not authorize binding a template.\n")
 	}

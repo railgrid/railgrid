@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260711-a1a2bb6.projects.ai.kedge.faros.sh
+  name: v260806-59f3b567.projects.ai.kedge.faros.sh
 spec:
   group: ai.kedge.faros.sh
   names:
@@ -147,6 +147,13 @@ spec:
               description: Repository records the Code provider repository backing
                 this Project.
               properties:
+                adopted:
+                  description: |-
+                    Adopted marks a binding built from an EXISTING Repository CR
+                    (repository import). The Project reconciler creates the Repository CR
+                    for non-adopted bindings only — an adopted repository is never
+                    (re)created on the project's behalf.
+                  type: boolean
                 connectionRef:
                   description: ConnectionRef names the Code provider Connection used
                     by the Repository.

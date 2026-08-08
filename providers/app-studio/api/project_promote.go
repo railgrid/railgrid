@@ -201,6 +201,18 @@ func (s *Server) promoteProject(ctx context.Context, c *asclient.Client, id iden
 		return nil, projectPromoteResponse{}, newValidationError("project has no template to promote; select a template and build first")
 	}
 
+	// The digest tether (vibe promote semantics): refuse to ship while the
+	// workspace holds uncommitted changes — the built images were made from
+	// git, and promoting over a dirty workspace would run production on code
+	// the user is no longer looking at. The Project reconciler's commit
+	// convergence clears this on its own once the project is idle.
+	if s.workspaces != nil {
+		if dirty, err := s.workspaces.UncommittedPaths(ctx, projectWorkspaceScope(id, p)); err == nil && len(dirty) > 0 {
+			return nil, projectPromoteResponse{}, newValidationError(fmt.Sprintf(
+				"the workspace has %d uncommitted file(s); commit them (or wait for the automatic sync) and rebuild before promoting", len(dirty)))
+		}
+	}
+
 	check, err := s.checkProjectBuild(ctx, c, id, p)
 	if err != nil {
 		return nil, projectPromoteResponse{}, err
@@ -243,16 +255,10 @@ func (s *Server) promoteProject(ctx context.Context, c *asclient.Client, id iden
 	if err != nil {
 		return nil, projectPromoteResponse{}, err
 	}
-	// Provision the production instance explicitly: reconcileProjectLiveBindings
-	// only ensures live (development) bindings, so the production artifact
-	// binding would otherwise never create its instance.
-	if _, err := ensureProjectProviderResource(ctx, c, updated, binding, id); err != nil {
-		return nil, projectPromoteResponse{}, err
-	}
-	reconciled, err := s.reconcileProjectLiveBindings(ctx, c, updated, id)
-	if err != nil {
-		return nil, projectPromoteResponse{}, err
-	}
+	// Promotion IS the spec write: the Project reconciler converges every
+	// environment's bindings — the production artifact binding just appended
+	// included — so no explicit provisioning happens here anymore.
+	reconciled := projectWithLiveBindingStatus(ctx, c, updated, id)
 
 	raw, _ := json.Marshal(reconciled)
 	return reconciled, projectPromoteResponse{

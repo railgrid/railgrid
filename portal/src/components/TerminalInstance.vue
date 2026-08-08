@@ -56,8 +56,8 @@ async function initialize() {
     theme: {
       background: '#0b0c11',
       foreground: '#c8c8d0',
-      cursor: '#a78bfa',
-      selectionBackground: '#a78bfa33',
+      cursor: '#8b6bff',
+      selectionBackground: '#8b6bff33',
       black: '#0b0c11',
       red: '#f87171',
       green: '#34d399',

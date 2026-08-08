@@ -152,6 +152,13 @@ spec:
                 description: Repository records the Code provider repository backing
                   this Project.
                 properties:
+                  adopted:
+                    description: |-
+                      Adopted marks a binding built from an EXISTING Repository CR
+                      (repository import). The Project reconciler creates the Repository CR
+                      for non-adopted bindings only — an adopted repository is never
+                      (re)created on the project's behalf.
+                    type: boolean
                   connectionRef:
                     description: ConnectionRef names the Code provider Connection
                       used by the Repository.

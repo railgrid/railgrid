@@ -33,25 +33,36 @@
 @source "../../../../portal/src/components/StatusBadge.vue";
 
 @theme inline {
-  --color-surface: var(--color-surface, #06060b);
-  --color-surface-raised: var(--color-surface-raised, #0d0d14);
-  --color-surface-overlay: var(--color-surface-overlay, #14141f);
-  --color-surface-hover: var(--color-surface-hover, #1a1a28);
-  --color-border-subtle: var(--color-border-subtle, rgba(255, 255, 255, 0.04));
-  --color-border-default: var(--color-border-default, rgba(255, 255, 255, 0.08));
-  --color-accent: var(--color-accent, #7c5bf5);
-  --color-accent-hover: var(--color-accent-hover, #9b85f7);
-  --color-accent-subtle: var(--color-accent-subtle, rgba(124, 91, 245, 0.1));
-  --color-accent-glow: var(--color-accent-glow, rgba(124, 91, 245, 0.25));
-  --color-text-primary: var(--color-text-primary, #eeeef3);
-  --color-text-secondary: var(--color-text-secondary, #7e7e96);
-  --color-text-muted: var(--color-text-muted, #44445a);
-  --color-success: var(--color-success, #34d399);
-  --color-success-subtle: var(--color-success-subtle, rgba(52, 211, 153, 0.1));
-  --color-warning: var(--color-warning, #fbbf24);
-  --color-warning-subtle: var(--color-warning-subtle, rgba(251, 191, 36, 0.1));
-  --color-danger: var(--color-danger, #f87171);
-  --color-danger-subtle: var(--color-danger-subtle, rgba(248, 113, 113, 0.1));
+  /* Sharp radius scale — plain values (not host pointers), mirroring the host
+     portal's global --radius-* overrides so this bundle's rounded-* utilities
+     compile to the same 6/4/3 law. */
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --radius-xl: 6px;
+  --radius-2xl: 8px;
+  --radius-3xl: 12px;
+
+  --color-surface: var(--color-surface, #0a0b12);
+  --color-surface-raised: var(--color-surface-raised, #111320);
+  --color-surface-overlay: var(--color-surface-overlay, #171927);
+  --color-surface-hover: var(--color-surface-hover, #1e2033);
+  --color-border-subtle: var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  --color-border-default: var(--color-border-default, rgba(255, 255, 255, 0.11));
+  --color-accent: var(--color-accent, #8b6bff);
+  --color-accent-hover: var(--color-accent-hover, #a18aff);
+  --color-accent-subtle: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  --color-accent-glow: var(--color-accent-glow, rgba(139, 107, 255, 0.3));
+  --color-text-primary: var(--color-text-primary, #e9e9f2);
+  --color-text-secondary: var(--color-text-secondary, #8a8ca6);
+  --color-text-muted: var(--color-text-muted, #5d5f78);
+  --color-success: var(--color-success, #2fd6a0);
+  --color-success-subtle: var(--color-success-subtle, rgba(47, 214, 160, 0.12));
+  --color-warning: var(--color-warning, #f0a63a);
+  --color-warning-subtle: var(--color-warning-subtle, rgba(240, 166, 58, 0.12));
+  --color-danger: var(--color-danger, #ff5d5d);
+  --color-danger-subtle: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
 }
 
 kedge-provider-app-studio,

@@ -73,7 +73,7 @@ const releasesURL = 'https://github.com/faroshq/kedge/releases/latest'
 <template>
   <Teleport to="body">
     <div
-      class="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      class="fixed inset-0 z-[100] flex items-center justify-center bg-surface/60 backdrop-blur-sm"
       @click.self="$emit('close')"
     >
       <div class="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-xl border border-border-subtle bg-surface-raised shadow-2xl">

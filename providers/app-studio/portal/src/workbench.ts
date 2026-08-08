@@ -1,4 +1,4 @@
-export type WorkbenchBuiltInTab = 'preview' | 'review' | 'providers' | 'publishing' | 'settings' | 'skills' | 'threads' | 'launcher'
+export type WorkbenchBuiltInTab = 'preview' | 'code' | 'review' | 'providers' | 'publishing' | 'settings' | 'skills' | 'threads' | 'launcher'
 export type WorkbenchTabKind = WorkbenchBuiltInTab | 'provider'
 
 export interface WorkbenchProviderToolRef {
@@ -31,6 +31,13 @@ const builtInTabs: Record<WorkbenchBuiltInTab, WorkbenchTabDescriptor> = {
     id: 'preview',
     kind: 'preview',
     title: 'Preview',
+    closeable: true,
+  },
+  code: {
+    id: 'code',
+    kind: 'code',
+    title: 'Code',
+    subtitle: 'Browse the live development workspace files',
     closeable: true,
   },
   review: {

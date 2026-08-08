@@ -6,14 +6,14 @@ export type ThemeMode = 'light' | 'dark' | 'system'
 const STORAGE_KEY = 'kedge-theme'
 
 function getSystemTheme(): 'light' | 'dark' {
-  // Light is the hard fallback (matches the CSS base) when matchMedia is
+  // Dark is the hard fallback (matches the CSS base) when matchMedia is
   // unavailable or throws.
   try {
     return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
       ? 'dark'
       : 'light'
   } catch {
-    return 'light'
+    return 'dark'
   }
 }
 
@@ -23,7 +23,8 @@ function applyTheme(resolved: 'light' | 'dark') {
 }
 
 export const useThemeStore = defineStore('theme', () => {
-  const mode = ref<ThemeMode>((localStorage.getItem(STORAGE_KEY) as ThemeMode) || 'system')
+  // Dark is the product default; 'system' is opt-in via the toggle cycle.
+  const mode = ref<ThemeMode>((localStorage.getItem(STORAGE_KEY) as ThemeMode) || 'dark')
   const resolved = ref<'light' | 'dark'>(
     mode.value === 'system' ? getSystemTheme() : mode.value,
   )
@@ -59,7 +60,7 @@ export const useThemeStore = defineStore('theme', () => {
 /** Call before Vue mounts to prevent flash of wrong theme. */
 export function initTheme() {
   const stored = localStorage.getItem(STORAGE_KEY) as ThemeMode | null
-  const mode = stored || 'system'
+  const mode = stored || 'dark'
   const resolved = mode === 'system' ? getSystemTheme() : mode
   applyTheme(resolved)
 }

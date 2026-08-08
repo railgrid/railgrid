@@ -28,9 +28,9 @@ kedge-provider-kuery .grid {
 }
 
 kedge-provider-kuery .panel {
-  background: var(--color-surface-raised, #0d0d14);
-  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.04));
-  border-radius: 12px;
+  background: var(--color-surface-raised, #111320);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 6px;
   padding: 14px 16px;
   color: var(--color-text-primary, inherit);
 }
@@ -56,27 +56,26 @@ kedge-provider-kuery .badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 9px;
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, Menlo, monospace);
+  font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--color-border-default, transparent);
+  padding: 2.5px 8px;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
   background: var(--color-surface-overlay, transparent);
   color: var(--color-text-muted, inherit);
 }
 
 kedge-provider-kuery .badge.ok {
-  border-color: var(--color-success);
   color: var(--color-success);
   background: var(--color-success-subtle);
 }
 
 kedge-provider-kuery .badge.warn {
-  border-color: var(--color-warning);
   color: var(--color-warning);
-  background: transparent;
+  background: var(--color-warning-subtle);
 }
 
 kedge-provider-kuery pre {
@@ -84,7 +83,7 @@ kedge-provider-kuery pre {
   background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
   color: var(--color-text-primary, inherit);
   border: 1px solid var(--color-border-subtle, transparent);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 10px 12px;
   font-family: "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
   font-size: 11px;
@@ -124,17 +123,24 @@ kedge-provider-kuery .toolbar select {
   background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
   color: var(--color-text-primary, inherit);
   border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.15));
-  border-radius: 6px;
+  border-radius: 4px;
   padding: 5px 8px;
   font-size: 11px;
   min-width: 120px;
 }
 
+kedge-provider-kuery .toolbar input:focus,
+kedge-provider-kuery .toolbar select:focus {
+  outline: none;
+  border-color: var(--color-accent, #8b6bff);
+  box-shadow: 0 0 0 3px var(--color-accent-subtle), 0 0 14px var(--color-accent-glow);
+}
+
 kedge-provider-kuery button {
-  background: var(--color-accent-subtle, rgba(109, 79, 224, 0.12));
-  color: var(--color-accent, #6d4fe0);
-  border: 1px solid var(--color-accent, #6d4fe0);
-  border-radius: 6px;
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent, #8b6bff);
+  border: 1px solid var(--color-accent, #8b6bff);
+  border-radius: 4px;
   padding: 5px 12px;
   font-size: 11px;
   font-weight: 600;
@@ -216,7 +222,7 @@ kedge-provider-kuery .head-actions {
 kedge-provider-kuery .seg {
   display: inline-flex;
   border: 1px solid var(--color-border-subtle, rgba(127, 127, 127, 0.3));
-  border-radius: 6px;
+  border-radius: 4px;
   overflow: hidden;
 }
 
@@ -233,8 +239,8 @@ kedge-provider-kuery .seg-btn {
 }
 
 kedge-provider-kuery .seg-btn.on {
-  background: var(--color-accent-subtle, rgba(109, 79, 224, 0.12));
-  color: var(--color-accent, #6d4fe0);
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent, #8b6bff);
 }
 
 kedge-provider-kuery .seg-btn:hover {
@@ -247,7 +253,7 @@ kedge-provider-kuery .kuery-graph {
   width: 100%;
   height: 440px;
   border: 1px solid var(--color-border-subtle, rgba(127, 127, 127, 0.15));
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--color-surface-base, rgba(0, 0, 0, 0.02));
   outline: none;
 }
@@ -260,7 +266,7 @@ kedge-provider-kuery .panel.kuery-full {
   margin: 0;
   border-radius: 0;
   overflow: auto;
-  background: var(--color-surface-overlay, var(--color-surface-base, #1b1b20));
+  background: var(--color-surface-overlay, var(--color-surface-base, #171927));
 }
 
 kedge-provider-kuery .panel.kuery-full .kuery-graph {
@@ -272,7 +278,7 @@ kedge-provider-kuery .panel.kuery-full .kuery-graph {
 kedge-provider-kuery .panel:fullscreen {
   overflow: auto;
   padding: 16px;
-  background: var(--color-surface-overlay, var(--color-surface-base, #1b1b20));
+  background: var(--color-surface-overlay, var(--color-surface-base, #171927));
 }
 
 kedge-provider-kuery .panel:fullscreen .kuery-graph {
@@ -295,7 +301,7 @@ kedge-provider-kuery .pg-split {
 kedge-provider-kuery .pg-editor {
   min-height: 360px;
   border: 1px solid var(--color-border-default, rgba(127, 127, 127, 0.45));
-  border-radius: 8px;
+  border-radius: 6px;
   overflow: hidden;
 }
 
@@ -321,7 +327,7 @@ kedge-provider-kuery .pg-result {
   overflow: auto;
   padding: 10px;
   border: 1px solid var(--color-border-subtle, rgba(127, 127, 127, 0.15));
-  border-radius: 8px;
+  border-radius: 6px;
   background: var(--color-surface-base, rgba(0, 0, 0, 0.02));
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
@@ -330,7 +336,7 @@ kedge-provider-kuery .pg-result {
 }
 
 kedge-provider-kuery .pg-result.error {
-  color: var(--color-text-error, #e0607a);
+  color: var(--color-text-error, #ff5d5d);
 }
 
 kedge-provider-kuery .pg-docs {
@@ -341,7 +347,7 @@ kedge-provider-kuery .pg-docs {
 kedge-provider-kuery .pg-docs summary {
   cursor: pointer;
   font-weight: 600;
-  color: var(--color-text-muted, #9aa0ad);
+  color: var(--color-text-muted, #5d5f78);
 }
 
 kedge-provider-kuery .rel-group {
@@ -354,7 +360,7 @@ kedge-provider-kuery .rel-group-title {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--color-text-muted, #9aa0ad);
+  color: var(--color-text-muted, #5d5f78);
   border-bottom: 1px solid var(--color-border-subtle, rgba(127, 127, 127, 0.15));
   padding-bottom: 3px;
 }

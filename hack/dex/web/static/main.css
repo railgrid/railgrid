@@ -1,22 +1,22 @@
 /* ─────────────────────────────────────────────────────────────────────────
    kedge — auth UI styling
    Matches the marketing site (faros.sh) and the console portal:
-   dark-first surface, violet accent (#7c5bf5), emerald flow (#34d399).
+   dark-first surface, violet accent (#8b6bff), emerald flow (#2fd6a0).
    Class names preserved so the upstream dex templates keep working.
    ───────────────────────────────────────────────────────────────────────── */
 
 :root {
-  --kedge-violet: #7c5bf5;
-  --kedge-violet-hover: #9b85f7;
-  --kedge-violet-soft: rgba(124, 91, 245, 0.12);
-  --kedge-violet-border: rgba(124, 91, 245, 0.32);
-  --kedge-emerald: #34d399;
-  --kedge-danger: #f87171;
+  --kedge-violet: #8b6bff;
+  --kedge-violet-hover: #a18aff;
+  --kedge-violet-soft: rgba(139, 107, 255, 0.12);
+  --kedge-violet-border: rgba(139, 107, 255, 0.32);
+  --kedge-emerald: #2fd6a0;
+  --kedge-danger: #ff5d5d;
   --kedge-text: #eeeef3;
   --kedge-text-muted: #9494a8;
   --kedge-text-dim: #6e6e84;
-  --kedge-surface: #06060b;
-  --kedge-surface-raised: #0d0d14;
+  --kedge-surface: #0a0b12;
+  --kedge-surface-raised: #111320;
   --kedge-surface-overlay: rgba(255, 255, 255, 0.04);
   --kedge-border: rgba(255, 255, 255, 0.06);
   --kedge-border-strong: rgba(255, 255, 255, 0.1);
@@ -32,8 +32,8 @@ html, body {
 
 body {
   background:
-    radial-gradient(900px 420px at 50% -80px, rgba(124, 91, 245, 0.20), transparent 60%),
-    radial-gradient(700px 380px at 90% 110%, rgba(52, 211, 153, 0.10), transparent 60%),
+    radial-gradient(900px 420px at 50% -80px, rgba(139, 107, 255, 0.20), transparent 60%),
+    radial-gradient(700px 380px at 90% 110%, rgba(47, 214, 160, 0.10), transparent 60%),
     var(--kedge-surface);
   background-attachment: fixed;
   color: var(--kedge-text);
@@ -90,7 +90,7 @@ body::before {
 .theme-panel {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, transparent 100%), var(--kedge-surface-raised);
   border: 1px solid var(--kedge-border);
-  border-radius: 16px;
+  border-radius: 6px;
   padding: 36px 32px 30px;
   box-shadow:
     0 1px 0 rgba(255, 255, 255, 0.04) inset,
@@ -130,7 +130,7 @@ body::before {
   align-items: center;
   width: 100%;
   padding: 0;
-  border-radius: 10px;
+  border-radius: 4px;
   border: 1px solid var(--kedge-border-strong);
   background: var(--kedge-surface-overlay);
   color: var(--kedge-text);
@@ -143,14 +143,14 @@ body::before {
 }
 
 .dex-btn:hover {
-  background: rgba(124, 91, 245, 0.08);
+  background: rgba(139, 107, 255, 0.08);
   border-color: var(--kedge-violet-border);
 }
 
 .dex-btn:focus-visible {
   outline: none;
   border-color: var(--kedge-violet);
-  box-shadow: 0 0 0 3px rgba(124, 91, 245, 0.25);
+  box-shadow: 0 0 0 3px rgba(139, 107, 255, 0.25);
 }
 
 .dex-btn:active {
@@ -174,11 +174,11 @@ body::before {
   background-repeat: no-repeat;
   background-size: 20px;
   border-right: 1px solid var(--kedge-border);
-  border-radius: 9px 0 0 9px;
+  border-radius: 4px 0 0 4px;
 }
 
 .dex-btn-icon--google        { background-color: #ffffff;             background-image: url(../static/img/google-icon.svg); }
-.dex-btn-icon--local         { background-color: rgba(124,91,245,0.18); background-image: url(../static/img/email-icon.svg); }
+.dex-btn-icon--local         { background-color: rgba(139, 107, 255,0.18); background-image: url(../static/img/email-icon.svg); }
 .dex-btn-icon--gitea         { background-color: #f5f5f5;             background-image: url(../static/img/gitea-icon.svg); }
 .dex-btn-icon--github        { background-color: #f5f5f5;             background-image: url(../static/img/github-icon.svg); }
 .dex-btn-icon--gitlab        { background-color: #f5f5f5;             background-image: url(../static/img/gitlab-icon.svg); background-size: contain; }
@@ -186,8 +186,8 @@ body::before {
 .dex-btn-icon--oidc          { background-color: rgba(255,255,255,0.94); background-image: url(../static/img/oidc-icon.svg); background-size: contain; }
 .dex-btn-icon--bitbucket-cloud { background-color: #205081;           background-image: url(../static/img/bitbucket-icon.svg); }
 .dex-btn-icon--atlassian-crowd { background-color: #cfdcea;           background-image: url(../static/img/atlassian-crowd-icon.svg); }
-.dex-btn-icon--ldap          { background-color: rgba(124,91,245,0.18); background-image: url(../static/img/ldap-icon.svg); }
-.dex-btn-icon--saml          { background-color: rgba(124,91,245,0.18); background-image: url(../static/img/saml-icon.svg); }
+.dex-btn-icon--ldap          { background-color: rgba(139, 107, 255,0.18); background-image: url(../static/img/ldap-icon.svg); }
+.dex-btn-icon--saml          { background-color: rgba(139, 107, 255,0.18); background-image: url(../static/img/saml-icon.svg); }
 .dex-btn-icon--linkedin      {                                         background-image: url(../static/img/linkedin-icon.svg); background-size: contain; }
 .dex-btn-icon--microsoft     {                                         background-image: url(../static/img/microsoft-icon.svg); }
 
@@ -200,7 +200,7 @@ body::before {
   letter-spacing: -0.005em;
 }
 
-/* Primary action (violet) */
+/* Primary action (violet, glow-means-alive) */
 .theme-btn--primary {
   background: var(--kedge-violet);
   border: 1px solid var(--kedge-violet);
@@ -210,30 +210,31 @@ body::before {
   padding: 0 16px;
   font-size: 13px;
   font-weight: 600;
-  border-radius: 10px;
+  border-radius: 4px;
   cursor: pointer;
+  box-shadow: 0 0 16px rgba(139, 107, 255, 0.3);
   transition: background 120ms ease, box-shadow 120ms ease, transform 120ms ease;
 }
 
-.theme-btn--primary:hover { background: var(--kedge-violet-hover); border-color: var(--kedge-violet-hover); box-shadow: 0 8px 24px -8px rgba(124,91,245,0.55); }
-.theme-btn--primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(124, 91, 245, 0.35); }
+.theme-btn--primary:hover { background: var(--kedge-violet-hover); border-color: var(--kedge-violet-hover); box-shadow: 0 0 22px rgba(139, 107, 255, 0.45); }
+.theme-btn--primary:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(139, 107, 255, 0.35); }
 .theme-btn--primary:active { transform: translateY(0.5px); }
 .theme-btn--primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Success / approval — emerald accent */
 .theme-btn--success {
-  background: rgba(52, 211, 153, 0.14);
-  border: 1px solid rgba(52, 211, 153, 0.45);
-  color: #6ee7b7;
+  background: rgba(47, 214, 160, 0.14);
+  border: 1px solid rgba(47, 214, 160, 0.45);
+  color: #8fe9cd;
   width: 100%;
   padding: 0;
   font-size: 13px;
   font-weight: 600;
-  border-radius: 10px;
+  border-radius: 4px;
   cursor: pointer;
   transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
 }
-.theme-btn--success:hover { background: rgba(52, 211, 153, 0.22); border-color: rgba(52, 211, 153, 0.65); color: #d1fae5; }
+.theme-btn--success:hover { background: rgba(47, 214, 160, 0.22); border-color: rgba(47, 214, 160, 0.65); color: #d6f7ec; }
 
 /* Provider / secondary button styling on light theme — re-targeted in theme dir */
 .theme-btn-provider {
@@ -242,7 +243,7 @@ body::before {
   border: 1px solid var(--kedge-border-strong);
 }
 .theme-btn-provider:hover {
-  background: rgba(124, 91, 245, 0.08);
+  background: rgba(139, 107, 255, 0.08);
   border-color: var(--kedge-violet-border);
 }
 
@@ -274,7 +275,7 @@ body::before {
   color: var(--kedge-text);
   background: var(--kedge-surface);
   border: 1px solid var(--kedge-border-strong);
-  border-radius: 10px;
+  border-radius: 4px;
   transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
 }
 
@@ -286,20 +287,20 @@ body::before {
 .theme-form-input:active {
   outline: none;
   border-color: var(--kedge-violet);
-  box-shadow: 0 0 0 3px rgba(124, 91, 245, 0.20);
-  background: #08080f;
+  box-shadow: 0 0 0 3px rgba(139, 107, 255, 0.20);
+  background: #07070d;
 }
 
 /* Error box */
 .dex-error-box {
   margin: 16px 0 4px;
   padding: 10px 14px;
-  background: rgba(248, 113, 113, 0.08);
-  border: 1px solid rgba(248, 113, 113, 0.30);
-  color: #fecaca;
+  background: rgba(255, 93, 93, 0.08);
+  border: 1px solid rgba(255, 93, 93, 0.30);
+  color: #ffc9c9;
   font-size: 12px;
   font-weight: 500;
-  border-radius: 10px;
+  border-radius: 4px;
   text-align: left;
 }
 
@@ -309,7 +310,7 @@ body::before {
   padding: 14px 16px;
   background: var(--kedge-surface-overlay);
   border: 1px solid var(--kedge-border);
-  border-radius: 12px;
+  border-radius: 6px;
   text-align: left;
 }
 
@@ -347,7 +348,7 @@ body::before {
   padding: 14px 16px;
   background: var(--kedge-surface-overlay);
   border: 1px solid var(--kedge-border);
-  border-radius: 12px;
+  border-radius: 6px;
   text-align: left;
 }
 
@@ -363,19 +364,19 @@ body::before {
 .code-section input:focus,
 .code-section input:hover {
   border-color: var(--kedge-violet);
-  background: #08080f;
+  background: #07070d;
 }
 
 /* Success block */
 .success-message {
   margin: 18px 0;
   padding: 14px 16px;
-  background: rgba(52, 211, 153, 0.06);
-  border: 1px solid rgba(52, 211, 153, 0.25);
-  border-radius: 12px;
+  background: rgba(47, 214, 160, 0.06);
+  border: 1px solid rgba(47, 214, 160, 0.25);
+  border-radius: 6px;
 }
 
-.success-message p { margin: 0; color: #d1fae5; font-size: 12px; }
+.success-message p { margin: 0; color: #d6f7ec; font-size: 12px; }
 
 /* Action button stack on approval */
 .action-buttons { margin-top: 20px; }

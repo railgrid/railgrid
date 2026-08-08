@@ -241,9 +241,9 @@ export function themeStyle(host: Element): cytoscape.StylesheetStyle[] {
 
   const surface = v('--color-surface-overlay', 'rgba(127,127,127,0.16)')
   const border = v('--color-border-default', 'rgba(127,127,127,0.45)')
-  const text = v('--color-text-primary', '#e6e6f0')
-  const muted = v('--color-text-muted', '#9aa0ad')
-  const accent = v('--color-accent', '#6d4fe0')
+  const text = v('--color-text-primary', '#e9e9f2')
+  const muted = v('--color-text-muted', '#5d5f78')
+  const accent = v('--color-accent', '#8b6bff')
 
   const style: cytoscape.StylesheetStyle[] = [
     {

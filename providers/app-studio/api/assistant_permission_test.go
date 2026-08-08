@@ -125,11 +125,11 @@ func TestProjectAssistantExistingMutationRequiresSameTurnRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := projectAssistantToolCallRequest{WorkspaceScope: scope, RunState: newProjectEinoAssistantRunState()}
-	if err := projectAssistantRequireMutationRead(ctx, req, files, "src/App.tsx", "sha256:missing"); err == nil {
+	if _, err := projectAssistantRequireMutationRead(ctx, req, files, "src/App.tsx", "sha256:missing"); err == nil {
 		t.Fatal("existing mutation accepted without same-turn read")
 	}
 	req.RunState.RecordObservedReadFile("./src/App.tsx")
-	if err := projectAssistantRequireMutationRead(ctx, req, files, "src/App.tsx", "sha256:missing"); err == nil {
+	if _, err := projectAssistantRequireMutationRead(ctx, req, files, "src/App.tsx", "sha256:missing"); err == nil {
 		t.Fatal("path-only observed read authorized existing mutation")
 	}
 	read, err := files.ReadFile(ctx, scope, workspace.ReadOptions{Path: "src/App.tsx"})
@@ -137,10 +137,24 @@ func TestProjectAssistantExistingMutationRequiresSameTurnRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.RunState.RecordObservedReadFileVersion(read.Path, read.Version)
-	if err := projectAssistantRequireMutationRead(ctx, req, files, "src/App.tsx", read.Version); err != nil {
+	eff, err := projectAssistantRequireMutationRead(ctx, req, files, "src/App.tsx", read.Version)
+	if err != nil {
 		t.Fatalf("canonical complete observed read rejected: %v", err)
 	}
-	if err := projectAssistantRequireMutationRead(ctx, req, files, "missing.ts", "sha256:missing"); err != nil {
+	if eff != read.Version {
+		t.Fatalf("effective version = %q, want the read version %q", eff, read.Version)
+	}
+	// A complete read this turn authorizes the mutation even when the caller
+	// passes a fabricated version (the common model failure): the returned
+	// effective version is the read's, not the bogus token.
+	eff, err = projectAssistantRequireMutationRead(ctx, req, files, "src/App.tsx", "4d4e9d93cb1ccf24fbc4f4304802f9d7029558d9")
+	if err != nil {
+		t.Fatalf("complete read rejected because of a fabricated expectedVersion: %v", err)
+	}
+	if eff != read.Version {
+		t.Fatalf("fabricated-version mutation used %q, want the read version %q", eff, read.Version)
+	}
+	if _, err := projectAssistantRequireMutationRead(ctx, req, files, "missing.ts", "sha256:missing"); err != nil {
 		t.Fatalf("missing target should defer to typed target-not-found: %v", err)
 	}
 }

@@ -171,6 +171,36 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		},
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
+				Name:         projectToolWebSearch,
+				Description:  "Search the web and return the top results (title, URL, snippet). Follow up with web_fetch to read one in full. Backed by the workspace's shared private search instance.",
+				Parameters:   json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":1,"description":"Search query."}},"required":["query"],"additionalProperties":false}`),
+				Risk:         projectAssistantToolRiskRead,
+				ParallelSafe: true,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				s, err := projectAssistantToolServer(server)
+				if err != nil {
+					return "", err
+				}
+				query, _ := req.Arguments["query"].(string)
+				return s.projectAssistantWebSearch(ctx, req, query)
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
+				Name:         projectToolWebFetch,
+				Description:  "Fetch a public web page over HTTP(S) and return its readable text (truncated). Use it to read documentation, a README, or a page found with web_search. Internal addresses are blocked.",
+				Parameters:   json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","minLength":1,"description":"Absolute http(s) URL."}},"required":["url"],"additionalProperties":false}`),
+				Risk:         projectAssistantToolRiskRead,
+				ParallelSafe: true,
+			},
+			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+				rawURL, _ := req.Arguments["url"].(string)
+				return projectAssistantWebFetch(ctx, rawURL)
+			},
+		},
+		projectAssistantToolFunc{
+			spec: projectAssistantToolSpec{
 				Name:        projectToolCreateFile,
 				Description: "Create one new bounded UTF-8 project-relative file. Creation is always create-only; if the target exists, use replace_file with the complete read version or edit_file with an exact oldString and expectedVersion.",
 				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":%d},"content":{"type":"string","maxLength":%d},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["path","content"],"additionalProperties":false}`, workspace.MaxProjectPathBytes, workspace.MaxWriteBytes)),
@@ -206,11 +236,12 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				}
 				path, _ := projectToolRawString(req.Arguments["path"])
 				expectedVersion, _ := projectToolRawString(req.Arguments["expectedVersion"])
-				if err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, path, expectedVersion); err != nil {
+				effVersion, err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, path, expectedVersion)
+				if err != nil {
 					return "", err
 				}
 				content, _ := projectToolRawString(req.Arguments["content"])
-				return projectAssistantToolJSONResult(s.workspaces.ReplaceFile(ctx, req.WorkspaceScope, workspace.ReplaceOptions{Path: path, Content: content, ExpectedVersion: expectedVersion}))
+				return projectAssistantToolJSONResult(s.workspaces.ReplaceFile(ctx, req.WorkspaceScope, workspace.ReplaceOptions{Path: path, Content: content, ExpectedVersion: effVersion}))
 			},
 		},
 		projectAssistantToolFunc{
@@ -227,14 +258,15 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				}
 				path, _ := projectToolRawString(req.Arguments["path"])
 				expectedVersion, _ := projectToolRawString(req.Arguments["expectedVersion"])
-				if err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, path, expectedVersion); err != nil {
+				effVersion, err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, path, expectedVersion)
+				if err != nil {
 					return "", err
 				}
 				oldString, _ := projectToolRawString(req.Arguments["oldString"])
 				newString, _ := projectToolRawString(req.Arguments["newString"])
 				replaceAll, _ := req.Arguments["replaceAll"].(bool)
 				return projectAssistantToolJSONResult(s.workspaces.EditFile(ctx, req.WorkspaceScope, workspace.EditOptions{
-					Path: path, OldString: oldString, NewString: newString, ReplaceAll: replaceAll, ExpectedVersion: expectedVersion,
+					Path: path, OldString: oldString, NewString: newString, ReplaceAll: replaceAll, ExpectedVersion: effVersion,
 				}))
 			},
 		},
@@ -252,10 +284,11 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				}
 				path, _ := projectToolRawString(req.Arguments["path"])
 				expectedVersion, _ := projectToolRawString(req.Arguments["expectedVersion"])
-				if err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, path, expectedVersion); err != nil {
+				effVersion, err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, path, expectedVersion)
+				if err != nil {
 					return "", err
 				}
-				return projectAssistantToolJSONResult(s.workspaces.DeleteFile(ctx, req.WorkspaceScope, workspace.DeleteOptions{Path: path, ExpectedVersion: expectedVersion}))
+				return projectAssistantToolJSONResult(s.workspaces.DeleteFile(ctx, req.WorkspaceScope, workspace.DeleteOptions{Path: path, ExpectedVersion: effVersion}))
 			},
 		},
 		projectAssistantToolFunc{
@@ -272,12 +305,13 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				}
 				sourcePath, _ := projectToolRawString(req.Arguments["sourcePath"])
 				expectedVersion, _ := projectToolRawString(req.Arguments["expectedVersion"])
-				if err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, sourcePath, expectedVersion); err != nil {
+				effVersion, err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, sourcePath, expectedVersion)
+				if err != nil {
 					return "", err
 				}
 				destinationPath, _ := projectToolRawString(req.Arguments["destinationPath"])
 				return projectAssistantToolJSONResult(s.workspaces.MoveFile(ctx, req.WorkspaceScope, workspace.MoveOptions{
-					SourcePath: sourcePath, DestinationPath: destinationPath, ExpectedVersion: expectedVersion,
+					SourcePath: sourcePath, DestinationPath: destinationPath, ExpectedVersion: effVersion,
 				}))
 			},
 		},
@@ -500,10 +534,24 @@ func projectAssistantReadFileTool(ctx context.Context, files *workspace.FileStor
 	if !ok || strings.TrimSpace(rawPath) == "" {
 		return "", errors.New("read_file requires file_path")
 	}
+	// Clamp offset/limit rather than reject them. The model does not know a
+	// file's line count, so to force a complete read (required before any
+	// edit) it commonly over-specifies limit — e.g. 2500 for a 1462-line
+	// file. Rejecting that turned a would-be complete read into a hard failure
+	// and, because editing requires a complete same-turn read, blocked edits
+	// on files small enough to read whole. Clamping to [1,2000] returns the
+	// whole file whenever it fits under the cap (Complete stays true), which
+	// is the common case; genuinely larger files still read bounded.
 	offset := projectEinoAssistantPositiveJSONInt(req.Arguments["offset"], 1)
 	limit := projectEinoAssistantPositiveJSONInt(req.Arguments["limit"], 2000)
-	if offset < 1 || limit < 1 || limit > 2000 {
-		return "", errors.New("read_file offset must be positive and limit must be between 1 and 2000")
+	if offset < 1 {
+		offset = 1
+	}
+	if limit < 1 {
+		limit = 2000
+	}
+	if limit > 2000 {
+		limit = 2000
 	}
 	file, err := files.ReadFile(ctx, req.WorkspaceScope, workspace.ReadOptions{Path: rawPath, MaxBytes: workspace.MaxReadMaxBytes})
 	if err != nil {

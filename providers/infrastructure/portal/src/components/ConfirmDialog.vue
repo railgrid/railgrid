@@ -24,7 +24,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 <template>
   <Teleport to="body">
     <div
-      class="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      class="fixed inset-0 z-[100] flex items-center justify-center bg-surface/60 backdrop-blur-sm"
       @click.self="emit('cancel')"
     >
       <div class="w-full max-w-md rounded-xl border border-border-subtle bg-surface-raised p-6 shadow-2xl">
