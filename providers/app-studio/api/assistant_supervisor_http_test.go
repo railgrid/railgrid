@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -33,6 +34,28 @@ func TestProjectAssistantRunErrorInfoClassifiesExhaustedModelRetries(t *testing.
 	err := &adk.RetryExhaustedError{LastErr: &projectEinoAssistantIncompleteStreamError{}, TotalRetries: 5}
 	if got := projectAssistantRunErrorInfo(err); got != "response_too_many_failed_attempts" {
 		t.Fatalf("error info = %q, want response_too_many_failed_attempts", got)
+	}
+}
+
+func TestProjectAssistantRunErrorInfoClassifiesStructuredProviderFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "context window", err: &projectEinoAssistantContextWindowExceededError{}, want: "context_window_exceeded"},
+		{name: "generic gateway context window", err: fmt.Errorf("opencode request failed: maximum context length exceeded"), want: "context_window_exceeded"},
+		{name: "model timeout", err: &projectEinoAssistantModelTimeoutError{Code: "model_stream_idle_timeout", Duration: time.Second}, want: "response_timeout"},
+		{name: "request deadline", err: context.DeadlineExceeded, want: "response_timeout"},
+		{name: "canceled", err: context.Canceled, want: "interrupted"},
+		{name: "generic", err: errors.New("provider unavailable"), want: "other"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := projectAssistantRunErrorInfo(tt.err); got != tt.want {
+				t.Fatalf("error info = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -662,7 +685,7 @@ func TestReconcileOrphanedProjectAssistantRunPersistsInterruptedMessageMetadata(
 		t.Fatal(err)
 	}
 	server := NewWithWorkspace(nil, msgStore, nil, "", false)
-	if err := server.reconcileOrphanedProjectAssistantRun(ctx, scope); err != nil {
+	if err := server.reconcileOrphanedProjectAssistantRun(ctx, scope, run.ID); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
 	updatedRun, err := msgStore.GetAssistantRun(ctx, scope, run.ID)

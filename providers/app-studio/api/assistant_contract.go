@@ -160,15 +160,16 @@ type projectAssistantCompletionEvidence struct {
 }
 
 type projectAssistantEvent struct {
-	Type         projectAssistantEventType   `json:"type"`
-	ToolCall     *projectAssistantToolCall   `json:"toolCall,omitempty"`
-	Permission   *projectAssistantPermission `json:"permission,omitempty"`
-	FollowUp     *projectAssistantFollowUp   `json:"followUp,omitempty"`
-	Checkpoint   *projectAssistantCheckpoint `json:"checkpoint,omitempty"`
-	BuilderEvent *projectBuilderEventView    `json:"builderEvent,omitempty"`
-	Delta        string                      `json:"delta,omitempty"`
-	Status       string                      `json:"status,omitempty"`
-	Error        string                      `json:"error,omitempty"`
+	Type         projectAssistantEventType     `json:"type"`
+	ToolCall     *projectAssistantToolCall     `json:"toolCall,omitempty"`
+	Permission   *projectAssistantPermission   `json:"permission,omitempty"`
+	FollowUp     *projectAssistantFollowUp     `json:"followUp,omitempty"`
+	Checkpoint   *projectAssistantCheckpoint   `json:"checkpoint,omitempty"`
+	BuilderEvent *projectBuilderEventView      `json:"builderEvent,omitempty"`
+	Plan         *projectAssistantPlanSnapshot `json:"plan,omitempty"`
+	Delta        string                        `json:"delta,omitempty"`
+	Status       string                        `json:"status,omitempty"`
+	Error        string                        `json:"error,omitempty"`
 }
 
 type projectAssistantEventType string
@@ -182,6 +183,7 @@ const (
 	projectAssistantEventInputNeeded      projectAssistantEventType = "input_required"
 	projectAssistantEventCheckpointSaved  projectAssistantEventType = "checkpoint_saved"
 	projectAssistantEventBuilderEvent     projectAssistantEventType = "builder_event"
+	projectAssistantEventPlanUpdated      projectAssistantEventType = "plan_updated"
 	projectAssistantEventRunFailed        projectAssistantEventType = "run_failed"
 	projectAssistantEventRunFinished      projectAssistantEventType = "run_finished"
 )

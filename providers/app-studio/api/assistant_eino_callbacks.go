@@ -120,6 +120,7 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(
 
 	var content strings.Builder
 	toolCalls := map[int]chatToolCall{}
+	var latestUsage *schema.TokenUsage
 	for {
 		chunk, err := output.Recv()
 		if errors.Is(err, io.EOF) {
@@ -136,6 +137,10 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(
 			continue
 		}
 		msg := modelOutput.Message
+		if msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
+			usage := *msg.ResponseMeta.Usage
+			latestUsage = &usage
+		}
 		if r.auditRecorder != nil && projectEinoAssistantMeaningfulModelChunk(msg) {
 			r.auditRecorder.recordModelResponseChunk(ctx, len(msg.ToolCalls) > 0)
 		}
@@ -162,6 +167,9 @@ func (r *projectEinoAssistantModelCallbackRecorder) recordModelStream(
 					Arguments: call.Function.Arguments,
 				},
 			})
+		}
+		if latestUsage != nil {
+			message.ResponseMeta = &schema.ResponseMeta{Usage: latestUsage}
 		}
 		_ = r.auditRecorder.recordModelResult(ctx, r.runState.CurrentModelCallOrdinal(), message)
 	}

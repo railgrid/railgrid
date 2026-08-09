@@ -273,7 +273,7 @@ func TestProjectAssistantSupervisorReservationProtectsFreshDurableRunUntilAttach
 	if _, err := memoryStore.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
 		t.Fatalf("CreateAssistantRun: %v", err)
 	}
-	if err := server.reconcileOrphanedProjectAssistantRun(context.Background(), scope); err != nil {
+	if err := server.reconcileOrphanedProjectAssistantRun(context.Background(), scope, run.ID); err != nil {
 		t.Fatalf("reconcile while reserved: %v", err)
 	}
 	persisted, err := memoryStore.GetAssistantRun(context.Background(), scope, run.ID)
@@ -300,7 +300,7 @@ func TestProjectAssistantReconcilesOrphanedConversationRun(t *testing.T) {
 	); err != nil {
 		t.Fatalf("CreateAssistantRun stale: %v", err)
 	}
-	if err := server.reconcileOrphanedProjectAssistantRun(context.Background(), scope); err != nil {
+	if err := server.reconcileOrphanedProjectAssistantRun(context.Background(), scope, stale.ID); err != nil {
 		t.Fatalf("reconcileOrphanedProjectAssistantRun: %v", err)
 	}
 	interrupted, err := messages.GetAssistantRun(context.Background(), scope, stale.ID)
@@ -317,6 +317,43 @@ func TestProjectAssistantReconcilesOrphanedConversationRun(t *testing.T) {
 	}
 	if !started.Started || started.Run.ClientRequestID != "request-new" {
 		t.Fatalf("started run = %#v, want a new started conversation", started)
+	}
+}
+
+func TestProjectAssistantReconcileTargetsRequestedRunWithoutInterruptingNewerRun(t *testing.T) {
+	ctx := context.Background()
+	messages := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, messages, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "test-project-uid-demo"}
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	oldRun := store.AssistantRun{ID: "run-old", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusCompleted, ActiveMessageID: "assistant-old", CreatedAt: now, UpdatedAt: now, Revision: 1}
+	newRun := store.AssistantRun{ID: "run-new", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusRunning, ActiveMessageID: "assistant-new", CreatedAt: now.Add(time.Minute), UpdatedAt: now.Add(time.Minute), Revision: 1}
+	if err := messages.AppendMessage(ctx, scope, store.Message{ID: oldRun.ActiveMessageID, Role: "assistant", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := messages.AppendMessage(ctx, scope, store.Message{ID: newRun.ActiveMessageID, Role: "assistant", CreatedAt: newRun.CreatedAt, UpdatedAt: newRun.UpdatedAt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := messages.SaveAssistantRun(ctx, scope, oldRun); err != nil {
+		t.Fatal(err)
+	}
+	if err := messages.SaveAssistantRun(ctx, scope, newRun); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := server.reconcileOrphanedProjectAssistantRun(ctx, scope, oldRun.ID); err != nil {
+		t.Fatal(err)
+	}
+	gotOld, err := messages.GetAssistantRun(ctx, scope, oldRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotNew, err := messages.GetAssistantRun(ctx, scope, newRun.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotOld.Status != store.AssistantRunStatusCompleted || gotNew.Status != store.AssistantRunStatusRunning {
+		t.Fatalf("reconciled statuses old=%q new=%q; want completed/running", gotOld.Status, gotNew.Status)
 	}
 }
 

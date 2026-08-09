@@ -18,7 +18,9 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 
 	"github.com/cloudwego/eino/adk"
@@ -34,19 +36,21 @@ import (
 type projectEinoAssistantLifecycle struct {
 	*adk.BaseChatModelAgentMiddleware
 
-	runState         *projectEinoAssistantRunState
-	server           *Server
-	req              projectAssistantRunRequest
-	repositoryRef    string
-	workspace        *workspace.FileStore
-	workspaceScope   workspace.Scope
-	repositoryView   func(context.Context) (*ProjectRepositoryView, error)
-	auditRecorder    *projectAssistantRunAuditRecorder
-	steering         <-chan projectAssistantSteeringInput
-	activateSteering func(context.Context, []projectAssistantSteeringInput) error
-	managedToolNames map[string]struct{}
-	liveContext      string
-	liveContextReady bool
+	runState              *projectEinoAssistantRunState
+	server                *Server
+	req                   projectAssistantRunRequest
+	repositoryRef         string
+	workspace             *workspace.FileStore
+	workspaceScope        workspace.Scope
+	repositoryView        func(context.Context) (*ProjectRepositoryView, error)
+	auditRecorder         *projectAssistantRunAuditRecorder
+	steering              <-chan projectAssistantSteeringInput
+	activateSteering      func(context.Context, []projectAssistantSteeringInput) error
+	managedToolNames      map[string]struct{}
+	liveContext           string
+	liveContextReady      bool
+	liveContextGeneration uint64
+	liveContextSections   map[string]string
 }
 
 func projectEinoAssistantLifecycleMiddleware(
@@ -104,6 +108,9 @@ func (m *projectEinoAssistantLifecycle) BeforeModelRewriteState(
 		if err := m.runState.MutationRecoveryBlockedError(); err != nil {
 			return ctx, state, err
 		}
+		if err := m.runState.NoProgressModelCallError(); err != nil {
+			return ctx, state, err
+		}
 	}
 	if err := m.refreshLiveRequestContext(ctx); err != nil {
 		return ctx, state, err
@@ -143,6 +150,7 @@ func (m *projectEinoAssistantLifecycle) BeforeModelRewriteState(
 			rolloutBudgetRemaining,
 			state.ToolInfos,
 			nil,
+			projectAssistantAuditInputBytes(state.Messages, state.ToolInfos),
 		); err != nil {
 			return ctx, state, err
 		}
@@ -168,6 +176,7 @@ func (m *projectEinoAssistantLifecycle) refreshExecutableToolContext(
 	}
 	infos := make([]*schema.ToolInfo, 0, len(tools))
 	currentNames := make(map[string]struct{}, len(tools))
+	exposedNames := make(map[string]struct{}, len(tools))
 	for _, tool := range tools {
 		if tool == nil {
 			continue
@@ -180,10 +189,15 @@ func (m *projectEinoAssistantLifecycle) refreshExecutableToolContext(
 			continue
 		}
 		name := projectAssistantToolKey(info.Name)
-		if _, exists := currentNames[name]; exists {
+		currentNames[name] = struct{}{}
+		if wrapped, isWrapped := tool.(projectEinoAssistantTool); isWrapped &&
+			wrapped.searchSelectionRequired && !m.runState.DynamicToolSelected(name) {
 			continue
 		}
-		currentNames[name] = struct{}{}
+		if _, exists := exposedNames[name]; exists {
+			continue
+		}
+		exposedNames[name] = struct{}{}
 		infos = append(infos, info)
 	}
 	if m.managedToolNames == nil {
@@ -206,12 +220,61 @@ func (m *projectEinoAssistantLifecycle) refreshExecutableToolContext(
 	for name := range currentNames {
 		m.managedToolNames[name] = struct{}{}
 	}
-	state.ToolInfos = append(frameworkInfos, infos...)
+	// Tool order is part of the model-visible request. Keep it deterministic
+	// even when provider/MCP discovery returns the same capabilities in a
+	// different order; a stable prefix lets provider-side prompt caches reuse
+	// the request while preserving the existing tool contracts.
+	state.ToolInfos = projectEinoAssistantStableToolInfos(append(frameworkInfos, infos...))
 	state.DeferredToolInfos = nil
 	if modelCtx != nil {
 		modelCtx.Tools = state.ToolInfos
 	}
 	return nil
+}
+
+// projectEinoAssistantStableToolInfos returns a new slice sorted by the
+// canonical tool name and contract presentation. The caller owns the returned
+// slice; individual ToolInfo values are intentionally not mutated because the
+// same values may still be referenced by Eino's tool node.
+func projectEinoAssistantStableToolInfos(infos []*schema.ToolInfo) []*schema.ToolInfo {
+	if len(infos) == 0 {
+		return nil
+	}
+	type keyedToolInfo struct {
+		info     *schema.ToolInfo
+		name     string
+		contract string
+	}
+	keyed := make([]keyedToolInfo, 0, len(infos))
+	for _, info := range infos {
+		entry := keyedToolInfo{info: info}
+		if info != nil {
+			entry.name = projectAssistantToolKey(info.Name)
+		}
+		// ToolInfo's custom JSON marshaler includes the provider-facing schema
+		// and description while keeping map keys deterministic. It is used only
+		// as a tie-breaker for duplicate/case-variant names.
+		if info != nil {
+			raw, err := json.Marshal(info)
+			if err != nil {
+				entry.contract = strings.TrimSpace(info.Desc)
+			} else {
+				entry.contract = string(raw)
+			}
+		}
+		keyed = append(keyed, entry)
+	}
+	sort.SliceStable(keyed, func(i, j int) bool {
+		if keyed[i].name != keyed[j].name {
+			return keyed[i].name < keyed[j].name
+		}
+		return keyed[i].contract < keyed[j].contract
+	})
+	out := make([]*schema.ToolInfo, len(keyed))
+	for i := range keyed {
+		out[i] = keyed[i].info
+	}
+	return out
 }
 
 func (m *projectEinoAssistantLifecycle) refreshLiveRequestContext(ctx context.Context) error {
@@ -250,40 +313,29 @@ func (m *projectEinoAssistantLifecycle) rewriteLiveContext(ctx context.Context, 
 	if m == nil || state == nil || m.req.Project == nil {
 		return nil
 	}
-	contextMessages := []chatMessage{{
-		Role:    "system",
-		Content: projectEinoAssistantLiveContextPrefix + projectSystemPromptForMode(m.req.Project, m.req.Repository, m.req.CollaborationMode, projectAssistantInitialBuildActive(m.req, m.runState)),
-	}}
-	if snapshot, ok := projectEinoAssistantSessionContextMessage(ctx, m.req, m.runState); ok {
-		snapshot.Content = projectEinoAssistantLiveContextPrefix + snapshot.Content
-		contextMessages = append(contextMessages, snapshot)
+	sections := m.liveRequestContextSections(ctx)
+	contextMessages := make([]chatMessage, 0, len(sections))
+	for _, section := range sections {
+		contextMessages = append(contextMessages, section.message)
 	}
-	if prompt := m.runState.ToolPrompt(); prompt != "" {
-		contextMessages = append(contextMessages, chatMessage{Role: "system", Content: projectEinoAssistantLiveContextPrefix + prompt})
+	digest := projectEinoAssistantLiveContextDigest(sections)
+	contextGeneration := m.runState.ModelContextGeneration()
+	if m.liveContextReady && m.liveContextGeneration != contextGeneration {
+		// Codex clears its reference context baseline when compaction replaces
+		// history. The next model boundary must rebuild the full canonical
+		// context, even when its content digest is unchanged.
+		m.liveContextReady = false
+		m.liveContextSections = nil
 	}
-	if prompt := m.runState.SkillPrompt(); prompt != "" {
-		contextMessages = append(contextMessages, chatMessage{Role: "system", Content: projectEinoAssistantLiveContextPrefix + prompt})
-	}
-	digestParts := make([]string, 0, len(contextMessages))
-	for _, message := range contextMessages {
-		digestParts = append(digestParts, message.Role+"\x00"+message.Content)
-	}
-	digest := strings.Join(digestParts, "\x00")
 	if m.liveContextReady && digest == m.liveContext {
 		return nil
 	}
 	if m.liveContextReady {
-		projectUpdate := "Context update since the previous model sample:\nProject metadata:\n- Name: " + m.req.Project.Name +
-			"\n- Display name: " + m.req.Project.Spec.DisplayName +
-			"\n- Repository: " + projectEinoAssistantProjectRepositoryRef(m.req)
-		updates := []chatMessage{{Role: "system", Content: projectEinoAssistantLiveContextPrefix + projectUpdate}}
-		updates = append(updates, contextMessages[1:]...)
-		for index := range updates {
-			if index == 0 {
-				continue
-			}
-			updates[index].Content = strings.TrimPrefix(updates[index].Content, projectEinoAssistantLiveContextPrefix)
-			updates[index].Content = projectEinoAssistantLiveContextPrefix + "Context update since the previous model sample:\n" + updates[index].Content
+		updates := projectEinoAssistantLiveContextUpdates(sections, m.liveContextSections)
+		if len(updates) == 0 {
+			m.liveContext = digest
+			m.liveContextSections = projectEinoAssistantCloneLiveContextSections(sections)
+			return nil
 		}
 		live, err := projectChatMessagesToEino(updates)
 		if err != nil {
@@ -302,6 +354,8 @@ func (m *projectEinoAssistantLifecycle) rewriteLiveContext(ctx context.Context, 
 		withUpdate = append(withUpdate, state.Messages[boundary:]...)
 		state.Messages = withUpdate
 		m.liveContext = digest
+		m.liveContextGeneration = contextGeneration
+		m.liveContextSections = projectEinoAssistantCloneLiveContextSections(sections)
 		return nil
 	}
 	live, err := projectChatMessagesToEino(contextMessages)
@@ -317,7 +371,148 @@ func (m *projectEinoAssistantLifecycle) rewriteLiveContext(ctx context.Context, 
 	state.Messages = append(live, conversationMessages...)
 	m.liveContext = digest
 	m.liveContextReady = true
+	m.liveContextGeneration = contextGeneration
+	m.liveContextSections = projectEinoAssistantCloneLiveContextSections(sections)
 	return nil
+}
+
+type projectEinoAssistantLiveContextSection struct {
+	name    string
+	content string
+	message chatMessage
+}
+
+func (m *projectEinoAssistantLifecycle) liveRequestContextSections(ctx context.Context) []projectEinoAssistantLiveContextSection {
+	if m == nil || m.req.Project == nil {
+		return nil
+	}
+	sections := []projectEinoAssistantLiveContextSection{{
+		name: "project",
+		content: projectSystemPromptForMode(
+			m.req.Project,
+			m.req.Repository,
+			m.req.CollaborationMode,
+			projectAssistantInitialBuildActive(m.req, m.runState),
+		),
+	}}
+	sections[0].message = chatMessage{Role: "system", Content: projectEinoAssistantLiveContextPrefix + sections[0].content}
+	if snapshot, ok := projectEinoAssistantSessionContextMessage(ctx, m.req, m.runState); ok {
+		content := strings.TrimPrefix(snapshot.Content, projectEinoAssistantLiveContextPrefix)
+		sections = append(sections, projectEinoAssistantLiveContextSection{
+			name:    "session",
+			content: content,
+			message: chatMessage{Role: "system", Content: projectEinoAssistantLiveContextPrefix + content},
+		})
+	}
+	if prompt := m.runState.ToolPrompt(); prompt != "" {
+		sections = append(sections, projectEinoAssistantLiveContextSection{
+			name: "tools", content: prompt,
+			message: chatMessage{Role: "system", Content: projectEinoAssistantLiveContextPrefix + prompt},
+		})
+	}
+	if prompt := m.runState.SkillPrompt(); prompt != "" {
+		sections = append(sections, projectEinoAssistantLiveContextSection{
+			name: "skills", content: prompt,
+			message: chatMessage{Role: "system", Content: projectEinoAssistantLiveContextPrefix + prompt},
+		})
+	}
+	return sections
+}
+
+func projectEinoAssistantLiveContextDigest(sections []projectEinoAssistantLiveContextSection) string {
+	parts := make([]string, 0, len(sections))
+	for _, section := range sections {
+		parts = append(parts, section.name+"\x00"+section.content)
+	}
+	return strings.Join(parts, "\x00")
+}
+
+func projectEinoAssistantCloneLiveContextSections(sections []projectEinoAssistantLiveContextSection) map[string]string {
+	if len(sections) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(sections))
+	for _, section := range sections {
+		cloned[section.name] = section.content
+	}
+	return cloned
+}
+
+func projectEinoAssistantLiveContextUpdates(
+	sections []projectEinoAssistantLiveContextSection,
+	previous map[string]string,
+) []chatMessage {
+	updates := make([]chatMessage, 0, len(sections))
+	seen := make(map[string]struct{}, len(sections))
+	for _, section := range sections {
+		seen[section.name] = struct{}{}
+		if prior, ok := previous[section.name]; ok && prior == section.content {
+			continue
+		}
+		content := section.content
+		if section.name == "project" {
+			content = projectEinoAssistantProjectContextUpdateContent(content, previous[section.name])
+		}
+		updates = append(updates, chatMessage{Role: "system", Content: projectEinoAssistantLiveContextPrefix +
+			"Context update since the previous model sample:\nSection: " + section.name + "\n" + content})
+	}
+	removed := make([]string, 0)
+	for name := range previous {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		removed = append(removed, name)
+	}
+	sort.Strings(removed)
+	for _, name := range removed {
+		updates = append(updates, chatMessage{Role: "system", Content: projectEinoAssistantLiveContextPrefix +
+			"Context update since the previous model sample:\nSection: " + name + "\nSection cleared."})
+	}
+	return updates
+}
+
+// The project section starts with a large, mostly static instruction block.
+// Once the initial authoritative prompt is present, a refresh should carry
+// only the project metadata that may have changed. Keep a collaboration-mode
+// line when that specific live field changed; omitting unchanged instructions
+// avoids replaying the full prompt on every model sample.
+func projectEinoAssistantProjectContextUpdateContent(current, previous string) string {
+	const metadataMarker = "Project metadata:\n"
+	start := strings.Index(current, metadataMarker)
+	if start < 0 {
+		return current
+	}
+	metadata := current[start:]
+	if end := strings.Index(metadata, "\nProject memory:"); end >= 0 {
+		metadata = metadata[:end]
+	}
+	currentMemory := projectEinoAssistantProjectMemorySection(current)
+	if currentMemory != "" && currentMemory != projectEinoAssistantProjectMemorySection(previous) {
+		metadata += "\n" + currentMemory
+	}
+	currentMode := projectEinoAssistantCollaborationModeLine(current)
+	if currentMode != "" && currentMode != projectEinoAssistantCollaborationModeLine(previous) {
+		metadata = currentMode + "\n" + metadata
+	}
+	return metadata
+}
+
+func projectEinoAssistantProjectMemorySection(content string) string {
+	const marker = "Project memory:\n"
+	start := strings.Index(content, marker)
+	if start < 0 {
+		return ""
+	}
+	return strings.TrimSpace(content[start:])
+}
+
+func projectEinoAssistantCollaborationModeLine(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "Collaboration mode: ") {
+			return line
+		}
+	}
+	return ""
 }
 
 func projectEinoAssistantDrainSteeringAtBoundary(
@@ -415,7 +610,7 @@ func (m *projectEinoAssistantLifecycle) WrapInvokableToolCall(
 		if name == projectEinoAssistantWriteTodosTool && succeeded {
 			if planProgress, ok := m.settledPlanSnapshot(ctx); ok {
 				previousPlan := m.runState.PlanProgress()
-				projectEinoAssistantPublishPlanProgress(m.runState, m.req.StreamCallbacks, planProgress)
+				projectEinoAssistantPublishAcceptedPlanProgress(m.runState, m.req.StreamCallbacks, planProgress)
 				m.runState.QueuePlanProgressReminder(previousPlan, planProgress)
 			}
 		}

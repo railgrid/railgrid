@@ -59,7 +59,8 @@ Usage:
 - Offset is a one-based line number and limit is the number of lines to return.
 - Structured results include exact selected content, path, byte size, and complete-read version metadata when the request covered the whole file.
 - You can call multiple tools in a single response. Batch independent reads of potentially useful files.
-- Before replacing, editing, deleting, or moving an existing file, perform one complete read and pass its returned version as expectedVersion. Partial reads do not authorize mutation.`
+- Before replacing, deleting, or moving an existing file, perform one complete read and pass its returned version as expectedVersion; partial reads do not authorize those version-gated mutations.
+- edit_file is different: it reads the current file under the workspace mutation lock and applies an exact oldString replacement. A separate read and expectedVersion are optional for edit_file; once the relevant oldString is known, call the mutation instead of rereading the file indefinitely.`
 	projectEinoFilesystemGlobDescription = `Fast file pattern matching for the current App Studio project.
 - Pattern and the optional path are project-relative.
 - Supports glob patterns like "**/*.js" or "src/**/*.ts".
@@ -82,7 +83,7 @@ Usage:
 - Filter files with the glob parameter, such as "*.js" or "**/*.tsx", or the type parameter, such as "js", "py", or "rust".
 - Output modes: "content" shows matching lines, "files_with_matches" shows only file paths, and "count" shows match counts.
 - By default patterns match within single lines only. For cross-line patterns, use multiline: true.`
-	projectEinoFilesystemInstruction = `Read known relevant files directly. Use glob only when the filename is unknown, and use grep only when the location of specific content is unknown. Batch independent workspace reads and targeted searches in one model response; use sequential reads only when a later range depends on an earlier result. Treat a successful search as evidence to act on: after the current question and relevant edit locations are understood, advance to the next action allowed by the current turn policy instead of launching more searches. If no further action is allowed, report the findings or a concrete blocker. Do not search again for evidence already available in prior tool results. Prefer one explicit limit=2000 read for reasonably sized source files that fit within that cap; do not crawl them through many adjacent short ranges. Use targeted searches or purposeful smaller ranges for generated, minified, or unusually dense files. Read existing files before proposing or applying edits. These tools are read-only and limited to the current App Studio project.`
+	projectEinoFilesystemInstruction = `Read known relevant files directly. Use glob only when the filename is unknown, and use grep only when the location of specific content is unknown. Batch independent workspace reads and targeted searches in one model response; use sequential reads only when a later range depends on an earlier result. Treat a successful search as evidence to act on: after the current question and relevant edit locations are understood, advance to the next action allowed by the current turn policy instead of launching more searches. If no further action is allowed, report the findings or a concrete blocker. Do not search again for evidence already available in prior tool results. Prefer one explicit limit=2000 read for reasonably sized source files that fit within that cap; do not crawl them through many adjacent short ranges. Use targeted searches or purposeful smaller ranges for generated, minified, or unusually dense files. For replace_file, delete_file, and move_file, read the existing source completely and carry its expectedVersion into the mutation. For edit_file, a separate read and expectedVersion are optional because the tool matches oldString against the current file under the workspace mutation lock; once the relevant edit location and exact oldString are known, advance to edit_file instead of rereading the same file. These tools are read-only and limited to the current App Studio project.`
 )
 
 func projectEinoAssistantFilesystemReadTool(name string) bool {
@@ -258,7 +259,7 @@ func (m *projectEinoAssistantFilesystemTelemetry) WrapInvokableToolCall(
 			return result, nil
 		}
 		if m.runState != nil {
-			m.runState.RecordCompletedRead(name, canonicalArguments)
+			freshRead := m.runState.RecordCompletedReadResult(name, canonicalArguments, result)
 			if projectToolBaseName(name) == projectToolReadFile {
 				var readEvidence struct {
 					Path     string `json:"path"`
@@ -279,7 +280,7 @@ func (m *projectEinoAssistantFilesystemTelemetry) WrapInvokableToolCall(
 					m.runState.RecordReadFileRange(readPath, first, last)
 				}
 			}
-			m.runState.RecordCompletedAction(name, canonicalArguments, true)
+			m.runState.RecordCompletedAction(name, canonicalArguments, freshRead)
 		}
 
 		m.emitToolCall(projectToolCallStreamEvent{

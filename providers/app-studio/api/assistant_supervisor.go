@@ -241,7 +241,7 @@ func (s *projectAssistantSupervisor) Shutdown(ctx context.Context) {
 			interrupted.run.Status = store.AssistantRunStatusInterrupted
 			interrupted.run.AbortReason = store.AssistantRunAbortReasonInterrupted
 			interrupted.run.Revision++
-			_ = appendProjectAssistantConversationMessage(ctx, s.store, interrupted.scope, interrupted.run.ID, "interruption-"+interrupted.run.ID, projectAssistantConversationInterruption, chatMessage{Role: "system", Content: "The prior assistant turn was interrupted by provider process loss. Completed response items and tool effects remain authoritative; do not replay in-flight effects."})
+			_ = appendProjectAssistantInterruptedBoundary(ctx, s.store, interrupted.scope, interrupted.run)
 		}
 	}
 	if s.cancel != nil {
@@ -912,6 +912,13 @@ func (s *projectAssistantSupervisor) AbortWith(scope store.Scope, runID string, 
 	if err := s.store.SaveAssistantRunSnapshot(ctx, scope, run, []store.Message{message}, run.Revision-1); err != nil {
 		return false, err
 	}
+	// Persist the model-visible boundary before notifying the thread mirror of
+	// the interrupted terminal state. This mirrors Codex's rollout flush before
+	// publishing TurnAborted and prevents a continuation from racing ahead of
+	// the interruption marker.
+	if err := appendProjectAssistantInterruptedBoundary(ctx, s.store, scope, run); err != nil {
+		s.recordPersistenceFailure(key, runID, err)
+	}
 	s.mu.Lock()
 	if current := s.runs[key]; current != nil && current.run.ID == runID && current.run.Revision == run.Revision {
 		current.committedRun, current.committedMessage = run, message
@@ -1146,11 +1153,24 @@ func (a *projectAssistantSnapshotAccumulator) update(ctx context.Context, mutate
 	s.mu.Unlock()
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), projectMessagePersistTimeout)
 	err := s.store.SaveAssistantRunSnapshot(persistCtx, scope, run, []store.Message{message}, run.Revision-1)
-	cancel()
 	if err != nil {
+		cancel()
 		s.recordPersistenceFailure(a.key, a.runID, err)
 		return fmt.Errorf("persist assistant snapshot: %w", err)
 	}
+	// Any supervised path that terminalizes through the accumulator (including
+	// cancellation while resuming an approval/input checkpoint) must publish
+	// the same model-visible interruption boundary before subscribers observe
+	// the interrupted snapshot. The explicit Stop path does this in AbortWith;
+	// this covers the other durable status transition path.
+	if run.Status == store.AssistantRunStatusInterrupted {
+		if err := appendProjectAssistantInterruptedBoundary(persistCtx, s.store, scope, run); err != nil {
+			cancel()
+			s.recordPersistenceFailure(a.key, a.runID, err)
+			return fmt.Errorf("persist interrupted assistant boundary: %w", err)
+		}
+	}
+	cancel()
 	s.mu.Lock()
 	if current := s.runs[a.key]; current != nil && current.run.ID == a.runID && current.run.Revision == run.Revision {
 		current.committedRun, current.committedMessage = run, message

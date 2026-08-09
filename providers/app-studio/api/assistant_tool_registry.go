@@ -156,7 +156,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:         projectToolReadFile,
-				Description:  "Read one bounded project-relative UTF-8 file. A complete read returns an opaque version; pass that exact version as expectedVersion to replace_file, edit_file, delete_file, or move_file. Partial reads are inspection-only and do not authorize mutation.",
+				Description:  "Read one bounded project-relative UTF-8 file. A complete read returns an opaque version; pass that exact version to replace_file, delete_file, or move_file. edit_file can apply an exact oldString directly against the current file without a separate read. Partial reads are inspection-only for version-gated mutations.",
 				Parameters:   json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"file_path":{"type":"string","minLength":1,"maxLength":%d},"offset":{"type":"integer","minimum":1},"limit":{"type":"integer","minimum":1,"maximum":2000}},"required":["file_path"],"additionalProperties":false}`, workspace.MaxProjectPathBytes)),
 				Risk:         projectAssistantToolRiskRead,
 				ParallelSafe: true,
@@ -247,8 +247,8 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolEditFile,
-				Description: "Replace an exact string in one existing UTF-8 project file. The current file must have been completely read during this turn and expectedVersion must match that read. oldString must match exactly once unless replaceAll is true; stale or ambiguous matches fail without changing the file.",
-				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":%d},"oldString":{"type":"string","minLength":1,"maxLength":%d},"newString":{"type":"string","maxLength":%d},"replaceAll":{"type":"boolean"},"expectedVersion":{"type":"string","minLength":1,"maxLength":%d},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["path","oldString","newString","expectedVersion"],"additionalProperties":false}`, workspace.MaxProjectPathBytes, workspace.MaxWriteBytes, workspace.MaxWriteBytes, workspace.MaxFileVersionBytes)),
+				Description: "Edit one existing UTF-8 project file using an exact oldString replacement. The tool reads the current file under the workspace mutation lock, so a separate read is optional. If expectedVersion is supplied after a complete read, the server uses that authoritative read version; otherwise the edit is checked against current content. oldString must match exactly once unless replaceAll is true; stale or ambiguous matches fail without changing the file.",
+				Parameters:  json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":%d},"oldString":{"type":"string","minLength":1,"maxLength":%d},"newString":{"type":"string","maxLength":%d},"replaceAll":{"type":"boolean"},"expectedVersion":{"type":"string","minLength":1,"maxLength":%d,"description":"Optional compatibility version from a complete read; edit_file can also operate without a prior read."},"recoveryOf":{"type":"string","minLength":1,"maxLength":120,"description":"Optional server-issued action reference used only to correlate a retry in the activity feed."}},"required":["path","oldString","newString"],"additionalProperties":false}`, workspace.MaxProjectPathBytes, workspace.MaxWriteBytes, workspace.MaxWriteBytes, workspace.MaxFileVersionBytes)),
 				Risk:        projectAssistantToolRiskWrite,
 			},
 			call: func(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
@@ -258,16 +258,20 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				}
 				path, _ := projectToolRawString(req.Arguments["path"])
 				expectedVersion, _ := projectToolRawString(req.Arguments["expectedVersion"])
-				effVersion, err := projectAssistantRequireMutationRead(ctx, req, s.workspaces, path, expectedVersion)
+				effVersion, err := projectAssistantResolveEditVersion(ctx, req, s.workspaces, path, expectedVersion)
 				if err != nil {
 					return "", err
 				}
 				oldString, _ := projectToolRawString(req.Arguments["oldString"])
 				newString, _ := projectToolRawString(req.Arguments["newString"])
 				replaceAll, _ := req.Arguments["replaceAll"].(bool)
-				return projectAssistantToolJSONResult(s.workspaces.EditFile(ctx, req.WorkspaceScope, workspace.EditOptions{
+				opts := workspace.EditOptions{
 					Path: path, OldString: oldString, NewString: newString, ReplaceAll: replaceAll, ExpectedVersion: effVersion,
-				}))
+				}
+				if effVersion == "" {
+					return projectAssistantToolJSONResult(s.workspaces.EditFileCurrent(ctx, req.WorkspaceScope, opts))
+				}
+				return projectAssistantToolJSONResult(s.workspaces.EditFile(ctx, req.WorkspaceScope, opts))
 			},
 		},
 		projectAssistantToolFunc{

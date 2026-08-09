@@ -76,7 +76,8 @@ test('keeps action details, assistant progress prose, working status, and plan d
   assert.match(workingStatus, /conversation-running-ripple/)
   assert.doesNotMatch(workingStatus, /animate-pulse font-medium/)
   assert.match(appSource, /<AssistantPlanPopover[\s\S]*v-if="activePlanMessage"/)
-  assert.doesNotMatch(appSource, /AssistantPlanDisclosure/)
+  assert.match(appSource, /<AssistantPlanDisclosure[\s\S]*v-if="assistantPlanDisclosureVisible\(message\)"/)
+  assert.match(appSource, /function assistantPlanDisclosureVisible\(message: ProjectMessageView\)/)
   assert.doesNotMatch(appSource, /Plan ended/)
   assert.doesNotMatch(appSource, /Plan completed/)
   assert.doesNotMatch(appSource, /if \(activePlanMessage\.value\) return ''/)
@@ -86,6 +87,15 @@ test('keeps the active plan step spinner rotating until its status changes', asy
   const source = await readFile(new URL('./AssistantPlanSteps.vue', import.meta.url), 'utf8')
   assert.match(source, /v-else-if="step\.status === 'in_progress'"[\s\S]*animate-spin/)
   assert.doesNotMatch(source, /motion-reduce:animate-none/)
+})
+
+test('protects live plan progress from stale sequence or revision events', async () => {
+  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  assert.match(appSource, /function assistantPlanEventIsNewer\(/)
+  assert.match(appSource, /if \(incomingValue < currentValue\) return false/)
+  assert.match(appSource, /metadata\.assistantPlanRevision/)
+  assert.match(appSource, /metadata\.assistantPlanSequence/)
+  assert.match(appSource, /rawItem\.type === 'plan' && rawItem\.data[\s\S]*assistantPlanEventIsNewer\(metadata, rawItem, event\)/)
 })
 
 test('renders the running label with a Codex-style gradient ripple', async () => {

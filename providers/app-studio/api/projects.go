@@ -670,7 +670,12 @@ func (s *Server) reserveProjectExternalOperation(
 ) (func(), bool) {
 	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
 	if s.store != nil {
-		if err := s.reconcileOrphanedProjectAssistantRun(ctx, scope); err != nil {
+		if latest, err := s.store.LatestAssistantRun(ctx, scope); err == nil {
+			if err := s.reconcileOrphanedProjectAssistantRun(ctx, scope, latest.ID); err != nil {
+				writeStatus(w, http.StatusInternalServerError, "InternalError", "check assistant activity: "+err.Error())
+				return nil, false
+			}
+		} else if !errors.Is(err, store.ErrAssistantRunNotFound) {
 			writeStatus(w, http.StatusInternalServerError, "InternalError", "check assistant activity: "+err.Error())
 			return nil, false
 		}

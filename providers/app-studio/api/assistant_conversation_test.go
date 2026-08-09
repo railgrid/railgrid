@@ -256,6 +256,55 @@ func TestProjectAssistantConversationForRunDoesNotResurrectLegacyProseAfterCheck
 	}
 }
 
+func TestProjectAssistantInterruptedBoundaryIsModelVisibleAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	memory := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+	run := store.AssistantRun{ID: "run-interrupted"}
+	if err := appendProjectAssistantInterruptedBoundary(ctx, memory, scope, run); err != nil {
+		t.Fatalf("append interrupted boundary: %v", err)
+	}
+	if err := appendProjectAssistantInterruptedBoundary(ctx, memory, scope, run); err != nil {
+		t.Fatalf("replay interrupted boundary: %v", err)
+	}
+	messages, err := loadProjectAssistantConversation(ctx, memory, scope)
+	if err != nil {
+		t.Fatalf("load conversation: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != "system" || messages[0].Content != projectAssistantInterruptedBoundaryMessage {
+		t.Fatalf("interrupted boundary = %#v, want one model-visible marker", messages)
+	}
+}
+
+func TestProjectAssistantSupervisorStatusInterruptionPersistsBoundary(t *testing.T) {
+	ctx := context.Background()
+	memory := store.NewMemoryStore()
+	supervisor := newProjectAssistantSupervisor(ctx, memory)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+	now := time.Now().UTC()
+	run := store.AssistantRun{ID: "run-supervisor-interrupted", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: run.UserMessageID, Role: "user", ActorID: "test-user", Content: "build it", CreatedAt: now, UpdatedAt: now}
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", CreatedAt: now, UpdatedAt: now}
+	created, err := memory.CreateAssistantRun(ctx, scope, user, assistant, run)
+	if err != nil {
+		t.Fatalf("CreateAssistantRun: %v", err)
+	}
+	accumulator, err := supervisor.Attach(scope, created, assistant)
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if err := accumulator.SetStatus(ctx, store.AssistantRunStatusInterrupted); err != nil {
+		t.Fatalf("SetStatus interrupted: %v", err)
+	}
+	messages, err := loadProjectAssistantConversation(ctx, memory, scope)
+	if err != nil {
+		t.Fatalf("load conversation: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content != projectAssistantInterruptedBoundaryMessage {
+		t.Fatalf("interrupted supervisor boundary = %#v, want one model-visible marker", messages)
+	}
+}
+
 func TestLoadProjectAssistantConversationRejectsInvalidVersionedCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	memory := store.NewMemoryStore()

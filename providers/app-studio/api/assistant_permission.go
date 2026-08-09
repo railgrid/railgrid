@@ -44,18 +44,29 @@ func projectAssistantToolHasEffect(spec projectAssistantToolSpec) bool {
 	}
 }
 
-// projectAssistantRequireMutationRead enforces read-before-edit and returns
-// the AUTHORITATIVE expectedVersion the caller must pass to the workspace
-// mutation. For an existing file this is the version recorded by a complete
-// same-turn read — NOT whatever token the model supplied. Models routinely
-// fabricate a git-blob-style hash instead of echoing the opaque version from
-// their read result, and correcting them in the error text does not reliably
-// work (observed: the model ignores the exact value and re-sends its bogus
-// hash until the recovery guard blocks the run). The safety the version
-// exists for is preserved: a complete read must have happened this turn, and
-// the workspace layer still rejects the returned version if the file changed
-// on disk since that read (a genuine stale/concurrent conflict).
+// projectAssistantRequireMutationRead enforces read-before-mutation and
+// returns the AUTHORITATIVE expectedVersion the caller must pass to the
+// workspace mutation. For an existing file this is the version recorded by a
+// complete same-turn read — NOT whatever token the model supplied. Models
+// routinely fabricate a git-blob-style hash instead of echoing the opaque
+// version from their read result, and correcting them in the error text does
+// not reliably work. The safety the version exists for is preserved: a
+// complete read must have happened this turn, and the workspace layer still
+// rejects the returned version if the file changed on disk since that read.
 func projectAssistantRequireMutationRead(ctx context.Context, req projectAssistantToolCallRequest, workspaces *workspace.FileStore, rawPath string, expectedVersions ...string) (string, error) {
+	return projectAssistantResolveMutationVersion(ctx, req, workspaces, rawPath, true, expectedVersions...)
+}
+
+// projectAssistantResolveEditVersion preserves a recorded read version when
+// one exists, but permits edit_file to operate against the current file when
+// the model has not performed a separate read. The workspace edit path then
+// reads and matches the file under its mutation lock, like Codex apply_patch
+// and Pi's edit tool.
+func projectAssistantResolveEditVersion(ctx context.Context, req projectAssistantToolCallRequest, workspaces *workspace.FileStore, rawPath string, expectedVersions ...string) (string, error) {
+	return projectAssistantResolveMutationVersion(ctx, req, workspaces, rawPath, false, expectedVersions...)
+}
+
+func projectAssistantResolveMutationVersion(ctx context.Context, req projectAssistantToolCallRequest, workspaces *workspace.FileStore, rawPath string, requireRead bool, expectedVersions ...string) (string, error) {
 	expectedVersion := ""
 	if len(expectedVersions) > 0 {
 		expectedVersion = strings.TrimSpace(expectedVersions[0])
@@ -76,10 +87,16 @@ func projectAssistantRequireMutationRead(ctx context.Context, req projectAssista
 		return expectedVersion, nil
 	}
 	if req.RunState == nil {
+		if !requireRead {
+			return "", nil
+		}
 		return "", fmt.Errorf("mutation of existing file %q requires a same-turn read", path)
 	}
 	observed := req.RunState.ReadFileVersion(path)
 	if observed == "" {
+		if !requireRead {
+			return "", nil
+		}
 		return "", fmt.Errorf("mutation of existing file %q requires a complete same-turn read first: call read_file at offset 1 covering the whole file (a partial or ranged read does not authorize an edit)", path)
 	}
 	// A complete read happened this turn — authorize the mutation using that
@@ -141,6 +158,53 @@ func projectAssistantPermissionForV2(
 	default:
 		return projectAssistantPermissionDeny
 	}
+}
+
+// projectAssistantRevalidatePermissionEdit treats edited approval arguments as
+// new untrusted input. Same-scope workspace edits preserve the approval dialog's
+// intended content-editing UX; any other effectful argument change can alter the
+// operation's authority or risk and therefore requires a fresh approval.
+func projectAssistantRevalidatePermissionEdit(
+	spec projectAssistantToolSpec,
+	original map[string]any,
+	edited map[string]any,
+) (map[string]any, bool, error) {
+	effective := cloneProjectAssistantToolArguments(edited)
+	if !projectAssistantToolHasEffect(spec) {
+		return nil, false, fmt.Errorf("tool %q does not support permission-edited arguments", spec.Name)
+	}
+	if err := projectAssistantValidateGrantBearingToolArguments(spec, effective); err != nil {
+		return nil, false, err
+	}
+	if projectToolBaseName(spec.Name) == projectToolExecCommand {
+		normalized, err := normalizeProjectAssistantExecCommandArguments(effective)
+		if err != nil {
+			return nil, false, err
+		}
+		effective = normalized
+	}
+
+	if projectAssistantWorkspaceMutationTool(spec.Name) {
+		before, err := projectAssistantWriteTargetPaths(spec.Name, original)
+		if err != nil {
+			return nil, false, fmt.Errorf("revalidate originally approved workspace scope: %w", err)
+		}
+		after, err := projectAssistantWriteTargetPaths(spec.Name, effective)
+		if err != nil {
+			return nil, false, err
+		}
+		return effective, strings.Join(before, "\x00") != strings.Join(after, "\x00"), nil
+	}
+
+	before, err := projectAssistantCanonicalJSON(original)
+	if err != nil {
+		return nil, false, fmt.Errorf("revalidate originally approved arguments: %w", err)
+	}
+	after, err := projectAssistantCanonicalJSON(effective)
+	if err != nil {
+		return nil, false, fmt.Errorf("revalidate edited arguments: %w", err)
+	}
+	return effective, string(before) != string(after), nil
 }
 
 func projectAssistantOnRequestRequiresApproval(name string) bool {
@@ -307,12 +371,16 @@ func projectAssistantValidateWorkspaceMutationArguments(toolName string, args ma
 	if _, err := projectAssistantWriteTargetPaths(toolName, args); err != nil {
 		return err
 	}
-	if toolName != projectToolCreateFile {
+	if toolName != projectToolCreateFile && toolName != projectToolEditFile {
 		expectedVersion, ok := projectToolRawString(args["expectedVersion"])
 		if !ok || strings.TrimSpace(expectedVersion) == "" {
 			return fmt.Errorf("%s requires expectedVersion", toolName)
 		}
 		if len([]byte(expectedVersion)) > workspace.MaxFileVersionBytes {
+			return fmt.Errorf("%s expectedVersion is too large", toolName)
+		}
+	} else if toolName == projectToolEditFile {
+		if expectedVersion, ok := projectToolRawString(args["expectedVersion"]); ok && len([]byte(expectedVersion)) > workspace.MaxFileVersionBytes {
 			return fmt.Errorf("%s expectedVersion is too large", toolName)
 		}
 	}

@@ -41,7 +41,76 @@ const (
 	projectEinoAssistantModelContextTokensEnv     = "APP_STUDIO_ASSISTANT_MODEL_CONTEXT_TOKENS"
 	projectEinoAssistantDefaultModelContextTokens = 128000
 	projectEinoAssistantCompactionReservePercent  = 25
+	// Context overflow recovery is deliberately bounded.  Each retry removes
+	// one oldest conversation segment, while the caller's context remains the
+	// authority for cancellation and deadline handling.
+	projectEinoAssistantCompactionMaxContextRecoveryAttempts = 3
 )
+
+type projectEinoAssistantContextRecoveryModel struct {
+	einomodel.BaseChatModel
+	maxAttempts int
+}
+
+func projectEinoAssistantModelWithContextRecovery(base einomodel.BaseChatModel) einomodel.BaseChatModel {
+	if base == nil {
+		return nil
+	}
+	return &projectEinoAssistantContextRecoveryModel{
+		BaseChatModel: base,
+		maxAttempts:   projectEinoAssistantCompactionMaxContextRecoveryAttempts,
+	}
+}
+
+func (m *projectEinoAssistantContextRecoveryModel) Generate(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.Message, error) {
+	current := append([]*schema.Message(nil), input...)
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		response, err := m.BaseChatModel.Generate(ctx, current, opts...)
+		if err == nil || !projectEinoAssistantContextWindowExceeded(err) {
+			return response, err
+		}
+		if attempt >= m.maxAttempts {
+			return nil, &projectEinoAssistantContextWindowExceededError{Cause: err}
+		}
+		trimmed, ok := projectEinoAssistantEvictOldestModelHistory(current, false)
+		if !ok {
+			return nil, &projectEinoAssistantContextWindowExceededError{Cause: err}
+		}
+		current = trimmed
+	}
+}
+
+func (m *projectEinoAssistantContextRecoveryModel) Stream(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.StreamReader[*schema.Message], error) {
+	current := append([]*schema.Message(nil), input...)
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		reader, err := m.BaseChatModel.Stream(ctx, current, opts...)
+		if err == nil || !projectEinoAssistantContextWindowExceeded(err) {
+			return reader, err
+		}
+		if attempt >= m.maxAttempts {
+			return nil, &projectEinoAssistantContextWindowExceededError{Cause: err}
+		}
+		trimmed, ok := projectEinoAssistantEvictOldestModelHistory(current, false)
+		if !ok {
+			return nil, &projectEinoAssistantContextWindowExceededError{Cause: err}
+		}
+		current = trimmed
+	}
+}
 
 func projectEinoAssistantCompactionContextTokens() int {
 	raw := strings.TrimSpace(os.Getenv(projectEinoAssistantModelContextTokensEnv))
@@ -185,6 +254,11 @@ func projectEinoAssistantCompactionMiddleware(
 			if err := runtime.complete(finalizeCtx, checkpoint, ignoredToolCallCount); err != nil {
 				return nil, err
 			}
+			// The replacement history no longer contains the prior live context.
+			// Clear the lifecycle baseline so the next model boundary performs a
+			// full canonical-context reinjection, matching Codex's compaction
+			// reference-context reset.
+			runState.InvalidateModelContext()
 			return finalized, nil
 		},
 	})
@@ -232,7 +306,88 @@ func (m *projectEinoAssistantCompactionIsolatedModel) Generate(
 	if m.forbidToolChoice {
 		opts = append(opts, einomodel.WithToolChoice(schema.ToolChoiceForbidden))
 	}
-	return m.BaseChatModel.Generate(ctx, input, opts...)
+	currentInput := append([]*schema.Message(nil), input...)
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		response, err := m.BaseChatModel.Generate(ctx, currentInput, opts...)
+		if err == nil || !projectEinoAssistantContextWindowExceeded(err) {
+			return response, err
+		}
+		if attempt >= projectEinoAssistantCompactionMaxContextRecoveryAttempts {
+			return nil, &projectEinoAssistantContextWindowExceededError{Cause: err}
+		}
+		trimmed, ok := projectEinoAssistantEvictOldestCompactionHistory(currentInput)
+		if !ok {
+			return nil, &projectEinoAssistantContextWindowExceededError{Cause: err}
+		}
+		currentInput = trimmed
+	}
+}
+
+// projectEinoAssistantEvictOldestCompactionHistory drops one oldest eligible
+// conversation segment while preserving system instructions and the final
+// compaction checkpoint prompt.  Tool-call messages are removed together with
+// their contiguous tool results so a retry cannot send an orphaned tool
+// result to an OpenAI-compatible endpoint.
+func projectEinoAssistantEvictOldestCompactionHistory(input []*schema.Message) ([]*schema.Message, bool) {
+	return projectEinoAssistantEvictOldestModelHistory(input, true)
+}
+
+func projectEinoAssistantEvictOldestModelHistory(input []*schema.Message, preserveCompactionPrompt bool) ([]*schema.Message, bool) {
+	if len(input) == 0 {
+		return input, false
+	}
+	start := 0
+	for start < len(input) && input[start] != nil && input[start].Role == schema.System {
+		start++
+	}
+	endExclusive := len(input)
+	if preserveCompactionPrompt && endExclusive > start {
+		last := input[endExclusive-1]
+		if last != nil && last.Role == schema.User && last.Content == projectEinoAssistantCompactionPrompt && len(last.ToolCalls) == 0 {
+			endExclusive--
+		}
+	}
+	if start >= endExclusive {
+		return input, false
+	}
+	// Ordinary model recovery must retain the newest request/tool continuation.
+	// It is a bounded request projection, not a replacement compaction, so the
+	// durable history and compaction checkpoint authority remain unchanged.
+	latestNonSystem := endExclusive - 1
+	if !preserveCompactionPrompt {
+		for latestNonSystem >= start {
+			message := input[latestNonSystem]
+			if message != nil && message.Role != schema.System {
+				break
+			}
+			latestNonSystem--
+		}
+		if latestNonSystem <= start {
+			return input, false
+		}
+	}
+
+	removeEnd := start + 1
+	first := input[start]
+	if first != nil && first.Role == schema.Assistant && len(first.ToolCalls) > 0 {
+		for removeEnd < endExclusive {
+			message := input[removeEnd]
+			if message == nil || message.Role != schema.Tool {
+				break
+			}
+			removeEnd++
+		}
+	}
+	if !preserveCompactionPrompt && removeEnd > latestNonSystem {
+		return input, false
+	}
+	trimmed := make([]*schema.Message, 0, len(input)-(removeEnd-start))
+	trimmed = append(trimmed, input[:start]...)
+	trimmed = append(trimmed, input[removeEnd:]...)
+	return trimmed, true
 }
 
 func projectEinoAssistantCompactionSupportsForbiddenToolChoice(settings projectLLMSettings) bool {

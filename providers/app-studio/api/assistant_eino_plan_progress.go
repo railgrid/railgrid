@@ -101,6 +101,32 @@ func projectEinoAssistantPublishPlanProgress(
 	}
 }
 
+// projectEinoAssistantPublishAcceptedPlanProgress projects a plan snapshot
+// only after the App-owned tool ledger has accepted its successful result.
+// OnPlan remains the durable metadata/state projection; the typed event is a
+// live notification for consumers that need the same accepted snapshot before
+// the next model boundary. Keep the event here rather than in the generic
+// publisher so checkpoint hydration and the initial execution-plan projection
+// do not masquerade as newly accepted write_todos updates.
+func projectEinoAssistantPublishAcceptedPlanProgress(
+	runState *projectEinoAssistantRunState,
+	callbacks projectAssistantStreamCallbacks,
+	plan projectAssistantPlanSnapshot,
+) {
+	if runState == nil || len(plan.Steps) == 0 {
+		return
+	}
+	projectEinoAssistantPublishPlanProgress(runState, callbacks, plan)
+	if callbacks.OnAssistantEvent == nil {
+		return
+	}
+	snapshot := cloneProjectAssistantPlanSnapshot(plan)
+	callbacks.OnAssistantEvent(projectAssistantEvent{
+		Type: projectAssistantEventPlanUpdated,
+		Plan: &snapshot,
+	})
+}
+
 // projectEinoAssistantHydratePlanProgress restores the latest successful
 // App-owned checklist projection after a process restart. The durable ledger
 // is authoritative over a stale checkpoint or message projection; when no

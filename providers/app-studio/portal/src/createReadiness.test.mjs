@@ -130,19 +130,19 @@ test('keeps ready setup rows visible while another prerequisite is missing', () 
   ])
 })
 
-test('new-project route has one setup surface and a stable create button label', () => {
+test('new-project route has one setup surface and a stable wizard entry label', () => {
   assert.equal(appSource.includes('workspaceSetupLabel'), false)
   assert.equal(appSource.includes('createPromptSubmitLabel'), false)
   assert.equal(appSource.includes('to create a durable project.'), false)
   assert.match(appSource, /<button\s+v-if="!showNewProjectComposer"[\s\S]*title="LLM settings"/)
   assert.equal(appSource.includes('error.value = gitConnectionCreateReady.value ? null : createReadinessError.value || createPromptBlockedMessage(createReadiness.value)'), false)
   assert.match(appSource, /if \(gitConnectionCreateReady\.value && llmConfigured\.value\) return true\s+error\.value = null\s+return false/)
-  assert.match(appSource, />\s*Create and send\s*</)
+  assert.match(appSource, />\s*Continue\s*</)
 })
 
-test('new-project prompt explicitly authorizes eager development-template inference', () => {
+test('new-project stream explicitly authorizes development-template inference when no template is selected', () => {
   assert.match(
     appSource,
-    /api\.createProject\(props\.ctx,\s*\{[\s\S]*prompt:\s*content,[\s\S]*inferDevelopmentTemplate:\s*true,[\s\S]*\}\)/,
+    /api\.createProjectStream\(props\.ctx,\s*\{[\s\S]*prompt:\s*content,[\s\S]*inferDevelopmentTemplate:\s*!createOverrides\?\.templateName,[\s\S]*\}, \(message\) =>/,
   )
 })

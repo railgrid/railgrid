@@ -42,7 +42,7 @@ const (
 	projectEinoAssistantLiveContextPrefix       = "App Studio live request context (regenerated before every model sample):\n"
 	projectEinoAssistantProjectPromptPrefix     = "You are the assistant for a persistent Kedge Project workspace. "
 	projectEinoAssistantSessionSnapshotPrefix   = "Current project snapshot (authoritative for the start of this turn;"
-	projectEinoAssistantV2DeepInstruction       = "You are the App Studio project assistant. Use only the tools exposed in this turn; do not assume shell, browser, host filesystem, or subagent access. " + projectAssistantBrowserConsoleTrustInstruction + "Browser inspection is available only when inspect_development_preview is exposed; it is read-only and cannot click, type, press keys, or run arbitrary JavaScript. Static text and role assertions verify rendered state only; they never verify keyboard, click, form, or other interaction behavior. Describe such behavior as source-reviewed but not browser-exercised, and never say it is live, working, or independently verified from static assertions. The server-selected Default, Plan, or Review collaboration mode is fixed for this turn. Plan and Review are read-only. In Default, infer inspection versus action authority from the user's request, diagnose reported defects from current evidence before editing, and keep changes narrowly scoped. When the user asks you to change, build, or fix the project, persist until the request is handled end-to-end whenever feasible: do not stop at analysis or a partial fix, and carry the work through implementation, relevant verification, and a clear explanation unless the user pauses, redirects, or required authority or input is missing. Tool calls continue the turn; a final assistant message ends it. You may call independent tools together when their arguments do not depend on one another. The only source-mutation tools are create_file, replace_file, edit_file, delete_file, and move_file. create_file is always create-only. Before replacing, editing, deleting, or moving an existing file, call read_file with a complete bounded read and pass its returned opaque version as expectedVersion; stale or incomplete reads fail closed. " + "Delete and move are supported only within server-approved workspace paths. Dirty files are workspace information, not an obligation to verify or commit. Use verify_development_runtime only when operational synchronization, process, log, or preview reachability evidence is relevant. After changing a dependency manifest, start command, or build/runtime configuration, restart the development runtime before verification because file synchronization does not reload process configuration. Never call commit_project_files unless the user explicitly asked to persist changes to the repository. Do not claim rendered content, interactions, data flow, or acceptance criteria were independently verified unless inspect_development_preview actually observed them. Finish with the model response that directly answers the user; do not add status boilerplate."
+	projectEinoAssistantV2DeepInstruction       = "You are the App Studio project assistant. Use only the tools exposed in this turn; do not assume shell, browser, host filesystem, or subagent access. " + projectAssistantBrowserConsoleTrustInstruction + "Browser inspection is available only when inspect_development_preview is exposed; it is read-only and cannot click, type, press keys, or run arbitrary JavaScript. Static text and role assertions verify rendered state only; they never verify keyboard, click, form, or other interaction behavior. Describe such behavior as source-reviewed but not browser-exercised, and never say it is live, working, or independently verified from static assertions. The server-selected Default, Plan, or Review collaboration mode is fixed for this turn. Plan and Review are read-only. In Default, infer inspection versus action authority from the user's request, diagnose reported defects from current evidence before editing, and keep changes narrowly scoped. When the user asks you to change, build, or fix the project, persist until the request is handled end-to-end whenever feasible: do not stop at analysis or a partial fix, and carry the work through implementation, relevant verification, and a clear explanation unless the user pauses, redirects, or required authority or input is missing. Tool calls continue the turn; a final assistant message ends it. You may call independent tools together when their arguments do not depend on one another. When tool_search is exposed, use it to load a less-common provider or repository capability before calling that capability. The only source-mutation tools are create_file, replace_file, edit_file, delete_file, and move_file. create_file is always create-only. replace_file, delete_file, and move_file require a complete bounded read and the opaque expectedVersion from that read. edit_file reads the current file under the workspace mutation lock and applies exact oldString replacement, so a separate read and expectedVersion are optional; stale or ambiguous text fails closed. " + "Delete and move are supported only within server-approved workspace paths. Dirty files are workspace information, not an obligation to verify or commit. Use verify_development_runtime only when operational synchronization, process, log, or preview reachability evidence is relevant. After changing a dependency manifest, start command, or build/runtime configuration, restart the development runtime before verification because file synchronization does not reload process configuration. Never call commit_project_files unless the user explicitly asked to persist changes to the repository. Do not claim rendered content, interactions, data flow, or acceptance criteria were independently verified unless inspect_development_preview actually observed them. Finish with the model response that directly answers the user; do not add status boilerplate."
 )
 
 var errProjectAssistantNoOutput = errors.New("assistant model produced no accepted output")
@@ -100,6 +100,7 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	req.TurnPolicy = normalizeProjectAssistantTurnPolicy(req.TurnPolicy, req.TurnProfile)
 	req.TurnProfile = req.TurnPolicy.profile
 	runState := newProjectEinoAssistantRunState()
+	runState.SetAgentOptimizationMode(projectEinoAssistantOptimizationModeFromEnvironment())
 	runState.SetTurnPolicy(req.TurnPolicy)
 	if req.SkillSnapshot == nil && e.server != nil {
 		snapshot, err := e.server.projectAssistantSkillSnapshot(ctx, req.WorkspaceScope)
@@ -477,19 +478,13 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 	if err != nil {
 		return nil, err
 	}
-	chatModel = projectEinoAssistantBoundModel(chatModel, req.LLM)
-	chatModel = projectEinoAssistantBudgetModel(chatModel, runState.RolloutBudget())
-	chatModel = &projectEinoAssistantTransientEvidenceModel{
-		BaseChatModel: chatModel,
-		runState:      runState,
-	}
-	chatModel = &projectEinoAssistantProgressReminderModel{
-		BaseChatModel: chatModel,
-		req:           req,
-		runState:      runState,
-	}
+	chatModel, compactionModel := projectEinoAssistantModels(chatModel, req, runState)
 	var handlers []adk.ChatModelAgentMiddleware
-	toolCallsMiddleware, err := projectEinoAssistantToolCallsMiddleware(ctx)
+	// Keep the durable ledger and telemetry on the full tool result while the
+	// next model request receives Codex-style bounded output. Eino applies the
+	// first registered handler outermost.
+	handlers = append(handlers, projectEinoAssistantModelToolOutputMiddlewareForModel())
+	toolCallsMiddleware, err := projectEinoAssistantToolCallsMiddleware(ctx, req.eventLedger)
 	if err != nil {
 		return nil, fmt.Errorf("create eino tool calls middleware: %w", err)
 	}
@@ -499,7 +494,7 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 		return nil, fmt.Errorf("create eino reduction middleware: %w", err)
 	}
 	handlers = append(handlers, reductionMiddleware)
-	summaryMiddleware, err := projectEinoAssistantCompactionMiddleware(ctx, chatModel, e.server, req, runState)
+	summaryMiddleware, err := projectEinoAssistantCompactionMiddleware(ctx, compactionModel, e.server, req, runState)
 	if err != nil {
 		return nil, fmt.Errorf("create App Studio compaction middleware: %w", err)
 	}
@@ -557,6 +552,31 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 		return nil, fmt.Errorf("create eino assistant agent: %w", err)
 	}
 	return agent, nil
+}
+
+func projectEinoAssistantModels(
+	base einomodel.BaseChatModel,
+	req projectAssistantRunRequest,
+	runState *projectEinoAssistantRunState,
+) (mainModel, compactionModel einomodel.BaseChatModel) {
+	bounded := projectEinoAssistantBoundModel(base, req.LLM)
+	// Compaction uses the same provider and timeout boundary, but it must not
+	// consume or mutate main-turn budget, transient-evidence, or progress-
+	// reminder state. Capture the bounded base before applying those stateful
+	// wrappers to the ordinary agent model.
+	compactionModel = bounded
+	mainModel = projectEinoAssistantModelWithContextRecovery(bounded)
+	mainModel = projectEinoAssistantBudgetModel(mainModel, runState.RolloutBudget())
+	mainModel = &projectEinoAssistantTransientEvidenceModel{
+		BaseChatModel: mainModel,
+		runState:      runState,
+	}
+	mainModel = &projectEinoAssistantProgressReminderModel{
+		BaseChatModel: mainModel,
+		req:           req,
+		runState:      runState,
+	}
+	return mainModel, compactionModel
 }
 
 type projectEinoAssistantTurnOutcome struct {
@@ -795,7 +815,7 @@ func (e projectEinoAssistantEngine) collectProjectAssistantTurnEvents(
 		if messageOutput == nil {
 			continue
 		}
-		msg, err := projectEinoAssistantMessageOutput(eventCtx, messageOutput, req.StreamCallbacks)
+		msg, err := projectEinoAssistantMessageOutput(eventCtx, messageOutput, req.StreamCallbacks, runState)
 		if err != nil {
 			if projectEinoAssistantWillRetry(err) {
 				continue
@@ -849,11 +869,13 @@ func projectEinoAssistantMessageOutput(
 	ctx context.Context,
 	output *adk.TypedMessageVariant[*schema.Message],
 	streamCallbacks projectAssistantStreamCallbacks,
+	runState *projectEinoAssistantRunState,
 ) (*schema.Message, error) {
 	if output == nil {
 		return nil, nil
 	}
 	if !output.IsStreaming {
+		projectEinoAssistantPublishInlineCommentary(output.Role, output.Message, streamCallbacks, runState)
 		projectEinoAssistantPublishAcceptedContent(output.Role, output.Message, streamCallbacks)
 		return output.Message, nil
 	}
@@ -903,8 +925,44 @@ func projectEinoAssistantMessageOutput(
 	if len(msg.ToolCalls) > 0 {
 		resetProvisional()
 	}
+	// A model may explain the action it is about to take in the same completed
+	// assistant message as its tool calls. Publish that prose exactly once at
+	// the completion boundary as inline commentary. It is deliberately not a
+	// content chunk: tool-adjacent prose is not the turn's terminal answer.
+	projectEinoAssistantPublishInlineCommentary(output.Role, msg, streamCallbacks, runState)
 	projectEinoAssistantPublishAcceptedContent(output.Role, msg, streamCallbacks)
 	return msg, nil
+}
+
+func projectEinoAssistantPublishInlineCommentary(
+	role schema.RoleType,
+	message *schema.Message,
+	streamCallbacks projectAssistantStreamCallbacks,
+	runState *projectEinoAssistantRunState,
+) {
+	if message == nil || len(message.ToolCalls) == 0 || streamCallbacks.OnCommentary == nil {
+		return
+	}
+	if role == "" {
+		role = message.Role
+	}
+	if role != schema.Assistant {
+		return
+	}
+	content := projectEinoAssistantStreamText(message)
+	content, reason := projectEinoAssistantProgressMessage(content)
+	if reason != "" {
+		return
+	}
+	// Inline commentary and report_progress share the same run-owned acceptance
+	// ledger. This makes a retried/replayed tool-adjacent message exactly-once,
+	// prevents the model from immediately duplicating it through report_progress,
+	// and satisfies the same silence reminder without changing durable UI
+	// sequencing or the terminal-answer channel.
+	if runState != nil && !runState.AcceptProgressMessage(content) {
+		return
+	}
+	streamCallbacks.OnCommentary(content)
 }
 
 func projectEinoAssistantPublishAcceptedContent(

@@ -168,7 +168,11 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 	if mode != store.AssistantRunModeDefault && mode != store.AssistantRunModePlan && mode != store.AssistantRunModeReview {
 		return projectAssistantDurableStartResult{}, newValidationError("collaborationMode must be default, plan, or review")
 	}
-	if err := s.reconcileOrphanedProjectAssistantRun(ctx, scope); err != nil {
+	if latest, err := s.store.LatestAssistantRun(ctx, scope); err == nil {
+		if err := s.reconcileOrphanedProjectAssistantRun(ctx, scope, latest.ID); err != nil {
+			return projectAssistantDurableStartResult{}, err
+		}
+	} else if !errors.Is(err, store.ErrAssistantRunNotFound) {
 		return projectAssistantDurableStartResult{}, err
 	}
 	if prior, err := s.store.FindAssistantRunByClientRequestID(ctx, scope, clientRequestID); err == nil {
@@ -738,6 +742,17 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 			syncSteeringSegment()
 			recordSnapshotErr(accumulator.UpdateText(ctx, appendProjectAssistantStreamBlock(content, chunk), false))
 		},
+		OnCommentary: func(message string) {
+			callbackMu.Lock()
+			defer callbackMu.Unlock()
+			if callbacksClosed {
+				return
+			}
+			syncSteeringSegment()
+			if state.appendProgress(message) {
+				recordSnapshotErr(persistMetadata(ctx, nil))
+			}
+		},
 		OnProgress: func(message string) {
 			callbackMu.Lock()
 			defer callbackMu.Unlock()
@@ -813,6 +828,11 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 			if event.FollowUp != nil && event.FollowUp.ToolCallID != "" {
 				state.upsertToolCall(projectToolCallStreamEvent{ID: event.FollowUp.ToolCallID, Name: projectToolAskFollowUp, Status: "input_required", Summary: event.FollowUp.Prompt, FollowUp: event.FollowUp})
 			}
+			if event.Type == projectAssistantEventPlanUpdated && event.Plan != nil && projectAssistantPlanSnapshotValid(*event.Plan) {
+				plan := cloneProjectAssistantPlanSnapshot(*event.Plan)
+				state.plan = &plan
+				state.status = projectEinoAssistantPlanProgressStatus(plan)
+			}
 			if event.Checkpoint != nil {
 				for i := range state.toolCalls {
 					if state.toolCalls[i].Status == "permission_required" || state.toolCalls[i].Status == "input_required" {
@@ -820,7 +840,12 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 					}
 				}
 			}
-			recordSnapshotErr(persistMetadata(ctx, nil))
+			// OnPlan is the durable metadata write boundary. The typed plan
+			// notification follows it for live consumers; persisting again here
+			// would create a redundant snapshot revision for the same update.
+			if event.Type != projectAssistantEventPlanUpdated {
+				recordSnapshotErr(persistMetadata(ctx, nil))
+			}
 		},
 	}, start)
 	callbackMu.Lock()
@@ -867,7 +892,10 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 	// A durable Stop wins even if the engine concurrently returns success or
 	// an interrupt. Do this before interpreting the engine result so a stopped
 	// run cannot become completed or pending again.
-	if ctx.Err() != nil {
+	// A caller stop is an interruption; a request deadline is a provider
+	// timeout and should retain its structured failure code.  Do not collapse
+	// both context outcomes into the same durable state.
+	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), adk.ErrStreamCanceled) {
 		state.status = "Interrupted"
 		state.abortReason = store.AssistantRunAbortReasonInterrupted
 		_, transitionErr := accumulator.supervisor.AbortWith(projectMessageScope(id.orgUUID, id.workspaceUUID, project), run.ID, func(run *store.AssistantRun, _ *store.Message) error {
@@ -875,7 +903,13 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 			return nil
 		})
 		recordSnapshotErr(transitionErr)
+		if transitionErr == nil {
+			recordSnapshotErr(appendProjectAssistantInterruptedBoundary(context.Background(), s.store, projectMessageScope(id.orgUUID, id.workspaceUUID, project), run))
+		}
 		return
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) && err == nil {
+		err = ctx.Err()
 	}
 	if err == nil {
 		state.status = "Completed"
@@ -889,10 +923,12 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 		}
 		return
 	}
-	if errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, adk.ErrStreamCanceled) {
 		state.status = "Interrupted"
 		state.abortReason = store.AssistantRunAbortReasonInterrupted
 		runStatus := store.AssistantRunStatusInterrupted
+		boundaryErr := appendProjectAssistantInterruptedBoundary(context.Background(), s.store, projectMessageScope(id.orgUUID, id.workspaceUUID, project), run)
+		recordSnapshotErr(boundaryErr)
 		transitionErr := persistMetadata(context.Background(), &runStatus)
 		recordSnapshotErr(transitionErr)
 		if transitionErr == nil {
@@ -975,6 +1011,16 @@ func projectAssistantRunErrorInfo(err error) string {
 	if err == nil {
 		return ""
 	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, adk.ErrStreamCanceled) {
+		return "interrupted"
+	}
+	if projectEinoAssistantContextWindowExceeded(err) {
+		return "context_window_exceeded"
+	}
+	var timeoutErr *projectEinoAssistantModelTimeoutError
+	if errors.As(err, &timeoutErr) || errors.Is(err, context.DeadlineExceeded) {
+		return "response_timeout"
+	}
 	if errors.Is(err, errProjectAssistantNoOutput) {
 		return "internal_server_error"
 	}
@@ -987,8 +1033,12 @@ func projectAssistantRunErrorInfo(err error) string {
 	return "other"
 }
 
-func (s *Server) reconcileOrphanedProjectAssistantRun(ctx context.Context, scope store.Scope) error {
-	run, err := s.store.LatestAssistantRun(ctx, scope)
+func (s *Server) reconcileOrphanedProjectAssistantRun(ctx context.Context, scope store.Scope, runID string) error {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return nil
+	}
+	run, err := s.store.GetAssistantRun(ctx, scope, runID)
 	if err != nil {
 		if errors.Is(err, store.ErrAssistantRunNotFound) {
 			return nil
@@ -1027,7 +1077,7 @@ func (s *Server) reconcileOrphanedProjectAssistantRun(ctx context.Context, scope
 	if err := s.store.SaveAssistantRunSnapshot(ctx, scope, run, []store.Message{message}, run.Revision-1); err != nil {
 		return err
 	}
-	if err := appendProjectAssistantConversationMessage(ctx, s.store, scope, run.ID, "interruption-"+run.ID, projectAssistantConversationInterruption, chatMessage{Role: "system", Content: "The prior assistant turn was interrupted by provider process loss. Completed response items and tool effects remain authoritative; do not replay in-flight effects."}); err != nil {
+	if err := appendProjectAssistantInterruptedBoundary(ctx, s.store, scope, run); err != nil {
 		return err
 	}
 	s.projectAssistantSupervisor().log("orphan_interrupted", scope, run)

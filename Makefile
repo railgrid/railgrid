@@ -1,5 +1,5 @@
 .PHONY: sync-portalkit verify-portalkit
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal build-app-studio-browser-worker test-app-studio-browser-worker run-app-studio-browser-worker docker-build-app-studio-browser-worker codegen-app-studio-provider app-studio-preview-console-dev-key verify-app-studio-preview-console-dev-key app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-vibe-studio-provider build-vibe-studio-provider-portal vibe-studio-db-up vibe-studio-db-down run-provider-vibe-studio install-provider-vibe-studio init-provider-vibe-studio uninstall-provider-vibe-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal build-app-studio-browser-worker test-app-studio-browser-worker run-app-studio-browser-worker docker-build-app-studio-browser-worker codegen-app-studio-provider app-studio-preview-console-dev-key verify-app-studio-preview-console-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-vibe-studio-provider build-vibe-studio-provider-portal vibe-studio-db-up vibe-studio-db-down run-provider-vibe-studio install-provider-vibe-studio init-provider-vibe-studio uninstall-provider-vibe-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -1271,6 +1271,18 @@ app-studio-preview-console-dev-key: ## Generate/reuse the local preview-console 
 verify-app-studio-preview-console-dev-key: ## Verify local preview-console key generation, repair, and concurrency
 	node --test providers/app-studio/hack/preview-console-dev-keys.test.mjs
 
+verify-app-studio-eval: ## Verify the terminal-aware assistant evaluation harness
+	@output="$$(node providers/app-studio/hack/eval/terminal-turn.test.mjs 2>&1)"; \
+	status=$$?; \
+	printf '%s\n' "$$output"; \
+	if [ "$$status" -ne 0 ]; then exit "$$status"; fi; \
+	declared="$$(grep -c '^test(' providers/app-studio/hack/eval/terminal-turn.test.mjs || true)"; \
+	reported="$$(printf '%s\n' "$$output" | awk '$$1 == "#" && $$2 == "tests" { print $$3 }' | tail -n 1)"; \
+	if [ "$$reported" != "$$declared" ]; then \
+		echo "App Studio eval expected $$declared TAP tests, got $${reported:-0}" >&2; \
+		exit 1; \
+	fi
+
 app-studio-db-up: ## Start/reuse local Postgres for App Studio message history (skips when APP_STUDIO_DATABASE_URL or in-memory mode is set)
 	@set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
 	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \
@@ -2221,7 +2233,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: verify-boilerplate verify-codegen verify-portalkit verify-app-studio-preview-console-dev-key test-app-studio-browser-worker vet lint build test ## Run all checks
+verify: verify-boilerplate verify-codegen verify-portalkit verify-app-studio-preview-console-dev-key verify-app-studio-eval test-app-studio-browser-worker vet lint build test ## Run all checks
 
 # --- Helm chart packaging ---
 

@@ -86,6 +86,101 @@ func TestProjectEinoAssistantLifecycleAppendsIncrementalLiveContextUpdates(t *te
 	if initialPromptCount != 1 || updateCount == 0 {
 		t.Fatalf("incremental context counts: initial=%d updates=%d", initialPromptCount, updateCount)
 	}
+
+	// Replaying the same boundary without a live-section change must not grow
+	// the conversation with another copy of the stable request prefix.
+	before := len(second.Messages)
+	_, third, err := lifecycle.BeforeModelRewriteState(context.Background(), second, &adk.ModelContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(third.Messages) != before {
+		t.Fatalf("unchanged context appended messages: before=%d after=%d", before, len(third.Messages))
+	}
+}
+
+func TestProjectEinoAssistantLifecycleReinjectsContextAfterCompactionWindowReset(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	runState.SetToolPrompt("tool contract")
+	req := projectAssistantRunRequest{
+		Project: &aiv1alpha1.Project{
+			ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "uid"},
+			Spec:       aiv1alpha1.ProjectSpec{DisplayName: "Current project"},
+		},
+		Repository:        &ProjectRepositoryView{Ref: "current-repo", Status: projectRepositoryStatusReady, Ready: true},
+		CollaborationMode: projectAssistantCollaborationModeDefault,
+	}
+	lifecycle := projectEinoAssistantLifecycleMiddleware(req, runState).(*projectEinoAssistantLifecycle)
+	state := &adk.ChatModelAgentState{Messages: []*schema.Message{schema.UserMessage("build it")}}
+
+	_, initialized, err := lifecycle.BeforeModelRewriteState(context.Background(), state, &adk.ModelContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initialized.Messages[0].Role != schema.System {
+		t.Fatalf("initial live context role = %q, want system", initialized.Messages[0].Role)
+	}
+
+	// Simulate Codex-style compaction replacement: the previous live context
+	// is gone and only the conversational checkpoint remains.
+	runState.InvalidateModelContext()
+	initialized.Messages = []*schema.Message{schema.UserMessage("Compacted conversation context:\ncontinue")}
+	_, reinjected, err := lifecycle.BeforeModelRewriteState(context.Background(), initialized, &adk.ModelContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := ""
+	var liveMessageCount int
+	for _, message := range reinjected.Messages {
+		joined += message.Content + "\n"
+		if message.Role == schema.System && strings.HasPrefix(message.Content, projectEinoAssistantLiveContextPrefix) {
+			liveMessageCount++
+		}
+	}
+	for _, want := range []string{"Current project", "current-repo", "tool contract"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("reinjected live context missing %q: %s", want, joined)
+		}
+	}
+	if liveMessageCount != 3 {
+		t.Fatalf("reinjected live context message count = %d, want three canonical sections", liveMessageCount)
+	}
+	if reinjected.Messages[len(reinjected.Messages)-1].Content != "Compacted conversation context:\ncontinue" {
+		t.Fatalf("compacted conversation tail = %#v, want preserved summary", reinjected.Messages[len(reinjected.Messages)-1])
+	}
+	var projectPromptCount int
+	for _, message := range reinjected.Messages {
+		if strings.Contains(message.Content, "Collaboration mode: default") {
+			projectPromptCount++
+		}
+	}
+	if projectPromptCount != 1 {
+		t.Fatalf("reinjected project prompt count = %d, want one full prompt", projectPromptCount)
+	}
+}
+
+func TestProjectEinoAssistantStableToolInfoOrderIsIndependentOfDiscoveryOrder(t *testing.T) {
+	first := []*schema.ToolInfo{
+		{Name: "mcp_zeta", Desc: "zeta"},
+		{Name: "read_file", Desc: "read"},
+		{Name: "mcp_alpha", Desc: "alpha"},
+	}
+	second := []*schema.ToolInfo{first[2], first[0], first[1]}
+	orderedFirst := projectEinoAssistantStableToolInfos(first)
+	orderedSecond := projectEinoAssistantStableToolInfos(second)
+	if len(orderedFirst) != len(orderedSecond) {
+		t.Fatalf("stable tool lengths = %d/%d", len(orderedFirst), len(orderedSecond))
+	}
+	for i := range orderedFirst {
+		if orderedFirst[i].Name != orderedSecond[i].Name {
+			t.Fatalf("stable tool order differs at %d: %q vs %q", i, orderedFirst[i].Name, orderedSecond[i].Name)
+		}
+	}
+	for i, want := range []string{"mcp_alpha", "mcp_zeta", "read_file"} {
+		if orderedFirst[i].Name != want {
+			t.Fatalf("stable tool order = %#v, want %v", orderedFirst, []string{"mcp_alpha", "mcp_zeta", "read_file"})
+		}
+	}
 }
 
 func TestProjectEinoAssistantLifecycleRefreshesModelAndExecutableToolSnapshotTogether(t *testing.T) {

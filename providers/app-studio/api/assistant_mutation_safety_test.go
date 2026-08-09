@@ -139,8 +139,12 @@ func TestAssistantFilesystemTelemetryRecordsObservedReadPath(t *testing.T) {
 	if got := state.ObservedReadFilePaths(); len(got) != 1 || got[0] != "src/app.js" {
 		t.Fatalf("observed reads = %v, want src/app.js", got)
 	}
+	if checkpoint := state.CheckpointState(); checkpoint.NoProgressModelCallCount != 0 {
+		t.Fatalf("first read no-progress count = %d, want 0", checkpoint.NoProgressModelCallCount)
+	}
 
 	secondMessages, secondScope := newAssistantRunEventLedgerTestStore(t, "run-read-telemetry-2")
+	state.NextModelCallOrdinal()
 	secondMiddleware := projectEinoAssistantFilesystemTelemetryMiddleware(projectAssistantRunRequest{
 		AssistantRun: &store.AssistantRun{ID: "run-read-telemetry-2", Mode: store.AssistantRunModeDefault},
 		eventLedger:  newProjectAssistantRunEventLedger(secondMessages, secondScope, "run-read-telemetry-2"),
@@ -161,6 +165,74 @@ func TestAssistantFilesystemTelemetryRecordsObservedReadPath(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("read endpoint calls = %d, want repeated reads dispatched", calls)
+	}
+	if checkpoint := state.CheckpointState(); checkpoint.NoProgressModelCallCount != 1 {
+		t.Fatalf("unchanged repeated read no-progress count = %d, want 1", checkpoint.NoProgressModelCallCount)
+	}
+	if events := listAssistantRunEventLedgerEvents(t, secondMessages, secondScope, "run-read-telemetry-2"); len(events) != 2 {
+		t.Fatalf("repeated read ledger events = %d, want durable call and result", len(events))
+	}
+}
+
+func TestAssistantReadProgressUsesCompleteReadVersion(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	arguments := `{"file_path":"src/app.js","limit":2000}`
+	first := `{"path":"src/app.js","complete":true,"version":"sha256:v1"}`
+	if !state.RecordCompletedReadResult(projectToolReadFile, arguments, first) {
+		t.Fatal("first complete read was not fresh")
+	}
+	if state.RecordCompletedReadResult(projectToolReadFile, arguments, first) {
+		t.Fatal("unchanged complete read was counted as fresh progress")
+	}
+	changed := `{"path":"src/app.js","complete":true,"version":"sha256:v2"}`
+	if !state.RecordCompletedReadResult(projectToolReadFile, arguments, changed) {
+		t.Fatal("complete read with a new version was not fresh")
+	}
+}
+
+func TestAssistantVersionedReadProgressKeepsEveryDispatchDurable(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	arguments := `{"file_path":"src/app.js","limit":2000}`
+	versions := []string{"sha256:v1", "sha256:v1", "sha256:v2"}
+	runIDs := []string{"run-versioned-read-1", "run-versioned-read-2", "run-versioned-read-3"}
+	calls := 0
+	for index, version := range versions {
+		if index > 0 {
+			state.NextModelCallOrdinal()
+		}
+		messages, scope := newAssistantRunEventLedgerTestStore(t, runIDs[index])
+		middleware := projectEinoAssistantFilesystemTelemetryMiddleware(projectAssistantRunRequest{
+			AssistantRun: &store.AssistantRun{ID: runIDs[index], Mode: store.AssistantRunModeDefault},
+			eventLedger:  newProjectAssistantRunEventLedger(messages, scope, runIDs[index]),
+		}, state)
+		wrapped, err := middleware.WrapInvokableToolCall(
+			context.Background(),
+			func(context.Context, string, ...einotool.Option) (string, error) {
+				calls++
+				return `{"path":"src/app.js","content":"source","complete":true,"version":"` + version + `"}`, nil
+			},
+			&adk.ToolContext{Name: projectToolReadFile},
+		)
+		if err != nil {
+			t.Fatalf("WrapInvokableToolCall[%d] returned error: %v", index, err)
+		}
+		result, err := wrapped(context.Background(), arguments)
+		if err != nil {
+			t.Fatalf("versioned read[%d] returned error: %v", index, err)
+		}
+		if !strings.Contains(result, `"version":"`+version+`"`) {
+			t.Fatalf("versioned read[%d] result = %q", index, result)
+		}
+		if events := listAssistantRunEventLedgerEvents(t, messages, scope, runIDs[index]); len(events) != 2 {
+			t.Fatalf("versioned read[%d] ledger events = %d, want durable request + result", index, len(events))
+		}
+		wantNoProgress := []int{0, 1, 0}[index]
+		if checkpoint := state.CheckpointState(); checkpoint.NoProgressModelCallCount != wantNoProgress {
+			t.Fatalf("versioned read[%d] no-progress count = %d, want %d", index, checkpoint.NoProgressModelCallCount, wantNoProgress)
+		}
+	}
+	if calls != len(versions) {
+		t.Fatalf("versioned read endpoint calls = %d, want every dispatch (%d)", calls, len(versions))
 	}
 }
 

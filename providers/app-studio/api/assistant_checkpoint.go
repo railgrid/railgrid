@@ -38,6 +38,9 @@ type projectAssistantCheckpointState struct {
 	ToolCalls                        []chatToolCall                                      `json:"toolCalls"`
 	CurrentIndex                     int                                                 `json:"currentIndex"`
 	ProjectRepositoryRef             string                                              `json:"projectRepositoryRef,omitempty"`
+	AgentOptimizationMode            string                                              `json:"agentOptimizationMode,omitempty"`
+	DynamicToolCatalogDigest         string                                              `json:"dynamicToolCatalogDigest,omitempty"`
+	SelectedDynamicToolNames         []string                                            `json:"selectedDynamicToolNames,omitempty"`
 	TurnPolicy                       projectAssistantCheckpointTurnPolicy                `json:"turnPolicy"`
 	Messages                         []chatMessage                                       `json:"messages,omitempty"`
 	Turn                             int                                                 `json:"turn,omitempty"`
@@ -94,6 +97,11 @@ type projectAssistantCheckpointState struct {
 	Eino                             *projectAssistantEinoCheckpointState                `json:"eino,omitempty"`
 }
 
+const (
+	projectAssistantCheckpointMaxMessages = 256
+	projectAssistantCheckpointMaxBytes    = 4 << 20
+)
+
 type projectAssistantCheckpointLineRange struct {
 	Start int    `json:"start"`
 	End   uint64 `json:"end"`
@@ -139,26 +147,58 @@ type projectAssistantResumeResponse struct {
 }
 
 type projectAssistantRunAudit struct {
-	Version            int                                 `json:"version,omitempty"`
-	StartRequestDigest string                              `json:"startRequestDigest,omitempty"`
-	ActorDigest        string                              `json:"actorDigest,omitempty"`
-	CatalogDigest      string                              `json:"catalogDigest,omitempty"`
-	SelectedSkills     []projectAssistantSkillReceipt      `json:"selectedSkills,omitempty"`
-	StopRequestID      string                              `json:"stopRequestID,omitempty"`
-	StopRequestDigest  string                              `json:"stopRequestDigest,omitempty"`
-	Provider           string                              `json:"provider,omitempty"`
-	Model              string                              `json:"model,omitempty"`
-	ApprovalMode       store.AssistantApprovalMode         `json:"approvalMode,omitempty"`
-	Profile            projectAssistantTurnProfile         `json:"profile,omitempty"`
-	StartedAt          time.Time                           `json:"startedAt,omitempty"`
-	Tools              []projectAssistantAuditTool         `json:"tools,omitempty"`
-	ModelCalls         []projectAssistantAuditModelCall    `json:"modelCalls,omitempty"`
-	Compactions        []projectAssistantAuditCompaction   `json:"compactions,omitempty"`
-	RolloutBudget      *projectAssistantRolloutBudgetState `json:"rolloutBudget,omitempty"`
-	Failure            *projectAssistantAuditFailure       `json:"failure,omitempty"`
-	Outcome            projectAssistantAuditOutcome        `json:"outcome,omitempty"`
-	DurationMS         int64                               `json:"durationMs,omitempty"`
-	Decisions          []projectAssistantPermissionAudit   `json:"decisions,omitempty"`
+	Version            int                                     `json:"version,omitempty"`
+	StartRequestDigest string                                  `json:"startRequestDigest,omitempty"`
+	ActorDigest        string                                  `json:"actorDigest,omitempty"`
+	CatalogDigest      string                                  `json:"catalogDigest,omitempty"`
+	SelectedSkills     []projectAssistantSkillReceipt          `json:"selectedSkills,omitempty"`
+	StopRequestID      string                                  `json:"stopRequestID,omitempty"`
+	StopRequestDigest  string                                  `json:"stopRequestDigest,omitempty"`
+	Provider           string                                  `json:"provider,omitempty"`
+	Model              string                                  `json:"model,omitempty"`
+	EffectiveSettings  *projectAssistantAuditEffectiveSettings `json:"effectiveSettings,omitempty"`
+	ApprovalMode       store.AssistantApprovalMode             `json:"approvalMode,omitempty"`
+	Profile            projectAssistantTurnProfile             `json:"profile,omitempty"`
+	StartedAt          time.Time                               `json:"startedAt,omitempty"`
+	Tools              []projectAssistantAuditTool             `json:"tools,omitempty"`
+	ModelCalls         []projectAssistantAuditModelCall        `json:"modelCalls,omitempty"`
+	ModelCallStats     *projectAssistantAuditModelCallStats    `json:"modelCallStats,omitempty"`
+	Compactions        []projectAssistantAuditCompaction       `json:"compactions,omitempty"`
+	RolloutBudget      *projectAssistantRolloutBudgetState     `json:"rolloutBudget,omitempty"`
+	Failure            *projectAssistantAuditFailure           `json:"failure,omitempty"`
+	Outcome            projectAssistantAuditOutcome            `json:"outcome,omitempty"`
+	DurationMS         int64                                   `json:"durationMs,omitempty"`
+	Decisions          []projectAssistantPermissionAudit       `json:"decisions,omitempty"`
+}
+
+// projectAssistantAuditEffectiveSettings records the bounded, server-selected
+// settings that governed a terminal assistant segment. Values are deliberately
+// limited to stable identifiers and digests; request payloads, credentials,
+// URLs, and prompt contents never belong in an audit.
+type projectAssistantAuditEffectiveSettings struct {
+	Provider                 string `json:"provider,omitempty"`
+	Model                    string `json:"model,omitempty"`
+	OptimizationMode         string `json:"optimizationMode,omitempty"`
+	ToolContractDigest       string `json:"toolContractDigest,omitempty"`
+	DynamicToolCatalogDigest string `json:"dynamicToolCatalogDigest,omitempty"`
+	InstructionDigest        string `json:"instructionDigest,omitempty"`
+}
+
+// projectAssistantAuditModelCallStats is the uncapped model-call rollup. The
+// detailed ModelCalls slice is intentionally bounded, while these counters
+// remain truthful across the full run (including calls evicted from that
+// window). Token fields are populated only when a provider returns usage.
+type projectAssistantAuditModelCallStats struct {
+	TotalCalls         int   `json:"totalCalls"`
+	RetainedCalls      int   `json:"retainedCalls"`
+	DroppedCalls       int   `json:"droppedCalls,omitempty"`
+	RetryAttempts      int   `json:"retryAttempts,omitempty"`
+	InputBytes         int64 `json:"inputBytes,omitempty"`
+	PromptTokens       int64 `json:"promptTokens,omitempty"`
+	CachedPromptTokens int64 `json:"cachedPromptTokens,omitempty"`
+	CompletionTokens   int64 `json:"completionTokens,omitempty"`
+	TotalTokens        int64 `json:"totalTokens,omitempty"`
+	MissingUsageCalls  int   `json:"missingUsageCalls,omitempty"`
 }
 
 type projectAssistantAuditCompaction struct {
@@ -276,6 +316,12 @@ func (s *Server) saveProjectAssistantEinoPermissionCheckpoint(
 	state.LastToolMessages = cloneChatMessages(state.LastToolMessages)
 	state.ApprovedPlan = cloneProjectAssistantApprovedPlan(state.ApprovedPlan)
 	state.Eino = cloneProjectAssistantEinoCheckpointState(state.Eino)
+	state.Messages = projectAssistantBoundCheckpointMessages(state.Messages)
+	state.LastToolMessages = projectAssistantBoundCheckpointMessages(state.LastToolMessages)
+	state.SeenToolCalls = projectEinoAssistantSanitizeSeenToolCalls(state.SeenToolCalls)
+	if len(state.Eino.Checkpoint) > projectAssistantCheckpointMaxBytes {
+		return nil, projectAssistantPermission{}, projectAssistantCheckpoint{}, fmt.Errorf("eino checkpoint exceeds %d bytes", projectAssistantCheckpointMaxBytes)
+	}
 	if state.AssistantMessageID == "" && req.AssistantRun != nil {
 		state.AssistantMessageID = strings.TrimSpace(req.AssistantRun.ActiveMessageID)
 	}
@@ -346,6 +392,12 @@ func (s *Server) saveProjectAssistantEinoFollowUpCheckpoint(
 	state.LastToolMessages = cloneChatMessages(state.LastToolMessages)
 	state.ApprovedPlan = cloneProjectAssistantApprovedPlan(state.ApprovedPlan)
 	state.Eino = cloneProjectAssistantEinoCheckpointState(state.Eino)
+	state.Messages = projectAssistantBoundCheckpointMessages(state.Messages)
+	state.LastToolMessages = projectAssistantBoundCheckpointMessages(state.LastToolMessages)
+	state.SeenToolCalls = projectEinoAssistantSanitizeSeenToolCalls(state.SeenToolCalls)
+	if len(state.Eino.Checkpoint) > projectAssistantCheckpointMaxBytes {
+		return nil, projectAssistantFollowUp{}, projectAssistantCheckpoint{}, fmt.Errorf("eino checkpoint exceeds %d bytes", projectAssistantCheckpointMaxBytes)
+	}
 	if state.AssistantMessageID == "" && req.AssistantRun != nil {
 		state.AssistantMessageID = strings.TrimSpace(req.AssistantRun.ActiveMessageID)
 	}
@@ -862,8 +914,18 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 					FollowUp: event.FollowUp,
 				})
 			}
+		case projectAssistantEventPlanUpdated:
+			if event.Plan != nil && projectAssistantPlanSnapshotValid(*event.Plan) {
+				plan := cloneProjectAssistantPlanSnapshot(*event.Plan)
+				metadataState.plan = &plan
+				metadataState.status = projectEinoAssistantPlanProgressStatus(plan)
+			}
 		}
-		persistMetadata(ctx, nil)
+		// OnPlan already persisted this accepted snapshot; the typed event is
+		// live-only here and must not advance durable metadata twice.
+		if event.Type != projectAssistantEventPlanUpdated {
+			persistMetadata(ctx, nil)
+		}
 	}
 	streamToolCall := func(toolCall projectToolCallStreamEvent) {
 		if toolCall.ID == "" || toolCall.Status == "" {
@@ -905,6 +967,17 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 				content := appendProjectAssistantStreamBlock(assistantContent, chunk)
 				if accumulator != nil {
 					recordSnapshotErr(accumulator.UpdateText(ctx, content, false))
+				}
+			},
+			OnCommentary: func(message string) {
+				callbackMu.Lock()
+				defer callbackMu.Unlock()
+				if callbacksClosed {
+					return
+				}
+				syncSteeringSegment()
+				if metadataState.appendProgress(message) {
+					persistMetadata(ctx, nil)
 				}
 			},
 			OnProgress: func(message string) {
@@ -1500,9 +1573,10 @@ func appendProjectAssistantRunAudit(run store.AssistantRun, entry projectAssista
 			return store.AssistantRun{}, fmt.Errorf("decode assistant run audit: %w", err)
 		}
 	}
-	if audit.Version == 0 {
+	if audit.Version < projectAssistantAuditVersion {
 		audit.Version = projectAssistantAuditVersion
 	}
+	projectAssistantAuditRefreshEffectiveSettings(&audit)
 	if strings.TrimSpace(entry.Reason) == "" {
 		entry.Reason = projectAssistantAuditReason(entry.Error)
 	}
@@ -1568,14 +1642,38 @@ func cloneChatToolCall(src chatToolCall) chatToolCall {
 }
 
 func cloneProjectAssistantSeenToolCalls(src map[string]int) map[string]int {
+	return projectEinoAssistantSanitizeSeenToolCalls(src)
+}
+
+func projectAssistantBoundCheckpointMessages(src []chatMessage) []chatMessage {
 	if len(src) == 0 {
 		return nil
 	}
-	dst := make(map[string]int, len(src))
-	for k, v := range src {
-		dst[k] = v
+	start := max(len(src)-projectAssistantCheckpointMaxMessages, 0)
+	// Never resume from an orphaned tool response when the retention window
+	// lands in the middle of an assistant tool-call group. Eino's opaque
+	// checkpoint remains the exact replay authority; this projection is the
+	// bounded App Studio run-state fallback used by later steering.
+	for start < len(src) && src[start].Role == "tool" {
+		start++
 	}
-	return dst
+	// A model-input snapshot can legitimately contain a standalone tool
+	// evidence message (for example, the scrubbed preview-console record used
+	// by the no-leakage boundary). Do not turn an all-tool snapshot into an
+	// empty checkpoint merely because there is no assistant call to anchor it.
+	if start == len(src) {
+		start = len(src) - 1
+	}
+	bounded := cloneChatMessages(src[start:])
+	for index := range bounded {
+		if bounded[index].Role == "tool" {
+			bounded[index].Content = projectEinoAssistantTruncateModelToolOutput(
+				bounded[index].Content,
+				projectEinoAssistantModelToolOutputMaxBytes,
+			)
+		}
+	}
+	return bounded
 }
 
 func cloneProjectAssistantEinoCheckpointState(src *projectAssistantEinoCheckpointState) *projectAssistantEinoCheckpointState {

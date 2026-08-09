@@ -7,7 +7,7 @@ import { renderToString } from 'vue/server-renderer'
 
 let vite
 test.before(async () => {
-  vite = await createServer({ appType: 'custom', server: { middlewareMode: true } })
+  vite = await createServer({ appType: 'custom', server: { middlewareMode: true, hmr: false } })
 })
 test.after(async () => vite?.close())
 
@@ -35,7 +35,7 @@ test('provides explicit default, plan, and review choices in one responsive popo
   assert.match(source, /if \(!open\.value \|\| event\.key !== 'Escape'\) return/)
   assert.match(source, /fixed inset-x-2 bottom-2/)
   assert.match(source, /md:w-\[360px\]/)
-  assert.match(source, /rounded-lg px-1\.5 py-1\.5/)
+  assert.match(source, /rounded-md px-1\.5 py-1\.5/)
   assert.match(source, /overflow-y-auto/)
   assert.match(source, /md:absolute/)
 })
@@ -45,6 +45,6 @@ test('composer mounts both current settings', async () => {
   assert.match(source, /<ResponseModePicker/)
   assert.match(source, /<ApprovalModePicker/)
   assert.match(source, /right-12 flex min-w-0/)
-  assert.match(source, /rounded-full bg-text-primary text-surface/)
+  assert.match(source, /rounded-md bg-accent text-white/)
   assert.match(source, /<ArrowUp class="h-4 w-4"/)
 })

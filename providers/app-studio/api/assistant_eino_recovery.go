@@ -55,6 +55,28 @@ type projectEinoAssistantModelTimeoutError struct {
 	Duration time.Duration
 }
 
+// projectEinoAssistantContextWindowExceededError is a stable semantic marker
+// for providers that report an over-sized request as an ordinary HTTP/API
+// error.  Keeping the marker local lets the supervisor expose a structured
+// terminal error without depending on one provider's concrete error type.
+type projectEinoAssistantContextWindowExceededError struct {
+	Cause error
+}
+
+func (e *projectEinoAssistantContextWindowExceededError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "context_window_exceeded: assistant model context window exceeded"
+	}
+	return "context_window_exceeded: " + e.Cause.Error()
+}
+
+func (e *projectEinoAssistantContextWindowExceededError) Unwrap() error {
+	if e == nil || e.Cause == nil {
+		return nil
+	}
+	return e.Cause
+}
+
 func (e *projectEinoAssistantModelTimeoutError) Error() string {
 	timeout := projectEinoAssistantDefaultModelStreamIdleTimeout
 	if e != nil && e.Duration > 0 {
@@ -199,6 +221,29 @@ func projectEinoAssistantBoundedStream(
 		defer cancel()
 		defer source.Close()
 		defer writer.Close()
+		type receiveResult struct {
+			message *schema.Message
+			err     error
+		}
+		// Use one receive pump for the lifetime of the source. The previous
+		// per-chunk goroutine pattern could leave one blocked Recv behind for
+		// every canceled or timed-out turn. Closing/canceling the source releases
+		// this single pump through the StreamReader contract.
+		received := make(chan receiveResult)
+		go func() {
+			defer close(received)
+			for {
+				message, err := source.Recv()
+				select {
+				case received <- receiveResult{message: message, err: err}:
+				case <-modelCtx.Done():
+					return
+				}
+				if err != nil {
+					return
+				}
+			}
+		}()
 		wait := firstResponseTimeout
 		first := true
 		completed := false
@@ -207,18 +252,6 @@ func projectEinoAssistantBoundedStream(
 				writer.Send(nil, &projectEinoAssistantModelTimeoutError{Code: "model_first_response_timeout", Duration: firstResponseTimeout})
 				return
 			}
-			type receiveResult struct {
-				message *schema.Message
-				err     error
-			}
-			received := make(chan receiveResult)
-			go func() {
-				message, err := source.Recv()
-				select {
-				case received <- receiveResult{message: message, err: err}:
-				case <-modelCtx.Done():
-				}
-			}()
 			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
@@ -236,8 +269,14 @@ func projectEinoAssistantBoundedStream(
 				}
 				writer.Send(nil, &projectEinoAssistantModelTimeoutError{Code: code, Duration: wait})
 				return
-			case result := <-received:
+			case result, ok := <-received:
 				timer.Stop()
+				if !ok {
+					if requireCompletion && !completed {
+						writer.Send(nil, &projectEinoAssistantIncompleteStreamError{})
+					}
+					return
+				}
 				if errors.Is(result.err, io.EOF) {
 					if requireCompletion && !completed {
 						writer.Send(nil, &projectEinoAssistantIncompleteStreamError{})
@@ -303,7 +342,8 @@ var projectEinoAssistantSecretPatterns = []struct {
 
 func projectEinoAssistantShouldRetryModelError(err error) bool {
 	if err == nil ||
-		errors.Is(err, context.Canceled) {
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, adk.ErrStreamCanceled) {
 		return false
 	}
 
@@ -327,6 +367,63 @@ func projectEinoAssistantShouldRetryModelError(err error) bool {
 	var networkError net.Error
 	return errors.As(err, &networkError) &&
 		(networkError.Timeout() || networkError.Temporary())
+}
+
+// projectEinoAssistantContextWindowExceeded reports the provider variants we
+// can identify without parsing a provider-specific response body.  A context
+// overflow is not a transient transport failure: callers should reduce the
+// request before retrying, and ultimately expose a distinct terminal code.
+func projectEinoAssistantContextWindowExceeded(err error) bool {
+	if err == nil {
+		return false
+	}
+	var marker *projectEinoAssistantContextWindowExceededError
+	if errors.As(err, &marker) {
+		return true
+	}
+
+	var openAIError *openaimodel.APIError
+	if errors.As(err, &openAIError) && projectEinoAssistantContextWindowMessage(openAIError.Message) {
+		return projectEinoAssistantContextWindowStatus(openAIError.HTTPStatusCode)
+	}
+	var geminiError genai.APIError
+	if errors.As(err, &geminiError) && projectEinoAssistantContextWindowMessage(geminiError.Message) {
+		return projectEinoAssistantContextWindowStatus(geminiError.Code)
+	}
+	var geminiErrorPointer *genai.APIError
+	if errors.As(err, &geminiErrorPointer) && projectEinoAssistantContextWindowMessage(geminiErrorPointer.Message) {
+		return projectEinoAssistantContextWindowStatus(geminiErrorPointer.Code)
+	}
+	// OpenAI-compatible gateways such as OpenCode may preserve the provider
+	// context-limit text while wrapping it in a generic error. Normalize that
+	// signal so compaction reduces the request instead of treating a
+	// deterministic overflow as a transient or opaque failure.
+	return projectEinoAssistantContextWindowMessage(err.Error())
+}
+
+func projectEinoAssistantContextWindowStatus(status int) bool {
+	return status == 0 || status == 400 || status == 413
+}
+
+func projectEinoAssistantContextWindowMessage(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	if message == "" {
+		return false
+	}
+	for _, phrase := range []string{
+		"context window",
+		"context length",
+		"maximum context",
+		"too many tokens",
+		"prompt is too long",
+		"input is too long",
+	} {
+		if strings.Contains(message, phrase) {
+			return true
+		}
+	}
+	return strings.Contains(message, "token") &&
+		(strings.Contains(message, "limit") || strings.Contains(message, "maximum"))
 }
 
 func projectEinoAssistantRetryableHTTPStatus(status int) bool {
@@ -373,6 +470,9 @@ func projectEinoAssistantModelRetryConfig(
 					return &adk.RetryDecision{}
 				}
 				projectEinoAssistantPublishRetryAttempt(req.StreamCallbacks, retryCtx.RetryAttempt, maxRetries)
+				if req.auditRecorder != nil {
+					req.auditRecorder.recordModelRetryAttempt(ctx)
+				}
 				return &adk.RetryDecision{
 					Retry:        true,
 					RejectReason: "transport failure",
@@ -660,16 +760,15 @@ func projectEinoAssistantSkipHorizontalSpace(value string, index int) int {
 
 func projectEinoAssistantToolCallsMiddleware(
 	ctx context.Context,
+	ledger *projectAssistantRunEventLedger,
 ) (adk.ChatModelAgentMiddleware, error) {
 	return patchtoolcalls.New(ctx, &patchtoolcalls.Config{
 		PatchedContentGenerator: func(
-			_ context.Context,
+			ctx context.Context,
 			toolName string,
-			_ string,
+			toolCallID string,
 		) (string, error) {
-			return "The result for " + toolName +
-					" was not recorded. Its completion is unknown; inspect current project or runtime state before retrying.",
-				nil
+			return ledger.RecoverDanglingToolCall(ctx, toolCallID, toolName)
 		},
 	})
 }

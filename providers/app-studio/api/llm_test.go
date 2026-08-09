@@ -337,7 +337,7 @@ func TestInitialCreationPromptUsesOrdinaryMutationAndVerificationContract(t *tes
 		"Collaboration mode: default",
 		"source-mutation tools are create_file, replace_file, edit_file, delete_file, and move_file",
 		"complete bounded read",
-		"Stale, partial, or ambiguous edits fail",
+		"stale or ambiguous text fails",
 		"The project-creation request is the one-time authorization for this initial source build",
 		"strongly prefer making reasonable assumptions and continuing",
 		"Use ask_follow_up only when the answer cannot be discovered",
@@ -369,9 +369,15 @@ func TestDefaultPromptRequiresEvidenceGroundedChecklistUpdates(t *testing.T) {
 	prompt := projectSystemPromptForMode(project, &ProjectRepositoryView{Ref: "demo-repo", Status: projectRepositoryStatusReady, Ready: true}, projectAssistantCollaborationModeDefault, false)
 	for _, want := range []string{
 		"sole authority for checklist state in non-trivial Default mode work",
+		"For every non-trivial Default-mode task, call write_todos with a complete full-list plan before the first substantive or mutating tool call",
+		"skip write_todos for trivial reads, routine calls, and simple answers",
+		"Plan and Review remain read-only and keep their mode-specific contracts",
 		"report_progress is only user-facing commentary; it never updates or replaces the checklist",
 		"Every model-authored checklist change must be a full-list write_todos update",
 		"Immediately after defining or receiving a plan, write the full list",
+		"Keep exactly one step in_progress at a time",
+		"all other unfinished or blocked work stays pending",
+		"Do not jump a pending step directly to completed; move it to in_progress first",
 		"Before moving to another phase, write the full list again",
 		"After verification changes completion evidence, immediately write the full list again",
 		"Immediately before the terminal response, write the full list one final time",
@@ -413,7 +419,7 @@ func TestDeepPromptDescribesOrdinaryMutationSemantics(t *testing.T) {
 		"replace_file",
 		"edit_file",
 		"complete bounded read",
-		"stale or incomplete",
+		"stale or ambiguous text fails closed",
 	} {
 		if !strings.Contains(projectEinoAssistantV2DeepInstruction, instruction) {
 			t.Fatalf("deep instruction missing %q", instruction)

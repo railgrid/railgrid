@@ -36,6 +36,12 @@ const (
 	projectEinoAssistantRepeatedActionWarnAt = 2
 	projectEinoAssistantRepeatedActionLimit  = 100
 
+	// Heterogeneous no-progress batches stop at the existing repeated-action
+	// warning point. This is deliberately counted by model-call batch rather
+	// than action signature so alternating reads cannot evade the bound, while
+	// the separate 100-call compatibility ceiling remains unchanged.
+	projectEinoAssistantNoProgressModelCallLimit = projectEinoAssistantRepeatedActionWarnAt
+
 	// A failed mutation gets one complete-reread repair attempt. If that
 	// repair also fails at the same source revision and canonical target, stop
 	// before asking the model for another sample.

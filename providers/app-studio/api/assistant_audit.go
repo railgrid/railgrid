@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	projectAssistantAuditVersion        = 1
+	projectAssistantAuditVersion        = 2
 	projectAssistantAuditMaxTools       = 128
 	projectAssistantAuditMaxModelCalls  = 32
 	projectAssistantAuditMaxCompactions = 16
@@ -42,6 +42,7 @@ const (
 	projectAssistantAuditMaxDecisions   = 64
 	projectAssistantAuditMaxPathBytes   = 512
 	projectAssistantAuditMaxSummaryLen  = 256
+	projectAssistantAuditMaxUsageDedupe = 64
 )
 
 func (r *projectAssistantRunAuditRecorder) recordCompaction(
@@ -127,6 +128,11 @@ type projectAssistantAuditModelCall struct {
 	FirstResponseAtOffsetMS   *int64   `json:"firstResponseAtOffsetMs,omitempty"`
 	ToolCallStartedAtOffsetMS *int64   `json:"toolCallStartedAtOffsetMs,omitempty"`
 	CompletedAtOffsetMS       *int64   `json:"completedAtOffsetMs,omitempty"`
+	InputBytes                int64    `json:"inputBytes,omitempty"`
+	PromptTokens              int64    `json:"promptTokens,omitempty"`
+	CachedPromptTokens        int64    `json:"cachedPromptTokens,omitempty"`
+	CompletionTokens          int64    `json:"completionTokens,omitempty"`
+	TotalTokens               int64    `json:"totalTokens,omitempty"`
 }
 
 type projectAssistantAuditFailure struct {
@@ -140,11 +146,21 @@ type projectAssistantAuditFailure struct {
 }
 
 type projectAssistantRunAuditRecorder struct {
-	mu      sync.Mutex
-	run     *store.AssistantRun
-	started time.Time
-	audit   projectAssistantRunAudit
-	persist func(context.Context, []byte) error
+	mu                   sync.Mutex
+	run                  *store.AssistantRun
+	started              time.Time
+	audit                projectAssistantRunAudit
+	persist              func(context.Context, []byte) error
+	modelUsageByOrdinal  map[int]projectAssistantAuditTokenUsage
+	missingUsageOrdinals map[int]struct{}
+	usageDedupeFloor     int
+}
+
+type projectAssistantAuditTokenUsage struct {
+	promptTokens       int64
+	cachedPromptTokens int64
+	completionTokens   int64
+	totalTokens        int64
 }
 
 func newProjectAssistantRunAuditRecorder(
@@ -159,7 +175,7 @@ func newProjectAssistantRunAuditRecorder(
 	if run != nil && len(run.Audit) > 0 {
 		_ = json.Unmarshal(run.Audit, &audit)
 	}
-	if audit.Version == 0 {
+	if audit.Version < projectAssistantAuditVersion {
 		audit.Version = projectAssistantAuditVersion
 	}
 	if audit.StartedAt.IsZero() {
@@ -183,13 +199,125 @@ func newProjectAssistantRunAuditRecorder(
 	if len(audit.SelectedSkills) == 0 && len(req.SelectedSkills) > 0 {
 		audit.SelectedSkills = cloneProjectAssistantSkillReceipts(req.SelectedSkills)
 	}
+	projectAssistantAuditApplyEffectiveSettings(&audit, req)
 	recorder := &projectAssistantRunAuditRecorder{
-		run:     run,
-		started: audit.StartedAt,
-		audit:   audit,
+		run:                  run,
+		started:              audit.StartedAt,
+		audit:                audit,
+		modelUsageByOrdinal:  make(map[int]projectAssistantAuditTokenUsage),
+		missingUsageOrdinals: make(map[int]struct{}),
 	}
+	// Rehydrate retained per-call usage so duplicate callbacks after a process
+	// restart remain idempotent instead of adding the same token counts twice.
+	for _, call := range audit.ModelCalls {
+		if call.PromptTokens == 0 && call.CachedPromptTokens == 0 && call.CompletionTokens == 0 && call.TotalTokens == 0 {
+			continue
+		}
+		recorder.modelUsageByOrdinal[call.Ordinal] = projectAssistantAuditTokenUsage{
+			promptTokens:       call.PromptTokens,
+			cachedPromptTokens: call.CachedPromptTokens,
+			completionTokens:   call.CompletionTokens,
+			totalTokens:        call.TotalTokens,
+		}
+	}
+	if len(audit.ModelCalls) > 0 {
+		firstRetained := audit.ModelCalls[0].Ordinal
+		for _, call := range audit.ModelCalls[1:] {
+			firstRetained = min(firstRetained, call.Ordinal)
+		}
+		recorder.usageDedupeFloor = max(firstRetained-1, 0)
+	} else if audit.ModelCallStats != nil {
+		recorder.usageDedupeFloor = max(audit.ModelCallStats.TotalCalls, 0)
+	}
+	recorder.trimUsageDedupeLocked()
 	recorder.updateRunLocked()
 	return recorder
+}
+
+// projectAssistantAuditApplyEffectiveSettings captures the settings known at
+// the start of a fresh or resumed segment. A continuation owns its persisted
+// optimization mode; falling back to the process environment is only valid for
+// a fresh segment where no checkpoint mode exists yet.
+func projectAssistantAuditApplyEffectiveSettings(audit *projectAssistantRunAudit, req projectAssistantRunRequest) {
+	if audit == nil {
+		return
+	}
+	if audit.EffectiveSettings == nil {
+		audit.EffectiveSettings = &projectAssistantAuditEffectiveSettings{}
+	}
+	settings := audit.EffectiveSettings
+	if strings.TrimSpace(settings.Provider) == "" {
+		settings.Provider = projectAssistantAuditString(req.LLM.Provider, projectAssistantAuditMaxSummaryLen)
+	}
+	if strings.TrimSpace(settings.Provider) == "" {
+		settings.Provider = projectAssistantAuditString(audit.Provider, projectAssistantAuditMaxSummaryLen)
+	}
+	if strings.TrimSpace(settings.Model) == "" {
+		settings.Model = projectAssistantAuditString(req.LLM.Model, projectAssistantAuditMaxSummaryLen)
+	}
+	if strings.TrimSpace(settings.Model) == "" {
+		settings.Model = projectAssistantAuditString(audit.Model, projectAssistantAuditMaxSummaryLen)
+	}
+	if strings.TrimSpace(settings.OptimizationMode) == "" {
+		if req.Continuation != nil {
+			settings.OptimizationMode = projectEinoAssistantNormalizeOptimizationMode(req.Continuation.AgentOptimizationMode)
+		} else {
+			settings.OptimizationMode = projectEinoAssistantOptimizationModeFromEnvironment()
+		}
+	}
+	if settings.DynamicToolCatalogDigest == "" && req.Continuation != nil {
+		settings.DynamicToolCatalogDigest = projectAssistantAuditString(
+			req.Continuation.DynamicToolCatalogDigest,
+			projectAssistantAuditMaxSummaryLen,
+		)
+	}
+	projectAssistantAuditRefreshEffectiveSettings(audit)
+	if settings.Provider != "" {
+		audit.Provider = settings.Provider
+	}
+	if settings.Model != "" {
+		audit.Model = settings.Model
+	}
+}
+
+// projectAssistantAuditRefreshEffectiveSettings keeps terminal snapshots
+// truthful when dynamic tools or a resumed segment add later model calls. It
+// intentionally does not consult process configuration, so finalizing a
+// legacy run cannot invent a new optimization mode.
+func projectAssistantAuditRefreshEffectiveSettings(audit *projectAssistantRunAudit) {
+	if audit == nil {
+		return
+	}
+	if audit.EffectiveSettings == nil {
+		audit.EffectiveSettings = &projectAssistantAuditEffectiveSettings{}
+	}
+	settings := audit.EffectiveSettings
+	settings.Provider = projectAssistantAuditString(settings.Provider, projectAssistantAuditMaxSummaryLen)
+	settings.Model = projectAssistantAuditString(settings.Model, projectAssistantAuditMaxSummaryLen)
+	if settings.Provider == "" {
+		settings.Provider = projectAssistantAuditString(audit.Provider, projectAssistantAuditMaxSummaryLen)
+	}
+	if settings.Model == "" {
+		settings.Model = projectAssistantAuditString(audit.Model, projectAssistantAuditMaxSummaryLen)
+	}
+	settings.OptimizationMode = projectEinoAssistantNormalizeOptimizationMode(settings.OptimizationMode)
+	settings.ToolContractDigest = projectAssistantAuditString(settings.ToolContractDigest, projectAssistantAuditMaxSummaryLen)
+	settings.DynamicToolCatalogDigest = projectAssistantAuditString(settings.DynamicToolCatalogDigest, projectAssistantAuditMaxSummaryLen)
+	if settings.InstructionDigest == "" {
+		settings.InstructionDigest = projectAssistantAuditInstructionDigest()
+	}
+	settings.InstructionDigest = projectAssistantAuditString(settings.InstructionDigest, projectAssistantAuditMaxSummaryLen)
+	for index := len(audit.ModelCalls) - 1; index >= 0; index-- {
+		if digest := strings.TrimSpace(audit.ModelCalls[index].ToolContractDigest); digest != "" {
+			settings.ToolContractDigest = projectAssistantAuditString(digest, projectAssistantAuditMaxSummaryLen)
+			break
+		}
+	}
+}
+
+func projectAssistantAuditInstructionDigest() string {
+	sum := sha256.Sum256([]byte(projectEinoAssistantV2DeepInstruction))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func (r *projectAssistantRunAuditRecorder) recordTool(event projectToolCallStreamEvent) {
@@ -262,6 +390,7 @@ func (r *projectAssistantRunAuditRecorder) recordModelCall(
 	rolloutBudgetRemaining *int64,
 	toolInfos []*schema.ToolInfo,
 	deferredToolInfos []*schema.ToolInfo,
+	inputBytes ...int64,
 ) error {
 	if r == nil || ordinal <= 0 {
 		return nil
@@ -275,18 +404,64 @@ func (r *projectAssistantRunAuditRecorder) recordModelCall(
 		ToolContractDigest:     projectAssistantAuditToolContractDigest(toolInfos, deferredToolInfos),
 		AtOffsetMS:             projectAssistantAuditOffsetMS(r.started, time.Now().UTC()),
 	}
+	if len(inputBytes) > 0 && inputBytes[0] > 0 {
+		entry.InputBytes = inputBytes[0]
+	}
 	r.mu.Lock()
+	stats := r.ensureModelCallStatsLocked()
+	stats.TotalCalls++
 	if len(r.audit.ModelCalls) >= projectAssistantAuditMaxModelCalls {
+		stats.DroppedCalls++
 		r.audit.ModelCalls = append(
 			[]projectAssistantAuditModelCall(nil),
 			r.audit.ModelCalls[len(r.audit.ModelCalls)-projectAssistantAuditMaxModelCalls+1:]...,
 		)
 	}
 	r.audit.ModelCalls = append(r.audit.ModelCalls, entry)
+	projectAssistantAuditRefreshEffectiveSettings(&r.audit)
+	stats.RetainedCalls = len(r.audit.ModelCalls)
+	if entry.InputBytes > 0 {
+		stats.InputBytes += entry.InputBytes
+	}
 	r.updateRunLocked()
 	raw := r.auditSnapshotLocked()
 	r.mu.Unlock()
 	return r.persistSnapshot(ctx, raw)
+}
+
+// ensureModelCallStatsLocked initializes the v2 rollup lazily so decoding an
+// older v1 audit remains compatible and untouched runs do not gain an empty
+// stats object merely by being read.
+func (r *projectAssistantRunAuditRecorder) ensureModelCallStatsLocked() *projectAssistantAuditModelCallStats {
+	if r == nil {
+		return nil
+	}
+	if r.audit.ModelCallStats == nil {
+		r.audit.ModelCallStats = &projectAssistantAuditModelCallStats{}
+	}
+	stats := r.audit.ModelCallStats
+	if stats.TotalCalls < len(r.audit.ModelCalls) {
+		stats.TotalCalls = len(r.audit.ModelCalls)
+	}
+	stats.RetainedCalls = len(r.audit.ModelCalls)
+	minimumDropped := stats.TotalCalls - stats.RetainedCalls
+	if minimumDropped > stats.DroppedCalls {
+		stats.DroppedCalls = minimumDropped
+	}
+	return stats
+}
+
+func (r *projectAssistantRunAuditRecorder) recordModelRetryAttempt(ctx context.Context) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	stats := r.ensureModelCallStatsLocked()
+	stats.RetryAttempts++
+	r.updateRunLocked()
+	raw := r.auditSnapshotLocked()
+	r.mu.Unlock()
+	_ = r.persistSnapshot(ctx, raw)
 }
 
 func projectAssistantAuditToolContractDigest(groups ...[]*schema.ToolInfo) string {
@@ -335,6 +510,22 @@ func projectAssistantAuditToolContractDigest(groups ...[]*schema.ToolInfo) strin
 	}
 	sum := sha256.Sum256(raw)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// projectAssistantAuditInputBytes measures the model-visible request without
+// retaining its payload. It intentionally counts serialized messages and tool
+// contracts only; callers persist the aggregate size, never the bytes.
+func projectAssistantAuditInputBytes(messages []*schema.Message, toolSets ...[]*schema.ToolInfo) int64 {
+	var total int64
+	if raw, err := json.Marshal(projectEinoMessagesToChat(messages)); err == nil {
+		total += int64(len(raw))
+	}
+	for _, tools := range toolSets {
+		if raw, err := json.Marshal(tools); err == nil {
+			total += int64(len(raw))
+		}
+	}
+	return total
 }
 
 func (r *projectAssistantRunAuditRecorder) rolloutBudgetSnapshot() *projectAssistantRolloutBudgetState {
@@ -387,6 +578,7 @@ func (r *projectAssistantRunAuditRecorder) recordModelResult(
 		}
 	}
 	r.mu.Lock()
+	stats := r.ensureModelCallStatsLocked()
 	for i := len(r.audit.ModelCalls) - 1; i >= 0; i-- {
 		entry := &r.audit.ModelCalls[i]
 		if entry.Ordinal == ordinal && entry.Outcome == "" {
@@ -394,14 +586,124 @@ func (r *projectAssistantRunAuditRecorder) recordModelResult(
 			entry.RequestedTools = requestedTools
 			completed := projectAssistantAuditOffsetMS(r.started, time.Now().UTC())
 			entry.CompletedAtOffsetMS = &completed
+			r.recordModelUsageLocked(stats, ordinal, entry, projectAssistantAuditTokenUsageFromMessage(response))
 			r.updateRunLocked()
 			raw := r.auditSnapshotLocked()
 			r.mu.Unlock()
 			return r.persistSnapshot(ctx, raw)
 		}
 	}
+	// A model result may be reported after its bounded detail entry has rolled
+	// out of the retention window. Keep the uncapped usage/missing counters even
+	// when no detailed row remains to update.
+	if stats != nil {
+		r.recordModelUsageLocked(stats, ordinal, nil, projectAssistantAuditTokenUsageFromMessage(response))
+		r.updateRunLocked()
+		raw := r.auditSnapshotLocked()
+		r.mu.Unlock()
+		return r.persistSnapshot(ctx, raw)
+	}
 	r.mu.Unlock()
 	return nil
+}
+
+func projectAssistantAuditTokenUsageFromMessage(response *schema.Message) *projectAssistantAuditTokenUsage {
+	if response == nil || response.ResponseMeta == nil || response.ResponseMeta.Usage == nil {
+		return nil
+	}
+	usage := response.ResponseMeta.Usage
+	return &projectAssistantAuditTokenUsage{
+		promptTokens:       int64(max(usage.PromptTokens, 0)),
+		cachedPromptTokens: int64(max(usage.PromptTokenDetails.CachedTokens, 0)),
+		completionTokens:   int64(max(usage.CompletionTokens, 0)),
+		totalTokens:        int64(max(usage.TotalTokens, 0)),
+	}
+}
+
+func (r *projectAssistantRunAuditRecorder) recordModelUsageLocked(
+	stats *projectAssistantAuditModelCallStats,
+	ordinal int,
+	entry *projectAssistantAuditModelCall,
+	usage *projectAssistantAuditTokenUsage,
+) {
+	if r == nil || stats == nil || ordinal <= 0 {
+		return
+	}
+	if ordinal <= r.usageDedupeFloor {
+		return
+	}
+	if r.missingUsageOrdinals == nil {
+		r.missingUsageOrdinals = make(map[int]struct{})
+	}
+	if usage == nil {
+		// Streaming adapters can report an assembled response with usage and
+		// then invoke the ordinary output callback with the same response but
+		// without metadata. Once usage has been observed, a later nil callback
+		// must not turn that model call back into "missing" telemetry.
+		if _, observed := r.modelUsageByOrdinal[ordinal]; observed {
+			return
+		}
+		if _, counted := r.missingUsageOrdinals[ordinal]; counted {
+			return
+		}
+		r.missingUsageOrdinals[ordinal] = struct{}{}
+		stats.MissingUsageCalls++
+		r.trimUsageDedupeLocked()
+		return
+	}
+	if r.modelUsageByOrdinal == nil {
+		r.modelUsageByOrdinal = make(map[int]projectAssistantAuditTokenUsage)
+	}
+	previous := r.modelUsageByOrdinal[ordinal]
+	delta := projectAssistantAuditTokenUsage{
+		promptTokens:       usage.promptTokens - previous.promptTokens,
+		cachedPromptTokens: usage.cachedPromptTokens - previous.cachedPromptTokens,
+		completionTokens:   usage.completionTokens - previous.completionTokens,
+		totalTokens:        usage.totalTokens - previous.totalTokens,
+	}
+	stats.PromptTokens += delta.promptTokens
+	stats.CachedPromptTokens += delta.cachedPromptTokens
+	stats.CompletionTokens += delta.completionTokens
+	stats.TotalTokens += delta.totalTokens
+	r.modelUsageByOrdinal[ordinal] = *usage
+	if _, counted := r.missingUsageOrdinals[ordinal]; counted {
+		delete(r.missingUsageOrdinals, ordinal)
+		if stats.MissingUsageCalls > 0 {
+			stats.MissingUsageCalls--
+		}
+	}
+	if entry != nil {
+		entry.PromptTokens = usage.promptTokens
+		entry.CachedPromptTokens = usage.cachedPromptTokens
+		entry.CompletionTokens = usage.completionTokens
+		entry.TotalTokens = usage.totalTokens
+	}
+	r.trimUsageDedupeLocked()
+}
+
+func (r *projectAssistantRunAuditRecorder) trimUsageDedupeLocked() {
+	if r == nil {
+		return
+	}
+	for len(r.modelUsageByOrdinal)+len(r.missingUsageOrdinals) > projectAssistantAuditMaxUsageDedupe {
+		oldest := 0
+		for ordinal := range r.modelUsageByOrdinal {
+			if oldest == 0 || ordinal < oldest {
+				oldest = ordinal
+			}
+		}
+		for ordinal := range r.missingUsageOrdinals {
+			if oldest == 0 || ordinal < oldest {
+				oldest = ordinal
+			}
+		}
+		if oldest == 0 {
+			return
+		}
+		delete(r.modelUsageByOrdinal, oldest)
+		delete(r.missingUsageOrdinals, oldest)
+		r.usageDedupeFloor = max(r.usageDedupeFloor, oldest)
+	}
 }
 
 func (r *projectAssistantRunAuditRecorder) recordModelResponseChunk(ctx context.Context, toolCallStarted bool) {
@@ -493,12 +795,14 @@ func (r *projectAssistantRunAuditRecorder) recordModelError() {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	stats := r.ensureModelCallStatsLocked()
 	for i := len(r.audit.ModelCalls) - 1; i >= 0; i-- {
 		entry := &r.audit.ModelCalls[i]
 		if entry.Outcome == "" {
 			entry.Outcome = "error"
 			completed := projectAssistantAuditOffsetMS(r.started, time.Now().UTC())
 			entry.CompletedAtOffsetMS = &completed
+			r.recordModelUsageLocked(stats, entry.Ordinal, entry, nil)
 			r.updateRunLocked()
 			return
 		}
@@ -512,6 +816,7 @@ func (r *projectAssistantRunAuditRecorder) recordFailure(err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.audit.Failure = projectAssistantAuditFailureForError(err)
+	projectAssistantAuditRefreshEffectiveSettings(&r.audit)
 	r.updateRunLocked()
 }
 
@@ -622,10 +927,11 @@ func recordProjectAssistantRunAuditFailure(run store.AssistantRun, cause error) 
 			return store.AssistantRun{}, err
 		}
 	}
-	if audit.Version == 0 {
+	if audit.Version < projectAssistantAuditVersion {
 		audit.Version = projectAssistantAuditVersion
 	}
 	audit.Failure = projectAssistantAuditFailureForError(cause)
+	projectAssistantAuditRefreshEffectiveSettings(&audit)
 	raw, err := json.Marshal(audit)
 	if err != nil {
 		return store.AssistantRun{}, err
@@ -671,6 +977,7 @@ func (r *projectAssistantRunAuditRecorder) finalizeAt(outcome projectAssistantAu
 	defer r.mu.Unlock()
 	r.audit.Outcome = outcome
 	r.audit.DurationMS = projectAssistantAuditOffsetMS(r.started, at)
+	projectAssistantAuditRefreshEffectiveSettings(&r.audit)
 	r.updateRunLocked()
 }
 
@@ -803,7 +1110,7 @@ func finalizeProjectAssistantRunAudit(
 			return store.AssistantRun{}, err
 		}
 	}
-	if audit.Version == 0 {
+	if audit.Version < projectAssistantAuditVersion {
 		audit.Version = projectAssistantAuditVersion
 	}
 	if audit.StartedAt.IsZero() {
@@ -812,6 +1119,7 @@ func finalizeProjectAssistantRunAudit(
 			audit.StartedAt = at.UTC()
 		}
 	}
+	projectAssistantAuditRefreshEffectiveSettings(&audit)
 	audit.Outcome = outcome
 	audit.DurationMS = projectAssistantAuditOffsetMS(audit.StartedAt, at)
 	raw, err := json.Marshal(audit)

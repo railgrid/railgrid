@@ -408,6 +408,7 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
   }
 
   const precedingAssistantByTurn = new Map<string, number>()
+  const latestPlanSequenceByAssistant = new Map<string, number>()
   for (const item of ordered) {
     if (item.type === 'agentMessage') {
       const index = isCommentaryItem(item)
@@ -447,7 +448,16 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
       else actions.push(item.data)
       metadata.assistantActionFeed = actions
     } else if (item.type === 'plan' && item.data) {
-      metadata.assistantPlan = item.data
+      // A plan item is replaced in place by the thread mirror today, but
+      // older stores can return every accepted snapshot. Keep the newest
+      // snapshot attached to the owner so terminal/reloaded turns render the
+      // same plan the live run last accepted.
+      const ownerID = result[index].id
+      const previousSequence = latestPlanSequenceByAssistant.get(ownerID)
+      if (previousSequence === undefined || item.sequence >= previousSequence) {
+        metadata.assistantPlan = item.data
+        latestPlanSequenceByAssistant.set(ownerID, item.sequence)
+      }
     } else if ((item.type === 'approval' || item.type === 'input') && item.status === 'in_progress' && item.data) {
       metadata.assistantInterrupt = item.data
     }

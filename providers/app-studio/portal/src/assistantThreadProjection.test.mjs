@@ -615,6 +615,39 @@ test('retains persisted plan snapshots for interrupted and failed reload owners'
   assert.deepEqual(messages.find(({ id }) => id === 'assistant-failed-plan').metadata.assistantPlan.steps.map(({ status }) => status), ['completed', 'in_progress'])
 })
 
+test('projects the latest persisted plan snapshot for a terminal owner', async () => {
+  const { assistantThreadItemsToMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const messages = assistantThreadItemsToMessages([
+    {
+      id: 'assistant-terminal-plan', turnID: 'run-terminal-plan', type: 'agentMessage', status: 'completed',
+      assistantMessageID: 'assistant-terminal-plan', content: 'Finished the work.', sequence: 1,
+      createdAt: '2026-08-02T17:42:09Z',
+    },
+    {
+      id: 'plan-terminal-1', turnID: 'run-terminal-plan', type: 'plan', status: 'completed',
+      assistantMessageID: 'assistant-terminal-plan', data: {
+        steps: [{ content: 'Inspect the project', status: 'in_progress' }],
+      }, sequence: 2, createdAt: '2026-08-02T17:42:10Z',
+    },
+    {
+      id: 'plan-terminal-2', turnID: 'run-terminal-plan', type: 'plan', status: 'completed',
+      assistantMessageID: 'assistant-terminal-plan', data: {
+        steps: [
+          { content: 'Inspect the project', status: 'completed' },
+          { content: 'Verify the preview', status: 'completed' },
+        ],
+      }, sequence: 3, createdAt: '2026-08-02T17:42:11Z',
+    },
+  ], 'demo')
+
+  assert.deepEqual(messages[0].metadata.assistantPlan, {
+    steps: [
+      { content: 'Inspect the project', status: 'completed' },
+      { content: 'Verify the preview', status: 'completed' },
+    ],
+  })
+})
+
 test('retains the first replacement delta when a stale list projection arrives after the stream', async () => {
   const { mergeAssistantThreadMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
   const current = [{ id: 'assistant-2', projectID: 'demo', role: 'assistant', content: 'first replacement delta', metadata: { assistantRevision: 2 }, createdAt: '2026-08-02T17:42:09Z' }]

@@ -58,6 +58,47 @@ func TestProjectAssistantV2PermissionPolicy(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantPermissionEditRevalidatesScopeAndEffectiveArguments(t *testing.T) {
+	spec := projectAssistantToolSpec{Name: projectToolEditFile, Risk: projectAssistantToolRiskWrite}
+	original := map[string]any{"path": "src/App.tsx", "oldString": "old", "newString": "new"}
+
+	effective, scopeChanged, err := projectAssistantRevalidatePermissionEdit(spec, original, map[string]any{
+		"path": "./src/App.tsx", "oldString": "old", "newString": "approved content",
+	})
+	if err != nil || scopeChanged || projectToolString(effective["newString"]) != "approved content" {
+		t.Fatalf("same-scope edit = %#v, changed=%t, err=%v", effective, scopeChanged, err)
+	}
+
+	_, scopeChanged, err = projectAssistantRevalidatePermissionEdit(spec, original, map[string]any{
+		"path": "src/Admin.tsx", "oldString": "old", "newString": "new",
+	})
+	if err != nil || !scopeChanged {
+		t.Fatalf("expanded-scope edit changed=%t, err=%v; want fresh approval", scopeChanged, err)
+	}
+
+	if _, _, err := projectAssistantRevalidatePermissionEdit(spec, original, map[string]any{
+		"path": "../secret", "oldString": "old", "newString": "new",
+	}); err == nil {
+		t.Fatal("unsafe edited path passed effective-argument validation")
+	}
+}
+
+func TestProjectAssistantPermissionEditRequiresFreshApprovalForRuntimeChange(t *testing.T) {
+	spec := projectAssistantToolSpec{Name: projectToolExecCommand, Risk: projectAssistantToolRiskRuntime}
+	original := map[string]any{"component": "web", "argv": []any{"npm", "test"}, "timeoutSeconds": float64(30)}
+	effective, changed, err := projectAssistantRevalidatePermissionEdit(spec, original, map[string]any{
+		"component": "api", "argv": []any{"go", "test", "./..."},
+	})
+	if err != nil || !changed || projectToolString(effective["component"]) != "api" {
+		t.Fatalf("runtime edit = %#v, changed=%t, err=%v; want normalized fresh approval", effective, changed, err)
+	}
+	if _, _, err := projectAssistantRevalidatePermissionEdit(spec, original, map[string]any{
+		"component": "api", "argv": []any{"go", "test"}, "workdir": "../outside",
+	}); err == nil {
+		t.Fatal("unsafe edited runtime scope passed effective-argument validation")
+	}
+}
+
 func TestProjectAssistantWorkspaceGrantAuthorizesAllOrdinaryMutations(t *testing.T) {
 	plan := &projectAssistantApprovedPlan{
 		Version:      projectAssistantApprovedPlanVersionWorkspaceMutation,

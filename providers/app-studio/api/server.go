@@ -53,14 +53,18 @@ type Server struct {
 	// assistantThreadTitleGenerator is a test seam for the detached, one-shot
 	// title request. Production leaves it nil and uses the connected project LLM.
 	assistantThreadTitleGenerator func(context.Context, *asclient.Client, string) (string, error)
-	assistantRunManager           *projectAssistantRunManager
-	assistantSupervisor           *projectAssistantSupervisor
-	assistantProjectionLocks      map[string]*assistantThreadProjectionLockEntry
-	assistantThreadMirrors        map[string]struct{}
-	developmentSyncLocks          map[string]*sync.Mutex
-	developmentSyncTails          map[string]chan struct{}
-	developmentSyncAfterMutation  func(identity, *aiv1alpha1.Project, string) error
-	projectCreatePreflight        projectCreatePreflightGenerator
+	// projectClientFor is an optional test seam for handlers that need a
+	// workspace-scoped Project client without opening a GraphQL listener.
+	// Production leaves it nil and uses clientFor's caller-scoped GraphQL path.
+	projectClientFor             func(identity) (*asclient.Client, error)
+	assistantRunManager          *projectAssistantRunManager
+	assistantSupervisor          *projectAssistantSupervisor
+	assistantProjectionLocks     map[string]*assistantThreadProjectionLockEntry
+	assistantThreadMirrors       map[string]struct{}
+	developmentSyncLocks         map[string]*sync.Mutex
+	developmentSyncTails         map[string]chan struct{}
+	developmentSyncAfterMutation func(identity, *aiv1alpha1.Project, string) error
+	projectCreatePreflight       projectCreatePreflightGenerator
 	// developmentSyncFailures records the most recent post-mutation sync
 	// failure per project so verify_development_runtime can report it. A
 	// failed background sync means the assistant's edits never reached the
@@ -182,8 +186,10 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns", s.startProjectAssistantThreadTurn).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/reviews", s.startProjectAssistantThreadReview).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/active", s.activeProjectAssistantThreadTurn).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}", s.getProjectAssistantThreadTurn).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/steer", s.steerProjectAssistantThreadTurn).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/interrupt", s.interruptProjectAssistantThreadTurn).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/continue", s.continueProjectAssistantThreadTurn).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/approval", s.respondProjectAssistantThreadTurn).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/input", s.respondProjectAssistantThreadTurn).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/template", s.putProjectTemplate).Methods(http.MethodPut)
@@ -211,6 +217,9 @@ func (s *Server) Register(r *mux.Router) {
 // clientFor builds a workspace-scoped client acting as the caller, talking to
 // the hub's GraphQL gateway for the caller's current workspace cluster.
 func (s *Server) clientFor(id identity) (*asclient.Client, error) {
+	if s.projectClientFor != nil {
+		return s.projectClientFor(id)
+	}
 	scope, err := s.gql.For(id.clusterID, id.token)
 	if err != nil {
 		return nil, err
@@ -229,7 +238,7 @@ func (s *Server) requireProjectClient(w http.ResponseWriter, r *http.Request) (*
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "a workspace is required for this endpoint — select an organization and workspace first")
 		return nil, identity{}, false
 	}
-	if s.gql == nil {
+	if s.gql == nil && s.projectClientFor == nil {
 		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "tenant GraphQL client not configured — provider has no hub URL")
 		return nil, identity{}, false
 	}

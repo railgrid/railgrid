@@ -50,6 +50,108 @@ type projectEinoAssistantCompactionTestModel struct {
 	err            error
 }
 
+type projectEinoAssistantCompactionOverflowModel struct {
+	maxMessages int
+	inputs      [][]*schema.Message
+	calls       int
+}
+
+type projectEinoAssistantNormalOverflowModel struct {
+	maxMessages int
+	inputs      [][]*schema.Message
+}
+
+func (m *projectEinoAssistantNormalOverflowModel) Generate(
+	ctx context.Context,
+	input []*schema.Message,
+	_ ...einomodel.Option,
+) (*schema.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.inputs = append(m.inputs, append([]*schema.Message(nil), input...))
+	if len(input) > m.maxMessages {
+		return nil, errors.New("maximum context length exceeded")
+	}
+	return schema.AssistantMessage("recovered", nil), nil
+}
+
+func (m *projectEinoAssistantNormalOverflowModel) Stream(
+	ctx context.Context,
+	input []*schema.Message,
+	opts ...einomodel.Option,
+) (*schema.StreamReader[*schema.Message], error) {
+	message, err := m.Generate(ctx, input, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return schema.StreamReaderFromArray([]*schema.Message{message}), nil
+}
+
+func TestProjectEinoAssistantNormalModelOverflowRetriesBoundedReduction(t *testing.T) {
+	base := &projectEinoAssistantNormalOverflowModel{maxMessages: 3}
+	main, _ := projectEinoAssistantModels(base, projectAssistantRunRequest{}, newProjectEinoAssistantRunState())
+	input := []*schema.Message{
+		schema.SystemMessage("system authority"),
+		schema.UserMessage("old request"),
+		schema.AssistantMessage("", []schema.ToolCall{{ID: "call-1", Function: schema.FunctionCall{Name: projectToolReadFile}}}),
+		schema.ToolMessage(`{"path":"old","complete":false}`, "call-1"),
+		schema.UserMessage("latest request"),
+		schema.SystemMessage("ephemeral progress reminder"),
+	}
+	reader, err := main.Stream(context.Background(), input)
+	if err != nil {
+		t.Fatalf("normal model overflow recovery: %v", err)
+	}
+	defer reader.Close()
+	message, err := reader.Recv()
+	if err != nil || message.Content != "recovered" {
+		t.Fatalf("recovered stream = %#v, err=%v", message, err)
+	}
+	if len(base.inputs) != 3 {
+		t.Fatalf("normal model calls = %d, want initial plus two bounded reductions", len(base.inputs))
+	}
+	last := base.inputs[len(base.inputs)-1]
+	if len(last) != 3 || last[0].Role != schema.System || last[1].Content != "latest request" || last[2].Content != "ephemeral progress reminder" {
+		t.Fatalf("reduced normal input = %#v, want system authority, latest request, and ephemeral reminder", last)
+	}
+}
+
+func TestProjectEinoAssistantNormalModelOverflowHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	base := &projectEinoAssistantNormalOverflowModel{maxMessages: 0}
+	model := projectEinoAssistantModelWithContextRecovery(base)
+	_, err := model.Generate(ctx, []*schema.Message{schema.UserMessage("request")})
+	if !errors.Is(err, context.Canceled) || len(base.inputs) != 0 {
+		t.Fatalf("canceled recovery = %v with %d calls, want context cancellation before retry", err, len(base.inputs))
+	}
+}
+
+func (m *projectEinoAssistantCompactionOverflowModel) Generate(
+	ctx context.Context,
+	input []*schema.Message,
+	_ ...einomodel.Option,
+) (*schema.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.calls++
+	m.inputs = append(m.inputs, append([]*schema.Message(nil), input...))
+	if len(input) > m.maxMessages {
+		return nil, &projectEinoAssistantContextWindowExceededError{Cause: errors.New("maximum context length exceeded")}
+	}
+	return schema.AssistantMessage("compacted", nil), nil
+}
+
+func (*projectEinoAssistantCompactionOverflowModel) Stream(
+	context.Context,
+	[]*schema.Message,
+	...einomodel.Option,
+) (*schema.StreamReader[*schema.Message], error) {
+	return nil, errors.New("unexpected compaction stream")
+}
+
 func (m *projectEinoAssistantCompactionTestModel) Generate(
 	ctx context.Context,
 	input []*schema.Message,
@@ -133,6 +235,86 @@ func TestProjectEinoAssistantCompactionPersistsExactReplacementHistory(t *testin
 	want := projectEinoMessagesToChat(compacted.Messages)
 	if !reflect.DeepEqual(projection.messages, want) {
 		t.Fatalf("persisted replacement history differs from finalized model history\ngot:  %#v\nwant: %#v", projection.messages, want)
+	}
+	if got := runState.ModelContextGeneration(); got != 1 {
+		t.Fatalf("model context generation = %d, want one invalidation after compaction", got)
+	}
+}
+
+func TestProjectEinoAssistantCompactionContextOverflowEvictsOldestHistory(t *testing.T) {
+	base := &projectEinoAssistantCompactionOverflowModel{maxMessages: 3}
+	model := &projectEinoAssistantCompactionIsolatedModel{BaseChatModel: base}
+	input := []*schema.Message{
+		schema.SystemMessage("stable instructions"),
+		schema.UserMessage("old request"),
+		schema.AssistantMessage("old answer", nil),
+		schema.UserMessage("latest request"),
+		schema.UserMessage(projectEinoAssistantCompactionPrompt),
+	}
+	response, err := model.Generate(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response == nil || response.Content != "compacted" {
+		t.Fatalf("compaction response = %#v, want successful retry", response)
+	}
+	if base.calls != 3 {
+		t.Fatalf("context recovery calls = %d, want initial call plus two bounded evictions", base.calls)
+	}
+	if len(base.inputs) != 3 {
+		t.Fatalf("captured inputs = %d, want one per recovery attempt", len(base.inputs))
+	}
+	last := base.inputs[len(base.inputs)-1]
+	if len(last) != 3 || last[0].Role != schema.System || last[1].Content != "latest request" || last[2].Content != projectEinoAssistantCompactionPrompt {
+		t.Fatalf("trimmed compaction input = %#v, want system/latest request/checkpoint prompt", last)
+	}
+}
+
+func TestProjectEinoAssistantCompactionContextOverflowHonorsCancellation(t *testing.T) {
+	base := &projectEinoAssistantCompactionOverflowModel{maxMessages: 0}
+	model := &projectEinoAssistantCompactionIsolatedModel{BaseChatModel: base}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := model.Generate(ctx, []*schema.Message{schema.UserMessage("request")})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled compaction error = %v, want context.Canceled", err)
+	}
+	if base.calls != 0 {
+		t.Fatalf("canceled compaction calls = %d, want zero", base.calls)
+	}
+}
+
+func TestProjectEinoAssistantCompactionModelExcludesMainTurnStatefulWrappers(t *testing.T) {
+	base := &projectEinoAssistantCompactionTestModel{response: schema.AssistantMessage("compacted", nil)}
+	runState := newProjectEinoAssistantRunState()
+	mainModel, compactionModel := projectEinoAssistantModels(base, projectAssistantRunRequest{}, runState)
+	if _, ok := mainModel.(*projectEinoAssistantProgressReminderModel); !ok {
+		t.Fatalf("main model = %T, want progress-reminder outer wrapper", mainModel)
+	}
+	if _, ok := compactionModel.(*projectEinoAssistantBoundedModel); !ok {
+		t.Fatalf("compaction model = %T, want bounded provider without main-turn wrappers", compactionModel)
+	}
+	response, err := compactionModel.Generate(context.Background(), []*schema.Message{schema.UserMessage("summarize")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response == nil || response.Content != "compacted" {
+		t.Fatalf("compaction response = %#v", response)
+	}
+	if runState.CurrentModelCallOrdinal() != 0 || runState.AcceptedProgressCount() != 0 {
+		t.Fatalf("compaction mutated main-turn progress state: ordinal=%d accepted=%d", runState.CurrentModelCallOrdinal(), runState.AcceptedProgressCount())
+	}
+}
+
+func TestProjectEinoAssistantContextOverflowAndCancellationAreNotTransientRetries(t *testing.T) {
+	for _, err := range []error{
+		&projectEinoAssistantContextWindowExceededError{},
+		context.Canceled,
+		adk.ErrStreamCanceled,
+	} {
+		if projectEinoAssistantShouldRetryModelError(err) {
+			t.Fatalf("error %v was classified as transient retry", err)
+		}
 	}
 }
 

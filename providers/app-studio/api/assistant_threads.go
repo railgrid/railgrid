@@ -37,6 +37,7 @@ const (
 	assistantThreadEventThreadCreated         = "thread.created"
 	assistantThreadEventThreadUpdated         = "thread.updated"
 	assistantThreadEventTurnStarted           = "turn.started"
+	assistantThreadEventTurnContinued         = "turn.continued"
 	assistantThreadEventTurnCompleted         = "turn.completed"
 	assistantThreadEventTurnFailed            = "turn.failed"
 	assistantThreadEventTurnInterrupted       = "turn.interrupted"
@@ -69,11 +70,30 @@ type assistantThreadTurnCreateRequest struct {
 	ClientUserMessageID string                 `json:"clientUserMessageID"`
 	CollaborationMode   store.AssistantRunMode `json:"collaborationMode,omitempty"`
 	Skills              []string               `json:"skills,omitempty"`
+	// continuationOfTurnID is server-owned. It is populated only by the
+	// interrupted-turn continuation endpoint so ordinary turns cannot forge a
+	// predecessor relationship.
+	continuationOfTurnID string
+}
+
+type assistantThreadTurnContinueRequest struct {
+	Content             string   `json:"content,omitempty"`
+	ClientUserMessageID string   `json:"clientUserMessageID"`
+	Skills              []string `json:"skills,omitempty"`
 }
 
 type assistantThreadTurnStartResponse struct {
-	Thread store.AssistantThread `json:"thread"`
-	Turn   store.AssistantTurn   `json:"turn"`
+	Thread               store.AssistantThread `json:"thread"`
+	Turn                 store.AssistantTurn   `json:"turn"`
+	ContinuationOfTurnID string                `json:"continuationOfTurnID,omitempty"`
+}
+
+// assistantThreadTurnDetailResponse is the authenticated, terminal-aware
+// read model used by evaluation and recovery clients. The full run audit stays
+// private; only the bounded effective settings snapshot is exposed.
+type assistantThreadTurnDetailResponse struct {
+	Turn              store.AssistantTurn                     `json:"turn"`
+	EffectiveSettings *projectAssistantAuditEffectiveSettings `json:"effectiveSettings,omitempty"`
 }
 
 type assistantThreadSteerRequest struct {
@@ -266,6 +286,70 @@ func (s *Server) startProjectAssistantThreadTurn(w http.ResponseWriter, r *http.
 	s.startProjectAssistantThreadExecution(w, r, c, id, project, thread, request)
 }
 
+// continueProjectAssistantThreadTurn starts a new turn on the same durable
+// thread after an interrupted turn. This is intentionally separate from the
+// approval/input endpoints: those resume an Eino checkpoint, while an
+// interruption has no in-flight checkpoint to resume.
+func (s *Server) continueProjectAssistantThreadTurn(w http.ResponseWriter, r *http.Request) {
+	c, id, project, thread, ok := s.requireOwnedAssistantThread(w, r)
+	if !ok {
+		return
+	}
+	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, project)
+	predecessorID := strings.TrimSpace(mux.Vars(r)["turn"])
+	predecessor, err := s.store.GetAssistantTurn(r.Context(), scope, thread.ID, predecessorID)
+	if err != nil || predecessor.ActorID != id.user {
+		writeStatus(w, http.StatusNotFound, "NotFound", "assistant turn not found")
+		return
+	}
+	predecessorRun, err := s.store.GetAssistantRun(r.Context(), scope, predecessor.ID)
+	if err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
+	}
+	if predecessor.Status != store.AssistantTurnStatusInterrupted ||
+		(predecessorRun.Status != store.AssistantRunStatusInterrupted && predecessorRun.Status != store.AssistantRunStatusAborted) {
+		writeStatus(w, http.StatusConflict, "Conflict", "assistant turn is not interrupted")
+		return
+	}
+	if active, activeErr := s.store.ActiveAssistantTurn(r.Context(), scope, thread.ID); activeErr == nil && active.ID != "" {
+		writeStatus(w, http.StatusConflict, "Conflict", "assistant thread has an active turn")
+		return
+	} else if activeErr != nil && !errors.Is(activeErr, store.ErrAssistantTurnNotFound) {
+		s.writeAssistantThreadError(w, activeErr)
+		return
+	}
+	var continueRequest assistantThreadTurnContinueRequest
+	if !decodeStrictJSON(w, r, &continueRequest) {
+		return
+	}
+	continueRequest.ClientUserMessageID = strings.TrimSpace(continueRequest.ClientUserMessageID)
+	if continueRequest.ClientUserMessageID == "" {
+		writeProjectError(w, newValidationError("clientUserMessageID is required"))
+		return
+	}
+	content := strings.TrimSpace(continueRequest.Content)
+	if content == "" {
+		content = projectAssistantInterruptedContinuationPrompt
+	}
+	skillIDs := append([]string(nil), continueRequest.Skills...)
+	if len(skillIDs) == 0 {
+		for _, receipt := range projectAssistantSkillReceiptsFromRunAudit(predecessorRun) {
+			if strings.TrimSpace(receipt.ID) != "" {
+				skillIDs = append(skillIDs, receipt.ID)
+			}
+		}
+	}
+	request := assistantThreadTurnCreateRequest{
+		Content:              content,
+		ClientUserMessageID:  continueRequest.ClientUserMessageID,
+		CollaborationMode:    predecessor.Mode,
+		Skills:               skillIDs,
+		continuationOfTurnID: predecessor.ID,
+	}
+	s.startProjectAssistantThreadExecution(w, r, c, id, project, thread, request)
+}
+
 // startProjectAssistantThreadExecution is the single durable start path shared
 // by ordinary turns and explicitly targeted review executions. Callers own
 // strict decoding; this method owns validation, persistence, worker startup,
@@ -292,7 +376,7 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		return
 	}
 	initialBootstrap := false
-	if request.CollaborationMode != store.AssistantRunModeReview {
+	if request.continuationOfTurnID == "" && request.CollaborationMode != store.AssistantRunModeReview {
 		initialBootstrap, err = s.consumeProjectInitialBootstrap(
 			r.Context(),
 			scope,
@@ -342,16 +426,22 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 			now := time.Now().UTC()
 			canonicalTurn = store.AssistantTurn{ID: created.ID, ThreadID: thread.ID, ActorID: id.user, ClientUserMessageID: request.ClientUserMessageID,
 				Mode: created.Mode, ApprovalMode: created.ApprovalMode, Status: store.AssistantTurnStatusInProgress, CreatedAt: now, UpdatedAt: now}
-			turnPayload, _ := json.Marshal(map[string]any{"turn": canonicalTurn})
+			turnStartedPayload := map[string]any{"turn": canonicalTurn}
+			turnPayload, _ := json.Marshal(turnStartedPayload)
 			userItem := assistantThreadItem{ID: created.UserMessageID, TurnID: created.ID, Type: assistantThreadEventUserMessage, Status: "completed", Content: request.Content, Data: projectAssistantThreadSkillData(selectedSkills), CreatedAt: now}
 			userPayload, _ := json.Marshal(map[string]any{"item": userItem})
 			assistantItem := assistantThreadAgentMessageItem(canonicalTurn, created, "in_progress", "", now, nil)
 			assistantPayload, _ := json.Marshal(map[string]any{"item": assistantItem})
-			createdTurn, createErr := s.store.CreateAssistantTurn(r.Context(), scope, canonicalTurn, []store.AssistantThreadEvent{
-				{Type: assistantThreadEventTurnStarted, Payload: turnPayload, CreatedAt: now},
-				{Type: assistantThreadEventItemCompleted, ItemID: userItem.ID, Payload: userPayload, CreatedAt: now},
-				{Type: assistantThreadEventItemStarted, ItemID: assistantItem.ID, Payload: assistantPayload, CreatedAt: now},
-			})
+			initialEvents := []store.AssistantThreadEvent{{Type: assistantThreadEventTurnStarted, Payload: turnPayload, CreatedAt: now}}
+			if request.continuationOfTurnID != "" {
+				continuationPayload, _ := json.Marshal(map[string]string{"continuationOfTurnID": request.continuationOfTurnID})
+				initialEvents = append(initialEvents, store.AssistantThreadEvent{Type: assistantThreadEventTurnContinued, Payload: continuationPayload, CreatedAt: now})
+			}
+			initialEvents = append(initialEvents,
+				store.AssistantThreadEvent{Type: assistantThreadEventItemCompleted, ItemID: userItem.ID, Payload: userPayload, CreatedAt: now},
+				store.AssistantThreadEvent{Type: assistantThreadEventItemStarted, ItemID: assistantItem.ID, Payload: assistantPayload, CreatedAt: now},
+			)
+			createdTurn, createErr := s.store.CreateAssistantTurn(r.Context(), scope, canonicalTurn, initialEvents)
 			if createErr != nil {
 				return createErr
 			}
@@ -393,7 +483,7 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		}
 	}
 	thread, _ = s.store.GetAssistantThread(r.Context(), scope, thread.ID)
-	writeJSON(w, http.StatusAccepted, assistantThreadTurnStartResponse{Thread: thread, Turn: canonicalTurn})
+	writeJSON(w, http.StatusAccepted, assistantThreadTurnStartResponse{Thread: thread, Turn: canonicalTurn, ContinuationOfTurnID: request.continuationOfTurnID})
 }
 
 // repairProjectAssistantThreadTurn reconstructs the canonical thread boundary
@@ -433,11 +523,16 @@ func (s *Server) repairProjectAssistantThreadTurn(ctx context.Context, scope sto
 	userPayload, _ := json.Marshal(map[string]any{"item": userItem})
 	assistantItem := assistantThreadAgentMessageItem(turn, run, "in_progress", assistant.Content, assistant.CreatedAt, assistant.Metadata)
 	assistantPayload, _ := json.Marshal(map[string]any{"item": assistantItem})
-	created, err := s.store.CreateAssistantTurn(ctx, scope, turn, []store.AssistantThreadEvent{
-		{Type: assistantThreadEventTurnStarted, Payload: turnPayload, CreatedAt: now},
-		{Type: assistantThreadEventItemCompleted, ItemID: userItem.ID, Payload: userPayload, CreatedAt: user.CreatedAt},
-		{Type: assistantThreadEventItemStarted, ItemID: assistantItem.ID, Payload: assistantPayload, CreatedAt: assistant.CreatedAt},
-	})
+	initialEvents := []store.AssistantThreadEvent{{Type: assistantThreadEventTurnStarted, Payload: turnPayload, CreatedAt: now}}
+	if request.continuationOfTurnID != "" {
+		continuationPayload, _ := json.Marshal(map[string]string{"continuationOfTurnID": request.continuationOfTurnID})
+		initialEvents = append(initialEvents, store.AssistantThreadEvent{Type: assistantThreadEventTurnContinued, Payload: continuationPayload, CreatedAt: now})
+	}
+	initialEvents = append(initialEvents,
+		store.AssistantThreadEvent{Type: assistantThreadEventItemCompleted, ItemID: userItem.ID, Payload: userPayload, CreatedAt: user.CreatedAt},
+		store.AssistantThreadEvent{Type: assistantThreadEventItemStarted, ItemID: assistantItem.ID, Payload: assistantPayload, CreatedAt: assistant.CreatedAt},
+	)
+	created, err := s.store.CreateAssistantTurn(ctx, scope, turn, initialEvents)
 	if err != nil {
 		return store.AssistantTurn{}, err
 	}
@@ -478,6 +573,58 @@ func (s *Server) activeProjectAssistantThreadTurn(w http.ResponseWriter, r *http
 		return
 	}
 	writeJSON(w, http.StatusOK, turn)
+}
+
+func (s *Server) getProjectAssistantThreadTurn(w http.ResponseWriter, r *http.Request) {
+	_, id, project, thread, ok := s.requireOwnedAssistantThread(w, r)
+	if !ok {
+		return
+	}
+	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, project)
+	turnID := strings.TrimSpace(mux.Vars(r)["turn"])
+	turn, err := s.store.GetAssistantTurn(r.Context(), scope, thread.ID, turnID)
+	if err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
+	}
+	run, err := s.store.GetAssistantRun(r.Context(), scope, turn.ID)
+	if err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
+	}
+	// A provider restart can terminalize the run before the mirror projects the
+	// canonical Turn. Reconcile first so this authenticated read never returns
+	// a stale in-progress turn for a terminal run.
+	if assistantRunTerminal(run.Status) && turn.Status == store.AssistantTurnStatusInProgress {
+		if err := s.reconcileProjectAssistantThreadTurn(r.Context(), scope, turn); err != nil {
+			s.writeAssistantThreadError(w, err)
+			return
+		}
+		turn, err = s.store.GetAssistantTurn(r.Context(), scope, thread.ID, turn.ID)
+		if err != nil {
+			s.writeAssistantThreadError(w, err)
+			return
+		}
+		run, err = s.store.GetAssistantRun(r.Context(), scope, turn.ID)
+		if err != nil {
+			s.writeAssistantThreadError(w, err)
+			return
+		}
+	}
+	response := assistantThreadTurnDetailResponse{Turn: turn}
+	if assistantRunTerminal(run.Status) && len(run.Audit) > 0 {
+		var audit projectAssistantRunAudit
+		if err := json.Unmarshal(run.Audit, &audit); err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", "assistant terminal audit is invalid")
+			return
+		}
+		projectAssistantAuditRefreshEffectiveSettings(&audit)
+		if audit.EffectiveSettings != nil {
+			settings := *audit.EffectiveSettings
+			response.EffectiveSettings = &settings
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) steerProjectAssistantThreadTurn(w http.ResponseWriter, r *http.Request) {
@@ -685,7 +832,7 @@ func (s *Server) reconcileProjectAssistantThreadTurn(ctx context.Context, scope 
 	release := s.acquireAssistantThreadProjectionLock(scope, turn.ThreadID, turn.ID)
 	defer release()
 
-	if err := s.reconcileOrphanedProjectAssistantRun(ctx, scope); err != nil {
+	if err := s.reconcileOrphanedProjectAssistantRun(ctx, scope, turn.ID); err != nil {
 		return err
 	}
 	run, err := s.store.GetAssistantRun(ctx, scope, turn.ID)

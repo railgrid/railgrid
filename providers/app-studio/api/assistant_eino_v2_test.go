@@ -507,6 +507,44 @@ func TestEinoV2CommitStateBindsVerifiedAndCommittedDigest(t *testing.T) {
 	}
 }
 
+func TestEinoV2CommitRepairsDirtyPathsFromMutationLedger(t *testing.T) {
+	ctx := context.Background()
+	workspaces := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "project-uid"}
+	writeTestWorkspaceFiles(t, ctx, workspaces, scope, []workspace.File{{Path: "src/App.tsx", Content: "app\n"}})
+	runState := newProjectEinoAssistantRunState()
+	runState.RecordSuccessfulMutationPath("src/App.tsx")
+	tool := projectEinoAssistantTool{
+		req:      projectAssistantRunRequest{Workspace: workspaces, WorkspaceScope: scope},
+		runState: runState,
+	}
+	args, err := tool.v2CommitArguments(ctx, map[string]any{"message": "Commit the project"})
+	if err != nil {
+		t.Fatalf("v2CommitArguments: %v", err)
+	}
+	if got := strings.Join(projectToolStringList(args["paths"]), ","); got != "src/App.tsx" {
+		t.Fatalf("repaired commit paths = %q, want src/App.tsx", got)
+	}
+	dirty, err := workspaces.UncommittedPaths(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(dirty, ","); got != "src/App.tsx" {
+		t.Fatalf("durable dirty paths = %q, want src/App.tsx", got)
+	}
+}
+
+func TestEinoV2SuccessfulCommitClearsMutationLedger(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	runState.RecordSuccessfulMutationPath("src/App.tsx")
+	runState.RecordSourceMutation()
+	runState.RecordSourceCommit("sha256:committed")
+	runState.ClearSuccessfulMutationPaths()
+	if got := runState.SuccessfulMutationPaths(); len(got) != 0 {
+		t.Fatalf("successful mutation paths after commit = %#v, want empty", got)
+	}
+}
+
 func TestProjectEinoAssistantFinalContentCarriesServerOwnedPreviewEvidenceScope(t *testing.T) {
 	runState := newProjectEinoAssistantRunState()
 	runState.RecordToolMessage(chatMessage{
@@ -1093,5 +1131,36 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 	}
 	if strings.Contains(read.Content, `const greeting = "hello again";`) {
 		t.Fatalf("workspace content after resume = %q, plan unexpectedly authorized patch", read.Content)
+	}
+
+	pending, err = h.messages.GetAssistantRun(ctx, h.scope, secondPermission.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(pending.Checkpoint, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = accumulator.ClaimPending(ctx, secondPermission.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.req.AssistantRun = &claimed
+	h.req.eventLedger = nil
+	_, err = engine.ResumeProjectAssistant(ctx, h.req, projectAssistantResumeRequest{
+		RequestID: secondPermission.RequestID,
+		Decision:  string(projectAssistantPermissionAllow),
+		EditedArguments: map[string]any{
+			"path": "src/Admin.tsx", "oldString": "old", "newString": "new",
+		},
+	}, checkpoint)
+	var freshPermission *projectAssistantPermissionRequiredError
+	if !errors.As(err, &freshPermission) {
+		t.Fatalf("edited-scope resume error = %v, want a fresh permission interrupt", err)
+	}
+	if freshPermission.ToolName != projectToolEditFile || freshPermission.RequestID == secondPermission.RequestID {
+		t.Fatalf("fresh permission = %#v, want a new edit_file approval", freshPermission)
+	}
+	if _, err := h.workspaces.ReadFile(ctx, h.req.WorkspaceScope, workspace.ReadOptions{Path: "src/Admin.tsx"}); err == nil {
+		t.Fatal("scope-changed edited arguments invoked the workspace mutation before fresh approval")
 	}
 }

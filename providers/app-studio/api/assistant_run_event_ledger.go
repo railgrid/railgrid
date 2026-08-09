@@ -863,6 +863,49 @@ func (l *projectAssistantRunEventLedger) ToolCallOutcome(ctx context.Context, ca
 	return *state.Outcome, true, nil
 }
 
+// RecoverDanglingToolCall resolves the missing tool-result message that Eino's
+// patchtoolcalls middleware found in restored history. The durable ledger is
+// authoritative: settled outcomes are replayed exactly, reads may be retried,
+// and any effect that may have crossed the dispatch boundary fails closed.
+func (l *projectAssistantRunEventLedger) RecoverDanglingToolCall(ctx context.Context, callID, toolName string) (string, error) {
+	if l == nil {
+		return "", errors.New("assistant run tool ledger is not configured for recovery")
+	}
+	callID = strings.TrimSpace(callID)
+	toolName = projectAssistantToolKey(toolName)
+	if callID == "" || toolName == "" {
+		return "", fmt.Errorf("%w: dangling tool call identity is incomplete", errProjectAssistantRunToolLedgerCorrupt)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := l.refreshLocked(ctx); err != nil {
+		return "", err
+	}
+	state := l.calls[callID]
+	if state == nil {
+		return "", fmt.Errorf("%w: dangling call %q has no durable ledger entry", errProjectAssistantRunToolLedgerCorrupt, callID)
+	}
+	if state.ToolName != toolName {
+		return "", fmt.Errorf("%w: call %q was recorded as %s", errProjectAssistantRunToolCallIDConflict, callID, state.ToolName)
+	}
+	if state.Outcome != nil {
+		if state.Outcome.Result != "" || !state.Outcome.Failed {
+			return state.Outcome.Result, nil
+		}
+		return "Tool call failed: " + state.Outcome.Error, nil
+	}
+	if !state.Dispatched {
+		return "Tool call was not durably admitted and was not dispatched. Submit a new call if it is still needed.", nil
+	}
+	if state.Effect {
+		return "", fmt.Errorf("%w: %s call %q may already have been dispatched", errProjectAssistantRunIncompleteEffect, state.ToolName, callID)
+	}
+	if !state.Read {
+		return "", fmt.Errorf("%w: %s call %q has no durable result", errProjectAssistantRunIncompleteNonRead, state.ToolName, callID)
+	}
+	return "The prior read result was not recorded. It is safe to issue a new read call if the information is still needed.", nil
+}
+
 func projectAssistantRunToolCallDigest(toolName string, args any) (json.RawMessage, string, error) {
 	toolName = projectAssistantToolKey(toolName)
 	if toolName == "" {

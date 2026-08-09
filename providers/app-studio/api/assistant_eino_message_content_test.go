@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
@@ -98,10 +99,20 @@ func TestProjectEinoAssistantRewrittenMutationCallKeepsContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The compaction must NOT leave any tool-call objects behind: keeping them
-	// with emptied arguments taught the model to emit mutation calls with no
-	// arguments (replace_file({}) → "requires path"). The outcome is retained
-	// as natural-language evidence instead.
+	// The compaction must emit one provenance-marked user evidence message and
+	// must not leave an assistant marker or tool-call objects behind. Keeping
+	// calls with emptied arguments taught the model to emit mutation calls with
+	// no arguments (replace_file({}) -> "requires path"); an assistant marker
+	// can also be mistaken for the terminal reply while work remains.
+	if len(rewritten) != 1 || rewritten[0].Role != schema.User || len(rewritten[0].ToolCalls) != 0 {
+		t.Fatalf("compacted mutation rewrite = %#v, want one user evidence message without tool calls", rewritten)
+	}
+	if !projectEinoAssistantSyntheticWorkspaceMutationEvidence(rewritten[0]) {
+		t.Fatalf("compacted mutation rewrite lost server provenance: %#v", rewritten[0])
+	}
+	if strings.Contains(rewritten[0].Content, "Applying workspace mutations") {
+		t.Fatalf("compacted mutation rewrite retained an assistant-style marker: %q", rewritten[0].Content)
+	}
 	sawEvidence := false
 	for _, message := range rewritten {
 		if len(message.ToolCalls) != 0 {
@@ -113,6 +124,10 @@ func TestProjectEinoAssistantRewrittenMutationCallKeepsContent(t *testing.T) {
 	}
 	if !sawEvidence {
 		t.Fatalf("compacted mutation outcome was not preserved as evidence: %#v", rewritten)
+	}
+	if !strings.Contains(rewritten[0].Content, "[compacted internal history]") ||
+		!strings.Contains(rewritten[0].Content, "Continue the original task") {
+		t.Fatalf("compacted mutation evidence lost continuation provenance: %#v", rewritten[0])
 	}
 }
 

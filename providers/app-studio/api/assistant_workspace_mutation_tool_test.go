@@ -52,7 +52,7 @@ func TestAssistantRegistryExposesStrictOrdinaryWorkspaceMutationTools(t *testing
 		t.Fatalf("replace_file contract missing expectedVersion: %#v", replace)
 	}
 	edit, _ := registry.Spec(projectToolEditFile)
-	for _, want := range []string{"oldString", "newString", "replaceAll", "during this turn", "expectedVersion", "stale or ambiguous"} {
+	for _, want := range []string{"oldString", "newString", "replaceAll", "current file", "expectedVersion", "stale or ambiguous"} {
 		if !strings.Contains(string(edit.Parameters)+edit.Description, want) {
 			t.Fatalf("edit_file contract missing %q", want)
 		}
@@ -83,17 +83,17 @@ func TestAssistantOrdinaryWorkspaceMutationToolsPerformCreateEditDeleteMove(t *t
 		t.Fatalf("initial create = %#v, %v", result, err)
 	}
 	state := newProjectEinoAssistantRunState()
-	if _, err := call(projectToolEditFile, map[string]any{"path": "src/App.tsx", "oldString": "old", "newString": "new"}, state, false); err == nil {
-		t.Fatal("edit accepted existing file without same-turn read")
+	if result, err := call(projectToolEditFile, map[string]any{"path": "src/App.tsx", "oldString": "old", "newString": "new"}, state, false); err != nil || result.Operation != projectToolEditFile || result.Diff == "" {
+		t.Fatalf("current-file edit = %#v, %v", result, err)
+	}
+	if result, err := call(projectToolEditFile, map[string]any{"path": "src/App.tsx", "oldString": "new", "newString": "newer"}, state, false); err != nil || result.Operation != projectToolEditFile || result.Diff == "" {
+		t.Fatalf("second current-file edit = %#v, %v", result, err)
 	}
 	current, err := files.ReadFile(ctx, scope, workspace.ReadOptions{Path: "src/App.tsx"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	state.RecordObservedReadFileVersion(current.Path, current.Version)
-	if result, err := call(projectToolEditFile, map[string]any{"path": "src/App.tsx", "oldString": "old", "newString": "new", "expectedVersion": current.Version}, state, false); err != nil || result.Operation != projectToolEditFile || result.Diff == "" {
-		t.Fatalf("edit = %#v, %v", result, err)
-	}
 	current, err = files.ReadFile(ctx, scope, workspace.ReadOptions{Path: "src/App.tsx"})
 	if err != nil {
 		t.Fatal(err)

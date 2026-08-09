@@ -81,6 +81,7 @@ import {
   restoreAssistantThreadFocus,
 } from './assistantThreadFocus'
 import AssistantPlanPopover from './AssistantPlanPopover.vue'
+import AssistantPlanDisclosure from './AssistantPlanDisclosure.vue'
 import SkillsWorkbench from './SkillsWorkbench.vue'
 import CodeExplorer from './CodeExplorer.vue'
 import ThreadsWorkbench from './ThreadsWorkbench.vue'
@@ -3290,6 +3291,54 @@ function updateActiveRunFromAssistantItem(item: ProjectAssistantThreadItem, runI
   messageStreaming.value = assistantRunRequiresLiveControls(next)
 }
 
+interface AssistantPlanEventVersion {
+  revision?: number
+  sequence?: number
+  eventSequence?: number
+}
+
+function finiteAssistantPlanVersion(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+function assistantPlanEventVersion(item: ProjectAssistantThreadItem, event: ProjectAssistantThreadEvent): AssistantPlanEventVersion {
+  return {
+    revision: finiteAssistantPlanVersion(item.revision) ?? finiteAssistantPlanVersion(item.data?.revision),
+    sequence: finiteAssistantPlanVersion(item.sequence) ?? finiteAssistantPlanVersion(event.sequence),
+    eventSequence: finiteAssistantPlanVersion(event.sequence),
+  }
+}
+
+function assistantPlanEventIsNewer(
+  metadata: Record<string, unknown>,
+  item: ProjectAssistantThreadItem,
+  event: ProjectAssistantThreadEvent,
+): boolean {
+  const incoming = assistantPlanEventVersion(item, event)
+  const current: AssistantPlanEventVersion = {
+    revision: finiteAssistantPlanVersion(metadata.assistantPlanRevision)
+      ?? (metadata.assistantPlan !== undefined ? finiteAssistantPlanVersion(metadata.assistantRevision) : undefined),
+    sequence: finiteAssistantPlanVersion(metadata.assistantPlanSequence),
+    eventSequence: finiteAssistantPlanVersion(metadata.assistantPlanEventSequence),
+  }
+  let compared = false
+  for (const [currentValue, incomingValue] of [
+    [current.revision, incoming.revision],
+    [current.sequence, incoming.sequence],
+    [current.eventSequence, incoming.eventSequence],
+  ] as Array<[number | undefined, number | undefined]>) {
+    if (currentValue === undefined || incomingValue === undefined) continue
+    compared = true
+    if (incomingValue < currentValue) return false
+    if (incomingValue > currentValue) return true
+  }
+  if (compared) return false
+  // A pre-versioned durable snapshot has no safe ordering basis. Accept the
+  // first versioned live event so subsequent reconnects are protected; reject
+  // unversioned replacements rather than allowing them to erase progress.
+  return metadata.assistantPlan === undefined || incoming.revision !== undefined || incoming.sequence !== undefined || incoming.eventSequence !== undefined
+}
+
 function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectName: string, runID: string) {
   const payload = event.payload ?? {}
   const rawItem = payload.item as ProjectAssistantThreadItem | undefined
@@ -3395,7 +3444,13 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
         else actions.push(rawItem.data)
         metadata.assistantActionFeed = actions
       } else if (rawItem.type === 'plan' && rawItem.data) {
-        metadata.assistantPlan = rawItem.data
+        if (assistantPlanEventIsNewer(metadata, rawItem, event)) {
+          const version = assistantPlanEventVersion(rawItem, event)
+          metadata.assistantPlan = rawItem.data
+          if (version.revision !== undefined) metadata.assistantPlanRevision = version.revision
+          if (version.sequence !== undefined) metadata.assistantPlanSequence = version.sequence
+          if (version.eventSequence !== undefined) metadata.assistantPlanEventSequence = version.eventSequence
+        }
       }
       next[assistantIndex] = toProjectMessageView({ ...assistant, metadata })
       messages.value = next
@@ -3520,6 +3575,10 @@ function assistantProgressClosed(message: ProjectMessageView): boolean {
 
 function assistantProgressHeaderVisible(message: ProjectMessageView): boolean {
   return Boolean(message.progress || (assistantMessageOwnsActiveRun(message) && !assistantProgressClosed(message)))
+}
+
+function assistantPlanDisclosureVisible(message: ProjectMessageView): boolean {
+  return Boolean(message.plan && activePlanMessage.value?.id !== message.id)
 }
 
 function assistantProgressExpanded(message: ProjectMessageView): boolean {
@@ -4458,6 +4517,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     </template>
                   </div>
                 </template>
+                <AssistantPlanDisclosure
+                  v-if="assistantPlanDisclosureVisible(message)"
+                  :message-id="message.id"
+                  :plan="message.plan!"
+                />
                 <AssistantActionLog
                   v-if="message.actionFeed?.length && !message.progress"
                   :message-id="message.id"

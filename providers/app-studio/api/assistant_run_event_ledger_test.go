@@ -23,6 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/schema"
+
 	"github.com/faroshq/provider-app-studio/store"
 )
 
@@ -320,6 +323,44 @@ func TestAssistantRunEventLedgerRetriesIncompleteReadButFailsClosedForEffect(t *
 	}
 	if fmt.Sprint(attempts) != "[1 2]" {
 		t.Fatalf("read attempts = %v, want [1 2]", attempts)
+	}
+}
+
+func TestAssistantRecoveryMiddlewareReplaysSettledOutcomeAndFailsClosedForDanglingEffect(t *testing.T) {
+	ctx := context.Background()
+	messageStore, scope := newAssistantRunEventLedgerTestStore(t, "run-recovery-patch")
+	ledger := newProjectAssistantRunEventLedger(messageStore, scope, "run-recovery-patch")
+	readSpec := projectAssistantToolSpec{Name: projectToolReadFile, Risk: projectAssistantToolRiskRead}
+	read, err := ledger.BeginToolCall(ctx, "call-read-settled", readSpec, map[string]any{"path": "README.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.FinishToolCall(ctx, read.Token, "durable contents", nil); err != nil {
+		t.Fatal(err)
+	}
+	middleware, err := projectEinoAssistantToolCallsMiddleware(ctx, newProjectAssistantRunEventLedger(messageStore, scope, "run-recovery-patch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rewritten, err := middleware.BeforeModelRewriteState(ctx, &adk.ChatModelAgentState{Messages: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{ID: "call-read-settled", Type: "function", Function: schema.FunctionCall{Name: projectToolReadFile, Arguments: `{"path":"README.md"}`}}}),
+	}}, &adk.ModelContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rewritten.Messages) != 2 || rewritten.Messages[1].Role != schema.Tool || rewritten.Messages[1].Content != "durable contents" {
+		t.Fatalf("patched settled messages = %#v", rewritten.Messages)
+	}
+
+	effectSpec := projectAssistantToolSpec{Name: projectToolEditFile, Risk: projectAssistantToolRiskWrite}
+	if _, err := ledger.BeginToolCall(ctx, "call-effect-dangling", effectSpec, map[string]any{"path": "src/App.tsx", "oldString": "old", "newString": "new"}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = middleware.BeforeModelRewriteState(ctx, &adk.ChatModelAgentState{Messages: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{ID: "call-effect-dangling", Type: "function", Function: schema.FunctionCall{Name: projectToolEditFile, Arguments: `{}`}}}),
+	}}, &adk.ModelContext{})
+	if !errors.Is(err, errProjectAssistantRunIncompleteEffect) {
+		t.Fatalf("dangling effect recovery error = %v, want incomplete-effect failure", err)
 	}
 }
 

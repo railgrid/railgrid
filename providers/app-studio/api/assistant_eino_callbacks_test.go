@@ -144,3 +144,54 @@ func TestProjectEinoAssistantModelCallbackDoesNotPublishPublicContentChunks(t *t
 		t.Fatalf("checkpoint messages = %#v, want streamed assistant reply recorded", state.Messages)
 	}
 }
+
+func TestProjectEinoAssistantModelCallbackCarriesLatestStreamUsageIntoAudit(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	run := &store.AssistantRun{ID: "run-stream-usage"}
+	auditRecorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, run, time.Now().UTC())
+	if err := auditRecorder.recordModelCall(context.Background(), 1, 0, 0, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	runState.NextModelCallOrdinal()
+	handler := newProjectEinoAssistantModelCallbackHandler(projectAssistantStreamCallbacks{}, runState, auditRecorder)
+	ctx := handler.OnStart(context.Background(), nil, &einomodel.CallbackInput{
+		Messages: []*schema.Message{schema.UserMessage("inspect the project")},
+	})
+	usage := &schema.TokenUsage{
+		PromptTokens:       100,
+		PromptTokenDetails: schema.PromptTokenDetails{CachedTokens: 20},
+		CompletionTokens:   10,
+		TotalTokens:        110,
+	}
+	index := 0
+	final := schema.AssistantMessage("I found it.", []schema.ToolCall{{
+		Index: &index,
+		ID:    "call-read",
+		Type:  "function",
+		Function: schema.FunctionCall{
+			Name:      projectToolReadFile,
+			Arguments: `{"file_path":"src/App.tsx"}`,
+		},
+	}})
+	final.ResponseMeta = &schema.ResponseMeta{Usage: usage}
+	stream := schema.StreamReaderFromArray([]callbacks.CallbackOutput{
+		&einomodel.CallbackOutput{Message: schema.AssistantMessage("I found ", nil)},
+		&einomodel.CallbackOutput{Message: final},
+	})
+	handler.OnEndWithStreamOutput(ctx, nil, stream)
+
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatal(err)
+	}
+	if audit.ModelCallStats == nil {
+		t.Fatal("model-call stats missing")
+	}
+	stats := audit.ModelCallStats
+	if stats.PromptTokens != 100 || stats.CachedPromptTokens != 20 || stats.CompletionTokens != 10 || stats.TotalTokens != 110 || stats.MissingUsageCalls != 0 {
+		t.Fatalf("stream usage rollup = %#v, want provider usage", stats)
+	}
+	if len(audit.ModelCalls) != 1 || audit.ModelCalls[0].PromptTokens != 100 || audit.ModelCalls[0].CachedPromptTokens != 20 || audit.ModelCalls[0].CompletionTokens != 10 || audit.ModelCalls[0].TotalTokens != 110 {
+		t.Fatalf("stream usage detail = %#v, want provider usage", audit.ModelCalls)
+	}
+}

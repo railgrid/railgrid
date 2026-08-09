@@ -17,6 +17,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -39,6 +40,36 @@ const (
 	projectAssistantConversationCheckpointV1  = 1
 	projectAssistantConversationSummaryPrefix = "Another language model started to solve this problem and produced a summary of its thinking process. You also have access to the state of the tools that were used by that language model. Use this to build on the work that has already been done and avoid duplicating work. Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:"
 )
+
+// projectAssistantInterruptedContinuationPrompt is the server-owned content
+// used by the Continue action when the user supplies no additional request.
+// It gives the model an explicit recovery instruction while the durable
+// interruption conversation item supplies the boundary and prior tool state.
+const projectAssistantInterruptedContinuationPrompt = "Continue the interrupted turn from its durable history. Inspect the current workspace before acting, preserve completed effects, and do not replay an in-flight effect solely because the prior turn was interrupted."
+
+// projectAssistantInterruptedBoundaryMessage is deliberately model-visible.
+// The run status alone is UI metadata; the next Chat Completions request must
+// receive the same kind of boundary Codex records in its rollout.
+const projectAssistantInterruptedBoundaryMessage = "<turn_aborted>\nThe previous assistant turn was interrupted on purpose. Any running workspace tools may have partially executed. Completed tool effects remain authoritative. Inspect the current workspace before continuing and do not replay an effect solely because the prior turn was interrupted.\n</turn_aborted>"
+
+func appendProjectAssistantInterruptedBoundary(ctx context.Context, messageStore store.Store, scope store.Scope, run store.AssistantRun) error {
+	err := appendProjectAssistantConversationMessage(
+		ctx,
+		messageStore,
+		scope,
+		run.ID,
+		"interruption-"+strings.TrimSpace(run.ID),
+		projectAssistantConversationInterruption,
+		chatMessage{Role: "system", Content: projectAssistantInterruptedBoundaryMessage},
+	)
+	// Older interrupted runs may already contain the pre-Codex marker under
+	// this deterministic item ID. Preserve that durable evidence rather than
+	// turning restart reconciliation into a persistence failure.
+	if errors.Is(err, store.ErrAssistantConversationItemConflict) {
+		return nil
+	}
+	return err
+}
 
 type projectAssistantConversationCompactionCheckpoint struct {
 	Version                         int           `json:"version"`

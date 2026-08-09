@@ -67,6 +67,31 @@ func TestFileStoreOrdinaryMutationsRejectStaleAndAmbiguousEdits(t *testing.T) {
 	}
 }
 
+func TestFileStoreEditFileCurrentReadsUnderMutationLock(t *testing.T) {
+	ctx := context.Background()
+	store := NewFileStore(t.TempDir())
+	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "uid-a"}
+	if _, err := store.WriteFile(ctx, scope, WriteOptions{Path: "src/app.js", Content: "one\ntwo\n"}); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := store.EditFileCurrent(ctx, scope, EditOptions{Path: "src/app.js", OldString: "one", NewString: "ONE"})
+	if err != nil || first.Changed != true {
+		t.Fatalf("first current edit = %#v, %v", first, err)
+	}
+	second, err := store.EditFileCurrent(ctx, scope, EditOptions{Path: "src/app.js", OldString: "two", NewString: "TWO"})
+	if err != nil || second.Changed != true {
+		t.Fatalf("second current edit = %#v, %v", second, err)
+	}
+	current, err := store.ReadFile(ctx, scope, ReadOptions{Path: "src/app.js"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Content != "ONE\nTWO\n" {
+		t.Fatalf("current edit content = %q, want both edits applied", current.Content)
+	}
+}
+
 func TestFileStoreReplaceFileAtomicallyRequiresCurrentVersion(t *testing.T) {
 	ctx := context.Background()
 	store := NewFileStore(t.TempDir())

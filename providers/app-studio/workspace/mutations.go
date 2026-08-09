@@ -221,9 +221,24 @@ func (s *FileStore) FileExists(ctx context.Context, scope Scope, rawPath string)
 	return true, nil
 }
 
-// EditFile replaces one exact source fragment. It reads and validates the
-// complete source under the mutation lock, then performs one atomic rename.
+// EditFile replaces one exact source fragment after validating the caller's
+// complete-read version. It reads and validates the complete source under the
+// mutation lock, then performs one atomic rename.
 func (s *FileStore) EditFile(ctx context.Context, scope Scope, opts EditOptions) (MutationResult, error) {
+	return s.editFile(ctx, scope, opts, true)
+}
+
+// EditFileCurrent replaces one exact source fragment against the current file.
+// The complete file read and exact-match check happen under the mutation lock,
+// so callers do not need to perform a separate read before every edit. This is
+// the safe, self-contained edit path used by agent-facing tools; callers still
+// get stale/ambiguous errors when their oldString no longer describes the
+// current file.
+func (s *FileStore) EditFileCurrent(ctx context.Context, scope Scope, opts EditOptions) (MutationResult, error) {
+	return s.editFile(ctx, scope, opts, false)
+}
+
+func (s *FileStore) editFile(ctx context.Context, scope Scope, opts EditOptions, requireVersion bool) (MutationResult, error) {
 	if s == nil {
 		return MutationResult{}, errors.New("project workspace store is not configured")
 	}
@@ -243,10 +258,14 @@ func (s *FileStore) EditFile(ctx context.Context, scope Scope, opts EditOptions)
 	if len([]byte(opts.OldString)) > MaxWriteBytes {
 		return MutationResult{}, newMutationError(MutationErrorInvalid, clean, "oldString is too large")
 	}
-	if err := validateExpectedVersion(clean, opts.ExpectedVersion); err != nil {
-		return MutationResult{}, err
+	if requireVersion {
+		if err := validateExpectedVersion(clean, opts.ExpectedVersion); err != nil {
+			return MutationResult{}, err
+		}
 	}
-
+	if !requireVersion {
+		opts.ExpectedVersion = ""
+	}
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
 	before, existed, err := s.readMutationTargetLimited(ctx, scope, clean, MaxWriteBytes)
@@ -260,8 +279,10 @@ func (s *FileStore) EditFile(ctx context.Context, scope Scope, opts EditOptions)
 	if !existed {
 		return MutationResult{}, newMutationError(MutationErrorTargetNotFound, clean, "source file does not exist")
 	}
-	if err := requireExpectedVersion(clean, before, opts.ExpectedVersion); err != nil {
-		return MutationResult{}, err
+	if requireVersion {
+		if err := requireExpectedVersion(clean, before, opts.ExpectedVersion); err != nil {
+			return MutationResult{}, err
+		}
 	}
 	if !validTextContent(string(before)) {
 		return MutationResult{}, newMutationError(MutationErrorInvalid, clean, "source file is not UTF-8 text")

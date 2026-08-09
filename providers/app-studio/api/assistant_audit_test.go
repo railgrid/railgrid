@@ -125,6 +125,30 @@ func TestProjectAssistantRunAuditIsBoundedAndSanitized(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantAuditUsageDedupeIsBoundedWithTruthfulRollup(t *testing.T) {
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{}, &store.AssistantRun{}, time.Now().UTC())
+	stats := recorder.ensureModelCallStatsLocked()
+	for ordinal := 1; ordinal <= 200; ordinal++ {
+		if ordinal%2 == 0 {
+			recorder.recordModelUsageLocked(stats, ordinal, nil, nil)
+			continue
+		}
+		recorder.recordModelUsageLocked(stats, ordinal, nil, &projectAssistantAuditTokenUsage{totalTokens: 1})
+	}
+	if retained := len(recorder.modelUsageByOrdinal) + len(recorder.missingUsageOrdinals); retained > projectAssistantAuditMaxUsageDedupe {
+		t.Fatalf("usage dedupe entries = %d, want <= %d", retained, projectAssistantAuditMaxUsageDedupe)
+	}
+	if stats.TotalTokens != 100 || stats.MissingUsageCalls != 100 {
+		t.Fatalf("usage rollup = %#v, want all observed token and missing-usage telemetry", stats)
+	}
+	// An evicted ordinal is below the compact dedupe floor. A replayed callback
+	// must not double count it after its detailed key has been removed.
+	recorder.recordModelUsageLocked(stats, 1, nil, &projectAssistantAuditTokenUsage{totalTokens: 1})
+	if stats.TotalTokens != 100 {
+		t.Fatalf("replayed evicted usage changed rollup to %d", stats.TotalTokens)
+	}
+}
+
 func TestProjectAssistantAuditToolContractDigestIsStableAndSchemaBound(t *testing.T) {
 	first := []*schema.ToolInfo{
 		{Name: "b", Extra: map[string]any{projectEinoToolParametersExtraKey: `{"type":"object"}`, "risk": "read", "parallelSafe": true}},
@@ -880,5 +904,122 @@ func TestProjectAssistantCompactionAuditUpdatesBoundedMetadataWithoutSummary(t *
 	}
 	if strings.Contains(string(run.Audit), "summary") {
 		t.Fatalf("compaction audit leaked summary-shaped content: %s", run.Audit)
+	}
+}
+
+func TestProjectAssistantRunAuditEffectiveSettingsCaptureTerminalSnapshot(t *testing.T) {
+	started := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	continuation := &projectAssistantCheckpointState{
+		AgentOptimizationMode:    " CoDeX_PoC ",
+		DynamicToolCatalogDigest: "sha256:dynamic-catalog",
+	}
+	run := &store.AssistantRun{ID: "run-effective-settings"}
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{
+		LLM: projectLLMSettings{
+			Provider: " openai-compatible ",
+			Model:    " gpt-effective ",
+		},
+		Continuation: continuation,
+	}, run, started)
+	tools := []*schema.ToolInfo{{
+		Name: projectToolReadFile,
+		Extra: map[string]any{
+			projectEinoToolParametersExtraKey: `{"type":"object","properties":{"path":{"type":"string"}}}`,
+			"risk":                            "read",
+		},
+	}}
+	if err := recorder.recordModelCall(context.Background(), 1, 0, 0, nil, tools, nil); err != nil {
+		t.Fatal(err)
+	}
+	recorder.finalizeAt(projectAssistantAuditOutcomeSucceeded, started.Add(time.Second))
+
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatalf("decode audit: %v", err)
+	}
+	settings := audit.EffectiveSettings
+	if settings == nil {
+		t.Fatalf("effective settings missing from terminal audit: %s", run.Audit)
+	}
+	if settings.Provider != "openai-compatible" || settings.Model != "gpt-effective" || settings.OptimizationMode != projectEinoAssistantOptimizationCodexPOC {
+		t.Fatalf("effective model settings = %#v", settings)
+	}
+	if settings.ToolContractDigest != projectAssistantAuditToolContractDigest(tools) {
+		t.Fatalf("tool contract digest = %q, want model-call contract", settings.ToolContractDigest)
+	}
+	if settings.DynamicToolCatalogDigest != continuation.DynamicToolCatalogDigest {
+		t.Fatalf("dynamic catalog digest = %q, want %q", settings.DynamicToolCatalogDigest, continuation.DynamicToolCatalogDigest)
+	}
+	if settings.InstructionDigest != projectAssistantAuditInstructionDigest() {
+		t.Fatalf("instruction digest = %q, want exact effective instruction digest", settings.InstructionDigest)
+	}
+	if strings.Contains(string(run.Audit), "experimentArm") {
+		t.Fatalf("audit contains unsupported experiment-arm concept: %s", run.Audit)
+	}
+}
+
+func TestProjectAssistantRunAuditEffectiveSettingsPresentForTerminalOutcomes(t *testing.T) {
+	for _, outcome := range []projectAssistantAuditOutcome{
+		projectAssistantAuditOutcomeSucceeded,
+		projectAssistantAuditOutcomeFailed,
+		projectAssistantAuditOutcomePreempted,
+		projectAssistantAuditOutcomeAborted,
+	} {
+		t.Run(string(outcome), func(t *testing.T) {
+			started := time.Date(2026, 8, 1, 13, 0, 0, 0, time.UTC)
+			run := &store.AssistantRun{ID: "run-terminal-" + string(outcome)}
+			recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{
+				LLM: projectLLMSettings{Provider: projectLLMProviderGoogle, Model: "gemini-terminal"},
+			}, run, started)
+			if outcome == projectAssistantAuditOutcomeFailed {
+				recorder.recordFailure(errors.New("backend details must not be persisted"))
+			}
+			recorder.finalizeAt(outcome, started.Add(time.Second))
+
+			var audit projectAssistantRunAudit
+			if err := json.Unmarshal(run.Audit, &audit); err != nil {
+				t.Fatalf("decode audit: %v", err)
+			}
+			if audit.Outcome != outcome || audit.EffectiveSettings == nil {
+				t.Fatalf("terminal audit = %#v", audit)
+			}
+			if audit.EffectiveSettings.Provider != projectLLMProviderGoogle || audit.EffectiveSettings.Model != "gemini-terminal" || audit.EffectiveSettings.InstructionDigest == "" {
+				t.Fatalf("terminal effective settings = %#v", audit.EffectiveSettings)
+			}
+			if strings.Contains(string(run.Audit), "backend details") {
+				t.Fatalf("terminal audit leaked failure details: %s", run.Audit)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantRunAuditEffectiveSettingsLegacyCheckpointKeepsEmptyMode(t *testing.T) {
+	t.Setenv(projectEinoAssistantOptimizationEnv, projectEinoAssistantOptimizationCodexPOC)
+	started := time.Date(2026, 8, 1, 14, 0, 0, 0, time.UTC)
+	run := &store.AssistantRun{
+		ID:    "run-legacy-settings",
+		Audit: json.RawMessage(`{"version":1,"provider":"legacy-provider","model":"legacy-model"}`),
+	}
+	// A legacy continuation has no persisted optimization mode. It must not
+	// silently inherit a newly enabled process mode during resume.
+	continuation := &projectAssistantCheckpointState{}
+	recorder := newProjectAssistantRunAuditRecorder(projectAssistantRunRequest{Continuation: continuation}, run, started)
+	recorder.finalizeAt(projectAssistantAuditOutcomeAborted, started.Add(time.Second))
+
+	var audit projectAssistantRunAudit
+	if err := json.Unmarshal(run.Audit, &audit); err != nil {
+		t.Fatalf("decode legacy audit: %v", err)
+	}
+	if audit.Version != projectAssistantAuditVersion || audit.EffectiveSettings == nil {
+		t.Fatalf("legacy terminal audit = %#v", audit)
+	}
+	if audit.EffectiveSettings.OptimizationMode != "" {
+		t.Fatalf("legacy empty optimization mode = %q, want empty", audit.EffectiveSettings.OptimizationMode)
+	}
+	if audit.EffectiveSettings.Provider != "legacy-provider" || audit.EffectiveSettings.Model != "legacy-model" || audit.EffectiveSettings.InstructionDigest == "" {
+		t.Fatalf("legacy effective settings = %#v", audit.EffectiveSettings)
+	}
+	if strings.Contains(string(run.Audit), "experimentArm") {
+		t.Fatalf("legacy audit contains unsupported experiment-arm concept: %s", run.Audit)
 	}
 }

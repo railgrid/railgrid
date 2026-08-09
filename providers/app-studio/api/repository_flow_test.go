@@ -502,35 +502,41 @@ func TestProjectAssistantWorkspaceInspectPromptUsesCanonicalReads(t *testing.T) 
 			t.Fatalf("prompt should not direct file inspection through provider-code tool %q:\n%s", unwanted, prompt)
 		}
 	}
-	if !strings.Contains(prompt, "## User-visible progress") ||
-		!strings.Contains(prompt, "report_progress is the only way to provide mid-turn commentary") ||
-		!strings.Contains(prompt, "normal assistant response is the terminal final answer") ||
-		!strings.Contains(prompt, "Before the first substantial action group, call report_progress once") ||
-		!strings.Contains(prompt, "approximately 60 seconds") ||
-		!strings.Contains(prompt, "completing a meaningful plan phase") ||
-		!strings.Contains(prompt, "new evidence changes the approach") ||
-		!strings.Contains(prompt, "you encounter a blocker") ||
-		!strings.Contains(prompt, "before and after lengthy verification") ||
-		!strings.Contains(prompt, "Skip progress for trivial reads") ||
-		!strings.Contains(prompt, "does not end or interrupt the turn") ||
-		!strings.Contains(prompt, "If report_progress is unavailable, continue without it") ||
-		!strings.Contains(prompt, "one or two concise sentences") ||
-		!strings.Contains(prompt, "use it as the sole authority for checklist state in non-trivial Default mode work") ||
-		!strings.Contains(prompt, "report_progress is only user-facing commentary; it never updates or replaces the checklist") ||
-		!strings.Contains(prompt, "Every model-authored checklist change must be a full-list write_todos update") ||
-		!strings.Contains(prompt, "Immediately after defining or receiving a plan, write the full list with evidence-grounded statuses") ||
-		!strings.Contains(prompt, "Before moving to another phase, write the full list again; mark a step completed only when current direct evidence supports it") ||
-		!strings.Contains(prompt, "For blocked or unfinished work, use pending (a non-complete status) and never invent a blocked status") ||
-		!strings.Contains(prompt, "After verification changes completion evidence, immediately write the full list again") ||
-		!strings.Contains(prompt, "Immediately before the terminal response, write the full list one final time") ||
-		!strings.Contains(prompt, "Runtime readiness, HTTP 200, and preview reachability are evidence only for those narrow conditions") ||
-		!strings.Contains(prompt, "cannot alone complete implementation or application-behavior steps") ||
-		!strings.Contains(prompt, "Do not infer broader completion from them or any other indirect status") ||
-		!strings.Contains(prompt, "Do not name tools in user-visible progress, expose hidden reasoning") ||
-		!strings.Contains(prompt, "raw arguments, raw results, logs, or secrets") ||
-		!strings.Contains(prompt, "do not repeat the plan, checklist, or status UI") ||
-		!strings.Contains(prompt, "Do not narrate each tool call") {
-		t.Fatalf("prompt missing milestone and per-tool narration guidance:\n%s", prompt)
+	for _, want := range []string{
+		"## User-visible progress",
+		"assistant preamble immediately before a substantial action group is user-visible inline commentary",
+		"normal assistant response remains the terminal final answer",
+		"Before the first substantial action group, give one concise preamble",
+		"approximately 60 seconds",
+		"completing a meaningful plan phase",
+		"new evidence changes the approach",
+		"you encounter a blocker",
+		"before and after lengthy verification",
+		"when there is no natural tool-adjacent preamble",
+		"Do not duplicate the same update in report_progress and inline commentary",
+		"Skip progress for trivial reads",
+		"does not end or interrupt the turn",
+		"If report_progress is unavailable, continue without it",
+		"one or two concise sentences",
+		"use it as the sole authority for checklist state in non-trivial Default mode work",
+		"report_progress is only user-facing commentary; it never updates or replaces the checklist",
+		"Every model-authored checklist change must be a full-list write_todos update",
+		"Immediately after defining or receiving a plan, write the full list with evidence-grounded statuses",
+		"Before moving to another phase, write the full list again; mark a step completed only when current direct evidence supports it",
+		"For blocked or unfinished work, use pending (a non-complete status) and never invent a blocked status",
+		"After verification changes completion evidence, immediately write the full list again",
+		"Immediately before the terminal response, write the full list one final time",
+		"Runtime readiness, HTTP 200, and preview reachability are evidence only for those narrow conditions",
+		"cannot alone complete implementation or application-behavior steps",
+		"Do not infer broader completion from them or any other indirect status",
+		"Do not name tools in user-visible progress, expose hidden reasoning",
+		"raw arguments, raw results, logs, or secrets",
+		"do not repeat the plan, checklist, or status UI",
+		"Keep tool-adjacent commentary outcome-oriented",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing milestone and per-tool narration guidance %q:\n%s", want, prompt)
+		}
 	}
 	if !strings.Contains(prompt, "Diagnose reported defects from current evidence before editing") {
 		t.Fatalf("prompt missing evidence-before-edit guidance:\n%s", prompt)
@@ -1458,8 +1464,8 @@ func TestResumeProjectAssistantRunAnswersFollowUpAndUpdatesMessage(t *testing.T)
 		t.Fatalf("resume response = %#v, want completed V2 plan update after follow-up", resp)
 	}
 	progress, ok := projectAssistantProgressSnapshotFromMetadata(resp.AssistantMessage.Metadata[projectAssistantMetadataProgress])
-	if ok && len(progress.Messages) != 0 {
-		t.Fatalf("resume progress = %#v, want no arbitrary tool-call narration", progress)
+	if ok && (len(progress.Messages) != 1 || progress.Messages[0] != "Thanks, I can build that.") {
+		t.Fatalf("resume progress = %#v, want one sanitized tool-adjacent commentary", progress)
 	}
 	updatedMsg, err := server.findProjectMessage(context.Background(), messageScope, assistantMessageID)
 	if err != nil {
@@ -1683,33 +1689,33 @@ func TestResumeProjectAssistantRunClearsStaleFollowUpInterruptWhenRunAlreadyClai
 	}
 }
 
-func TestGenerateProjectAssistantStreamSettlesRepeatedToolLoopAtGlobalCeiling(t *testing.T) {
+func TestGenerateProjectAssistantStreamStopsRepeatedToolLoopWithNoProgress(t *testing.T) {
 	closing := "I inspected src/App.tsx."
 	reply, requests, err := runRepeatedReadFileAssistantStream(t, closing)
-	if !projectEinoAssistantMaxIterationsExceeded(err) {
-		t.Fatalf("generateProjectAssistantStream error = %v after %d requests, want Eino max-iterations limit", err, len(requests))
+	if !projectEinoAssistantNoProgressExceeded(err) {
+		t.Fatalf("generateProjectAssistantStream error = %v after %d requests, want typed no-progress terminal error", err, len(requests))
 	}
 	if reply != "" {
 		t.Fatalf("reply = %q, want no manufactured assistant response", reply)
 	}
-	if got := projectAssistantToolBearingRequestCount(requests); got != projectEinoAssistantRepeatedActionLimit {
-		t.Fatalf("tool-bearing LLM request count = %d, want %d", got, projectEinoAssistantRepeatedActionLimit)
+	if got := projectAssistantToolBearingRequestCount(requests); got != projectEinoAssistantNoProgressModelCallLimit+1 {
+		t.Fatalf("tool-bearing LLM request count = %d, want one initial read plus %d stale turns", got, projectEinoAssistantNoProgressModelCallLimit)
 	}
-	if len(requests) != projectEinoAssistantRepeatedActionLimit {
-		t.Fatalf("LLM request count = %d, want the explicit test iteration ceiling", len(requests))
+	if len(requests) != projectEinoAssistantNoProgressModelCallLimit+1 {
+		t.Fatalf("LLM request count = %d, want the bounded no-progress window", len(requests))
 	}
 }
 
-func TestGenerateProjectAssistantStreamFallsBackWhenGlobalCeilingClosingAnswerIsEmpty(t *testing.T) {
+func TestGenerateProjectAssistantStreamStopsRepeatedToolLoopWhenClosingAnswerIsEmpty(t *testing.T) {
 	reply, requests, err := runRepeatedReadFileAssistantStream(t, "")
-	if !projectEinoAssistantMaxIterationsExceeded(err) {
-		t.Fatalf("generateProjectAssistantStream error = %v after %d requests, want Eino max-iterations limit", err, len(requests))
+	if !projectEinoAssistantNoProgressExceeded(err) {
+		t.Fatalf("generateProjectAssistantStream error = %v after %d requests, want typed no-progress terminal error", err, len(requests))
 	}
 	if reply != "" {
 		t.Fatalf("reply = %q, want no manufactured assistant response", reply)
 	}
-	if got := projectAssistantToolBearingRequestCount(requests); got != projectEinoAssistantRepeatedActionLimit {
-		t.Fatalf("tool-bearing LLM request count = %d, want %d", got, projectEinoAssistantRepeatedActionLimit)
+	if got := projectAssistantToolBearingRequestCount(requests); got != projectEinoAssistantNoProgressModelCallLimit+1 {
+		t.Fatalf("tool-bearing LLM request count = %d, want one initial read plus %d stale turns", got, projectEinoAssistantNoProgressModelCallLimit)
 	}
 }
 
@@ -2127,7 +2133,12 @@ func runProjectAssistantStreamWithModelAndPrompt(t *testing.T, model *repository
 			Content: fmt.Sprintf("export const value%d = %d\n", i, i),
 		})
 	}
-	writeTestWorkspaceFiles(t, context.Background(), workspaces, workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: "demo", ProjectUID: "test-project-uid"}, seedFiles)
+	writeTestWorkspaceFiles(t, context.Background(), workspaces, workspace.Scope{
+		OrgUUID:       scope.OrgUUID,
+		WorkspaceUUID: scope.WorkspaceUUID,
+		ProjectName:   scope.ProjectName,
+		ProjectUID:    "test-project-uid-demo",
+	}, seedFiles)
 	server := NewWithWorkspace(nil, messages, workspaces, hubBase, false)
 	setProjectAssistantModelForTest(server, model)
 	project := projectWithRepository("demo-repo", "demo", "github")

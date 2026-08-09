@@ -96,8 +96,17 @@ func TestProjectEinoAssistantWriteTodosDurablyProjectsInitialIncrementalAndTermi
 	h := newProjectAssistantV2ToolHarness(t, "run-write-todos-projection")
 	runState := newProjectEinoAssistantRunState()
 	var published []projectAssistantPlanSnapshot
+	var liveEvents []projectAssistantEvent
+	var callbackOrder []string
 	node := newProjectEinoAssistantWriteTodosNode(t, h, runState, projectAssistantStreamCallbacks{
-		OnPlan: func(plan projectAssistantPlanSnapshot) { published = append(published, plan) },
+		OnPlan: func(plan projectAssistantPlanSnapshot) {
+			published = append(published, plan)
+			callbackOrder = append(callbackOrder, "plan")
+		},
+		OnAssistantEvent: func(event projectAssistantEvent) {
+			liveEvents = append(liveEvents, event)
+			callbackOrder = append(callbackOrder, "event")
+		},
 	})
 	plans := []string{
 		`{"todos":[{"content":"Inspect current app","activeForm":"Inspecting current app","status":"in_progress"},{"content":"Implement the fix","activeForm":"Implementing the fix","status":"pending"},{"content":"Verify behavior","activeForm":"Verifying behavior","status":"pending"}]}`,
@@ -111,6 +120,21 @@ func TestProjectEinoAssistantWriteTodosDurablyProjectsInitialIncrementalAndTermi
 	}
 	if len(published) != 3 || len(published[0].Steps) != 3 || published[0].Steps[0].Status != "in_progress" || published[1].Steps[0].Status != "completed" || published[2].Steps[2].Status != "completed" {
 		t.Fatalf("published plans = %#v", published)
+	}
+	if len(liveEvents) != len(published) {
+		t.Fatalf("live plan events = %#v, want one per accepted snapshot", liveEvents)
+	}
+	for i, event := range liveEvents {
+		if event.Type != projectAssistantEventPlanUpdated || event.Plan == nil {
+			t.Fatalf("live plan event %d = %#v, want plan_updated with snapshot", i, event)
+		}
+		if !reflect.DeepEqual(*event.Plan, published[i]) {
+			t.Fatalf("live plan event %d snapshot = %#v, want OnPlan snapshot %#v", i, *event.Plan, published[i])
+		}
+	}
+	wantOrder := []string{"plan", "event", "plan", "event", "plan", "event"}
+	if !reflect.DeepEqual(callbackOrder, wantOrder) {
+		t.Fatalf("plan callback order = %#v, want OnPlan then plan_updated for each accepted snapshot", callbackOrder)
 	}
 	if got := projectEinoAssistantPlanProgressStatus(runState.PlanProgress()); got != "Building · 3 of 3 steps" {
 		t.Fatalf("terminal status = %q", got)
@@ -243,8 +267,10 @@ func TestProjectEinoAssistantWriteTodosSuppressesInvalidAndFailedProjection(t *t
 		},
 	}
 	failingReq := h.req
+	var failedLiveEvents []projectAssistantEvent
 	failingReq.StreamCallbacks = projectAssistantStreamCallbacks{
-		OnPlan: func(plan projectAssistantPlanSnapshot) { published = append(published, plan) },
+		OnPlan:           func(plan projectAssistantPlanSnapshot) { published = append(published, plan) },
+		OnAssistantEvent: func(event projectAssistantEvent) { failedLiveEvents = append(failedLiveEvents, event) },
 	}
 	failingTool.req = failingReq
 	failingNode := newProjectEinoAssistantToolNode(t, failingReq, runState, failingTool)
@@ -264,6 +290,9 @@ func TestProjectEinoAssistantWriteTodosSuppressesInvalidAndFailedProjection(t *t
 	}
 	if len(published) != 0 {
 		t.Fatalf("failed plan published = %#v", published)
+	}
+	if len(failedLiveEvents) != 0 {
+		t.Fatalf("failed plan emitted live events = %#v", failedLiveEvents)
 	}
 }
 
