@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // +genclient
@@ -128,6 +129,241 @@ type CatalogEntrySpec struct {
 	// permission claims, it is surfaced in the portal's Enable dialog.
 	// +optional
 	EdgeProxyAccess bool `json:"edgeProxyAccess,omitempty"`
+
+	// Actions declares the versioned capabilities that this provider exposes
+	// through its action transport. The list is keyed by the canonical action
+	// ID (for example, query_table/v1) so a provider cannot publish duplicate
+	// versions of the same action.
+	// +optional
+	// +listType=map
+	// +listMapKey=id
+	Actions []ProviderActionSpec `json:"actions,omitempty"`
+
+	// AssistantSkills declares read-only App Studio skill packages supplied by
+	// this provider. Packages are embedded in the CatalogEntry so the hub can
+	// authenticate and validate the artifact without contacting a provider
+	// runtime or learning any provider credentials. The App Studio projection
+	// publishes these packages as provider-qualified system skills.
+	// +optional
+	// +listType=map
+	// +listMapKey=packageName
+	// +kubebuilder:validation:MaxItems=64
+	AssistantSkills []ProviderAssistantSkillSpec `json:"assistantSkills,omitempty"`
+}
+
+// ProviderAssistantSkillSpec declares one immutable, provider-supplied App
+// Studio skill package. Skill is the complete raw SKILL.md document, including
+// its YAML frontmatter and markdown body. The digest is the sha256 digest of
+// the canonical package payload produced by ProviderAssistantSkillDigest.
+type ProviderAssistantSkillSpec struct {
+	// PackageName is the provider-local package identity. The hub qualifies it
+	// as providers/<provider>/<packageName> before exposing it to App Studio.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	PackageName string `json:"packageName"`
+
+	// Version is the provider-owned immutable package version.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=64
+	Version string `json:"version"`
+
+	// Digest is the deterministic package integrity digest.
+	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
+	Digest string `json:"digest"`
+
+	// Skill is the complete raw SKILL.md document. App Studio parses the
+	// document using its strict, authority-free frontmatter contract.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=32768
+	Skill string `json:"skill"`
+
+	// Resources are optional package-relative supporting files. They are
+	// included inline so no arbitrary provider URL or fetch capability is
+	// admitted into the skill source.
+	// +optional
+	// +listType=map
+	// +listMapKey=path
+	// +kubebuilder:validation:MaxItems=64
+	Resources []ProviderAssistantSkillResource `json:"resources,omitempty"`
+}
+
+// ProviderAssistantSkillResource is one bounded, package-relative supporting
+// file for a ProviderAssistantSkillSpec.
+type ProviderAssistantSkillResource struct {
+	// Path is relative to the provider skill package and must not contain
+	// traversal, absolute, or SKILL.md paths.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	Path string `json:"path"`
+
+	// Content is UTF-8 resource content.
+	// +kubebuilder:validation:MaxLength=65536
+	Content string `json:"content"`
+}
+
+// ProviderActionSpec declares one provider-owned, versioned action. The
+// declaration is intentionally complete: callers can inspect the input and
+// output schemas and policy metadata without learning the provider's backend
+// URL or credential model.
+type ProviderActionSpec struct {
+	// ID is the canonical action identifier: a lowercase action name followed
+	// by a slash and a numeric version (for example query_table/v1).
+	// +kubebuilder:validation:MinLength=3
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9_-]{0,62}/v[1-9][0-9]{0,7}$`
+	ID string `json:"id"`
+
+	// DisplayName is the human-readable label shown to action consumers.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	DisplayName string `json:"displayName"`
+
+	// Description explains the bounded operation and its expected use.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	Description string `json:"description,omitempty"`
+
+	// BoundResource identifies the provider-owned resource that supplies the
+	// action's server-resolved identity.
+	BoundResource ProviderActionBoundResource `json:"boundResource"`
+
+	// InputSchema is the JSON Schema for caller-supplied input. Provider
+	// credentials and backend details must not appear in this schema.
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:XPreserveUnknownFields
+	InputSchema *runtime.RawExtension `json:"inputSchema"`
+
+	// OutputSchema is the JSON Schema for the bounded action result.
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:XPreserveUnknownFields
+	OutputSchema *runtime.RawExtension `json:"outputSchema"`
+
+	// SchemaDigest is the digest of the canonical input/output schema envelope.
+	// It must be sha256:<64 lowercase hex digits> and match the schemas declared
+	// above.
+	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
+	SchemaDigest string `json:"schemaDigest"`
+
+	// ExecutionMode selects whether the action completes in the request or is
+	// represented by an asynchronous result handle.
+	ExecutionMode ProviderActionExecutionMode `json:"executionMode"`
+
+	// ReadOnly declares that the action does not mutate the bound resource.
+	ReadOnly bool `json:"readOnly"`
+
+	// Risk is the provider-declared impact classification for consent and UI
+	// policy decisions.
+	Risk ProviderActionRisk `json:"risk"`
+
+	// Idempotency describes retry behavior for this action.
+	Idempotency ProviderActionIdempotency `json:"idempotency"`
+
+	// Limits bounds execution and result materialization.
+	Limits ProviderActionLimits `json:"limits"`
+
+	// Consent describes whether a caller must explicitly approve invocation.
+	Consent ProviderActionConsent `json:"consent"`
+
+	// Deprecation carries optional lifecycle metadata for an action that should
+	// no longer be selected for new integrations.
+	// +optional
+	Deprecation *ProviderActionDeprecation `json:"deprecation,omitempty"`
+}
+
+// ProviderActionBoundResource identifies the API resource to which an action
+// is bound.
+type ProviderActionBoundResource struct {
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	APIVersion string `json:"apiVersion"`
+
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Kind string `json:"kind"`
+
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	Resource string `json:"resource"`
+}
+
+// ProviderActionExecutionMode describes the action's completion model.
+// +kubebuilder:validation:Enum=sync;async
+type ProviderActionExecutionMode string
+
+const (
+	ProviderActionExecutionSync  ProviderActionExecutionMode = "sync"
+	ProviderActionExecutionAsync ProviderActionExecutionMode = "async"
+)
+
+// ProviderActionRisk is the provider's impact classification.
+// +kubebuilder:validation:Enum=low;medium;high
+type ProviderActionRisk string
+
+const (
+	ProviderActionRiskLow    ProviderActionRisk = "low"
+	ProviderActionRiskMedium ProviderActionRisk = "medium"
+	ProviderActionRiskHigh   ProviderActionRisk = "high"
+)
+
+// ProviderActionIdempotency describes whether a retry can repeat an effect.
+// +kubebuilder:validation:Enum=inherent;keyed;none
+type ProviderActionIdempotency string
+
+const (
+	ProviderActionIdempotencyInherent ProviderActionIdempotency = "inherent"
+	ProviderActionIdempotencyKeyed    ProviderActionIdempotency = "keyed"
+	ProviderActionIdempotencyNone     ProviderActionIdempotency = "none"
+)
+
+// ProviderActionLimits bounds the resources an invocation may consume.
+type ProviderActionLimits struct {
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3600
+	TimeoutSeconds int64 `json:"timeoutSeconds"`
+
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1048576
+	MaxInputBytes int64 `json:"maxInputBytes"`
+
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=67108864
+	MaxOutputBytes int64 `json:"maxOutputBytes"`
+
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10000
+	MaxResultItems int64 `json:"maxResultItems"`
+}
+
+// ProviderActionConsent describes an explicit caller approval requirement.
+type ProviderActionConsent struct {
+	Required bool `json:"required"`
+
+	// Prompt is shown when Required is true.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	Prompt string `json:"prompt,omitempty"`
+
+	// Scope identifies the consent boundary, such as tenant or resource.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	Scope string `json:"scope,omitempty"`
+}
+
+// ProviderActionDeprecation carries lifecycle metadata for a deprecated
+// action. Sunset, when set, is an RFC3339 timestamp.
+type ProviderActionDeprecation struct {
+	Deprecated bool `json:"deprecated"`
+
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	Message string `json:"message,omitempty"`
+
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	ReplacementID string `json:"replacementID,omitempty"`
+
+	// +optional
+	Sunset *metav1.Time `json:"sunset,omitempty"`
 }
 
 // ProviderDependency references another provider that must be enabled first.

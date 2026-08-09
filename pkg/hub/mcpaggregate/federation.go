@@ -72,6 +72,18 @@ type ProviderEnumerator func(ctx context.Context) []ProviderTarget
 // recovers. A var (not a const) only so tests can lower it.
 var providerDiscoveryTimeout = 8 * time.Second
 
+const (
+	// providerMCPDiscoveryTimeout bounds an individual provider MCP request
+	// used for discovery. registerProviderTools also applies the shorter
+	// providerDiscoveryTimeout per-provider deadline around discovery, while
+	// this bound protects direct callers such as FederatedInstructions.
+	providerMCPDiscoveryTimeout = 15 * time.Second
+	// providerMCPCallTimeout allows bounded long-running provider actions (for
+	// example, a warehouse-backed query) without allowing one call to hang the
+	// aggregate indefinitely. It remains below the App Studio request budget.
+	providerMCPCallTimeout = 90 * time.Second
+)
+
 // FederatedProvider is the introspection view of one federation target: a Ready
 // provider, whether its MCP endpoint answered, and the tools it advertised. It
 // is what the portal renders so a user can see what the aggregate is federating
@@ -208,7 +220,7 @@ func FederatedInstructions(ctx context.Context, targets []ProviderTarget, bearer
 // `initialize` response, or "" if it has none or the call fails.
 func (c *providerMCPClient) fetchInstructions(ctx context.Context, mcpURL string) string {
 	params := json.RawMessage(`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"kedge-aggregate","version":"v1"}}`)
-	body, err := c.rpc(ctx, mcpURL, "initialize", params)
+	body, err := c.rpc(ctx, mcpURL, "initialize", params, c.discoveryTimeout)
 	if err != nil {
 		return ""
 	}
@@ -339,18 +351,36 @@ func registerOneProxyTool(srv *mcp.Server, cli *providerMCPClient, p ProviderTar
 // for tools/list + tools/call — federation only needs request/response, not
 // the SDK client's session/sampling lifecycle machinery.
 type providerMCPClient struct {
-	http        *http.Client
-	bearerToken string
-	tenantPath  string // forwarded as X-Kedge-Tenant
-	clusterID   string // forwarded as X-Kedge-Cluster
+	http             *http.Client
+	bearerToken      string
+	tenantPath       string // forwarded as X-Kedge-Tenant
+	clusterID        string // forwarded as X-Kedge-Cluster
+	discoveryTimeout time.Duration
+	callTimeout      time.Duration
 }
 
 func newProviderMCPClient(bearerToken, tenantPath, clusterID string) *providerMCPClient {
+	return newProviderMCPClientWithTimeouts(
+		bearerToken,
+		tenantPath,
+		clusterID,
+		providerMCPDiscoveryTimeout,
+		providerMCPCallTimeout,
+	)
+}
+
+// newProviderMCPClientWithTimeouts constructs a federation client with
+// operation-specific bounds. Keeping the durations on the client makes the
+// timeout policy explicit and lets tests use short deterministic deadlines
+// without changing production defaults or global state.
+func newProviderMCPClientWithTimeouts(bearerToken, tenantPath, clusterID string, discoveryTimeout, callTimeout time.Duration) *providerMCPClient {
 	return &providerMCPClient{
-		http:        &http.Client{Timeout: 15 * time.Second},
-		bearerToken: bearerToken,
-		tenantPath:  tenantPath,
-		clusterID:   clusterID,
+		http:             &http.Client{},
+		bearerToken:      bearerToken,
+		tenantPath:       tenantPath,
+		clusterID:        clusterID,
+		discoveryTimeout: discoveryTimeout,
+		callTimeout:      callTimeout,
 	}
 }
 
@@ -365,7 +395,7 @@ type discoveredTool struct {
 }
 
 func (c *providerMCPClient) listTools(ctx context.Context, mcpURL string) ([]discoveredTool, error) {
-	body, err := c.rpc(ctx, mcpURL, "tools/list", json.RawMessage(`{}`))
+	body, err := c.rpc(ctx, mcpURL, "tools/list", json.RawMessage(`{}`), c.discoveryTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -386,7 +416,7 @@ func (c *providerMCPClient) callTool(ctx context.Context, mcpURL, name string, a
 	if err != nil {
 		return nil, fmt.Errorf("encode tools/call params: %w", err)
 	}
-	body, err := c.rpc(ctx, mcpURL, "tools/call", paramsJSON)
+	body, err := c.rpc(ctx, mcpURL, "tools/call", paramsJSON, c.callTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -399,7 +429,12 @@ func (c *providerMCPClient) callTool(ctx context.Context, mcpURL, name string, a
 
 // rpc does one JSON-RPC POST and returns the `result` field. Handles both
 // application/json and text/event-stream (SSE `data: {json}`) responses.
-func (c *providerMCPClient) rpc(ctx context.Context, mcpURL, method string, paramsJSON json.RawMessage) (json.RawMessage, error) {
+func (c *providerMCPClient) rpc(ctx context.Context, mcpURL, method string, paramsJSON json.RawMessage, timeout time.Duration) (json.RawMessage, error) {
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	reqBody, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,

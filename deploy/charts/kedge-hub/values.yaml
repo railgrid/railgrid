@@ -80,7 +80,8 @@ hub:
   tls:
     # Provide an existing Secret with tls.crt and tls.key
     existingSecret: ""
-    # Auto-generate self-signed cert (dev/local only)
+    # Auto-generate a CA-signed self-signed cert (dev/local only). The
+    # generated Secret also contains the CA as ca.crt.
     selfSigned:
       enabled: true
       dnsNames: []

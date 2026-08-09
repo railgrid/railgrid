@@ -99,10 +99,11 @@ func (f TenantResolverFunc) Resolve(r *http.Request) (string, string, error) {
 // setting those headers directly.
 func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 	p := &ProviderProxy{
-		reg:        reg,
-		log:        log.WithName("backend-proxy"),
-		pathPrefix: apiurl.PathPrefixProvidersProxy,
-		pick:       func(p Provider) *url.URL { return p.BackendURL },
+		reg:                  reg,
+		log:                  log.WithName("backend-proxy"),
+		pathPrefix:           apiurl.PathPrefixProvidersProxy,
+		pick:                 func(p Provider) *url.URL { return p.BackendURL },
+		denyHubOnlyEndpoints: true,
 	}
 	// setHeaders runs after the Director's URL rewrite. Always strip
 	// inbound X-Kedge-* identity headers (defense in depth — a client
@@ -217,6 +218,16 @@ type ProviderProxy struct {
 	// per-cluster schema lookup only matches a cluster ID. See
 	// SetClusterResolver.
 	clusterResolver func(ctx context.Context, tenantPath string) (string, error)
+
+	// denyHubOnlyEndpoints reserves the hub-only path prefixes on a
+	// provider's backend origin. Provider action routes (/actions/*) are a
+	// public data-plane surface and ride this proxy like any other verb —
+	// authorization is delegated to the provider's caller-scoped SSAR gates.
+	// The attestation endpoint (/workload-identities/*), by contrast, is a
+	// hub→provider internal call: it must never be reachable with a caller's
+	// bearer through /services/providers/{name}, where it would act as a
+	// TokenReview oracle against the provider's runtime cluster.
+	denyHubOnlyEndpoints bool
 }
 
 // SetFallback installs the portal SPA handler invoked for non-asset paths
@@ -237,6 +248,11 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			p.fallback.ServeHTTP(w, r)
 			return
 		}
+		http.NotFound(w, r)
+		return
+	}
+
+	if p.denyHubOnlyEndpoints && isHubOnlyProviderPath(rest) {
 		http.NotFound(w, r)
 		return
 	}
@@ -308,6 +324,21 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	rp.ServeHTTP(w, r)
+}
+
+// hubOnlyProviderPrefixes are backend paths only the hub itself may dial.
+// Matching is case-insensitive on a cleaned path so segment tricks
+// (/x/../workload-identities, /Workload-Identities) cannot slip through.
+var hubOnlyProviderPrefixes = []string{"/workload-identities"}
+
+func isHubOnlyProviderPath(rest string) bool {
+	clean := strings.ToLower(path.Clean("/" + strings.TrimPrefix(rest, "/")))
+	for _, prefix := range hubOnlyProviderPrefixes {
+		if clean == prefix || strings.HasPrefix(clean, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // localAssetCacheControl is what we serve on embedded provider assets.

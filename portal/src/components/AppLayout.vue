@@ -10,7 +10,7 @@ import UserProfileModal from '@/components/UserProfileModal.vue'
 import TenantContextChip from '@/components/TenantContextChip.vue'
 import ThemeSwitch from '@/components/ThemeSwitch.vue'
 import FirstWorkspaceWizard from '@/components/FirstWorkspaceWizard.vue'
-import { Hexagon, LayoutDashboard, LogOut, Zap, GripHorizontal, GripVertical, Pin, Terminal, Puzzle, Dot, Settings, ShieldAlert, Plug } from 'lucide-vue-next'
+import { Hexagon, LayoutDashboard, LogOut, Zap, GripHorizontal, GripVertical, Pin, Terminal, Puzzle, Dot, Settings, ShieldAlert, Plug, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
 import { useProvidersStore } from '@/stores/providers'
 import { useAdminStore } from '@/stores/admin'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -182,6 +182,44 @@ function handleLogout() {
 const showCliModal = ref(false)
 const showProfileModal = ref(false)
 
+// --- Collapsible sidebar rail ---
+// The vertical dock defaults to a 56px icon rail so the canvas isn't taxed by
+// a permanent 192px label column; labels expand on click and the choice
+// persists per browser. Collapsed rows are icon-only with a native title
+// tooltip (design-book §6 "Sidebar rail").
+const SIDEBAR_EXPANDED_KEY = 'kedge-sidebar-expanded'
+const sidebarExpanded = ref(localStorage.getItem(SIDEBAR_EXPANDED_KEY) === '1')
+function toggleSidebar() {
+  sidebarExpanded.value = !sidebarExpanded.value
+  localStorage.setItem(SIDEBAR_EXPANDED_KEY, sidebarExpanded.value ? '1' : '0')
+}
+
+// --- Collapsible nav groups (expanded sidebar only) ---
+// Category groups and provider sub-nav toggle on click and persist per
+// browser. A group holding the active route is always forced open so
+// navigation state is never hidden from the user; the stored preference
+// takes effect again once they navigate elsewhere.
+const NAV_GROUPS_KEY = 'kedge-nav-collapsed-groups'
+function loadCollapsedGroups(): Record<string, boolean> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(NAV_GROUPS_KEY) || '{}')
+    if (parsed && typeof parsed === 'object') return parsed as Record<string, boolean>
+  } catch { /* ignore */ }
+  return {}
+}
+const collapsedGroups = ref<Record<string, boolean>>(loadCollapsedGroups())
+function toggleNavGroup(key: string) {
+  collapsedGroups.value = { ...collapsedGroups.value, [key]: !collapsedGroups.value[key] }
+  localStorage.setItem(NAV_GROUPS_KEY, JSON.stringify(collapsedGroups.value))
+}
+function navGroupHasActive(items: Array<{ to: string; children?: Array<{ to: string }> }>): boolean {
+  return items.some((i) => isActive(i.to) || (i.children ?? []).some((c) => isActive(c.to)))
+}
+function isNavGroupOpen(key: string, items: Array<{ to: string; children?: Array<{ to: string }> }>): boolean {
+  if (navGroupHasActive(items)) return true
+  return !collapsedGroups.value[key]
+}
+
 // --- Draggable dock with edge-snap (all 4 edges) ---
 type DockMode = 'float' | 'left' | 'right' | 'top' | 'bottom'
 const DOCK_STORAGE_KEY = 'kedge-dock-state'
@@ -324,8 +362,9 @@ const layoutClass = computed(() => {
 // CSS-variable insets so fixed-position overlays (like the terminal dock) can
 // avoid sliding under the side/bottom nav docks.
 const layoutInsetsStyle = computed<Record<string, string>>(() => {
-  const left = isVerticalDock.value && dockState.value.mode === 'left' ? '12rem' : '0px'
-  const right = isVerticalDock.value && dockState.value.mode === 'right' ? '12rem' : '0px'
+  const railWidth = sidebarExpanded.value ? '12rem' : '3.5rem'
+  const left = isVerticalDock.value && dockState.value.mode === 'left' ? railWidth : '0px'
+  const right = isVerticalDock.value && dockState.value.mode === 'right' ? railWidth : '0px'
   const bottom = isHorizontalDock.value && dockState.value.mode === 'bottom' ? '44px' : '0px'
   return {
     '--app-inset-left': left,
@@ -367,11 +406,12 @@ watchEffect(() => {
     <aside
       v-if="isVerticalDock"
       ref="dockedRef"
-      class="relative z-50 flex h-full w-48 flex-shrink-0 flex-col overflow-hidden border-border-default bg-surface-raised py-3 px-2"
-      :class="dockState.mode === 'left' ? 'order-first border-r' : 'order-last border-l'"
+      class="relative z-50 flex h-full flex-shrink-0 flex-col overflow-hidden border-border-default bg-surface-raised py-3 px-2 transition-[width] duration-200"
+      :class="[dockState.mode === 'left' ? 'order-first border-r' : 'order-last border-l', sidebarExpanded ? 'w-48' : 'w-14']"
     >
-      <!-- Drag handle + Logo -->
-      <div class="flex items-center gap-2 px-2 mb-1">
+      <!-- Drag handle + Logo. Collapsed rail stacks the same pieces
+           vertically; the wordmark and Live chip only exist expanded. -->
+      <div class="mb-1 flex items-center gap-2 px-2" :class="sidebarExpanded ? '' : 'flex-col gap-1.5 px-0'">
         <div
           class="flex h-6 w-6 cursor-grab items-center justify-center rounded-lg text-text-muted/30 transition-colors hover:text-text-muted"
           @mousedown="onDragStart"
@@ -379,23 +419,36 @@ watchEffect(() => {
           <GripVertical class="h-3 w-3" :stroke-width="2" />
         </div>
         <div class="flex h-7 w-7 items-center justify-center rounded-lg border border-border-default bg-surface-overlay">
-          <Hexagon class="h-3.5 w-3.5 text-accent" :stroke-width="2.5" />
+          <Hexagon class="h-3.5 w-3.5 text-accent" :stroke-width="2" />
         </div>
-        <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">KEDGE</span>
-        <div class="flex items-center gap-0.5 rounded-sm border border-success/20 bg-success-subtle px-1.5 py-px">
-          <Zap class="h-2 w-2 text-success" :stroke-width="2.5" fill="currentColor" />
-          <span class="text-[7px] font-semibold uppercase tracking-widest text-success">Live</span>
-        </div>
+        <template v-if="sidebarExpanded">
+          <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">KEDGE</span>
+          <div class="flex items-center gap-0.5 rounded-sm border border-success/20 bg-success-subtle px-1.5 py-px">
+            <Zap class="h-2 w-2 text-success" :stroke-width="2.5" fill="currentColor" />
+            <span class="text-[7px] font-semibold uppercase tracking-widest text-success">Live</span>
+          </div>
+        </template>
+        <button
+          class="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-overlay/50 hover:text-text-secondary"
+          :class="sidebarExpanded ? 'ml-auto' : ''"
+          :title="sidebarExpanded ? 'Collapse sidebar' : 'Expand sidebar'"
+          @click="toggleSidebar"
+        >
+          <component :is="sidebarExpanded ? PanelLeftClose : PanelLeftOpen" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </button>
       </div>
 
       <div class="mx-2 my-2 h-px bg-border-default/50" />
 
       <!-- Active org/workspace context. Compact selector + link to the
            full /tenant settings page. Sits above the static nav so the
-           "where am I" cue is the first thing users see. -->
-      <TenantContextChip variant="sidebar" />
+           "where am I" cue is the first thing users see. Needs the label
+           column — hidden on the collapsed rail. -->
+      <template v-if="sidebarExpanded">
+        <TenantContextChip variant="sidebar" />
 
-      <div class="mx-2 my-2 h-px bg-border-default/50" />
+        <div class="mx-2 my-2 h-px bg-border-default/50" />
+      </template>
 
       <!-- Scrollable nav region. With many providers this is the only
            part of the dock that grows, so it scrolls internally instead
@@ -409,10 +462,11 @@ watchEffect(() => {
         :key="item.to"
         :to="item.to"
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
-        :class="isActive(item.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+        :class="[isActive(item.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
+        :title="sidebarExpanded ? undefined : item.label"
       >
         <component :is="item.icon" class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
-        <span>{{ item.label }}</span>
+        <span v-if="sidebarExpanded">{{ item.label }}</span>
       </router-link>
 
       <!-- Provider categories render as non-clickable section dividers:
@@ -421,31 +475,64 @@ watchEffect(() => {
            provider (e.g. Workloads under Kubernetes) get one more level
            of indent, with a leading dot glyph for visual hierarchy. -->
       <template v-for="group in providersStore.categorizedNavItems.groups" :key="'cat-' + group.name">
-        <div class="mt-3 mb-1 flex items-center gap-2 px-3">
+        <!-- Category header doubles as the group toggle when expanded. The
+             chevron rotates closed; a group holding the active route stays
+             forced open (isNavGroupOpen). -->
+        <button
+          v-if="sidebarExpanded"
+          class="mt-3 mb-1 flex w-full items-center gap-2 px-3 text-left"
+          :title="isNavGroupOpen('cat:' + group.name, group.items) ? 'Collapse ' + group.name : 'Expand ' + group.name"
+          @click="toggleNavGroup('cat:' + group.name)"
+        >
           <component :is="categoryIcon(group.icon)" class="h-3 w-3 flex-shrink-0 text-text-muted/70" :stroke-width="2" />
           <span class="text-[9px] font-semibold uppercase tracking-wider text-text-muted/70">{{ group.name }}</span>
           <div class="h-px flex-1 bg-border-default/40" />
-        </div>
-        <template v-for="item in group.items" :key="item.to">
-          <router-link
-            :to="item.to"
-            class="flex items-center gap-2.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
-            :class="isActive(item.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
-          >
-            <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 flex-shrink-0 object-contain" />
-            <Puzzle v-else class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
-            <span>{{ item.label }}</span>
-          </router-link>
-          <router-link
-            v-for="child in item.children"
-            :key="'c-' + child.to"
-            :to="child.to"
-            class="flex items-center gap-2 rounded-xl py-1.5 pr-3 pl-8 text-[11px] font-medium transition-all duration-200"
-            :class="isActive(child.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
-          >
-            <Dot class="h-3.5 w-3.5 flex-shrink-0 -ml-1" :stroke-width="3" />
-            <span>{{ child.label }}</span>
-          </router-link>
+          <ChevronDown
+            class="h-3 w-3 flex-shrink-0 text-text-muted/70 transition-transform duration-200"
+            :class="isNavGroupOpen('cat:' + group.name, group.items) ? '' : '-rotate-90'"
+            :stroke-width="2"
+          />
+        </button>
+        <div v-else class="mx-3 mt-3 mb-1 h-px bg-border-default/40" :title="group.name" />
+        <template v-if="!sidebarExpanded || isNavGroupOpen('cat:' + group.name, group.items)">
+          <template v-for="item in group.items" :key="item.to">
+            <router-link
+              :to="item.to"
+              class="group/nav flex items-center gap-2.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
+              :class="[isActive(item.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
+              :title="sidebarExpanded ? undefined : item.label"
+            >
+              <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 flex-shrink-0 object-contain" />
+              <Puzzle v-else class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
+              <span v-if="sidebarExpanded" class="min-w-0 flex-1 truncate">{{ item.label }}</span>
+              <!-- Sub-nav toggle: stops the row navigation, flips only the
+                   children. Hidden on the rail (children don't render there). -->
+              <button
+                v-if="sidebarExpanded && item.children?.length"
+                class="-mr-1 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-sm text-text-muted/70 hover:text-text-secondary"
+                :title="isNavGroupOpen('item:' + item.to, item.children) ? 'Hide ' + item.label + ' pages' : 'Show ' + item.label + ' pages'"
+                @click.prevent.stop="toggleNavGroup('item:' + item.to)"
+              >
+                <ChevronDown
+                  class="h-3 w-3 transition-transform duration-200"
+                  :class="isNavGroupOpen('item:' + item.to, item.children) ? '' : '-rotate-90'"
+                  :stroke-width="2"
+                />
+              </button>
+            </router-link>
+            <template v-if="sidebarExpanded && item.children?.length && isNavGroupOpen('item:' + item.to, item.children)">
+              <router-link
+                v-for="child in item.children"
+                :key="'c-' + child.to"
+                :to="child.to"
+                class="flex items-center gap-2 rounded-xl py-1.5 pr-3 pl-8 text-[11px] font-medium transition-all duration-200"
+                :class="isActive(child.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+              >
+                <Dot class="h-3.5 w-3.5 flex-shrink-0 -ml-1" :stroke-width="3" />
+                <span>{{ child.label }}</span>
+              </router-link>
+            </template>
+          </template>
         </template>
       </template>
 
@@ -453,31 +540,59 @@ watchEffect(() => {
            under their own divider so the rhythm of the sidebar stays
            consistent. -->
       <template v-if="providersStore.categorizedNavItems.uncategorized.length">
-        <div class="mt-3 mb-1 flex items-center gap-2 px-3">
+        <button
+          v-if="sidebarExpanded"
+          class="mt-3 mb-1 flex w-full items-center gap-2 px-3 text-left"
+          :title="isNavGroupOpen('cat:Other', providersStore.categorizedNavItems.uncategorized) ? 'Collapse Other' : 'Expand Other'"
+          @click="toggleNavGroup('cat:Other')"
+        >
           <Puzzle class="h-3 w-3 flex-shrink-0 text-text-muted/70" :stroke-width="2" />
           <span class="text-[9px] font-semibold uppercase tracking-wider text-text-muted/70">Other</span>
           <div class="h-px flex-1 bg-border-default/40" />
-        </div>
-        <template v-for="item in providersStore.categorizedNavItems.uncategorized" :key="'u-' + item.to">
-          <router-link
-            :to="item.to"
-            class="flex items-center gap-2.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
-            :class="isActive(item.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
-          >
-            <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 flex-shrink-0 object-contain" />
-            <Puzzle v-else class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
-            <span>{{ item.label }}</span>
-          </router-link>
-          <router-link
-            v-for="child in item.children"
-            :key="'uc-' + child.to"
-            :to="child.to"
-            class="flex items-center gap-2 rounded-xl py-1.5 pr-3 pl-8 text-[11px] font-medium transition-all duration-200"
-            :class="isActive(child.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
-          >
-            <Dot class="h-3.5 w-3.5 flex-shrink-0 -ml-1" :stroke-width="3" />
-            <span>{{ child.label }}</span>
-          </router-link>
+          <ChevronDown
+            class="h-3 w-3 flex-shrink-0 text-text-muted/70 transition-transform duration-200"
+            :class="isNavGroupOpen('cat:Other', providersStore.categorizedNavItems.uncategorized) ? '' : '-rotate-90'"
+            :stroke-width="2"
+          />
+        </button>
+        <div v-else class="mx-3 mt-3 mb-1 h-px bg-border-default/40" title="Other" />
+        <template v-if="!sidebarExpanded || isNavGroupOpen('cat:Other', providersStore.categorizedNavItems.uncategorized)">
+          <template v-for="item in providersStore.categorizedNavItems.uncategorized" :key="'u-' + item.to">
+            <router-link
+              :to="item.to"
+              class="flex items-center gap-2.5 rounded-xl px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
+              :class="[isActive(item.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
+              :title="sidebarExpanded ? undefined : item.label"
+            >
+              <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 flex-shrink-0 object-contain" />
+              <Puzzle v-else class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
+              <span v-if="sidebarExpanded" class="min-w-0 flex-1 truncate">{{ item.label }}</span>
+              <button
+                v-if="sidebarExpanded && item.children?.length"
+                class="-mr-1 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-sm text-text-muted/70 hover:text-text-secondary"
+                :title="isNavGroupOpen('item:' + item.to, item.children) ? 'Hide ' + item.label + ' pages' : 'Show ' + item.label + ' pages'"
+                @click.prevent.stop="toggleNavGroup('item:' + item.to)"
+              >
+                <ChevronDown
+                  class="h-3 w-3 transition-transform duration-200"
+                  :class="isNavGroupOpen('item:' + item.to, item.children) ? '' : '-rotate-90'"
+                  :stroke-width="2"
+                />
+              </button>
+            </router-link>
+            <template v-if="sidebarExpanded && item.children?.length && isNavGroupOpen('item:' + item.to, item.children)">
+              <router-link
+                v-for="child in item.children"
+                :key="'uc-' + child.to"
+                :to="child.to"
+                class="flex items-center gap-2 rounded-xl py-1.5 pr-3 pl-8 text-[11px] font-medium transition-all duration-200"
+                :class="isActive(child.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+              >
+                <Dot class="h-3.5 w-3.5 flex-shrink-0 -ml-1" :stroke-width="3" />
+                <span>{{ child.label }}</span>
+              </router-link>
+            </template>
+          </template>
         </template>
       </template>
 
@@ -489,10 +604,11 @@ watchEffect(() => {
       <router-link
         :to="providersHeaderItem.to"
         class="flex items-center gap-2.5 rounded-xl px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider transition-all duration-200"
-        :class="isActive(providersHeaderItem.to, true) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted/80 hover:bg-surface-overlay/50 hover:text-text-secondary'"
+        :class="[isActive(providersHeaderItem.to, true) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted/80 hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
+        :title="sidebarExpanded ? undefined : providersHeaderItem.label"
       >
         <Puzzle class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
-        <span>{{ providersHeaderItem.label }}</span>
+        <span v-if="sidebarExpanded">{{ providersHeaderItem.label }}</span>
       </router-link>
       </div>
       <!-- end scrollable nav region -->
@@ -502,11 +618,12 @@ watchEffect(() => {
       <!-- CLI quickstart -->
       <button
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium text-text-muted transition-all hover:bg-surface-overlay/50 hover:text-text-secondary"
+        :class="sidebarExpanded ? '' : 'justify-center'"
         title="Install the kedge CLI"
         @click="showCliModal = true"
       >
         <Terminal class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
-        <span>CLI</span>
+        <span v-if="sidebarExpanded">CLI</span>
       </button>
 
       <!-- MCP Access: a workspace-level preference (connect an AI client to
@@ -514,10 +631,11 @@ watchEffect(() => {
       <router-link
         to="/mcp"
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
-        :class="isActive('/mcp') ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+        :class="[isActive('/mcp') ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
+        :title="sidebarExpanded ? undefined : 'MCP Access'"
       >
         <Plug class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
-        <span>MCP Access</span>
+        <span v-if="sidebarExpanded">MCP Access</span>
       </router-link>
 
       <!-- Settings (formerly at the top of the nav). Sits alongside the
@@ -525,10 +643,11 @@ watchEffect(() => {
       <router-link
         to="/tenant"
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
-        :class="isActive('/tenant') ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+        :class="[isActive('/tenant') ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
+        :title="sidebarExpanded ? undefined : 'Settings'"
       >
         <Settings class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
-        <span>Settings</span>
+        <span v-if="sidebarExpanded">Settings</span>
       </router-link>
 
       <!-- Platform admin (/bonkers): only rendered for allowlisted identities
@@ -537,30 +656,34 @@ watchEffect(() => {
         v-if="adminStore.isAdmin"
         to="/bonkers"
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
-        :class="isActive('/bonkers') ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary'"
+        :class="[isActive('/bonkers') ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
+        :title="sidebarExpanded ? undefined : 'Platform admin'"
       >
         <ShieldAlert class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
-        <span>Platform admin</span>
+        <span v-if="sidebarExpanded">Platform admin</span>
       </router-link>
 
       <!-- Theme segmented control: shows all three options so users can
            pick directly instead of cycling through unknown next states.
-           Icon-only — tooltips carry the per-option label. -->
-      <div class="px-1 py-1">
+           Icon-only — tooltips carry the per-option label. Needs the full
+           column width; hidden on the collapsed rail (expand to switch). -->
+      <div v-if="sidebarExpanded" class="px-1 py-1">
         <ThemeSwitch variant="sidebar" />
       </div>
 
-      <!-- Status -->
+      <!-- Status. Collapsed rail keeps the presence dot as the identity
+           affordance; the email and clock need the label column. -->
       <button
         v-if="auth.user"
         class="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left transition-colors hover:bg-surface-overlay/50"
+        :class="sidebarExpanded ? '' : 'justify-center'"
         title="Show your identity (email / user ID)"
         @click="showProfileModal = true"
       >
         <div class="h-1.5 w-1.5 rounded-full bg-success flex-shrink-0" />
-        <span class="font-mono text-[9px] text-text-muted truncate hover:text-accent">{{ auth.user.email }}</span>
+        <span v-if="sidebarExpanded" class="font-mono text-[9px] text-text-muted truncate hover:text-accent">{{ auth.user.email }}</span>
       </button>
-      <span class="px-3 font-mono text-[9px] tabular-nums text-text-muted/50">
+      <span v-if="sidebarExpanded" class="px-3 font-mono text-[9px] tabular-nums text-text-muted/50">
         {{ timeStr }}
       </span>
 
@@ -569,19 +692,23 @@ watchEffect(() => {
       <!-- Undock -->
       <button
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium text-text-muted/40 transition-all hover:text-accent"
+        :class="sidebarExpanded ? '' : 'justify-center'"
+        :title="sidebarExpanded ? undefined : 'Undock'"
         @click="resetDockPos"
       >
         <Pin class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="2" />
-        <span>Undock</span>
+        <span v-if="sidebarExpanded">Undock</span>
       </button>
 
       <!-- Logout -->
       <button
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium text-text-muted transition-all hover:bg-danger-subtle hover:text-danger"
+        :class="sidebarExpanded ? '' : 'justify-center'"
+        :title="sidebarExpanded ? undefined : 'Logout'"
         @click="handleLogout"
       >
         <LogOut class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="2" />
-        <span>Logout</span>
+        <span v-if="sidebarExpanded">Logout</span>
       </button>
     </aside>
 
@@ -670,7 +797,7 @@ watchEffect(() => {
         title="Install the kedge CLI"
         @click="showCliModal = true"
       >
-        <Terminal class="h-3 w-3" :stroke-width="1.75" />
+        <Terminal class="h-3 w-3" :stroke-width="2" />
         <span class="text-[8px] font-semibold uppercase tracking-wider">CLI</span>
       </button>
       <router-link

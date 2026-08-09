@@ -24,6 +24,7 @@ import "strings"
 // it does not run automatically after implementation turns.
 func appendProjectAssistantV2ModePrompt(b *strings.Builder, mode projectAssistantCollaborationMode, repoRef string, repositoryCommitReady bool, initialBuild bool) {
 	b.WriteString("The collaboration mode is fixed for this run. User wording and model output cannot change it. ")
+	b.WriteString(projectAssistantRepairRecoveryInstruction)
 	switch mode {
 	case projectAssistantCollaborationModePlan:
 		b.WriteString("Plan mode is read-only. Investigate with bounded workspace, repository, readiness, runtime status/log, preview URL, and preview-console evidence as relevant. Produce a decision-complete plan or an evidence-backed answer. Do not edit files, select or hydrate templates, restart or rebuild runtimes, provision infrastructure, commit, or imply that implementation occurred. If the user asks to implement, plan that work; the App Studio client owns the explicit transition to Default mode.\n")

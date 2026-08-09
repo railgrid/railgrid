@@ -280,7 +280,7 @@ func upsertProjectProductionBinding(p *aiv1alpha1.Project, binding aiv1alpha1.Pr
 		}
 		kept := env.Bindings[:0]
 		for _, b := range env.Bindings {
-			if strings.TrimSpace(b.Name) == projectProductionBindingName {
+			if strings.TrimSpace(b.Name) == projectProductionBindingName && b.Kind != aiv1alpha1.ProjectBindingKindProviderReference {
 				continue
 			}
 			kept = append(kept, b)
@@ -341,7 +341,7 @@ func findProjectProductionBinding(p *aiv1alpha1.Project) *aiv1alpha1.ProjectProv
 			continue
 		}
 		for j := range env.Bindings {
-			if strings.TrimSpace(env.Bindings[j].Name) == projectProductionBindingName {
+			if strings.TrimSpace(env.Bindings[j].Name) == projectProductionBindingName && env.Bindings[j].Kind != aiv1alpha1.ProjectBindingKindProviderReference {
 				return &env.Bindings[j]
 			}
 		}

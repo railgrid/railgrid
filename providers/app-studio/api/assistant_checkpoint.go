@@ -74,10 +74,6 @@ type projectAssistantCheckpointState struct {
 	RepeatedActionToolName           string                                              `json:"repeatedActionToolName,omitempty"`
 	RepeatedActionCount              int                                                 `json:"repeatedActionCount,omitempty"`
 	RuntimeWarmupAttempts            int                                                 `json:"runtimeWarmupAttempts,omitempty"`
-	NoProgressModelCallCount         int                                                 `json:"noProgressModelCallCount,omitempty"`
-	ActionBatchModelCall             int                                                 `json:"actionBatchModelCall,omitempty"`
-	ActionBatchObserved              bool                                                `json:"actionBatchObserved,omitempty"`
-	ActionBatchMadeProgress          bool                                                `json:"actionBatchMadeProgress,omitempty"`
 	ModelCallOrdinal                 int                                                 `json:"modelCallOrdinal,omitempty"`
 	AcceptedProgressCount            int                                                 `json:"acceptedProgressCount,omitempty"`
 	LastAcceptedProgressModelCall    int                                                 `json:"lastAcceptedProgressModelCall,omitempty"`

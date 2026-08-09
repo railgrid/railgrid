@@ -108,3 +108,91 @@ func TestCatalogReconciler_PreservesChartOwnedUIRoutingForBuiltinName(t *testing
 		t.Fatalf("status endpoints = %#v, want UI=http://app-studio.invalid", updated.Status.Endpoints)
 	}
 }
+
+func TestCatalogReconcilerRejectsInvalidActionDeclarations(t *testing.T) {
+	reg := NewRegistry()
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "invalid-actions"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			DisplayName: "Invalid actions",
+			UI:          &providersv1alpha1.ProviderUI{URL: "http://provider.invalid"},
+			Actions: []providersv1alpha1.ProviderActionSpec{{
+				ID:          "query_table/latest",
+				DisplayName: "Invalid action",
+			}},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).
+		WithObjects(entry).
+		Build()
+
+	r := &CatalogReconciler{mgr: testfakes.NewManager(c), reg: reg, noKCP: true}
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "invalid-actions")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if _, ok := reg.Get("invalid-actions"); ok {
+		t.Fatal("invalid action declaration must not enter the provider registry")
+	}
+
+	var updated providersv1alpha1.CatalogEntry
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "invalid-actions"}, &updated); err != nil {
+		t.Fatalf("get updated entry: %v", err)
+	}
+	if len(updated.Status.Conditions) != 1 {
+		t.Fatalf("conditions = %#v, want one Ready condition", updated.Status.Conditions)
+	}
+	condition := updated.Status.Conditions[0]
+	if condition.Type != "Ready" || condition.Status != metav1.ConditionFalse || condition.Reason != "InvalidActions" {
+		t.Fatalf("condition = %#v, want Ready=False/InvalidActions", condition)
+	}
+}
+
+func TestCatalogReconcilerOmitsInvalidAssistantSkillAndKeepsValidSibling(t *testing.T) {
+	reg := NewRegistry()
+	scheme := newProviderTestScheme(t)
+	valid := providersv1alpha1.ProviderAssistantSkillSpec{
+		PackageName: "valid",
+		Version:     "1.0.0",
+		Skill:       "---\nname: valid\ndescription: valid guidance\n---\nbody\n",
+	}
+	digest, err := providersv1alpha1.ProviderAssistantSkillDigest(valid)
+	if err != nil {
+		t.Fatalf("skill digest: %v", err)
+	}
+	valid.Digest = digest
+	invalid := valid
+	invalid.PackageName = "invalid"
+	invalid.Skill += "tampered"
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "skills"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			DisplayName: "Skills",
+			UI:          &providersv1alpha1.ProviderUI{URL: "http://skills.invalid"},
+			AssistantSkills: []providersv1alpha1.ProviderAssistantSkillSpec{
+				invalid,
+				valid,
+			},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).
+		WithObjects(entry).
+		Build()
+
+	r := &CatalogReconciler{mgr: testfakes.NewManager(c), reg: reg, noKCP: true}
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "skills")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	got, ok := reg.Get("skills")
+	if !ok {
+		t.Fatal("expected provider in registry")
+	}
+	if len(got.AssistantSkills) != 1 || got.AssistantSkills[0].PackageName != "valid" || got.AssistantSkills[0].Digest != digest {
+		t.Fatalf("assistant skills = %#v, want only valid sibling", got.AssistantSkills)
+	}
+}

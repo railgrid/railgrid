@@ -24,8 +24,6 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/adk/middlewares/reduction"
 	"github.com/cloudwego/eino/schema"
-
-	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 const (
@@ -37,141 +35,27 @@ const (
 const projectEinoAssistantReductionContextTokens int64 = 12000
 
 // Eino counts suffix retention in complete assistant tool-call groups. Keep a
-// two-group baseline while the controller below separately protects the latest
-// two distinct complete read_file results, without exempting older reads from
-// bounded clearing altogether.
-const projectEinoAssistantReductionReadGroupRetention = 2
-
-const projectEinoAssistantClearedReadFileResult = "[Old tool result content cleared]"
+// two-group baseline while read_file is excluded from age-based clearing.
+const projectEinoAssistantReductionToolGroupRetention = 2
 
 // projectEinoAssistantReductionMiddleware removes large historical workspace
 // mutation payloads before they force the more expensive session summarizer,
 // while retaining compact tool-result evidence for phase derivation and
-// checkpoint resume. It keeps a bounded read evidence window intact.
+// checkpoint resume. Read results are bounded by the model-output middleware
+// and excluded from age-based clearing so their source evidence remains
+// available until compaction.
 func projectEinoAssistantReductionMiddleware(ctx context.Context) (adk.ChatModelAgentMiddleware, error) {
-	controller := &projectEinoAssistantReductionController{}
-	inner, err := reduction.New(ctx, &reduction.Config{
+	return reduction.New(ctx, &reduction.Config{
 		SkipTruncation: true,
-		// Preserve the latest two tool groups while clearing older read payloads.
-		// The controller additionally protects the latest two distinct complete
-		// reads across interleaved failed mutations. Successful mutations use the
-		// compact App Studio rewrite below.
+		// Preserve the latest two tool groups while clearing eligible historical
+		// payloads. Successful mutations use the compact App Studio rewrite below.
 		SkipClear:                 false,
 		MaxTokensForClear:         projectEinoAssistantReductionContextTokens,
-		ClearRetentionSuffixLimit: projectEinoAssistantReductionReadGroupRetention,
+		ClearRetentionSuffixLimit: projectEinoAssistantReductionToolGroupRetention,
 		ClearAtLeastTokens:        1,
+		ClearExcludeTools:         []string{projectToolReadFile},
 		ClearMessageRewriter:      projectEinoAssistantRewriteWorkspaceMutations,
-		ToolConfig: map[string]*reduction.ToolReductionConfig{
-			projectToolReadFile: {
-				ClearHandler: controller.clearReadFile,
-			},
-		},
 	})
-	if err != nil {
-		return nil, err
-	}
-	controller.ChatModelAgentMiddleware = inner
-	return controller, nil
-}
-
-// projectEinoAssistantReductionController keeps the reduction middleware's
-// suffix policy bounded while protecting the two latest distinct complete
-// reads even when a failed mutation is interleaved between them. Eino's
-// ClearRetentionSuffixLimit is message-order based, so a static suffix alone
-// can clear one of those reads. The selected call IDs are recomputed for each
-// model request and are never persisted as authority.
-type projectEinoAssistantReductionController struct {
-	adk.ChatModelAgentMiddleware
-}
-
-type projectEinoAssistantReductionProtectedReadCallIDsContextKey struct{}
-
-func (m *projectEinoAssistantReductionController) BeforeModelRewriteState(
-	ctx context.Context,
-	state *adk.ChatModelAgentState,
-	mc *adk.ModelContext,
-) (context.Context, *adk.ChatModelAgentState, error) {
-	if m == nil || m.ChatModelAgentMiddleware == nil {
-		return ctx, state, nil
-	}
-	var messages []*schema.Message
-	if state != nil {
-		messages = state.Messages
-	}
-	protected := projectEinoAssistantLatestCompleteReadCallIDs(messages)
-	ctx = context.WithValue(ctx, projectEinoAssistantReductionProtectedReadCallIDsContextKey{}, protected)
-	return m.ChatModelAgentMiddleware.BeforeModelRewriteState(ctx, state, mc)
-}
-
-func (m *projectEinoAssistantReductionController) clearReadFile(
-	ctx context.Context,
-	detail *reduction.ToolDetail,
-) (*reduction.ClearResult, error) {
-	if detail == nil || detail.ToolResult == nil || detail.ToolContext == nil {
-		return &reduction.ClearResult{NeedClear: false}, nil
-	}
-	protectedIDs, _ := ctx.Value(projectEinoAssistantReductionProtectedReadCallIDsContextKey{}).(map[string]struct{})
-	_, protected := protectedIDs[detail.ToolContext.CallID]
-	if protected {
-		return &reduction.ClearResult{NeedClear: false}, nil
-	}
-	parts := make([]schema.ToolOutputPart, len(detail.ToolResult.Parts))
-	copy(parts, detail.ToolResult.Parts)
-	for index := range parts {
-		if parts[index].Type == schema.ToolPartTypeText {
-			parts[index].Text = projectEinoAssistantClearedReadFileResult
-		}
-	}
-	return &reduction.ClearResult{
-		NeedClear:    true,
-		ToolArgument: detail.ToolArgument,
-		ToolResult:   &schema.ToolResult{Parts: parts},
-	}, nil
-}
-
-func projectEinoAssistantLatestCompleteReadCallIDs(messages []*schema.Message) map[string]struct{} {
-	protected := make(map[string]struct{}, projectEinoAssistantReductionReadGroupRetention)
-	seenPaths := make(map[string]struct{}, projectEinoAssistantReductionReadGroupRetention)
-	for index := len(messages) - 1; index >= 0 && len(seenPaths) < projectEinoAssistantReductionReadGroupRetention; index-- {
-		message := messages[index]
-		if message == nil || message.Role != schema.Assistant || len(message.ToolCalls) == 0 {
-			continue
-		}
-		if index+len(message.ToolCalls) >= len(messages) {
-			continue
-		}
-		for offset := len(message.ToolCalls) - 1; offset >= 0 && len(seenPaths) < projectEinoAssistantReductionReadGroupRetention; offset-- {
-			toolCall := message.ToolCalls[offset]
-			if projectToolBaseName(toolCall.Function.Name) != projectToolReadFile {
-				continue
-			}
-			response := messages[index+offset+1]
-			if response == nil || response.Role != schema.Tool ||
-				(response.ToolCallID != "" && response.ToolCallID != toolCall.ID) {
-				continue
-			}
-			var evidence struct {
-				Path     string `json:"path"`
-				Version  string `json:"version"`
-				Complete bool   `json:"complete"`
-			}
-			if json.Unmarshal([]byte(response.Content), &evidence) != nil || !evidence.Complete || strings.TrimSpace(evidence.Version) == "" {
-				continue
-			}
-			path, pathErr := workspace.CleanProjectPath(evidence.Path)
-			if pathErr != nil || path == "" {
-				continue
-			}
-			if _, seen := seenPaths[path]; seen {
-				continue
-			}
-			seenPaths[path] = struct{}{}
-			if strings.TrimSpace(toolCall.ID) != "" {
-				protected[toolCall.ID] = struct{}{}
-			}
-		}
-	}
-	return protected
 }
 
 func projectEinoAssistantRewriteWorkspaceMutations(

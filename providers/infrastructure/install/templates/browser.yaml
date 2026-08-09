@@ -277,11 +277,34 @@ spec:
                     # --host 0.0.0.0, not loopback: the Service is the way in
                     # now, and services/proxy resolves to the POD IP, so
                     # anything bound to 127.0.0.1 would be unreachable.
+                    #
+                    # --allowed-hosts '*' disables Playwright MCP's DNS-rebinding
+                    # Host-header guard, which otherwise 403s every request that
+                    # is not addressed as localhost:8931 ("Access is only allowed
+                    # at localhost:8931"). The kube apiserver services/proxy hop
+                    # sends the pod/service Host, never localhost, so the guard
+                    # makes the instance unreachable through the data plane — the
+                    # only way in. Disabling it is safe here: the gate is the
+                    # caller's kcp RBAC on the Browser object (see agent.usage),
+                    # not a Host string, and the pod is never publicly exposed.
+                    # --ignore-https-errors: development (and many internal)
+                    # previews are served by the platform gateway with a
+                    # self-signed/dev certificate, which Chromium otherwise
+                    # rejects with net::ERR_CERT_AUTHORITY_INVALID before any
+                    # page loads. This browser only ever inspects the platform's
+                    # own previews over the internal data plane, so trusting
+                    # those certs is the intended posture (the retired app-studio
+                    # worker ran with the same setting). Valid public certs are
+                    # unaffected; the flag only stops the browser rejecting bad
+                    # ones, it does not weaken anything a valid cert provides.
                     args:
                       - --port
                       - "8931"
                       - --host
                       - "0.0.0.0"
+                      - --allowed-hosts
+                      - "*"
+                      - --ignore-https-errors
                     ports:
                       - name: http
                         containerPort: 8931

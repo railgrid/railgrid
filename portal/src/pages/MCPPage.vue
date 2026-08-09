@@ -344,7 +344,7 @@ function rel(ts?: string): string {
           </template>
           <template #tools="{ value }">
             <span class="inline-flex items-center gap-1.5 text-text-muted">
-              <Wrench class="h-3 w-3" :stroke-width="1.75" /> {{ value }}
+              <Wrench class="h-3 w-3" :stroke-width="2" /> {{ value }}
             </span>
           </template>
           <template #updated="{ value }">
@@ -454,7 +454,7 @@ function rel(ts?: string): string {
                   </span>
                 </div>
                 <span class="flex shrink-0 items-center gap-1.5 text-[11px] text-text-muted">
-                  <Wrench class="h-3 w-3" :stroke-width="1.75" /> {{ p.tools?.length ?? 0 }} {{ (p.tools?.length ?? 0) === 1 ? 'tool' : 'tools' }}
+                  <Wrench class="h-3 w-3" :stroke-width="2" /> {{ p.tools?.length ?? 0 }} {{ (p.tools?.length ?? 0) === 1 ? 'tool' : 'tools' }}
                 </span>
               </button>
               <div v-if="isProviderOpen(p.name)" class="border-t border-border-subtle p-3.5">

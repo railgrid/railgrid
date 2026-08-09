@@ -30,16 +30,16 @@ import (
 	databricksscheme "github.com/faroshq/provider-databricks/scheme"
 )
 
-func startControllerManager(ctx context.Context, config *rest.Config, validator backend.Validator) error {
+func startControllerManager(ctx context.Context, config *rest.Config, validator backend.Validator) (mcmanager.Manager, error) {
 	if config == nil {
-		return errControllerDisabled
+		return nil, errControllerDisabled
 	}
 	ctrl.SetLogger(klog.NewKlogr())
 	scheme := databricksscheme.NewScheme()
 
 	dyn, err := dynamic.NewForConfig(config)
 	if err != nil {
-		return fmt.Errorf("dynamic client: %w", err)
+		return nil, fmt.Errorf("dynamic client: %w", err)
 	}
 	workspacePath := envOr("DATABRICKS_WORKSPACE_PATH", defaultWorkspacePath)
 	if err := sdkinstall.EnsureAPIExportEndpointSlice(ctx, dyn, apiExportName, apiExportName, workspacePath); err != nil {
@@ -48,23 +48,23 @@ func startControllerManager(ctx context.Context, config *rest.Config, validator 
 
 	provider, err := apiexport.New(config, apiExportName, apiexport.Options{Scheme: scheme})
 	if err != nil {
-		return fmt.Errorf("creating apiexport multicluster provider: %w", err)
+		return nil, fmt.Errorf("creating apiexport multicluster provider: %w", err)
 	}
 	mgr, err := mcmanager.New(config, provider, manager.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"},
 	})
 	if err != nil {
-		return fmt.Errorf("creating multicluster manager: %w", err)
+		return nil, fmt.Errorf("creating multicluster manager: %w", err)
 	}
 	if err := (&connection.Reconciler{Validator: validator}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("connection controller: %w", err)
+		return nil, fmt.Errorf("connection controller: %w", err)
 	}
 	if err := (&warehouse.Reconciler{Validator: validator}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("warehouse controller: %w", err)
+		return nil, fmt.Errorf("warehouse controller: %w", err)
 	}
 	if err := (&table.Reconciler{Validator: validator}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("table controller: %w", err)
+		return nil, fmt.Errorf("table controller: %w", err)
 	}
 	go func() {
 		log.Printf("databricks controller manager starting (endpointSlice=%s)", apiExportName)
@@ -72,5 +72,5 @@ func startControllerManager(ctx context.Context, config *rest.Config, validator 
 			log.Printf("controller manager exited: %v", err)
 		}
 	}()
-	return nil
+	return mgr, nil
 }

@@ -28,8 +28,9 @@ const (
 // grows, and keep manifest.yaml + deploy/chart/templates/catalogentry.yaml in
 // sync: the hub writes the tenant APIBinding claims from those at Enable time,
 // and a claim missing there is silently denied at reconcile.
-// searxngs backs the Studio's shared web-search instance.
-var instanceClaimResources = []string{"applications", "simplewebapps", "workers", "searxngs"}
+// searxngs backs the Studio's shared web-search instance; browsers backs the
+// Studio's shared headless browser (development-preview inspection).
+var instanceClaimResources = []string{"applications", "simplewebapps", "workers", "searxngs", "browsers"}
 
 // runInitCmd applies the App Studio provider's in-workspace objects
 // (APIResourceSchemas, APIExport, APIExportEndpointSlice, bind grant) using the

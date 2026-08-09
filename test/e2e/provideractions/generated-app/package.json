@@ -1,0 +1,9 @@
+{
+  "name": "kedge-provider-actions-generated-app",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "@kedge/actions-node": "npm:@crwilhit/kedge-actions-node@0.1.0"
+  }
+}

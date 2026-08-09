@@ -100,7 +100,7 @@ function handleOIDCLogin() {
         <div class="mb-8 text-center lg:hidden">
           <div class="relative mx-auto flex h-14 w-14 items-center justify-center">
             <div class="relative flex h-14 w-14 items-center justify-center rounded-xl border border-border-default bg-surface-overlay">
-              <Hexagon class="h-7 w-7 text-accent" :stroke-width="2" />
+              <Hexagon class="h-7 w-7 text-accent" :stroke-width="1.5" />
             </div>
           </div>
           <h1 class="type-display mt-4 text-xl font-bold text-text-primary">KEDGE</h1>
@@ -125,7 +125,7 @@ function handleOIDCLogin() {
               class="group flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-[13px] font-semibold text-white shadow-[0_0_16px_var(--color-accent-glow)] transition-all duration-200 hover:bg-accent-hover active:scale-[0.98]"
               @click="handleOIDCLogin"
             >
-              <ShieldCheck class="h-4 w-4 transition-transform duration-200 group-hover:scale-110" :stroke-width="2" />
+              <ShieldCheck class="h-4 w-4 transition-transform duration-200 group-hover:scale-110" :stroke-width="1.75" />
               Sign in with SSO
             </button>
 

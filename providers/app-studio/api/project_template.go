@@ -38,6 +38,7 @@ import (
 	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/faroshq/provider-app-studio/bindings"
 	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/tenant"
 )
@@ -283,18 +284,55 @@ func projectTemplateScopedInstanceName(p *aiv1alpha1.Project, scope string) stri
 	return base + "-" + scope
 }
 
-// projectTemplateDevBinding builds the development binding for a
-// template-backed Project: an instance of the Template's kind provisioned in
-// development mode. The infrastructure provider's dev overlay does the rest.
-func projectTemplateDevBinding(p *aiv1alpha1.Project, info projectTemplateInfo) (aiv1alpha1.ProjectProviderBindingSpec, error) {
+type projectTemplateBindingContext struct {
+	ActionsExchangeURL string
+	ActionsBaseURL     string
+	ActionsCABundle    string
+	TenantPath         string
+	Org                string
+	Workspace          string
+	Project            string
+	ProjectUID         string
+	Environment        string
+	Instance           string
+}
+
+func projectTemplateDevBindingWithContext(p *aiv1alpha1.Project, info projectTemplateInfo, context projectTemplateBindingContext) (aiv1alpha1.ProjectProviderBindingSpec, error) {
 	name := projectTemplateInstanceName(p)
 	if name == "" {
 		return aiv1alpha1.ProjectProviderBindingSpec{}, fmt.Errorf("project has no name")
 	}
-	values, err := json.Marshal(map[string]any{
+	if context.Project == "" {
+		context.Project = p.Name
+	}
+	if context.ProjectUID == "" && p.UID != "" {
+		context.ProjectUID = string(p.UID)
+	}
+	if context.Environment == "" {
+		context.Environment = projectDevelopmentEnvironmentName
+	}
+	if context.Instance == "" {
+		context.Instance = name
+	}
+	valuesMap := map[string]any{
 		"name":      name,
 		"kedgeMode": "development",
+	}
+	valuesMap = bindings.ApplyActionsOverlay(valuesMap, bindings.ActionsOverlay{
+		ExchangeURL: context.ActionsExchangeURL,
+		BaseURL:     context.ActionsBaseURL,
+		CABundle:    context.ActionsCABundle,
+		ActionsIdentity: bindings.ActionsIdentity{
+			TenantPath:  context.TenantPath,
+			Org:         context.Org,
+			Workspace:   context.Workspace,
+			Project:     context.Project,
+			ProjectUID:  context.ProjectUID,
+			Environment: context.Environment,
+			Instance:    context.Instance,
+		},
 	})
+	values, err := json.Marshal(valuesMap)
 	if err != nil {
 		return aiv1alpha1.ProjectProviderBindingSpec{}, err
 	}
@@ -322,18 +360,14 @@ func validateProjectDevelopmentTemplate(info projectTemplateInfo) error {
 	return nil
 }
 
-// applyProjectDevelopmentTemplate mutates only the Project spec. It is shared
-// by initial creation (before the Project exists) and the explicit
-// select/switch path, so both produce the exact same template and binding
-// contract.
-func applyProjectDevelopmentTemplate(p *aiv1alpha1.Project, info projectTemplateInfo) error {
+func applyProjectDevelopmentTemplateWithContext(p *aiv1alpha1.Project, info projectTemplateInfo, context projectTemplateBindingContext) error {
 	if p == nil {
 		return fmt.Errorf("project is required")
 	}
 	if err := validateProjectDevelopmentTemplate(info); err != nil {
 		return err
 	}
-	binding, err := projectTemplateDevBinding(p, info)
+	binding, err := projectTemplateDevBindingWithContext(p, info, context)
 	if err != nil {
 		return err
 	}
@@ -347,7 +381,7 @@ func applyProjectDevelopmentTemplate(p *aiv1alpha1.Project, info projectTemplate
 		}
 		kept := env.Bindings[:0]
 		for _, existing := range env.Bindings {
-			if strings.TrimSpace(existing.Name) == projectDevelopmentBindingName {
+			if strings.TrimSpace(existing.Name) == projectDevelopmentBindingName && existing.Kind != aiv1alpha1.ProjectBindingKindProviderReference {
 				continue
 			}
 			kept = append(kept, existing)
@@ -364,6 +398,71 @@ func applyProjectDevelopmentTemplate(p *aiv1alpha1.Project, info projectTemplate
 		})
 	}
 	return nil
+}
+
+func validateActionsExternalURL(raw string) (string, error) {
+	return bindings.ValidateActionsExternalURL(raw)
+}
+
+func projectHasProviderActionGrant(p *aiv1alpha1.Project) bool {
+	return bindings.HasActiveProviderActionGrant(p)
+}
+
+func (s *Server) projectTemplateBindingContext(p *aiv1alpha1.Project, id identity) (projectTemplateBindingContext, error) {
+	context := projectTemplateBindingContext{
+		TenantPath:  id.tenantPath,
+		Org:         id.orgUUID,
+		Workspace:   id.workspaceUUID,
+		Project:     strings.TrimSpace(p.Name),
+		ProjectUID:  string(p.UID),
+		Environment: projectDevelopmentEnvironmentName,
+		Instance:    projectTemplateInstanceName(p),
+	}
+	// The external URL is meaningful only for an active Provider Actions
+	// grant. A globally configured origin must not opt actionless or revoked
+	// runtimes into the exchange contract; App Studio owns these fields and
+	// should leave them absent so the infrastructure schema defaults resolve to
+	// empty strings.
+	if !projectHasProviderActionGrant(p) {
+		return context, nil
+	}
+	externalRaw := strings.TrimSpace(s.actionsExternalURL)
+	if externalRaw == "" {
+		return projectTemplateBindingContext{}, fmt.Errorf("KEDGE_ACTIONS_EXTERNAL_URL is required for action-enabled development runtimes")
+	}
+	transport, err := bindings.ActionsTransportForOrigin(externalRaw)
+	if err != nil {
+		return projectTemplateBindingContext{}, err
+	}
+	context.ActionsExchangeURL = transport.ExchangeURL
+	context.ActionsBaseURL = transport.BaseURL
+	if s.actionsCABundleErr != nil {
+		return projectTemplateBindingContext{}, fmt.Errorf("configured action CA bundle: %w", s.actionsCABundleErr)
+	}
+	context.ActionsCABundle = s.actionsCABundle
+	return context, nil
+}
+
+func (s *Server) applyProjectDevelopmentTemplateWithIdentity(p *aiv1alpha1.Project, info projectTemplateInfo, id identity) error {
+	context, err := s.projectTemplateBindingContext(p, id)
+	if err != nil {
+		return err
+	}
+	return applyProjectDevelopmentTemplateWithContext(p, info, context)
+}
+
+// ActionsRuntimeConfig exposes the operator-owned action transport settings to
+// the background Project controller. The controller still derives tenant and
+// project identity from its authoritative multicluster context.
+func (s *Server) ActionsRuntimeConfig() bindings.ActionsRuntimeConfig {
+	if s == nil {
+		return bindings.ActionsRuntimeConfig{}
+	}
+	return bindings.ActionsRuntimeConfig{
+		ExternalURL: s.actionsExternalURL,
+		CABundle:    s.actionsCABundle,
+		CABundleErr: s.actionsCABundleErr,
+	}
 }
 
 // selectProjectTemplate switches the Project's development environment onto
@@ -404,7 +503,7 @@ func (s *Server) selectProjectTemplate(ctx context.Context, c *asclient.Client, 
 	}
 
 	next := p.DeepCopy()
-	if err := applyProjectDevelopmentTemplate(next, info); err != nil {
+	if err := s.applyProjectDevelopmentTemplateWithIdentity(next, info, id); err != nil {
 		return nil, projectTemplateInfo{}, err
 	}
 

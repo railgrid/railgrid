@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"sort"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -120,6 +121,32 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
+	// Validate the action map before any endpoint is admitted into the
+	// registry. A malformed declaration must fail closed: keeping a previous
+	// registry record would allow an action whose contract no longer matches
+	// the CatalogEntry observed by the controller.
+	if err := providersv1alpha1.ValidateProviderActions(entry.Spec.Actions); err != nil {
+		r.reg.Delete(entry.Name)
+		now := metav1.NewTime(time.Now())
+		entry.Status.Endpoints = &providersv1alpha1.ProviderEndpoints{}
+		setCondition(&entry.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "InvalidActions",
+			Message:            err.Error(),
+			LastTransitionTime: now,
+			ObservedGeneration: entry.Generation,
+		})
+		if statusErr := c.Status().Update(ctx, &entry); statusErr != nil {
+			if apierrors.IsConflict(statusErr) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			return ctrl.Result{}, fmt.Errorf("updating invalid-action status: %w", statusErr)
+		}
+		logger.Info("Rejected invalid provider action declarations", "error", err.Error())
+		return ctrl.Result{}, nil
+	}
+
 	dependencies := make([]Dependency, 0, len(entry.Spec.Dependencies))
 	for _, dep := range entry.Spec.Dependencies {
 		dependencies = append(dependencies, Dependency{Name: dep.Name})
@@ -159,6 +186,72 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 			})
 		}
 	}
+	parsedActions, actionSchemaErr := ParseProviderActions(entry.Spec.Actions)
+	if actionSchemaErr != nil {
+		r.reg.Delete(entry.Name)
+		now := metav1.NewTime(time.Now())
+		entry.Status.Endpoints = &providersv1alpha1.ProviderEndpoints{}
+		setCondition(&entry.Status.Conditions, metav1.Condition{
+			Type:               "Ready",
+			Status:             metav1.ConditionFalse,
+			Reason:             "InvalidActionSchemas",
+			Message:            actionSchemaErr.Error(),
+			LastTransitionTime: now,
+			ObservedGeneration: entry.Generation,
+		})
+		if statusErr := c.Status().Update(ctx, &entry); statusErr != nil {
+			if apierrors.IsConflict(statusErr) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			return ctrl.Result{}, fmt.Errorf("updating invalid-action-schema status: %w", statusErr)
+		}
+		logger.Info("Rejected provider action schemas", "error", actionSchemaErr.Error())
+		return ctrl.Result{}, nil
+	}
+	prov.Actions = parsedActions
+	seenSkillPackages := make(map[string]struct{}, len(entry.Spec.AssistantSkills))
+	var assistantSkillBytes int64
+	for _, skill := range entry.Spec.AssistantSkills {
+		if skillErr := providersv1alpha1.ValidateProviderAssistantSkill(skill); skillErr != nil {
+			// Skill packages are independent of provider routing and action
+			// declarations. Omit only the malformed package so valid sibling
+			// skills and actions remain available; App Studio receives no
+			// partially validated artifact.
+			logger.Info("Omitting invalid provider assistant skill", "packageName", skill.PackageName, "error", skillErr.Error())
+			continue
+		}
+		if _, duplicate := seenSkillPackages[skill.PackageName]; duplicate {
+			logger.Info("Omitting duplicate provider assistant skill", "packageName", skill.PackageName)
+			continue
+		}
+		packageBytes := int64(len([]byte(skill.Skill)))
+		for _, resource := range skill.Resources {
+			packageBytes += int64(len([]byte(resource.Content)))
+		}
+		if assistantSkillBytes+packageBytes > providersv1alpha1.ProviderAssistantSkillsMaxAggregateBytes {
+			logger.Info("Omitting provider assistant skill after aggregate bound", "packageName", skill.PackageName, "maxBytes", providersv1alpha1.ProviderAssistantSkillsMaxAggregateBytes)
+			continue
+		}
+		seenSkillPackages[skill.PackageName] = struct{}{}
+		assistantSkillBytes += packageBytes
+		resources := make([]ProviderAssistantSkillResource, 0, len(skill.Resources))
+		for _, resource := range skill.Resources {
+			resources = append(resources, ProviderAssistantSkillResource{Path: resource.Path, Content: resource.Content})
+		}
+		prov.AssistantSkills = append(prov.AssistantSkills, ProviderAssistantSkill{
+			PackageName: skill.PackageName,
+			Version:     skill.Version,
+			Digest:      skill.Digest,
+			Skill:       skill.Skill,
+			Resources:   resources,
+		})
+	}
+	sort.Slice(prov.AssistantSkills, func(i, j int) bool {
+		if prov.AssistantSkills[i].PackageName != prov.AssistantSkills[j].PackageName {
+			return prov.AssistantSkills[i].PackageName < prov.AssistantSkills[j].PackageName
+		}
+		return prov.AssistantSkills[i].Version < prov.AssistantSkills[j].Version
+	})
 
 	var parseErrs []string
 	if entry.Spec.UI != nil && entry.Spec.UI.URL != "" {
@@ -177,6 +270,14 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 			prov.BackendURL = u
 		}
 	}
+	if entry.Spec.VirtualWorkspace != nil {
+		u, err := ParseURL(entry.Spec.VirtualWorkspace.URL)
+		if err != nil {
+			parseErrs = append(parseErrs, "virtualWorkspace.url: "+err.Error())
+		} else {
+			prov.VirtualWorkspaceURL = u
+		}
+	}
 
 	// If this CatalogEntry name matches a first-party provider that
 	// registered LocalUIAssets via BuiltinSpec, plumb the embedded FS into
@@ -191,7 +292,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// backend proxy target OR embedded UI assets. Heartbeat-driven
 	// readiness is layered on by the sweeper (see Provider.Ready()).
 	prov.EndpointsValid = len(parseErrs) == 0 &&
-		(prov.UIURL != nil || prov.BackendURL != nil || prov.BuiltinRoute != "" || prov.LocalUIAssets != nil)
+		(prov.UIURL != nil || prov.BackendURL != nil || prov.VirtualWorkspaceURL != nil || prov.BuiltinRoute != "" || prov.LocalUIAssets != nil)
 
 	r.reg.Upsert(prov)
 	// Render URLs as strings: a nil *url.URL panics klog's stringer (shows as

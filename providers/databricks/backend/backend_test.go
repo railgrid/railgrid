@@ -11,13 +11,26 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/faroshq/provider-databricks/queryapi"
 )
+
+func TestStatementHTTPErrorNormalizesBackendAuthStatus(t *testing.T) {
+	err := statementHTTPError{statusCode: http.StatusUnauthorized, status: "401 Unauthorized"}
+	if got := err.ActionFailureStatus(); got != http.StatusBadGateway {
+		t.Fatalf("backend auth status = %d, want gateway 502", got)
+	}
+	if err.ActionFailureRetryable() {
+		t.Fatal("backend auth failure unexpectedly marked retryable")
+	}
+}
 
 func TestStatementClientValidateTablePostsStatementExecutionRequest(t *testing.T) {
 	var gotPath string
@@ -151,5 +164,117 @@ func TestStatementClientValidateTableDescribesColumns(t *testing.T) {
 	}
 	if result.Columns[1].Name != "total_amount" || result.Columns[1].Type != "DECIMAL(10,2)" {
 		t.Fatalf("second column = %#v", result.Columns[1])
+	}
+}
+
+func TestStatementClientExecuteTableQueryKeepsCredentialInBackendRequest(t *testing.T) {
+	var got statementRequest
+	var gotAuth string
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotAuth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			return nil, err
+		}
+		return jsonResponse(http.StatusOK, `{"status":{"state":"SUCCEEDED"},"manifest":{"schema":{"columns":[{"name":"order_id","type_text":"STRING"}]}},"result":{"data_array":[["ord-1"]]}}`), nil
+	})
+	client := NewStatementClient(&http.Client{Transport: transport})
+	result, err := client.ExecuteTableQuery(context.Background(), QueryExecutionTarget{
+		Table:          queryapi.TableRef{Catalog: "sales", Schema: "gold", Table: "orders"},
+		Connection:     queryapi.ConnectionRef{Host: "https://dbc-example.cloud.databricks.com"},
+		Warehouse:      queryapi.WarehouseRef{WarehouseID: "wh-123"},
+		BearerToken:    "backend-only-token",
+		Projection:     []string{"order_id"},
+		Limit:          10,
+		AllowedColumns: []string{"order_id"},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTableQuery returned error: %v", err)
+	}
+	if gotAuth != "Bearer backend-only-token" {
+		t.Fatalf("authorization = %q", gotAuth)
+	}
+	if strings.Contains(got.Statement, "backend-only-token") || got.Statement != "SELECT `order_id` FROM `sales`.`gold`.`orders` LIMIT 10" {
+		t.Fatalf("statement = %q", got.Statement)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["order_id"] != "ord-1" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestStatementClientExecuteTableQueryBoundsRowsAndRejectsUnsafeProjection(t *testing.T) {
+	rows := make([][]any, 0, queryapi.MaxQueryRows+5)
+	for i := 0; i < queryapi.MaxQueryRows+5; i++ {
+		rows = append(rows, []any{fmt.Sprintf("order-%d", i)})
+	}
+	payload, err := json.Marshal(map[string]any{
+		"status":   map[string]any{"state": "SUCCEEDED"},
+		"manifest": map[string]any{"schema": map[string]any{"columns": []map[string]any{{"name": "order_id"}}}},
+		"result":   map[string]any{"data_array": rows},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewStatementClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, string(payload)), nil
+	})})
+	result, err := client.ExecuteTableQuery(context.Background(), QueryExecutionTarget{
+		Table:          queryapi.TableRef{Catalog: "sales", Schema: "gold", Table: "orders"},
+		Connection:     queryapi.ConnectionRef{Host: "https://dbc-example.cloud.databricks.com"},
+		Warehouse:      queryapi.WarehouseRef{WarehouseID: "wh-123"},
+		BearerToken:    "token",
+		Limit:          queryapi.MaxQueryLimit,
+		AllowedColumns: []string{"order_id"},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTableQuery returned error: %v", err)
+	}
+	if len(result.Rows) != queryapi.MaxQueryRows || !result.Truncated {
+		t.Fatalf("rows=%d truncated=%v, want bounded/truncated", len(result.Rows), result.Truncated)
+	}
+	requests := 0
+	unsafeClient := NewStatementClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests++
+		return jsonResponse(http.StatusOK, string(payload)), nil
+	})})
+	_, err = unsafeClient.ExecuteTableQuery(context.Background(), QueryExecutionTarget{
+		Table:       queryapi.TableRef{Catalog: "sales", Schema: "gold", Table: "orders"},
+		Connection:  queryapi.ConnectionRef{Host: "https://dbc-example.cloud.databricks.com"},
+		Warehouse:   queryapi.WarehouseRef{WarehouseID: "wh-123"},
+		BearerToken: "token",
+		Projection:  []string{"order_id); DROP TABLE orders; --"},
+		Limit:       10,
+	})
+	if err == nil || requests != 0 {
+		t.Fatalf("unsafe projection err=%v requests=%d", err, requests)
+	}
+}
+
+func TestStatementClientSanitizesDatabricksErrorBody(t *testing.T) {
+	client := NewStatementClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusUnauthorized, `{"error":"backend-only-token secret"}`), nil
+	})})
+	_, err := client.ExecuteTableQuery(context.Background(), QueryExecutionTarget{
+		Table:       queryapi.TableRef{Catalog: "sales", Schema: "gold", Table: "orders"},
+		Connection:  queryapi.ConnectionRef{Host: "https://dbc-example.cloud.databricks.com"},
+		Warehouse:   queryapi.WarehouseRef{WarehouseID: "wh-123"},
+		BearerToken: "backend-only-token",
+		Limit:       1,
+	})
+	if err == nil || strings.Contains(err.Error(), "backend-only-token") || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("error = %v, want sanitized failure", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func jsonResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+		Request:    &http.Request{URL: &url.URL{}},
 	}
 }

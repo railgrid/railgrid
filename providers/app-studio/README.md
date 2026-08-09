@@ -54,8 +54,23 @@ activation metadata in `.agents/skills/.kedge-catalog.json`.
 Every package must contain a `SKILL.md` whose YAML frontmatter includes the
 required `name` and `description` fields. Skill bodies and supporting resources
 are untrusted guidance: they cannot grant tools, permissions, models, approval
-bypasses, or override system/tool policy. App Studio reads only bundled and
-project sources; there is no remote skill registry.
+bypasses, or override system/tool policy. App Studio reads bundled skills,
+authenticated provider-inline packages, and project packages; there is no
+remote skill registry. Provider packages are read-only system skills qualified
+as `providers/<provider>/<packageName>`.
+
+Provider package distribution and provider/action enablement are separate. A
+validated `CatalogEntry.spec.assistantSkills` entry is distributed through the
+authenticated hub `/api/providers` catalog. It follows the system-skill default
+of enabled, and each project may disable or re-enable it. The package's version
+and canonical `sha256:` digest are retained in the same catalog snapshot used
+for metadata discovery, progressive `load_skill`/`read_skill_resource`,
+activation, and turn receipts. Provider readiness is not skill authority: a transient
+heartbeat/readiness change does not revoke declared guidance. A missing bearer
+or transient provider-catalog failure leaves bundled and project skills
+available and emits only a bounded sanitized warning where applicable.
+Provider Actions and grants remain authoritative and fail closed; skill text
+cannot widen them.
 
 For each `Default`, `Plan`, or `Review` turn, catalog discovery exposes metadata
 for enabled skills and the model selectively invokes the assistant's native
@@ -96,10 +111,13 @@ Environment variables consumed by the binary:
 | Var | Purpose |
 |---|---|
 | `PORT` | Listen port (default `8081`) |
-| `KEDGE_HUB_URL` | Hub base URL (heartbeat + MCP endpoint resolution) |
+| `KEDGE_HUB_URL` | Hub base URL for tenant GraphQL, caller-scoped catalog lookup, and Provider Actions forwarding |
 | `KEDGE_HUB_TOKEN` | Bearer token for the heartbeat |
 | `KEDGE_PROVIDER_NAME` | CatalogEntry name (default `app-studio`) |
 | `KEDGE_PROVIDER_KUBECONFIG` | Provider kubeconfig (kcp front-proxy host + TLS only) |
+| `KEDGE_ACTIONS_EXTERNAL_URL` | Optional absolute HTTPS hub origin, reachable and certificate-valid from sandbox pods, injected into action-enabled development runtimes for workload-token exchange and the declared server-side Actions SDK gateway calls; no local default |
+| `KEDGE_ACTIONS_CA_BUNDLE_FILE` | Optional PEM file containing the public CA for that origin; passed only to action-enabled development runtimes, never used to disable TLS verification |
+| `KEDGE_ACTIONS_CA_BUNDLE` | Optional direct PEM equivalent for local launches; when both CA settings are present they must match |
 | `APP_STUDIO_DATABASE_URL` | Postgres DSN for the message store |
 | `APP_STUDIO_IN_MEMORY_MESSAGE_STORE` | `true` → non-durable in-memory store (dev) |
 | `APP_STUDIO_MESSAGE_ENCRYPTION_KEYS` | Comma-separated `key-id:base64-aes-key` entries for message content and metadata encryption at rest |
@@ -108,7 +126,6 @@ Environment variables consumed by the binary:
 | `APP_STUDIO_ASSISTANT_MAX_ITERATIONS` | Optional positive emergency model-call ceiling. The default is continuation-driven/unlimited, matching Codex; exhaustion fails with `budget_limited`. |
 | `APP_STUDIO_ASSISTANT_ROLLOUT_BUDGET_TOKENS` | Optional positive weighted-token budget for the Project conversation; disabled by default. Usage and reminders survive compaction and carry across runs. Exhaustion produces `failed` with `budget_limited`. |
 | `APP_STUDIO_ASSISTANT_MODEL_CONTEXT_TOKENS` | Active model context window used for token-pressure compaction (default `128000` when provider model metadata is unavailable). |
-| `APP_STUDIO_BROWSER_WORKER_URL` | Internal URL of the read-only Playwright worker. When unset or unhealthy, `inspect_development_preview` is not exposed to the model. |
 | `APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY` | `true` → skip TLS verify on MCP calls (dev) |
 | `APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY` | `true` → skip TLS verification only for preview readiness probes (local dev with a self-signed Gateway) |
 | `APP_STUDIO_PREVIEW_CONSOLE_ENABLED` | Automatically shares bounded browser-console evidence while the embedded preview is open; set `false` for a deployment-wide kill switch. |
@@ -125,11 +142,14 @@ make app-studio-db-up
 make run-provider-app-studio
 ```
 
-Tilt starts the browser worker as a separate resource. Outside Tilt, run
-`make run-app-studio-browser-worker`; the provider uses
-`http://127.0.0.1:8090` by default. The model can supply only a path within the
-server-resolved current preview plus bounded semantic assertions. It cannot
-select an origin, click, type, or execute arbitrary JavaScript.
+Preview inspection (`inspect_development_preview`) drives the workspace's shared
+headless browser — the infrastructure provider's Playwright MCP `browser`
+template, provisioned once per workspace by the Studio reconciler — over the
+infrastructure data plane. There is no app-studio browser worker to run; the
+tool is exposed to the model only when that shared browser is Ready. The model
+can supply only a path within the server-resolved current preview plus bounded
+semantic assertions. It cannot select an origin, click, type, or execute
+arbitrary JavaScript.
 
 The database container is named `kedge-app-studio-postgres`, listens on
 `127.0.0.1:55432`, and stores data under `.kcp/app-studio-postgres/`. Both
@@ -151,6 +171,19 @@ when testing a custom key pair.
 To use your own database, set `APP_STUDIO_DATABASE_URL` in the environment or in
 `providers/app-studio/.env` (copy from `.env.example`). To intentionally use the
 old throwaway behavior, set `APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true`.
+
+Action-enabled development sandboxes also require `KEDGE_ACTIONS_EXTERNAL_URL` in
+that environment file (or the launcher environment). `make run-provider-app-studio`
+forwards the explicitly configured value; it does not substitute the provider's
+internal `KEDGE_HUB_URL`, `localhost`, or an insecure HTTP URL. The origin must be
+reachable from the sandbox pod and trusted by its system CA; configure deployment
+CA material separately when a private certificate authority is used. Set
+`KEDGE_ACTIONS_CA_BUNDLE_FILE` (or the direct `KEDGE_ACTIONS_CA_BUNDLE` value) for
+that case. The bundle is copied into a public ConfigMap-backed development
+mount and added to Go/Node trust roots; an unset bundle leaves the image's
+system trust unchanged. Helm deployments can use
+`hub.actionsCABundleConfigMap` to mount the same public PEM file into App
+Studio.
 
 ## Resilient assistant conversations
 
@@ -355,3 +388,65 @@ edge is provisioning. The preview URL is the Template's normal public route,
 not an App Studio-signed preview token, and browser traffic goes directly to
 that route. `APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY` is only a local-dev
 override for the readiness probe.
+
+## Generated-app integrations
+
+Project environments may contain a non-owning `providerReference` binding:
+
+```yaml
+name: sales
+provider: databricks
+kind: providerReference
+resourceRef:
+  apiVersion: databricks.kedge.faros.sh/v1alpha1
+  kind: Table
+  resource: tables
+  name: order-history
+allowedActions:
+- name: query_table
+  version: v1
+  schemaDigest: sha256:<catalog-digest>
+```
+
+App Studio only GETs the referenced object while reconciling and never creates,
+updates, owns, or deletes it. Integrations are managed through
+`/api/projects/{project}/integrations` (GET/POST), removed with DELETE on the
+alias, and invoked with POST on `{alias}/invoke`. On create or reactivation,
+App Studio resolves the caller-scoped `/api/providers` catalog and records a
+server-owned `schemaDigest`, `grantedBy`, and `grantedAt` for every exact
+action/resource grant. Revocation preserves that grant audit and records
+`revokedBy`/`revokedAt`; reactivation requires fresh catalog verification and
+consent when declared.
+
+Invocation re-verifies the persisted grant digest against the live catalog
+(`409` on drift), then forwards `{"input": ...}` to the provider's
+data-plane action route through the hub backend proxy —
+`/services/providers/{provider}/actions/clusters/{cluster}/{resource}/{name}/{action}/{version}`.
+The route is composed from the hub base plus the grant's bound resource; App
+Studio never learns a provider URL or embeds provider transport logic.
+Caller credentials, provider backend URLs, resource overrides, and raw SQL
+are rejected.
+
+Generated server applications install the public
+`@crwilhit/kedge-actions-node@0.1.0` artifact under the stable consumer name
+with this exact dependency alias in the server component's `package.json`:
+
+```json
+{
+  "dependencies": {
+    "@kedge/actions-node": "npm:@crwilhit/kedge-actions-node@0.1.0"
+  }
+}
+```
+
+Application code keeps the canonical import
+`import { createActionsClient } from '@kedge/actions-node';` and can call
+`client.integration(alias).invoke(...)` or `invokeEnvelope(...)`. The SDK is
+server-only, requires an absolute HTTPS base URL (except an explicit loopback
+test override), reads the short-lived workload token from
+`KEDGE_ACTIONS_TOKEN_FILE` on every request or from a refreshable credential
+provider, and retries once with `forceRefresh` after a `401`. The bootstrap
+token used by the workload exchange is never the app token; no development
+token fallback exists. Development sandboxes install this declared dependency
+through the component toolchain; `kedge-dev-agent` does not project an SDK or
+mount `/node_modules`.

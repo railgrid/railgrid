@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260806-59f3b567.studios.ai.kedge.faros.sh
+  name: v260809-dbe6b457.studios.ai.kedge.faros.sh
 spec:
   group: ai.kedge.faros.sh
   names:
@@ -49,6 +49,41 @@ spec:
           type: object
         spec:
           properties:
+            browser:
+              description: |-
+                Browser configures the workspace's shared headless browser, used for
+                development-preview inspection. One Playwright instance for the whole
+                workspace, provisioned through the infrastructure provider exactly like
+                Search — no per-project browser, and app-studio owns no browser image.
+              properties:
+                disabled:
+                  description: Disabled turns preview browser inspection off for this
+                    workspace.
+                  type: boolean
+                resourceRef:
+                  description: |-
+                    ResourceRef is the fully-resolved instance the reconciler creates,
+                    written by the API from the browser Template's instanceCRD. Same
+                    self-contained contract as StudioSearch.ResourceRef.
+                  properties:
+                    apiVersion:
+                      type: string
+                    kind:
+                      type: string
+                    name:
+                      type: string
+                    resource:
+                      type: string
+                  type: object
+                size:
+                  description: Size is the browser's memory bucket, passed to the
+                    template.
+                  enum:
+                  - small
+                  - medium
+                  - large
+                  type: string
+              type: object
             search:
               description: Search configures the workspace's web-search backend.
               properties:
@@ -85,6 +120,22 @@ spec:
           type: object
         status:
           properties:
+            browser:
+              description: Browser reports the shared headless browser backend.
+              properties:
+                instance:
+                  description: Instance names the backing infrastructure instance.
+                  type: string
+                phase:
+                  description: Phase is Ready, Pending, or Disabled.
+                  type: string
+                reason:
+                  description: Reason explains a non-Ready phase.
+                  type: string
+                resource:
+                  description: Resource is the instance's plural resource.
+                  type: string
+              type: object
             phase:
               description: Phase is Ready when every enabled service is Ready.
               type: string

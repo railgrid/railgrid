@@ -40,7 +40,10 @@
 #     url                      Address proxied at /services/providers/<name>/*
 #                              (NOT for CRD traffic — CRs flow through kcp).
 #     healthPath               GET path that gates the BackendHealthy status.
-#   virtualWorkspace:        Advanced opt-in for custom non-CRD verbs (Phase 5).
+#                              Reserved hub-only prefixes on this origin
+#                              (/actions data plane is public; /workload-identities
+#                              is refused by the backend proxy and dialed only
+#                              by the hub).
 #   apiExport:               The provider's kcp APIExport.
 #     name                     Fully-qualified APIExport name tenants APIBind to.
 #     permissionClaims[]       Access the provider needs in tenant workspaces:

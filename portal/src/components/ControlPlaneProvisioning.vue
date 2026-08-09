@@ -73,7 +73,7 @@ const overBudget = computed(() => props.attempts >= 15)
       <div class="relative flex h-16 w-16 items-center justify-center">
         <div class="absolute inset-0 animate-pulse rounded-xl bg-accent/20 blur-lg" />
         <div class="relative flex h-16 w-16 items-center justify-center rounded-xl border border-accent/25 bg-surface-overlay">
-          <Hexagon class="h-8 w-8 animate-spin text-accent" style="animation-duration: 3s" :stroke-width="2" />
+          <Hexagon class="h-8 w-8 animate-spin text-accent" style="animation-duration: 3s" :stroke-width="1.5" />
         </div>
       </div>
 
@@ -104,7 +104,7 @@ const overBudget = computed(() => props.attempts >= 15)
                   : 'border-border-default/40 bg-surface-overlay/40 text-text-muted/40'"
             >
               <Check v-if="i < activeStep" class="h-3.5 w-3.5" :stroke-width="2.5" />
-              <Loader2 v-else-if="i === activeStep" class="h-3.5 w-3.5 animate-spin" :stroke-width="2.5" />
+              <Loader2 v-else-if="i === activeStep" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
               <component :is="step.icon" v-else class="h-3.5 w-3.5" :stroke-width="2" />
             </span>
             <span

@@ -21,164 +21,60 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 )
 
-func TestProjectEinoAssistantReductionRetainsLatestCompleteReadGroupsTogether(t *testing.T) {
+func TestProjectEinoAssistantReductionRetainsSequentialReadResultsAndCompactsMutations(t *testing.T) {
 	middleware, err := projectEinoAssistantReductionMiddleware(context.Background())
 	if err != nil {
 		t.Fatalf("create reduction middleware: %v", err)
 	}
 
-	// Keep an older read payload large enough to force clear while making the
-	// two complete reads the latest groups. The regression is specifically about
-	// preserving both source bodies before the next edit is generated.
+	// Four bounded read results exercise the age-based clear path: only the
+	// latest two groups are retained by suffix, so the first two must survive
+	// through ClearExcludeTools. The large mutation result forces reduction and
+	// still has to be rewritten to compact workspace evidence.
 	largeRequest := strings.Repeat("workspace context ", 4000)
-	oldReadContent := strings.Repeat("stale historical source ", 5000)
-	appContent := "// App.jsx\n" + strings.Repeat("const appMarker = true;\n", 500)
-	appRereadContent := "// App.jsx reread\n" + strings.Repeat("const appRereadMarker = true;\n", 500)
-	confettiContent := "// Confetti.jsx\n" + strings.Repeat("const confettiMarker = true;\n", 500)
+	largeMutationMessage := strings.Repeat("mutation payload ", 5000)
+	readContents := []string{
+		"// first.jsx\n" + strings.Repeat("const firstReadMarker = true;\n", 120),
+		"// second.jsx\n" + strings.Repeat("const secondReadMarker = true;\n", 120),
+		"// third.jsx\n" + strings.Repeat("const thirdReadMarker = true;\n", 120),
+		"// fourth.jsx\n" + strings.Repeat("const fourthReadMarker = true;\n", 120),
+	}
+	readPaths := []string{"src/first.jsx", "src/second.jsx", "src/third.jsx", "src/fourth.jsx"}
+	readCallIDs := []string{"read-call-1", "read-call-2", "read-call-3", "read-call-4"}
 	messages := []*schema.Message{
 		schema.SystemMessage("You are an App Studio implementation assistant."),
 		schema.UserMessage(largeRequest),
 		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "call-read-old",
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      projectToolReadFile,
-				Arguments: `{"file_path":"src/old.jsx","limit":2000}`,
-			},
-		}}),
-		schema.ToolMessage(`{"path":"src/old.jsx","content":`+quoteJSON(oldReadContent)+`,"complete":true,"version":"sha256:old"}`, "call-read-old", schema.WithToolName(projectToolReadFile)),
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "call-create-app",
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      projectToolCreateFile,
-				Arguments: `{"path":"src/App.jsx","content":"..."}`,
-			},
-		}}),
-		schema.ToolMessage(`{"operation":"create_file","path":"src/App.jsx","changed":true}`, "call-create-app", schema.WithToolName(projectToolCreateFile)),
-		schema.AssistantMessage("", []schema.ToolCall{
-			{
-				ID:   "call-read-app",
-				Type: "function",
-				Function: schema.FunctionCall{
-					Name:      projectToolReadFile,
-					Arguments: `{"file_path":"src/App.jsx","limit":2000}`,
-				},
-			},
-			{
-				ID:   "call-read-confetti",
-				Type: "function",
-				Function: schema.FunctionCall{
-					Name:      projectToolReadFile,
-					Arguments: `{"file_path":"src/Confetti.jsx","limit":2000}`,
-				},
-			},
-		}),
-		schema.ToolMessage(`{"path":"src/App.jsx","content":`+quoteJSON(appContent)+`,"complete":true,"version":"sha256:app"}`, "call-read-app", schema.WithToolName(projectToolReadFile)),
-		schema.ToolMessage(`{"path":"src/Confetti.jsx","content":`+quoteJSON(confettiContent)+`,"complete":true,"version":"sha256:confetti"}`, "call-read-confetti", schema.WithToolName(projectToolReadFile)),
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "call-failed-edit",
+			ID:   "mutation-call",
 			Type: "function",
 			Function: schema.FunctionCall{
 				Name:      projectToolEditFile,
-				Arguments: `{"path":"src/App.jsx","oldString":"stale","newString":"attempt"}`,
+				Arguments: `{"path":"src/App.jsx","oldString":"before","newString":"after"}`,
 			},
 		}}),
-		schema.ToolMessage(`{"operation":"edit_file","path":"src/App.jsx","status":"failed","message":"stale source"}`, "call-failed-edit", schema.WithToolName(projectToolEditFile)),
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "call-read-app-reread",
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      projectToolReadFile,
-				Arguments: `{"file_path":"src/App.jsx","limit":2000}`,
-			},
-		}}),
-		schema.ToolMessage(`{"path":"src/App.jsx","content":`+quoteJSON(appRereadContent)+`,"complete":true,"version":"sha256:app-reread"}`, "call-read-app-reread", schema.WithToolName(projectToolReadFile)),
+		schema.ToolMessage(`{"operation":"edit_file","path":"src/App.jsx","changed":true,"message":`+quoteJSON(largeMutationMessage)+`}`, "mutation-call", schema.WithToolName(projectToolEditFile)),
 	}
-	mutationRewrite, err := projectEinoAssistantRewriteWorkspaceMutations(context.Background(), messages[4], messages[5:6])
-	if err != nil || len(mutationRewrite) != 1 || !strings.Contains(mutationRewrite[0].Content, projectEinoAssistantWorkspaceMutationEvidencePrefix) {
-		t.Fatalf("mutation rewrite fixture = %#v, err=%v", mutationRewrite, err)
+	for index, path := range readPaths {
+		callID := readCallIDs[index]
+		messages = append(messages,
+			schema.AssistantMessage("", []schema.ToolCall{{
+				ID:   callID,
+				Type: "function",
+				Function: schema.FunctionCall{
+					Name:      projectToolReadFile,
+					Arguments: `{"file_path":"` + path + `","limit":2000}`,
+				},
+			}}),
+			schema.ToolMessage(`{"path":"`+path+`","content":`+quoteJSON(readContents[index])+`,"complete":true,"version":"sha256:read-`+callID+`"}`, callID, schema.WithToolName(projectToolReadFile)),
+		)
 	}
-	if mutationRewrite[0].Role != schema.User || len(mutationRewrite[0].ToolCalls) != 0 ||
-		!strings.Contains(mutationRewrite[0].Content, "[compacted internal history]") ||
-		!strings.Contains(mutationRewrite[0].Content, "Continue the original task") {
-		t.Fatalf("mutation rewrite must be sole continuation evidence user message: %#v", mutationRewrite)
-	}
-	_, rewritten, err := middleware.BeforeModelRewriteState(
-		context.Background(),
-		&adk.ChatModelAgentState{Messages: messages},
-		&adk.ModelContext{},
-	)
-	if err != nil {
-		t.Fatalf("reduce messages: %v", err)
-	}
-	joined := make([]string, 0, len(rewritten.Messages))
-	for _, message := range rewritten.Messages {
-		joined = append(joined, message.Content)
-	}
-	modelVisible := strings.Join(joined, "\n")
-	for _, marker := range []string{"// App.jsx reread", "const appRereadMarker = true;", "// Confetti.jsx", "const confettiMarker = true;"} {
-		if !strings.Contains(modelVisible, marker) {
-			t.Fatalf("reduced history lost %q:\n%s", marker, modelVisible)
-		}
-	}
-	if !strings.Contains(modelVisible, projectEinoAssistantWorkspaceMutationEvidencePrefix) {
-		shape := make([]string, 0, len(rewritten.Messages))
-		for _, message := range rewritten.Messages {
-			shape = append(shape, string(message.Role)+":"+message.Content[:min(len(message.Content), 48)])
-		}
-		t.Fatalf("mutation compaction evidence missing from reduced history: %#v", shape)
-	}
-	if strings.Contains(modelVisible, "stale historical source ") {
-		t.Fatal("forced reduction left the older read payload model-visible")
-	}
-}
 
-func TestProjectEinoAssistantReductionRetainsLatestSequentialCompleteReads(t *testing.T) {
-	middleware, err := projectEinoAssistantReductionMiddleware(context.Background())
-	if err != nil {
-		t.Fatalf("create reduction middleware: %v", err)
-	}
-	largeRequest := strings.Repeat("workspace context ", 4000)
-	oldReadContent := strings.Repeat("stale sequential source ", 5000)
-	appContent := "// sequential App.jsx\n" + strings.Repeat("const sequentialAppMarker = true;\n", 500)
-	confettiContent := "// sequential Confetti.jsx\n" + strings.Repeat("const sequentialConfettiMarker = true;\n", 500)
-	messages := []*schema.Message{
-		schema.SystemMessage("You are an App Studio implementation assistant."),
-		schema.UserMessage(largeRequest),
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "seq-read-old",
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      projectToolReadFile,
-				Arguments: `{"file_path":"src/old.jsx","limit":2000}`,
-			},
-		}}),
-		schema.ToolMessage(`{"path":"src/old.jsx","content":`+quoteJSON(oldReadContent)+`,"complete":true,"version":"sha256:old-sequential"}`, "seq-read-old", schema.WithToolName(projectToolReadFile)),
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "seq-read-app",
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      projectToolReadFile,
-				Arguments: `{"file_path":"src/App.jsx","limit":2000}`,
-			},
-		}}),
-		schema.ToolMessage(`{"path":"src/App.jsx","content":`+quoteJSON(appContent)+`,"complete":true,"version":"sha256:app-sequential"}`, "seq-read-app", schema.WithToolName(projectToolReadFile)),
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "seq-read-confetti",
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      projectToolReadFile,
-				Arguments: `{"file_path":"src/Confetti.jsx","limit":2000}`,
-			},
-		}}),
-		schema.ToolMessage(`{"path":"src/Confetti.jsx","content":`+quoteJSON(confettiContent)+`,"complete":true,"version":"sha256:confetti-sequential"}`, "seq-read-confetti", schema.WithToolName(projectToolReadFile)),
-	}
 	_, rewritten, err := middleware.BeforeModelRewriteState(
 		context.Background(),
 		&adk.ChatModelAgentState{Messages: messages},
@@ -192,138 +88,113 @@ func TestProjectEinoAssistantReductionRetainsLatestSequentialCompleteReads(t *te
 		modelVisible = append(modelVisible, message.Content)
 	}
 	joined := strings.Join(modelVisible, "\n")
-	for _, marker := range []string{"sequential App.jsx", "sequentialAppMarker", "sequential Confetti.jsx", "sequentialConfettiMarker"} {
+	for index, callID := range readCallIDs {
+		expectedArguments := `{"file_path":"` + readPaths[index] + `","limit":2000}`
+		expectedVersion := "sha256:read-" + callID
+		foundCall := false
+		foundEnvelope := false
+		for _, message := range rewritten.Messages {
+			for _, toolCall := range message.ToolCalls {
+				if toolCall.ID != callID {
+					continue
+				}
+				if foundCall {
+					t.Fatalf("read tool call %q appeared more than once", callID)
+				}
+				foundCall = true
+				if toolCall.Function.Name != projectToolReadFile || toolCall.Function.Arguments != expectedArguments {
+					t.Fatalf("read tool call %q = %#v; want exact read_file call and arguments", callID, toolCall)
+				}
+			}
+			if message.Role != schema.Tool || message.ToolCallID != callID {
+				continue
+			}
+			if foundEnvelope {
+				t.Fatalf("read result %q appeared more than once", callID)
+			}
+			var envelope struct {
+				Path     string `json:"path"`
+				Content  string `json:"content"`
+				Version  string `json:"version"`
+				Complete bool   `json:"complete"`
+			}
+			if err := json.Unmarshal([]byte(message.Content), &envelope); err != nil {
+				t.Fatalf("read result %q is not valid JSON: %v", callID, err)
+			}
+			foundEnvelope = true
+			if envelope.Path != readPaths[index] || envelope.Content != readContents[index] || envelope.Version != expectedVersion || !envelope.Complete {
+				t.Fatalf("read result %q = %#v; want unchanged versioned envelope", callID, envelope)
+			}
+		}
+		if !foundCall || !foundEnvelope {
+			t.Fatalf("read %q was not retained with its call and result: call=%t envelope=%t", callID, foundCall, foundEnvelope)
+		}
+	}
+	for index, marker := range []string{"firstReadMarker", "secondReadMarker", "thirdReadMarker", "fourthReadMarker"} {
 		if !strings.Contains(joined, marker) {
-			t.Fatalf("sequential reduction lost %q", marker)
+			t.Fatalf("reduced history lost sequential read %d (%q):\n%s", index+1, marker, joined)
 		}
 	}
-	if strings.Contains(joined, "stale sequential source ") {
-		t.Fatal("forced reduction left the older sequential read payload model-visible")
+	if strings.Contains(joined, "[Old tool result content cleared]") {
+		t.Fatal("read result was replaced with the age-based clearing placeholder")
 	}
-}
-
-func TestProjectEinoAssistantReductionDoesNotProtectPartialOrFailedReads(t *testing.T) {
-	messages := []*schema.Message{
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "complete-read",
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      projectToolReadFile,
-				Arguments: `{"file_path":"src/complete.jsx","limit":2000}`,
-			},
-		}}),
-		schema.ToolMessage(`{"path":"src/complete.jsx","content":"complete","complete":true,"version":"sha256:complete"}`, "complete-read", schema.WithToolName(projectToolReadFile)),
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "partial-read",
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      projectToolReadFile,
-				Arguments: `{"file_path":"src/partial.jsx","offset":1,"limit":20}`,
-			},
-		}}),
-		schema.ToolMessage(`{"path":"src/partial.jsx","content":"partial","complete":false,"version":"sha256:partial"}`, "partial-read", schema.WithToolName(projectToolReadFile)),
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "failed-read",
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      projectToolReadFile,
-				Arguments: `{"file_path":"src/failed.jsx","limit":2000}`,
-			},
-		}}),
-		schema.ToolMessage(`{"error":"source unavailable"}`, "failed-read", schema.WithToolName(projectToolReadFile)),
+	if !strings.Contains(joined, projectEinoAssistantWorkspaceMutationEvidencePrefix) {
+		t.Fatalf("mutation compaction evidence missing from reduced history: %s", joined)
 	}
-	protected := projectEinoAssistantLatestCompleteReadCallIDs(messages)
-	if _, ok := protected["complete-read"]; !ok {
-		t.Fatalf("complete read was not protected: %#v", protected)
-	}
-	for _, id := range []string{"partial-read", "failed-read"} {
-		if _, ok := protected[id]; ok {
-			t.Fatalf("%s unexpectedly protected: %#v", id, protected)
+	for _, marker := range []string{"const firstReadMarker = true;", "const secondReadMarker = true;", "const thirdReadMarker = true;", "const fourthReadMarker = true;"} {
+		if !strings.Contains(joined, marker) {
+			t.Fatalf("read body was not retained after reduction: %q", marker)
 		}
 	}
 }
 
-func TestProjectEinoAssistantReductionProtectionContextIsRequestLocal(t *testing.T) {
-	controller := &projectEinoAssistantReductionController{
-		ChatModelAgentMiddleware: &adk.BaseChatModelAgentMiddleware{},
-	}
-	stateForA := &adk.ChatModelAgentState{Messages: []*schema.Message{
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "request-a",
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      projectToolReadFile,
-				Arguments: `{"file_path":"src/A.jsx"}`,
-			},
-		}}),
-		schema.ToolMessage(`{"path":"src/A.jsx","complete":true,"version":"sha256:a"}`, "request-a", schema.WithToolName(projectToolReadFile)),
-	}}
-	stateForB := &adk.ChatModelAgentState{Messages: []*schema.Message{
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "request-b",
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      projectToolReadFile,
-				Arguments: `{"file_path":"src/B.jsx"}`,
-			},
-		}}),
-		schema.ToolMessage(`{"path":"src/B.jsx","complete":true,"version":"sha256:b"}`, "request-b", schema.WithToolName(projectToolReadFile)),
-	}}
-	ctxA, _, err := controller.BeforeModelRewriteState(context.Background(), stateForA, &adk.ModelContext{})
-	if err != nil {
-		t.Fatalf("request A reduction: %v", err)
-	}
-	ctxB, _, err := controller.BeforeModelRewriteState(context.Background(), stateForB, &adk.ModelContext{})
-	if err != nil {
-		t.Fatalf("request B reduction: %v", err)
-	}
-	protectedA, ok := ctxA.Value(projectEinoAssistantReductionProtectedReadCallIDsContextKey{}).(map[string]struct{})
-	if !ok {
-		t.Fatal("request A protection set missing")
-	}
-	protectedB, ok := ctxB.Value(projectEinoAssistantReductionProtectedReadCallIDsContextKey{}).(map[string]struct{})
-	if !ok {
-		t.Fatal("request B protection set missing")
-	}
-	if _, ok := protectedA["request-a"]; !ok {
-		t.Fatalf("request A protection set = %#v", protectedA)
-	}
-	if _, ok := protectedA["request-b"]; ok {
-		t.Fatalf("request A leaked request B ID: %#v", protectedA)
-	}
-	if _, ok := protectedB["request-b"]; !ok {
-		t.Fatalf("request B protection set = %#v", protectedB)
-	}
-	if _, ok := protectedB["request-a"]; ok {
-		t.Fatalf("request B leaked request A ID: %#v", protectedB)
-	}
-}
+func TestProjectEinoAssistantReductionProjectedReadRemainsBoundedAndNonAuthoritative(t *testing.T) {
+	const maxBytes = projectEinoAssistantModelToolOutputMaxBytes
+	content := "// projected App.jsx\n" + strings.Repeat("const projectedReadMarker = true;\n", 1200)
+	rawRead := `{"path":"src/App.jsx","content":` + quoteJSON(content) + `,"size":100000,"version":"sha256:projected-app","complete":true}`
 
-func TestProjectEinoAssistantReductionExcludesTruncatedReadAfterModelProjection(t *testing.T) {
-	middleware, err := projectEinoAssistantReductionMiddleware(context.Background())
-	if err != nil {
-		t.Fatalf("create reduction middleware: %v", err)
+	projectedRead := projectEinoAssistantTruncateModelToolOutput(rawRead, maxBytes)
+	if projectedRead == rawRead || len(projectedRead) > maxBytes {
+		t.Fatalf("projected read is %d bytes; want a changed result within %d", len(projectedRead), maxBytes)
 	}
+	if !utf8.ValidString(projectedRead) {
+		t.Fatal("projected read is not valid UTF-8")
+	}
+	var projected struct {
+		Path                     string `json:"path"`
+		Content                  string `json:"content"`
+		Version                  string `json:"version"`
+		Complete                 bool   `json:"complete"`
+		ModelProjectionTruncated bool   `json:"modelProjectionTruncated"`
+	}
+	if err := json.Unmarshal([]byte(projectedRead), &projected); err != nil {
+		t.Fatalf("projected read is not valid JSON: %v\n%s", err, projectedRead)
+	}
+	if projected.Path != "src/App.jsx" || projected.Version != "" || projected.Complete || !projected.ModelProjectionTruncated {
+		t.Fatalf("projected read metadata = %#v; want bounded, non-authoritative evidence", projected)
+	}
+	if !strings.Contains(projected.Content, "projected App.jsx") ||
+		!strings.Contains(projected.Content, projectEinoAssistantToolOutputTruncationNotice) {
+		t.Fatalf("projected read content lost bounded evidence: %q", projected.Content)
+	}
+
+	// Put the projected read before the two retained suffix groups. Reduction
+	// must still leave the exact bounded, non-authoritative envelope untouched
+	// because read_file is excluded from age-based clearing.
 	largeRequest := strings.Repeat("workspace context ", 4000)
-	largeContent := "// projected App.jsx\n" + strings.Repeat("const projectedReadMarker = true;\n", 1000)
-	rawRead := `{"path":"src/App.jsx","content":` + quoteJSON(largeContent) + `,"size":100000,"version":"sha256:projected-app","complete":true}`
-	projectedRead := projectEinoAssistantTruncateModelToolOutput(rawRead, projectEinoAssistantModelToolOutputMaxBytes)
-	if projectedRead == rawRead || len(projectedRead) > projectEinoAssistantModelToolOutputMaxBytes {
-		t.Fatalf("projection did not truncate read result: %d bytes", len(projectedRead))
-	}
-	protected := projectEinoAssistantLatestCompleteReadCallIDs([]*schema.Message{
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:       "projected-read",
-			Function: schema.FunctionCall{Name: projectToolReadFile, Arguments: `{"file_path":"src/App.jsx","limit":2000}`},
-		}}),
-		schema.ToolMessage(projectedRead, "projected-read", schema.WithToolName(projectToolReadFile)),
-	})
-	if _, ok := protected["projected-read"]; ok {
-		t.Fatalf("truncated projected read retained complete-read protection: %s", projectedRead)
-	}
+	largeMutationMessage := strings.Repeat("mutation payload ", 5000)
 	messages := []*schema.Message{
 		schema.SystemMessage("You are an App Studio implementation assistant."),
 		schema.UserMessage(largeRequest),
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "mutation-call",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      projectToolEditFile,
+				Arguments: `{"path":"src/App.jsx","oldString":"before","newString":"after"}`,
+			},
+		}}),
+		schema.ToolMessage(`{"operation":"edit_file","path":"src/App.jsx","changed":true,"message":`+quoteJSON(largeMutationMessage)+`}`, "mutation-call", schema.WithToolName(projectToolEditFile)),
 		schema.AssistantMessage("", []schema.ToolCall{{
 			ID:   "projected-read",
 			Type: "function",
@@ -333,24 +204,26 @@ func TestProjectEinoAssistantReductionExcludesTruncatedReadAfterModelProjection(
 			},
 		}}),
 		schema.ToolMessage(projectedRead, "projected-read", schema.WithToolName(projectToolReadFile)),
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "failed-edit-after-projection",
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      projectToolEditFile,
-				Arguments: `{"path":"src/App.jsx","oldString":"stale","newString":"attempt"}`,
-			},
-		}}),
-		schema.ToolMessage(`{"operation":"edit_file","path":"src/App.jsx","status":"failed","message":"stale source"}`, "failed-edit-after-projection", schema.WithToolName(projectToolEditFile)),
-		schema.AssistantMessage("", []schema.ToolCall{{
-			ID:   "small-read-after-projection",
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      projectToolReadFile,
-				Arguments: `{"file_path":"src/Confetti.jsx","limit":2000}`,
-			},
-		}}),
-		schema.ToolMessage(`{"path":"src/Confetti.jsx","content":"small","complete":true,"version":"sha256:confetti"}`, "small-read-after-projection", schema.WithToolName(projectToolReadFile)),
+	}
+	tailPaths := []string{"src/tail-one.jsx", "src/tail-two.jsx"}
+	tailCallIDs := []string{"tail-read-1", "tail-read-2"}
+	for index, path := range tailPaths {
+		callID := tailCallIDs[index]
+		messages = append(messages,
+			schema.AssistantMessage("", []schema.ToolCall{{
+				ID:   callID,
+				Type: "function",
+				Function: schema.FunctionCall{
+					Name:      projectToolReadFile,
+					Arguments: `{"file_path":"` + path + `","limit":2000}`,
+				},
+			}}),
+			schema.ToolMessage(`{"path":"`+path+`","content":"tail","complete":true,"version":"sha256:`+callID+`"}`, callID, schema.WithToolName(projectToolReadFile)),
+		)
+	}
+	middleware, err := projectEinoAssistantReductionMiddleware(context.Background())
+	if err != nil {
+		t.Fatalf("create reduction middleware: %v", err)
 	}
 	_, rewritten, err := middleware.BeforeModelRewriteState(
 		context.Background(),
@@ -360,12 +233,21 @@ func TestProjectEinoAssistantReductionExcludesTruncatedReadAfterModelProjection(
 	if err != nil {
 		t.Fatalf("reduce projected read messages: %v", err)
 	}
-	joined := make([]string, 0, len(rewritten.Messages))
+	foundProjectedRead := false
 	for _, message := range rewritten.Messages {
-		joined = append(joined, message.Content)
+		if message.Role != schema.Tool || message.ToolCallID != "projected-read" {
+			continue
+		}
+		if foundProjectedRead {
+			t.Fatal("projected read result appeared more than once")
+		}
+		foundProjectedRead = true
+		if message.Content != projectedRead {
+			t.Fatalf("projected read changed during reduction: got %d bytes, want exact %d-byte envelope", len(message.Content), len(projectedRead))
+		}
 	}
-	if strings.Contains(strings.Join(joined, "\n"), "projectedReadMarker") {
-		t.Fatal("truncated read remained protected from reduction")
+	if !foundProjectedRead {
+		t.Fatal("projected read outside the suffix was not retained")
 	}
 }
 

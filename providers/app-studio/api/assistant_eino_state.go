@@ -116,10 +116,6 @@ type projectEinoAssistantRunState struct {
 	repeatedActionToolName           string
 	repeatedActionCount              int
 	runtimeWarmupAttempts            int
-	noProgressModelCallCount         int
-	actionBatchModelCall             int
-	actionBatchObserved              bool
-	actionBatchMadeProgress          bool
 	modelCallOrdinal                 int
 	transientToolResults             map[string]string
 	transientPreviewImages           map[string]projectEinoAssistantTransientPreviewImage
@@ -827,12 +823,6 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.repeatedActionToolName = projectToolBaseName(state.RepeatedActionToolName)
 	s.repeatedActionCount = min(max(state.RepeatedActionCount, 0), projectEinoAssistantRepeatedActionLimit)
 	s.runtimeWarmupAttempts = min(max(state.RuntimeWarmupAttempts, 0), projectEinoAssistantRepeatedActionLimit)
-	// The durable counter tracks consecutive model calls without progress.
-	// Bound restored state so a malformed checkpoint cannot disable the guard.
-	s.noProgressModelCallCount = min(max(state.NoProgressModelCallCount, 0), projectEinoAssistantRepeatedActionLimit)
-	s.actionBatchModelCall = max(state.ActionBatchModelCall, 0)
-	s.actionBatchObserved = state.ActionBatchObserved
-	s.actionBatchMadeProgress = state.ActionBatchMadeProgress
 	s.modelCallOrdinal = max(state.ModelCallOrdinal, 0)
 	s.acceptedProgressCount = min(max(state.AcceptedProgressCount, 0), projectEinoAssistantProgressReminderMaxAcceptedCount)
 	s.lastAcceptedProgressModelCall = max(state.LastAcceptedProgressModelCall, 0)
@@ -853,11 +843,6 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	}
 	if s.lastAcceptedProgressModelCall > s.modelCallOrdinal {
 		s.lastAcceptedProgressModelCall = 0
-	}
-	if s.actionBatchModelCall > s.modelCallOrdinal {
-		s.actionBatchModelCall = 0
-		s.actionBatchObserved = false
-		s.actionBatchMadeProgress = false
 	}
 	if s.repeatedActionSignature == "" || s.repeatedActionToolName == "" || s.repeatedActionCount == 0 {
 		s.repeatedActionSignature = ""
@@ -1792,34 +1777,6 @@ func (s *projectEinoAssistantRunState) MutationRecoveryBlockedError() error {
 	return newProjectEinoAssistantRecoveryBlockedError(selected, s.verifiedMutationRevision)
 }
 
-// NoProgressModelCallError returns the terminal guard for consecutive model
-// call batches whose completed actions did not establish fresh progress. The
-// action name is informational only; the bound is intentionally independent of
-// the repeated-action signature so alternating unchanged reads are included.
-func (s *projectEinoAssistantRunState) NoProgressModelCallError() error {
-	if s == nil {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.noProgressModelCallCount < projectEinoAssistantNoProgressModelCallLimit {
-		return nil
-	}
-	toolName := s.repeatedActionToolName
-	if s.noProgressModelCallCount > s.repeatedActionCount {
-		// The no-progress window is broader than one action signature. Do not
-		// describe alternating reads as an exact repeated-tool loop.
-		toolName = ""
-	}
-	return &projectEinoAssistantNoProgressError{
-		ToolName:         toolName,
-		Calls:            s.noProgressModelCallCount,
-		Limit:            projectEinoAssistantNoProgressModelCallLimit,
-		SourceRevision:   s.sourceMutationRevision,
-		VerifiedRevision: s.verifiedMutationRevision,
-	}
-}
-
 // RecordMutationRecoveryReference records a server-generated public action ID
 // that belongs to this run. A model-supplied recoveryOf value is accepted only
 // when it is present in this set; paths are deliberately never used as a
@@ -1920,7 +1877,7 @@ func (s *projectEinoAssistantRunState) RuntimeWarmupAttempts() int {
 	return s.runtimeWarmupAttempts
 }
 
-func (s *projectEinoAssistantRunState) RecordCompletedAction(name, arguments string, madeProgress bool) {
+func (s *projectEinoAssistantRunState) RecordCompletedAction(name, arguments string) {
 	if s == nil {
 		return
 	}
@@ -1935,22 +1892,8 @@ func (s *projectEinoAssistantRunState) RecordCompletedAction(name, arguments str
 		s.repeatedActionToolName = name
 		s.repeatedActionCount = 1
 	}
-	if s.actionBatchModelCall != s.modelCallOrdinal {
-		s.actionBatchModelCall = s.modelCallOrdinal
-		s.actionBatchObserved = false
-		s.actionBatchMadeProgress = false
-	}
-	wasObserved := s.actionBatchObserved
-	s.actionBatchObserved = true
-	if madeProgress {
-		s.actionBatchMadeProgress = true
-		s.noProgressModelCallCount = 0
-		return
-	}
-	if !wasObserved && !s.actionBatchMadeProgress {
-		s.noProgressModelCallCount++
-	}
-	s.repeatedActionToolName = name
+	// Keep the repeated signature/count as informational replay and audit
+	// context; it never terminates a model turn.
 }
 
 func (s *projectEinoAssistantRunState) RepeatedCompletedAction() (string, int) {
@@ -1959,9 +1902,6 @@ func (s *projectEinoAssistantRunState) RepeatedCompletedAction() (string, int) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.noProgressModelCallCount > s.repeatedActionCount {
-		return "", s.noProgressModelCallCount
-	}
 	return s.repeatedActionToolName, s.repeatedActionCount
 }
 
@@ -2258,10 +2198,6 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		RepeatedActionToolName:           s.repeatedActionToolName,
 		RepeatedActionCount:              s.repeatedActionCount,
 		RuntimeWarmupAttempts:            s.runtimeWarmupAttempts,
-		NoProgressModelCallCount:         s.noProgressModelCallCount,
-		ActionBatchModelCall:             s.actionBatchModelCall,
-		ActionBatchObserved:              s.actionBatchObserved,
-		ActionBatchMadeProgress:          s.actionBatchMadeProgress,
 		ModelCallOrdinal:                 s.modelCallOrdinal,
 		AcceptedProgressCount:            s.acceptedProgressCount,
 		LastAcceptedProgressModelCall:    s.lastAcceptedProgressModelCall,

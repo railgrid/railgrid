@@ -184,7 +184,9 @@ func mapGraphQLError(errs []gqlError, res *Resource, name string) error {
 		return apierrors.NewNotFound(gr, name)
 	case strings.Contains(low, "already exists"):
 		return apierrors.NewAlreadyExists(gr, name)
-	case strings.Contains(low, "conflict"):
+	case strings.Contains(low, "conflict"),
+		strings.Contains(low, "object has been modified"),
+		strings.Contains(low, "object was modified"):
 		return apierrors.NewConflict(gr, name, fmt.Errorf("%s", first))
 	}
 	msgs := make([]string, 0, len(errs))

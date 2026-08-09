@@ -17,6 +17,7 @@ import {
   GitBranch,
   Globe,
   GripVertical,
+  Link2,
   Loader2,
   MessageSquare,
   PanelRight,
@@ -89,6 +90,7 @@ import ApprovalModePicker from './ApprovalModePicker.vue'
 import ResponseModePicker, { type AssistantResponseMode } from './ResponseModePicker.vue'
 import PreviewActionsMenu from './PreviewActionsMenu.vue'
 import NewProjectWizard from './NewProjectWizard.vue'
+import ProjectIntegrations from './ProjectIntegrations.vue'
 import {
   ConversationRunController,
   abortedConversationSnapshot,
@@ -951,6 +953,13 @@ const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
     builtInTab: 'providers',
   },
   {
+    id: 'builtin:integrations',
+    title: 'Integrations',
+    subtitle: 'Review automatic provider actions for this project',
+    icon: Link2,
+    builtInTab: 'integrations',
+  },
+  {
     id: 'builtin:publishing',
     title: 'Publish & Promote',
     subtitle: 'Check the build and promote your app to production',
@@ -1768,6 +1777,7 @@ async function openNewProjectComposer() {
   selectedLandingCategory.value = null
   prompt.value = ''
   error.value = null
+  wizardOpen.value = false
   props.navigate(CREATE_PROJECT_ROUTE)
   await nextTick()
   promptRef.value?.focus()
@@ -1777,6 +1787,7 @@ function closeNewProjectComposer() {
   selectedLandingCategory.value = null
   prompt.value = ''
   error.value = null
+  wizardOpen.value = false
   props.navigate('')
 }
 
@@ -1939,17 +1950,25 @@ async function clearLLMKey() {
 async function createProjectFromPrompt() {
   const content = prompt.value.trim()
   if (!content) return
-  // Blueprint-first: submitting the intake opens the confirmation step
-  // (template + starter code) rather than creating one-shot. The actual
-  // create runs from the blueprint via onWizardCreate, which re-checks setup.
+  // Blueprint-first: submitting the landing idea hands off to a full creation
+  // surface. The actual create still runs from onWizardCreate, which re-checks
+  // setup before using the durable project/thread path below.
   wizardOpen.value = true
 }
 
-// The mini creation wizard: an opt-in confirm step (blueprint → template +
-// scaffold preview → create) over the same create path. The one-shot prompt
-// entry above still works unchanged; the wizard just supplies a confirmed
-// template/name before kicking off.
+// The creation surface is continuous from the landing composer: its planning
+// and review states replace the composer without losing the submitted idea.
 const wizardOpen = ref(false)
+
+async function onWizardCancel() {
+  // Keep prompt.value intact so editing/back returns to the landing composer
+  // with the exact idea that was submitted. NewProjectWizard invalidates its
+  // pending plan request before emitting cancel.
+  wizardOpen.value = false
+  await nextTick()
+  promptRef.value?.focus()
+  promptRef.value?.setSelectionRange(prompt.value.length, prompt.value.length)
+}
 
 async function onWizardCreate(payload: { prompt: string; templateName?: string; displayName?: string }) {
   wizardOpen.value = false
@@ -2898,6 +2917,7 @@ function workbenchTabIcon(tab: WorkbenchTabDescriptor): Component {
   if (tab.kind === 'code') return FileCode
   if (tab.kind === 'review') return ClipboardList
   if (tab.kind === 'providers') return PanelRight
+  if (tab.kind === 'integrations') return Link2
   if (tab.kind === 'publishing') return Globe
   if (tab.kind === 'settings') return Settings2
   if (tab.kind === 'skills') return Plug
@@ -4108,6 +4128,18 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       <div v-else>
         <main class="flex min-h-0 flex-1 items-center justify-center py-4">
           <section class="w-full max-w-[1060px]">
+            <template v-if="wizardOpen">
+              <NewProjectWizard
+                :ctx="props.ctx"
+                :initial-prompt="prompt"
+                :disabled="busy || !canStartProjectFromPrompt"
+                :disabled-reason="createPromptSubmitTitle"
+                @create="onWizardCreate"
+                @cancel="onWizardCancel"
+              />
+            </template>
+
+            <template v-else>
             <div class="mx-auto flex max-w-[760px] flex-col items-center text-center">
               <h2 class="text-[44px] font-semibold leading-[1.05] text-text-primary md:text-[56px]">
                 What do you want to build?
@@ -4155,22 +4187,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     :title="createPromptSubmitTitle"
                   >
                     Continue
-                    <ArrowRight class="h-4 w-4" :stroke-width="2" />
+                    <ArrowRight class="h-4 w-4" :stroke-width="1.75" />
                   </button>
                 </div>
-              </div>
-              <div
-                v-if="wizardOpen"
-                class="mx-auto mt-4 max-w-[860px] rounded-lg border border-border-subtle bg-surface-raised p-4 text-left shadow-sm"
-              >
-                <NewProjectWizard
-                  :ctx="props.ctx"
-                  :initial-prompt="prompt"
-                  :disabled="busy || !canStartProjectFromPrompt"
-                  :disabled-reason="createPromptSubmitTitle"
-                  @create="onWizardCreate"
-                  @cancel="wizardOpen = false"
-                />
               </div>
               <div
                 v-if="createSetupVisible"
@@ -4294,6 +4313,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 </button>
               </div>
             </div>
+            </template>
           </section>
         </main>
       </div>
@@ -4326,7 +4346,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </div>
           <div class="flex min-w-0 items-center gap-1.5 truncate text-[11px] text-text-muted">
             <template v-if="selected?.repository">
-              <GitBranch class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+              <GitBranch class="h-3 w-3 shrink-0" :stroke-width="2" />
               <span class="truncate">{{ selected.repository.name || selected.repository.ref }}</span>
             </template>
             <template v-else>
@@ -4362,7 +4382,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-muted"
                   :class="llmSettings?.configured ? 'text-success' : 'text-accent'"
                 >
-                  <Check v-if="llmSettings?.configured" class="h-4 w-4" :stroke-width="2" />
+                  <Check v-if="llmSettings?.configured" class="h-4 w-4" :stroke-width="1.75" />
                   <Settings2 v-else class="h-4 w-4" :stroke-width="1.75" />
                 </div>
                 <div class="min-w-0 flex-1">
@@ -4432,7 +4452,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     class="inline-flex max-w-full items-center gap-1 rounded-sm border border-border-subtle bg-surface-raised px-2 py-1 text-[10px] text-text-secondary"
                     :title="`${skill.name} · ${skill.scope}`"
                   >
-                    <Plug class="h-3 w-3 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
+                    <Plug class="h-3 w-3 shrink-0 text-accent" :stroke-width="2" aria-hidden="true" />
                     <span class="max-w-40 truncate font-medium text-text-primary">{{ skill.name }}</span>
                     <span class="max-w-24 truncate text-text-muted">{{ skill.scope }}</span>
                   </span>
@@ -4473,7 +4493,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       <span>Worked for {{ assistantWorkedLabel(message) }}</span>
                       <span v-if="message.viewStatus === 'interrupted'" class="inline-flex items-center gap-1 text-warning/80" title="The assistant stopped before completing this turn">
                         <span class="text-text-muted" aria-hidden="true">·</span>
-                        <TriangleAlert class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
+                        <TriangleAlert class="h-3 w-3" :stroke-width="2" aria-hidden="true" />
                         <span>Interrupted</span>
                       </span>
                       <ChevronRight
@@ -4559,7 +4579,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   aria-atomic="true"
                   title="The assistant stopped before completing this turn"
                 >
-                  <TriangleAlert class="h-3 w-3 text-warning/80" :stroke-width="1.75" aria-hidden="true" />
+                  <TriangleAlert class="h-3 w-3 text-warning/80" :stroke-width="2" aria-hidden="true" />
                   Interrupted
                 </div>
               </div>
@@ -4761,7 +4781,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               aria-label="Stop generating"
               @click="cancelMessageStream"
             >
-              <Square class="h-4 w-4 fill-current" :stroke-width="2" />
+              <Square class="h-4 w-4 fill-current" :stroke-width="1.75" />
             </button>
             <button
               v-else-if="activeAssistantRun?.status === 'stopping'"
@@ -4771,7 +4791,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               title="Stopping"
               aria-label="Stopping"
             >
-              <Loader2 class="h-4 w-4 animate-spin" :stroke-width="2" />
+              <Loader2 class="h-4 w-4 animate-spin" :stroke-width="1.75" />
             </button>
             <button
               v-else
@@ -4780,7 +4800,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               :title="llmSettings?.configured ? 'Send' : 'Configure LLM settings before sending'"
               :aria-label="llmSettings?.configured ? 'Send' : 'Configure LLM settings before sending'"
             >
-              <ArrowUp class="h-4 w-4" :stroke-width="2" />
+              <ArrowUp class="h-4 w-4" :stroke-width="1.75" />
             </button>
           </div>
         </form>
@@ -5479,6 +5499,21 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       </div>
 
       <div
+        v-else-if="activeWorkbenchTab?.kind === 'integrations'"
+        class="min-h-0 flex-1 overflow-auto bg-surface"
+        role="tabpanel"
+        :id="workbenchTabPanelID(activeWorkbenchTab)"
+        :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
+      >
+        <ProjectIntegrations
+          :ctx="props.ctx"
+          :project-name="selected?.name || ''"
+          :providers="providers"
+          :providers-loading="providersLoading"
+        />
+      </div>
+
+      <div
         v-else-if="activeWorkbenchTab?.kind === 'provider'"
         class="relative min-h-0 flex-1 overflow-hidden bg-surface"
         role="tabpanel"
@@ -5534,7 +5569,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             title="Close"
             @click="closeSettings"
           >
-            <X class="h-4 w-4" :stroke-width="2" />
+            <X class="h-4 w-4" :stroke-width="1.75" />
           </button>
         </header>
 
@@ -5583,7 +5618,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 title="Save project details"
               >
                 <Loader2 v-if="projectSettingsSaving" class="h-4 w-4 animate-spin" :stroke-width="1.75" />
-                <Check v-else class="h-4 w-4" :stroke-width="2" />
+                <Check v-else class="h-4 w-4" :stroke-width="1.75" />
                 Save project
               </button>
             </div>
@@ -5732,7 +5767,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   :disabled="llmSaving || !llmModel.trim() || Boolean(llmBaseURLError)"
                 >
                   <Loader2 v-if="llmSaving" class="h-4 w-4 animate-spin" :stroke-width="1.75" />
-                  <Check v-else class="h-4 w-4" :stroke-width="2" />
+                  <Check v-else class="h-4 w-4" :stroke-width="1.75" />
                   Save settings
                 </button>
               </div>

@@ -245,6 +245,63 @@ retained historical proposal in
 > provider's published API, but it owns the failure handling when a
 > prerequisite binding isn't present.
 
+### Provider Actions
+
+Provider Actions extends the isolation boundary with catalog-declared,
+versioned capabilities served on the provider's **embedded virtual
+workspace** — the same resource-addressed data-plane shape as the
+infrastructure `dataplane/` verbs. App Studio stores a non-owning
+`providerReference`, grants an exact provider action, resource reference, and
+schema digest, and **materializes the grant as kcp RBAC** (`create` on the
+action's virtual subresource, e.g. `tables/query_table`, name-scoped) on the
+workload identity. Invocations ride the ordinary hub backend proxy at
+`/services/providers/{name}/actions/clusters/{clusterID}/{resource}/{rname}/{action}/{version}`;
+the owning provider authorizes them as the caller with two SSAR gates
+(visibility on the resource, verb on the subresource) — uniform for humans
+and workloads, mirroring how data-plane exec is authorized. There is no
+dedicated hub action router; the proxy reserves only the hub-internal
+`/workload-identities/*` prefix. The current shipped action is Databricks
+`query_table/v1`; the generic catalog also carries schemas, execution mode,
+read-only/risk/idempotency policy, limits, consent, and deprecation metadata.
+See the [Provider Actions contract and verification
+guide](./provider-actions.md) for the workload exchange, SDK, provider
+boundary, and verification commands, and
+[cross-provider-simplification.md](./cross-provider-simplification.md) for
+how this pattern generalizes (decision #6's `spec.virtualWorkspace.url` dial
+target is retired in favor of reserved prefixes on `spec.backend.url`).
+
+### Provider assistant skills
+
+`CatalogEntry.spec.assistantSkills` is an inline, versioned package contract
+for read-only App Studio guidance. Each package carries `packageName`,
+`version`, a complete raw `SKILL.md`, optional package-relative resources, and
+a canonical `sha256:` digest. The digest covers the package identity, version,
+document bytes, and resources in deterministic path order; it is provenance
+and integrity, not an authority grant. The authenticated hub
+`/api/providers` catalog distributes validated inline bytes. It never follows
+a provider URL and does not grant credentials, tools, models, permissions, or
+runtime authority.
+
+Publication is bounded: at most 64 packages per `CatalogEntry`, each document
+is at most 32 KiB, each supporting resource at most 64 KiB, and all documents
+and resources for one provider entry are at most 512 KiB. Invalid packages are
+isolated with bounded sanitized warnings where possible. These limits apply to
+the published artifact; they do not make a skill trusted instructions.
+
+App Studio projects expose valid packages as read-only, provider-qualified
+system skills (`providers/<provider>/<packageName>`). They use the existing
+catalog progressive-disclosure flow: metadata discovery, explicit
+`load_skill`, bounded `read_skill_resource`, activation policy, and immutable
+catalog/digest snapshots for a turn. Distribution is not provider or action
+enablement: a published provider package follows the system-skill default of
+enabled, and each project may disable or re-enable the qualified skill. A
+transient provider heartbeat/readiness change does not revoke declared
+guidance. If the request has no bearer or the provider skill catalog is
+temporarily unavailable, App Studio preserves bundled and project skills and
+emits only a bounded sanitized warning where applicable. Provider Actions and
+their grants remain the authoritative, fail-closed path for data access or
+other effects; a skill can never create or widen that authority.
+
 ---
 
 ## CRDs

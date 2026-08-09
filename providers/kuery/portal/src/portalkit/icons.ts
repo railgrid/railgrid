@@ -56,6 +56,7 @@ export type IconName =
   | 'dollar'
   | 'refresh'
   | 'flask'
+  | 'alert-triangle'
 
 // Each entry is the inner markup of a 24×24 stroke icon.
 const PATHS: Record<IconName, string> = {
@@ -102,6 +103,7 @@ const PATHS: Record<IconName, string> = {
   dollar: '<path d="M12 2v20M17 6a4 4 0 0 0-4-3H11a3.5 3.5 0 0 0 0 7h2a3.5 3.5 0 0 1 0 7h-2a4 4 0 0 1-4-3"/>',
   refresh: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/>',
   flask: '<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4A2 2 0 0 0 19 18l-5-9V3M7.5 14h9"/>',
+  'alert-triangle': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 20h16a2 2 0 0 0 1.73-2Z"/><path d="M12 9v4M12 17h.01"/>',
 }
 
 // Self-inject the .ic sizing rule once (browser only), so any portal that

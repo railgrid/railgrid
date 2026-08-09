@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260615-5246b68.catalogentries.providers.kedge.faros.sh
+  name: v260806-77afd67d.catalogentries.providers.kedge.faros.sh
 spec:
   group: providers.kedge.faros.sh
   names:
@@ -63,6 +63,190 @@ spec:
         spec:
           description: CatalogEntrySpec defines the desired state of a CatalogEntry.
           properties:
+            actions:
+              description: |-
+                Actions declares the versioned capabilities that this provider exposes
+                through its action transport. The list is keyed by the canonical action
+                ID (for example, query_table/v1) so a provider cannot publish duplicate
+                versions of the same action.
+              items:
+                description: |-
+                  ProviderActionSpec declares one provider-owned, versioned action. The
+                  declaration is intentionally complete: callers can inspect the input and
+                  output schemas and policy metadata without learning the provider's backend
+                  URL or credential model.
+                properties:
+                  boundResource:
+                    description: |-
+                      BoundResource identifies the provider-owned resource that supplies the
+                      action's server-resolved identity.
+                    properties:
+                      apiVersion:
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                      kind:
+                        maxLength: 63
+                        minLength: 1
+                        type: string
+                      resource:
+                        maxLength: 63
+                        minLength: 1
+                        type: string
+                    required:
+                    - apiVersion
+                    - kind
+                    - resource
+                    type: object
+                  consent:
+                    description: Consent describes whether a caller must explicitly
+                      approve invocation.
+                    properties:
+                      prompt:
+                        description: Prompt is shown when Required is true.
+                        maxLength: 512
+                        type: string
+                      required:
+                        type: boolean
+                      scope:
+                        description: Scope identifies the consent boundary, such as
+                          tenant or resource.
+                        maxLength: 128
+                        type: string
+                    required:
+                    - required
+                    type: object
+                  deprecation:
+                    description: |-
+                      Deprecation carries optional lifecycle metadata for an action that should
+                      no longer be selected for new integrations.
+                    properties:
+                      deprecated:
+                        type: boolean
+                      message:
+                        maxLength: 512
+                        type: string
+                      replacementID:
+                        maxLength: 128
+                        type: string
+                      sunset:
+                        format: date-time
+                        type: string
+                    required:
+                    - deprecated
+                    type: object
+                  description:
+                    description: Description explains the bounded operation and its
+                      expected use.
+                    maxLength: 512
+                    type: string
+                  displayName:
+                    description: DisplayName is the human-readable label shown to
+                      action consumers.
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                  executionMode:
+                    description: |-
+                      ExecutionMode selects whether the action completes in the request or is
+                      represented by an asynchronous result handle.
+                    enum:
+                    - sync
+                    - async
+                    type: string
+                  id:
+                    description: |-
+                      ID is the canonical action identifier: a lowercase action name followed
+                      by a slash and a numeric version (for example query_table/v1).
+                    maxLength: 128
+                    minLength: 3
+                    pattern: ^[a-z][a-z0-9_-]{0,62}/v[1-9][0-9]{0,7}$
+                    type: string
+                  idempotency:
+                    description: Idempotency describes retry behavior for this action.
+                    enum:
+                    - inherent
+                    - keyed
+                    - none
+                    type: string
+                  inputSchema:
+                    description: |-
+                      InputSchema is the JSON Schema for caller-supplied input. Provider
+                      credentials and backend details must not appear in this schema.
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                  limits:
+                    description: Limits bounds execution and result materialization.
+                    properties:
+                      maxInputBytes:
+                        format: int64
+                        maximum: 1048576
+                        minimum: 1
+                        type: integer
+                      maxOutputBytes:
+                        format: int64
+                        maximum: 67108864
+                        minimum: 1
+                        type: integer
+                      maxResultItems:
+                        format: int64
+                        maximum: 10000
+                        minimum: 1
+                        type: integer
+                      timeoutSeconds:
+                        format: int64
+                        maximum: 3600
+                        minimum: 1
+                        type: integer
+                    required:
+                    - maxInputBytes
+                    - maxOutputBytes
+                    - maxResultItems
+                    - timeoutSeconds
+                    type: object
+                  outputSchema:
+                    description: OutputSchema is the JSON Schema for the bounded action
+                      result.
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                  readOnly:
+                    description: ReadOnly declares that the action does not mutate
+                      the bound resource.
+                    type: boolean
+                  risk:
+                    description: |-
+                      Risk is the provider-declared impact classification for consent and UI
+                      policy decisions.
+                    enum:
+                    - low
+                    - medium
+                    - high
+                    type: string
+                  schemaDigest:
+                    description: |-
+                      SchemaDigest is the digest of the canonical input/output schema envelope.
+                      It must be sha256:<64 lowercase hex digits> and match the schemas declared
+                      above.
+                    pattern: ^sha256:[a-f0-9]{64}$
+                    type: string
+                required:
+                - boundResource
+                - consent
+                - displayName
+                - executionMode
+                - id
+                - idempotency
+                - inputSchema
+                - limits
+                - outputSchema
+                - readOnly
+                - risk
+                - schemaDigest
+                type: object
+              type: array
+              x-kubernetes-list-map-keys:
+              - id
+              x-kubernetes-list-type: map
             apiExport:
               description: |-
                 APIExport declares the provider's kcp APIExport. Not yet honored by
@@ -113,6 +297,84 @@ spec:
               required:
               - name
               type: object
+            assistantSkills:
+              description: |-
+                AssistantSkills declares read-only App Studio skill packages supplied by
+                this provider. Packages are embedded in the CatalogEntry so the hub can
+                authenticate and validate the artifact without contacting a provider
+                runtime or learning any provider credentials. The App Studio projection
+                publishes these packages as provider-qualified system skills.
+              items:
+                description: |-
+                  ProviderAssistantSkillSpec declares one immutable, provider-supplied App
+                  Studio skill package. Skill is the complete raw SKILL.md document, including
+                  its YAML frontmatter and markdown body. The digest is the sha256 digest of
+                  the canonical package payload produced by ProviderAssistantSkillDigest.
+                properties:
+                  digest:
+                    description: Digest is the deterministic package integrity digest.
+                    pattern: ^sha256:[a-f0-9]{64}$
+                    type: string
+                  packageName:
+                    description: |-
+                      PackageName is the provider-local package identity. The hub qualifies it
+                      as providers/<provider>/<packageName> before exposing it to App Studio.
+                    maxLength: 128
+                    minLength: 1
+                    type: string
+                  resources:
+                    description: |-
+                      Resources are optional package-relative supporting files. They are
+                      included inline so no arbitrary provider URL or fetch capability is
+                      admitted into the skill source.
+                    items:
+                      description: |-
+                        ProviderAssistantSkillResource is one bounded, package-relative supporting
+                        file for a ProviderAssistantSkillSpec.
+                      properties:
+                        content:
+                          description: Content is UTF-8 resource content.
+                          maxLength: 65536
+                          type: string
+                        path:
+                          description: |-
+                            Path is relative to the provider skill package and must not contain
+                            traversal, absolute, or SKILL.md paths.
+                          maxLength: 256
+                          minLength: 1
+                          type: string
+                      required:
+                      - content
+                      - path
+                      type: object
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - path
+                    x-kubernetes-list-type: map
+                  skill:
+                    description: |-
+                      Skill is the complete raw SKILL.md document. App Studio parses the
+                      document using its strict, authority-free frontmatter contract.
+                    maxLength: 32768
+                    minLength: 1
+                    type: string
+                  version:
+                    description: Version is the provider-owned immutable package version.
+                    maxLength: 64
+                    minLength: 1
+                    type: string
+                required:
+                - digest
+                - packageName
+                - skill
+                - version
+                type: object
+              maxItems: 64
+              type: array
+              x-kubernetes-list-map-keys:
+              - packageName
+              x-kubernetes-list-type: map
             backend:
               description: |-
                 Backend declares the provider's custom HTTP backend (REST/GraphQL/WS).

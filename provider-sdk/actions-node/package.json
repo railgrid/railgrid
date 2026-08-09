@@ -1,0 +1,31 @@
+{
+  "name": "@crwilhit/kedge-actions-node",
+  "version": "0.1.0",
+  "description": "Server-side App Studio integration gateway client for generated apps",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "default": "./index.mjs"
+    }
+  },
+  "main": "./index.mjs",
+  "types": "./index.d.ts",
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

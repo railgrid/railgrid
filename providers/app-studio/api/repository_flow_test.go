@@ -451,7 +451,7 @@ func TestGenerateProjectAssistantStreamDiscoversDatabricksToolsForDataTableQuest
 		"tableRef",
 		"provider-databricks",
 		"Do not call provider backend URLs",
-		"Do not generate application code that queries Databricks tableRefs",
+		"server-side provider-neutral Kedge Actions SDK",
 		"do not embed Databricks credentials",
 	} {
 		if !strings.Contains(joined, want) {
@@ -484,6 +484,11 @@ func TestProjectAssistantWorkspaceInspectPromptUsesCanonicalReads(t *testing.T) 
 	prompt := projectSystemPromptForMode(project, repository, projectAssistantCollaborationModeDefault, false)
 	for _, want := range []string{
 		"Use the current project snapshot first, then bounded reads and searches",
+		"Repair-or-stop cadence after a failed preview/API/network/console/provider observation",
+		"at most one targeted fresh read/search answering a new question",
+		"one bounded repair attempt using authorized version-checked mutations",
+		"rerun the original failed observation once",
+		"Never claim recovery without later success evidence from rerunning that same observation",
 		"The source-mutation tools are create_file, replace_file, edit_file, delete_file, and move_file",
 		"use verify_development_runtime only when that evidence is relevant",
 		"Never call commit_project_files unless the user explicitly requested repository persistence",
@@ -1689,33 +1694,33 @@ func TestResumeProjectAssistantRunClearsStaleFollowUpInterruptWhenRunAlreadyClai
 	}
 }
 
-func TestGenerateProjectAssistantStreamStopsRepeatedToolLoopWithNoProgress(t *testing.T) {
+func TestGenerateProjectAssistantStreamContinuesRepeatedToolLoopUntilModelAnswer(t *testing.T) {
 	closing := "I inspected src/App.tsx."
 	reply, requests, err := runRepeatedReadFileAssistantStream(t, closing)
-	if !projectEinoAssistantNoProgressExceeded(err) {
-		t.Fatalf("generateProjectAssistantStream error = %v after %d requests, want typed no-progress terminal error", err, len(requests))
+	if err != nil {
+		t.Fatalf("generateProjectAssistantStream error = %v after %d repeated requests", err, len(requests))
 	}
-	if reply != "" {
-		t.Fatalf("reply = %q, want no manufactured assistant response", reply)
+	if reply != closing {
+		t.Fatalf("reply = %q, want model-authored closing answer", reply)
 	}
-	if got := projectAssistantToolBearingRequestCount(requests); got != projectEinoAssistantNoProgressModelCallLimit+1 {
-		t.Fatalf("tool-bearing LLM request count = %d, want one initial read plus %d stale turns", got, projectEinoAssistantNoProgressModelCallLimit)
+	if got := projectAssistantToolBearingRequestCount(requests); got != 13 {
+		t.Fatalf("tool-bearing LLM request count = %d, want 12 repeated reads plus one closing turn", got)
 	}
-	if len(requests) != projectEinoAssistantNoProgressModelCallLimit+1 {
-		t.Fatalf("LLM request count = %d, want the bounded no-progress window", len(requests))
+	if len(requests) != 13 {
+		t.Fatalf("LLM request count = %d, want 12 repeated reads plus one closing turn", len(requests))
 	}
 }
 
-func TestGenerateProjectAssistantStreamStopsRepeatedToolLoopWhenClosingAnswerIsEmpty(t *testing.T) {
+func TestGenerateProjectAssistantStreamDoesNotManufactureAnswerAfterRepeatedToolLoop(t *testing.T) {
 	reply, requests, err := runRepeatedReadFileAssistantStream(t, "")
-	if !projectEinoAssistantNoProgressExceeded(err) {
-		t.Fatalf("generateProjectAssistantStream error = %v after %d requests, want typed no-progress terminal error", err, len(requests))
+	if !errors.Is(err, errProjectAssistantNoOutput) {
+		t.Fatalf("generateProjectAssistantStream error = %v after %d requests, want no-output error", err, len(requests))
 	}
 	if reply != "" {
 		t.Fatalf("reply = %q, want no manufactured assistant response", reply)
 	}
-	if got := projectAssistantToolBearingRequestCount(requests); got != projectEinoAssistantNoProgressModelCallLimit+1 {
-		t.Fatalf("tool-bearing LLM request count = %d, want one initial read plus %d stale turns", got, projectEinoAssistantNoProgressModelCallLimit)
+	if got := projectAssistantToolBearingRequestCount(requests); got != 13 {
+		t.Fatalf("tool-bearing LLM request count = %d, want 12 repeated reads plus one empty closing turn", got)
 	}
 }
 
@@ -2026,8 +2031,9 @@ func TestProjectAssistantStoredContentPrefersFinalReply(t *testing.T) {
 func runRepeatedReadFileAssistantStream(t *testing.T, finalAnswer string) (string, []chatCompletionRequest, error) {
 	t.Helper()
 	t.Setenv(projectAssistantMaxIterationsEnv, strconv.Itoa(projectAssistantTestFiniteIterationCeiling))
-	steps := make([]repositoryFlowEinoModelStep, 0, projectEinoAssistantRepeatedActionLimit+2)
-	for i := 1; i <= projectEinoAssistantRepeatedActionLimit+1; i++ {
+	const repeatedReads = 12
+	steps := make([]repositoryFlowEinoModelStep, 0, repeatedReads+1)
+	for i := 1; i <= repeatedReads; i++ {
 		steps = append(steps, repositoryFlowEinoModelStep{Message: einoschema.AssistantMessage("", []einoschema.ToolCall{{
 			ID:   fmt.Sprintf("call-%d", i),
 			Type: "function",

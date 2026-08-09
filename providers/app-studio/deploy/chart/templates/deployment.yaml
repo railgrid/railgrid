@@ -1,4 +1,5 @@
 {{- $catalogEntryConfigMap := and .Values.catalogEntry.enabled .Values.catalogEntry.renderAsConfigMap -}}
+{{- $actionsCABundleConfigMap := .Values.hub.actionsCABundleConfigMap.name -}}
 {{- if ne (int .Values.replicaCount) 1 -}}
 {{- fail "app-studio replicaCount must be 1 because assistant project mutations require a single active writer" -}}
 {{- end -}}
@@ -28,9 +29,8 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "appstudio.serviceAccountName" . }}
-      # The provider uses the explicitly mounted workspace-admin kubeconfig;
-      # neither the provider nor its browser-worker sidecar should receive an
-      # ambient Kubernetes ServiceAccount token.
+      # The provider uses the explicitly mounted workspace-admin kubeconfig; it
+      # should not receive an ambient Kubernetes ServiceAccount token.
       automountServiceAccountToken: false
       {{- with .Values.podSecurityContext }}
       securityContext:
@@ -96,6 +96,14 @@ spec:
               value: "8081"
             - name: KEDGE_HUB_URL
               value: {{ .Values.hub.url | quote }}
+            {{- if .Values.hub.actionsExternalURL }}
+            - name: KEDGE_ACTIONS_EXTERNAL_URL
+              value: {{ .Values.hub.actionsExternalURL | quote }}
+            {{- end }}
+            {{- if $actionsCABundleConfigMap }}
+            - name: KEDGE_ACTIONS_CA_BUNDLE_FILE
+              value: /etc/kedge/actions-ca/ca-bundle.pem
+            {{- end }}
             - name: KEDGE_PROVIDER_NAME
               value: "app-studio"
             # Provider kubeconfig — used for the kcp front-proxy host + TLS
@@ -105,10 +113,6 @@ spec:
               value: /var/run/secrets/kedge/kedge-provider-kubeconfig
             - name: APP_STUDIO_WORKSPACE_ROOT
               value: {{ .Values.workspace.path | quote }}
-            {{- if .Values.browserWorker.enabled }}
-            - name: APP_STUDIO_BROWSER_WORKER_URL
-              value: {{ printf "http://127.0.0.1:%v" .Values.browserWorker.port | quote }}
-            {{- end }}
             {{- if .Values.store.databaseURL }}
             - name: APP_STUDIO_DATABASE_URL
               value: {{ .Values.store.databaseURL | quote }}
@@ -171,55 +175,13 @@ spec:
               readOnly: true
             - name: project-workspaces
               mountPath: {{ .Values.workspace.path | quote }}
+            {{- if $actionsCABundleConfigMap }}
+            - name: actions-ca-bundle
+              mountPath: /etc/kedge/actions-ca
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-        {{- if .Values.browserWorker.enabled }}
-        - name: browser-worker
-          image: "{{ .Values.browserWorker.image.repository }}:{{ default .Chart.AppVersion .Values.browserWorker.image.tag }}"
-          imagePullPolicy: {{ .Values.browserWorker.image.pullPolicy }}
-          ports:
-            - name: browser-http
-              containerPort: {{ .Values.browserWorker.port }}
-              protocol: TCP
-          env:
-            - name: PORT
-              value: {{ .Values.browserWorker.port | quote }}
-            - name: BROWSER_WORKER_TIMEOUT_MS
-              value: {{ .Values.browserWorker.timeoutMs | quote }}
-            - name: BROWSER_WORKER_IGNORE_HTTPS_ERRORS
-              value: {{ .Values.browserWorker.ignoreHTTPSErrors | quote }}
-            - name: HOME
-              value: /tmp/browser-worker
-            - name: XDG_CACHE_HOME
-              value: /tmp/browser-worker/cache
-            - name: XDG_CONFIG_HOME
-              value: /tmp/browser-worker/config
-          livenessProbe:
-            exec:
-              command: ["node", "-e", "fetch('http://127.0.0.1:{{ .Values.browserWorker.port }}/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
-            initialDelaySeconds: 5
-            periodSeconds: 20
-          readinessProbe:
-            exec:
-              command: ["node", "-e", "fetch('http://127.0.0.1:{{ .Values.browserWorker.port }}/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
-            periodSeconds: 5
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 1000
-            seccompProfile:
-              type: RuntimeDefault
-          volumeMounts:
-            - name: browser-worker-tmp
-              mountPath: /tmp
-            - name: browser-worker-shm
-              mountPath: /dev/shm
-          resources:
-            {{- toYaml .Values.browserWorker.resources | nindent 12 }}
-        {{- end }}
       volumes:
         # Required input: the workspace-admin kubeconfig minted via /bonkers
         # (admin onboarding), consumed by both init and serve. The onboard
@@ -246,14 +208,13 @@ spec:
           persistentVolumeClaim:
             claimName: {{ include "appstudio.fullname" . }}-workspaces
           {{- end }}
-        {{- if .Values.browserWorker.enabled }}
-        - name: browser-worker-tmp
-          emptyDir:
-            sizeLimit: 256Mi
-        - name: browser-worker-shm
-          emptyDir:
-            medium: Memory
-            sizeLimit: 256Mi
+        {{- if $actionsCABundleConfigMap }}
+        - name: actions-ca-bundle
+          configMap:
+            name: {{ $actionsCABundleConfigMap | quote }}
+            items:
+              - key: {{ .Values.hub.actionsCABundleConfigMap.key | quote }}
+                path: ca-bundle.pem
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

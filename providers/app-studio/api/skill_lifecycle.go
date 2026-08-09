@@ -139,7 +139,7 @@ func (s *Server) getProjectAssistantSkillDetailByID(w http.ResponseWriter, r *ht
 		writeProjectError(w, newValidationError("id is required and must be bounded"))
 		return
 	}
-	snapshot, err := s.projectAssistantSkillCatalogSnapshot(r.Context(), projectWorkspaceScope(id, project))
+	snapshot, err := s.projectAssistantSkillCatalogSnapshot(r.Context(), projectWorkspaceScope(id, project), id)
 	if err != nil {
 		writeProjectError(w, err)
 		return
@@ -359,7 +359,7 @@ func (s *Server) setProjectAssistantSkillActivation(w http.ResponseWriter, r *ht
 	}
 	skillID := strings.TrimSpace(request.ID)
 	scope := projectWorkspaceScope(id, project)
-	snapshot, err := s.projectAssistantSkillCatalogSnapshot(r.Context(), scope)
+	snapshot, err := s.projectAssistantSkillCatalogSnapshot(r.Context(), scope, id)
 	if err != nil {
 		writeProjectError(w, err)
 		return
@@ -375,7 +375,7 @@ func (s *Server) setProjectAssistantSkillActivation(w http.ResponseWriter, r *ht
 		writeProjectSkillError(w, err)
 		return
 	}
-	updated, detailErr := s.projectAssistantSkillCatalogSnapshot(r.Context(), scope)
+	updated, detailErr := s.projectAssistantSkillCatalogSnapshot(r.Context(), scope, id)
 	if detailErr != nil {
 		writeProjectError(w, detailErr)
 		return

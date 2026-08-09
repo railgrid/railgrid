@@ -11,25 +11,10 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-# Read-only Playwright worker used by the assistant to inspect the current
-# development preview. It runs as a localhost-only sidecar and creates a fresh
-# browser context for every request; it receives no kubeconfig or workspace PVC.
-browserWorker:
-  enabled: true
-  image:
-    repository: ghcr.io/faroshq/kedge/app-studio-browser-worker
-    tag: ""
-    pullPolicy: IfNotPresent
-  port: 8090
-  timeoutMs: 15000
-  ignoreHTTPSErrors: false
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: "1"
-      memory: 1Gi
+# Preview inspection no longer runs a browser sidecar here. The assistant drives
+# the workspace's shared headless browser — the infrastructure provider's
+# Playwright MCP "browser" template, provisioned once per workspace by the Studio
+# reconciler — over the infrastructure data plane. Nothing to configure.
 
 serviceAccount:
   create: true
@@ -131,6 +116,16 @@ workspace:
 
 hub:
   url: "http://kedge-hub.kedge.svc.cluster.local:8080"
+  # Public hub origin used by action-enabled development runtimes. Keep this
+  # separate from hub.url: the latter is an internal provider-to-hub address.
+  # Production action-enabled projects require an absolute HTTPS origin.
+  actionsExternalURL: ""
+  # Optional public CA bundle for that origin. The referenced ConfigMap is
+  # mounted at a dedicated path so it augments (never masks) image/system
+  # trust. Leave empty when the origin chains to the system CA.
+  actionsCABundleConfigMap:
+    name: ""
+    key: ca-bundle.pem
   insecure: false
   tokenSecretRef:
     name: ""

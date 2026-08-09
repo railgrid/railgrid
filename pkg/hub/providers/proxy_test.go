@@ -112,6 +112,63 @@ func TestBackendProxyNoSPAFallback(t *testing.T) {
 	}
 }
 
+// TestBackendProxyHubOnlyReservations pins the split between the public
+// data plane and hub-only endpoints. Provider action routes are ordinary
+// data-plane verbs — they MUST ride the backend proxy (authorization is the
+// provider's caller-scoped SSAR gates, not a hub router). The attestation
+// endpoint is hub→provider internal and must never be reachable with a
+// caller bearer through /services/providers/{name}.
+func TestBackendProxyHubOnlyReservations(t *testing.T) {
+	reg := NewRegistry()
+	upstreamCalled := false
+	target, err := url.Parse("http://provider.invalid")
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	reg.Upsert(Provider{Name: "databricks", BackendURL: target, EndpointsValid: true})
+	reg.Upsert(Provider{Name: "infrastructure", BackendURL: target, EndpointsValid: true})
+	proxy := NewBackendProxy(reg, logr.Discard())
+	proxy.pick = func(Provider) *url.URL {
+		upstreamCalled = true
+		return nil
+	}
+
+	for _, requestPath := range []string{
+		"/services/providers/infrastructure/workload-identities",
+		"/services/providers/infrastructure/workload-identities/review",
+		"/services/providers/infrastructure/other/../workload-identities/review",
+		"/services/providers/infrastructure/Workload-Identities/review",
+	} {
+		t.Run(requestPath, func(t *testing.T) {
+			upstreamCalled = false
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, requestPath, nil)
+			proxy.ServeHTTP(response, request)
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", response.Code)
+			}
+			if upstreamCalled {
+				t.Fatal("hub-only provider path reached backend upstream")
+			}
+		})
+	}
+
+	for _, requestPath := range []string{
+		"/services/providers/databricks/actions/clusters/cluster-a/tables/trips/query_table/v1",
+		"/services/providers/databricks/healthz",
+	} {
+		t.Run(requestPath, func(t *testing.T) {
+			upstreamCalled = false
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, requestPath, nil)
+			proxy.ServeHTTP(response, request)
+			if !upstreamCalled {
+				t.Fatalf("public data-plane route status=%d upstreamCalled=false, want upstream selected", response.Code)
+			}
+		})
+	}
+}
+
 // TestUIProxyLocalAssets exercises the first-party-provider path:
 // when Provider.LocalUIAssets is set, asset requests serve from the
 // embedded FS without ever touching an upstream URL. The catalog SPA

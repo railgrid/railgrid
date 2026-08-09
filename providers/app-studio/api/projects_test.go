@@ -66,7 +66,7 @@ func TestCreateProjectPreflightTemplateCreatesBindingAndInstance(t *testing.T) {
 		Naming:       projectNamingResult{DisplayName: "Customer Portal", RepositoryName: "customer-portal"},
 		TemplateName: "application",
 	}
-	created, err := (&Server{}).createProjectFromRequestWithPreflight(
+	created, err := (&Server{actionsExternalURL: "https://actions.example.test"}).createProjectFromRequestWithPreflight(
 		context.Background(),
 		client,
 		identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"},
@@ -116,7 +116,8 @@ func TestCreateProjectLivePathListsCatalogCallsPreflightOnceAndCreatesInstance(t
 	client := asclient.NewFromDynamic(dynamicClient)
 	calls := 0
 	server := &Server{
-		store: store.NewMemoryStore(),
+		actionsExternalURL: "https://actions.example.test",
+		store:              store.NewMemoryStore(),
 		projectCreatePreflight: func(_ context.Context, _ *asclient.Client, prompt string, templates []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
 			calls++
 			if prompt != "Build a frontend and backend customer portal." {
@@ -224,7 +225,7 @@ func TestCreateProjectInvalidInferredTemplateFallsBackUnbound(t *testing.T) {
 		Naming:       projectNamingResult{DisplayName: "Customer Portal", RepositoryName: "customer-portal"},
 		TemplateName: "invented-template",
 	}
-	created, err := (&Server{}).createProjectFromRequestWithPreflight(
+	created, err := (&Server{actionsExternalURL: "https://actions.example.test"}).createProjectFromRequestWithPreflight(
 		context.Background(),
 		client,
 		identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"},
@@ -250,7 +251,7 @@ func TestCreateProjectPreflightTemplateRequiresExplicitInferenceAuthorization(t 
 		Naming:       projectNamingResult{DisplayName: "Customer Portal", RepositoryName: "customer-portal"},
 		TemplateName: "application",
 	}
-	created, err := (&Server{}).createProjectFromRequestWithPreflight(
+	created, err := (&Server{actionsExternalURL: "https://actions.example.test"}).createProjectFromRequestWithPreflight(
 		context.Background(),
 		client,
 		identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"},
@@ -276,7 +277,7 @@ func TestCreateProjectExplicitTemplateTakesPrecedenceOverPreflight(t *testing.T)
 		Naming:       projectNamingResult{DisplayName: "Customer Portal", RepositoryName: "customer-portal"},
 		TemplateName: "invented-template",
 	}
-	created, err := (&Server{}).createProjectFromRequestWithPreflight(
+	created, err := (&Server{actionsExternalURL: "https://actions.example.test"}).createProjectFromRequestWithPreflight(
 		context.Background(),
 		client,
 		identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:org-a:ws-1"},

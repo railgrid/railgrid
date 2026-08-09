@@ -1,4 +1,4 @@
-export type WorkbenchBuiltInTab = 'preview' | 'code' | 'review' | 'providers' | 'publishing' | 'settings' | 'skills' | 'threads' | 'launcher'
+export type WorkbenchBuiltInTab = 'preview' | 'code' | 'review' | 'providers' | 'integrations' | 'publishing' | 'settings' | 'skills' | 'threads' | 'launcher'
 export type WorkbenchTabKind = WorkbenchBuiltInTab | 'provider'
 
 export interface WorkbenchProviderToolRef {
@@ -50,6 +50,12 @@ const builtInTabs: Record<WorkbenchBuiltInTab, WorkbenchTabDescriptor> = {
     id: 'providers',
     kind: 'providers',
     title: 'Providers',
+    closeable: true,
+  },
+  integrations: {
+    id: 'integrations',
+    kind: 'integrations',
+    title: 'Integrations',
     closeable: true,
   },
   publishing: {

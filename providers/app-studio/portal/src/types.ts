@@ -318,10 +318,41 @@ export interface ProjectEnvironment {
 export interface ProjectProviderBinding {
   name: string
   provider?: string
+  kind?: 'providerReference' | 'providerResource' | string
+  resourceRef?: ProjectProviderResourceReference
+  allowedActions?: ProjectProviderActionGrant[]
   phase?: string
   url?: string
   previewURL?: string
   outputs?: Record<string, string>
+}
+
+export interface ProjectProviderResourceReference {
+  name: string
+  apiVersion: string
+  kind: string
+  resource: string
+}
+
+export interface ProjectProviderActionGrant {
+  name: string
+  version: string
+  schemaDigest: string
+  grantedBy?: string
+  grantedAt?: string
+  revoked?: boolean
+  revokedBy?: string
+  revokedAt?: string
+}
+
+export interface ProjectIntegration {
+  environment: string
+  alias: string
+  provider: string
+  kind: string
+  resourceRef?: ProjectProviderResourceReference
+  allowedActions: ProjectProviderActionGrant[]
+  phase?: string
 }
 
 export interface ProjectRepositoryCommit {
@@ -348,6 +379,49 @@ export interface ProviderChild {
   builtinRoute: string
 }
 
+export interface ProviderActionBoundResource {
+  apiVersion: string
+  kind: string
+  resource: string
+}
+
+export interface ProviderActionLimits {
+  timeoutSeconds?: number
+  maxInputBytes?: number
+  maxOutputBytes?: number
+  maxResultItems?: number
+}
+
+export interface ProviderActionConsent {
+  required: boolean
+  prompt?: string
+  scope?: string
+}
+
+export interface ProviderActionDeprecation {
+  deprecated: boolean
+  message?: string
+  replacementID?: string
+  sunset?: string
+}
+
+export interface ProviderAction {
+  id: string
+  displayName: string
+  description?: string
+  boundResource: ProviderActionBoundResource
+  inputSchema?: unknown
+  outputSchema?: unknown
+  schemaDigest: string
+  executionMode?: string
+  readOnly: boolean
+  risk: string
+  idempotency?: string
+  limits?: ProviderActionLimits
+  consent: ProviderActionConsent
+  deprecation?: ProviderActionDeprecation
+}
+
 export interface ProviderItem {
   name: string
   displayName: string
@@ -360,6 +434,7 @@ export interface ProviderItem {
   children?: ProviderChild[]
   category?: string
   builtin?: boolean
+  actions?: ProviderAction[]
 }
 
 export interface ListResponse<T> {

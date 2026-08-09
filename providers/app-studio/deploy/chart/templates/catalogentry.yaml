@@ -50,6 +50,10 @@ spec:
         group: infrastructure.kedge.faros.sh
         verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
         tenantScoped: true
+      - resource: browsers
+        group: infrastructure.kedge.faros.sh
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+        tenantScoped: true
       - resource: repositories
         group: code.kedge.faros.sh
         verbs: ["get", "list", "watch", "create", "update", "patch"]

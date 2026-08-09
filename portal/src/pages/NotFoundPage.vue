@@ -12,7 +12,7 @@ import { Hexagon, ArrowLeft } from 'lucide-vue-next'
       <div class="relative mx-auto flex h-20 w-20 items-center justify-center">
         <div class="absolute inset-0 rounded-xl bg-accent/10 blur-lg" />
         <div class="relative flex h-20 w-20 items-center justify-center rounded-xl border border-border-subtle bg-surface-raised">
-          <Hexagon class="h-10 w-10 text-text-muted/15" :stroke-width="1" />
+          <Hexagon class="h-10 w-10 text-text-muted/15" :stroke-width="1.25" />
         </div>
       </div>
       <h1 class="type-display mt-6 text-7xl font-bold tracking-tighter text-text-primary">404</h1>

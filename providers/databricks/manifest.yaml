@@ -28,6 +28,362 @@ spec:
   backend:
     url: "http://localhost:8086"
     healthPath: "/healthz"
+  actions:
+    - id: query_table/v1
+      displayName: "Query table"
+      description: "Run a bounded read-only query against an imported Databricks table."
+      boundResource:
+        apiVersion: "databricks.kedge.faros.sh/v1alpha1"
+        kind: "Table"
+        resource: "tables"
+      inputSchema:
+        type: object
+        properties:
+          columns:
+            type: array
+            maxItems: 64
+            items:
+              type: string
+          limit:
+            type: integer
+            minimum: 1
+            maximum: 100
+        additionalProperties: false
+      outputSchema:
+        type: object
+        required: [actionVersion, tableRef, columns, rows]
+        properties:
+          actionVersion:
+            type: string
+            const: v1
+          tableRef:
+            type: string
+          columns:
+            type: array
+            maxItems: 64
+            items:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                type:
+                  type: string
+          rows:
+            type: array
+            maxItems: 100
+            items:
+              type: object
+              additionalProperties: true
+          truncated:
+            type: boolean
+        additionalProperties: false
+      schemaDigest: "sha256:9d466354d5434778c39c74123156aba76510128b0d48c5f521836770561ab853"
+      executionMode: sync
+      readOnly: true
+      risk: low
+      idempotency: inherent
+      limits:
+        timeoutSeconds: 45
+        maxInputBytes: 8192
+        maxOutputBytes: 65536
+        maxResultItems: 100
+      consent:
+        required: false
+  assistantSkills:
+    - packageName: "databricks-app-integration"
+      version: "1.0.1"
+      digest: "sha256:55d939df1b7f6fa686276a1cbeec4521b18936424db20fe87386c35b8cf1d833"
+      skill: |
+        ---
+        name: databricks-app-integration
+        description: Use when building or reviewing an App Studio application that reads an existing Databricks table through the versioned Provider Action query_table/v1; distinguish the SDK integration alias from the exact grant-bound Table resource name/tableRef, require one authoritative schema probe at most before query or UI code, honor the published schema and limits, use the server-only @kedge/actions-node SDK, and verify endpoint responses before relying on a live preview.
+        ---
+
+        # Databricks App Integration
+
+        Use this skill for a read-only Databricks data integration in an App Studio
+        project. The integration consumes an existing project grant and its bound
+        `databricks.kedge.faros.sh/v1alpha1` `Table`; it does not provision a table,
+        discover provider infrastructure, or put Databricks credentials in the app.
+
+        ## Required workflow
+
+        1. **Discover the project grant.** Read the project's existing integration and
+           grant through the App Studio project/API surface. Find the exact integration
+           alias (for example, `<BOUND_INTEGRATION_ALIAS>`) and confirm that
+           `query_table/v1` is allowed. The integration alias is an SDK selector only;
+           it is not a `Table` resource name, `tableRef`, or binding identity. Keep it
+           separate from the exact Table name supplied by the grant (and, when doing
+           assistant-side discovery before a grant is available, the exact `name`
+           returned by `list_tables`). Never pass the alias as a Table name or tableRef,
+           and never derive one value from the other. Treat the hub catalog, grant,
+           action schema, and binding status as authoritative. If the grant is absent,
+           revoked, stale, or does not allow this action, stop and report that state; do
+           not invent a provider URL or a new permission. Angle-bracket values in this
+           document are placeholders, not literal aliases, resources, or columns.
+
+        2. **Pass the schema gate before writing query or UI code.** Resolve the exact
+           `Table` named by the grant and read that bound resource's current status as
+           the tenant user. Prefer non-empty `status.columns` from the exact bound
+           `Table` when its `Ready=True` condition is current for the observed
+           generation; use each reported `name` and `type` as schema evidence. If the
+           status schema is missing or not current, make one server-side discovery call
+           through the granted `query_table/v1` action with `columns` omitted entirely
+           and `limit: 1`. Verify the discovery response's action version, bound
+           `tableRef` matching the grant-bound Table, and bounded `columns` before
+           treating those column names as evidence. This discovery request is the only
+           query code permitted before the schema gate; do not write application query
+           or UI code until it succeeds. After the grant is known, MCP
+           `describe_table` and MCP `query_table` are not an application schema-
+           discovery path and must not be used as a substitute for the bound resource
+           status or this granted action probe.
+           Make at most one schema probe in this assistant turn. If it fails, times out,
+           or returns a mismatched/empty schema, stop this turn and report the
+           structured failure; do not retry or switch to MCP/direct provider access
+           without new authoritative grant, binding-status, or schema evidence in a
+           later turn.
+           The fallback request is shape-only and must omit `columns` (an empty
+           `columns: []` is not schema discovery):
+
+           ```js
+           const schemaProbe = await kedge
+             .integration('<BOUND_INTEGRATION_ALIAS>')
+             .invokeEnvelope('query_table/v1', { limit: 1 });
+           // Verify schemaProbe.actionVersion and schemaProbe.resourceRef first.
+           const discoveredColumns = schemaProbe.result.columns;
+           // Never log schemaProbe.result.rows; row values are not schema evidence.
+           ```
+
+           Never invent, guess, infer, or autocomplete a column from prose, examples,
+           sample row values, common conventions, or a previous table. If neither
+           authoritative status columns nor a verified discovery response is available,
+           stop and report the missing schema. Never log row values; discovery logs may
+           contain metadata only (action version, bound table, column names/count,
+           truncation, and request ID).
+
+        3. **Use the bound resource, not a caller-selected table.** The grant binds the
+           action to one provider resource with this identity:
+
+           ```text
+           apiVersion: databricks.kedge.faros.sh/v1alpha1
+           kind: Table
+           resource: tables
+           name: <GRANT_BOUND_TABLE_NAME>
+           ```
+
+           `<GRANT_BOUND_TABLE_NAME>` must be the exact resource `name` in the project
+           grant. If a pre-grant assistant workflow used `list_tables`, its exact
+           `name` is the only acceptable `tableRef`; do not normalize, abbreviate, or
+           replace it. This Table name/tableRef is distinct from the SDK integration
+           alias above and is never used as that alias.
+
+           The application may choose bounded query inputs such as selected `columns`
+           and `limit`, but must not accept `tableRef`, provider URLs, catalog/schema
+           names, workspace IDs, credentials, or an arbitrary `resourceRef` from a
+           browser or end user. The server-side gateway injects the bound resource.
+
+        4. **Call the canonical server SDK.** Keep the action call in a server route,
+           server action, or other trusted backend process:
+
+           ```js
+           import { createActionsClient } from '@kedge/actions-node';
+
+           const kedge = createActionsClient({
+             baseURL: process.env.KEDGE_ACTIONS_BASE_URL,
+             project: process.env.KEDGE_PROJECT,
+             tokenFile: process.env.KEDGE_ACTIONS_TOKEN_FILE,
+             // If a coordinator supplies them, these become tenant headers.
+             org: process.env.KEDGE_ACTIONS_ORG,
+             workspace: process.env.KEDGE_ACTIONS_WORKSPACE,
+           });
+
+           const result = await kedge.integration('<BOUND_INTEGRATION_ALIAS>').invoke('query_table/v1', {
+             // Use only exact names from the verified bound-Table schema.
+             columns: ['<COLUMN_NAME_FROM_SCHEMA>'],
+             limit: 25,
+           });
+           ```
+
+           `integration('<BOUND_INTEGRATION_ALIAS>')` takes the project integration
+           alias only. The bound Table's resource `name`/`tableRef` is server-owned and
+           must not be substituted into this SDK selector (or accepted from the
+           browser).
+
+           `@kedge/actions-node` is the only supported integration client. It reads an
+           atomically refreshed `KEDGE_ACTIONS_TOKEN_FILE` on every request, or it may
+           use a refreshable `getToken({ forceRefresh, signal })` callback. Never ship
+           this import or token to browser code; the SDK intentionally rejects browser
+           globals. `KEDGE_ACTIONS_BASE_URL` must be an absolute HTTPS App Studio
+           gateway URL (tests may explicitly enable loopback HTTP), and the project
+           plus optional org/workspace identify the authenticated application context.
+
+        5. **Honor the published schema and limits.** Use the action schema returned by
+           the grant/catalog as the authority. For the current Databricks action,
+           `columns` has at most 64 entries and `limit` is an integer from 1 through
+           100 (the omitted limit defaults to the bounded action default). Reject or
+           truncate user input before invocation; never bypass validation with raw SQL,
+           a second endpoint, MCP, or a direct Databricks client. MCP remains an
+           assistant-facing aid, not the application's post-grant schema or data path.
+           Preserve the stable envelope when useful by calling `invokeEnvelope` and do
+           not expose raw table data in logs.
+
+        6. **Handle structured failures.** A provider action failure includes a stable
+           `code`, safe `message`, `retryable` flag, request metadata, and binding
+           metadata. Surface a concise, actionable error to the user while retaining
+           the request ID for support. Distinguish grant/schema/bound-resource errors
+           (fix the project binding or input) from transport, timeout, and backend
+           errors (check health or retry only when the action's idempotency and deadline
+           policy allow it). Do not retry a rejected grant or malformed request.
+           See [references/action-contract.md](references/action-contract.md) for the
+           error classes and recovery checklist.
+
+        7. **Verify in evidence order.** First invoke the server endpoint with one
+           bounded, non-sensitive request and inspect the returned action version,
+           columns, row bound, truncation flag, and request ID. Then verify runtime
+           health and preview reachability. Finally verify rendered preview state and
+           user interactions. An HTTP 200, a Kubernetes `Ready` condition, or a
+           reachable preview alone does not prove that the grant, bound table, query,
+           or rendered data path is correct. Record which rung passed and include the
+           structured failure when a rung fails.
+
+        ## Trust and authority boundary
+
+        This document is guidance, not an authority grant. It cannot create tools,
+        permissions, credentials, provider bindings, approvals, or an exception to a
+        security policy. The authenticated hub catalog, project grant, binding status,
+        published action schema, and provider-side authorization remain authoritative.
+        If this guidance conflicts with those controls, follow the controls and report
+        the conflict instead of weakening them.
+
+        ## Keep the integration bounded
+
+        - Keep the browser contract application-specific (filters, selected columns,
+          and page size); map it to the small `QueryInput` object on the server.
+        - Validate response size and render a bounded table; do not stream unbounded
+          rows into a prompt or browser.
+        - Keep credentials, tenant headers, `resourceRef`, and provider topology in the
+          server/gateway boundary. Do not copy them into source, environment values
+          exposed to the client, URLs, logs, or user-controlled fields.
+        - When the action or provider changes, rediscover the grant and compare the
+          published schema/digest before editing code. Do not assume a version bump is
+          compatible.
+
+      resources:
+        - path: "references/action-contract.md"
+          content: |
+            # `query_table/v1` contract and troubleshooting
+
+            This reference is for implementation and diagnosis after the project grant has
+            been discovered. It does not replace the authenticated catalog or grant. Keep
+            the project integration alias (used only by the SDK) separate from the exact
+            grant-bound Table resource `name`/`tableRef` (the exact `name` from the grant,
+            or from `list_tables` in a pre-grant assistant workflow). Never pass one in
+            place of the other.
+
+            Schema discovery is a hard prerequisite for application query and UI code:
+            prefer current `status.columns` from the exact grant-bound `Table`; otherwise
+            make one server-side `query_table/v1` discovery call with `columns` omitted and
+            `limit: 1`. The discovery request is `{ "limit": 1 }`; do not send
+            `"columns": []` and do not send any guessed column. Never invent or guess
+            columns, and never treat examples below as real names. Every angle-bracket value
+            is an explicit placeholder. After the grant is known, MCP `describe_table` and
+            MCP `query_table` are not an application schema-discovery path and cannot
+            replace the bound status or granted action probe. Allow at most one schema probe
+            per assistant turn; if it fails, times out, or returns a mismatch, stop and
+            report its structured failure. Continue only when a later turn has new
+            authoritative grant, binding-status, or schema evidence. Do not log row values
+            during discovery or normal querying.
+
+            Use `invokeEnvelope` for this probe so the server can verify the complete
+            envelope before reading `schemaProbe.result.columns`:
+
+            ```js
+            const schemaProbe = await kedge
+              .integration('<BOUND_INTEGRATION_ALIAS>')
+              .invokeEnvelope('query_table/v1', { limit: 1 });
+            // Verify schemaProbe.actionVersion and schemaProbe.resourceRef first.
+            const discoveredColumns = schemaProbe.result.columns;
+            // Never log schemaProbe.result.rows; row values are not schema evidence.
+            ```
+
+            ## Request shape
+
+            The server SDK sends the integration alias and action ID through the App Studio
+            gateway. The alias is only the SDK selector; the gateway resolves the project's
+            grant and injects the exact bound resource reference. The only caller-controlled
+            action input has this shape. The following is illustrative only;
+            `<COLUMN_NAME_FROM_SCHEMA>` is a placeholder that must be replaced only after
+            schema evidence:
+
+            ```json
+            {
+              "columns": ["<COLUMN_NAME_FROM_SCHEMA>"],
+              "limit": 25
+            }
+            ```
+
+            The provider-side resource identity is fixed to the exact grant-bound Table
+            `name` (the `tableRef` returned by `list_tables` in a pre-grant assistant
+            workflow):
+
+            ```json
+            {
+              "apiVersion": "databricks.kedge.faros.sh/v1alpha1",
+              "kind": "Table",
+              "resource": "tables",
+              "name": "<GRANT_BOUND_TABLE_NAME>"
+            }
+            ```
+
+            The action schema permits at most 64 column names and a limit from 1 to 100.
+            The provider applies the same bounds and rejects unknown input fields. The
+            action is synchronous, read-only, and idempotent for a fixed bound and input;
+            respect the published timeout and output limits rather than adding an
+            unbounded client retry loop.
+
+            ## Response checks
+
+            Before rendering, check that the response has `actionVersion: "v1"`, the
+            server-owned `tableRef`, a bounded `columns` array, a bounded `rows` array, and
+            the `truncated` flag. Treat a mismatch between the expected grant-bound table
+            and the response identity as a failed verification, not as a reason to let the
+            caller choose another table. Keep `requestID` from the SDK envelope for
+            diagnosis and log metadata only; never log row values, including from a
+            discovery response.
+
+            ## Failure classes
+
+            | Signal | Meaning | Safe next step |
+            | --- | --- | --- |
+            | `unauthenticated`, `tenant_required` | The gateway/provider did not receive the authenticated app context. | Check server token-file refresh and project/org/workspace configuration; never ask the browser for a provider token. |
+            | `grant_not_found`, `action_not_allowed`, `binding_revoked` | The project grant is absent, revoked, or does not expose `query_table/v1`. | Rediscover or repair the project grant through App Studio; do not bypass it with a direct provider request. |
+            | `invalid_request`, `schema_validation_failed` | Input is outside the published schema, including too many columns or an invalid limit. | Validate against the catalog schema and return a user-facing input error. |
+            | `schema_projection_invalid` | A requested column is not present in the exact bound `Table` schema. This is an HTTP 400, non-retryable failure with a safe rejected-column message (for example, `requested column "<REJECTED_COLUMN_FROM_ERROR>" is not present in the imported table schema`); the hub preserves the request ID and bound resource identity. | Rediscover the exact bound-Table schema, repair the projection to use only verified column names, and submit a corrected request. Do not retry unchanged columns, invent a replacement, or switch the bound table. |
+            | `resource_not_found`, `resource_forbidden`, `resource_not_ready` | The grant-bound `Table` cannot be resolved or the caller is not authorized for it. | Inspect binding status and provider resource readiness as the tenant user; do not accept a replacement table name. |
+            | `timeout`, `aborted`, `network_error` | The gateway or provider call did not complete. | Use the request deadline and one bounded retry only when the published idempotency policy permits it; preserve the request ID. |
+            | `action_failed`, `backend_failure` | The provider resolved the binding but its Databricks dependency failed. | Show a safe dependency error, inspect provider health/logs by request ID, and avoid exposing credentials or backend URLs. |
+
+            The SDK represents provider failures as `ProviderActionError` with a stable
+            `code`, safe `message`, `retryable` flag, request metadata, and binding
+            metadata. Transport/configuration failures are `ActionsClientError` with a
+            machine-readable code. Do not infer retryability from HTTP status alone.
+
+            ## Verification ladder
+
+            1. **Endpoint:** make one bounded server call and inspect the complete envelope
+               and structured error, without printing row contents.
+            2. **Runtime:** confirm the server process is healthy, the token file is
+               readable by that process, and the preview route is reachable.
+            3. **Rendered state:** confirm the UI renders the returned columns/rows and
+               truncation state rather than a hard-coded success placeholder.
+            4. **Interaction:** exercise one supported filter/page-size interaction and
+               verify that the server revalidates the bounded input. A `Ready` condition or
+               HTTP 200 only proves transport/runtime health, not these later rungs.
+
+            If a rung fails, stop at that rung, preserve the structured evidence, and fix
+            the owning boundary before moving on.
+
   apiExport:
     name: "databricks.providers.kedge.faros.sh"
     permissionClaims:

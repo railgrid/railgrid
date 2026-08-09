@@ -29,7 +29,7 @@ onMounted(() => admin.refresh())
     <aside class="flex h-full w-56 flex-shrink-0 flex-col border-r border-border-subtle bg-surface-raised/80 px-3 py-4 backdrop-blur-xl">
       <div class="mb-5 flex items-center gap-2 px-1">
         <div class="relative flex h-7 w-7 items-center justify-center rounded-lg border border-accent/25 bg-surface-overlay/80">
-          <Hexagon class="h-3.5 w-3.5 text-accent" :stroke-width="2.5" />
+          <Hexagon class="h-3.5 w-3.5 text-accent" :stroke-width="2" />
         </div>
         <div class="flex flex-col leading-tight">
           <span class="text-sm font-semibold">Platform admin</span>
@@ -75,7 +75,7 @@ onMounted(() => admin.refresh())
       <div class="mx-auto max-w-6xl px-8 py-6">
         <header class="mb-6 flex items-center justify-between">
           <h1 class="flex items-center gap-2 text-xl font-semibold">
-            <ShieldAlert class="h-5 w-5 text-accent" :stroke-width="2" />
+            <ShieldAlert class="h-5 w-5 text-accent" :stroke-width="1.75" />
             Platform admin
           </h1>
           <button
@@ -83,7 +83,7 @@ onMounted(() => admin.refresh())
             :disabled="admin.loading"
             @click="admin.refresh()"
           >
-            <RefreshCw class="h-4 w-4" :class="admin.loading ? 'animate-spin' : ''" :stroke-width="2" />
+            <RefreshCw class="h-4 w-4" :class="admin.loading ? 'animate-spin' : ''" :stroke-width="1.75" />
             Refresh
           </button>
         </header>
@@ -92,7 +92,7 @@ onMounted(() => admin.refresh())
           v-if="admin.forbidden"
           class="rounded-lg border border-danger/30 bg-danger-subtle px-4 py-3 text-sm text-danger flex items-start gap-2"
         >
-          <AlertCircle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="2" />
+          <AlertCircle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="1.75" />
           <span>Access denied. Your identity is not in the hub's <code>--admin-users</code> allowlist.</span>
         </div>
 

@@ -25,7 +25,7 @@ const itemClass = () => props.mobile
         v-if="step.status === 'completed'"
         :class="mobile ? 'h-4 w-4' : 'h-3.5 w-3.5'"
         class="shrink-0 text-success"
-        :stroke-width="2"
+        :stroke-width="1.75"
         aria-hidden="true"
       />
       <Loader2

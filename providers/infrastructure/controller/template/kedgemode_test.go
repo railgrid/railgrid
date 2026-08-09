@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	apisv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -98,5 +99,119 @@ func TestKedgeModeReservedPropertyRejected(t *testing.T) {
 
 	if _, err := buildPerTemplateCRD(tmpl); err == nil {
 		t.Fatal("buildPerTemplateCRD: expected error for a template declaring the reserved kedgeMode property, got nil")
+	}
+}
+
+func TestProviderActionsFieldsPreservedInTenantAPIResourceSchema(t *testing.T) {
+	tmpl := newTestTemplate(t, "actions")
+	tmpl.Spec.Development = &infrav1alpha1.TemplateDevelopment{
+		Components: map[string]infrav1alpha1.TemplateDevelopmentComponent{
+			"app": {WorkspacePath: ".", DevImage: "${kedge.devImage.node}", StartCommand: "npm run dev"},
+		},
+	}
+	crd, err := buildPerTemplateCRD(tmpl)
+	if err != nil {
+		t.Fatalf("buildPerTemplateCRD: %v", err)
+	}
+	resourceSchema, err := apisv1alpha1.CRDToAPIResourceSchema(crd, "test")
+	if err != nil {
+		t.Fatalf("CRDToAPIResourceSchema: %v", err)
+	}
+	if len(resourceSchema.Spec.Versions) != 1 {
+		t.Fatalf("APIResourceSchema versions = %d, want 1", len(resourceSchema.Spec.Versions))
+	}
+	var root apiextensionsv1.JSONSchemaProps
+	if err := json.Unmarshal(resourceSchema.Spec.Versions[0].Schema.Raw, &root); err != nil {
+		t.Fatalf("decode APIResourceSchema schema: %v", err)
+	}
+	spec, ok := root.Properties["spec"]
+	if !ok {
+		t.Fatal("APIResourceSchema lacks instance spec schema")
+	}
+	for _, field := range []string{
+		infrav1alpha1.KedgeActionsExchangeURLField,
+		infrav1alpha1.KedgeActionsBaseURLField,
+		infrav1alpha1.KedgeActionsTenantPathField,
+		infrav1alpha1.KedgeActionsOrgField,
+		infrav1alpha1.KedgeActionsWorkspaceField,
+		infrav1alpha1.KedgeActionsProjectField,
+		infrav1alpha1.KedgeActionsProjectUIDField,
+		infrav1alpha1.KedgeActionsEnvironmentField,
+		infrav1alpha1.KedgeActionsInstanceField,
+		infrav1alpha1.KedgeActionsCABundleField,
+	} {
+		prop, ok := spec.Properties[field]
+		if !ok {
+			t.Errorf("tenant APIResourceSchema prunes reserved field %q", field)
+			continue
+		}
+		var def string
+		if prop.Type != "string" || prop.Default == nil || json.Unmarshal(prop.Default.Raw, &def) != nil || def != "" {
+			t.Errorf("tenant APIResourceSchema field %q = type=%q default=%v, want string default empty", field, prop.Type, prop.Default)
+		}
+	}
+}
+
+func TestProviderActionsReservedPropertyRejected(t *testing.T) {
+	tmpl := newTestTemplate(t, "actions-reserved")
+	tmpl.Spec.Development = &infrav1alpha1.TemplateDevelopment{
+		Components: map[string]infrav1alpha1.TemplateDevelopmentComponent{
+			"app": {WorkspacePath: ".", DevImage: "${kedge.devImage.node}", StartCommand: "npm run dev"},
+		},
+	}
+	schemaRaw, err := json.Marshal(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			infrav1alpha1.KedgeActionsInstanceField: map[string]any{"type": "string"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	tmpl.Spec.Schema = &runtime.RawExtension{Raw: schemaRaw}
+	if _, err := buildPerTemplateCRD(tmpl); err == nil {
+		t.Fatal("buildPerTemplateCRD: expected error for a template declaring reserved Provider Actions property, got nil")
+	}
+}
+
+func TestProviderActionsFieldsStayOutOfProductionSchema(t *testing.T) {
+	tmpl := newTestTemplate(t, "actions-production")
+	crd, err := buildPerTemplateCRD(tmpl)
+	if err != nil {
+		t.Fatalf("buildPerTemplateCRD: %v", err)
+	}
+	spec := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
+	for _, field := range []string{
+		infrav1alpha1.KedgeActionsExchangeURLField,
+		infrav1alpha1.KedgeActionsBaseURLField,
+		infrav1alpha1.KedgeActionsTenantPathField,
+		infrav1alpha1.KedgeActionsOrgField,
+		infrav1alpha1.KedgeActionsWorkspaceField,
+		infrav1alpha1.KedgeActionsProjectField,
+		infrav1alpha1.KedgeActionsProjectUIDField,
+		infrav1alpha1.KedgeActionsEnvironmentField,
+		infrav1alpha1.KedgeActionsInstanceField,
+		infrav1alpha1.KedgeActionsCABundleField,
+	} {
+		if _, found := spec.Properties[field]; found {
+			t.Errorf("production-only tenant schema unexpectedly exposes reserved field %q", field)
+		}
+	}
+}
+
+func TestProviderActionsReservedPropertyRejectedForProductionTemplate(t *testing.T) {
+	tmpl := newTestTemplate(t, "actions-reserved-production")
+	schemaRaw, err := json.Marshal(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			infrav1alpha1.KedgeActionsInstanceField: map[string]any{"type": "string"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	tmpl.Spec.Schema = &runtime.RawExtension{Raw: schemaRaw}
+	if _, err := buildPerTemplateCRD(tmpl); err == nil {
+		t.Fatal("buildPerTemplateCRD: expected error for a production template declaring reserved Provider Actions property, got nil")
 	}
 }

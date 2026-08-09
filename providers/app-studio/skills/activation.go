@@ -100,14 +100,29 @@ func (s *activationSource) ReadResource(ctx context.Context, packagePath, resour
 func activationMatchesPackageVersion(packageEntry Package, activation Activation) bool {
 	expected := strings.TrimSpace(activation.Version)
 	if expected == "" {
+		if digest := strings.TrimSpace(activation.Digest); digest != "" && strings.TrimSpace(packageEntry.Digest) != "" {
+			return digest == strings.TrimSpace(packageEntry.Digest)
+		}
 		return true
 	}
 	if version := strings.TrimSpace(packageEntry.Version); version != "" {
-		return expected == version
+		if expected != version {
+			return false
+		}
+		if digest := strings.TrimSpace(activation.Digest); digest != "" && strings.TrimSpace(packageEntry.Digest) != "" {
+			return digest == strings.TrimSpace(packageEntry.Digest)
+		}
+		return true
 	}
 	parsed, err := ParseSkill(packageEntry.SkillContent, DefaultLimits())
 	if err != nil {
 		return false
 	}
-	return expected == digestBytes([]byte(parsed.Content))
+	if expected != digestBytes([]byte(parsed.Content)) {
+		return false
+	}
+	if digest := strings.TrimSpace(activation.Digest); digest != "" && strings.TrimSpace(packageEntry.Digest) != "" {
+		return digest == strings.TrimSpace(packageEntry.Digest)
+	}
+	return true
 }

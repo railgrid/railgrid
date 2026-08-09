@@ -139,10 +139,6 @@ func TestAssistantFilesystemTelemetryRecordsObservedReadPath(t *testing.T) {
 	if got := state.ObservedReadFilePaths(); len(got) != 1 || got[0] != "src/app.js" {
 		t.Fatalf("observed reads = %v, want src/app.js", got)
 	}
-	if checkpoint := state.CheckpointState(); checkpoint.NoProgressModelCallCount != 0 {
-		t.Fatalf("first read no-progress count = %d, want 0", checkpoint.NoProgressModelCallCount)
-	}
-
 	secondMessages, secondScope := newAssistantRunEventLedgerTestStore(t, "run-read-telemetry-2")
 	state.NextModelCallOrdinal()
 	secondMiddleware := projectEinoAssistantFilesystemTelemetryMiddleware(projectAssistantRunRequest{
@@ -165,9 +161,6 @@ func TestAssistantFilesystemTelemetryRecordsObservedReadPath(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("read endpoint calls = %d, want repeated reads dispatched", calls)
-	}
-	if checkpoint := state.CheckpointState(); checkpoint.NoProgressModelCallCount != 1 {
-		t.Fatalf("unchanged repeated read no-progress count = %d, want 1", checkpoint.NoProgressModelCallCount)
 	}
 	if events := listAssistantRunEventLedgerEvents(t, secondMessages, secondScope, "run-read-telemetry-2"); len(events) != 2 {
 		t.Fatalf("repeated read ledger events = %d, want durable call and result", len(events))
@@ -225,10 +218,6 @@ func TestAssistantVersionedReadProgressKeepsEveryDispatchDurable(t *testing.T) {
 		}
 		if events := listAssistantRunEventLedgerEvents(t, messages, scope, runIDs[index]); len(events) != 2 {
 			t.Fatalf("versioned read[%d] ledger events = %d, want durable request + result", index, len(events))
-		}
-		wantNoProgress := []int{0, 1, 0}[index]
-		if checkpoint := state.CheckpointState(); checkpoint.NoProgressModelCallCount != wantNoProgress {
-			t.Fatalf("versioned read[%d] no-progress count = %d, want %d", index, checkpoint.NoProgressModelCallCount, wantNoProgress)
 		}
 	}
 	if calls != len(versions) {

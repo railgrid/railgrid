@@ -21,6 +21,9 @@ import type {
   ProjectAssistantThreadItem,
   ProjectAssistantTurn,
   ProjectLLMSettings,
+  ProjectIntegration,
+  ProjectProviderActionGrant,
+  ProjectProviderResourceReference,
   ProjectCheckpoints,
   ProjectPromotionReadiness,
   ProjectPromoteResult,
@@ -634,6 +637,57 @@ export const api = {
 
   async getProject(ctx: KedgeContext | null, name: string): Promise<Project> {
     return request<Project>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}`)
+  },
+
+  async listProjectIntegrations(ctx: KedgeContext | null, name: string): Promise<ProjectIntegration[]> {
+    const body = await request<ListResponse<ProjectIntegration>>(
+      ctx,
+      'GET',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/integrations`,
+    )
+    return body.items ?? []
+  },
+
+  async createProjectIntegration(
+    ctx: KedgeContext | null,
+    name: string,
+    body: {
+      alias: string
+      provider: string
+      kind: 'providerReference'
+      resourceRef: ProjectProviderResourceReference
+      allowedActions: ProjectProviderActionGrant[]
+      consentAccepted?: boolean
+    },
+  ): Promise<ProjectIntegration> {
+    return request<ProjectIntegration>(
+      ctx,
+      'POST',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/integrations`,
+      body,
+    )
+  },
+
+  async patchProjectIntegration(
+    ctx: KedgeContext | null,
+    name: string,
+    alias: string,
+    body: { allowedActions: ProjectProviderActionGrant[]; consentAccepted?: boolean },
+  ): Promise<ProjectIntegration> {
+    return request<ProjectIntegration>(
+      ctx,
+      'PATCH',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/integrations/${encodeURIComponent(alias)}`,
+      body,
+    )
+  },
+
+  async removeProjectIntegration(ctx: KedgeContext | null, name: string, alias: string): Promise<void> {
+    await request<null>(
+      ctx,
+      'DELETE',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/integrations/${encodeURIComponent(alias)}`,
+    )
   },
 
   async patchProject(

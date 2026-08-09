@@ -51,7 +51,7 @@ func (m *projectEinoAssistantProgressReminderCaptureModel) Stream(
 func TestProjectEinoAssistantProgressReminderTracksAcceptedProgressSeparately(t *testing.T) {
 	runState := newProjectEinoAssistantRunState()
 	runState.NextModelCallOrdinal()
-	runState.RecordCompletedAction("replace_file", `{"path":"src/App.tsx"}`, false)
+	runState.RecordCompletedAction("replace_file", `{"path":"src/App.tsx"}`)
 	if !runState.QueueProgressReminder(projectEinoAssistantProgressReminderVerification, "stale verification") {
 		t.Fatal("verification reminder did not queue")
 	}
@@ -61,9 +61,6 @@ func TestProjectEinoAssistantProgressReminderTracksAcceptedProgressSeparately(t 
 	checkpoint := runState.CheckpointState()
 	if checkpoint.AcceptedProgressCount != 1 || checkpoint.LastAcceptedProgressModelCall != 1 {
 		t.Fatalf("accepted progress checkpoint = %#v", checkpoint)
-	}
-	if checkpoint.NoProgressModelCallCount != 1 {
-		t.Fatalf("action-progress counter = %d, want 1", checkpoint.NoProgressModelCallCount)
 	}
 	if runState.progressReminderPending() {
 		t.Fatal("accepted progress left a stale reminder pending")

@@ -123,40 +123,11 @@ jobs:
           digest="${{ steps.build.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
-      - name: Build App Studio browser worker and push by digest
-        if: needs.meta.outputs.provider == 'app-studio'
-        id: browser-worker-build
-        uses: docker/build-push-action@v6
-        with:
-          context: ./providers/app-studio/browser-worker
-          file: ./providers/app-studio/browser-worker/Dockerfile
-          platforms: ${{ matrix.platform }}
-          cache-from: type=gha,scope=app-studio-browser-worker-${{ steps.prep.outputs.arch }}
-          cache-to: type=gha,mode=max,scope=app-studio-browser-worker-${{ steps.prep.outputs.arch }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge/app-studio-browser-worker,push-by-digest=true,name-canonical=true,push=true
-
-      - name: Export App Studio browser worker digest
-        if: needs.meta.outputs.provider == 'app-studio'
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/browser-worker-digests
-          digest="${{ steps.browser-worker-build.outputs.digest }}"
-          touch "/tmp/browser-worker-digests/${digest#sha256:}"
-
       - name: Upload digest
         uses: actions/upload-artifact@v4
         with:
           name: digests-${{ needs.meta.outputs.provider }}-${{ steps.prep.outputs.arch }}
           path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Upload App Studio browser worker digest
-        if: needs.meta.outputs.provider == 'app-studio'
-        uses: actions/upload-artifact@v4
-        with:
-          name: browser-worker-digests-${{ steps.prep.outputs.arch }}
-          path: /tmp/browser-worker-digests/*
           if-no-files-found: error
           retention-days: 1
 
@@ -176,14 +147,6 @@ jobs:
           pattern: digests-${{ needs.meta.outputs.provider }}-*
           merge-multiple: true
 
-      - name: Download App Studio browser worker digests
-        if: needs.meta.outputs.provider == 'app-studio'
-        uses: actions/download-artifact@v4
-        with:
-          path: /tmp/browser-worker-digests
-          pattern: browser-worker-digests-*
-          merge-multiple: true
-
       - name: Log in to the Container registry
         uses: docker/login-action@v3
         with:
@@ -198,21 +161,6 @@ jobs:
         working-directory: /tmp/digests
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ needs.meta.outputs.image }}
-          VERSION: ${{ needs.meta.outputs.version }}
-          SEMVER: ${{ needs.meta.outputs.semver }}
-        run: |
-          set -euo pipefail
-          docker buildx imagetools create \
-            -t "${IMAGE}:${VERSION}" \
-            -t "${IMAGE}:${SEMVER}" \
-            $(printf "${IMAGE}@sha256:%s " *)
-          docker buildx imagetools inspect "${IMAGE}:${VERSION}"
-
-      - name: Create App Studio browser worker manifest list and push
-        if: needs.meta.outputs.provider == 'app-studio'
-        working-directory: /tmp/browser-worker-digests
-        env:
-          IMAGE: ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge/app-studio-browser-worker
           VERSION: ${{ needs.meta.outputs.version }}
           SEMVER: ${{ needs.meta.outputs.semver }}
         run: |

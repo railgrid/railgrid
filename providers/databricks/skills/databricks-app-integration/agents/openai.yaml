@@ -1,0 +1,4 @@
+interface:
+  display_name: "Databricks App Integration"
+  short_description: "Build bounded Databricks Provider Action integrations"
+  default_prompt: "Use $databricks-app-integration to guide a bounded Databricks Provider Action integration."

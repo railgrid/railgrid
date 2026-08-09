@@ -103,12 +103,11 @@ func (m *projectEinoAssistantLifecycle) BeforeModelRewriteState(
 	// same canonical target fails again at the same source revision, terminate
 	// at this model boundary instead of sampling the model into an unbounded
 	// recovery loop. Read-only/Q&A turns and permission waits remain outside
-	// this implementation-only guard.
+	// this implementation-only guard. Tool/action counts never terminate a
+	// turn: valid tool calls may continue until Eino reaches its configured
+	// iteration or rollout-budget boundary, or the model authors a final answer.
 	if projectEinoAssistantProgressApplies(m.req, m.runState) && !m.runState.PermissionBarrierActive() {
 		if err := m.runState.MutationRecoveryBlockedError(); err != nil {
-			return ctx, state, err
-		}
-		if err := m.runState.NoProgressModelCallError(); err != nil {
 			return ctx, state, err
 		}
 	}
@@ -600,7 +599,7 @@ func (m *projectEinoAssistantLifecycle) WrapInvokableToolCall(
 			if m.runState != nil && !projectEinoAssistantFilesystemReadTool(name) {
 				if _, interrupted := compose.IsInterruptRerunError(err); !interrupted {
 					if !projectEinoAssistantCommitTool(name) {
-						m.runState.RecordCompletedAction(name, projectEinoAssistantCanonicalActionArguments(argumentsInJSON), false)
+						m.runState.RecordCompletedAction(name, projectEinoAssistantCanonicalActionArguments(argumentsInJSON))
 					}
 				}
 			}
@@ -640,8 +639,7 @@ func (m *projectEinoAssistantLifecycle) WrapInvokableToolCall(
 		}
 		if m.runState != nil && !projectEinoAssistantFilesystemReadTool(name) &&
 			!projectEinoAssistantCommitTool(name) && !projectEinoAssistantPendingPermissionResult(result) {
-			successful := succeeded
-			m.runState.RecordCompletedAction(name, projectEinoAssistantCanonicalActionArguments(argumentsInJSON), successful)
+			m.runState.RecordCompletedAction(name, projectEinoAssistantCanonicalActionArguments(argumentsInJSON))
 		}
 		return result, nil
 	}, nil
@@ -665,27 +663,12 @@ func (m *projectEinoAssistantLifecycle) WrapEnhancedInvokableToolCall(
 		if argument != nil && strings.TrimSpace(argument.Text) != "" {
 			rawArguments = argument.Text
 		}
-		succeeded := false
-		if err == nil {
-			succeeded = m.toolCallSucceeded(ctx, name, projectEinoAssistantEnhancedToolText(result))
-		} else if _, interrupted := compose.IsInterruptRerunError(err); interrupted {
+		if _, interrupted := compose.IsInterruptRerunError(err); interrupted {
 			return result, err
 		}
-		m.runState.RecordCompletedAction(name, projectEinoAssistantCanonicalActionArguments(rawArguments), succeeded)
+		m.runState.RecordCompletedAction(name, projectEinoAssistantCanonicalActionArguments(rawArguments))
 		return result, err
 	}, nil
-}
-
-func projectEinoAssistantEnhancedToolText(result *schema.ToolResult) string {
-	if result == nil {
-		return ""
-	}
-	for _, part := range result.Parts {
-		if part.Type == schema.ToolPartTypeText {
-			return part.Text
-		}
-	}
-	return ""
 }
 
 func (m *projectEinoAssistantLifecycle) toolCallSucceeded(ctx context.Context, name, result string) bool {

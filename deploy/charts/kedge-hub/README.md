@@ -46,7 +46,7 @@ For a complete production setup (TLS, OIDC, ingress) see the [full docs](https:/
 | Key | Default | Description |
 |-----|---------|-------------|
 | `hub.tls.existingSecret` | `""` | Name of an existing Secret with `tls.crt` and `tls.key` |
-| `hub.tls.selfSigned.enabled` | `true` | Auto-generate a self-signed cert (dev/local only) |
+| `hub.tls.selfSigned.enabled` | `true` | Auto-generate a CA-signed self-signed cert (dev/local only); the Secret also includes the CA as `ca.crt` |
 | `hub.tls.certManager.enabled` | `false` | Issue cert via cert-manager (recommended for production) |
 | `hub.tls.certManager.issuerRef.name` | `""` | cert-manager `ClusterIssuer` or `Issuer` name |
 | `hub.tls.certManager.dnsNames` | `[]` | DNS SANs for the cert (must include `hub.hubExternalURL` hostname) |

@@ -57,6 +57,7 @@ import (
 	"github.com/faroshq/faros-kedge/pkg/hub/restapi"
 	"github.com/faroshq/faros-kedge/pkg/hub/serviceaccounts"
 	"github.com/faroshq/faros-kedge/pkg/hub/tenant"
+	"github.com/faroshq/faros-kedge/pkg/hub/workloadidentity"
 	"github.com/faroshq/faros-kedge/pkg/kcppaths"
 	"github.com/faroshq/faros-kedge/pkg/server/auth"
 	"github.com/faroshq/faros-kedge/pkg/server/proxy"
@@ -331,6 +332,10 @@ func (s *Server) Run(ctx context.Context) error {
 	// (wired below alongside other multicluster controllers) keeps in sync
 	// with ProviderCatalogEntry resources.
 	providerRegistry := providers.NewRegistry()
+	// Provider action invocations ride the backend proxy like every other
+	// data-plane verb (/services/providers/{name}/actions/clusters/...): the
+	// owning provider authorizes them with caller-scoped SSAR gates and kcp
+	// RBAC carries the grants, so no hub-side action router exists.
 	// Keep the UI proxy reference around so we can install the portal SPA as
 	// its fallback once the portal handler is built later in this function.
 	// Without that fallback, a hard refresh of /ui/providers/{name} would
@@ -431,7 +436,6 @@ func (s *Server) Run(ctx context.Context) error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = fmt.Fprint(w, "ok")
 	})
-
 	// Version endpoint — used by the portal to detect when an edge agent is
 	// running an older build than the hub and to render upgrade instructions.
 	router.HandleFunc(apiurl.PathVersion, func(w http.ResponseWriter, r *http.Request) {
@@ -493,7 +497,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// See pkg/hub/provider_tenant_resolver.go for the concrete
 			// resolver (lives here to avoid a providers→proxy→kcp→providers
 			// import cycle).
-			backendProxy.SetTenantResolver(newKCPTenantResolver(kcpProxy, userClient))
+			backendProxy.SetTenantResolver(newKCPTenantResolver(kcpProxy, userClient, bootstrapper))
 			// Inject X-Kedge-Cluster (the resolved tenant's logical-cluster
 			// ID) so providers can address per-workspace surfaces that key on
 			// the ID — notably the GraphQL gateway at /graphql/clusters/{id}.
@@ -534,6 +538,22 @@ func (s *Server) Run(ctx context.Context) error {
 			saMgr := serviceaccounts.NewManager(bootstrapper)
 			saHandler := serviceaccounts.NewHandler(saMgr)
 			saHandler.Register(tenantSub)
+
+			// Production provider-action runtimes exchange an Infrastructure-owned
+			// bootstrap attestation for a short-lived, audience-bound Kedge token.
+			// The attestor resolves the provider's declared virtual workspace from
+			// the catalog; the service-account manager owns deterministic identity
+			// and scoped RBAC in the tenant workspace.
+			workloadAttestor := workloadidentity.NewHTTPAttestor(workloadidentity.HTTPAttestorOptions{
+				Registry: providerRegistry,
+			})
+			workloadHandler := workloadidentity.New(workloadidentity.Options{
+				Attestor:      workloadAttestor,
+				Issuer:        saMgr,
+				ScopeResolver: workloadidentity.NewKCPProjectScopeResolver(bootstrapper),
+				Logger:        logger,
+			})
+			router.Handle(workloadidentity.PathExchange, workloadHandler).Methods(http.MethodPost)
 
 			logger.Info("REST routes registered (Org/Workspace/Membership/User + ServiceAccount)")
 

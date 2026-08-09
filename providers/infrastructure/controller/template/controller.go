@@ -352,6 +352,9 @@ func buildPerTemplateCRD(tmpl *infrav1alpha1.Template) (*apiextensionsv1.CustomR
 	if err := injectKedgeMode(&spec, tmpl); err != nil {
 		return nil, err
 	}
+	if err := injectKedgeActions(&spec, tmpl.Spec.Development != nil); err != nil {
+		return nil, err
+	}
 
 	openAPI := apiextensionsv1.JSONSchemaProps{
 		Type: "object",
@@ -427,6 +430,47 @@ func injectKedgeMode(spec *apiextensionsv1.JSONSchemaProps, tmpl *infrav1alpha1.
 		Description: description,
 		Enum:        modes,
 		Default:     &apiextensionsv1.JSON{Raw: []byte(`"` + infrav1alpha1.KedgeModeProduction + `"`)},
+	}
+	return nil
+}
+
+// injectKedgeActions adds the platform-owned Provider Actions context to
+// development-template instance schemas. The fields are deliberately present
+// in the tenant-facing CRD/APIResourceSchema even when a Project has no action
+// grant: App Studio's dev binding can then omit them and rely on the empty
+// defaults, while KRO's synthesized env/annotation expressions still resolve.
+// For production-only templates the fields stay out of the public schema, but
+// a template author may not claim any reserved field in either mode.
+func injectKedgeActions(spec *apiextensionsv1.JSONSchemaProps, enabled bool) error {
+	fields := []string{
+		infrav1alpha1.KedgeActionsExchangeURLField,
+		infrav1alpha1.KedgeActionsBaseURLField,
+		infrav1alpha1.KedgeActionsTenantPathField,
+		infrav1alpha1.KedgeActionsOrgField,
+		infrav1alpha1.KedgeActionsWorkspaceField,
+		infrav1alpha1.KedgeActionsProjectField,
+		infrav1alpha1.KedgeActionsProjectUIDField,
+		infrav1alpha1.KedgeActionsEnvironmentField,
+		infrav1alpha1.KedgeActionsInstanceField,
+		infrav1alpha1.KedgeActionsCABundleField,
+	}
+	for _, field := range fields {
+		if _, exists := spec.Properties[field]; exists {
+			return fmt.Errorf("spec.schema declares reserved property %q; the platform injects Provider Actions context", field)
+		}
+	}
+	if !enabled {
+		return nil
+	}
+	if spec.Properties == nil {
+		spec.Properties = map[string]apiextensionsv1.JSONSchemaProps{}
+	}
+	for _, field := range fields {
+		spec.Properties[field] = apiextensionsv1.JSONSchemaProps{
+			Type:        "string",
+			Description: "Platform-reserved Provider Actions context; values are supplied by App Studio.",
+			Default:     &apiextensionsv1.JSON{Raw: []byte(`""`)},
+		}
 	}
 	return nil
 }

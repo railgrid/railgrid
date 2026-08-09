@@ -98,7 +98,7 @@ const requestRows = computed(() => {
         rel="noreferrer"
       >
         Details
-        <ExternalLink class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
+        <ExternalLink class="h-3 w-3" :stroke-width="2" aria-hidden="true" />
       </a>
     </div>
   </div>

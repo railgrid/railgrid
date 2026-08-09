@@ -240,7 +240,7 @@ onBeforeUnmount(() => {
         v-else-if="!entry.ready"
         class="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted"
       >
-        <AlertCircle class="h-4 w-4 mt-0.5 text-text-muted" :stroke-width="2" />
+        <AlertCircle class="h-4 w-4 mt-0.5 text-text-muted" :stroke-width="1.75" />
         <div>
           <div class="font-medium text-text-secondary">Provider not ready</div>
           <div class="mt-1 text-xs">
@@ -252,7 +252,7 @@ onBeforeUnmount(() => {
         v-else-if="loadState === 'error'"
         class="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-sm text-danger"
       >
-        <AlertCircle class="h-4 w-4 mt-0.5" :stroke-width="2" />
+        <AlertCircle class="h-4 w-4 mt-0.5" :stroke-width="1.75" />
         <div>
           <div class="font-medium">Failed to load provider bundle</div>
           <div class="mt-1 text-xs font-mono">{{ loadError }}</div>

@@ -31,6 +31,7 @@
 
 @source "../../../../portal/src/components/ConfirmDialog.vue";
 @source "../../../../portal/src/components/StatusBadge.vue";
+@source "./ProjectIntegrations.vue";
 
 @theme inline {
   /* Sharp radius scale — plain values (not host pointers), mirroring the host

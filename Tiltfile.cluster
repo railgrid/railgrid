@@ -142,6 +142,46 @@ os.putenv('KCP_KUBECONFIG_DIR', os.getcwd())
 # Pull in the entire upstream kcp Tilt setup.
 include(kcp_tilt)
 
+# The upstream KCP Tiltfile defines an `ingress` forward, but this stack imports
+# it from another checkout and the command relies on ambient kubectl context.
+# After a kind repave that can leave host-side provider jobs with a kubeconfig
+# pointing at kcp.localhost:8443 while no host listener exists. Keep a Kedge-
+# owned forward for the endpoint used by provider registration and runtime
+# kubeconfigs. Resolve the Envoy service on every reconnect because both the
+# service name and backing pod can change during a repave.
+local_resource(
+    'kcp-frontproxy-forward',
+    cmd='true',
+    serve_cmd='''
+set -eu
+CTX=%s
+while true; do
+  kubectl --context "$CTX" -n envoy-gateway-system \
+    wait gateway/eg --for=condition=Programmed --timeout=30s >/dev/null 2>&1 || {
+      sleep 2
+      continue
+    }
+  svc="$(kubectl --context "$CTX" -n envoy-gateway-system \
+    get svc -l gateway.envoyproxy.io/owning-gateway-name=eg \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [ -z "$svc" ]; then
+    sleep 2
+    continue
+  fi
+  kubectl --context "$CTX" -n envoy-gateway-system \
+    port-forward "svc/$svc" 8443:8443 &
+  pf=$!
+  while kill -0 "$pf" 2>/dev/null; do
+    sleep 1
+  done
+  wait "$pf" 2>/dev/null || true
+  sleep 2
+done
+'''.strip() % k8s_context(),
+    resource_deps=['kcp-admin extract'],
+    labels=['kcp'],
+)
+
 # ---------------------------------------------------------------------------
 # hub — kedge-hub running IN-CLUSTER as a container, against the external kcp.
 #
@@ -165,6 +205,8 @@ load('ext://restart_process', 'docker_build_with_restart')
 
 hub_namespace = 'kedge-system'
 hub_image = 'ghcr.io/faroshq/kedge-hub'
+hub_tls_secret_name = 'kedge-hub-tls'
+hub_tls_state_dir = '.kcp/tilt-hub-tls'
 app_studio_provider_image = 'ghcr.io/faroshq/kedge/app-studio-provider:dev'
 app_studio_preview_namespace = 'kedge-preview'
 app_studio_preview_gateway_name = 'sandbox-preview-gateway'
@@ -199,9 +241,54 @@ metadata:
   name: %s
 '''.strip() % hub_namespace))
 
+# Helm's genCA/genSignedCert helpers return new material on every template
+# render. Keep Tilt's local hub identity in ignored .kcp state and supply it as
+# an existing Secret so unrelated Tiltfile reloads cannot invalidate the CA
+# already injected into App Studio development runtimes.
+hub_tls_yaml = str(local(
+    'bash hack/scripts/render-tilt-hub-tls.sh %s %s %s' % (
+        hub_namespace,
+        hub_tls_secret_name,
+        hub_tls_state_dir,
+    ),
+    quiet=True,
+    echo_off=True,
+))
+k8s_yaml(blob(hub_tls_yaml))
+k8s_resource(
+    new_name='hub-tls',
+    objects=['%s:secret' % hub_tls_secret_name],
+    labels=['hub'],
+)
+
 # Envoy gateway ClusterIP that *.kcp.localhost resolves to (see kcp's
 # gateway.yaml addresses + the hostAliases in its shard/front-proxy manifests).
 gateway_ip = '10.96.2.2'
+
+# Keep host-side sslip.io loopback behavior while making the same app hosts
+# reachable from in-cluster development runtimes. This is a cluster-only
+# CoreDNS template; production clusters and per-project pod hostAliases are
+# untouched.
+app_studio_preview_dns_apply = 'hack/scripts/configure-tilt-preview-dns.sh %s %s %s' % (
+    k8s_context(), app_base_domain, gateway_ip)
+app_studio_preview_dns_cleanup = 'hack/scripts/configure-tilt-preview-dns.sh --cleanup %s %s %s' % (
+    k8s_context(), app_base_domain, gateway_ip)
+local_resource(
+    'app-studio-preview-dns',
+    # Keep a tiny serving process so Tilt can run the idempotent cleanup trap
+    # when the resource (or the whole Tilt session) is stopped.
+    cmd='true',
+    serve_cmd='''
+set -eu
+cleanup() { %s || true; }
+trap cleanup 0
+trap 'exit 0' 2 15
+%s
+while :; do sleep 86400; done
+'''.strip() % (app_studio_preview_dns_cleanup, app_studio_preview_dns_apply),
+    deps=['Tiltfile.cluster', 'hack/scripts/configure-tilt-preview-dns.sh'],
+    labels=['providers-app-studio'],
+)
 
 hub_host_aliases = [
     # Make *.kcp.localhost resolve to the Envoy gateway from the hub pod,
@@ -432,7 +519,7 @@ while true; do
   sleep 3
 done
 '''.strip() % (k8s_context(), app_studio_preview_base_domain),
-    labels=['providers-vibe-studio'],
+    labels=['providers-app-studio'],
 )
 
 # --- kcp kubeconfig → in-cluster Secret the chart mounts ---
@@ -493,6 +580,8 @@ k8s_yaml(helm(
         'kcp.external.enabled=true',
         'kcp.external.existingSecret=kcp-frontproxy-admin',
         'hub.hubExternalURL=https://localhost:9443',
+        'hub.tls.existingSecret=%s' % hub_tls_secret_name,
+        'hub.tls.selfSigned.enabled=false',
         'hub.devMode=true',
         'hub.embeddedGraphQL=true',
         # Match the plain Tiltfile's App Studio in-memory message store wiring.
@@ -513,7 +602,7 @@ k8s_yaml(helm(
 k8s_resource(
     'kedge-hub',
     port_forwards=['9443:9443'],
-    resource_deps=['hub-compile', 'hub-kcp-secrets', 'hub-rbac'],
+    resource_deps=['hub-compile', 'hub-kcp-secrets', 'hub-rbac', 'hub-tls'],
     labels=['hub'],
 )
 
@@ -577,7 +666,6 @@ kubectl create secret generic kcp-static-tokens -n default \
 #   providers-code         — git repository manager (port :8083)
 #   providers-kuery        — fleet query engine (port :8084)
 #   providers-agents       — long-running personal AI agents (port :8087)
-#   providers-vibe-studio  — wizard-first app builder (port :8089)
 #
 # Each provider has three resources:
 #   <name>            build + serve; auto-restarts on src change
@@ -626,7 +714,6 @@ KUERY_REWRITE_CMD, KUERY_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/ku
 DATABRICKS_REWRITE_CMD, DATABRICKS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/databricks/manifest.yaml')
 AGENTS_REWRITE_CMD, AGENTS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/agents/manifest.yaml')
 EDGES_REWRITE_CMD, EDGES_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/edges/manifest.yaml')
-VIBE_STUDIO_REWRITE_CMD, VIBE_STUDIO_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/vibe-studio/manifest.yaml')
 
 # --- providers-quickstart ---
 local_resource(
@@ -841,96 +928,6 @@ local_resource(
     labels=['providers-agents'],
 )
 
-# --- providers-vibe-studio ---
-# Wizard-first app builder (docs/vibe-studio-design.md). Phase 0: event store
-# + scripted engine. Standalone: only hard deps are the hub and the durable
-# store (local Postgres container via vibe-studio-db).
-local_resource(
-    'vibe-studio-db',
-    cmd='make vibe-studio-db-up',
-    deps=[
-        'providers/vibe-studio/.env',
-    ],
-    labels=['providers-vibe-studio'],
-)
-
-local_resource(
-    'vibe-studio',
-    cmd='make build-vibe-studio-provider',
-    serve_cmd='make run-provider-vibe-studio',
-    deps=[
-        'providers/vibe-studio/main.go',
-        'providers/vibe-studio/assets.go',
-        'providers/vibe-studio/init_cmd.go',
-        'providers/vibe-studio/controller_manager.go',
-        'providers/vibe-studio/api',
-        'providers/vibe-studio/apis',
-        'providers/vibe-studio/client',
-        'providers/vibe-studio/controller',
-        'providers/vibe-studio/engine',
-        'providers/vibe-studio/scheme',
-        'providers/vibe-studio/session',
-        'providers/vibe-studio/store',
-        'providers/vibe-studio/tenant',
-        'providers/vibe-studio/go.mod',
-        'providers/vibe-studio/portal/src',
-        'providers/vibe-studio/portal/package.json',
-        'providers/vibe-studio/portal/vite.config.ts',
-        'providers/vibe-studio/.env',
-    ],
-    resource_deps=['kedge-hub', 'vibe-studio-db'],
-    readiness_probe=probe(
-        period_secs=5,
-        http_get=http_get_action(port=8089, path='/healthz'),
-    ),
-    labels=['providers-vibe-studio'],
-)
-
-local_resource(
-    'vibe-studio-register',
-    cmd=('{rewrite} && VIBE_STUDIO_KCP_KUBECONFIG={kc} ' +
-         'VIBE_STUDIO_KCP_SERVER={sv} VIBE_STUDIO_MANIFEST={mf} ' +
-         'make install-provider-vibe-studio').format(
-             rewrite=VIBE_STUDIO_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
-             sv=KCP_ADMIN_SERVER, mf=VIBE_STUDIO_MANIFEST_REWRITTEN),
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    resource_deps=['kedge-hub'],
-    labels=['providers-vibe-studio'],
-)
-
-local_resource(
-    'vibe-studio-init',
-    cmd=('VIBE_STUDIO_KCP_KUBECONFIG={kc} VIBE_STUDIO_KCP_SERVER={sv} ' +
-         'make init-provider-vibe-studio').format(
-             kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    resource_deps=['kedge-hub', 'vibe-studio-register'],
-    labels=['providers-vibe-studio'],
-)
-
-local_resource(
-    'vibe-studio-unregister',
-    cmd=('{rewrite} && VIBE_STUDIO_KCP_KUBECONFIG={kc} ' +
-         'VIBE_STUDIO_KCP_SERVER={sv} VIBE_STUDIO_MANIFEST={mf} ' +
-         'make uninstall-provider-vibe-studio').format(
-             rewrite=VIBE_STUDIO_REWRITE_CMD, kc=KCP_ADMIN_KUBECONFIG,
-             sv=KCP_ADMIN_SERVER, mf=VIBE_STUDIO_MANIFEST_REWRITTEN),
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    resource_deps=['kedge-hub'],
-    labels=['providers-vibe-studio'],
-)
-
-local_resource(
-    'vibe-studio-db-down',
-    cmd='make vibe-studio-db-down',
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    labels=['providers-vibe-studio'],
-)
-
 # --- providers-app-studio ---
 local_resource(
     'app-studio-preview-console-key',
@@ -954,24 +951,73 @@ local_resource(
     labels=['providers-app-studio'],
 )
 
+# Generated apps and their coordinator call the hub through its in-cluster
+# Service, not the host-only 9443 port-forward. Preserve TLS verification by
+# exporting the hub's public CA certificate for App Studio to inject into
+# action-enabled development runtimes and append to its own verified Actions
+# transport. Production deployments continue to use their system trust.
+app_studio_actions_ca_file = '.kcp/app-studio-actions-ca.crt'
+app_studio_actions_ca_cmd = '''
+set -eu
+mkdir -p .kcp
+tmp_file="$(mktemp .kcp/app-studio-actions-ca.XXXXXX)"
+trap 'rm -f "$tmp_file"' EXIT
+kubectl -n %s get secret kedge-hub-tls -o go-template='{{ index .data "ca.crt" | base64decode }}' > "$tmp_file"
+chmod 0644 "$tmp_file"
+
+# Updating the mounted Secret does not restart the Go server that already
+# loaded its previous keypair. This covers the one-time migration from the old
+# chart-generated identity and any later intentional rotation: never publish a
+# CA to App Studio until it verifies the live hub certificate.
+verify_live_hub_tls() {
+  openssl s_client \
+    -connect 127.0.0.1:9443 \
+    -servername kedge-hub.%s.svc \
+    -CAfile "$tmp_file" \
+    -verify_return_error </dev/null >/dev/null 2>&1
+}
+
+if ! verify_live_hub_tls; then
+  echo "hub serving certificate does not match kedge-hub-tls; restarting hub"
+  kubectl -n %s rollout restart deployment/kedge-hub
+  kubectl -n %s rollout status deployment/kedge-hub --timeout=120s
+
+  verified=false
+  for _ in $(seq 1 30); do
+    if verify_live_hub_tls; then
+      verified=true
+      break
+    fi
+    sleep 1
+  done
+  if [ "$verified" != true ]; then
+    echo "hub serving certificate still does not match kedge-hub-tls after restart" >&2
+    exit 1
+  fi
+fi
+
+if [ -f %s ] && cmp -s "$tmp_file" %s; then
+  rm -f "$tmp_file"
+else
+  mv "$tmp_file" %s
+fi
+trap - EXIT
+''' % (
+    hub_namespace,
+    hub_namespace,
+    hub_namespace,
+    hub_namespace,
+    app_studio_actions_ca_file,
+    app_studio_actions_ca_file,
+    app_studio_actions_ca_file,
+)
 local_resource(
-    'app-studio-browser-worker',
-    cmd='APP_STUDIO_BROWSER_WORKER_IMAGE=kedge/app-studio-browser-worker:tilt make docker-build-app-studio-browser-worker',
-    serve_cmd='APP_STUDIO_BROWSER_WORKER_IMAGE=kedge/app-studio-browser-worker:tilt make run-app-studio-browser-worker',
-    deps=[
-        'Makefile',
-        'providers/app-studio/browser-worker/Dockerfile',
-        'providers/app-studio/browser-worker/package.json',
-        'providers/app-studio/browser-worker/package-lock.json',
-        'providers/app-studio/browser-worker/tsconfig.json',
-        'providers/app-studio/browser-worker/src',
-    ],
-    readiness_probe=probe(
-        period_secs=5,
-        http_get=http_get_action(port=8090, path='/healthz'),
-    ),
+    'app-studio-actions-ca',
+    cmd=app_studio_actions_ca_cmd,
+    resource_deps=['hub-tls', 'kedge-hub'],
     labels=['providers-app-studio'],
 )
+
 
 local_resource(
     'app-studio',
@@ -983,7 +1029,12 @@ local_resource(
     # /clusters/root kubeconfig makes the reconcilers watch an empty
     # workspace and silently never engage. Development previews are the
     # template instance's own public URL — no preview-gateway env.
-    serve_cmd='make run-provider-app-studio',
+    serve_cmd=(app_studio_actions_ca_cmd +
+               'KEDGE_ACTIONS_EXTERNAL_URL=https://kedge-hub.%s.svc:9443 ' +
+               'KEDGE_ACTIONS_CA_BUNDLE_FILE=%s ' +
+               'make run-provider-app-studio') % (
+                   hub_namespace,
+                   app_studio_actions_ca_file),
     deps=[
         'providers/app-studio/main.go',
         'providers/app-studio/heartbeat.go',
@@ -1001,11 +1052,15 @@ local_resource(
         'providers/app-studio/portal/vite.config.ts',
         'providers/app-studio/manifest.yaml',
         'providers/app-studio/.env',
+        # The provider loads this public CA once at process start. Restart it
+        # when the hub identity rotates so existing project bindings reconcile
+        # from the new authoritative bundle instead of retaining stale trust.
+        app_studio_actions_ca_file,
     ],
     resource_deps=[
         'kedge-hub',
         'app-studio-db',
-        'app-studio-browser-worker',
+        'app-studio-actions-ca',
         'dev-agent-image',
         'app-studio-preview-console-key',
     ],

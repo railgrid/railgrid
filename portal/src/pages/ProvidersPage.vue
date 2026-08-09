@@ -164,7 +164,7 @@ function dependencyNotice(p: ProviderDTO): string {
     <div>
       <header class="mb-6">
         <h1 class="text-xl font-semibold text-text-primary flex items-center gap-2">
-          <Puzzle class="h-5 w-5 text-accent" :stroke-width="2" />
+          <Puzzle class="h-5 w-5 text-accent" :stroke-width="1.75" />
           Providers
         </h1>
         <p class="mt-1 text-sm text-text-muted">
@@ -175,12 +175,12 @@ function dependencyNotice(p: ProviderDTO): string {
       </header>
 
       <div v-if="providers.error" class="mb-4 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-sm text-danger flex items-start gap-2">
-        <AlertCircle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="2" />
+        <AlertCircle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="1.75" />
         <span>{{ providers.error }}</span>
       </div>
 
       <div v-if="actionError" class="mb-4 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-sm text-danger flex items-start gap-2">
-        <AlertCircle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="2" />
+        <AlertCircle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="1.75" />
         <span>{{ actionError }}</span>
       </div>
 
@@ -201,7 +201,7 @@ function dependencyNotice(p: ProviderDTO): string {
              rather than a per-category section header. -->
         <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div class="relative w-full sm:max-w-xs">
-            <Search class="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" :stroke-width="2" />
+            <Search class="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" :stroke-width="1.75" />
             <input
               v-model="search"
               type="search"

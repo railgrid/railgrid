@@ -74,7 +74,7 @@ onMounted(() => {
       <div class="relative flex h-16 w-16 items-center justify-center">
         <div class="absolute inset-0 animate-pulse rounded-xl bg-accent/20 blur-lg" />
         <div class="relative flex h-16 w-16 items-center justify-center rounded-xl border border-accent/25 bg-surface-overlay">
-          <Hexagon class="h-8 w-8 animate-spin text-accent" style="animation-duration: 3s" :stroke-width="2" />
+          <Hexagon class="h-8 w-8 animate-spin text-accent" style="animation-duration: 3s" :stroke-width="1.5" />
         </div>
       </div>
       <span class="text-[12px] text-text-muted">Completing sign in...</span>

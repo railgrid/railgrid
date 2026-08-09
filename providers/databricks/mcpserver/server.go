@@ -16,6 +16,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"k8s.io/klog/v2"
 
+	"github.com/faroshq/provider-databricks/actions"
 	"github.com/faroshq/provider-databricks/queryapi"
 )
 
@@ -23,6 +24,8 @@ type Deps struct {
 	Tables                        map[string]queryapi.TableRef
 	TableResolver                 queryapi.TableResolver
 	ResolverFromRequest           func(*http.Request) queryapi.TableResolver
+	ActionExecutor                actions.QueryExecutor
+	ActionExecutorFromRequest     func(*http.Request) actions.QueryExecutor
 	DisableLocalhostMCPProtection bool
 }
 
@@ -46,12 +49,24 @@ func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 	}, &mcp.ServerOptions{
 		Instructions: "Use these tools only with Databricks tables already imported " +
 			"as kedge Table resources. Do not import tables from App Studio. " +
-			"Use tableRef only for design-time metadata and schema inspection. " +
+			"Use list_tables first when you need a table name, and copy its exact tables[].name " +
+			"into tableRef for metadata and the versioned query_table action (actionVersion v1). " +
+			"An App Studio integration alias or other binding alias is never a tableRef. " +
+			"query_table accepts only exact column names and a bounded limit; never send raw SQL. " +
 			"Do not generate application code that calls provider-databricks, " +
 			"and do not embed Databricks credentials or direct warehouse auth config.",
 	})
-	registerTools(srv, resolverForRequest(deps, r))
+	registerTools(srv, resolverForRequest(deps, r), actionExecutorForRequest(deps, r))
 	return srv
+}
+
+func actionExecutorForRequest(deps Deps, r *http.Request) actions.QueryExecutor {
+	if deps.ActionExecutorFromRequest != nil {
+		if executor := deps.ActionExecutorFromRequest(r); executor != nil {
+			return executor
+		}
+	}
+	return deps.ActionExecutor
 }
 
 func resolverForRequest(deps Deps, r *http.Request) queryapi.TableResolver {

@@ -115,7 +115,6 @@ func TestInstallSelf(t *testing.T) {
 	if info.Size() != selfInfo.Size() {
 		t.Errorf("installed binary size %d != executable size %d", info.Size(), selfInfo.Size())
 	}
-
 	plugin, err := os.ReadFile(filepath.Join(dir, previewConsolePluginName))
 	if err != nil {
 		t.Fatalf("read installed plugin: %v", err)
@@ -171,7 +170,6 @@ func TestInstallSelfInvalidJWKSFailsOpenAndRemovesStaleConfig(t *testing.T) {
 		})
 	}
 }
-
 func TestNormalizePreviewConsoleJWKSRejectsPrivateOrMalformedKeys(t *testing.T) {
 	for _, raw := range []string{
 		`{"keys":[]}`,
@@ -360,6 +358,128 @@ func TestAuthoritativeSyncRebuildsInvalidManifestWithoutBroadDeletes(t *testing.
 	manifest, found, err := readWorkspaceManifest(mustOpenWorkspaceRoot(t, workdir))
 	if err != nil || !found || manifest.SourceRevision != 1 {
 		t.Fatalf("rebuilt manifest = %+v found=%t err=%v", manifest, found, err)
+	}
+}
+
+func TestAuthoritativeSyncReloadHookCannotMutateSourceManifest(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		command    string
+		wantReload bool
+	}{
+		{name: "success", command: "printf mutated > package-lock.json; printf corrupted > .kedge-workspace-manifest.json"},
+		{name: "failure", command: "printf mutated > package-lock.json; printf corrupted > .kedge-workspace-manifest.json; exit 7", wantReload: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workdir := t.TempDir()
+			srv := newTestAgent(t, &agentConfig{
+				WorkDir:        workdir,
+				ReloadStrategy: "process",
+				ReloadRules:    []reloadRule{{Paths: []string{"package-lock.json"}, Command: tc.command}},
+			})
+			files := []syncFile{
+				{Path: "main.sh", Content: "#!/bin/sh\nexit 0\n"},
+				{Path: "package-lock.json", Content: `{"lockfileVersion":3}`},
+			}
+			digest, err := digestSyncFiles(files)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder, response := doSync(t, srv, syncRequest{
+				Files: files, Restart: "always", SourceRevision: 1, SourceDigest: digest,
+			})
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("sync status = %d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if response.SourceRevision != 1 || response.SourceDigest != digest || len(response.ReloadRuns) != 1 {
+				t.Fatalf("sync response = %+v", response)
+			}
+			if tc.wantReload && response.ReloadError == "" {
+				t.Fatalf("failed reload response = %+v, want reloadError", response)
+			}
+			if !tc.wantReload && response.ReloadError != "" {
+				t.Fatalf("successful reload response = %+v", response)
+			}
+
+			root := mustOpenWorkspaceRoot(t, workdir)
+			manifest, found, err := readWorkspaceManifest(root)
+			if err != nil || !found {
+				t.Fatalf("manifest = %+v found=%t err=%v", manifest, found, err)
+			}
+			if err := verifyWorkspaceManifest(root, manifest); err != nil {
+				t.Fatalf("manifest verification after reload = %v", err)
+			}
+			lock, err := os.ReadFile(filepath.Join(workdir, "package-lock.json"))
+			if err != nil || string(lock) != files[1].Content {
+				t.Fatalf("package-lock after reload = %q err=%v, want authoritative content", lock, err)
+			}
+
+			result, err := runPersistentExec(context.Background(), workdir, persistentExecRequest{
+				Argv: []string{"/bin/true"}, WorkDir: ".", SourceRevision: 1, SourceDigest: digest,
+			})
+			if err != nil || result.ExitCode != 0 {
+				t.Fatalf("exec after reload = %+v err=%v", result, err)
+			}
+		})
+	}
+}
+
+func TestAuthoritativeSyncReloadHookCannotRecreateDeletedManagedFile(t *testing.T) {
+	workdir := t.TempDir()
+	srv := newTestAgent(t, &agentConfig{
+		WorkDir:        workdir,
+		ReloadStrategy: "process",
+		ReloadRules:    []reloadRule{{Paths: []string{"package-lock.json"}, Command: "printf recreated > old.go"}},
+	})
+	first := []syncFile{
+		{Path: "main.sh", Content: "#!/bin/sh\nexit 0\n"},
+		{Path: "old.go", Content: "managed source\n"},
+		{Path: "package-lock.json", Content: `{"lockfileVersion":2}`},
+	}
+	firstDigest, err := digestSyncFiles(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorder, _ := doSync(t, srv, syncRequest{Files: first, SourceRevision: 1, SourceDigest: firstDigest}); recorder.Code != http.StatusOK {
+		t.Fatalf("initial sync status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "runtime.log"), []byte("runtime-only"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	second := []syncFile{
+		{Path: "main.sh", Content: "#!/bin/sh\nexit 0\n"},
+		{Path: "package-lock.json", Content: `{"lockfileVersion":3}`},
+	}
+	secondDigest, err := digestSyncFiles(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder, response := doSync(t, srv, syncRequest{
+		Files: second, Restart: "always", SourceRevision: 2, SourceDigest: secondDigest,
+	})
+	if recorder.Code != http.StatusOK || response.ReloadError != "" || !slices.Equal(response.Deleted, []string{"old.go"}) {
+		t.Fatalf("reload sync status = %d response=%+v body=%s", recorder.Code, response, recorder.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "old.go")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("reload hook recreated deleted managed file: %v", err)
+	}
+	root := mustOpenWorkspaceRoot(t, workdir)
+	manifest, found, err := readWorkspaceManifest(root)
+	if err != nil || !found || manifest.SourceRevision != 2 {
+		t.Fatalf("manifest = %+v found=%t err=%v", manifest, found, err)
+	}
+	if err := verifyWorkspaceManifest(root, manifest); err != nil {
+		t.Fatalf("manifest verification after recreated-file cleanup = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "runtime.log")); err != nil {
+		t.Fatalf("runtime-only file was removed: %v", err)
+	}
+	result, err := runPersistentExec(context.Background(), workdir, persistentExecRequest{
+		Argv: []string{"/bin/true"}, WorkDir: ".", SourceRevision: 2, SourceDigest: secondDigest,
+	})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("exec after recreated-file cleanup = %+v err=%v", result, err)
 	}
 }
 

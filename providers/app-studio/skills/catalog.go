@@ -203,6 +203,9 @@ func (c *Catalog) loadCandidate(ctx context.Context, source Source, packageEntry
 		entry.Version = version
 	}
 	entry.Digest = digestEntry(entry)
+	if digest := strings.TrimSpace(packageEntry.Digest); digest != "" {
+		entry.Digest = digest
+	}
 	return loadedCandidate{entry: entry, resources: resources}, warnings, true
 }
 

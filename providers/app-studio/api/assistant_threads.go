@@ -365,6 +365,15 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		writeProjectError(w, newValidationError("content and clientUserMessageID are required"))
 		return
 	}
+	// Provider Action access is temporarily materialized from the caller's
+	// Ready-provider catalog immediately before every new assistant turn. The
+	// helper is best-effort for catalog/resource discovery, but any successful
+	// Project write is reconciled before the worker receives its snapshot.
+	project, err := s.materializeAutomaticProjectIntegrations(r.Context(), c, id, project)
+	if err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
+	}
 	if request.CollaborationMode == "" {
 		request.CollaborationMode = store.AssistantRunModeDefault
 	}
@@ -406,7 +415,7 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 	var skillSnapshot appskills.Snapshot
 	var selectedSkills []projectAssistantSkillReceipt
 	if !replay {
-		skillSnapshot, err = s.projectAssistantSkillSnapshot(r.Context(), projectWorkspaceScope(id, project))
+		skillSnapshot, err = s.projectAssistantSkillSnapshotForIdentity(r.Context(), projectWorkspaceScope(id, project), id)
 		if err == nil {
 			selectedSkills, err = projectAssistantSelectedSkillReceipts(skillSnapshot, skillIDs)
 		}

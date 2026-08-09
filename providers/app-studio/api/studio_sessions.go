@@ -95,7 +95,11 @@ func (s *Server) ensureStudio(ctx context.Context, c *asclient.Client, id identi
 	if _, done := studioEnsured.Load(id.clusterID); done {
 		return
 	}
-	if _, err := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{}); err == nil {
+	if existing, err := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{}); err == nil {
+		// A Studio created before a service existed (e.g. browser, added after
+		// search) is missing that service's block. Retrofit it so existing
+		// workspaces gain the backend without recreating the Studio.
+		s.retrofitStudioServices(ctx, c, existing)
 		studioEnsured.Store(id.clusterID, struct{}{})
 		return
 	} else if !apierrors.IsNotFound(err) {
@@ -108,29 +112,63 @@ func (s *Server) ensureStudio(ctx context.Context, c *asclient.Client, id identi
 		"kind":       "Studio",
 		"metadata":   map[string]any{"name": aiv1alpha1.StudioName},
 		"spec": map[string]any{
-			"search": map[string]any{"size": "small"},
+			"search":  map[string]any{"size": "small"},
+			"browser": map[string]any{"size": "small"},
 		},
 	}}
 	if ref := s.searchResourceRef(ctx, c); ref != nil {
-		_ = unstructured.SetNestedMap(st.Object, map[string]any{
-			"name":       ref.Name,
-			"apiVersion": ref.APIVersion,
-			"kind":       ref.Kind,
-			"resource":   ref.Resource,
-		}, "spec", "search", "resourceRef")
+		setStudioResourceRef(st, "search", ref)
+	}
+	if ref := s.browserResourceRef(ctx, c); ref != nil {
+		setStudioResourceRef(st, "browser", ref)
 	}
 	if _, err := c.Resource(studioResource, "").Create(ctx, st, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		log.Printf("creating the studio for workspace %s: %v", id.clusterID, err)
 		return
 	}
 	studioEnsured.Store(id.clusterID, struct{}{})
-	log.Printf("studio created for workspace %s (search instance %s)", id.clusterID, studioSearchInstanceName)
+	log.Printf("studio created for workspace %s (search %s, browser %s)", id.clusterID, studioSearchInstanceName, studioBrowserInstanceName)
+}
+
+// retrofitStudioServices adds spec blocks for shared services introduced after
+// a Studio was first created (today: browser). It patches only what is missing,
+// so a workspace whose Studio predates the browser backend gains it without a
+// recreate. It is a no-op until the studios schema carries the field — kcp
+// prunes unknown fields, so the write simply does not persist before then.
+func (s *Server) retrofitStudioServices(ctx context.Context, c *asclient.Client, st *unstructured.Unstructured) {
+	if resource, _, _ := unstructured.NestedString(st.Object, "spec", "browser", "resourceRef", "resource"); strings.TrimSpace(resource) != "" {
+		return // browser already present
+	}
+	ref := s.browserResourceRef(ctx, c)
+	if ref == nil {
+		return
+	}
+	_ = unstructured.SetNestedField(st.Object, "small", "spec", "browser", "size")
+	setStudioResourceRef(st, "browser", ref)
+	if _, err := c.Resource(studioResource, "").Update(ctx, st, metav1.UpdateOptions{}); err != nil {
+		log.Printf("retrofitting browser onto studio for workspace %s: %v", st.GetName(), err)
+	}
+}
+
+// setStudioResourceRef writes a resolved instance reference under
+// spec.<service>.resourceRef on the Studio being created.
+func setStudioResourceRef(st *unstructured.Unstructured, service string, ref *aiv1alpha1.ProjectProviderResourceReference) {
+	_ = unstructured.SetNestedMap(st.Object, map[string]any{
+		"name":       ref.Name,
+		"apiVersion": ref.APIVersion,
+		"kind":       ref.Kind,
+		"resource":   ref.Resource,
+	}, "spec", service, "resourceRef")
 }
 
 // studioSearchInstanceName is the workspace's shared search backend — fixed,
 // because there is exactly one and every project addresses it. Must match
 // controller/studio.SearchInstanceName.
 const studioSearchInstanceName = "app-studio-search"
+
+// studioBrowserInstanceName is the workspace's shared headless browser — fixed,
+// like the search backend. Must match controller/studio.BrowserInstanceName.
+const studioBrowserInstanceName = "app-studio-browser"
 
 // searchResourceRef resolves the searxng Template's instanceCRD as the
 // caller, so the Studio reconciler never has to read Templates.
@@ -148,10 +186,40 @@ func (s *Server) searchResourceRef(ctx context.Context, c *asclient.Client) *aiv
 	}
 }
 
+// browserResourceRef resolves the browser Template's instanceCRD as the
+// caller, so the Studio reconciler never has to read Templates.
+func (s *Server) browserResourceRef(ctx context.Context, c *asclient.Client) *aiv1alpha1.ProjectProviderResourceReference {
+	info, err := fetchProjectTemplate(ctx, c, "browser")
+	if err != nil || strings.TrimSpace(info.Resource) == "" || strings.TrimSpace(info.Kind) == "" {
+		log.Printf("preview browser unavailable: resolving the browser template: %v", err)
+		return nil
+	}
+	return &aiv1alpha1.ProjectProviderResourceReference{
+		Name:       studioBrowserInstanceName,
+		APIVersion: info.APIVersion,
+		Kind:       info.Kind,
+		Resource:   info.Resource,
+	}
+}
+
 // searchBackend reports the workspace's shared search backend for a turn.
 // Empty when there is none — web_search then says so rather than failing
 // obscurely.
 func (s *Server) searchBackend(ctx context.Context, c *asclient.Client) (resource, name string) {
+	return s.studioBackend(ctx, c, "search")
+}
+
+// browserBackend reports the workspace's shared headless browser for a turn.
+// Empty when there is none — preview inspection then reports unavailable
+// rather than failing obscurely.
+func (s *Server) browserBackend(ctx context.Context, c *asclient.Client) (resource, name string) {
+	return s.studioBackend(ctx, c, "browser")
+}
+
+// studioBackend reads one ready shared service (search/browser) off the Studio
+// singleton, returning its plural resource and instance name, or empty when the
+// service is absent, disabled, or not yet Ready.
+func (s *Server) studioBackend(ctx context.Context, c *asclient.Client, service string) (resource, name string) {
 	if c == nil {
 		return "", ""
 	}
@@ -159,14 +227,14 @@ func (s *Server) searchBackend(ctx context.Context, c *asclient.Client) (resourc
 	if err != nil {
 		return "", ""
 	}
-	if disabled, _, _ := unstructured.NestedBool(st.Object, "spec", "search", "disabled"); disabled {
+	if disabled, _, _ := unstructured.NestedBool(st.Object, "spec", service, "disabled"); disabled {
 		return "", ""
 	}
-	phase, _, _ := unstructured.NestedString(st.Object, "status", "search", "phase")
+	phase, _, _ := unstructured.NestedString(st.Object, "status", service, "phase")
 	if phase != aiv1alpha1.StudioServiceReady {
 		return "", ""
 	}
-	resource, _, _ = unstructured.NestedString(st.Object, "status", "search", "resource")
-	name, _, _ = unstructured.NestedString(st.Object, "status", "search", "instance")
+	resource, _, _ = unstructured.NestedString(st.Object, "status", service, "resource")
+	name, _, _ = unstructured.NestedString(st.Object, "status", service, "instance")
 	return resource, name
 }

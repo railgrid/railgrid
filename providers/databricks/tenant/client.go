@@ -23,20 +23,36 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
+	authorizationv1client "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	multicluster "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	databricksv1alpha1 "github.com/faroshq/provider-databricks/apis/databricks/v1alpha1"
 	"github.com/faroshq/provider-databricks/queryapi"
 )
 
-var tablesGVR = databricksv1alpha1.SchemeGroupVersion.WithResource("tables")
+var (
+	tablesGVR = databricksv1alpha1.SchemeGroupVersion.WithResource("tables")
+)
 
 type ClientFactory struct {
-	baseHost string
-	baseTLS  rest.TLSClientConfig
+	baseHost  string
+	baseTLS   rest.TLSClientConfig
+	authority ClusterAuthority
 
-	mu  sync.RWMutex
-	hot map[string]dynamic.Interface
+	mu      sync.RWMutex
+	hot     map[string]dynamic.Interface
+	authHot map[string]authorizationv1client.AuthorizationV1Interface
+}
+
+// ClusterAuthority is the provider-owned multicluster manager. Its client is
+// authenticated with the provider ServiceAccount, so provider-owned Tables,
+// Warehouses, Connections, and credential Secrets are resolved with provider
+// authority rather than the forwarded caller token.
+type ClusterAuthority interface {
+	GetCluster(context.Context, multicluster.ClusterName) (cluster.Cluster, error)
 }
 
 func NewClientFactory(base *rest.Config) *ClientFactory {
@@ -56,12 +72,41 @@ func NewClientFactory(base *rest.Config) *ClientFactory {
 		baseHost: baseHost,
 		baseTLS:  tls,
 		hot:      make(map[string]dynamic.Interface),
+		authHot:  make(map[string]authorizationv1client.AuthorizationV1Interface),
 	}
 }
 
+// SetAuthority wires the multicluster manager after it has been constructed.
+// The HTTP server is started only after this is set when controller startup is
+// available; a nil authority makes direct actions fail closed.
+func (f *ClientFactory) SetAuthority(authority ClusterAuthority) {
+	if f != nil {
+		f.authority = authority
+	}
+}
+
+func (f *ClientFactory) AuthorityClient(ctx context.Context, clusterID string) (client.Client, error) {
+	if f == nil || f.authority == nil {
+		return nil, errors.New("provider authority client unavailable")
+	}
+	clusterID = strings.TrimSpace(clusterID)
+	if clusterID == "" || clusterID == "." || clusterID == ".." || url.PathEscape(clusterID) != clusterID {
+		return nil, errors.New("invalid tenant logical-cluster ID")
+	}
+	cl, err := f.authority.GetCluster(ctx, multicluster.ClusterName(clusterID))
+	if err != nil {
+		return nil, fmt.Errorf("provider authority cluster %q: %w", clusterID, err)
+	}
+	if cl == nil || cl.GetClient() == nil {
+		return nil, fmt.Errorf("provider authority cluster %q has no client", clusterID)
+	}
+	return cl.GetClient(), nil
+}
+
 func (f *ClientFactory) For(clusterID, token string) (dynamic.Interface, error) {
-	if token == "" {
-		return nil, errors.New("no bearer token on request; cannot act on the tenant's behalf")
+	cfg, err := f.configFor(clusterID, token)
+	if err != nil {
+		return nil, err
 	}
 	key := clusterID + ":" + hashToken(token)
 
@@ -72,12 +117,7 @@ func (f *ClientFactory) For(clusterID, token string) (dynamic.Interface, error) 
 		return dyn, nil
 	}
 
-	cfg := &rest.Config{
-		Host:            f.baseHost + "/clusters/" + clusterID,
-		BearerToken:     token,
-		TLSClientConfig: f.baseTLS,
-	}
-	dyn, err := dynamic.NewForConfig(cfg)
+	dyn, err = dynamic.NewForConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("dynamic client for cluster %q: %w", clusterID, err)
 	}
@@ -92,6 +132,51 @@ func (f *ClientFactory) For(clusterID, token string) (dynamic.Interface, error) 
 	}
 	f.hot[key] = dyn
 	return dyn, nil
+}
+
+func (f *ClientFactory) configFor(clusterID, token string) (*rest.Config, error) {
+	if f == nil {
+		return nil, errors.New("tenant client unavailable")
+	}
+	clusterID = strings.TrimSpace(clusterID)
+	if clusterID == "" || clusterID == "." || clusterID == ".." || url.PathEscape(clusterID) != clusterID {
+		return nil, errors.New("invalid tenant logical-cluster ID")
+	}
+	if strings.TrimSpace(token) == "" {
+		return nil, errors.New("no bearer token on request; cannot act on the tenant's behalf")
+	}
+	return &rest.Config{Host: f.baseHost + "/clusters/" + clusterID, BearerToken: token, TLSClientConfig: f.baseTLS}, nil
+}
+
+// AuthorizationFor returns a caller-token-scoped authorization client for
+// delegated SelfSubjectAccessReview checks. The provider's bootstrap
+// credential is never used to authorize an action on behalf of a caller.
+func (f *ClientFactory) AuthorizationFor(clusterID, token string) (authorizationv1client.AuthorizationV1Interface, error) {
+	cfg, err := f.configFor(clusterID, token)
+	if err != nil {
+		return nil, err
+	}
+	key := clusterID + ":" + hashToken(token)
+	f.mu.RLock()
+	client, ok := f.authHot[key]
+	f.mu.RUnlock()
+	if ok {
+		return client, nil
+	}
+	client, err = authorizationv1client.NewForConfig(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("authorization client for cluster %q: %w", clusterID, err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if existing, ok := f.authHot[key]; ok {
+		return existing, nil
+	}
+	if f.authHot == nil {
+		f.authHot = make(map[string]authorizationv1client.AuthorizationV1Interface)
+	}
+	f.authHot[key] = client
+	return client, nil
 }
 
 func (f *ClientFactory) TableResolverForRequest(r *http.Request) queryapi.TableResolver {
@@ -117,8 +202,11 @@ func identityFromRequest(r *http.Request) identity {
 }
 
 func bearerToken(r *http.Request) string {
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		return strings.TrimPrefix(auth, "Bearer ")
+	if auth := strings.TrimSpace(r.Header.Get("Authorization")); auth != "" {
+		parts := strings.SplitN(auth, " ", 2)
+		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+			return strings.TrimSpace(parts[1])
+		}
 	}
 	return ""
 }

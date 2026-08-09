@@ -76,6 +76,12 @@ spec:
         group: infrastructure.kedge.faros.sh
         verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
         tenantScoped: true
+      # Preview browser: the Studio reconciler provisions one shared headless
+      # browser (Playwright MCP) per workspace for development-preview inspection.
+      - resource: browsers
+        group: infrastructure.kedge.faros.sh
+        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+        tenantScoped: true
       # Repository CRs the Project reconciler creates (git backing).
       - resource: repositories
         group: code.kedge.faros.sh

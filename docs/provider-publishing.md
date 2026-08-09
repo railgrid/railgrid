@@ -62,6 +62,39 @@ The split workflow triggers on:
 Runs are serialized per ref (`concurrency` group) and never cancelled
 mid-push.
 
+## Publishing inline assistant skill packages
+
+A provider may publish App Studio guidance in
+`CatalogEntry.spec.assistantSkills`. This is package distribution, not provider
+enablement or authority: the authenticated hub catalog distributes the
+validated inline bytes into App Studio's read-only system-skill source. Like
+other system skills, a provider package is enabled by default and each project
+may disable or re-enable it. The package cannot grant tools, credentials,
+permissions, models, approvals, or Provider Actions access.
+
+For each package:
+
+1. Create a package with a `SKILL.md` (YAML `name` and `description` plus the
+   guidance body). When useful, start with the bundled
+   `skill-creator/scripts/init_skill.py` utility, then add only bounded,
+   package-relative supporting resources.
+2. Validate the package against the provider skill contract: UTF-8 content,
+   no traversal or absolute resource paths, no authority-bearing frontmatter,
+   and the 32 KiB document / 64 KiB resource / 512 KiB per-provider bounds.
+3. Compute the canonical `sha256:` digest over `packageName`, `version`, raw
+   `SKILL.md`, and resources sorted by path. Update the digest and version in
+   the provider's checked-in `manifest.yaml` and mirror the complete
+   `assistantSkills` entry in `deploy/chart/templates/catalogentry.yaml`.
+4. If the API contract changes, run the provider code-generation target and
+   commit generated schemas. Test that the manifest and Helm CatalogEntry
+   render equivalent package name, version, digest, document, and resources;
+   do not rely on one copy drifting silently.
+5. Link the shipped package's `SKILL.md` from the provider README so its
+   authoring contract and operational evidence remain reviewable.
+
+The Databricks provider's shipped example is
+[`databricks-app-integration`](../providers/databricks/skills/databricks-app-integration/SKILL.md).
+
 ## One-time setup per mirror
 
 These steps are **manual** and must be done once per provider mirror. They

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/faroshq/provider-databricks/actions"
 	"github.com/faroshq/provider-databricks/backend"
 	"github.com/faroshq/provider-databricks/mcpserver"
 	"github.com/faroshq/provider-databricks/queryapi"
@@ -65,10 +67,15 @@ func main() {
 }
 
 func runServe() {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 	port := envOr("PORT", "8081")
 	tables := seedTablesFromEnv()
 	devStaticTables := os.Getenv("DATABRICKS_DEV_STATIC_TABLES") == "true"
 	statementClient := backend.NewStatementClient(nil)
+	if loopbackE2EEnabled() {
+		statementClient = backend.NewDevelopmentLoopbackStatementClient()
+	}
 	var validator backend.Validator = statementClient
 	if devStaticTables {
 		validator = backend.Stub{}
@@ -78,7 +85,17 @@ func runServe() {
 		log.Printf("kcp config unavailable (%v); tenant Table lookup and controllers disabled", kcpErr)
 	}
 	tenantFactory := tenant.NewClientFactory(kcpConfig)
-	mux, err := newServeMux(tables, devStaticTables, tenantFactory)
+	controllerManager, controllerErr := startControllerManager(ctx, kcpConfig, validator)
+	if controllerErr != nil {
+		if errors.Is(controllerErr, errControllerDisabled) {
+			log.Printf("controller manager: disabled (no kubeconfig); tenant Table lookup and controllers disabled")
+		} else {
+			log.Printf("controller manager: NOT started: %v", controllerErr)
+		}
+	} else {
+		tenantFactory.SetAuthority(controllerManager)
+	}
+	mux, err := newServeMux(tables, devStaticTables, tenantFactory, statementClient)
 	if err != nil {
 		log.Fatalf("server mux: %v", err)
 	}
@@ -89,21 +106,12 @@ func runServe() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	go func() {
 		log.Printf("databricks provider listening on :%s", port)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server: %v", err)
 		}
 	}()
-	if err := startControllerManager(ctx, kcpConfig, validator); err != nil {
-		if errors.Is(err, errControllerDisabled) {
-			log.Printf("controller manager: disabled (no kubeconfig); set KEDGE_PROVIDER_KUBECONFIG to enable")
-		} else {
-			log.Printf("controller manager: NOT started: %v", err)
-		}
-	}
 	go runHeartbeat(ctx)
 
 	<-ctx.Done()
@@ -114,12 +122,49 @@ func runServe() {
 	}
 }
 
-func newServeMux(tables map[string]queryapi.TableRef, devStaticTables bool, tenantFactory *tenant.ClientFactory) (*http.ServeMux, error) {
+func loopbackE2EEnabled() bool {
+	return os.Getenv("DATABRICKS_E2E_LOOPBACK") == "true"
+}
+
+// mcpEnabled controls the optional legacy MCP surface. It remains enabled by
+// default for existing deployments, while an explicit false value lets a
+// deployment prove that provider actions do not depend on MCP being mounted.
+func mcpEnabled() bool {
+	raw := strings.TrimSpace(os.Getenv("DATABRICKS_MCP_ENABLED"))
+	if raw == "" {
+		return true
+	}
+	enabled, err := strconv.ParseBool(raw)
+	return err == nil && enabled
+}
+
+func newServeMux(tables map[string]queryapi.TableRef, devStaticTables bool, tenantFactory *tenant.ClientFactory, actionExecutors ...backend.QueryExecutor) (*http.ServeMux, error) {
+	var actionExecutor backend.QueryExecutor
+	if len(actionExecutors) > 0 {
+		actionExecutor = actionExecutors[0]
+	}
 	resolverFromRequest := func(r *http.Request) queryapi.TableResolver {
 		if devStaticTables {
 			return queryapi.StaticTableResolver(tables)
 		}
+		if tenantFactory == nil {
+			return queryapi.UnavailableResolver{Message: "tenant client unavailable (provider kubeconfig not set)"}
+		}
 		return tenantFactory.TableResolverForRequest(r)
+	}
+	actionExecutorForRoute := func(r *http.Request, route actions.Route) actions.QueryExecutor {
+		if devStaticTables || tenantFactory == nil {
+			return nil
+		}
+		return tenantFactory.ActionExecutorForRoute(r, route.ClusterID, actionExecutor)
+	}
+	// The MCP tool still resolves identity from proxy-injected headers; it is
+	// a presentation adapter over the same executor, not an action route.
+	actionExecutorFromRequest := func(r *http.Request) actions.QueryExecutor {
+		if devStaticTables || tenantFactory == nil {
+			return nil
+		}
+		return tenantFactory.ActionExecutorForRoute(r, r.Header.Get("X-Kedge-Cluster"), actionExecutor)
 	}
 
 	mux := http.NewServeMux()
@@ -143,13 +188,19 @@ func newServeMux(tables map[string]queryapi.TableRef, devStaticTables bool, tena
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	})
-	mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
-		Tables:                        tables,
-		ResolverFromRequest:           resolverFromRequest,
-		DisableLocalhostMCPProtection: os.Getenv("DATABRICKS_MCP_DISABLE_LOCALHOST_PROTECTION") == "true",
+	if mcpEnabled() {
+		mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
+			Tables:                    tables,
+			ResolverFromRequest:       resolverFromRequest,
+			ActionExecutorFromRequest: actionExecutorFromRequest,
+		})
+		mux.Handle("/mcp", mcpHandler)
+		mux.Handle("/mcp/sse", mcpHandler)
+	}
+	actionHandler := actions.NewHandler(actions.Deps{
+		QueryExecutorForRoute: actionExecutorForRoute,
 	})
-	mux.Handle("/mcp", mcpHandler)
-	mux.Handle("/mcp/sse", mcpHandler)
+	mux.Handle(actions.PathPrefix, actionHandler)
 
 	fileServer, distFS, err := portalHandler()
 	if err != nil {

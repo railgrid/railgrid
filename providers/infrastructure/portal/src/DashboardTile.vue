@@ -242,22 +242,22 @@ function styleFor(phase: string) {
            stacked boxes, so the tile stays compact. -->
       <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
         <span class="inline-flex items-center gap-1 text-text-primary">
-          <Layers class="h-3 w-3 text-text-muted" :stroke-width="1.75" />
+          <Layers class="h-3 w-3 text-text-muted" :stroke-width="2" />
           <span class="font-semibold tabular-nums">{{ stats.total }}</span>
           <span class="text-text-muted">total</span>
         </span>
         <span class="inline-flex items-center gap-1 text-success">
-          <CheckCircle2 class="h-3 w-3" :stroke-width="1.75" />
+          <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
           <span class="tabular-nums">{{ stats.ready }}</span>
           <span class="text-text-muted">ready</span>
         </span>
         <span v-if="stats.pending > 0" class="inline-flex items-center gap-1 text-text-muted">
-          <Clock class="h-3 w-3" :stroke-width="1.75" />
+          <Clock class="h-3 w-3" :stroke-width="2" />
           <span class="tabular-nums">{{ stats.pending }}</span>
           <span class="text-text-muted">pending</span>
         </span>
         <span v-if="stats.failed > 0" class="inline-flex items-center gap-1 text-danger">
-          <AlertCircle class="h-3 w-3" :stroke-width="1.75" />
+          <AlertCircle class="h-3 w-3" :stroke-width="2" />
           <span class="tabular-nums">{{ stats.failed }}</span>
           <span class="text-text-muted">failed</span>
         </span>
@@ -292,7 +292,7 @@ function styleFor(phase: string) {
               <component :is="styleFor(i.phase).icon" :class="styleFor(i.phase).cls + ' h-3 w-3 shrink-0'" :stroke-width="1.75" />
               <span class="min-w-0 flex-1 truncate text-[12px] text-text-primary">{{ i.name }}</span>
               <span class="shrink-0 truncate text-[10px] text-text-muted/70">{{ i.template }}</span>
-              <ChevronRight class="h-3 w-3 shrink-0 text-text-muted/30 transition-all group-hover:translate-x-0.5 group-hover:text-accent/60" :stroke-width="1.75" />
+              <ChevronRight class="h-3 w-3 shrink-0 text-text-muted/30 transition-all group-hover:translate-x-0.5 group-hover:text-accent/60" :stroke-width="2" />
             </button>
           </li>
         </ul>

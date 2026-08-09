@@ -261,6 +261,16 @@ func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
 				Resources: []string{"customresourcedefinitions"},
 				Verbs:     []string{"get", "list", "watch", "create", "update", "delete"},
 			},
+			// The provider-owned workload attestor performs an online
+			// TokenReview against the runtime cluster for projected
+			// kedge-provider-actions-bootstrap tokens. It never parses JWTs
+			// locally, so this is the only authentication API permission it
+			// needs.
+			{
+				APIGroups: []string{"authentication.k8s.io"},
+				Resources: []string{"tokenreviews"},
+				Verbs:     []string{"create"},
+			},
 		},
 	}
 	// API discovery non-resource URLs. Required for the kcp-apiexport
@@ -324,4 +334,3 @@ func ensureClusterRoleBinding(ctx context.Context, cs kubernetes.Interface) erro
 	}
 	return nil
 }
-

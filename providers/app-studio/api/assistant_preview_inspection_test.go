@@ -170,7 +170,7 @@ func TestInspectProjectDevelopmentPreviewRejectsUnsynchronizedMutation(t *testin
 func TestProjectAssistantPreviewInspectionCapabilityFollowsHealth(t *testing.T) {
 	inspector := &fakeProjectAssistantPreviewInspector{}
 	server := &Server{previewInspector: inspector}
-	if !server.projectAssistantPreviewInspectionAvailable(context.Background()) {
+	if !server.projectAssistantPreviewInspectionAvailable(context.Background(), identity{}) {
 		t.Fatal("healthy inspector capability was hidden")
 	}
 	discovery := projectEinoAssistantDiscoverTools(context.Background(), server, projectAssistantRunRequest{

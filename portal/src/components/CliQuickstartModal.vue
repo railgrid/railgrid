@@ -164,7 +164,7 @@ const releasesURL = 'https://github.com/faroshq/kedge/releases/latest'
               class="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-accent transition-colors hover:text-accent-hover"
             >
               Browse releases on GitHub
-              <ExternalLink class="h-3 w-3" :stroke-width="1.75" />
+              <ExternalLink class="h-3 w-3" :stroke-width="2" />
             </a>
           </div>
 

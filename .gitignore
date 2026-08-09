@@ -68,6 +68,9 @@ data/
 *.kubeconfig
 # Downloaded kubeconfigs that don't end in .kubeconfig (e.g. code-kubeconfig (2).yaml)
 *kubeconfig*.yaml
+# Stray extension-less kubeconfig dumps at the repo root (a `kind export
+# kubeconfig > tilt` once committed a client private key under this name).
+/tilt
 
 # Dev tools and certs
 hack/tools/

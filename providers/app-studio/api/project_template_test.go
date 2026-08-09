@@ -22,6 +22,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	k8sschema "k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
@@ -142,9 +143,9 @@ func TestProjectTemplateDevBinding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("template info: %v", err)
 	}
-	binding, err := projectTemplateDevBinding(p, info)
+	binding, err := projectTemplateDevBindingWithContext(p, info, projectTemplateBindingContext{})
 	if err != nil {
-		t.Fatalf("projectTemplateDevBinding: %v", err)
+		t.Fatalf("projectTemplateDevBindingWithContext: %v", err)
 	}
 	if binding.Name != projectDevelopmentBindingName || binding.Provider != projectDevelopmentProviderAppStudio {
 		t.Errorf("binding identity = %s/%s", binding.Name, binding.Provider)
@@ -161,6 +162,224 @@ func TestProjectTemplateDevBinding(t *testing.T) {
 	}
 }
 
+func TestProjectTemplateDevBindingCarriesTrustedActionsContext(t *testing.T) {
+	p := &aiv1alpha1.Project{}
+	p.Name = "shop"
+	p.UID = "test-project-uid-shop"
+	info, err := projectTemplateInfoFromUnstructured(applicationTemplateObject())
+	if err != nil {
+		t.Fatalf("template info: %v", err)
+	}
+	binding, err := projectTemplateDevBindingWithContext(p, info, projectTemplateBindingContext{
+		ActionsExchangeURL: "https://hub.example/api/provider-actions/workload/exchange",
+		ActionsBaseURL:     "https://hub.example/services/providers/app-studio",
+		ActionsCABundle:    "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+		TenantPath:         "root:kedge:tenants:org:ws",
+		Org:                "org",
+		Workspace:          "ws",
+		Project:            "shop",
+		ProjectUID:         "test-project-uid-shop",
+		Environment:        "development",
+		Instance:           "shop-dev",
+	})
+	if err != nil {
+		t.Fatalf("projectTemplateDevBindingWithContext: %v", err)
+	}
+	var values map[string]any
+	if err := json.Unmarshal(binding.Values.Raw, &values); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{
+		"kedgeActionsExchangeURL": "https://hub.example/api/provider-actions/workload/exchange",
+		"kedgeActionsBaseURL":     "https://hub.example/services/providers/app-studio",
+		"kedgeActionsCABundle":    "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+		"kedgeActionsTenantPath":  "root:kedge:tenants:org:ws",
+		"kedgeActionsProjectUID":  "test-project-uid-shop",
+		"kedgeActionsInstance":    "shop-dev",
+	} {
+		if values[key] != want {
+			t.Errorf("%s = %v, want %q", key, values[key], want)
+		}
+	}
+}
+
+func TestProjectTemplateBindingContextAllowsMissingActionsURLWithoutGrant(t *testing.T) {
+	p := &aiv1alpha1.Project{}
+	p.Name = "shop"
+	context, err := (&Server{}).projectTemplateBindingContext(p, identity{})
+	if err != nil {
+		t.Fatalf("projectTemplateBindingContext: %v", err)
+	}
+	if context.ActionsExchangeURL != "" || context.ActionsBaseURL != "" {
+		t.Fatalf("action URLs = %#v, want empty for a project without grants", context)
+	}
+}
+
+func TestProjectTemplateBindingContextDoesNotEnableActionsWithoutGrant(t *testing.T) {
+	p := &aiv1alpha1.Project{}
+	p.Name = "shop"
+	context, err := (&Server{actionsExternalURL: "https://hub.example"}).projectTemplateBindingContext(p, identity{})
+	if err != nil {
+		t.Fatalf("projectTemplateBindingContext: %v", err)
+	}
+	if context.ActionsExchangeURL != "" || context.ActionsBaseURL != "" {
+		t.Fatalf("action URLs = %#v, want empty for a project without active grants", context)
+	}
+}
+
+func TestProjectTemplateBindingContextIncludesCABundleOnlyWithActiveGrant(t *testing.T) {
+	p := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop"},
+		Spec: aiv1alpha1.ProjectSpec{
+			Environments: []aiv1alpha1.ProjectEnvironmentSpec{{
+				Bindings: []aiv1alpha1.ProjectProviderBindingSpec{{
+					Kind:           aiv1alpha1.ProjectBindingKindProviderReference,
+					AllowedActions: []aiv1alpha1.ProjectProviderActionSpec{{Name: "query_table"}},
+				}},
+			}},
+		},
+	}
+	bundle := "-----BEGIN CERTIFICATE-----\npublic-ca\n-----END CERTIFICATE-----"
+	context, err := (&Server{actionsExternalURL: "https://hub.example", actionsCABundle: bundle}).projectTemplateBindingContext(p, identity{})
+	if err != nil {
+		t.Fatalf("projectTemplateBindingContext: %v", err)
+	}
+	if context.ActionsCABundle != bundle {
+		t.Fatalf("CA bundle = %q, want configured public bundle", context.ActionsCABundle)
+	}
+
+	noGrant := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "plain"}}
+	context, err = (&Server{actionsCABundle: bundle}).projectTemplateBindingContext(noGrant, identity{})
+	if err != nil {
+		t.Fatalf("actionless projectTemplateBindingContext: %v", err)
+	}
+	if context.ActionsCABundle != "" {
+		t.Fatalf("actionless CA bundle = %q, want omitted", context.ActionsCABundle)
+	}
+}
+
+func TestProjectTemplateBindingContextRejectsMissingOrInvalidActionsURLWithGrant(t *testing.T) {
+	p := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop"},
+		Spec: aiv1alpha1.ProjectSpec{Environments: []aiv1alpha1.ProjectEnvironmentSpec{{
+			Name: projectDevelopmentEnvironmentName,
+			Bindings: []aiv1alpha1.ProjectProviderBindingSpec{{
+				Name:     "sales",
+				Provider: "databricks",
+				Kind:     aiv1alpha1.ProjectBindingKindProviderReference,
+				AllowedActions: []aiv1alpha1.ProjectProviderActionSpec{{
+					Name: "query_table", Version: "v1", SchemaDigest: "sha256:" + strings.Repeat("a", 64),
+				}},
+			}},
+		}}},
+	}
+
+	for _, tc := range []struct {
+		name string
+		url  string
+		want string
+	}{
+		{name: "missing", want: "required for action-enabled"},
+		{name: "http", url: "http://hub.example", want: "must use HTTPS"},
+		{name: "path", url: "https://hub.example/actions", want: "absolute HTTPS URL"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := (&Server{actionsExternalURL: tc.url}).projectTemplateBindingContext(p, identity{})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("projectTemplateBindingContext(%q) error = %v, want substring %q", tc.url, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestProjectDevelopmentRuntimeBindingClearsStaleActionsContext(t *testing.T) {
+	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "shop", UID: "project-uid"}}
+	binding := aiv1alpha1.ProjectProviderBindingSpec{
+		Name:     projectDevelopmentBindingName,
+		Provider: projectDevelopmentProviderAppStudio,
+		Kind:     aiv1alpha1.ProjectBindingKindProviderResource,
+		Values: runtime.RawExtension{Raw: []byte(`{
+			"name":"shop-dev",
+			"kedgeMode":"development",
+			"kedgeActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
+			"kedgeActionsBaseURL":"https://stale.example/services/providers/app-studio",
+			"kedgeActionsCABundle":"-----BEGIN CERTIFICATE-----stale-----END CERTIFICATE-----",
+			"kedgeActionsTenantPath":"stale-tenant",
+			"kedgeActionsProject":"stale-project"
+		}`)},
+	}
+
+	updated, err := (&Server{}).projectDevelopmentRuntimeBinding(binding, p, identity{
+		tenantPath:    "root:kedge:tenants:org:ws",
+		orgUUID:       "org",
+		workspaceUUID: "ws",
+	})
+	if err != nil {
+		t.Fatalf("projectDevelopmentRuntimeBinding: %v", err)
+	}
+	var values map[string]any
+	if err := json.Unmarshal(updated.Values.Raw, &values); err != nil {
+		t.Fatalf("updated values: %v", err)
+	}
+	for _, key := range []string{"kedgeActionsExchangeURL", "kedgeActionsBaseURL", "kedgeActionsCABundle"} {
+		if _, found := values[key]; found {
+			t.Errorf("stale %s survived missing external URL: %v", key, values[key])
+		}
+	}
+	for key, want := range map[string]string{
+		"kedgeActionsTenantPath":  "root:kedge:tenants:org:ws",
+		"kedgeActionsOrg":         "org",
+		"kedgeActionsWorkspace":   "ws",
+		"kedgeActionsProject":     "shop",
+		"kedgeActionsProjectUID":  "project-uid",
+		"kedgeActionsEnvironment": projectDevelopmentEnvironmentName,
+		"kedgeActionsInstance":    "shop-dev",
+	} {
+		if values[key] != want {
+			t.Errorf("%s = %v, want rebuilt trusted value %q", key, values[key], want)
+		}
+	}
+}
+
+func TestProjectDevelopmentRuntimeBindingClearsActionsAfterGrantRevocation(t *testing.T) {
+	p := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "shop", UID: "project-uid"},
+		Spec: aiv1alpha1.ProjectSpec{Environments: []aiv1alpha1.ProjectEnvironmentSpec{{
+			Bindings: []aiv1alpha1.ProjectProviderBindingSpec{{
+				Kind: aiv1alpha1.ProjectBindingKindProviderReference,
+				AllowedActions: []aiv1alpha1.ProjectProviderActionSpec{{
+					Name: "query_table", Version: "v1", Revoked: true,
+				}},
+			}},
+		}}},
+	}
+	binding := aiv1alpha1.ProjectProviderBindingSpec{
+		Name:     projectDevelopmentBindingName,
+		Provider: projectDevelopmentProviderAppStudio,
+		Kind:     aiv1alpha1.ProjectBindingKindProviderResource,
+		Values: runtime.RawExtension{Raw: []byte(`{
+			"name":"shop-dev",
+			"kedgeActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
+			"kedgeActionsBaseURL":"https://stale.example/services/providers/app-studio",
+			"kedgeActionsCABundle":"-----BEGIN CERTIFICATE-----stale-----END CERTIFICATE-----"
+		}`)},
+	}
+
+	updated, err := (&Server{actionsExternalURL: "https://hub.example"}).projectDevelopmentRuntimeBinding(binding, p, identity{})
+	if err != nil {
+		t.Fatalf("projectDevelopmentRuntimeBinding: %v", err)
+	}
+	var values map[string]any
+	if err := json.Unmarshal(updated.Values.Raw, &values); err != nil {
+		t.Fatalf("updated values: %v", err)
+	}
+	for _, key := range []string{"kedgeActionsExchangeURL", "kedgeActionsBaseURL", "kedgeActionsCABundle"} {
+		if _, found := values[key]; found {
+			t.Errorf("revoked grant left stale %s: %v", key, values[key])
+		}
+	}
+}
+
 func TestApplyProjectDevelopmentTemplateBuildsInitialBindingIdempotently(t *testing.T) {
 	p := &aiv1alpha1.Project{}
 	p.Name = "shop"
@@ -174,8 +393,12 @@ func TestApplyProjectDevelopmentTemplateBuildsInitialBindingIdempotently(t *test
 		t.Fatalf("template info: %v", err)
 	}
 
-	if err := applyProjectDevelopmentTemplate(p, info); err != nil {
-		t.Fatalf("applyProjectDevelopmentTemplate: %v", err)
+	context := projectTemplateBindingContext{
+		ActionsExchangeURL: "https://hub.example/api/provider-actions/workload/exchange",
+		ActionsBaseURL:     "https://hub.example/services/providers/app-studio",
+	}
+	if err := applyProjectDevelopmentTemplateWithContext(p, info, context); err != nil {
+		t.Fatalf("applyProjectDevelopmentTemplateWithContext: %v", err)
 	}
 	if p.Spec.Template == nil || p.Spec.Template.Name != "application" {
 		t.Fatalf("spec.template = %+v, want application", p.Spec.Template)
@@ -188,8 +411,8 @@ func TestApplyProjectDevelopmentTemplateBuildsInitialBindingIdempotently(t *test
 		t.Fatalf("template binding = %+v, want shop-dev", binding)
 	}
 
-	if err := applyProjectDevelopmentTemplate(p, info); err != nil {
-		t.Fatalf("second applyProjectDevelopmentTemplate: %v", err)
+	if err := applyProjectDevelopmentTemplateWithContext(p, info, context); err != nil {
+		t.Fatalf("second applyProjectDevelopmentTemplateWithContext: %v", err)
 	}
 	if got := len(p.Spec.Environments[0].Bindings); got != 2 {
 		t.Fatalf("development bindings after second apply = %d, want idempotent 2", got)

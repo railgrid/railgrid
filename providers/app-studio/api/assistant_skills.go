@@ -81,7 +81,17 @@ func (s *Server) projectAssistantSkillSnapshot(ctx context.Context, scope worksp
 	return snapshot.EnabledOnly(), nil
 }
 
-func (s *Server) projectAssistantSkillCatalogSnapshot(ctx context.Context, scope workspace.Scope) (snapshot appskills.Snapshot, err error) {
+// projectAssistantSkillSnapshotForIdentity loads the enabled catalog using the
+// caller-scoped authenticated provider catalog when the hub is configured.
+func (s *Server) projectAssistantSkillSnapshotForIdentity(ctx context.Context, scope workspace.Scope, id identity) (appskills.Snapshot, error) {
+	snapshot, err := s.projectAssistantSkillCatalogSnapshot(ctx, scope, id)
+	if err != nil {
+		return appskills.Snapshot{}, err
+	}
+	return snapshot.EnabledOnly(), nil
+}
+
+func (s *Server) projectAssistantSkillCatalogSnapshot(ctx context.Context, scope workspace.Scope, identities ...identity) (snapshot appskills.Snapshot, err error) {
 	defer func() {
 		if err != nil {
 			projectAssistantSkillMetric("catalog", "failure")
@@ -93,8 +103,10 @@ func (s *Server) projectAssistantSkillCatalogSnapshot(ctx context.Context, scope
 	if err != nil {
 		return appskills.Snapshot{}, fmt.Errorf("configure built-in assistant skills: %w", err)
 	}
+	metadata := appskills.ProjectMetadata{}
+	var metadataErr error
 	if s != nil && s.workspaces != nil {
-		metadata, _, metadataErr := appskills.ReadProjectMetadata(ctx, s.workspaces, scope)
+		metadata, _, metadataErr = appskills.ReadProjectMetadata(ctx, s.workspaces, scope)
 		wrapped, wrapErr := appskills.NewActivationSource(builtin, metadata.System, metadataErr != nil)
 		if wrapErr != nil {
 			return appskills.Snapshot{}, fmt.Errorf("configure built-in assistant skill activation: %w", wrapErr)
@@ -102,6 +114,25 @@ func (s *Server) projectAssistantSkillCatalogSnapshot(ctx context.Context, scope
 		builtin = wrapped
 	}
 	sources := []appskills.Source{builtin}
+	// Provider skills are distributed only by the authenticated hub catalog.
+	// Keep the zero-identity form useful for isolated unit tests and local
+	// deployments that intentionally have no hub URL; production request paths
+	// pass identity explicitly and therefore cannot silently fall back to a
+	// provider runtime or unauthenticated source.
+	if len(identities) > 0 && s != nil && (s.providerActionCatalogResolver != nil || strings.TrimSpace(s.hubBase) != "") {
+		providerSource, providerErr := s.providerAssistantSkillSource(ctx, identities[0])
+		if providerErr != nil {
+			return appskills.Snapshot{}, fmt.Errorf("load provider assistant skills: %w", providerErr)
+		}
+		if s.workspaces != nil {
+			wrapped, wrapErr := appskills.NewActivationSource(providerSource, metadata.System, metadataErr != nil)
+			if wrapErr != nil {
+				return appskills.Snapshot{}, fmt.Errorf("configure provider assistant skill activation: %w", wrapErr)
+			}
+			providerSource = wrapped
+		}
+		sources = append(sources, providerSource)
+	}
 	if s != nil && s.workspaces != nil {
 		project, projectErr := appskills.NewProjectSource(s.workspaces, scope)
 		if projectErr != nil {
@@ -125,7 +156,7 @@ func (s *Server) getProjectAssistantSkills(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	snapshot, err := s.projectAssistantSkillCatalogSnapshot(r.Context(), projectWorkspaceScope(id, project))
+	snapshot, err := s.projectAssistantSkillCatalogSnapshot(r.Context(), projectWorkspaceScope(id, project), id)
 	if err != nil {
 		writeProjectError(w, err)
 		return

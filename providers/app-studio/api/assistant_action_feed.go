@@ -114,6 +114,9 @@ func projectAssistantActionFeedItemFromToolCall(toolCall projectToolCallStreamEv
 	if (item.Status == projectAssistantActionFeedStatusFailed || item.Status == projectAssistantActionFeedStatusRejected) &&
 		projectAssistantWorkspaceMutationTool(toolCall.Name) {
 		item.Diagnostic = projectAssistantActionFeedMutationDiagnostic(toolCall.ID, toolCall.Name, toolCall.Mutation, toolCall.MutationError, toolCall.Error)
+	} else if (item.Status == projectAssistantActionFeedStatusFailed || item.Status == projectAssistantActionFeedStatusRejected) &&
+		projectAssistantProviderReadTool(toolCall.Name) {
+		item.Diagnostic = projectAssistantActionFeedDiagnosticForTool(toolCall.ID, toolCall.Name, toolCall.Error)
 	}
 	if projectToolBaseName(toolCall.Name) == projectToolInspectDevelopmentPreview {
 		projectAssistantApplyPreviewInspectionPresentation(&item, toolCall.ID, toolCall.PreviewInspection)
@@ -139,6 +142,9 @@ func projectAssistantActionFeedItemFromAssistantToolCall(toolCall projectAssista
 	if (item.Status == projectAssistantActionFeedStatusFailed || item.Status == projectAssistantActionFeedStatusRejected) &&
 		projectAssistantWorkspaceMutationTool(toolCall.Name) {
 		item.Diagnostic = projectAssistantActionFeedMutationDiagnostic(toolCall.ID, toolCall.Name, nil, nil, toolCall.Error)
+	} else if (item.Status == projectAssistantActionFeedStatusFailed || item.Status == projectAssistantActionFeedStatusRejected) &&
+		projectAssistantProviderReadTool(toolCall.Name) {
+		item.Diagnostic = projectAssistantActionFeedDiagnosticForTool(toolCall.ID, toolCall.Name, toolCall.Error)
 	}
 	if projectToolBaseName(toolCall.Name) == projectToolInspectDevelopmentPreview {
 		projectAssistantApplyPreviewInspectionPresentation(&item, toolCall.ID, projectAssistantPreviewInspectionActionFromText(string(toolCall.Result)))
@@ -731,6 +737,28 @@ func projectAssistantActionFeedDiagnostic(id, rawError string) *projectAssistant
 		Message:     message,
 		ReferenceID: "action-" + hex.EncodeToString(sum[:6]),
 	}
+}
+
+// projectAssistantActionFeedDiagnosticForTool adds trusted tool-contract
+// context to a bounded diagnostic without exposing the tool name or raw
+// provider payload. Provider MCP reads can return terse errors such as
+// `tableRef "..." not found`, so text-only classification would incorrectly
+// present them as unknown actions.
+func projectAssistantActionFeedDiagnosticForTool(id, name, rawError string) *projectAssistantActionDiagnostic {
+	diagnostic := projectAssistantActionFeedDiagnostic(id, rawError)
+	if diagnostic == nil {
+		return nil
+	}
+	if projectAssistantProviderReadTool(name) {
+		diagnostic.Category = "provider"
+		diagnostic.Message = projectAssistantActionDiagnosticMessage("provider", rawError)
+	}
+	return diagnostic
+}
+
+func projectAssistantProviderReadTool(name string) bool {
+	spec, ok := projectAssistantMCPToolSpec(projectMCPTool{Name: strings.TrimSpace(name)})
+	return ok && spec.Risk == projectAssistantToolRiskRead
 }
 
 func projectAssistantApplyPreviewInspectionPresentation(item *projectAssistantActionFeedItem, id string, preview *projectAssistantPreviewInspectionAction) {

@@ -37,6 +37,7 @@ import (
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
+	"github.com/faroshq/provider-app-studio/bindings"
 	"github.com/faroshq/provider-app-studio/controller/project"
 	"github.com/faroshq/provider-app-studio/controller/session"
 	"github.com/faroshq/provider-app-studio/controller/studio"
@@ -58,6 +59,7 @@ var errControllerDisabled = errors.New("no kubeconfig available; controller mana
 // convergence reads it), the assistant-busy gate, and the hub address for
 // MCP commit calls.
 type controllerDeps struct {
+	Actions     bindings.ActionsRuntimeConfig
 	Workspace   *workspace.FileStore
 	Busy        func(workspace.Scope) bool
 	Store       store.Store
@@ -89,6 +91,7 @@ func startControllerManager(ctx context.Context, config *rest.Config, deps contr
 	}
 
 	if err := (&project.Reconciler{
+		Actions:     deps.Actions,
 		Workspace:   deps.Workspace,
 		Busy:        deps.Busy,
 		HubBase:     deps.HubBase,

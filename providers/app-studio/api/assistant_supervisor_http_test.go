@@ -48,6 +48,7 @@ func TestProjectAssistantRunErrorInfoClassifiesStructuredProviderFailures(t *tes
 		{name: "model timeout", err: &projectEinoAssistantModelTimeoutError{Code: "model_stream_idle_timeout", Duration: time.Second}, want: "response_timeout"},
 		{name: "request deadline", err: context.DeadlineExceeded, want: "response_timeout"},
 		{name: "canceled", err: context.Canceled, want: "interrupted"},
+		{name: "no progress", err: &projectEinoAssistantNoProgressError{Calls: 2, Limit: 2}, want: "no_progress"},
 		{name: "generic", err: errors.New("provider unavailable"), want: "other"},
 	}
 	for _, tt := range tests {
@@ -56,6 +57,26 @@ func TestProjectAssistantRunErrorInfoClassifiesStructuredProviderFailures(t *tes
 				t.Fatalf("error info = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestProjectAssistantRunErrorJSONNormalizesNoProgressNodeError(t *testing.T) {
+	noProgress := &projectEinoAssistantNoProgressError{Calls: 2, Limit: 2}
+	err := fmt.Errorf("[NodeRunError] node path: [node_1, ChatModel]: %w", noProgress)
+
+	raw := projectAssistantRunErrorJSON(err, projectAssistantRunErrorInfo(err))
+	var got projectAssistantRunErrorView
+	if unmarshalErr := json.Unmarshal(raw, &got); unmarshalErr != nil {
+		t.Fatalf("decode terminal error: %v", unmarshalErr)
+	}
+	if got.ErrorInfo != "no_progress" {
+		t.Fatalf("error info = %q, want no_progress", got.ErrorInfo)
+	}
+	if got.Message != noProgress.Error() {
+		t.Fatalf("message = %q, want typed no-progress message %q", got.Message, noProgress.Error())
+	}
+	if strings.Contains(got.Message, "NodeRunError") {
+		t.Fatalf("message leaked Eino wrapper: %q", got.Message)
 	}
 }
 

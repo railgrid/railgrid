@@ -158,6 +158,7 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 	srv := server.New(server.Deps{
 		MCP:              mcpHandler,
 		DataPlane:        dataPlaneHandler,
+		WorkloadIdentity: buildWorkloadIdentityReviewHandler(),
 		PortalFileServer: fileServer,
 		PortalFS:         distFS,
 		ServePortalAsset: servePortalAsset,

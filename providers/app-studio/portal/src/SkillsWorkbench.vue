@@ -252,7 +252,7 @@ function friendlyError(error: unknown, fallback: string): string {
       </div>
     </div>
     <div v-if="statusMessage" class="flex items-center gap-2 rounded-xl border border-success/30 bg-success-subtle p-3 text-[12px] text-success" role="status">
-      <Check class="h-4 w-4 shrink-0" :stroke-width="2" />
+      <Check class="h-4 w-4 shrink-0" :stroke-width="1.75" />
       {{ statusMessage }}
     </div>
 
@@ -284,7 +284,7 @@ function friendlyError(error: unknown, fallback: string): string {
             @click="selectSkill(skill)"
           >
             <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-surface-raised text-accent">
-              <Plug class="h-4 w-4" :stroke-width="1.6" aria-hidden="true" />
+              <Plug class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
             </span>
             <span class="min-w-0 flex-1">
               <span class="flex min-w-0 items-center gap-2">
@@ -297,7 +297,7 @@ function friendlyError(error: unknown, fallback: string): string {
                 <code class="truncate font-mono" :title="skill.packageName || skill.id">{{ skill.packageName || skill.id }}</code>
               </span>
             </span>
-            <Check v-if="skill.enabled !== false" class="h-5 w-5 shrink-0 text-text-muted" :stroke-width="1.8" aria-label="Enabled" />
+            <Check v-if="skill.enabled !== false" class="h-5 w-5 shrink-0 text-text-muted" :stroke-width="1.75" aria-label="Enabled" />
             <span v-else class="h-5 w-5 shrink-0 rounded-full border border-border-default" aria-label="Disabled" />
           </button>
         </div>

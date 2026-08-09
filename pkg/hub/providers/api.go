@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+
+	providersv1alpha1 "github.com/faroshq/faros-kedge/apis/providers/v1alpha1"
 )
 
 // PathListProviders is the portal-facing list endpoint. It returns the names,
@@ -75,6 +77,48 @@ type providerDTO struct {
 	// uses this flag to skip the "Enable" / APIBinding gate that third-
 	// party providers require before appearing in the side nav.
 	Builtin bool `json:"builtin,omitempty"`
+	// Actions is the provider's public, versioned action catalog. It carries
+	// only discovery and consent policy metadata; provider transport URLs and
+	// credentials are intentionally not exposed here.
+	Actions []providerActionDTO `json:"actions,omitempty"`
+	// AssistantSkills contains validated inline App Studio packages. The
+	// authenticated /api/providers response is the only distribution surface;
+	// no provider runtime URL or credential is projected into this shape.
+	AssistantSkills []providerAssistantSkillDTO `json:"assistantSkills,omitempty"`
+}
+
+// providerActionDTO is the stable portal-facing projection of a provider
+// action. Keep this separate from the CatalogEntry wire type so the hub can
+// evolve its registry without exposing backend or virtual-workspace routing
+// details. The nested policy types retain the catalog's exact JSON shape.
+type providerActionDTO struct {
+	ID            string                                        `json:"id"`
+	DisplayName   string                                        `json:"displayName"`
+	Description   string                                        `json:"description,omitempty"`
+	BoundResource providersv1alpha1.ProviderActionBoundResource `json:"boundResource"`
+	InputSchema   json.RawMessage                               `json:"inputSchema"`
+	OutputSchema  json.RawMessage                               `json:"outputSchema"`
+	SchemaDigest  string                                        `json:"schemaDigest"`
+	ExecutionMode string                                        `json:"executionMode"`
+	ReadOnly      bool                                          `json:"readOnly"`
+	Risk          providersv1alpha1.ProviderActionRisk          `json:"risk"`
+	Idempotency   string                                        `json:"idempotency"`
+	Limits        providersv1alpha1.ProviderActionLimits        `json:"limits"`
+	Consent       providersv1alpha1.ProviderActionConsent       `json:"consent"`
+	Deprecation   *providersv1alpha1.ProviderActionDeprecation  `json:"deprecation,omitempty"`
+}
+
+type providerAssistantSkillDTO struct {
+	PackageName string                           `json:"packageName"`
+	Version     string                           `json:"version"`
+	Digest      string                           `json:"digest"`
+	Skill       string                           `json:"skill"`
+	Resources   []providerAssistantSkillResource `json:"resources,omitempty"`
+}
+
+type providerAssistantSkillResource struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
 }
 
 type permissionClaimDTO struct {
@@ -154,6 +198,48 @@ func NewListHandler(reg *Registry) http.Handler {
 			for _, d := range p.Dependencies {
 				dependencies = append(dependencies, dependencyDTO(d))
 			}
+			actions := make([]providerActionDTO, 0, len(p.Actions))
+			for _, action := range p.Actions {
+				actions = append(actions, providerActionDTO{
+					ID:          action.ID,
+					DisplayName: action.DisplayName,
+					Description: action.Description,
+					BoundResource: providersv1alpha1.ProviderActionBoundResource{
+						APIVersion: action.Resource.APIVersion,
+						Kind:       action.Resource.Kind,
+						Resource:   action.Resource.Resource,
+					},
+					InputSchema:   append(json.RawMessage(nil), action.InputSchema...),
+					OutputSchema:  append(json.RawMessage(nil), action.OutputSchema...),
+					SchemaDigest:  action.SchemaDigest,
+					ExecutionMode: action.ExecutionMode,
+					ReadOnly:      action.ReadOnly,
+					Risk:          action.Risk,
+					Idempotency:   action.Idempotency,
+					Limits: providersv1alpha1.ProviderActionLimits{
+						TimeoutSeconds: action.Limits.TimeoutSeconds,
+						MaxInputBytes:  action.Limits.MaxInputBytes,
+						MaxOutputBytes: action.Limits.MaxOutputBytes,
+						MaxResultItems: action.Limits.MaxResultItems,
+					},
+					Consent:     action.Consent,
+					Deprecation: action.Deprecation.DeepCopy(),
+				})
+			}
+			assistantSkills := make([]providerAssistantSkillDTO, 0, len(p.AssistantSkills))
+			for _, skill := range p.AssistantSkills {
+				resources := make([]providerAssistantSkillResource, 0, len(skill.Resources))
+				for _, resource := range skill.Resources {
+					resources = append(resources, providerAssistantSkillResource(resource))
+				}
+				assistantSkills = append(assistantSkills, providerAssistantSkillDTO{
+					PackageName: skill.PackageName,
+					Version:     skill.Version,
+					Digest:      skill.Digest,
+					Skill:       skill.Skill,
+					Resources:   resources,
+				})
+			}
 			_, isBuiltin := BuiltinByName(p.Name)
 			items = append(items, providerDTO{
 				Name:             p.Name,
@@ -172,6 +258,8 @@ func NewListHandler(reg *Registry) http.Handler {
 				PermissionClaims: claims,
 				EdgeProxyAccess:  p.EdgeProxyAccess,
 				Builtin:          isBuiltin,
+				Actions:          actions,
+				AssistantSkills:  assistantSkills,
 			})
 		}
 

@@ -177,6 +177,12 @@ texture (login, empty states — sparingly), `.island` floating dock card,
 - **Navigation.** Idle items are muted text on nothing; active = accent text on
   `accent-subtle` + nav glow (`0 0 14px`). Section headers are 9px mono
   uppercase with a trailing hairline rule.
+- **Sidebar rail.** The vertical dock is a **56px icon rail by default** —
+  labels are a click away (toggle at the top, state persisted per browser),
+  not a permanent tax on the canvas. Collapsed rows are icon-only, centered,
+  with a native `title` tooltip; category groups collapse to hairline rules;
+  sub-nav children, the tenant chip and the theme switch appear only when
+  expanded. The expanded state is the 192px labeled column.
 - **Chat bubbles.** Sanctioned 12–14px soft radius, surface-overlay for the
   counterpart, accent-subtle for the user. Bubbles never glow.
 - **Empty states.** Contour-grid texture + eyebrow + one-line explanation +
@@ -364,7 +370,79 @@ but still no gradients, still square-ish, still one accent.
 - **Edges' `<select>`** keeps `appearance: auto` on purpose (native popup UX);
   its closed control must still carry `.svc-input`/`.k-input` styling.
 
-## 11. Review checklist
+## 11. Iconography
+
+One family, everywhere: **Lucide**. Vue portals import from
+[`lucide-vue-next`](https://lucide.dev); vanilla-TS portals use `ic('name')`
+from `portalkit/icons.ts` — a hand-inlined, CSP-safe subset of Lucide-style
+stroke paths that renders at `1em` in `currentColor` (canonical in
+`provider-sdk/portalkit`; extend it there and run `make sync-portalkit`).
+
+**Never Unicode glyphs, never emoji.** Characters like `⚙ ☁ ✦ ⚠` look like
+quiet monochrome icons on macOS but carry emoji presentation variants — on
+Windows/Android they render as full-color emoji, and their weight/optical size
+is whatever the platform's symbol font decides. Lucide renders identically
+everywhere and inherits color like text. (The design-exploration mocks used
+glyphs as placeholders; that is not a license.)
+
+### Taste: abstract over literal
+
+Prefer the thin, geometric, slightly abstract mark over the literal pictogram —
+the machine speaks in symbols, not clip-art. The sanctioned nav/brand
+vocabulary: `Hexagon` (brand), `Diamond`, `Zap`/`Activity`, `Sparkles` (AI),
+`Command`, `Target`, `Boxes`. A literal object icon (`Cloud`, `Server`,
+`Database`) is fine when it names a real thing; reach for the geometric one
+when the concept is abstract.
+
+### Stroke & size law
+
+Stroke width compensates optically for size — small icons need heavier
+strokes to hold their weight, large decorative ones need lighter:
+
+| Context | Size | Stroke |
+|---|---|---|
+| Standard UI rows, buttons, table actions | `h-4 w-4` (16px) | `1.75` (the default) |
+| Dense rows, sub-nav, chips | `h-3.5 w-3.5` (14px) | `1.75`–`2` |
+| Micro: category eyebrows, badge glyphs, tiny brand marks | `h-3 w-3` and below | `2`–`2.5` |
+| Large decorative: empty states, hero tiles, nav-rail brand | 20px+ | `1.25`–`1.5` |
+
+Icons inherit `currentColor` from their row/button — an icon never sets its
+own color except the semantic status set below, and an icon never glows (glow
+belongs to the active row or button, per §1.3).
+
+### Semantic vocabulary
+
+Don't improvise synonyms — these pairings are load-bearing across every
+portal:
+
+| Meaning | Icon |
+|---|---|
+| Loading / in-flight | `Loader2` + `animate-spin` (the only spinner) |
+| Success outcome | `CheckCircle` · inline confirm `Check` |
+| Failure outcome | `XCircle` · inline dismiss/cancel `X` |
+| Warning / degraded | `AlertTriangle` |
+| Error detail / info-error | `AlertCircle` |
+| Create / add | `Plus` |
+| Delete | `Trash2` |
+| Empty state | `Inbox` |
+| Pending / time | `Clock` |
+| Refresh / retry | `RefreshCw` |
+| Provider (no logo) | `Puzzle` |
+| AI / assistant | `Sparkles` |
+| Brand | `Hexagon` |
+
+### Provider identity icons
+
+Providers ship a square `icon.svg` in their portal and declare
+`iconURL: "/ui/providers/<name>/icon.svg"` in `manifest.yaml`; the hub serves
+it through the UI proxy and the host nav renders it at 14px
+(`object-contain`). Registered *categories* resolve to a Lucide component
+name via `portal/src/lib/categoryIcons.ts`; providers without a logo fall
+back to `Puzzle`. Logos should read at 14px on both grounds — prefer
+stroke-style marks in a single color; full-color brand logos are sanctioned
+only per §8 (third-party brand tiles).
+
+## 12. Review checklist
 
 Before merging any UI change:
 
@@ -376,6 +454,8 @@ Before merging any UI change:
 - [ ] Uses `k-*` / portalkit primitives instead of re-derived markup.
 - [ ] No per-page `max-w-*` wrapper (width is owned by `AppLayout`).
 - [ ] Mono for identifiers; tabular-nums for aligned digits.
+- [ ] Icons are Lucide (or portalkit `ic()`) per §11 — no emoji, no Unicode
+      glyph icons; stroke/size on the law; only status icons carry color.
 - [ ] `prefers-reduced-motion` respected for any new animation.
 
 ---

@@ -51,6 +51,17 @@ func SetCondition(conds *[]metav1.Condition, condType string, status metav1.Cond
 	})
 }
 
+// CurrentConditionTrue requires both the status-level observed generation and
+// the condition's observed generation to match the current object generation.
+// Controllers use this gate before consuming a dependency's derived status.
+func CurrentConditionTrue(conditions []metav1.Condition, observedGeneration, generation int64, conditionType string) bool {
+	if observedGeneration != generation {
+		return false
+	}
+	condition := apimeta.FindStatusCondition(conditions, conditionType)
+	return condition != nil && condition.Status == metav1.ConditionTrue && condition.ObservedGeneration == generation
+}
+
 func ResolveConnection(ctx context.Context, c client.Client, name string) (*databricksv1alpha1.Connection, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -85,6 +96,24 @@ func ResolveWarehouse(ctx context.Context, c client.Client, name string) (*datab
 		return nil, fmt.Errorf("get warehouse %q: %w", name, err)
 	}
 	return &wh, nil
+}
+
+func ResolveTable(ctx context.Context, c client.Client, name string) (*databricksv1alpha1.Table, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("tableRef is required")
+	}
+	var tbl databricksv1alpha1.Table
+	if err := c.Get(ctx, types.NamespacedName{Name: name}, &tbl); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("tableRef %q not found", name)
+		}
+		if apierrors.IsForbidden(err) {
+			return nil, fmt.Errorf("tableRef %q is not readable; check the provider APIBinding claims", name)
+		}
+		return nil, fmt.Errorf("get tableRef %q: %w", name, err)
+	}
+	return &tbl, nil
 }
 
 func ResolveBearerToken(ctx context.Context, c client.Client, conn *databricksv1alpha1.Connection) (string, error) {

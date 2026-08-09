@@ -54,6 +54,13 @@ type StudioSpec struct {
 	// Search configures the workspace's web-search backend.
 	// +optional
 	Search StudioSearch `json:"search,omitempty"`
+
+	// Browser configures the workspace's shared headless browser, used for
+	// development-preview inspection. One Playwright instance for the whole
+	// workspace, provisioned through the infrastructure provider exactly like
+	// Search — no per-project browser, and app-studio owns no browser image.
+	// +optional
+	Browser StudioBrowser `json:"browser,omitempty"`
 }
 
 // StudioSearch describes the shared search backend. Its zero value is the
@@ -78,6 +85,27 @@ type StudioSearch struct {
 	ResourceRef *ProjectProviderResourceReference `json:"resourceRef,omitempty"`
 }
 
+// StudioBrowser describes the shared headless browser. Its zero value is the
+// intended configuration — enabled, small — so preview inspection works out of
+// the box. Structurally identical to StudioSearch: a fixed shared instance the
+// reconciler creates from an infrastructure Template.
+type StudioBrowser struct {
+	// Disabled turns preview browser inspection off for this workspace.
+	// +optional
+	Disabled bool `json:"disabled,omitempty"`
+
+	// Size is the browser's memory bucket, passed to the template.
+	// +optional
+	// +kubebuilder:validation:Enum=small;medium;large
+	Size string `json:"size,omitempty"`
+
+	// ResourceRef is the fully-resolved instance the reconciler creates,
+	// written by the API from the browser Template's instanceCRD. Same
+	// self-contained contract as StudioSearch.ResourceRef.
+	// +optional
+	ResourceRef *ProjectProviderResourceReference `json:"resourceRef,omitempty"`
+}
+
 type StudioStatus struct {
 	// Phase is Ready when every enabled service is Ready.
 	// +optional
@@ -86,6 +114,10 @@ type StudioStatus struct {
 	// Search reports the shared search backend.
 	// +optional
 	Search *StudioServiceStatus `json:"search,omitempty"`
+
+	// Browser reports the shared headless browser backend.
+	// +optional
+	Browser *StudioServiceStatus `json:"browser,omitempty"`
 
 	// UpdatedAt is the last status transition the reconciler observed.
 	// +optional

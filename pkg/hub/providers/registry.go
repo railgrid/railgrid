@@ -21,11 +21,19 @@ limitations under the License.
 package providers
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
+
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
+	"k8s.io/apimachinery/pkg/runtime"
+
+	providersv1alpha1 "github.com/faroshq/faros-kedge/apis/providers/v1alpha1"
 )
 
 // HeartbeatTTL is how long a provider's last heartbeat is considered fresh.
@@ -41,13 +49,23 @@ const SweepInterval = 30 * time.Second
 // Fields are nil-able to reflect that UI/backend/VW are independently optional
 // in the source ProviderCatalogEntry.
 type Provider struct {
-	Name             string
-	DisplayName      string // human-readable label, surfaced to the portal
-	IconURL          string // optional, defaults to /ui/providers/{name}/icon.svg
-	Category         string // optional grouping in the portal nav; empty = top-level
-	Dependencies     []Dependency
-	UIURL            *url.URL   // proxy target for /ui/providers/{name}/*; nil → 404
-	BackendURL       *url.URL   // proxy target for /services/providers/{name}/*; nil → 404
+	Name         string
+	DisplayName  string // human-readable label, surfaced to the portal
+	IconURL      string // optional, defaults to /ui/providers/{name}/icon.svg
+	Category     string // optional grouping in the portal nav; empty = top-level
+	Dependencies []Dependency
+	UIURL        *url.URL // proxy target for /ui/providers/{name}/*; nil → 404
+	BackendURL   *url.URL // proxy target for /services/providers/{name}/*; nil → 404
+	// VirtualWorkspaceURL is the provider-declared action transport target.
+	// Provider Actions append /actions/{name}/{version} to this URL; they never
+	// use BackendURL or a provider MCP endpoint.
+	VirtualWorkspaceURL *url.URL
+	Actions             []ProviderAction
+	// AssistantSkills contains only validated, provider-supplied inline App
+	// Studio packages. It intentionally carries no provider URL, credential, or
+	// runtime handle; the authenticated catalog API is the sole distribution
+	// boundary.
+	AssistantSkills  []ProviderAssistantSkill
 	BuiltinRoute     string     // when set, portal renders this Vue route instead of loading /main.js
 	Children         []NavChild // sub-nav entries surfaced indented under this provider
 	Version          string     // CatalogEntry.spec.version (chart-declared)
@@ -133,6 +151,219 @@ type NavChild struct {
 	BuiltinRoute string
 }
 
+// ProviderAction is the hub's normalized view of one CatalogEntry action.
+// The catalog API owns the wire shape; the registry keeps the complete
+// discovery and policy metadata needed by both the forward-only action
+// transport and the portal's consent UI. It deliberately does not retain
+// provider transport URLs on each action.
+type ProviderAction struct {
+	ID              string
+	Name            string
+	Version         string
+	DisplayName     string
+	Description     string
+	Resource        ProviderActionResource
+	InputSchema     json.RawMessage
+	OutputSchema    json.RawMessage
+	InputValidator  *jsonschema.Schema
+	OutputValidator *jsonschema.Schema
+	SchemaDigest    string
+	ExecutionMode   string
+	ReadOnly        bool
+	Risk            providersv1alpha1.ProviderActionRisk
+	Idempotency     string
+	Limits          ProviderActionLimits
+	Consent         providersv1alpha1.ProviderActionConsent
+	Deprecation     *providersv1alpha1.ProviderActionDeprecation
+}
+
+// ProviderActionResource identifies the provider-owned resource an action is
+// allowed to receive. The request's resourceRef must match all three fields.
+type ProviderActionResource struct {
+	APIVersion string
+	Kind       string
+	Resource   string
+}
+
+// ProviderActionLimits carries catalog-enforced byte, timeout, and result
+// bounds into the transport without coupling it to API object pointers.
+type ProviderActionLimits struct {
+	TimeoutSeconds int64
+	MaxInputBytes  int64
+	MaxOutputBytes int64
+	MaxResultItems int64
+}
+
+// ProviderAssistantSkill is the registry's normalized view of one inline App
+// Studio skill package. Resource paths remain package-relative and content is
+// copied into the catalog response only after CatalogEntry validation.
+type ProviderAssistantSkill struct {
+	PackageName string
+	Version     string
+	Digest      string
+	Skill       string
+	Resources   []ProviderAssistantSkillResource
+}
+
+// ProviderAssistantSkillResource is one package-relative supporting resource.
+type ProviderAssistantSkillResource struct {
+	Path    string
+	Content string
+}
+
+// ParseProviderActions normalizes the typed CatalogEntry action list and
+// compiles both schemas with the full JSON Schema implementation. Callers must
+// handle the error: admitting an action without compiled validators would make
+// the router fail open on malformed catalog metadata.
+func ParseProviderActions(actions []providersv1alpha1.ProviderActionSpec) ([]ProviderAction, error) {
+	out := make([]ProviderAction, 0, len(actions))
+	for _, action := range actions {
+		parts := strings.SplitN(strings.TrimSpace(action.ID), "/", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("action ID %q is invalid", action.ID)
+		}
+		inputSchema := schemaBytes(action.InputSchema)
+		outputSchema := schemaBytes(action.OutputSchema)
+		inputValidator, err := CompileProviderActionSchema(inputSchema, action.ID+"/input")
+		if err != nil {
+			return nil, fmt.Errorf("action %q inputSchema: %w", action.ID, err)
+		}
+		outputValidator, err := CompileProviderActionSchema(outputSchema, action.ID+"/output")
+		if err != nil {
+			return nil, fmt.Errorf("action %q outputSchema: %w", action.ID, err)
+		}
+		out = append(out, ProviderAction{
+			ID: parts[0] + "/" + parts[1], Name: parts[0], Version: parts[1],
+			DisplayName: action.DisplayName, Description: action.Description,
+			Resource: ProviderActionResource{
+				APIVersion: action.BoundResource.APIVersion,
+				Kind:       action.BoundResource.Kind,
+				Resource:   action.BoundResource.Resource,
+			},
+			InputSchema: inputSchema, OutputSchema: outputSchema,
+			InputValidator: inputValidator, OutputValidator: outputValidator,
+			SchemaDigest: action.SchemaDigest, ExecutionMode: string(action.ExecutionMode),
+			ReadOnly: action.ReadOnly, Risk: action.Risk,
+			Idempotency: string(action.Idempotency),
+			Limits: ProviderActionLimits{
+				TimeoutSeconds: action.Limits.TimeoutSeconds,
+				MaxInputBytes:  action.Limits.MaxInputBytes,
+				MaxOutputBytes: action.Limits.MaxOutputBytes,
+				MaxResultItems: action.Limits.MaxResultItems,
+			},
+			Consent:     action.Consent,
+			Deprecation: action.Deprecation.DeepCopy(),
+		})
+	}
+	return out, nil
+}
+
+// CompileProviderActionSchema compiles one catalog-declared JSON Schema with
+// format assertions enabled. It is exported for the action transport's
+// bounded fallback cache used by tests and embedders that construct a
+// normalized Provider directly instead of going through the catalog
+// reconciler.
+func CompileProviderActionSchema(raw json.RawMessage, name string) (*jsonschema.Schema, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, fmt.Errorf("schema is required")
+	}
+	document, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	if err := validateLocalSchemaReferences(document); err != nil {
+		return nil, err
+	}
+	compiler := jsonschema.NewCompiler()
+	// Action contracts must enforce format assertions even when the schema
+	// omits an explicit draft vocabulary declaration.
+	compiler.AssertFormat()
+	compiler.UseLoader(noExternalSchemaLoader{})
+	location := "urn:kedge:provider-action:" + url.PathEscape(name)
+	if err := compiler.AddResource(location, document); err != nil {
+		return nil, fmt.Errorf("add schema resource: %w", err)
+	}
+	compiled, err := compiler.Compile(location)
+	if err != nil {
+		return nil, fmt.Errorf("compile schema: %w", err)
+	}
+	return compiled, nil
+}
+
+type noExternalSchemaLoader struct{}
+
+func (noExternalSchemaLoader) Load(ref string) (any, error) {
+	return nil, fmt.Errorf("external schema resource %q is not allowed", ref)
+}
+
+func validateLocalSchemaReferences(value any) error {
+	switch current := value.(type) {
+	case []any:
+		for _, item := range current {
+			if err := validateLocalSchemaReferences(item); err != nil {
+				return err
+			}
+		}
+	case map[string]any:
+		for key, item := range current {
+			switch key {
+			case "$ref", "$dynamicRef", "$recursiveRef":
+				ref, ok := item.(string)
+				if !ok || !strings.HasPrefix(ref, "#") {
+					return fmt.Errorf("%s must be a local fragment reference", key)
+				}
+			case "$id":
+				id, ok := item.(string)
+				if !ok || (id != "" && !strings.HasPrefix(id, "#")) {
+					return fmt.Errorf("$id must be local to the declared schema")
+				}
+			case "$schema":
+				schemaURL, ok := item.(string)
+				if !ok || !localOrBuiltinSchemaURL(schemaURL) {
+					return fmt.Errorf("$schema must be a local or built-in JSON Schema URL")
+				}
+			case "$vocabulary":
+				vocabularies, ok := item.(map[string]any)
+				if !ok {
+					return fmt.Errorf("$vocabulary must be an object")
+				}
+				for vocabulary := range vocabularies {
+					if !localOrBuiltinSchemaURL(vocabulary) {
+						return fmt.Errorf("$vocabulary %q is external and not allowed", vocabulary)
+					}
+				}
+			}
+			if err := validateLocalSchemaReferences(item); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func localOrBuiltinSchemaURL(value string) bool {
+	return strings.HasPrefix(value, "#") ||
+		strings.HasPrefix(value, "http://json-schema.org/") ||
+		strings.HasPrefix(value, "https://json-schema.org/")
+}
+
+func schemaBytes(extension *runtime.RawExtension) json.RawMessage {
+	if extension == nil {
+		return nil
+	}
+	if len(extension.Raw) > 0 {
+		return append(json.RawMessage(nil), extension.Raw...)
+	}
+	if extension.Object == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(extension.Object)
+	if err != nil {
+		return nil
+	}
+	return encoded
+}
+
 // Registry is the hub's source of truth for provider routing. It is updated
 // by the catalog controller on Watch events and read by the proxies on each
 // request. Reads vastly outnumber writes; an RWMutex is sufficient.
@@ -155,7 +386,7 @@ func (r *Registry) Get(name string) (Provider, bool) {
 	if !ok {
 		return Provider{}, false
 	}
-	return *p, true
+	return cloneProvider(*p), true
 }
 
 // List returns a snapshot of all registered providers.
@@ -164,7 +395,7 @@ func (r *Registry) List() []Provider {
 	defer r.mu.RUnlock()
 	out := make([]Provider, 0, len(r.byName))
 	for _, p := range r.byName {
-		out = append(out, *p)
+		out = append(out, cloneProvider(*p))
 	}
 	return out
 }
@@ -188,7 +419,38 @@ func (r *Registry) Upsert(p Provider) {
 		}
 	}
 	cp := p
+	cp.AssistantSkills = cloneProviderAssistantSkills(p.AssistantSkills)
 	r.byName[p.Name] = &cp
+}
+
+func cloneProviderAssistantSkills(in []ProviderAssistantSkill) []ProviderAssistantSkill {
+	if in == nil {
+		return nil
+	}
+	out := make([]ProviderAssistantSkill, len(in))
+	for i, skill := range in {
+		out[i] = skill
+		if skill.Resources != nil {
+			out[i].Resources = append([]ProviderAssistantSkillResource(nil), skill.Resources...)
+		}
+	}
+	return out
+}
+
+func cloneProvider(p Provider) Provider {
+	p.Dependencies = append([]Dependency(nil), p.Dependencies...)
+	p.PermissionClaims = append([]PermissionClaim(nil), p.PermissionClaims...)
+	for i := range p.PermissionClaims {
+		p.PermissionClaims[i].Verbs = append([]string(nil), p.PermissionClaims[i].Verbs...)
+	}
+	p.Children = append([]NavChild(nil), p.Children...)
+	p.Actions = append([]ProviderAction(nil), p.Actions...)
+	for i := range p.Actions {
+		p.Actions[i].InputSchema = append(json.RawMessage(nil), p.Actions[i].InputSchema...)
+		p.Actions[i].OutputSchema = append(json.RawMessage(nil), p.Actions[i].OutputSchema...)
+	}
+	p.AssistantSkills = cloneProviderAssistantSkills(p.AssistantSkills)
+	return p
 }
 
 // SetWorkspaceCluster records the logical cluster ID of the provider's

@@ -32,6 +32,7 @@ type AssetServer func(w http.ResponseWriter, r *http.Request, distFS fs.FS, name
 type Deps struct {
 	MCP              http.Handler // /mcp + /mcp/sse handler; may be nil
 	DataPlane        http.Handler // /dataplane/* subresource proxy; may be nil
+	WorkloadIdentity http.Handler // POST /workload-identities/review attestation
 	PortalFileServer http.Handler
 	PortalFS         fs.FS
 	ServePortalAsset AssetServer
@@ -72,6 +73,9 @@ func New(d Deps) *Server {
 	// package and docs/app-studio-runtime-decoupling.md.
 	if d.DataPlane != nil {
 		s.mux.Handle("/dataplane/", d.DataPlane)
+	}
+	if d.WorkloadIdentity != nil {
+		s.mux.Handle("/workload-identities/review", d.WorkloadIdentity)
 	}
 
 	// Portal fallback — last so all explicit routes above take

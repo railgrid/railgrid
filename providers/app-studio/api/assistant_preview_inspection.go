@@ -22,8 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -32,7 +30,6 @@ import (
 )
 
 const (
-	projectAssistantPreviewInspectionTimeout       = 20 * time.Second
 	projectAssistantPreviewInspectionHealthTimeout = 750 * time.Millisecond
 	projectAssistantPreviewInspectionMaxResponse   = 4 << 20
 )
@@ -146,100 +143,21 @@ func projectAssistantPreviewInspectionActionFromToolResult(name, raw string) *pr
 	return projectAssistantPreviewInspectionActionFromText(raw)
 }
 
-type httpProjectAssistantPreviewInspector struct {
-	baseURL string
-	client  *http.Client
-}
-
-func newHTTPProjectAssistantPreviewInspector(rawURL string) (projectAssistantPreviewInspector, error) {
-	rawURL = strings.TrimRight(strings.TrimSpace(rawURL), "/")
-	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return nil, errors.New("browser worker URL must be an absolute HTTP(S) URL")
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, errors.New("browser worker URL must use HTTP(S)")
-	}
-	return &httpProjectAssistantPreviewInspector{
-		baseURL: rawURL,
-		client:  &http.Client{Timeout: projectAssistantPreviewInspectionTimeout},
-	}, nil
-}
-
-func (c *httpProjectAssistantPreviewInspector) Health(ctx context.Context) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/healthz", nil)
-	if err != nil {
-		return err
-	}
-	response, err := c.client.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("browser worker health returned %s", response.Status)
-	}
-	return nil
-}
-
-func (c *httpProjectAssistantPreviewInspector) Inspect(ctx context.Context, input projectAssistantPreviewInspectionRequest) (projectAssistantPreviewInspectionResult, error) {
-	body, err := json.Marshal(input)
-	if err != nil {
-		return projectAssistantPreviewInspectionResult{}, err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/inspect", bytes.NewReader(body))
-	if err != nil {
-		return projectAssistantPreviewInspectionResult{}, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := c.client.Do(request)
-	if err != nil {
-		return projectAssistantPreviewInspectionResult{}, err
-	}
-	defer response.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(response.Body, projectAssistantPreviewInspectionMaxResponse+1))
-	if err != nil {
-		return projectAssistantPreviewInspectionResult{}, err
-	}
-	if len(raw) > projectAssistantPreviewInspectionMaxResponse {
-		return projectAssistantPreviewInspectionResult{}, errors.New("browser worker response exceeded the configured limit")
-	}
-	if response.StatusCode != http.StatusOK {
-		return projectAssistantPreviewInspectionResult{}, fmt.Errorf("browser worker returned %s", response.Status)
-	}
-	var result projectAssistantPreviewInspectionResult
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return projectAssistantPreviewInspectionResult{}, fmt.Errorf("decode browser worker response: %w", err)
-	}
-	if result.Status != "succeeded" && result.Status != "failed" {
-		return projectAssistantPreviewInspectionResult{}, errors.New("browser worker returned an unsupported status")
-	}
-	return result, nil
-}
-
-func (s *Server) ConfigurePreviewInspection(rawURL string) error {
+// projectAssistantPreviewInspectionAvailable reports whether preview inspection
+// can run for this caller. In production that means the workspace has a Ready
+// shared browser (the Studio's Playwright MCP instance); tests inject a
+// previewInspector fake and gate on its Health probe instead.
+func (s *Server) projectAssistantPreviewInspectionAvailable(ctx context.Context, id identity) bool {
 	if s == nil {
-		return errors.New("server is not configured")
-	}
-	if strings.TrimSpace(rawURL) == "" {
-		s.previewInspector = nil
-		return nil
-	}
-	inspector, err := newHTTPProjectAssistantPreviewInspector(rawURL)
-	if err != nil {
-		return err
-	}
-	s.previewInspector = inspector
-	return nil
-}
-
-func (s *Server) projectAssistantPreviewInspectionAvailable(ctx context.Context) bool {
-	if s == nil || s.previewInspector == nil {
 		return false
 	}
-	healthCtx, cancel := context.WithTimeout(ctx, projectAssistantPreviewInspectionHealthTimeout)
-	defer cancel()
-	return s.previewInspector.Health(healthCtx) == nil
+	if s.previewInspector != nil {
+		healthCtx, cancel := context.WithTimeout(ctx, projectAssistantPreviewInspectionHealthTimeout)
+		defer cancel()
+		return s.previewInspector.Health(healthCtx) == nil
+	}
+	_, ok := s.resolveBrowserDataPlaneRef(ctx, id)
+	return ok
 }
 
 func (s *Server) inspectProjectDevelopmentPreview(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
@@ -251,15 +169,25 @@ func (s *Server) inspectProjectDevelopmentPreview(ctx context.Context, req proje
 }
 
 func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req projectAssistantToolCallRequest, includeScreenshot bool) (projectAssistantPreviewInspectionResult, error) {
-	if s == nil || s.previewInspector == nil {
-		return projectAssistantPreviewInspectionResult{
-			Status:      "unavailable",
-			FailureKind: "worker_unavailable",
-			Summary:     "Development preview inspection is unavailable.",
-		}, nil
+	if s == nil {
+		return projectAssistantPreviewInspectionResult{}, errors.New("server is not configured")
 	}
 	if req.Project == nil {
 		return projectAssistantPreviewInspectionResult{}, errors.New("project is required")
+	}
+	// Production drives the shared browser over the data plane; tests inject a
+	// previewInspector fake. Absent both, inspection is unavailable.
+	var browserRef dataPlaneRef
+	if s.previewInspector == nil {
+		ref, ok := s.resolveBrowserDataPlaneRef(ctx, req.Identity)
+		if !ok {
+			return projectAssistantPreviewInspectionResult{
+				Status:      "unavailable",
+				FailureKind: "worker_unavailable",
+				Summary:     "Development preview inspection is unavailable: no shared browser is ready in this workspace.",
+			}, nil
+		}
+		browserRef = ref
 	}
 	if req.RunState != nil {
 		revision, _ := req.RunState.SourceMutationRevisions()
@@ -289,11 +217,17 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 	if err != nil {
 		return projectAssistantPreviewInspectionResult{}, err
 	}
-	result, err := s.previewInspector.Inspect(ctx, projectAssistantPreviewInspectionRequest{
+	inspectionReq := projectAssistantPreviewInspectionRequest{
 		URL:               targetURL,
 		Assertions:        assertions,
 		IncludeScreenshot: includeScreenshot,
-	})
+	}
+	var result projectAssistantPreviewInspectionResult
+	if s.previewInspector != nil {
+		result, err = s.previewInspector.Inspect(ctx, inspectionReq)
+	} else {
+		result, err = s.inspectPreviewViaBrowserMCP(ctx, req.Identity, browserRef, inspectionReq)
+	}
 	if err != nil {
 		return projectAssistantPreviewInspectionResult{}, err
 	}

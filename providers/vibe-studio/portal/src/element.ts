@@ -13,6 +13,7 @@
 // -Workspace on every call; the hub resolves them into X-Kedge-Tenant.
 
 import { hasWorkspace, serviceBase, tenantHeaders } from './portalkit/tenant'
+import { ic } from './portalkit/icons'
 import { createEditor, type EditorHandle } from './editor'
 
 export interface KedgeContext {
@@ -1015,11 +1016,11 @@ export class VibeStudioElement extends HTMLElement {
         const state = cp?.state || 'pending'
         const icon =
           state === 'done'
-            ? '<span class="cp-icon ok">✓</span>'
+            ? `<span class="cp-icon ok">${ic('check')}</span>`
             : state === 'error'
-              ? '<span class="cp-icon bad">✗</span>'
+              ? `<span class="cp-icon bad">${ic('x')}</span>`
               : state === 'blocked'
-                ? '<span class="cp-icon warn">!</span>'
+                ? `<span class="cp-icon warn">${ic('alert-triangle')}</span>`
                 : live
                   ? '<span class="spinner tiny"></span>'
                   : '<span class="cp-icon idle">·</span>'
@@ -1110,7 +1111,7 @@ export class VibeStudioElement extends HTMLElement {
         const rows = b.items
           .map(
             (a) => `<li class="ledger-row ${a.ok === false ? 'failed' : ''}" ${a.error ? `title="${esc(a.error)}"` : ''}>
-              <span class="ledger-mark">${a.ok === false ? '✗' : '✓'}</span>
+              <span class="ledger-mark">${a.ok === false ? ic('x') : ic('check')}</span>
               <span class="ledger-tool">${esc(a.tool || '')}</span>
               <span class="ledger-detail">${esc(a.detail || '')}</span>
               <span class="ledger-dur">${fmtDur(a.durationMS)}</span>
@@ -1122,7 +1123,7 @@ export class VibeStudioElement extends HTMLElement {
           )
           .join('')
         return `<details class="ledger" ${open ? 'open' : ''}>
-          <summary>${failed ? '⚠' : '⚙'} Worked — ${b.items.length} step${b.items.length === 1 ? '' : 's'}${total ? ' · ' + fmtDur(total) : ''}</summary>
+          <summary>${failed ? ic('alert-triangle') : ic('settings')} Worked — ${b.items.length} step${b.items.length === 1 ? '' : 's'}${total ? ' · ' + fmtDur(total) : ''}</summary>
           <ul>${rows}</ul>
         </details>`
       })

@@ -90,7 +90,7 @@ async function remove(name: string) {
         :disabled="busy || !newName.trim()"
         @click="create"
       >
-        <Plus class="h-4 w-4" :stroke-width="2" />
+        <Plus class="h-4 w-4" :stroke-width="1.75" />
         Create Provider
       </button>
     </div>

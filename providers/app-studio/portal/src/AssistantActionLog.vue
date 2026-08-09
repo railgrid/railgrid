@@ -214,7 +214,7 @@ async function copyDiagnostic(item: typeof rows.value[number]) {
           <div v-for="item in group.items" :key="item.id" class="min-w-0">
             <div class="flex min-h-7 min-w-0 items-center gap-1.5 leading-5 text-text-muted">
               <Loader2 v-if="isBusy(item.status)" class="h-3.5 w-3.5 shrink-0 animate-spin text-accent motion-reduce:animate-none" :stroke-width="1.75" />
-              <Square v-else-if="isAttention(item.status, item.severity)" class="h-2.5 w-2.5 shrink-0 fill-current text-warning" :stroke-width="1.75" />
+              <Square v-else-if="isAttention(item.status, item.severity)" class="h-2.5 w-2.5 shrink-0 fill-current text-warning" :stroke-width="2" />
               <X v-else-if="isError(item.status, item.severity)" class="h-3.5 w-3.5 shrink-0 text-danger" :stroke-width="1.75" />
               <component v-else :is="kindIcon(item.kind)" class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
               <span class="sr-only">{{ assistantActionStatusLabel(item.status, item.severity) }}:</span>

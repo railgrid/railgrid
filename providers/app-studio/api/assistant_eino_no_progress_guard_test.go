@@ -18,11 +18,13 @@ package api
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/adk"
+	einotool "github.com/cloudwego/eino/components/tool"
 )
 
 func TestProjectEinoAssistantCompletedReadTrackingEvictsAndAcceptsLaterReads(t *testing.T) {
@@ -57,11 +59,11 @@ func recordProjectEinoAssistantCompleteRead(
 	arguments := `{"file_path":"` + path + `","limit":2000}`
 	result := `{"path":"` + path + `","complete":true,"version":"` + version + `"}`
 	state.NextModelCallOrdinal()
-	fresh := state.RecordCompletedReadResult(projectToolReadFile, arguments, result)
-	state.RecordCompletedAction(projectToolReadFile, arguments, fresh)
+	state.RecordCompletedReadResult(projectToolReadFile, arguments, result)
+	state.RecordCompletedAction(projectToolReadFile, arguments)
 }
 
-func newProjectEinoAssistantNoProgressGuardLifecycle(state *projectEinoAssistantRunState) *projectEinoAssistantLifecycle {
+func newProjectEinoAssistantLifecycleForState(state *projectEinoAssistantRunState) *projectEinoAssistantLifecycle {
 	return &projectEinoAssistantLifecycle{
 		runState: state,
 		req: projectAssistantRunRequest{
@@ -70,57 +72,101 @@ func newProjectEinoAssistantNoProgressGuardLifecycle(state *projectEinoAssistant
 	}
 }
 
-func TestProjectEinoAssistantNoProgressGuardStopsAlternatingUnchangedReads(t *testing.T) {
+func TestProjectEinoAssistantRepeatedUnchangedReadsDoNotTerminate(t *testing.T) {
 	state := newProjectEinoAssistantRunState()
 	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
-	for i := 0; i < 4; i++ {
-		state.RecordSourceMutation()
-	}
-	state.RecordDevelopmentVerification(true)
-	recordProjectEinoAssistantCompleteRead(state, "src/one.ts", "sha256:one")
-	recordProjectEinoAssistantCompleteRead(state, "src/two.ts", "sha256:two")
-	for i := 0; i < projectEinoAssistantNoProgressModelCallLimit; i++ {
-		if i%2 == 0 {
-			recordProjectEinoAssistantCompleteRead(state, "src/one.ts", "sha256:one")
-		} else {
-			recordProjectEinoAssistantCompleteRead(state, "src/two.ts", "sha256:two")
+	lifecycle := newProjectEinoAssistantLifecycleForState(state)
+	for i := 0; i < 12; i++ {
+		recordProjectEinoAssistantCompleteRead(state, "src/one.ts", "sha256:one")
+		if _, _, err := lifecycle.BeforeModelRewriteState(context.Background(), &adk.ChatModelAgentState{}, nil); err != nil {
+			t.Fatalf("unchanged read %d terminated the lifecycle: %v", i+1, err)
 		}
 	}
-
-	_, _, err := newProjectEinoAssistantNoProgressGuardLifecycle(state).BeforeModelRewriteState(
-		context.Background(),
-		&adk.ChatModelAgentState{},
-		nil,
-	)
-	var noProgress *projectEinoAssistantNoProgressError
-	if !errors.As(err, &noProgress) || !errors.Is(err, errProjectAssistantNoProgress) {
-		t.Fatalf("guard error = %v, want typed no-progress error", err)
-	}
-	if noProgress.Calls != projectEinoAssistantNoProgressModelCallLimit ||
-		noProgress.Limit != projectEinoAssistantNoProgressModelCallLimit ||
-		noProgress.ToolName != "" ||
-		noProgress.SourceRevision != 4 ||
-		noProgress.VerifiedRevision != 4 {
-		t.Fatalf("no-progress fields = %#v", noProgress)
+	if name, count := state.RepeatedCompletedAction(); name != projectToolReadFile || count != 12 {
+		t.Fatalf("repeated read tracking = (%q, %d), want (%q, 12)", name, count, projectToolReadFile)
 	}
 }
 
-func TestProjectEinoAssistantNoProgressGuardFreshReadResetsAndPermitsContinuation(t *testing.T) {
+func TestProjectEinoAssistantLifecycleAllowsSettledFailedExecCommandBatches(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
+	lifecycle := newProjectEinoAssistantLifecycleForState(state)
+
+	wrapped, err := lifecycle.WrapInvokableToolCall(
+		context.Background(),
+		func(context.Context, string, ...einotool.Option) (string, error) {
+			return `{"status":"failed","summary":"Command failed in component \"backend\".","exitCode":1}`, nil
+		},
+		&adk.ToolContext{Name: projectToolExecCommand},
+	)
+	if err != nil {
+		t.Fatalf("WrapInvokableToolCall returned error: %v", err)
+	}
+	for batch := 1; batch <= 12; batch++ {
+		if _, _, boundaryErr := lifecycle.BeforeModelRewriteState(context.Background(), &adk.ChatModelAgentState{}, nil); boundaryErr != nil {
+			t.Fatalf("failed diagnostic exec batch %d terminated before invocation: %v", batch, boundaryErr)
+		}
+		result, invokeErr := wrapped(context.Background(), `{"component":"backend","argv":["npm","run","check"]}`)
+		if invokeErr != nil {
+			t.Fatalf("failed diagnostic exec batch %d returned invoke error: %v", batch, invokeErr)
+		}
+		if !strings.Contains(result, `"status":"failed"`) {
+			t.Fatalf("failed diagnostic exec batch %d result = %q, want settled failed status", batch, result)
+		}
+	}
+	if _, _, boundaryErr := lifecycle.BeforeModelRewriteState(context.Background(), &adk.ChatModelAgentState{}, nil); boundaryErr != nil {
+		t.Fatalf("post-12 failed diagnostic exec boundary terminated the lifecycle: %v", boundaryErr)
+	}
+	if name, count := state.RepeatedCompletedAction(); name != projectToolExecCommand || count != 12 {
+		t.Fatalf("failed diagnostic exec tracking = (%q, %d), want (%q, 12)", name, count, projectToolExecCommand)
+	}
+}
+
+func TestProjectEinoAssistantLegacyNoProgressCheckpointFieldsAreIgnored(t *testing.T) {
+	var checkpoint projectAssistantCheckpointState
+	if err := json.Unmarshal([]byte(`{"noProgressModelCallCount":999,"actionBatchModelCall":999,"actionBatchObserved":true,"actionBatchMadeProgress":false,"modelCallOrdinal":3}`), &checkpoint); err != nil {
+		t.Fatalf("legacy checkpoint decode returned error: %v", err)
+	}
+	state := newProjectEinoAssistantRunState()
+	state.RestoreCheckpointState(checkpoint)
+	if got := state.CurrentModelCallOrdinal(); got != 3 {
+		t.Fatalf("model call ordinal = %d, want retained current ordinal 3", got)
+	}
+	if name, count := state.RepeatedCompletedAction(); name != "" || count != 0 {
+		t.Fatalf("legacy no-progress fields affected repeated tracking = (%q, %d)", name, count)
+	}
+	encoded, err := json.Marshal(state.CheckpointState())
+	if err != nil {
+		t.Fatalf("current checkpoint encode returned error: %v", err)
+	}
+	for _, field := range []string{
+		"noProgressModelCallCount",
+		"actionBatchModelCall",
+		"actionBatchObserved",
+		"actionBatchMadeProgress",
+	} {
+		if strings.Contains(string(encoded), `"`+field+`"`) {
+			t.Fatalf("current checkpoint retained obsolete field %q: %s", field, encoded)
+		}
+	}
+}
+
+func TestProjectEinoAssistantChangedReadRetainsContinuationAndReplayTracking(t *testing.T) {
 	state := newProjectEinoAssistantRunState()
 	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
 	recordProjectEinoAssistantCompleteRead(state, "src/one.ts", "sha256:one")
-	for i := 0; i < projectEinoAssistantNoProgressModelCallLimit; i++ {
+	for i := 0; i < 3; i++ {
 		recordProjectEinoAssistantCompleteRead(state, "src/one.ts", "sha256:one")
 	}
-	if got := state.CheckpointState().NoProgressModelCallCount; got != projectEinoAssistantNoProgressModelCallLimit {
-		t.Fatalf("before changed read no-progress count = %d, want %d", got, projectEinoAssistantNoProgressModelCallLimit)
+	if name, count := state.RepeatedCompletedAction(); name != projectToolReadFile || count != 4 {
+		t.Fatalf("before changed read tracking = (%q, %d), want (%q, 4)", name, count, projectToolReadFile)
 	}
 
 	recordProjectEinoAssistantCompleteRead(state, "src/one.ts", "sha256:changed")
-	if got := state.CheckpointState().NoProgressModelCallCount; got != 0 {
-		t.Fatalf("after changed read no-progress count = %d, want 0", got)
+	if name, count := state.RepeatedCompletedAction(); name != projectToolReadFile || count != 5 {
+		t.Fatalf("after changed read tracking = (%q, %d), want (%q, 5)", name, count, projectToolReadFile)
 	}
-	if _, _, err := newProjectEinoAssistantNoProgressGuardLifecycle(state).BeforeModelRewriteState(
+	if _, _, err := newProjectEinoAssistantLifecycleForState(state).BeforeModelRewriteState(
 		context.Background(),
 		&adk.ChatModelAgentState{},
 		nil,
@@ -129,14 +175,14 @@ func TestProjectEinoAssistantNoProgressGuardFreshReadResetsAndPermitsContinuatio
 	}
 }
 
-func TestProjectEinoAssistantNoProgressGuardIgnoresEmptyProgressAndReadOnlyProfiles(t *testing.T) {
+func TestProjectEinoAssistantLifecycleAllowsEmptyProgressAndReadOnlyProfiles(t *testing.T) {
 	for _, profile := range []projectAssistantTurnProfile{
 		projectAssistantTurnProfileImplementation,
 		projectAssistantTurnProfileDebugging,
 	} {
 		state := newProjectEinoAssistantRunState()
 		state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(profile))
-		if _, _, err := newProjectEinoAssistantNoProgressGuardLifecycle(state).BeforeModelRewriteState(
+		if _, _, err := newProjectEinoAssistantLifecycleForState(state).BeforeModelRewriteState(
 			context.Background(),
 			&adk.ChatModelAgentState{},
 			nil,
@@ -146,17 +192,17 @@ func TestProjectEinoAssistantNoProgressGuardIgnoresEmptyProgressAndReadOnlyProfi
 	}
 }
 
-func TestProjectEinoAssistantNoProgressGuardBypassesPermissionBarrier(t *testing.T) {
+func TestProjectEinoAssistantLifecycleKeepsPermissionBarrierContinuation(t *testing.T) {
 	state := newProjectEinoAssistantRunState()
 	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
 	recordProjectEinoAssistantCompleteRead(state, "src/one.ts", "sha256:one")
-	for i := 0; i < projectEinoAssistantNoProgressModelCallLimit; i++ {
+	for i := 0; i < 12; i++ {
 		recordProjectEinoAssistantCompleteRead(state, "src/one.ts", "sha256:one")
 	}
 	if !state.TryStartPermissionBarrier() {
 		t.Fatal("permission barrier did not start")
 	}
-	if _, _, err := newProjectEinoAssistantNoProgressGuardLifecycle(state).BeforeModelRewriteState(
+	if _, _, err := newProjectEinoAssistantLifecycleForState(state).BeforeModelRewriteState(
 		context.Background(),
 		&adk.ChatModelAgentState{},
 		nil,

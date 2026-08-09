@@ -11,6 +11,7 @@ You may obtain a copy of the License at
 package bindings
 
 import (
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -110,6 +111,147 @@ func TestDesiredInvalidBinding(t *testing.T) {
 	b.ResourceRef.Resource = ""
 	if _, _, err := Desired(p, b); !IsInvalidBinding(err) {
 		t.Fatalf("missing resource: err = %v, want InvalidBindingError", err)
+	}
+}
+
+func TestApplyActionsOverlayReplacesReservedValuesAndClearsTransport(t *testing.T) {
+	input := map[string]any{
+		"ordinary":                "preserved",
+		ActionsExchangeURLField:   "stale-exchange",
+		ActionsBaseURLField:       "stale-base",
+		ActionsCABundleField:      "stale-ca",
+		ActionsTenantPathField:    "stale-tenant",
+		"kedgeActionsFutureField": "stale-future",
+		"kedgeActions":            "stale-prefix",
+	}
+	overlay := ActionsOverlay{
+		ActionsIdentity: ActionsIdentity{
+			TenantPath:  "root:kedge:tenants:org:workspace",
+			Org:         "org",
+			Workspace:   "workspace",
+			Project:     "demo",
+			ProjectUID:  "uid-1",
+			Environment: "development",
+			Instance:    "demo-dev",
+		},
+		ExchangeURL: "https://actions.example/api/provider-actions/workload/exchange",
+		BaseURL:     "https://actions.example/services/providers/app-studio",
+		CABundle:    "public-ca",
+	}
+
+	got := ApplyActionsOverlay(input, overlay)
+	if got["ordinary"] != "preserved" {
+		t.Fatalf("ordinary value = %v, want preserved", got["ordinary"])
+	}
+	for key, want := range map[string]string{
+		ActionsExchangeURLField: overlay.ExchangeURL,
+		ActionsBaseURLField:     overlay.BaseURL,
+		ActionsCABundleField:    overlay.CABundle,
+		ActionsTenantPathField:  overlay.TenantPath,
+		ActionsOrgField:         overlay.Org,
+		ActionsWorkspaceField:   overlay.Workspace,
+		ActionsProjectField:     overlay.Project,
+		ActionsProjectUIDField:  overlay.ProjectUID,
+		ActionsEnvironmentField: overlay.Environment,
+		ActionsInstanceField:    overlay.Instance,
+	} {
+		if got[key] != want {
+			t.Errorf("%s = %v, want %q", key, got[key], want)
+		}
+	}
+	for _, key := range []string{"kedgeActionsFutureField", "kedgeActions"} {
+		if _, found := got[key]; found {
+			t.Errorf("reserved unknown field %s survived: %v", key, got[key])
+		}
+	}
+	if input[ActionsExchangeURLField] != "stale-exchange" || input["ordinary"] != "preserved" {
+		t.Fatalf("input was mutated: %v", input)
+	}
+
+	actionless := overlay
+	actionless.ExchangeURL = ""
+	actionless.BaseURL = ""
+	actionless.CABundle = ""
+	got = ApplyActionsOverlay(input, actionless)
+	for key, want := range map[string]string{
+		ActionsTenantPathField:  actionless.TenantPath,
+		ActionsOrgField:         actionless.Org,
+		ActionsWorkspaceField:   actionless.Workspace,
+		ActionsProjectField:     actionless.Project,
+		ActionsProjectUIDField:  actionless.ProjectUID,
+		ActionsEnvironmentField: actionless.Environment,
+		ActionsInstanceField:    actionless.Instance,
+	} {
+		if got[key] != want {
+			t.Errorf("actionless %s = %v, want identity %q", key, got[key], want)
+		}
+	}
+	for _, key := range []string{ActionsExchangeURLField, ActionsBaseURLField, ActionsCABundleField} {
+		if _, found := got[key]; found {
+			t.Errorf("actionless transport field %s survived: %v", key, got[key])
+		}
+	}
+}
+
+func TestMergeProviderSpecPreservesComputedFieldsAndClearsStaleActions(t *testing.T) {
+	observed := map[string]any{
+		"name": "demo-dev",
+		"expose": map[string]any{
+			"hostnamePrefix": "demo",
+			"fqdn":           "demo-tenant.apps.example",
+			"providerFlag":   "keep",
+		},
+		"credentialsSecretName": "demo-dev-credentials",
+		"providerComputed":      "keep-top-level",
+		ActionsExchangeURLField: "https://stale.example/exchange",
+		"kedgeActionsFuture":    "stale-future",
+	}
+	desired := map[string]any{
+		"expose": map[string]any{
+			"hostnamePrefix": "new-prefix",
+		},
+		"providerInput": "explicit",
+	}
+	got := MergeProviderSpec(observed, desired)
+
+	expose, ok := got["expose"].(map[string]any)
+	if !ok {
+		t.Fatalf("expose = %#v, want map", got["expose"])
+	}
+	for key, want := range map[string]any{
+		"hostnamePrefix": "new-prefix",
+		"fqdn":           "demo-tenant.apps.example",
+		"providerFlag":   "keep",
+	} {
+		if expose[key] != want {
+			t.Errorf("expose[%q] = %#v, want %#v", key, expose[key], want)
+		}
+	}
+	for key, want := range map[string]any{
+		"credentialsSecretName": "demo-dev-credentials",
+		"providerComputed":      "keep-top-level",
+		"providerInput":         "explicit",
+	} {
+		if got[key] != want {
+			t.Errorf("spec[%q] = %#v, want %#v", key, got[key], want)
+		}
+	}
+	for key := range observed {
+		if strings.HasPrefix(key, ActionsFieldPrefix) {
+			if _, found := got[key]; found {
+				t.Errorf("stale reserved field %q survived merge: %#v", key, got[key])
+			}
+		}
+	}
+	if observed[ActionsExchangeURLField] != "https://stale.example/exchange" {
+		t.Fatal("MergeProviderSpec mutated observed input")
+	}
+
+	// A subsequent explicit update changes only the requested nested input and
+	// remains stable once the provider has accepted it.
+	updated := MergeProviderSpec(got, map[string]any{"expose": map[string]any{"hostnamePrefix": "final"}})
+	if updated["expose"].(map[string]any)["fqdn"] != "demo-tenant.apps.example" {
+		t.Fatalf("explicit update dropped computed fqdn: %#v", updated["expose"])
 	}
 }
 

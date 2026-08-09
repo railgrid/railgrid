@@ -131,7 +131,7 @@ func projectEinoAssistantDiscoverTools(ctx context.Context, server *Server, req 
 	}
 	registry := server.projectAssistantToolRegistry()
 	policy := normalizeProjectAssistantTurnPolicy(req.TurnPolicy, req.TurnProfile)
-	includePreviewInspection := server.projectAssistantPreviewInspectionAvailable(ctx)
+	includePreviewInspection := server.projectAssistantPreviewInspectionAvailable(ctx, req.Identity)
 	localTools := projectEinoAssistantFilterPreviewInspection(registry.Tools(false), includePreviewInspection)
 	chatTools := projectAssistantChatToolsForSpecs(projectAssistantToolSpecsForTurnPolicy(projectAssistantAllToolSpecs(localTools), policy))
 	if len(chatTools) == 0 {
@@ -279,7 +279,7 @@ func (t projectEinoAssistantTool) InvokableRun(ctx context.Context, argumentsInJ
 		})
 		if t.runState != nil {
 			t.runState.RecordToolMessage(chatMessage{Role: "tool", Name: spec.Name, ToolCallID: callID, Content: result})
-			t.runState.RecordCompletedAction(spec.Name, projectEinoToolArgumentsString(args), false)
+			t.runState.RecordCompletedAction(spec.Name, projectEinoToolArgumentsString(args))
 		}
 		if t.req.eventLedger != nil {
 			decision, err := t.req.eventLedger.RecordToolRequest(ctx, callID, spec, durableArgs)
@@ -596,7 +596,16 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 			_ = t.recordV2CommitSettlement(ctx, spec, args, false)
 			return modelResult, durableErr
 		}
-		failed := t.finishFailedMutationToolCall(callID, spec.Name, args, err)
+		failed := ""
+		if projectAssistantWorkspaceMutationTool(spec.Name) {
+			// Workspace mutations keep their typed recovery envelope and bounded
+			// reread/repair accounting. Provider/MCP reads and other non-mutation
+			// tools must remain ordinary safe failures; classifying them as a
+			// mutation would manufacture a file target and recovery budget.
+			failed = t.finishFailedMutationToolCall(callID, spec.Name, args, err)
+		} else {
+			failed = t.finishFailedNonMutationToolCall(callID, spec.Name, args, err)
+		}
 		modelResult, durableErr := t.finishDurableToolFailureForModel(ctx, ledgerDecision, failed, err)
 		_ = t.recordV2CommitSettlement(ctx, spec, args, false)
 		return modelResult, durableErr
@@ -675,7 +684,7 @@ func (t projectEinoAssistantTool) recordV2CommitSettlement(
 	if err := t.recoverV2CommitSettlement(ctx, spec, args, succeeded); err != nil {
 		return err
 	}
-	t.runState.RecordCompletedAction(spec.Name, projectEinoAssistantCanonicalActionArguments(projectEinoToolArgumentsString(args)), succeeded)
+	t.runState.RecordCompletedAction(spec.Name, projectEinoAssistantCanonicalActionArguments(projectEinoToolArgumentsString(args)))
 	return nil
 }
 
@@ -1474,6 +1483,9 @@ func (t projectEinoAssistantTool) finishFailedToolCall(callID, name, rawArgs, re
 }
 
 func (t projectEinoAssistantTool) finishFailedMutationToolCall(callID, name string, args map[string]any, invokeErr error) string {
+	if !projectAssistantWorkspaceMutationTool(name) {
+		return t.finishFailedNonMutationToolCall(callID, name, args, invokeErr)
+	}
 	if invokeErr == nil {
 		return t.finishFailedToolCall(callID, name, projectEinoToolArgumentsString(args), "mutation failed")
 	}
@@ -1527,6 +1539,18 @@ func (t projectEinoAssistantTool) finishFailedMutationToolCall(callID, name stri
 	result := string(payload)
 	t.recordToolMessage(callID, name, result)
 	return result
+}
+
+// finishFailedNonMutationToolCall converts provider/MCP and other
+// non-workspace failures into bounded model feedback without manufacturing a
+// mutation envelope. The action feed receives only the safe error text, so a
+// failed read remains a provider/read diagnostic instead of operation=mutation.
+func (t projectEinoAssistantTool) finishFailedNonMutationToolCall(callID, name string, args map[string]any, invokeErr error) string {
+	reason := "tool call failed"
+	if invokeErr != nil {
+		reason = projectEinoAssistantSafeErrorText(invokeErr)
+	}
+	return t.finishFailedToolCall(callID, name, projectEinoToolArgumentsString(args), reason)
 }
 
 func (t projectEinoAssistantTool) emitToolCall(event projectToolCallStreamEvent) {
@@ -1619,7 +1643,7 @@ func projectEinoUnknownToolHandler(server *Server, req projectAssistantRunReques
 			ToolCallID: callID,
 			Content:    result,
 		})
-		runState.RecordCompletedAction(name, projectEinoToolArgumentsString(args), false)
+		runState.RecordCompletedAction(name, projectEinoToolArgumentsString(args))
 		return result, nil
 	}
 }

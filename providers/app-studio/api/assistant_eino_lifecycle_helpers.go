@@ -33,14 +33,9 @@ const (
 	projectEinoAssistantTodoProgressMaxInputBytes = 64 * 1024
 	projectEinoAssistantTodoProgressMaxLabelBytes = 120
 
-	projectEinoAssistantRepeatedActionWarnAt = 2
-	projectEinoAssistantRepeatedActionLimit  = 100
-
-	// Heterogeneous no-progress batches stop at the existing repeated-action
-	// warning point. This is deliberately counted by model-call batch rather
-	// than action signature so alternating reads cannot evade the bound, while
-	// the separate 100-call compatibility ceiling remains unchanged.
-	projectEinoAssistantNoProgressModelCallLimit = projectEinoAssistantRepeatedActionWarnAt
+	// Repeated action tracking is retained for durable telemetry/replay context;
+	// it is informational and never terminates a model turn.
+	projectEinoAssistantRepeatedActionLimit = 100
 
 	// A failed mutation gets one complete-reread repair attempt. If that
 	// repair also fails at the same source revision and canonical target, stop

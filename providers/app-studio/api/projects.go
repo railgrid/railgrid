@@ -113,12 +113,15 @@ type ProjectEnvironmentView struct {
 }
 
 type ProjectProviderBindingView struct {
-	Name       string            `json:"name"`
-	Provider   string            `json:"provider,omitempty"`
-	Phase      string            `json:"phase,omitempty"`
-	URL        string            `json:"url,omitempty"`
-	PreviewURL string            `json:"previewURL,omitempty"`
-	Outputs    map[string]string `json:"outputs,omitempty"`
+	Name           string                                       `json:"name"`
+	Provider       string                                       `json:"provider,omitempty"`
+	Kind           aiv1alpha1.ProjectBindingKind                `json:"kind,omitempty"`
+	ResourceRef    *aiv1alpha1.ProjectProviderResourceReference `json:"resourceRef,omitempty"`
+	AllowedActions []aiv1alpha1.ProjectProviderActionSpec       `json:"allowedActions,omitempty"`
+	Phase          string                                       `json:"phase,omitempty"`
+	URL            string                                       `json:"url,omitempty"`
+	PreviewURL     string                                       `json:"previewURL,omitempty"`
+	Outputs        map[string]string                            `json:"outputs,omitempty"`
 }
 
 type ProjectRepositoryView struct {
@@ -424,7 +427,7 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 		},
 	}
 	if selectedTemplate != nil {
-		if err := applyProjectDevelopmentTemplate(p, *selectedTemplate); err != nil {
+		if err := s.applyProjectDevelopmentTemplateWithIdentity(p, *selectedTemplate, id); err != nil {
 			return nil, err
 		}
 	}
@@ -1630,12 +1633,15 @@ func projectProviderBindingViews(specs []aiv1alpha1.ProjectProviderBindingSpec, 
 	for _, spec := range specs {
 		st := statusByName[spec.Name]
 		views = append(views, ProjectProviderBindingView{
-			Name:       spec.Name,
-			Provider:   firstNonEmpty(st.Provider, spec.Provider),
-			Phase:      st.Phase,
-			URL:        st.URL,
-			PreviewURL: st.PreviewURL,
-			Outputs:    st.Outputs,
+			Name:           spec.Name,
+			Provider:       firstNonEmpty(st.Provider, spec.Provider),
+			Kind:           spec.Kind,
+			ResourceRef:    spec.ResourceRef,
+			AllowedActions: append([]aiv1alpha1.ProjectProviderActionSpec(nil), spec.AllowedActions...),
+			Phase:          st.Phase,
+			URL:            st.URL,
+			PreviewURL:     st.PreviewURL,
+			Outputs:        st.Outputs,
 		})
 		delete(statusByName, spec.Name)
 	}

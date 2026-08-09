@@ -66,7 +66,7 @@ onBeforeUnmount(() => {
       <Hand v-else-if="mode === 'always_ask'" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
       <ShieldX v-else class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
       <span class="truncate">{{ busy ? 'Saving…' : labels[mode] }}</span>
-      <ChevronDown class="h-3 w-3 shrink-0 transition" :class="{ 'rotate-180': open }" :stroke-width="1.75" />
+      <ChevronDown class="h-3 w-3 shrink-0 transition" :class="{ 'rotate-180': open }" :stroke-width="2" />
     </button>
 
     <div

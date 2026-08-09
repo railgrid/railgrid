@@ -20,10 +20,12 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
@@ -31,6 +33,213 @@ import (
 
 // ProjectLabel attributes an instance back to its Project.
 const ProjectLabel = "app-studio.kedge.faros.sh/project"
+
+// Provider Actions fields are platform-owned instance inputs. The prefix is
+// intentionally broader than the currently-known field list: a binding must
+// never be able to smuggle a future reserved Actions field into an instance.
+const ActionsFieldPrefix = "kedgeActions"
+
+const (
+	ActionsExchangeURLField = "kedgeActionsExchangeURL"
+	ActionsBaseURLField     = "kedgeActionsBaseURL"
+	ActionsCABundleField    = "kedgeActionsCABundle"
+	ActionsTenantPathField  = "kedgeActionsTenantPath"
+	ActionsOrgField         = "kedgeActionsOrg"
+	ActionsWorkspaceField   = "kedgeActionsWorkspace"
+	ActionsProjectField     = "kedgeActionsProject"
+	ActionsProjectUIDField  = "kedgeActionsProjectUID"
+	ActionsEnvironmentField = "kedgeActionsEnvironment"
+	ActionsInstanceField    = "kedgeActionsInstance"
+)
+
+const tenantPathPrefix = "root:kedge:tenants:"
+
+// ActionsIdentity is the server-derived identity bound to one development
+// instance. It is separate from ActionsTransport so action grants can be
+// revoked without losing the instance's non-authorizing identity metadata.
+type ActionsIdentity struct {
+	TenantPath  string
+	Org         string
+	Workspace   string
+	Project     string
+	ProjectUID  string
+	Environment string
+	Instance    string
+}
+
+// ActionsRuntimeConfig contains operator-owned Provider Actions transport
+// configuration. CABundleErr is retained by the API server until a project
+// actually has an active grant, so unrelated actionless projects remain
+// usable.
+type ActionsRuntimeConfig struct {
+	ExternalURL string
+	CABundle    string
+	CABundleErr error
+}
+
+// ActionsOverlay is the complete platform-owned overlay applied to binding
+// values. Empty transport fields mean that the project is actionless or has a
+// revoked grant; ApplyActionsOverlay removes any stale persisted values first.
+type ActionsOverlay struct {
+	ActionsIdentity
+	ExchangeURL string
+	BaseURL     string
+	CABundle    string
+}
+
+// ValidateActionsExternalURL accepts only an operator-supplied HTTPS origin.
+// Paths, query strings, fragments, credentials, and non-HTTPS schemes are not
+// part of the configuration contract.
+func ValidateActionsExternalURL(raw string) (string, error) {
+	origin := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if origin == "" {
+		return "", fmt.Errorf("KEDGE_ACTIONS_EXTERNAL_URL is required for action-enabled development runtimes")
+	}
+	u, err := url.Parse(origin)
+	if err != nil || !u.IsAbs() || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" {
+		return "", fmt.Errorf("KEDGE_ACTIONS_EXTERNAL_URL must be an absolute HTTPS URL")
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return "", fmt.Errorf("KEDGE_ACTIONS_EXTERNAL_URL must use HTTPS")
+	}
+	return origin, nil
+}
+
+// ActionsTransportForOrigin derives the only two Provider Actions URLs that
+// development workloads may use. Callers must not accept user-provided paths
+// for either endpoint.
+func ActionsTransportForOrigin(raw string) (ActionsOverlay, error) {
+	origin, err := ValidateActionsExternalURL(raw)
+	if err != nil {
+		return ActionsOverlay{}, err
+	}
+	return ActionsOverlay{
+		ExchangeURL: origin + "/api/provider-actions/workload/exchange",
+		BaseURL:     origin + "/services/providers/app-studio",
+	}, nil
+}
+
+// ParseTenantWorkspacePath validates and splits the canonical KCP tenant
+// workspace path. A controller must have both segments before it can derive
+// Provider Actions identity.
+func ParseTenantWorkspacePath(raw string) (org, workspace string, err error) {
+	path := strings.TrimSpace(raw)
+	rest, ok := strings.CutPrefix(path, tenantPathPrefix)
+	if !ok {
+		return "", "", fmt.Errorf("tenant path %q does not use the canonical %s prefix", raw, tenantPathPrefix)
+	}
+	parts := strings.Split(rest, ":")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return "", "", fmt.Errorf("tenant path %q must identify exactly one organization and workspace", raw)
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
+}
+
+// HasActiveProviderActionGrant reports whether a Project contains at least one
+// non-revoked action on a provider reference. The check is deliberately kept
+// in the shared package so API and controller overlays make the same decision.
+func HasActiveProviderActionGrant(p *aiv1alpha1.Project) bool {
+	if p == nil {
+		return false
+	}
+	for _, environment := range p.Spec.Environments {
+		for _, binding := range environment.Bindings {
+			if binding.Kind != aiv1alpha1.ProjectBindingKindProviderReference {
+				continue
+			}
+			for _, action := range binding.AllowedActions {
+				if strings.TrimSpace(action.Name) != "" && !action.Revoked {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// NewActionsOverlay builds a complete overlay from server-derived identity and
+// operator-owned transport configuration. Identity is always applied; the
+// transport fields are present only for an active grant.
+func NewActionsOverlay(identity ActionsIdentity, config ActionsRuntimeConfig, activeGrant bool) (ActionsOverlay, error) {
+	overlay := ActionsOverlay{ActionsIdentity: identity}
+	if !activeGrant {
+		return overlay, nil
+	}
+	transport, err := ActionsTransportForOrigin(config.ExternalURL)
+	if err != nil {
+		return ActionsOverlay{}, err
+	}
+	if config.CABundleErr != nil {
+		return ActionsOverlay{}, fmt.Errorf("configured action CA bundle: %w", config.CABundleErr)
+	}
+	overlay.ExchangeURL = transport.ExchangeURL
+	overlay.BaseURL = transport.BaseURL
+	overlay.CABundle = config.CABundle
+	return overlay, nil
+}
+
+// ApplyActionsOverlay returns a new map. It first removes every reserved
+// kedgeActions* value, including fields unknown to this version, then adds the
+// current server-derived identity and (when active) transport fields. Neither
+// the persisted binding map nor the caller's map is mutated.
+func ApplyActionsOverlay(values map[string]any, overlay ActionsOverlay) map[string]any {
+	out := make(map[string]any, len(values)+len(actionsOverlayFields))
+	for key, value := range values {
+		if strings.HasPrefix(key, ActionsFieldPrefix) {
+			continue
+		}
+		out[key] = value
+	}
+	for key, value := range actionsOverlayFieldsFor(overlay) {
+		if strings.TrimSpace(value) != "" {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+// ApplyActionsOverlayToBinding applies the pure value overlay while retaining
+// the rest of the binding contract unchanged.
+func ApplyActionsOverlayToBinding(binding aiv1alpha1.ProjectProviderBindingSpec, overlay ActionsOverlay) (aiv1alpha1.ProjectProviderBindingSpec, error) {
+	values, err := Values(binding)
+	if err != nil {
+		return binding, err
+	}
+	raw, err := json.Marshal(ApplyActionsOverlay(values, overlay))
+	if err != nil {
+		return binding, fmt.Errorf("marshal provider binding %q values: %w", binding.Name, err)
+	}
+	binding.Values.Raw = raw
+	return binding, nil
+}
+
+var actionsOverlayFields = map[string]struct{}{
+	ActionsExchangeURLField: {},
+	ActionsBaseURLField:     {},
+	ActionsCABundleField:    {},
+	ActionsTenantPathField:  {},
+	ActionsOrgField:         {},
+	ActionsWorkspaceField:   {},
+	ActionsProjectField:     {},
+	ActionsProjectUIDField:  {},
+	ActionsEnvironmentField: {},
+	ActionsInstanceField:    {},
+}
+
+func actionsOverlayFieldsFor(overlay ActionsOverlay) map[string]string {
+	return map[string]string{
+		ActionsExchangeURLField: overlay.ExchangeURL,
+		ActionsBaseURLField:     overlay.BaseURL,
+		ActionsCABundleField:    overlay.CABundle,
+		ActionsTenantPathField:  overlay.TenantPath,
+		ActionsOrgField:         overlay.Org,
+		ActionsWorkspaceField:   overlay.Workspace,
+		ActionsProjectField:     overlay.Project,
+		ActionsProjectUIDField:  overlay.ProjectUID,
+		ActionsEnvironmentField: overlay.Environment,
+		ActionsInstanceField:    overlay.Instance,
+	}
+}
 
 // Identity annotations bridging the CR keyspace to the workspace/store
 // keyspace (reconcilers only know the cluster; store scopes are keyed by the
@@ -69,6 +278,45 @@ func Values(binding aiv1alpha1.ProjectProviderBindingSpec) (map[string]any, erro
 		return nil, fmt.Errorf("decode provider binding %q values: %w", binding.Name, err)
 	}
 	return values, nil
+}
+
+// MergeProviderSpec overlays desired binding values onto an observed provider
+// spec without erasing fields that the provider computes. Maps merge
+// recursively, scalar and list values are replaced by the explicit desired
+// value, and a top-level nil is an explicit desired value. Platform-owned
+// Provider Actions fields are removed from the observed map first so a grant
+// revocation or action removal cannot leave stale transport/identity values on
+// the instance. The inputs and all nested values remain untouched.
+func MergeProviderSpec(observed, desired map[string]any) map[string]any {
+	merged := make(map[string]any, len(observed)+len(desired))
+	for key, value := range observed {
+		if strings.HasPrefix(key, ActionsFieldPrefix) {
+			continue
+		}
+		merged[key] = runtime.DeepCopyJSONValue(value)
+	}
+	mergeProviderSpecMap(merged, desired)
+	return merged
+}
+
+func mergeProviderSpecMap(dst, desired map[string]any) {
+	for key, desiredValue := range desired {
+		desiredMap, desiredIsMap := desiredValue.(map[string]any)
+		if !desiredIsMap {
+			dst[key] = runtime.DeepCopyJSONValue(desiredValue)
+			continue
+		}
+		observedMap, observedIsMap := dst[key].(map[string]any)
+		if !observedIsMap {
+			observedMap = map[string]any{}
+		}
+		mergedMap := make(map[string]any, len(observedMap)+len(desiredMap))
+		for nestedKey, nestedValue := range observedMap {
+			mergedMap[nestedKey] = runtime.DeepCopyJSONValue(nestedValue)
+		}
+		mergeProviderSpecMap(mergedMap, desiredMap)
+		dst[key] = mergedMap
+	}
 }
 
 // ResourceName resolves the instance name: explicit resourceRef.name, then a

@@ -25,6 +25,8 @@ package api
 import (
 	"context"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/mux"
@@ -40,16 +42,31 @@ import (
 // Server holds the dependencies the project handlers need. clients builds a
 // per-(tenant, caller) dynamic client; store persists chat transcripts; hubBase
 // locates the hub's MCP virtual workspace; mcpInsecureSkipTLSVerify relaxes TLS
-// for dev MCP calls; workspaces stores project files owned by App Studio; and
-// assistantEngine runs project assistant turns.
+// for explicitly enabled local hub calls (MCP and action-catalog lookup), while
+// Provider Action invocation retains certificate validation; workspaces stores
+// project files owned by App Studio; and assistantEngine runs project turns.
 type Server struct {
-	gql                          *tenant.GraphQLClient
-	store                        store.Store
-	workspaces                   *workspace.FileStore
-	hubBase                      string
-	mcpInsecureSkipTLSVerify     bool
-	previewInsecureSkipTLSVerify bool
-	assistantEngine              projectAssistantEngine
+	gql        *tenant.GraphQLClient
+	store      store.Store
+	workspaces *workspace.FileStore
+	hubBase    string
+	// actionsExternalURL is the externally reachable hub origin used by
+	// development workloads for the Provider Actions exchange and SDK base
+	// URL. It is deliberately separate from hubBase, which may be an internal
+	// cluster-local address used for MCP/heartbeat traffic.
+	actionsExternalURL string
+	// actionsCABundle is optional public trust material for action-enabled
+	// development runtimes. Keep the load error until a grant actually needs
+	// the value so actionless projects retain the normal system trust path.
+	actionsCABundle    string
+	actionsCABundleErr error
+	// providerActionCatalogResolver is a test seam for the authenticated hub
+	// catalog lookup. Production leaves it nil so grants always resolve via
+	// GET /api/providers using the caller's bearer token.
+	providerActionCatalogResolver providerActionCatalogResolver
+	mcpInsecureSkipTLSVerify      bool
+	previewInsecureSkipTLSVerify  bool
+	assistantEngine               projectAssistantEngine
 	// assistantThreadTitleGenerator is a test seam for the detached, one-shot
 	// title request. Production leaves it nil and uses the connected project LLM.
 	assistantThreadTitleGenerator func(context.Context, *asclient.Client, string) (string, error)
@@ -95,11 +112,15 @@ func NewWithWorkspace(gql *tenant.GraphQLClient, msgStore store.Store, workspace
 
 // NewWithWorkspaceContext binds assistant workers to the provider lifecycle.
 func NewWithWorkspaceContext(parent context.Context, gql *tenant.GraphQLClient, msgStore store.Store, workspaces *workspace.FileStore, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
+	actionsCABundle, actionsCABundleErr := loadActionsCABundleFromEnv()
 	s := &Server{
 		gql:                      gql,
 		store:                    msgStore,
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
+		actionsExternalURL:       strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_EXTERNAL_URL")),
+		actionsCABundle:          actionsCABundle,
+		actionsCABundleErr:       actionsCABundleErr,
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
 	}
 	s.assistantEngine = NewEinoAssistantEngine(s)
@@ -193,6 +214,14 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/approval", s.respondProjectAssistantThreadTurn).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/assistant/threads/{thread}/turns/{turn}/input", s.respondProjectAssistantThreadTurn).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/template", s.putProjectTemplate).Methods(http.MethodPut)
+	r.HandleFunc("/api/projects/{project}/integrations", s.listProjectIntegrations).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/integrations", s.addProjectIntegration).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/integrations/{integration}", s.patchProjectIntegration).Methods(http.MethodPatch)
+	r.HandleFunc("/api/projects/{project}/integrations/{integration}", s.removeProjectIntegration).Methods(http.MethodDelete)
+	r.HandleFunc("/api/projects/{project}/integrations/{integration}/invoke", s.invokeProjectIntegration).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/integrations/{integration}/invoke/{action}", s.invokeProjectIntegration).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/integrations/{integration}/actions", s.invokeProjectIntegration).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/integrations/{integration}/actions/{action}", s.invokeProjectIntegration).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/promotion", s.getProjectPromotion).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/checkpoints", s.getProjectCheckpoints).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/promote", s.promoteProjectHandler).Methods(http.MethodPost)

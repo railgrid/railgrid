@@ -168,6 +168,11 @@ type Package struct {
 	Enabled    bool   `json:"enabled,omitempty"`
 	EnabledSet bool   `json:"-"`
 	Version    string `json:"version,omitempty"`
+	// Digest is an optional source-declared immutable artifact digest. Provider
+	// sources set it to the hub-validated package digest; ordinary bundled and
+	// project sources leave it empty and the catalog computes its historical
+	// entry digest.
+	Digest string `json:"-"`
 }
 
 // PackageList is returned by a Source. Warnings are already source-relative

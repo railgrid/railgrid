@@ -67,7 +67,7 @@ function onConfirm() {
           </p>
         </div>
         <button class="text-text-muted hover:text-text-primary" @click="$emit('cancel')">
-          <X class="h-4 w-4" :stroke-width="2" />
+          <X class="h-4 w-4" :stroke-width="1.75" />
         </button>
       </div>
 

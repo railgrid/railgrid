@@ -274,8 +274,12 @@ func assertDevProbes(t *testing.T, container map[string]any) {
 		switch containerName {
 		case "kedge-platform-coordinator":
 			httpGet, ok := probe["httpGet"].(map[string]any)
-			if !ok || httpGet["path"] != "/healthz" || numberValue(httpGet["port"]) != devAgentPort {
-				t.Errorf("%s %s = %v, want coordinator HTTP /healthz:%d probe", containerName, name, probe, devAgentPort)
+			wantPath := "/healthz"
+			if name == "readinessProbe" {
+				wantPath = "/readyz"
+			}
+			if !ok || httpGet["path"] != wantPath || numberValue(httpGet["port"]) != devAgentPort {
+				t.Errorf("%s %s = %v, want coordinator HTTP %s:%d probe", containerName, name, probe, wantPath, devAgentPort)
 			}
 			if _, ok := probe["exec"]; ok {
 				t.Errorf("%s %s unexpectedly has an exec probe: %v", containerName, name, probe)
@@ -340,7 +344,9 @@ func TestDevOverlayGatesProdWorkloadsAndAddsDevVariants(t *testing.T) {
 	// Dev variants + per-component PVC + control Service + instance token infra.
 	for _, id := range []string{
 		"backendDevDeployment", "backendDevWorkspace", "backendDevPlatformState", "backendDevControlService",
+		"backendDevCABundle",
 		"frontendDevDeployment", "frontendDevWorkspace", "frontendDevPlatformState", "frontendDevControlService",
+		"frontendDevCABundle",
 		"kedgeDevControlSecret", "kedgeDevTokenJob",
 	} {
 		res, ok := byID[id]
@@ -358,6 +364,77 @@ func TestDevOverlayGatesProdWorkloadsAndAddsDevVariants(t *testing.T) {
 	if !found || !strings.Contains(mode, "production,development") || !strings.Contains(mode, `default="production"`) {
 		t.Errorf("RGD schema kedgeMode = %q, want enum production,development with production default", mode)
 	}
+
+	// Provider Actions is optional. Every expression is still present in the
+	// synthesized dev workload, so omitted action context must be materialized
+	// as an empty string instead of making kro fail on a missing schema key.
+	for _, field := range []string{
+		"kedgeActionsExchangeURL",
+		"kedgeActionsBaseURL",
+		"kedgeActionsTenantPath",
+		"kedgeActionsOrg",
+		"kedgeActionsWorkspace",
+		"kedgeActionsProject",
+		"kedgeActionsProjectUID",
+		"kedgeActionsEnvironment",
+		"kedgeActionsInstance",
+		"kedgeActionsCABundle",
+	} {
+		value, found, err := unstructured.NestedString(rgd.Object, "spec", "schema", "spec", field)
+		if err != nil || !found || value != devActionsSchemaFieldMarker {
+			t.Errorf("RGD schema %s = %q (found=%t err=%v), want %q", field, value, found, err, devActionsSchemaFieldMarker)
+		}
+	}
+}
+
+func TestDevOverlayEmptyCABundleKeepsSystemTrustAndRequiredObject(t *testing.T) {
+	rgd, err := buildRGD(devTestTemplate(t), devTestTokens())
+	if err != nil {
+		t.Fatalf("buildRGD: %v", err)
+	}
+	byID := rgdResources(t, rgd)
+	dep := byID["backendDevDeployment"]["template"].(map[string]any)
+	spec, _, _ := nestedMap(dep, "spec")
+	podSpec, _, _ := nestedMap(spec, "template", "spec")
+	containers, _ := podSpec["containers"].([]any)
+	coordinator := namedContainer(t, containers, "kedge-platform-coordinator")
+	app := namedContainer(t, containers, "backend")
+	wantEmpty := `${schema.spec.kedgeActionsCABundle != "" ? "` + devActionsCABundlePath + `" : ""}`
+	for _, container := range []map[string]any{coordinator, app} {
+		if _, ok := testEnvValue(container, "SSL_CERT_FILE"); ok {
+			t.Errorf("%s sets SSL_CERT_FILE, which can replace system trust", container["name"])
+		}
+	}
+	if got, ok := testEnvValue(app, "NODE_EXTRA_CA_CERTS"); !ok || got != wantEmpty {
+		t.Errorf("app NODE_EXTRA_CA_CERTS = %q (present=%t), want conditional empty/default trust expression %q", got, ok, wantEmpty)
+	}
+	if got, ok := testEnvValue(coordinator, "KEDGE_ACTIONS_CA_FILE"); !ok || got != wantEmpty {
+		t.Errorf("coordinator KEDGE_ACTIONS_CA_FILE = %q (present=%t), want conditional empty/default trust expression %q", got, ok, wantEmpty)
+	}
+
+	caResource := byID["backendDevCABundle"]
+	when, _ := caResource["includeWhen"].([]any)
+	if len(when) != 1 || when[0] != devModeCondition {
+		t.Fatalf("CA ConfigMap includeWhen = %v, want [%s] so every dev pod has a non-dangling object", when, devModeCondition)
+	}
+	caTemplate, _ := caResource["template"].(map[string]any)
+	data, _ := caTemplate["data"].(map[string]any)
+	if data["ca-bundle.pem"] != "${schema.spec.kedgeActionsCABundle}" {
+		t.Fatalf("CA ConfigMap data = %v, want empty-default schema field", data)
+	}
+	volumes, _ := podSpec["volumes"].([]any)
+	for _, raw := range volumes {
+		volume, _ := raw.(map[string]any)
+		if volume["name"] != devActionsCABundleVolumeName {
+			continue
+		}
+		configMap, _ := volume["configMap"].(map[string]any)
+		if configMap["name"] != "${backendDevCABundle.metadata.name}" || configMap["optional"] != nil {
+			t.Fatalf("CA volume = %v, want required generated ConfigMap reference", configMap)
+		}
+		return
+	}
+	t.Fatal("CA volume missing from default development pod")
 }
 
 func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
@@ -416,6 +493,27 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	}
 	if hasTestEnv(app, "KEDGE_DEV_CONTROL_TOKEN") {
 		t.Error("control token is present on app")
+	}
+	if !hasTestEnv(coordinator, "KEDGE_ACTIONS_EXCHANGE_URL") || !hasTestEnv(coordinator, "KEDGE_ACTIONS_BOOTSTRAP_TOKEN_FILE") {
+		t.Error("coordinator lacks the Provider Actions exchange contract")
+	}
+	if hasTestEnv(app, "KEDGE_ACTIONS_EXCHANGE_URL") || hasTestEnv(app, "KEDGE_ACTIONS_BOOTSTRAP_TOKEN_FILE") {
+		t.Error("app received the coordinator-only Provider Actions exchange/bootstrap configuration")
+	}
+	for _, c := range []map[string]any{coordinator, app} {
+		for _, envName := range []string{"KEDGE_ACTIONS_TOKEN_FILE", "KEDGE_ACTIONS_BASE_URL", "KEDGE_PROJECT", "KEDGE_ACTIONS_ENVIRONMENT", "KEDGE_ACTIONS_INSTANCE"} {
+			if !hasTestEnv(c, envName) {
+				t.Errorf("%s lacks Provider Actions env %s", c["name"], envName)
+			}
+		}
+	}
+	for _, c := range []map[string]any{coordinator, app} {
+		if hasTestEnv(c, "SSL_CERT_FILE") {
+			t.Errorf("%s sets SSL_CERT_FILE, which can replace system trust", c["name"])
+		}
+	}
+	if !hasTestEnv(app, "NODE_EXTRA_CA_CERTS") {
+		t.Error("app lacks Node strict TLS trust env NODE_EXTRA_CA_CERTS")
 	}
 
 	if image, _ := executor["image"].(string); image != "docker.io/library/python:3.12" {
@@ -479,6 +577,12 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	if _, ok := findMount(app, devPlatformStateDir); ok {
 		t.Error("app mounts platform state")
 	}
+	for _, c := range []map[string]any{coordinator, app} {
+		mount := testMount(t, c, "/etc/kedge/actions-ca")
+		if mount["name"] != devActionsCABundleVolumeName || mount["readOnly"] != true {
+			t.Errorf("%s CA mount = %v", c["name"], mount)
+		}
+	}
 	coordSA := testMount(t, coordinator, devServiceAccountDir)
 	execSA := testMount(t, executor, devServiceAccountDir)
 	if coordSA["name"] != "kedge-dev-no-serviceaccount" || execSA["name"] != "kedge-dev-no-serviceaccount" {
@@ -486,6 +590,71 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	}
 	if _, ok := findMount(app, devServiceAccountDir); ok {
 		t.Error("app service-account mount was masked")
+	}
+	bootstrapMount := testMount(t, coordinator, devActionsBootstrapDir)
+	if bootstrapMount["name"] != devActionsBootstrapVolumeName || bootstrapMount["readOnly"] != true {
+		t.Errorf("coordinator bootstrap mount = %v", bootstrapMount)
+	}
+	if _, ok := findMount(app, devActionsBootstrapDir); ok {
+		t.Error("app mounted the coordinator-only bootstrap projection")
+	}
+	coordinatorActionsMount := testMount(t, coordinator, devActionsDir)
+	appActionsMount := testMount(t, app, devActionsDir)
+	if coordinatorActionsMount["name"] != devActionsTokenVolumeName || coordinatorActionsMount["readOnly"] == true {
+		t.Errorf("coordinator actions token mount = %v", coordinatorActionsMount)
+	}
+	if appActionsMount["name"] != devActionsTokenVolumeName || appActionsMount["readOnly"] != true {
+		t.Errorf("app actions token mount = %v", appActionsMount)
+	}
+	for _, container := range []map[string]any{coordinator, app, executor} {
+		if _, ok := findMount(container, "/node_modules"); ok {
+			t.Errorf("%s unexpectedly mounts a projected /node_modules SDK view", container["name"])
+		}
+	}
+	volumes, _ := podSpec["volumes"].([]any)
+	var projected bool
+	for _, raw := range volumes {
+		volume, _ := raw.(map[string]any)
+		if volume["name"] != devActionsBootstrapVolumeName {
+			continue
+		}
+		projected = true
+		projection, _ := volume["projected"].(map[string]any)
+		sources, _ := projection["sources"].([]any)
+		if len(sources) != 1 {
+			t.Fatalf("actions bootstrap sources = %v", sources)
+		}
+		tokenSource, _ := sources[0].(map[string]any)
+		tokenSpec, _ := tokenSource["serviceAccountToken"].(map[string]any)
+		if tokenSpec["audience"] != devActionsBootstrapAudience || numberValue(tokenSpec["expirationSeconds"]) != devActionsTokenExpiration {
+			t.Errorf("projected actions token = %v", tokenSpec)
+		}
+	}
+	if !projected {
+		t.Fatal("actions bootstrap projected volume missing")
+	}
+	caConfigMap := byID["backendDevCABundle"]["template"].(map[string]any)
+	if caConfigMap["kind"] != "ConfigMap" {
+		t.Fatalf("CA trust object kind = %v, want ConfigMap", caConfigMap["kind"])
+	}
+	caData, _ := caConfigMap["data"].(map[string]any)
+	if caData["ca-bundle.pem"] != "${schema.spec.kedgeActionsCABundle}" {
+		t.Errorf("CA ConfigMap data = %v, want schema-resolved public bundle", caData)
+	}
+	caVolumeFound := false
+	for _, raw := range volumes {
+		volume, _ := raw.(map[string]any)
+		if volume["name"] != devActionsCABundleVolumeName {
+			continue
+		}
+		caVolumeFound = true
+		configMap, _ := volume["configMap"].(map[string]any)
+		if configMap["optional"] != nil || configMap["name"] != "${backendDevCABundle.metadata.name}" {
+			t.Errorf("CA volume configMap = %v, want stable required-object reference", configMap)
+		}
+	}
+	if !caVolumeFound {
+		t.Fatal("CA ConfigMap volume missing")
 	}
 	if testMount(t, coordinator, "/tmp")["name"] == testMount(t, app, "/tmp")["name"] || testMount(t, app, "/tmp")["name"] == testMount(t, executor, "/tmp")["name"] {
 		t.Error("tmp volume is shared between containers")
@@ -538,6 +707,26 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	selector, _, _ := nestedMap(serviceSpec, "selector")
 	if selector["app"] != "${schema.spec.name}-backend" {
 		t.Errorf("control Service selector = %v", selector)
+	}
+}
+
+func TestDevOverlayPreservesProductionNodeModulesMount(t *testing.T) {
+	tmpl := devTestTemplate(t)
+	var backend map[string]any
+	if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &backend); err != nil {
+		t.Fatal(err)
+	}
+	resources, _ := backend["resources"].([]any)
+	deployment, _ := resources[1].(map[string]any)
+	template, _ := deployment["template"].(map[string]any)
+	podSpec, _, _ := nestedMap(template, "spec", "template", "spec")
+	container, _ := podSpec["containers"].([]any)
+	app, _ := container[0].(map[string]any)
+	app["volumeMounts"] = []any{map[string]any{"name": "project-node-modules", "mountPath": "/node_modules"}}
+	raw, _ := json.Marshal(backend)
+	tmpl.Spec.BackendConfig.Raw = raw
+	if _, err := buildRGD(tmpl, devTestTokens()); err != nil {
+		t.Fatalf("buildRGD rejected a template-owned /node_modules mount: %v", err)
 	}
 }
 

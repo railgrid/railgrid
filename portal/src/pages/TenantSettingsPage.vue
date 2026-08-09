@@ -601,7 +601,7 @@ function fmtDate(s?: string | null): string {
       <header class="mb-5 flex items-start justify-between gap-4">
         <div>
           <h1 class="flex items-center gap-2 text-xl font-semibold text-text-primary">
-            <Building2 class="h-5 w-5 text-accent" :stroke-width="2" />
+            <Building2 class="h-5 w-5 text-accent" :stroke-width="1.75" />
             Tenant settings
           </h1>
           <p class="mt-1 text-sm text-text-muted">
@@ -674,7 +674,7 @@ function fmtDate(s?: string | null): string {
         v-if="actionError"
         class="mb-3 flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-sm text-danger"
       >
-        <AlertCircle class="mt-0.5 h-4 w-4 flex-shrink-0" :stroke-width="2" />
+        <AlertCircle class="mt-0.5 h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
         <span class="flex-1">{{ actionError }}</span>
         <button class="text-danger/70 hover:text-danger" @click="actionError = null">
           <X class="h-3.5 w-3.5" />
@@ -684,7 +684,7 @@ function fmtDate(s?: string | null): string {
         v-if="actionInfo"
         class="mb-3 flex items-start gap-2 rounded-lg border border-success/30 bg-success-subtle px-3 py-2 text-sm text-success"
       >
-        <Check class="mt-0.5 h-4 w-4 flex-shrink-0" :stroke-width="2" />
+        <Check class="mt-0.5 h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
         <span class="flex-1">{{ actionInfo }}</span>
         <button class="text-success/70 hover:text-success" @click="actionInfo = null">
           <X class="h-3.5 w-3.5" />
@@ -1094,7 +1094,7 @@ function fmtDate(s?: string | null): string {
       <section v-if="tab === 'sas'" class="space-y-5">
         <div class="rounded-xl border border-border-subtle bg-surface-raised/60 p-5">
           <h2 class="mb-3 flex items-center gap-2 text-sm font-semibold text-text-primary">
-            <KeyRound class="h-4 w-4 text-accent" :stroke-width="2" /> Create service account
+            <KeyRound class="h-4 w-4 text-accent" :stroke-width="1.75" /> Create service account
           </h2>
           <p class="mb-3 text-[12px] text-text-muted">
             Service accounts are scoped to the active workspace and authenticate via short-lived
@@ -1139,7 +1139,7 @@ function fmtDate(s?: string | null): string {
           <ul v-else class="divide-y divide-border-default/30">
             <li v-for="s in sas" :key="s.uuid" class="grid grid-cols-[auto_1fr_auto] items-center gap-3 py-2">
               <div class="flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay/60">
-                <ShieldCheck class="h-4 w-4 text-accent" :stroke-width="2" />
+                <ShieldCheck class="h-4 w-4 text-accent" :stroke-width="1.75" />
               </div>
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
@@ -1195,7 +1195,7 @@ function fmtDate(s?: string | null): string {
         <div class="mb-3 flex items-start justify-between gap-3">
           <div>
             <h3 class="flex items-center gap-2 text-base font-semibold text-text-primary">
-              <KeyRound class="h-4 w-4 text-accent" :stroke-width="2" />
+              <KeyRound class="h-4 w-4 text-accent" :stroke-width="1.75" />
               Token for "{{ issuedTokenSA }}"
             </h3>
             <p class="mt-1 text-[12px] text-text-muted">

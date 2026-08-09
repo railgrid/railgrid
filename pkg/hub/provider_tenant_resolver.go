@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +36,7 @@ import (
 
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/providers"
+	"github.com/faroshq/faros-kedge/pkg/hub/serviceaccounts"
 	kcpproxy "github.com/faroshq/faros-kedge/pkg/server/proxy"
 )
 
@@ -67,6 +69,13 @@ const workspacePathRoot = "root:kedge:tenants"
 type kcpTenantResolver struct {
 	kcpProxy *kcpproxy.KCPProxy
 	client   *kedgeclient.Client
+	// identifyUser is kept as a narrow seam for tests. Production wiring uses
+	// kcpProxy.IdentifyUser; workload ServiceAccount identities are then
+	// re-verified online in the selected child workspace below.
+	identifyUser func(*http.Request) (string, error)
+	// workloadConfig enables online verification of Kedge-audience workload
+	// tokens in the concrete tenant selected by X-Kedge-Org/Workspace.
+	workloadConfig serviceaccounts.WorkspaceConfigBuilder
 
 	mu  sync.RWMutex
 	hot map[string]kcpResolverEntry
@@ -86,11 +95,17 @@ const kcpResolverTTL = 5 * time.Minute
 // for unauthenticated requests; the backend proxy maps that to
 // "forward without injecting X-Kedge-*" so anonymous /healthz reads
 // keep working.
-func newKCPTenantResolver(kcpProxy *kcpproxy.KCPProxy, client *kedgeclient.Client) providers.TenantResolver {
+func newKCPTenantResolver(kcpProxy *kcpproxy.KCPProxy, client *kedgeclient.Client, workloadConfig ...serviceaccounts.WorkspaceConfigBuilder) providers.TenantResolver {
 	r := &kcpTenantResolver{
 		kcpProxy: kcpProxy,
 		client:   client,
 		hot:      make(map[string]kcpResolverEntry),
+	}
+	if kcpProxy != nil {
+		r.identifyUser = kcpProxy.IdentifyUser
+	}
+	if len(workloadConfig) > 0 {
+		r.workloadConfig = workloadConfig[0]
 	}
 	return providers.TenantResolverFunc(r.resolve)
 }
@@ -102,9 +117,43 @@ func newKCPTenantResolver(kcpProxy *kcpproxy.KCPProxy, client *kedgeclient.Clien
 var ErrAnonymousProviderCaller = errors.New("anonymous caller")
 
 func (r *kcpTenantResolver) resolve(req *http.Request) (string, string, error) {
-	user, err := r.kcpProxy.IdentifyUser(req)
+	if r == nil || req == nil {
+		return "", "", errors.New("tenant resolver unavailable")
+	}
+	identifyUser := r.identifyUser
+	if identifyUser == nil && r.kcpProxy != nil {
+		identifyUser = r.kcpProxy.IdentifyUser
+	}
+	if identifyUser == nil {
+		return "", "", errors.New("tenant identity resolver unavailable")
+	}
+	user, err := identifyUser(req)
+	if err == nil && isServiceAccountIdentity(user) {
+		// Never pass an SA-shaped identity through human User/Membership
+		// resolution. It must be validated as a workload token against the
+		// selected tenant, or the request is denied.
+		workloadUser, workloadTenant, workloadErr := r.resolveWorkloadServiceAccount(req)
+		if workloadErr != nil {
+			return "", "", workloadErr
+		}
+		return workloadUser, workloadTenant, nil
+	}
 	if err != nil {
+		// KCPProxy's identity path intentionally accepts human/OIDC users, not
+		// ServiceAccount tokens. Workload capabilities are accepted only via
+		// this explicit online TokenReview path and concrete tenant headers.
+		workloadUser, workloadTenant, workloadErr := r.resolveWorkloadServiceAccount(req)
+		if workloadErr == nil {
+			return workloadUser, workloadTenant, nil
+		}
 		if errors.Is(err, kcpproxy.ErrIdentifyNoBearer) {
+			// A request with any supplied Authorization value is not an
+			// anonymous health probe. If the normal identity path cannot
+			// recognize it, the workload verifier's failure must be surfaced
+			// rather than forwarding an unauthenticated request to a provider.
+			if strings.TrimSpace(req.Header.Get("Authorization")) != "" {
+				return "", "", workloadErr
+			}
 			return "", "", ErrAnonymousProviderCaller
 		}
 		return "", "", err
@@ -155,6 +204,36 @@ func (r *kcpTenantResolver) resolve(req *http.Request) (string, string, error) {
 	r.hot[user] = kcpResolverEntry{tenantPath: tenantPath, expiresAt: now.Add(kcpResolverTTL)}
 	r.mu.Unlock()
 	return user, tenantPath, nil
+}
+
+func isServiceAccountIdentity(user string) bool {
+	return strings.HasPrefix(strings.TrimSpace(user), "system:serviceaccount:")
+}
+
+func (r *kcpTenantResolver) resolveWorkloadServiceAccount(req *http.Request) (string, string, error) {
+	if r == nil || r.workloadConfig == nil || req == nil {
+		return "", "", errors.New("workload identity resolver unavailable")
+	}
+	orgUUID := strings.TrimSpace(req.Header.Get(headerKedgeOrg))
+	wsUUID := strings.TrimSpace(req.Header.Get(headerKedgeWorkspace))
+	if orgUUID == "" || wsUUID == "" || strings.ContainsAny(orgUUID+wsUUID, ":\r\n") {
+		return "", "", errors.New("workload identity requires a concrete tenant selection")
+	}
+	authHeader := strings.TrimSpace(req.Header.Get("Authorization"))
+	if len(authHeader) <= len("Bearer ") || !strings.EqualFold(authHeader[:len("Bearer ")], "Bearer ") {
+		return "", "", errors.New("workload identity requires a bearer token")
+	}
+	token := strings.TrimSpace(authHeader[len("Bearer "):])
+	if token == "" || strings.ContainsAny(token, "\r\n") {
+		return "", "", errors.New("workload identity bearer is malformed")
+	}
+	tenantPath := workspacePathRoot + ":" + orgUUID + ":" + wsUUID
+	cfg := r.workloadConfig.ChildWorkspaceConfig(orgUUID, wsUUID)
+	username, err := serviceaccounts.VerifyWorkloadServiceAccount(req.Context(), cfg, token, tenantPath)
+	if err != nil {
+		return "", "", err
+	}
+	return username, tenantPath, nil
 }
 
 // resolveFromHeaders honors the portal's sidebar-driven X-Kedge-Org

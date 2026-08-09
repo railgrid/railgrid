@@ -51,9 +51,9 @@ sync_group() {
 sync_group "$TS_SRC" TS_PORTALS TS_FILES
 sync_group "$VUE_SRC" VUE_PORTALS VUE_FILES
 
-# vibe-studio's vanilla-TS portal only consumes tenant.ts (no icons/modal).
+# vibe-studio's vanilla-TS portal consumes tenant.ts + icons.ts (no modal).
 VIBE_PORTALS=("providers/vibe-studio/portal")
-VIBE_FILES=(tenant.ts)
+VIBE_FILES=(tenant.ts icons.ts)
 sync_group "$TS_SRC" VIBE_PORTALS VIBE_FILES
 
 # tenant.ts and toast.ts are plain TS (no framework) and shared by portals of

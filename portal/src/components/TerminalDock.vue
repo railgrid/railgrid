@@ -329,7 +329,7 @@ onUnmounted(() => {
           <TerminalSquare
             class="h-3 w-3 shrink-0"
             :class="session.id === store.activeSessionId ? 'text-accent' : 'text-text-muted'"
-            :stroke-width="1.75"
+            :stroke-width="2"
           />
           <span class="min-w-0 flex-1 truncate font-mono text-[11px]">{{ session.displayName }}</span>
           <button

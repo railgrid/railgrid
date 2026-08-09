@@ -405,10 +405,7 @@ type currentUserHTTPError struct {
 }
 
 func (e currentUserHTTPError) Error() string {
-	if e.body == "" {
-		return "databricks credential validation failed: " + e.status
-	}
-	return fmt.Sprintf("databricks credential validation failed: %s: %s", e.status, e.body)
+	return "databricks credential validation failed: " + e.status
 }
 
 func (e currentUserHTTPError) SafeStatusMessage() string {
@@ -421,10 +418,7 @@ type warehouseHTTPError struct {
 }
 
 func (e warehouseHTTPError) Error() string {
-	if e.body == "" {
-		return "databricks warehouse validation failed: " + e.status
-	}
-	return fmt.Sprintf("databricks warehouse validation failed: %s: %s", e.status, e.body)
+	return "databricks warehouse validation failed: " + e.status
 }
 
 func (e warehouseHTTPError) SafeStatusMessage() string {

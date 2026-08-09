@@ -232,7 +232,7 @@ func (m *projectEinoAssistantFilesystemTelemetry) WrapInvokableToolCall(
 		if endpointErr != nil {
 			safeError := projectEinoAssistantSafeErrorText(endpointErr)
 			if m.runState != nil {
-				m.runState.RecordCompletedAction(name, canonicalArguments, false)
+				m.runState.RecordCompletedAction(name, canonicalArguments)
 			}
 			m.emitToolCall(projectToolCallStreamEvent{
 				ID:        callID,
@@ -246,7 +246,7 @@ func (m *projectEinoAssistantFilesystemTelemetry) WrapInvokableToolCall(
 		}
 		if modelFailure {
 			if m.runState != nil {
-				m.runState.RecordCompletedAction(name, canonicalArguments, false)
+				m.runState.RecordCompletedAction(name, canonicalArguments)
 			}
 			m.emitToolCall(projectToolCallStreamEvent{
 				ID:        callID,
@@ -259,7 +259,7 @@ func (m *projectEinoAssistantFilesystemTelemetry) WrapInvokableToolCall(
 			return result, nil
 		}
 		if m.runState != nil {
-			freshRead := m.runState.RecordCompletedReadResult(name, canonicalArguments, result)
+			m.runState.RecordCompletedReadResult(name, canonicalArguments, result)
 			if projectToolBaseName(name) == projectToolReadFile {
 				var readEvidence struct {
 					Path     string `json:"path"`
@@ -280,7 +280,7 @@ func (m *projectEinoAssistantFilesystemTelemetry) WrapInvokableToolCall(
 					m.runState.RecordReadFileRange(readPath, first, last)
 				}
 			}
-			m.runState.RecordCompletedAction(name, canonicalArguments, freshRead)
+			m.runState.RecordCompletedAction(name, canonicalArguments)
 		}
 
 		m.emitToolCall(projectToolCallStreamEvent{

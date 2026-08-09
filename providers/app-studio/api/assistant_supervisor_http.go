@@ -996,7 +996,7 @@ func projectAssistantRunErrorJSON(err error, errorInfo string) json.RawMessage {
 	if err == nil {
 		return nil
 	}
-	message := strings.TrimSpace(projectEinoAssistantSafeErrorText(err))
+	message := projectAssistantRunErrorMessage(err)
 	if message == "" {
 		message = "The assistant provider could not complete the response."
 	}
@@ -1007,12 +1007,30 @@ func projectAssistantRunErrorJSON(err error, errorInfo string) json.RawMessage {
 	return raw
 }
 
+// projectAssistantRunErrorMessage keeps Eino's execution wrapper out of the
+// public terminal contract for bounded assistant exits. The typed cause is
+// already safe and actionable; exposing the NodeRunError framing makes a
+// deliberate no-progress stop look like an infrastructure or sync failure.
+func projectAssistantRunErrorMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	var noProgress *projectEinoAssistantNoProgressError
+	if errors.As(err, &noProgress) {
+		return strings.TrimSpace(noProgress.Error())
+	}
+	return strings.TrimSpace(projectEinoAssistantSafeErrorText(err))
+}
+
 func projectAssistantRunErrorInfo(err error) string {
 	if err == nil {
 		return ""
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, adk.ErrStreamCanceled) {
 		return "interrupted"
+	}
+	if projectEinoAssistantNoProgressExceeded(err) {
+		return "no_progress"
 	}
 	if projectEinoAssistantContextWindowExceeded(err) {
 		return "context_window_exceeded"

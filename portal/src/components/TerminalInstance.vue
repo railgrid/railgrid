@@ -217,7 +217,7 @@ defineExpose({ resize, focusTerminal, clearTerminal, reconnect })
           title="Reconnect"
           @click="reconnect"
         >
-          <RotateCw class="h-3 w-3" :stroke-width="1.75" />
+          <RotateCw class="h-3 w-3" :stroke-width="2" />
         </button>
         <button
           class="flex h-5 w-5 items-center justify-center rounded text-text-muted transition-colors hover:bg-surface-hover hover:text-accent disabled:opacity-30"
@@ -225,7 +225,7 @@ defineExpose({ resize, focusTerminal, clearTerminal, reconnect })
           :disabled="connectionStatus !== 'connected'"
           @click="clearTerminal"
         >
-          <Eraser class="h-3 w-3" :stroke-width="1.75" />
+          <Eraser class="h-3 w-3" :stroke-width="2" />
         </button>
       </div>
     </div>

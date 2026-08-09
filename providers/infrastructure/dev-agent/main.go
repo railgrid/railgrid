@@ -20,13 +20,14 @@ You may obtain a copy of the License at
 // The public control contract remains:
 //
 //	GET  /healthz  liveness; no auth.
+//	GET  /readyz   coordinator readiness; no auth.
 //	POST /sync     write/delete workspace files; restart: ""|"auto"|"always".
 //	POST /restart  stop + start the dev process.
 //	POST /env      set non-secret env for the dev process; optional restart.
 //	GET  /logs     current dev-process attempt output (text/plain).
 //	GET  /status   current child-process and declared-port readiness (JSON).
 //
-// Every endpoint except /healthz requires X-Sandbox-Control-Token (constant-
+// Every endpoint except /healthz and /readyz requires X-Sandbox-Control-Token (constant-
 // time compared against KEDGE_DEV_CONTROL_TOKEN, read once then cleared).
 // File writes are confined to the workdir via os.Root.
 //
@@ -106,6 +107,23 @@ type agentConfig struct {
 	StateDir             string
 	RuntimeURL           string
 	ExecutorURL          string
+	// Provider Actions identity exchange. The bootstrap token is read from a
+	// projected file only in coordinator mode; the app receives only the
+	// refreshed token file and non-secret context.
+	ActionsBootstrapTokenFile string
+	ActionsTokenFile          string
+	ActionsExchangeURL        string
+	ActionsBaseURL            string
+	ActionsProject            string
+	ActionsProjectUID         string
+	ActionsEnvironment        string
+	ActionsInstance           string
+	ActionsTenantPath         string
+	ActionsOrg                string
+	ActionsWorkspace          string
+	ActionsCAFile             string
+	actionsTokenState         *actionsTokenState
+	actionsHTTPClient         *http.Client
 }
 
 func main() {
@@ -194,6 +212,9 @@ func runCoordinator(ctx context.Context, cfg *agentConfig) error {
 	if strings.TrimSpace(cfg.StateDir) == "" {
 		return errors.New("KEDGE_DEV_STATE_DIR is required in coordinator mode")
 	}
+	if cfg.actionsTokenState == nil {
+		cfg.actionsTokenState = newActionsTokenState(strings.TrimSpace(cfg.ActionsExchangeURL) != "")
+	}
 	mutationMu := &sync.Mutex{}
 	runtime := &httpRuntimeClient{baseURL: cfg.RuntimeURL, client: &http.Client{Timeout: 3 * time.Minute}}
 	control := newCoordinatorServer(cfg, runtime, mutationMu)
@@ -201,6 +222,9 @@ func runCoordinator(ctx context.Context, cfg *agentConfig) error {
 		&httpExecDispatcher{url: strings.TrimRight(cfg.ExecutorURL, "/") + "/internal/exec", client: &http.Client{}}, mutationMu)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(cfg.ActionsExchangeURL) != "" {
+		go runActionsTokenRefreshLoop(ctx, cfg)
 	}
 	controlSrv := &http.Server{Addr: defaultControlAddr, Handler: control, ReadHeaderTimeout: 10 * time.Second}
 	execSrv := &http.Server{Addr: defaultExecAddr, Handler: execCoordinator, ReadHeaderTimeout: 10 * time.Second}
@@ -252,9 +276,11 @@ func serveUntilDone(ctx context.Context, srv *http.Server, cleanup func()) error
 }
 
 // installSelf atomically installs the agent executable, the platform-owned
-// preview-console Vite plugin, and (when configured) its trusted public JWKS
-// into dir, the shared emptyDir the dev container mounts at /kedge/bin. Plain
-// copies are used because the injector image may be scratch.
+// preview-console Vite plugin, and its optional trusted public JWKS into dir,
+// the shared emptyDir the dev container mounts at /kedge/bin. Plain copies are
+// used because the injector image may be scratch. Application dependencies are
+// deliberately not projected here: generated applications install their
+// declared package aliases through the component toolchain.
 //
 // Missing or invalid verification configuration disables the optional browser
 // bridge without blocking the application. Any stale JWKS is removed so an old
@@ -431,16 +457,28 @@ func configFromEnv() (*agentConfig, error) {
 
 	insecure := strings.TrimSpace(os.Getenv("KEDGE_DEV_ALLOW_INSECURE_CONTROL"))
 	cfg := &agentConfig{
-		WorkDir:              workdir,
-		StartCommand:         strings.TrimSpace(os.Getenv("KEDGE_DEV_START_COMMAND")),
-		Port:                 strings.TrimSpace(os.Getenv("KEDGE_DEV_PORT")),
-		ControlToken:         token,
-		ReloadStrategy:       strategy,
-		ReloadRules:          rules,
-		AllowInsecureControl: strings.EqualFold(insecure, "true"),
-		StateDir:             strings.TrimSpace(os.Getenv("KEDGE_DEV_STATE_DIR")),
-		RuntimeURL:           strings.TrimSpace(os.Getenv("KEDGE_DEV_RUNTIME_URL")),
-		ExecutorURL:          strings.TrimSpace(os.Getenv("KEDGE_DEV_EXECUTOR_URL")),
+		WorkDir:                   workdir,
+		StartCommand:              strings.TrimSpace(os.Getenv("KEDGE_DEV_START_COMMAND")),
+		Port:                      strings.TrimSpace(os.Getenv("KEDGE_DEV_PORT")),
+		ControlToken:              token,
+		ReloadStrategy:            strategy,
+		ReloadRules:               rules,
+		AllowInsecureControl:      strings.EqualFold(insecure, "true"),
+		StateDir:                  strings.TrimSpace(os.Getenv("KEDGE_DEV_STATE_DIR")),
+		RuntimeURL:                strings.TrimSpace(os.Getenv("KEDGE_DEV_RUNTIME_URL")),
+		ExecutorURL:               strings.TrimSpace(os.Getenv("KEDGE_DEV_EXECUTOR_URL")),
+		ActionsBootstrapTokenFile: envOrDefault("KEDGE_ACTIONS_BOOTSTRAP_TOKEN_FILE", "/var/run/secrets/kedge/actions-bootstrap/token"),
+		ActionsTokenFile:          envOrDefault("KEDGE_ACTIONS_TOKEN_FILE", "/var/run/secrets/kedge/actions/token"),
+		ActionsExchangeURL:        strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_EXCHANGE_URL")),
+		ActionsBaseURL:            strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_BASE_URL")),
+		ActionsProject:            strings.TrimSpace(os.Getenv("KEDGE_PROJECT")),
+		ActionsProjectUID:         strings.TrimSpace(os.Getenv("KEDGE_PROJECT_UID")),
+		ActionsEnvironment:        strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_ENVIRONMENT")),
+		ActionsInstance:           strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_INSTANCE")),
+		ActionsTenantPath:         strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_TENANT_PATH")),
+		ActionsOrg:                strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_ORG")),
+		ActionsWorkspace:          strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_WORKSPACE")),
+		ActionsCAFile:             strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_CA_FILE")),
 	}
 	if cfg.RuntimeURL == "" {
 		cfg.RuntimeURL = "http://" + defaultRuntimeAddr
@@ -449,6 +487,13 @@ func configFromEnv() (*agentConfig, error) {
 		cfg.ExecutorURL = "http://" + defaultExecutorAddr
 	}
 	return cfg, nil
+}
+
+func envOrDefault(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func reloadRulesFromEnv(raw string) ([]reloadRule, error) {
@@ -551,17 +596,18 @@ type envResponse struct {
 }
 
 type agentServer struct {
-	mux        *http.ServeMux
-	config     *agentConfig
-	supervisor *supervisor
-	logs       *ringLog
-	runtime    runtimeOperations
-	mutationMu *sync.Mutex
+	mux          *http.ServeMux
+	config       *agentConfig
+	actionsState *actionsTokenState
+	supervisor   *supervisor
+	logs         *ringLog
+	runtime      runtimeOperations
+	mutationMu   *sync.Mutex
 }
 
 func newAgentServer(ctx context.Context, cfg *agentConfig) *agentServer {
 	logs := newRingLog(500)
-	s := &agentServer{config: cfg, logs: logs, mutationMu: &sync.Mutex{}}
+	s := &agentServer{config: cfg, actionsState: ensureActionsTokenState(cfg), logs: logs, mutationMu: &sync.Mutex{}}
 	s.supervisor = newSupervisor(ctx, cfg, logs)
 	s.runtime = &localRuntime{supervisor: s.supervisor, logs: logs}
 	s.initMux()
@@ -569,7 +615,7 @@ func newAgentServer(ctx context.Context, cfg *agentConfig) *agentServer {
 }
 
 func newCoordinatorServer(cfg *agentConfig, runtime runtimeOperations, mutationMu *sync.Mutex) *agentServer {
-	s := &agentServer{config: cfg, runtime: runtime, mutationMu: mutationMu}
+	s := &agentServer{config: cfg, actionsState: ensureActionsTokenState(cfg), runtime: runtime, mutationMu: mutationMu}
 	s.initMux()
 	return s
 }
@@ -577,6 +623,7 @@ func newCoordinatorServer(cfg *agentConfig, runtime runtimeOperations, mutationM
 func (s *agentServer) initMux() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/readyz", s.handleReadyz)
 	mux.HandleFunc("/sync", s.handleSync)
 	mux.HandleFunc("/restart", s.handleRestart)
 	mux.HandleFunc("/env", s.handleEnv)
@@ -591,6 +638,26 @@ func (s *agentServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *agentServer) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *agentServer) handleReadyz(w http.ResponseWriter, _ *http.Request) {
+	status := s.actionsState.snapshot(time.Now())
+	response := map[string]any{
+		"status":         "ok",
+		"actionsEnabled": status.Enabled,
+		"actionsReady":   status.Ready,
+	}
+	if !status.Ready {
+		response["status"] = "not_ready"
+	}
+	if !status.ExpiresAt.IsZero() {
+		response["actionsTokenExpiresAt"] = status.ExpiresAt.UTC()
+	}
+	if !status.Ready {
+		writeJSON(w, http.StatusServiceUnavailable, response)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
@@ -710,43 +777,11 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 	deleted := make([]string, 0, len(req.DeletePaths))
 	if authoritative {
-		candidates := make(map[string]struct{}, len(previous.Files)+len(cleanDeletePaths))
-		for _, raw := range previous.Files {
-			candidates[raw] = struct{}{}
-		}
-		for _, raw := range cleanDeletePaths {
-			candidates[raw] = struct{}{}
-		}
-		paths := make([]string, 0, len(candidates))
-		for raw := range candidates {
-			paths = append(paths, raw)
-		}
-		slices.Sort(paths)
-		managed := make(map[string]struct{}, len(previous.Files))
-		for _, raw := range previous.Files {
-			managed[raw] = struct{}{}
-		}
-		for _, raw := range paths {
-			if _, keep := incomingPaths[raw]; keep {
-				continue
-			}
-			// When a valid prior manifest exists, explicit deletion hints are
-			// advisory and may remove only paths that manifest managed. If the
-			// manifest was missing/corrupt, the full sync is still authoritative
-			// for writes, and FileStore's explicit hints allow safe convergence.
-			if found {
-				if _, ok := managed[raw]; !ok {
-					continue
-				}
-			}
-			removed, err := removeManagedWorkspaceFile(root, raw)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("delete %q: %v", raw, err), http.StatusInternalServerError)
-				return
-			}
-			if removed {
-				deleted = append(deleted, raw)
-			}
+		var err error
+		deleted, err = deleteAuthoritativeWorkspaceCandidates(root, previous, found, cleanDeletePaths, incomingPaths)
+		if err != nil {
+			http.Error(w, "delete authoritative workspace files: "+err.Error(), http.StatusInternalServerError)
+			return
 		}
 	} else {
 		for _, clean := range cleanDeletePaths {
@@ -759,13 +794,14 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := syncResponse{Phase: "Synced", Changed: changed, Deleted: deleted, SourceRevision: req.SourceRevision, SourceDigest: req.SourceDigest}
+	var appliedManifest workspaceManifest
 	if authoritative {
-		manifest := workspaceManifest{SourceRevision: req.SourceRevision, SourceDigest: req.SourceDigest, Files: make([]string, 0, len(incomingPaths))}
+		appliedManifest = workspaceManifest{SourceRevision: req.SourceRevision, SourceDigest: req.SourceDigest, Files: make([]string, 0, len(incomingPaths))}
 		for clean := range incomingPaths {
-			manifest.Files = append(manifest.Files, clean)
+			appliedManifest.Files = append(appliedManifest.Files, clean)
 		}
-		slices.Sort(manifest.Files)
-		if err := writeWorkspaceManifest(root, manifest); err != nil {
+		slices.Sort(appliedManifest.Files)
+		if err := writeWorkspaceManifest(root, appliedManifest); err != nil {
 			http.Error(w, "write workspace manifest: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -782,10 +818,35 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 	if restartNeeded && len(ruleCommands) > 0 {
 		resp.ReloadRuns = ruleCommands
-		if err := s.runtime.Reload(r.Context(), ruleCommands); err != nil {
+		reloadErr := s.runtime.Reload(r.Context(), ruleCommands)
+		if authoritative {
+			// Reload hooks are allowed to install dependencies, but they must not
+			// become a second source of truth for managed files. A hook can mutate
+			// package-lock.json (or fail after doing so), so restore the exact
+			// authoritative bundle and verify the original manifest before any
+			// restart or response is accepted.
+			if err := restoreAuthoritativeWorkspaceFiles(root, req.Files); err != nil {
+				http.Error(w, "restore authoritative workspace after reload: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := writeWorkspaceManifest(root, appliedManifest); err != nil {
+				http.Error(w, "restore workspace manifest after reload: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if _, err := deleteAuthoritativeWorkspaceCandidates(root, previous, found, cleanDeletePaths, incomingPaths); err != nil {
+				http.Error(w, "re-delete authoritative workspace files after reload: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if err := verifyWorkspaceManifest(root, appliedManifest); err != nil {
+				http.Error(w, "workspace manifest verification after reload: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if reloadErr != nil {
 			// Keep the sync result; surface the reload failure for the caller
-			// (the dev process keeps running against the old dependencies).
-			resp.ReloadError = err.Error()
+			// (the dev process keeps running against the old dependencies). The
+			// authoritative source has already been restored above.
+			resp.ReloadError = reloadErr.Error()
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}
@@ -1044,6 +1105,84 @@ func workspaceFileContentChanged(root *os.Root, clean string, next []byte) bool 
 	return err != nil || !bytes.Equal(current, next)
 }
 
+// restoreAuthoritativeWorkspaceFiles repairs managed source files after a
+// reload hook. Hooks may legitimately create runtime output, but they must not
+// mutate the submitted source bundle or make the manifest claim hook output as
+// the current source digest.
+func restoreAuthoritativeWorkspaceFiles(root *os.Root, files []syncFile) error {
+	if _, err := validateSyncFiles(files); err != nil {
+		return err
+	}
+	for _, file := range files {
+		clean, err := cleanWorkspacePath(file.Path)
+		if err != nil {
+			return err
+		}
+		if err := validateManagedWorkspacePath(clean); err != nil {
+			return err
+		}
+		if err := ensureExecPathNoSymlink(root, clean, false); err != nil {
+			return err
+		}
+		if err := ensureExecPathNoSymlink(root, clean, true); err != nil {
+			return err
+		}
+		content := []byte(file.Content)
+		if workspaceFileContentChanged(root, clean, content) {
+			if err := writeWorkspaceFile(root, clean, content); err != nil {
+				return fmt.Errorf("restore %q: %w", clean, err)
+			}
+		}
+	}
+	return nil
+}
+
+// deleteAuthoritativeWorkspaceCandidates removes only files that the previous
+// manifest managed or that the caller explicitly asked to delete. Runtime-only
+// files are never swept. The same bounded set is replayed after reload hooks so
+// a hook cannot recreate a source file that the authoritative sync removed.
+func deleteAuthoritativeWorkspaceCandidates(root *os.Root, previous workspaceManifest, found bool, deletePaths []string, incoming map[string]struct{}) ([]string, error) {
+	candidates := make(map[string]struct{}, len(previous.Files)+len(deletePaths))
+	for _, raw := range previous.Files {
+		candidates[raw] = struct{}{}
+	}
+	for _, raw := range deletePaths {
+		candidates[raw] = struct{}{}
+	}
+	paths := make([]string, 0, len(candidates))
+	for raw := range candidates {
+		paths = append(paths, raw)
+	}
+	slices.Sort(paths)
+	managed := make(map[string]struct{}, len(previous.Files))
+	for _, raw := range previous.Files {
+		managed[raw] = struct{}{}
+	}
+	deleted := make([]string, 0, len(paths))
+	for _, raw := range paths {
+		if _, keep := incoming[raw]; keep {
+			continue
+		}
+		// When a valid prior manifest exists, explicit deletion hints are
+		// advisory and may remove only paths that manifest managed. If the
+		// manifest was missing/corrupt, explicit hints still allow safe
+		// convergence without broad deletion of unknown runtime files.
+		if found {
+			if _, ok := managed[raw]; !ok {
+				continue
+			}
+		}
+		removed, err := removeManagedWorkspaceFile(root, raw)
+		if err != nil {
+			return nil, fmt.Errorf("delete %q: %w", raw, err)
+		}
+		if removed {
+			deleted = append(deleted, raw)
+		}
+	}
+	return deleted, nil
+}
+
 // isStartupAffectingPath is the legacy node-shaped heuristic, used only when
 // the template declares no reload rules.
 func isStartupAffectingPath(clean string) bool {
@@ -1118,6 +1257,9 @@ type processStatusResponse struct {
 	Running                 bool   `json:"running"`
 	Port                    string `json:"port,omitempty"`
 	PortReachable           bool   `json:"portReachable,omitempty"`
+	ActionsEnabled          bool   `json:"actionsEnabled"`
+	ActionsReady            bool   `json:"actionsReady"`
+	ActionsTokenExpiresAt   int64  `json:"actionsTokenExpiresAtUnixMilli,omitempty"`
 }
 
 type runtimeOperations interface {
@@ -1360,6 +1502,12 @@ func (s *agentServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
+	}
+	actions := s.actionsState.snapshot(time.Now())
+	status.ActionsEnabled = actions.Enabled
+	status.ActionsReady = actions.Ready
+	if !actions.ExpiresAt.IsZero() {
+		status.ActionsTokenExpiresAt = actions.ExpiresAt.UnixMilli()
 	}
 	writeJSON(w, http.StatusOK, status)
 }

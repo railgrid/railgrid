@@ -253,6 +253,26 @@ const (
 	// KedgeModeDevelopment hot-swaps the declared development components to
 	// platform-managed dev images with the dev agent.
 	KedgeModeDevelopment = "development"
+
+	// Provider Actions fields are reserved instance spec properties used by the
+	// App Studio development runtime. The Template controller injects them into
+	// tenant-facing per-template CRDs/APIResourceSchemas, while App Studio owns
+	// their values and the dev overlay supplies empty defaults when no action
+	// grant is present. Templates MUST NOT declare these fields in spec.schema.
+	KedgeActionsExchangeURLField = "kedgeActionsExchangeURL"
+	KedgeActionsBaseURLField     = "kedgeActionsBaseURL"
+	KedgeActionsTenantPathField  = "kedgeActionsTenantPath"
+	KedgeActionsOrgField         = "kedgeActionsOrg"
+	KedgeActionsWorkspaceField   = "kedgeActionsWorkspace"
+	KedgeActionsProjectField     = "kedgeActionsProject"
+	KedgeActionsProjectUIDField  = "kedgeActionsProjectUID"
+	KedgeActionsEnvironmentField = "kedgeActionsEnvironment"
+	KedgeActionsInstanceField    = "kedgeActionsInstance"
+	// KedgeActionsCABundleField carries an optional public PEM CA bundle from
+	// App Studio into development-mode runtime pods. It is intentionally a
+	// reserved instance field: templates must not author trust material, and
+	// production-mode instances never receive it in their tenant schema.
+	KedgeActionsCABundleField = "kedgeActionsCABundle"
 )
 
 // TemplateDevelopment is the development-mode contract for a template's

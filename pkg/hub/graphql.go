@@ -77,25 +77,7 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 	}
 
 	// ── Listener ─────────────────────────────────────────────────────────────
-	listenerOpts := listeneroptions.NewOptions()
-	listenerOpts.Provider = "kcp"
-	listenerOpts.SchemaHandler = "grpc"
-	listenerOpts.Common.Kubeconfig = kubeconfigPath
-	listenerOpts.GRPCListenAddr = grpcAddr
-	// The default anchor (`namespaces.v1` / name=='default') doesn't work
-	// against a kcp APIExport virtual workspace — the VW doesn't surface the
-	// core/v1 group, so the resource controller's watch never starts. Use the
-	// APIBinding for this APIExport as the anchor instead: every consumer has
-	// exactly one such binding, so we reconcile once per consumer cluster.
-	listenerOpts.ResourceGVR = "apibindings.v1alpha2.apis.kcp.io"
-	listenerOpts.AnchorResource = fmt.Sprintf("object.spec.reference.export.name == %q", opts.GraphQLAPIExportSliceName)
-	listenerOpts.ProviderKcp = &kcplisteneroptions.Options{
-		ExtraOptions: kcplisteneroptions.ExtraOptions{
-			APIExportEndpointSliceName:           opts.GraphQLAPIExportSliceName,
-			APIExportEndpointSliceLogicalCluster: opts.GraphQLAPIExportLogicalCluster,
-			WorkspaceSchemaKubeconfigOverride:    kubeconfigPath,
-		},
-	}
+	listenerOpts := newEmbeddedGraphQLListenerOptions(opts, kubeconfigPath, grpcAddr)
 
 	listenerCompleted, err := listenerOpts.Complete()
 	if err != nil {
@@ -221,6 +203,38 @@ func startEmbeddedGraphQL(ctx context.Context, g *errgroup.Group, opts *Options,
 	})
 
 	return nil
+}
+
+// newEmbeddedGraphQLListenerOptions builds the listener options used by the
+// in-process GraphQL gateway. The listener normally exposes its own
+// controller-runtime health and metrics servers on fixed ports; embedded mode
+// is already hosted by the hub and must not claim those ports a second time.
+// Keep the gRPC address configurable because it is the in-process transport
+// between the listener and gateway.
+func newEmbeddedGraphQLListenerOptions(opts *Options, kubeconfigPath, grpcAddr string) *listeneroptions.Options {
+	listenerOpts := listeneroptions.NewOptions()
+	listenerOpts.Provider = "kcp"
+	listenerOpts.SchemaHandler = "grpc"
+	listenerOpts.Common.Kubeconfig = kubeconfigPath
+	listenerOpts.Common.HealthProbeBindAddress = "0"
+	listenerOpts.Common.Metrics.BindAddress = "0"
+	listenerOpts.GRPCListenAddr = grpcAddr
+	// The default anchor (`namespaces.v1` / name=='default') doesn't work
+	// against a kcp APIExport virtual workspace — the VW doesn't surface the
+	// core/v1 group, so the resource controller's watch never starts. Use the
+	// APIBinding for this APIExport as the anchor instead: every consumer has
+	// exactly one such binding, so we reconcile once per consumer cluster.
+	listenerOpts.ResourceGVR = "apibindings.v1alpha2.apis.kcp.io"
+	listenerOpts.AnchorResource = fmt.Sprintf("object.spec.reference.export.name == %q", opts.GraphQLAPIExportSliceName)
+	listenerOpts.ProviderKcp = &kcplisteneroptions.Options{
+		ExtraOptions: kcplisteneroptions.ExtraOptions{
+			APIExportEndpointSliceName:           opts.GraphQLAPIExportSliceName,
+			APIExportEndpointSliceLogicalCluster: opts.GraphQLAPIExportLogicalCluster,
+			WorkspaceSchemaKubeconfigOverride:    kubeconfigPath,
+		},
+	}
+
+	return listenerOpts
 }
 
 // writeKubeconfigTemp serialises kcpConfig as a kubeconfig to a temporary file

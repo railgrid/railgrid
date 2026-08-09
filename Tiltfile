@@ -78,7 +78,6 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
 #   providers-code         — git repository manager (port :8083)
 #   providers-kuery        — fleet query engine (port :8084)
 #   providers-agents       — long-running personal AI agents (port :8087)
-#   providers-vibe-studio  — wizard-first app builder (port :8089)
 #
 # Each provider has three resources:
 #   <name>            build + serve; auto-restarts on src change
@@ -313,25 +312,6 @@ local_resource(
 )
 
 local_resource(
-    'app-studio-browser-worker',
-    cmd='APP_STUDIO_BROWSER_WORKER_IMAGE=kedge/app-studio-browser-worker:tilt make docker-build-app-studio-browser-worker',
-    serve_cmd='APP_STUDIO_BROWSER_WORKER_IMAGE=kedge/app-studio-browser-worker:tilt make run-app-studio-browser-worker',
-    deps=[
-        'Makefile',
-        'providers/app-studio/browser-worker/Dockerfile',
-        'providers/app-studio/browser-worker/package.json',
-        'providers/app-studio/browser-worker/package-lock.json',
-        'providers/app-studio/browser-worker/tsconfig.json',
-        'providers/app-studio/browser-worker/src',
-    ],
-    readiness_probe=probe(
-        period_secs=5,
-        http_get=http_get_action(port=8090, path='/healthz'),
-    ),
-    labels=['providers-app-studio'],
-)
-
-local_resource(
     'app-studio',
     cmd='make build-app-studio-provider',
     serve_cmd='make run-provider-app-studio',
@@ -355,7 +335,7 @@ local_resource(
         'providers/app-studio/deploy/chart/values.yaml',
         'providers/app-studio/.env',
     ],
-    resource_deps=['hub', 'app-studio-db', 'app-studio-browser-worker', 'dev-agent-image', 'app-studio-preview-console-key'],
+    resource_deps=['hub', 'app-studio-db', 'dev-agent-image', 'app-studio-preview-console-key'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8085, path='/healthz'),
@@ -482,89 +462,6 @@ local_resource(
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     labels=['providers-agents'],
-)
-
-# --- providers-vibe-studio ---
-# Wizard-first app builder (docs/vibe-studio-design.md). Phase 0: event store
-# + scripted engine. Standalone: only hard deps are the hub and the durable
-# store (local Postgres container via vibe-studio-db).
-local_resource(
-    'vibe-studio-db',
-    cmd='make vibe-studio-db-up',
-    deps=[
-        'providers/vibe-studio/.env',
-    ],
-    labels=['providers-vibe-studio'],
-)
-
-local_resource(
-    'vibe-studio',
-    cmd='make build-vibe-studio-provider',
-    serve_cmd='make run-provider-vibe-studio',
-    deps=[
-        'providers/vibe-studio/main.go',
-        'providers/vibe-studio/assets.go',
-        'providers/vibe-studio/init_cmd.go',
-        'providers/vibe-studio/controller_manager.go',
-        'providers/vibe-studio/api',
-        'providers/vibe-studio/apis',
-        'providers/vibe-studio/client',
-        'providers/vibe-studio/controller',
-        'providers/vibe-studio/engine',
-        'providers/vibe-studio/scheme',
-        'providers/vibe-studio/session',
-        'providers/vibe-studio/store',
-        'providers/vibe-studio/tenant',
-        'providers/vibe-studio/go.mod',
-        'providers/vibe-studio/go.sum',
-        'providers/vibe-studio/portal/src',
-        'providers/vibe-studio/portal/package.json',
-        'providers/vibe-studio/portal/vite.config.ts',
-        'providers/vibe-studio/.env',
-    ],
-    resource_deps=['hub', 'vibe-studio-db'],
-    readiness_probe=probe(
-        period_secs=5,
-        http_get=http_get_action(port=8089, path='/healthz'),
-    ),
-    labels=['providers-vibe-studio'],
-)
-
-local_resource(
-    'vibe-studio-register',
-    cmd='make install-provider-vibe-studio',
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    resource_deps=['hub'],
-    labels=['providers-vibe-studio'],
-)
-
-# Creates the vibe-studio APIExport (+ schemas + endpoint slice + bind grant)
-# so tenants can Enable it. Run AFTER vibe-studio-register.
-local_resource(
-    'vibe-studio-init',
-    cmd='make init-provider-vibe-studio',
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    resource_deps=['hub', 'vibe-studio-register'],
-    labels=['providers-vibe-studio'],
-)
-
-local_resource(
-    'vibe-studio-unregister',
-    cmd='make uninstall-provider-vibe-studio',
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    resource_deps=['hub'],
-    labels=['providers-vibe-studio'],
-)
-
-local_resource(
-    'vibe-studio-db-down',
-    cmd='make vibe-studio-db-down',
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    labels=['providers-vibe-studio'],
 )
 
 # --- Dev agent image (template-native development mode) ---

@@ -77,6 +77,31 @@ const (
 	// tenant-facing API surface.
 	devWorkspaceSize     = "1Gi"
 	devPlatformStateSize = "1Gi"
+
+	// Provider Actions uses a short-lived projected service-account token for
+	// the coordinator-to-hub exchange. The app sees only the atomically
+	// refreshed token file, never this bootstrap projection.
+	devActionsBootstrapVolumeName = "kedge-actions-bootstrap"
+	devActionsTokenVolumeName     = "kedge-actions-token"
+	devActionsBootstrapDir        = "/var/run/secrets/kedge/actions-bootstrap"
+	devActionsDir                 = "/var/run/secrets/kedge/actions"
+	devActionsBootstrapAudience   = "kedge-provider-actions-bootstrap"
+	devActionsTokenExpiration     = int64(600)
+	devActionsTokenFile           = devActionsDir + "/token"
+	// The public CA bundle is optional. The ConfigMap is included only when
+	// App Studio supplied non-empty action trust material; the pod volume and
+	// trust environment remain harmless when that ConfigMap is absent.
+	devActionsCABundleVolumeName = "kedge-actions-ca-bundle"
+	// Keep the mounted file in a dedicated directory so the ConfigMap cannot
+	// mask the image's system CA directory; trust envs augment, rather than
+	// replace, the system roots.
+	devActionsCABundlePath = "/etc/kedge/actions-ca/kedge-actions-ca-bundle.pem"
+
+	// Provider Actions context is optional for development sandboxes. Keep the
+	// fields in every development RGD so the coordinator/app contract is
+	// stable, but default omitted values to empty strings: kro evaluates every
+	// referenced schema field even when a project has no action grant.
+	devActionsSchemaFieldMarker = `string | default=""`
 )
 
 // applyDevOverlay extends simpleSpec (kedgeMode field), the resource graph,
@@ -93,6 +118,29 @@ func applyDevOverlay(tmpl *infrav1alpha1.Template, simpleSpec map[string]any, re
 	}
 	simpleSpec[infrav1alpha1.KedgeModeField] = fmt.Sprintf("string | enum=%q default=%q",
 		infrav1alpha1.KedgeModeProduction+","+infrav1alpha1.KedgeModeDevelopment, infrav1alpha1.KedgeModeProduction)
+	// These fields are reserved platform inputs for the development Provider
+	// Actions contract. App Studio supplies the trusted values on the binding;
+	// the overlay projects them into coordinator/app environment without
+	// exposing the bootstrap service-account token to the app. The CA bundle is
+	// public trust material and defaults empty, so it never replaces system
+	// roots for actionless or production-mode instances.
+	for _, field := range []string{
+		infrav1alpha1.KedgeActionsExchangeURLField,
+		infrav1alpha1.KedgeActionsBaseURLField,
+		infrav1alpha1.KedgeActionsTenantPathField,
+		infrav1alpha1.KedgeActionsOrgField,
+		infrav1alpha1.KedgeActionsWorkspaceField,
+		infrav1alpha1.KedgeActionsProjectField,
+		infrav1alpha1.KedgeActionsProjectUIDField,
+		infrav1alpha1.KedgeActionsEnvironmentField,
+		infrav1alpha1.KedgeActionsInstanceField,
+		infrav1alpha1.KedgeActionsCABundleField,
+	} {
+		if _, exists := simpleSpec[field]; exists {
+			return nil, nil, fmt.Errorf("template %q: schema declares reserved field %q", tmpl.Name, field)
+		}
+		simpleSpec[field] = devActionsSchemaFieldMarker
+	}
 
 	agentImage := tokens[devAgentImageToken]
 	if agentImage == "" {
@@ -218,7 +266,7 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 		return nil, "", fmt.Errorf("workload %q declares no metadata.name", workloadID)
 	}
 
-	for _, id := range []string{name + "DevWorkspace", name + "DevPlatformState", name + "DevDeployment", name + "DevControlService"} {
+	for _, id := range []string{name + "DevWorkspace", name + "DevPlatformState", name + "DevDeployment", name + "DevControlService", name + "DevCABundle"} {
 		if _, taken := byID[id]; taken {
 			return nil, "", fmt.Errorf("graph already declares resource id %q (reserved for the dev overlay)", id)
 		}
@@ -242,6 +290,7 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 		workingDir,
 		pvcName,
 		"${schema.spec.name}-dev-"+name+"-platform-state",
+		name+"DevCABundle",
 	)
 	if err != nil {
 		return nil, "", err
@@ -287,6 +336,27 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 			},
 		},
 	})
+	// The CA is public trust material, so a ConfigMap is sufficient. Keep one
+	// per dev component even when the value is empty: that makes the generated
+	// Deployment's volume reference unconditional and therefore never dangling.
+	// The empty file is mounted in a dedicated directory, while trust envs are
+	// empty in the default case and leave image/system roots untouched.
+	out = append(out, map[string]any{
+		"id":          name + "DevCABundle",
+		"includeWhen": []any{devModeCondition},
+		"template": map[string]any{
+			"apiVersion": "v1",
+			"kind":       "ConfigMap",
+			"metadata": map[string]any{
+				"name":      "${schema.spec.name}-dev-" + name + "-actions-ca",
+				"namespace": namespace,
+				"labels":    labels,
+			},
+			"data": map[string]any{
+				"ca-bundle.pem": "${schema.spec." + infrav1alpha1.KedgeActionsCABundleField + "}",
+			},
+		},
+	})
 
 	controlService := map[string]any{
 		"id":          name + "DevControlService",
@@ -321,7 +391,7 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 // are built from scratch with their own mounts and minimal environments.
 // mountedWorkspace reports whether the overlay added the workspace mount (and
 // so needs the per-component workspace PVC).
-func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopmentComponent, prodTemplate map[string]any, devImage, agentImage, previewConsoleVerificationJWKS, workingDir, pvcName, statePVCName string) (dev, selector map[string]any, mountedWorkspace bool, err error) {
+func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopmentComponent, prodTemplate map[string]any, devImage, agentImage, previewConsoleVerificationJWKS, workingDir, pvcName, statePVCName, caBundleResourceID string) (dev, selector map[string]any, mountedWorkspace bool, err error) {
 	tmplCopy, err := deepCopyMap(prodTemplate)
 	if err != nil {
 		return nil, nil, false, err
@@ -400,7 +470,30 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	workspaceForSidecar := copyVolumeMount(workspaceMount, workingDir)
 	stateVolume := map[string]any{"name": "kedge-dev-platform-state", "persistentVolumeClaim": map[string]any{"claimName": statePVCName}}
 	noServiceAccountVolume := map[string]any{"name": "kedge-dev-no-serviceaccount", "emptyDir": map[string]any{}}
-	extraVolumes = append(extraVolumes, stateVolume, noServiceAccountVolume)
+	caBundleVolume := map[string]any{
+		"name": devActionsCABundleVolumeName,
+		"configMap": map[string]any{
+			"name": "${" + caBundleResourceID + ".metadata.name}",
+			"items": []any{map[string]any{
+				"key":  "ca-bundle.pem",
+				"path": "kedge-actions-ca-bundle.pem",
+			}},
+		},
+	}
+	actionsBootstrapVolume := map[string]any{
+		"name": devActionsBootstrapVolumeName,
+		"projected": map[string]any{
+			"sources": []any{
+				map[string]any{"serviceAccountToken": map[string]any{
+					"path":              "token",
+					"expirationSeconds": devActionsTokenExpiration,
+					"audience":          devActionsBootstrapAudience,
+				}},
+			},
+		},
+	}
+	actionsTokenVolume := map[string]any{"name": devActionsTokenVolumeName, "emptyDir": map[string]any{"medium": "Memory"}}
+	extraVolumes = append(extraVolumes, stateVolume, noServiceAccountVolume, caBundleVolume, actionsBootstrapVolume, actionsTokenVolume)
 
 	coordinator := map[string]any{
 		"name":            "kedge-platform-coordinator",
@@ -419,9 +512,12 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 			map[string]any{"name": "kedge-dev-platform-state", "mountPath": devPlatformStateDir},
 			map[string]any{"name": "kedge-dev-coordinator-tmp", "mountPath": "/tmp"},
 			map[string]any{"name": "kedge-dev-no-serviceaccount", "mountPath": devServiceAccountDir, "readOnly": true},
+			map[string]any{"name": devActionsBootstrapVolumeName, "mountPath": devActionsBootstrapDir, "readOnly": true},
+			map[string]any{"name": devActionsTokenVolumeName, "mountPath": devActionsDir},
+			map[string]any{"name": devActionsCABundleVolumeName, "mountPath": "/etc/kedge/actions-ca", "readOnly": true},
 		},
-		"livenessProbe":   devHTTPProbe(devAgentPort, 0),
-		"readinessProbe":  devHTTPProbe(devAgentPort, 0),
+		"livenessProbe":   devHTTPProbePath(devAgentPort, 0, "/healthz"),
+		"readinessProbe":  devHTTPProbePath(devAgentPort, 0, "/readyz"),
 		"securityContext": devContainerSecurityContext(true),
 	}
 	extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-dev-coordinator-tmp", "emptyDir": map[string]any{}})
@@ -448,6 +544,41 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 		"readinessProbe":  devExecProbe(devExecutorAddress, 1),
 		"securityContext": devContainerSecurityContext(true),
 	}
+	// The app gets only the refreshed token and non-secret action context. It
+	// deliberately has no bootstrap volume, exchange URL, or service-account
+	// token mount.
+	for _, reservedPath := range []string{devActionsDir, devActionsBootstrapDir, "/etc/kedge/actions-ca"} {
+		if hasMountPath(mounts, reservedPath, false) {
+			return nil, nil, false, fmt.Errorf("production workload already mounts reserved Provider Actions path %q", reservedPath)
+		}
+	}
+	app["volumeMounts"] = append(app["volumeMounts"].([]any), map[string]any{
+		"name": devActionsTokenVolumeName, "mountPath": devActionsDir, "readOnly": true,
+	})
+	app["volumeMounts"] = append(app["volumeMounts"].([]any), map[string]any{
+		"name": devActionsCABundleVolumeName, "mountPath": "/etc/kedge/actions-ca", "readOnly": true,
+	})
+	// These annotations let the attestor bind the reviewed projected token to
+	// the exact tenant/project instance that requested the exchange. They are
+	// non-secret CEL-resolved identity context and are checked in addition to
+	// the pod-bound TokenReview identity.
+	podTemplateMetadata, _, _ := nestedMap(tmplCopy, "spec", "template", "metadata")
+	if podTemplateMetadata == nil {
+		podTemplateMetadata = map[string]any{}
+		tmplSpec, _, _ := nestedMap(tmplCopy, "spec")
+		tmplTemplate, _, _ := nestedMap(tmplSpec, "template")
+		tmplTemplate["metadata"] = podTemplateMetadata
+	}
+	annotations, _ := podTemplateMetadata["annotations"].(map[string]any)
+	if annotations == nil {
+		annotations = map[string]any{}
+	}
+	annotations["kedge.faros.sh/actions-tenant"] = "${schema.spec." + infrav1alpha1.KedgeActionsTenantPathField + "}"
+	annotations["kedge.faros.sh/actions-project"] = "${schema.spec." + infrav1alpha1.KedgeActionsProjectField + "}"
+	annotations["kedge.faros.sh/actions-project-uid"] = "${schema.spec." + infrav1alpha1.KedgeActionsProjectUIDField + "}"
+	annotations["kedge.faros.sh/actions-environment"] = "${schema.spec." + infrav1alpha1.KedgeActionsEnvironmentField + "}"
+	annotations["kedge.faros.sh/actions-instance"] = "${schema.spec." + infrav1alpha1.KedgeActionsInstanceField + "}"
+	podTemplateMetadata["annotations"] = annotations
 	extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-dev-exec-tmp", "emptyDir": map[string]any{}})
 	podSpec["containers"] = []any{coordinator, app, executor}
 
@@ -550,6 +681,8 @@ func devCoordinatorEnv(comp infrav1alpha1.TemplateDevelopmentComponent, workingD
 			env = append(env, map[string]any{"name": "KEDGE_DEV_RELOAD_RULES", "value": string(rules)})
 		}
 	}
+	env = append(env, devActionsEnv(true)...)
+	env = append(env, devActionsTrustEnv(true)...)
 	return append(env, map[string]any{
 		"name": "KEDGE_DEV_CONTROL_TOKEN",
 		"valueFrom": map[string]any{
@@ -558,14 +691,53 @@ func devCoordinatorEnv(comp infrav1alpha1.TemplateDevelopmentComponent, workingD
 	})
 }
 
+// devActionsTrustEnv points Provider Actions TLS clients at the optional,
+// public CA bundle. A CEL expression yields an empty value when App Studio
+// omitted the bundle. The coordinator loads KEDGE_ACTIONS_CA_FILE into a pool
+// that starts with system roots; Node treats NODE_EXTRA_CA_CERTS as additive.
+// Do not set SSL_CERT_FILE here: on some images it replaces, rather than
+// augments, the system trust store.
+func devActionsTrustEnv(coordinator bool) []any {
+	path := `${schema.spec.kedgeActionsCABundle != "" ? "` + devActionsCABundlePath + `" : ""}`
+	if coordinator {
+		return []any{map[string]any{"name": "KEDGE_ACTIONS_CA_FILE", "value": path}}
+	}
+	return []any{map[string]any{"name": "NODE_EXTRA_CA_CERTS", "value": path}}
+}
+
+func devActionsEnv(includeExchange bool) []any {
+	env := []any{
+		map[string]any{"name": "KEDGE_ACTIONS_TOKEN_FILE", "value": devActionsTokenFile},
+		map[string]any{"name": "KEDGE_ACTIONS_BASE_URL", "value": "${schema.spec." + infrav1alpha1.KedgeActionsBaseURLField + "}"},
+		map[string]any{"name": "KEDGE_PROJECT", "value": "${schema.spec." + infrav1alpha1.KedgeActionsProjectField + "}"},
+		map[string]any{"name": "KEDGE_PROJECT_UID", "value": "${schema.spec." + infrav1alpha1.KedgeActionsProjectUIDField + "}"},
+		map[string]any{"name": "KEDGE_ACTIONS_ENVIRONMENT", "value": "${schema.spec." + infrav1alpha1.KedgeActionsEnvironmentField + "}"},
+		map[string]any{"name": "KEDGE_ACTIONS_INSTANCE", "value": "${schema.spec." + infrav1alpha1.KedgeActionsInstanceField + "}"},
+		map[string]any{"name": "KEDGE_ACTIONS_TENANT_PATH", "value": "${schema.spec." + infrav1alpha1.KedgeActionsTenantPathField + "}"},
+		map[string]any{"name": "KEDGE_ACTIONS_ORG", "value": "${schema.spec." + infrav1alpha1.KedgeActionsOrgField + "}"},
+		map[string]any{"name": "KEDGE_ACTIONS_WORKSPACE", "value": "${schema.spec." + infrav1alpha1.KedgeActionsWorkspaceField + "}"},
+	}
+	if includeExchange {
+		env = append(env,
+			map[string]any{"name": "KEDGE_ACTIONS_BOOTSTRAP_TOKEN_FILE", "value": devActionsBootstrapDir + "/token"},
+			map[string]any{"name": "KEDGE_ACTIONS_EXCHANGE_URL", "value": "${schema.spec." + infrav1alpha1.KedgeActionsExchangeURLField + "}"},
+		)
+	}
+	return env
+}
+
 // devHTTPProbe uses the agent's immediate health endpoint. The generous
 // failure threshold keeps a slow image pull or dependency install from
 // removing the pod while the public Service still publishes not-ready
 // addresses so initial synchronization can proceed.
 func devHTTPProbe(port int64, initialDelay int64) map[string]any {
+	return devHTTPProbePath(port, initialDelay, "/healthz")
+}
+
+func devHTTPProbePath(port int64, initialDelay int64, path string) map[string]any {
 	return map[string]any{
 		"httpGet": map[string]any{
-			"path": "/healthz",
+			"path": path,
 			"port": port,
 		},
 		"initialDelaySeconds": initialDelay,
@@ -650,10 +822,12 @@ func hasMountPath(mounts []any, path string, matchExpressions bool) bool {
 // from a copied production container so an old overlay cannot leak them into
 // the app process; the coordinator is the sole token consumer.
 func appendDevRuntimeEnv(container map[string]any, comp infrav1alpha1.TemplateDevelopmentComponent, workingDir, port string) []any {
-	env := []any{
+	env := append([]any{}, devActionsEnv(false)...)
+	env = append(env, devActionsTrustEnv(false)...)
+	env = append(env, []any{
 		map[string]any{"name": "KEDGE_DEV_WORKDIR", "value": workingDir},
 		map[string]any{"name": "KEDGE_DEV_START_COMMAND", "value": comp.StartCommand},
-	}
+	}...)
 	if port != "" {
 		env = append(env, map[string]any{"name": "KEDGE_DEV_PORT", "value": port})
 	}
@@ -681,7 +855,11 @@ func appendDevRuntimeEnv(container map[string]any, comp infrav1alpha1.TemplateDe
 	// user/application environment entries, including secretKeyRef values and
 	// envFrom on the app container.
 	reserved := map[string]bool{
-		"KEDGE_DEV_CONTROL_TOKEN": true,
+		"KEDGE_DEV_CONTROL_TOKEN":            true,
+		"KEDGE_ACTIONS_EXCHANGE_URL":         true,
+		"KEDGE_ACTIONS_BOOTSTRAP_TOKEN_FILE": true,
+		"KEDGE_ACTIONS_CA_FILE":              true,
+		"NODE_EXTRA_CA_CERTS":                true,
 	}
 	for _, raw := range env {
 		entry, _ := raw.(map[string]any)
