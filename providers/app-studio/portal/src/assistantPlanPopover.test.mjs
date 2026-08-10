@@ -108,8 +108,27 @@ test('renders the running label with a Codex-style gradient ripple', async () =>
 test('offers an explicit Default-mode implementation turn after the latest completed plan', async () => {
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   assert.match(appSource, /function canImplementPlan\(message:[\s\S]*assistantRunCanImplementPlan\(run\)/)
-  assert.match(appSource, /function implementPlan\(message:[\s\S]*assistantIntent\.value = 'default'[\s\S]*prompt\.value = 'Implement the plan above\.'/)
+  assert.match(appSource, /function implementPlan\(message:[\s\S]*assistantIntent\.value = 'default'[\s\S]*replaceAssistantComposerText\('Implement the plan above\.'\)/)
   assert.match(appSource, /v-if="canImplementPlan\(message\)"[\s\S]*Implement plan/)
+})
+
+test('programmatic active-project prompts replace rich composer state atomically', async () => {
+  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const replacement = appSource.match(/function replaceAssistantComposerText\(value: string\) \{[\s\S]*?\n\}/)?.[0] ?? ''
+  assert.match(replacement, /clearSelectedTurnAttachments\(\)/)
+  assert.match(replacement, /prompt\.value = value/)
+  assert.match(replacement, /assistantComposerParts\.value = \[\{ type: 'text', text: value \}\]/)
+
+  const checkpoint = appSource.slice(appSource.indexOf('function actOnCheckpoint'), appSource.indexOf('async function promoteToProd'))
+  assert.match(checkpoint, /replaceAssistantComposerText\(`Advance the/)
+
+  const starter = appSource.slice(appSource.indexOf('async function applyStarterPrompt'), appSource.indexOf('async function applyLandingCategory'))
+  assert.match(starter, /replaceAssistantComposerText\(value\)/)
+  assert.match(starter, /assistantComposerRef\.value\?\.focus\(\)/)
+  assert.doesNotMatch(starter, /promptRef/)
+
+  const implementation = appSource.slice(appSource.indexOf('async function implementPlan'), appSource.indexOf('function applyAssistantSnapshot'))
+  assert.match(implementation, /replaceAssistantComposerText\('Implement the plan above\.'\)/)
 })
 
 test('an action-only terminal turn activates the collapsed combined disclosure', async () => {

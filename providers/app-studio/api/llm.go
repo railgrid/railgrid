@@ -462,6 +462,10 @@ func (s *Server) generateProjectAssistantResultWithStart(
 		req.SkillSnapshot = &snapshot
 		req.SelectedSkills = cloneProjectAssistantSkillReceipts(start.SelectedSkills)
 	}
+	if start != nil {
+		req.SelectedContextResources = cloneProjectAssistantContextResourceReceipts(start.SelectedContextResources)
+		req.ContentParts = cloneProjectAssistantContentParts(start.ContentParts)
+	}
 	result, err := s.projectAssistantEngine().StreamProjectAssistant(ctx, req)
 	if err != nil {
 		if projectEinoAssistantBoundedExit(err) {

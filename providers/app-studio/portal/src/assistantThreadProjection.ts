@@ -1,13 +1,17 @@
 import type {
+  ProjectAssistantContentPart,
+  ProjectAssistantContextResource,
   ProjectAssistantSkill,
   ProjectAssistantRun,
   ProjectAssistantRunStatus,
   ProjectAssistantThreadItem,
   ProjectMessage,
 } from './types'
+import { projectAssistantComposerParts } from './assistantCommandPalette'
 import { parseAssistantProgress } from './assistantProgress'
 
 export const MAX_ASSISTANT_SKILLS = 8
+export const MAX_ASSISTANT_CONTEXT_RESOURCES = 8
 
 /**
  * Keep only the bounded, public skill view persisted on a user thread item.
@@ -34,6 +38,53 @@ export function projectAssistantSkills(value: unknown): ProjectAssistantSkill[] 
 
 export function assistantSkillsFromThreadItem(item: ProjectAssistantThreadItem): ProjectAssistantSkill[] {
   return projectAssistantSkills(item.data?.skills)
+}
+
+export function projectAssistantContextResources(value: unknown): ProjectAssistantContextResource[] {
+  if (!Array.isArray(value)) return []
+  const resources: ProjectAssistantContextResource[] = []
+  const seen = new Set<string>()
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== 'object') continue
+    const raw = candidate as Record<string, unknown>
+    const provider = typeof raw.provider === 'string' ? raw.provider.trim() : ''
+    const rawRef = raw.resourceRef
+    if (!provider || !rawRef || typeof rawRef !== 'object') continue
+    const ref = rawRef as Record<string, unknown>
+    const apiVersion = typeof ref.apiVersion === 'string' ? ref.apiVersion.trim() : ''
+    const kind = typeof ref.kind === 'string' ? ref.kind.trim() : ''
+    const resource = typeof ref.resource === 'string' ? ref.resource.trim() : ''
+    const name = typeof ref.name === 'string' ? ref.name.trim() : ''
+    if (!apiVersion || !kind || !resource || !name) continue
+    const key = [provider, apiVersion, kind, resource, name].join('\u0000')
+    if (seen.has(key)) continue
+    seen.add(key)
+    resources.push({ provider, resourceRef: { apiVersion, kind, resource, name } })
+    if (resources.length >= MAX_ASSISTANT_CONTEXT_RESOURCES) break
+  }
+  return resources
+}
+
+export function assistantContextResourcesFromThreadItem(item: ProjectAssistantThreadItem): ProjectAssistantContextResource[] {
+  return projectAssistantContextResources(item.data?.contextResources)
+}
+
+/**
+ * Project canonical rich-composer parts only after their companion selections
+ * have been bounded. Resource parts use an index into the durable
+ * contextResources array; invalid indices are dropped rather than rendering a
+ * misleading chip. Legacy user items simply return an empty list.
+ */
+export function assistantContentPartsFromThreadItem(item: ProjectAssistantThreadItem): ProjectAssistantContentPart[] {
+  const parts = projectAssistantComposerParts(item.data?.contentParts)
+  const resources = assistantContextResourcesFromThreadItem(item)
+  const skills = assistantSkillsFromThreadItem(item)
+  const skillIDs = new Set(skills.map((skill) => skill.id))
+  return parts.filter((part) =>
+    part.type === 'text' ||
+    (part.type === 'skill' && (!skillIDs.size || skillIDs.has(part.skillID))) ||
+    (part.type === 'resource' && part.resourceIndex < resources.length),
+  )
 }
 
 interface AssistantProgressEntry {
@@ -359,6 +410,10 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
     if (role === 'user') {
       const assistantSkills = assistantSkillsFromThreadItem(item)
       if (assistantSkills.length) metadata.assistantSkills = assistantSkills
+      const contextResources = assistantContextResourcesFromThreadItem(item)
+      if (contextResources.length) metadata.assistantContextResources = contextResources
+      const contentParts = assistantContentPartsFromThreadItem(item)
+      if (contentParts.length) metadata.assistantContentParts = contentParts
     }
     if (role === 'assistant') {
       metadata.assistantStatus = assistantStatusForItem(item.status)

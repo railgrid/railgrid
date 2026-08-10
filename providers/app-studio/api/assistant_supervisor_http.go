@@ -159,6 +159,8 @@ func (s *Server) startProjectAssistantRunDurablyWithMode(ctx context.Context, sc
 
 func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Context, scope store.Scope, actor, content, clientRequestID string, mode store.AssistantRunMode, selection projectAssistantDurableSkillSelection, start func(store.AssistantRun, store.Message, bool) error) (projectAssistantDurableStartResult, error) {
 	skills := selection.IDs
+	resources := projectAssistantContextResourceIdentities(selection.ContextResources)
+	parts := projectAssistantCanonicalContentPartsForIdentity(selection.ContentParts, skills, selection.ContextResources)
 	content = strings.TrimSpace(content)
 	clientRequestID = strings.TrimSpace(clientRequestID)
 	actor = strings.TrimSpace(actor)
@@ -176,7 +178,7 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 		return projectAssistantDurableStartResult{}, err
 	}
 	if prior, err := s.store.FindAssistantRunByClientRequestID(ctx, scope, clientRequestID); err == nil {
-		if err := validateProjectAssistantStartReplayWithSkills(prior, actor, content, mode, skills); err != nil {
+		if err := validateProjectAssistantStartReplayWithSelectionsAndParts(prior, actor, content, mode, skills, resources, parts); err != nil {
 			return projectAssistantDurableStartResult{}, err
 		}
 		return projectAssistantDurableStartResult{Run: prior}, nil
@@ -202,22 +204,28 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 	if err := s.captureProjectAssistantApprovalMode(ctx, scope, actor, &run); err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}
-	if err := bindProjectAssistantStartRequestWithSkills(&run, actor, content, skills); err != nil {
+	if err := bindProjectAssistantStartRequestWithSelectionsAndParts(&run, actor, content, skills, resources, parts); err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}
 	if err := bindProjectAssistantStartSkillAudit(&run, selection); err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}
+	if err := bindProjectAssistantStartContextResourceAudit(&run, selection.ContextResourceReceipts); err != nil {
+		return projectAssistantDurableStartResult{}, err
+	}
+	if err := bindProjectAssistantStartContentPartsAudit(&run, parts); err != nil {
+		return projectAssistantDurableStartResult{}, err
+	}
 	assistant.Metadata = projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil)
 	created, err := s.store.CreateAssistantRun(ctx, scope, user, assistant, run)
 	if err != nil {
-		if prior, ok := s.recoverProjectAssistantStartReplayWithSkills(ctx, scope, err, clientRequestID, actor, content, mode, skills); ok {
+		if prior, ok := s.recoverProjectAssistantStartReplayWithSelectionsAndParts(ctx, scope, err, clientRequestID, actor, content, mode, skills, resources, parts); ok {
 			return projectAssistantDurableStartResult{Run: prior}, nil
 		}
 		return projectAssistantDurableStartResult{}, err
 	}
 	if created.ID != run.ID {
-		if err := validateProjectAssistantStartReplayWithSkills(created, actor, content, mode, skills); err != nil {
+		if err := validateProjectAssistantStartReplayWithSelectionsAndParts(created, actor, content, mode, skills, resources, parts); err != nil {
 			return projectAssistantDurableStartResult{}, err
 		}
 		return projectAssistantDurableStartResult{Run: created}, nil

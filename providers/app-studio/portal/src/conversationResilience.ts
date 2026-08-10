@@ -1,4 +1,4 @@
-import type { ProjectAssistantRunMode, ProjectMessage } from './types'
+import type { ProjectAssistantContextResource, ProjectAssistantContentPart, ProjectAssistantRunMode, ProjectMessage } from './types'
 
 export interface AssistantRun {
   id: string
@@ -24,6 +24,68 @@ export interface AssistantRunStartRequest {
   collaborationMode: ProjectAssistantRunMode
   expectedRunID?: string
   skills?: string[]
+  contextResources?: ProjectAssistantContextResource[]
+  contentParts?: ProjectAssistantContentPart[]
+}
+
+function assistantContextResourceIdentity(resource: ProjectAssistantContextResource): string {
+  const apiVersion = resource.resourceRef.apiVersion.trim()
+  const separator = apiVersion.indexOf('/')
+  const group = separator >= 0 ? apiVersion.slice(0, separator) : ''
+  const version = separator >= 0 ? apiVersion.slice(separator + 1) : apiVersion
+  return [
+    resource.provider.trim(),
+    group,
+    version,
+    resource.resourceRef.kind.trim(),
+    resource.resourceRef.resource.trim(),
+    resource.resourceRef.name.trim(),
+  ].join('\u0000')
+}
+
+/**
+ * Reconstruct the content persisted by the server for a structured start.
+ * The API replaces browser prose with text parts plus canonical @skill/#resource
+ * markers, trims plain legacy content, and sorts/deduplicates resource inputs
+ * before remapping their part indexes. Keeping this derivation in the portal
+ * makes conflict recovery compare durable content rather than chip-free UI
+ * text, without treating a mismatched request identity as a successful replay.
+ */
+export function assistantRunExpectedServerContent(
+  request: Pick<AssistantRunStartRequest, 'content' | 'contentParts' | 'contextResources'>,
+): string {
+  const parts = request.contentParts ?? []
+  if (parts.length === 0) return request.content.trim()
+
+  const uniqueResources = new Map<string, ProjectAssistantContextResource>()
+  for (const resource of request.contextResources ?? []) {
+    const key = assistantContextResourceIdentity(resource)
+    if (!uniqueResources.has(key)) uniqueResources.set(key, resource)
+  }
+  const resources = [...uniqueResources.values()].sort((left, right) => {
+    const leftKey = assistantContextResourceIdentity(left)
+    const rightKey = assistantContextResourceIdentity(right)
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0
+  })
+  const resourceIndexes = new Map<string, number>()
+  resources.forEach((resource, index) => resourceIndexes.set(assistantContextResourceIdentity(resource), index))
+  const inputResources = request.contextResources ?? []
+  const originalToCanonical = new Map<number, number>()
+  inputResources.forEach((resource, index) => {
+    const canonicalIndex = resourceIndexes.get(assistantContextResourceIdentity(resource))
+    if (canonicalIndex !== undefined) originalToCanonical.set(index, canonicalIndex)
+  })
+
+  const derived = parts.map((part) => {
+    if (part.type === 'text') return part.text
+    if (part.type === 'skill') return `[@skill:${part.skillID.trim()}]`
+    const canonicalIndex = originalToCanonical.get(part.resourceIndex)
+    const resource = canonicalIndex === undefined ? undefined : resources[canonicalIndex]
+    if (!resource) return ''
+    const ref = resource.resourceRef
+    return `[@resource:${resource.provider.trim()}/${ref.apiVersion.trim()}/${ref.kind.trim()}/${ref.resource.trim()}/${ref.name.trim()}]`
+  }).join('')
+  return derived.trim()
 }
 
 export interface ConversationState<TMessage extends ProjectMessage = ProjectMessage> {
@@ -65,6 +127,8 @@ export function assistantRunStartFingerprint(projectName: string, request: Omit<
     request.collaborationMode,
     request.expectedRunID ?? '',
     request.skills ?? [],
+    request.contextResources ?? [],
+    request.contentParts ?? [],
   ])
 }
 

@@ -60,6 +60,25 @@ export interface ProjectAssistantSkill {
   status?: string
 }
 
+export interface ProjectAssistantContextResourceRef {
+  apiVersion: string
+  kind: string
+  resource: string
+  name: string
+}
+
+/** Public, canonical resource selection. Discovery metadata stays browser-only. */
+export interface ProjectAssistantContextResource {
+  provider: string
+  resourceRef: ProjectAssistantContextResourceRef
+}
+
+/** Canonical rich-composer content parts persisted on user thread items. */
+export type ProjectAssistantContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'skill'; skillID: string }
+  | { type: 'resource'; resourceIndex: number }
+
 export interface ProjectAssistantSkillResource {
   path: string
   size?: number

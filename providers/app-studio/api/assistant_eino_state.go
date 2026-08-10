@@ -80,6 +80,8 @@ type projectEinoAssistantRunState struct {
 	catalogDigest                    string
 	selectedSkillReceipts            map[string]projectAssistantSkillReceipt
 	loadedSkillReceipts              map[string]projectAssistantSkillReceipt
+	selectedContextResourceReceipts  []projectAssistantContextResourceReceipt
+	contentParts                     []projectAssistantContentPart
 	sessionSnapshot                  *projectEinoAssistantSessionSnapshot
 	rolloutBudget                    *projectEinoAssistantRolloutBudget
 	restoredRolloutBudget            *projectAssistantRolloutBudgetState
@@ -773,6 +775,42 @@ func (s *projectEinoAssistantRunState) SetProjectRepositoryRef(ref string) {
 	s.projectRepositoryRef = strings.TrimSpace(ref)
 }
 
+func (s *projectEinoAssistantRunState) SetContextResources(receipts []projectAssistantContextResourceReceipt) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.selectedContextResourceReceipts = cloneProjectAssistantContextResourceReceipts(receipts)
+}
+
+func (s *projectEinoAssistantRunState) ContextResources() []projectAssistantContextResourceReceipt {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneProjectAssistantContextResourceReceipts(s.selectedContextResourceReceipts)
+}
+
+func (s *projectEinoAssistantRunState) SetContentParts(parts []projectAssistantContentPart) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.contentParts = cloneProjectAssistantContentParts(parts)
+}
+
+func (s *projectEinoAssistantRunState) ContentParts() []projectAssistantContentPart {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneProjectAssistantContentParts(s.contentParts)
+}
+
 func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssistantCheckpointState) {
 	if s == nil {
 		return
@@ -784,6 +822,8 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.catalogDigest = strings.TrimSpace(state.CatalogDigest)
 	s.selectedSkillReceipts = make(map[string]projectAssistantSkillReceipt, len(state.SelectedSkillReceipts))
 	s.loadedSkillReceipts = make(map[string]projectAssistantSkillReceipt, len(state.LoadedSkillReceipts)+len(state.SelectedSkillReceipts))
+	s.selectedContextResourceReceipts = cloneProjectAssistantContextResourceReceipts(state.SelectedContextResourceReceipts)
+	s.contentParts = cloneProjectAssistantContentParts(state.ContentParts)
 	for _, receipt := range state.SelectedSkillReceipts {
 		s.selectedSkillReceipts[receipt.ID] = receipt
 		s.loadedSkillReceipts[receipt.ID] = receipt
@@ -2167,6 +2207,8 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		CatalogDigest:                    s.catalogDigest,
 		SelectedSkillReceipts:            cloneProjectAssistantSkillReceipts(selectedSkillReceipts),
 		LoadedSkillReceipts:              cloneProjectAssistantSkillReceipts(loadedSkillReceipts),
+		SelectedContextResourceReceipts:  cloneProjectAssistantContextResourceReceipts(s.selectedContextResourceReceipts),
+		ContentParts:                     cloneProjectAssistantContentParts(s.contentParts),
 		ToolCalls:                        cloneProjectAssistantToolCalls(s.toolCalls),
 		SeenToolCalls:                    projectEinoAssistantSanitizeSeenToolCalls(s.seenToolCalls),
 		Turn:                             s.turn,

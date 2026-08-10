@@ -34,8 +34,11 @@ const (
 // review/start contract. A review always gets its own durable Turn and an
 // explicit target; it is never an implicit completion gate.
 type assistantThreadReviewStartRequest struct {
-	Target              assistantReviewTarget `json:"target"`
-	ClientUserMessageID string                `json:"clientUserMessageID"`
+	Target              assistantReviewTarget                  `json:"target"`
+	ClientUserMessageID string                                 `json:"clientUserMessageID"`
+	Skills              []string                               `json:"skills,omitempty"`
+	ContextResources    []projectAssistantContextResourceInput `json:"contextResources,omitempty"`
+	ContentParts        []projectAssistantContentPart          `json:"contentParts,omitempty"`
 }
 
 type assistantReviewTarget struct {
@@ -64,6 +67,9 @@ func (r assistantThreadReviewStartRequest) turnRequest() (assistantThreadTurnCre
 		Content:             content,
 		ClientUserMessageID: r.ClientUserMessageID,
 		CollaborationMode:   store.AssistantRunModeReview,
+		Skills:              r.Skills,
+		ContextResources:    r.ContextResources,
+		ContentParts:        r.ContentParts,
 	}, nil
 }
 

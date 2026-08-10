@@ -67,6 +67,8 @@ import {
 import { buildAssistantTrace, type AssistantTraceBlock } from './assistantTrace'
 import {
   appendAssistantCommentaryToMessage,
+  assistantContentPartsFromThreadItem,
+  assistantContextResourcesFromThreadItem,
   assistantSkillsFromThreadItem,
   assistantThreadItemIdentity,
   assistantThreadItemToRun,
@@ -76,6 +78,7 @@ import {
   mergeAssistantThreadMessages,
   maxAssistantThreadSequence,
   projectAssistantSkills,
+  projectAssistantContextResources,
 } from './assistantThreadProjection'
 import {
   persistAssistantThreadFocus,
@@ -88,6 +91,9 @@ import CodeExplorer from './CodeExplorer.vue'
 import ThreadsWorkbench from './ThreadsWorkbench.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
 import ResponseModePicker, { type AssistantResponseMode } from './ResponseModePicker.vue'
+import AssistantRichComposer from './AssistantRichComposer.vue'
+import { MAX_ASSISTANT_COMPOSER_PARTS, projectAssistantComposerParts, type AssistantComposerState } from './assistantCommandPalette'
+import { assistantResourceSelectionKey } from './assistantResources'
 import PreviewActionsMenu from './PreviewActionsMenu.vue'
 import NewProjectWizard from './NewProjectWizard.vue'
 import ProjectIntegrations from './ProjectIntegrations.vue'
@@ -96,6 +102,7 @@ import {
   abortedConversationSnapshot,
   acceptScopedConversationSnapshot,
   assistantRunStartFingerprint,
+  assistantRunExpectedServerContent,
   assistantRunMatchesStartRequest,
   assistantRunCanImplementPlan,
   assistantRunRequiresLiveControls,
@@ -147,6 +154,8 @@ import type {
   ProjectAssistantSnapshot,
   ProjectAssistantApprovalMode,
   ProjectAssistantActionFeedItem,
+  ProjectAssistantContextResource,
+  ProjectAssistantContentPart,
   ProjectAssistantSkill,
   ProjectAssistantSkillsResponse,
   ProjectAssistantThread,
@@ -406,6 +415,10 @@ const projectSettingsError = ref<string | null>(null)
 const deleteProjectTarget = ref<Project | null>(null)
 const deletingProject = ref(false)
 const prompt = ref('')
+const selectedTurnSkills = ref<ProjectAssistantSkill[]>([])
+const selectedTurnResources = ref<ProjectAssistantContextResource[]>([])
+const assistantComposerParts = ref<ProjectAssistantContentPart[]>([])
+const assistantComposerRef = ref<{ focus: () => void; openPalette: () => void; closePalette: (restoreFocus?: boolean) => void } | null>(null)
 const assistantIntent = ref<AssistantResponseMode>('default')
 const approvalMode = ref<ProjectAssistantApprovalMode>('on_request')
 const approvalModeLoading = ref(false)
@@ -682,9 +695,10 @@ const chatPaneStyle = computed(() => ({ flexBasis: `${splitWidth.value}%` }))
 const assistantResumeBusy = computed(() => Object.keys(permissionBusy.value).length > 0 || Object.keys(followUpBusy.value).length > 0)
 const llmConfigured = computed(() => llmSettings.value?.configured ?? false)
 const canStartProjectFromPrompt = computed(() => canSubmitCreatePrompt(prompt.value, createReadiness.value) && llmConfigured.value)
+const assistantComposerHasChipContent = computed(() => assistantComposerParts.value.some((part) => part.type !== 'text'))
 const canSendPrompt = computed(() =>
   (llmSettings.value?.configured ?? false) &&
-  prompt.value.trim().length > 0 &&
+  (prompt.value.trim().length > 0 || (!messageStreaming.value && assistantComposerHasChipContent.value)) &&
   (!messageStreaming.value || activeAssistantRun?.status === 'running') &&
   !assistantResumeBusy.value &&
   !approvalModeLoading.value &&
@@ -1602,7 +1616,7 @@ function actOnCheckpoint(cp: ProjectCheckpoint) {
   }
   // auto: seed the chat composer so the user can review and send.
   const detail = cp.remediation?.message || cp.reason || ''
-  prompt.value = `Advance the "${cp.label}" checkpoint${detail ? `: ${detail}` : '.'}`
+  replaceAssistantComposerText(`Advance the "${cp.label}" checkpoint${detail ? `: ${detail}` : '.'}`)
 }
 
 async function promoteToProd() {
@@ -1717,10 +1731,9 @@ function selectLLMProvider(provider: string) {
 }
 
 async function applyStarterPrompt(value: string) {
-  prompt.value = value
+  replaceAssistantComposerText(value)
   await nextTick()
-  promptRef.value?.focus()
-  promptRef.value?.setSelectionRange(prompt.value.length, prompt.value.length)
+  assistantComposerRef.value?.focus()
 }
 
 async function applyLandingCategory(tile: LandingCategoryTile) {
@@ -2286,6 +2299,54 @@ function selectAssistantResponseMode(mode: AssistantResponseMode) {
   assistantIntent.value = mode
 }
 
+function closeAssistantCommandPalette(options: { restoreFocus?: boolean } = {}) {
+  assistantComposerRef.value?.closePalette(options.restoreFocus !== false)
+}
+
+function updateAssistantComposerParts(parts: ProjectAssistantContentPart[]) {
+  assistantComposerParts.value = parts.slice(0, MAX_ASSISTANT_COMPOSER_PARTS)
+}
+
+function updateAssistantComposerSkills(skills: ProjectAssistantSkill[]) {
+  selectedTurnSkills.value = skills.slice(0, 8)
+}
+
+function updateAssistantComposerResources(resources: ProjectAssistantContextResource[]) {
+  selectedTurnResources.value = resources.slice(0, 8)
+}
+
+function submitAssistantComposer(state?: AssistantComposerState) {
+  if (state) {
+    prompt.value = state.content
+    assistantComposerParts.value = state.contentParts as ProjectAssistantContentPart[]
+    selectedTurnSkills.value = state.skills.slice(0, 8)
+    selectedTurnResources.value = state.contextResources.slice(0, 8)
+  }
+  void sendMessage()
+}
+
+function clearSelectedTurnAttachments() {
+  selectedTurnSkills.value = []
+  selectedTurnResources.value = []
+  assistantComposerParts.value = []
+}
+
+function replaceAssistantComposerText(value: string) {
+  clearSelectedTurnAttachments()
+  prompt.value = value
+  assistantComposerParts.value = [{ type: 'text', text: value }]
+}
+
+watch(() => selected.value?.name ?? '', (current, previous) => {
+  if (current === previous) return
+  clearSelectedTurnAttachments()
+  closeAssistantCommandPalette({ restoreFocus: false })
+})
+
+watch(messageStreaming, (streaming) => {
+  if (streaming) closeAssistantCommandPalette({ restoreFocus: false })
+})
+
 function replaceAssistantThread(thread: ProjectAssistantThread) {
   const index = assistantThreads.value.findIndex((candidate) => candidate.id === thread.id)
   assistantThreads.value = index < 0
@@ -2447,7 +2508,7 @@ function canImplementPlan(message: ProjectMessageView): boolean {
 async function implementPlan(message: ProjectMessageView) {
   if (!canImplementPlan(message)) return
   assistantIntent.value = 'default'
-  prompt.value = 'Implement the plan above.'
+  replaceAssistantComposerText('Implement the plan above.')
   await nextTick()
   await sendMessage()
 }
@@ -2973,8 +3034,12 @@ async function confirmDeleteProject() {
 async function sendMessage() {
   const content = prompt.value.trim()
   const steeringActiveRun = messageStreaming.value && activeAssistantRun?.status === 'running'
-  if (!content || !selected.value || !llmSettings.value?.configured || (messageStreaming.value && !steeringActiveRun) || assistantResumeBusy.value || approvalModeLoading.value || approvalModeSaving.value) return
+  const hasStructuredContent = !steeringActiveRun && assistantComposerParts.value.some((part) => part.type !== 'text')
+  if ((!content && !hasStructuredContent) || !selected.value || !llmSettings.value?.configured || (messageStreaming.value && !steeringActiveRun) || assistantResumeBusy.value || approvalModeLoading.value || approvalModeSaving.value) return
   const projectName = selected.value.name
+  const turnSkills = steeringActiveRun ? [] : [...selectedTurnSkills.value]
+  const turnResources = steeringActiveRun ? [] : [...selectedTurnResources.value]
+  const turnContentParts = steeringActiveRun ? [] : [...assistantComposerParts.value]
   prompt.value = ''
   busy.value = true
   messageStreaming.value = true
@@ -2985,6 +3050,9 @@ async function sendMessage() {
   const startOperation = {
     content,
     collaborationMode: firstProjectPending ? 'default' as const : assistantIntent.value,
+    ...(turnSkills.length ? { skills: turnSkills.map((skill) => skill.id) } : {}),
+    ...(turnResources.length ? { contextResources: turnResources } : {}),
+    ...(turnContentParts.length ? { contentParts: turnContentParts } : {}),
     ...(steeringActiveRun ? { expectedRunID: activeAssistantRun!.id } : {}),
   }
   const submissionFingerprint = assistantRunStartFingerprint(projectName, startOperation)
@@ -3003,9 +3071,15 @@ async function sendMessage() {
     projectID: projectName,
     role: 'user',
     content,
+    metadata: {
+      ...(turnSkills.length ? { assistantSkills: turnSkills } : {}),
+      ...(turnResources.length ? { assistantContextResources: turnResources } : {}),
+      ...(turnContentParts.length ? { assistantContentParts: turnContentParts } : {}),
+    },
     createdAt: new Date().toISOString(),
   }
   if (!messages.value.some((message) => message.id === optimisticID)) messages.value = [...messages.value, optimisticUserMessage]
+  let startPostAccepted = false
   try {
     let started: ProjectAssistantRunStart
     if (steeringActiveRun) {
@@ -3038,12 +3112,23 @@ async function sendMessage() {
         ? await api.startAssistantReview(props.ctx, projectName, thread.id, {
             clientUserMessageID: clientRequestID,
             target: { type: 'current_workspace', instructions: content },
+            ...(turnSkills.length ? { skills: turnSkills.map((skill) => skill.id) } : {}),
+            ...(turnResources.length ? { contextResources: turnResources } : {}),
+            ...(turnContentParts.length ? { contentParts: turnContentParts } : {}),
           })
         : await api.startAssistantTurn(props.ctx, projectName, thread.id, {
             content,
             clientUserMessageID: clientRequestID,
             collaborationMode: startOperation.collaborationMode,
+            ...(turnSkills.length ? { skills: turnSkills.map((skill) => skill.id) } : {}),
+            ...(turnResources.length ? { contextResources: turnResources } : {}),
+            ...(turnContentParts.length ? { contentParts: turnContentParts } : {}),
           })
+      startPostAccepted = true
+      // The POST response is the acceptance boundary. Later projection or
+      // stream setup failures must not make already-consumed attachments look
+      // available for a second turn.
+      clearSelectedTurnAttachments()
       replaceAssistantThread(canonical.thread)
       const items = await api.listAssistantThreadItems(props.ctx, projectName, thread.id)
       activeAssistantThreadSequence = maxAssistantThreadSequence(items)
@@ -3080,6 +3165,17 @@ async function sendMessage() {
     }
   } catch (e) {
     messages.value = messages.value.filter((message) => message.id !== optimisticID)
+    if (startPostAccepted) {
+      pendingMessageSubmission = null
+      if (firstProjectPending) pendingFirstProjectSubmission = null
+      assistantRunController.disconnect()
+      messageStreaming.value = false
+      const detail = e instanceof Error ? e.message : String(e)
+      error.value = detail
+        ? `Turn accepted, but the conversation could not be refreshed: ${detail}`
+        : 'Turn accepted, but the conversation could not be refreshed. Reopen this project to recover it.'
+      return
+    }
     if (e instanceof ProjectAPIRequestError && e.status === 409) {
       try {
         const recovered = await recoverAssistantConversation(projectName)
@@ -3087,8 +3183,10 @@ async function sendMessage() {
         const persistedPrompt = persistedUserID
           ? messages.value.find((message) => message.id === persistedUserID && message.role === 'user')
           : undefined
-        if (persistedPrompt?.content === content && assistantRunMatchesStartRequest(recovered?.current, payload)) {
+        const expectedServerContent = assistantRunExpectedServerContent(payload)
+        if (persistedPrompt?.content === expectedServerContent && assistantRunMatchesStartRequest(recovered?.current, payload)) {
           pendingMessageSubmission = null
+          clearSelectedTurnAttachments()
           if (firstProjectPending && firstProjectSubmissionAccepted(firstProjectPending, persistedPrompt)) pendingFirstProjectSubmission = null
         } else {
           pendingMessageSubmission = null
@@ -3424,9 +3522,13 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
       const itemContent = rawItem.content ?? ''
       const existingContent = existing?.content ?? ''
       const userAssistantSkills = role === 'user' ? assistantSkillsFromThreadItem(rawItem) : []
+      const userContextResources = role === 'user' ? assistantContextResourcesFromThreadItem(rawItem) : []
+      const userContentParts = role === 'user' ? assistantContentPartsFromThreadItem(rawItem) : []
       const metadata: Record<string, unknown> = {
         ...(existing?.metadata ?? {}),
         ...(userAssistantSkills.length ? { assistantSkills: userAssistantSkills } : {}),
+        ...(userContextResources.length ? { assistantContextResources: userContextResources } : {}),
+        ...(userContentParts.length ? { assistantContentParts: userContentParts } : {}),
         ...(role === 'assistant' ? {
           assistantStatus: itemRun?.status ?? (rawItem.phase === 'commentary' && rawItem.status === 'completed' ? 'completed' : 'running'),
           assistantMessageID: rawItem.assistantMessageID || messageID,
@@ -3868,13 +3970,49 @@ function normalizeAssistantMarkdown(value: string): string {
   return value.replace(/^(#{2,6})([A-Za-z][^\n]*)$/gm, '$1 $2')
 }
 
-function renderMessageContent(content: string, role: ProjectMessage['role']): string {
-  if (role !== 'assistant') return escapeHtml(content).replace(/\n/g, '<br />')
-  return assistantMarkdown.render(normalizeAssistantMarkdown(content))
+function renderMessageContent(content: string, role: ProjectMessage['role'], message?: ProjectMessageView): string {
+  if (role !== 'user') return assistantMarkdown.render(normalizeAssistantMarkdown(content))
+  if (message) {
+    const parts = assistantContentPartsForMessage(message)
+    if (parts.length) {
+      const skills = assistantSkillsForMessage(message)
+      const resources = assistantContextResourcesForMessage(message)
+      const rendered = parts.map((part) => {
+        if (part.type === 'text') return escapeHtml(part.text).replace(/\n/g, '<br />')
+        if (part.type === 'skill') {
+          const skill = skills.find((candidate) => candidate.id === part.skillID)
+          const label = skill?.name || part.skillID
+          return `<span class="assistant-message-chip inline-flex max-w-full items-center gap-1 rounded-sm border border-accent/30 bg-accent/10 px-1.5 py-0.5 align-baseline font-mono text-[11px] leading-4 text-accent" title="${escapeHtml(skill?.scope ? `${label} · ${skill.scope}` : label)}">@ ${escapeHtml(label)}</span>`
+        }
+        const resource = resources[part.resourceIndex]
+        if (!resource) return ''
+        const label = resource.resourceRef.name
+        return `<span class="assistant-message-chip inline-flex max-w-full items-center gap-1 rounded-sm border border-accent/30 bg-accent/10 px-1.5 py-0.5 align-baseline font-mono text-[11px] leading-4 text-accent" title="${escapeHtml(`${resource.provider} · ${resource.resourceRef.kind} · ${label}`)}"># ${escapeHtml(label)}</span>`
+      }).join('')
+      if (rendered) return rendered
+    }
+  }
+  return escapeHtml(content).replace(/\n/g, '<br />')
 }
 
 function assistantSkillsForMessage(message: ProjectMessageView): ProjectAssistantSkill[] {
   return projectAssistantSkills(message.metadata?.assistantSkills)
+}
+
+function assistantContextResourcesForMessage(message: ProjectMessageView): ProjectAssistantContextResource[] {
+  return projectAssistantContextResources(message.metadata?.assistantContextResources)
+}
+
+function assistantContentPartsForMessage(message: ProjectMessageView): ProjectAssistantContentPart[] {
+  const parts = projectAssistantComposerParts(message.metadata?.assistantContentParts) as ProjectAssistantContentPart[]
+  const resources = assistantContextResourcesForMessage(message)
+  const skills = assistantSkillsForMessage(message)
+  const skillIDs = new Set(skills.map((skill) => skill.id))
+  return parts.filter((part) =>
+    part.type === 'text' ||
+    (part.type === 'skill' && (!skillIDs.size || skillIDs.has(part.skillID))) ||
+    (part.type === 'resource' && part.resourceIndex >= 0 && part.resourceIndex < resources.length),
+  )
 }
 
 function assistantSurfaceCards(message: ProjectMessageView): ProjectAssistantSurfaceCard[] {
@@ -4439,10 +4577,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               >
                 <div
                   class="rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 text-[13px] leading-5 text-text-primary shadow-sm"
-                  v-html="renderMessageContent(message.content, message.role)"
+                  v-html="renderMessageContent(message.content, message.role, message)"
                 />
                 <div
-                  v-if="assistantSkillsForMessage(message).length"
+                  v-if="!assistantContentPartsForMessage(message).length && assistantSkillsForMessage(message).length"
                   class="flex max-w-full flex-wrap justify-end gap-1.5"
                   aria-label="Skills used for this turn"
                 >
@@ -4455,6 +4593,22 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     <Plug class="h-3 w-3 shrink-0 text-accent" :stroke-width="2" aria-hidden="true" />
                     <span class="max-w-40 truncate font-medium text-text-primary">{{ skill.name }}</span>
                     <span class="max-w-24 truncate text-text-muted">{{ skill.scope }}</span>
+                  </span>
+                </div>
+                <div
+                  v-if="!assistantContentPartsForMessage(message).length && assistantContextResourcesForMessage(message).length"
+                  class="flex max-w-full flex-wrap justify-end gap-1.5"
+                  aria-label="Resources referenced for this turn"
+                >
+                  <span
+                    v-for="resource in assistantContextResourcesForMessage(message)"
+                    :key="assistantResourceSelectionKey(resource)"
+                    class="inline-flex max-w-full items-center gap-1 rounded-sm border border-border-subtle bg-surface-raised px-2 py-1 text-[10px] text-text-secondary"
+                    :title="`${resource.provider} · ${resource.resourceRef.kind} · ${resource.resourceRef.name}`"
+                  >
+                    <Link2 class="h-3 w-3 shrink-0 text-accent" :stroke-width="2" aria-hidden="true" />
+                    <span class="max-w-40 truncate font-mono text-text-primary">{{ resource.resourceRef.name }}</span>
+                    <span class="max-w-24 truncate text-text-muted">{{ resource.resourceRef.kind }}</span>
                   </span>
                 </div>
                 <div class="group/timestamp relative max-w-full">
@@ -4751,28 +4905,37 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </div>
           <div id="assistant-plan-mobile-anchor" class="mb-2 flex justify-end empty:hidden md:hidden" />
           <div class="relative min-h-[72px] rounded-md border border-border-subtle bg-surface shadow-sm transition focus-within:border-accent/50">
-            <textarea
-              ref="promptRef"
+            <AssistantRichComposer
+              ref="assistantComposerRef"
               v-model="prompt"
-              rows="2"
-              class="min-h-[72px] w-full resize-none rounded-md border-0 bg-transparent px-3 py-2.5 pb-12 pr-14 text-[13px] leading-5 text-text-primary outline-none placeholder:text-text-muted"
-              placeholder="Message this project"
+              :content-parts="assistantComposerParts"
+              :skills="assistantSkills"
+              :selected-skills="selectedTurnSkills"
+              :selected-resources="selectedTurnResources"
+              :ctx="props.ctx"
+              :providers="providers"
               :disabled="busy || assistantResumeBusy"
-              @keydown.enter.exact.prevent="sendMessage"
-            />
-            <div class="absolute bottom-2 left-1.5 right-12 flex min-w-0 items-center gap-0.5">
-              <ResponseModePicker
-                :mode="assistantIntent"
-                :disabled="messageStreaming || loading"
-                @select-mode="selectAssistantResponseMode"
-              />
-              <ApprovalModePicker
-                :mode="approvalMode"
-                :busy="approvalModeLoading || approvalModeSaving"
-                :disabled="messageStreaming || loading || approvalModeLoading || approvalModeSaving"
-                @select="selectApprovalMode"
-              />
-            </div>
+              :active-run="messageStreaming"
+              @update:content-parts="updateAssistantComposerParts"
+              @update:selected-skills="updateAssistantComposerSkills"
+              @update:selected-resources="updateAssistantComposerResources"
+              @select-mode="selectAssistantResponseMode"
+              @submit="submitAssistantComposer"
+            >
+              <template #controls>
+                <ResponseModePicker
+                  :mode="assistantIntent"
+                  :disabled="messageStreaming || loading"
+                  @select-mode="selectAssistantResponseMode"
+                />
+                <ApprovalModePicker
+                  :mode="approvalMode"
+                  :busy="approvalModeLoading || approvalModeSaving"
+                  :disabled="messageStreaming || loading || approvalModeLoading || approvalModeSaving"
+                  @select="selectApprovalMode"
+                />
+              </template>
+            </AssistantRichComposer>
             <button
               v-if="messageStreaming && !prompt.trim() && activeAssistantRun?.status !== 'stopping'"
               type="button"

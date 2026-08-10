@@ -10,6 +10,8 @@ import type {
   ProjectAssistantRunStatus,
   ProjectAssistantApprovalMode,
   ProjectAssistantApprovalPreference,
+  ProjectAssistantContextResource,
+  ProjectAssistantContentPart,
   ProjectAssistantSkill,
   ProjectAssistantSkillDetail,
   ProjectAssistantSkillExport,
@@ -750,11 +752,11 @@ export const api = {
     return body.items ?? []
   },
 
-  async startAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string, body: { content: string; clientUserMessageID: string; collaborationMode: ProjectAssistantRunMode; skills?: string[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+  async startAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string, body: { content: string; clientUserMessageID: string; collaborationMode: ProjectAssistantRunMode; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
     return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns`, body)
   },
 
-  async startAssistantReview(ctx: KedgeContext | null, name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string; skills?: string[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+  async startAssistantReview(ctx: KedgeContext | null, name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
     return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/reviews`, body)
   },
 
@@ -774,7 +776,7 @@ export const api = {
     return request<{ turnID: string; status: ProjectAssistantRunStatus }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/interrupt`, { clientRequestID })
   },
 
-  async continueAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string, turnID: string, body: { content?: string; clientUserMessageID: string; skills?: string[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }> {
+  async continueAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string, turnID: string, body: { content?: string; clientUserMessageID: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }> {
     return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/continue`, body)
   },
 

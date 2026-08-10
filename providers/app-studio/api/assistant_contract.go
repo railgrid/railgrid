@@ -67,6 +67,8 @@ type projectAssistantRunRequest struct {
 	TurnPolicy               projectAssistantTurnPolicy
 	SkillSnapshot            *appskills.Snapshot
 	SelectedSkills           []projectAssistantSkillReceipt
+	SelectedContextResources []projectAssistantContextResourceReceipt
+	ContentParts             []projectAssistantContentPart
 	// InitialApprovedPlan is a run-local grant derived from the explicit
 	// prompt that created a fresh Project. It is never saved as a cross-turn
 	// plan grant; checkpoints retain it only while this initial run is active.

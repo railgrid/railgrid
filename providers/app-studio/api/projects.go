@@ -919,9 +919,11 @@ func appendProjectUserMessage(ctx context.Context, msgStore store.Store, scope s
 }
 
 type projectAssistantStreamStart struct {
-	InitialApprovedPlan *projectAssistantApprovedPlan
-	SkillSnapshot       *appskills.Snapshot
-	SelectedSkills      []projectAssistantSkillReceipt
+	InitialApprovedPlan      *projectAssistantApprovedPlan
+	SkillSnapshot            *appskills.Snapshot
+	SelectedSkills           []projectAssistantSkillReceipt
+	SelectedContextResources []projectAssistantContextResourceReceipt
+	ContentParts             []projectAssistantContentPart
 }
 
 func ptrProjectAssistantApprovedPlan(plan projectAssistantApprovedPlan) *projectAssistantApprovedPlan {

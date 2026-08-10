@@ -119,6 +119,8 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 			return projectAssistantRunResult{}, err
 		}
 	}
+	runState.SetContextResources(req.SelectedContextResources)
+	runState.SetContentParts(req.ContentParts)
 	runState.SetProjectRepositoryRef(projectEinoAssistantProjectRepositoryRef(req))
 	if projectAssistantTurnProfileAllowsMutation(runState.TurnPolicy().profile) {
 		e.resumeCurrentDevelopmentSync(req, runState)
@@ -183,6 +185,8 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 
 	runState := newProjectEinoAssistantRunState()
 	runState.RestoreCheckpointState(state)
+	req.SelectedContextResources = runState.ContextResources()
+	req.ContentParts = runState.ContentParts()
 	hasSkillCheckpoint := state.CatalogDigest != "" || len(state.SelectedSkillReceipts) > 0 || len(state.LoadedSkillReceipts) > 0
 	if e.server == nil && hasSkillCheckpoint {
 		return projectAssistantRunResult{}, errors.New("assistant skill catalog is unavailable")

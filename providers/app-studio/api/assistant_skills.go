@@ -68,9 +68,12 @@ type projectAssistantSkillsResponse struct {
 }
 
 type projectAssistantDurableSkillSelection struct {
-	IDs           []string
-	CatalogDigest string
-	Receipts      []projectAssistantSkillReceipt
+	IDs                     []string
+	CatalogDigest           string
+	Receipts                []projectAssistantSkillReceipt
+	ContextResources        []projectAssistantContextResourceInput
+	ContextResourceReceipts []projectAssistantContextResourceReceipt
+	ContentParts            []projectAssistantContentPart
 }
 
 func (s *Server) projectAssistantSkillSnapshot(ctx context.Context, scope workspace.Scope) (appskills.Snapshot, error) {
@@ -289,15 +292,7 @@ func projectAssistantSkillViewsFromReceipts(receipts []projectAssistantSkillRece
 }
 
 func projectAssistantThreadSkillData(receipts []projectAssistantSkillReceipt) json.RawMessage {
-	views := projectAssistantSkillViewsFromReceipts(receipts)
-	if len(views) == 0 {
-		return nil
-	}
-	raw, err := json.Marshal(map[string]any{"skills": views})
-	if err != nil {
-		return nil
-	}
-	return raw
+	return projectAssistantThreadSelectionData(receipts, nil)
 }
 
 func projectAssistantSkillReceiptsFromRunAudit(run store.AssistantRun) []projectAssistantSkillReceipt {
@@ -326,6 +321,25 @@ func bindProjectAssistantStartSkillAudit(run *store.AssistantRun, selection proj
 	raw, err := json.Marshal(audit)
 	if err != nil {
 		return fmt.Errorf("encode assistant skill run audit: %w", err)
+	}
+	run.Audit = raw
+	return nil
+}
+
+func bindProjectAssistantStartContentPartsAudit(run *store.AssistantRun, parts []projectAssistantContentPart) error {
+	if run == nil || len(parts) == 0 {
+		return nil
+	}
+	var audit projectAssistantRunAudit
+	if len(run.Audit) > 0 {
+		if err := json.Unmarshal(run.Audit, &audit); err != nil {
+			return fmt.Errorf("decode assistant content parts audit: %w", err)
+		}
+	}
+	audit.ContentParts = projectAssistantCanonicalContentPartsForAudit(parts)
+	raw, err := json.Marshal(audit)
+	if err != nil {
+		return fmt.Errorf("encode assistant content parts audit: %w", err)
 	}
 	run.Audit = raw
 	return nil

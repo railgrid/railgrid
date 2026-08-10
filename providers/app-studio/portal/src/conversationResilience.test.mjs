@@ -10,6 +10,63 @@ const state = await import(`data:text/javascript;base64,${Buffer.from(outputText
 const message = (id, content) => ({ id, projectID: 'p', role: 'assistant', content, createdAt: '2026-01-01T00:00:00Z' })
 const snapshot = (revision, content, status = 'running') => ({ run: { id: 'run-1', mode: 'default', status, revision, activeMessageID: 'a-1' }, message: message('a-1', content) })
 
+test('start fingerprint changes with one-turn skill, resource, and inline-part selections', () => {
+  const base = { content: 'inspect this', collaborationMode: 'default' }
+  const resource = { provider: 'demo', resourceRef: { apiVersion: 'demo.example.io/v1', kind: 'Widget', resource: 'widgets', name: 'one' } }
+  const plain = state.assistantRunStartFingerprint('p', base)
+  assert.notEqual(state.assistantRunStartFingerprint('p', { ...base, skills: ['project:one'] }), plain)
+  assert.notEqual(state.assistantRunStartFingerprint('p', { ...base, contextResources: [resource] }), plain)
+  const inline = [{ type: 'text', text: 'inspect ' }, { type: 'resource', resourceIndex: 0 }]
+  assert.notEqual(state.assistantRunStartFingerprint('p', { ...base, contentParts: inline }), plain)
+  assert.notEqual(
+    state.assistantRunStartFingerprint('p', { ...base, contentParts: inline }),
+    state.assistantRunStartFingerprint('p', { ...base, contentParts: [{ type: 'resource', resourceIndex: 0 }, { type: 'text', text: 'inspect ' }] }),
+  )
+})
+
+test('server-derived structured content trims text and remaps sorted resource indexes', () => {
+  const resources = [
+    { provider: 'zeta', resourceRef: { apiVersion: 'apps.example/v1', kind: 'Table', resource: 'tables', name: 'orders' } },
+    { provider: 'alpha', resourceRef: { apiVersion: 'apps.example/v1', kind: 'Table', resource: 'tables', name: 'customers' } },
+  ]
+  assert.equal(
+    state.assistantRunExpectedServerContent({
+      content: 'browser-only prose',
+      contextResources: resources,
+      contentParts: [
+        { type: 'text', text: ' inspect ' },
+        { type: 'resource', resourceIndex: 0 },
+        { type: 'text', text: ' with ' },
+        { type: 'skill', skillID: ' team:review ' },
+        { type: 'resource', resourceIndex: 1 },
+      ],
+    }),
+    'inspect [@resource:zeta/apps.example/v1/Table/tables/orders] with [@skill:team:review][@resource:alpha/apps.example/v1/Table/tables/customers]',
+  )
+  assert.equal(
+    state.assistantRunExpectedServerContent({ content: '  plain retry  ' }),
+    'plain retry',
+  )
+  assert.equal(
+    state.assistantRunExpectedServerContent({ content: '', contentParts: [{ type: 'skill', skillID: 'team:review' }] }),
+    '[@skill:team:review]',
+  )
+})
+
+test('accepted start failures consume the rich draft and use server-derived conflict content', async () => {
+  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const sendMessage = appSource.slice(appSource.indexOf('async function sendMessage'), appSource.indexOf('function cancelMessageStream'))
+  assert.match(sendMessage, /let startPostAccepted = false/)
+  assert.match(sendMessage, /startPostAccepted = true[\s\S]*clearSelectedTurnAttachments\(\)/)
+  const acceptedFailure = sendMessage.slice(sendMessage.indexOf('if \(startPostAccepted\)'), sendMessage.indexOf("if (e instanceof ProjectAPIRequestError && e.status === 409)"))
+  assert.match(acceptedFailure, /pendingMessageSubmission = null/)
+  assert.match(acceptedFailure, /pendingFirstProjectSubmission = null/)
+  assert.match(acceptedFailure, /Turn accepted, but the conversation could not be refreshed/)
+  assert.doesNotMatch(acceptedFailure, /prompt\.value = content/)
+  assert.match(sendMessage, /assistantRunExpectedServerContent\(payload\)/)
+  assert.match(sendMessage, /persistedPrompt\?\.content === expectedServerContent/)
+})
+
 test('assistantRunTerminal recognizes run and display forms of every closed outcome', () => {
   for (const status of ['completed', 'failed', 'interrupted', 'aborted', 'Completed', 'Failed', 'Interrupted', 'Aborted']) {
     assert.equal(state.assistantRunTerminal(status), true, status)

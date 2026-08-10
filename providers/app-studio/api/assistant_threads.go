@@ -66,10 +66,15 @@ type assistantThreadPatchRequest struct {
 }
 
 type assistantThreadTurnCreateRequest struct {
-	Content             string                 `json:"content"`
-	ClientUserMessageID string                 `json:"clientUserMessageID"`
-	CollaborationMode   store.AssistantRunMode `json:"collaborationMode,omitempty"`
-	Skills              []string               `json:"skills,omitempty"`
+	Content             string                                 `json:"content"`
+	ClientUserMessageID string                                 `json:"clientUserMessageID"`
+	CollaborationMode   store.AssistantRunMode                 `json:"collaborationMode,omitempty"`
+	Skills              []string                               `json:"skills,omitempty"`
+	ContextResources    []projectAssistantContextResourceInput `json:"contextResources,omitempty"`
+	ContentParts        []projectAssistantContentPart          `json:"contentParts,omitempty"`
+	// contextResourceReceipts is server-owned continuity state for an
+	// interrupted-turn continuation. It is never decoded from the client.
+	contextResourceReceipts []projectAssistantContextResourceReceipt
 	// continuationOfTurnID is server-owned. It is populated only by the
 	// interrupted-turn continuation endpoint so ordinary turns cannot forge a
 	// predecessor relationship.
@@ -77,9 +82,11 @@ type assistantThreadTurnCreateRequest struct {
 }
 
 type assistantThreadTurnContinueRequest struct {
-	Content             string   `json:"content,omitempty"`
-	ClientUserMessageID string   `json:"clientUserMessageID"`
-	Skills              []string `json:"skills,omitempty"`
+	Content             string                                 `json:"content,omitempty"`
+	ClientUserMessageID string                                 `json:"clientUserMessageID"`
+	Skills              []string                               `json:"skills,omitempty"`
+	ContextResources    []projectAssistantContextResourceInput `json:"contextResources,omitempty"`
+	ContentParts        []projectAssistantContentPart          `json:"contentParts,omitempty"`
 }
 
 type assistantThreadTurnStartResponse struct {
@@ -340,12 +347,21 @@ func (s *Server) continueProjectAssistantThreadTurn(w http.ResponseWriter, r *ht
 			}
 		}
 	}
+	contextResources := append([]projectAssistantContextResourceInput(nil), continueRequest.ContextResources...)
+	var contextResourceReceipts []projectAssistantContextResourceReceipt
+	if len(contextResources) == 0 {
+		contextResourceReceipts = projectAssistantContextResourceReceiptsFromRunAudit(predecessorRun)
+		contextResources = projectAssistantContextResourceInputsFromReceipts(contextResourceReceipts)
+	}
 	request := assistantThreadTurnCreateRequest{
-		Content:              content,
-		ClientUserMessageID:  continueRequest.ClientUserMessageID,
-		CollaborationMode:    predecessor.Mode,
-		Skills:               skillIDs,
-		continuationOfTurnID: predecessor.ID,
+		Content:                 content,
+		ClientUserMessageID:     continueRequest.ClientUserMessageID,
+		CollaborationMode:       predecessor.Mode,
+		Skills:                  skillIDs,
+		ContextResources:        contextResources,
+		ContentParts:            append([]projectAssistantContentPart(nil), continueRequest.ContentParts...),
+		contextResourceReceipts: contextResourceReceipts,
+		continuationOfTurnID:    predecessor.ID,
 	}
 	s.startProjectAssistantThreadExecution(w, r, c, id, project, thread, request)
 }
@@ -361,17 +377,8 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 	}
 	request.Content = strings.TrimSpace(request.Content)
 	request.ClientUserMessageID = strings.TrimSpace(request.ClientUserMessageID)
-	if request.Content == "" || request.ClientUserMessageID == "" {
-		writeProjectError(w, newValidationError("content and clientUserMessageID are required"))
-		return
-	}
-	// Provider Action access is temporarily materialized from the caller's
-	// Ready-provider catalog immediately before every new assistant turn. The
-	// helper is best-effort for catalog/resource discovery, but any successful
-	// Project write is reconciled before the worker receives its snapshot.
-	project, err := s.materializeAutomaticProjectIntegrations(r.Context(), c, id, project)
-	if err != nil {
-		s.writeAssistantThreadError(w, err)
+	if request.ClientUserMessageID == "" {
+		writeProjectError(w, newValidationError("clientUserMessageID is required"))
 		return
 	}
 	if request.CollaborationMode == "" {
@@ -384,26 +391,31 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		s.writeAssistantThreadError(w, err)
 		return
 	}
-	initialBootstrap := false
-	if request.continuationOfTurnID == "" && request.CollaborationMode != store.AssistantRunModeReview {
-		initialBootstrap, err = s.consumeProjectInitialBootstrap(
-			r.Context(),
-			scope,
-			id.user,
-			request.Content,
-			request.ClientUserMessageID,
-		)
-		if err != nil {
-			s.writeAssistantThreadError(w, err)
+	contextResources, err := normalizeProjectAssistantContextResources(request.ContextResources)
+	if err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
+	}
+	contentPartsSupplied := projectAssistantContentPartsSupplied(request.ContentParts)
+	if contentPartsSupplied {
+		canonicalParts, canonicalResources, derivedContent, partsErr := normalizeProjectAssistantContentParts(request.ContentParts, skillIDs, request.ContextResources)
+		if partsErr != nil {
+			s.writeAssistantThreadError(w, partsErr)
 			return
 		}
+		request.ContentParts = canonicalParts
+		contextResources = canonicalResources
+		request.Content = derivedContent
+	} else {
+		request.ContentParts = nil
 	}
-	if initialBootstrap {
-		request.CollaborationMode = store.AssistantRunModeDefault
+	if request.Content == "" {
+		writeProjectError(w, newValidationError("content and clientUserMessageID are required"))
+		return
 	}
 	replay := false
 	if prior, replayErr := s.store.FindAssistantRunByClientRequestID(r.Context(), scope, request.ClientUserMessageID); replayErr == nil {
-		if replayErr = validateProjectAssistantStartReplayWithSkills(prior, id.user, request.Content, request.CollaborationMode, skillIDs); replayErr != nil {
+		if replayErr = validateProjectAssistantStartReplayWithSelectionsAndParts(prior, id.user, request.Content, request.CollaborationMode, skillIDs, contextResources, request.ContentParts); replayErr != nil {
 			s.writeAssistantThreadError(w, replayErr)
 			return
 		}
@@ -412,9 +424,28 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		s.writeAssistantThreadError(w, replayErr)
 		return
 	}
+	initialBootstrap := false
+	if !replay && request.continuationOfTurnID == "" && request.CollaborationMode != store.AssistantRunModeReview {
+		initialBootstrap, err = s.consumeProjectInitialBootstrap(r.Context(), scope, id.user, request.Content, request.ClientUserMessageID)
+		if err != nil {
+			s.writeAssistantThreadError(w, err)
+			return
+		}
+	}
+	if initialBootstrap {
+		request.CollaborationMode = store.AssistantRunModeDefault
+	}
 	var skillSnapshot appskills.Snapshot
 	var selectedSkills []projectAssistantSkillReceipt
+	var selectedContextResources []projectAssistantContextResourceReceipt
 	if !replay {
+		// Discover provider resources once. The same caller-scoped snapshot both
+		// validates structured context hints and drives temporary automatic grants.
+		project, selectedContextResources, err = s.prepareProjectAssistantContextResources(r.Context(), c, id, project, contextResources, request.contextResourceReceipts)
+		if err != nil {
+			s.writeAssistantThreadError(w, err)
+			return
+		}
 		skillSnapshot, err = s.projectAssistantSkillSnapshotForIdentity(r.Context(), projectWorkspaceScope(id, project), id)
 		if err == nil {
 			selectedSkills, err = projectAssistantSelectedSkillReceipts(skillSnapshot, skillIDs)
@@ -425,9 +456,17 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		return
 	}
 	var canonicalTurn store.AssistantTurn
-	started, err := s.startProjectAssistantRunDurablyWithModeAndSkills(r.Context(), scope, id.user, request.Content, request.ClientUserMessageID, request.CollaborationMode, projectAssistantDurableSkillSelection{IDs: skillIDs, CatalogDigest: skillSnapshot.CatalogDigest, Receipts: selectedSkills},
+	started, err := s.startProjectAssistantRunDurablyWithModeAndSkills(r.Context(), scope, id.user, request.Content, request.ClientUserMessageID, request.CollaborationMode, projectAssistantDurableSkillSelection{
+		IDs: skillIDs, CatalogDigest: skillSnapshot.CatalogDigest, Receipts: selectedSkills,
+		ContextResources: contextResources, ContextResourceReceipts: selectedContextResources,
+		ContentParts: request.ContentParts,
+	},
 		func(created store.AssistantRun, assistant store.Message, transcriptEmpty bool) error {
-			start := &projectAssistantStreamStart{SkillSnapshot: &skillSnapshot, SelectedSkills: cloneProjectAssistantSkillReceipts(selectedSkills)}
+			start := &projectAssistantStreamStart{
+				SkillSnapshot: &skillSnapshot, SelectedSkills: cloneProjectAssistantSkillReceipts(selectedSkills),
+				SelectedContextResources: cloneProjectAssistantContextResourceReceipts(selectedContextResources),
+				ContentParts:             cloneProjectAssistantContentParts(request.ContentParts),
+			}
 			if initialBootstrap && transcriptEmpty {
 				plan := projectAssistantInitialCreationPlan(request.Content)
 				start.InitialApprovedPlan = cloneProjectAssistantApprovedPlan(&plan)
@@ -437,7 +476,7 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 				Mode: created.Mode, ApprovalMode: created.ApprovalMode, Status: store.AssistantTurnStatusInProgress, CreatedAt: now, UpdatedAt: now}
 			turnStartedPayload := map[string]any{"turn": canonicalTurn}
 			turnPayload, _ := json.Marshal(turnStartedPayload)
-			userItem := assistantThreadItem{ID: created.UserMessageID, TurnID: created.ID, Type: assistantThreadEventUserMessage, Status: "completed", Content: request.Content, Data: projectAssistantThreadSkillData(selectedSkills), CreatedAt: now}
+			userItem := assistantThreadItem{ID: created.UserMessageID, TurnID: created.ID, Type: assistantThreadEventUserMessage, Status: "completed", Content: request.Content, Data: projectAssistantThreadSelectionDataWithParts(selectedSkills, selectedContextResources, request.ContentParts), CreatedAt: now}
 			userPayload, _ := json.Marshal(map[string]any{"item": userItem})
 			assistantItem := assistantThreadAgentMessageItem(canonicalTurn, created, "in_progress", "", now, nil)
 			assistantPayload, _ := json.Marshal(map[string]any{"item": assistantItem})
@@ -528,7 +567,7 @@ func (s *Server) repairProjectAssistantThreadTurn(ctx context.Context, scope sto
 		UpdatedAt:           now,
 	}
 	turnPayload, _ := json.Marshal(map[string]any{"turn": turn})
-	userItem := assistantThreadItem{ID: user.ID, TurnID: turn.ID, Type: assistantThreadEventUserMessage, Status: "completed", Content: user.Content, Data: projectAssistantThreadSkillData(projectAssistantSkillReceiptsFromRunAudit(run)), CreatedAt: user.CreatedAt}
+	userItem := assistantThreadItem{ID: user.ID, TurnID: turn.ID, Type: assistantThreadEventUserMessage, Status: "completed", Content: user.Content, Data: projectAssistantThreadSelectionDataWithParts(projectAssistantSkillReceiptsFromRunAudit(run), projectAssistantContextResourceReceiptsFromRunAudit(run), projectAssistantContentPartsFromRunAudit(run)), CreatedAt: user.CreatedAt}
 	userPayload, _ := json.Marshal(map[string]any{"item": userItem})
 	assistantItem := assistantThreadAgentMessageItem(turn, run, "in_progress", assistant.Content, assistant.CreatedAt, assistant.Metadata)
 	assistantPayload, _ := json.Marshal(map[string]any{"item": assistantItem})
@@ -924,6 +963,10 @@ func (s *Server) writeAssistantThreadError(w http.ResponseWriter, err error) {
 		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
 	case errors.Is(err, store.ErrAssistantThreadConflict), errors.Is(err, store.ErrAssistantThreadActive), errors.Is(err, store.ErrAssistantTurnConflict), errors.Is(err, store.ErrAssistantRunConflict):
 		writeStatus(w, http.StatusConflict, "Conflict", err.Error())
+	case errors.Is(err, errProjectAssistantContextResourceStale):
+		writeStatus(w, http.StatusConflict, "Conflict", errProjectAssistantContextResourceStale.Error())
+	case errors.Is(err, errProjectAssistantContextResourceUnavailable):
+		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", errProjectAssistantContextResourceUnavailable.Error())
 	default:
 		writeProjectError(w, err)
 	}

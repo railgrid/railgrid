@@ -415,6 +415,12 @@ func (m *projectEinoAssistantLifecycle) liveRequestContextSections(ctx context.C
 			message: chatMessage{Role: "system", Content: projectEinoAssistantLiveContextPrefix + prompt},
 		})
 	}
+	if prompt := projectAssistantContextResourcesPrompt(m.runState.ContextResources()); prompt != "" {
+		sections = append(sections, projectEinoAssistantLiveContextSection{
+			name: "context_resources", content: prompt,
+			message: chatMessage{Role: "system", Content: projectEinoAssistantLiveContextPrefix + prompt},
+		})
+	}
 	return sections
 }
 

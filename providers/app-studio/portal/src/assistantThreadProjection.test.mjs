@@ -34,6 +34,51 @@ test('projects terminal worked duration from canonical agent message data', asyn
   assert.equal(parseAssistantProgress(messages[0].metadata.assistantProgress)?.workedDurationMs, 83_400)
 })
 
+test('projects only canonical context-resource references on user messages', async () => {
+  const { assistantThreadItemsToMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const messages = assistantThreadItemsToMessages([{
+    id: 'user-resource', turnID: 'run-resource', type: 'userMessage', status: 'completed', content: 'Use this table',
+    data: { contextResources: [{
+      provider: 'databricks',
+      resourceRef: { apiVersion: 'databricks.kedge.faros.sh/v1alpha1', kind: 'Table', resource: 'tables', name: 'trips' },
+      uid: 'must-not-project', resourceVersion: 'must-not-project', catalogDigest: 'must-not-project',
+    }] },
+    sequence: 1, createdAt: '2026-08-02T17:42:09Z',
+  }], 'demo')
+  assert.deepEqual(messages[0].metadata.assistantContextResources, [{
+    provider: 'databricks',
+    resourceRef: { apiVersion: 'databricks.kedge.faros.sh/v1alpha1', kind: 'Table', resource: 'tables', name: 'trips' },
+  }])
+  assert.doesNotMatch(JSON.stringify(messages[0].metadata), /must-not-project/)
+})
+
+test('reload projection trims, deduplicates, and bounds context-resource chips', async () => {
+  const { assistantThreadItemsToMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const resources = [
+    { provider: 'demo', resourceRef: { apiVersion: 'demo.example/v1', kind: 'Widget', resource: 'widgets', name: '  first ' } },
+    { provider: 'demo', resourceRef: { apiVersion: 'demo.example/v1', kind: 'Widget', resource: 'widgets', name: 'first' }, uid: 'private' },
+    ...Array.from({ length: 8 }, (_, index) => ({
+      provider: 'demo',
+      resourceRef: { apiVersion: 'demo.example/v1', kind: 'Widget', resource: 'widgets', name: `item-${index}` },
+    })),
+    { provider: 'demo', resourceRef: { apiVersion: 'demo.example/v1', kind: 'Widget', resource: 'widgets', name: 'overflow' } },
+    { provider: '', resourceRef: { apiVersion: 'demo.example/v1', kind: 'Widget', resource: 'widgets', name: 'invalid' } },
+  ]
+  const [message] = assistantThreadItemsToMessages([{
+    id: 'user-resource-bounded', turnID: 'run-resource-bounded', type: 'userMessage', status: 'completed',
+    content: 'Use these resources', data: { contextResources: resources }, sequence: 1,
+    createdAt: '2026-08-02T17:42:09Z',
+  }], 'demo')
+
+  assert.equal(message.metadata.assistantContextResources.length, 8)
+  assert.deepEqual(message.metadata.assistantContextResources[0], {
+    provider: 'demo',
+    resourceRef: { apiVersion: 'demo.example/v1', kind: 'Widget', resource: 'widgets', name: 'first' },
+  })
+  assert.equal(message.metadata.assistantContextResources.some(({ resourceRef }) => resourceRef.name === 'overflow'), false)
+  assert.doesNotMatch(JSON.stringify(message.metadata), /private/)
+})
+
 test('keeps action items alongside agent progress in the thread projection', async () => {
   const { assistantThreadItemsToMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
   const messages = assistantThreadItemsToMessages([{

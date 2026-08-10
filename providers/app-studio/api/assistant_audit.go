@@ -199,6 +199,12 @@ func newProjectAssistantRunAuditRecorder(
 	if len(audit.SelectedSkills) == 0 && len(req.SelectedSkills) > 0 {
 		audit.SelectedSkills = cloneProjectAssistantSkillReceipts(req.SelectedSkills)
 	}
+	if len(audit.SelectedContextResources) == 0 && len(req.SelectedContextResources) > 0 {
+		audit.SelectedContextResources = cloneProjectAssistantContextResourceReceipts(req.SelectedContextResources)
+	}
+	if len(audit.ContentParts) == 0 && len(req.ContentParts) > 0 {
+		audit.ContentParts = projectAssistantCanonicalContentPartsForAudit(req.ContentParts)
+	}
 	projectAssistantAuditApplyEffectiveSettings(&audit, req)
 	recorder := &projectAssistantRunAuditRecorder{
 		run:                  run,

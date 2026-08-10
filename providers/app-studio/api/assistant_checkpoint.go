@@ -51,6 +51,8 @@ type projectAssistantCheckpointState struct {
 	CatalogDigest                    string                                              `json:"catalogDigest,omitempty"`
 	SelectedSkillReceipts            []projectAssistantSkillReceipt                      `json:"selectedSkillReceipts,omitempty"`
 	LoadedSkillReceipts              []projectAssistantSkillReceipt                      `json:"loadedSkillReceipts,omitempty"`
+	SelectedContextResourceReceipts  []projectAssistantContextResourceReceipt            `json:"selectedContextResourceReceipts,omitempty"`
+	ContentParts                     []projectAssistantContentPart                       `json:"contentParts,omitempty"`
 	ApprovedPlan                     *projectAssistantApprovedPlan                       `json:"approvedPlan,omitempty"`
 	ExecutionPlan                    *projectAssistantApprovedPlan                       `json:"executionPlan,omitempty"`
 	PlanProgress                     projectAssistantPlanSnapshot                        `json:"planProgress,omitempty"`
@@ -143,28 +145,30 @@ type projectAssistantResumeResponse struct {
 }
 
 type projectAssistantRunAudit struct {
-	Version            int                                     `json:"version,omitempty"`
-	StartRequestDigest string                                  `json:"startRequestDigest,omitempty"`
-	ActorDigest        string                                  `json:"actorDigest,omitempty"`
-	CatalogDigest      string                                  `json:"catalogDigest,omitempty"`
-	SelectedSkills     []projectAssistantSkillReceipt          `json:"selectedSkills,omitempty"`
-	StopRequestID      string                                  `json:"stopRequestID,omitempty"`
-	StopRequestDigest  string                                  `json:"stopRequestDigest,omitempty"`
-	Provider           string                                  `json:"provider,omitempty"`
-	Model              string                                  `json:"model,omitempty"`
-	EffectiveSettings  *projectAssistantAuditEffectiveSettings `json:"effectiveSettings,omitempty"`
-	ApprovalMode       store.AssistantApprovalMode             `json:"approvalMode,omitempty"`
-	Profile            projectAssistantTurnProfile             `json:"profile,omitempty"`
-	StartedAt          time.Time                               `json:"startedAt,omitempty"`
-	Tools              []projectAssistantAuditTool             `json:"tools,omitempty"`
-	ModelCalls         []projectAssistantAuditModelCall        `json:"modelCalls,omitempty"`
-	ModelCallStats     *projectAssistantAuditModelCallStats    `json:"modelCallStats,omitempty"`
-	Compactions        []projectAssistantAuditCompaction       `json:"compactions,omitempty"`
-	RolloutBudget      *projectAssistantRolloutBudgetState     `json:"rolloutBudget,omitempty"`
-	Failure            *projectAssistantAuditFailure           `json:"failure,omitempty"`
-	Outcome            projectAssistantAuditOutcome            `json:"outcome,omitempty"`
-	DurationMS         int64                                   `json:"durationMs,omitempty"`
-	Decisions          []projectAssistantPermissionAudit       `json:"decisions,omitempty"`
+	Version                  int                                      `json:"version,omitempty"`
+	StartRequestDigest       string                                   `json:"startRequestDigest,omitempty"`
+	ActorDigest              string                                   `json:"actorDigest,omitempty"`
+	CatalogDigest            string                                   `json:"catalogDigest,omitempty"`
+	SelectedSkills           []projectAssistantSkillReceipt           `json:"selectedSkills,omitempty"`
+	SelectedContextResources []projectAssistantContextResourceReceipt `json:"selectedContextResources,omitempty"`
+	ContentParts             []projectAssistantContentPart            `json:"contentParts,omitempty"`
+	StopRequestID            string                                   `json:"stopRequestID,omitempty"`
+	StopRequestDigest        string                                   `json:"stopRequestDigest,omitempty"`
+	Provider                 string                                   `json:"provider,omitempty"`
+	Model                    string                                   `json:"model,omitempty"`
+	EffectiveSettings        *projectAssistantAuditEffectiveSettings  `json:"effectiveSettings,omitempty"`
+	ApprovalMode             store.AssistantApprovalMode              `json:"approvalMode,omitempty"`
+	Profile                  projectAssistantTurnProfile              `json:"profile,omitempty"`
+	StartedAt                time.Time                                `json:"startedAt,omitempty"`
+	Tools                    []projectAssistantAuditTool              `json:"tools,omitempty"`
+	ModelCalls               []projectAssistantAuditModelCall         `json:"modelCalls,omitempty"`
+	ModelCallStats           *projectAssistantAuditModelCallStats     `json:"modelCallStats,omitempty"`
+	Compactions              []projectAssistantAuditCompaction        `json:"compactions,omitempty"`
+	RolloutBudget            *projectAssistantRolloutBudgetState      `json:"rolloutBudget,omitempty"`
+	Failure                  *projectAssistantAuditFailure            `json:"failure,omitempty"`
+	Outcome                  projectAssistantAuditOutcome             `json:"outcome,omitempty"`
+	DurationMS               int64                                    `json:"durationMs,omitempty"`
+	Decisions                []projectAssistantPermissionAudit        `json:"decisions,omitempty"`
 }
 
 // projectAssistantAuditEffectiveSettings records the bounded, server-selected

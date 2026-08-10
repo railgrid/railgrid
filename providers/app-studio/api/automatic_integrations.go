@@ -65,9 +65,17 @@ type automaticProviderCatalogAction struct {
 }
 
 type automaticIntegrationTarget struct {
-	provider string
-	ref      *aiv1alpha1.ProjectProviderResourceReference
-	actions  []aiv1alpha1.ProjectProviderActionSpec
+	provider        string
+	ref             *aiv1alpha1.ProjectProviderResourceReference
+	uid             string
+	resourceVersion string
+	actions         []aiv1alpha1.ProjectProviderActionSpec
+}
+
+type automaticIntegrationDiscovery struct {
+	targets             []automaticIntegrationTarget
+	failedResourceTypes map[string]struct{}
+	catalogUnavailable  bool
 }
 
 // materializeAutomaticProjectIntegrations temporarily removes the requirement
@@ -84,20 +92,28 @@ func (s *Server) materializeAutomaticProjectIntegrations(ctx context.Context, c 
 	if s == nil || c == nil || project == nil {
 		return project, nil
 	}
+	discovery := s.discoverAutomaticProjectIntegrations(ctx, c, id)
+	return materializeDiscoveredAutomaticProjectIntegrations(ctx, c, project, discovery.targets)
+}
+
+func (s *Server) discoverAutomaticProjectIntegrations(ctx context.Context, c *asclient.Client, id identity) automaticIntegrationDiscovery {
+	discovery := automaticIntegrationDiscovery{failedResourceTypes: map[string]struct{}{}}
+	if s == nil || c == nil {
+		return discovery
+	}
 	catalog, err := s.providerActionCatalog(ctx, id)
 	if err != nil {
-		return project, nil
+		discovery.catalogUnavailable = true
+		return discovery
 	}
 	resources := automaticProviderCatalogResources(catalog)
-	if len(resources) == 0 {
-		return project, nil
-	}
 	targets := make([]automaticIntegrationTarget, 0)
 	for _, resource := range resources {
 		list, listErr := c.Resource(automaticProviderResource(resource.gvr, resource.kind, resource.resource), "").List(ctx, metav1.ListOptions{})
 		if listErr != nil || list == nil {
 			// A denied or temporarily unavailable provider resource must not
 			// turn an otherwise actionless assistant turn into a provider error.
+			discovery.failedResourceTypes[automaticProviderCatalogResourceKey(resource.provider, resource.gvr, resource.kind, resource.resource)] = struct{}{}
 			continue
 		}
 		for _, object := range list.Items {
@@ -114,16 +130,23 @@ func (s *Server) materializeAutomaticProjectIntegrations(ctx context.Context, c 
 					Name: action.name, Version: action.version, SchemaDigest: action.schemaDigest,
 				})
 			}
-			targets = append(targets, automaticIntegrationTarget{provider: resource.provider, ref: ref, actions: actions})
+			targets = append(targets, automaticIntegrationTarget{
+				provider: resource.provider, ref: ref, uid: string(object.GetUID()),
+				resourceVersion: strings.TrimSpace(object.GetResourceVersion()), actions: actions,
+			})
 		}
-	}
-	if len(targets) == 0 {
-		return project, nil
 	}
 	sort.Slice(targets, func(i, j int) bool {
 		return automaticProviderReferenceKey(targets[i].provider, targets[i].ref) < automaticProviderReferenceKey(targets[j].provider, targets[j].ref)
 	})
+	discovery.targets = targets
+	return discovery
+}
 
+func materializeDiscoveredAutomaticProjectIntegrations(ctx context.Context, c *asclient.Client, project *aiv1alpha1.Project, targets []automaticIntegrationTarget) (*aiv1alpha1.Project, error) {
+	if c == nil || project == nil || len(targets) == 0 {
+		return project, nil
+	}
 	next := project.DeepCopy()
 	changed := materializeAutomaticIntegrationTargets(next, targets)
 	if !changed {

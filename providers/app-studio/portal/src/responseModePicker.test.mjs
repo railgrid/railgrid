@@ -41,10 +41,15 @@ test('provides explicit default, plan, and review choices in one responsive popo
 })
 
 test('composer mounts both current settings', async () => {
-  const source = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-  assert.match(source, /<ResponseModePicker/)
-  assert.match(source, /<ApprovalModePicker/)
-  assert.match(source, /right-12 flex min-w-0/)
-  assert.match(source, /rounded-md bg-accent text-white/)
-  assert.match(source, /<ArrowUp class="h-4 w-4"/)
+  const [app, composer] = await Promise.all([
+    readFile(new URL('./App.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+  ])
+  assert.match(app, /<ResponseModePicker/)
+  assert.match(app, /<ApprovalModePicker/)
+  assert.match(app, /<template #controls>/)
+  assert.match(composer, /right-12 flex min-w-0/)
+  assert.match(composer, /<slot name="controls" \/>/)
+  assert.match(app, /rounded-md bg-accent text-white/)
+  assert.match(app, /<ArrowUp class="h-4 w-4"/)
 })

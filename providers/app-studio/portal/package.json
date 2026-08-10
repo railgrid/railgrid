@@ -22,6 +22,8 @@
     "test:assistant-trace": "node --test src/assistantTrace.test.mjs",
     "test:approval-mode": "node --test src/approvalModePicker.test.mjs",
     "test:response-mode": "node --test src/responseModePicker.test.mjs",
+    "test:assistant-commands": "node --test src/assistantCommandPalette.test.mjs",
+    "test:assistant-rich-composer": "node --test src/assistantRichComposer.test.mjs",
     "test:conversation-resilience": "node --test src/conversationResilience.test.mjs",
     "typecheck": "vue-tsc --noEmit"
   },
