@@ -207,11 +207,8 @@ hub_namespace = 'kedge-system'
 hub_image = 'ghcr.io/faroshq/kedge-hub'
 hub_tls_secret_name = 'kedge-hub-tls'
 hub_tls_state_dir = '.kcp/tilt-hub-tls'
-app_studio_provider_image = 'ghcr.io/faroshq/kedge/app-studio-provider:dev'
 app_studio_preview_namespace = 'kedge-preview'
-app_studio_preview_gateway_name = 'sandbox-preview-gateway'
 app_studio_preview_parent_gateway_name = 'app-studio-preview'
-app_studio_preview_token_secret = 'sandbox-preview-token'
 app_studio_preview_tls_secret = 'app-studio-preview-localhost-tls'
 app_studio_preview_listener = 'app-studio-preview-https'
 app_studio_preview_base_domain = 'preview.localhost'
@@ -373,12 +370,6 @@ RUN chmod 0755 /tmp/kedge-hub
     live_update=[
         sync('bin/kedge-hub-linux', '/tmp/kedge-hub'),
     ],
-)
-
-docker_build(
-    app_studio_provider_image,
-    context='providers/app-studio',
-    dockerfile='providers/app-studio/Dockerfile',
 )
 
 k8s_yaml(blob('''
@@ -1335,8 +1326,17 @@ local_resource(
 # bootstrapping the provider workspace, helm-installing kro (with the kind
 # hostAliases + self-cluster patches), and seeding kro's kcp-kubeconfig. Serve
 # still runs as the host-binary `infrastructure` resource (skip-serve) for fast
-# iteration. Order: infrastructure-register (creates the workspace) →
-# infrastructure-operator → infrastructure (serve).
+# iteration. Order: infrastructure-operator → infrastructure (serve).
+#
+# NOT resource_deps on infrastructure-register: that resource is manual
+# (auto_init=False), and Tilt treats a never-built dep as unsatisfied, so
+# depending on it deadlocks this chain on every `tilt up` until someone
+# triggers register by hand — with the hub then answering 503
+# "provider not ready: infrastructure" for preview/data-plane routes. The
+# operator bootstraps the workspace itself, and register is an idempotent
+# CatalogEntry apply that survives cluster restarts, so the gate bought
+# nothing. Trigger infrastructure-register manually when the CatalogEntry
+# or Provider manifest actually changes.
 local_resource(
     'infrastructure-operator',
     cmd='make build-infrastructure-provider',
@@ -1354,7 +1354,7 @@ local_resource(
         'providers/infrastructure/go.mod',
         'providers/infrastructure/go.sum',
     ],
-    resource_deps=['kedge-hub', 'infrastructure-register', 'app-studio-preview-console-key'],
+    resource_deps=['kedge-hub', 'app-studio-preview-console-key'],
     labels=['providers-kro'],
 )
 

@@ -164,7 +164,7 @@ func projectEinoAssistantCompactionMiddleware(
 			BaseChatModel:    chatModel,
 			forbidToolChoice: projectEinoAssistantCompactionSupportsForbiddenToolChoice(req.LLM),
 		},
-		ModelOptions: []einomodel.Option{einomodel.WithMaxTokens(4096)},
+		ModelOptions: projectMaxTokensOptions(req.LLM.Model, 4096),
 		Retry:        projectEinoAssistantCompactionRetryConfig(req),
 		Trigger: &summarization.TriggerCondition{
 			// Codex rolls context from active model-window pressure rather than an
@@ -299,10 +299,12 @@ func (m *projectEinoAssistantCompactionIsolatedModel) Generate(
 		einomodel.WithDeferredTools(nil),
 		einomodel.WithToolSearchTool(nil),
 	)
-	// DeepSeek V4's direct thinking-mode API rejects the tool_choice field. The
-	// OpenCode Zen endpoint used by App Studio accepts it, so keep the stronger
-	// explicit prohibition there while omitting the incompatible field only for
-	// direct DeepSeek V4 requests. Empty tool sets remain mandatory in both cases.
+	// The explicit tool_choice prohibition exists for DeepSeek models only:
+	// their thinking variants may continue earlier tool-call patterns from the
+	// exact history even without tool schemas. Spec-compliant OpenAI endpoints
+	// reject tool_choice when no tools are specified, and DeepSeek V4's direct
+	// thinking-mode API rejects the field outright, so both omit it. Empty tool
+	// sets remain mandatory in every case.
 	if m.forbidToolChoice {
 		opts = append(opts, einomodel.WithToolChoice(schema.ToolChoiceForbidden))
 	}
@@ -390,10 +392,20 @@ func projectEinoAssistantEvictOldestModelHistory(input []*schema.Message, preser
 	return trimmed, true
 }
 
+// projectEinoAssistantCompactionSupportsForbiddenToolChoice reports whether
+// the compaction request should carry an explicit tool_choice "none". The
+// OpenAI chat completion spec only allows tool_choice when tools are
+// specified, and the compaction request deliberately exposes none, so the
+// explicit field is reserved for the DeepSeek models the prohibition was
+// written for. DeepSeek V4's direct thinking-mode API rejects the field
+// entirely; proxied V4 endpoints such as OpenCode Zen accept it.
 func projectEinoAssistantCompactionSupportsForbiddenToolChoice(settings projectLLMSettings) bool {
 	model := strings.ToLower(strings.TrimSpace(settings.Model))
 	if idx := strings.LastIndex(model, "/"); idx >= 0 {
 		model = model[idx+1:]
+	}
+	if !strings.HasPrefix(model, "deepseek") {
+		return false
 	}
 	if !strings.HasPrefix(model, "deepseek-v4") {
 		return true

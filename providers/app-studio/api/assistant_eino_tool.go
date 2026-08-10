@@ -161,8 +161,16 @@ func projectEinoAssistantDiscoverTools(ctx context.Context, server *Server, req 
 func projectEinoAssistantFilterPreviewInspection(tools []projectAssistantTool, include bool) []projectAssistantTool {
 	out := make([]projectAssistantTool, 0, len(tools))
 	for _, tool := range tools {
-		if tool == nil || (!include && projectToolBaseName(tool.Spec().Name) == projectToolInspectDevelopmentPreview) {
+		if tool == nil {
 			continue
+		}
+		// Both preview browser tools require a Ready shared browser; hide them
+		// together when it is unavailable.
+		if !include {
+			switch projectToolBaseName(tool.Spec().Name) {
+			case projectToolInspectDevelopmentPreview, projectToolInteractDevelopmentPreview:
+				continue
+			}
 		}
 		out = append(out, tool)
 	}

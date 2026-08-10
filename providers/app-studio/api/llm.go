@@ -118,6 +118,7 @@ const (
 	projectToolGetRuntimeStatus               = "get_runtime_status"
 	projectToolGetPreviewURL                  = "get_preview_url"
 	projectToolInspectDevelopmentPreview      = "inspect_development_preview"
+	projectToolInteractDevelopmentPreview     = "interact_development_preview"
 	projectToolGetRuntimeLogs                 = "get_runtime_logs"
 	projectToolGetPreviewConsoleLogs          = "get_preview_console_logs"
 	projectToolRestartRuntime                 = "restart_runtime"

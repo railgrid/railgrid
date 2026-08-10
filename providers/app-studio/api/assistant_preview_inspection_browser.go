@@ -363,15 +363,20 @@ func browserMCPParseConsole(text string) []projectAssistantPreviewInspectionCons
 	return events
 }
 
-// browserMCPNode is one accessibility-tree entry: a role and its accessible
-// name (quoted in the snapshot). Parsed from a line such as
+// browserMCPNode is one accessibility-tree entry: a role, its accessible name
+// (quoted in the snapshot), and the Playwright MCP element ref that interaction
+// tools target. Parsed from a line such as
 // `  - button "Add to cart" [ref=e7]`.
 type browserMCPNode struct {
 	role string
 	name string
+	ref  string
 }
 
-var browserMCPNodeLine = regexp.MustCompile(`^-\s+(?P<role>[A-Za-z0-9_]+)(?:\s+"(?P<name>(?:[^"\\]|\\.)*)")?`)
+var (
+	browserMCPNodeLine = regexp.MustCompile(`^-\s+(?P<role>[A-Za-z0-9_]+)(?:\s+"(?P<name>(?:[^"\\]|\\.)*)")?`)
+	browserMCPNodeRef  = regexp.MustCompile(`\[ref=([^\]]+)\]`)
+)
 
 func browserMCPParseAccessibilityNodes(snapshot string) []browserMCPNode {
 	var nodes []browserMCPNode
@@ -381,10 +386,14 @@ func browserMCPParseAccessibilityNodes(snapshot string) []browserMCPNode {
 		if m == nil {
 			continue
 		}
-		nodes = append(nodes, browserMCPNode{
+		node := browserMCPNode{
 			role: strings.ToLower(m[1]),
 			name: browserMCPUnquote(m[2]),
-		})
+		}
+		if ref := browserMCPNodeRef.FindStringSubmatch(trimmed); ref != nil {
+			node.ref = ref[1]
+		}
+		nodes = append(nodes, node)
 	}
 	return nodes
 }

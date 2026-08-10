@@ -249,6 +249,18 @@ func projectTemperatureOptions(model string, temperature float32) []einomodel.Op
 	return []einomodel.Option{einomodel.WithTemperature(temperature)}
 }
 
+// projectMaxTokensOptions returns the per-call completion budget option for the
+// given model. The OpenAI reasoning families that fix sampling parameters
+// (GPT-5, o1/o3/o4) also reject the legacy max_tokens field and accept only
+// max_completion_tokens; every other OpenAI-compatible provider keeps the
+// widely supported max_tokens.
+func projectMaxTokensOptions(model string, maxTokens int) []einomodel.Option {
+	if !projectModelSupportsTemperature(model) {
+		return []einomodel.Option{openaimodel.WithMaxCompletionTokens(maxTokens)}
+	}
+	return []einomodel.Option{einomodel.WithMaxTokens(maxTokens)}
+}
+
 func newProjectEinoGeminiChatModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {
 	clientConfig, err := projectEinoGeminiClientConfig(settings)
 	if err != nil {

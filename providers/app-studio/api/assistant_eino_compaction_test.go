@@ -600,6 +600,22 @@ func TestProjectEinoAssistantCompactionToolChoiceCompatibility(t *testing.T) {
 			},
 			want: true,
 		},
+		{
+			name: "OpenAI rejects tool_choice without tools",
+			settings: projectLLMSettings{
+				BaseURL: "https://api.openai.com/v1",
+				Model:   "gpt-5",
+			},
+			want: false,
+		},
+		{
+			name: "non-DeepSeek OpenAI-compatible omits tool_choice",
+			settings: projectLLMSettings{
+				BaseURL: "https://opencode.ai/zen/v1",
+				Model:   "qwen3-coder",
+			},
+			want: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
