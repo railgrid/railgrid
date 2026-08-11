@@ -155,6 +155,9 @@ func projectEinoAssistantDiscoverTools(ctx context.Context, server *Server, req 
 	discovery.MCPTools = mcpTools
 	allTools := append(projectEinoAssistantFilterPreviewInspection(registry.Tools(discovery.IncludeCommitBridge), includePreviewInspection), discovery.MCPTools...)
 	discovery.Prompt = projectMCPToolsPrompt(projectAssistantChatToolsForSpecs(projectAssistantToolSpecsForTurnPolicy(projectAssistantAllToolSpecs(allTools), policy)))
+	if researchPrompt := projectAssistantResearchCapabilityPrompt(ctx, req, discovery.MCPTools); researchPrompt != "" {
+		discovery.Prompt = strings.TrimSpace(discovery.Prompt) + "\n" + researchPrompt
+	}
 	return discovery
 }
 

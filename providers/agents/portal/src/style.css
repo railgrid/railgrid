@@ -637,6 +637,9 @@ kedge-provider-agents .agents-chip-primary { background: var(--color-accent-subt
 kedge-provider-agents .agents-chip-fallback { border-style: dashed; color: var(--color-text-secondary, #8a8ca6); }
 kedge-provider-agents .agents-model-meta .mono { font-size: 11px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 kedge-provider-agents .agents-model-discovered { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: 12px; padding: 8px; border-radius: 6px; background: var(--color-surface, #0a0b12); }
+kedge-provider-agents .agents-discovered-head { flex-basis: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+kedge-provider-agents .agents-discovered-filter { width: 140px; min-width: 0; font-size: 11px; padding: 3px 8px; border-radius: 3px; }
+kedge-provider-agents .agents-chip-current { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); border-color: transparent; color: var(--color-accent, #8b6bff); cursor: default; }
 kedge-provider-agents .agents-model-actions { display: flex; gap: 8px; align-items: center; margin-top: 2px; flex-wrap: wrap; }
 kedge-provider-agents .agents-model-actions button.secondary { font-size: 12.5px; }
 kedge-provider-agents .agents-rotate-form { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 6px; background: var(--color-surface, #0a0b12); }

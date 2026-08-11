@@ -45,17 +45,23 @@ var catalog = []ModelInfo{
 	{ID: "gpt-4.1-nano", Family: "openai", Label: "GPT-4.1 nano", ContextWindow: 1000000, InputPer1M: 0.10, OutputPer1M: 0.40, Vision: true, ToolCall: true},
 	{ID: "gpt-5", Family: "openai", Label: "GPT-5", ContextWindow: 400000, InputPer1M: 1.25, OutputPer1M: 10.00, Vision: true, ToolCall: true, Reasoning: true},
 	{ID: "gpt-5-mini", Family: "openai", Label: "GPT-5 mini", ContextWindow: 400000, InputPer1M: 0.25, OutputPer1M: 2.00, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "gpt-5.1", Family: "openai", Label: "GPT-5.1", ContextWindow: 400000, InputPer1M: 1.25, OutputPer1M: 10.00, Vision: true, ToolCall: true, Reasoning: true},
 	{ID: "o1", Family: "openai", Label: "o1", ContextWindow: 200000, InputPer1M: 15.00, OutputPer1M: 60.00, ToolCall: true, Reasoning: true},
 	{ID: "o3", Family: "openai", Label: "o3", ContextWindow: 200000, InputPer1M: 2.00, OutputPer1M: 8.00, ToolCall: true, Reasoning: true},
 	{ID: "o3-mini", Family: "openai", Label: "o3-mini", ContextWindow: 200000, InputPer1M: 1.10, OutputPer1M: 4.40, ToolCall: true, Reasoning: true},
 	{ID: "o4-mini", Family: "openai", Label: "o4-mini", ContextWindow: 200000, InputPer1M: 1.10, OutputPer1M: 4.40, ToolCall: true, Reasoning: true},
 	// Anthropic (via OpenAI-compatible endpoints / OpenRouter)
 	{ID: "claude-sonnet-4", Family: "anthropic", Label: "Claude Sonnet 4", ContextWindow: 200000, InputPer1M: 3.00, OutputPer1M: 15.00, Vision: true, ToolCall: true},
+	{ID: "claude-sonnet-4-5", Family: "anthropic", Label: "Claude Sonnet 4.5", ContextWindow: 200000, InputPer1M: 3.00, OutputPer1M: 15.00, Vision: true, ToolCall: true, Reasoning: true},
 	{ID: "claude-opus-4", Family: "anthropic", Label: "Claude Opus 4", ContextWindow: 200000, InputPer1M: 15.00, OutputPer1M: 75.00, Vision: true, ToolCall: true},
+	{ID: "claude-opus-4-1", Family: "anthropic", Label: "Claude Opus 4.1", ContextWindow: 200000, InputPer1M: 15.00, OutputPer1M: 75.00, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "claude-opus-4-5", Family: "anthropic", Label: "Claude Opus 4.5", ContextWindow: 200000, InputPer1M: 5.00, OutputPer1M: 25.00, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "claude-haiku-4-5", Family: "anthropic", Label: "Claude Haiku 4.5", ContextWindow: 200000, InputPer1M: 1.00, OutputPer1M: 5.00, Vision: true, ToolCall: true, Reasoning: true},
 	{ID: "claude-3-5-haiku", Family: "anthropic", Label: "Claude 3.5 Haiku", ContextWindow: 200000, InputPer1M: 0.80, OutputPer1M: 4.00, Vision: true, ToolCall: true},
 	// Google (via OpenAI-compatible endpoints)
 	{ID: "gemini-2.5-pro", Family: "google", Label: "Gemini 2.5 Pro", ContextWindow: 1000000, InputPer1M: 1.25, OutputPer1M: 10.00, Vision: true, ToolCall: true, Reasoning: true},
 	{ID: "gemini-2.5-flash", Family: "google", Label: "Gemini 2.5 Flash", ContextWindow: 1000000, InputPer1M: 0.30, OutputPer1M: 2.50, Vision: true, ToolCall: true},
+	{ID: "gemini-3-pro", Family: "google", Label: "Gemini 3 Pro", ContextWindow: 1000000, InputPer1M: 2.00, OutputPer1M: 12.00, Vision: true, ToolCall: true, Reasoning: true},
 }
 
 var catalogByID = func() map[string]ModelInfo {

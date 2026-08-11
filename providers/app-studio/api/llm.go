@@ -146,6 +146,10 @@ const (
 	projectToolInfrastructureGetInstance      = "infrastructure__get_instance"
 	projectToolDatabricksListTables           = "databricks__list_tables"
 	projectToolDatabricksDescribeTable        = "databricks__describe_table"
+	projectToolAgentsRunAgent                 = "agents__run_agent"
+	projectToolAgentsGetRun                   = "agents__get_run"
+	projectToolAgentsListRuns                 = "agents__list_runs"
+	projectToolAgentsListAgents               = "agents__list_agents"
 )
 
 var (
@@ -1623,7 +1627,7 @@ func callProjectMCPTool(ctx context.Context, endpoint string, r *http.Request, t
 	if err != nil {
 		return "", fmt.Errorf("encode tool args: %w", err)
 	}
-	body, err := projectMCPRequest(ctx, endpoint, "tools/call", params, r, tenantPath, skipTLSVerify)
+	body, err := projectMCPRequestWithTimeout(ctx, endpoint, "tools/call", params, r, tenantPath, skipTLSVerify, projectAssistantMCPToolCallTimeout(name, args))
 	if err != nil {
 		return "", err
 	}
@@ -1666,6 +1670,14 @@ func callProjectMCPTool(ctx context.Context, endpoint string, r *http.Request, t
 }
 
 func projectMCPRequest(ctx context.Context, endpoint, method string, paramsJSON json.RawMessage, r *http.Request, tenantPath string, skipTLSVerify bool) (json.RawMessage, error) {
+	return projectMCPRequestWithTimeout(ctx, endpoint, method, paramsJSON, r, tenantPath, skipTLSVerify, projectMCPCallTimeout)
+}
+
+// projectMCPRequestWithTimeout exists for tool calls that legitimately block
+// longer than the default transport timeout — an agents__run_agent or
+// agents__get_run call holds the connection for its wait argument, so the
+// client deadline must be derived from that wait, not race it.
+func projectMCPRequestWithTimeout(ctx context.Context, endpoint, method string, paramsJSON json.RawMessage, r *http.Request, tenantPath string, skipTLSVerify bool, timeout time.Duration) (json.RawMessage, error) {
 	env := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -1698,11 +1710,11 @@ func projectMCPRequest(ctx context.Context, endpoint, method string, paramsJSON 
 	}
 
 	transport := projectMCPTransport(skipTLSVerify)
-	client := &http.Client{Timeout: projectMCPCallTimeout, Transport: transport}
+	client := &http.Client{Timeout: timeout, Transport: transport}
 	resp, err := client.Do(req)
 	if err != nil && projectMCPShouldRetryInsecure(endpoint, err, skipTLSVerify) {
 		transport = projectMCPTransport(true)
-		client = &http.Client{Timeout: projectMCPCallTimeout, Transport: transport}
+		client = &http.Client{Timeout: timeout, Transport: transport}
 		resp, err = client.Do(req)
 	}
 	if err != nil {
@@ -2340,6 +2352,14 @@ func projectAssistantMCPToolSpec(tool projectMCPTool) (projectAssistantToolSpec,
 	case projectToolDatabricksListTables,
 		projectToolDatabricksDescribeTable:
 		risk = projectAssistantToolRiskRead
+	case projectToolAgentsListAgents,
+		projectToolAgentsGetRun,
+		projectToolAgentsListRuns:
+		risk = projectAssistantToolRiskRead
+	case projectToolAgentsRunAgent:
+		// Starting an agent run executes work (and spends tokens) in the agents
+		// provider — effectful, so read-only collaboration modes exclude it.
+		risk = projectAssistantToolRiskRuntime
 	default:
 		return projectAssistantToolSpec{}, false
 	}

@@ -36,6 +36,7 @@ export class Models extends StoreElement {
   @state() private windowDays = 30
   @state() private tested = new Map<string, CredentialTestResult>()
   @state() private discovered = new Map<string, string[]>()
+  @state() private discFilter = new Map<string, string>()
   @state() private editName: string | null = null
   @state() private creating = false
 
@@ -260,14 +261,7 @@ export class Models extends StoreElement {
               )}`
           : html`<span class="muted agents-assign-none">not assigned to any agent</span>`}
       </div>
-      ${disc?.length
-        ? html`<div class="agents-model-discovered">
-            <span class="muted">served models — click to switch:</span>
-            ${disc.slice(0, 24).map(
-              (m) => html`<button class="agents-chip agents-chip-btn" @click=${() => void this.switchModel(c, m)}>${m}</button>`,
-            )}
-          </div>`
-        : nothing}
+      ${disc?.length ? this.servedModels(c, disc) : nothing}
       ${isEditing ? this.rotateForm(c) : nothing}
       <div class="agents-model-actions">
         <button class="secondary" @click=${() => void this.testCredential(c.name)}>${icon('plug')} Test</button>
@@ -288,11 +282,49 @@ export class Models extends StoreElement {
     return html`<span class="agents-health agents-health-bad" title=${t.error || 'failed'}>${icon('circle')} failed</span>`
   }
 
+  // servedModels renders the endpoint's discovered model list as a filterable
+  // picker. Endpoints routinely serve dozens-to-hundreds of ids (OpenRouter is
+  // 300+), so a silently capped chip dump hides exactly the model the user is
+  // hunting for: filter first, cap what's visible, and always say what's hidden.
+  private servedModels(c: Credential, disc: string[]): TemplateResult {
+    const raw = this.discFilter.get(c.name) || ''
+    const filter = raw.toLowerCase().trim()
+    const matches = filter ? disc.filter((m) => m.toLowerCase().includes(filter)) : disc
+    const visible = matches.slice(0, 30)
+    return html`<div class="agents-model-discovered">
+      <div class="agents-discovered-head">
+        <span class="muted">${disc.length} served model${disc.length === 1 ? '' : 's'} — click to switch:</span>
+        ${disc.length > 12
+          ? html`<input
+              class="agents-discovered-filter mono"
+              placeholder="filter…"
+              .value=${raw}
+              @input=${(e: Event) => (this.discFilter = new Map(this.discFilter).set(c.name, (e.target as HTMLInputElement).value))}
+            />`
+          : nothing}
+      </div>
+      ${visible.map(
+        (m) =>
+          html`<button
+            class="agents-chip agents-chip-btn ${m === c.model ? 'agents-chip-current' : ''}"
+            title=${m === c.model ? 'current model' : `switch ${c.name} to ${m}`}
+            @click=${() => void this.switchModel(c, m)}
+          >
+            ${m}
+          </button>`,
+      )}
+      ${matches.length > visible.length
+        ? html`<span class="agents-hint">+${matches.length - visible.length} more — refine the filter to see them</span>`
+        : nothing}
+      ${matches.length === 0 ? html`<span class="agents-hint">nothing matches “${raw}”</span>` : nothing}
+    </div>`
+  }
+
   private async switchModel(c: Credential, model: string): Promise<void> {
     // The credential POST is an upsert: re-posting name+baseURL with a new
     // model keeps the stored API key.
     const res = await mutate(this.store, {
-      run: () => this.api.saveCredential({ name: c.name, provider: 'openai-compatible', baseURL: c.baseURL, model }),
+      run: () => this.api.saveCredential({ name: c.name, provider: c.provider || 'openai-compatible', baseURL: c.baseURL, model }),
       success: `${c.name} now uses ${model}.`,
       failure: 'Save failed',
       reload: ['credentials'],
@@ -305,6 +337,15 @@ export class Models extends StoreElement {
   }
 
   private rotateForm(c: Credential): TemplateResult {
+    // The model input starts empty (current model as placeholder) instead of
+    // pre-filled: browsers filter datalist suggestions by the input's value, so
+    // a pre-filled id hides every other option — the exact "can't see the list"
+    // trap this form exists to avoid. Blank means keep, same as the key field.
+    // Suggestions merge what the endpoint actually serves (from Test) with the
+    // curated catalog, served ids first.
+    const served = this.discovered.get(c.name) || []
+    const servedSet = new Set(served)
+    const listId = `agents-models-${c.name}`
     return html`<form
       class="agents-rotate-form"
       @submit=${(e: Event) => {
@@ -316,8 +357,8 @@ export class Models extends StoreElement {
           run: () =>
             this.api.saveCredential({
               name: c.name,
-              provider: 'openai-compatible',
-              model: g('model'),
+              provider: c.provider || 'openai-compatible',
+              model: g('model') || c.model || '',
               baseURL: g('baseURL'),
               ...(key ? { apiKey: key } : {}),
             }),
@@ -334,9 +375,16 @@ export class Models extends StoreElement {
       }}
     >
       <div class="agents-grid2">
-        <label>Model<input name="model" .value=${c.model || ''} class="mono" placeholder="gpt-4o" list="agents-catalog-models" /></label>
+        <label>
+          Model <span class="agents-hint">leave blank to keep ${c.model || 'the current one'}</span>
+          <input name="model" class="mono" placeholder=${c.model || 'gpt-4o'} list=${listId} />
+        </label>
         <label>Base URL<input name="baseURL" .value=${c.baseURL || ''} class="mono" placeholder="https://api.openai.com/v1" /></label>
       </div>
+      <datalist id=${listId}>
+        ${served.map((m) => html`<option value=${m}></option>`)}
+        ${this.catalog.filter((m) => !servedSet.has(m.id)).map((m) => html`<option value=${m.id}>${m.label || m.id}</option>`)}
+      </datalist>
       <label>
         New API key <span class="agents-hint">leave blank to keep the current key</span>
         <input name="apiKey" type="password" autocomplete="off" placeholder="sk-… (rotate)" />

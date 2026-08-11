@@ -194,7 +194,10 @@ func probeOpenAIModels(ctx context.Context, baseURL, apiKey string) ([]string, t
 		return nil, latency, err
 	}
 	defer resp.Body.Close() //nolint:errcheck
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// 8MB cap: aggregator /models responses are huge (OpenRouter ships several
+	// MB of per-model metadata) and a truncated body fails to parse, which used
+	// to report "healthy, zero served models".
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		msg := strings.TrimSpace(string(body))
 		if len(msg) > 200 {
