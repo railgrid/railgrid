@@ -68,6 +68,16 @@ function startCreate() {
   showForm.value = true
 }
 
+// Prefill the Databricks-provided samples catalog (readable in every
+// workspace) so a first import needs no lookup: samples.nyctaxi.trips.
+function fillDemo() {
+  if (!editing.value) form.name = 'nyctaxi-trips'
+  form.catalog = 'samples'
+  form.schema = 'nyctaxi'
+  form.table = 'trips'
+  formError.value = null
+}
+
 function editTable(row: Record<string, unknown>) {
   const table = row as unknown as Table
   editing.value = table.name
@@ -196,6 +206,7 @@ onUnmounted(() => window.clearInterval(timer))
     <div v-if="showForm" class="panel">
       <div class="panel-head">
         <h3 class="panel-title">{{ editing ? 'Update table' : 'Import table' }}</h3>
+        <button v-if="!editing" class="link" type="button" @click="fillDemo" title="Prefill samples.nyctaxi.trips — Databricks demo data available in every workspace">Fill with demo data</button>
       </div>
       <form class="form-grid" @submit.prevent="submit">
         <label class="field">

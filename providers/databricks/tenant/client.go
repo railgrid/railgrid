@@ -267,6 +267,39 @@ func (r tableResolver) dynamicClient() (dynamic.Interface, error) {
 	return r.factory.For(r.identity.clusterID, r.identity.token)
 }
 
+// GetTableSchema returns the controller-cached column schema from the Table
+// resource's status. Callers (describe_table) surface it so clients never have
+// to guess column names against the bounded query contract.
+func (r tableResolver) GetTableSchema(ctx context.Context, name string) ([]queryapi.QueryColumn, string, error) {
+	dyn, err := r.dynamicClient()
+	if err != nil {
+		return nil, "", err
+	}
+	item, err := dyn.Resource(tablesGVR).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	rawColumns, _, _ := unstructured.NestedSlice(item.Object, "status", "columns")
+	columns := make([]queryapi.QueryColumn, 0, len(rawColumns))
+	for _, raw := range rawColumns {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		columnName, _ := entry["name"].(string)
+		if strings.TrimSpace(columnName) == "" {
+			continue
+		}
+		columnType, _ := entry["type"].(string)
+		columns = append(columns, queryapi.QueryColumn{Name: columnName, Type: columnType})
+	}
+	refreshedAt, _, _ := unstructured.NestedString(item.Object, "status", "refreshedAt")
+	return columns, refreshedAt, nil
+}
+
 func tableRefFromObject(item unstructured.Unstructured) (queryapi.TableRef, bool) {
 	catalog, _, _ := unstructured.NestedString(item.Object, "spec", "catalog")
 	schemaName, _, _ := unstructured.NestedString(item.Object, "spec", "schema")

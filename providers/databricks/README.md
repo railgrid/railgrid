@@ -45,6 +45,43 @@ of enabled, and each project may disable or re-enable it.
   control-plane status. The optional MCP tool is only a presentation adapter
   over that same executor.
 
+## Creating a connection
+
+A `Connection` needs two values, both taken from the Databricks workspace you
+want to attach:
+
+- **Workspace host** — the URL your browser shows when you are logged into that
+  workspace: `https://dbc-….cloud.databricks.com` (AWS),
+  `https://adb-….azuredatabricks.net` (Azure) or `https://….gcp.databricks.com`
+  (GCP). Scheme and host only, no path.
+- **Token** — a Databricks personal access token, created in that workspace via
+  the avatar menu → Settings → Developer, then Manage on the "Access tokens"
+  card → Generate new token. The token's identity needs `SELECT` on the
+  catalogs and schemas you plan to import tables from, plus access to a running
+  SQL warehouse for `query_table/v1`.
+
+The token is stored as a `Secret` in the tenant workspace; the provider
+validates it against the Databricks current-user API and stamps the
+connection's `Validated` condition with the result.
+
+## Adding a warehouse
+
+A `Warehouse` is a handle to one Databricks SQL warehouse under an existing
+connection; imported tables use it to run `query_table/v1`.
+
+- **Warehouse ID** — in the Databricks workspace: SQL → SQL Warehouses → open
+  the warehouse. The ID is the 16-character hex value shown on its overview
+  page and is also the last segment of the HTTP path under Connection details
+  (`/sql/1.0/warehouses/<id>`). It is not the long numeric `?o=` value in the
+  browser URL — that is the workspace org ID, and pasting it fails validation
+  with `404 Not Found`.
+- The connection's token identity needs the warehouse's "Can use" permission;
+  the warehouse must be startable (serverless or with auto-start) for queries
+  to succeed.
+
+The provider validates the handle against the Databricks warehouses API and
+stamps the warehouse's `Ready` condition with its state.
+
 ## Current import path
 
 Users can import a table from the provider portal by creating a Connection, a

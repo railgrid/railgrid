@@ -24,6 +24,19 @@ type tableSummary struct {
 	Catalog string `json:"catalog"`
 	Schema  string `json:"schema"`
 	Table   string `json:"table"`
+	// Columns is the controller-cached schema from the Table resource status.
+	// Empty when the schema has not been refreshed yet or the resolver cannot
+	// read status.
+	Columns []queryapi.QueryColumn `json:"columns,omitempty"`
+	// SchemaRefreshedAt is when the cached schema was last refreshed.
+	SchemaRefreshedAt string `json:"schemaRefreshedAt,omitempty"`
+}
+
+// tableSchemaReader is optionally implemented by resolvers that can read the
+// controller-cached column schema off the Table resource status. The tenant
+// resolver implements it; static test resolvers need not.
+type tableSchemaReader interface {
+	GetTableSchema(ctx context.Context, name string) ([]queryapi.QueryColumn, string, error)
 }
 
 type listTablesOutput struct {
@@ -74,7 +87,7 @@ func registerTools(srv *mcp.Server, resolver queryapi.TableResolver, executor ac
 		mcp.AddTool(srv, &mcp.Tool{
 			Name:        "describe_table",
 			Title:       "Describe an imported Databricks table",
-			Description: "Describe one imported kedge Databricks Table resource by its exact tableRef (the name returned by list_tables or the project grant). The resource is a pointer plus cached schema, not table data; an App Studio integration alias is never a tableRef.",
+			Description: "Describe one imported kedge Databricks Table resource by its exact tableRef (the name returned by list_tables or the project grant). Returns the cached column schema (columns[].name/type) — use exactly these names for query_table projections; requesting a column not in this list fails the query, and an App Studio integration alias is never a tableRef.",
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
 		}, func(ctx context.Context, _ *mcp.CallToolRequest, in describeTableInput) (*mcp.CallToolResult, tableSummary, error) {
 			ref, ok, err := resolver.GetTable(ctx, in.TableRef)
@@ -84,7 +97,16 @@ func registerTools(srv *mcp.Server, resolver queryapi.TableResolver, executor ac
 			if !ok {
 				return nil, tableSummary{}, fmt.Errorf("tableRef %q not found", in.TableRef)
 			}
-			return nil, tableSummary{Name: in.TableRef, Catalog: ref.Catalog, Schema: ref.Schema, Table: ref.Table}, nil
+			summary := tableSummary{Name: in.TableRef, Catalog: ref.Catalog, Schema: ref.Schema, Table: ref.Table}
+			if schemaReader, ok := resolver.(tableSchemaReader); ok {
+				// Schema is additive evidence: a status read failure must not
+				// hide the table identity that GetTable already proved.
+				if columns, refreshedAt, err := schemaReader.GetTableSchema(ctx, in.TableRef); err == nil {
+					summary.Columns = columns
+					summary.SchemaRefreshedAt = refreshedAt
+				}
+			}
+			return nil, summary, nil
 		})
 	})
 

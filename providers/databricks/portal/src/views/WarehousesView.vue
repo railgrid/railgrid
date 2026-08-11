@@ -124,9 +124,18 @@ onUnmounted(() => window.clearInterval(timer))
           <select v-model="form.connectionRef">
             <option v-for="conn in connections" :key="conn.name" :value="conn.name">{{ conn.name }}</option>
           </select>
+          <span class="field-hint">The Databricks workspace connection this warehouse belongs to.</span>
         </div>
-        <div class="field"><span class="field-label">Object name</span><input v-model="form.name" placeholder="orders-sql" autocomplete="off" /></div>
-        <div class="field"><span class="field-label">Warehouse ID</span><input v-model="form.warehouseID" placeholder="abc123def4567890" autocomplete="off" /></div>
+        <div class="field">
+          <span class="field-label">Object name</span>
+          <input v-model="form.name" placeholder="orders-sql" autocomplete="off" />
+          <span class="field-hint">How this warehouse is referred to from kedge — lowercase, stable, yours to choose.</span>
+        </div>
+        <div class="field">
+          <span class="field-label">Warehouse ID</span>
+          <input v-model="form.warehouseID" placeholder="abc123def4567890" autocomplete="off" />
+          <span class="field-hint">In that Databricks workspace: SQL → SQL Warehouses → open the warehouse. The ID is the 16-character hex value on its overview page — also the last segment of the HTTP path under Connection details (/sql/1.0/warehouses/&lt;id&gt;). Not the long number after ?o= in the browser URL; that is the workspace org ID. The connection's token identity needs "Can use" permission on the warehouse.</span>
+        </div>
 	        <div class="actions">
           <button class="primary" type="submit" :disabled="submitting">{{ submitting ? 'Creating…' : 'Create' }}</button>
           <span v-if="formError" class="error">{{ formError }}</span>

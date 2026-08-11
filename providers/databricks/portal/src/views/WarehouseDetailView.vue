@@ -12,6 +12,10 @@ const emit = defineEmits<{ (e: 'back'): void }>()
 const warehouse = ref<Warehouse | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
+const editing = ref(false)
+const editWarehouseID = ref('')
+const saving = ref(false)
+const saveError = ref<string | null>(null)
 let timer: number | undefined
 
 const ready = computed(() => warehouse.value?.conditions.find(c => c.type === 'Ready'))
@@ -56,6 +60,37 @@ async function load() {
     error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
   } finally {
     loading.value = false
+  }
+}
+
+function startEdit() {
+  if (!warehouse.value) return
+  editWarehouseID.value = warehouse.value.warehouseID
+  saveError.value = null
+  editing.value = true
+}
+
+async function saveEdit() {
+  if (!warehouse.value) return
+  const nextID = editWarehouseID.value.trim()
+  if (!nextID) {
+    saveError.value = 'warehouse ID is required'
+    return
+  }
+  saving.value = true
+  saveError.value = null
+  try {
+    await api.saveWarehouse({
+      name: warehouse.value.name,
+      connectionRef: warehouse.value.connectionRef,
+      warehouseID: nextID,
+    })
+    editing.value = false
+    await load()
+  } catch (e) {
+    saveError.value = errMessage(e)
+  } finally {
+    saving.value = false
   }
 }
 
@@ -122,6 +157,22 @@ onUnmounted(() => window.clearInterval(timer))
         </dl>
       </div>
 
+      <div v-if="editing" class="panel">
+        <h3 class="panel-title">Edit warehouse</h3>
+        <form class="form" @submit.prevent="saveEdit">
+          <div class="field">
+            <span class="field-label">Warehouse ID</span>
+            <input v-model="editWarehouseID" placeholder="abc123def4567890" autocomplete="off" />
+            <span class="field-hint">The 16-character hex value from SQL Warehouses → Connection details (/sql/1.0/warehouses/&lt;id&gt;) — not the numeric ?o= workspace org ID from the browser URL.</span>
+          </div>
+          <div class="actions">
+            <button class="primary" type="submit" :disabled="saving">{{ saving ? 'Saving…' : 'Save' }}</button>
+            <button class="secondary" type="button" @click="editing = false">Cancel</button>
+            <span v-if="saveError" class="error">{{ saveError }}</span>
+          </div>
+        </form>
+      </div>
+
       <ConditionsPanel
         :conditions="warehouse.conditions"
         :generation="warehouse.generation"
@@ -130,6 +181,7 @@ onUnmounted(() => window.clearInterval(timer))
       />
 
       <div class="actions">
+        <button class="secondary" type="button" @click="startEdit">Edit</button>
         <button class="danger" type="button" @click="remove">Delete warehouse</button>
       </div>
     </template>

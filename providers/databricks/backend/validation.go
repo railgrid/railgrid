@@ -215,8 +215,10 @@ func (c StatementClient) ValidateWarehouse(ctx context.Context, target Warehouse
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return WarehouseValidationResult{}, warehouseHTTPError{
-			status: resp.Status,
-			body:   strings.TrimSpace(string(body)),
+			status:      resp.Status,
+			statusCode:  resp.StatusCode,
+			body:        strings.TrimSpace(string(body)),
+			warehouseID: strings.TrimSpace(target.WarehouseID),
 		}
 	}
 	var payload map[string]any
@@ -413,16 +415,40 @@ func (e currentUserHTTPError) SafeStatusMessage() string {
 }
 
 type warehouseHTTPError struct {
-	status string
-	body   string
+	status      string
+	statusCode  int
+	body        string
+	warehouseID string
 }
 
 func (e warehouseHTTPError) Error() string {
-	return "databricks warehouse validation failed: " + e.status
+	return e.SafeStatusMessage()
 }
 
 func (e warehouseHTTPError) SafeStatusMessage() string {
-	return "databricks warehouse validation failed: " + e.status
+	message := "databricks warehouse validation failed: " + e.status
+	if e.statusCode == http.StatusNotFound {
+		message += " — no SQL warehouse with this ID in the workspace. The warehouse ID is the 16-character hex value from SQL Warehouses → Connection details (/sql/1.0/warehouses/<id>)"
+		if warehouseIDLooksLikeOrgID(e.warehouseID) {
+			message += "; a purely numeric value is usually the workspace org ID from the ?o= URL parameter, not a warehouse ID"
+		}
+	}
+	return message
+}
+
+// warehouseIDLooksLikeOrgID reports whether the value is purely numeric —
+// the shape of the ?o= workspace org ID users paste by mistake, as opposed to
+// the 16-character hex of a real SQL warehouse ID.
+func warehouseIDLooksLikeOrgID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, r := range id {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func isEndpointNotFound(err error) bool {

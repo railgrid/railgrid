@@ -265,6 +265,12 @@ kedge-provider-databricks .field-label {
   text-transform: none;
 }
 
+kedge-provider-databricks .field-hint {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 kedge-provider-databricks input,
 kedge-provider-databricks select {
   background: var(--color-surface-overlay);

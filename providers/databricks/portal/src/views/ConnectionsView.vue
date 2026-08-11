@@ -115,9 +115,21 @@ onUnmounted(() => window.clearInterval(timer))
     <div v-if="showForm" class="panel">
       <h3 class="panel-title">Connect with a token</h3>
       <form class="form" @submit.prevent="submit">
-        <div class="field"><span class="field-label">Name</span><input v-model="name" autocomplete="off" placeholder="orders-prod" /></div>
-        <div class="field"><span class="field-label">Workspace host</span><input v-model="host" autocomplete="off" placeholder="https://dbc-example.cloud.databricks.com" /></div>
-	        <div class="field"><span class="field-label">Token</span><input v-model="token" type="password" autocomplete="off" placeholder="Paste token" /></div>
+        <div class="field">
+          <span class="field-label">Name</span>
+          <input v-model="name" autocomplete="off" placeholder="orders-prod" />
+          <span class="field-hint">How this workspace is referred to from kedge — lowercase, stable, yours to choose.</span>
+        </div>
+        <div class="field">
+          <span class="field-label">Workspace host</span>
+          <input v-model="host" autocomplete="off" placeholder="https://dbc-example.cloud.databricks.com" />
+          <span class="field-hint">The URL in your browser when you are logged into the Databricks workspace — e.g. https://dbc-….cloud.databricks.com (AWS), https://adb-….azuredatabricks.net (Azure) or https://….gcp.databricks.com (GCP). Scheme and host only, no path.</span>
+        </div>
+        <div class="field">
+          <span class="field-label">Token</span>
+          <input v-model="token" type="password" autocomplete="off" placeholder="Paste token" />
+          <span class="field-hint">A Databricks personal access token: in that workspace, open your avatar menu → Settings → Developer, then on the "Access tokens" card click Manage → Generate new token. The identity that owns the token needs SELECT on the catalogs and schemas you plan to import tables from.</span>
+        </div>
         <div class="actions">
           <button class="primary" type="submit" :disabled="submitting">{{ submitting ? 'Connecting...' : 'Create' }}</button>
           <button class="secondary" type="button" @click="() => { resetForm(); showForm = false }">Cancel</button>
