@@ -3,24 +3,24 @@
  * portal design tokens cascade in; component styles stay local to this bundle.
  */
 
-kedge-provider-databricks {
+faros-provider-databricks {
   display: block;
   color: var(--color-text-primary);
 }
 
-kedge-provider-databricks .app {
+faros-provider-databricks .app {
   display: flex;
   flex-direction: column;
   gap: 16px;
   padding: 8px 0;
 }
 
-kedge-provider-databricks .tabs {
+faros-provider-databricks .tabs {
   display: flex;
   gap: 4px;
 }
 
-kedge-provider-databricks .tabs button {
+faros-provider-databricks .tabs button {
   border: 1px solid transparent;
   border-radius: 4px;
   background: transparent;
@@ -33,50 +33,50 @@ kedge-provider-databricks .tabs button {
   transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 
-kedge-provider-databricks .tabs button:hover {
+faros-provider-databricks .tabs button:hover {
   background: var(--color-surface-hover);
   color: var(--color-text-primary);
 }
 
-kedge-provider-databricks .tabs button.active {
+faros-provider-databricks .tabs button.active {
   background: var(--color-accent-subtle);
   border-color: var(--color-accent);
   box-shadow: 0 0 14px var(--color-accent-glow);
   color: var(--color-accent);
 }
 
-kedge-provider-databricks .page {
+faros-provider-databricks .page {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
-kedge-provider-databricks .page-head {
+faros-provider-databricks .page-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
 
-kedge-provider-databricks .page-title {
+faros-provider-databricks .page-title {
   font-size: 15px;
   font-weight: 600;
   margin: 0 0 4px;
 }
 
-kedge-provider-databricks .page-meta,
-kedge-provider-databricks .muted {
+faros-provider-databricks .page-meta,
+faros-provider-databricks .muted {
   color: var(--color-text-secondary);
   font-size: 12px;
   line-height: 1.5;
   margin: 0;
 }
 
-kedge-provider-databricks .page-meta {
+faros-provider-databricks .page-meta {
   max-width: 70ch;
 }
 
-kedge-provider-databricks .panel {
+faros-provider-databricks .panel {
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border-subtle);
   border-radius: 6px;
@@ -86,14 +86,14 @@ kedge-provider-databricks .panel {
   padding: 14px 16px;
 }
 
-kedge-provider-databricks .panel-head {
+faros-provider-databricks .panel-head {
   align-items: center;
   display: flex;
   gap: 10px;
   justify-content: space-between;
 }
 
-kedge-provider-databricks .panel-title {
+faros-provider-databricks .panel-title {
   color: var(--color-text-secondary);
   font-size: 11px;
   font-weight: 600;
@@ -102,18 +102,18 @@ kedge-provider-databricks .panel-title {
   text-transform: uppercase;
 }
 
-kedge-provider-databricks .actions,
-kedge-provider-databricks .form-actions,
-kedge-provider-databricks .row-actions {
+faros-provider-databricks .actions,
+faros-provider-databricks .form-actions,
+faros-provider-databricks .row-actions {
   align-items: center;
   display: flex;
   gap: 8px;
 }
 
-kedge-provider-databricks button.primary,
-kedge-provider-databricks button.secondary,
-kedge-provider-databricks button.danger,
-kedge-provider-databricks button.icon-button {
+faros-provider-databricks button.primary,
+faros-provider-databricks button.secondary,
+faros-provider-databricks button.danger,
+faros-provider-databricks button.icon-button {
   align-items: center;
   border-radius: 4px;
   cursor: pointer;
@@ -125,7 +125,7 @@ kedge-provider-databricks button.icon-button {
   transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
 }
 
-kedge-provider-databricks button.primary {
+faros-provider-databricks button.primary {
   background: var(--color-accent);
   border: 1px solid var(--color-accent);
   box-shadow: 0 0 16px var(--color-accent-glow);
@@ -134,12 +134,12 @@ kedge-provider-databricks button.primary {
   padding: 6px 14px;
 }
 
-kedge-provider-databricks button.primary:hover {
+faros-provider-databricks button.primary:hover {
   background: var(--color-accent-hover);
   box-shadow: 0 0 22px var(--color-accent-glow);
 }
 
-kedge-provider-databricks button.secondary {
+faros-provider-databricks button.secondary {
   background: var(--color-surface-overlay);
   border: 1px solid var(--color-border-default);
   color: var(--color-text-primary);
@@ -147,12 +147,12 @@ kedge-provider-databricks button.secondary {
   padding: 6px 14px;
 }
 
-kedge-provider-databricks button.secondary:hover,
-kedge-provider-databricks button.icon-button:hover {
+faros-provider-databricks button.secondary:hover,
+faros-provider-databricks button.icon-button:hover {
   background: var(--color-surface-hover);
 }
 
-kedge-provider-databricks button.danger {
+faros-provider-databricks button.danger {
   background: transparent;
   border: 1px solid var(--color-border-default);
   color: var(--color-danger);
@@ -160,12 +160,12 @@ kedge-provider-databricks button.danger {
   padding: 6px 14px;
 }
 
-kedge-provider-databricks button.danger:hover {
+faros-provider-databricks button.danger:hover {
   background: var(--color-danger-subtle);
   border-color: var(--color-danger);
 }
 
-kedge-provider-databricks button.link {
+faros-provider-databricks button.link {
   align-items: center;
   background: transparent;
   border: none;
@@ -178,20 +178,20 @@ kedge-provider-databricks button.link {
   padding: 0;
 }
 
-kedge-provider-databricks button.link:hover {
+faros-provider-databricks button.link:hover {
   color: var(--color-accent-hover);
 }
 
-kedge-provider-databricks button.link.back {
+faros-provider-databricks button.link.back {
   color: var(--color-text-muted);
   margin-bottom: 4px;
 }
 
-kedge-provider-databricks button.link.back:hover {
+faros-provider-databricks button.link.back:hover {
   color: var(--color-accent);
 }
 
-kedge-provider-databricks button.icon-button {
+faros-provider-databricks button.icon-button {
   background: transparent;
   border: 1px solid var(--color-border-subtle);
   color: var(--color-text-secondary);
@@ -200,64 +200,64 @@ kedge-provider-databricks button.icon-button {
   width: 30px;
 }
 
-kedge-provider-databricks button.icon-button.danger {
+faros-provider-databricks button.icon-button.danger {
   color: var(--color-danger);
 }
 
-kedge-provider-databricks button.icon-button.danger:hover {
+faros-provider-databricks button.icon-button.danger:hover {
   background: var(--color-danger-subtle);
   border-color: var(--color-danger);
 }
 
-kedge-provider-databricks button:disabled {
+faros-provider-databricks button:disabled {
   cursor: progress;
   opacity: 0.55;
 }
 
-kedge-provider-databricks .icon-text {
+faros-provider-databricks .icon-text {
   gap: 7px;
 }
 
-kedge-provider-databricks .button-icon {
+faros-provider-databricks .button-icon {
   height: 14px;
   width: 14px;
 }
 
-kedge-provider-databricks .form {
+faros-provider-databricks .form {
   display: flex;
   flex-direction: column;
   gap: 12px;
   max-width: 36rem;
 }
 
-kedge-provider-databricks .form-grid {
+faros-provider-databricks .form-grid {
   display: grid;
   gap: 12px;
   grid-template-columns: minmax(0, 1fr);
 }
 
 @media (min-width: 780px) {
-  kedge-provider-databricks .form-grid {
+  faros-provider-databricks .form-grid {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
 }
 
-kedge-provider-databricks .form-grid.compact {
+faros-provider-databricks .form-grid.compact {
   gap: 10px;
 }
 
-kedge-provider-databricks .span-2 {
+faros-provider-databricks .span-2 {
   grid-column: 1 / -1;
 }
 
-kedge-provider-databricks .field {
+faros-provider-databricks .field {
   display: flex;
   flex-direction: column;
   gap: 5px;
   min-width: 0;
 }
 
-kedge-provider-databricks .field-label {
+faros-provider-databricks .field-label {
   color: var(--color-text-secondary);
   font-size: 11px;
   font-weight: 600;
@@ -265,14 +265,14 @@ kedge-provider-databricks .field-label {
   text-transform: none;
 }
 
-kedge-provider-databricks .field-hint {
+faros-provider-databricks .field-hint {
   color: var(--color-text-muted);
   font-size: 11px;
   line-height: 1.5;
 }
 
-kedge-provider-databricks input,
-kedge-provider-databricks select {
+faros-provider-databricks input,
+faros-provider-databricks select {
   background: var(--color-surface-overlay);
   border: 1px solid var(--color-border-default);
   border-radius: 4px;
@@ -285,40 +285,40 @@ kedge-provider-databricks select {
   width: 100%;
 }
 
-kedge-provider-databricks .form input,
-kedge-provider-databricks .form select {
+faros-provider-databricks .form input,
+faros-provider-databricks .form select {
   border-radius: 4px;
   font-size: 12px;
   min-height: 32px;
   padding: 6px 10px;
 }
 
-kedge-provider-databricks input:focus,
-kedge-provider-databricks select:focus {
+faros-provider-databricks input:focus,
+faros-provider-databricks select:focus {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 3px var(--color-accent-subtle), 0 0 14px var(--color-accent-glow);
 }
 
-kedge-provider-databricks input:disabled {
+faros-provider-databricks input:disabled {
   color: var(--color-text-muted);
   cursor: not-allowed;
   opacity: 0.75;
 }
 
-kedge-provider-databricks .mono {
+faros-provider-databricks .mono {
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
-kedge-provider-databricks .strong {
+faros-provider-databricks .strong {
   color: var(--color-text-primary);
   font-weight: 600;
 }
 
-kedge-provider-databricks code {
+faros-provider-databricks code {
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
-kedge-provider-databricks .props {
+faros-provider-databricks .props {
   display: grid;
   font-size: 12px;
   gap: 6px 16px;
@@ -326,18 +326,18 @@ kedge-provider-databricks .props {
   margin: 0;
 }
 
-kedge-provider-databricks .props dt {
+faros-provider-databricks .props dt {
   color: var(--color-text-muted);
 }
 
-kedge-provider-databricks .props dd {
+faros-provider-databricks .props dd {
   color: var(--color-text-secondary);
   margin: 0;
   min-width: 0;
   word-break: break-word;
 }
 
-kedge-provider-databricks .truncate-cell {
+faros-provider-databricks .truncate-cell {
   display: inline-block;
   max-width: min(36vw, 32rem);
   overflow: hidden;
@@ -345,7 +345,7 @@ kedge-provider-databricks .truncate-cell {
   vertical-align: bottom;
 }
 
-kedge-provider-databricks .row-message {
+faros-provider-databricks .row-message {
   color: var(--color-text-muted);
   display: block;
   font-size: 11px;
@@ -355,38 +355,38 @@ kedge-provider-databricks .row-message {
   text-overflow: ellipsis;
 }
 
-kedge-provider-databricks .error,
-kedge-provider-databricks .warning {
+faros-provider-databricks .error,
+faros-provider-databricks .warning {
   border-radius: 6px;
   font-size: 12px;
   margin: 0;
   padding: 8px 10px;
 }
 
-kedge-provider-databricks .error {
+faros-provider-databricks .error {
   background: var(--color-danger-subtle);
   color: var(--color-danger);
 }
 
-kedge-provider-databricks .warning {
+faros-provider-databricks .warning {
   background: var(--color-warning-subtle);
   color: var(--color-warning);
 }
 
-kedge-provider-databricks .empty {
+faros-provider-databricks .empty {
   color: var(--color-text-muted);
   font-size: 12px;
   margin: 0;
 }
 
-kedge-provider-databricks .resource-table {
+faros-provider-databricks .resource-table {
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border-subtle);
   border-radius: 6px;
   overflow-x: auto;
 }
 
-kedge-provider-databricks .resource-table-error {
+faros-provider-databricks .resource-table-error {
   align-items: center;
   color: var(--color-danger);
   display: flex;
@@ -395,87 +395,87 @@ kedge-provider-databricks .resource-table-error {
   padding: 16px;
 }
 
-kedge-provider-databricks .resource-table-error-icon {
+faros-provider-databricks .resource-table-error-icon {
   flex-shrink: 0;
   height: 16px;
   width: 16px;
 }
 
-kedge-provider-databricks .resource-table-loading-head,
-kedge-provider-databricks .resource-table-loading-row {
+faros-provider-databricks .resource-table-loading-head,
+faros-provider-databricks .resource-table-loading-row {
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
-kedge-provider-databricks .resource-table-loading-head {
+faros-provider-databricks .resource-table-loading-head {
   padding: 12px 20px;
 }
 
-kedge-provider-databricks .resource-table-loading-row {
+faros-provider-databricks .resource-table-loading-row {
   align-items: center;
   display: flex;
   gap: 24px;
   padding: 14px 20px;
 }
 
-kedge-provider-databricks .resource-table-loading-row:last-child {
+faros-provider-databricks .resource-table-loading-row:last-child {
   border-bottom: none;
 }
 
-kedge-provider-databricks .resource-table-skeleton {
+faros-provider-databricks .resource-table-skeleton {
   border-radius: 4px;
   height: 12px;
 }
 
-kedge-provider-databricks .resource-table-skeleton-short {
+faros-provider-databricks .resource-table-skeleton-short {
   width: 96px;
 }
 
-kedge-provider-databricks .resource-table-skeleton-wide {
+faros-provider-databricks .resource-table-skeleton-wide {
   width: 128px;
 }
 
-kedge-provider-databricks .resource-table-skeleton-mid {
+faros-provider-databricks .resource-table-skeleton-mid {
   width: 80px;
 }
 
-kedge-provider-databricks .resource-table-skeleton-small {
+faros-provider-databricks .resource-table-skeleton-small {
   width: 64px;
 }
 
-kedge-provider-databricks .shimmer {
+faros-provider-databricks .shimmer {
   background: linear-gradient(90deg, var(--color-surface-overlay), var(--color-surface-hover), var(--color-surface-overlay));
   background-size: 200% 100%;
   animation: provider-shimmer 1.4s ease-in-out infinite;
 }
 
-kedge-provider-databricks .resource-table-table {
+faros-provider-databricks .resource-table-table {
   border-collapse: collapse;
   min-width: 100%;
   width: 100%;
 }
 
-kedge-provider-databricks .resource-table-head-row,
-kedge-provider-databricks .resource-table-row {
+faros-provider-databricks .resource-table-head-row,
+faros-provider-databricks .resource-table-row {
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
-kedge-provider-databricks .resource-table-row {
+faros-provider-databricks .resource-table-row {
   transition: background-color 0.15s ease, color 0.1s ease;
 }
 
-kedge-provider-databricks .resource-table-row:last-child {
+faros-provider-databricks .resource-table-row:last-child {
   border-bottom: none;
 }
 
-kedge-provider-databricks .resource-table-row.is-interactive {
+faros-provider-databricks .resource-table-row.is-interactive {
   cursor: pointer;
 }
 
-kedge-provider-databricks .resource-table-row.is-interactive:hover {
+faros-provider-databricks .resource-table-row.is-interactive:hover {
   background: color-mix(in srgb, var(--color-accent) 4%, transparent);
 }
 
-kedge-provider-databricks .resource-table-heading {
+faros-provider-databricks .resource-table-heading {
   color: var(--color-text-muted);
   font-size: 10px;
   font-weight: 600;
@@ -485,7 +485,7 @@ kedge-provider-databricks .resource-table-heading {
   text-transform: uppercase;
 }
 
-kedge-provider-databricks .resource-table-cell {
+faros-provider-databricks .resource-table-cell {
   color: var(--color-text-secondary);
   font-size: 13px;
   padding: 12px 20px;
@@ -493,29 +493,29 @@ kedge-provider-databricks .resource-table-cell {
   white-space: nowrap;
 }
 
-kedge-provider-databricks .resource-table-row.is-interactive:hover .resource-table-cell {
+faros-provider-databricks .resource-table-row.is-interactive:hover .resource-table-cell {
   color: var(--color-text-primary);
 }
 
-kedge-provider-databricks .resource-table-empty-cell {
+faros-provider-databricks .resource-table-empty-cell {
   padding: 64px 20px;
   text-align: center;
 }
 
-kedge-provider-databricks .resource-table-empty-icon {
+faros-provider-databricks .resource-table-empty-icon {
   color: color-mix(in srgb, var(--color-text-muted) 20%, transparent);
   height: 32px;
   margin: 0 auto;
   width: 32px;
 }
 
-kedge-provider-databricks .resource-table-empty-label {
+faros-provider-databricks .resource-table-empty-label {
   color: var(--color-text-muted);
   font-size: 12px;
   margin: 8px 0 0;
 }
 
-kedge-provider-databricks .status-badge {
+faros-provider-databricks .status-badge {
   align-items: center;
   border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
   border-radius: 3px;
@@ -530,35 +530,35 @@ kedge-provider-databricks .status-badge {
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-kedge-provider-databricks .status-badge.tone-success {
+faros-provider-databricks .status-badge.tone-success {
   background: var(--color-success-subtle);
   color: var(--color-success);
 }
 
-kedge-provider-databricks .status-badge.tone-warning {
+faros-provider-databricks .status-badge.tone-warning {
   background: var(--color-warning-subtle);
   color: var(--color-warning);
 }
 
-kedge-provider-databricks .status-badge.tone-danger {
+faros-provider-databricks .status-badge.tone-danger {
   background: var(--color-danger-subtle);
   color: var(--color-danger);
 }
 
-kedge-provider-databricks .status-badge.tone-muted {
+faros-provider-databricks .status-badge.tone-muted {
   background: var(--color-surface-overlay);
   color: var(--color-text-muted);
 }
 
-kedge-provider-databricks .status-badge-dot-wrap {
+faros-provider-databricks .status-badge-dot-wrap {
   display: flex;
   height: 6px;
   position: relative;
   width: 6px;
 }
 
-kedge-provider-databricks .status-badge-pulse,
-kedge-provider-databricks .status-badge-dot {
+faros-provider-databricks .status-badge-pulse,
+faros-provider-databricks .status-badge-dot {
   border-radius: 999px;
   display: inline-flex;
   height: 6px;
@@ -566,38 +566,38 @@ kedge-provider-databricks .status-badge-dot {
   width: 6px;
 }
 
-kedge-provider-databricks .status-badge-pulse {
+faros-provider-databricks .status-badge-pulse {
   animation: provider-live-ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
   opacity: 0.6;
 }
 
-kedge-provider-databricks .dot-success,
-kedge-provider-databricks .pulse-success {
+faros-provider-databricks .dot-success,
+faros-provider-databricks .pulse-success {
   background: var(--color-success);
 }
 
-kedge-provider-databricks .dot-warning,
-kedge-provider-databricks .pulse-warning {
+faros-provider-databricks .dot-warning,
+faros-provider-databricks .pulse-warning {
   background: var(--color-warning);
 }
 
-kedge-provider-databricks .dot-danger,
-kedge-provider-databricks .pulse-danger {
+faros-provider-databricks .dot-danger,
+faros-provider-databricks .pulse-danger {
   background: var(--color-danger);
 }
 
-kedge-provider-databricks .dot-muted,
-kedge-provider-databricks .pulse-muted {
+faros-provider-databricks .dot-muted,
+faros-provider-databricks .pulse-muted {
   background: var(--color-text-muted);
 }
 
-kedge-provider-databricks .conditions-panel {
+faros-provider-databricks .conditions-panel {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-kedge-provider-databricks .conditions-title {
+faros-provider-databricks .conditions-title {
   color: var(--color-text-secondary);
   font-size: 11px;
   font-weight: 600;
@@ -606,25 +606,25 @@ kedge-provider-databricks .conditions-title {
   text-transform: uppercase;
 }
 
-kedge-provider-databricks .conditions-stale {
+faros-provider-databricks .conditions-stale {
   color: var(--color-warning);
   font-size: 12px;
   margin: 0;
 }
 
-kedge-provider-databricks .conditions-type {
+faros-provider-databricks .conditions-type {
   color: var(--color-text-primary);
   font-weight: 600;
 }
 
-kedge-provider-databricks .conditions-message {
+faros-provider-databricks .conditions-message {
   display: block;
   max-width: 40ch;
   overflow-wrap: anywhere;
   white-space: normal;
 }
 
-kedge-provider-databricks .conditions-muted {
+faros-provider-databricks .conditions-muted {
   color: var(--color-text-muted);
 }
 

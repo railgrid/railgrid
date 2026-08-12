@@ -1,0 +1,11 @@
+apiVersion: v2
+name: faros-hub
+description: Faros Hub - multi-tenant edge control plane (kcp + faros-hub)
+type: application
+version: v0.0.40
+appVersion: "v0.0.40"
+home: https://github.com/faroshq/faros
+sources:
+  - https://github.com/faroshq/faros
+maintainers:
+  - name: Faros Authors

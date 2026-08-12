@@ -29,8 +29,8 @@ import (
 )
 
 const (
-	projectBuildConfigPath          = ".kedge/build.json"
-	projectBuildWorkflowPath        = ".github/workflows/kedge-app-studio-build.yml"
+	projectBuildConfigPath          = ".faros/build.json"
+	projectBuildWorkflowPath        = ".github/workflows/faros-app-studio-build.yml"
 	projectBuildConfigCommitMessage = "chore(app-studio): configure Railpack build"
 	projectBuildBuilderRailpack     = "railpack"
 	projectBuildRailpackAction      = "iloveitaly/github-action-railpack@167ed71230addc378f3fb13122046c09f71c0e5f"

@@ -18,7 +18,7 @@
 //     /ui/providers/app-studio/.
 //   - /healthz, /api/projects/* — the backend API. Mounted under
 //     /services/providers/app-studio/; the hub backend proxy strips that prefix
-//     and injects X-Kedge-Tenant/X-Kedge-User plus the caller's bearer token.
+//     and injects X-Faros-Tenant/X-Faros-User plus the caller's bearer token.
 package main
 
 import (
@@ -69,8 +69,8 @@ func previewConsoleEnvironmentConfig() (bool, string, string) {
 // the caller). Resolution order matches the other providers.
 func loadProviderConfig() (*rest.Config, error) {
 	candidates := []string{
-		os.Getenv("KEDGE_PROVIDER_KUBECONFIG"),
-		"/var/run/secrets/kedge/kedge-provider-kubeconfig",
+		os.Getenv("FAROS_PROVIDER_KUBECONFIG"),
+		"/var/run/secrets/faros/faros-provider-kubeconfig",
 		os.Getenv("KUBECONFIG"),
 	}
 	for _, path := range candidates {
@@ -86,14 +86,14 @@ func loadProviderConfig() (*rest.Config, error) {
 		}
 		return cfg, nil
 	}
-	return nil, fmt.Errorf("no kubeconfig found (set KEDGE_PROVIDER_KUBECONFIG)")
+	return nil, fmt.Errorf("no kubeconfig found (set FAROS_PROVIDER_KUBECONFIG)")
 }
 
 // Subcommands:
 //
 //	app-studio init   — one-shot: apply APIResourceSchemas, APIExport,
 //	    APIExportEndpointSlice, and bind grant into the provider workspace using
-//	    KEDGE_PROVIDER_KUBECONFIG. See init_cmd.go.
+//	    FAROS_PROVIDER_KUBECONFIG. See init_cmd.go.
 //	app-studio serve  — runtime (default).
 func main() {
 	os.Exit(runMain(os.Args[1:]))
@@ -133,12 +133,12 @@ func runServe() {
 	defer stop()
 
 	// Tenant access goes through the hub's GraphQL gateway (the hub injects
-	// X-Kedge-Cluster per request). Without a hub URL the project API returns
+	// X-Faros-Cluster per request). Without a hub URL the project API returns
 	// 501 (useful for UI-only dev), with a loud warning.
-	hubInsecure := os.Getenv("KEDGE_HUB_INSECURE") == "true"
+	hubInsecure := os.Getenv("FAROS_HUB_INSECURE") == "true"
 	var gqlClient *tenant.GraphQLClient
-	if hubURL := os.Getenv("KEDGE_HUB_URL"); hubURL == "" {
-		log.Printf("WARNING project API disabled (no KEDGE_HUB_URL)")
+	if hubURL := os.Getenv("FAROS_HUB_URL"); hubURL == "" {
+		log.Printf("WARNING project API disabled (no FAROS_HUB_URL)")
 	} else {
 		gqlClient = tenant.NewGraphQLClient(hubURL, hubInsecure)
 	}
@@ -157,10 +157,10 @@ func runServe() {
 		gqlClient,
 		msgStore,
 		workspaces,
-		os.Getenv("KEDGE_HUB_URL"),
+		os.Getenv("FAROS_HUB_URL"),
 		// The MCP virtual-workspace and authenticated catalog endpoints live on the
 		// same hub host as the GraphQL client above, so they must honor the standard
-		// KEDGE_HUB_INSECURE knob every provider uses for in-cluster hub TLS (the
+		// FAROS_HUB_INSECURE knob every provider uses for in-cluster hub TLS (the
 		// hub serves its external cert, not one valid for the .svc.cluster.local
 		// name). Keep the MCP-specific override too, for callers that want to
 		// scope it narrowly. Provider Action invocation has its own verified
@@ -206,7 +206,7 @@ func runServe() {
 	go runHeartbeat(ctx)
 
 	// Deterministic lifecycle: the Project reconciler converges instances
-	// across every tenant workspace. Opt-in via KEDGE_PROVIDER_KUBECONFIG.
+	// across every tenant workspace. Opt-in via FAROS_PROVIDER_KUBECONFIG.
 	//
 	// Started in a retry loop because ordering is not guaranteed: the
 	// provider frequently comes up before `init` has created its workspace,
@@ -219,8 +219,8 @@ func runServe() {
 			Workspace:   workspaces,
 			Busy:        apiServer.AssistantBusy,
 			Store:       msgStore,
-			HubBase:     strings.TrimRight(os.Getenv("KEDGE_HUB_URL"), "/"),
-			HubInsecure: os.Getenv("KEDGE_HUB_INSECURE") == "true",
+			HubBase:     strings.TrimRight(os.Getenv("FAROS_HUB_URL"), "/"),
+			HubInsecure: os.Getenv("FAROS_HUB_INSECURE") == "true",
 		}
 		for attempt := 1; ; attempt++ {
 			// A missing kubeconfig is retried, not fatal: on a fresh stack
@@ -301,7 +301,7 @@ func newHandler(apiServer *api.Server) (http.Handler, error) {
 func openWorkspaceStore() *workspace.FileStore {
 	root := strings.TrimSpace(os.Getenv("APP_STUDIO_WORKSPACE_ROOT"))
 	if root == "" {
-		root = filepath.Join(os.TempDir(), "kedge-app-studio-workspaces")
+		root = filepath.Join(os.TempDir(), "faros-app-studio-workspaces")
 	}
 	log.Printf("app studio workspace root: %s", root)
 	return workspace.NewFileStore(root)

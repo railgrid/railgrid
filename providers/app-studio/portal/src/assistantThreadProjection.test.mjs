@@ -40,14 +40,14 @@ test('projects only canonical context-resource references on user messages', asy
     id: 'user-resource', turnID: 'run-resource', type: 'userMessage', status: 'completed', content: 'Use this table',
     data: { contextResources: [{
       provider: 'databricks',
-      resourceRef: { apiVersion: 'databricks.kedge.faros.sh/v1alpha1', kind: 'Table', resource: 'tables', name: 'trips' },
+      resourceRef: { apiVersion: 'databricks.faros.sh/v1alpha1', kind: 'Table', resource: 'tables', name: 'trips' },
       uid: 'must-not-project', resourceVersion: 'must-not-project', catalogDigest: 'must-not-project',
     }] },
     sequence: 1, createdAt: '2026-08-02T17:42:09Z',
   }], 'demo')
   assert.deepEqual(messages[0].metadata.assistantContextResources, [{
     provider: 'databricks',
-    resourceRef: { apiVersion: 'databricks.kedge.faros.sh/v1alpha1', kind: 'Table', resource: 'tables', name: 'trips' },
+    resourceRef: { apiVersion: 'databricks.faros.sh/v1alpha1', kind: 'Table', resource: 'tables', name: 'trips' },
   }])
   assert.doesNotMatch(JSON.stringify(messages[0].metadata), /must-not-project/)
 })

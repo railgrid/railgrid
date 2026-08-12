@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 )
 
 // clusterAuthorizer decides whether a user may address a given workspace

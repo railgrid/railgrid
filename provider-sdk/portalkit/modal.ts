@@ -25,7 +25,7 @@ export interface ConfirmOptions {
   danger?: boolean
 }
 
-const STYLE_ID = 'kedge-portalkit-modal-css'
+const STYLE_ID = 'faros-portalkit-modal-css'
 
 function ensureStyles(): void {
   if (document.getElementById(STYLE_ID)) return

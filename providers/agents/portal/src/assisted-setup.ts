@@ -63,7 +63,7 @@ export function selfHostedSearchConfigured(conns: Connection[]): boolean {
 // Manual dismissal is remembered per WORKSPACE, not per browser: search set up
 // in one workspace says nothing about another, and a card dismissed everywhere
 // at once would hide the affordance from a workspace that still needs it.
-const DISMISS_KEY = 'kedge:agents:assisted-search-dismissed'
+const DISMISS_KEY = 'faros:agents:assisted-search-dismissed'
 
 function dismissKey(workspaceUUID: string | null): string {
   return `${DISMISS_KEY}:${workspaceUUID || 'none'}`

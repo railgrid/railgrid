@@ -587,7 +587,7 @@ func TestWorkerTurnContextIsFresh(t *testing.T) {
 	s := &Server{store: store.NewMemoryStore()}
 	scope := store.Scope{OrgUUID: "o", WorkspaceUUID: "w", AgentName: "researcher"}
 	agent := &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "researcher"}}
-	agent.Spec.SystemPrompt = "You are Kedge's research agent."
+	agent.Spec.SystemPrompt = "You are Faros's research agent."
 
 	// A memory note and a prior transcript in the SAME session, both of which a
 	// worker must not inherit.

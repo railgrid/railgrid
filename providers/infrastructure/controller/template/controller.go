@@ -8,7 +8,7 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Package template reconciles infrastructure.kedge.faros.sh/v1alpha1
+// Package template reconciles infrastructure.faros.sh/v1alpha1
 // Template CRs. Each Template represents one catalog entry; the
 // controller's job is to (a) materialize the per-template CRD
 // declared in spec.instanceCRD into the provider workspace's
@@ -349,10 +349,10 @@ func buildPerTemplateCRD(tmpl *infrav1alpha1.Template) (*apiextensionsv1.CustomR
 		return nil, fmt.Errorf("decode spec.schema as JSONSchemaProps: %w", err)
 	}
 
-	if err := injectKedgeMode(&spec, tmpl); err != nil {
+	if err := injectFarosMode(&spec, tmpl); err != nil {
 		return nil, err
 	}
-	if err := injectKedgeActions(&spec, tmpl.Spec.Development != nil); err != nil {
+	if err := injectFarosActions(&spec, tmpl.Spec.Development != nil); err != nil {
 		return nil, err
 	}
 
@@ -375,9 +375,9 @@ func buildPerTemplateCRD(tmpl *infrav1alpha1.Template) (*apiextensionsv1.CustomR
 		ObjectMeta: metav1.ObjectMeta{
 			Name: perTemplateCRDName(tmpl),
 			Labels: map[string]string{
-				"infrastructure.kedge.faros.sh/template":         tmpl.Name,
-				"infrastructure.kedge.faros.sh/template-version": tmpl.Spec.Version,
-				"infrastructure.kedge.faros.sh/backend":          tmpl.Spec.Backend,
+				"infrastructure.faros.sh/template":         tmpl.Name,
+				"infrastructure.faros.sh/template-version": tmpl.Spec.Version,
+				"infrastructure.faros.sh/backend":          tmpl.Spec.Backend,
 			},
 		},
 		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
@@ -407,52 +407,52 @@ func buildPerTemplateCRD(tmpl *infrav1alpha1.Template) (*apiextensionsv1.CustomR
 	return crd, nil
 }
 
-// injectKedgeMode adds the platform-reserved kedgeMode property to the
+// injectFarosMode adds the platform-reserved farosMode property to the
 // instance spec schema. Every per-template CRD gets it; the enum only admits
 // "development" when the Template declares a development block, so an invalid
 // mode is rejected by the apiserver rather than by controller logic. The
 // property is reserved: a Template that declares it itself is rejected.
-func injectKedgeMode(spec *apiextensionsv1.JSONSchemaProps, tmpl *infrav1alpha1.Template) error {
-	if _, exists := spec.Properties[infrav1alpha1.KedgeModeField]; exists {
-		return fmt.Errorf("spec.schema declares reserved property %q; the platform injects it", infrav1alpha1.KedgeModeField)
+func injectFarosMode(spec *apiextensionsv1.JSONSchemaProps, tmpl *infrav1alpha1.Template) error {
+	if _, exists := spec.Properties[infrav1alpha1.FarosModeField]; exists {
+		return fmt.Errorf("spec.schema declares reserved property %q; the platform injects it", infrav1alpha1.FarosModeField)
 	}
-	modes := []apiextensionsv1.JSON{{Raw: []byte(`"` + infrav1alpha1.KedgeModeProduction + `"`)}}
+	modes := []apiextensionsv1.JSON{{Raw: []byte(`"` + infrav1alpha1.FarosModeProduction + `"`)}}
 	description := "Platform-reserved provisioning mode. This template is production-only."
 	if tmpl.Spec.Development != nil {
-		modes = append(modes, apiextensionsv1.JSON{Raw: []byte(`"` + infrav1alpha1.KedgeModeDevelopment + `"`)})
+		modes = append(modes, apiextensionsv1.JSON{Raw: []byte(`"` + infrav1alpha1.FarosModeDevelopment + `"`)})
 		description = "Platform-reserved provisioning mode. In development mode the declared development components run platform-managed dev images with the hot-reload agent; everything else runs as declared."
 	}
 	if spec.Properties == nil {
 		spec.Properties = map[string]apiextensionsv1.JSONSchemaProps{}
 	}
-	spec.Properties[infrav1alpha1.KedgeModeField] = apiextensionsv1.JSONSchemaProps{
+	spec.Properties[infrav1alpha1.FarosModeField] = apiextensionsv1.JSONSchemaProps{
 		Type:        "string",
 		Description: description,
 		Enum:        modes,
-		Default:     &apiextensionsv1.JSON{Raw: []byte(`"` + infrav1alpha1.KedgeModeProduction + `"`)},
+		Default:     &apiextensionsv1.JSON{Raw: []byte(`"` + infrav1alpha1.FarosModeProduction + `"`)},
 	}
 	return nil
 }
 
-// injectKedgeActions adds the platform-owned Provider Actions context to
+// injectFarosActions adds the platform-owned Provider Actions context to
 // development-template instance schemas. The fields are deliberately present
 // in the tenant-facing CRD/APIResourceSchema even when a Project has no action
 // grant: App Studio's dev binding can then omit them and rely on the empty
 // defaults, while KRO's synthesized env/annotation expressions still resolve.
 // For production-only templates the fields stay out of the public schema, but
 // a template author may not claim any reserved field in either mode.
-func injectKedgeActions(spec *apiextensionsv1.JSONSchemaProps, enabled bool) error {
+func injectFarosActions(spec *apiextensionsv1.JSONSchemaProps, enabled bool) error {
 	fields := []string{
-		infrav1alpha1.KedgeActionsExchangeURLField,
-		infrav1alpha1.KedgeActionsBaseURLField,
-		infrav1alpha1.KedgeActionsTenantPathField,
-		infrav1alpha1.KedgeActionsOrgField,
-		infrav1alpha1.KedgeActionsWorkspaceField,
-		infrav1alpha1.KedgeActionsProjectField,
-		infrav1alpha1.KedgeActionsProjectUIDField,
-		infrav1alpha1.KedgeActionsEnvironmentField,
-		infrav1alpha1.KedgeActionsInstanceField,
-		infrav1alpha1.KedgeActionsCABundleField,
+		infrav1alpha1.FarosActionsExchangeURLField,
+		infrav1alpha1.FarosActionsBaseURLField,
+		infrav1alpha1.FarosActionsTenantPathField,
+		infrav1alpha1.FarosActionsOrgField,
+		infrav1alpha1.FarosActionsWorkspaceField,
+		infrav1alpha1.FarosActionsProjectField,
+		infrav1alpha1.FarosActionsProjectUIDField,
+		infrav1alpha1.FarosActionsEnvironmentField,
+		infrav1alpha1.FarosActionsInstanceField,
+		infrav1alpha1.FarosActionsCABundleField,
 	}
 	for _, field := range fields {
 		if _, exists := spec.Properties[field]; exists {

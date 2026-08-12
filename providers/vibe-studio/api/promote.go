@@ -29,7 +29,7 @@ import (
 // Promotion.
 //
 // Promoting is a SPEC WRITE, nothing more: append a production environment to
-// the Project whose binding runs the same template in kedgeMode: production
+// the Project whose binding runs the same template in farosMode: production
 // with the built images pinned. The Project reconciler converges any binding
 // it finds, so the production instance is created, updated, and torn down by
 // exactly the machinery that already runs the development sandbox — no
@@ -243,7 +243,7 @@ func promoteProject(p *vibev1alpha1.Project, images map[string]string, revision 
 	}
 	prodName := productionInstanceName(p.Name)
 	values["name"] = prodName
-	values[templateKedgeModeField] = templateKedgeModeProduction
+	values[templateFarosModeField] = templateFarosModeProduction
 	maps.Copy(values, imageValues)
 	raw, err := json.Marshal(values)
 	if err != nil {

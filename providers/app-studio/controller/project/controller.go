@@ -55,7 +55,7 @@ import (
 
 const (
 	// finalizer guards instance teardown on Project deletion.
-	finalizer = "ai.kedge.faros.sh/instances"
+	finalizer = "ai.faros.sh/instances"
 	// requeueInterval polls instance status while not Ready. Instances are
 	// not watched (their kinds are per-template and dynamic); polling keeps
 	// the controller simple and deterministic.
@@ -69,8 +69,8 @@ const (
 	projectDevelopmentEnvironmentName = "development"
 	projectDevelopmentBindingName     = "dev"
 	projectDevelopmentProvider        = "app-studio"
-	appStudioAPIExportName            = "ai.kedge.faros.sh"
-	appStudioAPIExportPath            = "root:kedge:providers:app-studio"
+	appStudioAPIExportName            = "ai.faros.sh"
+	appStudioAPIExportPath            = "root:faros:providers:app-studio"
 )
 
 type tenantPathResolver func(context.Context, client.Client, string) (string, error)

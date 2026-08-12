@@ -14,8 +14,8 @@ import (
 )
 
 // hubBaseURL is the hub this provider reaches tenant runtimes through.
-func hubBaseURL() string { return strings.TrimRight(os.Getenv("KEDGE_HUB_URL"), "/") }
+func hubBaseURL() string { return strings.TrimRight(os.Getenv("FAROS_HUB_URL"), "/") }
 
 // hubInsecure relaxes TLS for the dev hub's self-signed cert (same knob the
 // heartbeat uses).
-func hubInsecure() bool { return os.Getenv("KEDGE_HUB_INSECURE") == "true" }
+func hubInsecure() bool { return os.Getenv("FAROS_HUB_INSECURE") == "true" }

@@ -6,7 +6,7 @@
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
 //
-// code is a kedge provider that manages source-code repositories across git
+// code is a faros provider that manages source-code repositories across git
 // hosting sub-providers (GitHub today). See
 // docs/code-provider-architecture.md for the design.
 //
@@ -18,7 +18,7 @@
 //
 // Connection / Repository / RepositoryCommit / DeployKey / Collaborator are NOT
 // served as REST here: the portal and tenants drive them as CRDs directly
-// against kcp (code.kedge.faros.sh), projected to tenant workspaces via the
+// against kcp (code.faros.sh), projected to tenant workspaces via the
 // APIExport. The controllers reconcile them across all tenant workspaces
 // (controller_manager.go).
 package main

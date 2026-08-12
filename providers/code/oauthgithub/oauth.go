@@ -27,7 +27,7 @@ You may obtain a copy of the License at
 // access token never transits kcp or the hub; it goes straight to the portal in
 // the user's browser.
 //
-// Because the callback is a top-level browser redirect from GitHub (no kedge
+// Because the callback is a top-level browser redirect from GitHub (no faros
 // auth), start/callback are served on the provider's OWN externally-reachable
 // URL (GITHUB_OAUTH_REDIRECT_URL), not through the hub's authenticated
 // /services proxy. In dev that's http://localhost:8083; the config endpoint,
@@ -256,7 +256,7 @@ func (h *Handler) renderResult(w http.ResponseWriter, res callbackResult) {
 	data := map[string]any{
 		"Origin": h.cfg.PortalOrigin,
 		"Payload": template.JS(mustJSON(map[string]string{
-			"type":   "kedge-github-oauth",
+			"type":   "faros-github-oauth",
 			"state":  res.State,
 			"token":  res.Token,
 			"login":  res.Login,

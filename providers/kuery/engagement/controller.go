@@ -15,7 +15,7 @@
 // at /services/edges-proxy/clusters/{tenant}/.../edges/{name}/k8s with the
 // provider SA's token. The Enable-time grant (verb "proxy" on edges, bound
 // to the SA's system:kcp:serviceaccount identity) authorizes it; see
-// docs/kuery-provider-architecture.md in the kedge repo.
+// docs/kuery-provider-architecture.md in the faros repo.
 package engagement
 
 import (
@@ -62,8 +62,8 @@ import (
 const TenantLabel = "tenant"
 
 // edgeGVK is read with unstructured so the provider does not import the
-// kedge monorepo module just for one type.
-var edgeGVK = schema.GroupVersionKind{Group: "kedge.faros.sh", Version: "v1alpha1", Kind: "Edge"}
+// faros monorepo module just for one type.
+var edgeGVK = schema.GroupVersionKind{Group: "faros.sh", Version: "v1alpha1", Kind: "Edge"}
 
 // clusterTTLSeconds is how long a disengaged cluster's rows survive before
 // kuery's GC reaps them (matches kuery's default).
@@ -78,14 +78,14 @@ type Config struct {
 	// it. Its bearer token (the provider SA token) also authorizes the
 	// per-edge edges-proxy data path.
 	ProviderConfig *rest.Config
-	// HubBaseURL is the kedge hub root that serves the edges-proxy virtual
+	// HubBaseURL is the faros hub root that serves the edges-proxy virtual
 	// workspace (/services/edges-proxy/...). When the hub and the kcp API
 	// share one front-proxy host (in-cluster production) this is empty and
 	// the base is derived from ProviderConfig.Host; in host-binary/Tilt dev
 	// the kcp API (kcp front proxy) and the edges-proxy (hub) are split
-	// across two ports, so the hub URL is passed explicitly via KEDGE_HUB_URL.
+	// across two ports, so the hub URL is passed explicitly via FAROS_HUB_URL.
 	HubBaseURL string
-	// APIExportName is the provider's APIExport ("kuery.providers.kedge.faros.sh").
+	// APIExportName is the provider's APIExport ("kuery.providers.faros.sh").
 	APIExportName string
 	// Sync is the kuery sync controller clusters are engaged into.
 	Sync *kuerysync.SyncController
@@ -108,7 +108,7 @@ type Controller struct {
 // ("{tenantCluster}/{edgeName}") so it's computable on delete (when the Edge —
 // and its status.workspacePath — is already gone), but the tenant identity
 // queries scope by is the workspace PATH the hub stamped onto the Edge status,
-// which is what X-Kedge-Tenant carries. Keeping both decouples the data-path
+// which is what X-Faros-Tenant carries. Keeping both decouples the data-path
 // key (cluster) from the tenant-scoping key (path).
 type engagedEdge struct {
 	cancel   context.CancelFunc
@@ -185,7 +185,7 @@ func (c *Controller) EngagedCount() int {
 
 // TenantEdges lists the edge names currently engaged for one tenant —
 // the portal's edge selector. The tenant key is the workspace PATH (matching
-// the X-Kedge-Tenant the hub injects), stored per-entry rather than parsed
+// the X-Faros-Tenant the hub injects), stored per-entry rather than parsed
 // from the cluster-based map key.
 func (c *Controller) TenantEdges(tenant string) []string {
 	c.mu.Lock()
@@ -357,12 +357,12 @@ func (c *Controller) disengage(ctx context.Context, key string) {
 	klog.FromContext(ctx).Info("edge disengaged", "edge", storeName)
 }
 
-// edgeProxyURL mirrors pkg/apiurl.EdgeProxyURL in the kedge monorepo —
+// edgeProxyURL mirrors pkg/apiurl.EdgeProxyURL in the faros monorepo —
 // inlined so the provider module doesn't depend on the monorepo. Keep the
 // pattern in lockstep:
-// {hub}/services/edges-proxy/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/k8s
+// {hub}/services/edges-proxy/clusters/{cluster}/apis/faros.sh/v1alpha1/edges/{name}/k8s
 func edgeProxyURL(hubBase, cluster, edgeName string) string {
-	return fmt.Sprintf("%s/services/edges-proxy/clusters/%s/apis/kedge.faros.sh/v1alpha1/edges/%s/k8s",
+	return fmt.Sprintf("%s/services/edges-proxy/clusters/%s/apis/faros.sh/v1alpha1/edges/%s/k8s",
 		strings.TrimRight(hubBase, "/"), cluster, edgeName)
 }
 

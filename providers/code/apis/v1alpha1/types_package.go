@@ -38,7 +38,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=kedge,shortName=gpkg
+// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=gpkg
 // +kubebuilder:printcolumn:name="Repository",type=string,JSONPath=`.spec.repositoryRef`
 // +kubebuilder:printcolumn:name="Package",type=string,JSONPath=`.status.packageName`
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.status.type`
@@ -159,4 +159,4 @@ type PackageVersion struct {
 // LabelRepository is set by the PackageController on every Package, mirroring
 // spec.repositoryRef, so the portal (and the controller's own diff) can list a
 // repository's packages with a label selector.
-const LabelRepository = "code.kedge.faros.sh/repository"
+const LabelRepository = "code.faros.sh/repository"

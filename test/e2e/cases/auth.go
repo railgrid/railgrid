@@ -29,8 +29,8 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	cliauth "github.com/faroshq/faros/pkg/cli/auth"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // proxyAuthClient is a shared HTTP client that skips TLS verification for the
@@ -47,7 +47,7 @@ var proxyAuthClient = &http.Client{
 // validation path. The edge name ("nonexistent") need not exist — auth is
 // checked before the edge lookup.
 func proxyEdgesURL(hubURL string) string {
-	return hubURL + "/services/edges-proxy/clusters/test/apis/kedge.faros.sh/v1alpha1/edges/nonexistent/k8s"
+	return hubURL + "/services/edges-proxy/clusters/test/apis/faros.sh/v1alpha1/edges/nonexistent/k8s"
 }
 
 // doProxyRequest sends a GET to the edges-proxy with the given Authorization
@@ -101,7 +101,7 @@ func ProxyUnauthenticated() features.Feature {
 			// The handler rejects requests with an empty bearer token with 401
 			// before any path parsing or cluster lookup occurs, so the cluster
 			// and edge name here are arbitrary placeholders.
-			proxyURL := clusterEnv.HubURL + "/services/edges-proxy/clusters/test/apis/kedge.faros.sh/v1alpha1/edges/nonexistent/k8s"
+			proxyURL := clusterEnv.HubURL + "/services/edges-proxy/clusters/test/apis/faros.sh/v1alpha1/edges/nonexistent/k8s"
 			code, err := framework.HTTPGet(ctx, proxyURL)
 			if err != nil {
 				t.Fatalf("HTTP GET to edges proxy failed: %v", err)
@@ -234,7 +234,7 @@ func OIDCCrossUserEdgeIsolation() features.Feature {
 			}
 
 			// ── User A: create an Edge resource ────────────────────────────
-			clientA := framework.NewKedgeClient(framework.RepoRoot(), kcFileA, clusterEnv.HubURL)
+			clientA := framework.NewFarosClient(framework.RepoRoot(), kcFileA, clusterEnv.HubURL)
 			if err := clientA.EdgeCreate(ctx, edgeName, "kubernetes", "env=e2e-isolation"); err != nil {
 				t.Fatalf("User A creating edge %q: %v", edgeName, err)
 			}
@@ -253,7 +253,7 @@ func OIDCCrossUserEdgeIsolation() features.Feature {
 			// be connected for the 403 check to be meaningful.
 			edgeProxyURL := clusterEnv.HubURL +
 				"/services/edges-proxy/clusters/" + clusterName +
-				"/apis/kedge.faros.sh/v1alpha1/edges/" + edgeName + "/k8s"
+				"/apis/faros.sh/v1alpha1/edges/" + edgeName + "/k8s"
 			t.Logf("User A edge proxy URL: %s", edgeProxyURL)
 
 			// ── User B: full OIDC login ─────────────────────────────────────
@@ -307,7 +307,7 @@ func OIDCCrossUserEdgeIsolation() features.Feature {
 			if !ok {
 				return ctx // setup was skipped, nothing to clean up
 			}
-			clientA := framework.NewKedgeClient(framework.RepoRoot(), data.userAKubeconfig, "")
+			clientA := framework.NewFarosClient(framework.RepoRoot(), data.userAKubeconfig, "")
 			if err := clientA.EdgeDelete(ctx, data.edgeName); err != nil {
 				t.Logf("warning: teardown edge delete failed (best-effort): %v", err)
 			}

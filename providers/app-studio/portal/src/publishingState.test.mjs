@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createServer } from 'vite'
 
-const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/kedge-vite-publishing-state', configFile: false, server: { middlewareMode: true } })
+const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/faros-vite-publishing-state', configFile: false, server: { middlewareMode: true } })
 const {
   productionAccessState,
   productionDeploymentDescription,

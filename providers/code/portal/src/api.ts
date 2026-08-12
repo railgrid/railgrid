@@ -1,10 +1,10 @@
 // GraphQL client for the code provider's portal.
 //
 // Every read and write goes through the hub's embedded GraphQL gateway at
-// /graphql/<cluster> — reads as `code_kedge_faros_sh { v1alpha1 { … } }`
+// /graphql/<cluster> — reads as `code_faros_sh { v1alpha1 { … } }`
 // queries, writes as create/update/delete mutations (and applyYaml for
-// create-or-update). The shell pushes kedgeContext.tenant (kcp cluster name,
-// used as the /graphql path segment) and kedgeContext.token (bearer). The one
+// create-or-update). The shell pushes farosContext.tenant (kcp cluster name,
+// used as the /graphql path segment) and farosContext.token (bearer). The one
 // non-gateway call is oauthConfig, which probes the provider backend directly.
 
 import type {
@@ -19,7 +19,7 @@ import type {
   RepositoryDetail,
 } from './types'
 
-const GROUP = 'code.kedge.faros.sh'
+const GROUP = 'code.faros.sh'
 const VERSION = 'v1alpha1'
 const CRED_NAMESPACE = 'default'
 const TOKEN_KEY = 'token'
@@ -247,7 +247,7 @@ async function applyCR(manifest: Record<string, unknown>): Promise<RawCR> {
 // deleteCR deletes a code-group resource by name via the delete<Kind> mutation.
 async function deleteCR(kind: string, name: string): Promise<void> {
   await graphqlQuery(
-    `mutation($n: String!) { code_kedge_faros_sh { v1alpha1 { delete${kind}(name: $n) } } }`,
+    `mutation($n: String!) { code_faros_sh { v1alpha1 { delete${kind}(name: $n) } } }`,
     { n: name },
   )
 }
@@ -264,8 +264,8 @@ async function deleteSecret(name: string): Promise<void> {
 // ── GraphQL read helpers ───────────────────────────────────────────────────
 // The gateway returns each CR as a metadata/spec/status object — the same shape
 // the kcp REST proxy does — so the *FromCR mappers consume GraphQL items as-is.
-// We select the full spec/status the mappers read; the group code.kedge.faros.sh
-// is the GraphQL field code_kedge_faros_sh (dots → underscores), list fields are
+// We select the full spec/status the mappers read; the group code.faros.sh
+// is the GraphQL field code_faros_sh (dots → underscores), list fields are
 // the capitalised plural (Connections), single-get is the capitalised singular
 // (Connection(name: …)).
 const GQL_META = 'metadata { name uid resourceVersion creationTimestamp }'
@@ -287,20 +287,20 @@ const F_PACKAGE = `${GQL_META} spec { repositoryRef } status { packageName type 
 async function gqlList(kind: string, fields: string, labelselector?: string): Promise<RawCR[]> {
   const decl = labelselector !== undefined ? '($sel: String!)' : ''
   const arg = labelselector !== undefined ? '(labelselector: $sel)' : ''
-  const query = `query${decl} { code_kedge_faros_sh { v1alpha1 { ${kind}${arg} { items { ${fields} } } } } }`
-  const data = await graphqlQuery<{ code_kedge_faros_sh?: { v1alpha1?: Record<string, { items?: RawCR[] }> } }>(
+  const query = `query${decl} { code_faros_sh { v1alpha1 { ${kind}${arg} { items { ${fields} } } } } }`
+  const data = await graphqlQuery<{ code_faros_sh?: { v1alpha1?: Record<string, { items?: RawCR[] }> } }>(
     query,
     labelselector !== undefined ? { sel: labelselector } : {},
   )
-  return data.code_kedge_faros_sh?.v1alpha1?.[kind]?.items ?? []
+  return data.code_faros_sh?.v1alpha1?.[kind]?.items ?? []
 }
 
 // gqlGet fetches a single named object (capitalised-singular field). Throws a
 // NotFound ErrorResponse when the gateway returns null.
 async function gqlGet(kind: string, name: string, fields: string): Promise<RawCR> {
-  const query = `query($n: String!) { code_kedge_faros_sh { v1alpha1 { ${kind}(name: $n) { ${fields} } } } }`
-  const data = await graphqlQuery<{ code_kedge_faros_sh?: { v1alpha1?: Record<string, RawCR | null> } }>(query, { n: name })
-  const obj = data.code_kedge_faros_sh?.v1alpha1?.[kind]
+  const query = `query($n: String!) { code_faros_sh { v1alpha1 { ${kind}(name: $n) { ${fields} } } } }`
+  const data = await graphqlQuery<{ code_faros_sh?: { v1alpha1?: Record<string, RawCR | null> } }>(query, { n: name })
+  const obj = data.code_faros_sh?.v1alpha1?.[kind]
   if (!obj) throw <ErrorResponse>{ reason: 'NotFound', message: `${kind} "${name}" not found` }
   return obj
 }
@@ -435,15 +435,15 @@ export const api = {
   // spec.connectionRef changes; the controller re-resolves the new credential/
   // owner on the next reconcile.
   async updateRepositoryConnection(name: string, connectionRef: string): Promise<Repository> {
-    const data = await graphqlQuery<{ code_kedge_faros_sh?: { v1alpha1?: { updateRepository?: RawCR } } }>(
+    const data = await graphqlQuery<{ code_faros_sh?: { v1alpha1?: { updateRepository?: RawCR } } }>(
       `mutation($n: String!, $ref: String!) {
-        code_kedge_faros_sh { v1alpha1 {
+        code_faros_sh { v1alpha1 {
           updateRepository(name: $n, object: { spec: { connectionRef: $ref } }) { ${F_REPOSITORY} }
         } }
       }`,
       { n: name, ref: connectionRef },
     )
-    const updated = data.code_kedge_faros_sh?.v1alpha1?.updateRepository
+    const updated = data.code_faros_sh?.v1alpha1?.updateRepository
     if (!updated) throw <ErrorResponse>{ reason: 'ServerError', message: 'updateRepository returned no object' }
     return repoFromCR(updated)
   },
@@ -524,7 +524,7 @@ export const api = {
 
 // PACKAGE_REPO_LABEL mirrors codev1alpha1.LabelRepository — the crawler stamps
 // it on every Package so we can list one repository's packages by selector.
-const PACKAGE_REPO_LABEL = 'code.kedge.faros.sh/repository'
+const PACKAGE_REPO_LABEL = 'code.faros.sh/repository'
 
 function shortRand(): string {
   // Browser crypto for a short suffix; avoids name collisions without Date/Math.random concerns.

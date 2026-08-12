@@ -9,7 +9,7 @@ COPY portal/ ./
 RUN npm run build
 
 # 2. Build the Go binary. The binary serves `init` + `serve`, so the whole
-#    module source has to be present. The kedge-provider-sdk is now a published
+#    module source has to be present. The faros-provider-sdk is now a published
 #    dependency (no replace), so `go mod download` fetches it from the proxy.
 FROM golang:1.26-alpine AS build
 WORKDIR /src

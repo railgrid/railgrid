@@ -69,10 +69,10 @@ import (
 // on generated clients for the per-template CRDs (their schemas are authored
 // at runtime by the Template controller).
 var (
-	appGVK     = schema.GroupVersionKind{Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Kind: "Application"}
-	webappGVK  = schema.GroupVersionKind{Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Kind: "SimpleWebApp"}
-	searxngGVK = schema.GroupVersionKind{Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Kind: "Searxng"}
-	browserGVK = schema.GroupVersionKind{Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Kind: "Browser"}
+	appGVK     = schema.GroupVersionKind{Group: "infrastructure.faros.sh", Version: "v1alpha1", Kind: "Application"}
+	webappGVK  = schema.GroupVersionKind{Group: "infrastructure.faros.sh", Version: "v1alpha1", Kind: "SimpleWebApp"}
+	searxngGVK = schema.GroupVersionKind{Group: "infrastructure.faros.sh", Version: "v1alpha1", Kind: "Searxng"}
+	browserGVK = schema.GroupVersionKind{Group: "infrastructure.faros.sh", Version: "v1alpha1", Kind: "Browser"}
 )
 
 // instanceKind pairs an exposed instance GVK with the treatment it needs.
@@ -124,7 +124,7 @@ const (
 	// finalizer guards the cross-cluster bridged Secret (and, later, the Dex
 	// client) — both live outside the instance's cluster, so GC can't reap
 	// them via ownerRefs.
-	finalizer = "infrastructure.kedge.faros.sh/application-bridge"
+	finalizer = "infrastructure.faros.sh/application-bridge"
 
 	// oidcClientSecretKey is the key the bridged Secret carries and the RGD's
 	// oauth2-proxy reads via secretKeyRef. BYO tenants put their client secret
@@ -147,9 +147,9 @@ type Config struct {
 	// APIExport VW discovery and the per-tenant clients.
 	ProviderConfig *rest.Config
 	// APIExportName is the provider's APIExport
-	// ("infrastructure.providers.kedge.faros.sh").
+	// ("infrastructure.providers.faros.sh").
 	APIExportName string
-	// BaseDomain is the zone apps are exposed under (KEDGE_APP_BASE_DOMAIN,
+	// BaseDomain is the zone apps are exposed under (FAROS_APP_BASE_DOMAIN,
 	// e.g. "apps.example.com"). Required to compute fqdn.
 	BaseDomain string
 	// Runtime is a dynamic client for the kro runtime cluster (KRO_KUBECONFIG),
@@ -176,7 +176,7 @@ func New(cfg Config) (*Controller, error) {
 		return nil, fmt.Errorf("application: APIExportName is required")
 	}
 	if cfg.BaseDomain == "" {
-		return nil, fmt.Errorf("application: BaseDomain (KEDGE_APP_BASE_DOMAIN) is required")
+		return nil, fmt.Errorf("application: BaseDomain (FAROS_APP_BASE_DOMAIN) is required")
 	}
 	if cfg.Runtime == nil {
 		return nil, fmt.Errorf("application: Runtime client (KRO_KUBECONFIG) is required")
@@ -368,12 +368,12 @@ func (c *Controller) stampSpec(ctx context.Context, tenantClient client.Client, 
 		return fmt.Errorf("computing fqdn: %w", err)
 	}
 
-	// Publishable templates declare spec.kedgeCluster (CRD-defaulted to
+	// Publishable templates declare spec.farosCluster (CRD-defaulted to
 	// "pending") so their embedded access gate learns the tenant workspace
 	// cluster ID for sign-in authorization. Stamp only when the schema
 	// declares the field — an absent field would be pruned server-side and
 	// re-stamping it every pass would hot-loop the reconciler.
-	curCluster, hasClusterField, _ := unstructured.NestedString(app.Object, "spec", "kedgeCluster")
+	curCluster, hasClusterField, _ := unstructured.NestedString(app.Object, "spec", "farosCluster")
 	stampCluster := hasClusterField && curCluster != tenant
 
 	current := curFQDN == fqdn && !stampCluster
@@ -387,8 +387,8 @@ func (c *Controller) stampSpec(ctx context.Context, tenantClient client.Client, 
 		return fmt.Errorf("set spec.expose.fqdn: %w", err)
 	}
 	if stampCluster {
-		if err := unstructured.SetNestedField(app.Object, tenant, "spec", "kedgeCluster"); err != nil {
-			return fmt.Errorf("set spec.kedgeCluster: %w", err)
+		if err := unstructured.SetNestedField(app.Object, tenant, "spec", "farosCluster"); err != nil {
+			return fmt.Errorf("set spec.farosCluster: %w", err)
 		}
 	}
 	if withCredentials {

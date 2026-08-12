@@ -33,12 +33,12 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros/pkg/apiurl"
 )
 
-// kedgeContextName is the kubeconfig context that `kedge login` writes and
-// that `kedge use` retargets.
-const kedgeContextName = "kedge"
+// farosContextName is the kubeconfig context that `faros login` writes and
+// that `faros use` retargets.
+const farosContextName = "faros"
 
 // orgView / workspaceView / listResponse mirror the hub REST projections in
 // pkg/hub/restapi (OrgView, WorkspaceView, ListResponse). Only the fields the
@@ -66,16 +66,16 @@ func newUseCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "use",
 		Short: "Switch the active organization and workspace",
-		Long: `Switch the kubeconfig "kedge" context between the organizations and
+		Long: `Switch the kubeconfig "faros" context between the organizations and
 workspaces you belong to.
 
 With no flags it opens an interactive picker — first an organization, then a
 workspace within it. Pass --org and/or --workspace (display name or UUID) to
 skip the picker, e.g. for scripts:
 
-  kedge use                                  # fully interactive
-  kedge use --org acme                       # pick a workspace in "acme"
-  kedge use --org acme --workspace platform  # non-interactive`,
+  faros use                                  # fully interactive
+  faros use --org acme                       # pick a workspace in "acme"
+  faros use --org acme --workspace platform  # non-interactive`,
 		Aliases: []string{"switch", "ctx"},
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -90,7 +90,7 @@ skip the picker, e.g. for scripts:
 }
 
 func runUse(ctx context.Context, orgFlag, wsFlag string) error {
-	// Load the kubeconfig and locate the kedge context to retarget.
+	// Load the kubeconfig and locate the faros context to retarget.
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfig != "" {
 		loadingRules.ExplicitPath = kubeconfig
@@ -99,7 +99,7 @@ func runUse(ctx context.Context, orgFlag, wsFlag string) error {
 	if err != nil {
 		return fmt.Errorf("loading kubeconfig: %w", err)
 	}
-	ctxName, kctx, err := resolveKedgeContext(raw)
+	ctxName, kctx, err := resolveFarosContext(raw)
 	if err != nil {
 		return err
 	}
@@ -163,7 +163,7 @@ func runUse(ctx context.Context, orgFlag, wsFlag string) error {
 		return fmt.Errorf("workspace %q is not ready yet (no cluster assigned); try again shortly", displayLabel(ws.DisplayName, ws.UUID))
 	}
 
-	// 3. Retarget the kedge cluster server URL and persist.
+	// 3. Retarget the faros cluster server URL and persist.
 	newServer := apiurl.HubServerURL(base, ws.ClusterName)
 	if cluster.Server == newServer {
 		fmt.Printf("Already using organization %q / workspace %q\n", org.DisplayName, displayLabel(ws.DisplayName, ws.UUID))
@@ -184,18 +184,18 @@ func runUse(ctx context.Context, orgFlag, wsFlag string) error {
 	return nil
 }
 
-// resolveKedgeContext returns the context to retarget: the "kedge" context if
-// present (what `kedge login` writes), otherwise the current-context.
-func resolveKedgeContext(raw *clientcmdapi.Config) (string, *clientcmdapi.Context, error) {
-	if c, ok := raw.Contexts[kedgeContextName]; ok {
-		return kedgeContextName, c, nil
+// resolveFarosContext returns the context to retarget: the "faros" context if
+// present (what `faros login` writes), otherwise the current-context.
+func resolveFarosContext(raw *clientcmdapi.Config) (string, *clientcmdapi.Context, error) {
+	if c, ok := raw.Contexts[farosContextName]; ok {
+		return farosContextName, c, nil
 	}
 	if raw.CurrentContext != "" {
 		if c, ok := raw.Contexts[raw.CurrentContext]; ok {
 			return raw.CurrentContext, c, nil
 		}
 	}
-	return "", nil, fmt.Errorf("no %q context found in kubeconfig — run 'kedge login' first", kedgeContextName)
+	return "", nil, fmt.Errorf("no %q context found in kubeconfig — run 'faros login' first", farosContextName)
 }
 
 func fetchOrgs(ctx context.Context, c *http.Client, base string) ([]orgView, error) {
@@ -226,7 +226,7 @@ func fetchWorkspaces(ctx context.Context, c *http.Client, base, orgUUID string) 
 }
 
 // doGetJSON issues an authenticated GET and decodes a JSON body. When orgHeader
-// is set it is sent as X-Kedge-Org, which the tenant-scoped endpoints require.
+// is set it is sent as X-Faros-Org, which the tenant-scoped endpoints require.
 func doGetJSON(ctx context.Context, c *http.Client, url, orgHeader string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -234,7 +234,7 @@ func doGetJSON(ctx context.Context, c *http.Client, url, orgHeader string, out a
 	}
 	req.Header.Set("Accept", "application/json")
 	if orgHeader != "" {
-		req.Header.Set("X-Kedge-Org", orgHeader)
+		req.Header.Set("X-Faros-Org", orgHeader)
 	}
 	resp, err := c.Do(req)
 	if err != nil {

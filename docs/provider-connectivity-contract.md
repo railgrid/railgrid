@@ -57,12 +57,12 @@ token for UI purposes.
 API **without any admin/root client**. It uses one of two scoped mechanisms:
 
 - **(2a) Controller / sync** — a non-privileged ServiceAccount minted in the
-  provider's own workspace (`root:kedge:providers:{name}`), driving a
+  provider's own workspace (`root:faros:providers:{name}`), driving a
   multicluster manager off the provider's **APIExportEndpointSlice** virtual
   workspace, bounded by the APIExport's `tenantScoped` permission claims.
 - **(2b) Per-request** — the provider drops its own credential and acts **as
   the caller**, using the bearer token forwarded by the hub, scoped to the
-  `X-Kedge-Tenant` workspace path.
+  `X-Faros-Tenant` workspace path.
 
 Both 2a and 2b are admin-free. New providers should pick one (or use 2a for
 controllers and 2b for request-driven endpoints, like `code` and
@@ -99,14 +99,14 @@ Two proxies back every provider, defined in
 
 | Proxy | Path | Token handling |
 |-------|------|----------------|
-| **UI proxy** (`NewUIProxy`, `proxy.go:52`) | `/ui/providers/{name}/*` | Static assets only. Injects `X-Kedge-Base-Path`. **No token forwarded.** First-party providers are served from an embedded FS (`LocalUIAssets`). |
-| **Backend proxy** (`NewBackendProxy`, `proxy.go:90`) | `/services/providers/{name}/*` | **Forwards the caller's `Authorization` header as-is**, and additionally injects `X-Kedge-User` + `X-Kedge-Tenant` resolved from the token. Inbound `X-Kedge-*` headers are **always stripped** first (anti-spoofing, `proxy.go:114`). |
+| **UI proxy** (`NewUIProxy`, `proxy.go:52`) | `/ui/providers/{name}/*` | Static assets only. Injects `X-Faros-Base-Path`. **No token forwarded.** First-party providers are served from an embedded FS (`LocalUIAssets`). |
+| **Backend proxy** (`NewBackendProxy`, `proxy.go:90`) | `/services/providers/{name}/*` | **Forwards the caller's `Authorization` header as-is**, and additionally injects `X-Faros-User` + `X-Faros-Tenant` resolved from the token. Inbound `X-Faros-*` headers are **always stripped** first (anti-spoofing, `proxy.go:114`). |
 
 The identity injected by the backend proxy is resolved by the
 **TenantResolver** ([`pkg/hub/provider_tenant_resolver.go`](../pkg/hub/provider_tenant_resolver.go),
 `resolve` at `:104`): caller token → `User` CR → `Organization` →
-`Status.WorkspacePath`. It honors the sidebar's `X-Kedge-Org` /
-`X-Kedge-Workspace` selection (validated against the user's
+`Status.WorkspacePath`. It honors the sidebar's `X-Faros-Org` /
+`X-Faros-Workspace` selection (validated against the user's
 `UserMembershipIndex`) and falls back to the user's personal org. Failures are
 best-effort: anonymous `/healthz` probes still pass through with no identity
 headers, they do not 401.
@@ -136,7 +136,7 @@ User opens portal
         → hub returns a LoginResponse (idToken, refreshToken, expiresAt, …)
   → Static: POST /auth/token-login with Authorization: Bearer <token>
         → hub constant-time-compares against configured tokens, seeds User CR
-  → portal stores it in localStorage["kedge-auth"]
+  → portal stores it in localStorage["faros-auth"]
         { idToken, refreshToken, expiresAt, issuerUrl, clientId,
           email, userId, clusterName }
 ```
@@ -163,12 +163,12 @@ shape:
 | kcp ServiceAccount token | kcp-minted | signature verified by kcp (provider/agent/inter-service) |
 
 **Passing context to provider micro-frontends.** `ProviderFrame.vue`
-(`portal/src/pages/ProviderFrame.vue:151`) sets a **`kedgeContext` property on
+(`portal/src/pages/ProviderFrame.vue:151`) sets a **`farosContext` property on
 the provider's custom element** (not a postMessage handshake — that part of
 older docs is stale):
 
 ```js
-el.kedgeContext = {
+el.farosContext = {
   subPath, basePath,            // routing
   token: auth.token,            // <-- the RAW bearer token
   user: auth.user,              // { email, userId }
@@ -229,12 +229,12 @@ servers receive the token by design.
 
 [`pkg/hub/providers/provision.go`](../pkg/hub/providers/provision.go):
 
-1. `EnsureProviderWorkspace` creates `root:kedge:providers:{name}`.
+1. `EnsureProviderWorkspace` creates `root:faros:providers:{name}`.
 2. `EnsureProviderSA` creates `system:serviceaccount:default:provider`, granted
    cluster-admin **only inside its own workspace** — its single privilege.
 3. `MintProviderKubeconfig` mints a long-lived SA-token kubeconfig pointing at
-   `{hub}/clusters/root:kedge:providers:{name}`, delivered to the provider as
-   the `kedge-provider-kubeconfig` Secret.
+   `{hub}/clusters/root:faros:providers:{name}`, delivered to the provider as
+   the `faros-provider-kubeconfig` Secret.
 4. `ApplyAPIExport` registers the provider's permission claims; `ApplyBindGrant`
    lets `system:authenticated` tenants bind the export.
 
@@ -293,9 +293,9 @@ internal Service.
       **APIExportEndpointSlice** (2a); declare `tenantScoped` permission claims
       for exactly the resources/verbs you need.
 - [ ] Request-driven endpoints act as the **caller** via the forwarded token
-      (2b): build the tenant client from `Authorization` + `X-Kedge-Tenant`,
+      (2b): build the tenant client from `Authorization` + `X-Faros-Tenant`,
       drop the provider's own credential.
-- [ ] Never trust inbound `X-Kedge-*` headers in the provider — the backend
+- [ ] Never trust inbound `X-Faros-*` headers in the provider — the backend
       proxy strips and re-injects them; treat them as hub-asserted only.
 - [ ] To reach **another provider**, bind its `APIExport` and call its CRs /
       VW subresources as the caller (contract 3). Never hold a credential
@@ -315,7 +315,7 @@ internal Service.
 | Provider provisioning (workspace, SA, kubeconfig) | `pkg/hub/providers/provision.go` |
 | Portal login / token storage | `portal/src/pages/LoginPage.vue`, `portal/src/auth/token.ts` |
 | Portal GraphQL client | `portal/src/graphql/client.ts`, `portal/src/composables/useGraphQL.ts` |
-| `kedgeContext` push to micro-frontend | `portal/src/pages/ProviderFrame.vue:151` |
+| `farosContext` push to micro-frontend | `portal/src/pages/ProviderFrame.vue:151` |
 | Hub bearer dispatch / verification | `pkg/server/proxy/proxy.go:248` |
 | (2a) endpointslice multicluster mgr | `providers/code/controller_manager.go` |
 | (2b) caller-token tenant factory | `providers/*/tenant/client.go` |

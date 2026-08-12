@@ -28,7 +28,7 @@ import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import { authFetch } from '@/auth/session'
 
-const STORAGE_KEY = 'kedge:portal:tenant'
+const STORAGE_KEY = 'faros:portal:tenant'
 
 // statusMessage pulls the human-readable `.message` out of the hub's
 // kube-style Status envelope (see restapi.writeStatus) so callers can
@@ -181,8 +181,8 @@ export const useTenantStore = defineStore('tenant', () => {
   // can decide whether the endpoint requires them.
   function tenantHeaders(): Record<string, string> {
     const h: Record<string, string> = {}
-    if (orgUUID.value) h['X-Kedge-Org'] = orgUUID.value
-    if (workspaceUUID.value) h['X-Kedge-Workspace'] = workspaceUUID.value
+    if (orgUUID.value) h['X-Faros-Org'] = orgUUID.value
+    if (workspaceUUID.value) h['X-Faros-Workspace'] = workspaceUUID.value
     return h
   }
 
@@ -221,7 +221,7 @@ export const useTenantStore = defineStore('tenant', () => {
     error.value = null
     try {
       const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces`, {
-        headers: { 'X-Kedge-Org': targetOrgUUID },
+        headers: { 'X-Faros-Org': targetOrgUUID },
       })
       if (!resp.ok) {
         error.value = `failed to list workspaces: ${resp.status}`
@@ -285,7 +285,7 @@ export const useTenantStore = defineStore('tenant', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Kedge-Org': targetOrgUUID,
+        'X-Faros-Org': targetOrgUUID,
       },
       body: JSON.stringify({ displayName }),
     })
@@ -376,7 +376,7 @@ export const useTenantStore = defineStore('tenant', () => {
   async function patchOrgDisplayName(targetOrgUUID: string, displayName: string): Promise<boolean> {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'Content-Type': 'application/json', 'X-Faros-Org': targetOrgUUID },
       body: JSON.stringify({ displayName }),
     })
     if (!resp.ok) {
@@ -390,7 +390,7 @@ export const useTenantStore = defineStore('tenant', () => {
   async function deleteOrg(targetOrgUUID: string): Promise<boolean> {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}`, {
       method: 'DELETE',
-      headers: { 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'X-Faros-Org': targetOrgUUID },
     })
     if (!resp.ok) {
       error.value = `failed to delete org: ${resp.status}`
@@ -403,7 +403,7 @@ export const useTenantStore = defineStore('tenant', () => {
   async function undeleteOrg(targetOrgUUID: string): Promise<boolean> {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/undelete`, {
       method: 'POST',
-      headers: { 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'X-Faros-Org': targetOrgUUID },
     })
     if (!resp.ok) {
       error.value = `failed to undelete org: ${resp.status}`
@@ -420,8 +420,8 @@ export const useTenantStore = defineStore('tenant', () => {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
-        'X-Kedge-Org': targetOrgUUID,
-        'X-Kedge-Workspace': wsUUID,
+        'X-Faros-Org': targetOrgUUID,
+        'X-Faros-Workspace': wsUUID,
       },
       body: JSON.stringify({ displayName }),
     })
@@ -437,8 +437,8 @@ export const useTenantStore = defineStore('tenant', () => {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}`, {
       method: 'DELETE',
       headers: {
-        'X-Kedge-Org': targetOrgUUID,
-        'X-Kedge-Workspace': wsUUID,
+        'X-Faros-Org': targetOrgUUID,
+        'X-Faros-Workspace': wsUUID,
       },
     })
     if (!resp.ok) {
@@ -453,8 +453,8 @@ export const useTenantStore = defineStore('tenant', () => {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/undelete`, {
       method: 'POST',
       headers: {
-        'X-Kedge-Org': targetOrgUUID,
-        'X-Kedge-Workspace': wsUUID,
+        'X-Faros-Org': targetOrgUUID,
+        'X-Faros-Workspace': wsUUID,
       },
     })
     if (!resp.ok) {
@@ -469,7 +469,7 @@ export const useTenantStore = defineStore('tenant', () => {
 
   async function listOrgMembers(targetOrgUUID: string): Promise<MemberRow[]> {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships`, {
-      headers: { 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'X-Faros-Org': targetOrgUUID },
     })
     if (!resp.ok) {
       error.value = `failed to list org members: ${resp.status}`
@@ -482,7 +482,7 @@ export const useTenantStore = defineStore('tenant', () => {
   async function addOrgMember(targetOrgUUID: string, user: string, role: 'admin' | 'member'): Promise<boolean> {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'Content-Type': 'application/json', 'X-Faros-Org': targetOrgUUID },
       body: JSON.stringify({ user, role }),
     })
     if (!resp.ok) {
@@ -496,7 +496,7 @@ export const useTenantStore = defineStore('tenant', () => {
   async function patchOrgMemberRole(targetOrgUUID: string, user: string, role: 'admin' | 'member'): Promise<boolean> {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships/${user}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'Content-Type': 'application/json', 'X-Faros-Org': targetOrgUUID },
       body: JSON.stringify({ role }),
     })
     if (!resp.ok) {
@@ -510,7 +510,7 @@ export const useTenantStore = defineStore('tenant', () => {
     const url = `/api/orgs/${targetOrgUUID}/memberships/${user}${cascade ? '?cascade=true' : ''}`
     const resp = await authFetch(url, {
       method: 'DELETE',
-      headers: { 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'X-Faros-Org': targetOrgUUID },
     })
     if (!resp.ok) {
       error.value = `failed to remove member: ${resp.status}`
@@ -522,7 +522,7 @@ export const useTenantStore = defineStore('tenant', () => {
   async function leaveOrg(targetOrgUUID: string): Promise<boolean> {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships/me`, {
       method: 'DELETE',
-      headers: { 'X-Kedge-Org': targetOrgUUID },
+      headers: { 'X-Faros-Org': targetOrgUUID },
     })
     if (!resp.ok) {
       error.value = `failed to leave org: ${resp.status}`
@@ -541,7 +541,7 @@ export const useTenantStore = defineStore('tenant', () => {
 
   async function listWorkspaceMembers(targetOrgUUID: string, wsUUID: string): Promise<MemberRow[]> {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/memberships`, {
-      headers: { 'X-Kedge-Org': targetOrgUUID, 'X-Kedge-Workspace': wsUUID },
+      headers: { 'X-Faros-Org': targetOrgUUID, 'X-Faros-Workspace': wsUUID },
     })
     if (!resp.ok) {
       error.value = `failed to list workspace members: ${resp.status}`
@@ -553,7 +553,7 @@ export const useTenantStore = defineStore('tenant', () => {
 
   async function listAppAccessGrants(targetOrgUUID: string, wsUUID: string): Promise<AppAccessGrantRow[]> {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/app-access`, {
-      headers: { 'X-Kedge-Org': targetOrgUUID, 'X-Kedge-Workspace': wsUUID },
+      headers: { 'X-Faros-Org': targetOrgUUID, 'X-Faros-Workspace': wsUUID },
     })
     if (!resp.ok) {
       error.value = `failed to list app access grants: ${resp.status}`
@@ -568,7 +568,7 @@ export const useTenantStore = defineStore('tenant', () => {
       `/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/app-access/${encodeURIComponent(binding)}`,
       {
         method: 'DELETE',
-        headers: { 'X-Kedge-Org': targetOrgUUID, 'X-Kedge-Workspace': wsUUID },
+        headers: { 'X-Faros-Org': targetOrgUUID, 'X-Faros-Workspace': wsUUID },
       },
     )
     if (!resp.ok) {
@@ -589,8 +589,8 @@ export const useTenantStore = defineStore('tenant', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Kedge-Org': targetOrgUUID,
-        'X-Kedge-Workspace': wsUUID,
+        'X-Faros-Org': targetOrgUUID,
+        'X-Faros-Workspace': wsUUID,
       },
       body: JSON.stringify({ user, role }),
     })
@@ -612,8 +612,8 @@ export const useTenantStore = defineStore('tenant', () => {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
-        'X-Kedge-Org': targetOrgUUID,
-        'X-Kedge-Workspace': wsUUID,
+        'X-Faros-Org': targetOrgUUID,
+        'X-Faros-Workspace': wsUUID,
       },
       body: JSON.stringify({ role }),
     })
@@ -627,7 +627,7 @@ export const useTenantStore = defineStore('tenant', () => {
   async function removeWorkspaceMember(targetOrgUUID: string, wsUUID: string, user: string): Promise<boolean> {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/memberships/${user}`, {
       method: 'DELETE',
-      headers: { 'X-Kedge-Org': targetOrgUUID, 'X-Kedge-Workspace': wsUUID },
+      headers: { 'X-Faros-Org': targetOrgUUID, 'X-Faros-Workspace': wsUUID },
     })
     if (!resp.ok) {
       error.value = `failed to remove member: ${resp.status}`
@@ -641,8 +641,8 @@ export const useTenantStore = defineStore('tenant', () => {
   async function listServiceAccounts(targetOrgUUID: string, wsUUID: string): Promise<SARow[]> {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts`, {
       headers: {
-        'X-Kedge-Org': targetOrgUUID,
-        'X-Kedge-Workspace': wsUUID,
+        'X-Faros-Org': targetOrgUUID,
+        'X-Faros-Workspace': wsUUID,
       },
     })
     if (!resp.ok) {
@@ -663,8 +663,8 @@ export const useTenantStore = defineStore('tenant', () => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Kedge-Org': targetOrgUUID,
-        'X-Kedge-Workspace': wsUUID,
+        'X-Faros-Org': targetOrgUUID,
+        'X-Faros-Workspace': wsUUID,
       },
       body: JSON.stringify({ displayName, role }),
     })
@@ -679,8 +679,8 @@ export const useTenantStore = defineStore('tenant', () => {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}`, {
       method: 'DELETE',
       headers: {
-        'X-Kedge-Org': targetOrgUUID,
-        'X-Kedge-Workspace': wsUUID,
+        'X-Faros-Org': targetOrgUUID,
+        'X-Faros-Workspace': wsUUID,
       },
     })
     if (!resp.ok) {
@@ -694,8 +694,8 @@ export const useTenantStore = defineStore('tenant', () => {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}/tokens`, {
       method: 'POST',
       headers: {
-        'X-Kedge-Org': targetOrgUUID,
-        'X-Kedge-Workspace': wsUUID,
+        'X-Faros-Org': targetOrgUUID,
+        'X-Faros-Workspace': wsUUID,
       },
     })
     if (!resp.ok) {
@@ -712,21 +712,21 @@ export const useTenantStore = defineStore('tenant', () => {
   // success — failures populate `error` and surface in the calling page.
   //
   // `install` selects the exec credential plugin Command in OIDC mode:
-  //   - 'kedge'         → Command="kedge" (curl/tar.gz install on PATH)
-  //   - 'krew'          → Command="kubectl-kedge" (krew install, no
+  //   - 'faros'         → Command="faros" (curl/tar.gz install on PATH)
+  //   - 'krew'          → Command="kubectl-faros" (krew install, no
   //                       symlink). The same binary, just renamed by krew.
-  // Defaults to 'kedge' for back-compat with the v1 endpoint. Ignored in
+  // Defaults to 'faros' for back-compat with the v1 endpoint. Ignored in
   // static-token mode (no exec plugin emitted).
   async function downloadKubeconfig(
     targetOrgUUID: string,
     wsUUID: string,
-    install: 'kedge' | 'krew' = 'kedge',
+    install: 'faros' | 'krew' = 'faros',
   ): Promise<boolean> {
     const url = `/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/kubeconfig?install=${encodeURIComponent(install)}`
     const resp = await authFetch(url, {
       headers: {
-        'X-Kedge-Org': targetOrgUUID,
-        'X-Kedge-Workspace': wsUUID,
+        'X-Faros-Org': targetOrgUUID,
+        'X-Faros-Workspace': wsUUID,
       },
     })
     if (!resp.ok) {
@@ -739,7 +739,7 @@ export const useTenantStore = defineStore('tenant', () => {
     // sanitised. Fallback to a UUID-based name if the header is missing.
     const cd = resp.headers.get('Content-Disposition') ?? ''
     const match = cd.match(/filename="?([^";]+)"?/i)
-    const filename = match?.[1] ?? `kedge-${wsUUID}.kubeconfig`
+    const filename = match?.[1] ?? `faros-${wsUUID}.kubeconfig`
     const blobURL = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = blobURL
@@ -755,8 +755,8 @@ export const useTenantStore = defineStore('tenant', () => {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}/tokens`, {
       method: 'DELETE',
       headers: {
-        'X-Kedge-Org': targetOrgUUID,
-        'X-Kedge-Workspace': wsUUID,
+        'X-Faros-Org': targetOrgUUID,
+        'X-Faros-Workspace': wsUUID,
       },
     })
     if (!resp.ok) {

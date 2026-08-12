@@ -2,7 +2,7 @@
 
 ## Project at a Glance
 
-kedge is a Kubernetes-native edge connectivity platform built on kcp. It lets you connect remote clusters and SSH hosts to a central hub, then access them through a unified API. The `ssh` branch being refactored adds bare-metal/SSH host support alongside the existing Kubernetes cluster support.
+faros is a Kubernetes-native edge connectivity platform built on kcp. It lets you connect remote clusters and SSH hosts to a central hub, then access them through a unified API. The `ssh` branch being refactored adds bare-metal/SSH host support alongside the existing Kubernetes cluster support.
 
 ## Key Findings
 
@@ -28,7 +28,7 @@ kedge is a Kubernetes-native edge connectivity platform built on kcp. It lets yo
 - `cluster-proxy` VW: routes requests to specific kcp workspaces
 - `site/` controllers: lifecycle (heartbeat timeout), mount (kcp workspace creation, k8s only), RBAC
 - Status reporters: `Reporter` (site, k8s) and `ServerReporter` (server, SSH) — parallel implementations
-- CLI `kedge ssh`: probes hub to determine resource kind before connecting
+- CLI `faros ssh`: probes hub to determine resource kind before connecting
 
 ### What changes in the refactor
 

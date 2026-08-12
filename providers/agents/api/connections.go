@@ -56,7 +56,7 @@ type createConnectionRequest struct {
 	ClientSecret  string   `json:"clientSecret,omitempty"`
 }
 
-func connectionSecretName(conn string) string { return "kedge-agents-conn-" + conn }
+func connectionSecretName(conn string) string { return "faros-agents-conn-" + conn }
 
 func (s *Server) createConnection(w http.ResponseWriter, r *http.Request) {
 	c, _, ok := s.requireClient(w, r)
@@ -280,7 +280,7 @@ func sendConnectionTest(ctx context.Context, c *agentsclient.Client, name string
 		Token:  token,
 		Target: conn.Spec.Channel,
 		Config: conn.Spec.Config,
-		Text:   "✅ Test message from your kedge agents — this connection works.",
+		Text:   "✅ Test message from your faros agents — this connection works.",
 	}); err != nil {
 		return &requestError{http.StatusBadGateway, "SendFailed", err.Error()}
 	}

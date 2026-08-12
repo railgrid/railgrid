@@ -33,10 +33,10 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["init"]
           env:
-            - name: KEDGE_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
-            - name: KEDGE_SCHEMAS_DIR
-              value: /etc/kedge/schemas
+            - name: FAROS_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/faros/faros-provider-kubeconfig
+            - name: FAROS_SCHEMAS_DIR
+              value: /etc/faros/schemas
             - name: KUERY_EDGES_IDENTITY_HASH
               value: {{ .Values.apiExport.edgesIdentityHash | quote }}
             {{- if .Values.catalogEntry.enabled }}
@@ -44,16 +44,16 @@ spec:
             # the hosting cluster. It is rendered into a ConfigMap (mounted below)
             # and init self-registers it into the provider workspace via the
             # provider kubeconfig.
-            - name: KEDGE_CATALOGENTRY_FILE
-              value: /etc/kedge/catalogentry/catalogentry.yaml
+            - name: FAROS_CATALOGENTRY_FILE
+              value: /etc/faros/catalogentry/catalogentry.yaml
             {{- end }}
           volumeMounts:
-            - name: kedge-provider-kubeconfig
-              mountPath: /var/run/secrets/kedge
+            - name: faros-provider-kubeconfig
+              mountPath: /var/run/secrets/faros
               readOnly: true
             {{- if .Values.catalogEntry.enabled }}
             - name: catalogentry
-              mountPath: /etc/kedge/catalogentry
+              mountPath: /etc/faros/catalogentry
               readOnly: true
             {{- end }}
       containers:
@@ -74,12 +74,12 @@ spec:
           env:
             - name: PORT
               value: "8081"
-            - name: KEDGE_HUB_URL
+            - name: FAROS_HUB_URL
               value: {{ .Values.hub.url | quote }}
-            - name: KEDGE_PROVIDER_NAME
+            - name: FAROS_PROVIDER_NAME
               value: "kuery"
-            - name: KEDGE_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            - name: FAROS_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/faros/faros-provider-kubeconfig
             - name: KUERY_STORE_DRIVER
               value: {{ .Values.store.driver | quote }}
             - name: KUERY_STORE_DSN
@@ -95,11 +95,11 @@ spec:
               value: {{ .Values.sync.blacklist | quote }}
             {{- end }}
             {{- if .Values.hub.insecure }}
-            - name: KEDGE_HUB_INSECURE
+            - name: FAROS_HUB_INSECURE
               value: "true"
             {{- end }}
             {{- if .Values.hub.tokenSecretRef.name }}
-            - name: KEDGE_HUB_TOKEN
+            - name: FAROS_HUB_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.hub.tokenSecretRef.name }}
@@ -109,8 +109,8 @@ spec:
             # The onboarded workspace-admin kubeconfig; the SA token inside is
             # what the Enable-time edges-proxy grant authorizes for background
             # edge sync.
-            - name: kedge-provider-kubeconfig
-              mountPath: /var/run/secrets/kedge
+            - name: faros-provider-kubeconfig
+              mountPath: /var/run/secrets/faros
               readOnly: true
             - name: store
               mountPath: /data
@@ -120,12 +120,12 @@ spec:
         # Required input: the workspace-admin kubeconfig minted via /bonkers
         # (admin onboarding), consumed by both init and serve. The onboard
         # response stores it under key "kubeconfig".
-        - name: kedge-provider-kubeconfig
+        - name: faros-provider-kubeconfig
           secret:
             secretName: {{ .Values.providerKubeconfig.secretName }}
             items:
               - key: kubeconfig
-                path: kedge-provider-kubeconfig
+                path: faros-provider-kubeconfig
         {{- if .Values.catalogEntry.enabled }}
         - name: catalogentry
           configMap:

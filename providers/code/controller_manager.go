@@ -59,8 +59,8 @@ import (
 const endpointSliceName = install.APIExportEndpointSliceName
 
 // defaultWorkspacePath is the kcp logical-cluster path the provider's APIExport
-// lives in (root:kedge:providers:<name>). Overridable via CODE_WORKSPACE_PATH.
-const defaultWorkspacePath = "root:kedge:providers:code"
+// lives in (root:faros:providers:<name>). Overridable via CODE_WORKSPACE_PATH.
+const defaultWorkspacePath = "root:faros:providers:code"
 
 // startControllerManager builds the multicluster manager and starts the
 // reconcilers, dispatching through the shared backend registry (built in
@@ -143,12 +143,12 @@ func startControllerManager(ctx context.Context, config *rest.Config, registry *
 //
 // Returns errControllerDisabled when none resolve.
 func loadControllerConfig() (*rest.Config, error) {
-	// KEDGE_PROVIDER_KUBECONFIG is the standardized name across all providers.
+	// FAROS_PROVIDER_KUBECONFIG is the standardized name across all providers.
 	// CODE_KUBECONFIG is kept as a fallback for one release.
-	if p := os.Getenv("KEDGE_PROVIDER_KUBECONFIG"); p != "" {
+	if p := os.Getenv("FAROS_PROVIDER_KUBECONFIG"); p != "" {
 		c, err := clientcmd.BuildConfigFromFlags("", p)
 		if err != nil {
-			return nil, fmt.Errorf("KEDGE_PROVIDER_KUBECONFIG: %w", err)
+			return nil, fmt.Errorf("FAROS_PROVIDER_KUBECONFIG: %w", err)
 		}
 		return c, nil
 	}

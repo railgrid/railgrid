@@ -26,7 +26,7 @@ import (
 
 // instanceGroupVersion is the group/version of every per-template instance CRD;
 // the resource (plural) comes from the request path.
-var instanceGroupVersion = schema.GroupVersion{Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1"}
+var instanceGroupVersion = schema.GroupVersion{Group: "infrastructure.faros.sh", Version: "v1alpha1"}
 
 // buildDataPlaneHandler wires the data-plane subresource handler for serve.
 // Returns nil (the handler then reports 503) when the provider has no kcp config

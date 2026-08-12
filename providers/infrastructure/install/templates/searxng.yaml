@@ -1,10 +1,10 @@
-apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+apiVersion: infrastructure.faros.sh/v1alpha1
 kind: Template
 metadata:
   name: searxng
 spec:
   displayName: "SearXNG web search"
-  description: "A private SearXNG metasearch instance with the JSON API enabled, reachable only from inside the platform over the infrastructure provider's data plane — the self-hosted web-search backend for kedge agents. No search-engine API key required, no public URL, no token to manage."
+  description: "A private SearXNG metasearch instance with the JSON API enabled, reachable only from inside the platform over the infrastructure provider's data plane — the self-hosted web-search backend for faros agents. No search-engine API key required, no public URL, no token to manage."
   category: Agent tools
   version: 0.1.0
   # exposure: what the platform tells callers about reaching an instance.
@@ -34,7 +34,7 @@ spec:
 
       The hop is hub → infrastructure provider → the runtime cluster's
       kube-apiserver `services/proxy` subresource → the instance's Service. The
-      caller authenticates as ITSELF with its own kedge credential; the gate is
+      caller authenticates as ITSELF with its own faros credential; the gate is
       the caller's kcp RBAC on this instance — a caller that cannot GET the
       Searxng object gets 403/404 and never reaches SearXNG. So there is
       nothing to paste anywhere: no bearer token, no baseURL, no Connection
@@ -101,7 +101,7 @@ spec:
             path: status.runtimeNamespace
             type: code
   instanceCRD:
-    group: infrastructure.kedge.faros.sh
+    group: infrastructure.faros.sh
     version: v1alpha1
     resource: searxngs
     kind: Searxng
@@ -606,8 +606,8 @@ spec:
             parentRefs:
               - group: gateway.networking.k8s.io
                 kind: Gateway
-                name: ${kedge.gatewayName}
-                namespace: ${kedge.gatewayNamespace}
+                name: ${faros.gatewayName}
+                namespace: ${faros.gatewayNamespace}
             hostnames:
               - ${schema.spec.expose.fqdn}
             rules:
@@ -637,4 +637,4 @@ spec:
       # is includeWhen-gated — so this resolves only for an instance that
       # opted into exposure and is simply absent otherwise. That is exactly
       # the wanted semantics: no URL that is only sometimes real.
-      url: ${"https://" + httpRoute.spec.hostnames[0] + "${kedge.appPublicPort}"}
+      url: ${"https://" + httpRoute.spec.hostnames[0] + "${faros.appPublicPort}"}

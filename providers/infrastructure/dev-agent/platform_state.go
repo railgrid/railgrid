@@ -32,7 +32,7 @@ func prepareCoordinatorState(stateDir, workspace string) (string, error) {
 	stateDir = filepath.Clean(stateDir)
 	workspace = filepath.Clean(workspace)
 	if stateDir == "." || stateDir == "" {
-		return "", errors.New("KEDGE_DEV_STATE_DIR is required")
+		return "", errors.New("FAROS_DEV_STATE_DIR is required")
 	}
 	absState, err := filepath.Abs(stateDir)
 	if err != nil {
@@ -43,7 +43,7 @@ func prepareCoordinatorState(stateDir, workspace string) (string, error) {
 		return "", fmt.Errorf("resolve workspace: %w", err)
 	}
 	if absState == absWorkspace || isWithin(absWorkspace, absState) || isWithin(absState, absWorkspace) {
-		return "", errors.New("KEDGE_DEV_STATE_DIR must be independent of the workspace")
+		return "", errors.New("FAROS_DEV_STATE_DIR must be independent of the workspace")
 	}
 	if err := rejectRootSymlink(absState); err != nil {
 		return "", fmt.Errorf("coordinator state directory: %w", err)

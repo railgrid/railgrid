@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	apiExportName        = "vibe.kedge.faros.sh"
-	defaultWorkspacePath = "root:kedge:providers:vibe-studio"
+	apiExportName        = "vibe.faros.sh"
+	defaultWorkspacePath = "root:faros:providers:vibe-studio"
 )
 
 // instanceClaimResources are the infrastructure instance resources the
@@ -37,24 +37,24 @@ var instanceClaimResources = []string{"applications", "simplewebapps", "workers"
 // The permission claims cover the infrastructure instance resources the
 // Project reconciler creates/deletes in tenant workspaces. They are
 // first-party (*.faros.sh) types, so kcp requires the identityHash of the
-// APIExport that serves them (infrastructure.providers.kedge.faros.sh) —
+// APIExport that serves them (infrastructure.providers.faros.sh) —
 // supplied via VIBE_STUDIO_INFRA_IDENTITY_HASH (Helm value in prod; the dev
 // Makefile auto-discovers it). Template catalog reads need NO claim: the
 // wizard reads Templates as the calling user via the hub gateway.
 func runInitCmd(ctx context.Context) error {
 	config, err := loadInitConfig()
 	if err != nil {
-		return fmt.Errorf("init needs a kubeconfig (set KEDGE_PROVIDER_KUBECONFIG): %w", err)
+		return fmt.Errorf("init needs a kubeconfig (set FAROS_PROVIDER_KUBECONFIG): %w", err)
 	}
 	workspacePath := os.Getenv("VIBE_STUDIO_WORKSPACE_PATH")
 	if workspacePath == "" {
 		workspacePath = defaultWorkspacePath
 	}
-	schemasDir := os.Getenv("KEDGE_SCHEMAS_DIR")
+	schemasDir := os.Getenv("FAROS_SCHEMAS_DIR")
 	if schemasDir == "" {
-		schemasDir = "/etc/kedge/schemas"
+		schemasDir = "/etc/faros/schemas"
 	}
-	catalogEntryFile := os.Getenv("KEDGE_CATALOGENTRY_FILE")
+	catalogEntryFile := os.Getenv("FAROS_CATALOGENTRY_FILE")
 
 	infraHash := os.Getenv("VIBE_STUDIO_INFRA_IDENTITY_HASH")
 	if infraHash == "" {
@@ -63,7 +63,7 @@ func runInitCmd(ctx context.Context) error {
 	claims := make([]sdkinstall.PermissionClaim, 0, len(instanceClaimResources)+1)
 	for _, r := range instanceClaimResources {
 		claims = append(claims, sdkinstall.PermissionClaim{
-			Group:        "infrastructure.kedge.faros.sh",
+			Group:        "infrastructure.faros.sh",
 			Resource:     r,
 			Verbs:        []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 			IdentityHash: infraHash,
@@ -77,7 +77,7 @@ func runInitCmd(ctx context.Context) error {
 		log.Printf("WARNING: VIBE_STUDIO_CODE_IDENTITY_HASH is empty — the repositories claim will have no identityHash and the reconciler cannot create repositories")
 	}
 	claims = append(claims, sdkinstall.PermissionClaim{
-		Group:        "code.kedge.faros.sh",
+		Group:        "code.faros.sh",
 		Resource:     "repositories",
 		Verbs:        []string{"get", "list", "watch", "create", "update", "patch"},
 		IdentityHash: codeHash,
@@ -117,7 +117,7 @@ func runInitCmd(ctx context.Context) error {
 
 // loadInitConfig resolves the workspace-admin kubeconfig for init.
 func loadInitConfig() (*rest.Config, error) {
-	if p := os.Getenv("KEDGE_PROVIDER_KUBECONFIG"); p != "" {
+	if p := os.Getenv("FAROS_PROVIDER_KUBECONFIG"); p != "" {
 		return clientcmd.BuildConfigFromFlags("", p)
 	}
 	if p := os.Getenv("KUBECONFIG"); p != "" {

@@ -19,7 +19,7 @@ package main
 //
 // This is where the deterministic lifecycle lives: the HTTP layer only
 // writes Project spec; the reconciler converges infrastructure instances and
-// mirrors their status back. OPT-IN via KEDGE_PROVIDER_KUBECONFIG — without
+// mirrors their status back. OPT-IN via FAROS_PROVIDER_KUBECONFIG — without
 // it the provider runs REST/portal-only.
 
 import (

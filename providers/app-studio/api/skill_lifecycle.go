@@ -507,7 +507,7 @@ func (s *Server) exportProjectAssistantSkill(w http.ResponseWriter, r *http.Requ
 	}
 	projectAssistantSkillMetric("lifecycle", "export")
 	filename := strings.ReplaceAll(entry.PackagePath, "/", "-")
-	writeJSON(w, http.StatusOK, projectAssistantSkillExport{Format: "kedge.skill.v1", PackageName: entry.PackagePath, Digest: entry.Digest, Files: files, Filename: filename + ".json", Content: string(content), Package: packageValue})
+	writeJSON(w, http.StatusOK, projectAssistantSkillExport{Format: "faros.skill.v1", PackageName: entry.PackagePath, Digest: entry.Digest, Files: files, Filename: filename + ".json", Content: string(content), Package: packageValue})
 }
 
 func (s *Server) projectSkillProjectEntry(w http.ResponseWriter, r *http.Request, scope workspace.Scope, packageName string) (appskills.Snapshot, appskills.Entry, bool) {
@@ -573,7 +573,7 @@ func validateProjectSkillPackageName(raw string) (string, error) {
 		return "", newValidationError("packageName is too large")
 	}
 	clean, err := appskills.ValidatePackagePath(raw)
-	if err != nil || clean != raw || !projectSkillPathSafe(clean) || clean == "SKILL.md" || strings.Contains(clean, "/SKILL.md") || strings.Contains(clean, "/.kedge-") || strings.HasPrefix(clean, ".kedge-") {
+	if err != nil || clean != raw || !projectSkillPathSafe(clean) || clean == "SKILL.md" || strings.Contains(clean, "/SKILL.md") || strings.Contains(clean, "/.faros-") || strings.HasPrefix(clean, ".faros-") {
 		return "", newValidationError("packageName must be a clean project-relative package identity")
 	}
 	return clean, nil
@@ -629,7 +629,7 @@ func normalizeProjectSkillImportRequest(request *projectAssistantSkillMutationRe
 	if request == nil || len(request.Files) == 0 {
 		return nil
 	}
-	if request.Format != "" && request.Format != "kedge.skill.v1" {
+	if request.Format != "" && request.Format != "faros.skill.v1" {
 		return newValidationError("unsupported skill export format")
 	}
 	var document string

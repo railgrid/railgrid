@@ -662,7 +662,7 @@ func (s *Server) edgesEndpoint(clusterID string) string {
 	if s.cfg.HubURL == "" || clusterID == "" {
 		return ""
 	}
-	return strings.TrimRight(s.cfg.HubURL, "/") + "/services/mcpserver/" + clusterID + "/apis/kedge.faros.sh/v1alpha1/mcpservers/default/mcp"
+	return strings.TrimRight(s.cfg.HubURL, "/") + "/services/mcpserver/" + clusterID + "/apis/faros.sh/v1alpha1/mcpservers/default/mcp"
 }
 
 // errNoCredential signals that an agent has no model credential assigned.
@@ -676,7 +676,7 @@ func (s *Server) buildChatModelCtx(ctx context.Context, creds llm.SecretGetter, 
 // buildModelForPurpose resolves the agent's named model credential for a run
 // purpose and builds the Eino model from it. Agents reference a credential by
 // name in spec.models[purpose]; the credential is its own Secret
-// (kedge-agents-model-<name>). A purpose the agent did not map falls back to
+// (faros-agents-model-<name>). A purpose the agent did not map falls back to
 // "chat", so mapping only "chat" keeps working everywhere.
 func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.SecretGetter, agent *agentsv1alpha1.Agent, purpose string) (einomodel.BaseChatModel, error) {
 	primary := strings.TrimSpace(agent.Spec.Models[purpose])

@@ -26,7 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	farosclient "github.com/faroshq/faros/pkg/client"
 )
 
 func newEdgeCommand() *cobra.Command {
@@ -71,9 +71,9 @@ func newEdgeCreateCommand() *cobra.Command {
 
 			// The connectable kind IS the type: KubernetesCluster or LinuxServer
 			// (no spec.type discriminator anymore).
-			kind, gvr := "KubernetesCluster", kedgeclient.KubernetesClusterGVR
+			kind, gvr := "KubernetesCluster", farosclient.KubernetesClusterGVR
 			if edgeType == "server" {
-				kind, gvr = "LinuxServer", kedgeclient.LinuxServerGVR
+				kind, gvr = "LinuxServer", farosclient.LinuxServerGVR
 			}
 
 			edge := &unstructured.Unstructured{
@@ -106,7 +106,7 @@ func newEdgeCreateCommand() *cobra.Command {
 			joinToken, err := pollJoinTokenDynamic(ctx, name, 30*time.Second)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not retrieve join token: %v\n", err)
-				fmt.Printf("\nRun 'kedge edge join-command %s' to print the join command once the token is available.\n", name)
+				fmt.Printf("\nRun 'faros edge join-command %s' to print the join command once the token is available.\n", name)
 				return nil
 			}
 
@@ -164,34 +164,34 @@ func loadHubURL() string {
 // printJoinCommand prints the formatted join instructions for an edge.
 func printJoinCommand(name, edgeType, hubURL, joinToken string) {
 	fmt.Println()
-	fmt.Printf("# Step 1: Install the kedge CLI (if not already installed)\n\n")
+	fmt.Printf("# Step 1: Install the faros CLI (if not already installed)\n\n")
 	fmt.Printf("  # Linux/macOS — download from GitHub Releases:\n")
-	fmt.Printf("  curl -fsSL https://github.com/faroshq/kedge/releases/latest/download/kubectl-kedge_linux_amd64.tar.gz | tar xz\n")
-	fmt.Printf("  sudo mv kubectl-kedge /usr/local/bin/kedge\n")
+	fmt.Printf("  curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_linux_amd64.tar.gz | tar xz\n")
+	fmt.Printf("  sudo mv kubectl-faros /usr/local/bin/faros\n")
 	fmt.Println()
 	fmt.Printf("  # Or via krew:\n")
 	fmt.Printf("  kubectl krew index add faros https://github.com/faroshq/krew-index.git\n")
-	fmt.Printf("  kubectl krew install faros/kedge\n")
+	fmt.Printf("  kubectl krew install faros/faros\n")
 	fmt.Println()
 
 	if edgeType == "kubernetes" {
 		fmt.Printf("# Step 2: Connect this Kubernetes cluster as an edge\n\n")
 		fmt.Printf("  # Option A — Helm (recommended for production):\n")
-		fmt.Printf("  helm install kedge-agent oci://ghcr.io/faroshq/charts/kedge-agent \\\n")
-		fmt.Printf("    --namespace kedge-agent --create-namespace \\\n")
+		fmt.Printf("  helm install faros-agent oci://ghcr.io/faroshq/charts/faros-agent \\\n")
+		fmt.Printf("    --namespace faros-agent --create-namespace \\\n")
 		fmt.Printf("    --set agent.edgeName=%s \\\n", name)
 		fmt.Printf("    --set agent.hub.url=%s \\\n", hubURL)
 		fmt.Printf("    --set agent.hub.token=%s\n", joinToken)
 		fmt.Println()
-		fmt.Printf("  # Option B — CLI persistent install (creates a Deployment in kedge-agent):\n")
-		fmt.Printf("  kedge agent join \\\n")
+		fmt.Printf("  # Option B — CLI persistent install (creates a Deployment in faros-agent):\n")
+		fmt.Printf("  faros agent join \\\n")
 		fmt.Printf("    --hub-url %s \\\n", hubURL)
 		fmt.Printf("    --edge-name %s \\\n", name)
 		fmt.Printf("    --type kubernetes \\\n")
 		fmt.Printf("    --token %s\n", joinToken)
 		fmt.Println()
 		fmt.Printf("  # Option C — foreground process (dev/containers):\n")
-		fmt.Printf("  kedge agent run \\\n")
+		fmt.Printf("  faros agent run \\\n")
 		fmt.Printf("    --hub-url %s \\\n", hubURL)
 		fmt.Printf("    --edge-name %s \\\n", name)
 		fmt.Printf("    --type kubernetes \\\n")
@@ -199,24 +199,24 @@ func printJoinCommand(name, edgeType, hubURL, joinToken string) {
 	} else {
 		fmt.Printf("# Step 2: Connect this server as an edge\n\n")
 		fmt.Printf("  # Option A — persistent install as a systemd service (recommended):\n")
-		fmt.Printf("  kedge agent join \\\n")
+		fmt.Printf("  faros agent join \\\n")
 		fmt.Printf("    --hub-url %s \\\n", hubURL)
 		fmt.Printf("    --edge-name %s \\\n", name)
 		fmt.Printf("    --type server \\\n")
 		fmt.Printf("    --token %s\n", joinToken)
 		fmt.Println()
 		fmt.Printf("  # Option B — foreground process (dev/containers):\n")
-		fmt.Printf("  kedge agent run \\\n")
+		fmt.Printf("  faros agent run \\\n")
 		fmt.Printf("    --hub-url %s \\\n", hubURL)
 		fmt.Printf("    --edge-name %s \\\n", name)
 		fmt.Printf("    --type server \\\n")
 		fmt.Printf("    --token %s\n", joinToken)
 	}
 	fmt.Println()
-	fmt.Printf("Run 'kedge edge join-command %s' to print this again.\n", name)
+	fmt.Printf("Run 'faros edge join-command %s' to print this again.\n", name)
 }
 
-// newEdgeJoinCommandCommand returns the 'kedge edge join-command <name>' subcommand.
+// newEdgeJoinCommandCommand returns the 'faros edge join-command <name>' subcommand.
 func newEdgeJoinCommandCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "join-command <name>",
@@ -268,7 +268,7 @@ func newEdgeListCommand() *cobra.Command {
 
 			dynClient, err := loadDynamicClient()
 			if err != nil {
-				return fmt.Errorf("not logged in — run: kedge login --hub-url <hub-url>\n(original error: %w)", err)
+				return fmt.Errorf("not logged in — run: faros login --hub-url <hub-url>\n(original error: %w)", err)
 			}
 
 			items, err := listAllEdges(ctx, dynClient)

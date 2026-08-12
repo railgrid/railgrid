@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package providerflags exercises the kedge-hub `--providers` flag in
+// Package providerflags exercises the faros-hub `--providers` flag in
 // isolation. Unlike test/e2e/suites/provider this suite does NOT start a
-// long-lived shared hub — each test spawns its own kedge-hub subprocess
+// long-lived shared hub — each test spawns its own faros-hub subprocess
 // with custom flags and tears it down afterwards. The reason is purely
 // practical: embedded kcp binds etcd on a hard-coded port (2380), so two
 // hubs cannot coexist on one host.
@@ -47,14 +47,14 @@ const staticToken = "test:user-default"
 func TestMain(m *testing.M) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	repoRoot = filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..")
-	hubBinary = filepath.Join(repoRoot, "bin", "kedge-hub")
+	hubBinary = filepath.Join(repoRoot, "bin", "faros-hub")
 
 	// Fail fast if the etcd port is busy. The suite can't function with a
 	// concurrent hub running.
 	if portInUse("2380") {
 		fmt.Fprintln(os.Stderr,
 			"port 2380 is in use; this suite needs an exclusive embedded etcd. "+
-				"Stop any running kedge-hub (e.g. `pkill kedge-hub`) and retry.")
+				"Stop any running faros-hub (e.g. `pkill faros-hub`) and retry.")
 		os.Exit(2)
 	}
 

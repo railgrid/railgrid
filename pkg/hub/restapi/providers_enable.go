@@ -30,9 +30,9 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
-	"github.com/faroshq/faros-kedge/pkg/hub/providers"
-	"github.com/faroshq/faros-kedge/pkg/util/identity"
+	"github.com/faroshq/faros/pkg/hub/kcp"
+	"github.com/faroshq/faros/pkg/hub/providers"
+	"github.com/faroshq/faros/pkg/util/identity"
 )
 
 // EnableProviderRequest is the body of POST .../providers/{name}/enable.
@@ -256,7 +256,7 @@ type ListEnabledProvidersResponse struct {
 
 // listEnabledProviders handles GET /api/orgs/{org}/workspaces/{ws}/providers/enabled.
 // Returns the set of provider APIBindings present in the target
-// workspace (those referencing root:kedge:providers:*), keyed by
+// workspace (those referencing root:faros:providers:*), keyed by
 // provider name. Counterpart to enableProvider — same proxy-avoidance
 // rationale: going through the REST endpoint lets the bootstrapper
 // list as kcp-admin in the target workspace path, sidestepping the

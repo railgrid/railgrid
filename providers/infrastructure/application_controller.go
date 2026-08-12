@@ -27,7 +27,7 @@ import (
 //
 // It runs on the provider's APIExport virtual workspace, so it needs the
 // provider kcp config (the same one the controller manager uses). It's
-// opt-in on KEDGE_APP_BASE_DOMAIN: without an app domain there is no hostname
+// opt-in on FAROS_APP_BASE_DOMAIN: without an app domain there is no hostname
 // to compute, so it stays disabled — preserving the REST-only/stub flow. The
 // kro runtime cluster (where the bridged Secret lands) is resolved the same
 // way the kro backend resolves it — explicit KRO_KUBECONFIG, else the pod's
@@ -37,9 +37,9 @@ func startApplicationController(ctx context.Context, providerConfig *rest.Config
 	if providerConfig == nil {
 		return
 	}
-	baseDomain := os.Getenv("KEDGE_APP_BASE_DOMAIN")
+	baseDomain := os.Getenv("FAROS_APP_BASE_DOMAIN")
 	if baseDomain == "" {
-		log.Printf("application controller: disabled (need KEDGE_APP_BASE_DOMAIN to compute app hostnames)")
+		log.Printf("application controller: disabled (need FAROS_APP_BASE_DOMAIN to compute app hostnames)")
 		return
 	}
 

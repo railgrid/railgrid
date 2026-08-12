@@ -1,0 +1,105 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: sessions.ai.faros.sh
+spec:
+  group: ai.faros.sh
+  names:
+    categories:
+    - faros
+    kind: Session
+    listKind: SessionList
+    plural: sessions
+    singular: session
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.projectRef
+      name: Project
+      type: string
+    - jsonPath: .status.title
+      name: Title
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Session is the control-plane projection of one assistant conversation
+          thread. The Postgres store is authoritative for conversation data; the CR
+          is its projection, so `kubectl get sessions.ai` tells the truth without
+          touching the database. Deleting the Session purges the thread from the
+          store (finalizer); the Session is ownerRef'd to its Project so project
+          deletion garbage-collects the conversations with it.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              actorID:
+                description: ActorID records the user the thread belongs to.
+                type: string
+              projectRef:
+                description: ProjectRef names the Project this conversation belongs
+                  to.
+                minLength: 1
+                type: string
+              threadID:
+                description: ThreadID is the store's thread identifier this Session
+                  projects.
+                minLength: 1
+                type: string
+            required:
+            - projectRef
+            - threadID
+            type: object
+          status:
+            properties:
+              activeTurnID:
+                description: ActiveTurnID is the in-flight turn, empty when idle.
+                type: string
+              activeTurnStatus:
+                description: ActiveTurnStatus is the in-flight turn's state.
+                type: string
+              phase:
+                description: Phase mirrors the thread status (active, archived).
+                type: string
+              title:
+                description: Title is the thread's display title.
+                type: string
+              updatedAt:
+                description: UpdatedAt is the thread's last store update the mirror
+                  observed.
+                format: date-time
+                type: string
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -1,7 +1,7 @@
 # `cloud-credentials` Secret convention
 
 The infrastructure provider brokers application templates from a
-central kro cluster into kedge tenant workspaces. When you provision a
+central kro cluster into faros tenant workspaces. When you provision a
 template, the provider reads a Secret named **`cloud-credentials`**
 from your tenant workspace's `default` namespace and bridges it into a
 per-instance Secret in the central cluster (named
@@ -28,7 +28,7 @@ re-prompting the user.
 | `aws_region` | yes | default region for the provisioned resources |
 
 ```sh
-kubectl --context kedge-<tenant-slug> create secret generic cloud-credentials \
+kubectl --context faros-<tenant-slug> create secret generic cloud-credentials \
   --from-literal=aws_access_key_id=AKIA... \
   --from-literal=aws_secret_access_key=SECRET... \
   --from-literal=aws_region=us-east-1

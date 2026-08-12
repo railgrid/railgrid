@@ -18,7 +18,7 @@ an edges `Service` so its MCP tools light up once the operator pastes a token.
 This closes the loop we already built: the MCP **service catalog**
 (`providers/edges/internal/tunnel/svc_catalog.go`, portal `PRESETS` in
 `providers/edges/portal/src/Services.vue`) knows how to *talk to* these apps;
-the marketplace makes kedge able to *run* them too.
+the marketplace makes faros able to *run* them too.
 
 ## Where things stand (read this first)
 
@@ -28,18 +28,18 @@ All paths relative to repo root; the edges provider is a separate Go module at
 ### Deploy path that already works end-to-end
 
 1. **`Workload` CR** — `providers/edges/apis/v1alpha1/types_workload.go`.
-   Namespaced (portal uses ns `default`), group `edges.kedge.faros.sh`.
+   Namespaced (portal uses ns `default`), group `edges.faros.sh`.
    `spec.simple` = `{image, ports, env, resources, command, args}` (there is
    also `spec.template` for a full PodTemplateSpec), plus `replicas`,
    `placement` (`edgeSelector` label selector + `strategy` Spread|Singleton)
    and `access` (`expose`, `dnsName`, `port` — currently mostly unused).
 2. **Scheduler** — `providers/edges/internal/scheduler/` fans a Workload out
    into one `Placement` per matching KubernetesCluster edge.
-3. **Agent** — `pkg/agent/reconciler/workload.go` (main kedge module) watches
+3. **Agent** — `pkg/agent/reconciler/workload.go` (main faros module) watches
    Placements through the hub and materializes each as a local `Deployment` in
    ns `default` (`convertToDeployment`, `buildPodSpecFromSimple`). It does
    **not** create a k8s `Service` today. Agent RBAC is already `*` on core/apps
-   (`deploy/charts/kedge-agent/templates/rbac.yaml`) — no chart change needed
+   (`deploy/charts/faros-agent/templates/rbac.yaml`) — no chart change needed
    to start creating Services.
 4. **Portal** — `providers/edges/portal/src/Workloads.vue` (list + create via
    `Wizard.vue`-style inline form), `api.ts` `createWorkload(WorkloadDraft)`
@@ -91,14 +91,14 @@ set with server-side apply". Release state stays in kcp, not on edges.
 
 ### Phase 1 — agent: generic manifest-bundle apply/prune
 
-`pkg/agent/reconciler/workload.go` (main kedge module, ships in the
-kedge-agent image — rebuild/rollout needed; Tiltfile.cluster covers dev kind):
+`pkg/agent/reconciler/workload.go` (main faros module, ships in the
+faros-agent image — rebuild/rollout needed; Tiltfile.cluster covers dev kind):
 
 - Placement gains a rendered-manifests payload (list of objects or one
   multi-doc YAML string — pick with an eye on etcd object size; prune
   whitespace/comments from rendered output).
-- Agent applies the set with SSA (field manager `kedge-agent`), labels every
-  object `edges.kedge.faros.sh/workload=<name>`, prunes labeled objects that
+- Agent applies the set with SSA (field manager `faros-agent`), labels every
+  object `edges.faros.sh/workload=<name>`, prunes labeled objects that
   vanished from the bundle, and deletes the set on Placement deletion.
   Agent RBAC is already `*` on core/apps/rbac/networking — no chart change.
 - Migrate simple mode to the same path: the **scheduler/provider** renders
@@ -189,7 +189,7 @@ login), **pihole** (session) — then fan out.
    root `make crds` (see memory: it guts core.faros.sh).
 5. Build gates: `cd providers/edges && go build ./... && go vet ./internal/...`;
    portal `npx vue-tsc --noEmit && npm run build`; main module `go build
-   ./pkg/agent/...` for Phase 1. Agent changes need the kedge-agent image
+   ./pkg/agent/...` for Phase 1. Agent changes need the faros-agent image
    rebuilt/rolled on the dev edge cluster.
 
 ## Gotchas / context for the next model

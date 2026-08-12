@@ -1,15 +1,15 @@
-# vibe-studio provider — register with the kedge hub (local dev variant).
+# vibe-studio provider — register with the faros hub (local dev variant).
 # In-cluster deployments render this CatalogEntry from the chart
 # (deploy/chart/templates/catalogentry.yaml); this file serves host-machine
 # dev where the binary runs on localhost and the hub proxies in front.
-apiVersion: providers.kedge.faros.sh/v1alpha1
+apiVersion: providers.faros.sh/v1alpha1
 kind: CatalogEntry
 metadata:
   name: vibe-studio
 spec:
   displayName: "Vibe Studio"
   description: "Wizard-first app builder: describe your app, get a template-grounded live sandbox, vibe, then ship."
-  vendor: "kedge"
+  vendor: "faros"
   version: "0.1.0"
   category: "Build"
   iconURL: "/ui/providers/vibe-studio/icon.svg"
@@ -25,28 +25,28 @@ spec:
   # by `init` (VIBE_STUDIO_INFRA_IDENTITY_HASH); the CatalogEntry lists them
   # for the Enable dialog only.
   apiExport:
-    name: "vibe.kedge.faros.sh"
+    name: "vibe.faros.sh"
     permissionClaims:
       - resource: applications
-        group: infrastructure.kedge.faros.sh
+        group: infrastructure.faros.sh
         verbs: [get, list, watch, create, update, patch, delete]
         tenantScoped: true
       - resource: simplewebapps
-        group: infrastructure.kedge.faros.sh
+        group: infrastructure.faros.sh
         verbs: [get, list, watch, create, update, patch, delete]
         tenantScoped: true
       - resource: workers
-        group: infrastructure.kedge.faros.sh
+        group: infrastructure.faros.sh
         verbs: [get, list, watch, create, update, patch, delete]
         tenantScoped: true
       # Web search: every project binds a private searxng instance so the
       # assistant can look things up instead of asking the user to paste.
       - resource: searxngs
-        group: infrastructure.kedge.faros.sh
+        group: infrastructure.faros.sh
         verbs: [get, list, watch, create, update, patch, delete]
         tenantScoped: true
       - resource: repositories
-        group: code.kedge.faros.sh
+        group: code.faros.sh
         verbs: [get, list, watch, create, update, patch]
         tenantScoped: true
       - resource: serviceaccounts

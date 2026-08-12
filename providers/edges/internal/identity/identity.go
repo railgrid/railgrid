@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package identity builds the cross-workspace ServiceAccount identity kedge
+// Package identity builds the cross-workspace ServiceAccount identity faros
 // authorizes foreign SAs under.
 //
 // kcp ServiceAccount usernames ("system:serviceaccount:{ns}:{name}") are
@@ -28,13 +28,13 @@ limitations under the License.
 //
 //	system:kcp:serviceaccount:{cluster}:{ns}:{name}
 //
-// Kedge emits the same format — after verifying the home cluster via
+// Faros emits the same format — after verifying the home cluster via
 // TokenReview — so the grant objects created on tenant Enable use kcp-native
-// subjects: the same binding that satisfies kedge's delegated SAR also
+// subjects: the same binding that satisfies faros's delegated SAR also
 // authorizes the SA on kcp-native paths.
 //
 // This is a monorepo-independent copy of the hub's pkg/util/identity so the
-// provider-sdk tunnel plane carries no dependency on kedge core. The two copies
+// provider-sdk tunnel plane carries no dependency on faros core. The two copies
 // MUST agree on the encoding — they are trivial string formatting and cannot be
 // version-skewed at runtime (each module vendors its own).
 package identity
@@ -43,7 +43,7 @@ import "strings"
 
 // globalSAPrefix is kcp's cross-workspace ServiceAccount username prefix.
 // kcp's authenticators never mint usernames under it directly (it is an
-// RBAC-resolution alias), so kedge synthesizing it after a successful
+// RBAC-resolution alias), so faros synthesizing it after a successful
 // TokenReview cannot collide with or be forged through any token.
 const globalSAPrefix = "system:kcp:serviceaccount:"
 

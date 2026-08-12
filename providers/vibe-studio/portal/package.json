@@ -1,8 +1,8 @@
 {
-  "name": "kedge-provider-vibe-studio-portal",
+  "name": "faros-provider-vibe-studio-portal",
   "version": "0.1.0",
   "private": true,
-  "description": "vibe-studio provider's portal-side micro-frontend: the wizard + studio UI. Built with Vite into a single main.js custom-element bundle the kedge hub serves under /ui/providers/vibe-studio/.",
+  "description": "vibe-studio provider's portal-side micro-frontend: the wizard + studio UI. Built with Vite into a single main.js custom-element bundle the faros hub serves under /ui/providers/vibe-studio/.",
   "type": "module",
   "scripts": {
     "build": "vite build",

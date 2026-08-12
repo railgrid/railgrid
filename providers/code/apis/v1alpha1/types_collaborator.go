@@ -31,7 +31,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=kedge,shortName=gcollab
+// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=gcollab
 // +kubebuilder:printcolumn:name="Repository",type=string,JSONPath=`.spec.repositoryRef`
 // +kubebuilder:printcolumn:name="User",type=string,JSONPath=`.spec.username`
 // +kubebuilder:printcolumn:name="Permission",type=string,JSONPath=`.spec.permission`
@@ -114,4 +114,4 @@ const (
 
 // FinalizerCollaborator is added by the CollaboratorController so the grant
 // is revoked on the host before the CR disappears.
-const FinalizerCollaborator = "collaborators.code.kedge.faros.sh/finalizer"
+const FinalizerCollaborator = "collaborators.code.faros.sh/finalizer"

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { KedgeContext } from './types'
+import type { FarosContext } from './types'
 import { setBasePath, setTenant, setToken } from './api'
 import ConnectionsView from './views/ConnectionsView.vue'
 import ConnectionDetailView from './views/ConnectionDetailView.vue'
@@ -15,7 +15,7 @@ import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 //   'repositories'             → Repositories
 //   'repositories/<name>'      → RepoDetail
 //   'packages'                 → Packages (workspace-wide)
-const props = defineProps<{ ctx: KedgeContext | null }>()
+const props = defineProps<{ ctx: FarosContext | null }>()
 
 interface Route {
   page: 'connections' | 'repositories' | 'packages'
@@ -46,15 +46,15 @@ watch(() => props.ctx?.tenant, v => setTenant(v), { immediate: true })
 
 const hasTenant = computed(() => !!props.ctx?.tenant)
 
-// navigate dispatches a kedge-navigate CustomEvent from the component root so it
-// bubbles up to the <kedge-provider-code> element, where ProviderFrame listens
+// navigate dispatches a faros-navigate CustomEvent from the component root so it
+// bubbles up to the <faros-provider-code> element, where ProviderFrame listens
 // and pushes the shell's vue-router. detail.path is the trailing segment the
 // shell appends to /providers/code/.
 const rootRef = ref<HTMLElement | null>(null)
 function navigate(path: string) {
   const el = rootRef.value
   if (!el) return
-  el.dispatchEvent(new CustomEvent('kedge-navigate', { detail: { path }, bubbles: true }))
+  el.dispatchEvent(new CustomEvent('faros-navigate', { detail: { path }, bubbles: true }))
 }
 </script>
 

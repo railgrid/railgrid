@@ -17,7 +17,7 @@ limitations under the License.
 // Package api serves the App Studio projects REST + LLM surface. It runs in
 // the standalone provider binary: the hub's backend proxy forwards
 // /services/providers/app-studio/* here (stripping that prefix), injecting the
-// verified X-Kedge-Tenant/X-Kedge-User headers and forwarding the caller's
+// verified X-Faros-Tenant/X-Faros-User headers and forwarding the caller's
 // bearer token. Every request therefore acts as the calling user against the
 // tenant's kcp workspace — there is no provider service-account escalation.
 package api
@@ -128,7 +128,7 @@ func NewWithWorkspaceContext(parent context.Context, gql *tenant.GraphQLClient, 
 		store:                    msgStore,
 		workspaces:               workspaces,
 		hubBase:                  hubBase,
-		actionsExternalURL:       strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_EXTERNAL_URL")),
+		actionsExternalURL:       strings.TrimSpace(os.Getenv("FAROS_ACTIONS_EXTERNAL_URL")),
 		actionsCABundle:          actionsCABundle,
 		actionsCABundleErr:       actionsCABundleErr,
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
@@ -290,7 +290,7 @@ func (s *Server) requireProjectClient(w http.ResponseWriter, r *http.Request) (*
 		return nil, identity{}, false
 	}
 	if id.clusterID == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Kedge-Cluster missing) — the hub did not resolve a cluster for this workspace")
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Faros-Cluster missing) — the hub did not resolve a cluster for this workspace")
 		return nil, identity{}, false
 	}
 	c, err := s.clientFor(id)

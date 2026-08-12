@@ -226,11 +226,11 @@ func TestValidateProjectSyncToolchainsRequiresRootManifest(t *testing.T) {
 
 func TestProjectTemplateToolchain(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{"${kedge.devImage.node}", "node"},
-		{"  ${kedge.devImage.python}  ", "python"},
-		{"${kedge.devImage.dotnet-8}", "dotnet-8"},
+		{"${faros.devImage.node}", "node"},
+		{"  ${faros.devImage.python}  ", "python"},
+		{"${faros.devImage.dotnet-8}", "dotnet-8"},
 		{"docker.io/library/node:22-bookworm", ""}, // a literal image is not a token
-		{"${kedge.devAgentImage}", ""},
+		{"${faros.devAgentImage}", ""},
 		{"", ""},
 	} {
 		if got := projectTemplateToolchain(tc.in); got != tc.want {

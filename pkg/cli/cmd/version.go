@@ -22,7 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
+	pkgversion "github.com/faroshq/faros/pkg/version"
 )
 
 func newVersionCommand() *cobra.Command {
@@ -30,7 +30,7 @@ func newVersionCommand() *cobra.Command {
 		Use:   "version",
 		Short: "Print version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("kedge version %s\n", pkgversion.Version)
+			fmt.Printf("faros version %s\n", pkgversion.Version)
 			fmt.Printf("  git commit: %s\n", pkgversion.GitCommit)
 			fmt.Printf("  build date: %s\n", pkgversion.BuildDate)
 			fmt.Printf("  go version: %s\n", runtime.Version())

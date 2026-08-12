@@ -26,7 +26,7 @@ import (
 
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros/pkg/apiurl"
 )
 
 // assertMCPAggregateListsKubeTools connects to the hub's MCP aggregate for the

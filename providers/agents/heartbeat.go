@@ -25,33 +25,33 @@ const (
 )
 
 // runHeartbeat POSTs to /api/providers/{name}/heartbeat every 30s so the hub's
-// catalog controller keeps the provider Ready. Disabled when KEDGE_HUB_URL is
+// catalog controller keeps the provider Ready. Disabled when FAROS_HUB_URL is
 // empty (tests / dry-run).
 //
 // Env:
 //
-//	KEDGE_HUB_URL        - hub base URL (https://localhost:9443 in dev)
-//	KEDGE_HUB_TOKEN      - bearer token for the heartbeat request
-//	KEDGE_PROVIDER_NAME  - this provider's CatalogEntry name (default: agents)
-//	KEDGE_HUB_INSECURE   - "true" → skip TLS verification (dev self-signed certs)
+//	FAROS_HUB_URL        - hub base URL (https://localhost:9443 in dev)
+//	FAROS_HUB_TOKEN      - bearer token for the heartbeat request
+//	FAROS_PROVIDER_NAME  - this provider's CatalogEntry name (default: agents)
+//	FAROS_HUB_INSECURE   - "true" → skip TLS verification (dev self-signed certs)
 func runHeartbeat(ctx context.Context) {
-	hub := os.Getenv("KEDGE_HUB_URL")
-	token := os.Getenv("KEDGE_HUB_TOKEN")
-	name := os.Getenv("KEDGE_PROVIDER_NAME")
+	hub := os.Getenv("FAROS_HUB_URL")
+	token := os.Getenv("FAROS_HUB_TOKEN")
+	name := os.Getenv("FAROS_PROVIDER_NAME")
 	if name == "" {
 		name = "agents"
 	}
 	if hub == "" {
-		log.Printf("heartbeat disabled (set KEDGE_HUB_URL to enable)")
+		log.Printf("heartbeat disabled (set FAROS_HUB_URL to enable)")
 		return
 	}
 	url := hub + "/api/providers/" + name + "/heartbeat"
 	body, _ := json.Marshal(map[string]string{"version": heartbeatVersion, "status": "healthy"})
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	if os.Getenv("KEDGE_HUB_INSECURE") == "true" {
+	if os.Getenv("FAROS_HUB_INSECURE") == "true" {
 		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev-only; opt-in via KEDGE_HUB_INSECURE
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev-only; opt-in via FAROS_HUB_INSECURE
 		}
 	}
 

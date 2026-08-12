@@ -27,7 +27,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros/pkg/apiurl"
 )
 
 // logicalClusterGVR addresses the well-known per-workspace LogicalCluster
@@ -44,8 +44,8 @@ var logicalClusterGVR = schema.GroupVersionResource{
 const clusterIDResolverTTL = 10 * time.Minute
 
 // newClusterIDResolver returns a function mapping a tenant workspace path
-// (root:kedge:tenants:<org>[:<ws>]) to its kcp logical-cluster ID, for the
-// backend proxy to inject as X-Kedge-Cluster. It reads the workspace's
+// (root:faros:tenants:<org>[:<ws>]) to its kcp logical-cluster ID, for the
+// backend proxy to inject as X-Faros-Cluster. It reads the workspace's
 // LogicalCluster "cluster" object via the hub's kcp admin config, scoping the
 // host to /clusters/<path> through the front-proxy (which resolves paths).
 //

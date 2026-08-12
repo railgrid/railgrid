@@ -238,7 +238,7 @@ var catalog = map[string]Definition{
 		DefaultPort: 9696, DefaultScheme: "http",
 		Auth: AuthAPIKeyHeader, AuthParam: "X-Api-Key",
 		Credential: CredentialModel{Packing: PackSingle, Fields: singleField("apiKey", "API key", "Settings → General → API Key."), Hint: "The Prowlarr API key."},
-		ProbePath: "/api/v1/system/status", ProbeMode: ProbeValidate,
+		ProbePath:  "/api/v1/system/status", ProbeMode: ProbeValidate,
 		Tools: []Tool{
 			{"indexers", "List configured Prowlarr indexers.", http.MethodGet, "/api/v1/indexer"},
 			{"search", "Search across indexers. Pass query params, e.g. {\"query\":\"ubuntu\",\"type\":\"search\"}.", http.MethodGet, "/api/v1/search"},
@@ -251,7 +251,7 @@ var catalog = map[string]Definition{
 		DefaultPort: 8989, DefaultScheme: "http",
 		Auth: AuthAPIKeyHeader, AuthParam: "X-Api-Key",
 		Credential: CredentialModel{Packing: PackSingle, Fields: singleField("apiKey", "API key", "Settings → General → API Key."), Hint: "The Sonarr API key."},
-		ProbePath: "/api/v3/system/status", ProbeMode: ProbeValidate,
+		ProbePath:  "/api/v3/system/status", ProbeMode: ProbeValidate,
 		Tools: []Tool{
 			{"series", "List all TV series in Sonarr.", http.MethodGet, "/api/v3/series"},
 			{"queue", "List the download queue.", http.MethodGet, "/api/v3/queue"},
@@ -265,7 +265,7 @@ var catalog = map[string]Definition{
 		DefaultPort: 7878, DefaultScheme: "http",
 		Auth: AuthAPIKeyHeader, AuthParam: "X-Api-Key",
 		Credential: CredentialModel{Packing: PackSingle, Fields: singleField("apiKey", "API key", "Settings → General → API Key."), Hint: "The Radarr API key."},
-		ProbePath: "/api/v3/system/status", ProbeMode: ProbeValidate,
+		ProbePath:  "/api/v3/system/status", ProbeMode: ProbeValidate,
 		Tools: []Tool{
 			{"movies", "List all movies in Radarr.", http.MethodGet, "/api/v3/movie"},
 			{"queue", "List the download queue.", http.MethodGet, "/api/v3/queue"},
@@ -276,9 +276,9 @@ var catalog = map[string]Definition{
 		Type: "grafana", DisplayName: "Grafana", Category: "Monitoring",
 		Description: "Dashboards and data-source explorer.",
 		DefaultPort: 3000, DefaultScheme: "http",
-		Auth: AuthBearer,
+		Auth:       AuthBearer,
 		Credential: CredentialModel{Packing: PackSingle, Fields: singleField("token", "Service account token", "Administration → Service accounts → Add token."), Hint: "A Grafana service-account (or API) token."},
-		ProbePath: "/api/org", ProbeMode: ProbeValidate,
+		ProbePath:  "/api/org", ProbeMode: ProbeValidate,
 		Tools: []Tool{
 			{"search", "Search dashboards/folders. Query: {\"query\":\"cpu\",\"type\":\"dash-db\"}.", http.MethodGet, "/api/search"},
 			{"datasources", "List configured data sources.", http.MethodGet, "/api/datasources"},
@@ -290,9 +290,9 @@ var catalog = map[string]Definition{
 		Type: "grafana-loki", DisplayName: "Grafana Loki", Category: "Monitoring",
 		Description: "Log aggregation (LogQL).",
 		DefaultPort: 3100, DefaultScheme: "http",
-		Auth: AuthBearer,
+		Auth:       AuthBearer,
 		Credential: CredentialModel{Optional: true, Packing: PackSingle, Fields: singleField("token", "Bearer token (optional)", "Leave empty if Loki is unauthenticated behind the tunnel."), Hint: "Optional bearer token; often unauthenticated behind the tunnel."},
-		ProbePath: "/ready", ProbeMode: ProbeReachable,
+		ProbePath:  "/ready", ProbeMode: ProbeReachable,
 		Tools: []Tool{
 			{"query", "LogQL instant query. Query {\"query\":\"{app=\\\"x\\\"}\"}.", http.MethodGet, "/loki/api/v1/query"},
 			{"query_range", "LogQL range query. Query {\"query\":\"...\",\"start\":\"...\",\"end\":\"...\"}.", http.MethodGet, "/loki/api/v1/query_range"},
@@ -303,9 +303,9 @@ var catalog = map[string]Definition{
 		Type: "prometheus", DisplayName: "Prometheus", Category: "Monitoring",
 		Description: "Metrics and alerting (PromQL).",
 		DefaultPort: 9090, DefaultScheme: "http",
-		Auth: AuthBearer,
+		Auth:       AuthBearer,
 		Credential: CredentialModel{Optional: true, Packing: PackSingle, Fields: singleField("token", "Bearer token (optional)", "Leave empty if Prometheus is unauthenticated behind the tunnel."), Hint: "Optional bearer token; often unauthenticated behind the tunnel."},
-		ProbePath: "/-/healthy", ProbeMode: ProbeReachable,
+		ProbePath:  "/-/healthy", ProbeMode: ProbeReachable,
 		Tools: []Tool{
 			{"query", "Instant query. Pass query {\"query\":\"up\"}.", http.MethodGet, "/api/v1/query"},
 			{"query_range", "Range query. Query: {\"query\":\"rate(...)\",\"start\":\"...\",\"end\":\"...\",\"step\":\"60\"}.", http.MethodGet, "/api/v1/query_range"},
@@ -319,7 +319,7 @@ var catalog = map[string]Definition{
 		DefaultPort: 8096, DefaultScheme: "http",
 		Auth: AuthAPIKeyHeader, AuthParam: "X-Emby-Token",
 		Credential: CredentialModel{Packing: PackSingle, Fields: singleField("apiKey", "API key", "Dashboard → API Keys."), Hint: "A Jellyfin API key."},
-		ProbePath: "/System/Info", ProbeMode: ProbeValidate,
+		ProbePath:  "/System/Info", ProbeMode: ProbeValidate,
 		Tools: []Tool{
 			{"sessions", "List active playback sessions.", http.MethodGet, "/Sessions"},
 			{"system", "Server system info/version.", http.MethodGet, "/System/Info"},
@@ -346,7 +346,7 @@ var catalog = map[string]Definition{
 		DefaultPort: 9000, DefaultScheme: "http",
 		Auth: AuthAPIKeyHeader, AuthParam: "X-API-Key",
 		Credential: CredentialModel{Packing: PackSingle, Fields: singleField("apiKey", "API key", "My account → Access tokens → Add access token."), Hint: "A Portainer API access token."},
-		ProbePath: "/api/endpoints", ProbeMode: ProbeValidate,
+		ProbePath:  "/api/endpoints", ProbeMode: ProbeValidate,
 		Tools: []Tool{
 			{"endpoints", "List environments (endpoints).", http.MethodGet, "/api/endpoints"},
 			{"stacks", "List deployed stacks.", http.MethodGet, "/api/stacks"},
@@ -357,9 +357,9 @@ var catalog = map[string]Definition{
 		Type: "adguard", DisplayName: "AdGuard Home", Category: "Network",
 		Description: "Network-wide DNS ad/tracker blocking.",
 		DefaultPort: 80, DefaultScheme: "http",
-		Auth: AuthBasic,
+		Auth:       AuthBasic,
 		Credential: CredentialModel{Packing: PackUserPass, Fields: userPassFields(), Hint: "The AdGuard Home web interface username and password."},
-		ProbePath: "/control/status", ProbeMode: ProbeValidate,
+		ProbePath:  "/control/status", ProbeMode: ProbeValidate,
 		Tools: []Tool{
 			{"status", "Protection status + version.", http.MethodGet, "/control/status"},
 			{"stats", "DNS query stats (top clients/domains, counts).", http.MethodGet, "/control/stats"},
@@ -371,9 +371,9 @@ var catalog = map[string]Definition{
 		Type: "proxmox", DisplayName: "Proxmox VE", Category: "Infrastructure",
 		Description: "Virtualization management (VMs, containers, storage).",
 		DefaultPort: 8006, DefaultScheme: "https",
-		Auth: AuthProxmox,
+		Auth:       AuthProxmox,
 		Credential: CredentialModel{Packing: PackSingle, Fields: singleField("token", "API token", "Datacenter → Permissions → API Tokens. Format USER@REALM!TOKENID=UUID."), Hint: "A Proxmox API token: USER@REALM!TOKENID=UUID."},
-		ProbePath: "/api2/json/version", ProbeMode: ProbeValidate,
+		ProbePath:  "/api2/json/version", ProbeMode: ProbeValidate,
 		Tools: []Tool{
 			{"nodes", "List cluster nodes.", http.MethodGet, "/api2/json/nodes"},
 			{"resources", "List cluster resources (VMs, storage, nodes).", http.MethodGet, "/api2/json/cluster/resources"},
@@ -384,9 +384,9 @@ var catalog = map[string]Definition{
 		Type: "pihole", DisplayName: "Pi-hole", Category: "Network",
 		Description: "Network-wide DNS ad blocking (v6).",
 		DefaultPort: 80, DefaultScheme: "http",
-		Auth: AuthPihole,
+		Auth:       AuthPihole,
 		Credential: CredentialModel{Packing: PackSingle, Fields: singleField("password", "Web password", "The Pi-hole admin web interface password."), Hint: "The Pi-hole v6 web interface password."},
-		ProbePath: "/api/dns/blocking", ProbeMode: ProbeValidate,
+		ProbePath:  "/api/dns/blocking", ProbeMode: ProbeValidate,
 		Tools: []Tool{
 			{"summary", "Query/blocking summary stats.", http.MethodGet, "/api/stats/summary"},
 			{"blocking", "Blocking enabled/disabled status.", http.MethodGet, "/api/dns/blocking"},
@@ -401,7 +401,7 @@ var catalog = map[string]Definition{
 		HostRequired: true, HostHelp: "The UniFi console address, e.g. 192.168.1.1.",
 		Auth: AuthAPIKeyHeader, AuthParam: "X-API-KEY",
 		Credential: CredentialModel{Packing: PackSingle, Fields: singleField("apiKey", "API key", "UniFi OS → Control Plane → Integrations → create a local API key."), Hint: "A UniFi OS local API key."},
-		ProbePath: "/proxy/network/integration/v1/sites", ProbeMode: ProbeValidate,
+		ProbePath:  "/proxy/network/integration/v1/sites", ProbeMode: ProbeValidate,
 		Tools: []Tool{
 			{"sites", "List UniFi Network sites (each site's id + name).", http.MethodGet, "/proxy/network/integration/v1/sites"},
 			{"clients", "List connected clients for a site. Query {\"siteId\":\"<id>\"}.", http.MethodGet, "/proxy/network/integration/v1/sites/{siteId}/clients"},
@@ -415,7 +415,7 @@ var catalog = map[string]Definition{
 		HostRequired: true, HostHelp: "The UniFi console address, e.g. 192.168.1.1.",
 		Auth: AuthAPIKeyHeader, AuthParam: "X-API-KEY",
 		Credential: CredentialModel{Packing: PackSingle, Fields: singleField("apiKey", "API key", "UniFi OS → Control Plane → Integrations → create a local API key."), Hint: "A UniFi OS local API key (same key works for Network + Protect)."},
-		ProbePath: "/proxy/protect/integration/v1/cameras", ProbeMode: ProbeValidate,
+		ProbePath:  "/proxy/protect/integration/v1/cameras", ProbeMode: ProbeValidate,
 		Instructions: "The snapshot tool captures a live frame on demand, so it depends on the camera's current state. " +
 			"Battery- or power-managed cameras (notably G4/G5 doorbells) drop to standby and their snapshot may return a 500 \"UNKNOWN_ERROR\" until they wake — this is UniFi Protect's response, not a credential or connectivity fault. " +
 			"On a snapshot 500, retry the same camera a couple of times (waking it usually succeeds), or take a snapshot from another camera covering the same area. " +
@@ -430,9 +430,9 @@ var catalog = map[string]Definition{
 		Type: "generic", DisplayName: "Generic HTTP service", Category: "Other",
 		Description: "Any HTTP service — proxied through the tunnel, no MCP tools.",
 		DefaultPort: 80, DefaultScheme: "http",
-		Auth: AuthBearer,
+		Auth:       AuthBearer,
 		Credential: CredentialModel{Optional: true, Packing: PackSingle, Fields: singleField("token", "Bearer token (optional)", "Injected as Authorization: Bearer when set."), Hint: "Optional bearer token injected on proxied requests."},
-		ProbeMode: ProbeReachable,
+		ProbeMode:  ProbeReachable,
 	},
 }
 

@@ -6,9 +6,9 @@
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
 //
-// infrastructure is a kedge provider that brokers application
+// infrastructure is a faros provider that brokers application
 // templates from a central kro (Kube Resource Orchestrator) cluster
-// into kedge tenant workspaces. See /Users/mjudeikis/.claude/plans/
+// into faros tenant workspaces. See /Users/mjudeikis/.claude/plans/
 // zippy-baking-jellyfish.md for the staged plan + design notes.
 //
 // Routes on a single port ($PORT, default 8081):
@@ -19,7 +19,7 @@
 //
 // Templates and instances are NOT served as REST here: the portal and
 // tenants drive them as CRDs directly against kcp
-// (templates.infrastructure.kedge.faros.sh + the per-template instance
+// (templates.infrastructure.faros.sh + the per-template instance
 // kinds), projected to tenant workspaces via the CachedResource +
 // APIExport. The MCP surface keeps its own kro.Client.
 package main
@@ -189,7 +189,7 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 	}
 
 	// Cross-tenant Application instance controller (fqdn stamp + OIDC
-	// client-secret bridge). Opt-in via KEDGE_APP_BASE_DOMAIN + KRO_KUBECONFIG.
+	// client-secret bridge). Opt-in via FAROS_APP_BASE_DOMAIN + KRO_KUBECONFIG.
 	startApplicationController(ctx, kcpConfig)
 
 	go runHeartbeat(ctx)

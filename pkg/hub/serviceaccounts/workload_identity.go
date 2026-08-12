@@ -40,14 +40,14 @@ import (
 
 const (
 	// WorkloadIdentityBootstrapAudience is the audience expected by the
-	// provider-owned bootstrap attestor. It is never used for the minted Kedge
+	// provider-owned bootstrap attestor. It is never used for the minted Faros
 	// capability.
-	WorkloadIdentityBootstrapAudience = "kedge-provider-actions-bootstrap"
+	WorkloadIdentityBootstrapAudience = "faros-provider-actions-bootstrap"
 
 	// WorkloadIdentityTokenAudience is the audience requested for the minted
 	// runtime capability. KCP's embedded and deployed API servers issue and
 	// validate ServiceAccount tokens for this issuer audience; using the
-	// legacy proxy-only "kedge" audience would make the token fail at the
+	// legacy proxy-only "faros" audience would make the token fail at the
 	// provider's tenant API before the action reached its backend.
 	WorkloadIdentityTokenAudience = "https://kcp.default.svc"
 
@@ -58,35 +58,35 @@ const (
 
 	// LabelWorkloadIdentity marks service accounts created for the provider
 	// action runtime. These accounts intentionally do not carry
-	// LabelKedgeSA, so the ordinary user-managed service-account CRUD surface
+	// LabelFarosSA, so the ordinary user-managed service-account CRUD surface
 	// cannot list, patch, or rotate them.
-	LabelWorkloadIdentity = "kedge.faros.sh/workload-identity"
+	LabelWorkloadIdentity = "faros.sh/workload-identity"
 
 	// AnnotationWorkloadIdentityScope is a compact, non-secret audit marker.
 	// The token itself is never persisted in an annotation or Secret.
-	AnnotationWorkloadIdentityScope = "kedge.faros.sh/workload-identity-scope"
+	AnnotationWorkloadIdentityScope = "faros.sh/workload-identity-scope"
 
 	// AnnotationWorkloadIdentityTenantPath binds a workload ServiceAccount to
 	// the child workspace in which it was issued. The tenant resolver checks
-	// this marker after an online TokenReview, preventing a valid Kedge token
+	// this marker after an online TokenReview, preventing a valid Faros token
 	// from being replayed with another tenant's selection headers.
-	AnnotationWorkloadIdentityTenantPath = "kedge.faros.sh/workload-identity-tenant"
+	AnnotationWorkloadIdentityTenantPath = "faros.sh/workload-identity-tenant"
 
 	// The remaining annotations carry the exact project identity tuple used to
 	// derive the deterministic workload ServiceAccount name. They are retained
 	// separately from the compact scope marker so an online verifier can load
 	// and compare the live Project before authorizing an action invocation.
-	AnnotationWorkloadIdentityProject     = "kedge.faros.sh/workload-identity-project"
-	AnnotationWorkloadIdentityProjectUID  = "kedge.faros.sh/workload-identity-project-uid"
-	AnnotationWorkloadIdentityEnvironment = "kedge.faros.sh/workload-identity-environment"
-	AnnotationWorkloadIdentityInstance    = "kedge.faros.sh/workload-identity-instance"
+	AnnotationWorkloadIdentityProject     = "faros.sh/workload-identity-project"
+	AnnotationWorkloadIdentityProjectUID  = "faros.sh/workload-identity-project-uid"
+	AnnotationWorkloadIdentityEnvironment = "faros.sh/workload-identity-environment"
+	AnnotationWorkloadIdentityInstance    = "faros.sh/workload-identity-instance"
 
-	workloadIdentityNamePrefix = "kedge-wi-"
+	workloadIdentityNamePrefix = "faros-wi-"
 	workloadIdentityRoleSuffix = "-access"
 
 	// The project resource is owned by App Studio. Provider-resource rules are
 	// derived from the verified Project environment and are never hard-coded.
-	workloadProjectGroup    = "ai.kedge.faros.sh"
+	workloadProjectGroup    = "ai.faros.sh"
 	workloadProjectResource = "projects"
 )
 

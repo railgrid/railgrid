@@ -62,15 +62,15 @@ const identityNamespace = "default"
 // agent's Role grants read across it; instance kinds are created at runtime
 // from Templates, so they cannot be enumerated ahead of time and the grant is
 // written against the group rather than a fixed resource list.
-const instanceGroup = "infrastructure.kedge.faros.sh"
+const instanceGroup = "infrastructure.faros.sh"
 
 // agentIdentityName is the ServiceAccount / ClusterRole / binding name for one
 // agent. Prefixed so it is obviously platform-managed in a workspace a human
 // also uses.
-func agentIdentityName(agent string) string { return "kedge-agent-" + agent }
+func agentIdentityName(agent string) string { return "faros-agent-" + agent }
 
 // agentTokenSecretName is the Secret kcp's token controller populates.
-func agentTokenSecretName(agent string) string { return "kedge-agent-" + agent + "-token" }
+func agentTokenSecretName(agent string) string { return "faros-agent-" + agent + "-token" }
 
 // identityCache memoises minted tokens per (cluster, agent). Provisioning is
 // idempotent but involves several API calls and a poll, and the background

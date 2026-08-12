@@ -2,13 +2,13 @@
 layout: default
 title: Helm Deployment
 nav_order: 5
-description: "Deploy Kedge Hub using Helm charts"
+description: "Deploy Faros Hub using Helm charts"
 ---
 
 # Helm Deployment
 {: .no_toc }
 
-Deploy kedge-hub into a Kubernetes cluster using Helm.
+Deploy faros-hub into a Kubernetes cluster using Helm.
 {: .fs-6 .fw-300 }
 
 ## Table of contents
@@ -21,7 +21,7 @@ Deploy kedge-hub into a Kubernetes cluster using Helm.
 
 ## Overview
 
-The kedge-hub Helm chart deploys **kcp + kedge-hub**. In the default embedded-kcp mode it runs as a StatefulSet (kcp's embedded etcd is persisted to a PVC). When `kcp.external.enabled=true`, the hub is stateless and runs as a Deployment instead. This guide covers deploying to both local clusters (kind) and production environments.
+The faros-hub Helm chart deploys **kcp + faros-hub**. In the default embedded-kcp mode it runs as a StatefulSet (kcp's embedded etcd is persisted to a PVC). When `kcp.external.enabled=true`, the hub is stateless and runs as a Deployment instead. This guide covers deploying to both local clusters (kind) and production environments.
 
 For authentication configuration, see [Security]({% link security.md %}).
 
@@ -43,20 +43,20 @@ For authentication configuration, see [Security]({% link security.md %}).
 ### 1. Create a kind cluster
 
 ```bash
-kind create cluster --name kedge
+kind create cluster --name faros
 ```
 
 Verify it's running:
 
 ```bash
-kubectl cluster-info --context kind-kedge
+kubectl cluster-info --context kind-faros
 ```
 
 ### 2. Build and load the hub image
 
 ```bash
 make docker-build-hub
-kind load docker-image ghcr.io/faroshq/kedge-hub:$(git describe --tags --always --dirty 2>/dev/null || echo dev) --name kedge
+kind load docker-image ghcr.io/faroshq/faros-hub:$(git describe --tags --always --dirty 2>/dev/null || echo dev) --name faros
 ```
 
 {: .note }
@@ -78,22 +78,22 @@ For OIDC authentication instead of static token, see [Security]({% link security
 ### 4. Install the chart
 
 ```bash
-helm upgrade --install kedge deploy/charts/kedge-hub/ \
+helm upgrade --install faros deploy/charts/faros-hub/ \
   -f values-kind.yaml \
-  --namespace kedge-system \
+  --namespace faros-system \
   --create-namespace
 ```
 
 ### 5. Wait for pods to be ready
 
 ```bash
-kubectl -n kedge-system get pods -w
+kubectl -n faros-system get pods -w
 ```
 
-Wait until `kedge-kedge-hub-0` is Running with all containers ready:
+Wait until `faros-faros-hub-0` is Running with all containers ready:
 
 ```bash
-kubectl -n kedge-system wait --for=condition=ready pod -l app.kubernetes.io/name=kedge-hub --timeout=120s
+kubectl -n faros-system wait --for=condition=ready pod -l app.kubernetes.io/name=faros-hub --timeout=120s
 ```
 
 {: .note }
@@ -102,13 +102,13 @@ The hub container waits for kcp to generate `admin.kubeconfig` before starting (
 ### 6. Port-forward and log in
 
 ```bash
-kubectl -n kedge-system port-forward svc/kedge-kedge-hub 9443:9443
+kubectl -n faros-system port-forward svc/faros-faros-hub 9443:9443
 ```
 
 In another terminal:
 
 ```bash
-kedge login \
+faros login \
   --hub-url https://localhost:9443 \
   --token <your-static-token> \
   --insecure-skip-tls-verify
@@ -151,7 +151,7 @@ idp:
   issuerURL: "https://idp.example.com"
   # Optional for split-horizon IdPs:
   # browserAuthURL: "https://login.example.com/oauth2/auth"
-  clientID: "kedge"
+  clientID: "faros"
   clientSecret: "<secret>"
 
 ingress:
@@ -172,18 +172,18 @@ ingress:
 
 ```bash
 # kcp container
-kubectl -n kedge-system logs kedge-kedge-hub-0 -c kcp
+kubectl -n faros-system logs faros-faros-hub-0 -c kcp
 
 # hub container
-kubectl -n kedge-system logs kedge-kedge-hub-0 -c hub
+kubectl -n faros-system logs faros-faros-hub-0 -c hub
 ```
 
 ### Upgrading
 
 ```bash
-helm upgrade kedge deploy/charts/kedge-hub/ \
+helm upgrade faros deploy/charts/faros-hub/ \
   -f values.yaml \
-  --namespace kedge-system
+  --namespace faros-system
 ```
 
 {: .note }
@@ -192,21 +192,21 @@ TLS secrets have `helm.sh/resource-policy: keep` and survive upgrades.
 ### Uninstalling
 
 ```bash
-helm uninstall kedge --namespace kedge-system
+helm uninstall faros --namespace faros-system
 ```
 
 This preserves PVCs (kcp data) and TLS secrets. To fully clean up:
 
 ```bash
-kubectl -n kedge-system delete pvc --all
-kubectl -n kedge-system delete secret kedge-kedge-hub-tls
-kubectl delete namespace kedge-system
+kubectl -n faros-system delete pvc --all
+kubectl -n faros-system delete secret faros-faros-hub-tls
+kubectl delete namespace faros-system
 ```
 
 To also remove the kind cluster:
 
 ```bash
-kind delete cluster --name kedge
+kind delete cluster --name faros
 ```
 
 ---
@@ -228,7 +228,7 @@ kind delete cluster --name kedge
 |:----|:------------|:--------|
 | `idp.issuerURL` | OIDC issuer URL | `""` |
 | `idp.browserAuthURL` | Public HTTPS browser authorization endpoint; discovery and token operations still use `issuerURL` | `""` |
-| `idp.clientID` | OIDC client ID | `"kedge"` |
+| `idp.clientID` | OIDC client ID | `"faros"` |
 | `idp.clientSecret` | OIDC client secret | `""` |
 | `hub.publishedAppsDomain` | DNS zone published apps are served under; enables private published-app sign-in (`/auth/apps/*`) | `""` |
 | `hub.disableTokenLogin` | Disable interactive static-token login (endpoint + portal form); bearer tokens still work for APIs | `false` |

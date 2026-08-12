@@ -2,7 +2,7 @@
 
 > **Status (2026-08-03): all four phases implemented.** Companion doc:
 > [agents-deep-research.md](agents-deep-research.md) (sub-agents inside one
-> run). This doc is about the *outside* surface: how another kedge provider, an
+> run). This doc is about the *outside* surface: how another faros provider, an
 > MCP client, or a plain HTTP caller hands an agent a task and retrieves the
 > answer.
 >
@@ -165,7 +165,7 @@ tokens, no new hub machinery.
 
 Why not the hub tenant resolver: `pkg/hub/provider_tenant_resolver.go:138`
 resolves bearer → User CR → personal org / membership index. Provider SAs
-have no User CR and no membership, so hub-side injection of `X-Kedge-Tenant`
+have no User CR and no membership, so hub-side injection of `X-Faros-Tenant`
 can never work for them without teaching the hub a parallel SA identity
 model. We don't need to: the app-studio → infrastructure data plane
 (`providers/app-studio/api/dataplane_client.go`) already established the
@@ -191,7 +191,7 @@ Authorization in the agents provider, per request:
    virtual workspace the provider already uses for background work
    (`api/background.go`).
 2. **Authorize**: SubjectAccessReview in `{clusterID}` — does the
-   authenticated subject have `create` on `agents.kedge.faros.sh/v1alpha1
+   authenticated subject have `create` on `agents.faros.sh/v1alpha1
    agents/delegate` (a named subresource used purely as an RBAC hook)?
    Verb-level RBAC in the tenant workspace then controls delegation: a tenant
    (or a provider's bootstrap step) grants a calling provider's SA exactly
@@ -325,7 +325,7 @@ are each tested), and everything in phases 3–4.
     in the tenant workspace, and edges mints agent credentials in the consumer
     workspace: the caller holds an SA *in the workspace it is invoking into*.
 11. **Authorization is the tenant's to grant, in their own RBAC.** The SAR asks
-    about `create`/`get` on `agents.kedge.faros.sh` `agents/delegate`, named for
+    about `create`/`get` on `agents.faros.sh` `agents/delegate`, named for
     the agent — a subresource that exists only as an RBAC hook, so permission to
     *run* an agent is expressible and revocable separately from permission to read
     or edit its configuration, and can be scoped to one agent by `resourceNames`.

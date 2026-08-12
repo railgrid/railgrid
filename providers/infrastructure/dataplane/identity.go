@@ -35,11 +35,11 @@ type identity struct {
 
 func identityFromRequest(r *http.Request) identity {
 	id := identity{
-		tenantPath: r.Header.Get("X-Kedge-Tenant"),
-		user:       r.Header.Get("X-Kedge-User"),
+		tenantPath: r.Header.Get("X-Faros-Tenant"),
+		user:       r.Header.Get("X-Faros-User"),
 		token:      bearerToken(r),
 	}
-	if os.Getenv("KEDGE_DEV_ALLOW_TENANT_QUERY") == "true" && id.token == "" {
+	if os.Getenv("FAROS_DEV_ALLOW_TENANT_QUERY") == "true" && id.token == "" {
 		id.token = r.URL.Query().Get("token")
 	}
 	return id

@@ -3,18 +3,18 @@
 > [!IMPORTANT]
 > **Read-only mirror — do not push or open PRs here.**
 > The standalone [`faroshq/provider-infrastructure`](https://github.com/faroshq/provider-infrastructure)
-> repository is **automatically synced** from the kedge monorepo
-> [`faroshq/kedge`](https://github.com/faroshq/kedge) (path `providers/infrastructure/`)
+> repository is **automatically synced** from the faros monorepo
+> [`faroshq/faros`](https://github.com/faroshq/faros) (path `providers/infrastructure/`)
 > via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
 > the mirror, so any direct change here is overwritten. File issues and PRs
-> against [`faroshq/kedge`](https://github.com/faroshq/kedge) instead.
+> against [`faroshq/faros`](https://github.com/faroshq/faros) instead.
 > See [docs/provider-publishing.md](../../docs/provider-publishing.md) for how
 > the mirror is published.
 
-A kedge provider that brokers application templates from a central
+A faros provider that brokers application templates from a central
 [kro](https://github.com/faroshq/kro-multicluster) (Kube Resource
-Orchestrator) cluster into kedge tenant workspaces. A tenant picks a
-template in the kedge portal — or asks an MCP-driven LLM — supplies
+Orchestrator) cluster into faros tenant workspaces. A tenant picks a
+template in the faros portal — or asks an MCP-driven LLM — supplies
 inputs, and this provider creates the kro instance CR on their behalf
 using cloud credentials pulled from the tenant's own kcp workspace.
 
@@ -40,7 +40,7 @@ ClusterRoles/CRDs) and manage runtime workloads.
 ### Prerequisites
 
 - The provider **workspace must already exist** — onboard/register the provider
-  so `root:kedge:providers:infrastructure` exists.
+  so `root:faros:providers:infrastructure` exists.
 - A **provider (kcp) kubeconfig** scoped to that workspace (what the admin
   portal issues).
 
@@ -52,13 +52,13 @@ operator uses its **own (in-cluster) cluster** as the runtime.
 
 ```sh
 helm install infrastructure \
-  oci://ghcr.io/faroshq/charts/kedge-infrastructure-provider --version <X.Y.Z> \
-  -n kedge-infra-operator --create-namespace \
+  oci://ghcr.io/faroshq/charts/faros-infrastructure-provider --version <X.Y.Z> \
+  -n faros-infra-operator --create-namespace \
   --set operator.enabled=true \
-  --set operator.providerWorkspace=root:kedge:providers:infrastructure \
+  --set operator.providerWorkspace=root:faros:providers:infrastructure \
   --set-file operator.providerKubeconfig=./provider-infrastructure.kubeconfig \
   --set operator.kro.version=v0.0.1-mc.7 \
-  --set hub.url=https://kedge-hub.kedge.svc.cluster.local:9443
+  --set hub.url=https://faros-hub.faros.svc.cluster.local:9443
 ```
 
 ### Install — separate runtime cluster
@@ -67,10 +67,10 @@ To run kro + serve in a different cluster, also pass its kubeconfig:
 
 ```sh
 helm install infrastructure \
-  oci://ghcr.io/faroshq/charts/kedge-infrastructure-provider --version <X.Y.Z> \
-  -n kedge-infra-operator --create-namespace \
+  oci://ghcr.io/faroshq/charts/faros-infrastructure-provider --version <X.Y.Z> \
+  -n faros-infra-operator --create-namespace \
   --set operator.enabled=true \
-  --set operator.providerWorkspace=root:kedge:providers:infrastructure \
+  --set operator.providerWorkspace=root:faros:providers:infrastructure \
   --set-file operator.providerKubeconfig=./provider-infrastructure.kubeconfig \
   --set-file operator.runtimeKubeconfig=./runtime-cluster.kubeconfig \
   --set operator.kro.version=v0.0.1-mc.7
@@ -92,18 +92,18 @@ Values:
   exposure**) and `gateway.name` / `gateway.namespace` (the Gateway API parent
   the generated HTTPRoutes attach to; default `cloudflare-tunnel` /
   `cfgate-system`). These render into the CR's `spec.application` and become the
-  serve container's `KEDGE_APP_BASE_DOMAIN` / `KEDGE_GATEWAY_NAME` /
-  `KEDGE_GATEWAY_NAMESPACE`. See
+  serve container's `FAROS_APP_BASE_DOMAIN` / `FAROS_GATEWAY_NAME` /
+  `FAROS_GATEWAY_NAMESPACE`. See
   [docs/application-template-architecture.md](docs/application-template-architecture.md).
 
 ### Verify
 
 ```sh
-kubectl -n kedge-infra-operator get infrastructureprovider infrastructure -o wide
+kubectl -n faros-infra-operator get infrastructureprovider infrastructure -o wide
 # PHASE → Ready; conditions Bootstrapped / KroReleased / ProviderDeployed = True
-kubectl -n kedge-infra-operator logs deploy/infrastructure-kedge-infrastructure-provider-operator
+kubectl -n faros-infra-operator logs deploy/infrastructure-faros-infrastructure-provider-operator
 kubectl -n kro-system get deploy kro
-kubectl -n kedge-infrastructure-provider get deploy,svc
+kubectl -n faros-infrastructure-provider get deploy,svc
 ```
 
 ### Upgrade
@@ -111,8 +111,8 @@ kubectl -n kedge-infrastructure-provider get deploy,svc
 Image versions live in the CR/values — bump and re-reconcile:
 
 ```sh
-helm upgrade infrastructure oci://ghcr.io/faroshq/charts/kedge-infrastructure-provider --version <X.Y.Z> \
-  -n kedge-infra-operator --reuse-values \
+helm upgrade infrastructure oci://ghcr.io/faroshq/charts/faros-infrastructure-provider --version <X.Y.Z> \
+  -n faros-infra-operator --reuse-values \
   --set operator.kro.version=<new-kro> \
   --set operator.provider.image.tag=<new-provider>
 ```
@@ -122,7 +122,7 @@ helm upgrade infrastructure oci://ghcr.io/faroshq/charts/kedge-infrastructure-pr
 [`.github/workflows/provider-release.yaml`](../../.github/workflows/provider-release.yaml)
 is the sole publisher: an `infrastructure/vX.Y.Z` tag builds + pushes the
 provider image (operator binary **and** the helm CLI baked in) and packages +
-pushes the chart to `oci://ghcr.io/faroshq/charts/kedge-infrastructure-provider`.
+pushes the chart to `oci://ghcr.io/faroshq/charts/faros-infrastructure-provider`.
 (`images.yaml` only build-validates the image on PRs; it does not publish.) Until
 a release tag is cut, install from the local chart path
 (`providers/infrastructure/deploy/chart`) with a provider image that contains the
@@ -154,23 +154,23 @@ Browser / MCP client
    │  bearer
    ▼
 hub /services/providers/infrastructure/{api/*, mcp, mcp/sse}
-   │  proxy injects X-Kedge-Tenant + X-Kedge-User
+   │  proxy injects X-Faros-Tenant + X-Faros-User
    │  (pkg/hub/providers/proxy.go SetTenantResolver +
    │   pkg/hub/provider_tenant_resolver.go)
    ▼
 this provider pod
    │
-   ├── tenant kcp client ── /var/run/secrets/kedge/kedge-provider-kubeconfig
+   ├── tenant kcp client ── /var/run/secrets/faros/faros-provider-kubeconfig
    │     resolves cloud-credentials Secret in tenant workspace
    │
    └── central kro client ── /var/run/secrets/kro/kubeconfig
          discovers RGDs, creates/lists/deletes instances in
-         per-tenant namespace kedge-tenants-<hash>
+         per-tenant namespace faros-tenants-<hash>
 ```
 
 kro runs in **`kcp-apiexport`** mode: the provider creates instance CRs in the
 tenant's kcp workspace through its APIExport
-`infrastructure.providers.kedge.faros.sh`; kro reads the `infrastructure`
+`infrastructure.providers.faros.sh`; kro reads the `infrastructure`
 APIExportEndpointSlice in the provider workspace to find the virtual-workspace
 URL, watches instance CRs across every bound tenant workspace, and — with
 `controller.deployToLocalRuntime=true` — materializes each instance's child
@@ -190,14 +190,14 @@ and [`app-studio-runtime-decoupling.md`](../../docs/app-studio-runtime-decouplin
 ## MCP integration
 
 Add the endpoint to a Claude / Cursor / Cline config separately from
-the central kedge MCP aggregator:
+the central faros MCP aggregator:
 
 ```jsonc
 {
   "mcpServers": {
-    "kedge-kro": {
-      "url": "https://<your-kedge-hub>/services/providers/infrastructure/mcp",
-      "headers": { "Authorization": "Bearer <kedge-bearer>" }
+    "faros-kro": {
+      "url": "https://<your-faros-hub>/services/providers/infrastructure/mcp",
+      "headers": { "Authorization": "Bearer <faros-bearer>" }
     }
   }
 }
@@ -206,7 +206,7 @@ the central kedge MCP aggregator:
 The MCP server exposes six tools: `kro_list_templates`,
 `kro_describe_template`, `kro_provision`, `kro_list_instances`,
 `kro_get_instance`, `kro_delete_instance`. Identity (tenant + user) is
-taken from the same bearer token the kedge portal uses — the model
+taken from the same bearer token the faros portal uses — the model
 never needs to ask the user for a tenant path.
 
 External providers cannot plug into the in-tree aggregator at
@@ -219,16 +219,16 @@ central one.
 | Var | Default | Purpose |
 |---|---|---|
 | `PORT` | `8081` | Listen port |
-| `KEDGE_HUB_URL` | (unset → heartbeat off) | Hub base URL for heartbeats |
-| `KEDGE_HUB_TOKEN` | (unset) | Bearer token for heartbeats |
-| `KEDGE_PROVIDER_NAME` | `infrastructure` | CatalogEntry name |
-| `KEDGE_HUB_INSECURE` | (unset) | `true` skips TLS verify on heartbeats |
-| `KEDGE_PROVIDER_KUBECONFIG` | `/var/run/secrets/kedge/kedge-provider-kubeconfig` | Mounted kcp kubeconfig |
-| `KEDGE_TENANT_CREDENTIALS_SECRET` | `cloud-credentials` | Secret name in tenant workspace |
-| `KEDGE_TENANT_CREDENTIALS_NAMESPACE` | `default` | Namespace in tenant workspace |
-| `KEDGE_DEV_ALLOW_TENANT_QUERY` | (unset) | `true` lets `?tenant=` replace `X-Kedge-Tenant` (dev only) |
+| `FAROS_HUB_URL` | (unset → heartbeat off) | Hub base URL for heartbeats |
+| `FAROS_HUB_TOKEN` | (unset) | Bearer token for heartbeats |
+| `FAROS_PROVIDER_NAME` | `infrastructure` | CatalogEntry name |
+| `FAROS_HUB_INSECURE` | (unset) | `true` skips TLS verify on heartbeats |
+| `FAROS_PROVIDER_KUBECONFIG` | `/var/run/secrets/faros/faros-provider-kubeconfig` | Mounted kcp kubeconfig |
+| `FAROS_TENANT_CREDENTIALS_SECRET` | `cloud-credentials` | Secret name in tenant workspace |
+| `FAROS_TENANT_CREDENTIALS_NAMESPACE` | `default` | Namespace in tenant workspace |
+| `FAROS_DEV_ALLOW_TENANT_QUERY` | (unset) | `true` lets `?tenant=` replace `X-Faros-Tenant` (dev only) |
 | `KRO_KUBECONFIG` | (unset → stub mode) | Central kro cluster kubeconfig |
-| `KRO_NAMESPACE_PREFIX` | `kedge-tenants-` | Per-tenant namespace prefix |
+| `KRO_NAMESPACE_PREFIX` | `faros-tenants-` | Per-tenant namespace prefix |
 
 ---
 
@@ -267,14 +267,14 @@ Point `KRO_KUBECONFIG` at the central cluster's kubeconfig:
 
 ```sh
 KRO_KUBECONFIG=/path/to/kro-kubeconfig \
-KEDGE_HUB_URL=https://localhost:9443 \
-KEDGE_HUB_TOKEN=test \
-KEDGE_HUB_INSECURE=true \
+FAROS_HUB_URL=https://localhost:9443 \
+FAROS_HUB_TOKEN=test \
+FAROS_HUB_INSECURE=true \
 go run .
 ```
 
 For the catalog to show real templates, the central kro cluster must
-have RGDs labeled `kedge.faros.sh/expose=true`. See
+have RGDs labeled `faros.sh/expose=true`. See
 [docs/credentials.md](docs/credentials.md) for the labeling /
 annotation contract.
 
@@ -282,8 +282,8 @@ annotation contract.
 
 ```sh
 kubectl --kubeconfig kcp-admin.kubeconfig \
-  --context kedge-admin \
-  ws use root:kedge:providers
+  --context faros-admin \
+  ws use root:faros:providers
 kubectl apply -f manifest.yaml
 kubectl get catalogentry infrastructure -o yaml
 # status.conditions[Ready].status flips True once heartbeats land.
@@ -294,7 +294,7 @@ Open the portal at `https://<hub>/ui/providers/infrastructure/`.
 ## Build the image
 
 ```sh
-docker build -t kedge-infrastructure-provider:dev .
+docker build -t faros-infrastructure-provider:dev .
 ```
 
 ## Manual kro install (without the operator)
@@ -368,24 +368,24 @@ kubectl -n kro-system rollout status deploy/kro
 kubectl -n kro-system logs deploy/kro | grep -i apiexport   # should log the discovered VW URL
 ```
 
-Apply the RGD templates you want to expose, labeled `kedge.faros.sh/expose=true`
+Apply the RGD templates you want to expose, labeled `faros.sh/expose=true`
 (see [docs/credentials.md](docs/credentials.md)).
 
 ## Deploy with Helm (init-container bootstrap, non-operator)
 
 A single provider Deployment that self-bootstraps via an init container — the
 pre-operator path. The provider needs a runtime kubeconfig to reach kcp, mounted
-as the `kedge-provider-kubeconfig` Secret. Onboard the provider in the kedge
+as the `faros-provider-kubeconfig` Secret. Onboard the provider in the faros
 **admin portal**, download the issued kubeconfig, create the Secret, then deploy.
 
 ### 1. Create the Secret from the download
 
-The Secret name must be `kedge-provider-kubeconfig` and the key must be
+The Secret name must be `faros-provider-kubeconfig` and the key must be
 `kubeconfig` (the chart defaults — `providerKubeconfig.secretName`):
 
 ```sh
 kubectl create namespace infrastructure
-kubectl -n infrastructure create secret generic kedge-provider-kubeconfig \
+kubectl -n infrastructure create secret generic faros-provider-kubeconfig \
   --from-file=kubeconfig=provider-infrastructure.kubeconfig
 ```
 
@@ -394,8 +394,8 @@ kubectl -n infrastructure create secret generic kedge-provider-kubeconfig \
 ```sh
 helm install infrastructure deploy/chart \
   -n infrastructure --create-namespace \
-  --set hub.url=https://kedge-hub.kedge.svc.cluster.local:9443 \
-  --set hub.tokenSecretRef.name=kedge-infrastructure-hub-token \
+  --set hub.url=https://faros-hub.faros.svc.cluster.local:9443 \
+  --set hub.tokenSecretRef.name=faros-infrastructure-hub-token \
   --set bootstrap.enabled=true
 ```
 
@@ -404,7 +404,7 @@ With `bootstrap.enabled=true`, an init container runs `infrastructure init`
 APIExportEndpointSlice kro watches) into the provider workspace. The serve
 container then reuses the same kubeconfig. The init/serve volume is **not**
 `optional`, so the pod waits in `ContainerCreating` until the
-`kedge-provider-kubeconfig` Secret exists.
+`faros-provider-kubeconfig` Secret exists.
 
 ### Alternative: `supplied` — fully standalone, no hub
 
@@ -412,7 +412,7 @@ container then reuses the same kubeconfig. The init/serve volume is **not**
 helm install infrastructure deploy/chart -n infrastructure --create-namespace \
   --set bootstrap.enabled=true \
   --set bootstrap.kubeconfigSource=supplied \
-  --set bootstrap.workspacePath=root:kedge:providers:infrastructure \
+  --set bootstrap.workspacePath=root:faros:providers:infrastructure \
   --set-file bootstrap.kcpKubeconfig=./provider-workspace-admin.kubeconfig
 ```
 

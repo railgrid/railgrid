@@ -21,7 +21,7 @@ verification (claims cross-checked 3-vote against primary sources, 2026-07-11).
 Framework, MCP, Claude-headless, and durable-execution claims are 3-0 verified;
 OpenClaw scheduler internals are single-sourced from its repo docs.
 
-## What kedge already has
+## What faros already has
 
 - **Agent loop**: app-studio's assistant is a streaming tool-call loop on
   [CloudWeGo Eino](https://github.com/cloudwego/eino) (`adk.ChatModelAgent`,
@@ -36,7 +36,7 @@ OpenClaw scheduler internals are single-sourced from its repo docs.
   (`/services/mcpserver/{cluster}/.../mcpservers/{name}/mcp`), which federates
   edge clusters, SSH servers, and other providers' MCP servers. app-studio
   already discovers and calls `infrastructure__provision` etc. through it.
-- **Tenant LLM credentials**: workspace Secret (`kedge-projects-llm`), BYO
+- **Tenant LLM credentials**: workspace Secret (`faros-projects-llm`), BYO
   OpenAI-compatible or Gemini endpoint per tenant.
 - **Scheduling**: nothing. The only cron primitive in the repo is the
   infrastructure `cron-job` Template (k8s CronJob via kro,
@@ -67,7 +67,7 @@ cron & wakeups, heartbeats, channels, session tools), not the runtime.
 
 | Option | Maturity (verified 2026-07) | Assessment |
 |---|---|---|
-| cloudwego/eino | ~12.2k★, 210 releases, v0.9.12, Apache-2.0, ByteDance/CloudWeGo | Already kedge's stack. ADK with ReAct `ChatModelAgent`, multi-agent `DeepAgent`, checkpoint interrupt/resume with framework-managed state persistence |
+| cloudwego/eino | ~12.2k★, 210 releases, v0.9.12, Apache-2.0, ByteDance/CloudWeGo | Already faros's stack. ADK with ReAct `ChatModelAgent`, multi-agent `DeepAgent`, checkpoint interrupt/resume with framework-managed state persistence |
 | google/adk-go | Announced 2025-11-07, 1.0 | Vendor-backed, but parity-with-Python claims were **refuted** by verification (tool ecosystem/A2A overstated). Would be a second framework beside Eino for no gain |
 | langchaingo, genkit | usable | No advantage over Eino here |
 | modelcontextprotocol/go-sdk | **v1.0.0 2025-09-30, v1.6.1 stable, semver-stable**, official, Google-maintained | The canonical MCP library; infrastructure's MCP server already uses its API surface |

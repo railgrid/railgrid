@@ -18,7 +18,7 @@ const {
 } = await import(moduleURL)
 
 const digest = 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
-const boundResource = { apiVersion: 'example.kedge.sh/v1', kind: 'Table', resource: 'tables' }
+const boundResource = { apiVersion: 'example.faros.sh/v1', kind: 'Table', resource: 'tables' }
 
 function action(id, overrides = {}) {
   return {

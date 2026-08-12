@@ -95,8 +95,8 @@ func TestCreateProjectPreflightTemplateCreatesBindingAndInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("binding is not self-contained: %v", err)
 	}
-	if gvr.Resource != "applications" || gvr.Group != "infrastructure.kedge.faros.sh" {
-		t.Fatalf("binding GVR = %v, want applications.infrastructure.kedge.faros.sh", gvr)
+	if gvr.Resource != "applications" || gvr.Group != "infrastructure.faros.sh" {
+		t.Fatalf("binding GVR = %v, want applications.infrastructure.faros.sh", gvr)
 	}
 	if want.GetName() != created.Name+"-dev" {
 		t.Fatalf("desired instance name = %q, want %s-dev", want.GetName(), created.Name)
@@ -390,7 +390,7 @@ func newProjectCreationTestDynamicClient(objects ...runtime.Object) *fake.FakeDy
 			codeConnectionsGVR:  "ConnectionList",
 			codeRepositoriesGVR: "RepositoryList",
 			{
-				Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Resource: "applications",
+				Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "applications",
 			}: "ApplicationList",
 		},
 		objects...,

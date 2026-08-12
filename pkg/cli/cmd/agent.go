@@ -30,8 +30,8 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/faros-kedge/pkg/agent"
-	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
+	"github.com/faroshq/faros/pkg/agent"
+	pkgversion "github.com/faroshq/faros/pkg/version"
 )
 
 func newAgentCommand() *cobra.Command {
@@ -102,7 +102,7 @@ func runAgentForeground(ctx context.Context, opts *agent.Options) error {
 				logger.Info("Could not load in-cluster kubeconfig Secret (will try other sources)", "err", err)
 			} else if kubeconfigData != "" {
 				// Write to a temp file so the rest of the startup path can use it.
-				tmpFile, err := os.CreateTemp("", "kedge-agent-kubeconfig-*")
+				tmpFile, err := os.CreateTemp("", "faros-agent-kubeconfig-*")
 				if err != nil {
 					return fmt.Errorf("creating temp kubeconfig file: %w", err)
 				}
@@ -162,23 +162,23 @@ func runAgentForeground(ctx context.Context, opts *agent.Options) error {
 	return a.Run(ctx)
 }
 
-// newAgentRunCommand returns the "kedge agent run" command — a foreground
+// newAgentRunCommand returns the "faros agent run" command — a foreground
 // process that connects this edge to the hub and blocks until interrupted.
 // This is the command used by containers, e2e tests, and dev workflows.
-// For persistent installation (systemd service), use "kedge agent join".
+// For persistent installation (systemd service), use "faros agent join".
 func newAgentRunCommand() *cobra.Command {
 	opts := agent.NewOptions()
 
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Run the agent as a foreground process (for containers/dev; use 'join' for persistent install)",
-		Long: `Run the kedge agent as a blocking foreground process.
+		Long: `Run the faros agent as a blocking foreground process.
 
 The agent connects to the hub, registers this edge, and maintains the reverse
 tunnel until interrupted (SIGINT/SIGTERM). Suitable for containers, e2e tests,
 and interactive development.
 
-For production use on bare-metal or VM hosts, use "kedge agent join" instead,
+For production use on bare-metal or VM hosts, use "faros agent join" instead,
 which installs the agent as a persistent systemd service.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -191,7 +191,7 @@ which installs the agent as a persistent systemd service.`,
 	return cmd
 }
 
-// newAgentJoinCommand returns the "kedge agent join" command — a persistent
+// newAgentJoinCommand returns the "faros agent join" command — a persistent
 // install that registers this edge with the hub and ensures the agent keeps
 // running across reboots.
 //
@@ -206,15 +206,15 @@ func newAgentJoinCommand() *cobra.Command {
 		Long: `Join this edge to the hub as a persistent installation.
 
 For server-type edges (bare-metal / VM):
-  Installs a systemd service that runs "kedge agent run" and survives reboots.
-  Requires root. The service is named kedge-agent-<edge-name>.service.
+  Installs a systemd service that runs "faros agent run" and survives reboots.
+  Requires root. The service is named faros-agent-<edge-name>.service.
 
 For kubernetes-type edges:
-  Applies a Deployment and RBAC into the kedge-agent namespace of the target
+  Applies a Deployment and RBAC into the faros-agent namespace of the target
   cluster so the agent runs as an in-cluster workload.
 
 To run the agent as a foreground process (containers / dev / e2e) use:
-  kedge agent run`,
+  faros agent run`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if opts.EdgeName == "" {
 				return fmt.Errorf("--edge-name is required")
@@ -260,7 +260,7 @@ func agentJoinServer(opts *agent.Options) error {
 		}
 	}
 
-	unitName := "kedge-agent-" + opts.EdgeName
+	unitName := "faros-agent-" + opts.EdgeName
 	data := systemdUnitData{
 		BinaryPath:      binaryPath,
 		HubKubeconfig:   absKubeconfig,
@@ -307,7 +307,7 @@ func agentJoinServer(opts *agent.Options) error {
 	fmt.Printf("Agent installed and running as systemd service.\n")
 	fmt.Printf("  Check status:  systemctl status %s\n", unitName)
 	fmt.Printf("  View logs:     journalctl -u %s -f\n", unitName)
-	fmt.Printf("  Uninstall:     kedge agent uninstall --edge-name %s\n", opts.EdgeName)
+	fmt.Printf("  Uninstall:     faros agent uninstall --edge-name %s\n", opts.EdgeName)
 	return nil
 }
 
@@ -333,22 +333,22 @@ func agentJoinKubernetes(opts *agent.Options) error {
 		kubectlArgs = append(kubectlArgs, "--context", opts.Context)
 	}
 
-	// Ensure kedge-agent namespace exists.
+	// Ensure faros-agent namespace exists.
 	nsManifest := `apiVersion: v1
 kind: Namespace
 metadata:
-  name: kedge-agent
+  name: faros-agent
 `
 	if err := kubectlApplyManifest(kubectlArgs, nsManifest); err != nil {
-		return fmt.Errorf("creating kedge-agent namespace: %w", err)
+		return fmt.Errorf("creating faros-agent namespace: %w", err)
 	}
 
 	// ServiceAccount.
 	saManifest := fmt.Sprintf(`apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: kedge-agent-%s
-  namespace: kedge-agent
+  name: faros-agent-%s
+  namespace: faros-agent
 `, opts.EdgeName)
 	if err := kubectlApplyManifest(kubectlArgs, saManifest); err != nil {
 		return fmt.Errorf("creating ServiceAccount: %w", err)
@@ -358,7 +358,7 @@ metadata:
 	clusterRoleManifest := `apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kedge-edge-agent
+  name: faros-edge-agent
 rules:
 - apiGroups: [""]
   resources: ["*"]
@@ -393,15 +393,15 @@ rules:
 	crbManifest := fmt.Sprintf(`apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: kedge-edge-agent-%s
+  name: faros-edge-agent-%s
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: kedge-edge-agent
+  name: faros-edge-agent
 subjects:
 - kind: ServiceAccount
-  name: kedge-agent-%s
-  namespace: kedge-agent
+  name: faros-agent-%s
+  namespace: faros-agent
 `, opts.EdgeName, opts.EdgeName)
 	if err := kubectlApplyManifest(kubectlArgs, crbManifest); err != nil {
 		return fmt.Errorf("creating ClusterRoleBinding: %w", err)
@@ -411,12 +411,12 @@ subjects:
 	roleManifest := fmt.Sprintf(`apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: kedge-agent-%s
-  namespace: kedge-agent
+  name: faros-agent-%s
+  namespace: faros-agent
 rules:
 - apiGroups: [""]
   resources: ["secrets"]
-  resourceNames: ["kedge-agent-%s-kubeconfig"]
+  resourceNames: ["faros-agent-%s-kubeconfig"]
   verbs: ["get", "create", "update", "patch"]
 `, opts.EdgeName, opts.EdgeName)
 	if err := kubectlApplyManifest(kubectlArgs, roleManifest); err != nil {
@@ -427,30 +427,30 @@ rules:
 	rbManifest := fmt.Sprintf(`apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: kedge-agent-%s
-  namespace: kedge-agent
+  name: faros-agent-%s
+  namespace: faros-agent
 subjects:
 - kind: ServiceAccount
-  name: kedge-agent-%s
-  namespace: kedge-agent
+  name: faros-agent-%s
+  namespace: faros-agent
 roleRef:
   kind: Role
-  name: kedge-agent-%s
+  name: faros-agent-%s
   apiGroup: rbac.authorization.k8s.io
 `, opts.EdgeName, opts.EdgeName, opts.EdgeName)
 	if err := kubectlApplyManifest(kubectlArgs, rbManifest); err != nil {
 		return fmt.Errorf("creating RoleBinding: %w", err)
 	}
 
-	agentImage := os.Getenv("KEDGE_AGENT_IMAGE")
+	agentImage := os.Getenv("FAROS_AGENT_IMAGE")
 	if agentImage == "" {
-		agentImage = "ghcr.io/faroshq/kedge-agent"
+		agentImage = "ghcr.io/faroshq/faros-agent"
 	}
-	agentImageTag := os.Getenv("KEDGE_AGENT_IMAGE_TAG")
+	agentImageTag := os.Getenv("FAROS_AGENT_IMAGE_TAG")
 	if agentImageTag == "" {
 		agentImageTag = pkgversion.Get()
 	}
-	agentImagePullPolicy := os.Getenv("KEDGE_AGENT_IMAGE_PULL_POLICY")
+	agentImagePullPolicy := os.Getenv("FAROS_AGENT_IMAGE_PULL_POLICY")
 	if agentImagePullPolicy == "" {
 		agentImagePullPolicy = "IfNotPresent"
 	}
@@ -466,7 +466,7 @@ roleRef:
 		if hubURL == "" {
 			return fmt.Errorf("--hub-url is required when using --token for kubernetes-type join")
 		}
-		// kedge-agent is a standalone binary; flags are passed directly (no subcommands).
+		// faros-agent is a standalone binary; flags are passed directly (no subcommands).
 		deployArgs := fmt.Sprintf("--hub-url=%s --edge-name=%s --type=kubernetes --token=%s",
 			hubURL, opts.EdgeName, opts.Token)
 		if opts.InsecureSkipTLSVerify {
@@ -478,24 +478,24 @@ roleRef:
 		deployManifest = fmt.Sprintf(`apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: kedge-agent-%s
-  namespace: kedge-agent
+  name: faros-agent-%s
+  namespace: faros-agent
   labels:
-    app: kedge-agent
-    kedge.faros.sh/edge-name: %s
+    app: faros-agent
+    faros.sh/edge-name: %s
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: kedge-agent
-      kedge.faros.sh/edge-name: %s
+      app: faros-agent
+      faros.sh/edge-name: %s
   template:
     metadata:
       labels:
-        app: kedge-agent
-        kedge.faros.sh/edge-name: %s
+        app: faros-agent
+        faros.sh/edge-name: %s
     spec:
-      serviceAccountName: kedge-agent-%s
+      serviceAccountName: faros-agent-%s
       containers:
       - name: agent
         image: %s
@@ -518,12 +518,12 @@ spec:
 		if err != nil {
 			return fmt.Errorf("reading hub kubeconfig: %w", err)
 		}
-		secretName := "kedge-agent-" + opts.EdgeName + "-hub-kubeconfig"
+		secretName := "faros-agent-" + opts.EdgeName + "-hub-kubeconfig"
 		secretManifest := fmt.Sprintf(`apiVersion: v1
 kind: Secret
 metadata:
   name: %s
-  namespace: kedge-agent
+  namespace: faros-agent
 type: Opaque
 stringData:
   hub.kubeconfig: |
@@ -532,8 +532,8 @@ stringData:
 			return fmt.Errorf("creating hub kubeconfig secret: %w", err)
 		}
 
-		// kedge-agent is a standalone binary; flags are passed directly (no subcommands).
-		deployArgs := fmt.Sprintf("--hub-kubeconfig=/etc/kedge/hub.kubeconfig --edge-name=%s --type=kubernetes", opts.EdgeName)
+		// faros-agent is a standalone binary; flags are passed directly (no subcommands).
+		deployArgs := fmt.Sprintf("--hub-kubeconfig=/etc/faros/hub.kubeconfig --edge-name=%s --type=kubernetes", opts.EdgeName)
 		if opts.InsecureSkipTLSVerify {
 			deployArgs += " --hub-insecure-skip-tls-verify"
 		}
@@ -543,24 +543,24 @@ stringData:
 		deployManifest = fmt.Sprintf(`apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: kedge-agent-%s
-  namespace: kedge-agent
+  name: faros-agent-%s
+  namespace: faros-agent
   labels:
-    app: kedge-agent
-    kedge.faros.sh/edge-name: %s
+    app: faros-agent
+    faros.sh/edge-name: %s
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: kedge-agent
-      kedge.faros.sh/edge-name: %s
+      app: faros-agent
+      faros.sh/edge-name: %s
   template:
     metadata:
       labels:
-        app: kedge-agent
-        kedge.faros.sh/edge-name: %s
+        app: faros-agent
+        faros.sh/edge-name: %s
     spec:
-      serviceAccountName: kedge-agent-%s
+      serviceAccountName: faros-agent-%s
       containers:
       - name: agent
         image: %s
@@ -571,7 +571,7 @@ spec:
         args: [%s]
         volumeMounts:
         - name: hub-kubeconfig
-          mountPath: /etc/kedge
+          mountPath: /etc/faros
           readOnly: true
       volumes:
       - name: hub-kubeconfig
@@ -588,16 +588,16 @@ spec:
 		return fmt.Errorf("creating Deployment: %w", err)
 	}
 
-	fmt.Printf("✓ kedge-agent deployed to Kubernetes\n")
-	fmt.Printf("  Namespace: kedge-agent\n")
-	fmt.Printf("  Check status: kubectl get pods -n kedge-agent\n")
-	fmt.Printf("  Logs:         kubectl logs -n kedge-agent deploy/kedge-agent-%s -f\n", opts.EdgeName)
+	fmt.Printf("✓ faros-agent deployed to Kubernetes\n")
+	fmt.Printf("  Namespace: faros-agent\n")
+	fmt.Printf("  Check status: kubectl get pods -n faros-agent\n")
+	fmt.Printf("  Logs:         kubectl logs -n faros-agent deploy/faros-agent-%s -f\n", opts.EdgeName)
 	return nil
 }
 
 // kubectlApplyManifest writes manifest to a temp file and runs kubectl apply.
 func kubectlApplyManifest(extraArgs []string, manifest string) error {
-	f, err := os.CreateTemp("", "kedge-join-*.yaml")
+	f, err := os.CreateTemp("", "faros-join-*.yaml")
 	if err != nil {
 		return err
 	}
@@ -664,16 +664,16 @@ func newAgentTokenCommand() *cobra.Command {
 	return cmd
 }
 
-// systemdUnitTemplate renders the systemd service unit for the kedge agent.
+// systemdUnitTemplate renders the systemd service unit for the faros agent.
 //
 // Token lifecycle note: when a join token is embedded (--token / --hub-url), the
 // agent will exchange it for a hub kubeconfig on first connect and save it to
-// $HOME/.kedge/agent-<edge-name>.kubeconfig.  On every subsequent start the agent
-// binary detects the saved kubeconfig (cmd/kedge-agent/main.go checks
+// $HOME/.faros/agent-<edge-name>.kubeconfig.  On every subsequent start the agent
+// binary detects the saved kubeconfig (cmd/faros-agent/main.go checks
 // LoadAgentKubeconfig before using the token) and clears --token automatically,
 // so the unit file does not need to be rewritten after first registration.
 const systemdUnitTemplate = `[Unit]
-Description=Kedge Agent - {{.EdgeName}}
+Description=Faros Agent - {{.EdgeName}}
 After=network-online.target
 Wants=network-online.target
 
@@ -730,18 +730,18 @@ func newAgentInstallCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Install kedge agent as a systemd service",
-		Long: `Install the kedge agent as a systemd service on the current host.
+		Short: "Install faros agent as a systemd service",
+		Long: `Install the faros agent as a systemd service on the current host.
 
 This creates a systemd unit file, reloads the daemon, enables and starts the
-service. The systemd unit runs "kedge agent join" so you get both the agent
-and the full kedge CLI on the server.
+service. The systemd unit runs "faros agent join" so you get both the agent
+and the full faros CLI on the server.
 
 Requires root privileges.
 
 Example:
-  sudo kedge agent install \
-    --hub-kubeconfig /etc/kedge/hub.kubeconfig \
+  sudo faros agent install \
+    --hub-kubeconfig /etc/faros/hub.kubeconfig \
     --edge-name my-server \
     --type server`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -769,7 +769,7 @@ Example:
 			}
 
 			if unitName == "" {
-				unitName = "kedge-agent-" + edgeName
+				unitName = "faros-agent-" + edgeName
 			}
 
 			data := systemdUnitData{
@@ -830,7 +830,7 @@ Example:
 	cmd.Flags().StringVar(&sshPrivateKey, "ssh-private-key", "", "Path to SSH private key file")
 	cmd.Flags().StringVar(&cluster, "cluster", "", "kcp logical cluster path")
 	cmd.Flags().BoolVar(&insecureSkipTLS, "hub-insecure-skip-tls-verify", false, "Skip TLS verification")
-	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: kedge-agent-<edge-name>)")
+	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: faros-agent-<edge-name>)")
 
 	return cmd
 }
@@ -841,13 +841,13 @@ func newAgentUninstallCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Uninstall kedge agent systemd service",
+		Short: "Uninstall faros agent systemd service",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if unitName == "" {
 				if edgeName == "" {
 					return fmt.Errorf("--edge-name or --unit-name is required")
 				}
-				unitName = "kedge-agent-" + edgeName
+				unitName = "faros-agent-" + edgeName
 			}
 
 			serviceName := unitName + ".service"
@@ -881,7 +881,7 @@ func newAgentUninstallCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&edgeName, "edge-name", "", "Edge name (used to derive unit name)")
-	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: kedge-agent-<edge-name>)")
+	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: faros-agent-<edge-name>)")
 
 	return cmd
 }

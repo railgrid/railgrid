@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // wlAgentKey is a context key for the Agent in WorkloadDeployment.
@@ -35,7 +35,7 @@ type wlAgentKey struct{}
 
 // WorkloadDeployment verifies the full workload delivery pipeline:
 //
-//  1. Create an edge with label "env=e2e-wl" and start a kedge-agent.
+//  1. Create an edge with label "env=e2e-wl" and start a faros-agent.
 //  2. Apply a VirtualWorkload targeting edges with that label (simple pause spec).
 //  3. Wait for a Placement to be created by the hub scheduler (max 2 min).
 //  4. Wait for a Deployment to appear on the edge cluster via the k8s proxy (max 2 min).
@@ -56,7 +56,7 @@ func WorkloadDeployment() features.Feature {
 	return features.New("workload deployment").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -79,7 +79,7 @@ func WorkloadDeployment() features.Feature {
 		}).
 		Assess("edge becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
@@ -88,9 +88,9 @@ func WorkloadDeployment() features.Feature {
 		}).
 		Assess("VirtualWorkload creates a Placement on the edge", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
-			manifest := fmt.Sprintf(`apiVersion: kedge.faros.sh/v1alpha1
+			manifest := fmt.Sprintf(`apiVersion: faros.sh/v1alpha1
 kind: VirtualWorkload
 metadata:
   name: %s
@@ -126,7 +126,7 @@ spec:
 		}).
 		Assess("Deployment appears on edge cluster via k8s proxy", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			edgeURL, err := client.GetEdgeURL(ctx, edgeName)
 			if err != nil {
@@ -167,7 +167,7 @@ spec:
 				a.Stop()
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.DeleteVirtualWorkload(ctx, vwName, ns)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx

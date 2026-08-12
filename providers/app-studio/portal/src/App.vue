@@ -166,7 +166,7 @@ import {
 import type {
   DevelopmentTemplate,
   ImportRepository,
-  KedgeContext,
+  FarosContext,
   Project,
   ProjectAssistantSnapshot,
   ProjectAssistantApprovalMode,
@@ -194,7 +194,7 @@ import type {
 } from './types'
 
 const props = defineProps<{
-  ctx: KedgeContext | null
+  ctx: FarosContext | null
   navigate: (path: string) => void
 }>()
 
@@ -269,7 +269,7 @@ interface ProjectDevelopmentPreviewAuthorization {
   reason: string
 }
 
-const SPLIT_WIDTH_KEY = 'kedge:projects:split-width'
+const SPLIT_WIDTH_KEY = 'faros:projects:split-width'
 const OPENAI_COMPATIBLE_PROVIDER = 'openai-compatible'
 const GOOGLE_AI_STUDIO_PROVIDER = 'google-ai-studio'
 const OPENAI_DEFAULT_MODEL = 'gpt-5.4'
@@ -280,7 +280,7 @@ const GOOGLE_CLOUD_BASE_URL = 'https://aiplatform.googleapis.com'
 const CREATE_PROJECT_ROUTE = '~new'
 const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
 const CODE_CONNECTIONS_URL = '/ui/providers/code/connections'
-const PUBLISHING_DOMAIN_SUFFIX = '.kedge.app'
+const PUBLISHING_DOMAIN_SUFFIX = '.faros.app'
 const DEVELOPMENT_PREVIEW_AUTH_RETRY_MS = 2000
 const PROJECT_TOOL_CATEGORIES = new Set(['developer', 'workloads'])
 const assistantMarkdown = new MarkdownIt({
@@ -830,7 +830,7 @@ const llmApiKeyPlaceholder = computed(() =>
 )
 const llmApiKeyHint = computed(() =>
   isGoogleServiceAccountMode.value
-    ? 'Paste the Google service-account JSON key. Kedge exchanges it for a short-lived OAuth token.'
+    ? 'Paste the Google service-account JSON key. Faros exchanges it for a short-lived OAuth token.'
     : isGoogleGeminiProvider.value
       ? 'Paste a Gemini API key string, not an OAuth/JWT token.'
       : '',
@@ -4159,10 +4159,10 @@ async function mountActiveProviderTool() {
     await ensureProviderScript(tool)
     if (serial !== toolLoadSerial || activeProviderTool.value?.id !== tool.id) return
 
-    const el = document.createElement(tag) as HTMLElement & { kedgeContext?: unknown }
+    const el = document.createElement(tag) as HTMLElement & { farosContext?: unknown }
     el.className = 'block h-full min-h-0 w-full overflow-auto'
     el.style.height = '100%'
-    el.addEventListener('kedge-navigate', onNestedProviderNavigate)
+    el.addEventListener('faros-navigate', onNestedProviderNavigate)
     host.replaceChildren(el)
     mountedToolEl.value = el
     pushToolContext()
@@ -4178,7 +4178,7 @@ async function ensureProviderScript(tool: ProviderTool) {
   const tag = tagForProvider(tool.providerName)
   if (customElements.get(tag)) return
 
-  const scriptID = `kedge-project-tool-${tool.providerName}`
+  const scriptID = `faros-project-tool-${tool.providerName}`
   if (!document.getElementById(scriptID)) {
     await new Promise<void>((resolve, reject) => {
       const script = document.createElement('script')
@@ -4198,10 +4198,10 @@ async function ensureProviderScript(tool: ProviderTool) {
 }
 
 function pushToolContext() {
-  const el = mountedToolEl.value as (HTMLElement & { kedgeContext?: unknown }) | null
+  const el = mountedToolEl.value as (HTMLElement & { farosContext?: unknown }) | null
   const tool = activeProviderTool.value
   if (!el || !tool) return
-  el.kedgeContext = {
+  el.farosContext = {
     subPath: tool.path,
     token: props.ctx?.token,
     user: props.ctx?.user,
@@ -4222,7 +4222,7 @@ function onNestedProviderNavigate(e: Event) {
 
 function detachMountedTool() {
   if (mountedToolEl.value) {
-    mountedToolEl.value.removeEventListener('kedge-navigate', onNestedProviderNavigate)
+    mountedToolEl.value.removeEventListener('faros-navigate', onNestedProviderNavigate)
   }
   toolHostRef.value?.replaceChildren()
   mountedToolEl.value = null
@@ -4256,7 +4256,7 @@ function readSplitWidth(): number {
 }
 
 function tagForProvider(name: string): string {
-  return `kedge-provider-${name}`
+  return `faros-provider-${name}`
 }
 
 function projectTimestamp(project: Project): string {

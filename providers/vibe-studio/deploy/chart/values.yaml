@@ -1,11 +1,11 @@
-## kedge-vibe-studio-provider values
+## faros-vibe-studio-provider values
 ## Phase 0: stateless HTTP server + optional Postgres event store. No kcp or
 ## runtime kubeconfig at serve time; the init container bootstraps the
 ## provider workspace (schemas/APIExport/slice/bind grant).
 
 # Container image. Build with: docker build -t IMAGE providers/vibe-studio/
 image:
-  repository: ghcr.io/faroshq/kedge-vibe-studio-provider
+  repository: ghcr.io/faroshq/faros-vibe-studio-provider
   tag: ""  # empty → defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
@@ -27,7 +27,7 @@ database:
 
 # Hub the provider POSTs heartbeats to. Empty url → heartbeats disabled.
 hub:
-  url: https://kedge-hub.kedge.svc.cluster.local:9443
+  url: https://faros-hub.faros.svc.cluster.local:9443
   tokenSecretRef:
     name: ""
     key: token
@@ -36,7 +36,7 @@ hub:
 # Secret holding the workspace-admin kubeconfig minted by the platform admin.
 # The init container uses it to apply schemas/APIExport/slice/bind grant.
 providerKubeconfig:
-  secretName: kedge-provider-kubeconfig
+  secretName: faros-provider-kubeconfig
 
 # Render the CatalogEntry into a ConfigMap the init container self-registers
 # into the provider workspace. Set false to manage it via GitOps separately.
@@ -45,12 +45,12 @@ catalogEntry:
 
 apiExport:
   # REQUIRED for instance lifecycling: identityHash of the infrastructure
-  # provider's APIExport (infrastructure.providers.kedge.faros.sh), read from
-  # its status.identityHash in root:kedge:providers:infrastructure. kcp
+  # provider's APIExport (infrastructure.providers.faros.sh), read from
+  # its status.identityHash in root:faros:providers:infrastructure. kcp
   # rejects first-party permission claims without it — with an empty value
   # the Project reconciler cannot create instances in tenant workspaces.
   infraIdentityHash: ""
-  # Same, for the code provider's APIExport (code.providers.kedge.faros.sh):
+  # Same, for the code provider's APIExport (code.providers.faros.sh):
   # backs the repositories claim the git-seeding reconciler needs.
   codeIdentityHash: ""
 

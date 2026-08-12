@@ -32,11 +32,11 @@ import (
 
 // ServeNamespace is the runtime-cluster namespace the operator deploys the
 // provider serve workload into.
-const ServeNamespace = "kedge-infrastructure-provider"
+const ServeNamespace = "faros-infrastructure-provider"
 
 const (
-	providerKubeconfigMount = "/var/run/secrets/kedge/provider/kubeconfig"
-	runtimeKubeconfigMount  = "/var/run/secrets/kedge/runtime/kubeconfig"
+	providerKubeconfigMount = "/var/run/secrets/faros/provider/kubeconfig"
+	runtimeKubeconfigMount  = "/var/run/secrets/faros/runtime/kubeconfig"
 )
 
 // EnsureProviderServe replicates the provider + runtime kubeconfigs (and hub
@@ -77,14 +77,14 @@ func EnsureProviderServe(
 
 	env := []corev1.EnvVar{
 		{Name: "PORT", Value: fmt.Sprintf("%d", port)},
-		{Name: "KEDGE_PROVIDER_NAME", Value: "infrastructure"},
+		{Name: "FAROS_PROVIDER_NAME", Value: "infrastructure"},
 		{Name: "INFRASTRUCTURE_KUBECONFIG", Value: providerKubeconfigMount},
 	}
 	if cr.Spec.Hub.URL != "" {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_HUB_URL", Value: cr.Spec.Hub.URL})
+		env = append(env, corev1.EnvVar{Name: "FAROS_HUB_URL", Value: cr.Spec.Hub.URL})
 	}
 	if cr.Spec.Hub.Insecure {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_HUB_INSECURE", Value: "true"})
+		env = append(env, corev1.EnvVar{Name: "FAROS_HUB_INSECURE", Value: "true"})
 	}
 	// Template-generic publishing access layer. Keep Application fields as a
 	// compatibility fallback while operators move to spec.publishing.
@@ -93,63 +93,63 @@ func EnsureProviderServe(
 		publishingBaseDomain = cr.Spec.Application.BaseDomain
 	}
 	if publishingBaseDomain != "" {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_APP_BASE_DOMAIN", Value: publishingBaseDomain})
+		env = append(env, corev1.EnvVar{Name: "FAROS_APP_BASE_DOMAIN", Value: publishingBaseDomain})
 	}
 	if cr.Spec.Publishing.AccessProxyImage != "" {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_ACCESS_PROXY_IMAGE", Value: cr.Spec.Publishing.AccessProxyImage})
+		env = append(env, corev1.EnvVar{Name: "FAROS_ACCESS_PROXY_IMAGE", Value: cr.Spec.Publishing.AccessProxyImage})
 	}
 	publishingHubURL := cr.Spec.Publishing.HubURL
 	if publishingHubURL == "" {
 		publishingHubURL = cr.Spec.Hub.URL
 	}
 	if publishingHubURL != "" {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_ACCESS_HUB_URL", Value: publishingHubURL})
+		env = append(env, corev1.EnvVar{Name: "FAROS_ACCESS_HUB_URL", Value: publishingHubURL})
 	}
 	if cr.Spec.Publishing.HubPublicURL != "" {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_ACCESS_HUB_PUBLIC_URL", Value: cr.Spec.Publishing.HubPublicURL})
+		env = append(env, corev1.EnvVar{Name: "FAROS_ACCESS_HUB_PUBLIC_URL", Value: cr.Spec.Publishing.HubPublicURL})
 	}
 	if cr.Spec.Publishing.HubInsecure {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_ACCESS_HUB_INSECURE", Value: "true"})
+		env = append(env, corev1.EnvVar{Name: "FAROS_ACCESS_HUB_INSECURE", Value: "true"})
 	}
 	if cr.Spec.Publishing.PublicScheme != "" {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_ACCESS_PUBLIC_SCHEME", Value: cr.Spec.Publishing.PublicScheme})
+		env = append(env, corev1.EnvVar{Name: "FAROS_ACCESS_PUBLIC_SCHEME", Value: cr.Spec.Publishing.PublicScheme})
 	}
 	if cr.Spec.Publishing.PublicPort > 0 {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_APP_PUBLIC_PORT", Value: fmt.Sprintf("%d", cr.Spec.Publishing.PublicPort)})
+		env = append(env, corev1.EnvVar{Name: "FAROS_APP_PUBLIC_PORT", Value: fmt.Sprintf("%d", cr.Spec.Publishing.PublicPort)})
 	}
 	publishingGatewayName := cr.Spec.Publishing.Gateway.Name
 	if publishingGatewayName == "" {
 		publishingGatewayName = cr.Spec.Application.Gateway.Name
 	}
 	if publishingGatewayName != "" {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_GATEWAY_NAME", Value: publishingGatewayName})
+		env = append(env, corev1.EnvVar{Name: "FAROS_GATEWAY_NAME", Value: publishingGatewayName})
 	}
 	publishingGatewayNamespace := cr.Spec.Publishing.Gateway.Namespace
 	if publishingGatewayNamespace == "" {
 		publishingGatewayNamespace = cr.Spec.Application.Gateway.Namespace
 	}
 	if publishingGatewayNamespace != "" {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_GATEWAY_NAMESPACE", Value: publishingGatewayNamespace})
+		env = append(env, corev1.EnvVar{Name: "FAROS_GATEWAY_NAMESPACE", Value: publishingGatewayNamespace})
 	}
-	// Dev-mode image set (${kedge.devAgentImage} / ${kedge.devImage.*}); empty
+	// Dev-mode image set (${faros.devAgentImage} / ${faros.devImage.*}); empty
 	// values fall back to the in-binary defaults (node toolchain + agent).
 	if cr.Spec.Development.AgentImage != "" {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_DEV_AGENT_IMAGE", Value: cr.Spec.Development.AgentImage})
+		env = append(env, corev1.EnvVar{Name: "FAROS_DEV_AGENT_IMAGE", Value: cr.Spec.Development.AgentImage})
 	}
-	if verificationJWKS := strings.TrimSpace(os.Getenv("KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS")); verificationJWKS != "" {
+	if verificationJWKS := strings.TrimSpace(os.Getenv("FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS")); verificationJWKS != "" {
 		env = append(env, corev1.EnvVar{
-			Name:  "KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS",
+			Name:  "FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS",
 			Value: verificationJWKS,
 		})
 	}
 	for _, toolchain := range slices.Sorted(maps.Keys(cr.Spec.Development.Images)) {
 		if image := cr.Spec.Development.Images[toolchain]; image != "" {
-			envName := "KEDGE_DEV_IMAGE_" + strings.ToUpper(strings.ReplaceAll(toolchain, "-", "_"))
+			envName := "FAROS_DEV_IMAGE_" + strings.ToUpper(strings.ReplaceAll(toolchain, "-", "_"))
 			env = append(env, corev1.EnvVar{Name: envName, Value: image})
 		}
 	}
 	volMounts := []corev1.VolumeMount{
-		{Name: "provider-kubeconfig", MountPath: "/var/run/secrets/kedge/provider", ReadOnly: true},
+		{Name: "provider-kubeconfig", MountPath: "/var/run/secrets/faros/provider", ReadOnly: true},
 	}
 	volumes := []corev1.Volume{
 		{Name: "provider-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: providerSecret}}},
@@ -165,7 +165,7 @@ func EnsureProviderServe(
 			return fmt.Errorf("replicate runtime kubeconfig: %w", err)
 		}
 		env = append(env, corev1.EnvVar{Name: "KRO_KUBECONFIG", Value: runtimeKubeconfigMount})
-		volMounts = append(volMounts, corev1.VolumeMount{Name: "runtime-kubeconfig", MountPath: "/var/run/secrets/kedge/runtime", ReadOnly: true})
+		volMounts = append(volMounts, corev1.VolumeMount{Name: "runtime-kubeconfig", MountPath: "/var/run/secrets/faros/runtime", ReadOnly: true})
 		volumes = append(volumes, corev1.Volume{Name: "runtime-kubeconfig", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: runtimeSecret}}})
 	} else {
 		// Give the serve pod an SA bound to the access its kro backend needs on
@@ -184,7 +184,7 @@ func EnsureProviderServe(
 		if err := upsertOpaqueSecret(ctx, cs, ServeNamespace, hubSecret, key, hubToken); err != nil {
 			return fmt.Errorf("replicate hub token: %w", err)
 		}
-		env = append(env, corev1.EnvVar{Name: "KEDGE_HUB_TOKEN", ValueFrom: &corev1.EnvVarSource{
+		env = append(env, corev1.EnvVar{Name: "FAROS_HUB_TOKEN", ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: hubSecret},
 				Key:                  key,
@@ -193,7 +193,7 @@ func EnsureProviderServe(
 	}
 
 	image := cr.Spec.Provider.Image.Repository + ":" + cr.Spec.Provider.Image.Tag
-	labels := map[string]string{"app.kubernetes.io/name": "kedge-infrastructure-provider", "app.kubernetes.io/instance": name}
+	labels := map[string]string{"app.kubernetes.io/name": "faros-infrastructure-provider", "app.kubernetes.io/instance": name}
 
 	want := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ServeNamespace, Labels: labels},
@@ -268,7 +268,7 @@ func ensureServeRBAC(ctx context.Context, cs kubernetes.Interface, saName string
 		return fmt.Errorf("get serve ServiceAccount: %w", err)
 	}
 
-	crbName := "kedge-infrastructure-serve-" + saName
+	crbName := "faros-infrastructure-serve-" + saName
 	crb := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: crbName},
 		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "cluster-admin"},

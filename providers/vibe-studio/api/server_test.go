@@ -192,7 +192,7 @@ func TestTenantIsolation(t *testing.T) {
 		req, _ := http.NewRequest(method, ts.URL+path, bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		if tenant != "" {
-			req.Header.Set("X-Kedge-Tenant", tenant)
+			req.Header.Set("X-Faros-Tenant", tenant)
 		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {

@@ -36,8 +36,8 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/util/validation"
 
-	"github.com/faroshq/faros-kedge/pkg/hub/providers"
-	"github.com/faroshq/faros-kedge/pkg/hub/serviceaccounts"
+	"github.com/faroshq/faros/pkg/hub/providers"
+	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
 )
 
 const (
@@ -239,8 +239,8 @@ func completeReview(review Review) bool {
 
 func parseTenantPath(value string) (string, string, error) {
 	parts := strings.Split(strings.TrimSpace(value), ":")
-	if len(parts) != 5 || parts[0] != "root" || parts[1] != "kedge" || parts[2] != "tenants" || parts[3] == "" || parts[4] == "" {
-		return "", "", errors.New("tenantPath must be root:kedge:tenants:<orgUUID>:<workspaceUUID>")
+	if len(parts) != 5 || parts[0] != "root" || parts[1] != "faros" || parts[2] != "tenants" || parts[3] == "" || parts[4] == "" {
+		return "", "", errors.New("tenantPath must be root:faros:tenants:<orgUUID>:<workspaceUUID>")
 	}
 	return parts[3], parts[4], nil
 }

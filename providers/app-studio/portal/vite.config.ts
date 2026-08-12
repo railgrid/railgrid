@@ -33,7 +33,7 @@ export default defineConfig({
     lib: {
       entry: 'src/main.ts',
       formats: ['iife'],
-      name: 'KedgeProviderAppStudio',
+      name: 'FarosProviderAppStudio',
       fileName: () => 'main.js',
     },
     rollupOptions: {

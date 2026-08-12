@@ -33,26 +33,26 @@ const (
 	// DexIssuerURL is the OIDC issuer URL used by both the hub pod (cluster
 	// DNS) and the test runner (/etc/hosts alias to localhost). HTTPS so
 	// embedded kcp's authentication validator (which mandates scheme=https)
-	// accepts it; the cert is signed by the kedge-selfsigned ClusterIssuer
+	// accepts it; the cert is signed by the faros-selfsigned ClusterIssuer
 	// and clients use InsecureSkipVerify.
-	DexIssuerURL = "https://dex.kedge-system.svc.cluster.local:5554/dex"
+	DexIssuerURL = "https://dex.faros-system.svc.cluster.local:5554/dex"
 
 	// DexExternalHost is added to the test runner's /etc/hosts as 127.0.0.1
 	// so it can reach the in-cluster Dex via the kind port mapping.
-	DexExternalHost = "dex.kedge-system.svc.cluster.local"
+	DexExternalHost = "dex.faros-system.svc.cluster.local"
 
 	// DexClientID / DexClientSecret are the OAuth2 credentials for the hub.
-	DexClientID     = "kedge"
-	DexClientSecret = "kedge-test-secret"
+	DexClientID     = "faros"
+	DexClientSecret = "faros-test-secret"
 
 	// DexTestUserEmail / DexTestUserPassword are the static-password credentials
 	// seeded in Dex for e2e OIDC tests (primary user / User A).
-	DexTestUserEmail    = "admin@test.kedge.local"
+	DexTestUserEmail    = "admin@test.faros.local"
 	DexTestUserPassword = "Password1!"
 
 	// DexTestUser2Email / DexTestUser2Password are the credentials for the second
 	// Dex static-password user, used in cross-user isolation tests (issue #79).
-	DexTestUser2Email    = "user2@test.kedge.local"
+	DexTestUser2Email    = "user2@test.faros.local"
 	DexTestUser2Password = "Password1!"
 )
 

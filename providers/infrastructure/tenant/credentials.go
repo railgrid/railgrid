@@ -27,14 +27,14 @@ var secretGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 // a non-default setup or the platform admin wants to push the secret
 // into a privileged namespace tenants can't write to.
 func secretName() string {
-	if v := os.Getenv("KEDGE_TENANT_CREDENTIALS_SECRET"); v != "" {
+	if v := os.Getenv("FAROS_TENANT_CREDENTIALS_SECRET"); v != "" {
 		return v
 	}
 	return "cloud-credentials"
 }
 
 func secretNamespace() string {
-	if v := os.Getenv("KEDGE_TENANT_CREDENTIALS_NAMESPACE"); v != "" {
+	if v := os.Getenv("FAROS_TENANT_CREDENTIALS_NAMESPACE"); v != "" {
 		return v
 	}
 	return "default"

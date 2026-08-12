@@ -63,11 +63,11 @@ type PendingCall struct {
 // images) are degraded to a text note — they are transient vision input, not
 // conversation state worth persisting.
 type CheckpointMessage struct {
-	Role       string                `json:"role"`
-	Content    string                `json:"content,omitempty"`
-	ToolCalls  []CheckpointToolCall  `json:"toolCalls,omitempty"`
-	ToolCallID string                `json:"toolCallID,omitempty"`
-	ToolName   string                `json:"toolName,omitempty"`
+	Role       string               `json:"role"`
+	Content    string               `json:"content,omitempty"`
+	ToolCalls  []CheckpointToolCall `json:"toolCalls,omitempty"`
+	ToolCallID string               `json:"toolCallID,omitempty"`
+	ToolName   string               `json:"toolName,omitempty"`
 }
 
 // CheckpointToolCall mirrors an assistant message's tool call.

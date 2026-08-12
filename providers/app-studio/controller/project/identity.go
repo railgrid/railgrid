@@ -49,8 +49,8 @@ const (
 	tokenWait = 15 * time.Second
 )
 
-func identityName(project string) string    { return "kedge-appstudio-" + project }
-func tokenSecretName(project string) string { return "kedge-appstudio-" + project + "-token" }
+func identityName(project string) string    { return "faros-appstudio-" + project }
+func tokenSecretName(project string) string { return "faros-appstudio-" + project + "-token" }
 
 // projectOwnerRef points identity objects at the Project so kcp
 // garbage-collects them with it.
@@ -82,18 +82,18 @@ func (r *Reconciler) ensureIdentity(ctx context.Context, c client.Client, p *aiv
 	}
 
 	// Instances and repositories are cluster-scoped (per-template CRDs and
-	// code.kedge.faros.sh are), so this must be a ClusterRole.
+	// code.faros.sh are), so this must be a ClusterRole.
 	role := &rbacv1.ClusterRole{}
 	role.Name = name
 	role.OwnerReferences = refs
 	role.Rules = []rbacv1.PolicyRule{
 		{
-			APIGroups: []string{"infrastructure.kedge.faros.sh"},
+			APIGroups: []string{"infrastructure.faros.sh"},
 			Resources: []string{"*"},
 			Verbs:     []string{"get", "list", "watch"},
 		},
 		{
-			APIGroups: []string{"code.kedge.faros.sh"},
+			APIGroups: []string{"code.faros.sh"},
 			Resources: []string{"*"},
 			Verbs:     []string{"get", "list", "watch", "create", "update", "patch"},
 		},

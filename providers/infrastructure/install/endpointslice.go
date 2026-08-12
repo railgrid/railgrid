@@ -91,7 +91,7 @@ var apiExportEndpointSliceGVR = schema.GroupVersionResource{
 // Idempotent.
 // PlatformAPIExportEndpointSlice ensures the slice the kcp-apiexport kro
 // provider watches. workspacePath is the logical-cluster path the APIExport
-// lives in (root:kedge:providers:<name>) — REQUIRED so kcp can resolve the
+// lives in (root:faros:providers:<name>) — REQUIRED so kcp can resolve the
 // export's cluster and publish endpoint URLs in status. Without it the slice
 // stays endpoint-less and kro never discovers a virtual-workspace URL to
 // watch, so tenant instances are never reconciled.

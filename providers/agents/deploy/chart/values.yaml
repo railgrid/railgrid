@@ -4,7 +4,7 @@ fullnameOverride: ""
 replicaCount: 1
 
 image:
-  repository: ghcr.io/faroshq/kedge-agents-provider
+  repository: ghcr.io/faroshq/faros-agents-provider
   tag: ""
   pullPolicy: IfNotPresent
 
@@ -30,7 +30,7 @@ catalogEntry:
 # via /bonkers (admin onboarding). Consumed by both the init container and the
 # serve container. Key must be "kubeconfig".
 providerKubeconfig:
-  secretName: kedge-provider-kubeconfig
+  secretName: faros-provider-kubeconfig
 
 # Durable store. Postgres is the agents provider's only hard dependency beyond
 # the hub; inMemoryStore is an explicit non-durable fallback for dev only.
@@ -46,7 +46,7 @@ store:
     key: keys
 
 hub:
-  url: "http://kedge-hub.kedge.svc.cluster.local:8080"
+  url: "http://faros-hub.faros.svc.cluster.local:8080"
   insecure: false
   tokenSecretRef:
     name: ""

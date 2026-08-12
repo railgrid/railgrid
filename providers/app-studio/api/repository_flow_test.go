@@ -448,11 +448,11 @@ func TestGenerateProjectAssistantStreamDiscoversDatabricksToolsForDataTableQuest
 		t.Fatalf("prompt duplicates local tool descriptions: %q", joined)
 	}
 	for _, want := range []string{
-		"existing imported kedge Table resources only",
+		"existing imported faros Table resources only",
 		"tableRef",
 		"provider-databricks",
 		"Do not call provider backend URLs",
-		"server-side provider-neutral Kedge Actions SDK",
+		"server-side provider-neutral Faros Actions SDK",
 		"do not embed Databricks credentials",
 	} {
 		if !strings.Contains(joined, want) {

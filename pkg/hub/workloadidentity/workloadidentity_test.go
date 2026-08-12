@@ -27,8 +27,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/faroshq/faros-kedge/pkg/hub/providers"
-	"github.com/faroshq/faros-kedge/pkg/hub/serviceaccounts"
+	"github.com/faroshq/faros/pkg/hub/providers"
+	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
 )
 
 type fakeIssuer struct {
@@ -50,7 +50,7 @@ func (fakeScopeResolver) Resolve(_ context.Context, _, _ string, req ExchangeReq
 func (f *fakeIssuer) EnsureWorkloadIdentity(_ context.Context, org, ws string, scope serviceaccounts.WorkloadIdentityScope) (*serviceaccounts.WorkloadIdentityToken, error) {
 	f.called = true
 	f.org, f.ws, f.scope = org, ws, scope
-	return &serviceaccounts.WorkloadIdentityToken{Token: "kedge-token", ExpiresAt: time.Now().Add(5 * time.Minute)}, nil
+	return &serviceaccounts.WorkloadIdentityToken{Token: "faros-token", ExpiresAt: time.Now().Add(5 * time.Minute)}, nil
 }
 
 func TestHandlerExchangeVerifiesExactTupleBeforeIssuing(t *testing.T) {
@@ -64,7 +64,7 @@ func TestHandlerExchangeVerifiesExactTupleBeforeIssuing(t *testing.T) {
 		}),
 		Issuer: issuer, ScopeResolver: fakeScopeResolver{},
 	})
-	body := `{"tenantPath":"root:kedge:tenants:org:workspace","project":"project","projectUID":"uid-1","environment":"development","instance":"project-dev"}`
+	body := `{"tenantPath":"root:faros:tenants:org:workspace","project":"project","projectUID":"uid-1","environment":"development","instance":"project-dev"}`
 	req := httptest.NewRequest(http.MethodPost, PathExchange, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer bootstrap-token")
 	response := httptest.NewRecorder()
@@ -79,7 +79,7 @@ func TestHandlerExchangeVerifiesExactTupleBeforeIssuing(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if got.Token != "kedge-token" || got.Type != "Bearer" {
+	if got.Token != "faros-token" || got.Type != "Bearer" {
 		t.Fatalf("response = %#v", got)
 	}
 	if gotBearer != "Bearer bootstrap-token" || gotRequest.ProjectUID != "uid-1" || !issuer.called {
@@ -104,9 +104,9 @@ func TestHandlerExchangeFailsClosedForMissingOrInvalidAttestation(t *testing.T) 
 		want int
 	}{
 		{name: "missing bearer", body: `{}`, want: http.StatusUnauthorized},
-		{name: "unknown field", body: `{"tenantPath":"root:kedge:tenants:o:w","project":"p","projectUID":"u","environment":"development","instance":"i","audience":"forged"}`, want: http.StatusBadRequest},
-		{name: "invalid tenant", body: `{"tenantPath":"root:kedge:tenants:o","project":"p","projectUID":"u","environment":"development","instance":"i"}`, want: http.StatusBadRequest},
-		{name: "provider rejection", body: `{"tenantPath":"root:kedge:tenants:o:w","project":"p","projectUID":"u","environment":"development","instance":"i"}`, want: http.StatusForbidden},
+		{name: "unknown field", body: `{"tenantPath":"root:faros:tenants:o:w","project":"p","projectUID":"u","environment":"development","instance":"i","audience":"forged"}`, want: http.StatusBadRequest},
+		{name: "invalid tenant", body: `{"tenantPath":"root:faros:tenants:o","project":"p","projectUID":"u","environment":"development","instance":"i"}`, want: http.StatusBadRequest},
+		{name: "provider rejection", body: `{"tenantPath":"root:faros:tenants:o:w","project":"p","projectUID":"u","environment":"development","instance":"i"}`, want: http.StatusForbidden},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -144,7 +144,7 @@ func TestHTTPAttestorForwardsBearerAndExactBody(t *testing.T) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"authenticated":true,"subject":"s","namespace":"n","serviceAccount":"sa"}`)), Header: make(http.Header)}, nil
 	})}
 	a := NewHTTPAttestor(HTTPAttestorOptions{Registry: fakeProviderLookup{provider: providers.Provider{BackendURL: base, EndpointsValid: true}}, Client: client})
-	req := ExchangeRequest{TenantPath: "root:kedge:tenants:o:w", Project: "p", ProjectUID: "u", Environment: "development", Instance: "i"}
+	req := ExchangeRequest{TenantPath: "root:faros:tenants:o:w", Project: "p", ProjectUID: "u", Environment: "development", Instance: "i"}
 	review, err := a.Verify(context.Background(), "Bearer bootstrap", req)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)

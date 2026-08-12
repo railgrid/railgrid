@@ -4,10 +4,10 @@
 
 ### API (EDGE-CRD)
 
-- [ ] **EDGE-01**: `Edge` CRD defined in `apis/kedge/v1alpha1/types_edge.go` with `spec.type` (kubernetes|server), `spec.kubernetes`, `spec.server.sshPort`, `spec.server.sshKeySecretRef`, and full status fields
+- [ ] **EDGE-01**: `Edge` CRD defined in `apis/faros/v1alpha1/types_edge.go` with `spec.type` (kubernetes|server), `spec.kubernetes`, `spec.server.sshPort`, `spec.server.sshKeySecretRef`, and full status fields
 - [ ] **EDGE-02**: Deep copy generated (`zz_generated.deepcopy.go` updated)
 - [ ] **EDGE-03**: CRD YAML manifest generated and embedded in hub bootstrap (`pkg/hub/bootstrap/crds/`)
-- [ ] **EDGE-04**: `Site` and `Server` types deleted from `apis/kedge/v1alpha1/`
+- [ ] **EDGE-04**: `Site` and `Server` types deleted from `apis/faros/v1alpha1/`
 - [ ] **EDGE-05**: `groupversion_info.go` / scheme registration updated to include `Edge`/`EdgeList`, remove `Site`/`Server`
 
 ### Hub Client (EDGE-CLI)
@@ -37,7 +37,7 @@
 
 ### Agent (EDGE-AGENT)
 
-- [ ] **AGENT-01**: `--type=kubernetes|server` flag added to `kedge agent join` (replaces `--mode=site|server`)
+- [ ] **AGENT-01**: `--type=kubernetes|server` flag added to `faros agent join` (replaces `--mode=site|server`)
 - [ ] **AGENT-02**: `AgentType` replaces `AgentMode` in `pkg/agent/agent.go`
 - [ ] **AGENT-03**: Agent registers tunnel with `?edge=<name>` query param (not `?site=` / `?server=`)
 - [ ] **AGENT-04**: `pkg/agent/status/edge_reporter.go` — unified reporter handles both type=kubernetes (k8s status + workload sync) and type=server (SSH tunnel state only)
@@ -47,7 +47,7 @@
 
 ### CLI (EDGE-CLI2)
 
-- [ ] **CLI2-01**: `kedge ssh <name>` builds URL `/proxy/apis/kedge.faros.sh/v1alpha1/edges/{name}/ssh` directly (no `resolveResourceKind` probe)
+- [ ] **CLI2-01**: `faros ssh <name>` builds URL `/proxy/apis/faros.sh/v1alpha1/edges/{name}/ssh` directly (no `resolveResourceKind` probe)
 - [ ] **CLI2-02**: `resolveResourceKind` function deleted from `pkg/cli/cmd/ssh.go`
 - [ ] **CLI2-03**: `pkg/cli/cmd/site.go` deleted or repurposed as `edge.go`
 

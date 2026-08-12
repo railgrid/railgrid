@@ -75,9 +75,9 @@ func TestProjectAssistantThreadContinueInterruptedTurnCreatesLinkedTurn(t *testi
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-review/turns/run-interrupted/continue", strings.NewReader(`{"clientUserMessageID":"continue-1"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Kedge-User", "test-user")
-	request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
-	request.Header.Set("X-Kedge-Cluster", "cluster-a")
+	request.Header.Set("X-Faros-User", "test-user")
+	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted {

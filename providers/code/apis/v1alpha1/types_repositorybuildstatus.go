@@ -33,7 +33,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=kedge,shortName=gbuildstatus
+// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=gbuildstatus
 // +kubebuilder:printcolumn:name="Repository",type=string,JSONPath=`.spec.repositoryRef`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Conclusion",type=string,JSONPath=`.status.run.conclusion`
@@ -74,7 +74,7 @@ type RepositoryBuildStatusSpec struct {
 	RepositoryRef string `json:"repositoryRef"`
 
 	// WorkflowFileName is the workflow file to inspect or dispatch
-	// (e.g. "kedge-app-studio-build.yml").
+	// (e.g. "faros-app-studio-build.yml").
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255

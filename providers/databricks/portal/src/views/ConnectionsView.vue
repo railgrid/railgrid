@@ -103,7 +103,7 @@ onUnmounted(() => window.clearInterval(timer))
     <header class="page-head">
       <div>
         <h2 class="page-title">Connections</h2>
-        <p class="page-meta">Databricks workspaces available to tables in this kedge workspace.</p>
+        <p class="page-meta">Databricks workspaces available to tables in this faros workspace.</p>
       </div>
       <div class="actions">
         <button class="primary" type="button" @click="showForm ? (showForm = false) : startCreate()">
@@ -118,7 +118,7 @@ onUnmounted(() => window.clearInterval(timer))
         <div class="field">
           <span class="field-label">Name</span>
           <input v-model="name" autocomplete="off" placeholder="orders-prod" />
-          <span class="field-hint">How this workspace is referred to from kedge — lowercase, stable, yours to choose.</span>
+          <span class="field-hint">How this workspace is referred to from faros — lowercase, stable, yours to choose.</span>
         </div>
         <div class="field">
           <span class="field-label">Workspace host</span>

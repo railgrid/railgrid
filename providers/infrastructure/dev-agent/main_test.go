@@ -367,8 +367,8 @@ func TestAuthoritativeSyncReloadHookCannotMutateSourceManifest(t *testing.T) {
 		command    string
 		wantReload bool
 	}{
-		{name: "success", command: "printf mutated > package-lock.json; printf corrupted > .kedge-workspace-manifest.json"},
-		{name: "failure", command: "printf mutated > package-lock.json; printf corrupted > .kedge-workspace-manifest.json; exit 7", wantReload: true},
+		{name: "success", command: "printf mutated > package-lock.json; printf corrupted > .faros-workspace-manifest.json"},
+		{name: "failure", command: "printf mutated > package-lock.json; printf corrupted > .faros-workspace-manifest.json; exit 7", wantReload: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			workdir := t.TempDir()
@@ -629,7 +629,7 @@ func TestStatusReportsCurrentAttemptAndDeclaredPortReadiness(t *testing.T) {
 
 func TestEnvRejectsReservedAndSecretNames(t *testing.T) {
 	srv := newTestAgent(t, &agentConfig{})
-	for _, name := range []string{"KEDGE_DEV_PORT", "API_TOKEN", "MY_SECRET"} {
+	for _, name := range []string{"FAROS_DEV_PORT", "API_TOKEN", "MY_SECRET"} {
 		if _, err := srv.supervisor.setEnv(map[string]string{name: "v"}); err == nil {
 			t.Errorf("setEnv(%s) accepted, want rejection", name)
 		}
@@ -640,14 +640,14 @@ func TestEnvRejectsReservedAndSecretNames(t *testing.T) {
 }
 
 func TestMergeChildEnvPortConventions(t *testing.T) {
-	out := mergeChildEnv([]string{"PATH=/bin", "KEDGE_DEV_CONTROL_TOKEN=x", "KEDGE_DEV_STATE_DIR=/state"}, map[string]string{"FOO": "bar"}, "8080")
+	out := mergeChildEnv([]string{"PATH=/bin", "FAROS_DEV_CONTROL_TOKEN=x", "FAROS_DEV_STATE_DIR=/state"}, map[string]string{"FOO": "bar"}, "8080")
 	joined := strings.Join(out, "\n")
 	for _, want := range []string{"PORT=8080", "FOO=bar", "PATH=/bin"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("child env lacks %s: %v", want, out)
 		}
 	}
-	if strings.Contains(joined, "KEDGE_DEV_") {
+	if strings.Contains(joined, "FAROS_DEV_") {
 		t.Errorf("coordinator/runtime configuration leaked into child env: %v", out)
 	}
 	// An explicit PORT wins over the convention.
@@ -720,8 +720,8 @@ func TestContainerReloadExitsRuntimeSupervisorAndKeepsCoordinatorAlive(t *testin
 }
 
 func TestConfigSeparatesCoordinatorSecretsFromProcessEnvironment(t *testing.T) {
-	t.Setenv("KEDGE_DEV_CONTROL_TOKEN", "top-secret")
-	t.Setenv("KEDGE_DEV_STATE_DIR", t.TempDir())
+	t.Setenv("FAROS_DEV_CONTROL_TOKEN", "top-secret")
+	t.Setenv("FAROS_DEV_STATE_DIR", t.TempDir())
 	cfg, err := configFromEnv()
 	if err != nil {
 		t.Fatal(err)
@@ -729,11 +729,11 @@ func TestConfigSeparatesCoordinatorSecretsFromProcessEnvironment(t *testing.T) {
 	if cfg.ControlToken != "top-secret" || cfg.StateDir == "" {
 		t.Fatalf("coordinator config = %+v", cfg)
 	}
-	if _, present := os.LookupEnv("KEDGE_DEV_CONTROL_TOKEN"); present {
+	if _, present := os.LookupEnv("FAROS_DEV_CONTROL_TOKEN"); present {
 		t.Fatal("control token remains in process environment")
 	}
 	env := strings.Join(mergeChildEnv(os.Environ(), nil, ""), "\n")
-	if strings.Contains(env, "KEDGE_DEV_STATE_DIR") || strings.Contains(env, "top-secret") {
+	if strings.Contains(env, "FAROS_DEV_STATE_DIR") || strings.Contains(env, "top-secret") {
 		t.Fatalf("runtime child environment contains coordinator state or secret: %s", env)
 	}
 }

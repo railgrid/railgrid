@@ -3,21 +3,21 @@
 > [!IMPORTANT]
 > **Read-only mirror — do not push or open PRs here.**
 > The standalone [`faroshq/provider-kuery`](https://github.com/faroshq/provider-kuery)
-> repository is **automatically synced** from the kedge monorepo
-> [`faroshq/kedge`](https://github.com/faroshq/kedge) (path `providers/kuery/`)
+> repository is **automatically synced** from the faros monorepo
+> [`faroshq/faros`](https://github.com/faroshq/faros) (path `providers/kuery/`)
 > via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
 > the mirror, so any direct change here is overwritten. File issues and PRs
-> against [`faroshq/kedge`](https://github.com/faroshq/kedge) instead.
+> against [`faroshq/faros`](https://github.com/faroshq/faros) instead.
 
 Fleet-wide object search, relationship traversal, and impact analysis across
-the edge clusters connected to a kedge workspace — built on
+the edge clusters connected to a faros workspace — built on
 [kuery](https://github.com/faroshq/kuery), a multi-cluster query engine that
 syncs objects into a local SQL store and answers relationship queries
 (owners, descendants, spec references, selector matches, cross-cluster
 links) that plain list/watch can't.
 
 The full design — architecture, tenant isolation, the Enable-time
-edges-proxy grant, value ranking, and phasing — lives in the kedge repo at
+edges-proxy grant, value ranking, and phasing — lives in the faros repo at
 [`docs/kuery-provider-architecture.md`](../../docs/kuery-provider-architecture.md).
 
 ## Status: Phase 2 — fleet query engine
@@ -38,7 +38,7 @@ What works today:
   labelled with their tenant.
 - **Tenant-scoped query API** (`queryapi/`): `POST /api/query` takes a
   kuery `QuerySpec`; the cluster filter is force-rewritten to the caller's
-  `X-Kedge-Tenant` before it reaches the engine — the only path to the
+  `X-Faros-Tenant` before it reaches the engine — the only path to the
   store.
 - **MCP tools** (`mcpserver/`): `kuery_query` (fleet-wide spec
   passthrough) and `kuery_impact` (declared blast radius of one object) at
@@ -72,11 +72,11 @@ deploy/chart/    Helm chart (host cluster only; PVC for the SQLite store)
 
 The provider runs on the **host cluster** and registers itself into the hub.
 The chart is published as an OCI artifact at
-`oci://ghcr.io/faroshq/charts/kedge-kuery-provider`.
+`oci://ghcr.io/faroshq/charts/faros-kuery-provider`.
 
 ### Prerequisites
 
-- A reachable kedge hub (`hub.url`).
+- A reachable faros hub (`hub.url`).
 - A **provider kubeconfig** — the workspace-admin kubeconfig minted via the
   admin onboarding flow (`/bonkers`). Stored as a Secret whose key **must be
   `kubeconfig`**.
@@ -90,17 +90,17 @@ The chart is published as an OCI artifact at
 ### 1. Namespace
 
 ```bash
-kubectl create namespace kedge-prod-provider-kuery
+kubectl create namespace faros-prod-provider-kuery
 ```
 
 ### 2. Provider kubeconfig Secret
 
 The key **must** be `kubeconfig` (this matches the chart default
-`providerKubeconfig.secretName=kedge-provider-kubeconfig`):
+`providerKubeconfig.secretName=faros-provider-kubeconfig`):
 
 ```bash
-kubectl -n kedge-prod-provider-kuery create secret generic kedge-provider-kubeconfig \
-  --from-file=kubeconfig="kedge/provider-kuery.kubeconfig"
+kubectl -n faros-prod-provider-kuery create secret generic faros-provider-kubeconfig \
+  --from-file=kubeconfig="faros/provider-kuery.kubeconfig"
 ```
 
 ### 3. (Postgres only) build the DSN
@@ -108,7 +108,7 @@ kubectl -n kedge-prod-provider-kuery create secret generic kedge-provider-kubeco
 Read the connection URI from the database Secret and require TLS:
 
 ```bash
-DSN="$(kubectl -n kedge-prod-provider-kuery get secret kuery-pg-app \
+DSN="$(kubectl -n faros-prod-provider-kuery get secret kuery-pg-app \
   -o jsonpath='{.data.uri}' | base64 -d)?sslmode=require"
 echo "$DSN"
 ```
@@ -116,10 +116,10 @@ echo "$DSN"
 ### 4. Install / upgrade
 
 ```bash
-helm upgrade --install kuery oci://ghcr.io/faroshq/charts/kedge-kuery-provider:0.0.8 \
-  -n kedge-prod-provider-kuery \
+helm upgrade --install kuery oci://ghcr.io/faroshq/charts/faros-kuery-provider:0.0.8 \
+  -n faros-prod-provider-kuery \
   --set image.tag=v0.0.8 \
-  --set hub.url=https://kedge-kedge-hub.kedge-prod.svc.cluster.local:9443 \
+  --set hub.url=https://faros-faros-hub.faros-prod.svc.cluster.local:9443 \
   --set hub.insecure=true \
   --set hub.tokenSecretRef.name="" \
   --set apiExport.edgesIdentityHash="<identity-hash>" \
@@ -150,8 +150,8 @@ PVC at `/data`).
 ### 5. Verify
 
 ```bash
-kubectl -n kedge-prod-provider-kuery rollout status deploy/kuery-kedge-kuery-provider
-kubectl -n kedge-prod-provider-kuery logs deploy/kuery-kedge-kuery-provider -c provider --tail=50
+kubectl -n faros-prod-provider-kuery rollout status deploy/kuery-faros-kuery-provider
+kubectl -n faros-prod-provider-kuery logs deploy/kuery-faros-kuery-provider -c provider --tail=50
 ```
 
 A healthy provider logs `updated endpointslice object` and serves
@@ -160,7 +160,7 @@ provider, then open the Kuery portal tab.
 
 ## Local development
 
-From the kedge repo root:
+From the faros repo root:
 
 ```bash
 make build-kuery-provider        # portal build + go build

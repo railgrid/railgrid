@@ -45,7 +45,7 @@ const serviceResource = "services"
 
 // svcTargetHeader mirrors the agent-side constant (pkg/agent/tunnel). The agent
 // enforces that the target host is loopback.
-const svcTargetHeader = "X-Kedge-Svc-Target"
+const svcTargetHeader = "X-Faros-Svc-Target"
 
 // serviceView is the projection of a Service CR the proxy needs. As
 // with sshEdgeView, every field must be exported and non-object fields tagged
@@ -106,7 +106,7 @@ func (v *serviceView) targetHost() string {
 	return "127.0.0.1"
 }
 
-// target is the full X-Kedge-Svc-Target value.
+// target is the full X-Faros-Svc-Target value.
 func (v *serviceView) target() string {
 	return fmt.Sprintf("%s://%s:%d", v.scheme(), v.targetHost(), v.Spec.Port)
 }
@@ -118,7 +118,7 @@ func (v *serviceView) target() string {
 //
 // Expected (after /edgeproxy is stripped):
 //
-//	/clusters/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/services/{name}/{subresource}[/rest...]
+//	/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/services/{name}/{subresource}[/rest...]
 func (p *Server) parseServicePath(path string) (cluster, name, subresource, rest string, ok bool) {
 	// [0]clusters [1]cluster [2]apis [3]group [4]version [5]resource [6]name [7]subresource [8...]rest
 	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 9)

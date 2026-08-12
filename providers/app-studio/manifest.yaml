@@ -1,12 +1,12 @@
-# App Studio provider — register with the kedge hub.
+# App Studio provider — register with the faros hub.
 #
 # App Studio gives tenants a persistent AI project workspace: project metadata,
 # durable "memory" (goals/requirements/constraints), and a chat surface backed
 # by the tenant's own LLM credentials, with optional MCP tool use against the
 # workspace.
 #
-# Apply this against the kcp workspace where the kedge.faros.sh APIExport is
-# bound (typically root:kedge:providers when running embedded kcp for
+# Apply this against the kcp workspace where the faros.sh APIExport is
+# bound (typically root:faros:providers when running embedded kcp for
 # development):
 #
 #   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
@@ -21,16 +21,16 @@
 # provider's init command creates the APIExport, schemas, endpoint slice, and
 # bind grant from deploy/chart/files/schemas.
 ---
-apiVersion: providers.kedge.faros.sh/v1alpha1
+apiVersion: providers.faros.sh/v1alpha1
 kind: CatalogEntry
 metadata:
   name: app-studio
   annotations:
-    providers.kedge.faros.sh/builtin: "false"
+    providers.faros.sh/builtin: "false"
 spec:
   displayName: "App Studio"
   description: "Persistent AI project workspace for planning, memory, and chat."
-  vendor: "kedge"
+  vendor: "faros"
   version: "0.1.0"
   category: "AI"
   iconURL: "/ui/providers/app-studio/icon.svg"
@@ -44,13 +44,13 @@ spec:
     indexPath: "/"
   backend:
     # The hub backend proxy forwards /services/providers/app-studio/* here,
-    # injecting the verified X-Kedge-Tenant/X-Kedge-User headers and the
+    # injecting the verified X-Faros-Tenant/X-Faros-User headers and the
     # caller's bearer token. The provider serves /api/projects/* + /healthz.
     url: "http://localhost:8085"
     healthPath: "/healthz"
 
   apiExport:
-    name: "ai.kedge.faros.sh"
+    name: "ai.faros.sh"
     # Keep in sync with init_cmd.go (APIExport claims) and
     # deploy/chart/templates/catalogentry.yaml — the hub writes these into the
     # tenant APIBinding at Enable time; a claim missing here is silently
@@ -59,32 +59,32 @@ spec:
       # Infrastructure instances the Project reconciler lifecycles from a
       # project's live bindings.
       - resource: applications
-        group: infrastructure.kedge.faros.sh
+        group: infrastructure.faros.sh
         verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
         tenantScoped: true
       - resource: simplewebapps
-        group: infrastructure.kedge.faros.sh
+        group: infrastructure.faros.sh
         verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
         tenantScoped: true
       - resource: workers
-        group: infrastructure.kedge.faros.sh
+        group: infrastructure.faros.sh
         verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
         tenantScoped: true
       # Web search: the Studio reconciler provisions one shared searxng
       # instance per workspace so the assistant can look things up.
       - resource: searxngs
-        group: infrastructure.kedge.faros.sh
+        group: infrastructure.faros.sh
         verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
         tenantScoped: true
       # Preview browser: the Studio reconciler provisions one shared headless
       # browser (Playwright MCP) per workspace for development-preview inspection.
       - resource: browsers
-        group: infrastructure.kedge.faros.sh
+        group: infrastructure.faros.sh
         verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
         tenantScoped: true
       # Repository CRs the Project reconciler creates (git backing).
       - resource: repositories
-        group: code.kedge.faros.sh
+        group: code.faros.sh
         verbs: ["get", "list", "watch", "create", "update", "patch"]
         tenantScoped: true
       # Per-project ServiceAccount identity for reconciler commits, plus

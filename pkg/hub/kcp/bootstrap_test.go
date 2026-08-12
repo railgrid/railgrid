@@ -24,7 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/fake"
 
-	"github.com/faroshq/faros-kedge/pkg/hub/providers"
+	"github.com/faroshq/faros/pkg/hub/providers"
 )
 
 func TestEnsureBuiltinCatalogEntries_DoesNotTouchChartOwnedEntry(t *testing.T) {
@@ -46,7 +46,7 @@ func TestEnsureBuiltinCatalogEntries_DoesNotTouchChartOwnedEntry(t *testing.T) {
 		"apiVersion": "apis.kcp.io/v1alpha2",
 		"kind":       "APIBinding",
 		"metadata": map[string]interface{}{
-			"name": "providers.kedge.faros.sh",
+			"name": "providers.faros.sh",
 		},
 		"status": map[string]interface{}{
 			"phase": "Bound",
@@ -56,7 +56,7 @@ func TestEnsureBuiltinCatalogEntries_DoesNotTouchChartOwnedEntry(t *testing.T) {
 	}
 
 	original := &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "providers.kedge.faros.sh/v1alpha1",
+		"apiVersion": "providers.faros.sh/v1alpha1",
 		"kind":       "CatalogEntry",
 		"metadata": map[string]interface{}{
 			"name": providerName,

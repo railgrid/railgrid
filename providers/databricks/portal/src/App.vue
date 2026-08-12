@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { setBasePath, setTenant, setTenantSelection, setToken } from './api'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
-import type { KedgeContext } from './types'
+import type { FarosContext } from './types'
 import ConnectionDetailView from './views/ConnectionDetailView.vue'
 import ConnectionsView from './views/ConnectionsView.vue'
 import TableDetailView from './views/TableDetailView.vue'
@@ -10,7 +10,7 @@ import TablesView from './views/TablesView.vue'
 import WarehouseDetailView from './views/WarehouseDetailView.vue'
 import WarehousesView from './views/WarehousesView.vue'
 
-const props = defineProps<{ ctx: KedgeContext | null }>()
+const props = defineProps<{ ctx: FarosContext | null }>()
 
 interface Route {
   page: 'connections' | 'warehouses' | 'tables'
@@ -48,7 +48,7 @@ watch(
 )
 
 function navigate(path: string) {
-  rootRef.value?.dispatchEvent(new CustomEvent('kedge-navigate', { detail: { path }, bubbles: true }))
+  rootRef.value?.dispatchEvent(new CustomEvent('faros-navigate', { detail: { path }, bubbles: true }))
 }
 </script>
 

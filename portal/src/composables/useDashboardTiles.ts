@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // useDashboardTiles probes which providers actually ship a
-// <kedge-dashboard-tile-{name}> custom element, so the dashboard can
+// <faros-dashboard-tile-{name}> custom element, so the dashboard can
 // place ONLY real tiles in the grid.
 //
 // Without this, DashboardPage placed a grid cell for every ready+UI
@@ -38,12 +38,12 @@ import type { ProviderDTO } from '@/stores/providers'
 // the script finishing; one that doesn't never will. Same-origin local
 // bundles resolve in well under this — it's a ceiling, not a typical wait.
 const TILE_PROBE_TIMEOUT_MS = 1500
-const STORAGE_KEY = 'kedge-dashboard-tile-probe'
+const STORAGE_KEY = 'faros-dashboard-tile-probe'
 
 // key: `${name}@${version}` → whether the bundle registered a tile element.
 type ProbeCache = Record<string, boolean>
 
-const tagFor = (name: string) => `kedge-dashboard-tile-${name}`
+const tagFor = (name: string) => `faros-dashboard-tile-${name}`
 const tileKey = (p: ProviderDTO) => `${p.name}@${p.version ?? '0'}`
 
 function loadCache(): ProbeCache {
@@ -80,7 +80,7 @@ const memCache: ProbeCache = loadCache()
 // no-op once this resolves.
 const inflight = new Map<string, Promise<void>>()
 function loadProviderBundle(name: string, version: string | undefined): Promise<void> {
-  const scriptID = `kedge-provider-script-${name}`
+  const scriptID = `faros-provider-script-${name}`
   if (customElements.get(tagFor(name)) || document.getElementById(scriptID)) {
     return Promise.resolve()
   }

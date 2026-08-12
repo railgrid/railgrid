@@ -38,7 +38,7 @@ import (
 
 	"github.com/faroshq/provider-sdk/revdial"
 
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros/pkg/apiurl"
 )
 
 // StartProxyTunnel establishes a reverse tunnel to the hub server.
@@ -52,11 +52,11 @@ import (
 // agent dials on the single `edges` provider (kubernetesclusters vs
 // linuxservers) via apiurl.ProviderAgentProxyURL.
 //
-// cluster is the kcp logical cluster path (e.g., "root:kedge:user-default").
+// cluster is the kcp logical cluster path (e.g., "root:faros:user-default").
 // If empty, it's extracted from the token (for SA tokens) or defaults to "default".
 //
 // onAgentToken, if non-nil, is called on the first successful connection when
-// the hub returns an X-Kedge-Agent-Token header (token-exchange flow). The
+// the hub returns an X-Faros-Agent-Token header (token-exchange flow). The
 // callback receives the durable token string. Callers can use this to persist
 // the token locally so the agent can reconnect without the bootstrap join token.
 //
@@ -165,7 +165,7 @@ func startTunneler(ctx context.Context, hubURL string, getToken func() string, e
 	// can persist it for reconnects without the bootstrap join token.
 	// The header value is base64-encoded kubeconfig YAML.
 	if resp != nil && onAgentToken != nil {
-		if kubeconfigB64 := resp.Header.Get("X-Kedge-Agent-Kubeconfig"); kubeconfigB64 != "" {
+		if kubeconfigB64 := resp.Header.Get("X-Faros-Agent-Kubeconfig"); kubeconfigB64 != "" {
 			onAgentToken(kubeconfigB64)
 		}
 	}
@@ -201,7 +201,7 @@ func startTunneler(ctx context.Context, hubURL string, getToken func() string, e
 
 // initiateConnection dials the hub via WebSocket and returns the underlying
 // net.Conn together with the HTTP upgrade response. The response headers may
-// contain hub-provided metadata such as X-Kedge-Agent-Token (token-exchange).
+// contain hub-provided metadata such as X-Faros-Agent-Token (token-exchange).
 func initiateConnection(ctx context.Context, wsURL string, token string, tlsConfig *tls.Config, extraHeaders http.Header) (net.Conn, *http.Response, error) {
 	u, err := url.Parse(wsURL)
 	if err != nil {
@@ -242,14 +242,14 @@ func initiateConnection(ctx context.Context, wsURL string, token string, tlsConf
 // SplitBaseAndCluster splits a hub URL into the base URL (scheme+host only) and
 // the kcp cluster name embedded in the path.
 //
-// For "https://kedge.localhost:9443/clusters/abc123" it returns:
+// For "https://faros.localhost:9443/clusters/abc123" it returns:
 //
-//	base    = "https://kedge.localhost:9443"
+//	base    = "https://faros.localhost:9443"
 //	cluster = "abc123"
 //
-// For "https://kedge.localhost:9443" (no /clusters/ path segment) it returns:
+// For "https://faros.localhost:9443" (no /clusters/ path segment) it returns:
 //
-//	base    = "https://kedge.localhost:9443"
+//	base    = "https://faros.localhost:9443"
 //	cluster = "default"
 //
 // The base URL is always used when dialling the hub so that /services/agent-proxy/

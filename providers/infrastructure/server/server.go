@@ -9,7 +9,7 @@
 // Package server wires the provider's HTTP routes: /healthz, the MCP
 // handler, and the embedded portal. Template + instance traffic is NOT
 // served here — the portal and tenants drive those as CRDs directly
-// against kcp (templates.infrastructure.kedge.faros.sh and the
+// against kcp (templates.infrastructure.faros.sh and the
 // per-template instance kinds), projected to tenant workspaces via the
 // CachedResource + APIExport. See providers/infrastructure/portal/src/api.ts.
 package server

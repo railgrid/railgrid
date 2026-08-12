@@ -38,8 +38,8 @@ type heartbeatRequest struct {
 }
 
 // NewHeartbeatHandler returns an http.Handler serving
-// POST /api/providers/{name}/heartbeat. Auth is enforced by the kedge auth
-// middleware mounted upstream of this handler — any bearer token kedge
+// POST /api/providers/{name}/heartbeat. Auth is enforced by the faros auth
+// middleware mounted upstream of this handler — any bearer token faros
 // accepts will be accepted as a valid heartbeat sender in Phase 1C. Phase
 // 1D will tighten this to "must be the provider's own SA token" once SA
 // minting is in place.

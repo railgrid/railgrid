@@ -1,4 +1,4 @@
-## kedge-quickstart-provider values
+## faros-quickstart-provider values
 ## The quickstart provider is a pure broker: it serves a micro-frontend and a
 ## small backend HTTP API, heartbeats the hub, and owns a sample APIExport. It
 ## does NOT read a kcp or kro kubeconfig at runtime, so this chart is
@@ -6,7 +6,7 @@
 
 # Container image. Build with: docker build -t IMAGE providers/quickstart/
 image:
-  repository: ghcr.io/faroshq/kedge-quickstart-provider
+  repository: ghcr.io/faroshq/faros-quickstart-provider
   tag: ""  # empty → defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
@@ -22,7 +22,7 @@ service:
 # pod (in-cluster Service DNS works). Empty url → heartbeats disabled, which
 # is fine for a UI-only demo install.
 hub:
-  url: https://kedge-hub.kedge.svc.cluster.local:9443
+  url: https://faros-hub.faros.svc.cluster.local:9443
   # Bearer token used in the heartbeat POST. Provided as a Secret because it
   # MUST NOT land in values.yaml in plaintext for prod. Leave name empty to
   # send unauthenticated heartbeats (dev only).
@@ -36,7 +36,7 @@ hub:
 # via /bonkers (admin onboarding). The init container uses it to apply the
 # provider's schemas/APIExport/slice/bind grant. Key must be "kubeconfig".
 providerKubeconfig:
-  secretName: kedge-provider-kubeconfig
+  secretName: faros-provider-kubeconfig
 
 # When true, the chart renders the CatalogEntry (which registers the provider
 # with the hub) into a ConfigMap that the init container applies into the

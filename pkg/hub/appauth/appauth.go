@@ -56,7 +56,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	authorizationv1client "k8s.io/client-go/kubernetes/typed/authorization/v1"
 
-	"github.com/faroshq/faros-kedge/pkg/browsersession"
+	"github.com/faroshq/faros/pkg/browsersession"
 )
 
 const (
@@ -69,7 +69,7 @@ const (
 	// CallbackPath is the reserved path on the app host that authorize
 	// redirects back to. It must stay in lockstep with the access proxy's
 	// callback route (providers/infrastructure/accessproxy).
-	CallbackPath = "/__kedge/auth/callback"
+	CallbackPath = "/__faros/auth/callback"
 
 	// AccessSubresource is the RBAC convention gating private apps: a visitor
 	// needs `get` on `<resource>/<name>` with this subresource in the tenant
@@ -139,7 +139,7 @@ type Config struct {
 	// SARClient resolves per-workspace SubjectAccessReview clients.
 	SARClient SARFactory
 	// AppsDomain is the DNS zone published apps live under
-	// (e.g. "apps.kedge.example"). Redirects are only issued to hosts
+	// (e.g. "apps.faros.example"). Redirects are only issued to hosts
 	// directly under this zone. Empty disables the endpoints.
 	AppsDomain string
 	// LoginPath is the hub-relative path of the interactive login page an
@@ -335,11 +335,11 @@ func (h *Handler) HandleExchange(w http.ResponseWriter, r *http.Request) {
 
 // authorize runs the single SubjectAccessReview backing a private-app login.
 //
-// The SAR subject is the account's kcp RBAC identity ("kedge:<email>") —
+// The SAR subject is the account's kcp RBAC identity ("faros:<email>") —
 // the username every tenant-workspace binding is written against: the
 // workspace-admin ClusterRoleBinding (which is why workspace members can
 // always open their own apps with no explicit grant) and the per-app
-// kedge-app-access grants alike. The User CR name is a platform-internal
+// faros-app-access grants alike. The User CR name is a platform-internal
 // key that appears in NO kcp binding; a SAR against it would deny everyone.
 func (h *Handler) authorize(ctx context.Context, identity browsersession.Identity, ref InstanceRef) (bool, error) {
 	user := strings.TrimSpace(identity.RBACIdentity)

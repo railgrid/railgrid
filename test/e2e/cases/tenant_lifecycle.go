@@ -33,7 +33,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // uniqueName produces a UUID-ish suffix unique enough that parallel runs

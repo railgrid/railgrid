@@ -16,7 +16,7 @@ limitations under the License.
 
 package hub
 
-import "github.com/faroshq/faros-kedge/pkg/kcppaths"
+import "github.com/faroshq/faros/pkg/kcppaths"
 
 // Options holds configuration for the hub server.
 type Options struct {
@@ -38,7 +38,7 @@ type Options struct {
 	// password at the IdP.
 	DisableTokenLogin bool
 	// PublishedAppsDomain is the DNS zone published template instances are
-	// served under (e.g. "apps.kedge.example"). When set, the hub mounts the
+	// served under (e.g. "apps.faros.example"). When set, the hub mounts the
 	// login-time published-app authorize/exchange endpoints and only ever
 	// redirects sign-ins back to hosts directly under this zone. Empty
 	// disables published-app auth entirely.
@@ -67,8 +67,8 @@ type Options struct {
 	AdminUsers []string
 
 	// Providers is the list of first-party builtin providers to materialize
-	// into root:kedge:providers at bootstrap. The flag accepts a comma-
-	// separated list or repeats; see cmd/kedge-hub/main.go for the default.
+	// into root:faros:providers at bootstrap. The flag accepts a comma-
+	// separated list or repeats; see cmd/faros-hub/main.go for the default.
 	// Empty/nil enables every known builtin (kcp.BuiltinProviderNames()).
 	// Dependencies between builtins are validated at hub startup — see
 	// pkg/hub/kcp.builtinEntries[].Requires.
@@ -84,7 +84,7 @@ type Options struct {
 
 	// GraphQL listener options (used when EmbeddedGraphQL is true).
 	GraphQLAPIExportSliceName      string // APIExportEndpointSlice name (default: "core.faros.sh")
-	GraphQLAPIExportLogicalCluster string // logical cluster of that endpointslice (default: "root:kedge:providers")
+	GraphQLAPIExportLogicalCluster string // logical cluster of that endpointslice (default: "root:faros:providers")
 	GraphQLGRPCAddr                string // in-process gRPC address (default: "localhost:50051")
 	GraphQLPlayground              bool   // enable playground UI
 	GraphQLPort                    int    // port for the embedded GraphQL HTTP server; 0 = serve via hub mux only
@@ -126,7 +126,7 @@ type Options struct {
 // NewOptions returns default Options.
 func NewOptions() *Options {
 	return &Options{
-		DataDir:             "/tmp/kedge-data",
+		DataDir:             "/tmp/faros-data",
 		ListenAddr:          ":9443",
 		HubExternalURL:      "https://localhost:9443",
 		GraphQLAddr:         "",

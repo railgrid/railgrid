@@ -9,7 +9,7 @@ const emit = defineEmits<{ (e: 'navigate', view: string): void }>()
 // flag dance.
 const cmd = computed(() => {
   const wsPath = props.tenantPath || '<your-tenant-workspace-path>'
-  return `kubectl --context kedge-${wsPath.split(':').pop()} \\
+  return `kubectl --context faros-${wsPath.split(':').pop()} \\
   create secret generic cloud-credentials \\
   --from-literal=aws_access_key_id=YOUR_KEY \\
   --from-literal=aws_secret_access_key=YOUR_SECRET \\

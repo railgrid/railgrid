@@ -63,7 +63,7 @@ func inClusterNamespace() (string, error) {
 // AgentKubeconfigSecretName returns the name of the Secret used to persist
 // the hub kubeconfig for the given edge when running in-cluster.
 func AgentKubeconfigSecretName(edgeName string) string {
-	return "kedge-agent-" + edgeName + "-kubeconfig"
+	return "faros-agent-" + edgeName + "-kubeconfig"
 }
 
 // newInClusterKubernetesClient builds a Kubernetes clientset using in-cluster

@@ -29,9 +29,9 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
-	"github.com/faroshq/faros-kedge/test/e2e/cases"
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	cliauth "github.com/faroshq/faros/pkg/cli/auth"
+	"github.com/faroshq/faros/test/e2e/cases"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // ── Shared cases (also run in standalone) ─────────────────────────────────────
@@ -119,8 +119,8 @@ func TestOIDCWrongPasswordFails(t *testing.T) {
 }
 
 // TestOIDCUserCanListEdges verifies that a kubeconfig obtained via OIDC can be
-// used to call the kedge API (list edges). Parked: `kedge edge list` now
-// targets the edges provider's group (edges.kedge.faros.sh), which requires the
+// used to call the faros API (list edges). Parked: `faros edge list` now
+// targets the edges provider's group (edges.faros.sh), which requires the
 // edges provider + a tenant APIBinding that this suite does not bootstrap.
 func TestOIDCUserCanListEdges(t *testing.T) {
 	edgeSkip(t)
@@ -161,12 +161,12 @@ func TestOIDCUserCanListEdges(t *testing.T) {
 				}
 			}
 
-			client := framework.NewKedgeClient(framework.RepoRoot(), kcFile, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), kcFile, clusterEnv.HubURL)
 			siteCtx, siteCancel := context.WithTimeout(ctx, 30*time.Second)
 			defer siteCancel()
 			out, err := client.Run(siteCtx, "edge", "list")
 			if err != nil {
-				t.Fatalf("kedge edge list with OIDC token failed: %v\noutput: %s", err, out)
+				t.Fatalf("faros edge list with OIDC token failed: %v\noutput: %s", err, out)
 			}
 			t.Logf("OIDC user can list edges: %s", out)
 			return ctx
@@ -175,13 +175,13 @@ func TestOIDCUserCanListEdges(t *testing.T) {
 }
 
 // edgeSkip marks an edge-connectivity test as parked while edge connectivity is
-// brought up as the standalone edges provider (group edges.kedge.faros.sh).
+// brought up as the standalone edges provider (group edges.faros.sh).
 // These agent/workload/edge-proxy/SSH cases will be relocated to the dedicated
 // edges suite that bootstraps that provider. See docs/edges-providers-testing.md.
 func edgeSkip(t *testing.T) {
 	t.Helper()
 	t.Skip("edge connectivity moved to the standalone edges provider " +
-		"(edges.kedge.faros.sh); e2e coverage pending the dedicated edges suite — " +
+		"(edges.faros.sh); e2e coverage pending the dedicated edges suite — " +
 		"see docs/edges-providers-testing.md")
 }
 

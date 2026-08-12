@@ -30,8 +30,8 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	cliauth "github.com/faroshq/faros/pkg/cli/auth"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // proxyIsolationHTTPClient skips TLS verification for the hub's self-signed
@@ -80,7 +80,7 @@ func K8sProxyWriteIsolation() features.Feature {
 				t.Skip("agent kubeconfig not configured — skipping K8sProxyWriteIsolation (requires direct edge cluster access)")
 			}
 
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -102,7 +102,7 @@ func K8sProxyWriteIsolation() features.Feature {
 		}).
 		Assess("edge becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
@@ -111,7 +111,7 @@ func K8sProxyWriteIsolation() features.Feature {
 		}).
 		Assess("ConfigMap written via proxy lands on edge not hub", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			edgeURL, err := client.GetEdgeURL(ctx, edgeName)
 			if err != nil {
@@ -188,7 +188,7 @@ data:
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if edgeURL, err := client.GetEdgeURL(ctx, edgeName); err == nil {
 				_, _ = client.KubectlWithURL(ctx, edgeURL,
@@ -290,7 +290,7 @@ func CrossWorkspaceEdgeIsolation() features.Feature {
 			}
 
 			// User A creates an edge.
-			clientA := framework.NewKedgeClient(framework.RepoRoot(), kcFileA, clusterEnv.HubURL)
+			clientA := framework.NewFarosClient(framework.RepoRoot(), kcFileA, clusterEnv.HubURL)
 			if err := clientA.EdgeCreate(ctx, edgeNameA, "kubernetes", "env=e2e-cross-ws-isolation"); err != nil {
 				t.Fatalf("User A creating edge %q: %v", edgeNameA, err)
 			}
@@ -305,7 +305,7 @@ func CrossWorkspaceEdgeIsolation() features.Feature {
 
 			edgeProxyURLForA := clusterEnv.HubURL +
 				"/services/edges-proxy/clusters/" + clusterNameA +
-				"/apis/kedge.faros.sh/v1alpha1/edges/" + edgeNameA + "/k8s"
+				"/apis/faros.sh/v1alpha1/edges/" + edgeNameA + "/k8s"
 			t.Logf("User A edge proxy URL: %s", edgeProxyURLForA)
 
 			// ── User B: full OIDC login ────────────────────────────────────
@@ -344,7 +344,7 @@ func CrossWorkspaceEdgeIsolation() features.Feature {
 			// User B creates an edge.
 			var edgeProxyURLForB string
 			if len(resultB.Kubeconfig) > 0 {
-				clientB := framework.NewKedgeClient(framework.RepoRoot(), kcFileB, clusterEnv.HubURL)
+				clientB := framework.NewFarosClient(framework.RepoRoot(), kcFileB, clusterEnv.HubURL)
 				if err := clientB.EdgeCreate(ctx, edgeNameB, "kubernetes", "env=e2e-cross-ws-isolation"); err != nil {
 					t.Logf("User B creating edge %q failed (non-fatal, bidirectional B→A still tested): %v", edgeNameB, err)
 				} else {
@@ -353,7 +353,7 @@ func CrossWorkspaceEdgeIsolation() features.Feature {
 					if clusterNameB != "" {
 						edgeProxyURLForB = clusterEnv.HubURL +
 							"/services/edges-proxy/clusters/" + clusterNameB +
-							"/apis/kedge.faros.sh/v1alpha1/edges/" + edgeNameB + "/k8s"
+							"/apis/faros.sh/v1alpha1/edges/" + edgeNameB + "/k8s"
 						t.Logf("User B edge proxy URL: %s", edgeProxyURLForB)
 					}
 				}
@@ -429,13 +429,13 @@ func CrossWorkspaceEdgeIsolation() features.Feature {
 				return ctx
 			}
 			if data.userAKubeconfig != "" {
-				clientA := framework.NewKedgeClient(framework.RepoRoot(), data.userAKubeconfig, "")
+				clientA := framework.NewFarosClient(framework.RepoRoot(), data.userAKubeconfig, "")
 				if err := clientA.EdgeDelete(ctx, edgeNameA); err != nil {
 					t.Logf("warning: teardown User A edge delete failed (best-effort): %v", err)
 				}
 			}
 			if data.userBKubeconfig != "" {
-				clientB := framework.NewKedgeClient(framework.RepoRoot(), data.userBKubeconfig, "")
+				clientB := framework.NewFarosClient(framework.RepoRoot(), data.userBKubeconfig, "")
 				if err := clientB.EdgeDelete(ctx, edgeNameB); err != nil {
 					t.Logf("warning: teardown User B edge delete failed (best-effort): %v", err)
 				}

@@ -37,7 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/rest"
 
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	farosclient "github.com/faroshq/faros/pkg/client"
 )
 
 // wsSshMsg mirrors the wsMsg type used by pkg/util/ssh.
@@ -57,10 +57,10 @@ that is connected to the hub.
 
 Examples:
   # Interactive session
-  kedge ssh my-server
+  faros ssh my-server
 
   # Run a single command (non-interactive)
-  kedge ssh my-server -- echo hello
+  faros ssh my-server -- echo hello
 `,
 		Args:               cobra.MinimumNArgs(1),
 		DisableFlagParsing: false,
@@ -90,14 +90,14 @@ func runSSH(cmd *cobra.Command, args []string) error {
 	}
 
 	// Fetch the Edge resource to get the proxy URL from status. The Edge type
-	// now lives in the edges-connectivity provider (edges.kedge.faros.sh), so we
+	// now lives in the edges-connectivity provider (edges.faros.sh), so we
 	// read it via the dynamic client and pull status.URL out of the unstructured.
-	client, err := kedgeclient.NewForConfig(config)
+	client, err := farosclient.NewForConfig(config)
 	if err != nil {
-		return fmt.Errorf("creating kedge client: %w", err)
+		return fmt.Errorf("creating faros client: %w", err)
 	}
 
-	edge, err := client.Dynamic().Resource(kedgeclient.LinuxServerGVR).Get(ctx, name, metav1.GetOptions{})
+	edge, err := client.Dynamic().Resource(farosclient.LinuxServerGVR).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("fetching edge %q: %w", name, err)
 	}
@@ -147,7 +147,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 // Edge.Status.URL for server-type edges is the edges-provider proxy path
 // (externalized against the current kubeconfig host by the caller):
 //
-//	https://<hub>/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/linuxservers/{name}/ssh
+//	https://<hub>/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/linuxservers/{name}/ssh
 //
 // This function simply converts the scheme to WebSocket (https→wss, http→ws)
 // and optionally appends the "cmd" query parameter for non-interactive SSH exec.
@@ -200,7 +200,7 @@ func runSSHCommandStream(ctx context.Context, conn *websocket.Conn) error {
 func runSSHInteractive(ctx context.Context, conn *websocket.Conn) error {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		return fmt.Errorf("stdin is not a terminal; use 'kedge ssh <name> -- <command>' for non-interactive use")
+		return fmt.Errorf("stdin is not a terminal; use 'faros ssh <name> -- <command>' for non-interactive use")
 	}
 
 	oldState, err := term.MakeRaw(fd)

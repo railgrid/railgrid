@@ -1,6 +1,6 @@
 # Home Assistant keeps its whole state under /config — configuration.yaml, the
 # auth store (users + long-lived access tokens), and the SQLite recorder DB. It
-# must survive pod restarts, or you re-do onboarding and your kedge token dies
+# must survive pod restarts, or you re-do onboarding and your faros token dies
 # with the pod.
 #
 # No storageClassName: use the cluster default. On kind that is the built-in

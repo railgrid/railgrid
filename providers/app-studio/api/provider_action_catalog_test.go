@@ -175,11 +175,11 @@ func TestFetchProviderActionCatalogInsecureOptInPreservesCallerHeaders(t *testin
 		}
 		wantHeaders := map[string]string{
 			"Authorization":     "Bearer caller-token",
-			"X-Kedge-Tenant":    "root:kedge:tenants:org-1:workspace-1",
-			"X-Kedge-Cluster":   "cluster-1",
-			"X-Kedge-Org":       "org-1",
-			"X-Kedge-Workspace": "workspace-1",
-			"X-Kedge-User":      "alice@example.com",
+			"X-Faros-Tenant":    "root:faros:tenants:org-1:workspace-1",
+			"X-Faros-Cluster":   "cluster-1",
+			"X-Faros-Org":       "org-1",
+			"X-Faros-Workspace": "workspace-1",
+			"X-Faros-User":      "alice@example.com",
 		}
 		for name, want := range wantHeaders {
 			if got := r.Header.Get(name); got != want {
@@ -203,7 +203,7 @@ func TestFetchProviderActionCatalogInsecureOptInPreservesCallerHeaders(t *testin
 
 	s := &Server{hubBase: upstream.URL, mcpInsecureSkipTLSVerify: true}
 	catalog, err := s.fetchProviderActionCatalog(context.Background(), identity{
-		tenantPath:    "root:kedge:tenants:org-1:workspace-1",
+		tenantPath:    "root:faros:tenants:org-1:workspace-1",
 		clusterID:     "cluster-1",
 		orgUUID:       "org-1",
 		workspaceUUID: "workspace-1",

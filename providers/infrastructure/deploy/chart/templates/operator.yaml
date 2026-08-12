@@ -19,10 +19,10 @@ metadata:
     {{- include "infrastructure.labels" . | nindent 4 }}
 rules:
   # Watch + status the CRs.
-  - apiGroups: ["infrastructure.kedge.faros.sh"]
+  - apiGroups: ["infrastructure.faros.sh"]
     resources: ["infrastructureproviders"]
     verbs: ["get", "list", "watch", "update", "patch"]
-  - apiGroups: ["infrastructure.kedge.faros.sh"]
+  - apiGroups: ["infrastructure.faros.sh"]
     resources: ["infrastructureproviders/status"]
     verbs: ["get", "update", "patch"]
   # Read the kubeconfig / hub-token Secrets the CR references.
@@ -97,13 +97,13 @@ spec:
             # the portal shows the release version (the embedded manifest.yaml
             # only carries a 0.1.0 placeholder). Mirrors the chart-templated
             # catalogentry.yaml's {{ "{{ .Chart.AppVersion }}" }}.
-            - name: KEDGE_PROVIDER_VERSION
+            - name: FAROS_PROVIDER_VERSION
               value: {{ .Chart.AppVersion | quote }}
             {{- with .Values.development.previewConsole.verificationJWKS }}
             # Public verification keys are platform-global configuration. The
             # operator propagates them into each managed provider Deployment;
             # no tenant or InfrastructureProvider CR can override them.
-            - name: KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS
+            - name: FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS
               value: {{ . | quote }}
             {{- end }}
           resources:

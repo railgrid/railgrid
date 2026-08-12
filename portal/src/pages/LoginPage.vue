@@ -118,7 +118,7 @@ function startOIDCLogin() {
           <div class="relative flex h-20 w-20 items-center justify-center rounded-xl border border-border-default bg-surface-overlay">
             <Hexagon class="h-10 w-10 text-accent" :stroke-width="1.5" />
           </div>
-          <span class="type-display mt-6 text-2xl font-bold tracking-tight text-text-primary">KEDGE</span>
+          <span class="type-display mt-6 text-2xl font-bold tracking-tight text-text-primary">FAROS</span>
           <span class="mt-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-text-muted">Command Center</span>
           <div class="energy-line mt-6 h-px w-24" />
         </div>
@@ -135,7 +135,7 @@ function startOIDCLogin() {
               <Hexagon class="h-7 w-7 text-accent" :stroke-width="1.5" />
             </div>
           </div>
-          <h1 class="type-display mt-4 text-xl font-bold text-text-primary">KEDGE</h1>
+          <h1 class="type-display mt-4 text-xl font-bold text-text-primary">FAROS</h1>
         </div>
 
         <div class="rounded-xl border border-border-default shadow-sm">

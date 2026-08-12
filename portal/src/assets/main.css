@@ -1,10 +1,10 @@
 @import "tailwindcss";
-@import "./kedge-ui.css";
+@import "./faros-ui.css";
 
 /*
  * Some built-in providers ship their UI as separate Vite bundles under
  * providers/{name}/portal/, but render inside this portal's DOM via the
- * <kedge-provider-{name}> custom element and use Tailwind utilities without
+ * <faros-provider-{name}> custom element and use Tailwind utilities without
  * shipping any CSS of their own. Their classes therefore need to live in THIS
  * stylesheet (the only one the host page loads), so these @source directives
  * pull the provider .vue/.ts files into Tailwind's scan and compile them here.
@@ -122,7 +122,7 @@ body {
 
 /*
  * Display face (Söhne-Breit role). Archivo's width axis expanded to its max
- * (125%) — used for page titles, KPI numerals and the KEDGE wordmark.
+ * (125%) — used for page titles, KPI numerals and the FAROS wordmark.
  * `font-stretch` drives the wdth axis on the variable font; if a target
  * browser mishandles it, swap to `font-variation-settings: "wdth" 125`.
  */

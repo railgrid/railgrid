@@ -7,9 +7,9 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 
 // Package tenant talks to the tenant's kcp workspace via the
-// kedge-provider-kubeconfig the hub catalog controller mints for this
+// faros-provider-kubeconfig the hub catalog controller mints for this
 // provider. The base kubeconfig targets the provider's own workspace
-// (root:kedge:providers:infrastructure); per-tenant operations derive
+// (root:faros:providers:infrastructure); per-tenant operations derive
 // a scoped client by swapping the cluster path in the host URL — the
 // recipe lives in pkg/hub/providers/provision.go around clientFor().
 //

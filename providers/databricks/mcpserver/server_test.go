@@ -54,7 +54,7 @@ func TestHandlerAllowsHubFederationHostHeaderWhenConfigured(t *testing.T) {
 		t.Fatalf("tools/list missing versioned runtime data query tool: %s", string(body))
 	}
 	for _, phrase := range []string{
-		"tables[].name is the exact kedge Table resource name",
+		"tables[].name is the exact faros Table resource name",
 		"never substitute an App Studio integration alias",
 		"exact tableRef (the name returned by list_tables or the project grant)",
 		"an App Studio integration alias is never a tableRef",

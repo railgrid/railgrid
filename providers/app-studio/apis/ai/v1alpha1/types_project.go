@@ -42,7 +42,7 @@ const (
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// Project is a persistent AI workspace scoped to a Kedge child workspace.
+// Project is a persistent AI workspace scoped to a Faros child workspace.
 type Project struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -71,7 +71,7 @@ type ProjectSpec struct {
 	// Template names the infrastructure Template whose instance backs this
 	// Project's development environment (docs/app-studio-template-sandboxes.md).
 	// When set, the development binding is generated from the Template's
-	// instanceCRD with kedgeMode: development, and file sync routes per the
+	// instanceCRD with farosMode: development, and file sync routes per the
 	// Template's declared development components. Empty means the project has
 	// no development environment yet — one must be selected before any
 	// development runtime surface (sync, preview, logs) works.

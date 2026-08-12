@@ -30,7 +30,7 @@ var repositoryBuildStatusesGVR = codev1alpha1.SchemeGroupVersion.WithResource("r
 
 type buildStatusInput struct {
 	RepositoryRef    string `json:"repositoryRef" jsonschema:"Name of the managed Repository CR whose build to inspect"`
-	WorkflowFileName string `json:"workflowFileName" jsonschema:"Workflow file name to inspect, e.g. kedge-app-studio-build.yml"`
+	WorkflowFileName string `json:"workflowFileName" jsonschema:"Workflow file name to inspect, e.g. faros-app-studio-build.yml"`
 	Ref              string `json:"ref,omitempty" jsonschema:"Commit SHA to inspect; defaults to the most recent run"`
 	MaxLogLines      int    `json:"maxLogLines,omitempty" jsonschema:"Max failure-log lines per failed job (default 200)"`
 }
@@ -55,7 +55,7 @@ type buildStatusOutput struct {
 
 type rebuildInput struct {
 	RepositoryRef    string `json:"repositoryRef" jsonschema:"Name of the managed Repository CR to re-run the build for"`
-	WorkflowFileName string `json:"workflowFileName" jsonschema:"Workflow file name to re-run, e.g. kedge-app-studio-build.yml"`
+	WorkflowFileName string `json:"workflowFileName" jsonschema:"Workflow file name to re-run, e.g. faros-app-studio-build.yml"`
 	Ref              string `json:"ref,omitempty" jsonschema:"Branch to re-run on; defaults to the repository default branch"`
 }
 

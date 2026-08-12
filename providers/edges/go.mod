@@ -174,7 +174,7 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
 )
 
-// Pin k8s.io/* to the kcp staging forks the kedge providers + SDK use.
+// Pin k8s.io/* to the kcp staging forks the faros providers + SDK use.
 
 // The full kcp k8s.io/* staging fork replace set, mirrored from the root
 // module. The edges provider imports kubernetes-mcp-server's helm toolset,

@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package install holds the one-shot bootstrap a kedge provider runs against
+// Package install holds the one-shot bootstrap a faros provider runs against
 // its own kcp workspace, using the workspace-admin kubeconfig the platform
-// admin onboarded (which already points at root:kedge:providers:<name>).
+// admin onboarded (which already points at root:faros:providers:<name>).
 //
 // It is the provider-side half of the bootstrap split: the admin UI/API creates
 // the provider workspace + ServiceAccount + legacy-token kubeconfig, and the
@@ -74,7 +74,7 @@ var (
 )
 
 // PermissionClaim is the provider-local mirror of a CatalogEntry permission
-// claim. It is duplicated here (rather than imported from the kedge apis
+// claim. It is duplicated here (rather than imported from the faros apis
 // module) so the SDK has no dependency on the monorepo — keeping every
 // provider's standalone build self-contained.
 //
@@ -94,13 +94,13 @@ type PermissionClaim struct {
 // Options bundles everything a provider's init needs.
 type Options struct {
 	// Config is the workspace-admin rest.Config (its Host already targets the
-	// provider workspace cluster, e.g. .../clusters/root:kedge:providers:code).
+	// provider workspace cluster, e.g. .../clusters/root:faros:providers:code).
 	Config *rest.Config
 	// ExportName is the provider's APIExport name (also the slice name by
-	// convention), e.g. "code.providers.kedge.faros.sh".
+	// convention), e.g. "code.providers.faros.sh".
 	ExportName string
 	// WorkspacePath is the logical-cluster path the APIExport lives in, e.g.
-	// "root:kedge:providers:code". REQUIRED so the slice can publish endpoints.
+	// "root:faros:providers:code". REQUIRED so the slice can publish endpoints.
 	WorkspacePath string
 	// SchemasDir holds APIResourceSchema YAML files (one document per file).
 	// Empty or non-existent → no schemas applied (valid for schema-less
@@ -112,8 +112,8 @@ type Options struct {
 
 	// CatalogEntryFile, when set, is the path to a CatalogEntry YAML the
 	// provider self-registers into its OWN workspace (which the platform's
-	// Provider controller bound to providers.kedge.faros.sh). Empty → skip
-	// (e.g. providers whose CatalogEntry is applied to root:kedge:providers by
+	// Provider controller bound to providers.faros.sh). Empty → skip
+	// (e.g. providers whose CatalogEntry is applied to root:faros:providers by
 	// an admin instead). Applied last, after the APIExport exists.
 	CatalogEntryFile string
 }
@@ -157,16 +157,16 @@ func Bootstrap(ctx context.Context, opts Options) error {
 }
 
 // catalogEntryGVR is the cluster-scoped CatalogEntry served by the
-// providers.kedge.faros.sh APIExport, which the platform's Provider controller
+// providers.faros.sh APIExport, which the platform's Provider controller
 // binds into each provider sub-workspace.
 var catalogEntryGVR = schema.GroupVersionResource{
-	Group: "providers.kedge.faros.sh", Version: "v1alpha1", Resource: "catalogentries",
+	Group: "providers.faros.sh", Version: "v1alpha1", Resource: "catalogentries",
 }
 
 // ApplyCatalogEntry reads a CatalogEntry YAML from path and create-or-updates it
 // in the workspace cl targets (the provider's own sub-workspace). This is how a
 // provider self-registers its catalog entry from inside its workspace, rather
-// than an admin applying it to root:kedge:providers. Idempotent.
+// than an admin applying it to root:faros:providers. Idempotent.
 func ApplyCatalogEntry(ctx context.Context, cl dynamic.Interface, path string) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -176,8 +176,8 @@ func ApplyCatalogEntry(ctx context.Context, cl dynamic.Interface, path string) e
 	if err := yaml.Unmarshal(raw, &u.Object); err != nil {
 		return fmt.Errorf("parsing CatalogEntry file %s: %w", path, err)
 	}
-	if u.GetAPIVersion() != "providers.kedge.faros.sh/v1alpha1" || u.GetKind() != "CatalogEntry" {
-		return fmt.Errorf("file %s: expected CatalogEntry providers.kedge.faros.sh/v1alpha1, got %s/%s", path, u.GetAPIVersion(), u.GetKind())
+	if u.GetAPIVersion() != "providers.faros.sh/v1alpha1" || u.GetKind() != "CatalogEntry" {
+		return fmt.Errorf("file %s: expected CatalogEntry providers.faros.sh/v1alpha1, got %s/%s", path, u.GetAPIVersion(), u.GetKind())
 	}
 	if u.GetName() == "" {
 		return fmt.Errorf("file %s: metadata.name is required", path)
@@ -384,12 +384,12 @@ func EnsureAPIExportEndpointSlice(ctx context.Context, cl dynamic.Interface, sli
 }
 
 // ApplyBindGrant creates / updates the ClusterRole + ClusterRoleBinding in the
-// provider workspace that lets any authenticated kedge user bind to the
+// provider workspace that lets any authenticated faros user bind to the
 // provider's APIExport from their own workspace. Without it, kcp refuses
 // tenant-side APIBinding creates with 403. Subject is "system:authenticated":
 // the platform admin is the gatekeeper at onboard/install time.
 func ApplyBindGrant(ctx context.Context, cl dynamic.Interface, exportName string) error {
-	roleName := "kedge:providers:bind:" + exportName
+	roleName := "faros:providers:bind:" + exportName
 	cr := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "rbac.authorization.k8s.io/v1",
 		"kind":       "ClusterRole",

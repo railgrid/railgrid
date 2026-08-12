@@ -1,7 +1,7 @@
 apiVersion: v2
-name: kedge-vibe-studio-provider
+name: faros-vibe-studio-provider
 description: >
-  vibe-studio: kedge's wizard-first app builder provider. Guided intake
+  vibe-studio: faros's wizard-first app builder provider. Guided intake
   recommends an infrastructure Template, provisions a dev sandbox from its
   scaffold, then drops into conversational building with preview and
   promotion (docs/vibe-studio-design.md).

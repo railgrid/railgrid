@@ -384,7 +384,7 @@ cookie policy to make it work. Prefer same-site preview domains or another
 Gateway-enforced, non-user-session credential design; if neither is available,
 the product must explicitly revisit the "direct iframe plus private edge" model.
 
-The Kedge user bearer token must never be placed in the browser context or
+The Faros user bearer token must never be placed in the browser context or
 forwarded to tenant-authored application code. Likewise, do not copy the user's
 preview cookie or application cookies into the agent context.
 

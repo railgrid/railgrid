@@ -1,22 +1,22 @@
 apiVersion: v2
-name: kedge-quickstart-provider
+name: faros-quickstart-provider
 description: |
-  Reference kedge provider demonstrating the platform's extension surface
+  Reference faros provider demonstrating the platform's extension surface
   end-to-end. Ships the provider Deployment, ClusterIP Service, and the
   CatalogEntry that registers the provider (UI + backend + a sample
-  greetings APIExport) with the kedge hub. Pure broker — no kcp or kro
+  greetings APIExport) with the faros hub. Pure broker — no kcp or kro
   kubeconfig wiring; useful as a copy-from template for new providers.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
-icon: https://example.com/kedge-icon.png
+icon: https://example.com/faros-icon.png
 keywords:
-  - kedge
+  - faros
   - provider
   - quickstart
   - reference
-home: https://github.com/faroshq/kedge
+home: https://github.com/faroshq/faros
 sources:
-  - https://github.com/faroshq/kedge/tree/main/providers/quickstart
+  - https://github.com/faroshq/faros/tree/main/providers/quickstart
 maintainers:
-  - name: kedge maintainers
+  - name: faros maintainers

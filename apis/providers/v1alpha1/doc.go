@@ -15,12 +15,12 @@ limitations under the License.
 */
 
 // +k8s:deepcopy-gen=package,register
-// +groupName=providers.kedge.faros.sh
+// +groupName=providers.faros.sh
 
-// Package v1alpha1 contains the platform-owner-only API for managing kedge
+// Package v1alpha1 contains the platform-owner-only API for managing faros
 // providers (extensions). These types are deliberately NOT bound into tenant
-// workspaces: the APIExport providers.kedge.faros.sh is bound only in
-// root:kedge:providers and is reachable to platform administrators (and the
+// workspaces: the APIExport providers.faros.sh is bound only in
+// root:faros:providers and is reachable to platform administrators (and the
 // hub's catalog controller). Tenants interact with providers via the portal,
 // which mediates Enable/Disable through hub APIs — not by directly creating
 // ProviderBinding objects.

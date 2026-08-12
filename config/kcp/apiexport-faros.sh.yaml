@@ -1,0 +1,71 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: faros.sh
+spec:
+  permissionClaims:
+  - resource: secrets
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - delete
+  - resource: namespaces
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+  - resource: configmaps
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - delete
+  - resource: serviceaccounts
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - delete
+  - group: rbac.authorization.k8s.io
+    resource: clusterroles
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - delete
+  - group: rbac.authorization.k8s.io
+    resource: clusterrolebindings
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - delete
+  - group: tenancy.kcp.io
+    identityHash: __TENANCY_IDENTITY_HASH__
+    resource: workspaces
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - delete
+  resources:
+  - group: faros.sh
+    name: mcpservers
+    schema: v260716-d4e8aa2.mcpservers.faros.sh
+    storage:
+      crd: {}
+status: {}

@@ -9,7 +9,7 @@ import { useThemeStore } from '@/stores/theme'
 import { AlertCircle, Puzzle } from 'lucide-vue-next'
 
 // Micro-frontend mount: instead of dropping an iframe, we load the
-// provider's /main.js (which defines a custom element kedge-provider-{name})
+// provider's /main.js (which defines a custom element faros-provider-{name})
 // and render that element directly in the portal's DOM tree. The provider
 // shares our stylesheet — CSS variables from :root cascade in — so there's
 // no visible boundary, no scrollbars, and no postMessage shuttle.
@@ -30,10 +30,10 @@ const elementRef = ref<HTMLElement | null>(null)
 const loadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const loadError = ref<string | null>(null)
 
-// Each provider's tag is kedge-provider-<name>. The hyphen requirement
+// Each provider's tag is faros-provider-<name>. The hyphen requirement
 // of custom element names matches naturally because provider names are
 // already kebab-case in the catalog.
-const tagFor = (name: string) => `kedge-provider-${name}`
+const tagFor = (name: string) => `faros-provider-${name}`
 
 onMounted(() => {
   if (!providers.loaded) providers.load()
@@ -104,7 +104,7 @@ async function loadAndMount(name: string, version: string | undefined) {
   loadState.value = 'loading'
   loadError.value = null
 
-  const scriptID = `kedge-provider-script-${name}`
+  const scriptID = `faros-provider-script-${name}`
   const v = encodeURIComponent(version ?? '0')
   const src = `/ui/providers/${name}/main.js?v=${v}`
 
@@ -151,9 +151,9 @@ async function loadAndMount(name: string, version: string | undefined) {
 }
 
 function pushContext() {
-  const el = elementRef.value as HTMLElement & { kedgeContext?: unknown } | null
+  const el = elementRef.value as HTMLElement & { farosContext?: unknown } | null
   if (!el || !entry.value) return
-  el.kedgeContext = {
+  el.farosContext = {
     // subPath is what the shell's vue-router parsed from
     // /providers/{name}/<rest> — empty for the bare provider URL,
     // 'instances' for /providers/{name}/instances, etc. Providers
@@ -166,9 +166,9 @@ function pushContext() {
     user: auth.user,
     tenant: auth.clusterName,
     // Sidebar-selected org/workspace. Providers that call their backend
-    // through /services/providers/* forward these as X-Kedge-Org /
-    // X-Kedge-Workspace so the hub's tenant resolver can inject
-    // X-Kedge-Tenant (the backend proxy honours the same headers the
+    // through /services/providers/* forward these as X-Faros-Org /
+    // X-Faros-Workspace so the hub's tenant resolver can inject
+    // X-Faros-Tenant (the backend proxy honours the same headers the
     // console's own /api/orgs/* calls send).
     orgUUID: tenant.orgUUID,
     workspaceUUID: tenant.workspaceUUID,
@@ -177,7 +177,7 @@ function pushContext() {
   }
 }
 
-// Bubble kedge-navigate CustomEvents up into Vue Router.
+// Bubble faros-navigate CustomEvents up into Vue Router.
 function onNavigate(e: Event) {
   const ce = e as CustomEvent<{ path: string }>
   const p = ce.detail?.path
@@ -185,9 +185,9 @@ function onNavigate(e: Event) {
   router.push(`/providers/${entry.value.name}/${p.replace(/^\//, '')}`)
 }
 
-onMounted(() => mountRef.value?.addEventListener('kedge-navigate', onNavigate))
+onMounted(() => mountRef.value?.addEventListener('faros-navigate', onNavigate))
 onBeforeUnmount(() => {
-  mountRef.value?.removeEventListener('kedge-navigate', onNavigate)
+  mountRef.value?.removeEventListener('faros-navigate', onNavigate)
   // Leave the script + custom element class registered — re-visits are
   // free and the registry can't be unregistered anyway. Just detach.
   if (elementRef.value && mountRef.value?.contains(elementRef.value)) {

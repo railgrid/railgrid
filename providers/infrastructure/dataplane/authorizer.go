@@ -28,7 +28,7 @@ import (
 	authorizationv1client "k8s.io/client-go/kubernetes/typed/authorization/v1"
 )
 
-var execInstanceGroupVersion = schema.GroupVersion{Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1"}
+var execInstanceGroupVersion = schema.GroupVersion{Group: "infrastructure.faros.sh", Version: "v1alpha1"}
 
 // CallerAuthorizationClientFactory builds an authorization client scoped to
 // the tenant logical cluster and authenticated solely with the forwarded

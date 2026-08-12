@@ -36,7 +36,7 @@ without changing the consumer-facing API.
 
 ## 2. API surface
 
-Group **`code.kedge.faros.sh`**. All CRDs are **cluster-scoped**, **tenant-authored** (created
+Group **`code.faros.sh`**. All CRDs are **cluster-scoped**, **tenant-authored** (created
 in the tenant's own workspace via the APIBinding), with a `status` subresource and standard
 conditions/finalizers.
 
@@ -54,7 +54,7 @@ parent object.
 ## 3. Pluggable backend (sub-providers)
 
 A `GitBackend` interface + a `Registry` copied from
-[`providers/infrastructure/backend/interface.go`](https://github.com/faroshq/faros-kedge/blob/main/providers/infrastructure/backend/interface.go):
+[`providers/infrastructure/backend/interface.go`](https://github.com/faroshq/faros/blob/main/providers/infrastructure/backend/interface.go):
 
 ```
 GitBackend {
@@ -77,7 +77,7 @@ pure remote-API dispatcher. v1 implementation: `backend/github` using `google/go
 **multicluster** shape (the hub's wiring in `pkg/hub/server.go`), *not* infra's single-cluster
 manager:
 
-- `apiexport.New(cfg, "code.providers.kedge.faros.sh", …)` → `mcmanager.New(...)`.
+- `apiexport.New(cfg, "code.providers.faros.sh", …)` → `mcmanager.New(...)`.
 - Each reconciler: `mcbuilder.ControllerManagedBy(mgr).For(&Repository{})`; inside
   `Reconcile(ctx, mcreconcile.Request)` it calls
   `mgr.GetCluster(ctx, req.ClusterName).GetClient()` to act in the tenant workspace.
@@ -97,7 +97,7 @@ seam the `infrastructure` provider mounts to clone/push.
   `list/validate_connection`, `create_connection` (references an existing Secret by name).
   **Pasting a PAT is a portal action, never an MCP tool** — the secret is never transported
   through MCP.
-- **Portal:** `<kedge-provider-code>` custom element with nav children **Connections** and
+- **Portal:** `<faros-provider-code>` custom element with nav children **Connections** and
   **Repositories**. Views: Connections (paste PAT → Secret + Connection, show
   `Validated`/login/scopes), Repositories (list/create/delete), RepoDetail (deploy keys +
   collaborators).
@@ -115,7 +115,7 @@ Manifest specifics (the corrections vs infra):
   Secret; infra only needed read).
 - `apiExport.schemas`: **NON-empty** — 4 inline `APIResourceSchema` bodies, applied by the hub
   with `storage: {crd: {}}`. Each body's `metadata.name` MUST follow the immutable
-  content-versioned format `vYYMMDD-hash.<resource>.code.kedge.faros.sh` (required by the
+  content-versioned format `vYYMMDD-hash.<resource>.code.faros.sh` (required by the
   provisioner's `splitSchemaName`).
 
 ## 7. Staged delivery
@@ -142,8 +142,8 @@ Manifest specifics (the corrections vs infra):
 
 The hub provisioner does **not** create an `APIExportEndpointSlice` for provider APIExports —
 the slice's name and export path are consumer-chosen, so it's the provider's job. The code
-provider creates one (`code.providers.kedge.faros.sh`, referencing its APIExport at
-`root:kedge:providers:code`) idempotently: `serve` ensures it at controller-manager startup and
+provider creates one (`code.providers.faros.sh`, referencing its APIExport at
+`root:faros:providers:code`) idempotently: `serve` ensures it at controller-manager startup and
 the `init` subcommand does the same for parity / out-of-band bootstrap. See
 `providers/code/install/endpointslice.go` (modeled on the infrastructure provider's
 `PlatformAPIExportEndpointSlice`).

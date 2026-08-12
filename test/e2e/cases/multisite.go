@@ -28,14 +28,14 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	cliauth "github.com/faroshq/faros/pkg/cli/auth"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // msAgentKey is a context key for a running Agent in multi-edge tests.
 type msAgentKey struct{ index int }
 
-// msClientKey is a context key for the shared KedgeClient in multi-edge tests.
+// msClientKey is a context key for the shared FarosClient in multi-edge tests.
 type msClientKey struct{}
 
 const (
@@ -56,11 +56,11 @@ func requireTwoAgentClusters(t *testing.T, env *framework.ClusterEnv) {
 	}
 }
 
-// multiedgeClient returns a KedgeClient authenticated for the current suite.
+// multiedgeClient returns a FarosClient authenticated for the current suite.
 // When DexEnv is present in ctx (OIDC suite) it performs a headless OIDC login
 // and returns a client backed by the resulting kubeconfig; otherwise it does a
 // static-token login and returns a client backed by HubKubeconfig.
-func multiedgeClient(ctx context.Context, t *testing.T, clusterEnv *framework.ClusterEnv) *framework.KedgeClient {
+func multiedgeClient(ctx context.Context, t *testing.T, clusterEnv *framework.ClusterEnv) *framework.FarosClient {
 	t.Helper()
 
 	if dexEnv := framework.DexEnvFrom(ctx); dexEnv != nil {
@@ -87,11 +87,11 @@ func multiedgeClient(ctx context.Context, t *testing.T, clusterEnv *framework.Cl
 		if err := os.WriteFile(kcPath, result.Kubeconfig, 0o600); err != nil {
 			t.Fatalf("write OIDC kubeconfig: %v", err)
 		}
-		return framework.NewKedgeClient(framework.RepoRoot(), kcPath, clusterEnv.HubURL)
+		return framework.NewFarosClient(framework.RepoRoot(), kcPath, clusterEnv.HubURL)
 	}
 
 	// Static-token suite.
-	client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+	client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 	if err := client.Login(ctx, framework.DevToken); err != nil {
 		t.Fatalf("login failed: %v", err)
 	}
@@ -99,7 +99,7 @@ func multiedgeClient(ctx context.Context, t *testing.T, clusterEnv *framework.Cl
 }
 
 // startMultiedgeAgents logs in, creates two edges, extracts their kubeconfigs,
-// and starts one kedge-agent process per edge/cluster. It stores the agents in
+// and starts one faros-agent process per edge/cluster. It stores the agents in
 // ctx under msAgentKey{0} and msAgentKey{1}.
 //
 // Phase order: CREATE all edges → EXTRACT all kubeconfigs → START all agents.
@@ -131,14 +131,14 @@ func startMultiedgeAgents(ctx context.Context, t *testing.T, clusterEnv *framewo
 
 	// Phase 2: extract all edge kubeconfigs.
 	for _, e := range edges {
-		// Diagnostic: print secrets in kedge-system before polling.
-		if out, err := client.Kubectl(ctx, "get", "secrets,serviceaccounts", "-n", "kedge-system", "--no-headers"); err == nil {
-			t.Logf("[diag] kedge-system resources before extracting %s KC:\n%s", e.name, out)
+		// Diagnostic: print secrets in faros-system before polling.
+		if out, err := client.Kubectl(ctx, "get", "secrets,serviceaccounts", "-n", "faros-system", "--no-headers"); err == nil {
+			t.Logf("[diag] faros-system resources before extracting %s KC:\n%s", e.name, out)
 		}
 		if err := client.ExtractEdgeKubeconfig(ctx, e.name, e.edgeKCPath); err != nil {
 			// Dump state on failure to help diagnose RBAC reconciler issues.
-			if out, err2 := client.Kubectl(ctx, "get", "secrets,serviceaccounts", "-n", "kedge-system", "--no-headers"); err2 == nil {
-				t.Logf("[diag] kedge-system at timeout:\n%s", out)
+			if out, err2 := client.Kubectl(ctx, "get", "secrets,serviceaccounts", "-n", "faros-system", "--no-headers"); err2 == nil {
+				t.Logf("[diag] faros-system at timeout:\n%s", out)
 			}
 			if out, err2 := client.Kubectl(ctx, "get", "edges", "--no-headers"); err2 == nil {
 				t.Logf("[diag] edges:\n%s", out)
@@ -151,7 +151,7 @@ func startMultiedgeAgents(ctx context.Context, t *testing.T, clusterEnv *framewo
 				"--kubeconfig", tmpKC); exportErr == nil {
 				_ = exportOut
 				if out, err2 := framework.KubectlWithConfig(ctx, tmpKC,
-					"logs", "-n", "kedge-system", "-l", "app.kubernetes.io/name=kedge-hub",
+					"logs", "-n", "faros-system", "-l", "app.kubernetes.io/name=faros-hub",
 					"--tail=150"); err2 == nil {
 					t.Logf("[diag] hub pod logs:\n%s", out)
 				}
@@ -192,7 +192,7 @@ func stopMultiedgeAgents(ctx context.Context, t *testing.T, clusterEnv *framewor
 		}
 	}
 	// Reuse the client stored in context; fall back to a fresh Login if absent.
-	client, ok := ctx.Value(msClientKey{}).(*framework.KedgeClient)
+	client, ok := ctx.Value(msClientKey{}).(*framework.FarosClient)
 	if !ok || client == nil {
 		client = multiedgeClient(ctx, t, clusterEnv)
 	}
@@ -218,7 +218,7 @@ func virtualWorkloadManifest(name, namespace string, selector map[string]string,
 	if selectorYAML != "" {
 		edgeSelectorBlock = "    edgeSelector:\n" + selectorYAML
 	}
-	return fmt.Sprintf(`apiVersion: kedge.faros.sh/v1alpha1
+	return fmt.Sprintf(`apiVersion: faros.sh/v1alpha1
 kind: VirtualWorkload
 metadata:
   name: %s
@@ -230,7 +230,7 @@ spec:
 %s`, name, namespace, strategy, edgeSelectorBlock)
 }
 
-// TwoAgentsJoin returns a feature that starts two kedge-agents connecting to
+// TwoAgentsJoin returns a feature that starts two faros-agents connecting to
 // the same hub and verifies both edges appear as Ready.
 func TwoAgentsJoin() features.Feature {
 	return features.New("two agents join").
@@ -240,7 +240,7 @@ func TwoAgentsJoin() features.Feature {
 			return startMultiedgeAgents(ctx, t, clusterEnv)
 		}).
 		Assess("both edges become Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
+			client := ctx.Value(msClientKey{}).(*framework.FarosClient)
 
 			for _, edge := range []string{msEdge1, msEdge2} {
 				if err := client.WaitForEdgeReady(ctx, edge, 3*time.Minute); err != nil {
@@ -268,7 +268,7 @@ func LabelBasedScheduling() features.Feature {
 			ctx = startMultiedgeAgents(ctx, t, clusterEnv)
 
 			// Retrieve the stored client (set by startMultiedgeAgents).
-			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
+			client := ctx.Value(msClientKey{}).(*framework.FarosClient)
 			for _, edge := range []string{msEdge1, msEdge2} {
 				if err := client.WaitForEdgeReady(ctx, edge, 3*time.Minute); err != nil {
 					t.Fatalf("edge %s did not become Ready: %v", edge, err)
@@ -277,7 +277,7 @@ func LabelBasedScheduling() features.Feature {
 			return ctx
 		}).
 		Assess("VW with region=eu selector schedules only to edge-1", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
+			client := ctx.Value(msClientKey{}).(*framework.FarosClient)
 
 			manifest := virtualWorkloadManifest(vwName, msNamespace, map[string]string{"region": "eu"}, "Spread")
 			if err := client.ApplyManifest(ctx, manifest); err != nil {
@@ -295,7 +295,7 @@ func LabelBasedScheduling() features.Feature {
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			if client, ok := ctx.Value(msClientKey{}).(*framework.KedgeClient); ok {
+			if client, ok := ctx.Value(msClientKey{}).(*framework.FarosClient); ok {
 				_ = client.DeleteVirtualWorkload(ctx, vwName, msNamespace)
 			}
 			stopMultiedgeAgents(ctx, t, framework.ClusterEnvFrom(ctx))
@@ -315,7 +315,7 @@ func WorkloadIsolation() features.Feature {
 			requireTwoAgentClusters(t, clusterEnv)
 			ctx = startMultiedgeAgents(ctx, t, clusterEnv)
 
-			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
+			client := ctx.Value(msClientKey{}).(*framework.FarosClient)
 			for _, edge := range []string{msEdge1, msEdge2} {
 				if err := client.WaitForEdgeReady(ctx, edge, 3*time.Minute); err != nil {
 					t.Fatalf("edge %s not Ready: %v", edge, err)
@@ -324,7 +324,7 @@ func WorkloadIsolation() features.Feature {
 			return ctx
 		}).
 		Assess("edge-1-only workload has no placement on edge-2", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
+			client := ctx.Value(msClientKey{}).(*framework.FarosClient)
 
 			manifest := virtualWorkloadManifest(vwName, msNamespace, map[string]string{"region": "eu"}, "Spread")
 			if err := client.ApplyManifest(ctx, manifest); err != nil {
@@ -340,7 +340,7 @@ func WorkloadIsolation() features.Feature {
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			if client, ok := ctx.Value(msClientKey{}).(*framework.KedgeClient); ok {
+			if client, ok := ctx.Value(msClientKey{}).(*framework.FarosClient); ok {
 				_ = client.DeleteVirtualWorkload(ctx, vwName, msNamespace)
 			}
 			stopMultiedgeAgents(ctx, t, framework.ClusterEnvFrom(ctx))
@@ -360,7 +360,7 @@ func EdgeFailoverIsolation() features.Feature {
 			requireTwoAgentClusters(t, clusterEnv)
 			ctx = startMultiedgeAgents(ctx, t, clusterEnv)
 
-			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
+			client := ctx.Value(msClientKey{}).(*framework.FarosClient)
 			for _, edge := range []string{msEdge1, msEdge2} {
 				if err := client.WaitForEdgeReady(ctx, edge, 3*time.Minute); err != nil {
 					t.Fatalf("edge %s not Ready: %v", edge, err)
@@ -378,7 +378,7 @@ func EdgeFailoverIsolation() features.Feature {
 			return ctx
 		}).
 		Assess("edge-1 goes offline; edge-2 placement is unaffected", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
+			client := ctx.Value(msClientKey{}).(*framework.FarosClient)
 
 			// Stop agent-1 (edge-1 goes offline).
 			if a, ok := ctx.Value(msAgentKey{0}).(*framework.Agent); ok {
@@ -397,7 +397,7 @@ func EdgeFailoverIsolation() features.Feature {
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			if client, ok := ctx.Value(msClientKey{}).(*framework.KedgeClient); ok {
+			if client, ok := ctx.Value(msClientKey{}).(*framework.FarosClient); ok {
 				_ = client.DeleteVirtualWorkload(ctx, vwName, msNamespace)
 			}
 			stopMultiedgeAgents(ctx, t, framework.ClusterEnvFrom(ctx))
@@ -417,7 +417,7 @@ func EdgeReconnect() features.Feature {
 			requireTwoAgentClusters(t, clusterEnv)
 			ctx = startMultiedgeAgents(ctx, t, clusterEnv)
 
-			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
+			client := ctx.Value(msClientKey{}).(*framework.FarosClient)
 			for _, edge := range []string{msEdge1, msEdge2} {
 				if err := client.WaitForEdgeReady(ctx, edge, 3*time.Minute); err != nil {
 					t.Fatalf("edge %s not Ready: %v", edge, err)
@@ -436,7 +436,7 @@ func EdgeReconnect() features.Feature {
 		}).
 		Assess("edge-1 disconnects then reconnects; placement reappears", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
+			client := ctx.Value(msClientKey{}).(*framework.FarosClient)
 
 			// Stop agent-1.
 			if a, ok := ctx.Value(msAgentKey{0}).(*framework.Agent); ok {
@@ -465,7 +465,7 @@ func EdgeReconnect() features.Feature {
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			if client, ok := ctx.Value(msClientKey{}).(*framework.KedgeClient); ok {
+			if client, ok := ctx.Value(msClientKey{}).(*framework.FarosClient); ok {
 				_ = client.DeleteVirtualWorkload(ctx, vwName, msNamespace)
 			}
 			stopMultiedgeAgents(ctx, t, framework.ClusterEnvFrom(ctx))
@@ -474,7 +474,7 @@ func EdgeReconnect() features.Feature {
 		Feature()
 }
 
-// EdgeListAccuracyUnderChurn verifies that `kedge edge list` accurately
+// EdgeListAccuracyUnderChurn verifies that `faros edge list` accurately
 // reflects Ready / Disconnected state as agents stop and start.
 func EdgeListAccuracyUnderChurn() features.Feature {
 	return features.New("edge list accuracy under churn").
@@ -483,7 +483,7 @@ func EdgeListAccuracyUnderChurn() features.Feature {
 			requireTwoAgentClusters(t, clusterEnv)
 			ctx = startMultiedgeAgents(ctx, t, clusterEnv)
 
-			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
+			client := ctx.Value(msClientKey{}).(*framework.FarosClient)
 			for _, edge := range []string{msEdge1, msEdge2} {
 				if err := client.WaitForEdgeReady(ctx, edge, 3*time.Minute); err != nil {
 					t.Fatalf("edge %s not Ready initially: %v", edge, err)
@@ -493,7 +493,7 @@ func EdgeListAccuracyUnderChurn() features.Feature {
 		}).
 		Assess("edge list reflects disconnect then reconnect of edge-1", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := ctx.Value(msClientKey{}).(*framework.KedgeClient)
+			client := ctx.Value(msClientKey{}).(*framework.FarosClient)
 
 			// Stop agent-1; wait for Disconnected.
 			if a, ok := ctx.Value(msAgentKey{0}).(*framework.Agent); ok {

@@ -24,9 +24,9 @@ const (
 	// SessionTenantAnnotation records the hub tenant path the session's store
 	// data is scoped under — the reconciler needs it to mirror status and to
 	// purge the database on deletion.
-	SessionTenantAnnotation = "vibe.kedge.faros.sh/tenant"
+	SessionTenantAnnotation = "vibe.faros.sh/tenant"
 	// SessionFinalizer guards the database purge on Session deletion.
-	SessionFinalizer = "vibe.kedge.faros.sh/purge"
+	SessionFinalizer = "vibe.faros.sh/purge"
 )
 
 // +genclient

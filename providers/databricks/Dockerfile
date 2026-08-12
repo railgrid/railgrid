@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/databricks-provider /databricks-provider
-COPY deploy/chart/files/schemas /etc/kedge/schemas
+COPY deploy/chart/files/schemas /etc/faros/schemas
 EXPOSE 8081
 ENV PORT=8081
 USER nonroot:nonroot

@@ -25,7 +25,7 @@ Use `invokeEnvelope` for this probe so the server can verify the complete
 envelope before reading `schemaProbe.result.columns`:
 
 ```js
-const schemaProbe = await kedge
+const schemaProbe = await faros
   .integration('<BOUND_INTEGRATION_ALIAS>')
   .invokeEnvelope('query_table/v1', { limit: 1 });
 // Verify schemaProbe.actionVersion and schemaProbe.resourceRef first.
@@ -55,7 +55,7 @@ workflow):
 
 ```json
 {
-  "apiVersion": "databricks.kedge.faros.sh/v1alpha1",
+  "apiVersion": "databricks.faros.sh/v1alpha1",
   "kind": "Table",
   "resource": "tables",
   "name": "<GRANT_BOUND_TABLE_NAME>"

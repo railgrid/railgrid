@@ -1,4 +1,4 @@
-# Tiltfile — local dev for kedge hub + portal + edges
+# Tiltfile — local dev for faros hub + portal + edges
 # Replaces: make run-hub-embedded-static (terminal 1) + make dev-portal (terminal 2)
 # Usage: tilt up
 
@@ -21,46 +21,46 @@ local_resource(
 )
 
 # ---------------------------------------------------------------------------
-# hub — kedge-hub binary (embedded KCP, static auth, embedded GraphQL, portal proxy)
+# hub — faros-hub binary (embedded KCP, static auth, embedded GraphQL, portal proxy)
 # ---------------------------------------------------------------------------
 local_resource(
     'hub',
     cmd='''
 make certs && \
-go build -o bin/kedge-hub ./cmd/kedge-hub
+go build -o bin/faros-hub ./cmd/faros-hub
 ''',
-    serve_cmd='''./bin/kedge-hub \
+    serve_cmd='''./bin/faros-hub \
   --serving-cert-file=certs/apiserver.crt \
   --serving-key-file=certs/apiserver.key \
   --hub-external-url=https://localhost:9443 \
   --dev-mode -v 4 \
   --static-auth-token=dev-token \
   --static-auth-token=dev-token2 \
-  --admin-users=static-dev-token@kedge.local \
+  --admin-users=static-dev-token@faros.local \
   --embedded-kcp \
   --kcp-root-dir=.kcp \
   --kcp-secure-port=6443 \
   --embedded-graphql \
   --graphql-apiexport-slice-name=core.faros.sh \
-  --graphql-apiexport-logical-cluster=root:kedge:system:controllers \
+  --graphql-apiexport-logical-cluster=root:faros:system:controllers \
   --graphql-grpc-addr=localhost:50051 \
   --graphql-playground \
   --portal-dev-url=http://localhost:3000 \
   --portal-frame-source=https://*.preview.localhost:10443 \
-  --kubeconfig=.kedge-kro.kubeconfig \
+  --kubeconfig=.faros-kro.kubeconfig \
   --provider-internal-url=https://host.docker.internal:9443
 ''',
     deps=[
-        'cmd/kedge-hub',
+        'cmd/faros-hub',
         'pkg',
         'apis',
         'go.mod',
         'go.sum',
-        # Restart the hub once the kedge-kro kubeconfig appears so the
-        # HostSecretWriter (which delivers kedge-provider-kubeconfig into
+        # Restart the hub once the faros-kro kubeconfig appears so the
+        # HostSecretWriter (which delivers faros-provider-kubeconfig into
         # that cluster) activates. The wiring is tolerant of the file being
         # absent at first boot — see pkg/hub/server.go.
-        '.kedge-kro.kubeconfig',
+        '.faros-kro.kubeconfig',
     ],
     resource_deps=['portal'],
     labels=['hub'],
@@ -86,14 +86,14 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
 #                     sub-workspace + ServiceAccount + kubeconfig Secret —
 #                     the hub's Provider controller does it declaratively
 #                     (no admin "onboard" step anymore). The Provider
-#                     (admin.kedge.faros.sh) is admin-only; the CatalogEntry
-#                     (providers.kedge.faros.sh) is also bound into provider
+#                     (admin.faros.sh) is admin-only; the CatalogEntry
+#                     (providers.faros.sh) is also bound into provider
 #                     sub-workspaces so a provider can self-register it from
-#                     inside. Both objects live in root:kedge:system:providers;
+#                     inside. Both objects live in root:faros:system:providers;
 #                     in dev we apply Provider + CatalogEntry there for
 #                     host-binary simplicity; in production the provider's init
 #                     self-registers the CatalogEntry into its own workspace via
-#                     KEDGE_CATALOGENTRY_FILE.
+#                     FAROS_CATALOGENTRY_FILE.
 #   <name>-unregister manual ▶ to kubectl delete them (deleting the Provider
 #                     triggers full teardown of the sub-workspace)
 #
@@ -106,7 +106,7 @@ go build -o bin/kedge-hub ./cmd/kedge-hub
 # Wiring: the `infrastructure` provider resource_deps on `kro-mgmt-up`
 # so the provider starts AFTER the kro management cluster is reachable
 # and the seed RGDs are applied. The provider's `make run-...` target
-# auto-detects the .kedge-kro.kubeconfig file and passes it as
+# auto-detects the .faros-kro.kubeconfig file and passes it as
 # KRO_KUBECONFIG, so the catalog UI shows the real seeded RGDs.
 # ---------------------------------------------------------------------------
 
@@ -210,7 +210,7 @@ local_resource(
 
 # Writes the dev kubeconfig (.kcp/code-runtime.kubeconfig) and ensures the
 # APIExportEndpointSlice the controller manager watches. Order:
-#   code-register  → creates root:kedge:providers:code
+#   code-register  → creates root:faros:providers:code
 #   code-init      → writes kubeconfig + endpoint slice
 #   code (serve)   → Tilt restarts it when the kubeconfig dep appears
 local_resource(
@@ -667,10 +667,10 @@ local_resource(
 # --- EXPERIMENTAL: run the infrastructure provider as a POD (init-container
 #     bootstrap) instead of the host binary above. Exercises the full
 #     hub-minted flow end to end: the hub mints + delivers
-#     kedge-provider-kubeconfig (HostSecretWriter, enabled by the hub's
+#     faros-provider-kubeconfig (HostSecretWriter, enabled by the hub's
 #     --kubeconfig + --provider-internal-url flags above), the init container
 #     bootstraps the workspace with it, then serve runs — all inside the
-#     kedge-kro kind cluster.
+#     faros-kro kind cluster.
 #
 #     Manual (click ▶). Order: kro-mgmt-up → infrastructure-register →
 #     infrastructure-pod. Stop the host-binary `infrastructure` resource
@@ -694,7 +694,7 @@ local_resource(
 
 # ---------------------------------------------------------------------------
 # edges — the standalone edges provider (KubernetesCluster + LinuxServer under
-# one group edges.kedge.faros.sh) PLUS the dev agents that connect to it.
+# one group edges.faros.sh) PLUS the dev agents that connect to it.
 #
 # The provider is SINGLE-REPLICA (revdial dialer map is process-global). It
 # terminates the agent reverse tunnels and serves kubectl/ssh/mcp; the agents
@@ -706,7 +706,7 @@ local_resource(
 #   2. Click ▶ on `edge-{kube,server}-create` to log in via static token,
 #      register the edge with the hub, and write .env.edge.<type>.
 #   3. Click ▶ on `edge-{kube,server}-agent` to run the agent.
-#        - kubernetes: also spins up a `kedge-agent` kind cluster on first run.
+#        - kubernetes: also spins up a `faros-agent` kind cluster on first run.
 #        - server: also click ▶ on `ssh-server` so the agent has an SSH target.
 #   4. Home Assistant (to exercise the Service kind + its MCP tools):
 #        - kube edge:   ▶ `ha-kube-deploy`, then ▶ `ha-kube-forward` to onboard
@@ -774,11 +774,11 @@ local_resource(
 local_resource(
     'edge-kube-create',
     # Drop any saved agent kubeconfig from a previous hub/kcp incarnation
-    # before re-creating. A stale ~/.kedge/agent-<edge>.kubeconfig points at
+    # before re-creating. A stale ~/.faros/agent-<edge>.kubeconfig points at
     # an old workspace + revoked SA token; the agent would load it, skip
     # re-registration, and fail every call with "workspace access not
     # permitted" (User ""). Clearing it forces a fresh join-token exchange.
-    cmd='rm -f ~/.kedge/agent-dev-edge-kube-1.kubeconfig ~/.kedge/agent-dev-edge-kube-1.json && make dev-login-static && make dev-edge-create TYPE=kubernetes DEV_EDGE_NAME=dev-edge-kube-1',
+    cmd='rm -f ~/.faros/agent-dev-edge-kube-1.kubeconfig ~/.faros/agent-dev-edge-kube-1.json && make dev-login-static && make dev-edge-create TYPE=kubernetes DEV_EDGE_NAME=dev-edge-kube-1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -799,7 +799,7 @@ local_resource(
 local_resource(
     'edge-server-create',
     # Same stale-kubeconfig cleanup as edge-kube-create (see note there).
-    cmd='rm -f ~/.kedge/agent-dev-edge-server-1.kubeconfig ~/.kedge/agent-dev-edge-server-1.json && make dev-login-static && make dev-edge-create TYPE=server DEV_EDGE_NAME=dev-edge-server-1',
+    cmd='rm -f ~/.faros/agent-dev-edge-server-1.kubeconfig ~/.faros/agent-dev-edge-server-1.json && make dev-login-static && make dev-edge-create TYPE=server DEV_EDGE_NAME=dev-edge-server-1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -828,7 +828,7 @@ local_resource(
     labels=['edges'],
 )
 
-# Home Assistant inside the `kedge-agent` kind cluster — a real target for the
+# Home Assistant inside the `faros-agent` kind cluster — a real target for the
 # kube-edge Service path (spec.targetRef → home-assistant.home.svc:8123).
 # Creates the kind cluster itself if edge-kube-agent hasn't yet, so it has no
 # resource_deps on it; first run pulls a ~1.5GB image.

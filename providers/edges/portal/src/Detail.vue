@@ -11,12 +11,12 @@ const emit = defineEmits<{ back: []; deleted: [] }>()
 // SSH terminals dock at the bottom of the host portal (survives page
 // navigation) rather than rendering inline here. The provider is an isolated
 // micro-frontend and can't reach the host's Pinia terminal store directly, so
-// it dispatches a window-scoped "kedge-terminal-open" CustomEvent that the
+// it dispatches a window-scoped "faros-terminal-open" CustomEvent that the
 // host TerminalDock listens for (see portal/src/components/TerminalDock.vue).
 function openTerminal() {
   if (!props.cluster) return
   window.dispatchEvent(
-    new CustomEvent('kedge-terminal-open', {
+    new CustomEvent('faros-terminal-open', {
       detail: { edgeName: props.name, cluster: props.cluster, displayName: props.name },
     }),
   )
@@ -72,17 +72,17 @@ const targetVersion = computed(() => {
   const m = upgradeCond.value?.message?.match(/upgrade available to (\S+?)\.?$/)
   return m?.[1] ?? 'latest'
 })
-const upgradeCliCommand = computed(() => `kedge agent upgrade ${props.name}`)
+const upgradeCliCommand = computed(() => `faros agent upgrade ${props.name}`)
 const upgradeHelmSnippet = computed(
-  () => `helm upgrade kedge-agent oci://ghcr.io/faroshq/charts/kedge-agent \\
-  --namespace kedge-agent \\
+  () => `helm upgrade faros-agent oci://ghcr.io/faroshq/charts/faros-agent \\
+  --namespace faros-agent \\
   --reuse-values \\
   --set agent.image.tag=${targetVersion.value}`,
 )
 const upgradeServerSnippet = computed(
-  () => `curl -fsSL https://github.com/faroshq/kedge/releases/latest/download/kubectl-kedge_linux_amd64.tar.gz | tar xz
-sudo mv kubectl-kedge /usr/local/bin/kedge
-sudo systemctl restart kedge-agent-${props.name}`,
+  () => `curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_linux_amd64.tar.gz | tar xz
+sudo mv kubectl-faros /usr/local/bin/faros
+sudo systemctl restart faros-agent-${props.name}`,
 )
 
 // ─── Services ────────────────────────────────────────────────────────
@@ -301,12 +301,12 @@ function rel(ts?: string): string {
         <h3>Connect the agent</h3>
         <p class="muted">This edge is waiting for its agent. Run on the target {{ type === 'server' ? 'server' : 'cluster' }}:</p>
         <div class="snippet">
-          <div class="snippet-head"><span>kedge agent join</span>
-            <button class="copy" @click="copy(`kedge agent join --edge-name ${name} --type ${type} --token ${edge.joinToken}`, 'join')">
+          <div class="snippet-head"><span>faros agent join</span>
+            <button class="copy" @click="copy(`faros agent join --edge-name ${name} --type ${type} --token ${edge.joinToken}`, 'join')">
               <component :is="copied === 'join' ? Check : Copy" :size="12" /> {{ copied === 'join' ? 'Copied' : 'Copy' }}
             </button>
           </div>
-          <pre>kedge agent join --edge-name {{ name }} --type {{ type }} --token {{ edge.joinToken }}</pre>
+          <pre>faros agent join --edge-name {{ name }} --type {{ type }} --token {{ edge.joinToken }}</pre>
         </div>
       </div>
 
@@ -316,11 +316,11 @@ function rel(ts?: string): string {
         <p class="muted">Download a kubeconfig scoped to this edge and use kubectl through the hub tunnel:</p>
         <div class="snippet">
           <div class="snippet-head"><span>kubectl</span>
-            <button class="copy" @click="copy(`kedge kubeconfig edge ${name} > ${name}.kubeconfig\nkubectl --kubeconfig ${name}.kubeconfig get nodes`, 'kube')">
+            <button class="copy" @click="copy(`faros kubeconfig edge ${name} > ${name}.kubeconfig\nkubectl --kubeconfig ${name}.kubeconfig get nodes`, 'kube')">
               <component :is="copied === 'kube' ? Check : Copy" :size="12" /> {{ copied === 'kube' ? 'Copied' : 'Copy' }}
             </button>
           </div>
-          <pre>kedge kubeconfig edge {{ name }} &gt; {{ name }}.kubeconfig
+          <pre>faros kubeconfig edge {{ name }} &gt; {{ name }}.kubeconfig
 kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
         </div>
       </div>
@@ -330,12 +330,12 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
         <h3>SSH access</h3>
         <p class="muted">Open an interactive shell in the browser, or SSH from your own terminal:</p>
         <div class="snippet">
-          <div class="snippet-head"><span>kedge ssh</span>
-            <button class="copy" @click="copy(`kedge ssh ${name}`, 'ssh')">
+          <div class="snippet-head"><span>faros ssh</span>
+            <button class="copy" @click="copy(`faros ssh ${name}`, 'ssh')">
               <component :is="copied === 'ssh' ? Check : Copy" :size="12" /> {{ copied === 'ssh' ? 'Copied' : 'Copy' }}
             </button>
           </div>
-          <pre>kedge ssh {{ name }}</pre>
+          <pre>faros ssh {{ name }}</pre>
         </div>
         <div class="wiz-actions" style="justify-content: flex-start;">
           <button class="btn primary" @click="openTerminal">

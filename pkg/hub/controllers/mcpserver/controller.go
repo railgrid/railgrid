@@ -44,9 +44,9 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	kedgev1alpha1 "github.com/faroshq/faros-kedge/apis/kedge/v1alpha1"
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
-	"github.com/faroshq/faros-kedge/pkg/hub/mcpaggregate"
+	farosv1alpha1 "github.com/faroshq/faros/apis/faros/v1alpha1"
+	"github.com/faroshq/faros/pkg/apiurl"
+	"github.com/faroshq/faros/pkg/hub/mcpaggregate"
 )
 
 // mcpIdentityNamespace is the tenant-workspace namespace the per-MCPServer
@@ -81,7 +81,7 @@ func SetupWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, hubExternal
 	r := &Reconciler{mgr: mgr, kcpConfig: kcpConfig, hubExternalURL: hubExternalURL, enumerate: enumerate}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("mcpserver").
-		For(&kedgev1alpha1.MCPServer{}).
+		For(&farosv1alpha1.MCPServer{}).
 		Complete(r)
 }
 
@@ -98,7 +98,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	c := cl.GetClient()
 
-	var srv kedgev1alpha1.MCPServer
+	var srv farosv1alpha1.MCPServer
 	if err := c.Get(ctx, req.NamespacedName, &srv); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -122,15 +122,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	ref, token, tokenReady, provErr := ensureMCPIdentity(ctx, kube, &srv)
 	switch {
 	case provErr != nil:
-		srv.Status.Phase = kedgev1alpha1.MCPServerPhaseError
+		srv.Status.Phase = farosv1alpha1.MCPServerPhaseError
 		setCondition(&srv.Status.Conditions, "Ready", metav1.ConditionFalse, "ProvisioningFailed", provErr.Error(), srv.Generation)
 	case !tokenReady:
 		srv.Status.TokenSecretRef = ref
-		srv.Status.Phase = kedgev1alpha1.MCPServerPhaseProvisioning
+		srv.Status.Phase = farosv1alpha1.MCPServerPhaseProvisioning
 		setCondition(&srv.Status.Conditions, "Ready", metav1.ConditionFalse, "TokenPending", "waiting for token controller to populate the Secret", srv.Generation)
 	default:
 		srv.Status.TokenSecretRef = ref
-		srv.Status.Phase = kedgev1alpha1.MCPServerPhaseReady
+		srv.Status.Phase = farosv1alpha1.MCPServerPhaseReady
 		setCondition(&srv.Status.Conditions, "Ready", metav1.ConditionTrue, "EndpointReady", "endpoint provisioned", srv.Generation)
 		// Discover the tools this endpoint federates, using its OWN token so the
 		// set reflects exactly what this server can reach (per-server targeted
@@ -160,21 +160,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 // discoverTools runs federation discovery for one server with its own token and
 // maps the result into the CR status shape. Returns nil when no enumerator is
 // wired (e.g. minimal hubs), so status simply carries no federated providers.
-func (r *Reconciler) discoverTools(ctx context.Context, cluster, token string) []kedgev1alpha1.FederatedMCPProvider {
+func (r *Reconciler) discoverTools(ctx context.Context, cluster, token string) []farosv1alpha1.FederatedMCPProvider {
 	if r.enumerate == nil {
 		return nil
 	}
 	targets := r.enumerate(ctx)
 	discovered := mcpaggregate.DiscoverFederation(ctx, targets, token, cluster)
-	out := make([]kedgev1alpha1.FederatedMCPProvider, 0, len(discovered))
+	out := make([]farosv1alpha1.FederatedMCPProvider, 0, len(discovered))
 	for _, p := range discovered {
-		tools := make([]kedgev1alpha1.FederatedMCPTool, 0, len(p.Tools))
+		tools := make([]farosv1alpha1.FederatedMCPTool, 0, len(p.Tools))
 		for _, t := range p.Tools {
-			tools = append(tools, kedgev1alpha1.FederatedMCPTool{
+			tools = append(tools, farosv1alpha1.FederatedMCPTool{
 				Name: t.Name, Title: t.Title, Description: t.Description,
 			})
 		}
-		out = append(out, kedgev1alpha1.FederatedMCPProvider{
+		out = append(out, farosv1alpha1.FederatedMCPProvider{
 			Name:        p.Name,
 			DisplayName: p.DisplayName,
 			Reachable:   p.Reachable,
@@ -198,12 +198,12 @@ func (r *Reconciler) tenantConfig(clusterName string) *rest.Config {
 // the MCPServer for GC. It returns a reference to the token Secret and whether
 // kcp's token controller has populated it yet (a short poll; if still empty the
 // caller requeues rather than blocking).
-func ensureMCPIdentity(ctx context.Context, cs kubernetes.Interface, srv *kedgev1alpha1.MCPServer) (*corev1.SecretReference, string, bool, error) {
+func ensureMCPIdentity(ctx context.Context, cs kubernetes.Interface, srv *farosv1alpha1.MCPServer) (*corev1.SecretReference, string, bool, error) {
 	saName := srv.Name + "-mcp"
 	secretName := srv.Name + "-mcp-token"
 
 	owner := metav1.OwnerReference{
-		APIVersion: kedgev1alpha1.SchemeGroupVersion.String(),
+		APIVersion: farosv1alpha1.SchemeGroupVersion.String(),
 		Kind:       "MCPServer",
 		Name:       srv.Name,
 		UID:        srv.UID,

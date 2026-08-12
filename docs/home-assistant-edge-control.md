@@ -1,4 +1,4 @@
-# Home Assistant control through kedge edges + AI agents
+# Home Assistant control through faros edges + AI agents
 
 Status: **implemented** (phases 1–4); live end-to-end demo (phase 5) not yet run
 Owner: mjudeikis
@@ -6,7 +6,7 @@ Scope: edges provider, edge agent (server mode), portal. **No agents-provider ch
 
 ## 1. What this does
 
-Install the kedge linux agent on the server that runs Home Assistant (HA). The
+Install the faros linux agent on the server that runs Home Assistant (HA). The
 agent auto-discovers HA (where and how it runs), the edges provider exposes it
 through the existing reverse tunnel, and AI agents get HA tools — so a user can
 type "open the gates" in chat (portal / Telegram / Discord) and it actuates.
@@ -38,10 +38,10 @@ discovery (control plane, separate loop):
    KubernetesCluster); services get their own lifecycle, reconcilers and RBAC,
    and one edge can carry many services without status bloat.
 3. **The kind is `Service` (resource `services`), not `EdgeService`** — it
-   already lives under group `edges.kedge.faros.sh`, so an "Edge" prefix is
+   already lives under group `edges.faros.sh`, so an "Edge" prefix is
    redundant. There is no core `services` to collide with: kcp workspaces are a
    control plane and don't serve core v1 workload resources. Short name
-   `edgesvc`; fully-qualified `services.edges.kedge.faros.sh`.
+   `edgesvc`; fully-qualified `services.edges.faros.sh`.
 4. **Discovery is provider-pulled** via a new agent `/api` management endpoint,
    not heartbeat-pushed — so `LinuxServerStatus` and the edge reporter are
    untouched, and no agent config sync is needed.
@@ -54,7 +54,7 @@ discovery (control plane, separate loop):
 ## 3. The `Service` API
 
 `providers/edges/apis/v1alpha1/types_service.go` — cluster-scoped, in group
-`edges.kedge.faros.sh/v1alpha1`.
+`edges.faros.sh/v1alpha1`.
 
 ```go
 type ServiceSpec struct {
@@ -78,8 +78,8 @@ type ServiceStatus struct {
 ```
 
 Discovery-created objects are named `<edge>-<type>` (e.g. `ha-box-home-assistant`)
-and labelled `edges.kedge.faros.sh/edge=<edge>` and
-`edges.kedge.faros.sh/discovered=true`. Users may also create Services by hand.
+and labelled `edges.faros.sh/edge=<edge>` and
+`edges.faros.sh/discovered=true`. Users may also create Services by hand.
 
 **Ownership contract** (load-bearing): the discovery reconciler owns
 discovery-derived status only and never clobbers user spec (port overrides,
@@ -129,7 +129,7 @@ reconciler by construction: it only ever lists and prunes objects labelled
   - `GET /api/v1/services` — runs the detectors, returns JSON. First endpoint of
     a general agent-management surface (host facts, future config can join).
   - `/svc/` — [svc.go](../pkg/agent/tunnel/svc.go): reverse-proxies to the
-    service named by the provider-set `X-Kedge-Svc-Target` header. WebSocket
+    service named by the provider-set `X-Faros-Svc-Target` header. WebSocket
     upgrades are hijacked and piped (HA uses `/api/websocket`).
 
     This is the **SSRF boundary**, and it is mode-aware (`isAllowedSvcHost`).
@@ -152,13 +152,13 @@ Both routes work in server mode and kubernetes mode.
   connectable):
 
   ```
-  /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/services/{name}/proxy[/...]
-  /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/services/{name}/mcp
+  /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/services/{name}/proxy[/...]
+  /services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/services/{name}/mcp
   ```
 
   `proxy` authorizes via kcp SAR (same delegated call as `ssh`), loads the
   Service, resolves the LinuxServer tunnel from the `ConnManager`, reads the
-  token from the tenant Secret, and forwards with `X-Kedge-Svc-Target` set and
+  token from the tenant Secret, and forwards with `X-Faros-Svc-Target` set and
   the caller's hub token **replaced** by the service token. Upgrades are
   hijacked and piped.
 - **[internal/haclient/](../providers/edges/internal/haclient/)** — issues HTTP
@@ -205,8 +205,8 @@ agents-provider change.
 
 `providers/edges/portal/` (Vue). Both edge detail views gained a **Services**
 section: cards per Service (type, version, target, install type, phase), plus a
-Connect/Update-token flow that writes the Secret `kedge-edges-svc-<name>` in
-`kedge-system` and patches `spec.authSecretRef`. The validation reconciler does
+Connect/Update-token flow that writes the Secret `faros-edges-svc-<name>` in
+`faros-system` and patches `spec.authSecretRef`. The validation reconciler does
 the rest.
 
 On kube edges the section also gets **Add service** (name, type, target
@@ -216,7 +216,7 @@ lists alongside discovered ones but **not** the discovered label, so the
 discovery reconciler leaves it alone.
 
 GraphQL wire identifiers follow the gateway convention for kind `Service`:
-list `Services`, input `EdgesKedgeFarosShV1alpha1Service_Input`, mutation
+list `Services`, input `EdgesFarosShV1alpha1Service_Input`, mutation
 `updateService`.
 
 ## 8. Using it
@@ -224,19 +224,19 @@ list `Services`, input `EdgesKedgeFarosShV1alpha1Service_Input`, mutation
 **HA on a bare host (LinuxServer):**
 
 1. Install the CLI, create the LinuxServer, then
-   `kedge install --type server --name ha-box ...` (systemd unit joins the tunnel).
+   `faros install --type server --name ha-box ...` (systemd unit joins the tunnel).
 2. Within a reconcile, `kubectl get edgesvc` shows `ha-box-home-assistant`
    phase `Detected`.
 
 **HA in a cluster (KubernetesCluster):** declare it — portal → Add service, or:
 
 ```yaml
-apiVersion: edges.kedge.faros.sh/v1alpha1
+apiVersion: edges.faros.sh/v1alpha1
 kind: Service
 metadata:
   name: ha-cluster
   labels:
-    edges.kedge.faros.sh/edge: kube-1
+    edges.faros.sh/edge: kube-1
 spec:
   edgeRef: {kind: KubernetesCluster, name: kube-1}
   targetRef: {namespace: home, name: home-assistant}   # → home-assistant.home.svc
@@ -252,7 +252,7 @@ spec:
 4. Verify the data plane:
    ```
    curl -H "Authorization: Bearer $USER_TOKEN" \
-     https://<hub>/services/providers/edges/edgeproxy/clusters/<cluster>/apis/edges.kedge.faros.sh/v1alpha1/services/ha-box-home-assistant/proxy/api/config
+     https://<hub>/services/providers/edges/edgeproxy/clusters/<cluster>/apis/edges.faros.sh/v1alpha1/services/ha-box-home-assistant/proxy/api/config
    ```
 5. Create an Agent with `spec.tools.interactive.families: [core, edges]` and
    `requireApproval: ["*ha_call_service*"]`. Chat: "open the gates" → the model

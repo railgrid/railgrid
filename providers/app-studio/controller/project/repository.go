@@ -24,12 +24,12 @@ import (
 )
 
 // repositoryGVK is the code provider's Repository resource.
-var repositoryGVK = schema.GroupVersionKind{Group: "code.kedge.faros.sh", Version: "v1alpha1", Kind: "Repository"}
+var repositoryGVK = schema.GroupVersionKind{Group: "code.faros.sh", Version: "v1alpha1", Kind: "Repository"}
 
 // projectRepositoryLabel matches the api layer's claim label/annotation so
 // handler-side cleanup and adoption keep recognizing reconciler-created
 // repositories.
-const projectRepositoryLabel = "app-studio.ai.kedge.faros.sh/project"
+const projectRepositoryLabel = "app-studio.ai.faros.sh/project"
 
 // ensureRepository creates the Repository CR the spec binding names, if any
 // (autoInit creates the repo on the git host), and returns the observed

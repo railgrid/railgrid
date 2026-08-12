@@ -7,7 +7,7 @@
 //    served-model discovery), key rotation, edit and delete;
 //  - an assignments view: which agents use each model (primary vs fallback).
 //
-// Each credential is its own Secret (kedge-agents-model-<name>).
+// Each credential is its own Secret (faros-agents-model-<name>).
 
 import { html, nothing, svg, type TemplateResult } from 'lit'
 import { state } from 'lit/decorators.js'
@@ -116,7 +116,7 @@ export class Models extends StoreElement {
         ${this.creating ? nothing : html`<button @click=${() => (this.creating = true)}>${icon('plus')} New model</button>`}
       </div>
       <p class="muted">
-        Model credentials shared across the workspace (each is a Secret <code>kedge-agents-model-&lt;name&gt;</code>). Assign them to
+        Model credentials shared across the workspace (each is a Secret <code>faros-agents-model-&lt;name&gt;</code>). Assign them to
         agents in each agent's Config pane.
       </p>
       ${this.dashboard()}

@@ -1,7 +1,7 @@
 # Agents portal
 
 Vite + TypeScript + [Lit](https://lit.dev) micro-frontend for the agents
-provider, mounted in the kedge portal under `/ui/providers/agents/`. The Go
+provider, mounted in the faros portal under `/ui/providers/agents/`. The Go
 binary embeds `portal/dist` via `assets.go`.
 
 ```
@@ -15,21 +15,21 @@ npm test
 
 There is **no iframe and no postMessage**. The host
 (`portal/src/pages/ProviderFrame.vue`) injects `/ui/providers/agents/main.js`,
-which registers the custom element `kedge-provider-agents`, then appends the
-element and assigns a `kedgeContext` **property** on it:
+which registers the custom element `faros-provider-agents`, then appends the
+element and assigns a `farosContext` **property** on it:
 
 ```ts
-el.kedgeContext = { subPath, token, user, tenant, orgUUID, workspaceUUID, theme, basePath }
+el.farosContext = { subPath, token, user, tenant, orgUUID, workspaceUUID, theme, basePath }
 ```
 
 The element renders in **light DOM**, so the portal's `:root` design tokens
 cascade in and light/dark themes match without any extra plumbing. Its own
 stylesheet (`src/style.css`) is injected once, with every selector namespaced
-under `kedge-provider-agents`.
+under `faros-provider-agents`.
 
 API calls go to `basePath` with `/ui/providers/` rewritten to
 `/services/providers/` (the hub's service proxy), carrying the bearer token and
-the `X-Kedge-Org` / `X-Kedge-Workspace` tenant headers — see
+the `X-Faros-Org` / `X-Faros-Workspace` tenant headers — see
 `src/portalkit/tenant.ts`. The host context is authoritative for the tenant; the
 localStorage copy is only a fallback.
 
@@ -41,7 +41,7 @@ router.
 ```
 src/
   main.ts               entry: registers the custom element + injects style.css
-  element.ts            <kedge-provider-agents> shell — nav, routing, store lifecycle
+  element.ts            <faros-provider-agents> shell — nav, routing, store lifecycle
   api.ts                typed REST client + a spec-correct SSE reader
   store.ts              Slice<T> {data, loading, error} collections + /api/events subscription
   mutate.ts             the one write helper (optimistic → request → toast → refresh)

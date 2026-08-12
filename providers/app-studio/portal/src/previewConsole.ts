@@ -55,7 +55,7 @@ interface PreviewConsoleControllerOptions {
 }
 
 interface BridgeReadyMessage {
-  type: 'kedge.preview-console.ready'
+  type: 'faros.preview-console.ready'
   version: number
   documentID?: string
   path?: string
@@ -116,7 +116,7 @@ export class PreviewConsoleController {
       // be missed. The bridge's document ID is the immutable generation; a new
       // document therefore cannot replay a capability issued to its predecessor.
       this.getFrame()?.contentWindow?.postMessage({
-        type: 'kedge.preview-console.probe',
+        type: 'faros.preview-console.probe',
         version: PREVIEW_CONSOLE_PROTOCOL_VERSION,
       }, this.expectedOrigin)
     } catch (error) {
@@ -205,7 +205,7 @@ export class PreviewConsoleController {
     this.port.onmessage = this.handlePortMessage
     this.port.start()
     frame.contentWindow.postMessage({
-      type: 'kedge.preview-console.start',
+      type: 'faros.preview-console.start',
       version: PREVIEW_CONSOLE_PROTOCOL_VERSION,
       sessionID: session.sessionID,
       generation: session.generation,
@@ -223,7 +223,7 @@ export class PreviewConsoleController {
       message.generation !== session.generation
     ) return
 
-    if (message.type === 'kedge.preview-console.connected') {
+    if (message.type === 'faros.preview-console.connected') {
       if (this.connectionTimer !== undefined) {
         window.clearTimeout(this.connectionTimer)
         this.connectionTimer = undefined
@@ -231,7 +231,7 @@ export class PreviewConsoleController {
       this.onState('connected')
       return
     }
-    if (message.type !== 'kedge.preview-console.events' || !Array.isArray(message.events)) return
+    if (message.type !== 'faros.preview-console.events' || !Array.isArray(message.events)) return
     if (Number.isSafeInteger(message.droppedCount) && Number(message.droppedCount) > 0) {
       this.addDropped(Number(message.droppedCount))
     }
@@ -345,7 +345,7 @@ export class PreviewConsoleController {
 function isBridgeReadyMessage(value: unknown): value is BridgeReadyMessage {
   if (!value || typeof value !== 'object') return false
   const message = value as Partial<BridgeReadyMessage>
-  return message.type === 'kedge.preview-console.ready' && message.version === PREVIEW_CONSOLE_PROTOCOL_VERSION
+  return message.type === 'faros.preview-console.ready' && message.version === PREVIEW_CONSOLE_PROTOCOL_VERSION
 }
 
 function isBridgePortMessage(value: unknown): value is BridgePortMessage {

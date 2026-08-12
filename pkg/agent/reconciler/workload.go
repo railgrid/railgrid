@@ -19,7 +19,7 @@ limitations under the License.
 // Deployment.
 //
 // The edges workload types (Workload/Placement, group
-// edges.kedge.faros.sh) live in the standalone edges provider module. To keep
+// edges.faros.sh) live in the standalone edges provider module. To keep
 // the core agent independent of that provider, this reconciler reads them as
 // unstructured objects and decodes only the fields it needs into local mirror
 // structs — no cross-module import.
@@ -55,7 +55,7 @@ import (
 const controllerName = "workload-reconciler"
 
 // fieldManager identifies the agent's server-side-apply writes on the edge.
-const fieldManager = "kedge-agent"
+const fieldManager = "faros-agent"
 
 // resyncPeriod for the Placement informer.
 const resyncPeriod = 10 * time.Minute
@@ -63,7 +63,7 @@ const resyncPeriod = 10 * time.Minute
 // Group/version/labels for the edges provider's workload types, mirrored here so
 // the agent needs no import of the provider module.
 const (
-	edgesGroup   = "edges.kedge.faros.sh"
+	edgesGroup   = "edges.faros.sh"
 	edgesVersion = "v1alpha1"
 
 	labelEdge      = edgesGroup + "/edge"

@@ -190,7 +190,7 @@ func webFetch(ctx context.Context, raw string, maxChars int) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "kedge-agents/0.1 (+https://github.com/faroshq/kedge)")
+	req.Header.Set("User-Agent", "faros-agents/0.1 (+https://github.com/faroshq/faros)")
 	resp, err := guardedHTTPClient.Do(req)
 	if err != nil {
 		return "", err

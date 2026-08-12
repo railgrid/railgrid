@@ -203,12 +203,12 @@ func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
 			// (controller/template/retired.go). Finalizer add/remove
 			// (update) comes from the wildcard rule below.
 			{
-				APIGroups: []string{"infrastructure.kedge.faros.sh"},
+				APIGroups: []string{"infrastructure.faros.sh"},
 				Resources: []string{"templates"},
 				Verbs:     []string{"get", "list", "watch", "delete"},
 			},
 			{
-				APIGroups: []string{"infrastructure.kedge.faros.sh"},
+				APIGroups: []string{"infrastructure.faros.sh"},
 				Resources: []string{"templates/status"},
 				Verbs:     []string{"get", "patch", "update"},
 			},
@@ -217,7 +217,7 @@ func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
 			// the APIExport VW so the future kro backend can see
 			// every tenant's Instance CRs.
 			{
-				APIGroups: []string{"infrastructure.kedge.faros.sh"},
+				APIGroups: []string{"infrastructure.faros.sh"},
 				Resources: []string{"*"},
 				Verbs:     []string{"get", "list", "watch", "patch", "update"},
 			},
@@ -263,7 +263,7 @@ func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
 			},
 			// The provider-owned workload attestor performs an online
 			// TokenReview against the runtime cluster for projected
-			// kedge-provider-actions-bootstrap tokens. It never parses JWTs
+			// faros-provider-actions-bootstrap tokens. It never parses JWTs
 			// locally, so this is the only authentication API permission it
 			// needs.
 			{

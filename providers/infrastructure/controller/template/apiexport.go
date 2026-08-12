@@ -54,7 +54,7 @@ import (
 // catalog controller in the hub creates this APIExport in the
 // provider's workspace; the Template controller appends per-template
 // resources to its spec.
-const APIExportName = "infrastructure.providers.kedge.faros.sh"
+const APIExportName = "infrastructure.providers.faros.sh"
 
 // apiExportGVR + apiResourceSchemaGVR are what the Reconciler's
 // dynamic client targets when reading + writing the kcp objects.

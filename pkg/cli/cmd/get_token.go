@@ -29,7 +29,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/oauth2"
 
-	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
+	cliauth "github.com/faroshq/faros/pkg/cli/auth"
 )
 
 func newGetTokenCommand() *cobra.Command {
@@ -89,13 +89,13 @@ func runGetToken(ctx context.Context, issuerURL, clientID string, insecure bool)
 
 	// Token is missing or expired -- try to refresh.
 	if cache == nil || cache.RefreshToken == "" {
-		return fmt.Errorf("no valid token found; please run 'kedge login' first")
+		return fmt.Errorf("no valid token found; please run 'faros login' first")
 	}
 
 	// Public client refresh: no client secret needed (PKCE flow).
 	newIDToken, newRefreshToken, expiry, err := refreshToken(ctx, issuerURL, clientID, "", cache.RefreshToken, insecure)
 	if err != nil {
-		return fmt.Errorf("token refresh failed (run 'kedge login' to re-authenticate): %w", err)
+		return fmt.Errorf("token refresh failed (run 'faros login' to re-authenticate): %w", err)
 	}
 
 	// Persist BEFORE returning the token: a successful refresh has already
@@ -106,7 +106,7 @@ func runGetToken(ctx context.Context, issuerURL, clientID string, insecure bool)
 	cache.RefreshToken = newRefreshToken
 	cache.ExpiresAt = expiry.Unix()
 	if err := cliauth.SaveTokenCache(cache); err != nil {
-		return fmt.Errorf("saving rotated token cache (run 'kedge login' to re-authenticate): %w", err)
+		return fmt.Errorf("saving rotated token cache (run 'faros login' to re-authenticate): %w", err)
 	}
 
 	return outputExecCredential(newIDToken, expiry.Unix())

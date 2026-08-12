@@ -109,7 +109,7 @@ func TestPortalAssets(t *testing.T) {
 		contentType  string
 		bodyContains string
 	}{
-		{path: "/main.js", contentType: "javascript", bodyContains: "kedge-provider-app-studio"},
+		{path: "/main.js", contentType: "javascript", bodyContains: "faros-provider-app-studio"},
 		{path: "/icon.svg", contentType: "image/svg+xml", bodyContains: "<svg"},
 		{path: "/does-not-exist", contentType: "text/html", bodyContains: "App Studio provider"},
 	} {

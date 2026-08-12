@@ -1,4 +1,4 @@
-module github.com/faroshq/faros-kedge
+module github.com/faroshq/faros
 
 go 1.26.3
 

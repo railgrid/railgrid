@@ -33,7 +33,7 @@ onMounted(() => admin.refresh())
         </div>
         <div class="flex flex-col leading-tight">
           <span class="text-sm font-semibold">Platform admin</span>
-          <span class="text-[10px] uppercase tracking-wide text-text-muted">kedge</span>
+          <span class="text-[10px] uppercase tracking-wide text-text-muted">faros</span>
         </div>
       </div>
 
@@ -58,7 +58,7 @@ onMounted(() => admin.refresh())
           class="flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-surface-overlay/50 hover:text-text-secondary"
         >
           <ArrowLeft class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
-          <span>Back to kedge</span>
+          <span>Back to faros</span>
         </router-link>
         <button
           class="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:bg-surface-overlay/50 hover:text-text-secondary"

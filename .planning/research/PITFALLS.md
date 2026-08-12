@@ -40,7 +40,7 @@
 **Prevention:**
 - Add guard at the top of `Reconcile` in `edge/mount_reconciler.go`:
   ```go
-  if edge.Spec.Type != kedgev1alpha1.EdgeTypeKubernetes {
+  if edge.Spec.Type != farosv1alpha1.EdgeTypeKubernetes {
       return ctrl.Result{}, nil
   }
   ```
@@ -50,7 +50,7 @@
 
 ## 5. Agent `--type` vs `--mode` flag rename breaks existing deployments
 
-**Risk:** Any existing `kedge-agent` invocations using `--mode=site` or `--mode=server` will silently fail or use the default (kubernetes) if the old flag is removed.
+**Risk:** Any existing `faros-agent` invocations using `--mode=site` or `--mode=server` will silently fail or use the default (kubernetes) if the old flag is removed.
 
 **Prevention:**
 - Add a deprecated `--mode` alias that prints a warning and maps to `--type`
@@ -59,9 +59,9 @@
 
 ---
 
-## 6. CLI `kedge ssh` URL path construction
+## 6. CLI `faros ssh` URL path construction
 
-**Risk:** The old URL is `/proxy/apis/kedge.faros.sh/v1alpha1/{sites|servers}/{name}/ssh`. The new URL is `/proxy/apis/kedge.faros.sh/v1alpha1/edges/{name}/ssh`. Building the URL wrong (e.g., keeping `sites` as default) causes a 404 that looks like a connection issue.
+**Risk:** The old URL is `/proxy/apis/faros.sh/v1alpha1/{sites|servers}/{name}/ssh`. The new URL is `/proxy/apis/faros.sh/v1alpha1/edges/{name}/ssh`. Building the URL wrong (e.g., keeping `sites` as default) causes a 404 that looks like a connection issue.
 
 **Prevention:**
 - Delete `resolveResourceKind` — if it compiles, it should be gone

@@ -26,22 +26,22 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros/pkg/apiurl"
 )
 
 // downloadKubeconfig serves a workspace-scoped kubeconfig YAML for the
 // caller. Two shapes are emitted depending on how the hub authenticates:
 //
 //   - OIDC mode (KubeconfigConfig.OIDCIssuerURL set): the kubeconfig
-//     points users at `kedge get-token` via the exec credential plugin
+//     points users at `faros get-token` via the exec credential plugin
 //     — the same shape /auth/callback writes — so refresh keeps working.
 //   - Static-token mode: the caller's bearer token is embedded directly.
 //     The downloaded file behaves the same way the live REST call did.
 //
 // The OIDC variant accepts ?install=krew to swap the exec Command from
-// `kedge` to `kubectl-kedge`, matching the binary name the krew plugin
-// installs (the only release channel that ships `kubectl-kedge` without
-// a `kedge` symlink). Default is `kedge` for back-compat.
+// `faros` to `kubectl-faros`, matching the binary name the krew plugin
+// installs (the only release channel that ships `kubectl-faros` without
+// a `faros` symlink). Default is `faros` for back-compat.
 //
 // Either way the cluster URL is HubExternalURL + /clusters/<clusterName>,
 // where clusterName is the kcp logical-cluster hash for the workspace
@@ -76,15 +76,15 @@ func (h *Handler) downloadKubeconfig(w http.ResponseWriter, r *http.Request) {
 		staticToken = strings.TrimPrefix(ah, "Bearer ")
 	}
 
-	execCommand := "kedge"
+	execCommand := "faros"
 	switch strings.ToLower(r.URL.Query().Get("install")) {
-	case "", "kedge", "standalone":
+	case "", "faros", "standalone":
 		// default
-	case "krew", "kubectl-kedge":
-		execCommand = "kubectl-kedge"
+	case "krew", "kubectl-faros":
+		execCommand = "kubectl-faros"
 	default:
 		writeStatus(w, http.StatusBadRequest, "BadRequest",
-			"unknown install variant; expected 'kedge' or 'krew'")
+			"unknown install variant; expected 'faros' or 'krew'")
 		return
 	}
 
@@ -105,7 +105,7 @@ func (h *Handler) downloadKubeconfig(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(cfg)
 }
 
-// kubeconfigFilename returns kedge-<slug>.kubeconfig where <slug> is the
+// kubeconfigFilename returns faros-<slug>.kubeconfig where <slug> is the
 // workspace's display name (sanitised to filesystem-safe chars) or the
 // UUID when there's no display name.
 func kubeconfigFilename(displayName, uuid string) string {
@@ -118,7 +118,7 @@ func kubeconfigFilename(displayName, uuid string) string {
 	if base == "" {
 		base = uuid
 	}
-	return "kedge-" + base + ".kubeconfig"
+	return "faros-" + base + ".kubeconfig"
 }
 
 var filenameSafe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
@@ -127,7 +127,7 @@ func (m *Manager) buildWorkspaceKubeconfig(userID, clusterName, staticToken, exe
 	cfg := clientcmdapi.NewConfig()
 	serverURL := apiurl.HubServerURL(m.kubeconfig.HubExternalURL, clusterName)
 
-	cfg.Clusters["kedge"] = &clientcmdapi.Cluster{
+	cfg.Clusters["faros"] = &clientcmdapi.Cluster{
 		Server:                serverURL,
 		InsecureSkipTLSVerify: m.kubeconfig.DevMode,
 	}
@@ -135,7 +135,7 @@ func (m *Manager) buildWorkspaceKubeconfig(userID, clusterName, staticToken, exe
 	authInfo := &clientcmdapi.AuthInfo{}
 	if m.kubeconfig.OIDCIssuerURL != "" {
 		if execCommand == "" {
-			execCommand = "kedge"
+			execCommand = "faros"
 		}
 		// PKCE public client — no --oidc-client-secret. Matches the args
 		// pkg/server/auth.Handler.generateKubeconfig writes on first login.
@@ -157,11 +157,11 @@ func (m *Manager) buildWorkspaceKubeconfig(userID, clusterName, staticToken, exe
 	}
 	cfg.AuthInfos[userID] = authInfo
 
-	cfg.Contexts["kedge"] = &clientcmdapi.Context{
-		Cluster:  "kedge",
+	cfg.Contexts["faros"] = &clientcmdapi.Context{
+		Cluster:  "faros",
 		AuthInfo: userID,
 	}
-	cfg.CurrentContext = "kedge"
+	cfg.CurrentContext = "faros"
 
 	return clientcmd.Write(*cfg)
 }

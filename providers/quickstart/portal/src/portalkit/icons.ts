@@ -109,7 +109,7 @@ const PATHS: Record<IconName, string> = {
 // Self-inject the .ic sizing rule once (browser only), so any portal that
 // imports ic() gets correct icon sizing without wiring a separate stylesheet —
 // important for the raw-CSS-injection portals (agents/kuery/quickstart).
-const ICON_STYLE_ID = 'kedge-portalkit-icons-css'
+const ICON_STYLE_ID = 'faros-portalkit-icons-css'
 if (typeof document !== 'undefined' && !document.getElementById(ICON_STYLE_ID)) {
   const s = document.createElement('style')
   s.id = ICON_STYLE_ID

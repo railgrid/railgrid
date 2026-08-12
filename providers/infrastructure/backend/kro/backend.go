@@ -56,14 +56,14 @@ type Backend struct {
 	// pointed at by KRO_KUBECONFIG.
 	runtime dynamic.Interface
 
-	// tokens are the platform-config values substituted for reserved ${kedge.*}
+	// tokens are the platform-config values substituted for reserved ${faros.*}
 	// placeholders in a Template's backendConfig before the RGD is authored —
 	// platform-wide settings that belong on the backend, not in per-tenant data.
 	// See substituteTokens in rgd.go. The tokens are the exposure-layer Gateway
-	// parent (${kedge.gatewayName}/${kedge.gatewayNamespace}) — the ONE Gateway
+	// parent (${faros.gatewayName}/${faros.gatewayNamespace}) — the ONE Gateway
 	// every template's HTTPRoutes attach to (cfgate cloudflare-tunnel in prod,
-	// envoy locally) — plus ${kedge.appPublicPort} and the dev-overlay images
-	// (${kedge.devImage.<toolchain>}, ${kedge.devAgentImage}); per-instance
+	// envoy locally) — plus ${faros.appPublicPort} and the dev-overlay images
+	// (${faros.devImage.<toolchain>}, ${faros.devAgentImage}); per-instance
 	// inputs like container images are schema fields with defaults, not tokens
 	// (see providers/infrastructure/docs/template-conventions.md).
 	tokens map[string]string
@@ -72,7 +72,7 @@ type Backend struct {
 var _ backend.Backend = (*Backend)(nil)
 
 // DefaultGatewayName / DefaultGatewayNamespace are used when
-// KEDGE_GATEWAY_NAME / KEDGE_GATEWAY_NAMESPACE are unset. They point at the
+// FAROS_GATEWAY_NAME / FAROS_GATEWAY_NAMESPACE are unset. They point at the
 // cfgate Cloudflare Tunnel Gateway we ship with (the Gateway API exposure
 // layer: reverse tunnels, edge TLS).
 const (
@@ -87,11 +87,11 @@ const (
 // backendConfig at RGD build time (so changing it is a config change, not a
 // template edit):
 //
-//   - KEDGE_GATEWAY_NAME / KEDGE_GATEWAY_NAMESPACE — the exposure-layer Gateway
+//   - FAROS_GATEWAY_NAME / FAROS_GATEWAY_NAMESPACE — the exposure-layer Gateway
 //     parent every template's HTTPRoutes attach to (defaults
 //     "cloudflare-tunnel" / "cfgate-system").
-//   - KEDGE_APP_PUBLIC_PORT — bare port number appended (as ":<port>") to
-//     synthesized exposure URLs via ${kedge.appPublicPort}. Unset in
+//   - FAROS_APP_PUBLIC_PORT — bare port number appended (as ":<port>") to
+//     synthesized exposure URLs via ${faros.appPublicPort}. Unset in
 //     production (443 implied); local kind sets 10443 (the envoy
 //     port-forward).
 //
@@ -100,20 +100,20 @@ const (
 // spec.version), the same convention every other template follows. See
 // providers/infrastructure/docs/template-conventions.md.
 func New(runtime dynamic.Interface) *Backend {
-	gatewayName := os.Getenv("KEDGE_GATEWAY_NAME")
+	gatewayName := os.Getenv("FAROS_GATEWAY_NAME")
 	if gatewayName == "" {
 		gatewayName = DefaultGatewayName
 	}
-	gatewayNamespace := os.Getenv("KEDGE_GATEWAY_NAMESPACE")
+	gatewayNamespace := os.Getenv("FAROS_GATEWAY_NAMESPACE")
 	if gatewayNamespace == "" {
 		gatewayNamespace = DefaultGatewayNamespace
 	}
 	tokens := map[string]string{
 		gatewayNameToken:      gatewayName,
 		gatewayNamespaceToken: gatewayNamespace,
-		appPublicPortToken:    appPublicPortSuffix(os.Getenv("KEDGE_APP_PUBLIC_PORT")),
+		appPublicPortToken:    appPublicPortSuffix(os.Getenv("FAROS_APP_PUBLIC_PORT")),
 		previewConsoleVerificationJWKSConfigKey: strings.TrimSpace(
-			os.Getenv("KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS"),
+			os.Getenv("FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS"),
 		),
 	}
 	maps.Copy(tokens, accessGateTokens())
@@ -121,30 +121,30 @@ func New(runtime dynamic.Interface) *Backend {
 	return &Backend{runtime: runtime, tokens: tokens}
 }
 
-// DefaultAccessProxyImage backs ${kedge.accessProxyImage} when
-// KEDGE_ACCESS_PROXY_IMAGE is unset. Production should pin a digest — the
+// DefaultAccessProxyImage backs ${faros.accessProxyImage} when
+// FAROS_ACCESS_PROXY_IMAGE is unset. Production should pin a digest — the
 // gate fronts every published app.
-const DefaultAccessProxyImage = "ghcr.io/faroshq/kedge-access-proxy:latest"
+const DefaultAccessProxyImage = "ghcr.io/faroshq/faros-access-proxy:latest"
 
 // accessGateTokens resolves the access-gate token family (see rgd.go). The
 // hub URLs may legitimately be empty on hubs that never publish privately;
 // the gate only requires them in private mode, so empty substitution renders
 // a public-only gate rather than failing template setup.
 func accessGateTokens() map[string]string {
-	image := strings.TrimSpace(os.Getenv("KEDGE_ACCESS_PROXY_IMAGE"))
+	image := strings.TrimSpace(os.Getenv("FAROS_ACCESS_PROXY_IMAGE"))
 	if image == "" {
 		image = DefaultAccessProxyImage
 	}
-	hubURL := strings.TrimSpace(os.Getenv("KEDGE_ACCESS_HUB_URL"))
+	hubURL := strings.TrimSpace(os.Getenv("FAROS_ACCESS_HUB_URL"))
 	if hubURL == "" {
-		hubURL = strings.TrimSpace(os.Getenv("KEDGE_HUB_URL"))
+		hubURL = strings.TrimSpace(os.Getenv("FAROS_HUB_URL"))
 	}
-	hubPublicURL := strings.TrimSpace(os.Getenv("KEDGE_ACCESS_HUB_PUBLIC_URL"))
+	hubPublicURL := strings.TrimSpace(os.Getenv("FAROS_ACCESS_HUB_PUBLIC_URL"))
 	if hubPublicURL == "" {
 		hubPublicURL = hubURL
 	}
 	hubInsecure := "false"
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("KEDGE_ACCESS_HUB_INSECURE")), "true") {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_ACCESS_HUB_INSECURE")), "true") {
 		hubInsecure = "true"
 	}
 	return map[string]string{
@@ -155,7 +155,7 @@ func accessGateTokens() map[string]string {
 	}
 }
 
-// appPublicPortSuffix turns KEDGE_APP_PUBLIC_PORT into the ":<port>" suffix
+// appPublicPortSuffix turns FAROS_APP_PUBLIC_PORT into the ":<port>" suffix
 // spliced into backendConfig JSON/CEL by plain byte substitution. The value is
 // operator-provided and substituted unescaped, so accept only a bare port in
 // the valid range (a stray quote, ":", or path would corrupt every synthesized
@@ -168,25 +168,25 @@ func appPublicPortSuffix(raw string) string {
 	if n, err := strconv.Atoi(port); err == nil && n >= 1 && n <= 65535 {
 		return ":" + strconv.Itoa(n)
 	}
-	klog.Background().Info("ignoring invalid KEDGE_APP_PUBLIC_PORT (want a bare port number 1-65535)", "value", raw)
+	klog.Background().Info("ignoring invalid FAROS_APP_PUBLIC_PORT (want a bare port number 1-65535)", "value", raw)
 	return ""
 }
 
 // DefaultNodeDevImage / DefaultDevAgentImage back the dev-overlay images when
 // the env knobs are unset, so a stock deployment (and local dev) can run
 // node-toolchain sandboxes out of the box. Production should pin digests via
-// KEDGE_DEV_IMAGE_NODE / KEDGE_DEV_AGENT_IMAGE (they run tenant code — see
+// FAROS_DEV_IMAGE_NODE / FAROS_DEV_AGENT_IMAGE (they run tenant code — see
 // docs/app-studio-template-sandboxes.md §9).
 const (
 	// DefaultNodeDevImage is a plain node toolchain image — the dev agent is
-	// injected by init container, so nothing kedge-specific is baked in
+	// injected by init container, so nothing faros-specific is baked in
 	// (bookworm, not slim: dev flows need git and the usual build tools).
 	DefaultNodeDevImage  = "docker.io/library/node:22-bookworm"
-	DefaultDevAgentImage = "ghcr.io/faroshq/kedge-dev-agent:latest"
+	DefaultDevAgentImage = "ghcr.io/faroshq/faros-dev-agent:latest"
 )
 
 // devImageTokens collects the platform-managed dev-mode images: every
-// KEDGE_DEV_IMAGE_<TOOLCHAIN> env var becomes ${kedge.devImage.<toolchain>}
+// FAROS_DEV_IMAGE_<TOOLCHAIN> env var becomes ${faros.devImage.<toolchain>}
 // (underscores → dashes, lowercased), plus the agent injector image. The node
 // toolchain and the agent get in-binary defaults; any other toolchain a
 // template references without configuration fails that template's setup with
@@ -196,7 +196,7 @@ func devImageTokens() map[string]string {
 		devImageTokenPrefix + "node}": DefaultNodeDevImage,
 		devAgentImageToken:            DefaultDevAgentImage,
 	}
-	const envPrefix = "KEDGE_DEV_IMAGE_"
+	const envPrefix = "FAROS_DEV_IMAGE_"
 	for _, kv := range os.Environ() {
 		k, v, ok := strings.Cut(kv, "=")
 		if !ok || v == "" || !strings.HasPrefix(k, envPrefix) {
@@ -208,7 +208,7 @@ func devImageTokens() map[string]string {
 		}
 		out[devImageTokenPrefix+toolchain+"}"] = v
 	}
-	if v := os.Getenv("KEDGE_DEV_AGENT_IMAGE"); v != "" {
+	if v := os.Getenv("FAROS_DEV_AGENT_IMAGE"); v != "" {
 		out[devAgentImageToken] = v
 	}
 	return out

@@ -5,7 +5,7 @@ metadata:
   annotations:
     bootstrap.kcp.io/create-only: "true"
 spec:
-  # A `provider` workspace (root:kedge:providers:<name>) hosts a single
+  # A `provider` workspace (root:faros:providers:<name>) hosts a single
   # extension provider: its own APIExport + APIResourceSchemas (created by the
   # provider's `init`), the `provider` ServiceAccount, and a self-registered
   # CatalogEntry.
@@ -23,7 +23,7 @@ spec:
   #     created explicitly by the Provider controller before the SA is minted.
   limitAllowedChildren:
     none: true
-  # Provider workspaces only make sense directly under root:kedge:providers
+  # Provider workspaces only make sense directly under root:faros:providers
   # (a `universal` workspace). kcp WorkspaceType admission rejects creation at
   # any other path.
   limitAllowedParents:
@@ -34,5 +34,5 @@ spec:
   # CatalogEntry from inside its workspace. The provisioning (Provider) and
   # other platform exports are intentionally NOT bound here.
   defaultAPIBindings:
-  - path: root:kedge:system:controllers
-    export: providers.kedge.faros.sh
+  - path: root:faros:system:controllers
+    export: providers.faros.sh

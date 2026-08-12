@@ -3,25 +3,25 @@
 > [!IMPORTANT]
 > **Read-only mirror — do not push or open PRs here.**
 > The standalone [`faroshq/provider-app-studio`](https://github.com/faroshq/provider-app-studio)
-> repository is **automatically synced** from the kedge monorepo
-> [`faroshq/kedge`](https://github.com/faroshq/kedge) (path `providers/app-studio/`)
+> repository is **automatically synced** from the faros monorepo
+> [`faroshq/faros`](https://github.com/faroshq/faros) (path `providers/app-studio/`)
 > via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
 > the mirror, so any direct change here is overwritten. File issues and PRs
-> against [`faroshq/kedge`](https://github.com/faroshq/kedge) instead.
+> against [`faroshq/faros`](https://github.com/faroshq/faros) instead.
 > See [docs/provider-publishing.md](../../docs/provider-publishing.md) for how
 > the mirror is published.
 
-App Studio is a kedge provider that gives each tenant a **persistent AI project
+App Studio is a faros provider that gives each tenant a **persistent AI project
 workspace**: named Projects with durable "memory" (goals / requirements /
 constraints) and a chat surface backed by the tenant's own LLM credentials,
 with optional MCP tool use against their workspace. Projects are stored as
-`projects.ai.kedge.faros.sh` resources in the tenant's own kcp workspace; chat
+`projects.ai.faros.sh` resources in the tenant's own kcp workspace; chat
 transcripts persist in the provider's message store (Postgres in production and
 local dev, with explicit in-memory mode available only for throwaway UI work).
 
 The provider acts **as the calling user**: the hub's backend proxy forwards
-`/services/providers/app-studio/*` with the verified `X-Kedge-Tenant` /
-`X-Kedge-User` headers and the caller's bearer token, and the provider builds a
+`/services/providers/app-studio/*` with the verified `X-Faros-Tenant` /
+`X-Faros-User` headers and the caller's bearer token, and the provider builds a
 per-request, token-scoped client (see `tenant/`). There is no provider
 service-account escalation.
 
@@ -36,8 +36,8 @@ service-account escalation.
 | Tenant client | `tenant/` — token-forwarding `ClientFactory` (host+TLS from the provider kubeconfig, caller token per request) |
 | Message store | `store/` — Postgres + in-memory + envelope-encryption implementations |
 | Development runtime | `api/development_*` + `api/dataplane_client.go` — template-selected development instances, component-aware sync, restart/log/status calls, and edge-checked preview authorization |
-| Portal | `portal/` — the Vue micro-frontend (`<kedge-provider-app-studio>`), embedded via `assets.go` |
-| Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.kedge.faros.sh`) + Code and Infrastructure provider dependencies + the Project APIResourceSchema + `secrets` claim |
+| Portal | `portal/` — the Vue micro-frontend (`<faros-provider-app-studio>`), embedded via `assets.go` |
+| Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.faros.sh`) + Code and Infrastructure provider dependencies + the Project APIResourceSchema + `secrets` claim |
 | Deploy | `deploy/chart/` — Helm chart (Deployment, Service, CatalogEntry) |
 | CI (mirror) | `.github/workflows/{image,chart}.yaml` — publish the image + chart to GHCR (run only in the mirror) |
 
@@ -49,7 +49,7 @@ focused detail view with author-visible instructions, supporting-resource
 metadata, and an Enable or Disable action. The portal intentionally does not
 offer skill creation, import, editing, export, or deletion. Bundled skill
 content is read-only; project packages live under `.agents/skills`, with
-activation metadata in `.agents/skills/.kedge-catalog.json`.
+activation metadata in `.agents/skills/.faros-catalog.json`.
 
 Every package must contain a `SKILL.md` whose YAML frontmatter includes the
 required `name` and `description` fields. Skill bodies and supporting resources
@@ -111,13 +111,13 @@ Environment variables consumed by the binary:
 | Var | Purpose |
 |---|---|
 | `PORT` | Listen port (default `8081`) |
-| `KEDGE_HUB_URL` | Hub base URL for tenant GraphQL, caller-scoped catalog lookup, and Provider Actions forwarding |
-| `KEDGE_HUB_TOKEN` | Bearer token for the heartbeat |
-| `KEDGE_PROVIDER_NAME` | CatalogEntry name (default `app-studio`) |
-| `KEDGE_PROVIDER_KUBECONFIG` | Provider kubeconfig (kcp front-proxy host + TLS only) |
-| `KEDGE_ACTIONS_EXTERNAL_URL` | Optional absolute HTTPS hub origin, reachable and certificate-valid from sandbox pods, injected into action-enabled development runtimes for workload-token exchange and the declared server-side Actions SDK gateway calls; no local default |
-| `KEDGE_ACTIONS_CA_BUNDLE_FILE` | Optional PEM file containing the public CA for that origin; passed only to action-enabled development runtimes, never used to disable TLS verification |
-| `KEDGE_ACTIONS_CA_BUNDLE` | Optional direct PEM equivalent for local launches; when both CA settings are present they must match |
+| `FAROS_HUB_URL` | Hub base URL for tenant GraphQL, caller-scoped catalog lookup, and Provider Actions forwarding |
+| `FAROS_HUB_TOKEN` | Bearer token for the heartbeat |
+| `FAROS_PROVIDER_NAME` | CatalogEntry name (default `app-studio`) |
+| `FAROS_PROVIDER_KUBECONFIG` | Provider kubeconfig (kcp front-proxy host + TLS only) |
+| `FAROS_ACTIONS_EXTERNAL_URL` | Optional absolute HTTPS hub origin, reachable and certificate-valid from sandbox pods, injected into action-enabled development runtimes for workload-token exchange and the declared server-side Actions SDK gateway calls; no local default |
+| `FAROS_ACTIONS_CA_BUNDLE_FILE` | Optional PEM file containing the public CA for that origin; passed only to action-enabled development runtimes, never used to disable TLS verification |
+| `FAROS_ACTIONS_CA_BUNDLE` | Optional direct PEM equivalent for local launches; when both CA settings are present they must match |
 | `APP_STUDIO_DATABASE_URL` | Postgres DSN for the message store |
 | `APP_STUDIO_IN_MEMORY_MESSAGE_STORE` | `true` → non-durable in-memory store (dev) |
 | `APP_STUDIO_MESSAGE_ENCRYPTION_KEYS` | Comma-separated `key-id:base64-aes-key` entries for message content and metadata encryption at rest |
@@ -151,7 +151,7 @@ can supply only a path within the server-resolved current preview plus bounded
 semantic assertions. It cannot select an origin, click, type, or execute
 arbitrary JavaScript.
 
-The database container is named `kedge-app-studio-postgres`, listens on
+The database container is named `faros-app-studio-postgres`, listens on
 `127.0.0.1:55432`, and stores data under `.kcp/app-studio-postgres/`. Both
 Tiltfiles expose it as the `app-studio-db` resource, so hard-refreshing the UI
 or rebuilding the provider no longer drops prior conversation history.
@@ -172,13 +172,13 @@ To use your own database, set `APP_STUDIO_DATABASE_URL` in the environment or in
 `providers/app-studio/.env` (copy from `.env.example`). To intentionally use the
 old throwaway behavior, set `APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true`.
 
-Action-enabled development sandboxes also require `KEDGE_ACTIONS_EXTERNAL_URL` in
+Action-enabled development sandboxes also require `FAROS_ACTIONS_EXTERNAL_URL` in
 that environment file (or the launcher environment). `make run-provider-app-studio`
 forwards the explicitly configured value; it does not substitute the provider's
-internal `KEDGE_HUB_URL`, `localhost`, or an insecure HTTP URL. The origin must be
+internal `FAROS_HUB_URL`, `localhost`, or an insecure HTTP URL. The origin must be
 reachable from the sandbox pod and trusted by its system CA; configure deployment
 CA material separately when a private certificate authority is used. Set
-`KEDGE_ACTIONS_CA_BUNDLE_FILE` (or the direct `KEDGE_ACTIONS_CA_BUNDLE` value) for
+`FAROS_ACTIONS_CA_BUNDLE_FILE` (or the direct `FAROS_ACTIONS_CA_BUNDLE` value) for
 that case. The bundle is copied into a public ConfigMap-backed development
 mount and added to Go/Node trust roots; an unset bundle leaves the image's
 system trust unchanged. Helm deployments can use
@@ -358,7 +358,7 @@ App Studio keeps project files in its own workspace root so the assistant can
 list, read, search, and safely mutate text files before asking provider-code to
 commit selected changed files to git. Set `APP_STUDIO_WORKSPACE_ROOT` to choose
 the directory; the binary defaults to a temp directory, while the Helm chart
-mounts a persistent volume at `/var/lib/kedge-app-studio/workspaces`.
+mounts a persistent volume at `/var/lib/faros-app-studio/workspaces`.
 
 The assistant-facing workspace tools are App Studio local tools. Provider-code
 remains the git-source boundary: `commit_project_files` reads changed workspace
@@ -398,7 +398,7 @@ name: sales
 provider: databricks
 kind: providerReference
 resourceRef:
-  apiVersion: databricks.kedge.faros.sh/v1alpha1
+  apiVersion: databricks.faros.sh/v1alpha1
   kind: Table
   resource: tables
   name: order-history
@@ -428,25 +428,25 @@ Caller credentials, provider backend URLs, resource overrides, and raw SQL
 are rejected.
 
 Generated server applications install the public
-`@crwilhit/kedge-actions-node@0.1.0` artifact under the stable consumer name
+`@crwilhit/faros-actions-node@0.1.0` artifact under the stable consumer name
 with this exact dependency alias in the server component's `package.json`:
 
 ```json
 {
   "dependencies": {
-    "@kedge/actions-node": "npm:@crwilhit/kedge-actions-node@0.1.0"
+    "@faros/actions-node": "npm:@crwilhit/faros-actions-node@0.1.0"
   }
 }
 ```
 
 Application code keeps the canonical import
-`import { createActionsClient } from '@kedge/actions-node';` and can call
+`import { createActionsClient } from '@faros/actions-node';` and can call
 `client.integration(alias).invoke(...)` or `invokeEnvelope(...)`. The SDK is
 server-only, requires an absolute HTTPS base URL (except an explicit loopback
 test override), reads the short-lived workload token from
-`KEDGE_ACTIONS_TOKEN_FILE` on every request or from a refreshable credential
+`FAROS_ACTIONS_TOKEN_FILE` on every request or from a refreshable credential
 provider, and retries once with `forceRefresh` after a `401`. The bootstrap
 token used by the workload exchange is never the app token; no development
 token fallback exists. Development sandboxes install this declared dependency
-through the component toolchain; `kedge-dev-agent` does not project an SDK or
+through the component toolchain; `faros-dev-agent` does not project an SDK or
 mount `/node_modules`.

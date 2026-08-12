@@ -32,7 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/tools/clientcmd"
 
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	farosclient "github.com/faroshq/faros/pkg/client"
 )
 
 // sshWsMsg mirrors the wsMsg type in pkg/util/ssh.
@@ -72,11 +72,11 @@ func DialSSH(ctx context.Context, kubeconfig, name string) (*SSHWebSocketClient,
 
 	// Look up the edge to get the correct status.URL (includes the real cluster
 	// name, e.g. /clusters/1fsiilmnkk22io6n/...).
-	kedgeClient, err := kedgeclient.NewForConfig(cfg)
+	farosClient, err := farosclient.NewForConfig(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("creating kedge client: %w", err)
+		return nil, fmt.Errorf("creating faros client: %w", err)
 	}
-	edge, err := kedgeClient.Dynamic().Resource(kedgeclient.LinuxServerGVR).Get(ctx, name, metav1.GetOptions{})
+	edge, err := farosClient.Dynamic().Resource(farosclient.LinuxServerGVR).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("fetching edge %q: %w", name, err)
 	}

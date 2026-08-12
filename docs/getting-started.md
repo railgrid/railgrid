@@ -2,13 +2,13 @@
 layout: default
 title: Getting Started
 nav_order: 2
-description: "Set up your first Kedge hub and connect an edge"
+description: "Set up your first Faros hub and connect an edge"
 ---
 
 # Getting Started
 {: .no_toc }
 
-Set up Kedge and connect your first cluster in minutes.
+Set up Faros and connect your first cluster in minutes.
 {: .fs-6 .fw-300 }
 
 ## Table of contents
@@ -47,8 +47,8 @@ For production deployments, see [Helm Deployment]({% link helm.md %}) after comp
 Clone the repository and build all binaries:
 
 ```bash
-git clone https://github.com/faroshq/kedge.git
-cd kedge
+git clone https://github.com/faroshq/faros.git
+cd faros
 make build
 ```
 
@@ -56,15 +56,15 @@ This builds three binaries in `bin/`:
 
 | Binary | Description |
 |:-------|:------------|
-| `kedge-hub` | The central control plane server |
-| `kedge-agent` | The agent that runs on each edge |
-| `kedge` | The CLI for users |
+| `faros-hub` | The central control plane server |
+| `faros-agent` | The agent that runs on each edge |
+| `faros` | The CLI for users |
 
 ---
 
 ## Step 2: Run the Development Stack
 
-The fastest way to try Kedge is using the development mode, which runs the full stack locally:
+The fastest way to try Faros is using the development mode, which runs the full stack locally:
 
 ```bash
 make dev
@@ -74,7 +74,7 @@ This starts:
 
 - **kcp** — Multi-tenant API server
 - **Dex** — OIDC identity provider
-- **Hub** — Kedge control plane
+- **Hub** — Faros control plane
 - **kind cluster** — A local Kubernetes cluster for the agent
 
 {: .note }
@@ -83,7 +83,7 @@ The dev stack uses hot-reload, so code changes are automatically picked up.
 Wait until you see the hub is ready:
 
 ```
-kedge-hub: listening on :9443
+faros-hub: listening on :9443
 ```
 
 ---
@@ -101,7 +101,7 @@ This opens a browser for OIDC login. Use the development credentials:
 - **Email:** `admin@example.com`
 - **Password:** `password`
 
-After login, your kubeconfig is configured with a `kedge` context.
+After login, your kubeconfig is configured with a `faros` context.
 
 ---
 
@@ -116,7 +116,7 @@ make dev-edge-create
 This creates an `Edge` resource in the hub. You can view it:
 
 ```bash
-kubectl --context=kedge get edges
+kubectl --context=faros get edges
 ```
 
 ---
@@ -138,7 +138,7 @@ The agent:
 Check that the edge shows as connected:
 
 ```bash
-kubectl --context=kedge get edges
+kubectl --context=faros get edges
 ```
 
 The `READY` column should show `True`.
@@ -157,16 +157,16 @@ This creates a `VirtualWorkload` resource. The hub schedules it to available sit
 
 ```bash
 # View the workload
-kubectl --context=kedge get virtualworkloads
+kubectl --context=faros get virtualworkloads
 
 # View the placement (binding to an edge)
-kubectl --context=kedge get placements
+kubectl --context=faros get placements
 ```
 
 The agent picks up the placement and reconciles the actual workload on the kind cluster:
 
 ```bash
-kubectl --context=kind-kedge-dev get pods
+kubectl --context=kind-faros-dev get pods
 ```
 
 ---
@@ -184,7 +184,7 @@ To connect a real cluster (k3s, k0s, etc.) instead of the dev kind cluster:
 ### 1. Create an edge registration
 
 ```bash
-kedge edge create my-home-server
+faros edge create my-home-server
 ```
 
 This outputs a bootstrap token.
@@ -194,7 +194,7 @@ This outputs a bootstrap token.
 On the target cluster, run the agent with the bootstrap token:
 
 ```bash
-kedge-agent \
+faros-agent \
   --hub-url https://your-hub-url:9443 \
   --bootstrap-token <token> \
   --edge-name my-home-server
@@ -205,7 +205,7 @@ Or deploy via Helm (see agent chart documentation).
 ### 3. Verify connection
 
 ```bash
-kubectl --context=kedge get edges
+kubectl --context=faros get edges
 ```
 
 ---
@@ -237,13 +237,13 @@ kubectl --context=kedge get edges
 
 ```bash
 # Check edge status
-kubectl --context=kedge describe edge <edge-name>
+kubectl --context=faros describe edge <edge-name>
 
 # Check agent logs
 # (in dev mode, look at the terminal running make dev-run-edge)
 
 # Check placement status
-kubectl --context=kedge describe placement <placement-name>
+kubectl --context=faros describe placement <placement-name>
 ```
 
 ### View hub logs
@@ -251,5 +251,5 @@ kubectl --context=kedge describe placement <placement-name>
 In dev mode, logs are printed to the terminal. For Helm deployments:
 
 ```bash
-kubectl -n kedge-system logs -l app.kubernetes.io/name=kedge-hub -c hub
+kubectl -n faros-system logs -l app.kubernetes.io/name=faros-hub -c hub
 ```

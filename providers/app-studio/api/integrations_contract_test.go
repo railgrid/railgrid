@@ -39,7 +39,7 @@ import (
 )
 
 var testDatabricksTableGVR = schema.GroupVersionResource{
-	Group: "databricks.kedge.faros.sh", Version: "v1alpha1", Resource: "tables",
+	Group: "databricks.faros.sh", Version: "v1alpha1", Resource: "tables",
 }
 
 const (
@@ -47,7 +47,7 @@ const (
 	projectIntegrationActionQueryTable   = "query_table"
 	projectIntegrationActionVersionV1    = "v1"
 	testProjectActionSchemaDigest        = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	databricksTableAPIVersion            = "databricks.kedge.faros.sh/v1alpha1"
+	databricksTableAPIVersion            = "databricks.faros.sh/v1alpha1"
 	databricksTableKind                  = "Table"
 	databricksTableResource              = "tables"
 )
@@ -223,14 +223,14 @@ func TestProviderActionForwardingAppendsConfiguredCAToSystemTrust(t *testing.T) 
 func TestProviderActionForwardingUsesVerifiedOrgWorkspaceHeaders(t *testing.T) {
 	ref := &aiv1alpha1.ProjectProviderResourceReference{Name: "item", APIVersion: "example/v1", Kind: "Item", Resource: "items"}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("X-Kedge-Org"); got != "org-verified" {
-			t.Errorf("X-Kedge-Org = %q, want org-verified", got)
+		if got := r.Header.Get("X-Faros-Org"); got != "org-verified" {
+			t.Errorf("X-Faros-Org = %q, want org-verified", got)
 		}
-		if got := r.Header.Get("X-Kedge-Workspace"); got != "workspace-verified" {
-			t.Errorf("X-Kedge-Workspace = %q, want workspace-verified", got)
+		if got := r.Header.Get("X-Faros-Workspace"); got != "workspace-verified" {
+			t.Errorf("X-Faros-Workspace = %q, want workspace-verified", got)
 		}
-		if got := r.Header.Get("X-Kedge-Tenant"); got != "root:kedge:tenants:org-verified:workspace-verified" {
-			t.Errorf("X-Kedge-Tenant = %q", got)
+		if got := r.Header.Get("X-Faros-Tenant"); got != "root:faros:tenants:org-verified:workspace-verified" {
+			t.Errorf("X-Faros-Tenant = %q", got)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer caller-token" {
 			t.Errorf("Authorization = %q", got)
@@ -243,10 +243,10 @@ func TestProviderActionForwardingUsesVerifiedOrgWorkspaceHeaders(t *testing.T) {
 	s := &Server{hubBase: upstream.URL, actionsExternalURL: "https://hub.example"}
 	request := httptest.NewRequest(http.MethodPost, "/", nil)
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Kedge-Org", "spoofed")
-	request.Header.Set("X-Kedge-Workspace", "spoofed")
+	request.Header.Set("X-Faros-Org", "spoofed")
+	request.Header.Set("X-Faros-Workspace", "spoofed")
 	status, envelope, err := s.forwardProjectProviderAction(request, identity{
-		tenantPath: "root:kedge:tenants:org-verified:workspace-verified", orgUUID: "org-verified", workspaceUUID: "workspace-verified", token: "caller-token", clusterID: "cluster-a",
+		tenantPath: "root:faros:tenants:org-verified:workspace-verified", orgUUID: "org-verified", workspaceUUID: "workspace-verified", token: "caller-token", clusterID: "cluster-a",
 	}, "other", "lookup", "v1", testProjectActionSchemaDigest, ref, json.RawMessage(`{}`))
 	if err != nil || status != http.StatusOK || envelope.Error != nil {
 		t.Fatalf("forward = status %d envelope %#v err %v", status, envelope, err)
@@ -370,19 +370,19 @@ func (f *integrationHTTPFixture) serveGraphQL(w http.ResponseWriter, r *http.Req
 	switch {
 	case strings.Contains(request.Query, "ProjectYaml"):
 		writeIntegrationGraphQLData(w, map[string]any{
-			"ai_kedge_faros_sh": map[string]any{
+			"ai_faros_sh": map[string]any{
 				"v1alpha1": map[string]any{"ProjectYaml": f.projectYAML},
 			},
 		})
 	case strings.Contains(request.Query, "TableYaml"):
 		writeIntegrationGraphQLData(w, map[string]any{
-			"databricks_kedge_faros_sh": map[string]any{
+			"databricks_faros_sh": map[string]any{
 				"v1alpha1": map[string]any{"TableYaml": f.tableYAML},
 			},
 		})
 	case strings.Contains(request.Query, "ApplicationYaml"):
 		writeIntegrationGraphQLData(w, map[string]any{
-			"infrastructure_kedge_faros_sh": map[string]any{
+			"infrastructure_faros_sh": map[string]any{
 				"v1alpha1": map[string]any{"ApplicationYaml": f.applicationYAML},
 			},
 		})
@@ -563,14 +563,14 @@ func projectWithDevelopmentRuntimeBinding() *aiv1alpha1.Project {
 					Name: projectDevelopmentBindingName, Provider: projectDevelopmentProviderAppStudio,
 					Kind: aiv1alpha1.ProjectBindingKindProviderResource,
 					ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
-						Name: "demo-dev", APIVersion: "infrastructure.kedge.faros.sh/v1alpha1", Kind: "Application", Resource: "applications",
+						Name: "demo-dev", APIVersion: "infrastructure.faros.sh/v1alpha1", Kind: "Application", Resource: "applications",
 					},
 					Values: runtime.RawExtension{Raw: []byte(`{
 						"name":"demo-dev",
-						"kedgeMode":"development",
-						"kedgeActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
-						"kedgeActionsBaseURL":"https://stale.example/services/providers/app-studio",
-						"kedgeActionsTenantPath":"stale-tenant"
+						"farosMode":"development",
+						"farosActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
+						"farosActionsBaseURL":"https://stale.example/services/providers/app-studio",
+						"farosActionsTenantPath":"stale-tenant"
 					}`)},
 				}},
 			}},
@@ -581,21 +581,21 @@ func projectWithDevelopmentRuntimeBinding() *aiv1alpha1.Project {
 
 func developmentApplicationObject() *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.faros.sh/v1alpha1",
 		"kind":       "Application",
 		"metadata":   map[string]any{"name": "demo-dev"},
 		"spec": map[string]any{
 			"name":                    "demo-dev",
-			"kedgeMode":               "development",
-			"kedgeActionsExchangeURL": "https://stale.example/api/provider-actions/workload/exchange",
-			"kedgeActionsBaseURL":     "https://stale.example/services/providers/app-studio",
-			"kedgeActionsTenantPath":  "stale-tenant",
-			"kedgeActionsProject":     "stale-project",
-			"kedgeActionsProjectUID":  "stale-project-uid",
-			"kedgeActionsEnvironment": "stale-environment",
-			"kedgeActionsInstance":    "stale-instance",
-			"kedgeActionsOrg":         "stale-org",
-			"kedgeActionsWorkspace":   "stale-workspace",
+			"farosMode":               "development",
+			"farosActionsExchangeURL": "https://stale.example/api/provider-actions/workload/exchange",
+			"farosActionsBaseURL":     "https://stale.example/services/providers/app-studio",
+			"farosActionsTenantPath":  "stale-tenant",
+			"farosActionsProject":     "stale-project",
+			"farosActionsProjectUID":  "stale-project-uid",
+			"farosActionsEnvironment": "stale-environment",
+			"farosActionsInstance":    "stale-instance",
+			"farosActionsOrg":         "stale-org",
+			"farosActionsWorkspace":   "stale-workspace",
 		},
 	}}
 }
@@ -623,11 +623,11 @@ func integrationHTTPTestRequest(method, path, body string) *http.Request {
 	request := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Kedge-User", "alice@example.com")
-	request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
-	request.Header.Set("X-Kedge-Org", "org-a")
-	request.Header.Set("X-Kedge-Workspace", "workspace-a")
-	request.Header.Set("X-Kedge-Cluster", "cluster-a")
+	request.Header.Set("X-Faros-User", "alice@example.com")
+	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Org", "org-a")
+	request.Header.Set("X-Faros-Workspace", "workspace-a")
+	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	return request
 }
 
@@ -643,7 +643,7 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 	router := mux.NewRouter()
 	server.Register(router)
 
-	add := integrationHTTPTestRequest(http.MethodPost, "/api/projects/demo/integrations", `{"alias":"sales","provider":"databricks","resourceRef":{"name":"orders","apiVersion":"databricks.kedge.faros.sh/v1alpha1","kind":"Table","resource":"tables"},"allowedActions":[{"name":"query_table","version":"v1","schemaDigest":"`+testProjectActionSchemaDigest+`"}]}`)
+	add := integrationHTTPTestRequest(http.MethodPost, "/api/projects/demo/integrations", `{"alias":"sales","provider":"databricks","resourceRef":{"name":"orders","apiVersion":"databricks.faros.sh/v1alpha1","kind":"Table","resource":"tables"},"allowedActions":[{"name":"query_table","version":"v1","schemaDigest":"`+testProjectActionSchemaDigest+`"}]}`)
 	addResponse := httptest.NewRecorder()
 	router.ServeHTTP(addResponse, add)
 	if addResponse.Code != http.StatusCreated {
@@ -671,7 +671,7 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 	invokeRequest := integrationHTTPTestRequest(http.MethodPost, "/api/projects/demo/integrations/sales/invoke", `{"action":"query_table/v1","input":{"columns":["id"],"limit":2}}`)
 	invokeRequest.Header.Set("Idempotency-Key", "idem-1")
 	invokeRequest.Header.Set("X-Request-ID", "request-1")
-	invokeRequest.Header.Set("X-Kedge-Action-Deadline-Ms", "45000")
+	invokeRequest.Header.Set("X-Faros-Action-Deadline-Ms", "45000")
 	router.ServeHTTP(invokeResponse, invokeRequest)
 	if invokeResponse.Code != http.StatusOK {
 		t.Fatalf("invoke status = %d: %s", invokeResponse.Code, invokeResponse.Body.String())
@@ -695,11 +695,11 @@ func TestProjectIntegrationCRUDInvokeAndForwardingContract(t *testing.T) {
 		t.Fatalf("provider action URL = %q, want data-plane action route", actionRequest.URL)
 	}
 	if actionRequest.Headers.Get("Authorization") != "Bearer caller-token" ||
-		actionRequest.Headers.Get("X-Kedge-Tenant") != "root:kedge:tenants:org-a:workspace-a" ||
-		actionRequest.Headers.Get("X-Kedge-Cluster") != "cluster-a" ||
+		actionRequest.Headers.Get("X-Faros-Tenant") != "root:faros:tenants:org-a:workspace-a" ||
+		actionRequest.Headers.Get("X-Faros-Cluster") != "cluster-a" ||
 		actionRequest.Headers.Get("Idempotency-Key") != "idem-1" ||
 		actionRequest.Headers.Get("X-Request-ID") != "request-1" ||
-		actionRequest.Headers.Get("X-Kedge-Action-Deadline-Ms") != "45000" {
+		actionRequest.Headers.Get("X-Faros-Action-Deadline-Ms") != "45000" {
 		t.Fatalf("provider action caller headers = %#v, want propagated auth/tenant/correlation/deadline", actionRequest.Headers)
 	}
 	for _, field := range []string{"provider", "action", "actionVersion", "schemaDigest", "resourceRef"} {
@@ -738,7 +738,7 @@ func TestProjectIntegrationMutationsDoNotReconcileDevelopmentActionContext(t *te
 	router := mux.NewRouter()
 	server.Register(router)
 
-	add := integrationHTTPTestRequest(http.MethodPost, "/api/projects/demo/integrations", `{"alias":"sales","provider":"databricks","resourceRef":{"name":"orders","apiVersion":"databricks.kedge.faros.sh/v1alpha1","kind":"Table","resource":"tables"},"allowedActions":[{"name":"query_table","version":"v1","schemaDigest":"`+testProjectActionSchemaDigest+`"}]}`)
+	add := integrationHTTPTestRequest(http.MethodPost, "/api/projects/demo/integrations", `{"alias":"sales","provider":"databricks","resourceRef":{"name":"orders","apiVersion":"databricks.faros.sh/v1alpha1","kind":"Table","resource":"tables"},"allowedActions":[{"name":"query_table","version":"v1","schemaDigest":"`+testProjectActionSchemaDigest+`"}]}`)
 	addResponse := httptest.NewRecorder()
 	router.ServeHTTP(addResponse, add)
 	if addResponse.Code != http.StatusCreated {
@@ -749,11 +749,11 @@ func TestProjectIntegrationMutationsDoNotReconcileDevelopmentActionContext(t *te
 	if !ok {
 		t.Fatalf("Application spec = %#v, want object", addedApplication.Object["spec"])
 	}
-	if got := addedSpec["kedgeActionsExchangeURL"]; got != "https://stale.example/api/provider-actions/workload/exchange" {
-		t.Fatalf("after grant kedgeActionsExchangeURL = %v, want unchanged provider resource", got)
+	if got := addedSpec["farosActionsExchangeURL"]; got != "https://stale.example/api/provider-actions/workload/exchange" {
+		t.Fatalf("after grant farosActionsExchangeURL = %v, want unchanged provider resource", got)
 	}
-	if got := addedSpec["kedgeActionsBaseURL"]; got != "https://stale.example/services/providers/app-studio" {
-		t.Fatalf("after grant kedgeActionsBaseURL = %v, want unchanged provider resource", got)
+	if got := addedSpec["farosActionsBaseURL"]; got != "https://stale.example/services/providers/app-studio" {
+		t.Fatalf("after grant farosActionsBaseURL = %v, want unchanged provider resource", got)
 	}
 
 	// Revocation remains a Project-spec mutation even when the external origin
@@ -772,8 +772,8 @@ func TestProjectIntegrationMutationsDoNotReconcileDevelopmentActionContext(t *te
 		t.Fatalf("reconciled Application spec after revoke = %#v, want object", revokedApplication.Object["spec"])
 	}
 	for field, want := range map[string]string{
-		"kedgeActionsExchangeURL": "https://stale.example/api/provider-actions/workload/exchange",
-		"kedgeActionsBaseURL":     "https://stale.example/services/providers/app-studio",
+		"farosActionsExchangeURL": "https://stale.example/api/provider-actions/workload/exchange",
+		"farosActionsBaseURL":     "https://stale.example/services/providers/app-studio",
 	} {
 		if got := revokedSpec[field]; got != want {
 			t.Fatalf("after grant revocation %s = %v, want unchanged provider resource", field, got)
@@ -792,8 +792,8 @@ func TestProjectIntegrationMutationsDoNotReconcileDevelopmentActionContext(t *te
 		t.Fatalf("reconciled Application spec after removal = %#v, want object", removedApplication.Object["spec"])
 	}
 	for field, want := range map[string]string{
-		"kedgeActionsExchangeURL": "https://stale.example/api/provider-actions/workload/exchange",
-		"kedgeActionsBaseURL":     "https://stale.example/services/providers/app-studio",
+		"farosActionsExchangeURL": "https://stale.example/api/provider-actions/workload/exchange",
+		"farosActionsBaseURL":     "https://stale.example/services/providers/app-studio",
 	} {
 		if got := removedSpec[field]; got != want {
 			t.Fatalf("after grant removal %s = %v, want unchanged provider resource", field, got)
@@ -811,13 +811,13 @@ func TestProjectIntegrationAddRejectsMissingActionsURLWithoutMutation(t *testing
 	router := mux.NewRouter()
 	server.Register(router)
 
-	add := integrationHTTPTestRequest(http.MethodPost, "/api/projects/demo/integrations", `{"alias":"sales","provider":"databricks","resourceRef":{"name":"orders","apiVersion":"databricks.kedge.faros.sh/v1alpha1","kind":"Table","resource":"tables"},"allowedActions":[{"name":"query_table","version":"v1","schemaDigest":"`+testProjectActionSchemaDigest+`"}]}`)
+	add := integrationHTTPTestRequest(http.MethodPost, "/api/projects/demo/integrations", `{"alias":"sales","provider":"databricks","resourceRef":{"name":"orders","apiVersion":"databricks.faros.sh/v1alpha1","kind":"Table","resource":"tables"},"allowedActions":[{"name":"query_table","version":"v1","schemaDigest":"`+testProjectActionSchemaDigest+`"}]}`)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, add)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("add without actions URL status = %d, want %d: %s", response.Code, http.StatusBadRequest, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), "KEDGE_ACTIONS_EXTERNAL_URL") {
+	if !strings.Contains(response.Body.String(), "FAROS_ACTIONS_EXTERNAL_URL") {
 		t.Fatalf("add without actions URL error = %s, want configuration guidance", response.Body.String())
 	}
 	if got := fixture.project(t); !reflect.DeepEqual(got.Spec, before.Spec) {
@@ -828,8 +828,8 @@ func TestProjectIntegrationAddRejectsMissingActionsURLWithoutMutation(t *testing
 	if !ok {
 		t.Fatalf("runtime Application spec = %#v, want object", application.Object["spec"])
 	}
-	if got := spec["kedgeActionsExchangeURL"]; got != "https://stale.example/api/provider-actions/workload/exchange" {
-		t.Fatalf("runtime changed after rejected grant: kedgeActionsExchangeURL = %v", got)
+	if got := spec["farosActionsExchangeURL"]; got != "https://stale.example/api/provider-actions/workload/exchange" {
+		t.Fatalf("runtime changed after rejected grant: farosActionsExchangeURL = %v", got)
 	}
 }
 
@@ -878,7 +878,7 @@ func testProjectIntegrationPatchPreflight(t *testing.T, actionsURL string) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("reactivation with actions URL %q status = %d, want %d: %s", actionsURL, response.Code, http.StatusBadRequest, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), "KEDGE_ACTIONS_EXTERNAL_URL") {
+	if !strings.Contains(response.Body.String(), "FAROS_ACTIONS_EXTERNAL_URL") {
 		t.Fatalf("reactivation with actions URL %q error = %s, want configuration guidance", actionsURL, response.Body.String())
 	}
 	if got := fixture.project(t); !reflect.DeepEqual(got.Spec, before.Spec) {
@@ -889,8 +889,8 @@ func testProjectIntegrationPatchPreflight(t *testing.T, actionsURL string) {
 	if !ok {
 		t.Fatalf("runtime Application spec = %#v, want object", application.Object["spec"])
 	}
-	if got := spec["kedgeActionsExchangeURL"]; got != "https://stale.example/api/provider-actions/workload/exchange" {
-		t.Fatalf("runtime changed after rejected reactivation: kedgeActionsExchangeURL = %v", got)
+	if got := spec["farosActionsExchangeURL"]; got != "https://stale.example/api/provider-actions/workload/exchange" {
+		t.Fatalf("runtime changed after rejected reactivation: farosActionsExchangeURL = %v", got)
 	}
 }
 
@@ -986,16 +986,16 @@ func TestProviderReferenceSurvivesTemplateSwitchPromotionAndProjectCleanup(t *te
 			Name: projectDevelopmentBindingName, Provider: projectDevelopmentProviderAppStudio,
 			Kind: aiv1alpha1.ProjectBindingKindProviderResource,
 			ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
-				Name: "demo-dev", APIVersion: "infrastructure.kedge.faros.sh/v1alpha1", Kind: "Application", Resource: "applications",
+				Name: "demo-dev", APIVersion: "infrastructure.faros.sh/v1alpha1", Kind: "Application", Resource: "applications",
 			},
 		})
 	scheme := runtime.NewScheme()
 	if err := aiv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add App Studio scheme: %v", err)
 	}
-	applicationGVR := schema.GroupVersionResource{Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Resource: "applications"}
+	applicationGVR := schema.GroupVersionResource{Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "applications"}
 	oldApplication := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1", "kind": "Application",
+		"apiVersion": "infrastructure.faros.sh/v1alpha1", "kind": "Application",
 		"metadata": map[string]any{"name": "demo-dev"},
 	}}
 	table := &unstructured.Unstructured{Object: map[string]any{
@@ -1013,7 +1013,7 @@ func TestProviderReferenceSurvivesTemplateSwitchPromotionAndProjectCleanup(t *te
 		})
 	}
 	c := asclient.NewFromDynamic(dyn)
-	id := identity{tenantPath: "root:kedge:tenants:org-a:workspace-a", clusterID: "cluster-a"}
+	id := identity{tenantPath: "root:faros:tenants:org-a:workspace-a", clusterID: "cluster-a"}
 
 	if err := (&Server{}).deleteProjectDevelopmentBindingResources(context.Background(), c, project, id); err != nil {
 		t.Fatalf("delete old template binding: %v", err)
@@ -1032,7 +1032,7 @@ func TestProviderReferenceSurvivesTemplateSwitchPromotionAndProjectCleanup(t *te
 		Name: projectProductionBindingName, Provider: projectDevelopmentProviderAppStudio,
 		Kind: aiv1alpha1.ProjectBindingKindProviderResource,
 		ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
-			Name: "demo-prod", APIVersion: "infrastructure.kedge.faros.sh/v1alpha1", Kind: "Application", Resource: "applications",
+			Name: "demo-prod", APIVersion: "infrastructure.faros.sh/v1alpha1", Kind: "Application", Resource: "applications",
 		},
 	})
 	if _, err := (&Server{actionsExternalURL: "https://hub.example"}).reconcileProjectLiveBindings(context.Background(), c, project, id); err != nil {

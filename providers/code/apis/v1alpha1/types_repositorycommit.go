@@ -31,7 +31,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=kedge,shortName=gcommit
+// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=gcommit
 // +kubebuilder:printcolumn:name="Repository",type=string,JSONPath=`.spec.repositoryRef`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.status.branch`

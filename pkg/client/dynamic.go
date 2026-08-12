@@ -30,16 +30,16 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 )
 
 // NOTE: the typed Edge / Workload / Placement accessors were removed when
-// the Edge API moved out of the hub core group (kedge.faros.sh) into the single
+// the Edge API moved out of the hub core group (faros.sh) into the single
 // standalone `edges` provider. Both connectable kinds live in ONE group
-// edges.kedge.faros.sh:
+// edges.faros.sh:
 //
-//	KubernetesCluster → edges.kedge.faros.sh/kubernetesclusters
-//	LinuxServer       → edges.kedge.faros.sh/linuxservers
+//	KubernetesCluster → edges.faros.sh/kubernetesclusters
+//	LinuxServer       → edges.faros.sh/linuxservers
 //
 // The core module cannot import the provider module (it would cycle — the
 // provider imports core primitives), so the agent + CLI address these
@@ -49,40 +49,40 @@ var (
 	// KubernetesClusterGVR addresses the edges provider's KubernetesCluster kind
 	// (cluster-scoped).
 	KubernetesClusterGVR = schema.GroupVersionResource{
-		Group:    "edges.kedge.faros.sh",
+		Group:    "edges.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "kubernetesclusters",
 	}
 	// LinuxServerGVR addresses the edges provider's LinuxServer kind
 	// (cluster-scoped).
 	LinuxServerGVR = schema.GroupVersionResource{
-		Group:    "edges.kedge.faros.sh",
+		Group:    "edges.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "linuxservers",
 	}
 	// WorkloadGVR addresses the edges provider's Workload kind
 	// (namespaced): a workload scheduled across matching KubernetesCluster edges.
 	WorkloadGVR = schema.GroupVersionResource{
-		Group:    "edges.kedge.faros.sh",
+		Group:    "edges.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "workloads",
 	}
 	// PlacementGVR addresses the edges provider's Placement kind (namespaced):
 	// one Workload placed on one edge.
 	PlacementGVR = schema.GroupVersionResource{
-		Group:    "edges.kedge.faros.sh",
+		Group:    "edges.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "placements",
 	}
 
-	// UserGVR points at the new tenants.kedge.faros.sh User CRD. PRs
-	// #204-#207 introduced the tenants.kedge.faros.sh group; this GVR
-	// previously pointed at the legacy kedge.faros.sh group, which left
+	// UserGVR points at the new tenants.faros.sh User CRD. PRs
+	// #204-#207 introduced the tenants.faros.sh group; this GVR
+	// previously pointed at the legacy faros.sh group, which left
 	// User writes from the auth handler invisible to the org bootstrap
 	// controller (which watches the new group). Migration in roadmap
-	// step 7+ aligns both sides on tenants.kedge.faros.sh.
+	// step 7+ aligns both sides on tenants.faros.sh.
 	UserGVR = schema.GroupVersionResource{
-		Group:    "tenants.kedge.faros.sh",
+		Group:    "tenants.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "users",
 	}
@@ -92,16 +92,16 @@ var (
 	// One UMI per User; the tenant middleware reads this on every
 	// request to authorise (Org, Workspace) header pairs.
 	UserMembershipIndexGVR = schema.GroupVersionResource{
-		Group:    "tenants.kedge.faros.sh",
+		Group:    "tenants.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "usermembershipindices",
 	}
 
 	// OrganizationGVR points at the cluster-scoped Organization CRD
 	// (see apis/tenancy/v1alpha1/types_organization.go). Used by the
-	// step 10 REST surface for Org CRUD against root:kedge:users.
+	// step 10 REST surface for Org CRUD against root:faros:users.
 	OrganizationGVR = schema.GroupVersionResource{
-		Group:    "tenants.kedge.faros.sh",
+		Group:    "tenants.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "organizations",
 	}
@@ -111,7 +111,7 @@ var (
 	// User; the portal's dashboard-layout REST handlers read/write it to
 	// remember each workspace's tile arrangement across browsers.
 	UserPreferencesGVR = schema.GroupVersionResource{
-		Group:    "tenants.kedge.faros.sh",
+		Group:    "tenants.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "userpreferences",
 	}
@@ -127,7 +127,7 @@ func EdgeGVRForType(edgeType string) schema.GroupVersionResource {
 	return KubernetesClusterGVR
 }
 
-// Client provides typed access to kedge custom resources via the dynamic client.
+// Client provides typed access to faros custom resources via the dynamic client.
 type Client struct {
 	dynamic dynamic.Interface
 }
@@ -161,7 +161,7 @@ func (c *Client) Users() *TypedResource[tenancyv1alpha1.User, tenancyv1alpha1.Us
 
 // UserMembershipIndices returns a typed interface for the UMI CRD
 // (cluster-scoped). One UMI per User; the tenant middleware uses
-// this to authorise X-Kedge-Org / X-Kedge-Workspace headers on every
+// this to authorise X-Faros-Org / X-Faros-Workspace headers on every
 // /api/* request.
 func (c *Client) UserMembershipIndices() *TypedResource[tenancyv1alpha1.UserMembershipIndex, tenancyv1alpha1.UserMembershipIndexList] {
 	return &TypedResource[tenancyv1alpha1.UserMembershipIndex, tenancyv1alpha1.UserMembershipIndexList]{

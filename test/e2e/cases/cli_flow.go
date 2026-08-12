@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // cliFlowAgentKey is the context key for the TokenAgent in AgentCLIFlow.
@@ -35,12 +35,12 @@ type cliFlowAgentKey struct{}
 
 // AgentCLIFlow returns a feature that exercises the full user-facing CLI journey:
 //
-//  1. kedge login --hub-url <hub> --token <token>
-//  2. kedge edge create <name> --type kubernetes
-//  3. kedge edge join-command <name>  → capture output, parse Option C args
-//  4. Start agent using parsed flags (kedge agent run)
+//  1. faros login --hub-url <hub> --token <token>
+//  2. faros edge create <name> --type kubernetes
+//  3. faros edge join-command <name>  → capture output, parse Option C args
+//  4. Start agent using parsed flags (faros agent run)
 //  5. Wait for edge to become Ready
-//  6. kedge kubeconfig edge <name> --output <path>
+//  6. faros kubeconfig edge <name> --output <path>
 //  7. kubectl --kubeconfig <path> get nodes → verify cluster access
 //
 // This closes the gap where "join-command" output was never executed in tests:
@@ -55,22 +55,22 @@ func AgentCLIFlow() features.Feature {
 				t.Fatal("cluster environment not found in context")
 			}
 
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
-			// Step 1: kedge login.
-			t.Log("step 1: kedge login")
+			// Step 1: faros login.
+			t.Log("step 1: faros login")
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
 			}
 
-			// Step 2: kedge edge create.
-			t.Log("step 2: kedge edge create")
+			// Step 2: faros edge create.
+			t.Log("step 2: faros edge create")
 			if err := client.EdgeCreate(ctx, edgeName, "kubernetes"); err != nil {
 				t.Fatalf("edge create failed: %v", err)
 			}
 
-			// Step 3: kedge edge join-command — capture output.
-			t.Log("step 3: kedge edge join-command")
+			// Step 3: faros edge join-command — capture output.
+			t.Log("step 3: faros edge join-command")
 			joinOut, err := client.EdgeJoinCommand(ctx, edgeName)
 			if err != nil {
 				t.Fatalf("edge join-command failed: %v", err)
@@ -95,7 +95,7 @@ func AgentCLIFlow() features.Feature {
 		}).
 		Assess("edge becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			t.Log("step 5: wait for edge Ready")
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
@@ -105,11 +105,11 @@ func AgentCLIFlow() features.Feature {
 		}).
 		Assess("kubeconfig edge is usable", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
-			// Step 6: kedge kubeconfig edge → write kubeconfig.
+			// Step 6: faros kubeconfig edge → write kubeconfig.
 			kubeconfigPath := filepath.Join(clusterEnv.WorkDir, "e2e-cli-flow.kubeconfig")
-			t.Log("step 6: kedge kubeconfig edge")
+			t.Log("step 6: faros kubeconfig edge")
 			if err := client.WaitForEdgeKubeconfig(ctx, edgeName, kubeconfigPath, 2*time.Minute); err != nil {
 				t.Fatalf("waiting for edge kubeconfig: %v", err)
 			}
@@ -138,7 +138,7 @@ func AgentCLIFlow() features.Feature {
 				a.Stop()
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
@@ -146,15 +146,15 @@ func AgentCLIFlow() features.Feature {
 }
 
 // parseJoinCommandOutput extracts --hub-url, --edge-name, --type, and --token
-// from the output of `kedge edge join-command`. It looks for the "Option C"
-// section containing "kedge agent run" and parses the multiline
+// from the output of `faros edge join-command`. It looks for the "Option C"
+// section containing "faros agent run" and parses the multiline
 // backslash-continuation flags.
 //
 // Expected output format:
 //
 //	# Option C — foreground process (dev/containers):
-//	kedge agent run \
-//	  --hub-url https://kedge.localhost:9443 \
+//	faros agent run \
+//	  --hub-url https://faros.localhost:9443 \
 //	  --edge-name my-edge \
 //	  --type kubernetes \
 //	  --token abc123
@@ -166,7 +166,7 @@ func parseJoinCommandOutput(output string) (hubURL, edgeName, token, agentType s
 		// Strip trailing backslash continuation and surrounding whitespace.
 		line = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(line), "\\"))
 
-		if strings.HasPrefix(line, "kedge agent run") {
+		if strings.HasPrefix(line, "faros agent run") {
 			inBlock = true
 			continue
 		}

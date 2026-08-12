@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createServer } from 'vite'
 
-const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/kedge-vite-assistant-action-feed', configFile: false, server: { middlewareMode: true } })
+const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/faros-vite-assistant-action-feed', configFile: false, server: { middlewareMode: true } })
 const feed = await vite.ssrLoadModule('/src/assistantActionFeed.ts')
 test.after(async () => vite.close())
 

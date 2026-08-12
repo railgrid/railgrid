@@ -38,7 +38,7 @@ func testActionsCABundle(t *testing.T) string {
 	}
 	template := &x509.Certificate{
 		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "kedge test CA"},
+		Subject:               pkix.Name{CommonName: "faros test CA"},
 		NotBefore:             time.Now().Add(-time.Minute),
 		NotAfter:              time.Now().Add(time.Hour),
 		IsCA:                  true,
@@ -55,8 +55,8 @@ func testActionsCABundle(t *testing.T) string {
 func TestLoadActionsCABundleFromEnv(t *testing.T) {
 	bundle := testActionsCABundle(t)
 	t.Run("unset", func(t *testing.T) {
-		t.Setenv("KEDGE_ACTIONS_CA_BUNDLE_FILE", "")
-		t.Setenv("KEDGE_ACTIONS_CA_BUNDLE", "")
+		t.Setenv("FAROS_ACTIONS_CA_BUNDLE_FILE", "")
+		t.Setenv("FAROS_ACTIONS_CA_BUNDLE", "")
 		got, err := loadActionsCABundleFromEnv()
 		if err != nil || got != "" {
 			t.Fatalf("load unset = %q, %v; want empty/nil", got, err)
@@ -67,8 +67,8 @@ func TestLoadActionsCABundleFromEnv(t *testing.T) {
 		if err := os.WriteFile(path, []byte("\r\n"+bundle+"\r\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("KEDGE_ACTIONS_CA_BUNDLE_FILE", path)
-		t.Setenv("KEDGE_ACTIONS_CA_BUNDLE", "")
+		t.Setenv("FAROS_ACTIONS_CA_BUNDLE_FILE", path)
+		t.Setenv("FAROS_ACTIONS_CA_BUNDLE", "")
 		got, err := loadActionsCABundleFromEnv()
 		if err != nil || got != strings.TrimSpace(bundle) {
 			t.Fatalf("load file = %q, %v; want normalized certificate/nil", got, err)
@@ -79,8 +79,8 @@ func TestLoadActionsCABundleFromEnv(t *testing.T) {
 		if err := os.WriteFile(path, []byte(bundle), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("KEDGE_ACTIONS_CA_BUNDLE_FILE", path)
-		t.Setenv("KEDGE_ACTIONS_CA_BUNDLE", "\n"+bundle+"\n")
+		t.Setenv("FAROS_ACTIONS_CA_BUNDLE_FILE", path)
+		t.Setenv("FAROS_ACTIONS_CA_BUNDLE", "\n"+bundle+"\n")
 		got, err := loadActionsCABundleFromEnv()
 		if err != nil || got != strings.TrimSpace(bundle) {
 			t.Fatalf("load matching values = %q, %v; want normalized certificate/nil", got, err)
@@ -91,15 +91,15 @@ func TestLoadActionsCABundleFromEnv(t *testing.T) {
 		if err := os.WriteFile(path, []byte(bundle), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("KEDGE_ACTIONS_CA_BUNDLE_FILE", path)
-		t.Setenv("KEDGE_ACTIONS_CA_BUNDLE", "not-the-file")
+		t.Setenv("FAROS_ACTIONS_CA_BUNDLE_FILE", path)
+		t.Setenv("FAROS_ACTIONS_CA_BUNDLE", "not-the-file")
 		if _, err := loadActionsCABundleFromEnv(); err == nil || !strings.Contains(err.Error(), "disagree") {
 			t.Fatalf("mismatched sources error = %v, want disagreement", err)
 		}
 	})
 	t.Run("invalid direct value", func(t *testing.T) {
-		t.Setenv("KEDGE_ACTIONS_CA_BUNDLE_FILE", "")
-		t.Setenv("KEDGE_ACTIONS_CA_BUNDLE", "not-pem")
+		t.Setenv("FAROS_ACTIONS_CA_BUNDLE_FILE", "")
+		t.Setenv("FAROS_ACTIONS_CA_BUNDLE", "not-pem")
 		if _, err := loadActionsCABundleFromEnv(); err == nil || !strings.Contains(err.Error(), "no PEM certificates") {
 			t.Fatalf("invalid bundle error = %v, want PEM validation", err)
 		}

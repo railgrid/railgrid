@@ -18,8 +18,12 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  HUB_IMAGE_NAME: ${{ github.repository }}-hub
-  AGENT_IMAGE_NAME: ${{ github.repository }}-agent
+  # Spelled out rather than derived from github.repository so the published
+  # names stay pinned to the chart values (ghcr.io/faroshq/faros-{hub,agent})
+  # regardless of what the repository is called. Matches helm-images.yaml and
+  # the provider matrix below, which all use repository_owner + a literal name.
+  HUB_IMAGE_NAME: ${{ github.repository_owner }}/faros-hub
+  AGENT_IMAGE_NAME: ${{ github.repository_owner }}/faros-agent
 
 jobs:
   build-and-push-hub-image:
@@ -82,31 +86,31 @@ jobs:
       matrix:
         include:
           - name: quickstart
-            image: ${{ github.repository_owner }}/kedge-quickstart-provider
+            image: ${{ github.repository_owner }}/faros-quickstart-provider
           - name: infrastructure
-            image: ${{ github.repository_owner }}/kedge-infrastructure-provider
+            image: ${{ github.repository_owner }}/faros-infrastructure-provider
           - name: code
-            image: ${{ github.repository_owner }}/kedge-code-provider
+            image: ${{ github.repository_owner }}/faros-code-provider
           - name: kuery
-            image: ${{ github.repository_owner }}/kedge-kuery-provider
+            image: ${{ github.repository_owner }}/faros-kuery-provider
           - name: app-studio
-            image: ${{ github.repository_owner }}/kedge/app-studio-provider
+            image: ${{ github.repository_owner }}/faros/app-studio-provider
           - name: databricks
-            image: ${{ github.repository_owner }}/kedge-databricks-provider
+            image: ${{ github.repository_owner }}/faros-databricks-provider
           - name: agents
-            image: ${{ github.repository_owner }}/kedge-agents-provider
+            image: ${{ github.repository_owner }}/faros-agents-provider
           - name: edges
-            image: ${{ github.repository_owner }}/kedge-edges-provider
+            image: ${{ github.repository_owner }}/faros-edges-provider
           # Companion image of the infrastructure provider (the dev-agent its
           # kro backend injects into development-mode pods); published by
           # provider-release.yaml on the infrastructure provider's tag.
           - name: infrastructure/dev-agent
-            image: ${{ github.repository_owner }}/kedge-dev-agent
+            image: ${{ github.repository_owner }}/faros-dev-agent
           # Second infrastructure companion: the access gate every publishable
           # template renders in front of its app. Non-default Dockerfile in the
           # provider module root, hence the explicit context/dockerfile.
           - name: access-proxy
-            image: ${{ github.repository_owner }}/kedge-access-proxy
+            image: ${{ github.repository_owner }}/faros-access-proxy
             context: ./providers/infrastructure
             dockerfile: ./providers/infrastructure/Dockerfile.access-proxy
     steps:

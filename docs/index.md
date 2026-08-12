@@ -2,24 +2,24 @@
 layout: default
 title: Home
 nav_order: 1
-description: "Kedge - The ultimate home lab tool for managing distributed Kubernetes clusters"
+description: "Faros - The ultimate home lab tool for managing distributed Kubernetes clusters"
 permalink: /
 ---
 
-# Kedge
+# Faros
 {: .fs-9 }
 
 The ultimate home lab tool for managing distributed Kubernetes clusters.
 {: .fs-6 .fw-300 }
 
 [Get Started]({% link getting-started.md %}){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
-[View on GitHub](https://github.com/faroshq/kedge){: .btn .fs-5 .mb-4 .mb-md-0 }
+[View on GitHub](https://github.com/faroshq/faros){: .btn .fs-5 .mb-4 .mb-md-0 }
 
 ---
 
-## Why Kedge?
+## Why Faros?
 
-Managing multiple Kubernetes clusters across your home lab, remote locations, or edge sites is painful. You end up juggling kubeconfigs, SSH tunnels, VPNs, and port forwards. Kedge solves this by providing a single control plane that connects all your clusters through secure reverse tunnels.
+Managing multiple Kubernetes clusters across your home lab, remote locations, or edge sites is painful. You end up juggling kubeconfigs, SSH tunnels, VPNs, and port forwards. Faros solves this by providing a single control plane that connects all your clusters through secure reverse tunnels.
 
 **Perfect for:**
 
@@ -30,9 +30,9 @@ Managing multiple Kubernetes clusters across your home lab, remote locations, or
 
 ## How It Works
 
-{% include excalidraw.html file="architecture.excalidraw" alt="Kedge architecture diagram showing agents connecting to hub via reverse tunnels" %}
+{% include excalidraw.html file="architecture.excalidraw" alt="Faros architecture diagram showing agents connecting to hub via reverse tunnels" %}
 
-1. **Deploy a Hub** — Run the Kedge hub on any reachable server (cloud VM, VPS, or your main home server)
+1. **Deploy a Hub** — Run the Faros hub on any reachable server (cloud VM, VPS, or your main home server)
 2. **Connect Sites** — Install the agent on each cluster; it establishes outbound tunnels to the hub
 3. **Manage Everything** — Use the CLI to deploy workloads, check status, and manage all clusters from one place
 
@@ -49,7 +49,7 @@ Managing multiple Kubernetes clusters across your home lab, remote locations, or
 
 ## Why HTTP/1.1?
 
-Kedge intentionally uses HTTP/1.1 with WebSockets for all communication. While HTTP/2 or HTTP/3 offer some benefits, they create significant deployment complexity — especially for home labs and small setups.
+Faros intentionally uses HTTP/1.1 with WebSockets for all communication. While HTTP/2 or HTTP/3 offer some benefits, they create significant deployment complexity — especially for home labs and small setups.
 
 With HTTP/1.1:
 
@@ -64,9 +64,9 @@ This design choice prioritizes ease of deployment over marginal performance gain
 
 | Component | Description |
 |:----------|:------------|
-| **Hub** (`kedge-hub`) | Central control plane — hosts the API, authentication, tunnel endpoints, and scheduling |
-| **Agent** (`kedge-agent`) | Runs on each site — establishes tunnels, reports status, reconciles workloads |
-| **CLI** (`kedge`) | User tool — login, register sites, deploy workloads |
+| **Hub** (`faros-hub`) | Central control plane — hosts the API, authentication, tunnel endpoints, and scheduling |
+| **Agent** (`faros-agent`) | Runs on each site — establishes tunnels, reports status, reconciles workloads |
+| **CLI** (`faros`) | User tool — login, register sites, deploy workloads |
 
 ## Resources
 
@@ -93,8 +93,8 @@ This design choice prioritizes ease of deployment over marginal performance gain
 
 ```bash
 # Clone and build
-git clone https://github.com/faroshq/kedge.git
-cd kedge
+git clone https://github.com/faroshq/faros.git
+cd faros
 make build
 
 # Run the full dev stack locally

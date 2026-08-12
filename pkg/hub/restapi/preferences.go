@@ -24,7 +24,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 )
 
 // Dashboard layout persistence. The portal remembers each user's
@@ -32,7 +32,7 @@ import (
 // server-side rather than in localStorage, so a layout follows the user
 // across browsers and devices. State is stored on a single per-user
 // UserPreferences CR (metadata.name = User CR name) in
-// root:kedge:system:tenants, with one entry per workspace. These handlers
+// root:faros:system:tenants, with one entry per workspace. These handlers
 // project just the active workspace's slice in and out.
 
 // dashboardTileBody is one tile's grid placement on the wire. Mirrors the

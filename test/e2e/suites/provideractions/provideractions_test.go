@@ -48,7 +48,7 @@ func TestProviderActionQueryThroughGeneratedNodeSDK(t *testing.T) {
 	bindProvider(t, tenant, "databricks", databricksWorkspace, databricksExport, []string{"get"})
 	bindProvider(t, tenant, "app-studio", appStudioWorkspace, appStudioExport, []string{"get", "list", "watch", "create", "update", "delete"})
 	waitTenantProxyContext(t, orgUUID, workspaceUUID)
-	tenantHeaders := map[string]string{"X-Kedge-Org": orgUUID, "X-Kedge-Workspace": workspaceUUID}
+	tenantHeaders := map[string]string{"X-Faros-Org": orgUUID, "X-Faros-Workspace": workspaceUUID}
 
 	secret := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1", "kind": "Secret",
@@ -62,7 +62,7 @@ func TestProviderActionQueryThroughGeneratedNodeSDK(t *testing.T) {
 	})
 
 	connection := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "databricks.kedge.faros.sh/v1alpha1", "kind": "Connection",
+		"apiVersion": "databricks.faros.sh/v1alpha1", "kind": "Connection",
 		"metadata": map[string]any{"name": "e2e-databricks-connection"},
 		"spec": map[string]any{
 			"host": fakeDB.URL(), "authType": "pat",
@@ -78,7 +78,7 @@ func TestProviderActionQueryThroughGeneratedNodeSDK(t *testing.T) {
 	}, "Connection Ready")
 
 	warehouse := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "databricks.kedge.faros.sh/v1alpha1", "kind": "Warehouse",
+		"apiVersion": "databricks.faros.sh/v1alpha1", "kind": "Warehouse",
 		"metadata": map[string]any{"name": "e2e-databricks-warehouse"},
 		"spec":     map[string]any{"connectionRef": connection.GetName(), "warehouseID": "e2e-warehouse"},
 	}}
@@ -91,7 +91,7 @@ func TestProviderActionQueryThroughGeneratedNodeSDK(t *testing.T) {
 	}, "Warehouse Ready")
 
 	table := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "databricks.kedge.faros.sh/v1alpha1", "kind": "Table",
+		"apiVersion": "databricks.faros.sh/v1alpha1", "kind": "Table",
 		"metadata": map[string]any{"name": tableRef},
 		"spec": map[string]any{
 			"connectionRef": connection.GetName(), "warehouseRef": warehouse.GetName(),
@@ -107,7 +107,7 @@ func TestProviderActionQueryThroughGeneratedNodeSDK(t *testing.T) {
 	}, "Table Ready")
 
 	project := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "ai.kedge.faros.sh/v1alpha1", "kind": "Project",
+		"apiVersion": "ai.faros.sh/v1alpha1", "kind": "Project",
 		"metadata": map[string]any{"name": testProject},
 		"spec":     map[string]any{"displayName": "Provider actions E2E"},
 	}}
@@ -122,7 +122,7 @@ func TestProviderActionQueryThroughGeneratedNodeSDK(t *testing.T) {
 		"alias":       testAlias,
 		"provider":    "databricks",
 		"resourceRef": map[string]any{
-			"name": tableRef, "apiVersion": "databricks.kedge.faros.sh/v1alpha1", "kind": "Table", "resource": "tables",
+			"name": tableRef, "apiVersion": "databricks.faros.sh/v1alpha1", "kind": "Table", "resource": "tables",
 		},
 		"allowedActions": []any{map[string]any{"name": "query_table", "version": "v1", "schemaDigest": digest}},
 	}
@@ -137,7 +137,7 @@ func TestProviderActionQueryThroughGeneratedNodeSDK(t *testing.T) {
 	if projectUID == "" {
 		t.Fatal("project has no UID for workload exchange")
 	}
-	tenantPath := "root:kedge:tenants:" + orgUUID + ":" + workspaceUUID
+	tenantPath := "root:faros:tenants:" + orgUUID + ":" + workspaceUUID
 	runtimeToken := exchangeWorkloadToken(t, tenantPath, projectUID, runtimeInstance, bootstrapToken)
 	tokenFile := filepath.Join(dataDir, "provider-actions-runtime.token")
 	if err := os.WriteFile(tokenFile, []byte(runtimeToken+"\n"), 0o600); err != nil {
@@ -219,7 +219,7 @@ func TestProviderActionQueryThroughGeneratedNodeSDK(t *testing.T) {
 		}
 	}
 	writeEvidence("invocation.json", map[string]any{
-		"surface": "generated-app -> generic @kedge/actions-node -> App Studio integration gateway -> hub backend proxy -> Databricks /actions/clusters/{cluster}/tables/{name}/query_table/v1",
+		"surface": "generated-app -> generic @faros/actions-node -> App Studio integration gateway -> hub backend proxy -> Databricks /actions/clusters/{cluster}/tables/{name}/query_table/v1",
 		"project": testProject, "integration": testAlias, "action": "query_table/v1",
 		"input": input, "directProviderURL": false, "patInInput": false, "mcp": false, "workloadTokenFile": true,
 	})
@@ -240,7 +240,7 @@ func TestProviderActionQueryThroughGeneratedNodeSDK(t *testing.T) {
 	} else if !strings.Contains(stderr, "403") {
 		t.Fatalf("unsupported action version did not fail closed with 403: %s", stderr)
 	}
-	if _, stderr, err := runGeneratedApp(t, hubURL, testProject, testAlias, "query_table/v1", input, tokenFile, map[string]string{"X-Kedge-Org": wrongOrgUUID, "X-Kedge-Workspace": wrongWorkspaceUUID}); err == nil {
+	if _, stderr, err := runGeneratedApp(t, hubURL, testProject, testAlias, "query_table/v1", input, tokenFile, map[string]string{"X-Faros-Org": wrongOrgUUID, "X-Faros-Workspace": wrongWorkspaceUUID}); err == nil {
 		t.Fatalf("wrong-tenant action unexpectedly succeeded (stderr=%s)", stderr)
 	} else if !strings.Contains(stderr, "401") && !strings.Contains(stderr, "403") && !strings.Contains(stderr, "404") {
 		t.Fatalf("wrong-tenant action did not fail closed: %s", stderr)
@@ -310,22 +310,22 @@ func TestProviderActionQueryThroughGeneratedNodeSDK(t *testing.T) {
 // same generated-app process against an existing local hub/project without
 // creating resources or talking to a provider URL directly.
 func TestOptionalLiveProviderActionSDK(t *testing.T) {
-	if !strings.EqualFold(strings.TrimSpace(os.Getenv("KEDGE_E2E_PROVIDER_ACTIONS_LIVE")), "true") {
-		t.Skip("set KEDGE_E2E_PROVIDER_ACTIONS_LIVE=true for the bounded live smoke")
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_E2E_PROVIDER_ACTIONS_LIVE")), "true") {
+		t.Skip("set FAROS_E2E_PROVIDER_ACTIONS_LIVE=true for the bounded live smoke")
 	}
-	hub := strings.TrimRight(strings.TrimSpace(os.Getenv("KEDGE_LIVE_HUB_URL")), "/")
-	project := strings.TrimSpace(os.Getenv("KEDGE_LIVE_PROJECT"))
-	tokenFile := strings.TrimSpace(os.Getenv("KEDGE_LIVE_ACTIONS_TOKEN_FILE"))
+	hub := strings.TrimRight(strings.TrimSpace(os.Getenv("FAROS_LIVE_HUB_URL")), "/")
+	project := strings.TrimSpace(os.Getenv("FAROS_LIVE_PROJECT"))
+	tokenFile := strings.TrimSpace(os.Getenv("FAROS_LIVE_ACTIONS_TOKEN_FILE"))
 	if hub == "" || project == "" || tokenFile == "" {
-		t.Skip("KEDGE_LIVE_HUB_URL, KEDGE_LIVE_PROJECT, and KEDGE_LIVE_ACTIONS_TOKEN_FILE are required")
+		t.Skip("FAROS_LIVE_HUB_URL, FAROS_LIVE_PROJECT, and FAROS_LIVE_ACTIONS_TOKEN_FILE are required")
 	}
-	alias := strings.TrimSpace(os.Getenv("KEDGE_LIVE_ACTION_ALIAS"))
+	alias := strings.TrimSpace(os.Getenv("FAROS_LIVE_ACTION_ALIAS"))
 	if alias == "" {
 		alias = testAlias
 	}
 	var tenantHeaders map[string]string
-	if org, workspace := strings.TrimSpace(os.Getenv("KEDGE_LIVE_ORG")), strings.TrimSpace(os.Getenv("KEDGE_LIVE_WORKSPACE")); org != "" && workspace != "" {
-		tenantHeaders = map[string]string{"X-Kedge-Org": org, "X-Kedge-Workspace": workspace}
+	if org, workspace := strings.TrimSpace(os.Getenv("FAROS_LIVE_ORG")), strings.TrimSpace(os.Getenv("FAROS_LIVE_WORKSPACE")); org != "" && workspace != "" {
+		tenantHeaders = map[string]string{"X-Faros-Org": org, "X-Faros-Workspace": workspace}
 	}
 	stdout, stderr, err := runGeneratedApp(t, hub, project, alias, "query_table/v1", map[string]any{"limit": 2}, tokenFile, tenantHeaders)
 	if err != nil {
@@ -349,10 +349,10 @@ func TestOptionalLiveProviderActionSDK(t *testing.T) {
 // access. The fresh temp directory verifies the published artifact and exact
 // consumer alias resolve together before importing the stable package name.
 func TestOptionalPublishedActionsSDKCleanInstall(t *testing.T) {
-	if !strings.EqualFold(strings.TrimSpace(os.Getenv("KEDGE_E2E_PROVIDER_ACTIONS_NPM_SMOKE")), "true") {
-		t.Skip("set KEDGE_E2E_PROVIDER_ACTIONS_NPM_SMOKE=true for the registry-backed SDK smoke")
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_E2E_PROVIDER_ACTIONS_NPM_SMOKE")), "true") {
+		t.Skip("set FAROS_E2E_PROVIDER_ACTIONS_NPM_SMOKE=true for the registry-backed SDK smoke")
 	}
-	registry := strings.TrimSpace(os.Getenv("KEDGE_E2E_PROVIDER_ACTIONS_NPM_REGISTRY"))
+	registry := strings.TrimSpace(os.Getenv("FAROS_E2E_PROVIDER_ACTIONS_NPM_REGISTRY"))
 	if registry == "" {
 		registry = "https://registry.npmjs.org"
 	}
@@ -365,12 +365,12 @@ func TestOptionalPublishedActionsSDKCleanInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("npm clean install from %s failed: %v\n%s", registry, err, output)
 	}
-	verify := exec.CommandContext(ctxWithTimeout(t, time.Minute), "node", "--input-type=module", "-e", "import { createActionsClient } from '@kedge/actions-node'; if (typeof createActionsClient !== 'function') process.exit(1)")
+	verify := exec.CommandContext(ctxWithTimeout(t, time.Minute), "node", "--input-type=module", "-e", "import { createActionsClient } from '@faros/actions-node'; if (typeof createActionsClient !== 'function') process.exit(1)")
 	verify.Dir = appDir
 	if output, err := verify.CombinedOutput(); err != nil {
 		t.Fatalf("published Actions SDK import failed after npm install: %v\n%s", err, output)
 	}
-	t.Logf("registry-backed clean install verified for @crwilhit/kedge-actions-node@0.1.0 via %s", registry)
+	t.Logf("registry-backed clean install verified for @crwilhit/faros-actions-node@0.1.0 via %s", registry)
 }
 
 func bindProvider(t *testing.T, tenant dynamic.Interface, name, workspace, export string, secretVerbs []string) {
@@ -458,7 +458,7 @@ func ensureInfrastructureBinding(t *testing.T, tenant dynamic.Interface, instanc
 			bindings = append(bindings, map[string]any{
 				"name": "runtime", "provider": "infrastructure", "kind": "providerResource",
 				"resourceRef": map[string]any{
-					"name": instance, "apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
+					"name": instance, "apiVersion": "infrastructure.faros.sh/v1alpha1",
 					"kind": "Application", "resource": "applications",
 				},
 			})
@@ -529,7 +529,7 @@ func assertProjectReferenceBinding(t *testing.T, tenant dynamic.Interface, table
 
 func catalogActionSchemaDigest(t *testing.T, providerName, actionID string) string {
 	t.Helper()
-	client := kcpDynamic(t, "root:kedge:system:providers", adminToken)
+	client := kcpDynamic(t, "root:faros:system:providers", adminToken)
 	entry, err := client.Resource(catalogEntryGVR).Get(context.Background(), providerName, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get %s catalog entry: %v", providerName, err)
@@ -636,7 +636,7 @@ func assertWorkloadReviewReserved(t *testing.T, tenantHeaders map[string]string)
 	t.Helper()
 	before := len(fakeAttestor.Requests())
 	status, body := postJSON(t, hubURL+"/services/providers/infrastructure/workload-identities/review", staticToken, map[string]any{
-		"tenantPath": "root:kedge:tenants:x:y", "project": "p", "projectUID": "u", "environment": "development", "instance": "i",
+		"tenantPath": "root:faros:tenants:x:y", "project": "p", "projectUID": "u", "environment": "development", "instance": "i",
 	}, tenantHeaders)
 	if status != http.StatusNotFound {
 		t.Fatalf("proxied attestation endpoint status=%d body=%s, want 404", status, body)
@@ -742,19 +742,19 @@ func runGeneratedApp(t *testing.T, hub, project, alias, action string, input map
 		env = append(env, value)
 	}
 	cmd.Env = append(env,
-		"KEDGE_ACTIONS_BASE_URL="+strings.TrimRight(hub, "/")+"/services/providers/app-studio",
-		"KEDGE_PROJECT="+project,
-		"KEDGE_ACTION_ALIAS="+alias,
-		"KEDGE_ACTION="+action,
-		"KEDGE_ACTIONS_TOKEN_FILE="+tokenFile,
-		"KEDGE_ACTION_INPUT_JSON="+string(b),
+		"FAROS_ACTIONS_BASE_URL="+strings.TrimRight(hub, "/")+"/services/providers/app-studio",
+		"FAROS_PROJECT="+project,
+		"FAROS_ACTION_ALIAS="+alias,
+		"FAROS_ACTION="+action,
+		"FAROS_ACTIONS_TOKEN_FILE="+tokenFile,
+		"FAROS_ACTION_INPUT_JSON="+string(b),
 	)
 	if len(tenantHeaders) > 0 && len(tenantHeaders[0]) > 0 {
 		headers, marshalErr := json.Marshal(tenantHeaders[0])
 		if marshalErr != nil {
 			t.Fatalf("encode generated app tenant headers: %v", marshalErr)
 		}
-		cmd.Env = append(cmd.Env, "KEDGE_ACTION_HEADERS_JSON="+string(headers))
+		cmd.Env = append(cmd.Env, "FAROS_ACTION_HEADERS_JSON="+string(headers))
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -763,7 +763,7 @@ func runGeneratedApp(t *testing.T, hub, project, alias, action string, input map
 }
 
 // stageGeneratedApp mirrors the production generated-app layout: the app
-// imports @kedge/actions-node by package name from a normal node_modules tree.
+// imports @faros/actions-node by package name from a normal node_modules tree.
 // The E2E copies the package into a temporary directory so it never relies on
 // a monorepo-relative runtime import or mutates the checkout under test.
 func stageGeneratedApp(t *testing.T) string {
@@ -783,8 +783,8 @@ func stageGeneratedApp(t *testing.T) string {
 	if err := json.Unmarshal(manifestContents, &manifest); err != nil {
 		t.Fatalf("decode generated app package manifest: %v", err)
 	}
-	const exactAlias = "npm:@crwilhit/kedge-actions-node@0.1.0"
-	if got := manifest.Dependencies["@kedge/actions-node"]; got != exactAlias {
+	const exactAlias = "npm:@crwilhit/faros-actions-node@0.1.0"
+	if got := manifest.Dependencies["@faros/actions-node"]; got != exactAlias {
 		t.Fatalf("generated app Actions SDK dependency = %q, want exact alias %q", got, exactAlias)
 	}
 	copyGeneratedAppFile(t, sourceManifest, filepath.Join(appDir, "package.json"))
@@ -793,7 +793,7 @@ func stageGeneratedApp(t *testing.T) string {
 		t.Fatalf("read generated app entrypoint: %v", err)
 	}
 	for _, want := range []string{
-		"import { createActionsClient } from '@kedge/actions-node';",
+		"import { createActionsClient } from '@faros/actions-node';",
 		"tokenFile: actionsTokenFile",
 	} {
 		if !strings.Contains(string(scriptContents), want) {
@@ -802,7 +802,7 @@ func stageGeneratedApp(t *testing.T) string {
 	}
 	copyGeneratedAppFile(t, sourceScript, script)
 
-	packageDir := filepath.Join(appDir, "node_modules", "@kedge", "actions-node")
+	packageDir := filepath.Join(appDir, "node_modules", "@faros", "actions-node")
 	if err := os.MkdirAll(packageDir, 0o755); err != nil {
 		t.Fatalf("create generated app package fixture: %v", err)
 	}
@@ -870,7 +870,7 @@ func setupTenantWorkspace(t *testing.T) (string, string, string) {
 	}, "personal organization")
 
 	status, body := doJSON(t, http.MethodPost, hubURL+"/api/orgs/"+orgUUID+"/workspaces", staticToken,
-		map[string]any{"displayName": "provider-actions-e2e"}, map[string]string{"X-Kedge-Org": orgUUID})
+		map[string]any{"displayName": "provider-actions-e2e"}, map[string]string{"X-Faros-Org": orgUUID})
 	if status != http.StatusCreated {
 		t.Fatalf("create provider-actions workspace: status=%d body=%s", status, body)
 	}
@@ -882,7 +882,7 @@ func setupTenantWorkspace(t *testing.T) (string, string, string) {
 	}
 
 	var clusterName string
-	headers := map[string]string{"X-Kedge-Org": orgUUID, "X-Kedge-Workspace": workspace.UUID}
+	headers := map[string]string{"X-Faros-Org": orgUUID, "X-Faros-Workspace": workspace.UUID}
 	waitCondition(t, 90*time.Second, func() (bool, string) {
 		status, body := doJSON(t, http.MethodGet, hubURL+"/api/orgs/"+orgUUID+"/workspaces/"+workspace.UUID, staticToken, nil, headers)
 		if status != http.StatusOK {
@@ -907,7 +907,7 @@ func setupTenantWorkspace(t *testing.T) (string, string, string) {
 // signal for this provider route.
 func waitTenantProxyContext(t *testing.T, orgUUID, workspaceUUID string) {
 	t.Helper()
-	headers := map[string]string{"X-Kedge-Org": orgUUID, "X-Kedge-Workspace": workspaceUUID}
+	headers := map[string]string{"X-Faros-Org": orgUUID, "X-Faros-Workspace": workspaceUUID}
 	waitCondition(t, 3*time.Minute, func() (bool, string) {
 		status, body := doJSON(t, http.MethodGet, hubURL+"/services/providers/app-studio/api/projects/__tenant_probe__", staticToken, nil, headers)
 		if status == http.StatusNotFound {

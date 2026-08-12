@@ -29,8 +29,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 
-	"github.com/faroshq/faros-kedge/pkg/hub/serviceaccounts"
-	kcpproxy "github.com/faroshq/faros-kedge/pkg/server/proxy"
+	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
+	kcpproxy "github.com/faroshq/faros/pkg/server/proxy"
 )
 
 type resolverConfigBuilder struct {
@@ -101,8 +101,8 @@ func (rt workloadResolverRoundTripper) RoundTrip(r *http.Request) (*http.Respons
 
 func TestKCPTenantResolverRoutesServiceAccountIdentityThroughWorkloadVerification(t *testing.T) {
 	const token = "runtime-token"
-	const serviceAccount = "kedge-wi-test"
-	const tenantPath = "root:kedge:tenants:org:workspace"
+	const serviceAccount = "faros-wi-test"
+	const tenantPath = "root:faros:tenants:org:workspace"
 	builder := &resolverConfigBuilder{cfg: &rest.Config{
 		Host:      "https://workload.test",
 		Transport: workloadResolverRoundTripper{token: token, serviceAccount: serviceAccount, tenantPath: tenantPath},
@@ -125,8 +125,8 @@ func TestKCPTenantResolverRoutesServiceAccountIdentityThroughWorkloadVerificatio
 			}
 			req := httptest.NewRequest(http.MethodGet, "/services/providers/databricks/x", nil)
 			req.Header.Set("Authorization", "Bearer "+token)
-			req.Header.Set(headerKedgeOrg, "org")
-			req.Header.Set(headerKedgeWorkspace, "workspace")
+			req.Header.Set(headerFarosOrg, "org")
+			req.Header.Set(headerFarosWorkspace, "workspace")
 
 			user, gotPath, err := r.resolve(req)
 			if err != nil {
@@ -144,11 +144,11 @@ func TestKCPTenantResolverRoutesServiceAccountIdentityThroughWorkloadVerificatio
 
 func TestKCPTenantResolverRejectsWorkloadTokenForWrongTenantSelection(t *testing.T) {
 	const token = "runtime-token"
-	const serviceAccount = "kedge-wi-test"
+	const serviceAccount = "faros-wi-test"
 	r := &kcpTenantResolver{
 		workloadConfig: &resolverConfigBuilder{cfg: &rest.Config{
 			Host:      "https://workload.test",
-			Transport: workloadResolverRoundTripper{token: token, serviceAccount: serviceAccount, tenantPath: "root:kedge:tenants:org:workspace"},
+			Transport: workloadResolverRoundTripper{token: token, serviceAccount: serviceAccount, tenantPath: "root:faros:tenants:org:workspace"},
 		}},
 		identifyUser: func(*http.Request) (string, error) {
 			return "system:serviceaccount:default:" + serviceAccount, nil
@@ -156,8 +156,8 @@ func TestKCPTenantResolverRejectsWorkloadTokenForWrongTenantSelection(t *testing
 	}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set(headerKedgeOrg, "other-org")
-	req.Header.Set(headerKedgeWorkspace, "workspace")
+	req.Header.Set(headerFarosOrg, "other-org")
+	req.Header.Set(headerFarosWorkspace, "workspace")
 	if _, _, err := r.resolve(req); err == nil {
 		t.Fatal("resolve accepted workload token with a different tenant selection")
 	}
@@ -165,11 +165,11 @@ func TestKCPTenantResolverRejectsWorkloadTokenForWrongTenantSelection(t *testing
 
 func TestKCPTenantResolverRejectsWrongTenantWhenIdentifyUserReturnsNoBearer(t *testing.T) {
 	const token = "runtime-token"
-	const serviceAccount = "kedge-wi-test"
+	const serviceAccount = "faros-wi-test"
 	r := &kcpTenantResolver{
 		workloadConfig: &resolverConfigBuilder{cfg: &rest.Config{
 			Host:      "https://workload.test",
-			Transport: workloadResolverRoundTripper{token: token, serviceAccount: serviceAccount, tenantPath: "root:kedge:tenants:org:workspace"},
+			Transport: workloadResolverRoundTripper{token: token, serviceAccount: serviceAccount, tenantPath: "root:faros:tenants:org:workspace"},
 		}},
 		identifyUser: func(*http.Request) (string, error) {
 			return "", kcpproxy.ErrIdentifyNoBearer
@@ -177,8 +177,8 @@ func TestKCPTenantResolverRejectsWrongTenantWhenIdentifyUserReturnsNoBearer(t *t
 	}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set(headerKedgeOrg, "other-org")
-	req.Header.Set(headerKedgeWorkspace, "workspace")
+	req.Header.Set(headerFarosOrg, "other-org")
+	req.Header.Set(headerFarosWorkspace, "workspace")
 	if _, _, err := r.resolve(req); err == nil || errors.Is(err, ErrAnonymousProviderCaller) {
 		t.Fatalf("resolve error = %v, want fail-closed workload verification error", err)
 	}
@@ -198,12 +198,12 @@ func TestKCPTenantResolverMapsOnlyMissingAuthorizationToAnonymous(t *testing.T) 
 
 func TestKCPTenantResolverRejectsUnavailableWorkloadIdentity(t *testing.T) {
 	r := &kcpTenantResolver{identifyUser: func(*http.Request) (string, error) {
-		return "system:serviceaccount:default:kedge-wi-test", nil
+		return "system:serviceaccount:default:faros-wi-test", nil
 	}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("Authorization", "Bearer runtime-token")
-	req.Header.Set(headerKedgeOrg, "org")
-	req.Header.Set(headerKedgeWorkspace, "workspace")
+	req.Header.Set(headerFarosOrg, "org")
+	req.Header.Set(headerFarosWorkspace, "workspace")
 	if _, _, err := r.resolve(req); err == nil || errors.Is(err, ErrAnonymousProviderCaller) {
 		t.Fatalf("resolve error = %v, want fail-closed workload error", err)
 	}

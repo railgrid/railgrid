@@ -32,12 +32,12 @@ import (
 
 func applicationTemplateObject() *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.faros.sh/v1alpha1",
 		"kind":       "Template",
 		"metadata":   map[string]any{"name": "application"},
 		"spec": map[string]any{
 			"instanceCRD": map[string]any{
-				"group":    "infrastructure.kedge.faros.sh",
+				"group":    "infrastructure.faros.sh",
 				"version":  "v1alpha1",
 				"resource": "applications",
 				"kind":     "Application",
@@ -46,14 +46,14 @@ func applicationTemplateObject() *unstructured.Unstructured {
 				"components": map[string]any{
 					"frontend": map[string]any{
 						"workspacePath": "web",
-						"devImage":      "${kedge.devImage.node}",
+						"devImage":      "${faros.devImage.node}",
 						"startCommand":  "npm run dev",
 						"port":          "frontend",
 						"imageInput":    "frontendImage",
 					},
 					"backend": map[string]any{
 						"workspacePath": "api",
-						"devImage":      "${kedge.devImage.node}",
+						"devImage":      "${faros.devImage.node}",
 						"startCommand":  "npm run dev || npm start",
 						"port":          "backend",
 						"imageInput":    "backendImage",
@@ -69,7 +69,7 @@ func TestProjectTemplateInfoFromUnstructured(t *testing.T) {
 	if err != nil {
 		t.Fatalf("projectTemplateInfoFromUnstructured: %v", err)
 	}
-	if info.APIVersion != "infrastructure.kedge.faros.sh/v1alpha1" || info.Kind != "Application" || info.Resource != "applications" {
+	if info.APIVersion != "infrastructure.faros.sh/v1alpha1" || info.Kind != "Application" || info.Resource != "applications" {
 		t.Errorf("instance coordinates = %s/%s/%s", info.APIVersion, info.Kind, info.Resource)
 	}
 	// The runtime half of the contract must survive extraction: without the
@@ -157,8 +157,8 @@ func TestProjectTemplateDevBinding(t *testing.T) {
 	if err := json.Unmarshal(binding.Values.Raw, &values); err != nil {
 		t.Fatalf("values: %v", err)
 	}
-	if values["name"] != "shop-dev" || values["kedgeMode"] != "development" {
-		t.Errorf("values = %v, want name=shop-dev kedgeMode=development", values)
+	if values["name"] != "shop-dev" || values["farosMode"] != "development" {
+		t.Errorf("values = %v, want name=shop-dev farosMode=development", values)
 	}
 }
 
@@ -174,7 +174,7 @@ func TestProjectTemplateDevBindingCarriesTrustedActionsContext(t *testing.T) {
 		ActionsExchangeURL: "https://hub.example/api/provider-actions/workload/exchange",
 		ActionsBaseURL:     "https://hub.example/services/providers/app-studio",
 		ActionsCABundle:    "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
-		TenantPath:         "root:kedge:tenants:org:ws",
+		TenantPath:         "root:faros:tenants:org:ws",
 		Org:                "org",
 		Workspace:          "ws",
 		Project:            "shop",
@@ -190,12 +190,12 @@ func TestProjectTemplateDevBindingCarriesTrustedActionsContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	for key, want := range map[string]string{
-		"kedgeActionsExchangeURL": "https://hub.example/api/provider-actions/workload/exchange",
-		"kedgeActionsBaseURL":     "https://hub.example/services/providers/app-studio",
-		"kedgeActionsCABundle":    "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
-		"kedgeActionsTenantPath":  "root:kedge:tenants:org:ws",
-		"kedgeActionsProjectUID":  "test-project-uid-shop",
-		"kedgeActionsInstance":    "shop-dev",
+		"farosActionsExchangeURL": "https://hub.example/api/provider-actions/workload/exchange",
+		"farosActionsBaseURL":     "https://hub.example/services/providers/app-studio",
+		"farosActionsCABundle":    "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+		"farosActionsTenantPath":  "root:faros:tenants:org:ws",
+		"farosActionsProjectUID":  "test-project-uid-shop",
+		"farosActionsInstance":    "shop-dev",
 	} {
 		if values[key] != want {
 			t.Errorf("%s = %v, want %q", key, values[key], want)
@@ -300,17 +300,17 @@ func TestProjectDevelopmentRuntimeBindingClearsStaleActionsContext(t *testing.T)
 		Kind:     aiv1alpha1.ProjectBindingKindProviderResource,
 		Values: runtime.RawExtension{Raw: []byte(`{
 			"name":"shop-dev",
-			"kedgeMode":"development",
-			"kedgeActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
-			"kedgeActionsBaseURL":"https://stale.example/services/providers/app-studio",
-			"kedgeActionsCABundle":"-----BEGIN CERTIFICATE-----stale-----END CERTIFICATE-----",
-			"kedgeActionsTenantPath":"stale-tenant",
-			"kedgeActionsProject":"stale-project"
+			"farosMode":"development",
+			"farosActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
+			"farosActionsBaseURL":"https://stale.example/services/providers/app-studio",
+			"farosActionsCABundle":"-----BEGIN CERTIFICATE-----stale-----END CERTIFICATE-----",
+			"farosActionsTenantPath":"stale-tenant",
+			"farosActionsProject":"stale-project"
 		}`)},
 	}
 
 	updated, err := (&Server{}).projectDevelopmentRuntimeBinding(binding, p, identity{
-		tenantPath:    "root:kedge:tenants:org:ws",
+		tenantPath:    "root:faros:tenants:org:ws",
 		orgUUID:       "org",
 		workspaceUUID: "ws",
 	})
@@ -321,19 +321,19 @@ func TestProjectDevelopmentRuntimeBindingClearsStaleActionsContext(t *testing.T)
 	if err := json.Unmarshal(updated.Values.Raw, &values); err != nil {
 		t.Fatalf("updated values: %v", err)
 	}
-	for _, key := range []string{"kedgeActionsExchangeURL", "kedgeActionsBaseURL", "kedgeActionsCABundle"} {
+	for _, key := range []string{"farosActionsExchangeURL", "farosActionsBaseURL", "farosActionsCABundle"} {
 		if _, found := values[key]; found {
 			t.Errorf("stale %s survived missing external URL: %v", key, values[key])
 		}
 	}
 	for key, want := range map[string]string{
-		"kedgeActionsTenantPath":  "root:kedge:tenants:org:ws",
-		"kedgeActionsOrg":         "org",
-		"kedgeActionsWorkspace":   "ws",
-		"kedgeActionsProject":     "shop",
-		"kedgeActionsProjectUID":  "project-uid",
-		"kedgeActionsEnvironment": projectDevelopmentEnvironmentName,
-		"kedgeActionsInstance":    "shop-dev",
+		"farosActionsTenantPath":  "root:faros:tenants:org:ws",
+		"farosActionsOrg":         "org",
+		"farosActionsWorkspace":   "ws",
+		"farosActionsProject":     "shop",
+		"farosActionsProjectUID":  "project-uid",
+		"farosActionsEnvironment": projectDevelopmentEnvironmentName,
+		"farosActionsInstance":    "shop-dev",
 	} {
 		if values[key] != want {
 			t.Errorf("%s = %v, want rebuilt trusted value %q", key, values[key], want)
@@ -359,9 +359,9 @@ func TestProjectDevelopmentRuntimeBindingClearsActionsAfterGrantRevocation(t *te
 		Kind:     aiv1alpha1.ProjectBindingKindProviderResource,
 		Values: runtime.RawExtension{Raw: []byte(`{
 			"name":"shop-dev",
-			"kedgeActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
-			"kedgeActionsBaseURL":"https://stale.example/services/providers/app-studio",
-			"kedgeActionsCABundle":"-----BEGIN CERTIFICATE-----stale-----END CERTIFICATE-----"
+			"farosActionsExchangeURL":"https://stale.example/api/provider-actions/workload/exchange",
+			"farosActionsBaseURL":"https://stale.example/services/providers/app-studio",
+			"farosActionsCABundle":"-----BEGIN CERTIFICATE-----stale-----END CERTIFICATE-----"
 		}`)},
 	}
 
@@ -373,7 +373,7 @@ func TestProjectDevelopmentRuntimeBindingClearsActionsAfterGrantRevocation(t *te
 	if err := json.Unmarshal(updated.Values.Raw, &values); err != nil {
 		t.Fatalf("updated values: %v", err)
 	}
-	for _, key := range []string{"kedgeActionsExchangeURL", "kedgeActionsBaseURL", "kedgeActionsCABundle"} {
+	for _, key := range []string{"farosActionsExchangeURL", "farosActionsBaseURL", "farosActionsCABundle"} {
 		if _, found := values[key]; found {
 			t.Errorf("revoked grant left stale %s: %v", key, values[key])
 		}
@@ -604,7 +604,7 @@ func TestProjectDevelopmentTargetRefs(t *testing.T) {
 	target := projectDevelopmentSyncTargetInfo{
 		Resource:     "applications",
 		Kind:         "Application",
-		APIVersion:   "infrastructure.kedge.faros.sh/v1alpha1",
+		APIVersion:   "infrastructure.faros.sh/v1alpha1",
 		ResourceName: "shop-dev",
 		Components:   devComponentPaths(map[string]string{"frontend": "web", "backend": "api"}),
 	}

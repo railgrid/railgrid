@@ -44,7 +44,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/faroshq/kedge-hub
+          images: ghcr.io/faroshq/faros-hub
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

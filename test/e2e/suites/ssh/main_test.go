@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package ssh implements e2e tests for kedge SSH server-mode functionality.
+// Package ssh implements e2e tests for faros SSH server-mode functionality.
 // It requires only a hub cluster (no agent clusters) since SSH tests start
 // their own server-mode agents as subprocesses.
 package ssh
@@ -28,7 +28,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 var testenv env.Environment
@@ -44,7 +44,7 @@ func TestMain(m *testing.M) {
 
 	testenv = env.NewWithConfig(cfg)
 
-	if os.Getenv("KEDGE_USE_EXISTING_CLUSTERS") == "true" {
+	if os.Getenv("FAROS_USE_EXISTING_CLUSTERS") == "true" {
 		testenv.Setup(framework.UseExistingClusters(repoRoot))
 	} else {
 		// SSH tests only need the hub — use agentCount=1 (CLI minimum) to avoid

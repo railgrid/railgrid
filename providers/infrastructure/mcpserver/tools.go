@@ -31,7 +31,7 @@ func tenantClient(deps Deps, ident identity) (dynamic.Interface, error) {
 		return nil, errors.New("no tenant identity on this request — bearer token did not resolve to a workspace")
 	}
 	if ident.clusterID == "" {
-		return nil, errors.New("no workspace cluster on this request (X-Kedge-Cluster missing) — cannot address the tenant workspace by ID")
+		return nil, errors.New("no workspace cluster on this request (X-Faros-Cluster missing) — cannot address the tenant workspace by ID")
 	}
 	if ident.token == "" {
 		return nil, errors.New("no bearer token on this request — the MCP request must carry the caller's credentials")
@@ -104,7 +104,7 @@ type instanceNameInput struct {
 
 type updateInstanceInput struct {
 	Name   string         `json:"name" jsonschema:"Instance name"`
-	Values map[string]any `json:"values" jsonschema:"JSON merge patch for the instance's values: send only the fields to change (objects merge, null unsets, scalars/arrays replace). Immutable fields (name, kedgeMode, platform-stamped, template-declared) are rejected."`
+	Values map[string]any `json:"values" jsonschema:"JSON merge patch for the instance's values: send only the fields to change (objects merge, null unsets, scalars/arrays replace). Immutable fields (name, farosMode, platform-stamped, template-declared) are rejected."`
 }
 
 type updateInstanceOutput struct {
@@ -180,7 +180,7 @@ func registerTools(srv *mcp.Server, deps Deps, ident identity) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "provision",
 		Title:       "Provision a template instance in your workspace",
-		Description: "Create an instance of the named template as a CR in the caller's tenant workspace; the backend reconciles it. For development-capable templates (describe_template reports a development block), set values.kedgeMode=\"development\" to get a live dev sandbox instead of a production deployment: image inputs may be omitted, and source is pushed with dev_sync (hot reload, no image builds). Identity is taken from the bearer token; the user does not need to supply a tenant path.",
+		Description: "Create an instance of the named template as a CR in the caller's tenant workspace; the backend reconciles it. For development-capable templates (describe_template reports a development block), set values.farosMode=\"development\" to get a live dev sandbox instead of a production deployment: image inputs may be omitted, and source is pushed with dev_sync (hot reload, no image builds). Identity is taken from the bearer token; the user does not need to supply a tenant path.",
 		Annotations: &mcp.ToolAnnotations{
 			IdempotentHint:  false,
 			DestructiveHint: &no,
@@ -267,7 +267,7 @@ func registerTools(srv *mcp.Server, deps Deps, ident identity) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "update_instance",
 		Title:       "Update a live instance's values in place",
-		Description: "Merge-patch an instance's values (RFC 7386: send only what changes, null unsets) and let the backend reconcile the delta — an image bump becomes a rolling update with managed state (e.g. the database) untouched. Use this instead of delete+provision to roll a new image tag, scale replicas, change ports/env/schedule, or adjust oidc settings. Rejected for immutable fields: name, kedgeMode (dev↔production is a recreate), platform-stamped fields, and anything the template declares immutable (e.g. database.version).",
+		Description: "Merge-patch an instance's values (RFC 7386: send only what changes, null unsets) and let the backend reconcile the delta — an image bump becomes a rolling update with managed state (e.g. the database) untouched. Use this instead of delete+provision to roll a new image tag, scale replicas, change ports/env/schedule, or adjust oidc settings. Rejected for immutable fields: name, farosMode (dev↔production is a recreate), platform-stamped fields, and anything the template declares immutable (e.g. database.version).",
 		Annotations: &mcp.ToolAnnotations{
 			IdempotentHint:  true,
 			DestructiveHint: &no,

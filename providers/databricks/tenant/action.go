@@ -59,9 +59,9 @@ type TableAuthorizer interface {
 // with a useful unavailable error.
 func (f *ClientFactory) ActionExecutorForRoute(r *http.Request, clusterID string, executor backend.QueryExecutor) *ActionExecutor {
 	return &ActionExecutor{
-		factory:  f,
-		identity: identity{clusterID: strings.TrimSpace(clusterID), token: bearerToken(r)},
-		executor: executor,
+		factory:    f,
+		identity:   identity{clusterID: strings.TrimSpace(clusterID), token: bearerToken(r)},
+		executor:   executor,
 		authorizer: f,
 	}
 }

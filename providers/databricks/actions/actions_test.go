@@ -160,7 +160,7 @@ func TestQueryTableActionDefaultsTypedFailureStatusFromCode(t *testing.T) {
 }
 
 func TestQueryTableActionUnsafeTypedFailureFallsBack(t *testing.T) {
-	unsafe := "SELECT * FROM https://dbc.example.com with bearer token root:kedge:tenants:org:ws"
+	unsafe := "SELECT * FROM https://dbc.example.com with bearer token root:faros:tenants:org:ws"
 	executor := &fakeExecutor{err: &ActionError{
 		Code: ActionErrorCodeBackendFailure, Message: unsafe,
 		Status: http.StatusServiceUnavailable, Retryable: true,
@@ -173,7 +173,7 @@ func TestQueryTableActionUnsafeTypedFailureFallsBack(t *testing.T) {
 	if rw.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502; body=%s", rw.Code, rw.Body.String())
 	}
-	if strings.Contains(rw.Body.String(), "dbc.example.com") || strings.Contains(rw.Body.String(), "root:kedge:tenants") || strings.Contains(rw.Body.String(), "SELECT") || strings.Contains(rw.Body.String(), "bearer") {
+	if strings.Contains(rw.Body.String(), "dbc.example.com") || strings.Contains(rw.Body.String(), "root:faros:tenants") || strings.Contains(rw.Body.String(), "SELECT") || strings.Contains(rw.Body.String(), "bearer") {
 		t.Fatalf("unsafe error leaked: %s", rw.Body.String())
 	}
 	if !strings.Contains(rw.Body.String(), `"code":"action_failed"`) || !strings.Contains(rw.Body.String(), `"retryable":false`) {
@@ -206,7 +206,7 @@ func TestQueryTableActionForwardsOnlyValidatedInput(t *testing.T) {
 	h := NewHandler(deps)
 	r := httptest.NewRequest(http.MethodPost, testActionPath, strings.NewReader(`{"input":{"columns":["trip_id","fare_amount"],"limit":25}}`))
 	r.Header.Set("Authorization", "Bearer caller")
-	r.Header.Set("X-Kedge-Action-Deadline-Ms", "5000")
+	r.Header.Set("X-Faros-Action-Deadline-Ms", "5000")
 	r.Header.Set("X-Request-ID", "req-1")
 	r.Header.Set("Idempotency-Key", "idem-1")
 	r.Header.Set("Content-Type", "application/json")
@@ -321,7 +321,7 @@ func TestActionDeadlineDefaultIsBounded(t *testing.T) {
 		t.Fatal("action deadline must remain bounded to the declared timeout")
 	}
 	invalid := httptest.NewRequest(http.MethodPost, testActionPath, nil)
-	invalid.Header.Set("X-Kedge-Action-Deadline-Ms", "not-a-number")
+	invalid.Header.Set("X-Faros-Action-Deadline-Ms", "not-a-number")
 	if _, err := actionDeadline(invalid); err == nil {
 		t.Fatal("invalid action deadline must fail closed")
 	}

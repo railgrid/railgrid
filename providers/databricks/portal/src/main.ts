@@ -1,7 +1,7 @@
 import { DatabricksElement } from './element'
 import styles from './style.css?raw'
 
-const TAG = 'kedge-provider-databricks'
+const TAG = 'faros-provider-databricks'
 
 if (!customElements.get(TAG)) {
   const styleId = `${TAG}-css`

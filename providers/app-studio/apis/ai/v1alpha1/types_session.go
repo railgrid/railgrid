@@ -15,12 +15,12 @@ import (
 )
 
 // SessionFinalizer guards the store purge on Session deletion.
-const SessionFinalizer = "ai.kedge.faros.sh/purge"
+const SessionFinalizer = "ai.faros.sh/purge"
 
 // +genclient
 // +genclient:nonNamespaced
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster,categories=kedge
+// +kubebuilder:resource:scope=Cluster,categories=faros
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Project",type=string,JSONPath=".spec.projectRef"
 // +kubebuilder:printcolumn:name="Title",type=string,JSONPath=".status.title"

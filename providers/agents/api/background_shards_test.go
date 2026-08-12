@@ -45,8 +45,8 @@ func sliceWithEndpoints(urls ...string) *unstructured.Unstructured {
 // must yield BOTH URLs. Returning only the first is what stranded every tenant
 // on the second shard.
 func TestSliceEndpointURLsKeepsEveryShard(t *testing.T) {
-	root := "https://root-kcp:6443/services/apiexport/2tr07/agents.kedge.faros.sh"
-	alpha := "https://alpha-shard-kcp:6443/services/apiexport/2tr07/agents.kedge.faros.sh"
+	root := "https://root-kcp:6443/services/apiexport/2tr07/agents.faros.sh"
+	alpha := "https://alpha-shard-kcp:6443/services/apiexport/2tr07/agents.faros.sh"
 
 	got, err := sliceEndpointURLs(sliceWithEndpoints(root, alpha))
 	if err != nil {
@@ -120,7 +120,7 @@ func TestListAllMergesAcrossShards(t *testing.T) {
 	b := &background{
 		shards: []*vwShard{
 			shardWith(t, "https://root/vw", connectionObj("rootcluster", "other-conn")),
-			shardWith(t, "https://alpha/vw", connectionObj("tenantcluster", "discordia-kedge")),
+			shardWith(t, "https://alpha/vw", connectionObj("tenantcluster", "discordia-faros")),
 		},
 	}
 
@@ -132,7 +132,7 @@ func TestListAllMergesAcrossShards(t *testing.T) {
 	for i := range items {
 		names[items[i].GetName()] = true
 	}
-	if !names["discordia-kedge"] || !names["other-conn"] {
+	if !names["discordia-faros"] || !names["other-conn"] {
 		t.Fatalf("want connections from both shards, got %v", names)
 	}
 
@@ -164,7 +164,7 @@ func TestListAllToleratesOneBadShard(t *testing.T) {
 	b := &background{
 		shards: []*vwShard{
 			brokenShard(t, "https://broken/vw"),
-			shardWith(t, "https://alpha/vw", connectionObj("tenantcluster", "discordia-kedge")),
+			shardWith(t, "https://alpha/vw", connectionObj("tenantcluster", "discordia-faros")),
 		},
 	}
 
@@ -172,7 +172,7 @@ func TestListAllToleratesOneBadShard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a single failing shard must not fail the whole list: %v", err)
 	}
-	if len(items) != 1 || items[0].GetName() != "discordia-kedge" {
+	if len(items) != 1 || items[0].GetName() != "discordia-faros" {
 		t.Fatalf("want the healthy shard's connection, got %v", items)
 	}
 }

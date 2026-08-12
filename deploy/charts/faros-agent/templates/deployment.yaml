@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "faros-agent.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "faros-agent.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "faros-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "faros-agent.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.hostAliases }}
+      hostAliases:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "faros-agent.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: agent
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "faros-agent.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            # Set HOME so the agent can write ~/.faros/ for kubeconfig caching.
+            - name: HOME
+              value: /tmp
+          args:
+            - --edge-name={{ required "agent.edgeName is required" .Values.agent.edgeName }}
+            - --type=kubernetes
+            {{- if .Values.agent.cluster }}
+            - --cluster={{ .Values.agent.cluster }}
+            {{- end }}
+            {{- if .Values.agent.hub.token }}
+            - --hub-url={{ required "agent.hub.url is required when using token auth" .Values.agent.hub.url }}
+            - --token={{ .Values.agent.hub.token }}
+            {{- else }}
+            - --hub-kubeconfig=/etc/faros/hub-kubeconfig/kubeconfig
+            {{- if .Values.agent.hub.context }}
+            - --hub-context={{ .Values.agent.hub.context }}
+            {{- end }}
+            {{- if .Values.agent.hub.url }}
+            - --hub-url={{ .Values.agent.hub.url }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.agent.hub.insecureSkipTLSVerify }}
+            - --hub-insecure-skip-tls-verify
+            {{- end }}
+            {{- if .Values.agent.tunnelURL }}
+            - --tunnel-url={{ .Values.agent.tunnelURL }}
+            {{- end }}
+            {{- range $key, $value := .Values.agent.labels }}
+            - --labels={{ $key }}={{ $value }}
+            {{- end }}
+            {{- if .Values.agent.debugAddr }}
+            - --debug-addr={{ .Values.agent.debugAddr }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.agent.resources | nindent 12 }}
+          {{- if not .Values.agent.hub.token }}
+          volumeMounts:
+            - name: hub-kubeconfig
+              mountPath: /etc/faros/hub-kubeconfig
+              readOnly: true
+          {{- end }}
+      {{- if not .Values.agent.hub.token }}
+      volumes:
+        - name: hub-kubeconfig
+          secret:
+            secretName: {{ include "faros-agent.hubKubeconfigSecretName" . }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

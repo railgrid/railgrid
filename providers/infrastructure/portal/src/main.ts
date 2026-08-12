@@ -1,4 +1,4 @@
-// Entry point loaded by the kedge portal as a single <script> tag.
+// Entry point loaded by the faros portal as a single <script> tag.
 // The build emits this as IIFE (see vite.config.ts) so the side
 // effects below run immediately — registering the custom element and
 // the per-element stylesheet — without waiting on the module loader.
@@ -6,8 +6,8 @@
 import { InfrastructureElement, InfrastructureDashboardTileElement } from './element'
 import styles from './style.css?raw'
 
-const TAG = 'kedge-provider-infrastructure'
-const TILE_TAG = 'kedge-dashboard-tile-infrastructure'
+const TAG = 'faros-provider-infrastructure'
+const TILE_TAG = 'faros-dashboard-tile-infrastructure'
 
 // Hot-reload safety: customElements.define throws on a second
 // registration for the same tag. The portal can re-execute this

@@ -27,7 +27,7 @@ const (
 	// New per-template CRDs registered by the Template controller share
 	// this group; their resource names are derived from
 	// Template.spec.instanceCRD.
-	GroupName = "infrastructure.kedge.faros.sh"
+	GroupName = "infrastructure.faros.sh"
 	// Version pins the served + storage version. Bumping to v1 will
 	// require a conversion plan — keep all in-tree changes additive
 	// until then.

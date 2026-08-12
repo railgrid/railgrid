@@ -4,7 +4,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    kedge hub                            │
+│                    faros hub                            │
 │                                                         │
 │  ┌─────────────────────────────────────────────────┐   │
 │  │  Virtual Workspaces (pkg/virtual/builder/)       │   │
@@ -28,7 +28,7 @@
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
-│                    kedge agent                          │
+│                    faros agent                          │
 │  pkg/agent/agent.go                                     │
 │    ├── mode=site: starts downstream k8s + reconciler    │
 │    │   status/reporter.go    (Site heartbeats)          │
@@ -39,7 +39,7 @@
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
-│                    kedge CLI                            │
+│                    faros CLI                            │
 │  pkg/cli/cmd/                                           │
 │    ssh.go — resolveResourceKind probe + WS dial         │
 │    site.go — site management commands                   │
@@ -51,7 +51,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    kedge hub                            │
+│                    faros hub                            │
 │                                                         │
 │  ┌─────────────────────────────────────────────────┐   │
 │  │  Virtual Workspaces                              │   │
@@ -76,7 +76,7 @@
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
-│                    kedge agent                          │
+│                    faros agent                          │
 │  pkg/agent/agent.go                                     │
 │    ├── type=kubernetes: k8s client + reconciler          │
 │    │   status/edge_reporter.go  (Edge heartbeats)       │
@@ -105,8 +105,8 @@
 
 | File/Dir | Reason |
 |----------|--------|
-| `apis/kedge/v1alpha1/types_site.go` | Replaced by types_edge.go |
-| `apis/kedge/v1alpha1/types_server.go` | Replaced by types_edge.go |
+| `apis/faros/v1alpha1/types_site.go` | Replaced by types_edge.go |
+| `apis/faros/v1alpha1/types_server.go` | Replaced by types_edge.go |
 | `pkg/hub/controllers/site/` (all files) | Replaced by pkg/hub/controllers/edge/ |
 | `pkg/virtual/builder/edge_proxy_builder.go` | Merged into edges_proxy_builder.go |
 | `pkg/virtual/builder/agent_proxy_builder.go` | Merged into edges_proxy_builder.go |
@@ -117,7 +117,7 @@
 
 | File | Contents |
 |------|----------|
-| `apis/kedge/v1alpha1/types_edge.go` | Edge/EdgeList/EdgeSpec/EdgeStatus types |
+| `apis/faros/v1alpha1/types_edge.go` | Edge/EdgeList/EdgeSpec/EdgeStatus types |
 | `pkg/hub/controllers/edge/controller.go` | Constants + setup |
 | `pkg/hub/controllers/edge/lifecycle_reconciler.go` | Heartbeat staleness |
 | `pkg/hub/controllers/edge/mount_reconciler.go` | kcp workspace (k8s only) |

@@ -6,7 +6,7 @@ App Studio's development environment is **Template-backed**. A Project records
 the selected infrastructure `Template`; the Template's development contract
 declares its instance resource and one or more development components. App
 Studio does not assume a `SandboxRunner` kind, a single container, or a fixed
-toolchain. The selected Template is provisioned with `kedgeMode: development`
+toolchain. The selected Template is provisioned with `farosMode: development`
 and its own graph owns the runtime namespace, workloads, services, routes, and
 development-agent configuration.
 
@@ -37,7 +37,7 @@ token-authenticated App Studio → Infrastructure control contract remains on th
 component Service's `7070` control port and `7071` exec port, using
 `X-Sandbox-Control-Token`. The coordinator owns that contract and durable
 session/idempotency state on a separate per-component platform-state PVC
-mounted at `/kedge/state`; it has no app environment or secrets.
+mounted at `/faros/state`; it has no app environment or secrets.
 
 The app runtime supervisor owns the app environment/secrets and starts or
 restarts the app, but has no platform token or platform-state mount. The

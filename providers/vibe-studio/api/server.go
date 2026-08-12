@@ -130,7 +130,7 @@ type callerAuth struct {
 }
 
 func callerAuthFromRequest(r *http.Request) callerAuth {
-	auth := callerAuth{clusterID: strings.TrimSpace(r.Header.Get("X-Kedge-Cluster"))}
+	auth := callerAuth{clusterID: strings.TrimSpace(r.Header.Get("X-Faros-Cluster"))}
 	const p = "Bearer "
 	if h := r.Header.Get("Authorization"); len(h) > len(p) && strings.EqualFold(h[:len(p)], p) {
 		auth.token = strings.TrimSpace(h[len(p):])
@@ -255,7 +255,7 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 			Name:        p.Name,
 			DisplayName: firstNonEmpty(p.Spec.DisplayName, p.Name),
 			Phase:       p.Status.Phase,
-			SessionID:   p.Labels["vibe.kedge.faros.sh/session"],
+			SessionID:   p.Labels["vibe.faros.sh/session"],
 			UpdatedAt:   p.CreationTimestamp.UTC().Format(time.RFC3339),
 		}
 		if p.Spec.Template != nil {
@@ -385,14 +385,14 @@ func (s *Server) handleReadFile(w http.ResponseWriter, r *http.Request) {
 }
 
 // scope resolves the hub-verified tenant. The hub backend proxy injects
-// X-Kedge-Tenant on every request it forwards.
+// X-Faros-Tenant on every request it forwards.
 func (s *Server) scope(r *http.Request) (store.Scope, error) {
-	tenant := strings.TrimSpace(r.Header.Get("X-Kedge-Tenant"))
+	tenant := strings.TrimSpace(r.Header.Get("X-Faros-Tenant"))
 	if tenant == "" {
 		tenant = s.devTenant
 	}
 	if tenant == "" {
-		return store.Scope{}, errors.New("missing X-Kedge-Tenant")
+		return store.Scope{}, errors.New("missing X-Faros-Tenant")
 	}
 	return store.Scope{Tenant: tenant}, nil
 }
@@ -814,7 +814,7 @@ func (s *Server) applyProject(ctx context.Context, cl *client.Client, sessionID 
 	values := map[string]any{}
 	maps.Copy(values, bp.Values)
 	values["name"] = name
-	values[templateKedgeModeField] = templateKedgeModeDevelopment
+	values[templateFarosModeField] = templateFarosModeDevelopment
 	raw, err := json.Marshal(values)
 	if err != nil {
 		return fmt.Errorf("encoding instance values: %w", err)
@@ -836,7 +836,7 @@ func (s *Server) applyProject(ctx context.Context, cl *client.Client, sessionID 
 
 	p := &vibev1alpha1.Project{}
 	p.Name = name
-	p.Labels = map[string]string{"vibe.kedge.faros.sh/session": sessionID}
+	p.Labels = map[string]string{"vibe.faros.sh/session": sessionID}
 	if owner != nil && owner.UID != "" {
 		p.OwnerReferences = []metav1.OwnerReference{{
 			APIVersion: vibev1alpha1.SchemeGroupVersion.String(),
@@ -917,11 +917,11 @@ func (s *Server) applyProject(ctx context.Context, cl *client.Client, sessionID 
 // per-project state, so a per-project instance ran N identical pods.
 const searchTemplate = "searxng"
 
-// Instance kedgeMode contract (providers/infrastructure/apis: KedgeModeField).
+// Instance farosMode contract (providers/infrastructure/apis: FarosModeField).
 const (
-	templateKedgeModeField       = "kedgeMode"
-	templateKedgeModeDevelopment = "development"
-	templateKedgeModeProduction  = "production"
+	templateFarosModeField       = "farosMode"
+	templateFarosModeDevelopment = "development"
+	templateFarosModeProduction  = "production"
 )
 
 // sortedComponentNames keeps the Project spec's component order stable so a

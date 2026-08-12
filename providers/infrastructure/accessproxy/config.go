@@ -47,13 +47,13 @@ import (
 const (
 	// SessionCookieName is intentionally a __Host cookie: Secure, Path=/, and
 	// no Domain attribute are mandatory.  The app proxy never forwards it.
-	SessionCookieName = "__Host-kedge-app-session"
+	SessionCookieName = "__Host-faros-app-session"
 	// ReturnCookieName is a short-lived opaque handle for the original clean
 	// path while the browser completes the hub sign-in flow.
-	ReturnCookieName = "kedge-app-return"
+	ReturnCookieName = "faros-app-return"
 	// CallbackPath is the reserved platform path on the app host. It must stay
 	// in lockstep with the hub's appauth.CallbackPath.
-	CallbackPath = "/__kedge/auth/callback"
+	CallbackPath = "/__faros/auth/callback"
 
 	// hubAuthorizePath / hubExchangePath mirror pkg/hub/appauth. The contract
 	// is intentionally tiny (two endpoints, standard redirect + JSON), so the

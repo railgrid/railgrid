@@ -1,4 +1,4 @@
-apiVersion: kedge.faros.sh/v1alpha1
+apiVersion: faros.sh/v1alpha1
 kind: Edge
 metadata:
   name: test-edge

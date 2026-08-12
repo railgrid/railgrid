@@ -106,7 +106,7 @@ func TestBuildRGD(t *testing.T) {
 	tmpl.Name = "redis-cache"
 	tmpl.Spec.Version = "0.1.0"
 	tmpl.Spec.InstanceCRD = infrav1alpha1.TemplateInstanceCRD{
-		Group:    "infrastructure.kedge.faros.sh",
+		Group:    "infrastructure.faros.sh",
 		Version:  "v1alpha1",
 		Resource: "rediscaches",
 		Kind:     "RedisCache",
@@ -125,7 +125,7 @@ func TestBuildRGD(t *testing.T) {
 	if rgd.GetName() != "redis-cache" {
 		t.Errorf("name = %q", rgd.GetName())
 	}
-	if lbl := rgd.GetLabels()["kedge.faros.sh/template"]; lbl != "redis-cache" {
+	if lbl := rgd.GetLabels()["faros.sh/template"]; lbl != "redis-cache" {
 		t.Errorf("template label = %q", lbl)
 	}
 
@@ -140,7 +140,7 @@ func TestBuildRGD(t *testing.T) {
 		}
 	}
 	assertNested("v1alpha1", "spec", "schema", "apiVersion")
-	assertNested("infrastructure.kedge.faros.sh", "spec", "schema", "group")
+	assertNested("infrastructure.faros.sh", "spec", "schema", "group")
 	assertNested("RedisCache", "spec", "schema", "kind")
 	assertNested("Cluster", "spec", "schema", "scope")
 
@@ -154,13 +154,13 @@ func TestBuildRGDSubstitutesGatewayRef(t *testing.T) {
 	tmpl := &infrav1alpha1.Template{}
 	tmpl.Name = "application"
 	tmpl.Spec.InstanceCRD = infrav1alpha1.TemplateInstanceCRD{
-		Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Resource: "applications", Kind: "Application",
+		Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "applications", Kind: "Application",
 	}
 	tmpl.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}`)}
 	// A graph with an unconditional HTTPRoute is exposure "public"; anything
 	// else is rejected as a marker that contradicts the graph.
 	tmpl.Spec.Exposure = infrav1alpha1.ExposurePublic
-	tmpl.Spec.BackendConfig = &runtime.RawExtension{Raw: []byte(`{"resources":[{"id":"httpRoute","template":{"apiVersion":"gateway.networking.k8s.io/v1","kind":"HTTPRoute","spec":{"parentRefs":[{"name":"${kedge.gatewayName}","namespace":"${kedge.gatewayNamespace}"}]}}}]}`)}
+	tmpl.Spec.BackendConfig = &runtime.RawExtension{Raw: []byte(`{"resources":[{"id":"httpRoute","template":{"apiVersion":"gateway.networking.k8s.io/v1","kind":"HTTPRoute","spec":{"parentRefs":[{"name":"${faros.gatewayName}","namespace":"${faros.gatewayNamespace}"}]}}}]}`)}
 
 	rgd, err := buildRGD(tmpl, testTokens())
 	if err != nil {
@@ -185,7 +185,7 @@ func TestBuildRGDSubstitutesGatewayRef(t *testing.T) {
 
 func TestSubstituteTokensLeavesKroRefs(t *testing.T) {
 	// kro's own ${...} references must survive substitution untouched.
-	in := []byte(`{"a":"${schema.spec.name}","b":"${kedge.gatewayName}","c":"${kedge.gatewayNamespace}","d":"${svc.metadata.name}"}`)
+	in := []byte(`{"a":"${schema.spec.name}","b":"${faros.gatewayName}","c":"${faros.gatewayNamespace}","d":"${svc.metadata.name}"}`)
 	out := string(substituteTokens(in, map[string]string{gatewayNameToken: "my-gw", gatewayNamespaceToken: "my-ns"}))
 	if want := `{"a":"${schema.spec.name}","b":"my-gw","c":"my-ns","d":"${svc.metadata.name}"}`; out != want {
 		t.Errorf("substituteTokens = %s, want %s", out, want)
@@ -195,9 +195,9 @@ func TestSubstituteTokensLeavesKroRefs(t *testing.T) {
 func TestSubstituteTokensAppPublicPort(t *testing.T) {
 	// The status.url CEL embeds the token inside a quoted CEL string; both
 	// values must yield a valid expression.
-	in := []byte(`{"url":"${\"https://\" + httpRoute.spec.hostnames[0] + \"${kedge.appPublicPort}\"}"}`)
+	in := []byte(`{"url":"${\"https://\" + httpRoute.spec.hostnames[0] + \"${faros.appPublicPort}\"}"}`)
 
-	// Local kind: KEDGE_APP_PUBLIC_PORT=10443 → ":10443" suffix.
+	// Local kind: FAROS_APP_PUBLIC_PORT=10443 → ":10443" suffix.
 	out := string(substituteTokens(in, map[string]string{appPublicPortToken: ":10443"}))
 	if want := `{"url":"${\"https://\" + httpRoute.spec.hostnames[0] + \":10443\"}"}`; out != want {
 		t.Errorf("with port: substituteTokens = %s, want %s", out, want)

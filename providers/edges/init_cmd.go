@@ -21,13 +21,13 @@ import (
 )
 
 const (
-	apiExportName        = "edges.providers.kedge.faros.sh"
-	defaultWorkspacePath = "root:kedge:providers:edges"
+	apiExportName        = "edges.providers.faros.sh"
+	defaultWorkspacePath = "root:faros:providers:edges"
 )
 
 // runInitCmd bootstraps the provider's APIExport into its workspace: it applies
-// the KubernetesCluster + LinuxServer APIResourceSchemas from KEDGE_SCHEMAS_DIR,
-// creates the edges.providers.kedge.faros.sh APIExport referencing them, the
+// the KubernetesCluster + LinuxServer APIResourceSchemas from FAROS_SCHEMAS_DIR,
+// creates the edges.providers.faros.sh APIExport referencing them, the
 // endpoint slice, and the bind grant. Tenants that bind this export get both
 // edge kinds.
 func runInitCmd(ctx context.Context) error {
@@ -35,17 +35,17 @@ func runInitCmd(ctx context.Context) error {
 
 	config, err := loadInitConfig()
 	if err != nil {
-		return fmt.Errorf("init needs a kubeconfig (set KEDGE_PROVIDER_KUBECONFIG): %w", err)
+		return fmt.Errorf("init needs a kubeconfig (set FAROS_PROVIDER_KUBECONFIG): %w", err)
 	}
 	workspacePath := os.Getenv("EDGES_WORKSPACE_PATH")
 	if workspacePath == "" {
 		workspacePath = defaultWorkspacePath
 	}
-	schemasDir := os.Getenv("KEDGE_SCHEMAS_DIR")
+	schemasDir := os.Getenv("FAROS_SCHEMAS_DIR")
 	if schemasDir == "" {
-		schemasDir = "/etc/kedge/schemas"
+		schemasDir = "/etc/faros/schemas"
 	}
-	catalogEntryFile := os.Getenv("KEDGE_CATALOGENTRY_FILE")
+	catalogEntryFile := os.Getenv("FAROS_CATALOGENTRY_FILE")
 
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
 		Config:        config,
@@ -83,7 +83,7 @@ func runInitCmd(ctx context.Context) error {
 }
 
 func loadInitConfig() (*rest.Config, error) {
-	if p := os.Getenv("KEDGE_PROVIDER_KUBECONFIG"); p != "" {
+	if p := os.Getenv("FAROS_PROVIDER_KUBECONFIG"); p != "" {
 		return clientcmd.BuildConfigFromFlags("", p)
 	}
 	if p := os.Getenv("KUBECONFIG"); p != "" {

@@ -204,10 +204,10 @@ func TestResolveProjectComponentImagesKeepsPackagesBoundToProjectRepository(t *t
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(req.Query, "RepositoryCommitsYaml") {
-			_, _ = fmt.Fprintf(w, `{"data":{"code_kedge_faros_sh":{"v1alpha1":{"RepositoryCommitsYaml":%q}}}}`, string(commitYAML))
+			_, _ = fmt.Fprintf(w, `{"data":{"code_faros_sh":{"v1alpha1":{"RepositoryCommitsYaml":%q}}}}`, string(commitYAML))
 			return
 		}
-		_, _ = fmt.Fprintf(w, `{"data":{"code_kedge_faros_sh":{"v1alpha1":{"PackagesYaml":%q}}}}`, string(listYAML))
+		_, _ = fmt.Fprintf(w, `{"data":{"code_faros_sh":{"v1alpha1":{"PackagesYaml":%q}}}}`, string(listYAML))
 	}))
 	t.Cleanup(graphql.Close)
 	scope, err := tenant.NewGraphQLClient(graphql.URL, false).For("cluster-id", "caller-token")

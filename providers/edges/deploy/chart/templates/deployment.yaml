@@ -31,27 +31,27 @@ spec:
         # Bootstrap the provider workspace (KubernetesCluster + LinuxServer
         # APIResourceSchemas, APIExport, endpoint slice, bind grant) with the
         # onboarded workspace-admin kubeconfig. Schemas baked at
-        # /etc/kedge/schemas. Idempotent.
+        # /etc/faros/schemas. Idempotent.
         - name: init
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["init"]
           env:
-            - name: KEDGE_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/kedge/kubeconfig
-            - name: KEDGE_SCHEMAS_DIR
-              value: /etc/kedge/schemas
+            - name: FAROS_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/faros/kubeconfig
+            - name: FAROS_SCHEMAS_DIR
+              value: /etc/faros/schemas
             {{- if .Values.catalogEntry.enabled }}
-            - name: KEDGE_CATALOGENTRY_FILE
-              value: /etc/kedge/catalogentry/catalogentry.yaml
+            - name: FAROS_CATALOGENTRY_FILE
+              value: /etc/faros/catalogentry/catalogentry.yaml
             {{- end }}
           volumeMounts:
             - name: provider-kubeconfig
-              mountPath: /var/run/secrets/kedge
+              mountPath: /var/run/secrets/faros
               readOnly: true
             {{- if .Values.catalogEntry.enabled }}
             - name: catalogentry
-              mountPath: /etc/kedge/catalogentry
+              mountPath: /etc/faros/catalogentry
               readOnly: true
             {{- end }}
       containers:
@@ -73,39 +73,39 @@ spec:
           env:
             - name: PORT
               value: {{ .Values.service.port | quote }}
-            - name: KEDGE_PROVIDER_NAME
+            - name: FAROS_PROVIDER_NAME
               value: "edges"
-            - name: KEDGE_HUB_URL
+            - name: FAROS_HUB_URL
               value: {{ .Values.hub.url | quote }}
-            - name: KEDGE_HUB_EXTERNAL_URL
+            - name: FAROS_HUB_EXTERNAL_URL
               value: {{ .Values.hub.externalURL | default .Values.hub.url | quote }}
             {{- if .Values.hub.internalURL }}
-            - name: KEDGE_HUB_INTERNAL_URL
+            - name: FAROS_HUB_INTERNAL_URL
               value: {{ .Values.hub.internalURL | quote }}
             {{- end }}
-            - name: KEDGE_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/kedge/kubeconfig
+            - name: FAROS_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/faros/kubeconfig
             {{- if .Values.staticTokens }}
-            - name: KEDGE_STATIC_TOKENS
+            - name: FAROS_STATIC_TOKENS
               value: {{ .Values.staticTokens | quote }}
             {{- end }}
             {{- if .Values.devMode }}
-            - name: KEDGE_DEV_MODE
+            - name: FAROS_DEV_MODE
               value: "true"
             {{- end }}
             {{- if .Values.hub.insecure }}
-            - name: KEDGE_HUB_INSECURE
+            - name: FAROS_HUB_INSECURE
               value: "true"
             {{- end }}
             {{- if .Values.hub.caData }}
-            - name: KEDGE_HUB_CA_DATA
+            - name: FAROS_HUB_CA_DATA
               value: {{ .Values.hub.caData | quote }}
             {{- else if .Values.hub.caSecretRef.name }}
-            - name: KEDGE_HUB_CA_FILE
-              value: /var/run/secrets/kedge-hub-ca/{{ .Values.hub.caSecretRef.key }}
+            - name: FAROS_HUB_CA_FILE
+              value: /var/run/secrets/faros-hub-ca/{{ .Values.hub.caSecretRef.key }}
             {{- end }}
             {{- if .Values.hub.tokenSecretRef.name }}
-            - name: KEDGE_HUB_TOKEN
+            - name: FAROS_HUB_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.hub.tokenSecretRef.name }}
@@ -113,11 +113,11 @@ spec:
             {{- end }}
           volumeMounts:
             - name: provider-kubeconfig
-              mountPath: /var/run/secrets/kedge
+              mountPath: /var/run/secrets/faros
               readOnly: true
             {{- if and (not .Values.hub.caData) .Values.hub.caSecretRef.name }}
             - name: hub-ca
-              mountPath: /var/run/secrets/kedge-hub-ca
+              mountPath: /var/run/secrets/faros-hub-ca
               readOnly: true
             {{- end }}
           resources:

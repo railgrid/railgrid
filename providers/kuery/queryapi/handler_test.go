@@ -26,9 +26,9 @@ func TestScopeToTenant_ReplacesLabels(t *testing.T) {
 	spec := &v1alpha1.QuerySpec{
 		Cluster: &v1alpha1.ClusterFilter{
 			Labels: map[string]string{
-				"tenant":                  "someone-else", // spoof attempt
-				"x') OR 1=1 --":           "boom",         // sqlite json_extract injection attempt
-				"kedge.faros.sh/whatever": "v",
+				"tenant":            "someone-else", // spoof attempt
+				"x') OR 1=1 --":     "boom",         // sqlite json_extract injection attempt
+				"faros.sh/whatever": "v",
 			},
 		},
 	}
@@ -79,7 +79,7 @@ func TestScopeToTenant_EdgeNameRewrite(t *testing.T) {
 
 func TestIdentityFromRequest_HeaderOnly(t *testing.T) {
 	r := httptest.NewRequest("POST", "/api/query?tenant=evil", nil)
-	r.Header.Set("X-Kedge-Tenant", "tenant-a")
+	r.Header.Set("X-Faros-Tenant", "tenant-a")
 	if id := IdentityFromRequest(r); id.Tenant != "tenant-a" {
 		t.Fatalf("tenant = %q, want header value", id.Tenant)
 	}

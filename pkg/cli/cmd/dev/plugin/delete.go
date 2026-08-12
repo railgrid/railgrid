@@ -69,16 +69,16 @@ func (o *DevOptions) deleteCluster(clusterName string) error {
 }
 
 func (o *DevOptions) cleanupHostEntries() error {
-	if err := removeHostEntry("kedge.localhost"); err != nil {
+	if err := removeHostEntry("faros.localhost"); err != nil {
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Failed to remove host entry: %v\n", err)
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Warning: Could not automatically remove host entry. Please run:\n")
 		if runtime.GOOS == "windows" {
-			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Remove '127.0.0.1 kedge.localhost' line from C:\\Windows\\System32\\drivers\\etc\\hosts\n")
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Remove '127.0.0.1 faros.localhost' line from C:\\Windows\\System32\\drivers\\etc\\hosts\n")
 		} else {
-			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  sudo sed -i '/127.0.0.1 kedge.localhost/d' /etc/hosts\n")
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  sudo sed -i '/127.0.0.1 faros.localhost/d' /etc/hosts\n")
 		}
 	} else {
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Removed host entry kedge.localhost\n")
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Removed host entry faros.localhost\n")
 	}
 	return nil
 }

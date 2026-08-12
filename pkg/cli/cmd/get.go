@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	farosclient "github.com/faroshq/faros/pkg/client"
 )
 
 func newGetCommand() *cobra.Command {
@@ -85,7 +85,7 @@ func listEdges(ctx context.Context, dynClient dynamic.Interface) error {
 }
 
 func listWorkloads(ctx context.Context, dyn dynamic.Interface) error {
-	list, err := dyn.Resource(kedgeclient.WorkloadGVR).List(ctx, metav1.ListOptions{})
+	list, err := dyn.Resource(farosclient.WorkloadGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("listing workloads: %w", err)
 	}
@@ -105,7 +105,7 @@ func listWorkloads(ctx context.Context, dyn dynamic.Interface) error {
 }
 
 func listPlacements(ctx context.Context, dyn dynamic.Interface) error {
-	list, err := dyn.Resource(kedgeclient.PlacementGVR).List(ctx, metav1.ListOptions{})
+	list, err := dyn.Resource(farosclient.PlacementGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("listing placements: %w", err)
 	}

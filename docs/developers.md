@@ -2,7 +2,7 @@
 layout: default
 title: Developer Guide
 nav_order: 6
-description: "Local development environment with kedge dev command"
+description: "Local development environment with faros dev command"
 ---
 
 # Developer Guide
@@ -21,10 +21,10 @@ Set up a complete local development environment with a single command.
 
 ## Overview
 
-The `kedge dev` command creates a complete local development environment with:
+The `faros dev` command creates a complete local development environment with:
 
-- **Hub cluster** — A kind cluster running kedge-hub with embedded kcp
-- **Agent cluster** — A second kind cluster for deploying the kedge-agent
+- **Hub cluster** — A kind cluster running faros-hub with embedded kcp
+- **Agent cluster** — A second kind cluster for deploying the faros-agent
 
 Both clusters share a Docker network, allowing the agent to connect to the hub.
 
@@ -45,18 +45,18 @@ Both clusters share a Docker network, allowing the agent to connect to the hub.
 ### 1. Build the CLI
 
 ```bash
-make build-kedge
+make build-faros
 ```
 
 ### 2. Create the development environment
 
 ```bash
-./bin/kedge dev init --worker-count 1 --chart-path deploy/charts/kedge-hub
+./bin/faros dev init --worker-count 1 --chart-path deploy/charts/faros-hub
 ```
 
 This creates two kind clusters:
-- `kedge-hub` — Hub cluster with kedge-hub installed
-- `kedge-agent` — Worker cluster (empty, ready for agent deployment)
+- `faros-hub` — Hub cluster with faros-hub installed
+- `faros-agent` — Worker cluster (empty, ready for agent deployment)
 
 The default `--worker-count` is `0` (hub only). Use `--worker-count N` to
 spin up additional worker kind clusters when developing agents.
@@ -76,25 +76,25 @@ The command outputs step-by-step instructions for:
 ### Set kubeconfig to access hub cluster
 
 ```bash
-export KUBECONFIG=kedge-hub.kubeconfig
+export KUBECONFIG=faros-hub.kubeconfig
 ```
 
 ### Login to authenticate to the hub
 
 ```bash
-kedge login --hub-url https://kedge.localhost:9443 --insecure-skip-tls-verify --token=dev-token
+faros login --hub-url https://faros.localhost:9443 --insecure-skip-tls-verify --token=dev-token
 ```
 
 ### Create a site in the hub
 
 ```bash
-kedge site create my-site --labels env=dev
+faros site create my-site --labels env=dev
 ```
 
 ### Wait for the site kubeconfig secret and extract it
 
 ```bash
-kubectl get secret -n kedge-system site-my-site-kubeconfig \
+kubectl get secret -n faros-system site-my-site-kubeconfig \
   -o jsonpath='{.data.kubeconfig}' | base64 -d > site-kubeconfig
 ```
 
@@ -105,19 +105,19 @@ The secret is created automatically after the site is registered.
 First, create a namespace and secret with the site kubeconfig:
 
 ```bash
-kubectl --kubeconfig kedge-agent.kubeconfig create namespace kedge-system
+kubectl --kubeconfig faros-agent.kubeconfig create namespace faros-system
 
-kubectl --kubeconfig kedge-agent.kubeconfig create secret generic site-kubeconfig \
-  -n kedge-system \
+kubectl --kubeconfig faros-agent.kubeconfig create secret generic site-kubeconfig \
+  -n faros-system \
   --from-file=kubeconfig=site-kubeconfig
 ```
 
 Then install the agent Helm chart:
 
 ```bash
-helm install kedge-agent deploy/charts/kedge-agent \
-  --kubeconfig kedge-agent.kubeconfig \
-  -n kedge-system \
+helm install faros-agent deploy/charts/faros-agent \
+  --kubeconfig faros-agent.kubeconfig \
+  -n faros-system \
   --set agent.edgeName=my-edge \
   --set agent.hub.existingSecret=site-kubeconfig
 ```
@@ -125,8 +125,8 @@ helm install kedge-agent deploy/charts/kedge-agent \
 ### Verify the agent is connected
 
 ```bash
-kedge site list
-kedge site get my-site
+faros site list
+faros site get my-site
 ```
 
 The site should show `tunnelConnected: true` and have a recent heartbeat.
@@ -135,26 +135,26 @@ The site should show `tunnelConnected: true` and have a recent heartbeat.
 
 ## Command Reference
 
-### kedge dev init
+### faros dev init
 
-Initializes a local kedge environment.
+Initializes a local faros environment.
 
 ```bash
-kedge dev init [flags]
+faros dev init [flags]
 ```
 
 **Flags:**
 
 | Flag | Default | Description |
 |:-----|:--------|:------------|
-| `--hub-cluster-name` | `kedge-hub` | Name of the hub kind cluster |
-| `--agent-cluster-name` | `kedge-agent` | Name of the worker (agent) kind cluster(s) |
+| `--hub-cluster-name` | `faros-hub` | Name of the hub kind cluster |
+| `--agent-cluster-name` | `faros-agent` | Name of the worker (agent) kind cluster(s) |
 | `--worker-count` | `0` | Number of worker kind clusters (0 = hub only) |
-| `--chart-path` | `oci://ghcr.io/faroshq/charts/kedge-hub` | Hub Helm chart (local path or OCI) |
+| `--chart-path` | `oci://ghcr.io/faroshq/charts/faros-hub` | Hub Helm chart (local path or OCI) |
 | `--chart-version` | (auto) | Helm chart version (for OCI charts) |
-| `--image` | `ghcr.io/faroshq/kedge-hub` | Hub container image |
+| `--image` | `ghcr.io/faroshq/faros-hub` | Hub container image |
 | `--tag` | (auto) | Hub image tag |
-| `--kind-network` | `kedge-dev` | Docker network for kind clusters |
+| `--kind-network` | `faros-dev` | Docker network for kind clusters |
 | `--wait-for-ready-timeout` | `2m` | Timeout waiting for cluster readiness |
 
 `--agent-count` is accepted as a deprecated alias for `--worker-count`.
@@ -163,33 +163,33 @@ kedge dev init [flags]
 
 ```bash
 # Hub-only local environment (end users)
-kedge dev init
+faros dev init
 
 # Hub + 1 worker (typical developer setup)
-kedge dev init --worker-count 1 --chart-path deploy/charts/kedge-hub
+faros dev init --worker-count 1 --chart-path deploy/charts/faros-hub
 
 # Hub + 3 workers
-kedge dev init --worker-count 3
+faros dev init --worker-count 3
 
 # Published OCI chart, pinned version
-kedge dev init --chart-path oci://ghcr.io/faroshq/charts/kedge-hub --chart-version 0.1.0
+faros dev init --chart-path oci://ghcr.io/faroshq/charts/faros-hub --chart-version 0.1.0
 ```
 
-### kedge dev update
+### faros dev update
 
-Upgrades the kedge-hub Helm release on the existing hub kind cluster (image,
+Upgrades the faros-hub Helm release on the existing hub kind cluster (image,
 tag, chart version, …). Kind clusters themselves are not modified.
 
 ```bash
-kedge dev update [flags]
+faros dev update [flags]
 ```
 
-### kedge dev delete
+### faros dev delete
 
-Deletes the local kedge environment.
+Deletes the local faros environment.
 
 ```bash
-kedge dev delete [flags]
+faros dev delete [flags]
 ```
 
 This removes the hub kind cluster, any worker kind clusters that were
@@ -215,7 +215,7 @@ The agent cluster is a plain kind cluster with no special configuration. The age
 
 ### Docker network
 
-Both clusters are created on the `kedge-dev` Docker network, allowing them to communicate using container IPs. The hub's internal IP is displayed after cluster creation.
+Both clusters are created on the `faros-dev` Docker network, allowing them to communicate using container IPs. The hub's internal IP is displayed after cluster creation.
 
 ---
 
@@ -223,23 +223,23 @@ Both clusters are created on the `kedge-dev` Docker network, allowing them to co
 
 ```bash
 # List all sites
-kedge site list
+faros site list
 
 # Get site details
-kedge site get my-site
+faros site get my-site
 
 # Check agent logs
-kubectl --kubeconfig kedge-agent.kubeconfig logs \
-  -n kedge-system \
-  -l app.kubernetes.io/name=kedge-agent -f
+kubectl --kubeconfig faros-agent.kubeconfig logs \
+  -n faros-system \
+  -l app.kubernetes.io/name=faros-agent -f
 
 # Check hub logs
-kubectl --kubeconfig kedge-hub.kubeconfig logs \
-  -n kedge-system \
-  -l app.kubernetes.io/name=kedge-hub -f
+kubectl --kubeconfig faros-hub.kubeconfig logs \
+  -n faros-system \
+  -l app.kubernetes.io/name=faros-hub -f
 
 # Delete the dev environment
-kedge dev delete
+faros dev delete
 ```
 
 ---
@@ -248,7 +248,7 @@ kedge dev delete
 
 ### Tilt-cluster E2E: a resource never becomes Ready
 
-The `Tilt E2E` workflow waits for each Tilt resource (e.g. `kedge-hub`) to reach
+The `Tilt E2E` workflow waits for each Tilt resource (e.g. `faros-hub`) to reach
 `update=ok runtime=ok`. When one times out, the wait helper now prints a
 collapsible **`diagnostics for stuck resource '<name>'`** group in the job log
 containing: the resource's own Tilt logs (e.g. the hub's klog stdout, which
@@ -261,19 +261,19 @@ stuck step (slow kcp bootstrap, a crashlooping pod, an image pull, …).
 
 If you see:
 ```
-Error: failed to locate OCI chart: ghcr.io/faroshq/charts/kedge-hub:0.1.0: not found
+Error: failed to locate OCI chart: ghcr.io/faroshq/charts/faros-hub:0.1.0: not found
 ```
 
 Use the local chart path instead:
 ```bash
-kedge dev init --chart-path deploy/charts/kedge-hub
+faros dev init --chart-path deploy/charts/faros-hub
 ```
 
 ### Agent can't connect to hub
 
 1. Check the hub is running:
    ```bash
-   kubectl --kubeconfig kedge-hub.kubeconfig get pods -n kedge-system
+   kubectl --kubeconfig faros-hub.kubeconfig get pods -n faros-system
    ```
 
 2. Verify the site kubeconfig has the correct hub IP:
@@ -285,9 +285,9 @@ kedge dev init --chart-path deploy/charts/kedge-hub
 
 3. Check agent logs:
    ```bash
-   kubectl --kubeconfig kedge-agent.kubeconfig logs \
-     -n kedge-system \
-     -l app.kubernetes.io/name=kedge-agent
+   kubectl --kubeconfig faros-agent.kubeconfig logs \
+     -n faros-system \
+     -l app.kubernetes.io/name=faros-agent
    ```
 
 ### Site kubeconfig secret not created
@@ -295,7 +295,7 @@ kedge dev init --chart-path deploy/charts/kedge-hub
 The secret is created by the hub's RBAC controller after the site is registered. Wait a few seconds and check:
 
 ```bash
-kubectl get secret -n kedge-system site-my-site-kubeconfig
+kubectl get secret -n faros-system site-my-site-kubeconfig
 ```
 
 If it doesn't appear, check hub logs for errors.
@@ -305,8 +305,8 @@ If it doesn't appear, check hub logs for errors.
 If the clusters already exist, the command will skip creation and reuse them. To start fresh:
 
 ```bash
-kedge dev delete
-kedge dev init --chart-path deploy/charts/kedge-hub
+faros dev delete
+faros dev init --chart-path deploy/charts/faros-hub
 ```
 
 ---
@@ -315,13 +315,13 @@ kedge dev init --chart-path deploy/charts/kedge-hub
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Docker Network (kedge-dev)                  │
+│                     Docker Network (faros-dev)                  │
 │                                                                 │
 │  ┌─────────────────────────┐    ┌─────────────────────────┐   │
-│  │   kedge-hub cluster     │    │   kedge-agent cluster   │   │
+│  │   faros-hub cluster     │    │   faros-agent cluster   │   │
 │  │                         │    │                         │   │
 │  │  ┌───────────────────┐  │    │  ┌───────────────────┐  │   │
-│  │  │    kedge-hub      │  │◄───┼──│   kedge-agent     │  │   │
+│  │  │    faros-hub      │  │◄───┼──│   faros-agent     │  │   │
 │  │  │  (StatefulSet)    │  │    │  │   (Deployment)    │  │   │
 │  │  └───────────────────┘  │    │  └───────────────────┘  │   │
 │  │                         │    │                         │   │
@@ -341,18 +341,18 @@ The agent establishes a reverse WebSocket tunnel to the hub, allowing the hub to
 
 ## MCP Integration
 
-kedge exposes all connected Kubernetes clusters as a single [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server.
+faros exposes all connected Kubernetes clusters as a single [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server.
 
 ### URL format
 
 ```
-https://<hub>/services/mcp/<workspace-cluster-id>/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/<name>/mcp
+https://<hub>/services/mcp/<workspace-cluster-id>/apis/faros.sh/v1alpha1/kubernetesmcps/<name>/mcp
 ```
 
 ### Getting the URL
 
 ```bash
-kedge mcp url --name default
+faros mcp url --name default
 ```
 
 This prints the URL and a ready-to-use `claude mcp add` command with your bearer token.
@@ -365,7 +365,7 @@ A `default` `Kubernetes` object is auto-created in every tenant workspace. It se
 
 1. The hub's MCP virtual workspace handler validates the bearer token.
 2. Lists all `Edge` objects in the workspace, filters to `spec.type: kubernetes` + connected + label selector.
-3. Builds a `MultiEdgeKedgeEdgeProvider` that dials each edge over its revdial tunnel.
+3. Builds a `MultiEdgeFarosEdgeProvider` that dials each edge over its revdial tunnel.
 4. Passes control to `kubernetes-mcp-server` which implements the MCP protocol.
 
-See [DEVELOPERS.md](https://github.com/faroshq/kedge/blob/main/DEVELOPERS.md#mcp-integration) for the full internals reference.
+See [DEVELOPERS.md](https://github.com/faroshq/faros/blob/main/DEVELOPERS.md#mcp-integration) for the full internals reference.

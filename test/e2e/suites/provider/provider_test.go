@@ -42,16 +42,16 @@ import (
 
 // workspacePath is the provider sub-workspace the hub's Provider controller
 // materializes from provider.yaml.
-const workspacePath = "root:kedge:providers:quickstart"
+const workspacePath = "root:faros:providers:quickstart"
 
 var secretGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 
 // providersWorkspaceClient returns a dynamic client targeting
 // systemProvidersClient returns a dynamic client targeting
-// root:kedge:system:providers — where Provider + CatalogEntry live since the
+// root:faros:system:providers — where Provider + CatalogEntry live since the
 // provider bootstrap refactor.
 func systemProvidersClient(t *testing.T) dynamic.Interface {
-	return kcpDynamic(t, "root:kedge:system:providers", adminToken)
+	return kcpDynamic(t, "root:faros:system:providers", adminToken)
 }
 
 // kcpDynamicRaw is kcpDynamic for non-test callers (TestMain bootstrap).
@@ -67,10 +67,10 @@ func kcpDynamicRaw(clusterPath, token string) (dynamic.Interface, error) {
 }
 
 // providerSubClient returns a dynamic client targeting
-// root:kedge:providers:{name} (where the per-provider APIExport + schemas
+// root:faros:providers:{name} (where the per-provider APIExport + schemas
 // + RBAC live).
 func providerSubClient(t *testing.T, name string) dynamic.Interface {
-	return kcpDynamic(t, "root:kedge:providers:"+name, adminToken)
+	return kcpDynamic(t, "root:faros:providers:"+name, adminToken)
 }
 
 func kcpDynamic(t *testing.T, clusterPath, token string) dynamic.Interface {
@@ -90,18 +90,18 @@ func kcpDynamic(t *testing.T, clusterPath, token string) dynamic.Interface {
 }
 
 // applyQuickstartManifests applies provider.yaml (kind Provider) +
-// manifest.yaml (kind CatalogEntry) into root:kedge:system:providers,
+// manifest.yaml (kind CatalogEntry) into root:faros:system:providers,
 // mirroring `make install-provider-quickstart`. Called from TestMain. The
 // hub reports /readyz before those APIs are fully servable, so creates are
 // retried until the API answers.
 func applyQuickstartManifests() error {
-	cl, err := kcpDynamicRaw("root:kedge:system:providers", adminToken)
+	cl, err := kcpDynamicRaw("root:faros:system:providers", adminToken)
 	if err != nil {
 		return fmt.Errorf("dynamic client: %w", err)
 	}
 	gvrByKind := map[string]schema.GroupVersionResource{
-		"Provider":     {Group: "admin.kedge.faros.sh", Version: "v1alpha1", Resource: "providers"},
-		"CatalogEntry": {Group: "providers.kedge.faros.sh", Version: "v1alpha1", Resource: "catalogentries"},
+		"Provider":     {Group: "admin.faros.sh", Version: "v1alpha1", Resource: "providers"},
+		"CatalogEntry": {Group: "providers.faros.sh", Version: "v1alpha1", Resource: "catalogentries"},
 	}
 	for _, file := range []string{"provider.yaml", "manifest.yaml"} {
 		raw, err := os.ReadFile(filepath.Join(repoRoot, "providers", "quickstart", file))
@@ -155,13 +155,13 @@ func applyQuickstartManifests() error {
 
 // TestACatalogProvisioning asserts every kcp-side artefact provisioning is
 // supposed to leave behind. TestMain already applied Provider + CatalogEntry
-// (into root:kedge:system:providers) and ran `quickstart-provider init`, so
+// (into root:faros:system:providers) and ran `quickstart-provider init`, so
 // the sub-workspace artifacts here come from the Provider controller + init.
 func TestACatalogProvisioning(t *testing.T) {
 	// Wait for status.conditions[Ready] == True on the CatalogEntry.
 	cl := systemProvidersClient(t)
 	gvr := schema.GroupVersionResource{
-		Group: "providers.kedge.faros.sh", Version: "v1alpha1", Resource: "catalogentries",
+		Group: "providers.faros.sh", Version: "v1alpha1", Resource: "catalogentries",
 	}
 	ready := waitForCondition(t, 90*time.Second, func() (bool, string) {
 		got, err := cl.Resource(gvr).Get(ctxWithTimeout(t, 5*time.Second), "quickstart", metav1.GetOptions{})
@@ -194,7 +194,7 @@ func TestACatalogProvisioning(t *testing.T) {
 		}
 		found := false
 		for _, it := range list.Items {
-			if strings.HasSuffix(it.GetName(), ".greetings.quickstart.providers.kedge.faros.sh") {
+			if strings.HasSuffix(it.GetName(), ".greetings.quickstart.providers.faros.sh") {
 				found = true
 			}
 		}
@@ -205,7 +205,7 @@ func TestACatalogProvisioning(t *testing.T) {
 
 	t.Run("APIExport present with resources and permissionClaims", func(t *testing.T) {
 		gvr := schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports"}
-		got, err := sub.Resource(gvr).Get(ctxWithTimeout(t, 5*time.Second), "quickstart.providers.kedge.faros.sh", metav1.GetOptions{})
+		got, err := sub.Resource(gvr).Get(ctxWithTimeout(t, 5*time.Second), "quickstart.providers.faros.sh", metav1.GetOptions{})
 		if err != nil {
 			t.Fatalf("get APIExport: %v", err)
 		}
@@ -227,7 +227,7 @@ func TestACatalogProvisioning(t *testing.T) {
 	t.Run("bind grant ClusterRole + ClusterRoleBinding for system:authenticated", func(t *testing.T) {
 		crGVR := schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}
 		crbGVR := schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
-		const name = "kedge:providers:bind:quickstart.providers.kedge.faros.sh"
+		const name = "faros:providers:bind:quickstart.providers.faros.sh"
 
 		cr, err := sub.Resource(crGVR).Get(ctxWithTimeout(t, 5*time.Second), name, metav1.GetOptions{})
 		if err != nil {
@@ -264,9 +264,9 @@ func TestACatalogProvisioning(t *testing.T) {
 			t.Fatalf("ServiceAccount default/provider not found: %v", err)
 		}
 		crbGVR := schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
-		crb, err := sub.Resource(crbGVR).Get(ctxWithTimeout(t, 5*time.Second), "kedge:providers:sa:provider", metav1.GetOptions{})
+		crb, err := sub.Resource(crbGVR).Get(ctxWithTimeout(t, 5*time.Second), "faros:providers:sa:provider", metav1.GetOptions{})
 		if err != nil {
-			t.Fatalf("ClusterRoleBinding kedge:providers:sa:provider not found: %v", err)
+			t.Fatalf("ClusterRoleBinding faros:providers:sa:provider not found: %v", err)
 		}
 		role, _, _ := unstructured.NestedString(crb.Object, "roleRef", "name")
 		if role != "cluster-admin" {
@@ -301,7 +301,7 @@ func TestBAPIProvidersDTO(t *testing.T) {
 		if qs["ready"] != true {
 			t.Errorf("expected ready=true, got %v", qs["ready"])
 		}
-		if qs["apiExportPath"] != "root:kedge:providers:quickstart" {
+		if qs["apiExportPath"] != "root:faros:providers:quickstart" {
 			t.Errorf("apiExportPath = %v", qs["apiExportPath"])
 		}
 		// Third-party provider should NOT carry a builtinRoute.
@@ -424,8 +424,8 @@ func TestFTenantEnableAndCRUsable(t *testing.T) {
 		"spec": map[string]any{
 			"reference": map[string]any{
 				"export": map[string]any{
-					"path": "root:kedge:providers:quickstart",
-					"name": "quickstart.providers.kedge.faros.sh",
+					"path": "root:faros:providers:quickstart",
+					"name": "quickstart.providers.faros.sh",
 				},
 			},
 			"permissionClaims": []any{
@@ -457,10 +457,10 @@ func TestFTenantEnableAndCRUsable(t *testing.T) {
 
 	// CR must now be creatable in the tenant workspace.
 	greetingGVR := schema.GroupVersionResource{
-		Group: "quickstart.providers.kedge.faros.sh", Version: "v1alpha1", Resource: "greetings",
+		Group: "quickstart.providers.faros.sh", Version: "v1alpha1", Resource: "greetings",
 	}
 	g := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "quickstart.providers.kedge.faros.sh/v1alpha1",
+		"apiVersion": "quickstart.providers.faros.sh/v1alpha1",
 		"kind":       "Greeting",
 		"metadata":   map[string]any{"name": "e2e-hello", "namespace": "default"},
 		"spec":       map[string]any{"message": "hello from e2e"},
@@ -487,7 +487,7 @@ func TestGTenantDisableRemovesCR(t *testing.T) {
 
 	apiBindingGVR := schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}
 	greetingGVR := schema.GroupVersionResource{
-		Group: "quickstart.providers.kedge.faros.sh", Version: "v1alpha1", Resource: "greetings",
+		Group: "quickstart.providers.faros.sh", Version: "v1alpha1", Resource: "greetings",
 	}
 
 	// Sanity: binding exists from the previous test.
@@ -575,7 +575,7 @@ func httpGetJSON(t *testing.T, url, token string) map[string]any {
 func loginStaticTokenAndGetCluster(t *testing.T) string {
 	t.Helper()
 	// The hub reports /readyz before the users APIBinding in
-	// root:kedge:users is fully usable, so the first logins after startup
+	// root:faros:users is fully usable, so the first logins after startup
 	// can 500 with "failed to create user" (the handler's user list hits
 	// "the server could not find the requested resource"). Retry until the
 	// binding settles rather than failing the suite on the race.

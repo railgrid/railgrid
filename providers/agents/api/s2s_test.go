@@ -93,7 +93,7 @@ func TestQualifyServiceAccount(t *testing.T) {
 
 func TestShardBase(t *testing.T) {
 	cases := map[string]string{
-		"https://shard.example/services/apiexport/abc/agents.kedge.faros.sh/clusters/xyz": "https://shard.example/services/apiexport/abc/agents.kedge.faros.sh",
+		"https://shard.example/services/apiexport/abc/agents.faros.sh/clusters/xyz": "https://shard.example/services/apiexport/abc/agents.faros.sh",
 		"https://shard.example/base":  "https://shard.example/base",
 		"https://shard.example/base/": "https://shard.example/base",
 	}

@@ -219,7 +219,7 @@ func FederatedInstructions(ctx context.Context, targets []ProviderTarget, bearer
 // fetchInstructions returns a provider's server-level MCP instructions from its
 // `initialize` response, or "" if it has none or the call fails.
 func (c *providerMCPClient) fetchInstructions(ctx context.Context, mcpURL string) string {
-	params := json.RawMessage(`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"kedge-aggregate","version":"v1"}}`)
+	params := json.RawMessage(`{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"faros-aggregate","version":"v1"}}`)
 	body, err := c.rpc(ctx, mcpURL, "initialize", params, c.discoveryTimeout)
 	if err != nil {
 		return ""
@@ -246,8 +246,8 @@ func registerProviderTools(ctx context.Context, srv *mcp.Server, log logr.Logger
 	}
 
 	// cluster is the workspace's kcp logical-cluster ID parsed off the
-	// MCPServer URL. The federation client forwards it as BOTH X-Kedge-Tenant
-	// and X-Kedge-Cluster so the provider sees the same identity headers it
+	// MCPServer URL. The federation client forwards it as BOTH X-Faros-Tenant
+	// and X-Faros-Cluster so the provider sees the same identity headers it
 	// would have received via the hub backend proxy (that proxy injects them
 	// on /services/providers/*, but this federation path POSTs directly).
 	cli := newProviderMCPClient(bearerToken, cluster, cluster)
@@ -353,8 +353,8 @@ func registerOneProxyTool(srv *mcp.Server, cli *providerMCPClient, p ProviderTar
 type providerMCPClient struct {
 	http             *http.Client
 	bearerToken      string
-	tenantPath       string // forwarded as X-Kedge-Tenant
-	clusterID        string // forwarded as X-Kedge-Cluster
+	tenantPath       string // forwarded as X-Faros-Tenant
+	clusterID        string // forwarded as X-Faros-Cluster
 	discoveryTimeout time.Duration
 	callTimeout      time.Duration
 }
@@ -463,10 +463,10 @@ func (c *providerMCPClient) rpc(ctx context.Context, mcpURL, method string, para
 		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
 	}
 	if c.tenantPath != "" {
-		req.Header.Set("X-Kedge-Tenant", c.tenantPath)
+		req.Header.Set("X-Faros-Tenant", c.tenantPath)
 	}
 	if c.clusterID != "" {
-		req.Header.Set("X-Kedge-Cluster", c.clusterID)
+		req.Header.Set("X-Faros-Cluster", c.clusterID)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

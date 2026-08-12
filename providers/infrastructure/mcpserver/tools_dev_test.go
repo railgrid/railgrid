@@ -115,8 +115,8 @@ func TestCallDataPlaneSynthesizesHubShapedRequest(t *testing.T) {
 	if got := h.req.Header.Get("Authorization"); got != "Bearer tok" {
 		t.Errorf("Authorization = %q, want caller bearer", got)
 	}
-	if got := h.req.Header.Get("X-Kedge-Tenant"); got != "root:orgs:acme" {
-		t.Errorf("X-Kedge-Tenant = %q", got)
+	if got := h.req.Header.Get("X-Faros-Tenant"); got != "root:orgs:acme" {
+		t.Errorf("X-Faros-Tenant = %q", got)
 	}
 	if h.body != `{"files":[]}` {
 		t.Errorf("body = %q", h.body)
@@ -126,7 +126,7 @@ func TestCallDataPlaneSynthesizesHubShapedRequest(t *testing.T) {
 func TestCallDataPlaneRequiresClusterID(t *testing.T) {
 	h := &captureHandler{}
 	_, _, err := callDataPlane(context.Background(), h, identity{token: "tok"}, http.MethodGet, "simplewebapps", "x", "app", "log", nil)
-	if err == nil || !strings.Contains(err.Error(), "X-Kedge-Cluster") {
+	if err == nil || !strings.Contains(err.Error(), "X-Faros-Cluster") {
 		t.Fatalf("missing cluster ID must fail with an addressing error, got %v", err)
 	}
 	if h.req != nil {
@@ -136,7 +136,7 @@ func TestCallDataPlaneRequiresClusterID(t *testing.T) {
 
 func TestTemplateDevelopmentFromSpec(t *testing.T) {
 	u := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.faros.sh/v1alpha1",
 		"kind":       "Template",
 		"metadata":   map[string]any{"name": "application"},
 		"spec": map[string]any{
@@ -210,10 +210,10 @@ func TestValidateDevSyncToolchains(t *testing.T) {
 
 func TestDevToolchainFromImageToken(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{"${kedge.devImage.node}", "node"},
-		{"  ${kedge.devImage.python}  ", "python"},
+		{"${faros.devImage.node}", "node"},
+		{"  ${faros.devImage.python}  ", "python"},
 		{"docker.io/library/node:22-bookworm", ""},
-		{"${kedge.devAgentImage}", ""},
+		{"${faros.devAgentImage}", ""},
 		{"", ""},
 	} {
 		if got := devToolchainFromImageToken(tc.in); got != tc.want {
@@ -232,7 +232,7 @@ func TestTemplateDevelopmentFromSpecCarriesRuntimeContract(t *testing.T) {
 				"components": map[string]any{
 					"backend": map[string]any{
 						"workspacePath": "api",
-						"devImage":      "${kedge.devImage.node}",
+						"devImage":      "${faros.devImage.node}",
 						"startCommand":  "npm run dev || npm start",
 						"port":          "backend",
 					},

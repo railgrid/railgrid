@@ -9,7 +9,7 @@
 | 1 | API Foundation | New Edge CRD + client; old CRDs deleted | EDGE-01..05, CLI-01..02 | `go build ./apis/...` passes; Edge type registered; Site/Server gone |
 | 2 | Hub Controllers | Edge controllers replace site controllers | CTRL-01..06 | Hub starts; lifecycle/mount/rbac reconcile Edge resources |
 | 3 | Virtual Workspaces | `edges-proxy` replaces edge-proxy+agent-proxy | VW-01..08 | Agent registers with `?edge=`; /k8s and /ssh subresources work |
-| 4 | Agent + CLI | Agent uses Edge; `--type` flag; unified reporter | AGENT-01..07, CLI2-01..03 | Agent connects as Edge; `kedge ssh` works without probing |
+| 4 | Agent + CLI | Agent uses Edge; `--type` flag; unified reporter | AGENT-01..07, CLI2-01..03 | Agent connects as Edge; `faros ssh` works without probing |
 | 5 | e2e + Cleanup | All tests green; lint passes | E2E-01..05, BUILD-01..03 | `make lint` passes; e2e suites pass |
 
 ---
@@ -25,10 +25,10 @@
 #### Plan 1.1 — Define Edge type
 
 **Files to create/edit:**
-- `apis/kedge/v1alpha1/types_edge.go` — new file
-- `apis/kedge/v1alpha1/zz_generated.deepcopy.go` — regenerate (run `controller-gen`)
-- `apis/kedge/v1alpha1/groupversion_info.go` — register Edge/EdgeList
-- `pkg/hub/bootstrap/crds/` — add `kedge.faros.sh_edges.yaml`, remove `sites.yaml` / `servers.yaml`
+- `apis/faros/v1alpha1/types_edge.go` — new file
+- `apis/faros/v1alpha1/zz_generated.deepcopy.go` — regenerate (run `controller-gen`)
+- `apis/faros/v1alpha1/groupversion_info.go` — register Edge/EdgeList
+- `pkg/hub/bootstrap/crds/` — add `faros.sh_edges.yaml`, remove `sites.yaml` / `servers.yaml`
 
 **Edge type structure:**
 ```go
@@ -101,7 +101,7 @@ type EdgeStatus struct {
 
 **Guidance:**
 - Follow the exact same pattern as existing `Sites()` / `Servers()` — same RBAC verbs, just different GVR
-- GVR: `kedge.faros.sh / v1alpha1 / edges`
+- GVR: `faros.sh / v1alpha1 / edges`
 - Keep `Placements()` unchanged
 
 **Checklist:**
@@ -135,7 +135,7 @@ type EdgeStatus struct {
 - `pkg/hub/controllers/edge/rbac_reconciler.go`
 
 **Key changes vs site package:**
-- All `kedgev1alpha1.Site` references → `kedgev1alpha1.Edge`
+- All `farosv1alpha1.Site` references → `farosv1alpha1.Edge`
 - All `SitePhase*` constants → `EdgePhase*`
 - `SiteStatus.TunnelConnected` → `EdgeStatus.TunnelConnected` (same field name)
 - `mount_reconciler.go`: add early-return guard `if edge.Spec.Type != EdgeTypeKubernetes { return ctrl.Result{}, nil }`
@@ -194,8 +194,8 @@ mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
 
 **Subresource dispatch** (all other paths):
 ```go
-// Path: /clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/k8s|ssh
-// OR legacy: /proxy/apis/kedge.faros.sh/v1alpha1/edges/{name}/ssh
+// Path: /clusters/{cluster}/apis/faros.sh/v1alpha1/edges/{name}/k8s|ssh
+// OR legacy: /proxy/apis/faros.sh/v1alpha1/edges/{name}/ssh
 ```
 
 Parse `edges` from path segments; dispatch on final segment:
@@ -242,7 +242,7 @@ Parse `edges` from path segments; dispatch on final segment:
 
 ## Phase 4: Agent + CLI
 
-**Goal:** Update the agent to use the `Edge` resource (not `Site`/`Server`), change the flag name from `--mode` to `--type`, write a unified `edge_reporter.go`, and simplify the CLI `kedge ssh` command.
+**Goal:** Update the agent to use the `Edge` resource (not `Site`/`Server`), change the flag name from `--mode` to `--type`, write a unified `edge_reporter.go`, and simplify the CLI `faros ssh` command.
 
 **Requirements:** AGENT-01..07, CLI2-01..03
 
@@ -268,8 +268,8 @@ Merges `Reporter` (site) and `ServerReporter` (server):
 ```go
 type EdgeReporter struct {
     edgeName        string
-    edgeType        kedgev1alpha1.EdgeType
-    hubClient       *kedgeclient.Client
+    edgeType        farosv1alpha1.EdgeType
+    hubClient       *farosclient.Client
     downstreamClient kubernetes.Interface  // nil for type=server
     tunnelState     <-chan bool            // nil for type=kubernetes
 }
@@ -286,7 +286,7 @@ type EdgeReporter struct {
 **File to edit:** `pkg/cli/cmd/ssh.go`
 
 - Delete `resolveResourceKind` function
-- `buildSSHWebSocketURL` directly uses `/proxy/apis/kedge.faros.sh/v1alpha1/edges/{name}/ssh`
+- `buildSSHWebSocketURL` directly uses `/proxy/apis/faros.sh/v1alpha1/edges/{name}/ssh`
 - No GET probe to hub before connecting
 
 **File to delete / rename:** `pkg/cli/cmd/site.go` → `pkg/cli/cmd/edge.go` (or delete if only Site-specific)
@@ -295,14 +295,14 @@ type EdgeReporter struct {
 - [ ] Agent compiles with `--type` flag
 - [ ] No references to `?site=` or `?server=` query params in agent tunnel code
 - [ ] `edge_reporter.go` handles both types
-- [ ] `kedge ssh` does not call `resolveResourceKind`
-- [ ] `go build ./cmd/kedge-agent/...` and `./cmd/kedge/...` succeed
+- [ ] `faros ssh` does not call `resolveResourceKind`
+- [ ] `go build ./cmd/faros-agent/...` and `./cmd/faros/...` succeed
 
 ---
 
 **Phase 4 Success Criteria:**
-1. `kedge-agent` binary compiles with `--type=kubernetes|server`
-2. `kedge` binary compiles; `kedge ssh <name>` uses edges URL directly
+1. `faros-agent` binary compiles with `--type=kubernetes|server`
+2. `faros` binary compiles; `faros ssh <name>` uses edges URL directly
 3. Agent registers with `?edge=<name>` query param
 4. Edge reporter sends heartbeats to `Edge` resource status
 

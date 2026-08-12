@@ -36,10 +36,10 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
-	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
-	"github.com/faroshq/faros-kedge/pkg/hub/providers"
-	"github.com/faroshq/faros-kedge/pkg/kcppaths"
+	"github.com/faroshq/faros/pkg/apiurl"
+	"github.com/faroshq/faros/pkg/hub/kcp"
+	"github.com/faroshq/faros/pkg/hub/providers"
+	"github.com/faroshq/faros/pkg/kcppaths"
 )
 
 // exportsWorkspace is where the platform APIExports live (system:controllers).
@@ -51,16 +51,16 @@ var apiExportGVR = schema.GroupVersionResource{
 }
 
 // providerGVR is the declarative Provider provisioning record. Provider objects
-// live in root:kedge:system:providers; creating one drives the Provider
+// live in root:faros:system:providers; creating one drives the Provider
 // reconciler (pkg/hub/providers/provider_controller.go) to provision the
 // sub-workspace + ServiceAccount + kubeconfig Secret.
 var providerGVR = schema.GroupVersionResource{
-	Group: "admin.kedge.faros.sh", Version: "v1alpha1", Resource: "providers",
+	Group: "admin.faros.sh", Version: "v1alpha1", Resource: "providers",
 }
 
 // CreateProvider create-or-updates a Provider object in
-// root:kedge:system:providers. name drives the provisioned sub-workspace
-// (root:kedge:providers:<name>); displayName is informational. Idempotent.
+// root:faros:system:providers. name drives the provisioned sub-workspace
+// (root:faros:providers:<name>); displayName is informational. Idempotent.
 func (s *Service) CreateProvider(ctx context.Context, name, displayName string) error {
 	cfg := rest.CopyConfig(s.kcpConfig)
 	cfg.Host = apiurl.KCPClusterURL(cfg.Host, kcppaths.SystemProviders)
@@ -73,7 +73,7 @@ func (s *Service) CreateProvider(ctx context.Context, name, displayName string) 
 		spec["displayName"] = displayName
 	}
 	obj := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "admin.kedge.faros.sh/v1alpha1",
+		"apiVersion": "admin.faros.sh/v1alpha1",
 		"kind":       "Provider",
 		"metadata":   map[string]any{"name": name},
 		"spec":       spec,
@@ -85,7 +85,7 @@ func (s *Service) CreateProvider(ctx context.Context, name, displayName string) 
 }
 
 // GetProviderKubeconfig returns the minted kubeconfig the Provider controller
-// wrote into a Secret in root:kedge:system:providers. It reads the Provider's
+// wrote into a Secret in root:faros:system:providers. It reads the Provider's
 // status.secretRef to locate the Secret (falling back to the
 // "<name>-kubeconfig" / "default" / "kubeconfig" conventions). Returns a nil
 // slice + nil error when the Provider exists but hasn't been provisioned yet
@@ -128,7 +128,7 @@ func (s *Service) GetProviderKubeconfig(ctx context.Context, name string) ([]byt
 	return secret.Data[secretKey], nil
 }
 
-// DeleteProvider removes a Provider object from root:kedge:system:providers.
+// DeleteProvider removes a Provider object from root:faros:system:providers.
 // The reconciler's finalizer then tears down the sub-workspace. Idempotent.
 func (s *Service) DeleteProvider(ctx context.Context, name string) error {
 	cfg := rest.CopyConfig(s.kcpConfig)
@@ -179,7 +179,7 @@ type OrgWorkspace struct {
 }
 
 // ListOrgWorkspaces returns every child Workspace under the org at
-// root:kedge:tenants:{orgUUID}, enriched with display name, cluster name,
+// root:faros:tenants:{orgUUID}, enriched with display name, cluster name,
 // soft-delete timestamp and the set of enabled provider names. Reads run
 // with kcp-admin credentials, so the admin surface sees all workspaces
 // regardless of per-user RBAC. Per-workspace lookups are best-effort: a
@@ -239,7 +239,7 @@ func (s *Service) ListOnboardedWorkspaces(ctx context.Context) ([]OnboardedWorks
 
 // RootIdentity is one (group, resource) served by a first-party APIExport,
 // together with the identityHash kcp minted for it. The admin copies the hash a
-// provider needs (e.g. edges.kedge.faros.sh for kuery) into that provider's
+// provider needs (e.g. edges.faros.sh for kuery) into that provider's
 // Helm values so its `init` can stamp it onto the APIExport's permissionClaim.
 type RootIdentity struct {
 	Group        string `json:"group"`

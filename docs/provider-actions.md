@@ -52,7 +52,7 @@ portal-facing `/api/providers` projection exposes discovery and consent
 metadata, but not transport URLs.
 
 Databricks publishes `query_table/v1` bound to
-`databricks.kedge.faros.sh/v1alpha1 / Table / tables`. Its catalog declaration
+`databricks.faros.sh/v1alpha1 / Table / tables`. Its catalog declaration
 is `sync`, `readOnly: true`, `risk: low`, `idempotency: inherent`, with a
 45-second timeout, 8 KiB input cap, 64 KiB output cap, and 100 result-item
 cap. Consent is not required. Its input schema permits only optional exact
@@ -73,7 +73,7 @@ name: sales
 provider: databricks
 kind: providerReference
 resourceRef:
-  apiVersion: databricks.kedge.faros.sh/v1alpha1
+  apiVersion: databricks.faros.sh/v1alpha1
   kind: Table
   resource: tables
   name: order-history
@@ -101,13 +101,13 @@ uses the same alias and accepts a provider-neutral action name/version.
 
 ```text
 generated server application
-  -> @kedge/actions-node
+  -> @faros/actions-node
   -> App Studio integration invoke
        verify persisted grant (non-revoked, complete audit)
        re-verify the grant digest against the live catalog (409 on drift)
        POST /services/providers/{provider}/actions/clusters/{cluster}/{resource}/{name}/{action}/{version}
   -> hub backend proxy
-       strip + re-inject X-Kedge-* identity hints, forward the bearer
+       strip + re-inject X-Faros-* identity hints, forward the bearer
   -> provider action handler (embedded virtual workspace)
        parse identity from the route; bearer is the only trust root
        gate 1: SSAR get on the addressed resource, as the caller
@@ -189,7 +189,7 @@ workload exchange and a short-lived workload capability:
    audience-bound TokenReview and verifies the pod identity and exact runtime
    tuple.
 3. The hub verifies the live Project environment, instance, and provider
-   resource references, then issues a short-lived Kedge ServiceAccount token
+   resource references, then issues a short-lived Faros ServiceAccount token
    whose ClusterRole carries GET on each granted resource plus `create` on
    each granted action's virtual subresource — the RBAC materialization of
    the Project's action grants. The current token TTL is ten minutes and the
@@ -203,7 +203,7 @@ workload exchange and a short-lived workload capability:
 The SDK is server-only. Its base URL must be absolute HTTPS; HTTP is allowed
 only for an explicit loopback test override. Do not pass provider URLs,
 provider credentials, resource coordinates, or raw SQL in action input. The
-runtime's `KEDGE_ACTIONS_CA_FILE` can add an explicitly configured CA for the
+runtime's `FAROS_ACTIONS_CA_FILE` can add an explicitly configured CA for the
 workload exchange, but the source does not provide automatic custom-CA
 distribution. Production external URLs therefore require HTTPS with a
 system- or publicly-trusted certificate unless deployment configuration
@@ -211,7 +211,7 @@ explicitly supplies the CA.
 
 ## Server-side SDK
 
-The published artifact is `@crwilhit/kedge-actions-node@0.1.0`. Generated
+The published artifact is `@crwilhit/faros-actions-node@0.1.0`. Generated
 server components must install it under the stable consumer name with this
 exact npm alias in their `package.json`; the artifact name and import name are
 intentionally different:
@@ -219,7 +219,7 @@ intentionally different:
 ```json
 {
   "dependencies": {
-    "@kedge/actions-node": "npm:@crwilhit/kedge-actions-node@0.1.0"
+    "@faros/actions-node": "npm:@crwilhit/faros-actions-node@0.1.0"
   }
 }
 ```
@@ -228,15 +228,15 @@ Use the generic `integration(alias).invoke` API with the stable consumer import.
 The SDK never exposes a provider-specific convenience method:
 
 ```js
-import { createActionsClient } from '@kedge/actions-node';
+import { createActionsClient } from '@faros/actions-node';
 
-const kedge = createActionsClient({
-  baseURL: process.env.KEDGE_ACTIONS_BASE_URL,
-  project: process.env.KEDGE_PROJECT,
-  tokenFile: process.env.KEDGE_ACTIONS_TOKEN_FILE,
+const faros = createActionsClient({
+  baseURL: process.env.FAROS_ACTIONS_BASE_URL,
+  project: process.env.FAROS_PROJECT,
+  tokenFile: process.env.FAROS_ACTIONS_TOKEN_FILE,
 });
 
-const result = await kedge.integration('sales').invoke(
+const result = await faros.integration('sales').invoke(
   'query_table/v1',
   { columns: ['order_id', 'total'], limit: 25 },
   { requestID: 'request-42', timeoutMs: 10_000 },
@@ -244,7 +244,7 @@ const result = await kedge.integration('sales').invoke(
 console.log(result);
 ```
 
-`tokenFile` defaults to `KEDGE_ACTIONS_TOKEN_FILE`; it is read for every
+`tokenFile` defaults to `FAROS_ACTIONS_TOKEN_FILE`; it is read for every
 request. A `getToken`/credential provider receives `{ forceRefresh, signal }`
 and is retried once after an HTTP `401`. The SDK propagates caller aborts and
 local timeouts, rejects browser globals, and returns typed transport or
@@ -252,7 +252,7 @@ provider-action errors. There is no development-token fallback.
 
 ### Development sandbox delivery
 
-The Infrastructure `kedge-dev-agent` supplies only the coordinator, runtime
+The Infrastructure `faros-dev-agent` supplies only the coordinator, runtime
 supervisor, executor, and preview-console assets. It does not copy, validate,
 or mount the Actions SDK. Development components run their normal package
 manager against the exact alias in the server `package.json`, writing
@@ -329,20 +329,20 @@ cd provider-sdk/actions-node && npm test
 The registry-backed clean-install smoke is opt-in because it needs network
 access and the published artifact to exist. It stages the generated server
 manifest in a fresh directory, installs the exact alias from npm, and imports
-`@kedge/actions-node`:
+`@faros/actions-node`:
 
 ```bash
 make e2e-provider-actions-npm
 ```
 
-The target sets `KEDGE_E2E_PROVIDER_ACTIONS_LIVE_ONLY=true` so the smoke does
+The target sets `FAROS_E2E_PROVIDER_ACTIONS_LIVE_ONLY=true` so the smoke does
 not start the full hub/provider stack. Set
-`KEDGE_E2E_PROVIDER_ACTIONS_NPM_REGISTRY` first when using a registry mirror.
+`FAROS_E2E_PROVIDER_ACTIONS_NPM_REGISTRY` first when using a registry mirror.
 
 The opt-in live command reads an already-refreshed workload token file. Set
-`KEDGE_E2E_PROVIDER_ACTIONS_LIVE=true`, `KEDGE_LIVE_HUB_URL`,
-`KEDGE_LIVE_PROJECT`, and `KEDGE_LIVE_ACTIONS_TOKEN_FILE` (optionally
-`KEDGE_LIVE_ACTION_ALIAS`, `KEDGE_LIVE_ORG`, and `KEDGE_LIVE_WORKSPACE`):
+`FAROS_E2E_PROVIDER_ACTIONS_LIVE=true`, `FAROS_LIVE_HUB_URL`,
+`FAROS_LIVE_PROJECT`, and `FAROS_LIVE_ACTIONS_TOKEN_FILE` (optionally
+`FAROS_LIVE_ACTION_ALIAS`, `FAROS_LIVE_ORG`, and `FAROS_LIVE_WORKSPACE`):
 
 ```bash
 make e2e-provider-actions-live

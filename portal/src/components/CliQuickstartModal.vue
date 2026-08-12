@@ -22,25 +22,25 @@ const methods: { id: Method; label: string; description: string; icon: typeof Do
 const hubURL = computed(() => window.location.origin)
 
 const binarySnippet = `# Download the latest release for your OS/arch
-curl -fsSL https://github.com/faroshq/kedge/releases/latest/download/kubectl-kedge_$(uname -s)_$(uname -m).tar.gz | tar xz
+curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_$(uname -s)_$(uname -m).tar.gz | tar xz
 
 # Move to a directory on your PATH
-sudo mv kubectl-kedge /usr/local/bin/kedge
-chmod +x /usr/local/bin/kedge
+sudo mv kubectl-faros /usr/local/bin/faros
+chmod +x /usr/local/bin/faros
 
-kedge version`
+faros version`
 
 const krewSnippet = `# Requires kubectl + krew (https://krew.sigs.k8s.io)
 kubectl krew index add faros https://github.com/faroshq/krew-index.git
-kubectl krew install faros/kedge
+kubectl krew install faros/faros
 
 # Verify
-kubectl kedge version`
+kubectl faros version`
 
 const sourceSnippet = `# Requires Go 1.22+
-go install github.com/faroshq/kedge/cmd/kedge@latest
+go install github.com/faroshq/faros/cmd/faros@latest
 
-kedge version`
+faros version`
 
 const installSnippet = computed(() => {
   if (method.value === 'binary') return binarySnippet
@@ -48,7 +48,7 @@ const installSnippet = computed(() => {
   return sourceSnippet
 })
 
-const cliBinary = computed(() => (method.value === 'krew' ? 'kubectl kedge' : 'kedge'))
+const cliBinary = computed(() => (method.value === 'krew' ? 'kubectl faros' : 'faros'))
 
 const loginSnippet = computed(
   () => `${cliBinary.value} login --hub-url ${hubURL.value}`,
@@ -67,7 +67,7 @@ async function copy(text: string, field: string) {
   } catch {}
 }
 
-const releasesURL = 'https://github.com/faroshq/kedge/releases/latest'
+const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
 </script>
 
 <template>
@@ -87,7 +87,7 @@ const releasesURL = 'https://github.com/faroshq/kedge/releases/latest'
             </div>
             <Terminal class="ml-2 h-3.5 w-3.5 text-accent" :stroke-width="1.75" />
             <span class="font-mono text-[11px] font-semibold tracking-wider text-text-secondary">
-              kedge — quickstart
+              faros — quickstart
             </span>
           </div>
           <button
@@ -103,7 +103,7 @@ const releasesURL = 'https://github.com/faroshq/kedge/releases/latest'
           <div>
             <h2 class="text-[15px] font-bold text-text-primary">Install & log in to the CLI</h2>
             <p class="mt-1 text-[12px] text-text-muted">
-              The <span class="font-mono text-text-secondary">kedge</span> CLI talks to this hub at
+              The <span class="font-mono text-text-secondary">faros</span> CLI talks to this hub at
               <span class="font-mono text-text-secondary">{{ hubURL }}</span>.
               Once installed, log in once and your kubeconfig will be updated automatically.
             </p>
@@ -196,7 +196,7 @@ const releasesURL = 'https://github.com/faroshq/kedge/releases/latest'
 
             <p class="mt-2 text-[11px] text-text-muted">
               A browser window opens for SSO; the CLI then writes a context named
-              <span class="font-mono text-text-secondary">kedge</span> into
+              <span class="font-mono text-text-secondary">faros</span> into
               <span class="font-mono text-text-secondary">~/.kube/config</span>.
             </p>
           </div>

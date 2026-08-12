@@ -663,18 +663,18 @@ func (s *Server) forwardProjectProviderAction(r *http.Request, id identity, prov
 		req.Header.Set("Authorization", authorization)
 	}
 	if id.tenantPath != "" {
-		req.Header.Set("X-Kedge-Tenant", id.tenantPath)
+		req.Header.Set("X-Faros-Tenant", id.tenantPath)
 	}
 	if id.clusterID != "" {
-		req.Header.Set("X-Kedge-Cluster", id.clusterID)
+		req.Header.Set("X-Faros-Cluster", id.clusterID)
 	}
 	if id.orgUUID != "" {
-		req.Header.Set("X-Kedge-Org", id.orgUUID)
+		req.Header.Set("X-Faros-Org", id.orgUUID)
 	}
 	if id.workspaceUUID != "" {
-		req.Header.Set("X-Kedge-Workspace", id.workspaceUUID)
+		req.Header.Set("X-Faros-Workspace", id.workspaceUUID)
 	}
-	for _, header := range []string{"Idempotency-Key", "X-Request-ID", "X-Kedge-Action-Deadline-Ms"} {
+	for _, header := range []string{"Idempotency-Key", "X-Request-ID", "X-Faros-Action-Deadline-Ms"} {
 		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
 			req.Header.Set(header, value)
 		}

@@ -8,11 +8,11 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Command kedge-dev-agent provides three capability-separated modes for
+// Command faros-dev-agent provides three capability-separated modes for
 // development components. Default mode is the trusted coordinator: it serves
 // authenticated public control on :7070 and execution sessions on :7071,
 // owns workspace sync serialization, and stores durable records only beneath
-// KEDGE_DEV_STATE_DIR. --runtime-supervisor is the unprivileged app-container
+// FAROS_DEV_STATE_DIR. --runtime-supervisor is the unprivileged app-container
 // process supervisor. --executor is an unprivileged stateless direct-argv
 // executor. The two internal modes bind loopback-only narrow APIs and receive
 // neither the public control token nor coordinator state.
@@ -28,14 +28,14 @@ You may obtain a copy of the License at
 //	GET  /status   current child-process and declared-port readiness (JSON).
 //
 // Every endpoint except /healthz and /readyz requires X-Sandbox-Control-Token (constant-
-// time compared against KEDGE_DEV_CONTROL_TOKEN, read once then cleared).
+// time compared against FAROS_DEV_CONTROL_TOKEN, read once then cleared).
 // File writes are confined to the workdir via os.Root.
 //
-// Invoked as `kedge-dev-agent --install <dir>` it copies its own executable
+// Invoked as `faros-dev-agent --install <dir>` it copies its own executable
 // into <dir> and exits — the init-container injection mode, which is what
-// lets the dev image stay a plain toolchain image with nothing kedge-specific
+// lets the dev image stay a plain toolchain image with nothing faros-specific
 // baked in.
-// Invoked as `kedge-dev-agent --healthcheck <address>` it performs a
+// Invoked as `faros-dev-agent --healthcheck <address>` it performs a
 // container-local TCP health check and exits. This mode is used by the
 // runtime-supervisor and executor Kubernetes exec probes; it intentionally
 // does not load the coordinator configuration or expose a shell.
@@ -78,12 +78,12 @@ const (
 	defaultRuntimeAddr  = "127.0.0.1:7072"
 	defaultExecutorAddr = "127.0.0.1:7073"
 	controlTokenHeader  = "X-Sandbox-Control-Token"
-	agentBinaryName     = "kedge-dev-agent"
+	agentBinaryName     = "faros-dev-agent"
 
 	previewConsolePluginName = "preview-console-plugin.mjs"
 	previewConsoleJWKSName   = "preview-console-jwks.json"
-	previewConsoleJWKSEnv    = "KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS"
-	workspaceManifestName    = ".kedge-workspace-manifest.json"
+	previewConsoleJWKSEnv    = "FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS"
+	workspaceManifestName    = ".faros-workspace-manifest.json"
 )
 
 //go:embed preview-console-plugin.mjs
@@ -210,7 +210,7 @@ func runStatelessExecutor(ctx context.Context, cfg *agentConfig) error {
 
 func runCoordinator(ctx context.Context, cfg *agentConfig) error {
 	if strings.TrimSpace(cfg.StateDir) == "" {
-		return errors.New("KEDGE_DEV_STATE_DIR is required in coordinator mode")
+		return errors.New("FAROS_DEV_STATE_DIR is required in coordinator mode")
 	}
 	if cfg.actionsTokenState == nil {
 		cfg.actionsTokenState = newActionsTokenState(strings.TrimSpace(cfg.ActionsExchangeURL) != "")
@@ -277,7 +277,7 @@ func serveUntilDone(ctx context.Context, srv *http.Server, cleanup func()) error
 
 // installSelf atomically installs the agent executable, the platform-owned
 // preview-console Vite plugin, and its optional trusted public JWKS into dir,
-// the shared emptyDir the dev container mounts at /kedge/bin. Plain copies are
+// the shared emptyDir the dev container mounts at /faros/bin. Plain copies are
 // used because the injector image may be scratch. Application dependencies are
 // deliberately not projected here: generated applications install their
 // declared package aliases through the component toolchain.
@@ -434,51 +434,51 @@ func normalizePreviewConsoleJWKS(raw []byte) ([]byte, error) {
 }
 
 func configFromEnv() (*agentConfig, error) {
-	workdir := strings.TrimSpace(os.Getenv("KEDGE_DEV_WORKDIR"))
+	workdir := strings.TrimSpace(os.Getenv("FAROS_DEV_WORKDIR"))
 	if workdir == "" {
 		workdir = "/workspace"
 	}
-	token := strings.TrimSpace(os.Getenv("KEDGE_DEV_CONTROL_TOKEN"))
-	_ = os.Unsetenv("KEDGE_DEV_CONTROL_TOKEN")
+	token := strings.TrimSpace(os.Getenv("FAROS_DEV_CONTROL_TOKEN"))
+	_ = os.Unsetenv("FAROS_DEV_CONTROL_TOKEN")
 
-	strategy := strings.ToLower(strings.TrimSpace(os.Getenv("KEDGE_DEV_RELOAD_STRATEGY")))
+	strategy := strings.ToLower(strings.TrimSpace(os.Getenv("FAROS_DEV_RELOAD_STRATEGY")))
 	switch strategy {
 	case "", "process":
 		strategy = "process"
 	case "container":
 	default:
-		return nil, fmt.Errorf("unknown KEDGE_DEV_RELOAD_STRATEGY %q", strategy)
+		return nil, fmt.Errorf("unknown FAROS_DEV_RELOAD_STRATEGY %q", strategy)
 	}
 
-	rules, err := reloadRulesFromEnv(os.Getenv("KEDGE_DEV_RELOAD_RULES"))
+	rules, err := reloadRulesFromEnv(os.Getenv("FAROS_DEV_RELOAD_RULES"))
 	if err != nil {
 		return nil, err
 	}
 
-	insecure := strings.TrimSpace(os.Getenv("KEDGE_DEV_ALLOW_INSECURE_CONTROL"))
+	insecure := strings.TrimSpace(os.Getenv("FAROS_DEV_ALLOW_INSECURE_CONTROL"))
 	cfg := &agentConfig{
 		WorkDir:                   workdir,
-		StartCommand:              strings.TrimSpace(os.Getenv("KEDGE_DEV_START_COMMAND")),
-		Port:                      strings.TrimSpace(os.Getenv("KEDGE_DEV_PORT")),
+		StartCommand:              strings.TrimSpace(os.Getenv("FAROS_DEV_START_COMMAND")),
+		Port:                      strings.TrimSpace(os.Getenv("FAROS_DEV_PORT")),
 		ControlToken:              token,
 		ReloadStrategy:            strategy,
 		ReloadRules:               rules,
 		AllowInsecureControl:      strings.EqualFold(insecure, "true"),
-		StateDir:                  strings.TrimSpace(os.Getenv("KEDGE_DEV_STATE_DIR")),
-		RuntimeURL:                strings.TrimSpace(os.Getenv("KEDGE_DEV_RUNTIME_URL")),
-		ExecutorURL:               strings.TrimSpace(os.Getenv("KEDGE_DEV_EXECUTOR_URL")),
-		ActionsBootstrapTokenFile: envOrDefault("KEDGE_ACTIONS_BOOTSTRAP_TOKEN_FILE", "/var/run/secrets/kedge/actions-bootstrap/token"),
-		ActionsTokenFile:          envOrDefault("KEDGE_ACTIONS_TOKEN_FILE", "/var/run/secrets/kedge/actions/token"),
-		ActionsExchangeURL:        strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_EXCHANGE_URL")),
-		ActionsBaseURL:            strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_BASE_URL")),
-		ActionsProject:            strings.TrimSpace(os.Getenv("KEDGE_PROJECT")),
-		ActionsProjectUID:         strings.TrimSpace(os.Getenv("KEDGE_PROJECT_UID")),
-		ActionsEnvironment:        strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_ENVIRONMENT")),
-		ActionsInstance:           strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_INSTANCE")),
-		ActionsTenantPath:         strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_TENANT_PATH")),
-		ActionsOrg:                strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_ORG")),
-		ActionsWorkspace:          strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_WORKSPACE")),
-		ActionsCAFile:             strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_CA_FILE")),
+		StateDir:                  strings.TrimSpace(os.Getenv("FAROS_DEV_STATE_DIR")),
+		RuntimeURL:                strings.TrimSpace(os.Getenv("FAROS_DEV_RUNTIME_URL")),
+		ExecutorURL:               strings.TrimSpace(os.Getenv("FAROS_DEV_EXECUTOR_URL")),
+		ActionsBootstrapTokenFile: envOrDefault("FAROS_ACTIONS_BOOTSTRAP_TOKEN_FILE", "/var/run/secrets/faros/actions-bootstrap/token"),
+		ActionsTokenFile:          envOrDefault("FAROS_ACTIONS_TOKEN_FILE", "/var/run/secrets/faros/actions/token"),
+		ActionsExchangeURL:        strings.TrimSpace(os.Getenv("FAROS_ACTIONS_EXCHANGE_URL")),
+		ActionsBaseURL:            strings.TrimSpace(os.Getenv("FAROS_ACTIONS_BASE_URL")),
+		ActionsProject:            strings.TrimSpace(os.Getenv("FAROS_PROJECT")),
+		ActionsProjectUID:         strings.TrimSpace(os.Getenv("FAROS_PROJECT_UID")),
+		ActionsEnvironment:        strings.TrimSpace(os.Getenv("FAROS_ACTIONS_ENVIRONMENT")),
+		ActionsInstance:           strings.TrimSpace(os.Getenv("FAROS_ACTIONS_INSTANCE")),
+		ActionsTenantPath:         strings.TrimSpace(os.Getenv("FAROS_ACTIONS_TENANT_PATH")),
+		ActionsOrg:                strings.TrimSpace(os.Getenv("FAROS_ACTIONS_ORG")),
+		ActionsWorkspace:          strings.TrimSpace(os.Getenv("FAROS_ACTIONS_WORKSPACE")),
+		ActionsCAFile:             strings.TrimSpace(os.Getenv("FAROS_ACTIONS_CA_FILE")),
 	}
 	if cfg.RuntimeURL == "" {
 		cfg.RuntimeURL = "http://" + defaultRuntimeAddr
@@ -503,11 +503,11 @@ func reloadRulesFromEnv(raw string) ([]reloadRule, error) {
 	}
 	var rules []reloadRule
 	if err := json.Unmarshal([]byte(raw), &rules); err != nil {
-		return nil, fmt.Errorf("KEDGE_DEV_RELOAD_RULES is not a JSON rule list: %w", err)
+		return nil, fmt.Errorf("FAROS_DEV_RELOAD_RULES is not a JSON rule list: %w", err)
 	}
 	for i, r := range rules {
 		if len(r.Paths) == 0 || strings.TrimSpace(r.Command) == "" {
-			return nil, fmt.Errorf("KEDGE_DEV_RELOAD_RULES[%d] needs paths and a command", i)
+			return nil, fmt.Errorf("FAROS_DEV_RELOAD_RULES[%d] needs paths and a command", i)
 		}
 	}
 	return rules, nil
@@ -1575,7 +1575,7 @@ const maxRuntimeEnvKeys = 32
 
 // reservedEnvPrefixes protect the agent's own control plane from being
 // overridden through /env or child env merging.
-var reservedEnvPrefixes = []string{"KEDGE_DEV_"}
+var reservedEnvPrefixes = []string{"FAROS_DEV_"}
 
 func hasReservedEnvPrefix(name string) bool {
 	return slices.ContainsFunc(reservedEnvPrefixes, func(p string) bool {
@@ -1682,7 +1682,7 @@ func (s *supervisor) runReloadCommands(ctx context.Context, commands []string) e
 	childEnv := make(map[string]string, len(s.customEnv))
 	maps.Copy(childEnv, s.customEnv)
 	for _, command := range commands {
-		s.logs.append("[kedge reload] " + command)
+		s.logs.append("[faros reload] " + command)
 		cmd := exec.CommandContext(ctx, "/bin/sh", "-lc", command)
 		cmd.Dir = s.config.WorkDir
 		cmd.Env = mergeChildEnv(os.Environ(), childEnv, s.config.Port)
@@ -1693,7 +1693,7 @@ func (s *supervisor) runReloadCommands(ctx context.Context, commands []string) e
 			}
 		}
 		if err != nil {
-			s.logs.append("[kedge reload] failed: " + err.Error())
+			s.logs.append("[faros reload] failed: " + err.Error())
 			return fmt.Errorf("reload command %q: %w", command, err)
 		}
 	}

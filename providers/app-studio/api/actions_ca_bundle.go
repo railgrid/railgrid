@@ -28,7 +28,7 @@ const actionsCABundleMaxBytes = 1 << 20
 // loadActionsCABundleFromEnv reads the explicitly configured public trust
 // material for action-enabled development runtimes. A file is preferred so a
 // PEM bundle does not become part of process arguments or a deployment value;
-// KEDGE_ACTIONS_CA_BUNDLE is a small direct-value escape hatch for local
+// FAROS_ACTIONS_CA_BUNDLE is a small direct-value escape hatch for local
 // launches. If both forms are supplied they must contain the same normalized
 // bytes, avoiding an ambiguous source of trust.
 //
@@ -36,8 +36,8 @@ const actionsCABundleMaxBytes = 1 << 20
 // configuration error until a project actually has an active action grant, so
 // an unrelated/actionless project remains usable.
 func loadActionsCABundleFromEnv() (string, error) {
-	filePath := strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_CA_BUNDLE_FILE"))
-	direct := strings.TrimSpace(os.Getenv("KEDGE_ACTIONS_CA_BUNDLE"))
+	filePath := strings.TrimSpace(os.Getenv("FAROS_ACTIONS_CA_BUNDLE_FILE"))
+	direct := strings.TrimSpace(os.Getenv("FAROS_ACTIONS_CA_BUNDLE"))
 	if filePath == "" && direct == "" {
 		return "", nil
 	}
@@ -46,16 +46,16 @@ func loadActionsCABundleFromEnv() (string, error) {
 	if filePath != "" {
 		data, err := os.ReadFile(filePath)
 		if err != nil {
-			return "", fmt.Errorf("read KEDGE_ACTIONS_CA_BUNDLE_FILE %q: %w", filePath, err)
+			return "", fmt.Errorf("read FAROS_ACTIONS_CA_BUNDLE_FILE %q: %w", filePath, err)
 		}
 		if len(data) > actionsCABundleMaxBytes {
-			return "", fmt.Errorf("KEDGE_ACTIONS_CA_BUNDLE_FILE %q exceeds %d bytes", filePath, actionsCABundleMaxBytes)
+			return "", fmt.Errorf("FAROS_ACTIONS_CA_BUNDLE_FILE %q exceeds %d bytes", filePath, actionsCABundleMaxBytes)
 		}
 		fromFile = string(data)
 	}
 
 	if fromFile != "" && direct != "" && normalizeCABundle(fromFile) != normalizeCABundle(direct) {
-		return "", fmt.Errorf("KEDGE_ACTIONS_CA_BUNDLE_FILE and KEDGE_ACTIONS_CA_BUNDLE disagree")
+		return "", fmt.Errorf("FAROS_ACTIONS_CA_BUNDLE_FILE and FAROS_ACTIONS_CA_BUNDLE disagree")
 	}
 	bundle := fromFile
 	if bundle == "" {

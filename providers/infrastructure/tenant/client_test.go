@@ -30,11 +30,11 @@ func TestConfigForRejectsUnsafeLogicalClusterIDs(t *testing.T) {
 			}
 		})
 	}
-	cfg, err := factory.configFor("root:kedge-org_1.2", "caller-token")
+	cfg, err := factory.configFor("root:faros-org_1.2", "caller-token")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(cfg.Host, "/clusters/root:kedge-org_1.2") {
+	if !strings.HasSuffix(cfg.Host, "/clusters/root:faros-org_1.2") {
 		t.Fatalf("cluster host = %q", cfg.Host)
 	}
 }

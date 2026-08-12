@@ -33,7 +33,7 @@ import (
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	providersv1alpha1 "github.com/faroshq/faros-kedge/apis/providers/v1alpha1"
+	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
 )
 
 // HeartbeatTTL is how long a provider's last heartbeat is considered fresh.
@@ -69,8 +69,8 @@ type Provider struct {
 	BuiltinRoute     string     // when set, portal renders this Vue route instead of loading /main.js
 	Children         []NavChild // sub-nav entries surfaced indented under this provider
 	Version          string     // CatalogEntry.spec.version (chart-declared)
-	APIExportPath    string     // kcp workspace path hosting the APIExport (e.g. root:kedge:providers:cost)
-	APIExportName    string     // APIExport name (e.g. cost.providers.kedge.faros.sh)
+	APIExportPath    string     // kcp workspace path hosting the APIExport (e.g. root:faros:providers:cost)
+	APIExportName    string     // APIExport name (e.g. cost.providers.faros.sh)
 	PermissionClaims []PermissionClaim
 
 	// EdgeProxyAccess mirrors CatalogEntry.spec.edgeProxyAccess: on tenant
@@ -78,7 +78,7 @@ type Provider struct {
 	// the tenant workspace (see pkg/hub/restapi/providers_enable.go).
 	EdgeProxyAccess bool
 	// WorkspaceCluster is the logical cluster ID of the provider's
-	// sub-workspace (Workspace.spec.cluster of root:kedge:providers:{name}).
+	// sub-workspace (Workspace.spec.cluster of root:faros:providers:{name}).
 	// It anchors the qualified RBAC subject the edge-proxy grant binds —
 	// the same cluster ID kcp puts in the provider SA's token claims. Set
 	// via SetWorkspaceCluster after provisioning; empty until then.
@@ -279,7 +279,7 @@ func CompileProviderActionSchema(raw json.RawMessage, name string) (*jsonschema.
 	// omits an explicit draft vocabulary declaration.
 	compiler.AssertFormat()
 	compiler.UseLoader(noExternalSchemaLoader{})
-	location := "urn:kedge:provider-action:" + url.PathEscape(name)
+	location := "urn:faros:provider-action:" + url.PathEscape(name)
 	if err := compiler.AddResource(location, document); err != nil {
 		return nil, fmt.Errorf("add schema resource: %w", err)
 	}

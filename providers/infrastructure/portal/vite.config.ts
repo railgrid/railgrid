@@ -1,9 +1,9 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-// The kedge hub serves this provider under /ui/providers/infrastructure/.
+// The faros hub serves this provider under /ui/providers/infrastructure/.
 // ProviderFrame injects <script src="/ui/providers/infrastructure/main.js">
-// once and waits for the <kedge-provider-infrastructure> custom element
+// once and waits for the <faros-provider-infrastructure> custom element
 // to be defined. So the build must:
 //
 //   1. Emit the entry script at exactly /main.js (no hash, no /assets/
@@ -15,12 +15,12 @@ import vue from '@vitejs/plugin-vue'
 //      to this binary.
 export default defineConfig({
   plugins: [vue({
-    // Allow <kedge-provider-infrastructure> as a custom element tag
+    // Allow <faros-provider-infrastructure> as a custom element tag
     // inside Vue templates without compiler warnings (the element is
     // OUR own host shell, not the Vue-rendered children, but Vue's
     // compiler also runs over user pages that may want to reference
     // it for debug.).
-    template: { compilerOptions: { isCustomElement: (tag) => tag.startsWith('kedge-provider-') } },
+    template: { compilerOptions: { isCustomElement: (tag) => tag.startsWith('faros-provider-') } },
   })],
   // Vite's library mode (`build.lib`) intentionally leaves
   // process.env.NODE_ENV and the __VUE_*__ feature flags
@@ -47,7 +47,7 @@ export default defineConfig({
     lib: {
       entry: 'src/main.ts',
       formats: ['iife'],
-      name: 'KedgeProviderInfrastructure',
+      name: 'FarosProviderInfrastructure',
       fileName: () => 'main.js',
     },
     rollupOptions: {

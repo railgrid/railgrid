@@ -33,7 +33,7 @@ type LoginResponse struct {
 	RefreshToken string `json:"refreshToken,omitempty"`
 
 	// OIDC provider config so the exec plugin can refresh tokens.
-	// ClientSecret is intentionally omitted: kedge uses PKCE (public client)
+	// ClientSecret is intentionally omitted: faros uses PKCE (public client)
 	// so no client secret is ever issued or sent to CLI users.
 	IssuerURL string `json:"issuerUrl,omitempty"`
 	ClientID  string `json:"clientId,omitempty"`

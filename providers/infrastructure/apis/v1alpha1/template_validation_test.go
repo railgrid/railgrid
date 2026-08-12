@@ -24,7 +24,7 @@ import (
 func devComponent(workspacePath string) TemplateDevelopmentComponent {
 	return TemplateDevelopmentComponent{
 		WorkspacePath: workspacePath,
-		DevImage:      "${kedge.devImage.node}",
+		DevImage:      "${faros.devImage.node}",
 		StartCommand:  "npm run dev",
 	}
 }
@@ -109,7 +109,7 @@ func TestValidateDevelopment(t *testing.T) {
 			name: "missing start command",
 			spec: TemplateSpec{Development: &TemplateDevelopment{
 				Components: map[string]TemplateDevelopmentComponent{
-					"web": {WorkspacePath: ".", DevImage: "${kedge.devImage.node}"},
+					"web": {WorkspacePath: ".", DevImage: "${faros.devImage.node}"},
 				},
 			}},
 			wantErr: "startCommand is required",
@@ -120,7 +120,7 @@ func TestValidateDevelopment(t *testing.T) {
 				Components: map[string]TemplateDevelopmentComponent{
 					"web": {
 						WorkspacePath: ".",
-						DevImage:      "${kedge.devImage.node}",
+						DevImage:      "${faros.devImage.node}",
 						StartCommand:  "npm run dev",
 						Reload: &TemplateDevelopmentReload{Rules: []TemplateDevelopmentReloadRule{
 							{Paths: []string{"package.json"}},

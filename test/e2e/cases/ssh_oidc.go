@@ -28,8 +28,8 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	cliauth "github.com/faroshq/faros/pkg/cli/auth"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // sshOIDCIdentityPort is the embedded SSH server port for SSHOIDCUsernameMapping.
@@ -103,7 +103,7 @@ func SSHOIDCUsernameMapping() features.Feature {
 			}
 			t.Logf("OIDC login succeeded; kubeconfig written to %s", oidcKubeconfigPath)
 
-			// Cache the OIDC token so the exec-credential plugin (`kedge get-token`)
+			// Cache the OIDC token so the exec-credential plugin (`faros get-token`)
 			// can refresh it when making API calls via the kubeconfig.
 			if result.IDToken != "" {
 				tokenCache := &cliauth.TokenCache{
@@ -208,7 +208,7 @@ func SSHOIDCUsernameMapping() features.Feature {
 			privKeyPEM := framework.SSHPrivateKeyPEMFromContext(ctx)
 			// Use the OIDC kubeconfig so resources are created in the OIDC user's
 			// kcp workspace.
-			client := framework.NewKedgeClient(framework.RepoRoot(), setupData.oidcKubeconfig, "")
+			client := framework.NewFarosClient(framework.RepoRoot(), setupData.oidcKubeconfig, "")
 
 			// Create the Secret containing only the private key (no username — the
 			// SSH username is derived from the caller's OIDC identity at runtime).

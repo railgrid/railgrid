@@ -1,7 +1,7 @@
-# infrastructure provider — register with the kedge hub.
+# infrastructure provider — register with the faros hub.
 #
-# Apply to the kcp workspace where the kedge.faros.sh APIExport is bound
-# (typically root:kedge:providers when running embedded kcp for
+# Apply to the kcp workspace where the faros.sh APIExport is bound
+# (typically root:faros:providers when running embedded kcp for
 # development):
 #
 #   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
@@ -12,11 +12,11 @@
 # change.
 #
 # ════════════════════════════════════════════════════════════════════════
-# Provider object reference — kind: CatalogEntry (providers.kedge.faros.sh)
+# Provider object reference — kind: CatalogEntry (providers.faros.sh)
 #
-# A CatalogEntry registers one provider ("plugin") with the kedge hub. The
+# A CatalogEntry registers one provider ("plugin") with the faros hub. The
 # hub's catalog controller reconciles it into the provider sub-workspace
-# root:kedge:providers:<name>, a ServiceAccount + runtime kubeconfig, the
+# root:faros:providers:<name>, a ServiceAccount + runtime kubeconfig, the
 # APIExport tenants APIBind to, and a routing entry backing
 # /ui/providers/<name>/* and /services/providers/<name>/*.
 #
@@ -28,7 +28,7 @@
 #   category                 Groups the entry under a portal nav heading.
 #   iconURL                  Portal-relative icon path (served via the UI proxy).
 #   serviceAccountNamespace  Host namespace the provider Deployment runs in;
-#                            the hub writes kedge-provider-kubeconfig here.
+#                            the hub writes faros-provider-kubeconfig here.
 #   ui:                      Micro-frontend (omit for a UI-less provider).
 #     url                      Address the hub reverse-proxies for
 #                              /ui/providers/<name>/* (exclusive with builtinRoute).
@@ -53,14 +53,14 @@
 #                              body}); [] = pure broker, no CRDs leak to tenants.
 # ════════════════════════════════════════════════════════════════════════
 ---
-apiVersion: providers.kedge.faros.sh/v1alpha1
+apiVersion: providers.faros.sh/v1alpha1
 kind: CatalogEntry
 metadata:
   name: infrastructure
 spec:
   displayName: "Application Templates"
   description: "Provision applications and infrastructure from curated templates."
-  vendor: "kedge"
+  vendor: "faros"
   version: "0.1.0"
   category: "Workloads"
   iconURL: "/ui/providers/infrastructure/icon.svg"
@@ -75,7 +75,7 @@ spec:
     # Sub-nav entries shown indented under "Application Templates" in
     # the portal side menu. The portal composes each child URL as
     # /providers/infrastructure/{builtinRoute}; the micro-frontend
-    # reads the trailing segment off kedgeContext.subPath and routes
+    # reads the trailing segment off farosContext.subPath and routes
     # to the matching internal page. Mirrors kubernetes-edges → Workloads.
     children:
       - displayName: Templates
@@ -86,7 +86,7 @@ spec:
     url: "http://localhost:8082"
     healthPath: "/healthz"
   apiExport:
-    name: "infrastructure.providers.kedge.faros.sh"
+    name: "infrastructure.providers.faros.sh"
     # secrets get/list/watch with tenantScoped: true is what lets the
     # provider read the per-tenant `cloud-credentials` Secret when
     # brokering a template (phase 3). tenantScoped: true triggers

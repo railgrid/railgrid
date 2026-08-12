@@ -9,7 +9,7 @@ building with preview, build, and promotion to production. Replaces app-studio.
 
 What works today:
 
-- One CRD (`Project`, `vibe.kedge.faros.sh/v1alpha1`); everything
+- One CRD (`Project`, `vibe.faros.sh/v1alpha1`); everything
   conversational lives in the store, never in kube.
 - Event-sourced sessions: append-only log (ordinal-CAS'd appends), pure
   `Apply`/`Evolve`/`Fold`/`NextAction` state machines, full wizard lifecycle
@@ -19,14 +19,14 @@ What works today:
   (`input` | `answers` | `approve`), `GET /api/sessions/{id}/events`
   (JSON or SSE). Multi-replica safe via the append CAS.
 - Stores: Postgres (`VIBE_STUDIO_DATABASE_URL`) and in-memory (dev).
-- Portal custom element (`kedge-provider-vibe-studio`) rendering the whole
+- Portal custom element (`faros-provider-vibe-studio`) rendering the whole
   flow, chart + CatalogEntry + APIResourceSchema, Dockerfile.
 
 Deterministic lifecycle (first slice of Phase 1): approve resolves the
 Template's `instanceCRD` as the caller and records a fully-resolved runtime
 binding on the Project spec; a **multicluster Project reconciler**
 (kcp apiexport provider — per-shard fan-out handled by the library) then
-creates the `kedgeMode: development` instance in the tenant workspace,
+creates the `farosMode: development` instance in the tenant workspace,
 mirrors instance status (phase/url/outputs) into `Project.status`, stamps
 `Provisioning`/`Ready`, and tears instances down via finalizer on Project
 delete. All decisions are code (`controller/project/desired.go` is pure and

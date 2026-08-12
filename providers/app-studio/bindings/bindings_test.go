@@ -35,11 +35,11 @@ func testBinding() aiv1alpha1.ProjectProviderBindingSpec {
 		Kind:     aiv1alpha1.ProjectBindingKindProviderResource,
 		ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
 			Name:       "demo-dev",
-			APIVersion: "infrastructure.kedge.faros.sh/v1alpha1",
+			APIVersion: "infrastructure.faros.sh/v1alpha1",
 			Kind:       "Application",
 			Resource:   "applications",
 		},
-		Values: runtime.RawExtension{Raw: []byte(`{"kedgeMode":"development","webImage":"x"}`)},
+		Values: runtime.RawExtension{Raw: []byte(`{"farosMode":"development","webImage":"x"}`)},
 	}
 }
 
@@ -49,7 +49,7 @@ func TestDesiredIsSelfContained(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Desired: %v", err)
 	}
-	if gvr.Group != "infrastructure.kedge.faros.sh" || gvr.Resource != "applications" || gvr.Version != "v1alpha1" {
+	if gvr.Group != "infrastructure.faros.sh" || gvr.Resource != "applications" || gvr.Version != "v1alpha1" {
 		t.Fatalf("gvr = %v", gvr)
 	}
 	if want.GetName() != "demo-dev" {
@@ -62,9 +62,9 @@ func TestDesiredIsSelfContained(t *testing.T) {
 	if len(owners) != 1 || owners[0].Kind != "Project" || owners[0].Name != "demo" {
 		t.Fatalf("ownerReferences = %+v", owners)
 	}
-	mode, _, _ := unstructured.NestedString(want.Object, "spec", "kedgeMode")
+	mode, _, _ := unstructured.NestedString(want.Object, "spec", "farosMode")
 	if mode != "development" {
-		t.Fatalf("spec.kedgeMode = %q", mode)
+		t.Fatalf("spec.farosMode = %q", mode)
 	}
 }
 
@@ -121,12 +121,12 @@ func TestApplyActionsOverlayReplacesReservedValuesAndClearsTransport(t *testing.
 		ActionsBaseURLField:       "stale-base",
 		ActionsCABundleField:      "stale-ca",
 		ActionsTenantPathField:    "stale-tenant",
-		"kedgeActionsFutureField": "stale-future",
-		"kedgeActions":            "stale-prefix",
+		"farosActionsFutureField": "stale-future",
+		"farosActions":            "stale-prefix",
 	}
 	overlay := ActionsOverlay{
 		ActionsIdentity: ActionsIdentity{
-			TenantPath:  "root:kedge:tenants:org:workspace",
+			TenantPath:  "root:faros:tenants:org:workspace",
 			Org:         "org",
 			Workspace:   "workspace",
 			Project:     "demo",
@@ -159,7 +159,7 @@ func TestApplyActionsOverlayReplacesReservedValuesAndClearsTransport(t *testing.
 			t.Errorf("%s = %v, want %q", key, got[key], want)
 		}
 	}
-	for _, key := range []string{"kedgeActionsFutureField", "kedgeActions"} {
+	for _, key := range []string{"farosActionsFutureField", "farosActions"} {
 		if _, found := got[key]; found {
 			t.Errorf("reserved unknown field %s survived: %v", key, got[key])
 		}
@@ -204,7 +204,7 @@ func TestMergeProviderSpecPreservesComputedFieldsAndClearsStaleActions(t *testin
 		"credentialsSecretName": "demo-dev-credentials",
 		"providerComputed":      "keep-top-level",
 		ActionsExchangeURLField: "https://stale.example/exchange",
-		"kedgeActionsFuture":    "stale-future",
+		"farosActionsFuture":    "stale-future",
 	}
 	desired := map[string]any{
 		"expose": map[string]any{

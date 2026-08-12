@@ -27,7 +27,7 @@ import (
 )
 
 // TokenCache stores OIDC tokens for the exec credential plugin.
-// ClientSecret is intentionally absent: kedge uses PKCE (public client) so
+// ClientSecret is intentionally absent: faros uses PKCE (public client) so
 // token refresh requires only the refresh token, issuer URL, and client ID.
 type TokenCache struct {
 	IDToken      string `json:"idToken"`
@@ -48,7 +48,7 @@ func cacheDir() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("getting home directory: %w", err)
 	}
-	dir := filepath.Join(home, ".config", "kedge", "tokens")
+	dir := filepath.Join(home, ".config", "faros", "tokens")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", fmt.Errorf("creating cache directory: %w", err)
 	}
@@ -141,7 +141,7 @@ func SaveTokenCache(cache *TokenCache) error {
 // LockTokenCache takes an exclusive OS-level file lock on a sidecar lock file
 // for the given OIDC config. Returns an unlock function that the caller MUST
 // invoke (e.g. via defer) — typically wrapping load → expiry-check → refresh →
-// save so that concurrent `kedge get-token` invocations don't race on the
+// save so that concurrent `faros get-token` invocations don't race on the
 // refresh-token rotation. On platforms where advisory locking isn't supported
 // the returned unlock is a no-op.
 func LockTokenCache(issuerURL, clientID string) (unlock func(), err error) {

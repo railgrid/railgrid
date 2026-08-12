@@ -73,7 +73,7 @@ var guardedClient = &http.Client{
 
 // SearchRef addresses the project's private search backend: a searxng
 // instance reached over the infrastructure data plane, with no public URL and
-// no credential of its own — the caller's own kedge RBAC on the instance is
+// no credential of its own — the caller's own faros RBAC on the instance is
 // the gate.
 type SearchRef struct {
 	Resource string // "searxngs"
@@ -130,7 +130,7 @@ func Fetch(ctx context.Context, raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "kedge-vibe-studio/0.1 (+https://github.com/faroshq/kedge)")
+	req.Header.Set("User-Agent", "faros-vibe-studio/0.1 (+https://github.com/faroshq/faros)")
 	resp, err := guardedClient.Do(req)
 	if err != nil {
 		return "", err

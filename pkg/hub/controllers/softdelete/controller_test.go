@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 )
 
 // ===== test doubles =====

@@ -37,7 +37,7 @@ func tenantClient(deps Deps, ident identity) (dynamic.Interface, error) {
 		return nil, errors.New("no tenant identity on this request — bearer token did not resolve to a workspace")
 	}
 	if ident.clusterID == "" {
-		return nil, errors.New("no workspace cluster on this request (X-Kedge-Cluster missing) — cannot address the tenant workspace by ID")
+		return nil, errors.New("no workspace cluster on this request (X-Faros-Cluster missing) — cannot address the tenant workspace by ID")
 	}
 	if ident.token == "" {
 		return nil, errors.New("no bearer token on this request — the MCP request must carry the caller's credentials")

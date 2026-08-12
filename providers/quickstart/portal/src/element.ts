@@ -1,20 +1,20 @@
-// QuickstartElement is the custom element the kedge portal renders for
+// QuickstartElement is the custom element the faros portal renders for
 // this provider. The portal:
 //   1. Loads main.js via a one-shot <script> tag (this module's side effect
 //      registers the element with customElements.define).
 //   2. Appends the element to its DOM tree.
-//   3. Sets element.kedgeContext as a JS property (NOT an attribute) — the
+//   3. Sets element.farosContext as a JS property (NOT an attribute) — the
 //      setter triggers a re-render.
-//   4. Listens for kedge-navigate CustomEvents bubbled from the element to
+//   4. Listens for faros-navigate CustomEvents bubbled from the element to
 //      push browser history within the portal SPA.
 //
 // The element runs in light DOM so the portal's :root CSS variables cascade
 // in — see style.css.
 
-// KedgeContext is the shape the host portal sets on element.kedgeContext
+// FarosContext is the shape the host portal sets on element.farosContext
 // once mounted. Fields are optional because the portal may push partial
 // updates (theme toggle, token rotation) and our render must cope.
-export interface KedgeContext {
+export interface FarosContext {
   token?: string | null
   user?: { email?: string; sub?: string } | null
   tenant?: string | null
@@ -29,17 +29,17 @@ interface APIState {
 }
 
 export class QuickstartElement extends HTMLElement {
-  private _ctx: KedgeContext | null = null
+  private _ctx: FarosContext | null = null
   private _calledAPI = false
   private _apiState: APIState | null = null
 
   // Portal sets this property after appending; setter triggers a render so
   // the panels reflect the new identity/theme without an explicit refresh.
-  set kedgeContext(v: KedgeContext | null) {
+  set farosContext(v: FarosContext | null) {
     this._ctx = v
     this._render()
   }
-  get kedgeContext(): KedgeContext | null {
+  get farosContext(): FarosContext | null {
     return this._ctx
   }
 
@@ -101,7 +101,7 @@ export class QuickstartElement extends HTMLElement {
   private _callAPI(): void {
     if (this._calledAPI) return
     this._calledAPI = true
-    // basePath may arrive on a later kedgeContext set; poll briefly so we
+    // basePath may arrive on a later farosContext set; poll briefly so we
     // don't issue the call against a partial URL on the first paint.
     const tryFetch = () => {
       if (!this._ctx?.basePath) {

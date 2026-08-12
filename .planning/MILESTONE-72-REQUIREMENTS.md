@@ -18,7 +18,7 @@ Auth: []gossh.AuthMethod{gossh.Password("")},
 ## Architecture
 
 ```
-kedge ssh my-server
+faros ssh my-server
   → CLI (unchanged: WebSocket to hub)
   → Hub sshHandler
       - looks up Server object by name       (NEW: needs k8s/kcp client)
@@ -65,7 +65,7 @@ kedge ssh my-server
 - [ ] **KEY-22**: Unit test: `newSSHClient` — when signer nil, Auth is `[Password("")]`; when signer non-nil, Auth is `[PublicKeys(signer)]`
 
 ### Tests — E2e
-- [ ] **KEY-23**: E2e: register `Server` with `sshKeySecretRef` pointing to a valid Secret containing the test sshd's accepted key → `kedge ssh <name> hostname` returns correct hostname
+- [ ] **KEY-23**: E2e: register `Server` with `sshKeySecretRef` pointing to a valid Secret containing the test sshd's accepted key → `faros ssh <name> hostname` returns correct hostname
 - [ ] **KEY-24**: E2e: `Server` without `sshKeySecretRef` still works (backward-compat, existing e2e suite must continue to pass)
 
 ## Out of Scope (this milestone)

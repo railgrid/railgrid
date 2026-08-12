@@ -57,7 +57,7 @@ type OIDCLoginResult struct {
 
 // HeadlessOIDCLogin drives the full OIDC authorization-code flow headlessly.
 //
-// The kedge hub auth flow (see pkg/server/auth/handler.go):
+// The faros hub auth flow (see pkg/server/auth/handler.go):
 //  1. GET  /auth/authorize?p=<port>&s=<session>  →  302 to Dex auth URL
 //  2. GET  Dex auth URL                           →  Dex login page
 //  3. POST Dex login form with credentials        →  302 to hub /auth/callback
@@ -195,7 +195,7 @@ func HeadlessOIDCLogin(ctx context.Context, hubURL, email, password string) (*OI
 	dexCallbackURL = resolveRelative(formAction, dexCallbackURL)
 
 	// ── Step 6: follow Dex → hub /auth/callback ───────────────────────────────
-	// The Location may point to the hub's public URL (e.g. https://kedge.localhost:9443/auth/callback).
+	// The Location may point to the hub's public URL (e.g. https://faros.localhost:9443/auth/callback).
 	// We follow it so the hub can exchange the auth code.
 	hubCallbackReq, err := http.NewRequestWithContext(ctx, http.MethodGet, dexCallbackURL, nil)
 	if err != nil {
@@ -253,11 +253,11 @@ func HeadlessOIDCLogin(ctx context.Context, hubURL, email, password string) (*OI
 	}
 }
 
-// patchKubeconfigExecPath rewrites any AuthInfo.Exec.Command of "kedge" to
-// the absolute path of the kedge binary under test ($RepoRoot/bin/kedge).
+// patchKubeconfigExecPath rewrites any AuthInfo.Exec.Command of "faros" to
+// the absolute path of the faros binary under test ($RepoRoot/bin/faros).
 //
 // The hub generates kubeconfigs whose auth is an exec credential plugin with
-// Command: "kedge" (see pkg/server/auth/handler.go). That requires "kedge" to
+// Command: "faros" (see pkg/server/auth/handler.go). That requires "faros" to
 // be on PATH at kubectl-invocation time. In tests (and for users running
 // kubectl manually against these kubeconfigs) it usually is not, so we rewrite
 // the command to the absolute path we already know about.
@@ -272,11 +272,11 @@ func patchKubeconfigExecPath(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading kubeconfig: %w", err)
 	}
-	kedgeBin := filepath.Join(RepoRoot(), "bin", "kedge")
+	farosBin := filepath.Join(RepoRoot(), "bin", "faros")
 	changed := false
 	for _, authInfo := range cfg.AuthInfos {
-		if authInfo.Exec != nil && authInfo.Exec.Command == "kedge" {
-			authInfo.Exec.Command = kedgeBin
+		if authInfo.Exec != nil && authInfo.Exec.Command == "faros" {
+			authInfo.Exec.Command = farosBin
 			changed = true
 		}
 	}

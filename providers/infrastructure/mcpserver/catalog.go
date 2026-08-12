@@ -33,7 +33,7 @@ import (
 
 // templateGroup is the fixed group every Template + per-template instance
 // kind lives under (see apis/v1alpha1 TemplateInstanceCRD.Group).
-const templateGroup = "infrastructure.kedge.faros.sh"
+const templateGroup = "infrastructure.faros.sh"
 
 // templatesGVR is the cluster-scoped Template resource the portal and MCP
 // both read from the tenant workspace.
@@ -41,7 +41,7 @@ var templatesGVR = schema.GroupVersionResource{Group: templateGroup, Version: "v
 
 // templateLabel tags an instance CR with its originating Template's name so
 // listInstances can attribute a CR without a second lookup.
-const templateLabel = "kedge.faros.sh/template"
+const templateLabel = "faros.sh/template"
 
 // listTemplates reads every Template in the tenant workspace.
 func listTemplates(ctx context.Context, dyn dynamic.Interface) ([]kro.Template, error) {
@@ -125,7 +125,7 @@ func templateFromUnstructured(u *unstructured.Unstructured) kro.Template {
 // immutableInputsAnnotation lets a Template declare value dot-paths that
 // update_instance must reject (comma-separated). Rides on an annotation
 // rather than a spec field so the Template CRD schema stays untouched.
-const immutableInputsAnnotation = "kedge.faros.sh/immutable-inputs"
+const immutableInputsAnnotation = "faros.sh/immutable-inputs"
 
 func immutableInputsFromAnnotation(u *unstructured.Unstructured) []string {
 	raw := strings.TrimSpace(u.GetAnnotations()[immutableInputsAnnotation])
@@ -170,11 +170,11 @@ func templateDevelopmentFromSpec(u *unstructured.Unstructured) *kro.TemplateDeve
 
 // devImageTokenPrefix is the reserved token family template authors put in
 // spec.development.components[].devImage. The Template CRD validates the full
-// ${kedge.devImage.<toolchain>} shape, so the toolchain is the token's suffix.
-const devImageTokenPrefix = "${kedge.devImage."
+// ${faros.devImage.<toolchain>} shape, so the toolchain is the token's suffix.
+const devImageTokenPrefix = "${faros.devImage."
 
 // devToolchainFromImageToken extracts the toolchain name an agent needs
-// ("${kedge.devImage.node}" → "node"). The MCP layer never resolves the token
+// ("${faros.devImage.node}" → "node"). The MCP layer never resolves the token
 // to a real image — that is the backend's job — it only names the runtime so
 // an agent knows which language the component must be written in.
 func devToolchainFromImageToken(devImage string) string {

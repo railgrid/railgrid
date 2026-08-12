@@ -54,7 +54,7 @@ function connectGitHub() {
     oauthOrigin = ''
   }
   const url = oauthStartURL.value + '?state=' + encodeURIComponent(oauthState)
-  const popup = window.open(url, 'kedge-github-oauth', 'width=720,height=820')
+  const popup = window.open(url, 'faros-github-oauth', 'width=720,height=820')
   if (!popup) {
     oauthBusy.value = false
     formError.value = 'popup blocked — allow popups and retry'
@@ -65,7 +65,7 @@ function onMessage(ev: MessageEvent) {
   if (!oauthBusy.value) return
   if (oauthOrigin && ev.origin !== oauthOrigin) return
   const d = ev.data as { type?: string; state?: string; token?: string; login?: string; error?: string }
-  if (!d || d.type !== 'kedge-github-oauth') return
+  if (!d || d.type !== 'faros-github-oauth') return
   oauthBusy.value = false
   if (d.state !== oauthState) {
     formError.value = 'oauth state mismatch — please retry'

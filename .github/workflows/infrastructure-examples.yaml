@@ -36,9 +36,9 @@ jobs:
       matrix:
         include:
           - name: frontend
-            image: ${{ github.repository_owner }}/kedge-infrastructure-example-frontend
+            image: ${{ github.repository_owner }}/faros-infrastructure-example-frontend
           - name: backend
-            image: ${{ github.repository_owner }}/kedge-infrastructure-example-backend
+            image: ${{ github.repository_owner }}/faros-infrastructure-example-backend
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

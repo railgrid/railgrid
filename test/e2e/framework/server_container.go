@@ -38,14 +38,14 @@ const (
 )
 
 // ServerContainer manages a Docker container running lscr.io/linuxserver/openssh-server
-// alongside a kedge server-mode agent.  The container runs with --network host so
-// the agent can reach the hub at kedge.localhost:9443.
+// alongside a faros server-mode agent.  The container runs with --network host so
+// the agent can reach the hub at faros.localhost:9443.
 type ServerContainer struct {
 	// Name is the Docker container name.
 	Name string
-	// ServerName is the kedge Server resource name to register on the hub.
+	// ServerName is the faros Server resource name to register on the hub.
 	ServerName string
-	// HubURL is the URL of the kedge hub, reachable from the runner's network.
+	// HubURL is the URL of the faros hub, reachable from the runner's network.
 	HubURL string
 	// HubCluster is the kcp logical cluster name (e.g. "1tww43gelbj45g0k").
 	// When set it is passed to the agent via --cluster so that the tunnel is
@@ -53,7 +53,7 @@ type ServerContainer struct {
 	HubCluster string
 	// Token is the bearer token for the agent.
 	Token string
-	// AgentBin is the host path to the kedge binary.
+	// AgentBin is the host path to the faros binary.
 	AgentBin string
 }
 
@@ -61,7 +61,7 @@ type ServerContainer struct {
 func (s *ServerContainer) Start(ctx context.Context) error {
 	// 1. Start a plain Ubuntu container with --network host.
 	//    We install openssh-server and configure it to allow root login with an
-	//    empty password — the security boundary is the kedge tunnel auth, not sshd.
+	//    empty password — the security boundary is the faros tunnel auth, not sshd.
 	sshdScript := strings.Join([]string{
 		"apt-get update -q",
 		"DEBIAN_FRONTEND=noninteractive apt-get install -y -q openssh-server",
@@ -90,8 +90,8 @@ func (s *ServerContainer) Start(ctx context.Context) error {
 			ContainerSSHPort, err, logs)
 	}
 
-	// 3. Copy the kedge binary into the container.
-	if _, err := runDockerCmd(ctx, "cp", s.AgentBin, s.Name+":/kedge"); err != nil {
+	// 3. Copy the faros binary into the container.
+	if _, err := runDockerCmd(ctx, "cp", s.AgentBin, s.Name+":/faros"); err != nil {
 		return fmt.Errorf("copying agent binary: %w", err)
 	}
 
@@ -105,9 +105,9 @@ func (s *ServerContainer) Start(ctx context.Context) error {
 		clusterFlag = " --cluster=" + s.HubCluster
 	}
 	agentCmd := fmt.Sprintf(
-		"/kedge agent run --type=server --hub-url=%s --token=%s --edge-name=%s"+
+		"/faros agent run --type=server --hub-url=%s --token=%s --edge-name=%s"+
 			" --hub-insecure-skip-tls-verify --ssh-proxy-port=%d%s"+
-			" > /var/log/kedge-agent.log 2>&1 &",
+			" > /var/log/faros-agent.log 2>&1 &",
 		s.HubURL, s.Token, s.ServerName, ContainerSSHPort, clusterFlag,
 	)
 	if _, err := s.exec(ctx, "sh", "-c", agentCmd); err != nil {
@@ -125,7 +125,7 @@ func (s *ServerContainer) Stop(ctx context.Context) error {
 
 // AgentLogs returns the agent log from inside the container.
 func (s *ServerContainer) AgentLogs(ctx context.Context) (string, error) {
-	return s.exec(ctx, "cat", "/var/log/kedge-agent.log")
+	return s.exec(ctx, "cat", "/var/log/faros-agent.log")
 }
 
 // WaitForAgentReady polls until the agent log shows the tunnel is connected.

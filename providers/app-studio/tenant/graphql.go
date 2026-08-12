@@ -48,7 +48,7 @@ type GraphQLClient struct {
 }
 
 // NewGraphQLClient targets the hub's GraphQL gateway under hubBase (the hub's
-// base URL, e.g. https://kedge-hub.kedge.svc:9443). insecureSkipVerify relaxes
+// base URL, e.g. https://faros-hub.faros.svc:9443). insecureSkipVerify relaxes
 // TLS for in-cluster hub certs that aren't in the provider's trust store.
 func NewGraphQLClient(hubBase string, insecureSkipVerify bool) *GraphQLClient {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
@@ -106,11 +106,11 @@ type Scope struct {
 	token     string
 }
 
-// For returns a client scoped to clusterID (the X-Kedge-Cluster the hub
+// For returns a client scoped to clusterID (the X-Faros-Cluster the hub
 // injected) authenticating as the caller via token.
 func (c *GraphQLClient) For(clusterID, token string) (*Scope, error) {
 	if clusterID == "" {
-		return nil, fmt.Errorf("no cluster id (X-Kedge-Cluster missing) — cannot target the tenant workspace")
+		return nil, fmt.Errorf("no cluster id (X-Faros-Cluster missing) — cannot target the tenant workspace")
 	}
 	if token == "" {
 		return nil, fmt.Errorf("no bearer token on request — cannot act on the tenant's behalf")

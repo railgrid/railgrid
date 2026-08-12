@@ -21,7 +21,7 @@ export interface AssistantThreadFocusStorage {
   removeItem?(key: string): void
 }
 
-const STORAGE_PREFIX = 'kedge:app-studio:assistant-thread-focus:v1'
+const STORAGE_PREFIX = 'faros:app-studio:assistant-thread-focus:v1'
 
 function normalizeScopePart(value: string | null | undefined, fallback: string): string {
   const normalized = typeof value === 'string' ? value.trim() : ''

@@ -43,12 +43,12 @@ func NewHandler(deps Deps) http.Handler {
 
 func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{
-		Name:    "kedge-databricks",
+		Name:    "faros-databricks",
 		Version: "0.1.0",
-		Title:   "kedge Databricks provider",
+		Title:   "faros Databricks provider",
 	}, &mcp.ServerOptions{
 		Instructions: "Use these tools only with Databricks tables already imported " +
-			"as kedge Table resources. Do not import tables from App Studio. " +
+			"as faros Table resources. Do not import tables from App Studio. " +
 			"Use list_tables first when you need a table name, and copy its exact tables[].name " +
 			"into tableRef for metadata and the versioned query_table action (actionVersion v1). " +
 			"An App Studio integration alias or other binding alias is never a tableRef. " +

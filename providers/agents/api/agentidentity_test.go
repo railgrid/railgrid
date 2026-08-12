@@ -76,7 +76,7 @@ func TestEnsureAgentIdentity(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ServiceAccount: %v", err)
 		}
-		if sa.GetName() != "kedge-agent-scout" {
+		if sa.GetName() != "faros-agent-scout" {
 			t.Fatalf("SA name = %q", sa.GetName())
 		}
 

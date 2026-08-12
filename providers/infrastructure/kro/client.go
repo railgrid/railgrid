@@ -36,7 +36,7 @@ type Client interface {
 
 	// EnsureTenantNamespace materializes the per-tenant namespace in
 	// the central kro cluster on first provision. Idempotent. Returns
-	// the namespace name (kedge-tenants-<hash>).
+	// the namespace name (faros-tenants-<hash>).
 	EnsureTenantNamespace(ctx context.Context, tenantPath string) (string, error)
 
 	// CreateInstance writes the kro instance CR and bridges the
@@ -77,7 +77,7 @@ type CreateInstanceParams struct {
 // Env:
 //
 //	KRO_KUBECONFIG          - path to the central kro cluster kubeconfig
-//	KRO_NAMESPACE_PREFIX    - tenant-namespace prefix (default "kedge-tenants-")
+//	KRO_NAMESPACE_PREFIX    - tenant-namespace prefix (default "faros-tenants-")
 func NewClient() (Client, error) {
 	path := os.Getenv("KRO_KUBECONFIG")
 	if path == "" {

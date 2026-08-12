@@ -24,9 +24,9 @@ import (
 )
 
 // BuiltinSpec describes a first-party provider the hub bootstraps into
-// root:kedge:providers on startup. Each provider lives in its own package
+// root:faros:providers on startup. Each provider lives in its own package
 // under providers/<name>/ and calls RegisterBuiltin in its init() — the
-// hub picks them up via blank import in cmd/kedge-hub/main.go.
+// hub picks them up via blank import in cmd/faros-hub/main.go.
 //
 // The split is deliberately declarative: this struct is the contract a
 // provider package publishes. The kcp apply, RBAC plumbing, and reconcile
@@ -113,7 +113,7 @@ func RegisterBuiltin(s BuiltinSpec) {
 }
 
 // AllBuiltins returns a snapshot of every registered builtin in
-// registration order (which == cmd/kedge-hub blank-import order). Stable
+// registration order (which == cmd/faros-hub blank-import order). Stable
 // across calls within a process lifetime since init() runs once.
 func AllBuiltins() []BuiltinSpec {
 	builtinMu.RLock()

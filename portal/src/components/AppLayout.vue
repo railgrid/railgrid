@@ -192,7 +192,7 @@ const showProfileModal = ref(false)
 // a permanent 192px label column; labels expand on click and the choice
 // persists per browser. Collapsed rows are icon-only with a native title
 // tooltip (design-book §6 "Sidebar rail").
-const SIDEBAR_EXPANDED_KEY = 'kedge-sidebar-expanded'
+const SIDEBAR_EXPANDED_KEY = 'faros-sidebar-expanded'
 const sidebarExpanded = ref(localStorage.getItem(SIDEBAR_EXPANDED_KEY) === '1')
 function toggleSidebar() {
   sidebarExpanded.value = !sidebarExpanded.value
@@ -204,7 +204,7 @@ function toggleSidebar() {
 // browser. A group holding the active route is always forced open so
 // navigation state is never hidden from the user; the stored preference
 // takes effect again once they navigate elsewhere.
-const NAV_GROUPS_KEY = 'kedge-nav-collapsed-groups'
+const NAV_GROUPS_KEY = 'faros-nav-collapsed-groups'
 function loadCollapsedGroups(): Record<string, boolean> {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(NAV_GROUPS_KEY) || '{}')
@@ -227,7 +227,7 @@ function isNavGroupOpen(key: string, items: Array<{ to: string; children?: Array
 
 // --- Draggable dock with edge-snap (all 4 edges) ---
 type DockMode = 'float' | 'left' | 'right' | 'top' | 'bottom'
-const DOCK_STORAGE_KEY = 'kedge-dock-state'
+const DOCK_STORAGE_KEY = 'faros-dock-state'
 const SNAP_THRESHOLD = 80
 
 const floatRef = ref<HTMLElement | null>(null)
@@ -427,7 +427,7 @@ watchEffect(() => {
           <Hexagon class="h-3.5 w-3.5 text-accent" :stroke-width="2" />
         </div>
         <template v-if="sidebarExpanded">
-          <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">KEDGE</span>
+          <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">FAROS</span>
           <div class="flex items-center gap-0.5 rounded-sm border border-success/20 bg-success-subtle px-1.5 py-px">
             <Zap class="h-2 w-2 text-success" :stroke-width="2.5" fill="currentColor" />
             <span class="text-[7px] font-semibold uppercase tracking-widest text-success">Live</span>
@@ -624,7 +624,7 @@ watchEffect(() => {
       <button
         class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium text-text-muted transition-all hover:bg-surface-overlay/50 hover:text-text-secondary"
         :class="sidebarExpanded ? '' : 'justify-center'"
-        title="Install the kedge CLI"
+        title="Install the faros CLI"
         @click="showCliModal = true"
       >
         <Terminal class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
@@ -739,7 +739,7 @@ watchEffect(() => {
         <div class="flex h-6 w-6 items-center justify-center rounded-md border border-border-default bg-surface-overlay">
           <Hexagon class="h-3 w-3 text-accent" :stroke-width="2.5" />
         </div>
-        <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">KEDGE</span>
+        <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">FAROS</span>
         <div class="flex items-center gap-0.5 rounded-sm border border-success/20 bg-success-subtle px-1.5 py-px">
           <Zap class="h-2 w-2 text-success" :stroke-width="2.5" fill="currentColor" />
           <span class="text-[8px] font-semibold uppercase tracking-widest text-success">Live</span>
@@ -761,7 +761,7 @@ watchEffect(() => {
            link until the labels collide. This track also replaces the
            old flex-1 spacer — it pushes the right-side controls to the
            edge while staying scrollable. -->
-      <div class="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto kedge-nav-scroll">
+      <div class="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto faros-nav-scroll">
       <template v-for="(section, sIdx) in horizontalNavSections" :key="section.key">
         <div
           v-if="section.label"
@@ -799,7 +799,7 @@ watchEffect(() => {
       </span>
       <button
         class="flex items-center gap-1 rounded-md border border-border-subtle px-1.5 py-1 text-text-muted transition-all hover:border-accent/30 hover:text-accent"
-        title="Install the kedge CLI"
+        title="Install the faros CLI"
         @click="showCliModal = true"
       >
         <Terminal class="h-3 w-3" :stroke-width="2" />
@@ -912,7 +912,7 @@ watchEffect(() => {
           <div class="flex h-6 w-6 items-center justify-center rounded-md border border-border-default bg-surface-overlay">
             <Hexagon class="h-3 w-3 text-accent" :stroke-width="2.5" />
           </div>
-          <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">KEDGE</span>
+          <span class="type-display text-[11px] font-bold tracking-[0.08em] text-text-primary">FAROS</span>
           <div class="flex items-center gap-0.5 rounded-sm border border-success/20 bg-success-subtle px-1.5 py-px">
             <Zap class="h-2 w-2 text-success" :stroke-width="2.5" fill="currentColor" />
             <span class="text-[8px] font-semibold uppercase tracking-widest text-success">Live</span>
@@ -925,7 +925,7 @@ watchEffect(() => {
 
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
-        <div class="flex min-w-0 items-center gap-1 overflow-x-auto kedge-nav-scroll">
+        <div class="flex min-w-0 items-center gap-1 overflow-x-auto faros-nav-scroll">
         <template v-for="(section, sIdx) in horizontalNavSections" :key="section.key">
           <div
             v-if="section.label"
@@ -1034,17 +1034,17 @@ watchEffect(() => {
 /* Slim, unobtrusive scrollbar for the horizontal provider-nav tracks in
    the top/bottom and floating docks. Without this the default chunky
    scrollbar eats vertical space in the thin bar. */
-.kedge-nav-scroll {
+.faros-nav-scroll {
   scrollbar-width: thin;
   scrollbar-color: var(--color-text-muted) transparent;
 }
-.kedge-nav-scroll::-webkit-scrollbar {
+.faros-nav-scroll::-webkit-scrollbar {
   height: 4px;
 }
-.kedge-nav-scroll::-webkit-scrollbar-track {
+.faros-nav-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
-.kedge-nav-scroll::-webkit-scrollbar-thumb {
+.faros-nav-scroll::-webkit-scrollbar-thumb {
   background-color: var(--color-text-muted);
   border-radius: 9999px;
 }

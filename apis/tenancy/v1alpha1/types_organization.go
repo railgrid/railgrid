@@ -58,18 +58,18 @@ const (
 
 	// OrganizationConditionDefaultWorkspaceReady reports whether the
 	// personal Org's default child Workspace has been provisioned at
-	// root:kedge:tenants:{org-uuid}:{default-ws-uuid}. The portal pins this
-	// UUID as the default X-Kedge-Workspace so members always have
+	// root:faros:tenants:{org-uuid}:{default-ws-uuid}. The portal pins this
+	// UUID as the default X-Faros-Workspace so members always have
 	// somewhere to land on first login.
 	OrganizationConditionDefaultWorkspaceReady = "DefaultWorkspaceReady"
 
-	// OrganizationConditionDefaultWorkspaceKedgeBound reports whether
-	// the kedge APIBinding (core.faros.sh) has been written inside the
-	// default child Workspace, with the permission claims kedge
+	// OrganizationConditionDefaultWorkspaceFarosBound reports whether
+	// the faros APIBinding (core.faros.sh) has been written inside the
+	// default child Workspace, with the permission claims faros
 	// controllers need. Until this flips True the user can't read or
 	// write Edges / MCPServers / Placements in their default
 	// Workspace.
-	OrganizationConditionDefaultWorkspaceKedgeBound = "DefaultWorkspaceKedgeBound"
+	OrganizationConditionDefaultWorkspaceFarosBound = "DefaultWorkspaceFarosBound"
 
 	// OrganizationConditionDefaultWorkspaceAdminReady reports whether
 	// the user has been granted cluster-admin (via ClusterRoleBinding
@@ -105,8 +105,8 @@ const (
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// Organization is the unit of tenancy in kedge. An Organization owns a kcp
-// workspace at root:kedge:tenants:{metadata.name} that holds catalog metadata
+// Organization is the unit of tenancy in faros. An Organization owns a kcp
+// workspace at root:faros:tenants:{metadata.name} that holds catalog metadata
 // and membership for its members. All tenant work (APIBindings, edges, MCP
 // instances, …) lives in child Workspaces beneath the Organization, never
 // in the Organization workspace itself.
@@ -178,7 +178,7 @@ type OrganizationSpec struct {
 // OrganizationStatus defines the observed state of an Organization.
 type OrganizationStatus struct {
 	// WorkspacePath is the path to the materialized kcp Workspace, always
-	// root:kedge:tenants:{metadata.name}. Set by the bootstrap controller once
+	// root:faros:tenants:{metadata.name}. Set by the bootstrap controller once
 	// the workspace has been provisioned.
 	//
 	// +optional

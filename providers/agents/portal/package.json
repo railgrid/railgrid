@@ -1,8 +1,8 @@
 {
-  "name": "kedge-provider-agents-portal",
+  "name": "faros-provider-agents-portal",
   "version": "0.1.0",
   "private": true,
-  "description": "Agents provider's portal-side micro-frontend. Built with Vite into a single main.js custom-element bundle the kedge hub serves under /ui/providers/agents/.",
+  "description": "Agents provider's portal-side micro-frontend. Built with Vite into a single main.js custom-element bundle the faros hub serves under /ui/providers/agents/.",
   "type": "module",
   "scripts": {
     "build": "vite build",

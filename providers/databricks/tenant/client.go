@@ -195,8 +195,8 @@ type identity struct {
 
 func identityFromRequest(r *http.Request) identity {
 	return identity{
-		tenantPath: r.Header.Get("X-Kedge-Tenant"),
-		clusterID:  r.Header.Get("X-Kedge-Cluster"),
+		tenantPath: r.Header.Get("X-Faros-Tenant"),
+		clusterID:  r.Header.Get("X-Faros-Cluster"),
 		token:      bearerToken(r),
 	}
 }
@@ -259,7 +259,7 @@ func (r tableResolver) dynamicClient() (dynamic.Interface, error) {
 		return nil, errors.New("no tenant identity on this request; bearer token did not resolve to a workspace")
 	}
 	if r.identity.clusterID == "" {
-		return nil, errors.New("no workspace cluster on this request (X-Kedge-Cluster missing)")
+		return nil, errors.New("no workspace cluster on this request (X-Faros-Cluster missing)")
 	}
 	if r.factory == nil {
 		return nil, errors.New("tenant client unavailable (provider kubeconfig not set)")

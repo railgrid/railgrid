@@ -38,8 +38,8 @@ import (
 
 // rootMCPImpl is advertised on `initialize` for the provider aggregate endpoint.
 var rootMCPImpl = &mcp.Implementation{
-	Name:    "kedge-edges",
-	Title:   "Kedge edges provider MCP",
+	Name:    "faros-edges",
+	Title:   "Faros edges provider MCP",
 	Version: "v1alpha1",
 }
 
@@ -63,7 +63,7 @@ func (p *Server) buildRootMCPHandler() http.Handler {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		cluster := r.Header.Get("X-Kedge-Cluster")
+		cluster := r.Header.Get("X-Faros-Cluster")
 
 		r.Host = "localhost" // MCP SDK DNS-rebinding guard (see buildMCPHandler).
 		handler := mcp.NewStreamableHTTPHandler(
@@ -106,7 +106,7 @@ func (p *Server) buildRootMCPServer(ctx context.Context, cluster, token string, 
 	}
 
 	instructions := fmt.Sprintf(
-		"You are connected to the kedge edges provider MCP endpoint for tenant workspace %q. "+
+		"You are connected to the faros edges provider MCP endpoint for tenant workspace %q. "+
 			"It exposes Kubernetes tools across connected KubernetesCluster edges and, for each Ready "+
 			"Service, tools named \"<service>_*\" (e.g. a Home Assistant service \"ha\" gives ha_states/ha_call_service; a qBittorrent service \"qb\" gives qb_torrents/qb_add).",
 		cluster,
@@ -350,7 +350,7 @@ func (p *Server) kubeRPC(ctx context.Context, h http.Handler, token, cluster, me
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	if cluster != "" {
-		req.Header.Set("X-Kedge-Cluster", cluster)
+		req.Header.Set("X-Faros-Cluster", cluster)
 	}
 
 	rec := httptest.NewRecorder()

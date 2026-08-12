@@ -59,18 +59,18 @@ func TestWorkloadIdentityReviewAttestsBoundProjectedToken(t *testing.T) {
 				Namespace: "runtime",
 				UID:       "pod-uid-1",
 				Annotations: map[string]string{
-					"kedge.faros.sh/actions-tenant":      "root:kedge:tenants:org:ws",
-					"kedge.faros.sh/actions-project":     "demo",
-					"kedge.faros.sh/actions-project-uid": "project-uid-1",
-					"kedge.faros.sh/actions-environment": "development",
-					"kedge.faros.sh/actions-instance":    "demo-dev",
+					"faros.sh/actions-tenant":      "root:faros:tenants:org:ws",
+					"faros.sh/actions-project":     "demo",
+					"faros.sh/actions-project-uid": "project-uid-1",
+					"faros.sh/actions-environment": "development",
+					"faros.sh/actions-instance":    "demo-dev",
 				},
 			},
 			Spec: corev1.PodSpec{ServiceAccountName: "actions"},
 		},
 	}
 	handler := newWorkloadIdentityReviewHandler(fake)
-	req := httptest.NewRequest(http.MethodPost, workloadIdentityReviewPath, stringsReader(`{"tenantPath":"root:kedge:tenants:org:ws","project":"demo","projectUID":"project-uid-1","environment":"development","instance":"demo-dev"}`))
+	req := httptest.NewRequest(http.MethodPost, workloadIdentityReviewPath, stringsReader(`{"tenantPath":"root:faros:tenants:org:ws","project":"demo","projectUID":"project-uid-1","environment":"development","instance":"demo-dev"}`))
 	req.Header.Set("Authorization", "Bearer projected-token")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, req)

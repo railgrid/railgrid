@@ -20,7 +20,7 @@ export interface PanelState {
   paneSizes: number[]
 }
 
-const STORAGE_KEY = 'kedge-terminal-panel'
+const STORAGE_KEY = 'faros-terminal-panel'
 
 const defaultPanelState = (): PanelState => ({
   height: 420,

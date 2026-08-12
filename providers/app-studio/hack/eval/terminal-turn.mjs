@@ -85,11 +85,11 @@ function requestHeaders(options = {}) {
   if (options.token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${String(options.token).trim()}`);
   }
-  if (options.user && !headers.has("X-Kedge-User")) headers.set("X-Kedge-User", String(options.user).trim());
-  if (options.tenant && !headers.has("X-Kedge-Tenant")) headers.set("X-Kedge-Tenant", String(options.tenant).trim());
-  if (options.cluster && !headers.has("X-Kedge-Cluster")) headers.set("X-Kedge-Cluster", String(options.cluster).trim());
-  if (options.org && !headers.has("X-Kedge-Org")) headers.set("X-Kedge-Org", String(options.org).trim());
-  if (options.workspace && !headers.has("X-Kedge-Workspace")) headers.set("X-Kedge-Workspace", String(options.workspace).trim());
+  if (options.user && !headers.has("X-Faros-User")) headers.set("X-Faros-User", String(options.user).trim());
+  if (options.tenant && !headers.has("X-Faros-Tenant")) headers.set("X-Faros-Tenant", String(options.tenant).trim());
+  if (options.cluster && !headers.has("X-Faros-Cluster")) headers.set("X-Faros-Cluster", String(options.cluster).trim());
+  if (options.org && !headers.has("X-Faros-Org")) headers.set("X-Faros-Org", String(options.org).trim());
+  if (options.workspace && !headers.has("X-Faros-Workspace")) headers.set("X-Faros-Workspace", String(options.workspace).trim());
   return headers;
 }
 
@@ -477,7 +477,7 @@ function parseJSONSetting(value, label) {
 }
 
 function cliOptions(values, environment = process.env) {
-  const expected = parseJSONSetting(values["expected-settings"] ?? values.settings ?? environment.KEDGE_EXPECTED_SETTINGS, "expected settings") ?? {};
+  const expected = parseJSONSetting(values["expected-settings"] ?? values.settings ?? environment.FAROS_EXPECTED_SETTINGS, "expected settings") ?? {};
   const aliases = {
     provider: "expected-provider",
     model: "expected-model",
@@ -491,19 +491,19 @@ function cliOptions(values, environment = process.env) {
     if (value !== undefined && value !== true) expected[key] = value;
   }
   return {
-    baseURL: values["base-url"] ?? values.url ?? environment.KEDGE_APP_STUDIO_URL ?? environment.APP_STUDIO_URL ?? environment.KEDGE_BATTERY_BASE,
-    project: values.project ?? environment.KEDGE_APP_STUDIO_PROJECT,
-    thread: values.thread ?? environment.KEDGE_APP_STUDIO_THREAD,
-    turn: values.turn ?? environment.KEDGE_APP_STUDIO_TURN,
-    token: values.token ?? environment.KEDGE_TOKEN ?? environment.APP_STUDIO_TOKEN,
-    user: values.user ?? environment.KEDGE_USER,
-    tenant: values.tenant ?? environment.KEDGE_TENANT,
-    cluster: values.cluster ?? environment.KEDGE_CLUSTER,
-    org: values.org ?? environment.KEDGE_ORG ?? environment.KEDGE_BATTERY_ORG,
-    workspace: values.workspace ?? environment.KEDGE_WORKSPACE ?? environment.KEDGE_BATTERY_WORKSPACE,
+    baseURL: values["base-url"] ?? values.url ?? environment.FAROS_APP_STUDIO_URL ?? environment.APP_STUDIO_URL ?? environment.FAROS_BATTERY_BASE,
+    project: values.project ?? environment.FAROS_APP_STUDIO_PROJECT,
+    thread: values.thread ?? environment.FAROS_APP_STUDIO_THREAD,
+    turn: values.turn ?? environment.FAROS_APP_STUDIO_TURN,
+    token: values.token ?? environment.FAROS_TOKEN ?? environment.APP_STUDIO_TOKEN,
+    user: values.user ?? environment.FAROS_USER,
+    tenant: values.tenant ?? environment.FAROS_TENANT,
+    cluster: values.cluster ?? environment.FAROS_CLUSTER,
+    org: values.org ?? environment.FAROS_ORG ?? environment.FAROS_BATTERY_ORG,
+    workspace: values.workspace ?? environment.FAROS_WORKSPACE ?? environment.FAROS_BATTERY_WORKSPACE,
     expectedSettings: expected,
-    timeoutMs: values["timeout-ms"] ?? environment.KEDGE_EVAL_TIMEOUT_MS,
-    intervalMs: values["interval-ms"] ?? environment.KEDGE_EVAL_INTERVAL_MS,
+    timeoutMs: values["timeout-ms"] ?? environment.FAROS_EVAL_TIMEOUT_MS,
+    intervalMs: values["interval-ms"] ?? environment.FAROS_EVAL_INTERVAL_MS,
   };
 }
 

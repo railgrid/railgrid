@@ -51,7 +51,7 @@ const (
 	callbackTimeout = 10 * time.Second
 	// callbackSignatureHeader carries the HMAC over the body, so a receiver can
 	// tell a real callback from anything else that finds the URL.
-	callbackSignatureHeader = "X-Kedge-Signature"
+	callbackSignatureHeader = "X-Faros-Signature"
 )
 
 // runCallback is where to report a finished run.
@@ -155,7 +155,7 @@ func postCallback(ctx context.Context, client *http.Client, cb *runCallback, bod
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "kedge-agents/0.1")
+	req.Header.Set("User-Agent", "faros-agents/0.1")
 	if secret := strings.TrimSpace(cb.Secret); secret != "" {
 		mac := hmac.New(sha256.New, []byte(secret))
 		mac.Write(body)

@@ -36,11 +36,11 @@ func testProject() *vibev1alpha1.Project {
 			Provider: "infrastructure",
 			Kind:     vibev1alpha1.ProjectBindingKindProviderResource,
 			ResourceRef: &vibev1alpha1.ProjectProviderResourceReference{
-				Name: "shop-4fbc", APIVersion: "infra.kedge.faros.sh/v1alpha1",
+				Name: "shop-4fbc", APIVersion: "infra.faros.sh/v1alpha1",
 				Kind: "Application", Resource: "applications",
 			},
 			Values: runtime.RawExtension{Raw: []byte(
-				`{"name":"shop-4fbc","kedgeMode":"development","webPort":3000,"expose":true}`)},
+				`{"name":"shop-4fbc","farosMode":"development","webPort":3000,"expose":true}`)},
 		}},
 	}}
 	return p
@@ -103,8 +103,8 @@ func TestPromoteWritesProductionEnvironment(t *testing.T) {
 	}
 
 	values := prodValues(t, p)
-	if values[templateKedgeModeField] != templateKedgeModeProduction {
-		t.Errorf("kedgeMode = %v, want production", values[templateKedgeModeField])
+	if values[templateFarosModeField] != templateFarosModeProduction {
+		t.Errorf("farosMode = %v, want production", values[templateFarosModeField])
 	}
 	if values["name"] != "shop-4fbc-prod" {
 		t.Errorf("values.name = %v, want shop-4fbc-prod", values["name"])
@@ -206,7 +206,7 @@ func TestPromotionPicksTheRuntimeAmongSeveralBindings(t *testing.T) {
 		Provider: "infrastructure",
 		Kind:     vibev1alpha1.ProjectBindingKindProviderResource,
 		ResourceRef: &vibev1alpha1.ProjectProviderResourceReference{
-			Name: "shop-4fbc-sidecar", APIVersion: "infrastructure.kedge.faros.sh/v1alpha1",
+			Name: "shop-4fbc-sidecar", APIVersion: "infrastructure.faros.sh/v1alpha1",
 			Kind: "Worker", Resource: "workers",
 		},
 	}}, p.Spec.Environments[0].Bindings...)

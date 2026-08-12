@@ -15,9 +15,9 @@ oauth2:
   skipApprovalScreen: true
 
 staticClients:
-  - id: kedge
+  - id: faros
     secret: ZXhhbXBsZS1hcHAtc2VjcmV0
-    name: Kedge
+    name: Faros
     redirectURIs:
       - https://localhost:9443/auth/callback
       - http://127.0.0.1:8080/auth/callback

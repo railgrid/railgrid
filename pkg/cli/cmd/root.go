@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package cmd implements the kedge CLI commands.
+// Package cmd implements the faros CLI commands.
 package cmd
 
 import (
@@ -24,18 +24,18 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 
-	devcmd "github.com/faroshq/faros-kedge/pkg/cli/cmd/dev/cmd"
+	devcmd "github.com/faroshq/faros/pkg/cli/cmd/dev/cmd"
 )
 
-// NewRootCommand creates the root cobra command for the kedge CLI.
+// NewRootCommand creates the root cobra command for the faros CLI.
 func NewRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "kedge",
-		Short: "Kedge - workload management across edges",
-		Long: `Kedge is an OSS control plane that combines multi-tenant API serving
+		Use:   "faros",
+		Short: "Faros - workload management across edges",
+		Long: `Faros is an OSS control plane that combines multi-tenant API serving
 with reverse-dialer connectivity mesh and OIDC identity.
 
-Remote agents "kedge" (pull) toward the hub via reverse tunnels,
+Remote agents "faros" (pull) toward the hub via reverse tunnels,
 enabling secure workload deployment across distributed edges.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -72,11 +72,11 @@ enabling secure workload deployment across distributed edges.`,
 	return cmd
 }
 
-// newListCommand provides a shorthand 'kedge list' → 'kedge edge list'.
+// newListCommand provides a shorthand 'faros list' → 'faros edge list'.
 func newListCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:     "list",
-		Short:   "List edges (shorthand for 'kedge edge list')",
+		Short:   "List edges (shorthand for 'faros edge list')",
 		Aliases: []string{"ls"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return newEdgeListCommand().RunE(cmd, args)

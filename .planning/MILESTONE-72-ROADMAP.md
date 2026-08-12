@@ -1,7 +1,7 @@
 # Milestone v1.1 Roadmap — SSH Key Injection (issue #72)
 
 **4 phases** | **24 requirements** | Continues from Phase 6 → starts at Phase 7
-GitHub issue: https://github.com/faroshq/kedge/issues/72
+GitHub issue: https://github.com/faroshq/faros/issues/72
 
 | # | Phase | Goal | Requirements | Branch |
 |---|-------|------|--------------|--------|
@@ -18,13 +18,13 @@ GitHub issue: https://github.com/faroshq/kedge/issues/72
 **Requirements:** KEY-01, KEY-02, KEY-03, KEY-04, KEY-05
 
 **File changes:**
-- `apis/kedge/v1alpha1/types_server.go` — add `SSHKeySecretRef *corev1.SecretReference` and `SSHKeySecretDataKey string` to `ServerSpec`
-- `apis/kedge/v1alpha1/zz_generated.deepcopy.go` — regenerated
+- `apis/faros/v1alpha1/types_server.go` — add `SSHKeySecretRef *corev1.SecretReference` and `SSHKeySecretDataKey string` to `ServerSpec`
+- `apis/faros/v1alpha1/zz_generated.deepcopy.go` — regenerated
 - CRD YAML in `config/crd/` or `deploy/crd/` — regenerated
 
 **Success criteria:**
 1. `kubectl apply -f deploy/crd/servers.yaml` succeeds — new fields present in OpenAPI schema
-2. `kubectl patch server my-server --type=merge -p '{"spec":{"sshKeySecretRef":{"name":"my-key","namespace":"kedge-system"}}}'` accepted (no validation error)
+2. `kubectl patch server my-server --type=merge -p '{"spec":{"sshKeySecretRef":{"name":"my-key","namespace":"faros-system"}}}'` accepted (no validation error)
 3. `make generate && make verify-codegen` exits 0
 4. `make manifests` exits 0
 5. `Server.Spec.SSHKeySecretRef` field documented in CRD schema description (`+kubebuilder:validation:Optional`)
@@ -55,7 +55,7 @@ func (p *virtualWorkspaces) loadSSHKeyForServer(ctx context.Context, serverName,
     if p.kubeClient == nil {
         return nil, nil  // no k8s client configured, skip key lookup
     }
-    server, err := p.kedgeClient.Servers().Get(ctx, serverName, metav1.GetOptions{})
+    server, err := p.farosClient.Servers().Get(ctx, serverName, metav1.GetOptions{})
     if err != nil || server.Spec.SSHKeySecretRef == nil {
         return nil, nil  // no ref set, use password fallback
     }
@@ -99,8 +99,8 @@ func newSSHClient(_ context.Context, deviceConn net.Conn, sshUser string, signer
 ```
 
 **Success criteria:**
-1. `kedge ssh my-server` with `sshKeySecretRef` set → connects using key-based auth (verify via sshd `AuthorizedKeysFile` matching only the public key)
-2. `kedge ssh my-server` without `sshKeySecretRef` → still works (password fallback, existing e2e unaffected)
+1. `faros ssh my-server` with `sshKeySecretRef` set → connects using key-based auth (verify via sshd `AuthorizedKeysFile` matching only the public key)
+2. `faros ssh my-server` without `sshKeySecretRef` → still works (password fallback, existing e2e unaffected)
 3. `sshKeySecretRef` referencing a non-existent Secret → CLI receives `HTTP 502`, hub logs error with secret ref
 4. Invalid key bytes in Secret → CLI receives `HTTP 502`, hub logs parse error
 5. `make build ./...` exits 0
@@ -122,12 +122,12 @@ func newSSHClient(_ context.Context, deviceConn net.Conn, sshUser string, signer
 - `README.md` or `docs/server-mode.md` — note: Secrets must be accessible to hub SA
 
 **Design notes:**
-- Scope the role to only the namespace(s) where Secrets are expected (e.g., `kedge-system`), not cluster-wide, to follow least-privilege
+- Scope the role to only the namespace(s) where Secrets are expected (e.g., `faros-system`), not cluster-wide, to follow least-privilege
 - If the codebase uses ClusterRole, add a comment explaining the trade-off
 - Consider documenting that operators can further scope using namespace-scoped Roles
 
 **Success criteria:**
-1. Hub pod starts with correct RBAC and can `kubectl auth can-i get secrets -n kedge-system --as system:serviceaccount:kedge-system:kedge-hub` = yes
+1. Hub pod starts with correct RBAC and can `kubectl auth can-i get secrets -n faros-system --as system:serviceaccount:faros-system:faros-hub` = yes
 2. Hub pod cannot get secrets in unrelated namespaces (Role, not ClusterRole, preferred)
 3. `make lint` exits 0 on RBAC YAML (if linting is configured)
 4. Documentation mentions RBAC requirement
@@ -164,10 +164,10 @@ func newSSHClient(_ context.Context, deviceConn net.Conn, sshUser string, signer
 ```go
 // TestSSHKeyInjection:
 //   1. Generate RSA keypair in test
-//   2. Create Secret in kedge-system with private key
+//   2. Create Secret in faros-system with private key
 //   3. Start test sshd configured to accept only the public key
 //   4. Register Server with sshKeySecretRef pointing to the Secret
-//   5. Run kedge ssh my-server -- hostname
+//   5. Run faros ssh my-server -- hostname
 //   6. Assert output == expected hostname
 //   7. Assert existing e2e (no sshKeySecretRef) still passes
 ```

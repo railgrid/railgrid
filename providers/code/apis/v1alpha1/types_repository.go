@@ -31,7 +31,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=kedge,shortName=grepo
+// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=grepo
 // +kubebuilder:printcolumn:name="Connection",type=string,JSONPath=`.spec.connectionRef`
 // +kubebuilder:printcolumn:name="Repo",type=string,JSONPath=`.spec.name`
 // +kubebuilder:printcolumn:name="Visibility",type=string,JSONPath=`.spec.visibility`
@@ -146,4 +146,4 @@ type RepositoryStatus struct {
 
 // FinalizerRepository is added by the RepositoryController so the host-side
 // repository is deleted before the CR disappears.
-const FinalizerRepository = "repositories.code.kedge.faros.sh/finalizer"
+const FinalizerRepository = "repositories.code.faros.sh/finalizer"

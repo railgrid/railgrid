@@ -49,7 +49,7 @@ const ConnectionConditionUpgradeAvailable = "UpgradeAvailable"
 
 // AnnotationRegenerateJoinToken, set on a connectable resource, instructs the
 // token reconciler to mint a fresh bootstrap join token.
-const AnnotationRegenerateJoinToken = "edges.kedge.faros.sh/regenerate-join-token"
+const AnnotationRegenerateJoinToken = "edges.faros.sh/regenerate-join-token"
 
 // ConnectionStatus is the tunnel/connection state shared by every connectable
 // kind. Providers embed it (inline) into their kind's Status.
@@ -72,7 +72,7 @@ type ConnectionStatus struct {
 	// Labels are propagated from the agent.
 	// +optional
 	Labels map[string]string `json:"labels,omitempty"`
-	// AgentVersion is the version of the kedge binary on the agent.
+	// AgentVersion is the version of the faros binary on the agent.
 	// +optional
 	AgentVersion string `json:"agentVersion,omitempty"`
 	// LastHeartbeatTime is the most recent agent heartbeat.

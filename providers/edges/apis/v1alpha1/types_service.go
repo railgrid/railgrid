@@ -105,7 +105,7 @@ type KubeServiceRef struct {
 // agents can drive it.
 //
 // Discovery-created objects are named "<edge>-<type>" and carry the labels
-// edges.kedge.faros.sh/edge=<edge> and edges.kedge.faros.sh/discovered=true.
+// edges.faros.sh/edge=<edge> and edges.faros.sh/discovered=true.
 // Users may also create Services manually.
 type Service struct {
 	metav1.TypeMeta   `json:",inline"`

@@ -33,18 +33,18 @@ func TestIsOrgWorkspacePath(t *testing.T) {
 		path   string
 		wantOK bool
 	}{
-		{"org workspace UUID", "root:kedge:tenants:7f3a91d2-aaaa-bbbb-cccc-1111", true},
-		{"org workspace short", "root:kedge:tenants:acme", true},
-		{"child team workspace", "root:kedge:tenants:7f3a:9c4b", false},
-		{"child team workspace nested", "root:kedge:tenants:acme:platform", false},
-		{"system tenants object store", "root:kedge:system:tenants", false},
-		{"providers workspace", "root:kedge:providers", false},
+		{"org workspace UUID", "root:faros:tenants:7f3a91d2-aaaa-bbbb-cccc-1111", true},
+		{"org workspace short", "root:faros:tenants:acme", true},
+		{"child team workspace", "root:faros:tenants:7f3a:9c4b", false},
+		{"child team workspace nested", "root:faros:tenants:acme:platform", false},
+		{"system tenants object store", "root:faros:system:tenants", false},
+		{"providers workspace", "root:faros:providers", false},
 		{"root", "root", false},
 		{"empty", "", false},
-		{"tenants parent (no org)", "root:kedge:tenants:", false},
-		{"tenants parent (no trailing colon)", "root:kedge:tenants", false},
+		{"tenants parent (no org)", "root:faros:tenants:", false},
+		{"tenants parent (no trailing colon)", "root:faros:tenants", false},
 		{"random workspace under root", "root:other", false},
-		{"path traversal attempt", "root:kedge:tenants:foo/etc/passwd", true /* path has no colon → structural match; caller's regex strips traversal earlier */},
+		{"path traversal attempt", "root:faros:tenants:foo/etc/passwd", true /* path has no colon → structural match; caller's regex strips traversal earlier */},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,9 +63,9 @@ func TestExtractClusterPathFromKCPPath(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"clusters with subpath", "/clusters/root:kedge:tenants:7f3a/api/v1/pods", "root:kedge:tenants:7f3a"},
+		{"clusters with subpath", "/clusters/root:faros:tenants:7f3a/api/v1/pods", "root:faros:tenants:7f3a"},
 		{"clusters with mount suffix", "/clusters/root:tenant:abc:mount1/api/v1/pods", "root:tenant:abc:mount1"},
-		{"clusters bare (no subpath)", "/clusters/root:kedge:tenants:7f3a", "root:kedge:tenants:7f3a"},
+		{"clusters bare (no subpath)", "/clusters/root:faros:tenants:7f3a", "root:faros:tenants:7f3a"},
 		{"non-clusters path", "/api/v1/pods", ""},
 		{"empty", "", ""},
 	}
@@ -80,7 +80,7 @@ func TestExtractClusterPathFromKCPPath(t *testing.T) {
 
 // TestWriteOrgWorkspaceForbidden verifies the 403 envelope is a valid
 // Kubernetes Status object so kubectl renders it nicely, and carries the
-// kedge-specific reason + a pointer at the hub REST surface for CLI tooling.
+// faros-specific reason + a pointer at the hub REST surface for CLI tooling.
 func TestWriteOrgWorkspaceForbidden(t *testing.T) {
 	w := httptest.NewRecorder()
 	writeOrgWorkspaceForbidden(w)

@@ -45,7 +45,7 @@ func New() *Backend { return &Backend{} }
 
 func (b *Backend) Name() string { return string(codev1alpha1.ProviderGitHub) }
 
-const repositoryCommitIdempotencyTrailer = "Kedge-RepositoryCommit:"
+const repositoryCommitIdempotencyTrailer = "Faros-RepositoryCommit:"
 
 // client builds a token-authenticated go-github client for one call. baseURL
 // (Connection.spec.baseURL) targets GitHub Enterprise Server when set; empty

@@ -18,14 +18,14 @@ import (
 
 func TestProvidersFromTools(t *testing.T) {
 	// Shape as it actually arrives: our MCP client prefixes what it dialed
-	// ("kedge"), and the aggregate endpoint namespaces each federated tool.
+	// ("faros"), and the aggregate endpoint namespaces each federated tool.
 	tools := []engine.Tool{
-		{Name: "kedge__infrastructure__provision"},
-		{Name: "kedge__infrastructure__list_templates"},
-		{Name: "kedge__code__create_repository"},
-		{Name: "kedge__kuery__kuery_query"},
+		{Name: "faros__infrastructure__provision"},
+		{Name: "faros__infrastructure__list_templates"},
+		{Name: "faros__code__create_repository"},
+		{Name: "faros__kuery__kuery_query"},
 		// A tool the endpoint serves directly, with no provider segment.
-		{Name: "kedge__ping"},
+		{Name: "faros__ping"},
 		{Name: "malformed"},
 	}
 	got := providersFromTools(tools)

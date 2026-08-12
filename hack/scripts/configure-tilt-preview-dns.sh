@@ -19,8 +19,8 @@ fi
 context="$1"
 base_domain="$2"
 gateway_ip="$3"
-marker_start="# kedge-preview-dns"
-marker_end="# kedge-preview-dns-end"
+marker_start="# faros-preview-dns"
+marker_end="# faros-preview-dns-end"
 
 if [[ ! "$base_domain" =~ ^[a-z0-9.-]+$ ]]; then
   echo "invalid preview base domain: $base_domain" >&2

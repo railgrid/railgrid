@@ -145,16 +145,16 @@ func TestGetProjectAssistantThreadTurnEnforcesThreadOwnership(t *testing.T) {
 func assistantTurnDetailHTTPTestRequest(method, path, user string) *http.Request {
 	request := httptest.NewRequest(method, path, nil)
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Kedge-User", user)
-	request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
-	request.Header.Set("X-Kedge-Cluster", "cluster-a")
+	request.Header.Set("X-Faros-User", user)
+	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	return request
 }
 
 func newAssistantTurnDetailServer(messages store.Store) *Server {
 	scheme := runtime.NewScheme()
 	project := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "ai.kedge.faros.sh/v1alpha1",
+		"apiVersion": "ai.faros.sh/v1alpha1",
 		"kind":       "Project",
 		"metadata": map[string]any{
 			"name": "demo",

@@ -220,7 +220,7 @@ func TestFileStoreMutatesWorkspaceFiles(t *testing.T) {
 	}
 
 	version := testFileVersion(t, context.Background(), store, scope, "src/components/App.tsx")
-	patch, err := store.EditFile(context.Background(), scope, EditOptions{Path: "src/components/App.tsx", OldString: "  return <h1>Hello</h1>", NewString: "  return <h1>Kedge</h1>", ExpectedVersion: version})
+	patch, err := store.EditFile(context.Background(), scope, EditOptions{Path: "src/components/App.tsx", OldString: "  return <h1>Hello</h1>", NewString: "  return <h1>Faros</h1>", ExpectedVersion: version})
 	if err != nil {
 		t.Fatalf("EditFile returned error: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestFileStoreMutatesWorkspaceFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile returned error: %v", err)
 	}
-	if !strings.Contains(read.Content, "Kedge") || strings.Contains(read.Content, "Hello") {
+	if !strings.Contains(read.Content, "Faros") || strings.Contains(read.Content, "Hello") {
 		t.Fatalf("content after patch = %q", read.Content)
 	}
 }

@@ -71,14 +71,14 @@ const (
 	accessPublic  = "public"
 	accessPrivate = "private"
 	// appAccessRolePrefix names the per-app ClusterRole and its bindings.
-	appAccessRolePrefix = "kedge-app-access"
+	appAccessRolePrefix = "faros-app-access"
 	// appAccessLabel marks every RBAC object this API manages with the
 	// instance it grants access to, so grants are enumerable by selector.
-	appAccessLabel = "kedge.faros.sh/app-access"
+	appAccessLabel = "faros.sh/app-access"
 	// appAccessProjectLabel traces the grant back to its App Studio project.
-	appAccessProjectLabel = "app-studio.kedge.faros.sh/project"
+	appAccessProjectLabel = "app-studio.faros.sh/project"
 	// appAccessUserLabel records the granted platform User name.
-	appAccessUserLabel = "app-studio.kedge.faros.sh/user"
+	appAccessUserLabel = "app-studio.faros.sh/user"
 )
 
 var (
@@ -98,7 +98,7 @@ var (
 
 type publishingMember struct {
 	User string `json:"user"`
-	// RBACIdentity is the member's kcp username ("kedge:<email>") — the ONLY
+	// RBACIdentity is the member's kcp username ("faros:<email>") — the ONLY
 	// subject string tenant-workspace RBAC evaluates. Grants must bind it;
 	// the User CR name appears in no kcp binding.
 	RBACIdentity string `json:"rbacIdentity,omitempty"`
@@ -168,7 +168,7 @@ func newPublishingHTTPClient() *http.Client {
 	if base, ok := http.DefaultTransport.(*http.Transport); ok {
 		transport = base.Clone()
 	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("KEDGE_HUB_INSECURE")), "true") {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_HUB_INSECURE")), "true") {
 		if base, ok := transport.(*http.Transport); ok {
 			base.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // explicit local/dev opt-in
 		}
@@ -366,7 +366,7 @@ func (s *Server) createProjectPublishingGrant(w http.ResponseWriter, r *http.Req
 		// Never fall back to the User CR name: kcp evaluates no binding
 		// against it, so a grant bound to it would silently deny.
 		writeStatus(w, http.StatusBadGateway, "BadGateway",
-			"the platform did not report the member's RBAC identity; update the kedge hub")
+			"the platform did not report the member's RBAC identity; update the faros hub")
 		return
 	}
 	if err := s.ensureAppAccessRole(r.Context(), c, p, runtime.target); err != nil {
@@ -759,8 +759,8 @@ func (s *Server) invitePublishingMember(ctx context.Context, id identity, email 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+id.token)
-	req.Header.Set("X-Kedge-Org", id.orgUUID)
-	req.Header.Set("X-Kedge-User", id.user)
+	req.Header.Set("X-Faros-Org", id.orgUUID)
+	req.Header.Set("X-Faros-User", id.user)
 	client := s.publishingHTTPClient
 	if client == nil {
 		client = http.DefaultClient
@@ -812,9 +812,9 @@ func (s *Server) currentPublishingMembers(ctx context.Context, id identity) ([]p
 			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+id.token)
-		req.Header.Set("X-Kedge-Org", id.orgUUID)
-		req.Header.Set("X-Kedge-Workspace", id.workspaceUUID)
-		req.Header.Set("X-Kedge-User", id.user)
+		req.Header.Set("X-Faros-Org", id.orgUUID)
+		req.Header.Set("X-Faros-Workspace", id.workspaceUUID)
+		req.Header.Set("X-Faros-User", id.user)
 		resp, err := client.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("membership lookup: %w", err)

@@ -43,7 +43,7 @@ const (
 	defaultRegistryHost = "ghcr.io"
 	// defaultRegistryUser is a placeholder for hosts that authenticate the
 	// token and ignore the username (ghcr does).
-	defaultRegistryUser = "kedge-vibe-studio"
+	defaultRegistryUser = "faros-vibe-studio"
 )
 
 // registryPullSecretName mirrors the infrastructure provider's convention.

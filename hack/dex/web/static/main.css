@@ -1,5 +1,5 @@
 /*
-   Kedge OIDC surface — Violet Circuit.
+   Faros OIDC surface — Violet Circuit.
 
    Dex serves these pages as a standalone frontend, so this stylesheet uses
    the dark palette locally instead of depending on the portal bundle. Keep
@@ -9,25 +9,25 @@
 
 :root {
   color-scheme: dark;
-  --kedge-surface: #0a0b12;
-  --kedge-surface-raised: #111320;
-  --kedge-surface-overlay: #171927;
-  --kedge-surface-hover: #1d2030;
-  --kedge-border-subtle: rgba(255, 255, 255, 0.07);
-  --kedge-border-default: rgba(255, 255, 255, 0.12);
-  --kedge-accent: #8b6bff;
-  --kedge-accent-hover: #a18aff;
-  --kedge-accent-subtle: rgba(139, 107, 255, 0.14);
-  --kedge-accent-glow: rgba(139, 107, 255, 0.30);
-  --kedge-success: #2fd6a0;
-  --kedge-success-subtle: rgba(47, 214, 160, 0.12);
-  --kedge-danger: #ff5d5d;
-  --kedge-danger-subtle: rgba(255, 93, 93, 0.12);
-  --kedge-text-primary: #e9e9f2;
-  --kedge-text-secondary: #8a8ca6;
-  --kedge-text-muted: #5d5f78;
-  --kedge-font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --kedge-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --faros-surface: #0a0b12;
+  --faros-surface-raised: #111320;
+  --faros-surface-overlay: #171927;
+  --faros-surface-hover: #1d2030;
+  --faros-border-subtle: rgba(255, 255, 255, 0.07);
+  --faros-border-default: rgba(255, 255, 255, 0.12);
+  --faros-accent: #8b6bff;
+  --faros-accent-hover: #a18aff;
+  --faros-accent-subtle: rgba(139, 107, 255, 0.14);
+  --faros-accent-glow: rgba(139, 107, 255, 0.30);
+  --faros-success: #2fd6a0;
+  --faros-success-subtle: rgba(47, 214, 160, 0.12);
+  --faros-danger: #ff5d5d;
+  --faros-danger-subtle: rgba(255, 93, 93, 0.12);
+  --faros-text-primary: #e9e9f2;
+  --faros-text-secondary: #8a8ca6;
+  --faros-text-muted: #5d5f78;
+  --faros-font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --faros-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 *,
@@ -42,7 +42,7 @@ body {
 }
 
 html {
-  background: var(--kedge-surface);
+  background: var(--faros-surface);
 }
 
 body {
@@ -53,10 +53,10 @@ body {
   background:
     radial-gradient(56rem 30rem at 50% -12rem, rgba(139, 107, 255, 0.20), transparent 68%),
     radial-gradient(36rem 24rem at 100% 110%, rgba(47, 214, 160, 0.08), transparent 70%),
-    var(--kedge-surface);
+    var(--faros-surface);
   background-attachment: fixed;
-  color: var(--kedge-text-primary);
-  font-family: var(--kedge-font-sans);
+  color: var(--faros-text-primary);
+  font-family: var(--faros-font-sans);
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -91,8 +91,8 @@ body::before {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  color: var(--kedge-text-primary);
-  font-family: var(--kedge-font-mono);
+  color: var(--faros-text-primary);
+  font-family: var(--faros-font-mono);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.20em;
@@ -105,16 +105,16 @@ body::before {
   width: 28px;
   height: 28px;
   place-items: center;
-  border: 1px solid color-mix(in srgb, var(--kedge-accent) 55%, var(--kedge-border-default));
+  border: 1px solid color-mix(in srgb, var(--faros-accent) 55%, var(--faros-border-default));
   border-radius: 6px;
-  background: var(--kedge-accent-subtle);
-  color: var(--kedge-accent-hover);
+  background: var(--faros-accent-subtle);
+  color: var(--faros-accent-hover);
   font-size: 14px;
   letter-spacing: 0;
 }
 
 .brand-name {
-  background: linear-gradient(90deg, var(--kedge-accent-hover), var(--kedge-text-primary));
+  background: linear-gradient(90deg, var(--faros-accent-hover), var(--faros-text-primary));
   background-clip: text;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -123,15 +123,15 @@ body::before {
 .theme-panel {
   margin-top: 20px;
   padding: 32px;
-  border: 1px solid var(--kedge-border-default);
+  border: 1px solid var(--faros-border-default);
   border-radius: 6px;
-  background: var(--kedge-surface-raised);
+  background: var(--faros-surface-raised);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 24px 80px rgba(0, 0, 0, 0.24);
 }
 
 .theme-heading {
   margin: 0;
-  color: var(--kedge-text-primary);
+  color: var(--faros-text-primary);
   font-size: clamp(21px, 5vw, 26px);
   font-weight: 650;
   letter-spacing: -0.02em;
@@ -140,18 +140,18 @@ body::before {
 
 .dex-subtitle {
   margin: 12px 0 24px;
-  color: var(--kedge-text-secondary);
+  color: var(--faros-text-secondary);
   font-size: 13px;
   line-height: 1.55;
 }
 
 .dex-subtle-text {
-  color: var(--kedge-text-secondary);
+  color: var(--faros-text-secondary);
   font-size: 12px;
 }
 
 .dex-separator {
-  color: var(--kedge-text-muted);
+  color: var(--faros-text-muted);
 }
 
 .theme-form-row {
@@ -163,8 +163,8 @@ body::before {
 .theme-form-label {
   display: block;
   margin: 0 0 6px;
-  color: var(--kedge-text-secondary);
-  font-family: var(--kedge-font-mono);
+  color: var(--faros-text-secondary);
+  font-family: var(--faros-font-mono);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.15em;
@@ -177,30 +177,30 @@ body::before {
   width: 100%;
   min-height: 44px;
   padding: 10px 12px;
-  border: 1px solid var(--kedge-border-default);
+  border: 1px solid var(--faros-border-default);
   border-radius: 4px;
   outline: none;
-  background: var(--kedge-surface);
-  color: var(--kedge-text-primary);
-  font-family: var(--kedge-font-mono);
+  background: var(--faros-surface);
+  color: var(--faros-text-primary);
+  font-family: var(--faros-font-mono);
   font-size: 13px;
   line-height: 1.4;
   transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
 }
 
 .theme-form-input::placeholder {
-  color: var(--kedge-text-muted);
+  color: var(--faros-text-muted);
 }
 
 .theme-form-input:hover {
-  border-color: color-mix(in srgb, var(--kedge-accent) 45%, var(--kedge-border-default));
+  border-color: color-mix(in srgb, var(--faros-accent) 45%, var(--faros-border-default));
 }
 
 .theme-form-input:focus,
 .theme-form-input:active {
-  border-color: var(--kedge-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--kedge-accent) 20%, transparent), 0 0 16px var(--kedge-accent-glow);
-  background: var(--kedge-surface-overlay);
+  border-color: var(--faros-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--faros-accent) 20%, transparent), 0 0 16px var(--faros-accent-glow);
+  background: var(--faros-surface-overlay);
 }
 
 .dex-btn {
@@ -210,13 +210,13 @@ body::before {
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 1px solid var(--kedge-border-default);
+  border: 1px solid var(--faros-border-default);
   border-radius: 4px;
   outline: none;
-  background: var(--kedge-surface-overlay);
-  color: var(--kedge-text-primary);
+  background: var(--faros-surface-overlay);
+  color: var(--faros-text-primary);
   cursor: pointer;
-  font-family: var(--kedge-font-sans);
+  font-family: var(--faros-font-sans);
   font-size: 13px;
   font-weight: 600;
   text-align: center;
@@ -225,13 +225,13 @@ body::before {
 }
 
 .dex-btn:hover {
-  border-color: color-mix(in srgb, var(--kedge-accent) 55%, var(--kedge-border-default));
-  background: var(--kedge-accent-subtle);
+  border-color: color-mix(in srgb, var(--faros-accent) 55%, var(--faros-border-default));
+  background: var(--faros-accent-subtle);
 }
 
 .dex-btn:focus-visible {
-  border-color: var(--kedge-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--kedge-accent) 24%, transparent), 0 0 14px var(--kedge-accent-glow);
+  border-color: var(--faros-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--faros-accent) 24%, transparent), 0 0 14px var(--faros-accent-glow);
 }
 
 .dex-btn:active {
@@ -250,7 +250,7 @@ body::before {
   align-items: center;
   justify-content: center;
   flex: 0 0 44px;
-  border-right: 1px solid var(--kedge-border-subtle);
+  border-right: 1px solid var(--faros-border-subtle);
   border-radius: 4px 0 0 4px;
   background-position: center;
   background-repeat: no-repeat;
@@ -258,9 +258,9 @@ body::before {
 }
 
 /* Provider tiles retain the provider's own icon colors, as required by their
-   brand guidelines; the surrounding control remains Kedge-owned. */
+   brand guidelines; the surrounding control remains Faros-owned. */
 .dex-btn-icon--google { background-color: #ffffff; background-image: url(../static/img/google-icon.svg); }
-.dex-btn-icon--local { background-color: var(--kedge-accent-subtle); background-image: url(../static/img/email-icon.svg); }
+.dex-btn-icon--local { background-color: var(--faros-accent-subtle); background-image: url(../static/img/email-icon.svg); }
 .dex-btn-icon--gitea { background-color: #f5f5f5; background-image: url(../static/img/gitea-icon.svg); }
 .dex-btn-icon--github { background-color: #f5f5f5; background-image: url(../static/img/github-icon.svg); }
 .dex-btn-icon--gitlab { background-color: #f5f5f5; background-image: url(../static/img/gitlab-icon.svg); background-size: contain; }
@@ -268,8 +268,8 @@ body::before {
 .dex-btn-icon--oidc { background-color: rgba(255, 255, 255, 0.94); background-image: url(../static/img/oidc-icon.svg); background-size: contain; }
 .dex-btn-icon--bitbucket-cloud { background-color: #205081; background-image: url(../static/img/bitbucket-icon.svg); }
 .dex-btn-icon--atlassian-crowd { background-color: #cfdcea; background-image: url(../static/img/atlassian-crowd-icon.svg); }
-.dex-btn-icon--ldap { background-color: var(--kedge-accent-subtle); background-image: url(../static/img/ldap-icon.svg); }
-.dex-btn-icon--saml { background-color: var(--kedge-accent-subtle); background-image: url(../static/img/saml-icon.svg); }
+.dex-btn-icon--ldap { background-color: var(--faros-accent-subtle); background-image: url(../static/img/ldap-icon.svg); }
+.dex-btn-icon--saml { background-color: var(--faros-accent-subtle); background-image: url(../static/img/saml-icon.svg); }
 .dex-btn-icon--linkedin { background-image: url(../static/img/linkedin-icon.svg); background-size: contain; }
 .dex-btn-icon--microsoft { background-image: url(../static/img/microsoft-icon.svg); }
 
@@ -283,47 +283,47 @@ body::before {
 .theme-btn--primary {
   min-height: 44px;
   padding: 10px 16px;
-  border-color: var(--kedge-accent);
-  background: var(--kedge-accent);
-  box-shadow: 0 0 16px var(--kedge-accent-glow);
+  border-color: var(--faros-accent);
+  background: var(--faros-accent);
+  box-shadow: 0 0 16px var(--faros-accent-glow);
   color: #ffffff;
 }
 
 .theme-btn--primary:hover {
-  border-color: var(--kedge-accent-hover);
-  background: var(--kedge-accent-hover);
-  box-shadow: 0 0 22px var(--kedge-accent-glow);
+  border-color: var(--faros-accent-hover);
+  background: var(--faros-accent-hover);
+  box-shadow: 0 0 22px var(--faros-accent-glow);
 }
 
 .theme-btn--primary:focus-visible {
-  border-color: var(--kedge-accent-hover);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--kedge-accent) 28%, transparent), 0 0 16px var(--kedge-accent-glow);
+  border-color: var(--faros-accent-hover);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--faros-accent) 28%, transparent), 0 0 16px var(--faros-accent-glow);
 }
 
 .theme-btn--success {
   min-height: 44px;
   padding: 10px 16px;
-  border-color: color-mix(in srgb, var(--kedge-success) 55%, var(--kedge-border-default));
-  background: var(--kedge-success-subtle);
-  color: var(--kedge-success);
+  border-color: color-mix(in srgb, var(--faros-success) 55%, var(--faros-border-default));
+  background: var(--faros-success-subtle);
+  color: var(--faros-success);
 }
 
 .theme-btn--success:hover {
-  border-color: var(--kedge-success);
-  background: color-mix(in srgb, var(--kedge-success) 18%, transparent);
+  border-color: var(--faros-success);
+  background: color-mix(in srgb, var(--faros-success) 18%, transparent);
 }
 
 .theme-btn-provider {
-  background: var(--kedge-surface-overlay);
+  background: var(--faros-surface-overlay);
 }
 
 .dex-error-box {
   margin: 16px 0 4px;
   padding: 10px 14px;
-  border: 1px solid color-mix(in srgb, var(--kedge-danger) 45%, var(--kedge-border-default));
+  border: 1px solid color-mix(in srgb, var(--faros-danger) 45%, var(--faros-border-default));
   border-radius: 4px;
-  background: var(--kedge-danger-subtle);
-  color: var(--kedge-danger);
+  background: var(--faros-danger-subtle);
+  color: var(--faros-danger);
   font-size: 12px;
   font-weight: 600;
   text-align: left;
@@ -334,9 +334,9 @@ body::before {
 .success-message {
   margin: 18px 0 8px;
   padding: 14px 16px;
-  border: 1px solid var(--kedge-border-subtle);
+  border: 1px solid var(--faros-border-subtle);
   border-radius: 6px;
-  background: var(--kedge-surface-overlay);
+  background: var(--faros-surface-overlay);
   text-align: left;
 }
 
@@ -344,7 +344,7 @@ body::before {
   display: block;
   margin: 8px 0 0;
   padding: 0;
-  color: var(--kedge-text-secondary);
+  color: var(--faros-text-secondary);
   font-size: 12px;
   list-style: none;
 }
@@ -362,7 +362,7 @@ body::before {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--kedge-accent);
+  background: var(--faros-accent);
   content: "";
 }
 
@@ -388,25 +388,25 @@ body::before {
 .theme-link-back {
   display: inline-block;
   margin-top: 18px;
-  color: var(--kedge-text-secondary);
+  color: var(--faros-text-secondary);
   font-size: 12px;
   text-decoration: none;
 }
 
 .theme-link-back:hover,
 .theme-link-back:focus-visible {
-  color: var(--kedge-accent-hover);
+  color: var(--faros-accent-hover);
 }
 
 .theme-link-back:focus-visible {
-  outline: 2px solid var(--kedge-accent);
+  outline: 2px solid var(--faros-accent);
   outline-offset: 3px;
 }
 
 .dex-footer-text {
   margin: 18px 0 0;
-  color: var(--kedge-text-muted);
-  font-family: var(--kedge-font-mono);
+  color: var(--faros-text-muted);
+  font-family: var(--faros-font-mono);
   font-size: 10px;
   letter-spacing: 0.02em;
   line-height: 1.5;

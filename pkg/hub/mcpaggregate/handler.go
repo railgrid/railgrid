@@ -38,13 +38,13 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros/pkg/apiurl"
 )
 
 // impl is the MCP Implementation advertised on `initialize`.
 var impl = &mcp.Implementation{
-	Name:    "kedge-mcpserver",
-	Title:   "Kedge aggregate MCP",
+	Name:    "faros-mcpserver",
+	Title:   "Faros aggregate MCP",
 	Version: "v1alpha1",
 }
 
@@ -53,7 +53,7 @@ type Options struct {
 	// Providers enumerates the live Ready providers to federate. Required.
 	Providers ProviderEnumerator
 	// ExternalURL is the hub's externally reachable base URL, used only to
-	// self-describe the endpoint in the kedge://about resource. Optional.
+	// self-describe the endpoint in the faros://about resource. Optional.
 	ExternalURL string
 	// Logger is used for federation diagnostics. Optional.
 	Logger logr.Logger
@@ -61,13 +61,13 @@ type Options struct {
 
 // New returns the http.Handler mounted at apiurl.PathPrefixMCPServer. The
 // handler expects the prefix to have been stripped, so it sees
-// /{cluster}/apis/kedge.faros.sh/v1alpha1/mcpservers/{name}/mcp.
+// /{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp.
 func New(opts Options) http.Handler {
 	log := opts.Logger
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cluster, name, ok := parseMCPServerPath(r.URL.Path)
 		if !ok {
-			http.Error(w, "invalid path: expected /{cluster}/apis/kedge.faros.sh/v1alpha1/mcpservers/{name}/mcp", http.StatusBadRequest)
+			http.Error(w, "invalid path: expected /{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp", http.StatusBadRequest)
 			return
 		}
 		token := extractBearer(r)
@@ -105,14 +105,14 @@ type buildParams struct {
 }
 
 // buildServer constructs the aggregate mcp.Server for one request: generic
-// per-tenant metadata, the kedge://about resource, and every Ready provider's
+// per-tenant metadata, the faros://about resource, and every Ready provider's
 // federated tools. It never fails — with no providers it serves an empty but
 // valid MCP server.
 func buildServer(ctx context.Context, p buildParams) *mcp.Server {
-	title := fmt.Sprintf("Kedge — %s (tenant %s)", p.name, p.cluster)
+	title := fmt.Sprintf("Faros — %s (tenant %s)", p.name, p.cluster)
 	instructions := fmt.Sprintf(
-		"You are connected to the kedge aggregate MCP endpoint %q in tenant workspace %q.\n\n"+
-			"This single endpoint federates the tools of every enabled kedge provider in this tenant "+
+		"You are connected to the faros aggregate MCP endpoint %q in tenant workspace %q.\n\n"+
+			"This single endpoint federates the tools of every enabled faros provider in this tenant "+
 			"(for example infrastructure, code, and edge access). Provider tools are namespaced as "+
 			"\"<provider>__<tool>\". Call tools/list to enumerate what is currently reachable — the set "+
 			"reflects which providers are enabled and healthy right now.",
@@ -147,7 +147,7 @@ func buildServer(ctx context.Context, p buildParams) *mcp.Server {
 	return srv
 }
 
-// aboutDoc is the structured self-description served at kedge://about.
+// aboutDoc is the structured self-description served at faros://about.
 type aboutDoc struct {
 	Role        string `json:"role"`
 	Tenant      string `json:"tenant"`
@@ -156,13 +156,13 @@ type aboutDoc struct {
 	EndpointURL string `json:"endpointURL,omitempty"`
 }
 
-const aboutResourceURI = "kedge://about"
+const aboutResourceURI = "faros://about"
 
 func registerAboutResource(srv *mcp.Server, about aboutDoc) {
 	srv.AddResource(&mcp.Resource{
 		URI:         aboutResourceURI,
-		Name:        "kedge-about",
-		Title:       "About this kedge MCP endpoint",
+		Name:        "faros-about",
+		Title:       "About this faros MCP endpoint",
 		MIMEType:    "application/json",
 		Description: "Structured JSON describing this endpoint's role, tenant context, and URL. Read once on connect.",
 	}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
@@ -195,14 +195,14 @@ func extractBearer(r *http.Request) string {
 //
 // Expected format:
 //
-//	/{cluster}/apis/kedge.faros.sh/v1alpha1/mcpservers/{name}/mcp
+//	/{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp
 func parseMCPServerPath(path string) (cluster, name string, ok bool) {
 	path = strings.TrimPrefix(path, "/")
 	parts := strings.SplitN(path, "/", 8)
 	if len(parts) < 7 {
 		return "", "", false
 	}
-	if parts[1] != "apis" || parts[2] != "kedge.faros.sh" || parts[3] != "v1alpha1" ||
+	if parts[1] != "apis" || parts[2] != "faros.sh" || parts[3] != "v1alpha1" ||
 		parts[4] != "mcpservers" || parts[6] != "mcp" {
 		return "", "", false
 	}

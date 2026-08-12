@@ -34,7 +34,7 @@ limitations under the License.
 //   - Workspace: kcp Workspaces aren't in our scheme, so this branch
 //     polls (default every minute) — lists Org workspaces, lists each
 //     Org's child Workspaces, reads the annotation
-//     tenants.kedge.faros.sh/deletion-requested-at and, once the grace
+//     tenants.faros.sh/deletion-requested-at and, once the grace
 //     window expires, drives the Workspace cascade (kcp Workspace +
 //     workspace-scope UMI rows).
 //
@@ -65,7 +65,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 )
 
 const (

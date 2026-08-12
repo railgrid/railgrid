@@ -1,0 +1,344 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: agents.agents.faros.sh
+spec:
+  group: agents.faros.sh
+  names:
+    kind: Agent
+    listKind: AgentList
+    plural: agents
+    shortNames:
+    - agt
+    singular: agent
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.displayName
+      name: DisplayName
+      type: string
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Agent is a persistent, long-running personal assistant scoped to a Faros
+          workspace. It chats, runs scheduled work on its own clock, uses tools, and
+          keeps durable memory. Runtime state (transcripts, runs) lives in the
+          provider's store; this resource holds the durable configuration.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AgentSpec is the user-authored agent configuration.
+            properties:
+              autonomy:
+                default: ask
+                description: |-
+                  Autonomy is the agent's default posture toward taking action: "suggest"
+                  drafts but never acts, "ask" acts after approval, "auto" acts freely
+                  within the tool policy. Per-trigger requireApproval lists refine it.
+                enum:
+                - suggest
+                - ask
+                - auto
+                type: string
+              budget:
+                description: |-
+                  Budget caps spend over a rolling window. On breach the provider suspends
+                  schedules and background runs and notifies the user; interactive chat
+                  stays available.
+                properties:
+                  tokenLimit:
+                    description: |-
+                      TokenLimit is the token ceiling for the window. Zero disables the token
+                      cap.
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  usdLimit:
+                    description: |-
+                      USDLimit is the spend ceiling in US dollars for the window. Zero disables
+                      the cost cap.
+                    type: string
+                  window:
+                    default: month
+                    description: 'Window is the rolling budget period: "day" or "month".'
+                    enum:
+                    - day
+                    - month
+                    type: string
+                type: object
+              channels:
+                description: |-
+                  Channels binds named messaging channels to the agent. The channel marked
+                  Primary (or, failing that, the first entry) is the default notify target
+                  for output that does not name a channel — the notify/ask tools, approval
+                  requests, and schedules/triggers with no ChannelRef. Schedules and
+                  Triggers may deliver to any channel by referencing its Name. An agent also
+                  receives inbound messages on every channel's Connection, so a user can
+                  talk to it from more than one place (e.g. Telegram and Discord).
+                items:
+                  description: AgentChannel binds one logical channel role to a messaging
+                    Connection.
+                  properties:
+                    connectionRef:
+                      description: |-
+                        ConnectionRef names the messaging Connection (telegram/slack/discord/smtp)
+                        that backs this channel.
+                      maxLength: 253
+                      type: string
+                    name:
+                      description: |-
+                        Name is the logical channel role referenced by schedules and triggers,
+                        e.g. "primary", "incidents", "news". Unique within the agent.
+                      maxLength: 63
+                      minLength: 1
+                      type: string
+                    primary:
+                      description: |-
+                        Primary marks this channel as the agent's default notify target. Exactly
+                        one channel should be primary; when none is marked the first entry is
+                        treated as primary.
+                      type: boolean
+                  required:
+                  - connectionRef
+                  - name
+                  type: object
+                type: array
+              delegates:
+                description: |-
+                  Delegates lists the names of other Agents this agent may spawn as
+                  sub-agents via the core "delegate" tool. Empty disables delegation.
+                items:
+                  type: string
+                type: array
+              description:
+                description: Description is a short summary of what this agent is
+                  for.
+                maxLength: 2048
+                type: string
+              displayName:
+                description: DisplayName is the human-readable agent name.
+                maxLength: 128
+                minLength: 1
+                type: string
+              limits:
+                description: Limits bounds a single run.
+                properties:
+                  maxConcurrentSpawns:
+                    description: |-
+                      MaxConcurrentSpawns caps how many spawned workers execute at the same
+                      time; the rest queue. Zero uses the provider default (4); the provider caps
+                      it at 8 regardless.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  maxSpawnsPerRun:
+                    description: |-
+                      MaxSpawnsPerRun caps how many scoped workers one run may start with the
+                      "spawn" tool. Zero uses the provider default (10); the provider caps it at
+                      20 regardless.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  maxToolTurns:
+                    description: |-
+                      MaxToolTurns caps tool-call iterations in one run. Zero uses the provider
+                      default.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  timeoutSeconds:
+                    description: |-
+                      TimeoutSeconds is the wall-clock budget for one run. Zero uses the
+                      provider default watchdog (3600s).
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
+              memory:
+                description: Memory configures long-term memory behavior.
+                properties:
+                  enabled:
+                    default: true
+                    description: Enabled turns on long-term memory notes. Defaults
+                      to true.
+                    type: boolean
+                  maxNotes:
+                    description: |-
+                      MaxNotes bounds how many memory notes may be injected into a run's
+                      context. Zero uses the provider default.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
+              modelFallbacks:
+                description: |-
+                  ModelFallbacks is an ordered list of additional model-credential names
+                  tried, in order, when the primary chat model (models["chat"]) fails to
+                  respond — a provider outage, rate limit, timeout, or connection error.
+                  The first credential that responds is used. Streaming only falls back
+                  before the first token is emitted. Empty means no fallback.
+                items:
+                  type: string
+                type: array
+              models:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Models maps run purposes to named profiles in the tenant's model
+                  credentials Secret (faros-agents-llm). Recognized purposes: "chat"
+                  (interactive, strong), "background" (schedules/heartbeats, cheap),
+                  "compaction" (summarization). An empty map falls back to the "chat"
+                  profile for every purpose.
+                type: object
+              systemPrompt:
+                description: |-
+                  SystemPrompt is the agent's persona and standing instructions, injected
+                  at the head of every run.
+                maxLength: 32768
+                type: string
+              tools:
+                description: |-
+                  Tools grants tool families and connections to the agent, per trigger
+                  class. Unattended runs (schedule/heartbeat/wakeup) default to read-only.
+                properties:
+                  background:
+                    description: |-
+                      Background applies to schedule, heartbeat, and wakeup runs. Defaults to
+                      read-only families plus notify when unset.
+                    properties:
+                      connections:
+                        description: Connections names Connection resources whose
+                          tools are exposed.
+                        items:
+                          type: string
+                        type: array
+                      families:
+                        description: |-
+                          Families names built-in tool families to enable: "core", "web",
+                          "github", "mcp", "files", "edges", "spawn". "spawn" lets a run fan out to
+                          scoped workers (the same agent on sub-tasks, with a subset of this grant)
+                          and join their answers — the basis of a research pass.
+                        items:
+                          type: string
+                        type: array
+                      requireApproval:
+                        description: |-
+                          RequireApproval lists tool names (or "*" family wildcards like "github:*")
+                          that must be approved by the user before they run.
+                        items:
+                          type: string
+                        type: array
+                      toolsets:
+                        description: |-
+                          Toolsets names shared Toolset resources whose families, connections, and
+                          approval rules are merged into this grant. Lets many agents link one
+                          reusable bundle.
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  interactive:
+                    description: |-
+                      Interactive applies to chat and channel-triggered runs, where a human is
+                      present to approve risky actions.
+                    properties:
+                      connections:
+                        description: Connections names Connection resources whose
+                          tools are exposed.
+                        items:
+                          type: string
+                        type: array
+                      families:
+                        description: |-
+                          Families names built-in tool families to enable: "core", "web",
+                          "github", "mcp", "files", "edges", "spawn". "spawn" lets a run fan out to
+                          scoped workers (the same agent on sub-tasks, with a subset of this grant)
+                          and join their answers — the basis of a research pass.
+                        items:
+                          type: string
+                        type: array
+                      requireApproval:
+                        description: |-
+                          RequireApproval lists tool names (or "*" family wildcards like "github:*")
+                          that must be approved by the user before they run.
+                        items:
+                          type: string
+                        type: array
+                      toolsets:
+                        description: |-
+                          Toolsets names shared Toolset resources whose families, connections, and
+                          approval rules are merged into this grant. Lets many agents link one
+                          reusable bundle.
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                type: object
+            required:
+            - displayName
+            type: object
+          status:
+            description: AgentStatus is the observed agent state.
+            properties:
+              lastRunAt:
+                description: LastRunAt is when the agent most recently executed.
+                format: date-time
+                type: string
+              phase:
+                description: Phase is Ready or Suspended.
+                type: string
+              suspendedReason:
+                description: SuspendedReason explains a Suspended phase (e.g. "budget
+                  exceeded").
+                type: string
+              updatedAt:
+                description: UpdatedAt reflects the latest configuration mutation.
+                format: date-time
+                type: string
+              usage:
+                description: Usage reports the current rolling-window consumption.
+                properties:
+                  tokens:
+                    description: Tokens consumed in the current window.
+                    format: int64
+                    type: integer
+                  usd:
+                    description: USD spent in the current window.
+                    type: string
+                  windowStart:
+                    description: WindowStart is when the current budget window began.
+                    format: date-time
+                    type: string
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

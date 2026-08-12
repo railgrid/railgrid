@@ -41,12 +41,12 @@ func (s *Server) MCPHandler() http.Handler {
 	return mcp.NewStreamableHTTPHandler(
 		func(r *http.Request) *mcp.Server {
 			srv := mcp.NewServer(&mcp.Implementation{
-				Name:    "kedge-agents",
+				Name:    "faros-agents",
 				Version: "0.1.0",
-				Title:   "kedge agents provider",
+				Title:   "faros agents provider",
 			}, &mcp.ServerOptions{
 				Instructions: "This MCP endpoint both RUNS and CONFIGURES the AI agents hosted in " +
-					"your kedge tenant workspace. To delegate work: run_agent(agent, task) hands an " +
+					"your faros tenant workspace. To delegate work: run_agent(agent, task) hands an " +
 					"agent a task and returns its answer (pass wait for it inline, or poll get_run); " +
 					"get_run reads a run's answer, sources, tool steps and sub-agent runs; list_runs " +
 					"finds runs in flight. Everything else is configuration — everything the portal's " +
@@ -78,15 +78,15 @@ func (s *Server) MCPHandler() http.Handler {
 // mcpClient resolves the caller's tenant client from the identity the hub (or
 // its federation client) put on the MCP request. Unlike requireClient it does
 // not demand a parseable tenant path: federation forwards the cluster ID as
-// both X-Kedge-Tenant and X-Kedge-Cluster, and the GraphQL client only needs
+// both X-Faros-Tenant and X-Faros-Cluster, and the GraphQL client only needs
 // the cluster ID plus the caller's token.
 func (s *Server) mcpClient(r *http.Request) (*agentsclient.Client, error) {
 	if s.gql == nil {
-		return nil, errors.New("tenant access not configured — provider has no hub URL (set KEDGE_HUB_URL)")
+		return nil, errors.New("tenant access not configured — provider has no hub URL (set FAROS_HUB_URL)")
 	}
-	clusterID := strings.TrimSpace(r.Header.Get("X-Kedge-Cluster"))
+	clusterID := strings.TrimSpace(r.Header.Get("X-Faros-Cluster"))
 	if clusterID == "" {
-		return nil, errors.New("no workspace cluster on this request (X-Kedge-Cluster missing) — cannot address the tenant workspace")
+		return nil, errors.New("no workspace cluster on this request (X-Faros-Cluster missing) — cannot address the tenant workspace")
 	}
 	if bearerToken(r) == "" {
 		return nil, errors.New("no bearer token on this request — the MCP request must carry the caller's credentials")

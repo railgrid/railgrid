@@ -93,7 +93,7 @@ func TestParseServicePath(t *testing.T) {
 	}{
 		{
 			name:        "proxy subresource, no trailing path",
-			path:        "/clusters/abc/apis/edges.kedge.faros.sh/v1alpha1/services/ha-box-home-assistant/proxy",
+			path:        "/clusters/abc/apis/edges.faros.sh/v1alpha1/services/ha-box-home-assistant/proxy",
 			wantOK:      true,
 			cluster:     "abc",
 			obj:         "ha-box-home-assistant",
@@ -102,7 +102,7 @@ func TestParseServicePath(t *testing.T) {
 		},
 		{
 			name:        "proxy subresource with trailing service path",
-			path:        "/clusters/abc/apis/edges.kedge.faros.sh/v1alpha1/services/ha/proxy/api/services/cover/open_cover",
+			path:        "/clusters/abc/apis/edges.faros.sh/v1alpha1/services/ha/proxy/api/services/cover/open_cover",
 			wantOK:      true,
 			cluster:     "abc",
 			obj:         "ha",
@@ -111,7 +111,7 @@ func TestParseServicePath(t *testing.T) {
 		},
 		{
 			name:        "mcp subresource",
-			path:        "/clusters/xyz/apis/edges.kedge.faros.sh/v1alpha1/services/ha/mcp",
+			path:        "/clusters/xyz/apis/edges.faros.sh/v1alpha1/services/ha/mcp",
 			wantOK:      true,
 			cluster:     "xyz",
 			obj:         "ha",
@@ -120,7 +120,7 @@ func TestParseServicePath(t *testing.T) {
 		},
 		{
 			name:   "connectable kind is not an edgeservice path",
-			path:   "/clusters/abc/apis/edges.kedge.faros.sh/v1alpha1/linuxservers/srv/ssh",
+			path:   "/clusters/abc/apis/edges.faros.sh/v1alpha1/linuxservers/srv/ssh",
 			wantOK: false,
 		},
 		{
@@ -130,7 +130,7 @@ func TestParseServicePath(t *testing.T) {
 		},
 		{
 			name:   "too short",
-			path:   "/clusters/abc/apis/edges.kedge.faros.sh/v1alpha1/services/ha",
+			path:   "/clusters/abc/apis/edges.faros.sh/v1alpha1/services/ha",
 			wantOK: false,
 		},
 	}

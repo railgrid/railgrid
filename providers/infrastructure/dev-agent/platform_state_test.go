@@ -65,7 +65,7 @@ func TestCoordinatorStateIsRequiredAndIndependentFromWorkspace(t *testing.T) {
 	if sessionsInfo.Mode().Perm() != 0o700 {
 		t.Fatalf("coordinator-owned sessions mode = %o", sessionsInfo.Mode().Perm())
 	}
-	if _, err := os.Stat(filepath.Join(workspace, ".kedge-platform")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(workspace, ".faros-platform")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("workspace platform state exists: %v", err)
 	}
 }
@@ -94,7 +94,7 @@ func TestSyncUsesCoordinatorMutationLock(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("sync did not resume after lock release")
 	}
-	if _, err := os.Stat(filepath.Join(workspace, ".kedge-platform")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(workspace, ".faros-platform")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("sync created workspace platform state: %v", err)
 	}
 }

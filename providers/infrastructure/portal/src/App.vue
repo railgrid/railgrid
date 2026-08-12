@@ -6,7 +6,7 @@ import InstanceListPage from './views/InstanceListPage.vue'
 import InstanceDetailPage from './views/InstanceDetailPage.vue'
 import MissingCredentialsPage from './views/MissingCredentialsPage.vue'
 import { setBasePath, setTenant, setToken } from './api'
-import type { KedgeContext } from './types'
+import type { FarosContext } from './types'
 
 // Two top-level pages: 'templates' and 'instances'. Sub-routes:
 //
@@ -18,14 +18,14 @@ import type { KedgeContext } from './types'
 //   'missing-credentials'       → onboarding error (provision side-effect)
 //
 // The shell's vue-router parses /providers/infrastructure/<rest>
-// and pushes <rest> to us via kedgeContext.subPath. Internal nav
-// dispatches a 'kedge-navigate' CustomEvent (bubbles up to
+// and pushes <rest> to us via farosContext.subPath. Internal nav
+// dispatches a 'faros-navigate' CustomEvent (bubbles up to
 // ProviderFrame.vue's listener, which calls router.push), so the
 // browser URL stays in sync — refresh, back, forward all land on
 // the same page. Previously navigation was tracked in a local ref
 // and refresh always snapped back to the catalog.
 
-const props = defineProps<{ ctx: KedgeContext | null }>()
+const props = defineProps<{ ctx: FarosContext | null }>()
 
 interface Route {
   page: 'templates' | 'instances' | 'missing-credentials'
@@ -57,7 +57,7 @@ watch(() => props.ctx?.token, (v) => setToken(v), { immediate: true })
 // /graphql/<cluster> path segment for every gateway call in api.ts.
 watch(() => props.ctx?.tenant, (v) => setTenant(v), { immediate: true })
 
-// navigate dispatches a kedge-navigate CustomEvent (bubbles) so the
+// navigate dispatches a faros-navigate CustomEvent (bubbles) so the
 // shell updates the browser URL. Children call this through the
 // emitted 'navigate' event so they don't need to know about the
 // custom-event protocol. Path is RELATIVE to the provider root
@@ -67,7 +67,7 @@ const rootRef = ref<HTMLElement | null>(null)
 function navigate(path: string) {
   const el = rootRef.value
   if (!el) return
-  el.dispatchEvent(new CustomEvent('kedge-navigate', { detail: { path }, bubbles: true }))
+  el.dispatchEvent(new CustomEvent('faros-navigate', { detail: { path }, bubbles: true }))
 }
 
 // Bridge legacy navigate('catalog' | 'provision' | 'instances' | 'detail' | 'missing-credentials')

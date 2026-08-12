@@ -14,7 +14,7 @@ import {
 } from './assistantResources'
 import { filterAssistantSkills } from './skillsSearch'
 import type {
-  KedgeContext,
+  FarosContext,
   ProjectAssistantContextResource,
   ProjectAssistantRunMode,
   ProjectAssistantSkill,
@@ -26,7 +26,7 @@ type PaletteView = 'commands' | 'skills' | 'providers' | 'resources'
 const props = defineProps<{
   open: boolean
   commandQuery: string
-  ctx: KedgeContext | null
+  ctx: FarosContext | null
   providers: ProviderItem[]
   skills: ProjectAssistantSkill[]
   selectedSkillIDs: string[]

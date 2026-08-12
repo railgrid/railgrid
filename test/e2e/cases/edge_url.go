@@ -28,7 +28,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // edgeURLAgentKey is a context key for the Agent in EdgeURLSet / K8sProxyAccess.
@@ -42,7 +42,7 @@ func EdgeURLSet() features.Feature {
 	return features.New("edge URL set").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -64,7 +64,7 @@ func EdgeURLSet() features.Feature {
 		}).
 		Assess("edge becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
@@ -73,7 +73,7 @@ func EdgeURLSet() features.Feature {
 		}).
 		Assess("status.URL is populated and ends with /k8s", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			edgeURL, err := client.GetEdgeURL(ctx, edgeName)
 			if err != nil {
@@ -90,7 +90,7 @@ func EdgeURLSet() features.Feature {
 				a.Stop()
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
@@ -111,7 +111,7 @@ func K8sProxyAccess() features.Feature {
 	return features.New("k8s proxy access").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -133,7 +133,7 @@ func K8sProxyAccess() features.Feature {
 		}).
 		Assess("edge becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
@@ -142,7 +142,7 @@ func K8sProxyAccess() features.Feature {
 		}).
 		Assess("kubectl get nodes via status.URL returns edge cluster nodes", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			edgeURL, err := client.GetEdgeURL(ctx, edgeName)
 			if err != nil {
@@ -169,7 +169,7 @@ func K8sProxyAccess() features.Feature {
 		}).
 		Assess("kubectl get namespaces via status.URL returns default namespace", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			edgeURL, err := client.GetEdgeURL(ctx, edgeName)
 			if err != nil {
@@ -191,7 +191,7 @@ func K8sProxyAccess() features.Feature {
 				a.Stop()
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
@@ -221,7 +221,7 @@ func K8sProxyWrite() features.Feature {
 	return features.New("k8s proxy write").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -243,7 +243,7 @@ func K8sProxyWrite() features.Feature {
 		}).
 		Assess("edge becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
@@ -252,7 +252,7 @@ func K8sProxyWrite() features.Feature {
 		}).
 		Assess("kubectl apply ConfigMap via status.URL creates the resource", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			edgeURL, err := client.GetEdgeURL(ctx, edgeName)
 			if err != nil {
@@ -309,7 +309,7 @@ data:
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			// Best-effort cleanup: delete the ConfigMap on the edge cluster.
 			if edgeURL, err := client.GetEdgeURL(ctx, edgeName); err == nil {
@@ -340,7 +340,7 @@ type k8sProxyExecAgentKey struct{}
 //  2. Get status.URL.
 //  3. kubectl apply a busybox Pod via KubectlWithURL.
 //  4. Wait for the Pod to be Running (max 5 min — busybox may need to pull).
-//  5. kubectl exec <pod> -- echo kedge_exec_ok via KubectlWithURL.
+//  5. kubectl exec <pod> -- echo faros_exec_ok via KubectlWithURL.
 //  6. Assert output contains the marker.
 //  7. Cleanup: delete the Pod, stop agent, delete edge.
 func K8sProxyExec() features.Feature {
@@ -348,13 +348,13 @@ func K8sProxyExec() features.Feature {
 		edgeName   = "e2e-proxy-exec-edge"
 		podName    = "e2e-proxy-exec-pod"
 		ns         = "default"
-		execMarker = "kedge_exec_ok"
+		execMarker = "faros_exec_ok"
 	)
 
 	return features.New("k8s proxy exec").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -376,7 +376,7 @@ func K8sProxyExec() features.Feature {
 		}).
 		Assess("edge becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
@@ -385,7 +385,7 @@ func K8sProxyExec() features.Feature {
 		}).
 		Assess("kubectl exec via status.URL succeeds (SPDY upgrade path)", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			edgeURL, err := client.GetEdgeURL(ctx, edgeName)
 			if err != nil {
@@ -473,7 +473,7 @@ spec:
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			// Best-effort cleanup: delete the pod on the edge cluster.
 			if edgeURL, err := client.GetEdgeURL(ctx, edgeName); err == nil {

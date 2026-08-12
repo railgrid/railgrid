@@ -90,7 +90,7 @@ type UserStatus struct {
 	// PersonalOrg is the metadata.name (UUID) of the Organization
 	// auto-created for this User at bootstrap. Set once by the
 	// organization bootstrap controller; never reassigned. The portal
-	// uses this as the default X-Kedge-Org when the user has not
+	// uses this as the default X-Faros-Org when the user has not
 	// explicitly switched orgs. See docs/organizations.md §Personal Org.
 	//
 	// +optional
@@ -100,8 +100,8 @@ type UserStatus struct {
 	// Workspace auto-created inside the personal Organization at
 	// bootstrap. Set once by the organization bootstrap controller;
 	// never reassigned. The portal uses this as the default
-	// X-Kedge-Workspace when the user has not explicitly picked a
-	// Workspace. Lives at root:kedge:tenants:{personalOrg}:{defaultWorkspace}.
+	// X-Faros-Workspace when the user has not explicitly picked a
+	// Workspace. Lives at root:faros:tenants:{personalOrg}:{defaultWorkspace}.
 	//
 	// +optional
 	DefaultWorkspace string `json:"defaultWorkspace,omitempty"`

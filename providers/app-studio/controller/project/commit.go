@@ -46,8 +46,8 @@ import (
 // (the reconciler only knows the cluster; scopes are keyed by org/workspace
 // UUIDs the hub derives from the tenant path). Stamped at project creation.
 const (
-	orgUUIDAnnotation       = "ai.kedge.faros.sh/org-uuid"
-	workspaceUUIDAnnotation = "ai.kedge.faros.sh/workspace-uuid"
+	orgUUIDAnnotation       = "ai.faros.sh/org-uuid"
+	workspaceUUIDAnnotation = "ai.faros.sh/workspace-uuid"
 )
 
 // scopeOf derives the workspace scope from the Project's identity

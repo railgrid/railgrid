@@ -33,7 +33,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	providersv1alpha1 "github.com/faroshq/faros-kedge/apis/providers/v1alpha1"
+	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
 )
 
 // CatalogReconciler keeps the in-process Registry in sync with the cluster's
@@ -111,7 +111,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		if apierrors.IsNotFound(err) {
 			// Deletion: drop from registry. We key by name only across all
 			// clusters for Phase 1A; this is fine because catalog entries
-			// are intended to live in root:kedge:providers and the chart
+			// are intended to live in root:faros:providers and the chart
 			// names them uniquely cluster-wide.
 			if r.reg.Delete(req.Name) {
 				logger.Info("Removed provider from registry")
@@ -301,7 +301,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 
 	// The hub no longer provisions the per-provider workspace, schemas,
 	// APIExport, SA, or kubeconfig — that moved to admin onboarding
-	// (pkg/hub/admin) plus the provider's own Helm `init` (kedge-provider-sdk).
+	// (pkg/hub/admin) plus the provider's own Helm `init` (faros-provider-sdk).
 	// We only RESOLVE the provider workspace's logical cluster ID (read-only)
 	// so the Enable endpoint can build the edges-proxy RBAC subject. Returns
 	// empty until the provider has been onboarded, which is the correct gate.

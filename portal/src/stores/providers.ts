@@ -338,7 +338,7 @@ export const useProvidersStore = defineStore('providers', () => {
   // the org/workspace request *headers* come from authFetch({tenant:true}).
   function readTenantSelection(): { orgUUID: string | null; workspaceUUID: string | null } {
     try {
-      const raw = localStorage.getItem('kedge:portal:tenant')
+      const raw = localStorage.getItem('faros:portal:tenant')
       if (!raw) return { orgUUID: null, workspaceUUID: null }
       const parsed = JSON.parse(raw) as { orgUUID?: string | null; workspaceUUID?: string | null }
       return { orgUUID: parsed.orgUUID ?? null, workspaceUUID: parsed.workspaceUUID ?? null }

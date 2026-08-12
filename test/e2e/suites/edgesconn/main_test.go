@@ -20,13 +20,13 @@ limitations under the License.
 // Unlike the embedded edges suite (which covers the control-plane + auth
 // surface without an agent), this suite needs a live edge target, so it stands
 // up a kind cluster as the KubernetesCluster agent's backing cluster. It runs
-// the kedge-hub with embedded kcp over HTTPS + the edges-provider (init then
+// the faros-hub with embedded kcp over HTTPS + the edges-provider (init then
 // serve) as host subprocesses, mirroring `make run-hub-embedded-static` +
 // `make run-provider-edges`, then:
 //
 //   - enables edges in a tenant workspace (APIBinding) + the edge-proxy grant
 //     the hub REST /enable path would create (EnsureProviderEdgeProxyGrant),
-//   - registers a KubernetesCluster, runs `kedge agent run` against the kind
+//   - registers a KubernetesCluster, runs `faros agent run` against the kind
 //     cluster, waits for the tunnel to come up, and
 //   - fetches the edge kubeconfig and runs `kubectl get nodes` through the
 //     tunnel.
@@ -66,7 +66,7 @@ var (
 	hubURL      string // https://127.0.0.1:<port>
 	kcpServer   string // https://127.0.0.1:<port> (admin kubeconfig)
 	adminToken  string
-	kedgeBin    string
+	farosBin    string
 	staticToken = "dev-token"
 )
 
@@ -79,8 +79,8 @@ const (
 	kcpPort      = "16473"
 	providerPort = "18098"
 
-	edgesWorkspacePath = "root:kedge:providers:edges"
-	edgesAPIExportName = "edges.providers.kedge.faros.sh"
+	edgesWorkspacePath = "root:faros:providers:edges"
+	edgesAPIExportName = "edges.providers.faros.sh"
 )
 
 var secretGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
@@ -94,7 +94,7 @@ func TestMain(m *testing.M) {
 
 	for _, p := range []string{hubPort, kcpPort, providerPort, "2380"} {
 		if portInUse(p) {
-			fmt.Fprintf(os.Stderr, "port :%s already in use; stop stray kedge-hub/edges-provider and retry\n", p)
+			fmt.Fprintf(os.Stderr, "port :%s already in use; stop stray faros-hub/edges-provider and retry\n", p)
 			os.Exit(2)
 		}
 	}
@@ -103,17 +103,17 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "build failed:", err)
 		os.Exit(1)
 	}
-	kedgeBin = filepath.Join(repoRoot, "bin", "kedge")
+	farosBin = filepath.Join(repoRoot, "bin", "faros")
 
-	dataDir, err := os.MkdirTemp("", "kedge-e2e-edgesconn-")
+	dataDir, err := os.MkdirTemp("", "faros-e2e-edgesconn-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tempdir:", err)
 		os.Exit(1)
 	}
-	keepData := os.Getenv("KEDGE_E2E_KEEP_DATA") == "true"
+	keepData := os.Getenv("FAROS_E2E_KEEP_DATA") == "true"
 
 	hubLog, _ := os.Create(filepath.Join(dataDir, "hub.log"))
-	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "kedge-hub"),
+	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "faros-hub"),
 		"--serving-cert-file", filepath.Join(repoRoot, "certs", "apiserver.crt"),
 		"--serving-key-file", filepath.Join(repoRoot, "certs", "apiserver.key"),
 		"--hub-external-url", hubURL,
@@ -176,9 +176,9 @@ func TestMain(m *testing.M) {
 	initLog, _ := os.Create(filepath.Join(dataDir, "init.log"))
 	initCmd := exec.Command(filepath.Join(repoRoot, "bin", "edges-provider"), "init")
 	initCmd.Env = append(os.Environ(),
-		"KEDGE_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
+		"FAROS_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		"EDGES_WORKSPACE_PATH="+edgesWorkspacePath,
-		"KEDGE_SCHEMAS_DIR="+filepath.Join(repoRoot, "providers", "edges", "deploy", "chart", "files", "schemas"),
+		"FAROS_SCHEMAS_DIR="+filepath.Join(repoRoot, "providers", "edges", "deploy", "chart", "files", "schemas"),
 	)
 	initCmd.Stdout = initLog
 	initCmd.Stderr = initLog
@@ -192,14 +192,14 @@ func TestMain(m *testing.M) {
 	provCmd = exec.Command(filepath.Join(repoRoot, "bin", "edges-provider"), "serve")
 	provCmd.Env = append(os.Environ(),
 		"PORT="+providerPort,
-		"KEDGE_HUB_URL="+hubURL,
-		"KEDGE_HUB_EXTERNAL_URL="+hubURL,
-		"KEDGE_HUB_TOKEN="+staticToken,
-		"KEDGE_HUB_INSECURE=true",
-		"KEDGE_PROVIDER_NAME=edges",
-		"KEDGE_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
-		"KEDGE_STATIC_TOKENS="+staticToken,
-		"KEDGE_DEV_MODE=true",
+		"FAROS_HUB_URL="+hubURL,
+		"FAROS_HUB_EXTERNAL_URL="+hubURL,
+		"FAROS_HUB_TOKEN="+staticToken,
+		"FAROS_HUB_INSECURE=true",
+		"FAROS_PROVIDER_NAME=edges",
+		"FAROS_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
+		"FAROS_STATIC_TOKENS="+staticToken,
+		"FAROS_DEV_MODE=true",
 	)
 	provCmd.Stdout = provLog
 	provCmd.Stderr = provLog
@@ -223,13 +223,13 @@ func TestMain(m *testing.M) {
 }
 
 func applyEdgesManifests() error {
-	cl, err := kcpDynamicRaw("root:kedge:system:providers", adminToken)
+	cl, err := kcpDynamicRaw("root:faros:system:providers", adminToken)
 	if err != nil {
 		return fmt.Errorf("dynamic client: %w", err)
 	}
 	gvrByKind := map[string]schema.GroupVersionResource{
-		"Provider":     {Group: "admin.kedge.faros.sh", Version: "v1alpha1", Resource: "providers"},
-		"CatalogEntry": {Group: "providers.kedge.faros.sh", Version: "v1alpha1", Resource: "catalogentries"},
+		"Provider":     {Group: "admin.faros.sh", Version: "v1alpha1", Resource: "providers"},
+		"CatalogEntry": {Group: "providers.faros.sh", Version: "v1alpha1", Resource: "catalogentries"},
 	}
 	overrideURL := "http://localhost:" + providerPort
 	for _, file := range []string{"provider.yaml", "manifest.yaml"} {
@@ -305,18 +305,18 @@ func mintRuntimeKubeconfig(path string, timeout time.Duration) error {
 	kc := fmt.Sprintf(`apiVersion: v1
 kind: Config
 clusters:
-- name: kedge
+- name: faros
   cluster:
     server: %s/clusters/%s
     insecure-skip-tls-verify: true
 contexts:
-- name: kedge
+- name: faros
   context:
-    cluster: kedge
-    user: kedge
-current-context: kedge
+    cluster: faros
+    user: faros
+current-context: faros
 users:
-- name: kedge
+- name: faros
   user:
     token: %s
 `, kcpServer, edgesWorkspacePath, token)
@@ -326,7 +326,7 @@ users:
 // --- shared helpers ---
 
 func build(root string) error {
-	cmd := exec.Command("make", "-C", root, "build-hub", "build-edges-provider", "build-kedge", "certs")
+	cmd := exec.Command("make", "-C", root, "build-hub", "build-edges-provider", "build-faros", "certs")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

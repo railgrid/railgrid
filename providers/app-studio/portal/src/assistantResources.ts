@@ -1,5 +1,5 @@
 import type {
-  KedgeContext,
+  FarosContext,
   ProjectAssistantContextResource,
   ProviderActionBoundResource,
   ProviderItem,
@@ -107,7 +107,7 @@ function graphqlEndpoint(tenant: string): string {
   return `/graphql/${encodeURIComponent(tenant)}`
 }
 
-async function queryResourceType(ctx: KedgeContext, type: AssistantResourceType, fetcher: typeof fetch): Promise<AssistantResourceGroup> {
+async function queryResourceType(ctx: FarosContext, type: AssistantResourceType, fetcher: typeof fetch): Promise<AssistantResourceGroup> {
   const tenant = ctx.tenant?.trim() ?? ''
   const token = ctx.token?.trim() ?? ''
   if (!tenant || !token) throw new Error('tenant context unavailable')
@@ -145,7 +145,7 @@ async function queryResourceType(ctx: KedgeContext, type: AssistantResourceType,
 }
 
 export async function discoverAssistantResources(
-  ctx: KedgeContext | null,
+  ctx: FarosContext | null,
   types: AssistantResourceType[],
   fetcher: typeof fetch = fetch,
 ): Promise<AssistantResourceDiscoveryResult> {

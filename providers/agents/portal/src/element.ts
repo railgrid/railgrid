@@ -1,6 +1,6 @@
-// AgentsElement is the custom element the kedge portal renders for the agents
+// AgentsElement is the custom element the faros portal renders for the agents
 // provider. The portal loads main.js (registering this element), appends the
-// element, and sets element.kedgeContext as a JS property — no iframe, no
+// element, and sets element.farosContext as a JS property — no iframe, no
 // postMessage. The element runs in light DOM so the portal's CSS variables
 // cascade in.
 //
@@ -10,7 +10,7 @@
 // feed and trace viewer, with pending approvals pinned on top; Connections
 // carries Toolsets as a section; Models is the usage dashboard + credentials.
 //
-// This element is a thin shell: it owns the KedgeContext, one ApiClient, one
+// This element is a thin shell: it owns the FarosContext, one ApiClient, one
 // AppStore, the current Route, and the render dispatch.
 
 import { html, nothing, type TemplateResult } from 'lit'
@@ -20,7 +20,7 @@ import { AppStore } from './store'
 import { LightElement } from './ui/base'
 import { icon, type IconName } from './ui/icon'
 import { clearToasts } from './ui/toast'
-import type { KedgeContext } from './types'
+import type { FarosContext } from './types'
 import { DEFAULT_ROUTE, MENUS, activeMenu, parseHash, syncHash, type MenuKey, type Route } from './router'
 
 import './ui/toast'
@@ -39,19 +39,19 @@ const MENU_META: Record<MenuKey, { icon: IconName; label: string }> = {
 }
 
 export class AgentsElement extends LightElement {
-  @state() private ctx: KedgeContext | null = null
+  @state() private ctx: FarosContext | null = null
   @state() private route: Route = DEFAULT_ROUTE
 
   private api = new ApiClient()
   private store = new AppStore(this.api)
   private loadedTenant: string | null = null
 
-  set kedgeContext(v: KedgeContext | null) {
+  set farosContext(v: FarosContext | null) {
     this.ctx = v
     this.api.setContext(v)
     this.maybeLoad()
   }
-  get kedgeContext(): KedgeContext | null {
+  get farosContext(): FarosContext | null {
     return this.ctx
   }
 

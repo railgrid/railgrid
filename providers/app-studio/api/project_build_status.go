@@ -47,7 +47,7 @@ const (
 
 	// projectBuildWorkflowFileName is the basename of the build workflow the
 	// scaffold commits — the Actions API addresses workflows by file name.
-	projectBuildWorkflowFileName = "kedge-app-studio-build.yml"
+	projectBuildWorkflowFileName = "faros-app-studio-build.yml"
 
 	// projectToolCodeBuildStatus / projectToolCodeRebuild are the Code
 	// provider's Actions tools exposed through the tenant MCP federation.

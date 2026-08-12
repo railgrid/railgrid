@@ -27,7 +27,7 @@ func TestSearchRequest(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("brave is the default and keeps its own auth header", func(t *testing.T) {
-		req, err := searchRequest(ctx, searchConn("brave", agentsv1alpha1.ConnectionSpec{}), DataPlane{}, "tok", "kedge agents")
+		req, err := searchRequest(ctx, searchConn("brave", agentsv1alpha1.ConnectionSpec{}), DataPlane{}, "tok", "faros agents")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -37,7 +37,7 @@ func TestSearchRequest(t *testing.T) {
 		if req.Header.Get("X-Subscription-Token") != "tok" {
 			t.Fatalf("missing Brave subscription header: %v", req.Header)
 		}
-		if req.URL.Query().Get("q") != "kedge agents" {
+		if req.URL.Query().Get("q") != "faros agents" {
 			t.Fatalf("query not passed through: %s", req.URL)
 		}
 	})

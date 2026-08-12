@@ -19,8 +19,8 @@ func TestSplitSchemaName(t *testing.T) {
 		wantGroup    string
 	}{
 		{"v260522-abc.greetings.hello.cost.faros.sh", "greetings", "hello.cost.faros.sh"},
-		{"v260609-fc69fa2.connections.code.kedge.faros.sh", "connections", "code.kedge.faros.sh"},
-		{"v1.savedviews.kuery.kedge.faros.sh", "savedviews", "kuery.kedge.faros.sh"},
+		{"v260609-fc69fa2.connections.code.faros.sh", "connections", "code.faros.sh"},
+		{"v1.savedviews.kuery.faros.sh", "savedviews", "kuery.faros.sh"},
 		{"noversion", "", ""},     // no dot
 		{"version.only", "", ""},  // missing group segment
 		{"trailing.dot.", "", ""}, // trailing dot
@@ -39,14 +39,14 @@ func TestMergeAPIExportResources(t *testing.T) {
 		return map[string]any{"group": group, "name": name}
 	}
 	existing := []any{
-		res("code.kedge.faros.sh", "connections"),         // owned → replaced
-		res("code.kedge.faros.sh", "coderepos"),           // stale in owned group → pruned
-		res("infrastructure.kedge.faros.sh", "templates"), // foreign → preserved
+		res("code.faros.sh", "connections"),         // owned → replaced
+		res("code.faros.sh", "coderepos"),           // stale in owned group → pruned
+		res("infrastructure.faros.sh", "templates"), // foreign → preserved
 		"unparseable", // kept verbatim
 	}
 	owned := []any{
-		res("code.kedge.faros.sh", "connections"),
-		res("code.kedge.faros.sh", "repositories"),
+		res("code.faros.sh", "connections"),
+		res("code.faros.sh", "repositories"),
 	}
 	out := mergeAPIExportResources(existing, owned)
 

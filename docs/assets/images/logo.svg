@@ -5,5 +5,5 @@
       <stop offset="100%" style="stop-color:#8b5cf6;stop-opacity:1" />
     </linearGradient>
   </defs>
-  <text x="5" y="28" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="700" fill="url(#grad)">Kedge</text>
+  <text x="5" y="28" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="700" fill="url(#grad)">Faros</text>
 </svg>

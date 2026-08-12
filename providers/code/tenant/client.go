@@ -67,7 +67,7 @@ func NewClientFactory(base *rest.Config) *ClientFactory {
 
 // For returns a dynamic client scoped to the workspace's logical-cluster ID,
 // authenticating as the caller via token. Cached per (cluster, token). The
-// cluster MUST be the kcp logical-cluster ID (X-Kedge-Cluster), never a
+// cluster MUST be the kcp logical-cluster ID (X-Faros-Cluster), never a
 // workspace path — the hub proxy rejects path-form addressing.
 func (f *ClientFactory) For(clusterID, token string) (dynamic.Interface, error) {
 	if token == "" {

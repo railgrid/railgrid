@@ -31,7 +31,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/faroshq/faros-kedge/pkg/hub/providers"
+	"github.com/faroshq/faros/pkg/hub/providers"
 )
 
 // Fixture builtin names, prefixed to avoid colliding with any real

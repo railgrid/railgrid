@@ -118,7 +118,7 @@ export class AssistantWorkedDurationClock {
   }
 
   private storageKey(scope: string): string {
-    return `kedge:app-studio:assistant-worked-duration:v1:${encodeDurationScope(this.namespace)}:${encodeDurationScope(scope || 'default')}`
+    return `faros:app-studio:assistant-worked-duration:v1:${encodeDurationScope(this.namespace)}:${encodeDurationScope(scope || 'default')}`
   }
 
   private restoreState(

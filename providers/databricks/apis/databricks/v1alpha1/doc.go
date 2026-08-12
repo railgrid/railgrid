@@ -9,5 +9,5 @@
 // Package v1alpha1 contains the Databricks provider API.
 //
 // +k8s:deepcopy-gen=package
-// +groupName=databricks.kedge.faros.sh
+// +groupName=databricks.faros.sh
 package v1alpha1

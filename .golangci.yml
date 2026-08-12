@@ -26,4 +26,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/faroshq/faros-kedge
+        - github.com/faroshq/faros

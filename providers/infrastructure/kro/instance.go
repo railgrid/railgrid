@@ -44,15 +44,15 @@ func init() {
 // namespace and bridges cloud credentials into a sidecar Secret. The
 // sequence is:
 //
-//	1. Marshal spec.<fields> from in.Values into the unstructured
-//	   instance shaped by in.Template.InstanceGVR.
-//	2. Create the instance CR (Create, not Apply — collisions become
-//	   409 to the caller, signalling "pick a different name").
-//	3. Create the cloud-credentials-<name> Secret in the same
-//	   namespace, populated from in.Credentials. The RGD template
-//	   references it by name.
-//	4. Patch the Secret's ownerReferences to the just-created
-//	   instance UID so Kubernetes GC handles cleanup on delete.
+//  1. Marshal spec.<fields> from in.Values into the unstructured
+//     instance shaped by in.Template.InstanceGVR.
+//  2. Create the instance CR (Create, not Apply — collisions become
+//     409 to the caller, signalling "pick a different name").
+//  3. Create the cloud-credentials-<name> Secret in the same
+//     namespace, populated from in.Credentials. The RGD template
+//     references it by name.
+//  4. Patch the Secret's ownerReferences to the just-created
+//     instance UID so Kubernetes GC handles cleanup on delete.
 //
 // On failure between (2) and (4) we leave an orphan Secret; the
 // startup-time sweeper in sweeper.go reclaims them after 10 minutes.
@@ -233,11 +233,11 @@ func buildInstanceUnstructured(in CreateInstanceParams, namespace string) *unstr
 // slice rather than nil so the JSON response always carries the key.
 func unstructuredToInstance(obj *unstructured.Unstructured, templateName string) *Instance {
 	inst := &Instance{
-		Name:      obj.GetName(),
-		Namespace: obj.GetNamespace(),
-		Template:  templateName,
-		Phase:     "Pending",
-		CreatedAt: obj.GetCreationTimestamp().Time,
+		Name:       obj.GetName(),
+		Namespace:  obj.GetNamespace(),
+		Template:   templateName,
+		Phase:      "Pending",
+		CreatedAt:  obj.GetCreationTimestamp().Time,
 		Conditions: []InstanceCondition{},
 		Children:   []InstanceChild{},
 	}

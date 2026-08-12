@@ -46,12 +46,12 @@ func NewHandler(deps Deps) http.Handler {
 
 func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{
-		Name:    "kedge-code",
+		Name:    "faros-code",
 		Version: "0.1.0",
-		Title:   "kedge code provider",
+		Title:   "faros code provider",
 	}, &mcp.ServerOptions{
 		Instructions: "This MCP endpoint manages source-code repositories in " +
-			"your kedge tenant workspace across git hosting providers " +
+			"your faros tenant workspace across git hosting providers " +
 			"(GitHub today). A Connection holds the credential for one git " +
 			"account; Repositories, DeployKeys, and Collaborators reference a " +
 			"Connection. Use list_connections to see configured accounts and " +

@@ -2,18 +2,18 @@
  * code provider element styles. Imported as a string by main.ts and injected as
  * one <style> tag in the host document. The element renders in LIGHT DOM so the
  * portal's CSS custom properties (--color-*) cascade in; every selector is
- * namespaced under kedge-provider-code so these styles cannot leak into the
+ * namespaced under faros-provider-code so these styles cannot leak into the
  * portal. Structure + tokens mirror the infrastructure provider so the two look
  * like one product.
  */
 
-kedge-provider-code {
+faros-provider-code {
   display: block;
   font-family: inherit;
   color: var(--color-text-primary, inherit);
 }
 
-kedge-provider-code .app {
+faros-provider-code .app {
   padding: 8px 0;
   display: flex;
   flex-direction: column;
@@ -21,11 +21,11 @@ kedge-provider-code .app {
 }
 
 /* Tabs (segmented sub-nav) */
-kedge-provider-code .tabs {
+faros-provider-code .tabs {
   display: flex;
   gap: 4px;
 }
-kedge-provider-code .tabs button {
+faros-provider-code .tabs button {
   background: transparent;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -36,11 +36,11 @@ kedge-provider-code .tabs button {
   font-size: 12px;
   font-weight: 500;
 }
-kedge-provider-code .tabs button:hover {
+faros-provider-code .tabs button:hover {
   color: var(--color-text-primary, inherit);
   background: var(--color-surface-hover, rgba(255, 255, 255, 0.07));
 }
-kedge-provider-code .tabs button.active {
+faros-provider-code .tabs button.active {
   color: var(--color-accent, #8b6bff);
   background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
   border-color: var(--color-accent, #8b6bff);
@@ -48,23 +48,23 @@ kedge-provider-code .tabs button.active {
 }
 
 /* Page scaffold */
-kedge-provider-code .page {
+faros-provider-code .page {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
-kedge-provider-code .page-head {
+faros-provider-code .page-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
-kedge-provider-code .page-title {
+faros-provider-code .page-title {
   margin: 0 0 4px;
   font-size: 15px;
   font-weight: 600;
 }
-kedge-provider-code .page-meta {
+faros-provider-code .page-meta {
   margin: 0;
   font-size: 12px;
   color: var(--color-text-secondary, #8a8ca6);
@@ -73,7 +73,7 @@ kedge-provider-code .page-meta {
 }
 
 /* Panels (cards) */
-kedge-provider-code .panel {
+faros-provider-code .panel {
   background: var(--color-surface-raised, #111320);
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
@@ -82,7 +82,7 @@ kedge-provider-code .panel {
   flex-direction: column;
   gap: 10px;
 }
-kedge-provider-code .panel-title {
+faros-provider-code .panel-title {
   margin: 0;
   font-size: 11px;
   font-weight: 600;
@@ -90,7 +90,7 @@ kedge-provider-code .panel-title {
   text-transform: uppercase;
   color: var(--color-text-secondary, currentColor);
 }
-kedge-provider-code .panel-head {
+faros-provider-code .panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -98,84 +98,84 @@ kedge-provider-code .panel-head {
 }
 
 /* Two-column grid for the detail page */
-kedge-provider-code .grid-2 {
+faros-provider-code .grid-2 {
   display: grid;
   gap: 12px;
   grid-template-columns: 1fr;
 }
 @media (min-width: 860px) {
-  kedge-provider-code .grid-2 {
+  faros-provider-code .grid-2 {
     grid-template-columns: 1fr 1fr;
     align-items: start;
   }
 }
 
 /* Definition list for key/value rows on the detail page */
-kedge-provider-code .props {
+faros-provider-code .props {
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 6px 16px;
   margin: 0;
   font-size: 12px;
 }
-kedge-provider-code .props dt {
+faros-provider-code .props dt {
   color: var(--color-text-muted, #5d5f78);
 }
-kedge-provider-code .props dd {
+faros-provider-code .props dd {
   margin: 0;
   color: var(--color-text-secondary, #8a8ca6);
   word-break: break-all;
 }
 
 /* Inline connection switcher on the detail page */
-kedge-provider-code .conn-edit {
+faros-provider-code .conn-edit {
   display: flex;
   gap: 8px;
   align-items: center;
 }
-kedge-provider-code .conn-edit select {
+faros-provider-code .conn-edit select {
   flex: 1;
   min-width: 0;
 }
-kedge-provider-code .conn-warn {
+faros-provider-code .conn-warn {
   margin: 6px 0 0;
   color: var(--color-warning, #f0a63a);
 }
 /* Tables */
-kedge-provider-code .table {
+faros-provider-code .table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
 }
-kedge-provider-code .table th,
-kedge-provider-code .table td {
+faros-provider-code .table th,
+faros-provider-code .table td {
   text-align: left;
   padding: 7px 10px;
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
 }
-kedge-provider-code .table tbody tr:last-child td {
+faros-provider-code .table tbody tr:last-child td {
   border-bottom: none;
 }
-kedge-provider-code .table tbody tr {
+faros-provider-code .table tbody tr {
   transition: background-color 0.1s ease;
 }
-kedge-provider-code .table tbody tr:hover {
+faros-provider-code .table tbody tr:hover {
   background: var(--color-accent-subtle, rgba(139, 107, 255, 0.05));
 }
-kedge-provider-code .table th {
+faros-provider-code .table th {
   font-weight: 600;
   font-size: 10px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--color-text-muted, #5d5f78);
 }
-kedge-provider-code .table td.right,
-kedge-provider-code .table th.right {
+faros-provider-code .table td.right,
+faros-provider-code .table th.right {
   text-align: right;
 }
 
 /* Buttons */
-kedge-provider-code button.primary {
+faros-provider-code button.primary {
   background: var(--color-accent, #8b6bff);
   color: #fff;
   border: 1px solid var(--color-accent, #8b6bff);
@@ -188,15 +188,15 @@ kedge-provider-code button.primary {
   box-shadow: 0 0 16px var(--color-accent-glow);
   transition: background-color 0.12s ease, box-shadow 0.12s ease;
 }
-kedge-provider-code button.primary:hover {
+faros-provider-code button.primary:hover {
   background: var(--color-accent-hover, #a18aff);
   box-shadow: 0 0 22px var(--color-accent-glow);
 }
-kedge-provider-code button.primary:disabled {
+faros-provider-code button.primary:disabled {
   opacity: 0.55;
   cursor: progress;
 }
-kedge-provider-code button.secondary {
+faros-provider-code button.secondary {
   background: var(--color-surface-overlay, #171927);
   color: var(--color-text-primary, inherit);
   border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
@@ -206,10 +206,10 @@ kedge-provider-code button.secondary {
   font-size: 12px;
   cursor: pointer;
 }
-kedge-provider-code button.secondary:hover {
+faros-provider-code button.secondary:hover {
   background: var(--color-surface-hover, #1e2033);
 }
-kedge-provider-code button.danger {
+faros-provider-code button.danger {
   background: transparent;
   color: var(--color-danger, #ff5d5d);
   border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
@@ -220,11 +220,11 @@ kedge-provider-code button.danger {
   cursor: pointer;
   transition: all 0.12s ease;
 }
-kedge-provider-code button.danger:hover {
+faros-provider-code button.danger:hover {
   border-color: var(--color-danger, #ff5d5d);
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
 }
-kedge-provider-code button.link {
+faros-provider-code button.link {
   background: transparent;
   border: none;
   color: var(--color-accent, #8b6bff);
@@ -233,49 +233,49 @@ kedge-provider-code button.link {
   cursor: pointer;
   padding: 0;
 }
-kedge-provider-code button.link:hover {
+faros-provider-code button.link:hover {
   color: var(--color-accent-hover, #a18aff);
 }
-kedge-provider-code button.link.back {
+faros-provider-code button.link.back {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   color: var(--color-text-muted, #5d5f78);
   margin-bottom: 4px;
 }
-kedge-provider-code button.link.back:hover {
+faros-provider-code button.link.back:hover {
   color: var(--color-accent, #8b6bff);
 }
 
-kedge-provider-code .actions {
+faros-provider-code .actions {
   display: flex;
   gap: 8px;
   align-items: center;
 }
 
 /* Forms */
-kedge-provider-code .form {
+faros-provider-code .form {
   display: flex;
   flex-direction: column;
   gap: 12px;
   max-width: 36rem;
 }
-kedge-provider-code .field {
+faros-provider-code .field {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-kedge-provider-code .field-label {
+faros-provider-code .field-label {
   font-size: 11px;
   font-weight: 600;
   color: var(--color-text-secondary, currentColor);
 }
-kedge-provider-code .field input,
-kedge-provider-code .field select,
-kedge-provider-code .field textarea,
-kedge-provider-code .inline-form input,
-kedge-provider-code .inline-form select,
-kedge-provider-code .conn-edit select {
+faros-provider-code .field input,
+faros-provider-code .field select,
+faros-provider-code .field textarea,
+faros-provider-code .inline-form input,
+faros-provider-code .inline-form select,
+faros-provider-code .conn-edit select {
   background: var(--color-surface-overlay, #171927);
   color: var(--color-text-primary, inherit);
   border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
@@ -286,30 +286,30 @@ kedge-provider-code .conn-edit select {
   width: 100%;
   box-sizing: border-box;
 }
-kedge-provider-code .field input::placeholder,
-kedge-provider-code .field textarea::placeholder {
+faros-provider-code .field input::placeholder,
+faros-provider-code .field textarea::placeholder {
   color: var(--color-text-muted, #5d5f78);
 }
-kedge-provider-code .field input:focus,
-kedge-provider-code .field select:focus,
-kedge-provider-code .field textarea:focus {
+faros-provider-code .field input:focus,
+faros-provider-code .field select:focus,
+faros-provider-code .field textarea:focus {
   outline: none;
   border-color: var(--color-accent, #8b6bff);
   box-shadow: 0 0 0 3px var(--color-accent-subtle), 0 0 14px var(--color-accent-glow);
 }
-kedge-provider-code .field-check {
+faros-provider-code .field-check {
   flex-direction: row;
   align-items: center;
   gap: 8px;
   font-size: 12px;
   color: var(--color-text-secondary, #8a8ca6);
 }
-kedge-provider-code .field-check input {
+faros-provider-code .field-check input {
   width: auto;
 }
 
 /* Status badges (square mono tags) */
-kedge-provider-code .badge {
+faros-provider-code .badge {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -325,31 +325,31 @@ kedge-provider-code .badge {
   color: var(--color-text-muted, inherit);
   white-space: nowrap;
 }
-kedge-provider-code .badge::before {
+faros-provider-code .badge::before {
   content: "";
   width: 5px;
   height: 5px;
   border-radius: 999px;
   background: currentColor;
 }
-kedge-provider-code .badge.ok {
+faros-provider-code .badge.ok {
   background: var(--color-success-subtle, rgba(47, 214, 160, 0.12));
   color: var(--color-success, #2fd6a0);
 }
-kedge-provider-code .badge.warn {
+faros-provider-code .badge.warn {
   background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12));
   color: var(--color-warning, #f0a63a);
 }
-kedge-provider-code .badge.fail {
+faros-provider-code .badge.fail {
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   color: var(--color-danger, #ff5d5d);
 }
-kedge-provider-code .badge.muted::before {
+faros-provider-code .badge.muted::before {
   display: none;
 }
 
 /* Solid destructive button — emphasis variant for confirm-dialog actions */
-kedge-provider-code button.danger-solid {
+faros-provider-code button.danger-solid {
   background: var(--color-danger, #ff5d5d);
   color: #fff;
   border: 1px solid var(--color-danger, #ff5d5d);
@@ -361,12 +361,12 @@ kedge-provider-code button.danger-solid {
   cursor: pointer;
   transition: background-color 0.12s ease;
 }
-kedge-provider-code button.danger-solid:hover {
+faros-provider-code button.danger-solid:hover {
   background: var(--color-danger-hover, #e64c4c);
 }
 
 /* Confirm dialog (in-app modal replacing window.confirm) */
-kedge-provider-code .modal-overlay {
+faros-provider-code .modal-overlay {
   position: fixed;
   inset: 0;
   z-index: 1000;
@@ -377,7 +377,7 @@ kedge-provider-code .modal-overlay {
   background: rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(2px);
 }
-kedge-provider-code .modal {
+faros-provider-code .modal {
   width: 100%;
   max-width: 26rem;
   background: var(--color-surface-raised, #111320);
@@ -389,19 +389,19 @@ kedge-provider-code .modal {
   gap: 10px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
 }
-kedge-provider-code .modal-title {
+faros-provider-code .modal-title {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
   color: var(--color-text-primary, inherit);
 }
-kedge-provider-code .modal-message {
+faros-provider-code .modal-message {
   margin: 0;
   font-size: 12px;
   line-height: 1.5;
   color: var(--color-text-secondary, #8a8ca6);
 }
-kedge-provider-code .modal-actions {
+faros-provider-code .modal-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
@@ -409,27 +409,27 @@ kedge-provider-code .modal-actions {
 }
 
 /* Misc text */
-kedge-provider-code .muted {
+faros-provider-code .muted {
   color: var(--color-text-muted, #5d5f78);
   font-size: 12px;
 }
-kedge-provider-code .error {
+faros-provider-code .error {
   color: var(--color-danger, #ff5d5d);
   font-size: 12px;
 }
-kedge-provider-code .empty {
+faros-provider-code .empty {
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 12px;
   padding: 8px 0;
 }
-kedge-provider-code a {
+faros-provider-code a {
   color: var(--color-accent, #8b6bff);
   text-decoration: none;
 }
-kedge-provider-code a:hover {
+faros-provider-code a:hover {
   text-decoration: underline;
 }
-kedge-provider-code code {
+faros-provider-code code {
   background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
   color: var(--color-text-secondary, currentColor);
   padding: 1px 5px;
@@ -438,14 +438,14 @@ kedge-provider-code code {
   font-size: 11px;
 }
 
-kedge-provider-code .resource-table {
+faros-provider-code .resource-table {
   background: color-mix(in srgb, var(--color-surface-raised, #111320) 80%, transparent);
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
   overflow: hidden;
 }
 
-kedge-provider-code .resource-table-error {
+faros-provider-code .resource-table-error {
   align-items: center;
   color: var(--color-danger, #ff5d5d);
   display: flex;
@@ -454,87 +454,87 @@ kedge-provider-code .resource-table-error {
   padding: 16px;
 }
 
-kedge-provider-code .resource-table-error-icon {
+faros-provider-code .resource-table-error-icon {
   flex-shrink: 0;
   height: 16px;
   width: 16px;
 }
 
-kedge-provider-code .resource-table-loading-head,
-kedge-provider-code .resource-table-loading-row {
+faros-provider-code .resource-table-loading-head,
+faros-provider-code .resource-table-loading-row {
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
 }
 
-kedge-provider-code .resource-table-loading-head {
+faros-provider-code .resource-table-loading-head {
   padding: 12px 20px;
 }
 
-kedge-provider-code .resource-table-loading-row {
+faros-provider-code .resource-table-loading-row {
   align-items: center;
   display: flex;
   gap: 24px;
   padding: 14px 20px;
 }
 
-kedge-provider-code .resource-table-loading-row:last-child {
+faros-provider-code .resource-table-loading-row:last-child {
   border-bottom: none;
 }
 
-kedge-provider-code .resource-table-skeleton {
+faros-provider-code .resource-table-skeleton {
   border-radius: 4px;
   height: 12px;
 }
 
-kedge-provider-code .resource-table-skeleton-short {
+faros-provider-code .resource-table-skeleton-short {
   width: 96px;
 }
 
-kedge-provider-code .resource-table-skeleton-wide {
+faros-provider-code .resource-table-skeleton-wide {
   width: 128px;
 }
 
-kedge-provider-code .resource-table-skeleton-mid {
+faros-provider-code .resource-table-skeleton-mid {
   width: 80px;
 }
 
-kedge-provider-code .resource-table-skeleton-small {
+faros-provider-code .resource-table-skeleton-small {
   width: 64px;
 }
 
-kedge-provider-code .shimmer {
+faros-provider-code .shimmer {
   background: linear-gradient(90deg, var(--color-surface-overlay, #171927), var(--color-surface-hover, #1e2033), var(--color-surface-overlay, #171927));
   background-size: 200% 100%;
   animation: provider-shimmer 1.4s ease-in-out infinite;
 }
 
-kedge-provider-code .resource-table-table {
+faros-provider-code .resource-table-table {
   border-collapse: collapse;
   min-width: 100%;
   width: 100%;
 }
 
-kedge-provider-code .resource-table-head-row,
-kedge-provider-code .resource-table-row {
+faros-provider-code .resource-table-head-row,
+faros-provider-code .resource-table-row {
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
 }
 
-kedge-provider-code .resource-table-row {
+faros-provider-code .resource-table-row {
   transition: background-color 0.15s ease, color 0.1s ease;
 }
 
-kedge-provider-code .resource-table-row:last-child {
+faros-provider-code .resource-table-row:last-child {
   border-bottom: none;
 }
 
-kedge-provider-code .resource-table-row.is-interactive {
+faros-provider-code .resource-table-row.is-interactive {
   cursor: pointer;
 }
 
-kedge-provider-code .resource-table-row.is-interactive:hover {
+faros-provider-code .resource-table-row.is-interactive:hover {
   background: color-mix(in srgb, var(--color-accent, #8b6bff) 3%, transparent);
 }
 
-kedge-provider-code .resource-table-heading {
+faros-provider-code .resource-table-heading {
   color: var(--color-text-muted, #5d5f78);
   font-size: 10px;
   font-weight: 600;
@@ -544,7 +544,7 @@ kedge-provider-code .resource-table-heading {
   text-transform: uppercase;
 }
 
-kedge-provider-code .resource-table-cell {
+faros-provider-code .resource-table-cell {
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 13px;
   padding: 12px 20px;
@@ -552,29 +552,29 @@ kedge-provider-code .resource-table-cell {
   white-space: nowrap;
 }
 
-kedge-provider-code .resource-table-row.is-interactive:hover .resource-table-cell {
+faros-provider-code .resource-table-row.is-interactive:hover .resource-table-cell {
   color: var(--color-text-primary, inherit);
 }
 
-kedge-provider-code .resource-table-empty-cell {
+faros-provider-code .resource-table-empty-cell {
   padding: 64px 20px;
   text-align: center;
 }
 
-kedge-provider-code .resource-table-empty-icon {
+faros-provider-code .resource-table-empty-icon {
   color: color-mix(in srgb, var(--color-text-muted, #5d5f78) 20%, transparent);
   height: 32px;
   margin: 0 auto;
   width: 32px;
 }
 
-kedge-provider-code .resource-table-empty-label {
+faros-provider-code .resource-table-empty-label {
   color: var(--color-text-muted, #5d5f78);
   font-size: 12px;
   margin: 8px 0 0;
 }
 
-kedge-provider-code .status-badge {
+faros-provider-code .status-badge {
   align-items: center;
   border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
   border-radius: 3px;
@@ -589,35 +589,35 @@ kedge-provider-code .status-badge {
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-kedge-provider-code .status-badge.tone-success {
+faros-provider-code .status-badge.tone-success {
   background: var(--color-success-subtle, rgba(47, 214, 160, 0.12));
   color: var(--color-success, #2fd6a0);
 }
 
-kedge-provider-code .status-badge.tone-warning {
+faros-provider-code .status-badge.tone-warning {
   background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12));
   color: var(--color-warning, #f0a63a);
 }
 
-kedge-provider-code .status-badge.tone-danger {
+faros-provider-code .status-badge.tone-danger {
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   color: var(--color-danger, #ff5d5d);
 }
 
-kedge-provider-code .status-badge.tone-muted {
+faros-provider-code .status-badge.tone-muted {
   background: var(--color-surface-overlay, #171927);
   color: var(--color-text-muted, #5d5f78);
 }
 
-kedge-provider-code .status-badge-dot-wrap {
+faros-provider-code .status-badge-dot-wrap {
   display: flex;
   height: 6px;
   position: relative;
   width: 6px;
 }
 
-kedge-provider-code .status-badge-pulse,
-kedge-provider-code .status-badge-dot {
+faros-provider-code .status-badge-pulse,
+faros-provider-code .status-badge-dot {
   border-radius: 999px;
   display: inline-flex;
   height: 6px;
@@ -625,38 +625,38 @@ kedge-provider-code .status-badge-dot {
   width: 6px;
 }
 
-kedge-provider-code .status-badge-pulse {
+faros-provider-code .status-badge-pulse {
   animation: provider-live-ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
   opacity: 0.6;
 }
 
-kedge-provider-code .dot-success,
-kedge-provider-code .pulse-success {
+faros-provider-code .dot-success,
+faros-provider-code .pulse-success {
   background: var(--color-success, #2fd6a0);
 }
 
-kedge-provider-code .dot-warning,
-kedge-provider-code .pulse-warning {
+faros-provider-code .dot-warning,
+faros-provider-code .pulse-warning {
   background: var(--color-warning, #f0a63a);
 }
 
-kedge-provider-code .dot-danger,
-kedge-provider-code .pulse-danger {
+faros-provider-code .dot-danger,
+faros-provider-code .pulse-danger {
   background: var(--color-danger, #ff5d5d);
 }
 
-kedge-provider-code .dot-muted,
-kedge-provider-code .pulse-muted {
+faros-provider-code .dot-muted,
+faros-provider-code .pulse-muted {
   background: var(--color-text-muted, #5d5f78);
 }
 
-kedge-provider-code .conditions-panel {
+faros-provider-code .conditions-panel {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-kedge-provider-code .conditions-title {
+faros-provider-code .conditions-title {
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 11px;
   font-weight: 600;
@@ -665,25 +665,25 @@ kedge-provider-code .conditions-title {
   text-transform: uppercase;
 }
 
-kedge-provider-code .conditions-stale {
+faros-provider-code .conditions-stale {
   color: var(--color-warning, #f0a63a);
   font-size: 12px;
   margin: 0;
 }
 
-kedge-provider-code .conditions-type {
+faros-provider-code .conditions-type {
   color: var(--color-text-primary, inherit);
   font-weight: 600;
 }
 
-kedge-provider-code .conditions-message {
+faros-provider-code .conditions-message {
   display: block;
   max-width: 40ch;
   overflow-wrap: anywhere;
   white-space: normal;
 }
 
-kedge-provider-code .conditions-muted {
+faros-provider-code .conditions-muted {
   color: var(--color-text-muted, #5d5f78);
 }
 

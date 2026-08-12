@@ -19,7 +19,7 @@ package restapi
 // Published-app access grants are plain workspace RBAC (a labeled
 // ClusterRoleBinding per invited member — see docs/app-studio-publishing.md).
 // These endpoints surface them in tenant settings so the invitations App
-// Studio's share dialog writes are visible and revocable from the kedge UI,
+// Studio's share dialog writes are visible and revocable from the faros UI,
 // not only through kubectl. Same kcp-admin/proxy-avoidance rationale as the
 // providers/enabled endpoints: the portal cannot read sibling-workspace RBAC
 // through the user kcp proxy directly.
@@ -30,7 +30,7 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
+	"github.com/faroshq/faros/pkg/hub/kcp"
 )
 
 // ListAppAccessGrantsResponse is the body of GET .../app-access.

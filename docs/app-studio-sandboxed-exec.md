@@ -32,7 +32,7 @@ caller-authorized data-plane `exec` capability.
    execution-session state.
 6. The platform coordinator owns the durable, caller-bound session and
    idempotency records on the separate per-component platform-state PVC at
-   `/kedge/state`. It forwards an already-authorized execution request to the
+   `/faros/state`. It forwards an already-authorized execution request to the
    stateless executor over pod loopback. The executor re-hashes the actual
    managed source files, runs typed argv only when the workspace exactly
    matches the expected revision and SHA-256 digest, and returns bounded
@@ -93,7 +93,7 @@ spec:
     components:
       app:
         workspacePath: .
-        devImage: "${kedge.devImage.node}"
+        devImage: "${faros.devImage.node}"
         workingDir: /workspace
         startCommand: npm run dev -- --host 0.0.0.0
   dataPlane:
@@ -125,7 +125,7 @@ The three containers have deliberately separate authorities:
 
 | Container | Owns | Does not receive |
 |---|---|---|
-| platform coordinator | public control and exec endpoints, the instance control token, and durable session/idempotency state on `/kedge/state` | application environment or secrets |
+| platform coordinator | public control and exec endpoints, the instance control token, and durable session/idempotency state on `/faros/state` | application environment or secrets |
 | app runtime supervisor | the application environment and secrets; starts, restarts, and reloads the app process | the platform control token and platform-state PVC |
 | stateless executor | typed argv execution after workspace revision/SHA-256 verification | the platform control token, platform-state PVC, application environment/secrets, and service-account credentials |
 

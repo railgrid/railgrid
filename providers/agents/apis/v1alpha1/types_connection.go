@@ -48,7 +48,7 @@ const (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // Connection is a named credential to an external system. The secret material
-// lives in a tenant-workspace Secret (kedge-agents-conn-<name>); this resource
+// lives in a tenant-workspace Secret (faros-agents-conn-<name>); this resource
 // carries only the type and non-secret configuration.
 type Connection struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -84,7 +84,7 @@ type ConnectionSpec struct {
 	OAuth *ConnectionOAuth `json:"oauth,omitempty"`
 
 	// SecretRef names the tenant-workspace Secret holding this connection's
-	// credentials. Defaults to kedge-agents-conn-<connection-name> when empty.
+	// credentials. Defaults to faros-agents-conn-<connection-name> when empty.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	SecretRef string `json:"secretRef,omitempty"`

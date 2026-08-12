@@ -1,4 +1,4 @@
-apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+apiVersion: infrastructure.faros.sh/v1alpha1
 kind: Template
 metadata:
   name: browser
@@ -36,7 +36,7 @@ spec:
       set (POST for requests, GET for the SSE stream, DELETE to end a session).
       The hop is hub → infrastructure provider → the runtime cluster's
       kube-apiserver `services/proxy` subresource → the instance's Service. The
-      caller authenticates as ITSELF with its own kedge credential; the gate is
+      caller authenticates as ITSELF with its own faros credential; the gate is
       the caller's kcp RBAC on this instance — a caller that cannot GET the
       Browser object gets 403/404 and never reaches Chromium. So there is
       nothing to paste anywhere: no bearer token, no baseURL to copy out of
@@ -102,7 +102,7 @@ spec:
             path: status.runtimeNamespace
             type: code
   instanceCRD:
-    group: infrastructure.kedge.faros.sh
+    group: infrastructure.faros.sh
     version: v1alpha1
     resource: browsers
     kind: Browser
@@ -538,8 +538,8 @@ spec:
             parentRefs:
               - group: gateway.networking.k8s.io
                 kind: Gateway
-                name: ${kedge.gatewayName}
-                namespace: ${kedge.gatewayNamespace}
+                name: ${faros.gatewayName}
+                namespace: ${faros.gatewayNamespace}
             hostnames:
               - ${schema.spec.expose.fqdn}
             rules:
@@ -569,4 +569,4 @@ spec:
       # is includeWhen-gated — so this resolves only for an instance that
       # opted into exposure and is simply absent otherwise. That is exactly
       # the wanted semantics: no URL that is only sometimes real.
-      url: ${"https://" + httpRoute.spec.hostnames[0] + "${kedge.appPublicPort}"}
+      url: ${"https://" + httpRoute.spec.hostnames[0] + "${faros.appPublicPort}"}

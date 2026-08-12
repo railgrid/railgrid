@@ -1,4 +1,4 @@
-# Agents provider — register with the kedge hub.
+# Agents provider — register with the faros hub.
 #
 # The agents provider hosts long-running personal AI agents: chat, scheduled
 # and heartbeat runs, tool use, and durable memory. It is standalone — its only
@@ -7,8 +7,8 @@
 # infrastructure provider is present, so infrastructure is an OPTIONAL
 # dependency and is intentionally not listed under spec.dependencies.
 #
-# Apply this against the kcp workspace where the kedge.faros.sh APIExport is
-# bound (typically root:kedge:providers when running embedded kcp for dev):
+# Apply this against the kcp workspace where the faros.sh APIExport is
+# bound (typically root:faros:providers when running embedded kcp for dev):
 #
 #   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
 #
@@ -22,16 +22,16 @@
 # provider's init command creates the APIExport, schemas, endpoint slice, and
 # bind grant from deploy/chart/files/schemas.
 ---
-apiVersion: providers.kedge.faros.sh/v1alpha1
+apiVersion: providers.faros.sh/v1alpha1
 kind: CatalogEntry
 metadata:
   name: agents
   annotations:
-    providers.kedge.faros.sh/builtin: "false"
+    providers.faros.sh/builtin: "false"
 spec:
   displayName: "Agents"
   description: "Long-running personal AI agents: chat, scheduled runs, tools, and durable memory."
-  vendor: "kedge"
+  vendor: "faros"
   version: "0.1.0"
   category: "AI"
   iconURL: "/ui/providers/agents/icon.svg"
@@ -42,13 +42,13 @@ spec:
     indexPath: "/"
   backend:
     # The hub backend proxy forwards /services/providers/agents/* here,
-    # injecting the verified X-Kedge-Tenant/X-Kedge-User headers and the
+    # injecting the verified X-Faros-Tenant/X-Faros-User headers and the
     # caller's bearer token. The provider serves /api/* + /healthz.
     url: "http://localhost:8087"
     healthPath: "/healthz"
 
   apiExport:
-    name: "agents.kedge.faros.sh"
+    name: "agents.faros.sh"
     # The provider stores per-workspace model credentials and per-connection
     # secrets in Secrets in the tenant workspace; the claim lets it read/write
     # them as the calling user.

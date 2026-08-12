@@ -25,14 +25,14 @@ const (
 )
 
 func runHeartbeat(ctx context.Context) {
-	hub := os.Getenv("KEDGE_HUB_URL")
-	token := os.Getenv("KEDGE_HUB_TOKEN")
-	name := os.Getenv("KEDGE_PROVIDER_NAME")
+	hub := os.Getenv("FAROS_HUB_URL")
+	token := os.Getenv("FAROS_HUB_TOKEN")
+	name := os.Getenv("FAROS_PROVIDER_NAME")
 	if name == "" {
 		name = "app-studio"
 	}
 	if hub == "" {
-		log.Printf("heartbeat disabled (set KEDGE_HUB_URL to enable)")
+		log.Printf("heartbeat disabled (set FAROS_HUB_URL to enable)")
 		return
 	}
 
@@ -40,9 +40,9 @@ func runHeartbeat(ctx context.Context) {
 	body, _ := json.Marshal(map[string]string{"version": heartbeatVersion, "status": "healthy"})
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	if os.Getenv("KEDGE_HUB_INSECURE") == "true" {
+	if os.Getenv("FAROS_HUB_INSECURE") == "true" {
 		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev-only; opt-in via KEDGE_HUB_INSECURE
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev-only; opt-in via FAROS_HUB_INSECURE
 		}
 	}
 

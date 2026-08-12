@@ -144,7 +144,7 @@ export class AgentChat extends StoreElement {
 
   private sessKey(agent: string): string {
     const t = this.api.tenant()
-    return `kedge:agents:session:${t.orgUUID || ''}:${t.workspaceUUID || ''}:${agent}`
+    return `faros:agents:session:${t.orgUUID || ''}:${t.workspaceUUID || ''}:${agent}`
   }
 
   private newSessionID(): string {

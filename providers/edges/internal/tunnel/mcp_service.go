@@ -34,8 +34,8 @@ import (
 // serviceMCPImpl is advertised on `initialize` for a per-Service MCP
 // endpoint.
 var serviceMCPImpl = &mcp.Implementation{
-	Name:    "kedge-edgeservice",
-	Title:   "Kedge Service",
+	Name:    "faros-edgeservice",
+	Title:   "Faros Service",
 	Version: "v1alpha1",
 }
 
@@ -67,7 +67,7 @@ func (p *Server) buildServiceMCPHandler(cluster, name, kcpToken string, svc *ser
 // buildServiceMCPServer constructs the MCP server for one Service.
 func (p *Server) buildServiceMCPServer(cluster, name, kcpToken string, svc *serviceView, dialer haclient.Dialer) *mcp.Server {
 	instructions := fmt.Sprintf(
-		"You are connected to the kedge Service %q (type %q) in tenant workspace %q. "+
+		"You are connected to the faros Service %q (type %q) in tenant workspace %q. "+
 			"Tools here drive a real service running next to an edge agent. "+
 			"The call_service tool actuates physical devices — treat it with care.",
 		name, svc.Spec.Type, cluster,

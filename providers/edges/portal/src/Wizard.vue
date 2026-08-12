@@ -38,14 +38,14 @@ const hubURL = computed(() => {
 
 const masked = '••••••••••••••••'
 function helmSnippet(token: string) {
-  return `helm install kedge-agent oci://ghcr.io/faroshq/charts/kedge-agent \\
-  --namespace kedge-agent --create-namespace \\
+  return `helm install faros-agent oci://ghcr.io/faroshq/charts/faros-agent \\
+  --namespace faros-agent --create-namespace \\
   --set agent.edgeName=${trimmed.value} \\
   --set agent.hub.url=${hubURL.value} \\
   --set agent.hub.token=${token}`
 }
 function cliSnippet(token: string) {
-  return `kedge agent join \\
+  return `faros agent join \\
   --hub-url ${hubURL.value} \\
   --edge-name ${trimmed.value} \\
   --type ${edgeType.value} \\
@@ -101,7 +101,7 @@ function startPolling() {
       if (!p) return
       if (!joinToken.value && p.joinToken) joinToken.value = p.joinToken
       if (!joinToken.value && Date.now() > tokenDeadline) {
-        tokenError.value = `Could not retrieve join token. Run: kedge edge join-command ${edgeName}`
+        tokenError.value = `Could not retrieve join token. Run: faros edge join-command ${edgeName}`
       }
       if (p.connected) {
         agentVersion.value = p.agentVersion ?? null
@@ -181,7 +181,7 @@ function fmt(s: number) {
           <pre>{{ helmText }}</pre>
         </div>
         <div class="snippet">
-          <div class="snippet-head"><span>CLI — kedge agent join</span>
+          <div class="snippet-head"><span>CLI — faros agent join</span>
             <button class="copy" :disabled="!joinToken" @click="copy(cliSnippet, 'cli')">
               <component :is="copied === 'cli' ? Check : Copy" :size="12" /> {{ copied === 'cli' ? 'Copied' : 'Copy' }}
             </button>

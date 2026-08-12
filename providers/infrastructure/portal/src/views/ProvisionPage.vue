@@ -56,11 +56,11 @@ async function submit() {
       return
     }
     if (err.reason === REASON_API_BINDING_MISSING) {
-      error.value = 'This provider is not enabled in your workspace. Click Enable in the kedge portal first.'
+      error.value = 'This provider is not enabled in your workspace. Click Enable in the faros portal first.'
       return
     }
     if (err.reason === REASON_TENANT_MISSING) {
-      error.value = 'No tenant identity on this request — the kedge hub did not inject X-Kedge-Tenant. (Phase-3 hub wiring required.)'
+      error.value = 'No tenant identity on this request — the faros hub did not inject X-Faros-Tenant. (Phase-3 hub wiring required.)'
       return
     }
     error.value = err.message || 'provision failed'

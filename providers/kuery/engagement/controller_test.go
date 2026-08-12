@@ -12,11 +12,11 @@ import (
 	"testing"
 )
 
-// TestEdgeProxyURL keeps the inlined URL pattern in lockstep with the kedge
+// TestEdgeProxyURL keeps the inlined URL pattern in lockstep with the faros
 // monorepo's pkg/apiurl.EdgeProxyURL — the cases mirror its tests.
 func TestEdgeProxyURL(t *testing.T) {
 	got := edgeProxyURL("https://hub.example.com/", "2hx82dl9ncmepp5l", "edge-1")
-	want := "https://hub.example.com/services/edges-proxy/clusters/2hx82dl9ncmepp5l/apis/kedge.faros.sh/v1alpha1/edges/edge-1/k8s"
+	want := "https://hub.example.com/services/edges-proxy/clusters/2hx82dl9ncmepp5l/apis/faros.sh/v1alpha1/edges/edge-1/k8s"
 	if got != want {
 		t.Fatalf("edgeProxyURL = %q, want %q", got, want)
 	}
@@ -24,7 +24,7 @@ func TestEdgeProxyURL(t *testing.T) {
 
 func TestStripClusterSuffix(t *testing.T) {
 	cases := map[string]string{
-		"https://hub:9443/clusters/root:kedge:providers:kuery": "https://hub:9443",
+		"https://hub:9443/clusters/root:faros:providers:kuery": "https://hub:9443",
 		"https://hub:9443": "https://hub:9443",
 	}
 	for in, want := range cases {

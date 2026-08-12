@@ -35,13 +35,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	"github.com/faroshq/faros-kedge/pkg/util/identity"
+	"github.com/faroshq/faros/pkg/util/identity"
 )
 
 var (
-	kubernetesClusterGVR  = schema.GroupVersionResource{Group: "edges.kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
-	linuxServerGVR        = schema.GroupVersionResource{Group: "edges.kedge.faros.sh", Version: "v1alpha1", Resource: "linuxservers"}
-	workloadGVR           = schema.GroupVersionResource{Group: "edges.kedge.faros.sh", Version: "v1alpha1", Resource: "workloads"}
+	kubernetesClusterGVR  = schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
+	linuxServerGVR        = schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "linuxservers"}
+	workloadGVR           = schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "workloads"}
 	apiBindingGVR         = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}
 	clusterRoleGVR        = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}
 	clusterRoleBindingGVR = schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
@@ -50,7 +50,7 @@ var (
 
 // TestKubectlThroughTunnel drives the full edges data-plane end to end: it
 // enables the edges provider in a fresh tenant workspace, registers a
-// KubernetesCluster, runs a real `kedge agent` against a kind cluster, and
+// KubernetesCluster, runs a real `faros agent` against a kind cluster, and
 // proves `kubectl get nodes` streams down the reverse tunnel (agent → hub
 // backend proxy → out-of-process edges provider → agent → kind API server).
 func TestKubectlThroughTunnel(t *testing.T) {
@@ -59,15 +59,15 @@ func TestKubectlThroughTunnel(t *testing.T) {
 	}
 
 	edgeName := "conn-k8s"
-	kindName := "kedge-edgesconn"
+	kindName := "faros-edgesconn"
 	workDir := t.TempDir()
-	kubeconfig := filepath.Join(workDir, "kedge.kubeconfig")    // tenant login context
+	kubeconfig := filepath.Join(workDir, "faros.kubeconfig")    // tenant login context
 	kindKubeconfig := filepath.Join(workDir, "kind.kubeconfig") // agent's backing cluster
 	edgeKubeconfig := filepath.Join(workDir, "edge.kubeconfig") // consumer, through the tunnel
 
 	// 1. Log in as the static tenant user; the CLI writes a workspace-scoped
-	// context we drive `kedge`/`kubectl` against.
-	runCLI(t, kubeconfig, kedgeBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)
+	// context we drive `faros`/`kubectl` against.
+	runCLI(t, kubeconfig, farosBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)
 	tenantWS := clusterFromKubeconfig(t, kubeconfig)
 	t.Logf("tenant workspace = %s", tenantWS)
 
@@ -84,9 +84,9 @@ func TestKubectlThroughTunnel(t *testing.T) {
 	// the local system:serviceaccount:default:provider.
 	grantEdgeProxy(t, tenantAdmin)
 
-	// 4. Register the KubernetesCluster via the CLI (new edges.kedge.faros.sh
+	// 4. Register the KubernetesCluster via the CLI (new edges.faros.sh
 	// group). Label it so the workload subtest's edgeSelector can target it.
-	runCLI(t, kubeconfig, kedgeBin, "edge", "create", edgeName, "--type", "kubernetes", "--labels", "app="+edgeName)
+	runCLI(t, kubeconfig, farosBin, "edge", "create", edgeName, "--type", "kubernetes", "--labels", "app="+edgeName)
 	t.Cleanup(func() {
 		_ = tenantAdmin.Resource(kubernetesClusterGVR).Delete(context.Background(), edgeName, metav1.DeleteOptions{})
 	})
@@ -104,7 +104,7 @@ func TestKubectlThroughTunnel(t *testing.T) {
 	waitForConnected(t, tenantAdmin, kubernetesClusterGVR, edgeName)
 
 	// 9. THE PROOF: fetch the edge kubeconfig and list nodes through the tunnel.
-	runCLI(t, kubeconfig, kedgeBin, "kubeconfig", "edge", edgeName, "--output", edgeKubeconfig)
+	runCLI(t, kubeconfig, farosBin, "kubeconfig", "edge", edgeName, "--output", edgeKubeconfig)
 	out := kubectlThroughTunnel(t, edgeKubeconfig)
 	if !strings.Contains(out, "control-plane") {
 		t.Fatalf("kubectl get nodes through tunnel did not return a control-plane node:\n%s", out)
@@ -116,7 +116,7 @@ func TestKubectlThroughTunnel(t *testing.T) {
 	// the agent's workload reconciler as a Deployment on the edge cluster.
 	t.Run("workload deploys to the edge", func(t *testing.T) {
 		wl := &unstructured.Unstructured{Object: map[string]any{
-			"apiVersion": "edges.kedge.faros.sh/v1alpha1",
+			"apiVersion": "edges.faros.sh/v1alpha1",
 			"kind":       "Workload",
 			"metadata":   map[string]any{"name": "conn-wl", "namespace": "default"},
 			"spec": map[string]any{
@@ -202,7 +202,7 @@ func enableEdges(t *testing.T, tenant dynamic.Interface) {
 func grantEdgeProxy(t *testing.T, tenant dynamic.Interface) {
 	t.Helper()
 	// Provider workspace cluster ID → the qualified subject.
-	providersWS := kcpDynamic(t, "root:kedge:providers", adminToken)
+	providersWS := kcpDynamic(t, "root:faros:providers", adminToken)
 	ws, err := providersWS.Resource(workspaceGVR).Get(ctxWithTimeout(t, 10*time.Second), "edges", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get provider workspace: %v", err)
@@ -213,11 +213,11 @@ func grantEdgeProxy(t *testing.T, tenant dynamic.Interface) {
 	}
 	qualified := identity.QualifiedServiceAccount(providerCluster, "default", "provider")
 
-	name := "kedge:provider:edges:edgeproxy"
+	name := "faros:provider:edges:edgeproxy"
 	rules := []any{
 		map[string]any{"nonResourceURLs": []any{"/"}, "verbs": []any{"access"}},
-		map[string]any{"apiGroups": []any{"edges.kedge.faros.sh"}, "resources": []any{"kubernetesclusters", "linuxservers"}, "verbs": []any{"get", "list", "watch", "proxy"}},
-		map[string]any{"apiGroups": []any{"edges.kedge.faros.sh"}, "resources": []any{"kubernetesclusters/status", "linuxservers/status"}, "verbs": []any{"get", "update", "patch"}},
+		map[string]any{"apiGroups": []any{"edges.faros.sh"}, "resources": []any{"kubernetesclusters", "linuxservers"}, "verbs": []any{"get", "list", "watch", "proxy"}},
+		map[string]any{"apiGroups": []any{"edges.faros.sh"}, "resources": []any{"kubernetesclusters/status", "linuxservers/status"}, "verbs": []any{"get", "update", "patch"}},
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"secrets"}, "verbs": []any{"get", "list", "watch", "create", "update"}},
 		map[string]any{"apiGroups": []any{""}, "resources": []any{"namespaces"}, "verbs": []any{"get", "create"}},
 		map[string]any{"apiGroups": []any{"authentication.k8s.io"}, "resources": []any{"tokenreviews"}, "verbs": []any{"create"}},
@@ -295,7 +295,7 @@ func startAgent(t *testing.T, edgeName, joinToken, tenantWS string, extra ...str
 		"--edge-name", edgeName,
 		"--cluster", tenantWS,
 	}, extra...)
-	cmd := exec.Command(kedgeBin, args...)
+	cmd := exec.Command(farosBin, args...)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -341,7 +341,7 @@ func kubectlThroughTunnel(t *testing.T, edgeKubeconfig string) string {
 
 // --- CLI + kubeconfig helpers ---
 
-// runCLI runs a kedge/kubectl command with an isolated KUBECONFIG.
+// runCLI runs a faros/kubectl command with an isolated KUBECONFIG.
 func runCLI(t *testing.T, kubeconfig string, name string, args ...string) string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -356,7 +356,7 @@ func runCLI(t *testing.T, kubeconfig string, name string, args ...string) string
 }
 
 // clusterFromKubeconfig extracts the logical cluster name from the server URL
-// (https://.../clusters/<cluster>) of the kedge login context.
+// (https://.../clusters/<cluster>) of the faros login context.
 func clusterFromKubeconfig(t *testing.T, kubeconfig string) string {
 	t.Helper()
 	b, err := os.ReadFile(kubeconfig)

@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	GroupName = "databricks.kedge.faros.sh"
+	GroupName = "databricks.faros.sh"
 	Version   = "v1alpha1"
 )
 

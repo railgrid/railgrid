@@ -16,7 +16,7 @@ limitations under the License.
 
 // gen-core-apiexport merges all individual APIExport YAMLs under config/kcp/
 // into a single "core.faros.sh" APIExport that covers every API group.
-// This lets tenants bind a single export to get access to all kedge resources.
+// This lets tenants bind a single export to get access to all faros resources.
 //
 // Usage (via make codegen):
 //
@@ -73,7 +73,7 @@ func main() {
 	// own core.faros.sh binding (kcp's reflexive fallback), so enabling another
 	// provider — a new APIBinding to a different APIExport — produces no event
 	// and the schema goes stale until the next informer resync. The consumer
-	// binding must accept this claim (see EnsureChildWorkspaceKedgeBinding).
+	// binding must accept this claim (see EnsureChildWorkspaceFarosBinding).
 	// Ref: kcp pkg/virtual/apiexport/controllers/apireconciler (claimsAPIBindings).
 	mergedClaims = append(mergedClaims, map[string]interface{}{
 		"group":    "apis.kcp.io",
@@ -88,12 +88,12 @@ func main() {
 	// excludedAPIExports are API groups whose APIExports must NOT be merged
 	// into core.faros.sh. These exports are platform-owner-only and are not
 	// bound into tenant workspaces — the hub binds them directly in its
-	// own workspaces (providers in root:kedge:providers, tenancy in
-	// root:kedge:users) and writes their CRs with admin credentials.
+	// own workspaces (providers in root:faros:providers, tenancy in
+	// root:faros:users) and writes their CRs with admin credentials.
 	excludedAPIExports := map[string]bool{
-		"apiexport-providers.kedge.faros.sh.yaml": true,
-		"apiexport-admin.kedge.faros.sh.yaml":     true,
-		"apiexport-tenants.kedge.faros.sh.yaml":   true,
+		"apiexport-providers.faros.sh.yaml": true,
+		"apiexport-admin.faros.sh.yaml":     true,
+		"apiexport-tenants.faros.sh.yaml":   true,
 	}
 
 	var files []string

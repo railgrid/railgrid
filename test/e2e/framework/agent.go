@@ -26,7 +26,7 @@ import (
 	"time"
 )
 
-// Agent manages a kedge-agent process for e2e tests.
+// Agent manages a faros-agent process for e2e tests.
 type Agent struct {
 	bin             string
 	workDir         string
@@ -41,7 +41,7 @@ type Agent struct {
 // NewAgent creates a new Agent.
 func NewAgent(workDir, hubKubeconfig, agentKubeconfig, edgeName string) *Agent {
 	return &Agent{
-		bin:             filepath.Join(workDir, KedgeBin),
+		bin:             filepath.Join(workDir, FarosBin),
 		workDir:         workDir,
 		hubKubeconfig:   hubKubeconfig,
 		agentKubeconfig: agentKubeconfig,
@@ -55,7 +55,7 @@ func (a *Agent) WithLabels(labels map[string]string) *Agent {
 	return a
 }
 
-// Start launches the kedge agent run process. It runs until Stop is called or
+// Start launches the faros agent run process. It runs until Stop is called or
 // the parent context is cancelled.
 func (a *Agent) Start(ctx context.Context) error {
 	agentCtx, cancel := context.WithCancel(ctx)
@@ -85,7 +85,7 @@ func (a *Agent) Start(ctx context.Context) error {
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return fmt.Errorf("failed to start kedge agent run: %w", err)
+		return fmt.Errorf("failed to start faros agent run: %w", err)
 	}
 
 	// Reap the process in the background when context is cancelled.
@@ -103,7 +103,7 @@ func (a *Agent) Stop() {
 	}
 }
 
-// TokenAgent manages a kedge agent run process authenticated via a bootstrap
+// TokenAgent manages a faros agent run process authenticated via a bootstrap
 // join token instead of a SA-backed hub kubeconfig.
 type TokenAgent struct {
 	bin             string
@@ -121,11 +121,11 @@ type TokenAgent struct {
 }
 
 // NewAgentWithToken creates a TokenAgent that connects to the hub using a bootstrap
-// join token (kedge agent run --token). Use agentKubeconfig="" for server-type edges
+// join token (faros agent run --token). Use agentKubeconfig="" for server-type edges
 // that have no downstream Kubernetes cluster.
 func NewAgentWithToken(workDir, hubURL, edgeName, token string) *TokenAgent {
 	return &TokenAgent{
-		bin:       filepath.Join(workDir, KedgeBin),
+		bin:       filepath.Join(workDir, FarosBin),
 		workDir:   workDir,
 		hubURL:    hubURL,
 		edgeName:  edgeName,
@@ -156,23 +156,23 @@ func (a *TokenAgent) WithCluster(clusterName string) *TokenAgent {
 }
 
 // WithSSHUser sets the SSH username the agent reports to the hub via
-// X-Kedge-SSH-User WebSocket header (join-token mode) or the --ssh-user flag.
+// X-Faros-SSH-User WebSocket header (join-token mode) or the --ssh-user flag.
 func (a *TokenAgent) WithSSHUser(user string) *TokenAgent {
 	a.sshUser = user
 	return a
 }
 
 // WithSSHPassword sets the SSH password the agent reports to the hub via
-// X-Kedge-SSH-Password WebSocket header (join-token mode) or the --ssh-password flag.
+// X-Faros-SSH-Password WebSocket header (join-token mode) or the --ssh-password flag.
 func (a *TokenAgent) WithSSHPassword(pass string) *TokenAgent {
 	a.sshPassword = pass
 	return a
 }
 
-// Start launches the kedge agent run process with the configured join token.
+// Start launches the faros agent run process with the configured join token.
 // It runs until Stop is called or the parent context is cancelled.
 // When token is empty (e.g. NewReconnectAgent), no --token flag is passed and
-// the binary auto-discovers the saved kubeconfig from ~/.kedge/.
+// the binary auto-discovers the saved kubeconfig from ~/.faros/.
 func (a *TokenAgent) Start(ctx context.Context) error {
 	agentCtx, cancel := context.WithCancel(ctx)
 	a.cancel = cancel
@@ -210,7 +210,7 @@ func (a *TokenAgent) Start(ctx context.Context) error {
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return fmt.Errorf("failed to start kedge agent run: %w", err)
+		return fmt.Errorf("failed to start faros agent run: %w", err)
 	}
 
 	// Reap the process in the background when context is cancelled.
@@ -231,12 +231,12 @@ func (a *TokenAgent) Stop() {
 // NewReconnectAgent creates a TokenAgent that reconnects to the hub using the
 // previously saved kubeconfig (written during the first successful join-token
 // exchange). No --token is passed — the binary's built-in auto-detection reads
-// the saved kubeconfig from ~/.kedge/agent-<edgeName>.kubeconfig.
+// the saved kubeconfig from ~/.faros/agent-<edgeName>.kubeconfig.
 //
 // Use this to verify the reconnect-after-restart flow end-to-end.
 func NewReconnectAgent(workDir, hubURL, edgeName string) *TokenAgent {
 	return &TokenAgent{
-		bin:       filepath.Join(workDir, KedgeBin),
+		bin:       filepath.Join(workDir, FarosBin),
 		workDir:   workDir,
 		hubURL:    hubURL,
 		edgeName:  edgeName,
@@ -253,7 +253,7 @@ func AgentSavedKubeconfigPath(edgeName string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("getting home dir: %w", err)
 	}
-	return filepath.Join(home, ".kedge", "agent-"+edgeName+".kubeconfig"), nil
+	return filepath.Join(home, ".faros", "agent-"+edgeName+".kubeconfig"), nil
 }
 
 // WaitForAgentSavedKubeconfig polls until the saved kubeconfig file appears at

@@ -26,7 +26,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
+	pkgversion "github.com/faroshq/faros/pkg/version"
 )
 
 func newAgentUpgradeCommand() *cobra.Command {
@@ -37,9 +37,9 @@ func newAgentUpgradeCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "upgrade <edge-name>",
-		Short: "Upgrade the agent for an edge deployed via 'kedge agent join'",
-		Long: `Upgrade the kedge agent for a Kubernetes edge that was deployed using
-"kedge agent join". This patches the agent Deployment in the kedge-agent
+		Short: "Upgrade the agent for an edge deployed via 'faros agent join'",
+		Long: `Upgrade the faros agent for a Kubernetes edge that was deployed using
+"faros agent join". This patches the agent Deployment in the faros-agent
 namespace with the new image tag.
 
 For agents installed via Helm, use "helm upgrade" instead.
@@ -59,7 +59,7 @@ the binary.`,
 			// Look up the edge on the hub to determine its type.
 			dynClient, err := loadDynamicClient()
 			if err != nil {
-				return fmt.Errorf("not logged in — run: kedge login --hub-url <hub-url>\n(original error: %w)", err)
+				return fmt.Errorf("not logged in — run: faros login --hub-url <hub-url>\n(original error: %w)", err)
 			}
 
 			edge, _, err := getEdgeByName(ctx, dynClient, edgeName)
@@ -92,14 +92,14 @@ the binary.`,
 	return cmd
 }
 
-// agentUpgradeKubernetes patches the kedge-agent Deployment to use the new image tag.
+// agentUpgradeKubernetes patches the faros-agent Deployment to use the new image tag.
 func agentUpgradeKubernetes(ctx context.Context, edgeName, tag string, wait bool) error {
-	deployName := "kedge-agent-" + edgeName
-	namespace := "kedge-agent"
+	deployName := "faros-agent-" + edgeName
+	namespace := "faros-agent"
 
-	agentImage := os.Getenv("KEDGE_AGENT_IMAGE")
+	agentImage := os.Getenv("FAROS_AGENT_IMAGE")
 	if agentImage == "" {
-		agentImage = "ghcr.io/faroshq/kedge-agent"
+		agentImage = "ghcr.io/faroshq/faros-agent"
 	}
 	newImage := agentImage + ":" + tag
 
@@ -159,7 +159,7 @@ func agentUpgradeKubernetes(ctx context.Context, edgeName, tag string, wait bool
 		fmt.Printf("Verifying agent version (may take up to 30s)...\n")
 		if err := waitForAgentVersion(ctx, edgeName, tag, 60*time.Second); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
-			fmt.Printf("Run 'kedge edge list' to check the agent version.\n")
+			fmt.Printf("Run 'faros edge list' to check the agent version.\n")
 		} else {
 			fmt.Printf("Agent %q now reports version %s\n", edgeName, tag)
 		}
@@ -196,11 +196,11 @@ func waitForAgentVersion(ctx context.Context, edgeName, expectedVersion string, 
 func agentUpgradeServer(edgeName string) error {
 	fmt.Printf("Server-type agents must be upgraded by replacing the binary on the host.\n\n")
 	fmt.Printf("  # Download the latest binary:\n")
-	fmt.Printf("  curl -fsSL https://github.com/faroshq/kedge/releases/latest/download/kubectl-kedge_linux_amd64.tar.gz | tar xz\n")
-	fmt.Printf("  sudo mv kubectl-kedge /usr/local/bin/kedge\n\n")
+	fmt.Printf("  curl -fsSL https://github.com/faroshq/faros/releases/latest/download/kubectl-faros_linux_amd64.tar.gz | tar xz\n")
+	fmt.Printf("  sudo mv kubectl-faros /usr/local/bin/faros\n\n")
 	fmt.Printf("  # Restart the systemd service:\n")
-	fmt.Printf("  sudo systemctl restart kedge-agent-%s\n\n", edgeName)
+	fmt.Printf("  sudo systemctl restart faros-agent-%s\n\n", edgeName)
 	fmt.Printf("After upgrading, verify with:\n")
-	fmt.Printf("  kedge edge list\n")
+	fmt.Printf("  faros edge list\n")
 	return nil
 }

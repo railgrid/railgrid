@@ -33,7 +33,7 @@ import (
 // layout (tile geometry, hidden set, chosen column count) for every
 // workspace the user visits. metadata.name matches the User's
 // metadata.name; one UserPreferences exists per User, and it lives in the
-// same hub-mediated workspace (root:kedge:system:tenants) as the User and
+// same hub-mediated workspace (root:faros:system:tenants) as the User and
 // UserMembershipIndex CRs.
 //
 // It is deliberately generic — a single per-user object the portal

@@ -1,10 +1,10 @@
 // ApiClient wraps the agents provider REST API.
 //
-// Tenant scope: the host pushes orgUUID/workspaceUUID on the KedgeContext, and
+// Tenant scope: the host pushes orgUUID/workspaceUUID on the FarosContext, and
 // those win. portalkit/tenant.ts's localStorage copy is the fallback for the
 // (brief) window before the host has pushed a context.
 //
-// Every call carries the Bearer token plus the X-Kedge-Org / X-Kedge-Workspace
+// Every call carries the Bearer token plus the X-Faros-Org / X-Faros-Workspace
 // headers the hub's tenant middleware requires.
 
 import type {
@@ -18,7 +18,7 @@ import type {
   CredentialTestResult,
   CredentialWrite,
   InboxItem,
-  KedgeContext,
+  FarosContext,
   ModelInfo,
   RunDetail,
   RunSummary,
@@ -77,13 +77,13 @@ export class ApiError extends Error {
 }
 
 export class ApiClient {
-  private ctx: KedgeContext | null = null
+  private ctx: FarosContext | null = null
 
-  setContext(ctx: KedgeContext | null): void {
+  setContext(ctx: FarosContext | null): void {
     this.ctx = ctx
   }
 
-  context(): KedgeContext | null {
+  context(): FarosContext | null {
     return this.ctx
   }
 
@@ -116,8 +116,8 @@ export class ApiClient {
     const h = tenantHeaders({ token: this.ctx?.token, json: hasBody })
     // Host context wins over the localStorage copy portalkit read.
     const t = this.tenant()
-    if (t.orgUUID) h['X-Kedge-Org'] = t.orgUUID
-    if (t.workspaceUUID) h['X-Kedge-Workspace'] = t.workspaceUUID
+    if (t.orgUUID) h['X-Faros-Org'] = t.orgUUID
+    if (t.workspaceUUID) h['X-Faros-Workspace'] = t.workspaceUUID
     return h
   }
 
@@ -250,7 +250,7 @@ export class ApiClient {
 
   // eventStream subscribes to GET /api/events (run + inbox pushes). It is a
   // plain fetch rather than EventSource because EventSource cannot send the
-  // Authorization / X-Kedge-* headers the hub proxy requires. onOpen fires once
+  // Authorization / X-Faros-* headers the hub proxy requires. onOpen fires once
   // the response headers are in, which is the real liveness signal — the server
   // may legitimately send no parsable event for minutes.
   async *eventStream(signal: AbortSignal, onOpen?: () => void): AsyncGenerator<SSEEvent> {

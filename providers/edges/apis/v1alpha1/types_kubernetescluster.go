@@ -38,11 +38,11 @@ import (
 //
 // Agents register via the provider's agent-ingress endpoint:
 //
-//	/services/providers/edges/agent/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/kubernetesclusters/{name}/proxy
+//	/services/providers/edges/agent/{cluster}/apis/edges.faros.sh/v1alpha1/kubernetesclusters/{name}/proxy
 //
 // Users access it via the k8s subresource:
 //
-//	/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/kubernetesclusters/{name}/k8s
+//	/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/kubernetesclusters/{name}/k8s
 type KubernetesCluster struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

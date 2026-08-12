@@ -25,7 +25,7 @@ import (
 const (
 	// GroupName is the API group for code-provider types. Tenant-authored
 	// desired-state resources and observed helper resources share this group.
-	GroupName = "code.kedge.faros.sh"
+	GroupName = "code.faros.sh"
 	// Version pins the served + storage version. Bumping to v1 will
 	// require a conversion plan — keep all in-tree changes additive
 	// until then.

@@ -86,7 +86,7 @@ func TestProjectMetadataRejectsTraversalAndStaleReplacement(t *testing.T) {
 	if _, err := WriteProjectMetadata(ctx, files, scope, current, "sha256:stale"); err == nil {
 		t.Fatal("stale metadata replacement unexpectedly succeeded")
 	}
-	if _, err := files.ReadFile(ctx, scope, workspace.ReadOptions{Path: ".agents/skills/.kedge-catalog.json"}); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if _, err := files.ReadFile(ctx, scope, workspace.ReadOptions{Path: ".agents/skills/.faros-catalog.json"}); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal(err)
 	}
 }

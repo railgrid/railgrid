@@ -23,7 +23,7 @@ import (
 	"net/url"
 	"testing"
 
-	providersv1alpha1 "github.com/faroshq/faros-kedge/apis/providers/v1alpha1"
+	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
 )
 
 func TestListHandlerIncludesActionDiscoveryMetadataWithoutTransportURLs(t *testing.T) {
@@ -41,7 +41,7 @@ func TestListHandlerIncludesActionDiscoveryMetadataWithoutTransportURLs(t *testi
 			DisplayName: "Mutate",
 			Description: "Mutates one bound resource.",
 			Resource: ProviderActionResource{
-				APIVersion: "example.kedge.faros.sh/v1alpha1",
+				APIVersion: "example.faros.sh/v1alpha1",
 				Kind:       "Widget",
 				Resource:   "widgets",
 			},

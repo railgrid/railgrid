@@ -1,0 +1,57 @@
+# APIResourceSchema for the vibe-studio Model CRD — one configured LLM
+# endpoint. The API key lives in the referenced Secret, never in the CR.
+apiVersion: apis.kcp.io/v1alpha1
+kind: APIResourceSchema
+metadata:
+  name: v260801-001.models.vibe.faros.sh
+spec:
+  group: vibe.faros.sh
+  names:
+    kind: Model
+    listKind: ModelList
+    plural: models
+    singular: model
+    shortNames:
+      - vmodel
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Model
+          type: string
+          jsonPath: .spec.model
+        - name: Provider
+          type: string
+          jsonPath: .spec.provider
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        type: object
+        properties:
+          apiVersion: { type: string }
+          kind: { type: string }
+          metadata: { type: object }
+          spec:
+            type: object
+            required: [model, secretRef]
+            properties:
+              displayName: { type: string, maxLength: 128 }
+              provider: { type: string, maxLength: 64 }
+              baseURL: { type: string, maxLength: 512 }
+              model: { type: string, minLength: 1, maxLength: 253 }
+              secretRef:
+                type: object
+                required: [name]
+                properties:
+                  name: { type: string, minLength: 1, maxLength: 253 }
+                  namespace: { type: string, maxLength: 253 }
+                  key: { type: string, maxLength: 253 }
+          status:
+            type: object
+            properties:
+              lastUsedAt: { type: string, format: date-time }

@@ -3,11 +3,11 @@
 #
 #   helm upgrade -i --create-namespace --namespace dex dex dex/dex \
 #     -f hack/dex/dex-values.yaml \
-#     --set image.repository=ghcr.io/faroshq/kedge-dex \
+#     --set image.repository=ghcr.io/faroshq/faros-dex \
 #     --set image.tag=$TAG
 
 config:
-  issuer: https://auth.kedge.example.com
+  issuer: https://auth.faros.example.com
 
   logger:
     level: "debug"
@@ -34,15 +34,15 @@ config:
       config:
         clientID: REPLACE_ME
         clientSecret: REPLACE_ME
-        redirectURI: https://auth.kedge.example.com/callback
+        redirectURI: https://auth.faros.example.com/callback
         org: faroshq
 
   staticClients:
-    - id: kedge
-      name: Kedge
+    - id: faros
+      name: Faros
       public: true
       redirectURIs:
-        - https://console.kedge.example.com/auth/callback
+        - https://console.faros.example.com/auth/callback
 
 service:
   type: ClusterIP
@@ -51,11 +51,11 @@ ingress:
   enabled: true
   className: "cloudflare-tunnel"
   hosts:
-    - host: auth.kedge.example.com
+    - host: auth.faros.example.com
       paths:
         - path: /
           pathType: ImplementationSpecific
   tls:
     - secretName: dex-tls
       hosts:
-        - auth.kedge.example.com
+        - auth.faros.example.com

@@ -1,19 +1,19 @@
-# edges provider — CatalogEntry (providers.kedge.faros.sh).
+# edges provider — CatalogEntry (providers.faros.sh).
 #
 # Single, optional, self-contained provider for BOTH edge kinds (KubernetesCluster
-# + LinuxServer) under one group edges.kedge.faros.sh. It terminates the agent
+# + LinuxServer) under one group edges.faros.sh. It terminates the agent
 # reverse tunnel (revdial) in-process, owns the API + its APIExport, runs the
 # token/RBAC/lifecycle controllers, and proxies kubectl/SSH/MCP through the hub
 # backend proxy. Runs SINGLE-REPLICA (revdial dialer map is process-global).
 ---
-apiVersion: providers.kedge.faros.sh/v1alpha1
+apiVersion: providers.faros.sh/v1alpha1
 kind: CatalogEntry
 metadata:
   name: edges
 spec:
   displayName: "Edges"
   description: "Connect and manage Kubernetes clusters and Linux/SSH servers as edges: kubectl and SSH through the hub reverse tunnel, plus the edge MCP endpoint."
-  vendor: "kedge"
+  vendor: "faros"
   version: "0.1.0"
   category: "Edges"
   # On Enable, grant the provider SA get/list/watch/proxy on the edge kinds in
@@ -23,7 +23,7 @@ spec:
   ui:
     # The provider serves its portal micro-frontend (main.js custom element) from
     # the embedded Vite bundle; the hub proxies /ui/providers/edges/* here and
-    # ProviderFrame mounts <kedge-provider-edges>. Overridden by the chart to the
+    # ProviderFrame mounts <faros-provider-edges>. Overridden by the chart to the
     # in-cluster Service DNS name.
     url: "http://localhost:8088"
     indexPath: "/"
@@ -43,7 +43,7 @@ spec:
     url: "http://localhost:8088"
     healthPath: "/healthz"
   apiExport:
-    name: "edges.providers.kedge.faros.sh"
+    name: "edges.providers.faros.sh"
     # Both KubernetesCluster + LinuxServer come with this export (the provider
     # owns them). These claims are the additional tenant-workspace resources the
     # token/RBAC/lifecycle reconcilers create per registered edge: a namespace +

@@ -26,7 +26,7 @@ import (
 	"path/filepath"
 	"time"
 
-	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
+	cliauth "github.com/faroshq/faros/pkg/cli/auth"
 )
 
 // ConditionFunc is a function that returns (done bool, err error).
@@ -77,11 +77,11 @@ var insecureHTTPClient = &http.Client{
 // first tenant operations, so suites gate startup on this.
 //
 // This replaces the pre-decouple WaitForEdgeAPI gate: edges are now an
-// optional out-of-process provider (group edges.kedge.faros.sh) that these
+// optional out-of-process provider (group edges.faros.sh) that these
 // suites do not bootstrap, so "edge list works" is no longer a valid
 // readiness signal. Edge connectivity has its own dedicated suite.
-func WaitForTenantAPI(ctx context.Context, client *KedgeClient, hubURL, token string) error {
-	// Login (retryable) so the kedge context is written to the default
+func WaitForTenantAPI(ctx context.Context, client *FarosClient, hubURL, token string) error {
+	// Login (retryable) so the faros context is written to the default
 	// kubeconfig — some non-edge tests drive kubectl via that context.
 	loginCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()

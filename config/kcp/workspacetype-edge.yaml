@@ -13,7 +13,7 @@ spec:
   #     topology.kcp.io. There is nothing local to namespace; everything the
   #     user sees comes from the mount target.
   #   * defaultAPIBindings  — the edge proxy serves the remote kube API, so no
-  #     kedge APIBinding is bound here.
+  #     faros APIBinding is bound here.
   limitAllowedChildren:
     none: true
   # An edge workspace only makes sense as a leaf under a team `workspace`. The
@@ -22,4 +22,4 @@ spec:
   limitAllowedParents:
     types:
     - name: workspace
-      path: root:kedge
+      path: root:faros

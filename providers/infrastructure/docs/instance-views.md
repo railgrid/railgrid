@@ -7,7 +7,7 @@ template controls how its own instances look — add an `Endpoint` column, turn 
 computed URL into a clickable link, group fields under headings, etc.
 
 The view is authored **on the template** (`spec.view` on the `Template` CRD, or
-the `kedge.faros.sh/view` annotation on a kro RGD). It is opaque to the
+the `faros.sh/view` annotation on a kro RGD). It is opaque to the
 controller and interpreted entirely by the portal's view resolver
 (`portal/src/view.ts`).
 

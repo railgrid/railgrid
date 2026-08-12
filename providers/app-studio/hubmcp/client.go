@@ -89,9 +89,9 @@ type rpcResponse struct {
 // CallCodeTool invokes one code__-namespaced tool via the hub aggregate.
 func (c *Client) CallCodeTool(ctx context.Context, tool string, args map[string]any) (json.RawMessage, error) {
 	// apiurl.MCPServerPath pattern (hub module): /services/mcpserver/{cluster}/
-	// apis/kedge.faros.sh/v1alpha1/mcpservers/{name}/mcp — "default" is the
+	// apis/faros.sh/v1alpha1/mcpservers/{name}/mcp — "default" is the
 	// per-tenant aggregate the hub bootstraps.
-	endpoint := fmt.Sprintf("%s/services/mcpserver/%s/apis/kedge.faros.sh/v1alpha1/mcpservers/default/mcp",
+	endpoint := fmt.Sprintf("%s/services/mcpserver/%s/apis/faros.sh/v1alpha1/mcpservers/default/mcp",
 		c.HubBase, c.ClusterID)
 
 	post := func(sessionID string, req rpcRequest) (json.RawMessage, string, error) {

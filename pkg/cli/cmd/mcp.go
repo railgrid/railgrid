@@ -25,15 +25,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	"github.com/faroshq/faros/pkg/apiurl"
+	farosclient "github.com/faroshq/faros/pkg/client"
 )
 
 func newMCPCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mcp",
 		Short: "MCP (Model Context Protocol) related commands",
-		Long:  `Commands for interacting with the kedge MCP endpoint.`,
+		Long:  `Commands for interacting with the faros MCP endpoint.`,
 	}
 
 	cmd.AddCommand(newMCPURLCommand())
@@ -53,10 +53,10 @@ Use --mcpserver-name to print the aggregate MCPServer endpoint URL — one
 endpoint that exposes both kube and linux edges plus a list_targets tool the
 AI uses to discover what's reachable.  This is the entry point for
 Claude / Cursor / similar MCP clients:
-  https://kedge.example.com/services/mcpserver/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/mcpservers/default/mcp
+  https://faros.example.com/services/mcpserver/root:faros:user-default/apis/faros.sh/v1alpha1/mcpservers/default/mcp
 
 Use --edge to print the per-edge MCP endpoint URL (single Kubernetes edge):
-  https://kedge.example.com/services/providers/edges/agent/root:kedge:user-default/apis/edges.kedge.faros.sh/v1alpha1/kubernetesclusters/my-edge/mcp
+  https://faros.example.com/services/providers/edges/agent/root:faros:user-default/apis/edges.faros.sh/v1alpha1/kubernetesclusters/my-edge/mcp
 
 The previous per-kind MCP endpoints (--name for KubernetesMCP,
 --linux-name for LinuxMCP) were removed; their tools now appear on the
@@ -65,7 +65,7 @@ MCPServer aggregate via the in-binary ToolFamily registry.
 Usage with Claude Desktop (claude_desktop_config.json):
   {
     "mcpServers": {
-      "kedge": {
+      "faros": {
         "url": "<output of this command>"
       }
     }
@@ -184,13 +184,13 @@ func runMCPURL(_ *cobra.Command, edgeName, mcpserverName string) error {
 	fmt.Println()
 	fmt.Println("To add to Codex:")
 	if token != "" {
-		fmt.Printf("  export KEDGE_MCP_TOKEN=%s\n", shellSingleQuote(token))
+		fmt.Printf("  export FAROS_MCP_TOKEN=%s\n", shellSingleQuote(token))
 	} else {
-		fmt.Println("  export KEDGE_MCP_TOKEN='<your-token>'")
+		fmt.Println("  export FAROS_MCP_TOKEN='<your-token>'")
 	}
 	fmt.Printf("  codex mcp add %s \\\n", mcpName)
 	fmt.Printf("    --url %s \\\n", shellSingleQuote(mcpURL))
-	fmt.Println("    --bearer-token-env-var KEDGE_MCP_TOKEN")
+	fmt.Println("    --bearer-token-env-var FAROS_MCP_TOKEN")
 	return nil
 }
 
@@ -199,7 +199,7 @@ func shellSingleQuote(value string) string {
 }
 
 // mcpServerName chooses a friendly identifier for the `claude mcp add`
-// name argument. All names share a `kedge-` prefix so multiple kedge
+// name argument. All names share a `faros-` prefix so multiple faros
 // MCP servers registered in a single client config sort together.
 // Aggregate MCPServer entries take the CR name directly; per-edge
 // entries derive their middle segment from the edge's spec.type
@@ -210,11 +210,11 @@ func shellSingleQuote(value string) string {
 func mcpServerName(edgeName, mcpserverName string) string {
 	switch {
 	case mcpserverName != "":
-		return "kedge-" + mcpserverName
+		return "faros-" + mcpserverName
 	case edgeName != "":
-		return "kedge-" + edgeTypeKind(edgeName) + "-" + edgeName
+		return "faros-" + edgeTypeKind(edgeName) + "-" + edgeName
 	}
-	return "kedge"
+	return "faros"
 }
 
 // edgeTypeKind returns the singular per-edge segment matching the edge's
@@ -225,7 +225,7 @@ func edgeTypeKind(edgeName string) string {
 	if err != nil {
 		return "kubernetes-cluster"
 	}
-	edge, err := dynClient.Resource(kedgeclient.KubernetesClusterGVR).Get(context.Background(), edgeName, metav1.GetOptions{})
+	edge, err := dynClient.Resource(farosclient.KubernetesClusterGVR).Get(context.Background(), edgeName, metav1.GetOptions{})
 	if err != nil {
 		return "kubernetes-cluster"
 	}
@@ -239,8 +239,8 @@ func edgeTypeKind(edgeName string) string {
 
 // mcpURLFromServerURL derives the per-edge MCP endpoint URL from a kcp server URL and edge name.
 //
-// Input:  https://kedge.example.com/clusters/11tcw27t4rdtnacy, "my-edge"
-// Output: https://kedge.example.com/services/providers/edges/agent/11tcw27t4rdtnacy/apis/edges.kedge.faros.sh/v1alpha1/kubernetesclusters/my-edge/mcp
+// Input:  https://faros.example.com/clusters/11tcw27t4rdtnacy, "my-edge"
+// Output: https://faros.example.com/services/providers/edges/agent/11tcw27t4rdtnacy/apis/edges.faros.sh/v1alpha1/kubernetesclusters/my-edge/mcp
 //
 // Per-edge MCP exposes the kube toolset against a single KubernetesCluster edge,
 // so the URL targets the `kubernetesclusters` resource on the decoupled edges
@@ -263,8 +263,8 @@ func mcpURLFromServerURL(serverURL, edgeName string) (string, error) {
 // mcpAggregateURLFromServerURL derives the aggregate MCPServer endpoint URL
 // from a kcp server URL and an MCPServer object name.
 //
-// Input:  https://kedge.example.com/clusters/root:kedge:user-default, "default"
-// Output: https://kedge.example.com/services/mcpserver/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/mcpservers/default/mcp
+// Input:  https://faros.example.com/clusters/root:faros:user-default, "default"
+// Output: https://faros.example.com/services/mcpserver/root:faros:user-default/apis/faros.sh/v1alpha1/mcpservers/default/mcp
 func mcpAggregateURLFromServerURL(serverURL, mcpserverName string) (string, error) {
 	base, cluster := apiurl.SplitBaseAndCluster(serverURL)
 	if cluster == "default" {

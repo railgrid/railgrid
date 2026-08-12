@@ -50,7 +50,7 @@ const (
 	ActionQueryName = "query_table"
 	ActionQueryV1   = "v1"
 
-	resourceAPIVersion = "databricks.kedge.faros.sh/v1alpha1"
+	resourceAPIVersion = "databricks.faros.sh/v1alpha1"
 	resourceKind       = "Table"
 	resourceName       = "tables"
 
@@ -494,13 +494,13 @@ func decodeRequest(w http.ResponseWriter, r *http.Request) (QueryInput, error) {
 }
 
 func actionDeadline(r *http.Request) (time.Duration, error) {
-	value := strings.TrimSpace(r.Header.Get("X-Kedge-Action-Deadline-Ms"))
+	value := strings.TrimSpace(r.Header.Get("X-Faros-Action-Deadline-Ms"))
 	if value == "" {
 		return maxActionDeadline, nil
 	}
 	millis, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || millis < 1 {
-		return 0, fmt.Errorf("X-Kedge-Action-Deadline-Ms must be a positive integer")
+		return 0, fmt.Errorf("X-Faros-Action-Deadline-Ms must be a positive integer")
 	}
 	if millis >= maxActionDeadline.Milliseconds() {
 		return maxActionDeadline, nil
@@ -525,7 +525,7 @@ func safeActionErrorMessage(message string) string {
 	lower := strings.ToLower(message)
 	for _, marker := range []string{
 		"bearer", "token", "secret", "password", "authorization", "credential",
-		"root:kedge:tenants:", "/clusters/", "http://", "https://", "://",
+		"root:faros:tenants:", "/clusters/", "http://", "https://", "://",
 	} {
 		if strings.Contains(lower, marker) {
 			return defaultActionFailureMessage

@@ -34,11 +34,11 @@ func devProject() *vibev1alpha1.Project {
 				Kind:     vibev1alpha1.ProjectBindingKindProviderResource,
 				ResourceRef: &vibev1alpha1.ProjectProviderResourceReference{
 					Name:       "barber-1234",
-					APIVersion: "infrastructure.kedge.faros.sh/v1alpha1",
+					APIVersion: "infrastructure.faros.sh/v1alpha1",
 					Kind:       "Application",
 					Resource:   "applications",
 				},
-				Values: runtime.RawExtension{Raw: []byte(`{"name":"barber-1234","kedgeMode":"development"}`)},
+				Values: runtime.RawExtension{Raw: []byte(`{"name":"barber-1234","farosMode":"development"}`)},
 			}},
 		}},
 	}
@@ -52,11 +52,11 @@ func TestInstanceRefs(t *testing.T) {
 		t.Fatalf("refs = %d, want 1", len(refs))
 	}
 	ref := refs[0]
-	if ref.GVR.Group != "infrastructure.kedge.faros.sh" || ref.GVR.Resource != "applications" ||
+	if ref.GVR.Group != "infrastructure.faros.sh" || ref.GVR.Resource != "applications" ||
 		ref.Kind != "Application" || ref.Name != "barber-1234" {
 		t.Fatalf("ref = %+v", ref)
 	}
-	if ref.Values["kedgeMode"] != "development" {
+	if ref.Values["farosMode"] != "development" {
 		t.Fatalf("values not decoded: %+v", ref.Values)
 	}
 
@@ -74,15 +74,15 @@ func TestDesiredInstance(t *testing.T) {
 	p := devProject()
 	ref := InstanceRefs(p)[0]
 	inst := DesiredInstance(p, ref)
-	if inst.GetAPIVersion() != "infrastructure.kedge.faros.sh/v1alpha1" || inst.GetKind() != "Application" {
+	if inst.GetAPIVersion() != "infrastructure.faros.sh/v1alpha1" || inst.GetKind() != "Application" {
 		t.Fatalf("gvk = %s/%s", inst.GetAPIVersion(), inst.GetKind())
 	}
 	if inst.GetLabels()[templateLabel] != "application" || inst.GetLabels()[projectLabel] != "barber-1234" {
 		t.Fatalf("labels = %v", inst.GetLabels())
 	}
-	mode, _, _ := unstructured.NestedString(inst.Object, "spec", "kedgeMode")
+	mode, _, _ := unstructured.NestedString(inst.Object, "spec", "farosMode")
 	if mode != "development" {
-		t.Fatalf("spec.kedgeMode = %q", mode)
+		t.Fatalf("spec.farosMode = %q", mode)
 	}
 }
 

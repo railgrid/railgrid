@@ -11,7 +11,7 @@ import { Puzzle, Plus, RotateCcw, Check, LayoutGrid } from 'lucide-vue-next'
 
 // The dashboard iterates the catalog and mounts one <DashboardTile> per
 // ready provider. Each provider may register a
-// <kedge-dashboard-tile-{name}> custom element in its main.js — that
+// <faros-dashboard-tile-{name}> custom element in its main.js — that
 // element owns its own data fetch, summary rendering, and click-through
 // URLs. Providers without a tile drop out of the grid entirely.
 //
@@ -56,7 +56,7 @@ const gated = computed(() =>
 // decided in the store, which excludes providers already known to ship no
 // dashboard tile (the persisted `noTile` set). A provider seen to be
 // tileless once — DashboardTile emits `no-tile` when its bundle registers
-// no <kedge-dashboard-tile-*> element — is remembered in localStorage and
+// no <faros-dashboard-tile-*> element — is remembered in localStorage and
 // on the hub, so it flashes at most once and never again on reload (this
 // is the flicker fix). Placing optimistically means the grid is never
 // wrongly empty just because a bundle was slow to probe.

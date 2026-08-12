@@ -30,7 +30,7 @@ import (
 
 const (
 	workloadIdentityReviewPath = "/workload-identities/review"
-	workloadIdentityAudience   = "kedge-provider-actions-bootstrap"
+	workloadIdentityAudience   = "faros-provider-actions-bootstrap"
 	identityReviewBodyLimit    = 1 << 20
 )
 
@@ -227,11 +227,11 @@ func workloadPodMatchesRequest(pod *corev1.Pod, request workloadIdentityReviewRe
 	}
 	annotations := pod.GetAnnotations()
 	for key, expected := range map[string]string{
-		"kedge.faros.sh/actions-tenant":      request.TenantPath,
-		"kedge.faros.sh/actions-project":     request.Project,
-		"kedge.faros.sh/actions-project-uid": request.ProjectUID,
-		"kedge.faros.sh/actions-environment": request.Environment,
-		"kedge.faros.sh/actions-instance":    request.Instance,
+		"faros.sh/actions-tenant":      request.TenantPath,
+		"faros.sh/actions-project":     request.Project,
+		"faros.sh/actions-project-uid": request.ProjectUID,
+		"faros.sh/actions-environment": request.Environment,
+		"faros.sh/actions-instance":    request.Instance,
 	} {
 		actual := strings.TrimSpace(annotations[key])
 		if actual == "" || actual != expected {

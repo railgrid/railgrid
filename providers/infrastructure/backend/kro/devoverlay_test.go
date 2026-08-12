@@ -30,7 +30,7 @@ func devTestTemplate(t *testing.T) *infrav1alpha1.Template {
 	tmpl.Spec.Version = "0.1.0"
 	tmpl.Spec.Backend = Name
 	tmpl.Spec.InstanceCRD = infrav1alpha1.TemplateInstanceCRD{
-		Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Resource: "webapps", Kind: "WebApp",
+		Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "webapps", Kind: "WebApp",
 	}
 	tmpl.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{
 		"type": "object",
@@ -96,12 +96,12 @@ func devTestTemplate(t *testing.T) *infrav1alpha1.Template {
 		Components: map[string]infrav1alpha1.TemplateDevelopmentComponent{
 			"frontend": {
 				WorkspacePath: "web",
-				DevImage:      "${kedge.devImage.node}",
+				DevImage:      "${faros.devImage.node}",
 				StartCommand:  "npm run dev",
 			},
 			"backend": {
 				WorkspacePath: "api",
-				DevImage:      "${kedge.devImage.python}",
+				DevImage:      "${faros.devImage.python}",
 				StartCommand:  "uvicorn main:app --reload",
 				Reload: &infrav1alpha1.TemplateDevelopmentReload{
 					Strategy: "process",
@@ -117,7 +117,7 @@ func devTestTemplate(t *testing.T) *infrav1alpha1.Template {
 
 func devTestTokens() map[string]string {
 	tokens := testTokens()
-	tokens["${kedge.devImage.python}"] = "docker.io/library/python:3.12"
+	tokens["${faros.devImage.python}"] = "docker.io/library/python:3.12"
 	return tokens
 }
 
@@ -272,7 +272,7 @@ func assertDevProbes(t *testing.T, container map[string]any) {
 			continue
 		}
 		switch containerName {
-		case "kedge-platform-coordinator":
+		case "faros-platform-coordinator":
 			httpGet, ok := probe["httpGet"].(map[string]any)
 			wantPath := "/healthz"
 			if name == "readinessProbe" {
@@ -286,7 +286,7 @@ func assertDevProbes(t *testing.T, container map[string]any) {
 			}
 		case "backend", "frontend":
 			assertDevExecProbeCommand(t, containerName, name, probe, devRuntimeAddress)
-		case "kedge-exec-runner":
+		case "faros-exec-runner":
 			assertDevExecProbeCommand(t, containerName, name, probe, devExecutorAddress)
 		default:
 			t.Errorf("unexpected container %q while checking %s", containerName, name)
@@ -302,7 +302,7 @@ func assertDevExecProbeCommand(t *testing.T, containerName, probeName string, pr
 		return
 	}
 	command, _ := execProbe["command"].([]any)
-	want := []string{devAgentBinDir + "/kedge-dev-agent", "--healthcheck", address}
+	want := []string{devAgentBinDir + "/faros-dev-agent", "--healthcheck", address}
 	if len(command) != len(want) {
 		t.Errorf("%s %s command = %v, want %v", containerName, probeName, command, want)
 		return
@@ -347,7 +347,7 @@ func TestDevOverlayGatesProdWorkloadsAndAddsDevVariants(t *testing.T) {
 		"backendDevCABundle",
 		"frontendDevDeployment", "frontendDevWorkspace", "frontendDevPlatformState", "frontendDevControlService",
 		"frontendDevCABundle",
-		"kedgeDevControlSecret", "kedgeDevTokenJob",
+		"farosDevControlSecret", "farosDevTokenJob",
 	} {
 		res, ok := byID[id]
 		if !ok {
@@ -359,26 +359,26 @@ func TestDevOverlayGatesProdWorkloadsAndAddsDevVariants(t *testing.T) {
 		}
 	}
 
-	// The RGD schema accepts the injected kedgeMode field.
-	mode, found, _ := unstructured.NestedString(rgd.Object, "spec", "schema", "spec", infrav1alpha1.KedgeModeField)
+	// The RGD schema accepts the injected farosMode field.
+	mode, found, _ := unstructured.NestedString(rgd.Object, "spec", "schema", "spec", infrav1alpha1.FarosModeField)
 	if !found || !strings.Contains(mode, "production,development") || !strings.Contains(mode, `default="production"`) {
-		t.Errorf("RGD schema kedgeMode = %q, want enum production,development with production default", mode)
+		t.Errorf("RGD schema farosMode = %q, want enum production,development with production default", mode)
 	}
 
 	// Provider Actions is optional. Every expression is still present in the
 	// synthesized dev workload, so omitted action context must be materialized
 	// as an empty string instead of making kro fail on a missing schema key.
 	for _, field := range []string{
-		"kedgeActionsExchangeURL",
-		"kedgeActionsBaseURL",
-		"kedgeActionsTenantPath",
-		"kedgeActionsOrg",
-		"kedgeActionsWorkspace",
-		"kedgeActionsProject",
-		"kedgeActionsProjectUID",
-		"kedgeActionsEnvironment",
-		"kedgeActionsInstance",
-		"kedgeActionsCABundle",
+		"farosActionsExchangeURL",
+		"farosActionsBaseURL",
+		"farosActionsTenantPath",
+		"farosActionsOrg",
+		"farosActionsWorkspace",
+		"farosActionsProject",
+		"farosActionsProjectUID",
+		"farosActionsEnvironment",
+		"farosActionsInstance",
+		"farosActionsCABundle",
 	} {
 		value, found, err := unstructured.NestedString(rgd.Object, "spec", "schema", "spec", field)
 		if err != nil || !found || value != devActionsSchemaFieldMarker {
@@ -397,9 +397,9 @@ func TestDevOverlayEmptyCABundleKeepsSystemTrustAndRequiredObject(t *testing.T) 
 	spec, _, _ := nestedMap(dep, "spec")
 	podSpec, _, _ := nestedMap(spec, "template", "spec")
 	containers, _ := podSpec["containers"].([]any)
-	coordinator := namedContainer(t, containers, "kedge-platform-coordinator")
+	coordinator := namedContainer(t, containers, "faros-platform-coordinator")
 	app := namedContainer(t, containers, "backend")
-	wantEmpty := `${schema.spec.kedgeActionsCABundle != "" ? "` + devActionsCABundlePath + `" : ""}`
+	wantEmpty := `${schema.spec.farosActionsCABundle != "" ? "` + devActionsCABundlePath + `" : ""}`
 	for _, container := range []map[string]any{coordinator, app} {
 		if _, ok := testEnvValue(container, "SSL_CERT_FILE"); ok {
 			t.Errorf("%s sets SSL_CERT_FILE, which can replace system trust", container["name"])
@@ -408,8 +408,8 @@ func TestDevOverlayEmptyCABundleKeepsSystemTrustAndRequiredObject(t *testing.T) 
 	if got, ok := testEnvValue(app, "NODE_EXTRA_CA_CERTS"); !ok || got != wantEmpty {
 		t.Errorf("app NODE_EXTRA_CA_CERTS = %q (present=%t), want conditional empty/default trust expression %q", got, ok, wantEmpty)
 	}
-	if got, ok := testEnvValue(coordinator, "KEDGE_ACTIONS_CA_FILE"); !ok || got != wantEmpty {
-		t.Errorf("coordinator KEDGE_ACTIONS_CA_FILE = %q (present=%t), want conditional empty/default trust expression %q", got, ok, wantEmpty)
+	if got, ok := testEnvValue(coordinator, "FAROS_ACTIONS_CA_FILE"); !ok || got != wantEmpty {
+		t.Errorf("coordinator FAROS_ACTIONS_CA_FILE = %q (present=%t), want conditional empty/default trust expression %q", got, ok, wantEmpty)
 	}
 
 	caResource := byID["backendDevCABundle"]
@@ -419,7 +419,7 @@ func TestDevOverlayEmptyCABundleKeepsSystemTrustAndRequiredObject(t *testing.T) 
 	}
 	caTemplate, _ := caResource["template"].(map[string]any)
 	data, _ := caTemplate["data"].(map[string]any)
-	if data["ca-bundle.pem"] != "${schema.spec.kedgeActionsCABundle}" {
+	if data["ca-bundle.pem"] != "${schema.spec.farosActionsCABundle}" {
 		t.Fatalf("CA ConfigMap data = %v, want empty-default schema field", data)
 	}
 	volumes, _ := podSpec["volumes"].([]any)
@@ -464,14 +464,14 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	if len(containers) != 3 {
 		t.Fatalf("containers = %d, want coordinator + app + executor", len(containers))
 	}
-	coordinator := namedContainer(t, containers, "kedge-platform-coordinator")
+	coordinator := namedContainer(t, containers, "faros-platform-coordinator")
 	app := namedContainer(t, containers, "backend")
-	executor := namedContainer(t, containers, "kedge-exec-runner")
+	executor := namedContainer(t, containers, "faros-exec-runner")
 
 	if image, _ := coordinator["image"].(string); image != tokens[devAgentImageToken] {
 		t.Errorf("coordinator image = %q, want agent image %q", image, tokens[devAgentImageToken])
 	}
-	assertCommand(t, coordinator, "/kedge-dev-agent")
+	assertCommand(t, coordinator, "/faros-dev-agent")
 	for _, port := range []int64{devAgentPort, devExecPort} {
 		if !hasTestContainerPort(coordinator, port) {
 			t.Errorf("coordinator does not expose port %d", port)
@@ -484,24 +484,24 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	if image, _ := app["image"].(string); image != "docker.io/library/python:3.12" {
 		t.Errorf("app image = %q, want resolved dev image", image)
 	}
-	assertCommand(t, app, devAgentBinDir+"/kedge-dev-agent", "--runtime-supervisor")
+	assertCommand(t, app, devAgentBinDir+"/faros-dev-agent", "--runtime-supervisor")
 	if !hasTestContainerPort(app, devRuntimePort) {
 		t.Errorf("app does not expose internal runtime port %d", devRuntimePort)
 	}
-	if !hasTestEnv(app, "DATABASE_URL") || !hasTestEnv(app, "KEDGE_DEV_START_COMMAND") || !hasTestEnv(app, "KEDGE_DEV_RELOAD_RULES") {
+	if !hasTestEnv(app, "DATABASE_URL") || !hasTestEnv(app, "FAROS_DEV_START_COMMAND") || !hasTestEnv(app, "FAROS_DEV_RELOAD_RULES") {
 		t.Error("app lost production or runtime-supervisor environment")
 	}
-	if hasTestEnv(app, "KEDGE_DEV_CONTROL_TOKEN") {
+	if hasTestEnv(app, "FAROS_DEV_CONTROL_TOKEN") {
 		t.Error("control token is present on app")
 	}
-	if !hasTestEnv(coordinator, "KEDGE_ACTIONS_EXCHANGE_URL") || !hasTestEnv(coordinator, "KEDGE_ACTIONS_BOOTSTRAP_TOKEN_FILE") {
+	if !hasTestEnv(coordinator, "FAROS_ACTIONS_EXCHANGE_URL") || !hasTestEnv(coordinator, "FAROS_ACTIONS_BOOTSTRAP_TOKEN_FILE") {
 		t.Error("coordinator lacks the Provider Actions exchange contract")
 	}
-	if hasTestEnv(app, "KEDGE_ACTIONS_EXCHANGE_URL") || hasTestEnv(app, "KEDGE_ACTIONS_BOOTSTRAP_TOKEN_FILE") {
+	if hasTestEnv(app, "FAROS_ACTIONS_EXCHANGE_URL") || hasTestEnv(app, "FAROS_ACTIONS_BOOTSTRAP_TOKEN_FILE") {
 		t.Error("app received the coordinator-only Provider Actions exchange/bootstrap configuration")
 	}
 	for _, c := range []map[string]any{coordinator, app} {
-		for _, envName := range []string{"KEDGE_ACTIONS_TOKEN_FILE", "KEDGE_ACTIONS_BASE_URL", "KEDGE_PROJECT", "KEDGE_ACTIONS_ENVIRONMENT", "KEDGE_ACTIONS_INSTANCE"} {
+		for _, envName := range []string{"FAROS_ACTIONS_TOKEN_FILE", "FAROS_ACTIONS_BASE_URL", "FAROS_PROJECT", "FAROS_ACTIONS_ENVIRONMENT", "FAROS_ACTIONS_INSTANCE"} {
 			if !hasTestEnv(c, envName) {
 				t.Errorf("%s lacks Provider Actions env %s", c["name"], envName)
 			}
@@ -519,7 +519,7 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	if image, _ := executor["image"].(string); image != "docker.io/library/python:3.12" {
 		t.Errorf("executor image = %q, want resolved dev image", image)
 	}
-	assertCommand(t, executor, devAgentBinDir+"/kedge-dev-agent", "--executor")
+	assertCommand(t, executor, devAgentBinDir+"/faros-dev-agent", "--executor")
 	if !hasTestContainerPort(executor, devExecRunnerPort) {
 		t.Errorf("executor does not expose internal port %d", devExecRunnerPort)
 	}
@@ -528,7 +528,7 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 		if hasTestEnv(c, "DATABASE_URL") && containerName != "backend" {
 			t.Error("production database environment leaked from app")
 		}
-		if hasTestEnv(c, "KEDGE_DEV_CONTROL_TOKEN") && containerName != "kedge-platform-coordinator" {
+		if hasTestEnv(c, "FAROS_DEV_CONTROL_TOKEN") && containerName != "faros-platform-coordinator" {
 			t.Error("control token leaked from coordinator")
 		}
 		assertDevProbes(t, c)
@@ -537,23 +537,23 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 	assertSecureDevContainer(t, app, false)
 	assertSecureDevContainer(t, executor, true)
 
-	if value, ok := testEnvValue(coordinator, "KEDGE_DEV_STATE_DIR"); !ok || value != devPlatformStateDir {
+	if value, ok := testEnvValue(coordinator, "FAROS_DEV_STATE_DIR"); !ok || value != devPlatformStateDir {
 		t.Errorf("coordinator state directory = %q, want %q", value, devPlatformStateDir)
 	}
-	if value, ok := testEnvValue(coordinator, "KEDGE_DEV_RUNTIME_URL"); !ok || value != "http://"+devRuntimeAddress {
+	if value, ok := testEnvValue(coordinator, "FAROS_DEV_RUNTIME_URL"); !ok || value != "http://"+devRuntimeAddress {
 		t.Errorf("coordinator runtime address = %q, want %q", value, devRuntimeAddress)
 	}
-	if value, ok := testEnvValue(coordinator, "KEDGE_DEV_EXECUTOR_URL"); !ok || value != "http://"+devExecutorAddress {
+	if value, ok := testEnvValue(coordinator, "FAROS_DEV_EXECUTOR_URL"); !ok || value != "http://"+devExecutorAddress {
 		t.Errorf("coordinator executor address = %q, want %q", value, devExecutorAddress)
 	}
-	if !hasTestEnv(coordinator, "KEDGE_DEV_RELOAD_STRATEGY") || !hasTestEnv(coordinator, "KEDGE_DEV_RELOAD_RULES") {
+	if !hasTestEnv(coordinator, "FAROS_DEV_RELOAD_STRATEGY") || !hasTestEnv(coordinator, "FAROS_DEV_RELOAD_RULES") {
 		t.Error("coordinator lacks the template reload contract")
 	}
-	tokenEnv, ok := testEnv(coordinator, "KEDGE_DEV_CONTROL_TOKEN")
+	tokenEnv, ok := testEnv(coordinator, "FAROS_DEV_CONTROL_TOKEN")
 	if !ok {
 		t.Fatal("coordinator has no control-token environment")
 	}
-	if secret, _, _ := nestedMap(tokenEnv, "valueFrom", "secretKeyRef"); secret["name"] != "${kedgeDevControlSecret.metadata.name}" {
+	if secret, _, _ := nestedMap(tokenEnv, "valueFrom", "secretKeyRef"); secret["name"] != "${farosDevControlSecret.metadata.name}" {
 		t.Errorf("coordinator control token source = %v", secret)
 	}
 
@@ -568,7 +568,7 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 		}
 	}
 	stateMount := testMount(t, coordinator, devPlatformStateDir)
-	if stateMount["name"] != "kedge-dev-platform-state" {
+	if stateMount["name"] != "faros-dev-platform-state" {
 		t.Errorf("coordinator state mount = %v", stateMount)
 	}
 	if _, ok := findMount(executor, devPlatformStateDir); ok {
@@ -578,14 +578,14 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 		t.Error("app mounts platform state")
 	}
 	for _, c := range []map[string]any{coordinator, app} {
-		mount := testMount(t, c, "/etc/kedge/actions-ca")
+		mount := testMount(t, c, "/etc/faros/actions-ca")
 		if mount["name"] != devActionsCABundleVolumeName || mount["readOnly"] != true {
 			t.Errorf("%s CA mount = %v", c["name"], mount)
 		}
 	}
 	coordSA := testMount(t, coordinator, devServiceAccountDir)
 	execSA := testMount(t, executor, devServiceAccountDir)
-	if coordSA["name"] != "kedge-dev-no-serviceaccount" || execSA["name"] != "kedge-dev-no-serviceaccount" {
+	if coordSA["name"] != "faros-dev-no-serviceaccount" || execSA["name"] != "faros-dev-no-serviceaccount" {
 		t.Errorf("service-account masks = %v, %v", coordSA, execSA)
 	}
 	if _, ok := findMount(app, devServiceAccountDir); ok {
@@ -638,7 +638,7 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 		t.Fatalf("CA trust object kind = %v, want ConfigMap", caConfigMap["kind"])
 	}
 	caData, _ := caConfigMap["data"].(map[string]any)
-	if caData["ca-bundle.pem"] != "${schema.spec.kedgeActionsCABundle}" {
+	if caData["ca-bundle.pem"] != "${schema.spec.farosActionsCABundle}" {
 		t.Errorf("CA ConfigMap data = %v, want schema-resolved public bundle", caData)
 	}
 	caVolumeFound := false
@@ -673,17 +673,17 @@ func TestDevOverlayThreeContainerDeploymentShape(t *testing.T) {
 		t.Fatalf("initContainers = %d, want one agent installer", len(inits))
 	}
 	installer, _ := inits[0].(map[string]any)
-	assertCommand(t, installer, "/kedge-dev-agent", "--install", devAgentBinDir)
+	assertCommand(t, installer, "/faros-dev-agent", "--install", devAgentBinDir)
 	assertSecureDevContainer(t, installer, true)
 	if _, ok := findMount(installer, devPlatformStateDir); ok {
 		t.Error("agent installer mounts platform state")
 	}
 	if !hasTestMount(installer, devAgentBinDir) {
-		t.Error("agent installer does not mount /kedge/bin")
+		t.Error("agent installer does not mount /faros/bin")
 	}
 
 	encoded, _ := json.Marshal(dep)
-	for _, forbidden := range []string{".kedge-platform", "KEDGE_DEV_DROP_CHILD_GROUPS", "SETUID", "SETGID", "CHOWN", "--exec-worker"} {
+	for _, forbidden := range []string{".faros-platform", "FAROS_DEV_DROP_CHILD_GROUPS", "SETUID", "SETGID", "CHOWN", "--exec-worker"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Errorf("dev deployment contains removed legacy wiring %q", forbidden)
 		}
@@ -763,7 +763,7 @@ func TestDevOverlaySharedWorkspaceSubPathHasSeparatePlatformState(t *testing.T) 
 		if mount["name"] != "existing-workspace" || mount["subPath"] != "components/backend" {
 			t.Fatalf("workspace mount was not shared with its existing subPath: %v", mount)
 		}
-		if _, ok := findMount(container, "/workspace/.kedge-platform"); ok {
+		if _, ok := findMount(container, "/workspace/.faros-platform"); ok {
 			t.Fatalf("legacy platform subPath mount remains: %v", container)
 		}
 	}
@@ -789,7 +789,7 @@ func TestDevOverlayStatusAdditions(t *testing.T) {
 	}
 	raw, _ := json.Marshal(status)
 	for _, want := range []string{
-		`"runtimeNamespace":"${kedgeDevControlSecret.metadata.namespace}"`,
+		`"runtimeNamespace":"${farosDevControlSecret.metadata.namespace}"`,
 		`"controlSecretRef"`,
 		`"frontend":{"controlServiceRef"`,
 		`"backend":{"controlServiceRef"`,
@@ -804,7 +804,7 @@ func TestDevOverlayErrors(t *testing.T) {
 	t.Run("unknown component workload", func(t *testing.T) {
 		tmpl := devTestTemplate(t)
 		tmpl.Spec.Development.Components["worker"] = infrav1alpha1.TemplateDevelopmentComponent{
-			WorkspacePath: "jobs", DevImage: "${kedge.devImage.node}", StartCommand: "npm run worker",
+			WorkspacePath: "jobs", DevImage: "${faros.devImage.node}", StartCommand: "npm run worker",
 		}
 		if _, err := buildRGD(tmpl, devTestTokens()); err == nil || !strings.Contains(err.Error(), "worker") {
 			t.Fatalf("buildRGD = %v, want unknown-workload error naming the component", err)
@@ -812,10 +812,10 @@ func TestDevOverlayErrors(t *testing.T) {
 	})
 	t.Run("unconfigured dev image token", func(t *testing.T) {
 		tokens := devTestTokens()
-		delete(tokens, "${kedge.devImage.python}")
+		delete(tokens, "${faros.devImage.python}")
 		_, err := buildRGD(devTestTemplate(t), tokens)
-		if err == nil || !strings.Contains(err.Error(), "KEDGE_DEV_IMAGE_PYTHON") {
-			t.Fatalf("buildRGD = %v, want missing-token error naming KEDGE_DEV_IMAGE_PYTHON", err)
+		if err == nil || !strings.Contains(err.Error(), "FAROS_DEV_IMAGE_PYTHON") {
+			t.Fatalf("buildRGD = %v, want missing-token error naming FAROS_DEV_IMAGE_PYTHON", err)
 		}
 	})
 	t.Run("reserved graph id collision", func(t *testing.T) {

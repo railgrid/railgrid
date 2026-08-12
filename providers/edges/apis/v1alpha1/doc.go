@@ -15,12 +15,12 @@ limitations under the License.
 */
 
 // +k8s:deepcopy-gen=package,register
-// +groupName=edges.kedge.faros.sh
+// +groupName=edges.faros.sh
 
 // Package v1alpha1 holds the edges provider's two connectable kinds:
 // KubernetesCluster (a managed Kubernetes cluster) and LinuxServer (a bare-metal
 // / VM Linux host), both reachable through the hub over the agent's reverse
 // tunnel. Each Status embeds the SDK's edgeapi.ConnectionStatus so the SDK
 // tunnel + controllers manage connection state generically. Both live in one
-// group (edges.kedge.faros.sh) and one APIExport.
+// group (edges.faros.sh) and one APIExport.
 package v1alpha1

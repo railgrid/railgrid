@@ -1,5 +1,5 @@
 /*
-   Kedge's standalone Dex surface is dark-first. The shared stylesheet owns
+   Faros's standalone Dex surface is dark-first. The shared stylesheet owns
    the complete Violet Circuit recipe; this file remains as the theme hook
    expected by Dex and intentionally contains no upstream theme overrides.
 */

@@ -29,7 +29,7 @@ func testProviderAction() ProviderActionSpec {
 		DisplayName: "Query table",
 		Description: "Run a bounded read-only query.",
 		BoundResource: ProviderActionBoundResource{
-			APIVersion: "databricks.kedge.faros.sh/v1alpha1",
+			APIVersion: "databricks.faros.sh/v1alpha1",
 			Kind:       "Table",
 			Resource:   "tables",
 		},

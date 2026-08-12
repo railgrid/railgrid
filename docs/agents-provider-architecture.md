@@ -28,7 +28,7 @@ agent runs scheduled jobs and heartbeats on its own clock, notifies the user
 proactively, uses tools (built-in web/GitHub/files families plus arbitrary
 MCP connections), and keeps durable memory, sessions, and a file workspace.
 
-**Hard dependencies: the kedge hub and Postgres. Nothing else.** The provider
+**Hard dependencies: the faros hub and Postgres. Nothing else.** The provider
 must be fully functional on a hub that has no infrastructure provider, no
 app-studio, and no connected edges. It does not use the Kubernetes layer to
 execute anything — agent runs are in-process LLM turns, and cron scheduling is
@@ -53,7 +53,7 @@ and tools are edited inside the agent, next to a live chat playground.
 - **Chat** — streaming (SSE) single-turn conversations on the Eino engine, with
   transcript + resumable run records in the store (in-memory backend; see gaps).
 - **Named model credentials** — created once, each its own Secret
-  (`kedge-agents-model-<name>`), listed/created/deleted on the Models tab and
+  (`faros-agents-model-<name>`), listed/created/deleted on the Models tab and
   assigned/reassigned per agent. This is what an agent uses to reach its
   provider (OpenAI-compatible today).
 - **Schedules / Triggers / Connections CRUD** — full create/list/delete of the
@@ -71,7 +71,7 @@ and tools are edited inside the agent, next to a live chat playground.
   pushed to the agent's channel. Resolving an approval **resumes the paused
   run** (see Durable approvals below).
 - **Background executor** — schedules fire **autonomously**. The provider reads
-  its APIExportEndpointSlice (via `KEDGE_PROVIDER_KUBECONFIG`) to discover the
+  its APIExportEndpointSlice (via `FAROS_PROVIDER_KUBECONFIG`) to discover the
   APIExport virtual workspace, polls `AgentSchedule` CRs across all bound tenant
   workspaces (~30s, `AGENTS_SCHEDULER_INTERVAL`), claims each fire with an
   optimistic status update (multi-replica safe), and executes through an
@@ -238,7 +238,7 @@ those outranks new features.**
     with no per-user identity inside it).
 11. **Per-tool grant granularity.** Grants stop at family/connection: granting
     `mcp` + a connection exposes every tool that server discovers, and the
-    aggregate kedge endpoint is all-or-nothing for interactive runs. There is
+    aggregate faros endpoint is all-or-nothing for interactive runs. There is
     also no cached tool inventory, so every run re-dials each MCP connection
     serially.
 12. **Executor durability + fairness.** The in-process pool is 4 workers
@@ -278,7 +278,7 @@ The [Milestones](#milestones) section lists the full plan.
    the primary prompt-injection mitigation: unattended runs read untrusted
    web/email content, so they don't get write-capable tools by default.
 
-## APIExport resources (`agents.kedge.faros.sh`)
+## APIExport resources (`agents.faros.sh`)
 
 | Kind | Purpose |
 |---|---|
@@ -295,8 +295,8 @@ and resume checkpoint live in the provider's Postgres and are served over
 room for the schema and the execution reality to drift.
 
 Tenant-facing permission claim: `secrets` (tenant-scoped), under this
-provider's own names: `kedge-agents-llm` (model profiles — see Runner) and
-`kedge-agents-conn-<name>` (one per Connection).
+provider's own names: `faros-agents-llm` (model profiles — see Runner) and
+`faros-agents-conn-<name>` (one per Connection).
 
 ### Autonomy and the approvals inbox
 
@@ -425,7 +425,7 @@ type Runner interface {
 - `Agent.spec.runner: auto | eino | claude-code` — `auto` picks `eino`
   unless the task is marked long-running and `claude-code` is available.
 
-**Model profiles.** `kedge-agents-llm` holds a small list of named profiles
+**Model profiles.** `faros-agents-llm` holds a small list of named profiles
 (provider, baseURL, model, key) instead of one entry. Agents map purposes to
 profiles: `chat` (strong), `background` (cheap — heartbeats, wakeups,
 summarization), `compaction`. BYO OpenAI-compatible or Gemini, per tenant,
@@ -497,7 +497,7 @@ Settings edits display name, model credential, system prompt, autonomy, monthly
 budget, and delegates. The shared footer holds **Models** (credentials),
 **Connections** (secrets — created once, referenced by agents), and the
 cross-agent **Inbox**. This keeps per-agent config inside the agent and shared
-secrets outside it, mirroring app-studio. (Vite + `kedge.ready`/`kedge.context`
+secrets outside it, mirroring app-studio. (Vite + `faros.ready`/`faros.context`
 handshake; streaming chat with tool-call rows + approval prompts.)
 
 **OAuth connections.** For `auth: oauth` Connections the portal starts the flow
@@ -600,7 +600,7 @@ reflect the 2026-07-12 state (see [Implementation status](#implementation-status
 2. ◑ **Chat + store** — eino runner, SSE chat, messages/runs in the store.
    **Done** except: Postgres backend (in-memory only), tool approvals in chat
    (needs the tool loop), at-rest encryption. Model creds became *named
-   credentials* (own Secret each), not the single `kedge-agents-llm`.
+   credentials* (own Secret each), not the single `faros-agents-llm`.
 3. ✅ **Scheduler** — CRUD + tab + Run now, and **autonomous firing** via the
    background executor: timezone-aware cron/wakeup/heartbeat, optimistic status
    claims, watchdog timeout, disable-after-5-failures. (Exponential retry

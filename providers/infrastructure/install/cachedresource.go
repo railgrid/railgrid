@@ -11,14 +11,14 @@ You may obtain a copy of the License at
 package install
 
 // CachedResource projection. Templates live in the provider workspace
-// (root:kedge:providers:infrastructure). For tenants who APIBind to
+// (root:faros:providers:infrastructure). For tenants who APIBind to
 // the infrastructure APIExport to be able to `kubectl get templates`
 // in their OWN workspace, kcp needs a CachedResource here pointing at
-// templates.infrastructure.kedge.faros.sh. The kcp cache machinery
+// templates.infrastructure.faros.sh. The kcp cache machinery
 // then projects every Template into every tenant workspace that has
 // the binding — read-only, no extra controller required on our side.
 //
-// PR A took care of putting templates.infrastructure.kedge.faros.sh
+// PR A took care of putting templates.infrastructure.faros.sh
 // into APIExport.spec.resources (via install/apiexport.go). This
 // file is the second half: the CachedResource itself.
 //
@@ -57,7 +57,7 @@ const CachedResourceTemplatesName = "publish-templates"
 
 // PlatformCachedResources ensures the CachedResource(s) the platform
 // owns exist in the provider workspace. There's one today:
-// publish-templates, projecting templates.infrastructure.kedge.faros.sh
+// publish-templates, projecting templates.infrastructure.faros.sh
 // to every APIBound tenant workspace.
 //
 // Idempotent. Errors mean "binary boot didn't complete" — same

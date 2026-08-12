@@ -195,7 +195,7 @@ const (
 	// ProjectEnvironmentModeArtifact deploys built image digests (production).
 	ProjectEnvironmentModeArtifact ProjectEnvironmentMode = "artifact"
 	// ProjectEnvironmentModeLive is a development sandbox synced from the
-	// workspace (kedgeMode: development).
+	// workspace (farosMode: development).
 	ProjectEnvironmentModeLive ProjectEnvironmentMode = "live"
 )
 

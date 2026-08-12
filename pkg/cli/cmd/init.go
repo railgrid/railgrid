@@ -25,7 +25,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/faroshq/faros-kedge/pkg/hub"
+	"github.com/faroshq/faros/pkg/hub"
 )
 
 func newInitCommand() *cobra.Command {
@@ -33,7 +33,7 @@ func newInitCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Initialize and start the kedge hub",
+		Short: "Initialize and start the faros hub",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()

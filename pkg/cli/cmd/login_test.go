@@ -25,14 +25,14 @@ import (
 )
 
 // loginKubeconfig mimics what the hub's auth handler returns on login: the
-// "kedge" cluster pointing at the user's home workspace.
+// "faros" cluster pointing at the user's home workspace.
 func loginKubeconfig(t *testing.T, server string) []byte {
 	t.Helper()
 	cfg := clientcmdapi.NewConfig()
-	cfg.Clusters["kedge"] = &clientcmdapi.Cluster{Server: server}
+	cfg.Clusters["faros"] = &clientcmdapi.Cluster{Server: server}
 	cfg.AuthInfos["user-abc"] = &clientcmdapi.AuthInfo{Token: "tok"}
-	cfg.Contexts["kedge"] = &clientcmdapi.Context{Cluster: "kedge", AuthInfo: "user-abc"}
-	cfg.CurrentContext = "kedge"
+	cfg.Contexts["faros"] = &clientcmdapi.Context{Cluster: "faros", AuthInfo: "user-abc"}
+	cfg.CurrentContext = "faros"
 	out, err := clientcmd.Write(*cfg)
 	if err != nil {
 		t.Fatalf("writing kubeconfig: %v", err)
@@ -43,10 +43,10 @@ func loginKubeconfig(t *testing.T, server string) []byte {
 func writeKubeconfigFile(t *testing.T, path, server string) {
 	t.Helper()
 	cfg := clientcmdapi.NewConfig()
-	cfg.Clusters["kedge"] = &clientcmdapi.Cluster{Server: server}
+	cfg.Clusters["faros"] = &clientcmdapi.Cluster{Server: server}
 	cfg.AuthInfos["user-abc"] = &clientcmdapi.AuthInfo{Token: "old"}
-	cfg.Contexts["kedge"] = &clientcmdapi.Context{Cluster: "kedge", AuthInfo: "user-abc"}
-	cfg.CurrentContext = "kedge"
+	cfg.Contexts["faros"] = &clientcmdapi.Context{Cluster: "faros", AuthInfo: "user-abc"}
+	cfg.CurrentContext = "faros"
 	if err := clientcmd.WriteToFile(*cfg, path); err != nil {
 		t.Fatalf("writing kubeconfig file: %v", err)
 	}
@@ -58,9 +58,9 @@ func mergedServer(t *testing.T, path string) string {
 	if err != nil {
 		t.Fatalf("loading merged kubeconfig: %v", err)
 	}
-	cluster := cfg.Clusters["kedge"]
+	cluster := cfg.Clusters["faros"]
 	if cluster == nil {
-		t.Fatalf("merged kubeconfig has no kedge cluster")
+		t.Fatalf("merged kubeconfig has no faros cluster")
 	}
 	return cluster.Server
 }
@@ -73,7 +73,7 @@ func TestMergeKubeconfigPreservesWorkspaceSelection(t *testing.T) {
 		wantServer string
 	}{
 		{
-			name:       "relogin same hub keeps kedge use selection",
+			name:       "relogin same hub keeps faros use selection",
 			existing:   "https://console-dev.faros.sh/clusters/jcb49sm6dkg85xwg",
 			incoming:   "https://console-dev.faros.sh/clusters/home111",
 			wantServer: "https://console-dev.faros.sh/clusters/jcb49sm6dkg85xwg",
@@ -115,7 +115,7 @@ func TestMergeKubeconfigPreservesWorkspaceSelection(t *testing.T) {
 				t.Fatalf("mergeKubeconfig: %v", err)
 			}
 			if got := mergedServer(t, path); got != tc.wantServer {
-				t.Errorf("kedge cluster server = %q, want %q", got, tc.wantServer)
+				t.Errorf("faros cluster server = %q, want %q", got, tc.wantServer)
 			}
 		})
 	}

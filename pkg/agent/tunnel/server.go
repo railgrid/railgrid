@@ -51,7 +51,7 @@ func setupRouter(downstream *rest.Config, sshPort int) *mux.Router {
 	router.HandleFunc("/api/v1/services", newServicesHandler()).Methods("GET")
 
 	// Generic HTTP service proxy. The provider computes the target (from a
-	// Service CR) and sets X-Kedge-Svc-Target per request. Server mode allows
+	// Service CR) and sets X-Faros-Svc-Target per request. Server mode allows
 	// loopback only; kubernetes mode (downstream != nil) also allows cluster-DNS
 	// names, since Services on a KubernetesCluster edge live behind cluster DNS.
 	router.PathPrefix("/svc/").HandlerFunc(newSvcProxyHandler(downstream != nil))

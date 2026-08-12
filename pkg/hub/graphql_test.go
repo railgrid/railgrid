@@ -25,7 +25,7 @@ import (
 func TestEmbeddedGraphQLListenerOptionsDisableStandaloneListeners(t *testing.T) {
 	hubOpts := &Options{
 		GraphQLAPIExportSliceName:      "graphql.apiexports",
-		GraphQLAPIExportLogicalCluster: "root:kedge:providers",
+		GraphQLAPIExportLogicalCluster: "root:faros:providers",
 	}
 	const (
 		kubeconfigPath = "/tmp/embedded-graphql-kubeconfig"

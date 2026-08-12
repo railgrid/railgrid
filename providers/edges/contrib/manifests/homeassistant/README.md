@@ -9,7 +9,7 @@ Loosely follows [How to run Home Assistant in Kubernetes][blog], minus the
 home-lab specifics — there is no Zigbee dongle in a kind cluster, so no
 `privileged`, `hostNetwork`, or `nodeSelector`, and no Ceph, so the PVC uses the
 cluster's default StorageClass. The Service is ClusterIP rather than
-LoadBalancer because kedge reaches HA from *inside* the cluster.
+LoadBalancer because faros reaches HA from *inside* the cluster.
 
 [blog]: https://blog.quadmeup.com/2025/04/07/how-to-run-home-assistant-in-kubernetes/
 
@@ -24,14 +24,14 @@ LoadBalancer because kedge reaches HA from *inside* the cluster.
 
 ## Deploy
 
-Via Tilt: click ▶ on **`ha-kube-deploy`** (it also creates the `kedge-agent`
+Via Tilt: click ▶ on **`ha-kube-deploy`** (it also creates the `faros-agent`
 kind cluster if it isn't up yet). Or directly:
 
 ```sh
 make dev-deploy-homeassistant
 ```
 
-Both apply into the `kedge-agent` kind cluster (`.kubeconfig-kedge-agent`) —
+Both apply into the `faros-agent` kind cluster (`.kubeconfig-faros-agent`) —
 the cluster the dev kubernetes edge agent serves. First boot takes a few
 minutes: it pulls a ~1.5GB image, then initialises `/config`.
 
@@ -47,7 +47,7 @@ make dev-homeassistant-forward     # or ▶ ha-kube-forward in Tilt
 Then open <http://localhost:8123>, complete onboarding, and create a token at
 **your profile → Security → Long-lived access tokens**.
 
-## Wire it into kedge
+## Wire it into faros
 
 Kubernetes services are **declared**, not discovered — a host has a handful of
 listening ports, a cluster has hundreds of Services, so scanning them would be
@@ -57,8 +57,8 @@ noise. Two ways:
 Assistant`, target namespace `home`, target service `home-assistant`, port
 `8123`), then *Connect* and paste the token.
 
-**kubectl** — edit and apply [`kedge-service.example.yaml`](kedge-service.example.yaml)
-**against your kedge tenant workspace**, not this kind cluster.
+**kubectl** — edit and apply [`faros-service.example.yaml`](faros-service.example.yaml)
+**against your faros tenant workspace**, not this kind cluster.
 
 Either way the validation reconciler probes `GET /api/config` through the
 tunnel; the Service goes `Ready` and fills in HA's exact version. A `401` means
@@ -68,7 +68,7 @@ the token is wrong.
 
 ```sh
 curl -H "Authorization: Bearer $USER_TOKEN" \
-  "https://<hub>/services/providers/edges/edgeproxy/clusters/<cluster>/apis/edges.kedge.faros.sh/v1alpha1/services/ha-kube/proxy/api/config"
+  "https://<hub>/services/providers/edges/edgeproxy/clusters/<cluster>/apis/edges.faros.sh/v1alpha1/services/ha-kube/proxy/api/config"
 ```
 
 Then an agent granted the `edges` tool family sees `edges__ha_kube_ha_states`,
@@ -99,9 +99,9 @@ input_boolean:
 ```
 
 ```sh
-kubectl --kubeconfig=.kubeconfig-kedge-agent -n home exec -it deploy/home-assistant -- \
+kubectl --kubeconfig=.kubeconfig-faros-agent -n home exec -it deploy/home-assistant -- \
   sh -c 'cat >> /config/configuration.yaml' < snippet.yaml
-kubectl --kubeconfig=.kubeconfig-kedge-agent -n home rollout restart deploy/home-assistant
+kubectl --kubeconfig=.kubeconfig-faros-agent -n home rollout restart deploy/home-assistant
 ```
 
 ## Notes
@@ -109,10 +109,10 @@ kubectl --kubeconfig=.kubeconfig-kedge-agent -n home rollout restart deploy/home
 - **Not production.** No TLS, no backups, a single replica on an RWO volume, and
   a token that can actuate anything HA can. It exists to exercise the kube
   `Service` path end to end.
-- **Reverse-proxy headers.** kedge's `/svc` proxy adds `X-Forwarded-For`. HA
+- **Reverse-proxy headers.** faros's `/svc` proxy adds `X-Forwarded-For`. HA
   ignores it by default (`use_x_forwarded_for` is off), so nothing to configure.
   If you ever turn that on to see real client IPs, you must also list the pod
   CIDR under `http.trusted_proxies` or HA will start rejecting requests.
-- **Deleting the PVC resets everything** — users, tokens, entities. The kedge
+- **Deleting the PVC resets everything** — users, tokens, entities. The faros
   Secret would then hold a token HA no longer recognises, and the Service goes
   `Unreachable` with a `401`.

@@ -25,31 +25,31 @@ spec:
       initContainers:
         # Bootstrap the provider workspace (schemas, APIExport, slice, bind
         # grant) with the onboarded workspace-admin kubeconfig. Schemas baked
-        # at /etc/kedge/schemas (Dockerfile). Idempotent.
+        # at /etc/faros/schemas (Dockerfile). Idempotent.
         - name: init
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["init"]
           env:
-            - name: KEDGE_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
-            - name: KEDGE_SCHEMAS_DIR
-              value: /etc/kedge/schemas
+            - name: FAROS_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/faros/faros-provider-kubeconfig
+            - name: FAROS_SCHEMAS_DIR
+              value: /etc/faros/schemas
             - name: VIBE_STUDIO_INFRA_IDENTITY_HASH
               value: {{ .Values.apiExport.infraIdentityHash | quote }}
             - name: VIBE_STUDIO_CODE_IDENTITY_HASH
               value: {{ .Values.apiExport.codeIdentityHash | quote }}
             {{- if .Values.catalogEntry.enabled }}
-            - name: KEDGE_CATALOGENTRY_FILE
-              value: /etc/kedge/catalogentry/catalogentry.yaml
+            - name: FAROS_CATALOGENTRY_FILE
+              value: /etc/faros/catalogentry/catalogentry.yaml
             {{- end }}
           volumeMounts:
-            - name: kedge-provider-kubeconfig
-              mountPath: /var/run/secrets/kedge
+            - name: faros-provider-kubeconfig
+              mountPath: /var/run/secrets/faros
               readOnly: true
             {{- if .Values.catalogEntry.enabled }}
             - name: catalogentry
-              mountPath: /etc/kedge/catalogentry
+              mountPath: /etc/faros/catalogentry
               readOnly: true
             {{- end }}
       containers:
@@ -70,20 +70,20 @@ spec:
           env:
             - name: PORT
               value: "8081"
-            - name: KEDGE_HUB_URL
+            - name: FAROS_HUB_URL
               value: {{ .Values.hub.url | quote }}
-            - name: KEDGE_PROVIDER_NAME
+            - name: FAROS_PROVIDER_NAME
               value: "vibe-studio"
             # The Project reconciler (multicluster controller manager) needs
             # the provider-workspace kubeconfig at serve time too.
-            - name: KEDGE_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            - name: FAROS_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/faros/faros-provider-kubeconfig
             {{- if .Values.hub.insecure }}
-            - name: KEDGE_HUB_INSECURE
+            - name: FAROS_HUB_INSECURE
               value: "true"
             {{- end }}
             {{- if .Values.hub.tokenSecretRef.name }}
-            - name: KEDGE_HUB_TOKEN
+            - name: FAROS_HUB_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.hub.tokenSecretRef.name }}
@@ -97,18 +97,18 @@ spec:
                   key: {{ .Values.database.dsnSecretRef.key }}
             {{- end }}
           volumeMounts:
-            - name: kedge-provider-kubeconfig
-              mountPath: /var/run/secrets/kedge
+            - name: faros-provider-kubeconfig
+              mountPath: /var/run/secrets/faros
               readOnly: true
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
-        - name: kedge-provider-kubeconfig
+        - name: faros-provider-kubeconfig
           secret:
             secretName: {{ .Values.providerKubeconfig.secretName }}
             items:
               - key: kubeconfig
-                path: kedge-provider-kubeconfig
+                path: faros-provider-kubeconfig
         {{- if .Values.catalogEntry.enabled }}
         - name: catalogentry
           configMap:

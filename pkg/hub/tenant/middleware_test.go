@@ -30,7 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 )
 
 // fakeIndex is a small fixture builder for UserMembershipIndex.
@@ -75,7 +75,7 @@ func TestMiddleware_OrgScopeHappyPath(t *testing.T) {
 	h := Middleware(resolver, lookup)(captureNext(&got, reached))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/orgs/x/anything", nil)
-	req.Header.Set(HeaderKedgeOrg, orgUUID)
+	req.Header.Set(HeaderFarosOrg, orgUUID)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -118,8 +118,8 @@ func TestMiddleware_WorkspaceScopeHappyPath(t *testing.T) {
 	h := Middleware(resolver, lookup)(captureNext(&got, reached))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/orgs/x/workspaces/y/anything", nil)
-	req.Header.Set(HeaderKedgeOrg, orgUUID)
-	req.Header.Set(HeaderKedgeWorkspace, wsUUID)
+	req.Header.Set(HeaderFarosOrg, orgUUID)
+	req.Header.Set(HeaderFarosWorkspace, wsUUID)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -145,7 +145,7 @@ func TestMiddleware_WorkspaceScopeHappyPath(t *testing.T) {
 func TestMiddleware_MissingOrgHeader(t *testing.T) {
 	resolver := UserResolverFunc(func(_ *http.Request) (string, error) { return "alice", nil })
 	lookup := MembershipLookupFunc(func(_ context.Context, _ string) (*tenancyv1alpha1.UserMembershipIndex, error) {
-		t.Fatal("lookup should not be called when X-Kedge-Org is missing")
+		t.Fatal("lookup should not be called when X-Faros-Org is missing")
 		return nil, nil
 	})
 
@@ -164,7 +164,7 @@ func TestMiddleware_MissingOrgHeader(t *testing.T) {
 	if nextCalled {
 		t.Error("next handler should not be called on missing header")
 	}
-	assertStatusEnvelope(t, rec, "BadRequest", HeaderKedgeOrg)
+	assertStatusEnvelope(t, rec, "BadRequest", HeaderFarosOrg)
 }
 
 func TestMiddleware_NoMatchingMembership(t *testing.T) {
@@ -181,7 +181,7 @@ func TestMiddleware_NoMatchingMembership(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.Header.Set(HeaderKedgeOrg, "asked-for-org")
+	req.Header.Set(HeaderFarosOrg, "asked-for-org")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -193,7 +193,7 @@ func TestMiddleware_NoMatchingMembership(t *testing.T) {
 
 func TestMiddleware_IndexNotFound(t *testing.T) {
 	resolver := UserResolverFunc(func(_ *http.Request) (string, error) { return "alice", nil })
-	notFound := apierrors.NewNotFound(schema.GroupResource{Group: "tenants.kedge.faros.sh", Resource: "usermembershipindices"}, "alice")
+	notFound := apierrors.NewNotFound(schema.GroupResource{Group: "tenants.faros.sh", Resource: "usermembershipindices"}, "alice")
 	lookup := MembershipLookupFunc(func(_ context.Context, _ string) (*tenancyv1alpha1.UserMembershipIndex, error) {
 		return nil, notFound
 	})
@@ -203,7 +203,7 @@ func TestMiddleware_IndexNotFound(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.Header.Set(HeaderKedgeOrg, "org")
+	req.Header.Set(HeaderFarosOrg, "org")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -224,7 +224,7 @@ func TestMiddleware_LookupError(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.Header.Set(HeaderKedgeOrg, "org")
+	req.Header.Set(HeaderFarosOrg, "org")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -246,7 +246,7 @@ func TestMiddleware_Unauthenticated(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.Header.Set(HeaderKedgeOrg, "org") // header present but irrelevant
+	req.Header.Set(HeaderFarosOrg, "org") // header present but irrelevant
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -270,7 +270,7 @@ func TestMiddleware_ResolverInternalError(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.Header.Set(HeaderKedgeOrg, "org")
+	req.Header.Set(HeaderFarosOrg, "org")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 

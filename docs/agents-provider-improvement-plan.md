@@ -110,7 +110,7 @@ Key facts an implementer needs:
 | Background executor | `api/background.go` | 30s poll over APIExport VW, optimistic status-claim, in-process 4-worker pool (`executor/executor.go`) |
 | Channels | `channels/channels.go`, `api/channels_inbound.go`, `api/discord_gateway.go` | telegram/slack/discord in+out, smtp out, slash commands `/new /status /inbox /approve /deny /answer` (`channels_inbound.go:148-235`) |
 | Store | `store/store.go` (iface), `store/postgres.go`, in-memory impl | Messages, Runs (with unused `Checkpoint` col), Memory, InboxItems, ToolCalls, Usage, Sessions, TenantRefs |
-| Portal | `portal/src/` (~5.8k lines TS) | vanilla custom element `kedge-provider-agents`, full-`innerHTML` re-render + manual re-wire (`element.ts:142-160`), hash router (`router.ts`), module-singleton view state, one 610-line namespaced stylesheet |
+| Portal | `portal/src/` (~5.8k lines TS) | vanilla custom element `faros-provider-agents`, full-`innerHTML` re-render + manual re-wire (`element.ts:142-160`), hash router (`router.ts`), module-singleton view state, one 610-line namespaced stylesheet |
 | Host embedding | repo `portal/src/pages/ProviderFrame.vue:92-176` | loads `/ui/providers/agents/main.js`, sets context property on the element; **no iframe/postMessage** (portal/README.md is stale on this) |
 | Build | `make build-agents-provider` (embeds portal), `make build-agents-provider-portal`, `make codegen-agents-provider`, `make agents-db-up/down`, `make run-provider-agents` | portal: `npm run build` / `npm run typecheck` in `portal/` (no tests exist) |
 
@@ -322,10 +322,10 @@ focus loss, and streaming re-render wholesale, and `lit-html` auto-escaping reti
 `host.requestUpdate()` bridge — keep it boring.
 
 Also in this step:
-- Type the host context properly: `KedgeContext` in `portal/src/types.ts:6-12` is missing
+- Type the host context properly: `FarosContext` in `portal/src/types.ts:6-12` is missing
   `subPath`, `orgUUID`, `workspaceUUID` that the host actually passes
   (repo `portal/src/pages/ProviderFrame.vue:162`); tenant currently comes from
-  `localStorage['kedge:portal:tenant']` (`portal/src/portalkit/tenant.ts`) — make the host
+  `localStorage['faros:portal:tenant']` (`portal/src/portalkit/tenant.ts`) — make the host
   context the source of truth.
 - Kill module-singleton view state (`agent-chat.ts:12-17`, `connections.ts:21-24`,
   `models.ts:66-74`) — move into component state so tenant switches don't need the manual
@@ -420,7 +420,7 @@ Target:
 ### 2.5 Activity / trace viewer (the LangSmith-class drill-down)
 
 New views on top of 1.1/1.4 — this is the single biggest parity gap with a UI surface
-(LangSmith, OpenAI Traces, n8n execution inspector all have it; kedge records the data and
+(LangSmith, OpenAI Traces, n8n execution inspector all have it; faros records the data and
 shows none of it):
 
 - **Activity list**: paged run table — agent, trigger class icon, input preview, phase chip,

@@ -1,7 +1,7 @@
-# code provider — register with the kedge hub.
+# code provider — register with the faros hub.
 #
-# Apply to the kcp workspace where the kedge.faros.sh APIExport is bound
-# (typically root:kedge:providers when running embedded kcp for development):
+# Apply to the kcp workspace where the faros.sh APIExport is bound
+# (typically root:faros:providers when running embedded kcp for development):
 #
 #   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
 #
@@ -10,14 +10,14 @@
 # bind grant from deploy/chart/files/schemas, including Connection, Repository,
 # RepositoryCommit, DeployKey, Collaborator, and Package resources.
 ---
-apiVersion: providers.kedge.faros.sh/v1alpha1
+apiVersion: providers.faros.sh/v1alpha1
 kind: CatalogEntry
 metadata:
   name: code
 spec:
   displayName: "Code"
   description: "Manage source-code repositories and access across git providers (GitHub)."
-  vendor: "kedge"
+  vendor: "faros"
   version: "0.1.0"
   category: "Developer"
   iconURL: "/ui/providers/code/icon.svg"
@@ -39,7 +39,7 @@ spec:
     url: "http://localhost:8083"
     healthPath: "/healthz"
   apiExport:
-    name: "code.providers.kedge.faros.sh"
+    name: "code.providers.faros.sh"
     # The controllers read each Connection's PAT Secret AND write the generated
     # DeployKey private-key Secret in the tenant workspace, so the secrets claim
     # needs write verbs (infra only needed read). tenantScoped: true auto-accepts

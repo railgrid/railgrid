@@ -30,27 +30,27 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // TestSSHThroughTunnel drives the LinuxServer half of the edges data plane:
-// it registers a LinuxServer, runs a server-mode `kedge agent` that proxies to
-// an embedded in-process SSH server, and proves `kedge ssh <edge> -- echo …`
-// runs a command down the reverse tunnel (kedge ssh → hub backend proxy →
+// it registers a LinuxServer, runs a server-mode `faros agent` that proxies to
+// an embedded in-process SSH server, and proves `faros ssh <edge> -- echo …`
+// runs a command down the reverse tunnel (faros ssh → hub backend proxy →
 // out-of-process edges provider → agent → local sshd). No kind cluster needed —
 // the agent's backing "host" is the embedded test SSH server.
 func TestSSHThroughTunnel(t *testing.T) {
 	const (
 		edgeName = "conn-srv"
 		sshPort  = 22022
-		marker   = "kedge_ssh_tunnel_ok"
+		marker   = "faros_ssh_tunnel_ok"
 	)
 
 	workDir := t.TempDir()
-	kubeconfig := filepath.Join(workDir, "kedge.kubeconfig")
+	kubeconfig := filepath.Join(workDir, "faros.kubeconfig")
 
 	// 1. Log in + resolve the tenant workspace.
-	runCLI(t, kubeconfig, kedgeBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)
+	runCLI(t, kubeconfig, farosBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)
 	tenantWS := clusterFromKubeconfig(t, kubeconfig)
 	t.Logf("tenant workspace = %s", tenantWS)
 	tenantAdmin := kcpDynamic(t, tenantWS, adminToken)
@@ -72,7 +72,7 @@ func TestSSHThroughTunnel(t *testing.T) {
 	t.Cleanup(sshSrv.Stop)
 
 	// 5. Register the LinuxServer + wait for the join token.
-	runCLI(t, kubeconfig, kedgeBin, "edge", "create", edgeName, "--type", "server")
+	runCLI(t, kubeconfig, farosBin, "edge", "create", edgeName, "--type", "server")
 	t.Cleanup(func() {
 		_ = tenantAdmin.Resource(linuxServerGVR).Delete(context.Background(), edgeName, metav1.DeleteOptions{})
 	})
@@ -87,9 +87,9 @@ func TestSSHThroughTunnel(t *testing.T) {
 	// 8. THE PROOF: run a command over SSH through the tunnel.
 	out := sshThroughTunnel(t, kubeconfig, edgeName, marker)
 	if !strings.Contains(out, marker) {
-		t.Fatalf("kedge ssh -- echo did not return %q through the tunnel:\n%s", marker, out)
+		t.Fatalf("faros ssh -- echo did not return %q through the tunnel:\n%s", marker, out)
 	}
-	t.Logf("kedge ssh through the tunnel returned the marker:\n%s", out)
+	t.Logf("faros ssh through the tunnel returned the marker:\n%s", out)
 }
 
 // TestSSHUserMappingInherited proves the default `inherited` SSH user mapping:
@@ -104,9 +104,9 @@ func TestSSHUserMappingInherited(t *testing.T) {
 	)
 
 	workDir := t.TempDir()
-	kubeconfig := filepath.Join(workDir, "kedge.kubeconfig")
+	kubeconfig := filepath.Join(workDir, "faros.kubeconfig")
 
-	runCLI(t, kubeconfig, kedgeBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)
+	runCLI(t, kubeconfig, farosBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)
 	tenantWS := clusterFromKubeconfig(t, kubeconfig)
 	tenantAdmin := kcpDynamic(t, tenantWS, adminToken)
 	enableEdges(t, tenantAdmin)
@@ -120,7 +120,7 @@ func TestSSHUserMappingInherited(t *testing.T) {
 	}
 	t.Cleanup(sshSrv.Stop)
 
-	runCLI(t, kubeconfig, kedgeBin, "edge", "create", edgeName, "--type", "server")
+	runCLI(t, kubeconfig, farosBin, "edge", "create", edgeName, "--type", "server")
 	t.Cleanup(func() {
 		_ = tenantAdmin.Resource(linuxServerGVR).Delete(context.Background(), edgeName, metav1.DeleteOptions{})
 	})
@@ -133,7 +133,7 @@ func TestSSHUserMappingInherited(t *testing.T) {
 	waitForConnected(t, tenantAdmin, linuxServerGVR, edgeName)
 
 	// Open a session through the tunnel, then assert the sshd saw the mapped user.
-	_ = sshThroughTunnel(t, kubeconfig, edgeName, "kedge_ssh_mapping_ok")
+	_ = sshThroughTunnel(t, kubeconfig, edgeName, "faros_ssh_mapping_ok")
 	if !waitFor(t, 30*time.Second, func() (bool, string) {
 		users := sshSrv.ConnectedUsers()
 		if slices.Contains(users, sshUser) {
@@ -146,7 +146,7 @@ func TestSSHUserMappingInherited(t *testing.T) {
 	t.Logf("inherited mapping: sshd session ran as %q", sshUser)
 }
 
-// sshThroughTunnel runs `kedge ssh <edge> -- echo <marker>` and returns the
+// sshThroughTunnel runs `faros ssh <edge> -- echo <marker>` and returns the
 // combined output, retrying briefly (SSH credential/status propagation can lag
 // the connected flag by a beat).
 func sshThroughTunnel(t *testing.T, kubeconfig, edgeName, marker string) string {
@@ -155,13 +155,13 @@ func sshThroughTunnel(t *testing.T, kubeconfig, edgeName, marker string) string 
 	if !waitFor(t, 90*time.Second, func() (bool, string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		cmd := exec.CommandContext(ctx, kedgeBin, "ssh", edgeName, "--", "echo", marker)
+		cmd := exec.CommandContext(ctx, farosBin, "ssh", edgeName, "--", "echo", marker)
 		cmd.Env = append(os.Environ(), "KUBECONFIG="+kubeconfig)
 		b, _ := cmd.CombinedOutput()
 		last = string(b)
 		return strings.Contains(last, marker), last
 	}) {
-		t.Fatalf("kedge ssh never returned the marker; last output:\n%s", last)
+		t.Fatalf("faros ssh never returned the marker; last output:\n%s", last)
 	}
 	return last
 }

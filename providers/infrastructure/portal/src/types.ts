@@ -109,7 +109,7 @@ export interface InstanceChild {
   phase?: string
 }
 
-export interface KedgeContext {
+export interface FarosContext {
   token?: string | null
   user?: { email?: string; sub?: string } | null
   tenant?: string | null

@@ -52,7 +52,7 @@ func (s *Server) ensureSessionCR(ctx context.Context, c *asclient.Client, id ide
 			"annotations": map[string]any{
 				bindings.OrgUUIDAnnotation:       id.orgUUID,
 				bindings.WorkspaceUUIDAnnotation: id.workspaceUUID,
-				"ai.kedge.faros.sh/project-uid":  string(p.UID),
+				"ai.faros.sh/project-uid":        string(p.UID),
 			},
 		},
 		"spec": map[string]any{

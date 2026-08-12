@@ -1,21 +1,21 @@
-// CodeElement is the custom element the kedge portal renders for the code
+// CodeElement is the custom element the faros portal renders for the code
 // provider. It mounts a Vue 3 app in its own light-DOM container and survives
 // portal re-renders by keeping a single app instance whose props are driven by
-// the .kedgeContext setter. Mirrors the infrastructure provider's element.ts.
+// the .farosContext setter. Mirrors the infrastructure provider's element.ts.
 
 import { createApp, h, reactive, type App as VueApp } from 'vue'
 import App from './App.vue'
-import type { KedgeContext } from './types'
+import type { FarosContext } from './types'
 
 export class CodeElement extends HTMLElement {
   private _vueApp: VueApp | null = null
-  private _state = reactive<{ ctx: KedgeContext | null }>({ ctx: null })
+  private _state = reactive<{ ctx: FarosContext | null }>({ ctx: null })
   private _host: HTMLDivElement | null = null
 
-  set kedgeContext(v: KedgeContext | null) {
+  set farosContext(v: FarosContext | null) {
     this._state.ctx = v
   }
-  get kedgeContext(): KedgeContext | null {
+  get farosContext(): FarosContext | null {
     return this._state.ctx
   }
 

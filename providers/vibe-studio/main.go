@@ -14,11 +14,11 @@
 // One port serves:
 //
 //   - /, /main.js, /icon.svg, /assets/* — the portal micro-frontend
-//     (custom element kedge-provider-vibe-studio), embedded from portal/dist.
+//     (custom element faros-provider-vibe-studio), embedded from portal/dist.
 //   - /healthz — hub health probe.
 //   - /api/* — sessions, submissions, SSE events. Mounted by the hub at
 //     /services/providers/vibe-studio/ with the prefix stripped and
-//     X-Kedge-Tenant/-User injected.
+//     X-Faros-Tenant/-User injected.
 package main
 
 import (
@@ -46,7 +46,7 @@ import (
 //
 //	vibe-studio-provider init   — one-shot: apply APIResourceSchemas, APIExport,
 //	    APIExportEndpointSlice, and bind grant into the provider workspace using
-//	    KEDGE_PROVIDER_KUBECONFIG. See init_cmd.go.
+//	    FAROS_PROVIDER_KUBECONFIG. See init_cmd.go.
 //	vibe-studio-provider serve  — runtime (default).
 func main() {
 	if len(os.Args) > 1 {
@@ -87,8 +87,8 @@ func runServe() {
 	// Tenant-workspace writes (the Project CR) go through the hub's GraphQL
 	// gateway as the calling user. No hub URL → writes disabled (dev).
 	var gql *tenant.GraphQLClient
-	if hub := os.Getenv("KEDGE_HUB_URL"); hub != "" {
-		gql = tenant.NewGraphQLClient(hub, os.Getenv("KEDGE_HUB_INSECURE") == "true")
+	if hub := os.Getenv("FAROS_HUB_URL"); hub != "" {
+		gql = tenant.NewGraphQLClient(hub, os.Getenv("FAROS_HUB_INSECURE") == "true")
 	}
 
 	// VIBE_STUDIO_DEV_TENANT allows headerless local requests (no hub in
@@ -96,7 +96,7 @@ func runServe() {
 	scripted := &session.ScriptedEngine{}
 	server := api.NewServer(st, scripted, gql, os.Getenv("VIBE_STUDIO_DEV_TENANT"))
 	// The Eino engine drives real model turns when the tenant has an LLM
-	// Secret (default/kedge-vibe-studio-llm); otherwise every turn falls back
+	// Secret (default/faros-vibe-studio-llm); otherwise every turn falls back
 	// to the deterministic scripted engine.
 	server.SetEngine(api.NewEinoEngine(server, scripted))
 
@@ -146,7 +146,7 @@ func runServe() {
 
 	// Deterministic lifecycle: the Project and Session reconcilers converge
 	// projects, instances, and provisioning across every tenant workspace.
-	// Opt-in via KEDGE_PROVIDER_KUBECONFIG.
+	// Opt-in via FAROS_PROVIDER_KUBECONFIG.
 	//
 	// Started in a retry loop because ordering is not guaranteed: the
 	// provider frequently comes up before `init` has created its workspace,
@@ -154,8 +154,8 @@ func runServe() {
 	// one-shot start would leave the provider serving HTTP with no
 	// controller — silently, forever.
 	go func() {
-		hubBase := strings.TrimRight(os.Getenv("KEDGE_HUB_URL"), "/")
-		hubInsecure := os.Getenv("KEDGE_HUB_INSECURE") == "true"
+		hubBase := strings.TrimRight(os.Getenv("FAROS_HUB_URL"), "/")
+		hubInsecure := os.Getenv("FAROS_HUB_INSECURE") == "true"
 		for attempt := 1; ; attempt++ {
 			kcpConfig, err := loadControllerConfig()
 			if err == nil {
@@ -221,25 +221,25 @@ const (
 )
 
 // runHeartbeat POSTs to /api/providers/{name}/heartbeat every 30s. Skips
-// silently when KEDGE_HUB_URL is empty so test invocations don't need a hub.
+// silently when FAROS_HUB_URL is empty so test invocations don't need a hub.
 func runHeartbeat(ctx context.Context) {
-	hub := os.Getenv("KEDGE_HUB_URL")
-	token := os.Getenv("KEDGE_HUB_TOKEN")
-	name := os.Getenv("KEDGE_PROVIDER_NAME")
+	hub := os.Getenv("FAROS_HUB_URL")
+	token := os.Getenv("FAROS_HUB_TOKEN")
+	name := os.Getenv("FAROS_PROVIDER_NAME")
 	if name == "" {
 		name = "vibe-studio"
 	}
 	if hub == "" {
-		log.Printf("heartbeat disabled (set KEDGE_HUB_URL to enable)")
+		log.Printf("heartbeat disabled (set FAROS_HUB_URL to enable)")
 		return
 	}
 	url := hub + "/api/providers/" + name + "/heartbeat"
 	body, _ := json.Marshal(map[string]string{"version": heartbeatVersion, "status": "healthy"})
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	if os.Getenv("KEDGE_HUB_INSECURE") == "true" {
+	if os.Getenv("FAROS_HUB_INSECURE") == "true" {
 		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev-only; opt-in via KEDGE_HUB_INSECURE
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev-only; opt-in via FAROS_HUB_INSECURE
 		}
 	}
 

@@ -1,10 +1,10 @@
-## kedge-code-provider values
+## faros-code-provider values
 ## See providers/code/README.md for the deploy guide and the credential /
 ## GitHub OAuth conventions the portal expects.
 
 # Container image. Build with: docker build -t IMAGE providers/code/
 image:
-  repository: ghcr.io/faroshq/kedge-code-provider
+  repository: ghcr.io/faroshq/faros-code-provider
   tag: ""  # empty → defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
@@ -20,23 +20,23 @@ service:
 # Hub the provider POSTs heartbeats to. Must be reachable from the provider pod
 # (in-cluster Service DNS works).
 hub:
-  url: https://kedge-hub.kedge.svc.cluster.local:9443
+  url: https://faros-hub.faros.svc.cluster.local:9443
   # Bearer token used in the heartbeat POST. Provided as a Secret because it
   # MUST NOT land in values.yaml in plaintext for prod.
   tokenSecretRef:
-    name: kedge-code-hub-token
+    name: faros-code-hub-token
     key: token
   # Skip TLS verification on heartbeat — dev only, defaults off.
   insecure: false
 
 # Secret the provider mounts read-only at
-# /var/run/secrets/kedge/kedge-provider-kubeconfig to reach kcp (CODE_KUBECONFIG).
+# /var/run/secrets/faros/faros-provider-kubeconfig to reach kcp (CODE_KUBECONFIG).
 # The hub catalog controller mints it when it reconciles the CatalogEntry; the
 # volume is `optional`, so the pod stays schedulable and serves portal/MCP reads
 # until the Secret appears — the multicluster controller manager engages once it
 # does (pod restart on Secret mount).
 providerKubeconfig:
-  secretName: kedge-provider-kubeconfig
+  secretName: faros-provider-kubeconfig
 
 # GitHub "Connect with GitHub" OAuth App (optional). When enabled, the portal
 # shows a "Connect with GitHub" button and mints OAuth tokens (with read:packages
@@ -53,7 +53,7 @@ githubOAuth:
     name: ""
     key: clientSecret
   # Absolute callback URL registered on the GitHub OAuth App. It is a top-level
-  # redirect from GitHub (no kedge auth), so it must be publicly reachable and
+  # redirect from GitHub (no faros auth), so it must be publicly reachable and
   # forward to the provider's HTTP backend. Two options — both end in /callback:
   #   1. Reuse the hub ingress via its /services proxy (no extra ingress needed):
   #      https://<hub-host>/services/providers/code/oauth/github/callback
@@ -79,7 +79,7 @@ tenant:
 # RepositoryCommit source bundles. The CR stores only a bundle ref/digest; the
 # generated file contents live here until the controller commits them.
 bundleStore:
-  path: /var/lib/kedge-code/commit-bundles
+  path: /var/lib/faros-code/commit-bundles
   # Use an existing PVC instead of rendering one.
   existingClaim: ""
   # Explicit non-durable fallback for throwaway/dev deployments.

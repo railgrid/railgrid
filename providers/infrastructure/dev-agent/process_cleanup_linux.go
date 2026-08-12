@@ -82,7 +82,7 @@ func execProcessIDs(marker string) ([]int, error) {
 	}
 	self := os.Getpid()
 	pidOne := self == 1
-	want := []byte("KEDGE_EXEC_SESSION=" + marker)
+	want := []byte("FAROS_EXEC_SESSION=" + marker)
 	var pids []int
 	for _, entry := range entries {
 		pid, err := strconv.Atoi(entry.Name())

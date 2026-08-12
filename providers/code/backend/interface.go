@@ -139,7 +139,7 @@ type PackageLister interface {
 
 // WorkflowRunQuery identifies the CI run to inspect.
 type WorkflowRunQuery struct {
-	// WorkflowFileName is the workflow file (e.g. "kedge-app-studio-build.yml").
+	// WorkflowFileName is the workflow file (e.g. "faros-app-studio-build.yml").
 	WorkflowFileName string
 	// HeadSHA optionally pins the commit; empty means the most recent run.
 	HeadSHA string

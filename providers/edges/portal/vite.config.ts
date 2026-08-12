@@ -1,15 +1,15 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
-// The kedge hub serves this provider under /ui/providers/edges/. ProviderFrame
+// The faros hub serves this provider under /ui/providers/edges/. ProviderFrame
 // injects <script src="/ui/providers/edges/main.js"> and waits for the
-// <kedge-provider-edges> custom element to be defined. So the build must emit
+// <faros-provider-edges> custom element to be defined. So the build must emit
 // the entry at exactly /main.js (no hash) as an IIFE whose side effects
 // (customElements.define) fire on load. See the infrastructure provider's
 // vite.config.ts for the full rationale.
 export default defineConfig({
   plugins: [vue({
-    template: { compilerOptions: { isCustomElement: (tag) => tag.startsWith('kedge-provider-') } },
+    template: { compilerOptions: { isCustomElement: (tag) => tag.startsWith('faros-provider-') } },
   })],
   // Library mode leaves Vue's feature-flag globals unreplaced; pre-substitute
   // them so the IIFE runs in a bare <script> tag without "process is not defined".
@@ -28,7 +28,7 @@ export default defineConfig({
     lib: {
       entry: 'src/main.ts',
       formats: ['iife'],
-      name: 'KedgeProviderEdges',
+      name: 'FarosProviderEdges',
       fileName: () => 'main.js',
     },
     rollupOptions: {

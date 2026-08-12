@@ -1,17 +1,17 @@
 import { createApp, h, reactive, type App as VueApp } from 'vue'
 import App from './App.vue'
-import type { KedgeContext } from './types'
+import type { FarosContext } from './types'
 
 export class DatabricksElement extends HTMLElement {
   private _vueApp: VueApp | null = null
-  private _state = reactive<{ ctx: KedgeContext | null }>({ ctx: null })
+  private _state = reactive<{ ctx: FarosContext | null }>({ ctx: null })
   private _host: HTMLDivElement | null = null
 
-  set kedgeContext(v: KedgeContext | null) {
+  set farosContext(v: FarosContext | null) {
     this._state.ctx = v
   }
 
-  get kedgeContext(): KedgeContext | null {
+  get farosContext(): FarosContext | null {
     return this._state.ctx
   }
 

@@ -8,7 +8,7 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Package operator implements the CRD-driven kedge infrastructure operator:
+// Package operator implements the CRD-driven faros infrastructure operator:
 // a controller-runtime manager that reconciles InfrastructureProvider CRs by
 // bootstrapping the provider kcp workspace, lifecycling the kro Helm release,
 // and owning the provider serve Deployment.
@@ -29,7 +29,7 @@ import (
 
 // BootstrapOptions parameterizes one bootstrap pass.
 type BootstrapOptions struct {
-	// WorkspacePath is the provider workspace (root:kedge:providers:infrastructure).
+	// WorkspacePath is the provider workspace (root:faros:providers:infrastructure).
 	WorkspacePath string
 	// APIExportName is the provider's APIExport name.
 	APIExportName string

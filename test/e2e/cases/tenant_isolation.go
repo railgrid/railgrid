@@ -35,7 +35,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // tenantIsolationCtxKey carries setup state into Assess/Teardown.
@@ -115,7 +115,7 @@ func MultiOrgIsolation() features.Feature {
 				ctx, http.MethodPost,
 				clusterEnv.HubURL+"/api/orgs/"+createdOrg.UUID+"/workspaces",
 				resultA.IDToken,
-				map[string]string{"X-Kedge-Org": createdOrg.UUID},
+				map[string]string{"X-Faros-Org": createdOrg.UUID},
 				wsBody,
 			)
 			if err != nil {
@@ -188,7 +188,7 @@ func MultiOrgIsolation() features.Feature {
 				ctx, http.MethodGet,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID,
 				data.userBToken,
-				map[string]string{"X-Kedge-Org": data.userAOrgUUID},
+				map[string]string{"X-Faros-Org": data.userAOrgUUID},
 				nil,
 			)
 			if err != nil {
@@ -206,7 +206,7 @@ func MultiOrgIsolation() features.Feature {
 				ctx, http.MethodPatch,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID,
 				data.userBToken,
-				map[string]string{"X-Kedge-Org": data.userAOrgUUID},
+				map[string]string{"X-Faros-Org": data.userAOrgUUID},
 				map[string]string{"displayName": "hijacked"},
 			)
 			if err != nil {
@@ -224,7 +224,7 @@ func MultiOrgIsolation() features.Feature {
 				ctx, http.MethodDelete,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID,
 				data.userBToken,
-				map[string]string{"X-Kedge-Org": data.userAOrgUUID},
+				map[string]string{"X-Faros-Org": data.userAOrgUUID},
 				nil,
 			)
 			if err != nil {
@@ -242,7 +242,7 @@ func MultiOrgIsolation() features.Feature {
 				ctx, http.MethodGet,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID+"/workspaces",
 				data.userBToken,
-				map[string]string{"X-Kedge-Org": data.userAOrgUUID},
+				map[string]string{"X-Faros-Org": data.userAOrgUUID},
 				nil,
 			)
 			if err != nil {
@@ -260,7 +260,7 @@ func MultiOrgIsolation() features.Feature {
 				ctx, http.MethodPost,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID+"/workspaces",
 				data.userBToken,
-				map[string]string{"X-Kedge-Org": data.userAOrgUUID},
+				map[string]string{"X-Faros-Org": data.userAOrgUUID},
 				map[string]string{"displayName": "evil-ws"},
 			)
 			if err != nil {
@@ -279,8 +279,8 @@ func MultiOrgIsolation() features.Feature {
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID+"/workspaces/"+data.userAWSUUID,
 				data.userBToken,
 				map[string]string{
-					"X-Kedge-Org":       data.userAOrgUUID,
-					"X-Kedge-Workspace": data.userAWSUUID,
+					"X-Faros-Org":       data.userAOrgUUID,
+					"X-Faros-Workspace": data.userAWSUUID,
 				},
 				nil,
 			)
@@ -299,7 +299,7 @@ func MultiOrgIsolation() features.Feature {
 				ctx, http.MethodGet,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID+"/memberships",
 				data.userBToken,
-				map[string]string{"X-Kedge-Org": data.userAOrgUUID},
+				map[string]string{"X-Faros-Org": data.userAOrgUUID},
 				nil,
 			)
 			if err != nil {
@@ -320,7 +320,7 @@ func MultiOrgIsolation() features.Feature {
 				ctx, http.MethodPost,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID+"/memberships",
 				data.userBToken,
-				map[string]string{"X-Kedge-Org": data.userAOrgUUID},
+				map[string]string{"X-Faros-Org": data.userAOrgUUID},
 				map[string]string{"user": "attacker@example.com", "role": "admin"},
 			)
 			if err != nil {
@@ -339,8 +339,8 @@ func MultiOrgIsolation() features.Feature {
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID+"/workspaces/"+data.userAWSUUID+"/serviceaccounts",
 				data.userBToken,
 				map[string]string{
-					"X-Kedge-Org":       data.userAOrgUUID,
-					"X-Kedge-Workspace": data.userAWSUUID,
+					"X-Faros-Org":       data.userAOrgUUID,
+					"X-Faros-Workspace": data.userAWSUUID,
 				},
 				nil,
 			)
@@ -360,8 +360,8 @@ func MultiOrgIsolation() features.Feature {
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID+"/workspaces/"+data.userAWSUUID+"/serviceaccounts",
 				data.userBToken,
 				map[string]string{
-					"X-Kedge-Org":       data.userAOrgUUID,
-					"X-Kedge-Workspace": data.userAWSUUID,
+					"X-Faros-Org":       data.userAOrgUUID,
+					"X-Faros-Workspace": data.userAWSUUID,
 				},
 				map[string]string{"displayName": "attacker-sa", "role": "admin"},
 			)
@@ -383,7 +383,7 @@ func MultiOrgIsolation() features.Feature {
 				ctx, http.MethodGet,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID,
 				data.userAToken,
-				map[string]string{"X-Kedge-Org": data.userAOrgUUID},
+				map[string]string{"X-Faros-Org": data.userAOrgUUID},
 				nil,
 			)
 			if err != nil {
@@ -409,7 +409,7 @@ func MultiOrgIsolation() features.Feature {
 				ctx, http.MethodDelete,
 				data.hubURL+"/api/orgs/"+data.userAOrgUUID,
 				data.userAToken,
-				map[string]string{"X-Kedge-Org": data.userAOrgUUID},
+				map[string]string{"X-Faros-Org": data.userAOrgUUID},
 				nil,
 			)
 			if err != nil {

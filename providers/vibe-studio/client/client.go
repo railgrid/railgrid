@@ -41,7 +41,7 @@ var projectResource = tenant.Resource{
 // read as the caller (same path app-studio uses — no permission claim needed
 // for catalog reads).
 var TemplateGVR = schema.GroupVersionResource{
-	Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Resource: "templates",
+	Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "templates",
 }
 
 var templateResource = tenant.Resource{
@@ -58,11 +58,11 @@ func (c *Client) GetTemplate(ctx context.Context, name string) (*unstructured.Un
 // caller's identity; the reconciler's writes ride the code claims.
 var (
 	connectionResource = tenant.Resource{
-		GVR:  schema.GroupVersionResource{Group: "code.kedge.faros.sh", Version: "v1alpha1", Resource: "connections"},
+		GVR:  schema.GroupVersionResource{Group: "code.faros.sh", Version: "v1alpha1", Resource: "connections"},
 		Kind: "Connection", Plural: "Connections", Namespaced: false,
 	}
 	repositoryResource = tenant.Resource{
-		GVR:  schema.GroupVersionResource{Group: "code.kedge.faros.sh", Version: "v1alpha1", Resource: "repositories"},
+		GVR:  schema.GroupVersionResource{Group: "code.faros.sh", Version: "v1alpha1", Resource: "repositories"},
 		Kind: "Repository", Plural: "Repositories", Namespaced: false,
 	}
 )
@@ -392,7 +392,7 @@ func (c *Client) ApplyStudio(ctx context.Context, st *vibev1alpha1.Studio) (*vib
 // PackageController crawls the git host and authors these, so vibe-studio
 // only ever reads them.
 var packageResource = tenant.Resource{
-	GVR:  schema.GroupVersionResource{Group: "code.kedge.faros.sh", Version: "v1alpha1", Resource: "packages"},
+	GVR:  schema.GroupVersionResource{Group: "code.faros.sh", Version: "v1alpha1", Resource: "packages"},
 	Kind: "Package", Plural: "Packages", Namespaced: false,
 }
 
@@ -426,7 +426,7 @@ func (c *Client) ListPackages(ctx context.Context) ([]Package, error) {
 	out := make([]Package, 0, len(items))
 	for i := range items {
 		u := items[i]
-		p := Package{Repository: u.GetLabels()["code.kedge.faros.sh/repository"]}
+		p := Package{Repository: u.GetLabels()["code.faros.sh/repository"]}
 		p.Name, _, _ = unstructured.NestedString(u.Object, "status", "packageName")
 		p.ImageRepository, _, _ = unstructured.NestedString(u.Object, "status", "imageRepository")
 		versions, _, _ := unstructured.NestedSlice(u.Object, "status", "versions")

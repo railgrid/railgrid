@@ -124,7 +124,7 @@ type oauthState struct {
 func (s *Server) encodeOAuthState(st oauthState) (string, error) {
 	key := s.webhookKeyBytes()
 	if len(key) == 0 {
-		return "", fmt.Errorf("state signing unavailable — set KEDGE_PROVIDER_KUBECONFIG or AGENTS_WEBHOOK_KEY")
+		return "", fmt.Errorf("state signing unavailable — set FAROS_PROVIDER_KUBECONFIG or AGENTS_WEBHOOK_KEY")
 	}
 	raw, _ := json.Marshal(st)
 	payload := base64.RawURLEncoding.EncodeToString(raw)
@@ -307,7 +307,7 @@ func (s *Server) oauthCallback(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprintf(w, `<html><body style="font-family:sans-serif;text-align:center;margin-top:20vh">
-		<h2>✅ %s connected</h2><p>You can close this tab and return to kedge.</p></body></html>`,
+		<h2>✅ %s connected</h2><p>You can close this tab and return to faros.</p></body></html>`,
 		conn.Spec.OAuth.Provider)
 }
 

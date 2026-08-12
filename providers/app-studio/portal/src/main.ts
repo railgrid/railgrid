@@ -1,5 +1,5 @@
 // IIFE entry loaded by the host portal. Registers
-// <kedge-provider-app-studio> as a side effect and injects the provider's
+// <faros-provider-app-studio> as a side effect and injects the provider's
 // self-contained, Tailwind-compiled stylesheet.
 //
 // ?inline runs style.css through the Tailwind Vite plugin at build time and
@@ -24,7 +24,7 @@ import './element'
 // harmless, so we leave them alone.
 const styles = rawStyles.replace(/--color-[\w-]+:var\(--color[^;}]*;?/g, '')
 
-const STYLE_ID = 'kedge-provider-app-studio-css'
+const STYLE_ID = 'faros-provider-app-studio-css'
 if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
   const s = document.createElement('style')
   s.id = STYLE_ID

@@ -195,7 +195,7 @@ func scopeOf(s *aiv1alpha1.Session) (store.Scope, bool) {
 
 // projectUIDAnnotation records the owning Project's UID — part of the store
 // scope key (a recreated Project must not inherit the deleted one's rows).
-const projectUIDAnnotation = "ai.kedge.faros.sh/project-uid"
+const projectUIDAnnotation = "ai.faros.sh/project-uid"
 
 // statusEqual compares mirrored status.
 func statusEqual(a, b aiv1alpha1.SessionStatus) bool {

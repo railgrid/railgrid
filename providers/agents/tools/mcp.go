@@ -92,7 +92,7 @@ func ConnectMCPEndpoint(ctx context.Context, endpoint, bearer, prefix string, in
 	if bearer != "" {
 		httpClient.Transport = &bearerTransport{token: bearer, base: base}
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "kedge-agents", Version: "0.1.0"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "faros-agents", Version: "0.1.0"}, nil)
 	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
 		Endpoint:             endpoint,
 		HTTPClient:           httpClient,

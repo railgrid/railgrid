@@ -19,8 +19,8 @@ import (
 func TestDataPlaneURL(t *testing.T) {
 	s := &Server{hubBase: "https://hub.example/"}
 
-	got := s.dataPlaneURL("root:kedge:orgs:acme", dataPlaneRef{Resource: "applications", Name: "shop-dev"}, dataPlaneVerbLog, "")
-	want := "https://hub.example/services/providers/infrastructure/dataplane/clusters/root:kedge:orgs:acme/applications/shop-dev/log"
+	got := s.dataPlaneURL("root:faros:orgs:acme", dataPlaneRef{Resource: "applications", Name: "shop-dev"}, dataPlaneVerbLog, "")
+	want := "https://hub.example/services/providers/infrastructure/dataplane/clusters/root:faros:orgs:acme/applications/shop-dev/log"
 	if got != want {
 		t.Fatalf("dataPlaneURL = %q, want %q", got, want)
 	}

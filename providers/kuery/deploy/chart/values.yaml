@@ -1,4 +1,4 @@
-## kedge-kuery-provider values
+## faros-kuery-provider values
 ## Phase 1 skeleton: the provider serves a micro-frontend and a small
 ## backend HTTP API, heartbeats the hub, and owns the SavedView APIExport.
 ## Phase 2 adds the embedded kuery engine (edge informer sync into a local
@@ -7,7 +7,7 @@
 
 # Container image. Build with: docker build -t IMAGE providers/kuery/
 image:
-  repository: ghcr.io/faroshq/kedge-kuery-provider
+  repository: ghcr.io/faroshq/faros-kuery-provider
   tag: ""  # empty → defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
@@ -23,7 +23,7 @@ service:
 # pod (in-cluster Service DNS works). Empty url → heartbeats disabled, which
 # is fine for a UI-only demo install.
 hub:
-  url: https://kedge-hub.kedge.svc.cluster.local:9443
+  url: https://faros-hub.faros.svc.cluster.local:9443
   # Bearer token used in the heartbeat POST. Provided as a Secret because it
   # MUST NOT land in values.yaml in plaintext for prod. Leave name empty to
   # send unauthenticated heartbeats (dev only).
@@ -81,11 +81,11 @@ catalogEntry:
 # Secret holding the workspace-admin kubeconfig minted via /bonkers (admin
 # onboarding). Consumed by both the init container and serve. Key "kubeconfig".
 providerKubeconfig:
-  secretName: kedge-provider-kubeconfig
+  secretName: faros-provider-kubeconfig
 
 # APIExport bootstrap (applied by the init container).
 apiExport:
-  # REQUIRED for kuery: the identityHash of the root edges.kedge.faros.sh
+  # REQUIRED for kuery: the identityHash of the root edges.faros.sh
   # APIExport. Copy it from the /bonkers "Root identities" view. Without it,
   # tenant Enable accepts the edges claim but the controller engages zero edges.
   edgesIdentityHash: ""

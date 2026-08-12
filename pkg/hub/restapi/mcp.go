@@ -22,13 +22,13 @@ import (
 
 	"github.com/gorilla/mux"
 
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
-	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
+	"github.com/faroshq/faros/pkg/apiurl"
+	"github.com/faroshq/faros/pkg/hub/kcp"
 )
 
 // mcpClientServerName is the friendly name connect snippets give the server
 // entry in the user's MCP client config.
-const mcpClientServerName = "kedge"
+const mcpClientServerName = "faros"
 
 // mcpServerBody is the create/update payload for an MCPServer.
 type mcpServerBody struct {

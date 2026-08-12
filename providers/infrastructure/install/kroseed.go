@@ -152,7 +152,7 @@ func restartKroDeployment(ctx context.Context, cs kubernetes.Interface) error {
 	// isn't useful for debug). Use the SA token's hash as the rollout
 	// trigger — it changes on every successful TokenRequest, which is
 	// exactly the signal that we want kro to pick up a new credential.
-	dep.Spec.Template.Annotations["kedge.faros.sh/kcp-kubeconfig-revision"] = secretRevision(cs, ctx)
+	dep.Spec.Template.Annotations["faros.sh/kcp-kubeconfig-revision"] = secretRevision(cs, ctx)
 	if _, err := cs.AppsV1().Deployments(KroNamespace).Update(ctx, dep, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("annotate kro Deployment to trigger restart: %w", err)
 	}

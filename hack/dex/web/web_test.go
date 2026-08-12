@@ -23,11 +23,11 @@ import (
 	"testing"
 )
 
-func TestEmbeddedKedgeWebAssetsKeepOIDCFrontendContract(t *testing.T) {
+func TestEmbeddedFarosWebAssetsKeepOIDCFrontendContract(t *testing.T) {
 	assets := FS()
 	for _, path := range []string{
 		"static/main.css",
-		"static/kedge-mark.svg",
+		"static/faros-mark.svg",
 		"static/img/google-icon.svg",
 		"templates/header.html",
 		"templates/login.html",
@@ -47,19 +47,19 @@ func TestEmbeddedKedgeWebAssetsKeepOIDCFrontendContract(t *testing.T) {
 	}
 
 	header := readEmbedded(t, assets, "templates/header.html")
-	if !strings.Contains(header, "<title>Kedge — Sign in</title>") ||
-		!strings.Contains(header, "Sign in to Kedge securely") ||
-		!strings.Contains(header, `static/kedge-mark.svg`) {
-		t.Fatalf("header lost Kedge title, description, or mark: %s", header)
+	if !strings.Contains(header, "<title>Faros — Sign in</title>") ||
+		!strings.Contains(header, "Sign in to Faros securely") ||
+		!strings.Contains(header, `static/faros-mark.svg`) {
+		t.Fatalf("header lost Faros title, description, or mark: %s", header)
 	}
 
 	login := readEmbedded(t, assets, "templates/login.html")
 	if !strings.Contains(login, "Sign in with {{ $c.Name }}") || strings.Contains(login, "Continue with") {
-		t.Fatalf("connector action copy is not Kedge sign-in copy: %s", login)
+		t.Fatalf("connector action copy is not Faros sign-in copy: %s", login)
 	}
 	password := readEmbedded(t, assets, "templates/password.html")
-	if !strings.Contains(password, "Sign in with Kedge") {
-		t.Fatalf("password action does not identify Kedge: %s", password)
+	if !strings.Contains(password, "Sign in with Faros") {
+		t.Fatalf("password action does not identify Faros: %s", password)
 	}
 
 	var pages strings.Builder
@@ -103,8 +103,8 @@ func TestEmbeddedKedgeWebAssetsKeepOIDCFrontendContract(t *testing.T) {
 	if strings.Contains(strings.ToLower(visible), "dex") {
 		t.Fatalf("embedded page copy exposes upstream Dex branding: %q", visible)
 	}
-	if strings.Contains(visible, "kedge terms") {
-		t.Fatalf("embedded page copy uses lowercase Kedge branding: %q", visible)
+	if strings.Contains(visible, "faros terms") {
+		t.Fatalf("embedded page copy uses lowercase Faros branding: %q", visible)
 	}
 }
 

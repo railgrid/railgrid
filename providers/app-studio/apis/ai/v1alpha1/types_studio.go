@@ -18,7 +18,7 @@ import (
 const StudioName = "studio"
 
 // StudioFinalizer guards teardown of the services a Studio owns.
-const StudioFinalizer = "ai.kedge.faros.sh/services"
+const StudioFinalizer = "ai.faros.sh/services"
 
 // Studio service phases.
 const (
@@ -30,7 +30,7 @@ const (
 // +genclient
 // +genclient:nonNamespaced
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster,categories=kedge
+// +kubebuilder:resource:scope=Cluster,categories=faros
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"

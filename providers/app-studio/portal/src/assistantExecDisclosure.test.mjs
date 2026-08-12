@@ -7,7 +7,7 @@ import { renderToString } from 'vue/server-renderer'
 
 let vite
 test.before(async () => {
-  vite = await createServer({ appType: 'custom', cacheDir: '/tmp/kedge-vite-assistant-exec', configFile: false, plugins: [vue()], server: { hmr: false, middlewareMode: true } })
+  vite = await createServer({ appType: 'custom', cacheDir: '/tmp/faros-vite-assistant-exec', configFile: false, plugins: [vue()], server: { hmr: false, middlewareMode: true } })
 })
 test.after(async () => vite?.close())
 

@@ -27,8 +27,8 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	providersv1alpha1 "github.com/faroshq/faros-kedge/apis/providers/v1alpha1"
-	"github.com/faroshq/faros-kedge/utils/testfakes"
+	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
+	"github.com/faroshq/faros/utils/testfakes"
 )
 
 func newProviderTestScheme(t *testing.T) *runtime.Scheme {

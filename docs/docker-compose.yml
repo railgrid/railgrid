@@ -1,10 +1,10 @@
 services:
   jekyll:
     image: jekyll/jekyll:4
-    container_name: kedge-docs
+    container_name: faros-docs
     environment:
       - JEKYLL_ENV=development
-      - PAGES_REPO_NWO=faroshq/faros-kedge
+      - PAGES_REPO_NWO=faroshq/faros
     command: >
       sh -c "bundle install && bundle exec jekyll serve --host 0.0.0.0 --baseurl '' --force_polling --livereload"
     ports:

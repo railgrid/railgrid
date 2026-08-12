@@ -6,12 +6,12 @@
 // (rather than Record<string, unknown>) so a typo in a patch key is a compile
 // error instead of a silently-ignored field.
 //
-// KedgeContext is the host↔element contract: the portal's ProviderFrame sets it
-// as a JS property on <kedge-provider-agents>.
+// FarosContext is the host↔element contract: the portal's ProviderFrame sets it
+// as a JS property on <faros-provider-agents>.
 
 // ---- host contract ---------------------------------------------------------
 
-export interface KedgeContext {
+export interface FarosContext {
   token?: string | null
   user?: { email?: string; sub?: string } | null
   // tenant is the kcp cluster name of the active workspace (host-side id).

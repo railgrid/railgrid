@@ -15,8 +15,8 @@ limitations under the License.
 */
 
 // Tenant header validation: every /api/orgs/{org}/... call requires the
-// caller to set X-Kedge-Org; workspace-scoped calls require both
-// X-Kedge-Org and X-Kedge-Workspace. The headers are not optional and
+// caller to set X-Faros-Org; workspace-scoped calls require both
+// X-Faros-Org and X-Faros-Workspace. The headers are not optional and
 // they must match the URL path — if they don't, that's an attempt to
 // fool the tenant middleware and should be rejected.
 
@@ -30,11 +30,11 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // TenancyTenantHeaders verifies the tenant middleware rejects requests
-// where the X-Kedge-Org/X-Kedge-Workspace headers are missing, point at a
+// where the X-Faros-Org/X-Faros-Workspace headers are missing, point at a
 // non-existent org, or don't match the URL path.
 func TenancyTenantHeaders() features.Feature {
 	return features.New("Tenancy/TenantHeaders").
@@ -73,7 +73,7 @@ func TenancyTenantHeaders() features.Feature {
 			// rejected as a forgery attempt.
 			code, body, err := framework.DoRESTRequest(ctx, http.MethodGet,
 				workspacesURL(d.hubURL, d.orgUUID), d.bearer,
-				map[string]string{"X-Kedge-Org": "00000000-0000-0000-0000-000000000000"}, nil)
+				map[string]string{"X-Faros-Org": "00000000-0000-0000-0000-000000000000"}, nil)
 			if err != nil {
 				t.Fatalf("GET workspaces mismatched header: %v", err)
 			}
@@ -111,8 +111,8 @@ func TenancyTenantHeaders() features.Feature {
 			code, body, err := framework.DoRESTRequest(ctx, http.MethodGet,
 				workspaceURL(d.hubURL, d.orgUUID, d.wsUUID), d.bearer,
 				map[string]string{
-					"X-Kedge-Org":       d.orgUUID,
-					"X-Kedge-Workspace": fakeWS,
+					"X-Faros-Org":       d.orgUUID,
+					"X-Faros-Workspace": fakeWS,
 				}, nil)
 			if err != nil {
 				t.Fatalf("GET workspace mismatched ws header: %v", err)

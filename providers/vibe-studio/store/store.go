@@ -24,7 +24,7 @@ import (
 )
 
 // Scope isolates all data to one tenant boundary. Tenant is the hub-verified
-// tenant identifier (X-Kedge-Tenant); every query includes it.
+// tenant identifier (X-Faros-Tenant); every query includes it.
 type Scope struct {
 	Tenant string
 }

@@ -71,9 +71,9 @@ spec:
     - update
     - delete
   resources:
-  - group: kedge.faros.sh
+  - group: faros.sh
     name: mcpservers
-    schema: v260716-d4e8aa2.mcpservers.kedge.faros.sh
+    schema: v260716-d4e8aa2.mcpservers.faros.sh
     storage:
       crd: {}
 status: {}

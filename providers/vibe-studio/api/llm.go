@@ -25,11 +25,11 @@ import (
 // caller. Keys: provider | baseURL | model | apiKey.
 //
 // Two names are tried in order: vibe-studio's own, then app-studio's
-// (kedge-projects-llm) — vibe-studio replaces app-studio, so a workspace
+// (faros-projects-llm) — vibe-studio replaces app-studio, so a workspace
 // already configured for it works without re-entering the credential.
 const llmSecretNamespace = "default"
 
-var llmSecretNames = []string{"kedge-vibe-studio-llm", "kedge-projects-llm"}
+var llmSecretNames = []string{"faros-vibe-studio-llm", "faros-projects-llm"}
 
 // errLLMNotConfigured routes the turn to the scripted fallback engine.
 var errLLMNotConfigured = errors.New("llm is not configured for this workspace")
@@ -46,7 +46,7 @@ type llmProfile struct {
 //  1. the session's spec.modelRef (the per-project choice)
 //  2. the Model annotated as the workspace default
 //  3. the only Model, when exactly one is configured
-//  4. the legacy single-Secret scheme (kedge-vibe-studio-llm / -projects-llm)
+//  4. the legacy single-Secret scheme (faros-vibe-studio-llm / -projects-llm)
 //
 // Returns the profile and the Model CR name it came from ("" for legacy).
 func resolveLLMProfile(ctx context.Context, cl *client.Client, sessionID string) (llmProfile, string, error) {

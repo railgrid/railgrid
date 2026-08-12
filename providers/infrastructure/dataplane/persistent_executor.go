@@ -38,7 +38,7 @@ const (
 	persistentExecRetryAttempts  = 3
 )
 
-var executionGroupResource = schema.GroupResource{Group: "infrastructure.kedge.faros.sh", Resource: "executions"}
+var executionGroupResource = schema.GroupResource{Group: "infrastructure.faros.sh", Resource: "executions"}
 
 type execCoordinatorRequest struct {
 	Action         ExecAction `json:"action"`

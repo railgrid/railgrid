@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite'
 
-// The kedge hub serves this provider under /ui/providers/quickstart/. The
+// The faros hub serves this provider under /ui/providers/quickstart/. The
 // ProviderFrame component injects a <script src="/ui/providers/quickstart/main.js">
-// tag once and waits for the kedge-provider-quickstart custom element to be
+// tag once and waits for the faros-provider-quickstart custom element to be
 // defined. So the build needs to:
 //
 //   1. Emit the entry script at exactly /main.js (no hash, no /assets/ prefix)
@@ -25,7 +25,7 @@ export default defineConfig({
     lib: {
       entry: 'src/main.ts',
       formats: ['iife'],
-      name: 'KedgeProviderQuickstart',
+      name: 'FarosProviderQuickstart',
       fileName: () => 'main.js',
     },
     rollupOptions: {

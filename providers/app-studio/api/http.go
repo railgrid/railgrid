@@ -26,24 +26,24 @@ import (
 )
 
 // identity is the per-request caller context the hub's backend proxy injects.
-// The hub verifies the tenant before forwarding, so X-Kedge-Tenant is trusted;
+// The hub verifies the tenant before forwarding, so X-Faros-Tenant is trusted;
 // the org/workspace UUIDs are derived from it rather than from client-supplied
 // headers (defense in depth — a spoofed header cannot mis-scope storage).
 type identity struct {
-	tenantPath    string // X-Kedge-Tenant, e.g. root:kedge:orgs:<org>:<ws>
-	clusterID     string // X-Kedge-Cluster, the workspace's kcp logical-cluster ID
+	tenantPath    string // X-Faros-Tenant, e.g. root:faros:orgs:<org>:<ws>
+	clusterID     string // X-Faros-Cluster, the workspace's kcp logical-cluster ID
 	orgUUID       string // parsed from tenantPath
 	workspaceUUID string // parsed from tenantPath ("" when the path is org-only)
-	user          string // X-Kedge-User
+	user          string // X-Faros-User
 	token         string // bearer token, forwarded as-is from Authorization
 }
 
-const tenantPathPrefix = "root:kedge:tenants:"
+const tenantPathPrefix = "root:faros:tenants:"
 
 // identityFromRequest extracts the caller identity from the proxy-injected
 // headers. It returns ok=false (and writes 401) when no tenant is present.
 func identityFromRequest(w http.ResponseWriter, r *http.Request) (identity, bool) {
-	tenantPath := strings.TrimSpace(r.Header.Get("X-Kedge-Tenant"))
+	tenantPath := strings.TrimSpace(r.Header.Get("X-Faros-Tenant"))
 	if tenantPath == "" {
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "tenant context missing — the hub did not resolve a workspace for this request")
 		return identity{}, false
@@ -51,15 +51,15 @@ func identityFromRequest(w http.ResponseWriter, r *http.Request) (identity, bool
 	org, ws := parseTenantPath(tenantPath)
 	return identity{
 		tenantPath:    tenantPath,
-		clusterID:     strings.TrimSpace(r.Header.Get("X-Kedge-Cluster")),
+		clusterID:     strings.TrimSpace(r.Header.Get("X-Faros-Cluster")),
 		orgUUID:       org,
 		workspaceUUID: ws,
-		user:          strings.TrimSpace(r.Header.Get("X-Kedge-User")),
+		user:          strings.TrimSpace(r.Header.Get("X-Faros-User")),
 		token:         bearerToken(r),
 	}, true
 }
 
-// parseTenantPath splits a root:kedge:orgs:<org>[:<ws>] cluster path into its
+// parseTenantPath splits a root:faros:orgs:<org>[:<ws>] cluster path into its
 // org and workspace UUID segments.
 func parseTenantPath(path string) (org, ws string) {
 	rest := strings.TrimPrefix(path, tenantPathPrefix)

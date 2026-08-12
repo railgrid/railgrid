@@ -30,25 +30,25 @@ import (
 // Implemented by *pkg/hub/kcp.Bootstrapper.
 type Provisioner interface {
 	// DeleteOrgWorkspace removes the kcp Workspace at
-	// root:kedge:orgs:{orgUUID}. Idempotent on NotFound.
+	// root:faros:orgs:{orgUUID}. Idempotent on NotFound.
 	DeleteOrgWorkspace(ctx context.Context, orgUUID string) error
 
 	// DeleteChildWorkspace removes the kcp Workspace at
-	// root:kedge:orgs:{orgUUID}:{wsUUID}. Idempotent on NotFound.
+	// root:faros:orgs:{orgUUID}:{wsUUID}. Idempotent on NotFound.
 	DeleteChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error
 
 	// ListChildWorkspaces returns the names of every child Workspace
-	// inside the Org workspace at root:kedge:orgs:{orgUUID}. Empty if
+	// inside the Org workspace at root:faros:orgs:{orgUUID}. Empty if
 	// the parent Org workspace has been deleted.
 	ListChildWorkspaces(ctx context.Context, orgUUID string) ([]string, error)
 
 	// ListOrgWorkspaces returns the names (UUIDs) of every
-	// Organization workspace at root:kedge:orgs. Drives the
+	// Organization workspace at root:faros:orgs. Drives the
 	// Workspace-branch poll sweep.
 	ListOrgWorkspaces(ctx context.Context) ([]string, error)
 
 	// GetWorkspaceDeletionRequestedAt reads the
-	// tenants.kedge.faros.sh/deletion-requested-at annotation from the
+	// tenants.faros.sh/deletion-requested-at annotation from the
 	// child Workspace. The second return reports presence — callers
 	// can distinguish "no soft-delete requested" from "annotation
 	// present but malformed".

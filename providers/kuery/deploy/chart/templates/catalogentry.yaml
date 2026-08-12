@@ -1,11 +1,11 @@
 {{- if .Values.catalogEntry.enabled -}}
-# CatalogEntry registers this provider with the kedge hub for routing + the
-# portal Enable flow. It is a kcp resource (providers.kedge.faros.sh/v1alpha1),
+# CatalogEntry registers this provider with the faros hub for routing + the
+# portal Enable flow. It is a kcp resource (providers.faros.sh/v1alpha1),
 # so it MUST NOT be applied to the hosting cluster where this chart installs.
 # Instead the chart renders it into a ConfigMap that the init container mounts
 # and applies into the provider workspace via the provider kubeconfig
-# (KEDGE_CATALOGENTRY_FILE -> sdkinstall.Bootstrap). The hub watches
-# CatalogEntries in every workspace bound to providers.kedge.faros.sh, including
+# (FAROS_CATALOGENTRY_FILE -> sdkinstall.Bootstrap). The hub watches
+# CatalogEntries in every workspace bound to providers.faros.sh, including
 # the provider's own, so a self-registered entry is seen.
 #
 # It only REFERENCES the APIExport (apiExport.name); the APIExport, its
@@ -20,7 +20,7 @@ metadata:
     {{- include "kuery.labels" . | nindent 4 }}
 data:
   catalogentry.yaml: |
-    apiVersion: providers.kedge.faros.sh/v1alpha1
+    apiVersion: providers.faros.sh/v1alpha1
     kind: CatalogEntry
     metadata:
       name: kuery
@@ -45,14 +45,14 @@ data:
       edgeProxyAccess: true
 
       apiExport:
-        name: "kuery.providers.kedge.faros.sh"
+        name: "kuery.providers.faros.sh"
         # The engagement controller watches the tenant's Edge objects (via the
         # APIExport virtual workspace) to know which edges to engage/disengage.
         # First-party claim: the init container stamps its identityHash from
         # apiExport.edgesIdentityHash (Helm value, copied from /bonkers).
         permissionClaims:
           - resource: edges
-            group: kedge.faros.sh
+            group: faros.sh
             verbs: [get, list, watch]
             tenantScoped: true
 {{- end }}

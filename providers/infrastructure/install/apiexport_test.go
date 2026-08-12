@@ -32,7 +32,7 @@ func schemaWithPointers() *apiextensionsv1.CustomResourceDefinition {
 	preserve := true
 	return &apiextensionsv1.CustomResourceDefinition{
 		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-			Group: "infrastructure.kedge.faros.sh",
+			Group: "infrastructure.faros.sh",
 			Names: apiextensionsv1.CustomResourceDefinitionNames{Kind: "Template", Plural: "templates"},
 			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
 				Name: "v1alpha1",

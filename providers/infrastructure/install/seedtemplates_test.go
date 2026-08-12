@@ -82,8 +82,8 @@ func TestSeedTemplatesDecodeAndValidate(t *testing.T) {
 // TestApplicationSeedsRouteEverythingThroughTheAccessGate encodes the
 // exposure invariants of the template-native access design:
 //
-//   - the schema declares platform-owned access + kedgeCluster fields;
-//   - a gate (kedge-access-proxy) component exists, its image and hub
+//   - the schema declares platform-owned access + farosCluster fields;
+//   - a gate (faros-access-proxy) component exists, its image and hub
 //     endpoints are platform tokens, and its mode is the tenant's
 //     spec.access value;
 //   - every HTTPRoute is unconditional and its only backend is the gate
@@ -121,12 +121,12 @@ func TestApplicationSeedsRouteEverythingThroughTheAccessGate(t *testing.T) {
 			if len(enum) != 2 || enum[0] != "public" || enum[1] != "private" {
 				t.Fatalf("access enum = %#v, want [public private]", enum)
 			}
-			cluster, ok := properties["kedgeCluster"].(map[string]any)
+			cluster, ok := properties["farosCluster"].(map[string]any)
 			if !ok {
-				t.Fatal("seed schema has no kedgeCluster property")
+				t.Fatal("seed schema has no farosCluster property")
 			}
 			if desc, _ := cluster["description"].(string); !strings.Contains(desc, "Computed by the platform") {
-				t.Fatalf("kedgeCluster description = %q, want platform-computed guidance", desc)
+				t.Fatalf("farosCluster description = %q, want platform-computed guidance", desc)
 			}
 
 			var backend map[string]any
@@ -170,24 +170,24 @@ func TestApplicationSeedsRouteEverythingThroughTheAccessGate(t *testing.T) {
 				t.Fatal("seed has no gateDeployment component")
 			}
 			wantEnv := map[string]string{
-				"KEDGE_ACCESS_PROXY_MODE": "${schema.spec.access}",
+				"FAROS_ACCESS_PROXY_MODE": "${schema.spec.access}",
 				// The external host includes the local Gateway's forwarded
-				// port when configured (${kedge.appPublicPort} → ":<port>"
+				// port when configured (${faros.appPublicPort} → ":<port>"
 				// or "", substituted before kro sees the CEL).
-				"KEDGE_ACCESS_PROXY_HOST":              `${schema.spec.expose.fqdn + "${kedge.appPublicPort}"}`,
-				"KEDGE_ACCESS_PROXY_INSTANCE_CLUSTER":  "${schema.spec.kedgeCluster}",
-				"KEDGE_ACCESS_PROXY_INSTANCE_GROUP":    "infrastructure.kedge.faros.sh",
-				"KEDGE_ACCESS_PROXY_INSTANCE_RESOURCE": instanceResource[file],
-				"KEDGE_HUB_URL":                        "${kedge.hubUrl}",
-				"KEDGE_HUB_PUBLIC_URL":                 "${kedge.hubPublicUrl}",
+				"FAROS_ACCESS_PROXY_HOST":              `${schema.spec.expose.fqdn + "${faros.appPublicPort}"}`,
+				"FAROS_ACCESS_PROXY_INSTANCE_CLUSTER":  "${schema.spec.farosCluster}",
+				"FAROS_ACCESS_PROXY_INSTANCE_GROUP":    "infrastructure.faros.sh",
+				"FAROS_ACCESS_PROXY_INSTANCE_RESOURCE": instanceResource[file],
+				"FAROS_HUB_URL":                        "${faros.hubUrl}",
+				"FAROS_HUB_PUBLIC_URL":                 "${faros.hubPublicUrl}",
 			}
 			for name, want := range wantEnv {
 				if gateEnv[name] != want {
 					t.Errorf("gate env %s = %q, want %q", name, gateEnv[name], want)
 				}
 			}
-			if !strings.Contains(gateEnv["KEDGE_ACCESS_PROXY_ROUTES"], ".svc.cluster.local:") {
-				t.Errorf("gate routes are not cluster-local Service targets: %q", gateEnv["KEDGE_ACCESS_PROXY_ROUTES"])
+			if !strings.Contains(gateEnv["FAROS_ACCESS_PROXY_ROUTES"], ".svc.cluster.local:") {
+				t.Errorf("gate routes are not cluster-local Service targets: %q", gateEnv["FAROS_ACCESS_PROXY_ROUTES"])
 			}
 		})
 	}
@@ -229,7 +229,7 @@ func TestApplicationSeedsDeclareAndProjectRedeployRevision(t *testing.T) {
 		"simple-webapp.yaml": {"appDeployment": true},
 		"application.yaml":   {"webDeployment": true, "apiDeployment": true},
 	}
-	const annotationKey = "kedge.faros.sh/redeploy-revision"
+	const annotationKey = "faros.sh/redeploy-revision"
 
 	for file, want := range wantWorkloads {
 		t.Run(file, func(t *testing.T) {
@@ -253,16 +253,16 @@ func TestApplicationSeedsDeclareAndProjectRedeployRevision(t *testing.T) {
 			if !ok {
 				t.Fatal("seed schema has no properties")
 			}
-			revisionProperty, ok := properties["kedgeRedeployRevision"].(map[string]any)
+			revisionProperty, ok := properties["farosRedeployRevision"].(map[string]any)
 			if !ok {
-				t.Fatal("seed schema has no kedgeRedeployRevision property")
+				t.Fatal("seed schema has no farosRedeployRevision property")
 			}
 			if revisionProperty["type"] != "string" || revisionProperty["default"] != "initial" {
-				t.Fatalf("kedgeRedeployRevision property = %#v, want string default initial", revisionProperty)
+				t.Fatalf("farosRedeployRevision property = %#v, want string default initial", revisionProperty)
 			}
 			description, _ := revisionProperty["description"].(string)
 			if !strings.Contains(description, "Computed by the platform") || !strings.Contains(description, "do NOT set") {
-				t.Fatalf("kedgeRedeployRevision description = %q, want platform-computed/not-user-set guidance", description)
+				t.Fatalf("farosRedeployRevision description = %q, want platform-computed/not-user-set guidance", description)
 			}
 
 			var backend map[string]any
@@ -290,7 +290,7 @@ func TestApplicationSeedsDeclareAndProjectRedeployRevision(t *testing.T) {
 					if !want[id] {
 						t.Errorf("resource %q has unexpected rollout annotation", id)
 					}
-					if gotRevision != "${schema.spec.kedgeRedeployRevision}" {
+					if gotRevision != "${schema.spec.farosRedeployRevision}" {
 						t.Errorf("resource %q rollout annotation = %#v, want schema revision expression", id, gotRevision)
 					}
 					found[id] = true
@@ -352,13 +352,13 @@ func TestPreviewConsolePluginIsLimitedToBuiltInViteComponents(t *testing.T) {
 				t.Errorf("duplicate preview console discovery for %s", key)
 			}
 			found[key] = true
-			count := strings.Count(source, "file:///kedge/bin/preview-console-plugin.mjs")
+			count := strings.Count(source, "file:///faros/bin/preview-console-plugin.mjs")
 			references += count
 			if count != 1 {
 				t.Errorf("%s Vite shim has %d preview-console imports, want exactly 1", key, count)
 			}
 			for _, required := range []string{
-				"await import('file:///kedge/bin/preview-console-plugin.mjs')",
+				"await import('file:///faros/bin/preview-console-plugin.mjs')",
 				"forced.plugins = [previewConsolePlugin()]",
 				"} catch (e) {",
 				"return mergeConfig(base, forced)",

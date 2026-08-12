@@ -36,12 +36,12 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
-	cliauth "github.com/faroshq/faros-kedge/pkg/cli/auth"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	"github.com/faroshq/faros/pkg/apiurl"
+	cliauth "github.com/faroshq/faros/pkg/cli/auth"
 )
 
-// DefaultHubURL is the hosted kedge hub used when --hub-url is not specified.
+// DefaultHubURL is the hosted faros hub used when --hub-url is not specified.
 const DefaultHubURL = "https://console.faros.sh"
 
 func newLoginCommand() *cobra.Command {
@@ -54,7 +54,7 @@ func newLoginCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Authenticate with the kedge hub via OIDC or static token",
+		Short: "Authenticate with the faros hub via OIDC or static token",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hubURL == "" {
 				hubURL = DefaultHubURL
@@ -72,7 +72,7 @@ func newLoginCommand() *cobra.Command {
 					return err
 				}
 				if !oidcEnabled {
-					return fmt.Errorf("hub at %s does not have OIDC configured — use: kedge login --hub-url %s --token <token>", hubURL, hubURL)
+					return fmt.Errorf("hub at %s does not have OIDC configured — use: faros login --hub-url %s --token <token>", hubURL, hubURL)
 				}
 				ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
 				defer cancel()
@@ -170,8 +170,8 @@ func runStaticTokenLogin(hubURL, token string, insecure bool) error {
 	}
 
 	fmt.Printf("Login successful! Logged in as %s (user: %s)\n", loginResp.Email, loginResp.UserID)
-	fmt.Printf("Kubeconfig context \"kedge\" has been set.\n")
-	fmt.Printf("Run: kubectl --context=kedge get namespaces\n")
+	fmt.Printf("Kubeconfig context \"faros\" has been set.\n")
+	fmt.Printf("Run: kubectl --context=faros get namespaces\n")
 	return nil
 }
 
@@ -232,8 +232,8 @@ func runLogin(ctx context.Context, hubURL string, insecure bool) error {
 	}
 
 	fmt.Printf("Login successful! Logged in as %s (user: %s)\n", resp.Email, resp.UserID)
-	fmt.Printf("Kubeconfig context \"kedge\" has been set.\n")
-	fmt.Printf("Run: kubectl --context=kedge get users\n")
+	fmt.Printf("Kubeconfig context \"faros\" has been set.\n")
+	fmt.Printf("Run: kubectl --context=faros get users\n")
 	return nil
 }
 
@@ -245,12 +245,12 @@ func mergeKubeconfig(kubeconfigBytes []byte) error {
 		return fmt.Errorf("parsing received kubeconfig: %w", err)
 	}
 
-	// The hub emits the exec credential plugin with Command="kedge", which
+	// The hub emits the exec credential plugin with Command="faros", which
 	// only resolves on PATH for the curl/tar.gz install. Krew installs the
-	// binary as `kubectl-kedge` — there is no `kedge` symlink — so kubectl
+	// binary as `kubectl-faros` — there is no `faros` symlink — so kubectl
 	// would fail to exec the plugin. Rewrite to the absolute path of the
 	// running binary so both install modes work.
-	rewriteKedgeExecCommand(newConfig)
+	rewriteFarosExecCommand(newConfig)
 
 	// Load the existing kubeconfig.
 	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
@@ -263,7 +263,7 @@ func mergeKubeconfig(kubeconfigBytes []byte) error {
 	// Merge: overwrite clusters, contexts, and auth infos from the new config.
 	for k, v := range newConfig.Clusters {
 		// Re-login always points the cluster at the home workspace. When the
-		// user previously switched workspaces with `kedge use` on the same
+		// user previously switched workspaces with `faros use` on the same
 		// hub, keep that selection — only credentials and TLS settings are
 		// refreshed. Logging into a different hub still takes the new URL.
 		if prev := existingConfig.Clusters[k]; prev != nil && strings.Contains(prev.Server, "/clusters/") {
@@ -293,12 +293,12 @@ func mergeKubeconfig(kubeconfigBytes []byte) error {
 	return nil
 }
 
-// rewriteKedgeExecCommand replaces the sentinel `kedge` command in any exec
+// rewriteFarosExecCommand replaces the sentinel `faros` command in any exec
 // credential plugin with the absolute path of the currently running binary.
 // This makes the kubeconfig work regardless of how the CLI was installed —
-// curl/tar.gz (binary named `kedge`), krew (binary named `kubectl-kedge`), or
+// curl/tar.gz (binary named `faros`), krew (binary named `kubectl-faros`), or
 // any custom path.
-func rewriteKedgeExecCommand(cfg *clientcmdapi.Config) {
+func rewriteFarosExecCommand(cfg *clientcmdapi.Config) {
 	exe, err := os.Executable()
 	if err != nil || exe == "" {
 		// Fall back to leaving the kubeconfig untouched — better than writing
@@ -309,7 +309,7 @@ func rewriteKedgeExecCommand(cfg *clientcmdapi.Config) {
 		if ai == nil || ai.Exec == nil {
 			continue
 		}
-		if ai.Exec.Command == "kedge" {
+		if ai.Exec.Command == "faros" {
 			ai.Exec.Command = exe
 		}
 	}

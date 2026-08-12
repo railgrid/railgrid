@@ -1,13 +1,13 @@
 ---
 name: databricks-app-integration
-description: Use when building or reviewing an App Studio application that reads an existing Databricks table through the versioned Provider Action query_table/v1; distinguish the SDK integration alias from the exact grant-bound Table resource name/tableRef, require one authoritative schema probe at most before query or UI code, honor the published schema and limits, use the server-only @kedge/actions-node SDK, and verify endpoint responses before relying on a live preview.
+description: Use when building or reviewing an App Studio application that reads an existing Databricks table through the versioned Provider Action query_table/v1; distinguish the SDK integration alias from the exact grant-bound Table resource name/tableRef, require one authoritative schema probe at most before query or UI code, honor the published schema and limits, use the server-only @faros/actions-node SDK, and verify endpoint responses before relying on a live preview.
 ---
 
 # Databricks App Integration
 
 Use this skill for a read-only Databricks data integration in an App Studio
 project. The integration consumes an existing project grant and its bound
-`databricks.kedge.faros.sh/v1alpha1` `Table`; it does not provision a table,
+`databricks.faros.sh/v1alpha1` `Table`; it does not provision a table,
 discover provider infrastructure, or put Databricks credentials in the app.
 
 ## Required workflow
@@ -50,7 +50,7 @@ discover provider infrastructure, or put Databricks credentials in the app.
    `columns: []` is not schema discovery):
 
    ```js
-   const schemaProbe = await kedge
+   const schemaProbe = await faros
      .integration('<BOUND_INTEGRATION_ALIAS>')
      .invokeEnvelope('query_table/v1', { limit: 1 });
    // Verify schemaProbe.actionVersion and schemaProbe.resourceRef first.
@@ -69,7 +69,7 @@ discover provider infrastructure, or put Databricks credentials in the app.
    action to one provider resource with this identity:
 
    ```text
-   apiVersion: databricks.kedge.faros.sh/v1alpha1
+   apiVersion: databricks.faros.sh/v1alpha1
    kind: Table
    resource: tables
    name: <GRANT_BOUND_TABLE_NAME>
@@ -90,18 +90,18 @@ discover provider infrastructure, or put Databricks credentials in the app.
    server action, or other trusted backend process:
 
    ```js
-   import { createActionsClient } from '@kedge/actions-node';
+   import { createActionsClient } from '@faros/actions-node';
 
-   const kedge = createActionsClient({
-     baseURL: process.env.KEDGE_ACTIONS_BASE_URL,
-     project: process.env.KEDGE_PROJECT,
-     tokenFile: process.env.KEDGE_ACTIONS_TOKEN_FILE,
+   const faros = createActionsClient({
+     baseURL: process.env.FAROS_ACTIONS_BASE_URL,
+     project: process.env.FAROS_PROJECT,
+     tokenFile: process.env.FAROS_ACTIONS_TOKEN_FILE,
      // If a coordinator supplies them, these become tenant headers.
-     org: process.env.KEDGE_ACTIONS_ORG,
-     workspace: process.env.KEDGE_ACTIONS_WORKSPACE,
+     org: process.env.FAROS_ACTIONS_ORG,
+     workspace: process.env.FAROS_ACTIONS_WORKSPACE,
    });
 
-   const result = await kedge.integration('<BOUND_INTEGRATION_ALIAS>').invoke('query_table/v1', {
+   const result = await faros.integration('<BOUND_INTEGRATION_ALIAS>').invoke('query_table/v1', {
      // Use only exact names from the verified bound-Table schema.
      columns: ['<COLUMN_NAME_FROM_SCHEMA>'],
      limit: 25,
@@ -113,11 +113,11 @@ discover provider infrastructure, or put Databricks credentials in the app.
    must not be substituted into this SDK selector (or accepted from the
    browser).
 
-   `@kedge/actions-node` is the only supported integration client. It reads an
-   atomically refreshed `KEDGE_ACTIONS_TOKEN_FILE` on every request, or it may
+   `@faros/actions-node` is the only supported integration client. It reads an
+   atomically refreshed `FAROS_ACTIONS_TOKEN_FILE` on every request, or it may
    use a refreshable `getToken({ forceRefresh, signal })` callback. Never ship
    this import or token to browser code; the SDK intentionally rejects browser
-   globals. `KEDGE_ACTIONS_BASE_URL` must be an absolute HTTPS App Studio
+   globals. `FAROS_ACTIONS_BASE_URL` must be an absolute HTTPS App Studio
    gateway URL (tests may explicitly enable loopback HTTP), and the project
    plus optional org/workspace identify the authenticated application context.
 

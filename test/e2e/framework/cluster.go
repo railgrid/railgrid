@@ -31,10 +31,10 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros/pkg/apiurl"
 )
 
-// RepoRoot returns the absolute path to the kedge repository root, derived
+// RepoRoot returns the absolute path to the faros repository root, derived
 // from the location of this source file at compile time.
 func RepoRoot() string {
 	_, thisFile, _, _ := runtime.Caller(0)
@@ -45,50 +45,50 @@ func RepoRoot() string {
 
 const (
 	// hubImagePullPolicyEnv overrides the hub image pull policy passed to
-	// `kedge dev init`. Set to "Never" in CI when the image is pre-loaded.
-	hubImagePullPolicyEnv = "KEDGE_HUB_IMAGE_PULL_POLICY"
+	// `faros dev init`. Set to "Never" in CI when the image is pre-loaded.
+	hubImagePullPolicyEnv = "FAROS_HUB_IMAGE_PULL_POLICY"
 
-	// hubImageEnv overrides the hub image repository passed to `kedge dev init`.
+	// hubImageEnv overrides the hub image repository passed to `faros dev init`.
 	// Use this in CI when the image is built with a non-default name
-	// (e.g. "ghcr.io/faroshq/kedge-hub" instead of "ghcr.io/faroshq/kedge").
-	hubImageEnv = "KEDGE_HUB_IMAGE"
+	// (e.g. "ghcr.io/faroshq/faros-hub" instead of "ghcr.io/faroshq/faros").
+	hubImageEnv = "FAROS_HUB_IMAGE"
 
-	// hubImageTagEnv overrides the hub image tag passed to `kedge dev init`.
+	// hubImageTagEnv overrides the hub image tag passed to `faros dev init`.
 	// Use this in CI to ensure the built image tag matches what the chart uses.
-	hubImageTagEnv = "KEDGE_HUB_IMAGE_TAG"
+	hubImageTagEnv = "FAROS_HUB_IMAGE_TAG"
 
 	// hubClusterNameEnv overrides the hub kind cluster name.
 	// Useful when running against the dev cluster instead of the e2e cluster.
-	hubClusterNameEnv = "KEDGE_HUB_CLUSTER_NAME"
+	hubClusterNameEnv = "FAROS_HUB_CLUSTER_NAME"
 
 	// agentClusterNameEnv overrides the agent kind cluster name.
-	agentClusterNameEnv = "KEDGE_AGENT_CLUSTER_NAME"
+	agentClusterNameEnv = "FAROS_AGENT_CLUSTER_NAME"
 
 	// hubAPIServerPortEnv overrides the Kubernetes API server port for the hub
 	// kind cluster (default 6443). Set this when port 6443 is already in use
 	// on the host (e.g. when kcp or another cluster is running).
-	// Example: KEDGE_HUB_API_SERVER_PORT=6444
-	hubAPIServerPortEnv = "KEDGE_HUB_API_SERVER_PORT"
+	// Example: FAROS_HUB_API_SERVER_PORT=6444
+	hubAPIServerPortEnv = "FAROS_HUB_API_SERVER_PORT"
 
 	// agentImageEnv overrides the agent image repository. Use this in CI when
-	// the agent image is built locally (e.g. "ghcr.io/faroshq/kedge-agent").
-	agentImageEnv = "KEDGE_AGENT_IMAGE"
+	// the agent image is built locally (e.g. "ghcr.io/faroshq/faros-agent").
+	agentImageEnv = "FAROS_AGENT_IMAGE"
 
 	// agentImageTagEnv overrides the agent image tag.
 	// Use this in CI to match the locally built image tag.
-	agentImageTagEnv = "KEDGE_AGENT_IMAGE_TAG"
+	agentImageTagEnv = "FAROS_AGENT_IMAGE_TAG"
 
 	// agentImagePullPolicyEnv overrides the agent image pull policy.
 	// Set to "Never" in CI when the image is pre-loaded into kind.
-	agentImagePullPolicyEnv = "KEDGE_AGENT_IMAGE_PULL_POLICY"
+	agentImagePullPolicyEnv = "FAROS_AGENT_IMAGE_PULL_POLICY"
 )
 
 const (
-	DefaultHubClusterName   = "kedge-e2e-hub"
-	DefaultAgentClusterName = "kedge-e2e-agent"
-	DefaultKindNetwork      = "kedge-e2e"
-	DefaultChartPath        = "deploy/charts/kedge-hub"
-	DefaultHubURL           = "https://kedge.localhost:9443"
+	DefaultHubClusterName   = "faros-e2e-hub"
+	DefaultAgentClusterName = "faros-e2e-agent"
+	DefaultKindNetwork      = "faros-e2e"
+	DefaultChartPath        = "deploy/charts/faros-hub"
+	DefaultHubURL           = "https://faros.localhost:9443"
 
 	// DefaultAgentCount is the number of agent clusters created by the e2e
 	// test suites. All suites create 2 agent clusters so multi-site tests run
@@ -119,8 +119,8 @@ func effectiveAgentClusterName() string {
 }
 
 // apiServerPortArgs returns the --api-server-port flag and value when the
-// KEDGE_HUB_API_SERVER_PORT env var is set, so callers can forward it to
-// `kedge dev init`. Returns nil when the env var is not set (use the default).
+// FAROS_HUB_API_SERVER_PORT env var is set, so callers can forward it to
+// `faros dev init`. Returns nil when the env var is not set (use the default).
 func apiServerPortArgs() []string {
 	if v := os.Getenv(hubAPIServerPortEnv); v != "" {
 		return []string{"--api-server-port", v}
@@ -150,7 +150,7 @@ type ClusterEnv struct {
 	KCPKubeconfig string
 
 	// HubAdminKubeconfig is the raw kind-cluster admin kubeconfig for the hub
-	// cluster, saved before kedge login overwrites the main HubKubeconfig with
+	// cluster, saved before faros login overwrites the main HubKubeconfig with
 	// a kcp workspace context. Use this for kubectl commands against the hub
 	// kind cluster itself (e.g. deleting pods in the kcp namespace).
 	HubAdminKubeconfig string
@@ -211,14 +211,14 @@ func probeAgentClusters(workDir, baseName string) []AgentClusterInfo {
 }
 
 // SetupClusters returns an env.Func that creates the hub and agent kind clusters
-// using `kedge dev init` with the local Helm chart. It stores a ClusterEnv
+// using `faros dev init` with the local Helm chart. It stores a ClusterEnv
 // in the context for use by tests.
 //
-// If the KEDGE_HUB_IMAGE_PULL_POLICY env var is set (e.g. to "Never" in CI when
-// the image is pre-loaded into kind), it is forwarded to `kedge dev init`.
+// If the FAROS_HUB_IMAGE_PULL_POLICY env var is set (e.g. to "Never" in CI when
+// the image is pre-loaded into kind), it is forwarded to `faros dev init`.
 func SetupClusters(workDir string) env.Func {
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-		kedge := filepath.Join(workDir, KedgeBin)
+		faros := filepath.Join(workDir, FarosBin)
 
 		args := []string{
 			"dev", "init",
@@ -241,13 +241,13 @@ func SetupClusters(workDir string) env.Func {
 		}
 		args = append(args, apiServerPortArgs()...)
 
-		cmd := exec.CommandContext(ctx, kedge, args...)
+		cmd := exec.CommandContext(ctx, faros, args...)
 		cmd.Dir = workDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 
 		if err := cmd.Run(); err != nil {
-			return ctx, fmt.Errorf("kedge dev init failed: %w", err)
+			return ctx, fmt.Errorf("faros dev init failed: %w", err)
 		}
 
 		agents := agentClusterInfos(workDir, DefaultAgentClusterName, DefaultAgentCount)
@@ -262,7 +262,7 @@ func SetupClusters(workDir string) env.Func {
 			AgentKubeconfig:  agents[0].Kubeconfig,
 		}
 
-		// Belt-and-suspenders: wait for the hub /healthz even if kedge dev init
+		// Belt-and-suspenders: wait for the hub /healthz even if faros dev init
 		// already waited (it may return before the TLS listener is fully up).
 		healthCtx, healthCancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer healthCancel()
@@ -273,7 +273,7 @@ func SetupClusters(workDir string) env.Func {
 		// Wait for KCP APIBindings (tenant/users) to finish bootstrapping.
 		// Without this, tests that hit the tenant REST surface immediately
 		// after setup can get a 500 ("failed to create user").
-		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
+		client := NewFarosClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
 		if err := WaitForTenantAPI(apiCtx, client, DefaultHubURL, clusterEnv.Token); err != nil {
@@ -289,11 +289,11 @@ func SetupClusters(workDir string) env.Func {
 //
 // Networking: Dex is exposed as NodePort 31554 on the hub kind node; the kind
 // cluster maps that to localhost:5554.  The test runner adds a /etc/hosts entry
-// (127.0.0.1 dex.kedge-system.svc.cluster.local) so it can reach the in-cluster
+// (127.0.0.1 dex.faros-system.svc.cluster.local) so it can reach the in-cluster
 // Dex on the same hostname that the hub pod uses via cluster DNS.
 func SetupClustersWithOIDC(workDir string) env.Func {
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-		kedge := filepath.Join(workDir, KedgeBin)
+		faros := filepath.Join(workDir, FarosBin)
 
 		args := []string{
 			"dev", "init",
@@ -316,12 +316,12 @@ func SetupClustersWithOIDC(workDir string) env.Func {
 		}
 		args = append(args, apiServerPortArgs()...)
 
-		cmd := exec.CommandContext(ctx, kedge, args...)
+		cmd := exec.CommandContext(ctx, faros, args...)
 		cmd.Dir = workDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			return ctx, fmt.Errorf("kedge dev init --with-dex failed: %w", err)
+			return ctx, fmt.Errorf("faros dev init --with-dex failed: %w", err)
 		}
 
 		// Ensure the test runner resolves the Dex hostname to localhost so it can
@@ -371,7 +371,7 @@ func SetupClustersWithOIDC(workDir string) env.Func {
 	}
 }
 
-// ensureDexHostsEntry adds "127.0.0.1 dex.kedge-system.svc.cluster.local" to
+// ensureDexHostsEntry adds "127.0.0.1 dex.faros-system.svc.cluster.local" to
 // /etc/hosts if it is not already there.
 func ensureDexHostsEntry() error {
 	const hostsFile = "/etc/hosts"
@@ -395,8 +395,8 @@ func ensureDexHostsEntry() error {
 
 // UseExistingClusters wires up ClusterEnv from already-running clusters without
 // creating or destroying anything.  It verifies that the hub is healthy before
-// returning.  Cluster names can be overridden via KEDGE_HUB_CLUSTER_NAME and
-// KEDGE_AGENT_CLUSTER_NAME.
+// returning.  Cluster names can be overridden via FAROS_HUB_CLUSTER_NAME and
+// FAROS_AGENT_CLUSTER_NAME.
 func UseExistingClusters(workDir string) env.Func {
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
 		hubName := effectiveHubClusterName()
@@ -419,7 +419,7 @@ func UseExistingClusters(workDir string) env.Func {
 			return ctx, fmt.Errorf("hub not reachable for existing clusters: %w", err)
 		}
 
-		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
+		client := NewFarosClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 2*time.Minute)
 		defer apiCancel()
 		if err := WaitForTenantAPI(apiCtx, client, DefaultHubURL, clusterEnv.Token); err != nil {
@@ -431,12 +431,12 @@ func UseExistingClusters(workDir string) env.Func {
 }
 
 // UseExistingClustersWithOIDC wires up ClusterEnv and DexEnv from already-running
-// clusters (KEDGE_USE_EXISTING_CLUSTERS=true path).  It verifies that the hub
+// clusters (FAROS_USE_EXISTING_CLUSTERS=true path).  It verifies that the hub
 // and Dex are reachable but does NOT create or destroy any clusters.
 //
-// Cluster names can be overridden via KEDGE_HUB_CLUSTER_NAME and
-// KEDGE_AGENT_CLUSTER_NAME environment variables.  This is useful when testing
-// against the dev cluster (kedge-hub / kedge-agent) instead of the e2e cluster.
+// Cluster names can be overridden via FAROS_HUB_CLUSTER_NAME and
+// FAROS_AGENT_CLUSTER_NAME environment variables.  This is useful when testing
+// against the dev cluster (faros-hub / faros-agent) instead of the e2e cluster.
 func UseExistingClustersWithOIDC(workDir string) env.Func {
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
 		hubName := effectiveHubClusterName()
@@ -485,7 +485,7 @@ func TeardownClusters(workDir string) env.Func {
 			return ctx, nil
 		}
 
-		kedge := filepath.Join(workDir, KedgeBin)
+		faros := filepath.Join(workDir, FarosBin)
 
 		args := []string{
 			"dev", "delete",
@@ -495,13 +495,13 @@ func TeardownClusters(workDir string) env.Func {
 		}
 
 		// Best-effort: log but don't fail if delete fails.
-		cmd := exec.CommandContext(ctx, kedge, args...)
+		cmd := exec.CommandContext(ctx, faros, args...)
 		cmd.Dir = workDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 
 		if err := cmd.Run(); err != nil {
-			fmt.Printf("WARNING: kedge dev delete failed (clusters may remain): %v\n", err)
+			fmt.Printf("WARNING: faros dev delete failed (clusters may remain): %v\n", err)
 		}
 
 		return ctx, nil
@@ -537,19 +537,19 @@ func WaitForHubReady(ctx context.Context, hubURL string) error {
 	return nil
 }
 
-// DefaultKCPExternalKubeconfigFile is the filename written by kedge dev init
+// DefaultKCPExternalKubeconfigFile is the filename written by faros dev init
 // --with-external-kcp for the test runner to reach kcp directly.
 const DefaultKCPExternalKubeconfigFile = "kcp-admin.kubeconfig"
 
 // SetupClustersWithExternalKCP returns an env.Func that creates hub and agent
-// kind clusters using `kedge dev init --with-external-kcp`. kcp is deployed
+// kind clusters using `faros dev init --with-external-kcp`. kcp is deployed
 // via Helm into the hub cluster; the hub is configured to use it.
 //
 // The external kcp kubeconfig (for test assertions against kcp directly) is
 // stored in ClusterEnv.KCPKubeconfig.
 func SetupClustersWithExternalKCP(workDir string) env.Func {
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-		kedge := filepath.Join(workDir, KedgeBin)
+		faros := filepath.Join(workDir, FarosBin)
 
 		args := []string{
 			"dev", "init",
@@ -573,19 +573,19 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 		}
 		args = append(args, apiServerPortArgs()...)
 
-		cmd := exec.CommandContext(ctx, kedge, args...)
+		cmd := exec.CommandContext(ctx, faros, args...)
 		cmd.Dir = workDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 
 		if err := cmd.Run(); err != nil {
-			return ctx, fmt.Errorf("kedge dev init --with-external-kcp failed: %w", err)
+			return ctx, fmt.Errorf("faros dev init --with-external-kcp failed: %w", err)
 		}
 
 		hubKubeconfig := filepath.Join(workDir, DefaultHubClusterName+".kubeconfig")
 		hubAdminKubeconfig := filepath.Join(workDir, DefaultHubClusterName+"-admin.kubeconfig")
 
-		// Save a copy of the hub kubeconfig before kedge login overwrites the
+		// Save a copy of the hub kubeconfig before faros login overwrites the
 		// current context with a kcp workspace URL.
 		if data, err := os.ReadFile(hubKubeconfig); err == nil {
 			_ = os.WriteFile(hubAdminKubeconfig, data, 0o600)
@@ -613,7 +613,7 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 		}
 
 		// Wait for tenant API.
-		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
+		client := NewFarosClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
 		if err := WaitForTenantAPI(apiCtx, client, DefaultHubURL, clusterEnv.Token); err != nil {
@@ -624,7 +624,7 @@ func SetupClustersWithExternalKCP(workDir string) env.Func {
 	}
 }
 
-// UseExistingClustersWithExternalKCP is the KEDGE_USE_EXISTING_CLUSTERS=true
+// UseExistingClustersWithExternalKCP is the FAROS_USE_EXISTING_CLUSTERS=true
 // variant of SetupClustersWithExternalKCP. It assumes clusters and kcp are
 // already running and just wires up the ClusterEnv.
 func UseExistingClustersWithExternalKCP(workDir string) env.Func {
@@ -632,7 +632,7 @@ func UseExistingClustersWithExternalKCP(workDir string) env.Func {
 		hubCluster := effectiveHubClusterName()
 		agentCluster := effectiveAgentClusterName()
 
-		hubKubeconfig := os.Getenv("KEDGE_HUB_KUBECONFIG")
+		hubKubeconfig := os.Getenv("FAROS_HUB_KUBECONFIG")
 		if hubKubeconfig == "" {
 			hubKubeconfig = filepath.Join(workDir, hubCluster+".kubeconfig")
 		}
@@ -665,7 +665,7 @@ func UseExistingClustersWithExternalKCP(workDir string) env.Func {
 // HubNodePortURL returns the hub URL reachable from inside a pod in another
 // kind cluster — i.e. via the hub node's Docker IP on the shared kind network
 // and NodePort 31443.
-// This is needed because kedge.localhost resolves only on the CI runner host,
+// This is needed because faros.localhost resolves only on the CI runner host,
 // not inside pods.
 // Returns "" if the Docker IP cannot be determined (caller should skip or fall back).
 func HubNodePortURL() string {
@@ -686,7 +686,7 @@ func HubNodePortURL() string {
 // the hub node's Docker network NodePort address so that in-cluster agents can
 // connect.
 //
-// clusterEnv.HubURL is always "https://kedge.localhost:9443" (no cluster path),
+// clusterEnv.HubURL is always "https://faros.localhost:9443" (no cluster path),
 // so this function reads the cluster path directly from the hub kubeconfig
 // instead of relying on the HubURL field.
 //
@@ -701,7 +701,7 @@ func PodHubURLFromKubeconfig(kubeconfigPath string) string {
 	if err != nil {
 		return ""
 	}
-	// cfg.Host is like "https://kedge.localhost:9443/clusters/root:kedge:user-default"
+	// cfg.Host is like "https://faros.localhost:9443/clusters/root:faros:user-default"
 	parsedCluster, err := url.Parse(cfg.Host)
 	if err != nil {
 		return base
@@ -712,9 +712,9 @@ func PodHubURLFromKubeconfig(kubeconfigPath string) string {
 	return parsedCluster.String()
 }
 
-// AgentBinPath returns the path to the kedge binary under bin/.
+// AgentBinPath returns the path to the faros binary under bin/.
 func AgentBinPath() string {
-	return filepath.Join(RepoRoot(), "bin", "kedge")
+	return filepath.Join(RepoRoot(), "bin", "faros")
 }
 
 // ClusterNameFromKubeconfig reads the kubeconfig at path and extracts the kcp
@@ -738,7 +738,7 @@ func ClusterNameFromKubeconfig(kubeconfigPath string) string {
 // need multi-agent tests (e.g. SSH) to save cluster creation time.
 func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 	return func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-		kedge := filepath.Join(workDir, KedgeBin)
+		faros := filepath.Join(workDir, FarosBin)
 
 		args := []string{
 			"dev", "init",
@@ -761,13 +761,13 @@ func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 		}
 		args = append(args, apiServerPortArgs()...)
 
-		cmd := exec.CommandContext(ctx, kedge, args...)
+		cmd := exec.CommandContext(ctx, faros, args...)
 		cmd.Dir = workDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 
 		if err := cmd.Run(); err != nil {
-			return ctx, fmt.Errorf("kedge dev init failed: %w", err)
+			return ctx, fmt.Errorf("faros dev init failed: %w", err)
 		}
 
 		agents := agentClusterInfos(workDir, DefaultAgentClusterName, agentCount)
@@ -788,7 +788,7 @@ func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 			return ctx, fmt.Errorf("hub did not become healthy after setup: %w", err)
 		}
 
-		client := NewKedgeClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
+		client := NewFarosClient(workDir, clusterEnv.HubKubeconfig, DefaultHubURL)
 		apiCtx, apiCancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer apiCancel()
 		if err := WaitForTenantAPI(apiCtx, client, DefaultHubURL, clusterEnv.Token); err != nil {
@@ -801,7 +801,7 @@ func SetupClustersWithAgentCount(workDir string, agentCount int) env.Func {
 
 // LoadAgentImageIntoCluster loads the agent container image into a kind cluster
 // so that Deployments with imagePullPolicy=Never can use it without a registry
-// pull. This is a no-op unless KEDGE_AGENT_IMAGE_PULL_POLICY=Never (i.e. CI
+// pull. This is a no-op unless FAROS_AGENT_IMAGE_PULL_POLICY=Never (i.e. CI
 // with a locally built image).
 func LoadAgentImageIntoCluster(clusterName string) error {
 	pullPolicy := os.Getenv(agentImagePullPolicyEnv)
@@ -810,7 +810,7 @@ func LoadAgentImageIntoCluster(clusterName string) error {
 	}
 	image := os.Getenv(agentImageEnv)
 	if image == "" {
-		image = "ghcr.io/faroshq/kedge-agent"
+		image = "ghcr.io/faroshq/faros-agent"
 	}
 	tag := os.Getenv(agentImageTagEnv)
 	if tag == "" {
@@ -831,19 +831,19 @@ func TeardownClustersWithAgentCount(workDir string, agentCount int) env.Func {
 			fmt.Println("--keep-clusters set: skipping cluster teardown")
 			return ctx, nil
 		}
-		kedge := filepath.Join(workDir, KedgeBin)
+		faros := filepath.Join(workDir, FarosBin)
 		args := []string{
 			"dev", "delete",
 			"--hub-cluster-name", DefaultHubClusterName,
 			"--agent-cluster-name", DefaultAgentClusterName,
 			"--worker-count", fmt.Sprintf("%d", agentCount),
 		}
-		cmd := exec.CommandContext(ctx, kedge, args...)
+		cmd := exec.CommandContext(ctx, faros, args...)
 		cmd.Dir = workDir
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Printf("WARNING: kedge dev delete failed (clusters may remain): %v\n", err)
+			fmt.Printf("WARNING: faros dev delete failed (clusters may remain): %v\n", err)
 		}
 		return ctx, nil
 	}

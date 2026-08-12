@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "faros-hub.fullname" . }}
+  labels:
+    {{- include "faros-hub.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - name: https
+      port: {{ .Values.service.hub.port }}
+      targetPort: https
+      protocol: TCP
+      {{- if and (eq .Values.service.type "NodePort") .Values.service.hub.nodePort }}
+      nodePort: {{ .Values.service.hub.nodePort }}
+      {{- end }}
+  selector:
+    {{- include "faros-hub.selectorLabels" . | nindent 4 }}

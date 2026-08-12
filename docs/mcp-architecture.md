@@ -2,13 +2,13 @@
 layout: default
 title: MCP Architecture
 nav_order: 7
-description: "How kedge aggregates Model Context Protocol (MCP) tools from in-binary edges and out-of-process providers into one endpoint"
+description: "How faros aggregates Model Context Protocol (MCP) tools from in-binary edges and out-of-process providers into one endpoint"
 ---
 
 # MCP Architecture
 {: .no_toc }
 
-How kedge exposes a single Model Context Protocol (MCP) endpoint that federates
+How faros exposes a single Model Context Protocol (MCP) endpoint that federates
 tools from connected **edges** (compiled into the hub) and from **providers**
 that run as separate processes.
 {: .fs-6 .fw-300 }
@@ -28,7 +28,7 @@ There is **one** MCP endpoint a client connects to — the *aggregate MCPServer
 virtual workspace*, served by the hub:
 
 ```
-https://<hub>/services/mcpserver/{cluster}/apis/kedge.faros.sh/v1alpha1/mcpservers/{name}/mcp
+https://<hub>/services/mcpserver/{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp
 ```
 
 That single endpoint is filled, **per request**, from two sources:
@@ -47,17 +47,17 @@ tenant workspace. There is no provider-wide identity.
 
 ## The aggregate endpoint
 
-The MCP surface is registered as a kedge *built-in provider* and mounted by the
+The MCP surface is registered as a faros *built-in provider* and mounted by the
 hub as a virtual workspace.
 
-- **Registration** — [`providers/mcp/manifest.go`](https://github.com/faroshq/kedge/blob/main/providers/mcp/manifest.go) calls
+- **Registration** — [`providers/mcp/manifest.go`](https://github.com/faroshq/faros/blob/main/providers/mcp/manifest.go) calls
   `providers.RegisterBuiltin(...)` with
   `VirtualWorkspaceMount = apiurl.PathPrefixMCPServer` (`/services/mcpserver`)
   and `VirtualWorkspaceHandler = mcpvirtual.Build`.
-- **Mounting** — [`pkg/hub/server.go`](https://github.com/faroshq/kedge/blob/main/pkg/hub/server.go) loops over `providers.AllBuiltins()`
+- **Mounting** — [`pkg/hub/server.go`](https://github.com/faroshq/faros/blob/main/pkg/hub/server.go) loops over `providers.AllBuiltins()`
   and mounts each builtin's VW handler at its prefix.
-- **Handler** — [`providers/mcp/virtual/builder.go`](https://github.com/faroshq/kedge/blob/main/providers/mcp/virtual/builder.go) `Build()` parses
-  `/{cluster}/apis/kedge.faros.sh/v1alpha1/mcpservers/{name}/mcp`, reads the
+- **Handler** — [`providers/mcp/virtual/builder.go`](https://github.com/faroshq/faros/blob/main/providers/mcp/virtual/builder.go) `Build()` parses
+  `/{cluster}/apis/faros.sh/v1alpha1/mcpservers/{name}/mcp`, reads the
   `MCPServer` CR (for the edge selector + toolset config), then composes an
   aggregate `mcp.Server`.
 
@@ -74,17 +74,17 @@ Edge providers contribute their tools by registering a `ToolFamily` at package
 `init()`:
 
 - The registry is **in-process and `init()`-only** —
-  [`providers/mcp/aggregate/registry.go`](https://github.com/faroshq/kedge/blob/main/providers/mcp/aggregate/registry.go) (`RegisterToolFamily`,
+  [`providers/mcp/aggregate/registry.go`](https://github.com/faroshq/faros/blob/main/providers/mcp/aggregate/registry.go) (`RegisterToolFamily`,
   `RegisteredFamilies`). A `ToolFamily` has a `Name`, an `EdgeType`, and a
   `Register(srv, familyCtx)` callback invoked once per request.
-- **Kubernetes edges** — [`providers/kubernetesedges/mcp/family.go`](https://github.com/faroshq/kedge/blob/main/providers/kubernetesedges/mcp/family.go)
+- **Kubernetes edges** — [`providers/kubernetesedges/mcp/family.go`](https://github.com/faroshq/faros/blob/main/providers/kubernetesedges/mcp/family.go)
   registers `{Name: "kubernetes", EdgeType: "kubernetes"}`. The family is wired
   in via a side-effect import in
-  [`providers/kubernetesedges/manifest.go`](https://github.com/faroshq/kedge/blob/main/providers/kubernetesedges/manifest.go).
-- **Server (Linux) edges** — [`providers/serveredges/mcp/family.go`](https://github.com/faroshq/kedge/blob/main/providers/serveredges/mcp/family.go)
+  [`providers/kubernetesedges/manifest.go`](https://github.com/faroshq/faros/blob/main/providers/kubernetesedges/manifest.go).
+- **Server (Linux) edges** — [`providers/serveredges/mcp/family.go`](https://github.com/faroshq/faros/blob/main/providers/serveredges/mcp/family.go)
   registers `{Name: "linux", EdgeType: "server"}`.
 
-At request time, [`providers/mcp/aggregate/aggregatemcp.go`](https://github.com/faroshq/kedge/blob/main/providers/mcp/aggregate/aggregatemcp.go) `newServer`
+At request time, [`providers/mcp/aggregate/aggregatemcp.go`](https://github.com/faroshq/faros/blob/main/providers/mcp/aggregate/aggregatemcp.go) `newServer`
 iterates `RegisteredFamilies()` and calls each `Register(...)`, filtering edges
 by `EdgeType` against the `MCPServer`'s selector. An edge tool call is proxied
 to the actual edge over its **agent-proxy / tunnel** connection (tracked in the
@@ -101,15 +101,15 @@ are folded into the same aggregate over HTTP.
 
 **Discovery.** Providers are registered via a `ProviderCatalogEntry` and kept
 in an in-memory registry with a `BackendURL` and a heartbeat
-([`pkg/hub/providers/registry.go`](https://github.com/faroshq/kedge/blob/main/pkg/hub/providers/registry.go)). `Provider.Ready()` requires
+([`pkg/hub/providers/registry.go`](https://github.com/faroshq/faros/blob/main/pkg/hub/providers/registry.go)). `Provider.Ready()` requires
 valid endpoints and a fresh heartbeat (TTL ~90s).
 
 **Enumeration.** The hub wires a `ProviderEnumerator` into the aggregate
-([`pkg/hub/server.go`](https://github.com/faroshq/kedge/blob/main/pkg/hub/server.go) `SetProviderEnumerator`) that returns each
+([`pkg/hub/server.go`](https://github.com/faroshq/faros/blob/main/pkg/hub/server.go) `SetProviderEnumerator`) that returns each
 Ready provider's MCP URL as `BackendURL + "/mcp"`.
 
 **Federation.** Per request,
-[`providers/mcp/aggregate/provider_proxy.go`](https://github.com/faroshq/kedge/blob/main/providers/mcp/aggregate/provider_proxy.go) `registerProviderTools`:
+[`providers/mcp/aggregate/provider_proxy.go`](https://github.com/faroshq/faros/blob/main/providers/mcp/aggregate/provider_proxy.go) `registerProviderTools`:
 
 1. enumerates Ready providers,
 2. `POST`s `tools/list` to each `{BackendURL}/mcp`,
@@ -120,7 +120,7 @@ A provider that fails `tools/list`, or a tool whose schema fails `AddTool`, is
 **logged and skipped** — one bad provider never poisons the aggregate.
 
 The provider's own MCP handler — e.g.
-[`providers/infrastructure/mcpserver/server.go`](https://github.com/faroshq/kedge/blob/main/providers/infrastructure/mcpserver/server.go) — is an ordinary
+[`providers/infrastructure/mcpserver/server.go`](https://github.com/faroshq/faros/blob/main/providers/infrastructure/mcpserver/server.go) — is an ordinary
 streamable-HTTP MCP server built fresh per request.
 
 ## Authentication & identity
@@ -133,13 +133,13 @@ hub's or the provider's:
 ```go
 // providers/mcp/aggregate/provider_proxy.go
 cli := newProviderMCPClient(cfg.BearerToken, cfg.Cluster)
-//                          └ caller's token   └ tenant workspace (→ X-Kedge-Tenant)
+//                          └ caller's token   └ tenant workspace (→ X-Faros-Tenant)
 ```
 
 - `cfg.BearerToken` is the token the client authenticated the **aggregate**
   request with (`builder.ExtractBearerToken(r)`).
 - `cfg.Cluster` is the tenant workspace parsed off the MCPServer URL, forwarded
-  as the `X-Kedge-Tenant` header on every federated call.
+  as the `X-Faros-Tenant` header on every federated call.
 
 So the identity flows end-to-end:
 
@@ -149,11 +149,11 @@ AI client ──Bearer T──▶ hub aggregate VW              (T = the MCPServ
                           ├─ in-binary families ─────▶ edges (agent-proxy / tunnel)
                           └─ federation: POST {provider BackendURL}/mcp
                                Authorization: Bearer T
-                               X-Kedge-Tenant: {cluster}
+                               X-Faros-Tenant: {cluster}
                                     │
                                     ▼
                         out-of-process provider (own /mcp)
-                          identity = { tenant: X-Kedge-Tenant, token: Bearer T }
+                          identity = { tenant: X-Faros-Tenant, token: Bearer T }
                           tenant client uses T, scoped to {cluster}
                           → acts AS the caller, authorized by the caller's RBAC
 ```
@@ -165,11 +165,11 @@ Two consequences:
   `MCPServer.status.tokenSecretRef` (the token itself never lands in the CR; the
   portal reads the Secret to render the connect command). A user OIDC token
   would expire and silently break a long-lived MCP connection — see the
-  `MCPServer` controller in [`providers/mcp/controllers/`](https://github.com/faroshq/kedge/blob/main/providers/mcp/controllers/).
+  `MCPServer` controller in [`providers/mcp/controllers/`](https://github.com/faroshq/faros/blob/main/providers/mcp/controllers/).
 - **No provider-wide identity.** A federated provider must perform its tenant
   work as the forwarded caller token, scoped to the workspace from
-  `X-Kedge-Tenant`. The infrastructure provider does this in
-  [`providers/infrastructure/tenant/client.go`](https://github.com/faroshq/kedge/blob/main/providers/infrastructure/tenant/client.go): the tenant client is
+  `X-Faros-Tenant`. The infrastructure provider does this in
+  [`providers/infrastructure/tenant/client.go`](https://github.com/faroshq/faros/blob/main/providers/infrastructure/tenant/client.go): the tenant client is
   built per-(tenant, caller) from the request token; the provider's own
   credentials are never used for tenant work.
 - **Federation routes to published endpoints, not backends.** The aggregator
@@ -208,7 +208,7 @@ Use this when your integration runs as its own process/binary.
 2. Register a `ProviderCatalogEntry` and **heartbeat** so the hub marks you
    `Ready` with a reachable `BackendURL`. The aggregate fetches `{BackendURL}/mcp`.
 3. **Honour the forwarded identity.** Read the caller from each request:
-   `X-Kedge-Tenant` for the tenant workspace and `Authorization: Bearer <token>`
+   `X-Faros-Tenant` for the tenant workspace and `Authorization: Bearer <token>`
    for the credential (see `providers/infrastructure/mcpserver/context.go`).
    Do all tenant work **as that token**, scoped to that workspace — never with a
    provider-wide service account.
@@ -223,12 +223,12 @@ each provider separately.
 2. Hub routes to `mcpvirtual.Build` → `aggregatemcp.Handler`.
 3. A fresh `mcp.Server` is built:
    - each registered `ToolFamily.Register` runs (edges, filtered by selector),
-   - `list_targets` + the `kedge://about` resource are added,
+   - `list_targets` + the `faros://about` resource are added,
    - `registerProviderTools` enumerates Ready providers and federates their
      `/mcp` tools as `<provider>__<tool>`.
 4. The composed server answers `tools/list` / `tools/call`.
 5. Federated `tools/call` is forwarded to the provider's `/mcp` with the
-   caller's bearer token + `X-Kedge-Tenant`.
+   caller's bearer token + `X-Faros-Tenant`.
 
 ## Resilience notes
 
@@ -256,4 +256,4 @@ each provider separately.
 | Backend proxy (header/token forwarding) | `pkg/hub/providers/proxy.go` |
 | Example out-of-process provider MCP | `providers/infrastructure/mcpserver/` |
 | Caller-scoped tenant client | `providers/infrastructure/tenant/client.go` |
-| Per-MCPServer SA token | `providers/mcp/controllers/`, `apis/kedge/v1alpha1/types_mcpserver.go` (`status.tokenSecretRef`) |
+| Per-MCPServer SA token | `providers/mcp/controllers/`, `apis/faros/v1alpha1/types_mcpserver.go` (`status.tokenSecretRef`) |

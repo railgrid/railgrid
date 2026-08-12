@@ -23,8 +23,8 @@ import (
 // Dev-overlay synthesis (docs/app-studio-template-sandboxes.md §1, §6.1).
 //
 // A Template that declares spec.development gets its RGD mechanically
-// extended so instances provisioned with kedgeMode: development run the
-// declared components on platform-managed dev images with the kedge-dev-agent,
+// extended so instances provisioned with farosMode: development run the
+// declared components on platform-managed dev images with the faros-dev-agent,
 // while everything else in the graph (databases, routes, services) runs
 // exactly as declared. Template authors write the development block, never a
 // second graph; this file is the "backend-synthesized overlay" decided in the
@@ -35,7 +35,7 @@ import (
 //
 //   - The production workload resource (graph id == component name, or
 //     component name + "Deployment") gets includeWhen
-//     ${schema.spec.kedgeMode != "development"} appended.
+//     ${schema.spec.farosMode != "development"} appended.
 //   - A dev variant of the workload is synthesized (same Kubernetes name, so
 //     the production Service selectors keep routing) with includeWhen
 //     == "development". It contains three deliberately separate processes:
@@ -59,19 +59,19 @@ const (
 	devExecPort          = 7071
 	devRuntimePort       = 7072
 	devExecRunnerPort    = 7073
-	devPlatformStateDir  = "/kedge/state"
+	devPlatformStateDir  = "/faros/state"
 	devRuntimeAddress    = "127.0.0.1:7072"
 	devExecutorAddress   = "127.0.0.1:7073"
 	devServiceAccountDir = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 	// devAgentBinDir is where the injector init container installs the agent
 	// binary and the dev container executes it from.
-	devAgentBinDir = "/kedge/bin"
+	devAgentBinDir = "/faros/bin"
 
 	// devModeCondition / prodModeCondition are the includeWhen expressions
-	// keyed on the platform-injected kedgeMode instance field.
-	devModeCondition  = `${schema.spec.kedgeMode == "development"}`
-	prodModeCondition = `${schema.spec.kedgeMode != "development"}`
+	// keyed on the platform-injected farosMode instance field.
+	devModeCondition  = `${schema.spec.farosMode == "development"}`
+	prodModeCondition = `${schema.spec.farosMode != "development"}`
 
 	// PVC sizes are deliberately constants for now — knobs here would be
 	// tenant-facing API surface.
@@ -81,21 +81,21 @@ const (
 	// Provider Actions uses a short-lived projected service-account token for
 	// the coordinator-to-hub exchange. The app sees only the atomically
 	// refreshed token file, never this bootstrap projection.
-	devActionsBootstrapVolumeName = "kedge-actions-bootstrap"
-	devActionsTokenVolumeName     = "kedge-actions-token"
-	devActionsBootstrapDir        = "/var/run/secrets/kedge/actions-bootstrap"
-	devActionsDir                 = "/var/run/secrets/kedge/actions"
-	devActionsBootstrapAudience   = "kedge-provider-actions-bootstrap"
+	devActionsBootstrapVolumeName = "faros-actions-bootstrap"
+	devActionsTokenVolumeName     = "faros-actions-token"
+	devActionsBootstrapDir        = "/var/run/secrets/faros/actions-bootstrap"
+	devActionsDir                 = "/var/run/secrets/faros/actions"
+	devActionsBootstrapAudience   = "faros-provider-actions-bootstrap"
 	devActionsTokenExpiration     = int64(600)
 	devActionsTokenFile           = devActionsDir + "/token"
 	// The public CA bundle is optional. The ConfigMap is included only when
 	// App Studio supplied non-empty action trust material; the pod volume and
 	// trust environment remain harmless when that ConfigMap is absent.
-	devActionsCABundleVolumeName = "kedge-actions-ca-bundle"
+	devActionsCABundleVolumeName = "faros-actions-ca-bundle"
 	// Keep the mounted file in a dedicated directory so the ConfigMap cannot
 	// mask the image's system CA directory; trust envs augment, rather than
 	// replace, the system roots.
-	devActionsCABundlePath = "/etc/kedge/actions-ca/kedge-actions-ca-bundle.pem"
+	devActionsCABundlePath = "/etc/faros/actions-ca/faros-actions-ca-bundle.pem"
 
 	// Provider Actions context is optional for development sandboxes. Keep the
 	// fields in every development RGD so the coordinator/app contract is
@@ -104,20 +104,20 @@ const (
 	devActionsSchemaFieldMarker = `string | default=""`
 )
 
-// applyDevOverlay extends simpleSpec (kedgeMode field), the resource graph,
+// applyDevOverlay extends simpleSpec (farosMode field), the resource graph,
 // and the status mapping for a Template with a development block. Returns the
 // extended resources and status; simpleSpec is mutated in place.
 func applyDevOverlay(tmpl *infrav1alpha1.Template, simpleSpec map[string]any, resources []any, status map[string]any, tokens map[string]string) ([]any, map[string]any, error) {
 	dev := tmpl.Spec.Development
 
-	// The RGD's own schema must accept the kedgeMode field the platform
+	// The RGD's own schema must accept the farosMode field the platform
 	// injects into the kcp-side CRD, and the includeWhen expressions below
 	// reference it.
-	if _, exists := simpleSpec[infrav1alpha1.KedgeModeField]; exists {
-		return nil, nil, fmt.Errorf("template %q: schema declares reserved field %q", tmpl.Name, infrav1alpha1.KedgeModeField)
+	if _, exists := simpleSpec[infrav1alpha1.FarosModeField]; exists {
+		return nil, nil, fmt.Errorf("template %q: schema declares reserved field %q", tmpl.Name, infrav1alpha1.FarosModeField)
 	}
-	simpleSpec[infrav1alpha1.KedgeModeField] = fmt.Sprintf("string | enum=%q default=%q",
-		infrav1alpha1.KedgeModeProduction+","+infrav1alpha1.KedgeModeDevelopment, infrav1alpha1.KedgeModeProduction)
+	simpleSpec[infrav1alpha1.FarosModeField] = fmt.Sprintf("string | enum=%q default=%q",
+		infrav1alpha1.FarosModeProduction+","+infrav1alpha1.FarosModeDevelopment, infrav1alpha1.FarosModeProduction)
 	// These fields are reserved platform inputs for the development Provider
 	// Actions contract. App Studio supplies the trusted values on the binding;
 	// the overlay projects them into coordinator/app environment without
@@ -125,16 +125,16 @@ func applyDevOverlay(tmpl *infrav1alpha1.Template, simpleSpec map[string]any, re
 	// public trust material and defaults empty, so it never replaces system
 	// roots for actionless or production-mode instances.
 	for _, field := range []string{
-		infrav1alpha1.KedgeActionsExchangeURLField,
-		infrav1alpha1.KedgeActionsBaseURLField,
-		infrav1alpha1.KedgeActionsTenantPathField,
-		infrav1alpha1.KedgeActionsOrgField,
-		infrav1alpha1.KedgeActionsWorkspaceField,
-		infrav1alpha1.KedgeActionsProjectField,
-		infrav1alpha1.KedgeActionsProjectUIDField,
-		infrav1alpha1.KedgeActionsEnvironmentField,
-		infrav1alpha1.KedgeActionsInstanceField,
-		infrav1alpha1.KedgeActionsCABundleField,
+		infrav1alpha1.FarosActionsExchangeURLField,
+		infrav1alpha1.FarosActionsBaseURLField,
+		infrav1alpha1.FarosActionsTenantPathField,
+		infrav1alpha1.FarosActionsOrgField,
+		infrav1alpha1.FarosActionsWorkspaceField,
+		infrav1alpha1.FarosActionsProjectField,
+		infrav1alpha1.FarosActionsProjectUIDField,
+		infrav1alpha1.FarosActionsEnvironmentField,
+		infrav1alpha1.FarosActionsInstanceField,
+		infrav1alpha1.FarosActionsCABundleField,
 	} {
 		if _, exists := simpleSpec[field]; exists {
 			return nil, nil, fmt.Errorf("template %q: schema declares reserved field %q", tmpl.Name, field)
@@ -144,7 +144,7 @@ func applyDevOverlay(tmpl *infrav1alpha1.Template, simpleSpec map[string]any, re
 
 	agentImage := tokens[devAgentImageToken]
 	if agentImage == "" {
-		return nil, nil, fmt.Errorf("template %q: dev agent image is not configured; set KEDGE_DEV_AGENT_IMAGE", tmpl.Name)
+		return nil, nil, fmt.Errorf("template %q: dev agent image is not configured; set FAROS_DEV_AGENT_IMAGE", tmpl.Name)
 	}
 	previewConsoleVerificationJWKS := tokens[previewConsoleVerificationJWKSConfigKey]
 
@@ -221,12 +221,12 @@ func applyDevOverlay(tmpl *infrav1alpha1.Template, simpleSpec map[string]any, re
 
 	// Status additions — author-declared keys win.
 	if _, ok := status["runtimeNamespace"]; !ok {
-		status["runtimeNamespace"] = "${kedgeDevControlSecret.metadata.namespace}"
+		status["runtimeNamespace"] = "${farosDevControlSecret.metadata.namespace}"
 	}
 	if _, ok := status["controlSecretRef"]; !ok {
 		status["controlSecretRef"] = map[string]any{
-			"name":      "${kedgeDevControlSecret.metadata.name}",
-			"namespace": "${kedgeDevControlSecret.metadata.namespace}",
+			"name":      "${farosDevControlSecret.metadata.name}",
+			"namespace": "${farosDevControlSecret.metadata.namespace}",
 		}
 	}
 	if _, ok := status["components"]; !ok {
@@ -353,7 +353,7 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 				"labels":    labels,
 			},
 			"data": map[string]any{
-				"ca-bundle.pem": "${schema.spec." + infrav1alpha1.KedgeActionsCABundleField + "}",
+				"ca-bundle.pem": "${schema.spec." + infrav1alpha1.FarosActionsCABundleField + "}",
 			},
 		},
 	})
@@ -423,7 +423,7 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 
 	appPort := firstContainerPort(app)
 	app["image"] = devImage
-	app["command"] = []any{devAgentBinDir + "/kedge-dev-agent", "--runtime-supervisor"}
+	app["command"] = []any{devAgentBinDir + "/faros-dev-agent", "--runtime-supervisor"}
 	delete(app, "args")
 	app["workingDir"] = workingDir
 	delete(app, "livenessProbe")
@@ -446,16 +446,16 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	var extraVolumes []any
 	if !hasMountPath(mounts, workingDir, true) {
 		mountedWorkspace = true
-		mounts = append(mounts, map[string]any{"name": "kedge-dev-workspace", "mountPath": workingDir})
-		extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-dev-workspace", "persistentVolumeClaim": map[string]any{"claimName": pvcName}})
+		mounts = append(mounts, map[string]any{"name": "faros-dev-workspace", "mountPath": workingDir})
+		extraVolumes = append(extraVolumes, map[string]any{"name": "faros-dev-workspace", "persistentVolumeClaim": map[string]any{"claimName": pvcName}})
 	}
 	if !hasMountPath(mounts, devAgentBinDir, false) {
-		mounts = append(mounts, map[string]any{"name": "kedge-dev-agent-bin", "mountPath": devAgentBinDir, "readOnly": true})
-		extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-dev-agent-bin", "emptyDir": map[string]any{}})
+		mounts = append(mounts, map[string]any{"name": "faros-dev-agent-bin", "mountPath": devAgentBinDir, "readOnly": true})
+		extraVolumes = append(extraVolumes, map[string]any{"name": "faros-dev-agent-bin", "emptyDir": map[string]any{}})
 	}
 	if !hasMountPath(mounts, "/tmp", true) {
-		mounts = append(mounts, map[string]any{"name": "kedge-dev-runtime-tmp", "mountPath": "/tmp"})
-		extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-dev-runtime-tmp", "emptyDir": map[string]any{}})
+		mounts = append(mounts, map[string]any{"name": "faros-dev-runtime-tmp", "mountPath": "/tmp"})
+		extraVolumes = append(extraVolumes, map[string]any{"name": "faros-dev-runtime-tmp", "emptyDir": map[string]any{}})
 	}
 	workspaceMount := mountForPath(mounts, workingDir, true)
 	if workspaceMount == nil {
@@ -468,15 +468,15 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	app["volumeMounts"] = mounts
 
 	workspaceForSidecar := copyVolumeMount(workspaceMount, workingDir)
-	stateVolume := map[string]any{"name": "kedge-dev-platform-state", "persistentVolumeClaim": map[string]any{"claimName": statePVCName}}
-	noServiceAccountVolume := map[string]any{"name": "kedge-dev-no-serviceaccount", "emptyDir": map[string]any{}}
+	stateVolume := map[string]any{"name": "faros-dev-platform-state", "persistentVolumeClaim": map[string]any{"claimName": statePVCName}}
+	noServiceAccountVolume := map[string]any{"name": "faros-dev-no-serviceaccount", "emptyDir": map[string]any{}}
 	caBundleVolume := map[string]any{
 		"name": devActionsCABundleVolumeName,
 		"configMap": map[string]any{
 			"name": "${" + caBundleResourceID + ".metadata.name}",
 			"items": []any{map[string]any{
 				"key":  "ca-bundle.pem",
-				"path": "kedge-actions-ca-bundle.pem",
+				"path": "faros-actions-ca-bundle.pem",
 			}},
 		},
 	}
@@ -496,12 +496,12 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	extraVolumes = append(extraVolumes, stateVolume, noServiceAccountVolume, caBundleVolume, actionsBootstrapVolume, actionsTokenVolume)
 
 	coordinator := map[string]any{
-		"name":            "kedge-platform-coordinator",
+		"name":            "faros-platform-coordinator",
 		"image":           agentImage,
 		"imagePullPolicy": "IfNotPresent",
 		// No mode flag selects the finalized default coordinator mode. The
-		// coordinator owns the public :7070/:7071 servers and KEDGE_DEV_STATE_DIR.
-		"command": []any{"/kedge-dev-agent"},
+		// coordinator owns the public :7070/:7071 servers and FAROS_DEV_STATE_DIR.
+		"command": []any{"/faros-dev-agent"},
 		"ports": []any{
 			map[string]any{"name": "control", "containerPort": int64(devAgentPort)},
 			map[string]any{"name": "exec", "containerPort": int64(devExecPort)},
@@ -509,36 +509,36 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 		"env": devCoordinatorEnv(comp, workingDir),
 		"volumeMounts": []any{
 			workspaceForSidecar,
-			map[string]any{"name": "kedge-dev-platform-state", "mountPath": devPlatformStateDir},
-			map[string]any{"name": "kedge-dev-coordinator-tmp", "mountPath": "/tmp"},
-			map[string]any{"name": "kedge-dev-no-serviceaccount", "mountPath": devServiceAccountDir, "readOnly": true},
+			map[string]any{"name": "faros-dev-platform-state", "mountPath": devPlatformStateDir},
+			map[string]any{"name": "faros-dev-coordinator-tmp", "mountPath": "/tmp"},
+			map[string]any{"name": "faros-dev-no-serviceaccount", "mountPath": devServiceAccountDir, "readOnly": true},
 			map[string]any{"name": devActionsBootstrapVolumeName, "mountPath": devActionsBootstrapDir, "readOnly": true},
 			map[string]any{"name": devActionsTokenVolumeName, "mountPath": devActionsDir},
-			map[string]any{"name": devActionsCABundleVolumeName, "mountPath": "/etc/kedge/actions-ca", "readOnly": true},
+			map[string]any{"name": devActionsCABundleVolumeName, "mountPath": "/etc/faros/actions-ca", "readOnly": true},
 		},
 		"livenessProbe":   devHTTPProbePath(devAgentPort, 0, "/healthz"),
 		"readinessProbe":  devHTTPProbePath(devAgentPort, 0, "/readyz"),
 		"securityContext": devContainerSecurityContext(true),
 	}
-	extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-dev-coordinator-tmp", "emptyDir": map[string]any{}})
+	extraVolumes = append(extraVolumes, map[string]any{"name": "faros-dev-coordinator-tmp", "emptyDir": map[string]any{}})
 
 	executor := map[string]any{
-		"name":            "kedge-exec-runner",
+		"name":            "faros-exec-runner",
 		"image":           devImage,
 		"imagePullPolicy": "IfNotPresent",
-		"command":         []any{devAgentBinDir + "/kedge-dev-agent", "--executor"},
+		"command":         []any{devAgentBinDir + "/faros-dev-agent", "--executor"},
 		"workingDir":      workingDir,
 		"ports":           []any{map[string]any{"name": "exec-runner", "containerPort": int64(devExecRunnerPort)}},
 		"env": []any{
-			map[string]any{"name": "KEDGE_DEV_WORKDIR", "value": workingDir},
-			map[string]any{"name": "HOME", "value": "/tmp/kedge-exec-home"},
+			map[string]any{"name": "FAROS_DEV_WORKDIR", "value": workingDir},
+			map[string]any{"name": "HOME", "value": "/tmp/faros-exec-home"},
 			map[string]any{"name": "TMPDIR", "value": "/tmp"},
 		},
 		"volumeMounts": []any{
 			copyVolumeMount(workspaceMount, workingDir),
 			map[string]any{"name": agentBinMount["name"], "mountPath": devAgentBinDir, "readOnly": true},
-			map[string]any{"name": "kedge-dev-exec-tmp", "mountPath": "/tmp"},
-			map[string]any{"name": "kedge-dev-no-serviceaccount", "mountPath": devServiceAccountDir, "readOnly": true},
+			map[string]any{"name": "faros-dev-exec-tmp", "mountPath": "/tmp"},
+			map[string]any{"name": "faros-dev-no-serviceaccount", "mountPath": devServiceAccountDir, "readOnly": true},
 		},
 		"livenessProbe":   devExecProbe(devExecutorAddress, 1),
 		"readinessProbe":  devExecProbe(devExecutorAddress, 1),
@@ -547,7 +547,7 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	// The app gets only the refreshed token and non-secret action context. It
 	// deliberately has no bootstrap volume, exchange URL, or service-account
 	// token mount.
-	for _, reservedPath := range []string{devActionsDir, devActionsBootstrapDir, "/etc/kedge/actions-ca"} {
+	for _, reservedPath := range []string{devActionsDir, devActionsBootstrapDir, "/etc/faros/actions-ca"} {
 		if hasMountPath(mounts, reservedPath, false) {
 			return nil, nil, false, fmt.Errorf("production workload already mounts reserved Provider Actions path %q", reservedPath)
 		}
@@ -556,7 +556,7 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 		"name": devActionsTokenVolumeName, "mountPath": devActionsDir, "readOnly": true,
 	})
 	app["volumeMounts"] = append(app["volumeMounts"].([]any), map[string]any{
-		"name": devActionsCABundleVolumeName, "mountPath": "/etc/kedge/actions-ca", "readOnly": true,
+		"name": devActionsCABundleVolumeName, "mountPath": "/etc/faros/actions-ca", "readOnly": true,
 	})
 	// These annotations let the attestor bind the reviewed projected token to
 	// the exact tenant/project instance that requested the exchange. They are
@@ -573,33 +573,33 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	if annotations == nil {
 		annotations = map[string]any{}
 	}
-	annotations["kedge.faros.sh/actions-tenant"] = "${schema.spec." + infrav1alpha1.KedgeActionsTenantPathField + "}"
-	annotations["kedge.faros.sh/actions-project"] = "${schema.spec." + infrav1alpha1.KedgeActionsProjectField + "}"
-	annotations["kedge.faros.sh/actions-project-uid"] = "${schema.spec." + infrav1alpha1.KedgeActionsProjectUIDField + "}"
-	annotations["kedge.faros.sh/actions-environment"] = "${schema.spec." + infrav1alpha1.KedgeActionsEnvironmentField + "}"
-	annotations["kedge.faros.sh/actions-instance"] = "${schema.spec." + infrav1alpha1.KedgeActionsInstanceField + "}"
+	annotations["faros.sh/actions-tenant"] = "${schema.spec." + infrav1alpha1.FarosActionsTenantPathField + "}"
+	annotations["faros.sh/actions-project"] = "${schema.spec." + infrav1alpha1.FarosActionsProjectField + "}"
+	annotations["faros.sh/actions-project-uid"] = "${schema.spec." + infrav1alpha1.FarosActionsProjectUIDField + "}"
+	annotations["faros.sh/actions-environment"] = "${schema.spec." + infrav1alpha1.FarosActionsEnvironmentField + "}"
+	annotations["faros.sh/actions-instance"] = "${schema.spec." + infrav1alpha1.FarosActionsInstanceField + "}"
 	podTemplateMetadata["annotations"] = annotations
-	extraVolumes = append(extraVolumes, map[string]any{"name": "kedge-dev-exec-tmp", "emptyDir": map[string]any{}})
+	extraVolumes = append(extraVolumes, map[string]any{"name": "faros-dev-exec-tmp", "emptyDir": map[string]any{}})
 	podSpec["containers"] = []any{coordinator, app, executor}
 
 	initContainer := map[string]any{
-		"name":  "kedge-dev-agent-installer",
+		"name":  "faros-dev-agent-installer",
 		"image": agentImage,
 		// The default-for-:latest Always policy would force a registry pull
 		// even when the image is side-loaded (kind/local dev) and fail the pod
 		// if the registry copy is missing. Production pins digests via
-		// KEDGE_DEV_AGENT_IMAGE, where IfNotPresent is equivalent.
+		// FAROS_DEV_AGENT_IMAGE, where IfNotPresent is equivalent.
 		"imagePullPolicy": "IfNotPresent",
-		"command":         []any{"/kedge-dev-agent", "--install", devAgentBinDir},
+		"command":         []any{"/faros-dev-agent", "--install", devAgentBinDir},
 		"volumeMounts": []any{
-			map[string]any{"name": "kedge-dev-agent-bin", "mountPath": devAgentBinDir},
-			map[string]any{"name": "kedge-dev-no-serviceaccount", "mountPath": devServiceAccountDir, "readOnly": true},
+			map[string]any{"name": "faros-dev-agent-bin", "mountPath": devAgentBinDir},
+			map[string]any{"name": "faros-dev-no-serviceaccount", "mountPath": devServiceAccountDir, "readOnly": true},
 		},
 		"securityContext": devContainerSecurityContext(true),
 	}
 	if previewConsoleVerificationJWKS != "" {
 		initContainer["env"] = []any{map[string]any{
-			"name":  "KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS",
+			"name":  "FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS",
 			"value": previewConsoleVerificationJWKS,
 		}}
 	}
@@ -667,60 +667,60 @@ func devContainerSecurityContext(readOnlyRootFilesystem bool) map[string]any {
 
 func devCoordinatorEnv(comp infrav1alpha1.TemplateDevelopmentComponent, workingDir string) []any {
 	env := []any{
-		map[string]any{"name": "KEDGE_DEV_WORKDIR", "value": workingDir},
-		map[string]any{"name": "KEDGE_DEV_STATE_DIR", "value": devPlatformStateDir},
-		map[string]any{"name": "KEDGE_DEV_RUNTIME_URL", "value": "http://" + devRuntimeAddress},
-		map[string]any{"name": "KEDGE_DEV_EXECUTOR_URL", "value": "http://" + devExecutorAddress},
+		map[string]any{"name": "FAROS_DEV_WORKDIR", "value": workingDir},
+		map[string]any{"name": "FAROS_DEV_STATE_DIR", "value": devPlatformStateDir},
+		map[string]any{"name": "FAROS_DEV_RUNTIME_URL", "value": "http://" + devRuntimeAddress},
+		map[string]any{"name": "FAROS_DEV_EXECUTOR_URL", "value": "http://" + devExecutorAddress},
 	}
 	if comp.Reload != nil {
 		if comp.Reload.Strategy != "" {
-			env = append(env, map[string]any{"name": "KEDGE_DEV_RELOAD_STRATEGY", "value": comp.Reload.Strategy})
+			env = append(env, map[string]any{"name": "FAROS_DEV_RELOAD_STRATEGY", "value": comp.Reload.Strategy})
 		}
 		if len(comp.Reload.Rules) > 0 {
 			rules, _ := json.Marshal(comp.Reload.Rules)
-			env = append(env, map[string]any{"name": "KEDGE_DEV_RELOAD_RULES", "value": string(rules)})
+			env = append(env, map[string]any{"name": "FAROS_DEV_RELOAD_RULES", "value": string(rules)})
 		}
 	}
 	env = append(env, devActionsEnv(true)...)
 	env = append(env, devActionsTrustEnv(true)...)
 	return append(env, map[string]any{
-		"name": "KEDGE_DEV_CONTROL_TOKEN",
+		"name": "FAROS_DEV_CONTROL_TOKEN",
 		"valueFrom": map[string]any{
-			"secretKeyRef": map[string]any{"name": "${kedgeDevControlSecret.metadata.name}", "key": "token"},
+			"secretKeyRef": map[string]any{"name": "${farosDevControlSecret.metadata.name}", "key": "token"},
 		},
 	})
 }
 
 // devActionsTrustEnv points Provider Actions TLS clients at the optional,
 // public CA bundle. A CEL expression yields an empty value when App Studio
-// omitted the bundle. The coordinator loads KEDGE_ACTIONS_CA_FILE into a pool
+// omitted the bundle. The coordinator loads FAROS_ACTIONS_CA_FILE into a pool
 // that starts with system roots; Node treats NODE_EXTRA_CA_CERTS as additive.
 // Do not set SSL_CERT_FILE here: on some images it replaces, rather than
 // augments, the system trust store.
 func devActionsTrustEnv(coordinator bool) []any {
-	path := `${schema.spec.kedgeActionsCABundle != "" ? "` + devActionsCABundlePath + `" : ""}`
+	path := `${schema.spec.farosActionsCABundle != "" ? "` + devActionsCABundlePath + `" : ""}`
 	if coordinator {
-		return []any{map[string]any{"name": "KEDGE_ACTIONS_CA_FILE", "value": path}}
+		return []any{map[string]any{"name": "FAROS_ACTIONS_CA_FILE", "value": path}}
 	}
 	return []any{map[string]any{"name": "NODE_EXTRA_CA_CERTS", "value": path}}
 }
 
 func devActionsEnv(includeExchange bool) []any {
 	env := []any{
-		map[string]any{"name": "KEDGE_ACTIONS_TOKEN_FILE", "value": devActionsTokenFile},
-		map[string]any{"name": "KEDGE_ACTIONS_BASE_URL", "value": "${schema.spec." + infrav1alpha1.KedgeActionsBaseURLField + "}"},
-		map[string]any{"name": "KEDGE_PROJECT", "value": "${schema.spec." + infrav1alpha1.KedgeActionsProjectField + "}"},
-		map[string]any{"name": "KEDGE_PROJECT_UID", "value": "${schema.spec." + infrav1alpha1.KedgeActionsProjectUIDField + "}"},
-		map[string]any{"name": "KEDGE_ACTIONS_ENVIRONMENT", "value": "${schema.spec." + infrav1alpha1.KedgeActionsEnvironmentField + "}"},
-		map[string]any{"name": "KEDGE_ACTIONS_INSTANCE", "value": "${schema.spec." + infrav1alpha1.KedgeActionsInstanceField + "}"},
-		map[string]any{"name": "KEDGE_ACTIONS_TENANT_PATH", "value": "${schema.spec." + infrav1alpha1.KedgeActionsTenantPathField + "}"},
-		map[string]any{"name": "KEDGE_ACTIONS_ORG", "value": "${schema.spec." + infrav1alpha1.KedgeActionsOrgField + "}"},
-		map[string]any{"name": "KEDGE_ACTIONS_WORKSPACE", "value": "${schema.spec." + infrav1alpha1.KedgeActionsWorkspaceField + "}"},
+		map[string]any{"name": "FAROS_ACTIONS_TOKEN_FILE", "value": devActionsTokenFile},
+		map[string]any{"name": "FAROS_ACTIONS_BASE_URL", "value": "${schema.spec." + infrav1alpha1.FarosActionsBaseURLField + "}"},
+		map[string]any{"name": "FAROS_PROJECT", "value": "${schema.spec." + infrav1alpha1.FarosActionsProjectField + "}"},
+		map[string]any{"name": "FAROS_PROJECT_UID", "value": "${schema.spec." + infrav1alpha1.FarosActionsProjectUIDField + "}"},
+		map[string]any{"name": "FAROS_ACTIONS_ENVIRONMENT", "value": "${schema.spec." + infrav1alpha1.FarosActionsEnvironmentField + "}"},
+		map[string]any{"name": "FAROS_ACTIONS_INSTANCE", "value": "${schema.spec." + infrav1alpha1.FarosActionsInstanceField + "}"},
+		map[string]any{"name": "FAROS_ACTIONS_TENANT_PATH", "value": "${schema.spec." + infrav1alpha1.FarosActionsTenantPathField + "}"},
+		map[string]any{"name": "FAROS_ACTIONS_ORG", "value": "${schema.spec." + infrav1alpha1.FarosActionsOrgField + "}"},
+		map[string]any{"name": "FAROS_ACTIONS_WORKSPACE", "value": "${schema.spec." + infrav1alpha1.FarosActionsWorkspaceField + "}"},
 	}
 	if includeExchange {
 		env = append(env,
-			map[string]any{"name": "KEDGE_ACTIONS_BOOTSTRAP_TOKEN_FILE", "value": devActionsBootstrapDir + "/token"},
-			map[string]any{"name": "KEDGE_ACTIONS_EXCHANGE_URL", "value": "${schema.spec." + infrav1alpha1.KedgeActionsExchangeURLField + "}"},
+			map[string]any{"name": "FAROS_ACTIONS_BOOTSTRAP_TOKEN_FILE", "value": devActionsBootstrapDir + "/token"},
+			map[string]any{"name": "FAROS_ACTIONS_EXCHANGE_URL", "value": "${schema.spec." + infrav1alpha1.FarosActionsExchangeURLField + "}"},
 		)
 	}
 	return env
@@ -754,7 +754,7 @@ func devHTTPProbePath(port int64, initialDelay int64, path string) map[string]an
 func devExecProbe(address string, initialDelay int64) map[string]any {
 	return map[string]any{
 		"exec": map[string]any{
-			"command": []any{devAgentBinDir + "/kedge-dev-agent", "--healthcheck", address},
+			"command": []any{devAgentBinDir + "/faros-dev-agent", "--healthcheck", address},
 		},
 		"initialDelaySeconds": initialDelay,
 		"periodSeconds":       int64(5),
@@ -825,26 +825,26 @@ func appendDevRuntimeEnv(container map[string]any, comp infrav1alpha1.TemplateDe
 	env := append([]any{}, devActionsEnv(false)...)
 	env = append(env, devActionsTrustEnv(false)...)
 	env = append(env, []any{
-		map[string]any{"name": "KEDGE_DEV_WORKDIR", "value": workingDir},
-		map[string]any{"name": "KEDGE_DEV_START_COMMAND", "value": comp.StartCommand},
+		map[string]any{"name": "FAROS_DEV_WORKDIR", "value": workingDir},
+		map[string]any{"name": "FAROS_DEV_START_COMMAND", "value": comp.StartCommand},
 	}...)
 	if port != "" {
-		env = append(env, map[string]any{"name": "KEDGE_DEV_PORT", "value": port})
+		env = append(env, map[string]any{"name": "FAROS_DEV_PORT", "value": port})
 	}
 	if comp.Reload != nil {
 		if comp.Reload.Strategy != "" {
-			env = append(env, map[string]any{"name": "KEDGE_DEV_RELOAD_STRATEGY", "value": comp.Reload.Strategy})
+			env = append(env, map[string]any{"name": "FAROS_DEV_RELOAD_STRATEGY", "value": comp.Reload.Strategy})
 		}
 		if len(comp.Reload.Rules) > 0 {
 			// Single-line JSON; contains no ${...}, so kro passes it through.
 			rules, _ := json.Marshal(comp.Reload.Rules)
-			env = append(env, map[string]any{"name": "KEDGE_DEV_RELOAD_RULES", "value": string(rules)})
+			env = append(env, map[string]any{"name": "FAROS_DEV_RELOAD_RULES", "value": string(rules)})
 		}
 	}
 	for _, e := range []struct{ name, value string }{
-		{"HOME", "/tmp/kedge-runtime-home"},
-		{"NPM_CONFIG_CACHE", "/tmp/kedge-cache/npm"},
-		{"XDG_CACHE_HOME", "/tmp/kedge-cache"},
+		{"HOME", "/tmp/faros-runtime-home"},
+		{"NPM_CONFIG_CACHE", "/tmp/faros-cache/npm"},
+		{"XDG_CACHE_HOME", "/tmp/faros-cache"},
 	} {
 		if !hasEnv(container, e.name) {
 			env = append(env, map[string]any{"name": e.name, "value": e.value})
@@ -855,10 +855,10 @@ func appendDevRuntimeEnv(container map[string]any, comp infrav1alpha1.TemplateDe
 	// user/application environment entries, including secretKeyRef values and
 	// envFrom on the app container.
 	reserved := map[string]bool{
-		"KEDGE_DEV_CONTROL_TOKEN":            true,
-		"KEDGE_ACTIONS_EXCHANGE_URL":         true,
-		"KEDGE_ACTIONS_BOOTSTRAP_TOKEN_FILE": true,
-		"KEDGE_ACTIONS_CA_FILE":              true,
+		"FAROS_DEV_CONTROL_TOKEN":            true,
+		"FAROS_ACTIONS_EXCHANGE_URL":         true,
+		"FAROS_ACTIONS_BOOTSTRAP_TOKEN_FILE": true,
+		"FAROS_ACTIONS_CA_FILE":              true,
 		"NODE_EXTRA_CA_CERTS":                true,
 	}
 	for _, raw := range env {
@@ -884,7 +884,7 @@ func appendDevRuntimeEnv(container map[string]any, comp infrav1alpha1.TemplateDe
 // generator Job (the proven sandbox-runner pattern), gated to development
 // mode. The token authenticates every component's data-plane control calls.
 func synthesizeControlToken(templateName, namespace string, byID map[string]map[string]any) ([]any, error) {
-	for _, id := range []string{"kedgeDevControlSecret", "kedgeDevTokenAccount", "kedgeDevTokenRole", "kedgeDevTokenBinding", "kedgeDevTokenJob"} {
+	for _, id := range []string{"farosDevControlSecret", "farosDevTokenAccount", "farosDevTokenRole", "farosDevTokenBinding", "farosDevTokenJob"} {
 		if _, taken := byID[id]; taken {
 			return nil, fmt.Errorf("template %q: graph already declares resource id %q (reserved for the dev overlay)", templateName, id)
 		}
@@ -896,7 +896,7 @@ func synthesizeControlToken(templateName, namespace string, byID map[string]map[
 	include := []any{devModeCondition}
 
 	script := `set -eu
-SECRET="${kedgeDevControlSecret.metadata.name}"
+SECRET="${farosDevControlSecret.metadata.name}"
 if [ -z "$(kubectl get secret "$SECRET" -o jsonpath='{.data.token}' 2>/dev/null)" ]; then
   TOKEN="$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom | head -c 64)"
   kubectl patch secret "$SECRET" --type merge -p "{\"stringData\":{\"token\":\"$TOKEN\"}}"
@@ -908,7 +908,7 @@ fi
 
 	return []any{
 		map[string]any{
-			"id": "kedgeDevControlSecret", "includeWhen": include,
+			"id": "farosDevControlSecret", "includeWhen": include,
 			"template": map[string]any{
 				"apiVersion": "v1", "kind": "Secret",
 				"metadata": meta("${schema.spec.name}-dev-control"),
@@ -916,14 +916,14 @@ fi
 			},
 		},
 		map[string]any{
-			"id": "kedgeDevTokenAccount", "includeWhen": include,
+			"id": "farosDevTokenAccount", "includeWhen": include,
 			"template": map[string]any{
 				"apiVersion": "v1", "kind": "ServiceAccount",
 				"metadata": meta("${schema.spec.name}-dev-token"),
 			},
 		},
 		map[string]any{
-			"id": "kedgeDevTokenRole", "includeWhen": include,
+			"id": "farosDevTokenRole", "includeWhen": include,
 			"template": map[string]any{
 				"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role",
 				"metadata": meta("${schema.spec.name}-dev-token"),
@@ -935,21 +935,21 @@ fi
 			},
 		},
 		map[string]any{
-			"id": "kedgeDevTokenBinding", "includeWhen": include,
+			"id": "farosDevTokenBinding", "includeWhen": include,
 			"template": map[string]any{
 				"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
 				"metadata": meta("${schema.spec.name}-dev-token"),
 				"roleRef": map[string]any{
 					"apiGroup": "rbac.authorization.k8s.io", "kind": "Role",
-					"name": "${kedgeDevTokenRole.metadata.name}",
+					"name": "${farosDevTokenRole.metadata.name}",
 				},
 				"subjects": []any{map[string]any{
-					"kind": "ServiceAccount", "name": "${kedgeDevTokenAccount.metadata.name}", "namespace": namespace,
+					"kind": "ServiceAccount", "name": "${farosDevTokenAccount.metadata.name}", "namespace": namespace,
 				}},
 			},
 		},
 		map[string]any{
-			"id": "kedgeDevTokenJob", "includeWhen": include,
+			"id": "farosDevTokenJob", "includeWhen": include,
 			"template": map[string]any{
 				"apiVersion": "batch/v1", "kind": "Job",
 				"metadata": meta("${schema.spec.name}-dev-token"),
@@ -959,7 +959,7 @@ fi
 					"template": map[string]any{
 						"metadata": map[string]any{"labels": labels},
 						"spec": map[string]any{
-							"serviceAccountName": "${kedgeDevTokenAccount.metadata.name}",
+							"serviceAccountName": "${farosDevTokenAccount.metadata.name}",
 							"restartPolicy":      "OnFailure",
 							"containers": []any{map[string]any{
 								"name":    "token",
@@ -977,8 +977,8 @@ fi
 func devLabels(templateName string) map[string]any {
 	return map[string]any{
 		"app.kubernetes.io/name":       templateName,
-		"app.kubernetes.io/component":  "kedge-dev",
-		"app.kubernetes.io/managed-by": "kedge-infrastructure",
+		"app.kubernetes.io/component":  "faros-dev",
+		"app.kubernetes.io/managed-by": "faros-infrastructure",
 	}
 }
 
@@ -1113,9 +1113,9 @@ func nestedMap(m map[string]any, path ...string) (map[string]any, bool, error) {
 	return out, ok, nil
 }
 
-// devImageEnvName maps a ${kedge.devImage.<toolchain>} token to the env var
-// that configures it (KEDGE_DEV_IMAGE_<TOOLCHAIN>).
+// devImageEnvName maps a ${faros.devImage.<toolchain>} token to the env var
+// that configures it (FAROS_DEV_IMAGE_<TOOLCHAIN>).
 func devImageEnvName(token string) string {
-	tc := strings.TrimSuffix(strings.TrimPrefix(token, "${kedge.devImage."), "}")
-	return "KEDGE_DEV_IMAGE_" + strings.ToUpper(strings.ReplaceAll(tc, "-", "_"))
+	tc := strings.TrimSuffix(strings.TrimPrefix(token, "${faros.devImage."), "}")
+	return "FAROS_DEV_IMAGE_" + strings.ToUpper(strings.ReplaceAll(tc, "-", "_"))
 }

@@ -6,9 +6,9 @@
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
 //
-// agents is a standalone kedge provider hosting long-running personal AI
+// agents is a standalone faros provider hosting long-running personal AI
 // agents: chat, scheduled/heartbeat runs, tool use over MCP and built-in tool
-// families, and durable memory. Its only hard dependencies are the kedge hub
+// families, and durable memory. Its only hard dependencies are the faros hub
 // and Postgres; compute- and storage-backed capabilities (the claude-code
 // runner, the file workspace) light up only when the infrastructure provider
 // is present. See docs/agents-provider-architecture.md.
@@ -41,7 +41,7 @@ import (
 //
 //	agents-provider init   — one-shot: apply APIResourceSchemas, APIExport,
 //	    APIExportEndpointSlice, and bind grant into the provider workspace using
-//	    KEDGE_PROVIDER_KUBECONFIG. See init_cmd.go.
+//	    FAROS_PROVIDER_KUBECONFIG. See init_cmd.go.
 //	agents-provider serve  — runtime (default).
 func main() {
 	if len(os.Args) > 1 {
@@ -74,12 +74,12 @@ func runServe() {
 	defer stop()
 
 	srv, err := api.New(ctx, api.Config{
-		HubURL:             os.Getenv("KEDGE_HUB_URL"),
-		HubInsecure:        os.Getenv("KEDGE_HUB_INSECURE") == "true",
+		HubURL:             os.Getenv("FAROS_HUB_URL"),
+		HubInsecure:        os.Getenv("FAROS_HUB_INSECURE") == "true",
 		DatabaseURL:        os.Getenv("AGENTS_DATABASE_URL"),
 		InMemoryStore:      os.Getenv("AGENTS_IN_MEMORY_STORE") == "true",
 		EncryptionKeys:     os.Getenv("AGENTS_MESSAGE_ENCRYPTION_KEYS"),
-		ProviderKubeconfig: os.Getenv("KEDGE_PROVIDER_KUBECONFIG"),
+		ProviderKubeconfig: os.Getenv("FAROS_PROVIDER_KUBECONFIG"),
 		WebhookKey:         os.Getenv("AGENTS_WEBHOOK_KEY"),
 		SchedulerInterval:  parseDuration(os.Getenv("AGENTS_SCHEDULER_INTERVAL")),
 		OAuthApps:          oauthAppsFromEnv(),

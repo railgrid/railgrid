@@ -28,7 +28,7 @@ minter.
 
 **Key facts discovered by the audit (don't re-derive):**
 
-- kedge's "VW subresources" are **not** kcp virtual workspaces. The
+- faros's "VW subresources" are **not** kcp virtual workspaces. The
   infrastructure data plane is a plain HTTP handler behind the hub backend
   proxy, addressed `/services/providers/infrastructure/dataplane/clusters/{clusterID}/{resource}/{name}/{verb}`,
   authorized by re-reading the resource **as the caller** so kcp RBAC decides
@@ -107,7 +107,7 @@ absorbs. M5 is kept but demoted to a projection.
    it as a registry `dockerconfigjson`. Contract 3 says the owning provider is
    the single holder of its backend credential; code publishes no such API and
    is never consulted. Works only because of M3.
-2. **kuery's edge sync is dead three ways.** It claims `kedge.faros.sh/edges`
+2. **kuery's edge sync is dead three ways.** It claims `faros.sh/edges`
    (the core export no longer exports Edge), dials `/services/edges-proxy/…`
    (unmounted since edges was extracted to a standalone provider —
    [server.go:325](../pkg/hub/server.go)), and composes the path by hand
@@ -121,9 +121,9 @@ absorbs. M5 is kept but demoted to a projection.
    vibe-studio's own comment admits "the convention is the infrastructure
    provider's, not ours". No schema, no validation, no versioning.
 4. **Providers authoring RBAC over each other's API groups.** vibe-studio
-   session SAs get standing write on `code.kedge.faros.sh/*`
+   session SAs get standing write on `code.faros.sh/*`
    ([vibesession/identity.go:78](../providers/vibe-studio/controller/vibesession/identity.go));
-   agents' per-agent SAs get read on the whole `infrastructure.kedge.faros.sh`
+   agents' per-agent SAs get read on the whole `infrastructure.faros.sh`
    group with non-expiring tokens
    ([agentidentity.go:61](../providers/agents/api/agentidentity.go)).
 5. **The Enable-time edges-proxy grant** gives a provider SA direct, non-VW
@@ -143,8 +143,8 @@ absorbs. M5 is kept but demoted to a projection.
 |---|---|---|
 | `POST /api/providers/{name}/heartbeat` | **unauthenticated and state-changing** — anyone can keep a dead provider Ready, or set `HeartbeatRequired` on a non-beating provider and force it not-Ready within 90s | [heartbeat.go:41](../pkg/hub/providers/heartbeat.go) |
 | `GET /api/providers` | **unauthenticated**; now returns full action schemas, consent prompts, and up to 512 KiB of inline skill content per provider; both new docs wrongly say "authenticated" | [api.go:164](../pkg/hub/providers/api.go), [server.go:355](../pkg/hub/server.go) |
-| MCP aggregate | bearer required but **never verified**; cluster ID is caller-asserted from the URL and injected as `X-Kedge-Tenant`/`X-Kedge-Cluster` | [mcpaggregate/handler.go:73](../pkg/hub/mcpaggregate/handler.go), [federation.go:242](../pkg/hub/mcpaggregate/federation.go) |
-| UI proxy | does **not** strip inbound `X-Kedge-*` identity headers (the backend proxy does) | [proxy.go:53](../pkg/hub/providers/proxy.go) |
+| MCP aggregate | bearer required but **never verified**; cluster ID is caller-asserted from the URL and injected as `X-Faros-Tenant`/`X-Faros-Cluster` | [mcpaggregate/handler.go:73](../pkg/hub/mcpaggregate/handler.go), [federation.go:242](../pkg/hub/mcpaggregate/federation.go) |
+| UI proxy | does **not** strip inbound `X-Faros-*` identity headers (the backend proxy does) | [proxy.go:53](../pkg/hub/providers/proxy.go) |
 | Backend proxy identity | fail-open: resolver failure forwards the request without identity headers | [proxy.go:120](../pkg/hub/providers/proxy.go) |
 | GraphQL gateway | accepts the token from the `?token=` query parameter (log/referrer leak path) | [graphql.go:174](../pkg/hub/graphql.go) |
 | `/metrics` (new in PR #499) | unauthenticated on the public listener, serving the entire `legacyregistry` | [server.go:206](../pkg/hub/server.go) |
@@ -254,7 +254,7 @@ authorizer; **grants are kcp RBAC rules**:
 
 ```yaml
 # "this workload may run query_table on Table trips"
-- apiGroups: ["databricks.kedge.faros.sh"]
+- apiGroups: ["databricks.faros.sh"]
   resources: ["tables/query_table"]
   verbs: ["create"]
   resourceNames: ["trips"]
@@ -282,7 +282,7 @@ app-studio, agents, and vibe-studio are replaced by that package.
 
 **What P2 keeps from PR #499 unchanged:** the CatalogEntry action schema and
 its fail-closed validation/compilation; the App Studio grant UX and digest
-pinning; the `@kedge/actions-node` SDK (its target URL changes shape only);
+pinning; the `@faros/actions-node` SDK (its target URL changes shape only);
 the Databricks executor and its SQL bounding.
 
 **What P2 deletes from PR #499:** the hub invoke router and its Go authorizer
@@ -298,7 +298,7 @@ routing, and the human/workload authorization asymmetry.
   cluster **before** fan-out (today it forwards unverified —
   [mcpaggregate/handler.go:73](../pkg/hub/mcpaggregate/handler.go)).
 - Capability discovery is **hub-authored**: the aggregate serves a
-  `kedge://providers/actions` MCP resource generated from the same validated
+  `faros://providers/actions` MCP resource generated from the same validated
   registry the data plane enforces, so advertised capabilities cannot drift
   from enforceable ones, and no provider URL ever appears. Federated tools
   that back a declared action carry the action id + digest in `_meta`.
@@ -352,9 +352,9 @@ Each phase is independently shippable and none blocks the others except as
 noted.
 
 **Phase 0 — close the fail-open surfaces (small, urgent).**
-Authenticate heartbeat (providers already hold `KEDGE_HUB_TOKEN`); move
+Authenticate heartbeat (providers already hold `FAROS_HUB_TOKEN`); move
 `GET /api/providers` under the authenticated subrouter; verify bearer↔cluster
-in the MCP aggregate; strip `X-Kedge-*` in the UI proxy; move `/metrics` off
+in the MCP aggregate; strip `X-Faros-*` in the UI proxy; move `/metrics` off
 the public listener; drop GraphQL `?token=` support.
 Anchors: [server.go:206,355,358](../pkg/hub/server.go),
 [heartbeat.go](../pkg/hub/providers/heartbeat.go),
@@ -382,14 +382,14 @@ Factor the enforcement kit out of the databricks actions handler + infra
 dataplane handler; migrate edges `edgeproxy/` and agents `s2s/` onto it.
 Introduce the consumer-side grammar package and `status`-stamped endpoints;
 replace the hardcoded paths in app-studio, agents, vibe-studio (X-8). Fix
-kuery: claim `edges.kedge.faros.sh/{kubernetesclusters,linuxservers}`, follow
+kuery: claim `edges.faros.sh/{kubernetesclusters,linuxservers}`, follow
 `status.URL`, delete the dead `/services/edges-proxy` dial.
 
 **Phase 3 — the identity service.**
 Generalize the workload-identity minter (owner kinds, attestation plug,
 TokenRequest-only, GC controller). Migrate agents, vibe-studio, and edges
 identity minting onto it; remove their RBAC-authoring claims (X-5). Add GC
-for existing `kedge-wi-*` identities.
+for existing `faros-wi-*` identities.
 
 **Phase 4 — credential APIs replace the Secrets side-door.**
 code provider publishes `RegistryCredential` (CR or declared action);
@@ -449,14 +449,14 @@ credential, **X** = external credential owned by the tenant connection.
 | A16 | agents inbound s2s (`/s2s/clusters/{c}/agents/{name}/runs`) | M4 | caller SA | [s2s.go:37](../providers/agents/api/s2s.go) |
 | A17 | vibe-studio → infra + code CRs (claims incl. two foreign groups) | M2 | P | [manifest.yaml:29](../providers/vibe-studio/manifest.yaml) |
 | A18 | vibe-studio reads code PAT Secret → registry secret | **M3** | P+claim | [registry.go:70](../providers/vibe-studio/controller/project/registry.go) |
-| A19 | vibe-studio session SA with write on `code.kedge.faros.sh/*` | **M7** | P→W | [vibesession/identity.go:78](../providers/vibe-studio/controller/vibesession/identity.go) |
+| A19 | vibe-studio session SA with write on `code.faros.sh/*` | **M7** | P→W | [vibesession/identity.go:78](../providers/vibe-studio/controller/vibesession/identity.go) |
 | A20 | vibe-studio → code MCP via hub aggregate | M5 | C | [codemcp.go:47](../providers/vibe-studio/provision/codemcp.go) |
 
 ### B. Hub-mediated surfaces
 
 | Ch | Surface | Posture | Anchor |
 |---|---|---|---|
-| B1 | Backend proxy `/services/providers/{name}/*` | fail-open identity, strips+reinjects `X-Kedge-*`, forwards bearer | [proxy.go:100](../pkg/hub/providers/proxy.go) |
+| B1 | Backend proxy `/services/providers/{name}/*` | fail-open identity, strips+reinjects `X-Faros-*`, forwards bearer | [proxy.go:100](../pkg/hub/providers/proxy.go) |
 | B2 | `/actions` denial on backend proxy (PR #499) | fail-closed; case-sensitive; backend proxy only | [proxy.go:326](../pkg/hub/providers/proxy.go) |
 | B3 | `POST /api/provider-actions/invoke` → `virtualWorkspace.url` | fail-closed; grants enforced for workload SAs only | [handler.go:217](../pkg/hub/provideractions/handler.go) |
 | B4 | `POST /api/provider-actions/workload/exchange` → infra attestation | fail-closed; unauthenticated route by design (attestation is authn) | [workloadidentity.go:132](../pkg/hub/workloadidentity/workloadidentity.go) |
@@ -464,7 +464,7 @@ credential, **X** = external credential owned by the tenant connection.
 | B6 | MCPServer controller tool discovery (background) | hub-minted per-MCPServer SA token | [controller.go:163](../pkg/hub/controllers/mcpserver/controller.go) |
 | B7 | GraphQL gateway `/graphql/{cluster}` | caller-scoped at kcp; `?token=` accepted | [graphql.go:168](../pkg/hub/graphql.go) |
 | B8 | kcp front door `/clusters/…` (static/SA/OIDC dispatch) | fail-closed; Org-path and root-path refusals; membership check | [proxy.go:260](../pkg/server/proxy/proxy.go) |
-| B9 | UI proxy `/ui/providers/{name}/*` | **does not strip `X-Kedge-*`** | [proxy.go:53](../pkg/hub/providers/proxy.go) |
+| B9 | UI proxy `/ui/providers/{name}/*` | **does not strip `X-Faros-*`** | [proxy.go:53](../pkg/hub/providers/proxy.go) |
 | B10 | `GET /api/providers` | **unauthenticated** | [api.go:164](../pkg/hub/providers/api.go) |
 | B11 | `POST /api/providers/{name}/heartbeat` | **unauthenticated, state-changing** | [heartbeat.go:41](../pkg/hub/providers/heartbeat.go) |
 | B12 | Provider provisioning (workspace, SA, kubeconfig, non-expiring token) | admin-gated | [provision.go:98](../pkg/hub/providers/provision.go) |
@@ -477,13 +477,13 @@ credential, **X** = external credential owned by the tenant connection.
 | Ch | Channel | Note | Anchor |
 |---|---|---|---|
 | C1 | vibe-studio claims two foreign API groups (infra CRUD, code write) | only provider claiming foreign groups besides kuery | [manifest.yaml:29](../providers/vibe-studio/manifest.yaml) |
-| C2 | kuery claims `kedge.faros.sh/edges` | **dangling** — resource no longer exported | [manifest.yaml:52](../providers/kuery/manifest.yaml) |
+| C2 | kuery claims `faros.sh/edges` | **dangling** — resource no longer exported | [manifest.yaml:52](../providers/kuery/manifest.yaml) |
 | C3 | Six providers hold `secrets` claims (4 with write) | the M3 side-door | providers/*/manifest.yaml |
 | C4 | Edge agent tunnel join/reconnect (join token → per-edge SA, revdial) | healthy M4+identity pattern | [agent_proxy_builder_v2.go:361](../providers/edges/internal/tunnel/agent_proxy_builder_v2.go) |
 | C5 | Edges consumer egress `edgeproxy/…/{k8s\|ssh\|mcp}` (TokenReview+SAR `proxy`) | healthy; stamps `status.URL` for consumers | [auth.go:116](../providers/edges/internal/tunnel/auth.go) |
 | C6 | Edges `svc/` proxy (Service CR + authSecret read as caller; agent host allowlist) | confused-deputy-safe by design | [service_proxy.go:282](../providers/edges/internal/tunnel/service_proxy.go) |
 | C7 | kuery edge sync via `/services/edges-proxy/…` as provider SA | **dead mount + wrong group + hardcoded path** | [engagement/controller.go:363](../providers/kuery/engagement/controller.go) |
-| C8 | kuery query API scoped only by `X-Kedge-Tenant` header, no per-object RBAC re-check | read amplification: provider-SA-synced data served on a header check | [queryapi/handler.go:44](../providers/kuery/queryapi/handler.go) |
+| C8 | kuery query API scoped only by `X-Faros-Tenant` header, no per-object RBAC re-check | read amplification: provider-SA-synced data served on a header check | [queryapi/handler.go:44](../providers/kuery/queryapi/handler.go) |
 | C9 | code → GitHub (Connection token; exclusive holder) | conforming external egress | [tenant/credentials.go:28](../providers/code/tenant/credentials.go) |
 | C10 | infra imagePullSecret bridge (`<instance>-registry` name convention → runtime SA) | **M8** string contract across 3 providers | [application/controller.go:118](../providers/infrastructure/controller/application/controller.go) |
 | C11 | infra OIDC client-secret bridge into runtime namespace | M8, finalizer-guarded | [application/controller.go:122](../providers/infrastructure/controller/application/controller.go) |

@@ -18,7 +18,7 @@ limitations under the License.
 // not a mode flip on the Project — it is a SECOND environment alongside the
 // development sandbox: an artifact-mode ProjectEnvironment bound to a
 // "<project>-prod" instance of the SAME template, provisioned with
-// kedgeMode: production and each template imageInput set to the digest the
+// farosMode: production and each template imageInput set to the digest the
 // per-component build recorded in git. The user promotes explicitly ("Promote
 // to Prod") once the sandbox looks good and the build is green; promotion is
 // repeatable (re-promote redeploys the latest digests). The dev sandbox keeps
@@ -92,7 +92,7 @@ func (s *Server) ensureProjectRegistryPullSecret(ctx context.Context, c *asclien
 
 	username := strings.TrimSpace(login)
 	if username == "" {
-		username = "kedge-app-studio" // ghcr validates the token, not the username
+		username = "faros-app-studio" // ghcr validates the token, not the username
 	}
 	dockerConfig, err := json.Marshal(map[string]any{
 		"auths": map[string]any{
@@ -141,15 +141,15 @@ const (
 	// infrastructure Template instance. A fresh value is minted for every
 	// accepted promotion so a provider can roll only the application workload
 	// pods without recreating the production instance (or its database).
-	projectRedeployRevisionField = "kedgeRedeployRevision"
+	projectRedeployRevisionField = "farosRedeployRevision"
 
 	projectToolPromoteProject = "promote_project"
 )
 
 // projectPromoteRequest is the "Promote to Prod" form submission: the
 // template's production inputs (ports, replicas, oidc, …). The instance name,
-// kedgeMode, per-component image fields, and kedgeRedeployRevision are
-// platform-owned and ignored if supplied — name/kedgeMode are deterministic,
+// farosMode, per-component image fields, and farosRedeployRevision are
+// platform-owned and ignored if supplied — name/farosMode are deterministic,
 // images come from the build, and the revision is minted for this promotion.
 type projectPromoteRequest struct {
 	Values map[string]any `json:"values,omitempty"`
@@ -172,9 +172,9 @@ func newProjectRedeployRevision() string {
 }
 
 // projectTemplateProdBinding builds the production binding: an instance of the
-// template kind named "<project>-prod", provisioned with kedgeMode: production,
+// template kind named "<project>-prod", provisioned with farosMode: production,
 // the user's production input values, and each imageInput set to the built
-// digest. Platform-owned fields (name, kedgeMode, image inputs, and the
+// digest. Platform-owned fields (name, farosMode, image inputs, and the
 // rollout revision) always win over anything in values. The optional revision
 // argument exists so promoteProject can mint once and return the exact value
 // written to the binding; callers that omit it get a fresh revision too.
@@ -201,7 +201,7 @@ func projectTemplateProdBinding(p *aiv1alpha1.Project, info projectTemplateInfo,
 		merged[imageInput] = image
 	}
 	merged["name"] = name
-	merged["kedgeMode"] = "production"
+	merged["farosMode"] = "production"
 	merged[projectRedeployRevisionField] = rolloutRevision
 	raw, err := json.Marshal(merged)
 	if err != nil {

@@ -28,7 +28,7 @@ import (
 
 func TestEnsureProviderServePropagatesPlatformPreviewConsoleJWKS(t *testing.T) {
 	const jwks = `{"keys":[{"kid":"current"}]}`
-	t.Setenv("KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS", "  "+jwks+"  ")
+	t.Setenv("FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS", "  "+jwks+"  ")
 	client := fake.NewSimpleClientset()
 	provider := &v1alpha1.InfrastructureProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-infrastructure"},
@@ -51,14 +51,14 @@ func TestEnsureProviderServePropagatesPlatformPreviewConsoleJWKS(t *testing.T) {
 		t.Fatalf("get managed provider Deployment: %v", err)
 	}
 	for _, env := range deployment.Spec.Template.Spec.Containers[0].Env {
-		if env.Name == "KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS" {
+		if env.Name == "FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS" {
 			if env.Value != jwks {
 				t.Errorf("verification JWKS = %q, want trimmed platform value %q", env.Value, jwks)
 			}
 			return
 		}
 	}
-	t.Error("managed provider Deployment lacks KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS")
+	t.Error("managed provider Deployment lacks FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS")
 }
 
 func TestEnsureProviderServePropagatesPlatformPublishingConfig(t *testing.T) {
@@ -92,14 +92,14 @@ func TestEnsureProviderServePropagatesPlatformPublishingConfig(t *testing.T) {
 		counts[variable.Name]++
 	}
 	want := map[string]string{
-		"KEDGE_APP_BASE_DOMAIN":      "apps.example.test",
-		"KEDGE_ACCESS_PROXY_IMAGE":   "example.test/access-proxy@sha256:deadbeef",
-		"KEDGE_ACCESS_HUB_URL":       "https://access-hub.internal",
-		"KEDGE_ACCESS_HUB_INSECURE":  "true",
-		"KEDGE_ACCESS_PUBLIC_SCHEME": "https",
-		"KEDGE_APP_PUBLIC_PORT":      "10443",
-		"KEDGE_GATEWAY_NAME":         "shared",
-		"KEDGE_GATEWAY_NAMESPACE":    "gateway-system",
+		"FAROS_APP_BASE_DOMAIN":      "apps.example.test",
+		"FAROS_ACCESS_PROXY_IMAGE":   "example.test/access-proxy@sha256:deadbeef",
+		"FAROS_ACCESS_HUB_URL":       "https://access-hub.internal",
+		"FAROS_ACCESS_HUB_INSECURE":  "true",
+		"FAROS_ACCESS_PUBLIC_SCHEME": "https",
+		"FAROS_APP_PUBLIC_PORT":      "10443",
+		"FAROS_GATEWAY_NAME":         "shared",
+		"FAROS_GATEWAY_NAMESPACE":    "gateway-system",
 	}
 	for name, value := range want {
 		if env[name] != value {

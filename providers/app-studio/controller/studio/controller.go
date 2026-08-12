@@ -42,9 +42,9 @@ import (
 
 const (
 	// templateLabel matches the infrastructure provider's attribution label.
-	templateLabel = "kedge.faros.sh/template"
+	templateLabel = "faros.sh/template"
 	// studioLabel attributes a shared instance back to the Studio.
-	studioLabel = "ai.kedge.faros.sh/studio"
+	studioLabel = "ai.faros.sh/studio"
 	// searchTemplate is the template shared search is provisioned from.
 	searchTemplate = "searxng"
 	// SearchInstanceName is the workspace's shared search backend. Fixed,

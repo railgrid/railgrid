@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package standalone implements e2e tests for kedge running with embedded kcp
+// Package standalone implements e2e tests for faros running with embedded kcp
 // and static token authentication (no Dex/OIDC required).
 package standalone
 
@@ -27,7 +27,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 var testenv env.Environment
@@ -44,7 +44,7 @@ func TestMain(m *testing.M) {
 
 	testenv = env.NewWithConfig(cfg)
 
-	if os.Getenv("KEDGE_USE_EXISTING_CLUSTERS") == "true" {
+	if os.Getenv("FAROS_USE_EXISTING_CLUSTERS") == "true" {
 		testenv.Setup(framework.UseExistingClusters(repoRoot))
 	} else {
 		testenv.Setup(framework.SetupClusters(repoRoot))

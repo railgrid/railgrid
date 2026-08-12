@@ -31,10 +31,10 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// InstallCRDs installs the kedge CRDs into the cluster.
+// InstallCRDs installs the faros CRDs into the cluster.
 func InstallCRDs(ctx context.Context, config *rest.Config) error {
 	logger := klog.FromContext(ctx)
-	logger.Info("Installing kedge CRDs")
+	logger.Info("Installing faros CRDs")
 
 	client, err := apiextensionsclient.NewForConfig(config)
 	if err != nil {
@@ -80,20 +80,20 @@ func InstallCRDs(ctx context.Context, config *rest.Config) error {
 
 	// Wait for all CRDs to be established. KubernetesMCP + LinuxMCP
 	// CRDs were removed when both per-kind endpoints collapsed into
-	// the MCPServer aggregate. The legacy `users.kedge.faros.sh` CRD
+	// the MCPServer aggregate. The legacy `users.faros.sh` CRD
 	// was retired in the User CRD migration; the User type now lives
-	// under tenants.kedge.faros.sh alongside Organization, Membership,
+	// under tenants.faros.sh alongside Organization, Membership,
 	// and UserMembershipIndex.
 	crdNames := []string{
 		// Edge / VirtualWorkload / Placement / MCPServer CRDs moved out of the
 		// hub core into the edges-connectivity + edges-* providers, which install
 		// their own schemas at provider init. The hub no longer bootstraps them.
-		"users.tenants.kedge.faros.sh",
-		"organizations.tenants.kedge.faros.sh",
-		"memberships.tenants.kedge.faros.sh",
-		"usermembershipindices.tenants.kedge.faros.sh",
-		"userpreferences.tenants.kedge.faros.sh",
-		"catalogentries.providers.kedge.faros.sh",
+		"users.tenants.faros.sh",
+		"organizations.tenants.faros.sh",
+		"memberships.tenants.faros.sh",
+		"usermembershipindices.tenants.faros.sh",
+		"userpreferences.tenants.faros.sh",
+		"catalogentries.providers.faros.sh",
 	}
 
 	for _, name := range crdNames {
@@ -103,7 +103,7 @@ func InstallCRDs(ctx context.Context, config *rest.Config) error {
 		}
 	}
 
-	logger.Info("All kedge CRDs installed and established")
+	logger.Info("All faros CRDs installed and established")
 	return nil
 }
 

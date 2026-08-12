@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	apiExportName        = "ai.kedge.faros.sh"
-	defaultWorkspacePath = "root:kedge:providers:app-studio"
+	apiExportName        = "ai.faros.sh"
+	defaultWorkspacePath = "root:faros:providers:app-studio"
 )
 
 // instanceClaimResources are the infrastructure instance resources the
@@ -38,22 +38,22 @@ var instanceClaimResources = []string{"applications", "simplewebapps", "workers"
 func runInitCmd(ctx context.Context) error {
 	config, err := loadProviderConfig()
 	if err != nil {
-		return fmt.Errorf("init needs a kubeconfig (set KEDGE_PROVIDER_KUBECONFIG): %w", err)
+		return fmt.Errorf("init needs a kubeconfig (set FAROS_PROVIDER_KUBECONFIG): %w", err)
 	}
 	workspacePath := os.Getenv("APP_STUDIO_WORKSPACE_PATH")
 	if workspacePath == "" {
 		workspacePath = defaultWorkspacePath
 	}
-	schemasDir := os.Getenv("KEDGE_SCHEMAS_DIR")
+	schemasDir := os.Getenv("FAROS_SCHEMAS_DIR")
 	if schemasDir == "" {
-		schemasDir = "/etc/kedge/schemas"
+		schemasDir = "/etc/faros/schemas"
 	}
-	catalogEntryFile := os.Getenv("KEDGE_CATALOGENTRY_FILE")
+	catalogEntryFile := os.Getenv("FAROS_CATALOGENTRY_FILE")
 
 	// The Project reconciler creates/deletes infrastructure instances in
 	// tenant workspaces. Those are first-party (*.faros.sh) types, so kcp
 	// requires the identityHash of the APIExport serving them
-	// (infrastructure.providers.kedge.faros.sh) — Helm value in prod, the dev
+	// (infrastructure.providers.faros.sh) — Helm value in prod, the dev
 	// Makefile auto-discovers it.
 	infraHash := os.Getenv("APP_STUDIO_INFRA_IDENTITY_HASH")
 	if infraHash == "" {
@@ -62,7 +62,7 @@ func runInitCmd(ctx context.Context) error {
 	claims := make([]sdkinstall.PermissionClaim, 0, len(instanceClaimResources)+6)
 	for _, r := range instanceClaimResources {
 		claims = append(claims, sdkinstall.PermissionClaim{
-			Group:        "infrastructure.kedge.faros.sh",
+			Group:        "infrastructure.faros.sh",
 			Resource:     r,
 			Verbs:        []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 			IdentityHash: infraHash,
@@ -76,7 +76,7 @@ func runInitCmd(ctx context.Context) error {
 		log.Printf("WARNING: APP_STUDIO_CODE_IDENTITY_HASH is empty — the repositories claim will have no identityHash and the reconciler cannot create repositories")
 	}
 	claims = append(claims, sdkinstall.PermissionClaim{
-		Group:        "code.kedge.faros.sh",
+		Group:        "code.faros.sh",
 		Resource:     "repositories",
 		Verbs:        []string{"get", "list", "watch", "create", "update", "patch"},
 		IdentityHash: codeHash,

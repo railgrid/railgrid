@@ -35,7 +35,7 @@ export class ProviderActionError extends ActionsClientError {
 function assertServerOnly() {
   if (typeof window !== 'undefined' || typeof document !== 'undefined') {
     throw new ActionsClientError(
-      'The Kedge Actions SDK is server-only; never expose a caller credential to a browser',
+      'The Faros Actions SDK is server-only; never expose a caller credential to a browser',
       { code: 'server_only' },
     );
   }
@@ -97,7 +97,7 @@ function hasRefreshableCredential(options) {
 }
 
 function tokenFilePath(options) {
-  const configured = options.tokenFile ?? process.env.KEDGE_ACTIONS_TOKEN_FILE;
+  const configured = options.tokenFile ?? process.env.FAROS_ACTIONS_TOKEN_FILE;
   return String(configured ?? '').trim();
 }
 
@@ -126,7 +126,7 @@ async function resolveCredential(options, { forceRefresh = false, signal } = {})
     try {
       contents = await readFile(file, 'utf8');
     } catch (error) {
-      throw new ActionsClientError('the Kedge caller credential file is unavailable', {
+      throw new ActionsClientError('the Faros caller credential file is unavailable', {
         code: 'credential_file_unavailable',
         retryable: !forceRefresh,
         cause: error,
@@ -134,13 +134,13 @@ async function resolveCredential(options, { forceRefresh = false, signal } = {})
     }
     const normalized = normalizeToken(contents);
     if (normalized) return normalized;
-    throw new ActionsClientError('the Kedge caller credential file is empty', {
+    throw new ActionsClientError('the Faros caller credential file is empty', {
       code: 'credential_file_unavailable',
       retryable: !forceRefresh,
     });
   }
   throw new ActionsClientError(
-    'a Kedge caller credential is required; pass token, tokenFile, getToken, or credentialProvider on the server',
+    'a Faros caller credential is required; pass token, tokenFile, getToken, or credentialProvider on the server',
     { code: 'credential_required' },
   );
 }
@@ -164,11 +164,11 @@ function requestHeaderOptions(clientOptions, requestOptions) {
   const requestID = options.requestID ?? options.requestId ?? options.correlationID ?? options.correlationId;
   if (requestID !== undefined) headers['X-Request-ID'] = String(requestID);
   const deadline = options.actionDeadlineMs ?? options.deadlineMs;
-  if (deadline !== undefined) headers['X-Kedge-Action-Deadline-Ms'] = String(deadline);
-  const org = options.org ?? options.organization ?? process.env.KEDGE_ACTIONS_ORG;
-  if (org !== undefined && String(org).trim() !== '') headers['X-Kedge-Org'] = String(org).trim();
-  const workspace = options.workspace ?? process.env.KEDGE_ACTIONS_WORKSPACE;
-  if (workspace !== undefined && String(workspace).trim() !== '') headers['X-Kedge-Workspace'] = String(workspace).trim();
+  if (deadline !== undefined) headers['X-Faros-Action-Deadline-Ms'] = String(deadline);
+  const org = options.org ?? options.organization ?? process.env.FAROS_ACTIONS_ORG;
+  if (org !== undefined && String(org).trim() !== '') headers['X-Faros-Org'] = String(org).trim();
+  const workspace = options.workspace ?? process.env.FAROS_ACTIONS_WORKSPACE;
+  if (workspace !== undefined && String(workspace).trim() !== '') headers['X-Faros-Workspace'] = String(workspace).trim();
   return { options, headers };
 }
 
@@ -280,15 +280,15 @@ export class ActionsClient {
   constructor(options = {}) {
     assertServerOnly();
     this.baseURL = validateBaseURL(
-      options.baseURL ?? options.baseUrl ?? process.env.KEDGE_ACTIONS_BASE_URL,
+      options.baseURL ?? options.baseUrl ?? process.env.FAROS_ACTIONS_BASE_URL,
       options.allowInsecureLoopback === true,
     );
-    this.project = String(options.project ?? process.env.KEDGE_PROJECT ?? '').trim();
+    this.project = String(options.project ?? process.env.FAROS_PROJECT ?? '').trim();
     if (!this.project) throw new ActionsClientError('project is required', { code: 'invalid_config' });
     this.fetch = options.fetch ?? globalThis.fetch;
     if (typeof this.fetch !== 'function') throw new ActionsClientError('fetch is required', { code: 'invalid_config' });
-    this.org = String(options.org ?? options.organization ?? process.env.KEDGE_ACTIONS_ORG ?? '').trim();
-    this.workspace = String(options.workspace ?? process.env.KEDGE_ACTIONS_WORKSPACE ?? '').trim();
+    this.org = String(options.org ?? options.organization ?? process.env.FAROS_ACTIONS_ORG ?? '').trim();
+    this.workspace = String(options.workspace ?? process.env.FAROS_ACTIONS_WORKSPACE ?? '').trim();
     this.options = {
       ...options,
       baseURL: this.baseURL,

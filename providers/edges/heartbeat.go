@@ -26,24 +26,24 @@ const (
 )
 
 // runHeartbeat POSTs to /api/providers/{name}/heartbeat every 30s. Env:
-// KEDGE_HUB_URL, KEDGE_HUB_TOKEN, KEDGE_PROVIDER_NAME (default edges),
-// KEDGE_HUB_INSECURE.
+// FAROS_HUB_URL, FAROS_HUB_TOKEN, FAROS_PROVIDER_NAME (default edges),
+// FAROS_HUB_INSECURE.
 func runHeartbeat(ctx context.Context, log logr.Logger) {
-	hub := os.Getenv("KEDGE_HUB_URL")
-	token := os.Getenv("KEDGE_HUB_TOKEN")
-	name := os.Getenv("KEDGE_PROVIDER_NAME")
+	hub := os.Getenv("FAROS_HUB_URL")
+	token := os.Getenv("FAROS_HUB_TOKEN")
+	name := os.Getenv("FAROS_PROVIDER_NAME")
 	if name == "" {
 		name = "edges"
 	}
 	if hub == "" {
-		log.Info("heartbeat disabled (set KEDGE_HUB_URL to enable)")
+		log.Info("heartbeat disabled (set FAROS_HUB_URL to enable)")
 		return
 	}
 	url := hub + "/api/providers/" + name + "/heartbeat"
 	body, _ := json.Marshal(map[string]string{"version": heartbeatVersion, "status": "healthy"})
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	if os.Getenv("KEDGE_HUB_INSECURE") == "true" {
+	if os.Getenv("FAROS_HUB_INSECURE") == "true" {
 		client.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev-only
 		}

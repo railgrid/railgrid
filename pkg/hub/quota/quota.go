@@ -32,7 +32,7 @@ import (
 	"context"
 	"fmt"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 )
 
 const (
@@ -51,7 +51,7 @@ const (
 	// Set at create time by the hub's Org-create endpoint (roadmap step 10)
 	// and by the personal-Org bootstrap controller (roadmap step 1+). Used
 	// here to count Orgs against the user's quota.
-	LabelCreatedBy = "tenants.kedge.faros.sh/created-by"
+	LabelCreatedBy = "tenants.faros.sh/created-by"
 )
 
 // EffectiveOrgsPerUser returns the effective Org quota for the given
@@ -80,7 +80,7 @@ func EffectiveWorkspacesPerOrg(org *tenancyv1alpha1.Organization) int32 {
 // QuotaExceededError when usage >= cap.
 //
 // Pulling the count behind an interface keeps the package
-// dependency-free of the kedge / kcp clientsets so the helpers can be
+// dependency-free of the faros / kcp clientsets so the helpers can be
 // unit-tested with a literal fakeCounter (see quota_test.go) and the
 // production wiring picks the appropriate listing strategy at the
 // call site.

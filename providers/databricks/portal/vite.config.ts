@@ -3,7 +3,7 @@ import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
   plugins: [vue({
-    template: { compilerOptions: { isCustomElement: (tag) => tag.startsWith('kedge-provider-') } },
+    template: { compilerOptions: { isCustomElement: (tag) => tag.startsWith('faros-provider-') } },
   })],
   define: {
     'process.env.NODE_ENV': JSON.stringify('production'),
@@ -20,7 +20,7 @@ export default defineConfig({
     lib: {
       entry: 'src/main.ts',
       formats: ['iife'],
-      name: 'KedgeProviderDatabricks',
+      name: 'FarosProviderDatabricks',
       fileName: () => 'main.js',
     },
     rollupOptions: {

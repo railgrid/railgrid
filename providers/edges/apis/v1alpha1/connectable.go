@@ -29,7 +29,7 @@ const (
 	ServiceResource           = "services"
 )
 
-// GVRs of the group's kinds (all in edges.kedge.faros.sh). The two connectable
+// GVRs of the group's kinds (all in edges.faros.sh). The two connectable
 // kinds terminate agent tunnels; Workload/Placement drive workload
 // scheduling across KubernetesCluster edges.
 var (
@@ -44,15 +44,15 @@ var (
 // and the edge agent read them back to tie a Placement to its Workload
 // and target edge.
 const (
-	LabelWorkload = "edges.kedge.faros.sh/workload"
-	LabelEdge     = "edges.kedge.faros.sh/edge"
+	LabelWorkload = "edges.faros.sh/workload"
+	LabelEdge     = "edges.faros.sh/edge"
 	// LabelName is stamped on each connectable with its own metadata.name so a
 	// Workload's placement can target a single specific edge by label selector
 	// (the marketplace deploys to one chosen edge).
-	LabelName = "edges.kedge.faros.sh/name"
+	LabelName = "edges.faros.sh/name"
 	// LabelDiscovered marks a Service created/confirmed by the discovery
 	// reconciler (value "true"), distinguishing it from user-declared objects.
-	LabelDiscovered = "edges.kedge.faros.sh/discovered"
+	LabelDiscovered = "edges.faros.sh/discovered"
 )
 
 // GetConnectionStatus makes KubernetesCluster satisfy edgeapi.Connectable so the

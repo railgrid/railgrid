@@ -49,7 +49,7 @@ const (
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// Agent is a persistent, long-running personal assistant scoped to a Kedge
+// Agent is a persistent, long-running personal assistant scoped to a Faros
 // workspace. It chats, runs scheduled work on its own clock, uses tools, and
 // keeps durable memory. Runtime state (transcripts, runs) lives in the
 // provider's store; this resource holds the durable configuration.
@@ -81,7 +81,7 @@ type AgentSpec struct {
 	SystemPrompt string `json:"systemPrompt,omitempty"`
 
 	// Models maps run purposes to named profiles in the tenant's model
-	// credentials Secret (kedge-agents-llm). Recognized purposes: "chat"
+	// credentials Secret (faros-agents-llm). Recognized purposes: "chat"
 	// (interactive, strong), "background" (schedules/heartbeats, cheap),
 	// "compaction" (summarization). An empty map falls back to the "chat"
 	// profile for every purpose.

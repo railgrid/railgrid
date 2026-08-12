@@ -37,7 +37,7 @@ func TestFetchRequiresAnAbsoluteHTTPURL(t *testing.T) {
 }
 
 func TestSearchWithoutABackendExplainsItself(t *testing.T) {
-	_, err := Search(context.Background(), nil, SearchRef{}, "kedge")
+	_, err := Search(context.Background(), nil, SearchRef{}, "faros")
 	if err == nil || !strings.Contains(err.Error(), "search backend") {
 		t.Errorf("err = %v, want it to say the project has no search backend yet", err)
 	}
@@ -68,11 +68,11 @@ func TestParseResultsReadsSearXNGAndCaps(t *testing.T) {
 
 func TestHTMLToTextStripsMarkupAndScripts(t *testing.T) {
 	got := htmlToText(`<html><head><style>a{}</style><script>var x=1</script></head>
-		<body><h1>Kedge</h1><p>A platform&nbsp;&amp; more</p></body></html>`)
+		<body><h1>Faros</h1><p>A platform&nbsp;&amp; more</p></body></html>`)
 	if strings.Contains(got, "var x") || strings.Contains(got, "<h1>") {
 		t.Errorf("markup survived: %q", got)
 	}
-	if !strings.Contains(got, "Kedge") || !strings.Contains(got, "A platform & more") {
+	if !strings.Contains(got, "Faros") || !strings.Contains(got, "A platform & more") {
 		t.Errorf("text lost: %q", got)
 	}
 }

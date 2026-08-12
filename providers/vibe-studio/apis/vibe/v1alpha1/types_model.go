@@ -22,7 +22,7 @@ import (
 
 // ModelDefaultAnnotation marks the Model used by sessions that name none.
 // Exactly one Model should carry it; the newest wins if several do.
-const ModelDefaultAnnotation = "vibe.kedge.faros.sh/default"
+const ModelDefaultAnnotation = "vibe.faros.sh/default"
 
 // +genclient
 // +genclient:nonNamespaced
@@ -31,7 +31,7 @@ const ModelDefaultAnnotation = "vibe.kedge.faros.sh/default"
 // +kubebuilder:resource:path=models,singular=model,scope=Cluster,shortName=vmodel
 // +kubebuilder:printcolumn:name="Model",type=string,JSONPath=".spec.model"
 // +kubebuilder:printcolumn:name="Provider",type=string,JSONPath=".spec.provider"
-// +kubebuilder:printcolumn:name="Default",type=string,JSONPath=".metadata.annotations.vibe\\.kedge\\.faros\\.sh/default"
+// +kubebuilder:printcolumn:name="Default",type=string,JSONPath=".metadata.annotations.vibe\\.faros\\.faros\\.sh/default"
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=".metadata.creationTimestamp"
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 

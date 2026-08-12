@@ -59,9 +59,9 @@ test("plugin injects the v1 bridge before application scripts", async () => {
   const tags = plugin.transformIndexHtml();
   assert.equal(plugin.apply, "serve");
   assert.equal(tags[0].injectTo, "head-prepend");
-  assert.equal(tags[0].attrs["data-kedge-preview-console"], "v1");
-  assert.match(tags[0].children, /kedge\.preview-console\.ready/);
-  assert.doesNotMatch(tags[0].children, /__KEDGE_PREVIEW_CONSOLE_VERIFICATION_KEYS__/);
+  assert.equal(tags[0].attrs["data-faros-preview-console"], "v1");
+  assert.match(tags[0].children, /faros\.preview-console\.ready/);
+  assert.doesNotMatch(tags[0].children, /__FAROS_PREVIEW_CONSOLE_VERIFICATION_KEYS__/);
 });
 
 test("bridge ignores attacker-supplied keys and accepts a platform-trusted capability", async () => {
@@ -131,7 +131,7 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
   vm.runInContext(source, context);
 
   assert.equal(parentMessages.length, 1);
-  assert.equal(parentMessages[0].message.type, "kedge.preview-console.ready");
+  assert.equal(parentMessages[0].message.type, "faros.preview-console.ready");
   const documentID = parentMessages[0].message.documentID;
   assert.match(documentID, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   const parentOrigin = "https://studio.test";
@@ -153,7 +153,7 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
   await windowListeners.get("message")({
     source: parent,
     origin: parentOrigin,
-    data: { type: "kedge.preview-console.probe", version: 1 },
+    data: { type: "faros.preview-console.probe", version: 1 },
     ports: [],
   });
   assert.equal(parentMessages.at(-1).origin, parentOrigin);
@@ -169,7 +169,7 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
     source: parent,
     origin: parentOrigin,
     data: {
-      type: "kedge.preview-console.start",
+      type: "faros.preview-console.start",
       version: 1,
       sessionID,
       generation: documentID,
@@ -220,7 +220,7 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
     source: parent,
     origin: parentOrigin,
     data: {
-      type: "kedge.preview-console.start",
+      type: "faros.preview-console.start",
       version: 1,
       sessionID,
       generation: documentID,
@@ -231,9 +231,9 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
   await tick();
 
   assert.equal(getterCalls, 0);
-  assert.equal(trustedPort.messages[0].type, "kedge.preview-console.connected");
+  assert.equal(trustedPort.messages[0].type, "faros.preview-console.connected");
   assert.equal(trustedPort.messages[0].generation, documentID);
-  const batch = trustedPort.messages.find((message) => message.type === "kedge.preview-console.events");
+  const batch = trustedPort.messages.find((message) => message.type === "faros.preview-console.events");
   assert.equal(batch.sessionID, sessionID);
   assert.equal(batch.generation, documentID);
   assert.equal(batch.events.length, 3);
@@ -270,7 +270,7 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
     source: parent,
     origin: parentOrigin,
     data: {
-      type: "kedge.preview-console.start",
+      type: "faros.preview-console.start",
       version: 1,
       sessionID: renewalClaims.sid,
       generation: documentID,
@@ -279,13 +279,13 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
     ports: [renewalPort],
   });
   assert.equal(trustedPort.closed, true);
-  assert.equal(renewalPort.messages[0].type, "kedge.preview-console.connected");
+  assert.equal(renewalPort.messages[0].type, "faros.preview-console.connected");
 
   const beforeHugeEvent = renewalPort.messages.length;
   window.console.log("🔥".repeat(5_000));
   await tick();
   const hugeBatch = renewalPort.messages.slice(beforeHugeEvent)
-    .find((message) => message.type === "kedge.preview-console.events");
+    .find((message) => message.type === "faros.preview-console.events");
   assert.ok(hugeBatch);
   assert.ok(new TextEncoder().encode(JSON.stringify(hugeBatch.events[0])).byteLength <= 1_900);
 
@@ -295,7 +295,7 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
   }
   await tick();
   const burstBatches = renewalPort.messages.slice(beforeBurst)
-    .filter((message) => message.type === "kedge.preview-console.events");
+    .filter((message) => message.type === "faros.preview-console.events");
   assert.ok(burstBatches.length > 1);
   assert.ok(burstBatches.every((message) => message.events.length <= 16));
   assert.equal(burstBatches.reduce((total, message) => total + message.events.length, 0), 200);
@@ -312,7 +312,7 @@ test("bridge ignores attacker-supplied keys and accepts a platform-trusted capab
     source: parent,
     origin: parentOrigin,
     data: {
-      type: "kedge.preview-console.start",
+      type: "faros.preview-console.start",
       version: 1,
       sessionID: renewalClaims.sid,
       generation: documentID,

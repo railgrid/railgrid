@@ -32,8 +32,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
-	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
+	farosclient "github.com/faroshq/faros/pkg/client"
+	pkgversion "github.com/faroshq/faros/pkg/version"
 )
 
 // DialAndFetchSSHHostKey connects to the SSH server on the given local port and
@@ -87,7 +87,7 @@ const (
 type EdgeReporter struct {
 	edgeName        string
 	gvr             schema.GroupVersionResource
-	hubClient       *kedgeclient.Client
+	hubClient       *farosclient.Client
 	tunnelState     <-chan bool // receives true on connect, false on disconnect; may be nil
 	tunnelConnected bool
 	// sshProxyPort is the local port of the SSH daemon the agent proxies to.
@@ -100,7 +100,7 @@ type EdgeReporter struct {
 // skip tunnel-state tracking (tunnelConnected will always report false).
 // sshProxyPort is the local SSH daemon port to probe for its host key (server
 // mode only); pass 0 to skip SSH host key reporting.
-func NewEdgeReporter(edgeName string, gvr schema.GroupVersionResource, hubClient *kedgeclient.Client, tunnelState <-chan bool, sshProxyPort int) *EdgeReporter {
+func NewEdgeReporter(edgeName string, gvr schema.GroupVersionResource, hubClient *farosclient.Client, tunnelState <-chan bool, sshProxyPort int) *EdgeReporter {
 	return &EdgeReporter{
 		edgeName:     edgeName,
 		gvr:          gvr,
@@ -140,7 +140,7 @@ func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 	// The hub may set Hostname/WorkspaceURL; we only patch the fields we own.
 	// "Ready" mirrors the provider's EdgePhaseReady; the Edge type now lives in
 	// the edges-connectivity provider so we build the patch as a plain map and
-	// apply it via the dynamic client (edges.kedge.faros.sh).
+	// apply it via the dynamic client (edges.faros.sh).
 	statusPatch := map[string]interface{}{
 		"phase":             "Ready",
 		"connected":         r.tunnelConnected,

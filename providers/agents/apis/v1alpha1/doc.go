@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // +kubebuilder:object:generate=true
-// +groupName=agents.kedge.faros.sh
+// +groupName=agents.faros.sh
 
 // Package v1alpha1 defines the agents provider's tenant-facing API: Agent,
 // Connection, Schedule, and Run. These are the source of truth for

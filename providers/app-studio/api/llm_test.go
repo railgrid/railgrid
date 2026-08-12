@@ -469,18 +469,18 @@ func TestProjectPromptDocumentsPublishedActionsSDKAliasForActiveGrant(t *testing
 	}
 	prompt := projectSystemPromptForMode(project, nil, projectAssistantCollaborationModeDefault, false)
 	for _, want := range []string{
-		`"@kedge/actions-node": "npm:@crwilhit/kedge-actions-node@0.1.0"`,
+		`"@faros/actions-node": "npm:@crwilhit/faros-actions-node@0.1.0"`,
 		"server component's package.json MUST declare this exact dependency alias",
-		"import { createActionsClient } from '@kedge/actions-node';",
-		"KEDGE_ACTIONS_BASE_URL",
-		"KEDGE_PROJECT",
-		"KEDGE_PROJECT_UID",
-		"KEDGE_ACTIONS_TOKEN_FILE",
-		"KEDGE_ACTIONS_ENVIRONMENT",
-		"KEDGE_ACTIONS_INSTANCE",
-		"KEDGE_ACTIONS_TENANT_PATH",
-		"KEDGE_ACTIONS_ORG",
-		"KEDGE_ACTIONS_WORKSPACE",
+		"import { createActionsClient } from '@faros/actions-node';",
+		"FAROS_ACTIONS_BASE_URL",
+		"FAROS_PROJECT",
+		"FAROS_PROJECT_UID",
+		"FAROS_ACTIONS_TOKEN_FILE",
+		"FAROS_ACTIONS_ENVIRONMENT",
+		"FAROS_ACTIONS_INSTANCE",
+		"FAROS_ACTIONS_TENANT_PATH",
+		"FAROS_ACTIONS_ORG",
+		"FAROS_ACTIONS_WORKSPACE",
 		"component automatically installs and reloads dependencies after the manifest synchronizes",
 		"do not manually run npm install, npm exec, npm search, or package discovery",
 		"do not discover the gateway",
@@ -525,7 +525,7 @@ func TestProjectPromptDoesNotClaimActionsSDKWithoutActiveGrant(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			prompt := projectSystemPromptForMode(tt.project, nil, projectAssistantCollaborationModeDefault, false)
-			if strings.Contains(prompt, "MUST declare this exact dependency alias") || strings.Contains(prompt, "import { createActionsClient } from '@kedge/actions-node';") {
+			if strings.Contains(prompt, "MUST declare this exact dependency alias") || strings.Contains(prompt, "import { createActionsClient } from '@faros/actions-node';") {
 				t.Fatalf("prompt made an SDK availability claim without an active grant:\n%s", prompt)
 			}
 			if !strings.Contains(prompt, "No active integration action grant is present") {

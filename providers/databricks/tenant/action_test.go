@@ -93,11 +93,11 @@ func TestActionExecutorUnknownProjectionReturnsTypedFailure(t *testing.T) {
 	).Build()
 	actionExecutor := &ActionExecutor{
 		factory: &ClientFactory{}, authorityClient: authority,
-		identity: identity{tenantPath: "root:kedge:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
+		identity: identity{tenantPath: "root:faros:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
 		executor: &actionTestExecutor{}, authorizer: &actionTestAuthorizer{},
 	}
 	_, err := actionExecutor.QueryTable(context.Background(), actions.ResourceRef{
-		APIVersion: "databricks.kedge.faros.sh/v1alpha1", Kind: "Table", Resource: "tables", Name: "taxi-trips",
+		APIVersion: "databricks.faros.sh/v1alpha1", Kind: "Table", Resource: "tables", Name: "taxi-trips",
 	}, actions.QueryInput{Columns: []string{"missing"}, Limit: 1})
 	var typed *actions.ActionError
 	if !errors.As(err, &typed) || typed.Code != actions.ActionErrorCodeSchemaProjectionInvalid {
@@ -123,11 +123,11 @@ func TestActionExecutorNotReadyResourceReturnsTypedFailure(t *testing.T) {
 	).Build()
 	actionExecutor := &ActionExecutor{
 		factory: &ClientFactory{}, authorityClient: authority,
-		identity: identity{tenantPath: "root:kedge:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
+		identity: identity{tenantPath: "root:faros:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
 		executor: &actionTestExecutor{}, authorizer: &actionTestAuthorizer{},
 	}
 	_, err := actionExecutor.QueryTable(context.Background(), actions.ResourceRef{
-		APIVersion: "databricks.kedge.faros.sh/v1alpha1", Kind: "Table", Resource: "tables", Name: "taxi-trips",
+		APIVersion: "databricks.faros.sh/v1alpha1", Kind: "Table", Resource: "tables", Name: "taxi-trips",
 	}, actions.QueryInput{Limit: 1})
 	var typed *actions.ActionError
 	if !errors.As(err, &typed) || typed.Code != actions.ActionErrorCodeResourceNotReady {
@@ -157,12 +157,12 @@ func TestActionExecutorResolvesTenantResourcesWithoutControlPlaneWrites(t *testi
 	executor := &actionTestExecutor{}
 	actionExecutor := &ActionExecutor{
 		factory: factory, authorityClient: authority,
-		identity: identity{tenantPath: "root:kedge:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
+		identity: identity{tenantPath: "root:faros:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
 		executor: executor, authorizer: authorizer,
 	}
 
 	result, err := actionExecutor.QueryTable(context.Background(), actions.ResourceRef{
-		APIVersion: "databricks.kedge.faros.sh/v1alpha1", Kind: "Table", Resource: "tables", Name: "taxi-trips",
+		APIVersion: "databricks.faros.sh/v1alpha1", Kind: "Table", Resource: "tables", Name: "taxi-trips",
 	}, actions.QueryInput{Columns: []string{"trip_id"}, Limit: 1})
 	if err != nil {
 		t.Fatalf("QueryTable returned error: %v", err)
@@ -199,11 +199,11 @@ func TestActionExecutorDeniedCallerDoesNotReadProviderResources(t *testing.T) {
 	executor := &actionTestExecutor{}
 	actionExecutor := &ActionExecutor{
 		factory: &ClientFactory{}, authorityClient: authority,
-		identity: identity{tenantPath: "root:kedge:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
+		identity: identity{tenantPath: "root:faros:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
 		executor: executor, authorizer: &actionTestAuthorizer{err: fmt.Errorf("caller denied by SelfSubjectAccessReview")},
 	}
 	if _, err := actionExecutor.QueryTable(context.Background(), actions.ResourceRef{
-		APIVersion: "databricks.kedge.faros.sh/v1alpha1", Kind: "Table", Resource: "tables", Name: "taxi-trips",
+		APIVersion: "databricks.faros.sh/v1alpha1", Kind: "Table", Resource: "tables", Name: "taxi-trips",
 	}, actions.QueryInput{Limit: 1}); err == nil {
 		t.Fatal("denied caller unexpectedly executed action")
 	}

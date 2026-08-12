@@ -38,14 +38,14 @@ import (
 
 // buildProviderMCPHandler is the provider's AGGREGATE MCP endpoint, mounted at
 // the provider root `/mcp`. The hub's MCP aggregate federates it by POSTing
-// tools/list here with the caller's bearer token and X-Kedge-Cluster (the tenant
+// tools/list here with the caller's bearer token and X-Faros-Cluster (the tenant
 // logical-cluster ID). It exposes the kube toolset across every connected
 // KubernetesCluster edge in that tenant; the MCP "cluster" tool parameter selects
 // which edge a call targets.
 //
 // This is the counterpart to the per-edge handler: per-edge is a single fixed
 // KubernetesCluster; this one is the whole fleet, and is what appears in the
-// tenant's aggregate `kedge` MCP endpoint.
+// tenant's aggregate `faros` MCP endpoint.
 func (p *Server) buildProviderMCPHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		logger := klog.FromContext(r.Context()).WithName("provider-mcp-handler")
@@ -56,10 +56,10 @@ func (p *Server) buildProviderMCPHandler() http.Handler {
 			return
 		}
 
-		// Tenant is carried on X-Kedge-Cluster (injected by the hub backend proxy,
+		// Tenant is carried on X-Faros-Cluster (injected by the hub backend proxy,
 		// forwarded by the aggregate's federation client). Without it there is no
 		// tenant to scope edges to — serve an empty-but-valid MCP server.
-		cluster := r.Header.Get("X-Kedge-Cluster")
+		cluster := r.Header.Get("X-Faros-Cluster")
 
 		// Kube MCP applies to KubernetesCluster edges. Enumerate the connected ones
 		// for this tenant from the tunnel registry (keys: "{resource}/{cluster}/{name}").
@@ -93,7 +93,7 @@ func (p *Server) buildProviderMCPHandler() http.Handler {
 		staticCfg := mcpconfig.Default()
 		staticCfg.Stateless = true
 		staticCfg.ServerInstructions = fmt.Sprintf(
-			"You are connected to the kedge edges provider MCP endpoint for tenant workspace %q. "+
+			"You are connected to the faros edges provider MCP endpoint for tenant workspace %q. "+
 				"Kube tools route to a connected KubernetesCluster edge selected by the \"cluster\" parameter; "+
 				"call the targets/list tool to see which edges are reachable. %d edge(s) connected.",
 			cluster, len(edgeNames),
@@ -126,7 +126,7 @@ func (p *Server) buildProviderMCPHandler() http.Handler {
 // the middleware returns before it can dereference clientInfo.
 func ensureUserAgent(r *http.Request) {
 	if r.Header.Get("User-Agent") == "" {
-		r.Header.Set("User-Agent", "kedge-edges-provider")
+		r.Header.Set("User-Agent", "faros-edges-provider")
 	}
 }
 
@@ -135,7 +135,7 @@ func ensureUserAgent(r *http.Request) {
 // URL pattern (behind the hub backend proxy, on the provider's agent-ingress
 // mount, which dispatches /mcp before agent auth):
 //
-//	/services/providers/edges/agent/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/{resource}/{name}/mcp
+//	/services/providers/edges/agent/{cluster}/apis/edges.faros.sh/v1alpha1/{resource}/{name}/mcp
 //
 // cluster, resource and edgeName are parsed from the path by the caller and
 // passed as explicit arguments. Kube MCP tools only apply to KubernetesCluster
@@ -144,7 +144,7 @@ func ensureUserAgent(r *http.Request) {
 //
 // On each request the handler:
 //  1. Extracts the caller's bearer token from the Authorization header.
-//  2. Builds a single-edge kedgeEdgeProvider for (cluster, resource, edgeName).
+//  2. Builds a single-edge farosEdgeProvider for (cluster, resource, edgeName).
 //  3. Spins up a fresh stateless MCP server.
 //  4. Serves via the streamable-HTTP transport (ServeHTTP).
 func (p *Server) buildMCPHandler(cluster, resource, edgeName string) http.Handler {
@@ -174,7 +174,7 @@ func (p *Server) buildMCPHandler(cluster, resource, edgeName string) http.Handle
 		if baseURL == "" {
 			baseURL = p.hubExternalURL
 		}
-		provider := &kedgeEdgeProvider{
+		provider := &farosEdgeProvider{
 			cluster:             cluster,
 			resource:            resource,
 			group:               p.group,
@@ -188,14 +188,14 @@ func (p *Server) buildMCPHandler(cluster, resource, edgeName string) http.Handle
 
 		// 3. Create a stateless MCP server for this request. Use the default
 		//    toolset configuration (core, config, helm) so tools/list returns the
-		//    expected tools. ServerInstructions seeds the LLM with kedge-specific
+		//    expected tools. ServerInstructions seeds the LLM with faros-specific
 		//    context the moment it connects.
 		staticCfg := mcpconfig.Default()
 		staticCfg.Stateless = true
 		staticCfg.ServerInstructions = fmt.Sprintf(
-			"You are connected to a kedge per-edge Kubernetes MCP endpoint for edge %q in tenant workspace %q. "+
+			"You are connected to a faros per-edge Kubernetes MCP endpoint for edge %q in tenant workspace %q. "+
 				"All kube tools route to this single edge — there is no \"cluster\" selection to make here. "+
-				"For multi-cluster operation, point your MCP client at the kedge aggregate endpoint instead.",
+				"For multi-cluster operation, point your MCP client at the faros aggregate endpoint instead.",
 			edgeName, cluster,
 		)
 		srv, err := mcpserver.NewServer(mcpserver.Configuration{StaticConfig: staticCfg}, provider)

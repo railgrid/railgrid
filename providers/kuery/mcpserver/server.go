@@ -11,11 +11,11 @@
 // its declared-coupling blast radius). One structured query against the
 // local index replaces N kubectl round-trips through N edge tunnels —
 // the primary practical justification for the provider (see
-// docs/kuery-provider-architecture.md in the kedge repo).
+// docs/kuery-provider-architecture.md in the faros repo).
 //
 // Mirrors the infrastructure provider's pattern: a stateless streamable
 // HTTP handler building a per-request server, so each caller's
-// X-Kedge-Tenant is closed over in the tool handlers. All queries go
+// X-Faros-Tenant is closed over in the tool handlers. All queries go
 // through queryapi.ScopeToTenant — the same choke point as the REST API.
 package mcpserver
 
@@ -49,12 +49,12 @@ func NewHandler(deps Deps) http.Handler {
 
 func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{
-		Name:    "kedge-kuery",
+		Name:    "faros-kuery",
 		Version: "0.1.0",
-		Title:   "kedge kuery provider",
+		Title:   "faros kuery provider",
 	}, &mcp.ServerOptions{
 		Instructions: "Fleet-wide object search over the edge clusters " +
-			"connected to this kedge workspace. kuery_query answers " +
+			"connected to this faros workspace. kuery_query answers " +
 			"questions like 'which edges run image X' or 'list all " +
 			"deployments with label Y across the fleet' in ONE call — " +
 			"prefer it over per-edge kubectl round-trips. kuery_impact " +

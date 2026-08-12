@@ -16,14 +16,14 @@ func TestParseTenantPath(t *testing.T) {
 		wantOrg string
 		wantWS  string
 	}{
-		// Workspace scope: root:kedge:tenants:<org>:<ws>.
-		{"root:kedge:tenants:acme:ws1", "acme", "ws1"},
-		// Org scope: root:kedge:tenants:<org> (no workspace).
-		{"root:kedge:tenants:acme", "acme", ""},
+		// Workspace scope: root:faros:tenants:<org>:<ws>.
+		{"root:faros:tenants:acme:ws1", "acme", "ws1"},
+		// Org scope: root:faros:tenants:<org> (no workspace).
+		{"root:faros:tenants:acme", "acme", ""},
 		// UUID-shaped ids (the real form).
-		{"root:kedge:tenants:9f2c-1a:proj-7", "9f2c-1a", "proj-7"},
+		{"root:faros:tenants:9f2c-1a:proj-7", "9f2c-1a", "proj-7"},
 		// Wrong / missing prefix → empty.
-		{"root:kedge:orgs:acme:ws1", "", ""},
+		{"root:faros:orgs:acme:ws1", "", ""},
 		{"", "", ""},
 	}
 	for _, c := range cases {

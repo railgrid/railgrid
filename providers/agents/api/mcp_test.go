@@ -29,8 +29,8 @@ func mcpRPC(t *testing.T, url, method string, params any) json.RawMessage {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("Authorization", "Bearer test-token")
-	req.Header.Set("X-Kedge-Tenant", "test-cluster")
-	req.Header.Set("X-Kedge-Cluster", "test-cluster")
+	req.Header.Set("X-Faros-Tenant", "test-cluster")
+	req.Header.Set("X-Faros-Cluster", "test-cluster")
 
 	s := newMCPTestServer(t)
 	rec := httptest.NewRecorder()

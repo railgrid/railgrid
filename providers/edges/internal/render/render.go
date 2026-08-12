@@ -37,7 +37,7 @@ import (
 func intOrString(port int32) intstr.IntOrString { return intstr.FromInt32(port) }
 
 const (
-	edgesGroup    = "edges.kedge.faros.sh"
+	edgesGroup    = "edges.faros.sh"
 	labelWorkload = edgesGroup + "/workload"
 
 	// targetNamespace is where the agent materializes workloads on the edge

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# kedge-access-proxy: the infrastructure-owned per-app gate that templates
+# faros-access-proxy: the infrastructure-owned per-app gate that templates
 # render into their own graph. Build context is providers/infrastructure.
 FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 
@@ -14,10 +14,10 @@ COPY . .
 
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
-    -ldflags="-s -w" -o /kedge-access-proxy ./cmd/access-proxy/
+    -ldflags="-s -w" -o /faros-access-proxy ./cmd/access-proxy/
 
 # The proxy dials the hub over TLS, so it only needs CA roots; distroless
 # static ships them and nothing else.
 FROM gcr.io/distroless/static:nonroot
-COPY --from=builder /kedge-access-proxy /kedge-access-proxy
-ENTRYPOINT ["/kedge-access-proxy"]
+COPY --from=builder /faros-access-proxy /faros-access-proxy
+ENTRYPOINT ["/faros-access-proxy"]

@@ -3,7 +3,7 @@ import { ref } from 'vue'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
-const STORAGE_KEY = 'kedge-theme'
+const STORAGE_KEY = 'faros-theme'
 
 function getSystemTheme(): 'light' | 'dark' {
   // Dark is the hard fallback (matches the CSS base) when matchMedia is

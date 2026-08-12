@@ -28,7 +28,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 )
 
-// kedgeEdgeProvider implements the kubernetes-mcp-server Provider interface so
+// farosEdgeProvider implements the kubernetes-mcp-server Provider interface so
 // the MCP server can route Kubernetes API calls to a specific edge's tunnel.
 //
 // It is single-edge: cluster, resource and edgeName are fixed at construction.
@@ -36,27 +36,27 @@ import (
 // in the provider's ConnManager. All kube API calls are routed through the
 // provider's own consumer edgeproxy `k8s` subresource (reached back through the
 // hub via hubBase + edgeProxyPublicPath), which streams down the reverse tunnel.
-type kedgeEdgeProvider struct {
+type farosEdgeProvider struct {
 	cluster             string       // kcp logical-cluster ID, e.g. "11tcw27t4rdtnacy"
 	resource            string       // GVR resource, e.g. "kubernetesclusters"
-	group               string       // API group, e.g. "edges.kedge.faros.sh"
+	group               string       // API group, e.g. "edges.faros.sh"
 	version             string       // API version, e.g. "v1alpha1"
 	edgeName            string       // fixed edge name, e.g. "my-cluster"
 	edgeConnManager     *ConnManager // shared dialer registry (tunnel liveness)
-	hubBase             string       // e.g. "https://kedge.example.com" (no trailing slash)
+	hubBase             string       // e.g. "https://faros.example.com" (no trailing slash)
 	edgeProxyPublicPath string       // e.g. "/services/providers/edges/edgeproxy"
 	bearerToken         string       // caller's bearer token, forwarded to the edgeproxy
 }
 
-// Ensure kedgeEdgeProvider implements mcpkubernetes.Provider.
-var _ mcpkubernetes.Provider = (*kedgeEdgeProvider)(nil)
+// Ensure farosEdgeProvider implements mcpkubernetes.Provider.
+var _ mcpkubernetes.Provider = (*farosEdgeProvider)(nil)
 
-// IsOpenShift always returns false — kedge edges are vanilla Kubernetes clusters.
-func (p *kedgeEdgeProvider) IsOpenShift(_ context.Context) bool { return false }
+// IsOpenShift always returns false — faros edges are vanilla Kubernetes clusters.
+func (p *farosEdgeProvider) IsOpenShift(_ context.Context) bool { return false }
 
 // GetTargets returns the single fixed edgeName if its reverse tunnel is
 // registered in ConnManager, or an empty slice if the edge is not connected.
-func (p *kedgeEdgeProvider) GetTargets(_ context.Context) ([]string, error) {
+func (p *farosEdgeProvider) GetTargets(_ context.Context) ([]string, error) {
 	key := edgeConnKey(p.resource, p.cluster, p.edgeName)
 	if _, ok := p.edgeConnManager.Load(key); ok {
 		return []string{p.edgeName}, nil
@@ -68,7 +68,7 @@ func (p *kedgeEdgeProvider) GetTargets(_ context.Context) ([]string, error) {
 // by the provider's own consumer edgeproxy and reached back through the hub:
 //
 //	{hubBase}{edgeProxyPublicPath}/clusters/{cluster}/apis/{group}/{version}/{resource}/{name}/k8s
-func (p *kedgeEdgeProvider) k8sSubresourceURL(edgeName string) string {
+func (p *farosEdgeProvider) k8sSubresourceURL(edgeName string) string {
 	return fmt.Sprintf("%s%s/clusters/%s/apis/%s/%s/%s/%s/k8s",
 		strings.TrimRight(p.hubBase, "/"),
 		strings.TrimRight(p.edgeProxyPublicPath, "/"),
@@ -77,7 +77,7 @@ func (p *kedgeEdgeProvider) k8sSubresourceURL(edgeName string) string {
 
 // GetDerivedKubernetes returns a *mcpkubernetes.Kubernetes pointing at the edge
 // agent's Kubernetes API, reached via the provider's edgeproxy k8s subresource.
-func (p *kedgeEdgeProvider) GetDerivedKubernetes(_ context.Context, edgeName string) (*mcpkubernetes.Kubernetes, error) {
+func (p *farosEdgeProvider) GetDerivedKubernetes(_ context.Context, edgeName string) (*mcpkubernetes.Kubernetes, error) {
 	// Guard: if the caller passes an empty edge name (e.g. MCP client sends
 	// cluster=""), fall back to the provider's fixed edge name.
 	if edgeName == "" {
@@ -124,17 +124,17 @@ func (p *kedgeEdgeProvider) GetDerivedKubernetes(_ context.Context, edgeName str
 
 // GetDefaultTarget returns the fixed edge name so MCP tool calls that omit the
 // "cluster" parameter automatically route to the only available edge.
-func (p *kedgeEdgeProvider) GetDefaultTarget() string { return p.edgeName }
+func (p *farosEdgeProvider) GetDefaultTarget() string { return p.edgeName }
 
 // GetTargetParameterName returns "cluster" as the MCP target query parameter.
 // "cluster" is used rather than "edge" because users think in terms of clusters.
-func (p *kedgeEdgeProvider) GetTargetParameterName() string { return "cluster" }
+func (p *farosEdgeProvider) GetTargetParameterName() string { return "cluster" }
 
 // WatchTargets is a no-op; dynamic target reloading is not implemented.
-func (p *kedgeEdgeProvider) WatchTargets(_ mcpkubernetes.McpReload) {}
+func (p *farosEdgeProvider) WatchTargets(_ mcpkubernetes.McpReload) {}
 
 // Close is a no-op.
-func (p *kedgeEdgeProvider) Close() {}
+func (p *farosEdgeProvider) Close() {}
 
 // multiEdgeProvider implements the kubernetes-mcp-server Provider interface for
 // routing kube tool calls across a SET of edges in one tenant — the provider's
@@ -147,7 +147,7 @@ type multiEdgeProvider struct {
 	version             string       // API version
 	edgeNames           []string     // candidate edge names in this tenant
 	edgeConnManager     *ConnManager // shared dialer registry
-	hubBase             string       // e.g. "https://kedge.example.com" (no trailing slash)
+	hubBase             string       // e.g. "https://faros.example.com" (no trailing slash)
 	edgeProxyPublicPath string       // e.g. "/services/providers/edges/edgeproxy"
 	bearerToken         string       // caller's bearer token
 }
@@ -176,7 +176,7 @@ func (p *multiEdgeProvider) GetDerivedKubernetes(ctx context.Context, edgeName s
 	if edgeName == "" {
 		return nil, fmt.Errorf("no edge name specified and no connected edges available")
 	}
-	single := &kedgeEdgeProvider{
+	single := &farosEdgeProvider{
 		cluster:             p.cluster,
 		resource:            p.resource,
 		group:               p.group,

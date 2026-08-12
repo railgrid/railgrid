@@ -64,7 +64,7 @@ describe('chat streaming', () => {
       scripted(
         [
           { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
-          { event: 'tool_start', data: { id: 't1', name: 'github__list_issues', args: '{"repo":"kedge"}' } },
+          { event: 'tool_start', data: { id: 't1', name: 'github__list_issues', args: '{"repo":"faros"}' } },
         ],
         gate,
       ),
@@ -214,7 +214,7 @@ describe('transcript rehydration', () => {
     // The API returns newest-first; the component reverses it.
     const listMessages = vi.fn().mockResolvedValue([
       { id: '3', role: 'assistant', content: 'done', runID: 'r1' },
-      { id: '2', role: 'tool', content: 'ok', runID: 'r1', metadata: { tool: 'web_search', args: '{"q":"kedge"}', durationMS: 90 } },
+      { id: '2', role: 'tool', content: 'ok', runID: 'r1', metadata: { tool: 'web_search', args: '{"q":"faros"}', durationMS: 90 } },
       { id: '1', role: 'user', content: 'search', runID: 'r1' },
     ])
     const api = stubApi({ listMessages })

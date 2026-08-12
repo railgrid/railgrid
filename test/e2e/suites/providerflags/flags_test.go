@@ -37,7 +37,7 @@ import (
 // first-party builtins left, so the "known:" list is empty — but the
 // unknown-name validation still fires.)
 func TestUnknownProviderRejected(t *testing.T) {
-	dataDir := tempDir(t, "kedge-e2e-flags-unknown-")
+	dataDir := tempDir(t, "faros-e2e-flags-unknown-")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -78,7 +78,7 @@ func TestFilteredEnableReflectedInAPI(t *testing.T) {
 	// with fixture builtins if the hub ever ships first-party builtins again.
 	t.Skip("no first-party hub builtins after the edges/mcp decouple; nothing to positively filter")
 
-	dataDir := tempDir(t, "kedge-e2e-flags-filtered-")
+	dataDir := tempDir(t, "faros-e2e-flags-filtered-")
 	logf, _ := os.Create(filepath.Join(dataDir, "hub.log"))
 
 	cmd := exec.Command(hubBinary,
@@ -132,7 +132,7 @@ func tempDir(t *testing.T, prefix string) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if os.Getenv("KEDGE_E2E_KEEP_DATA") == "true" {
+		if os.Getenv("FAROS_E2E_KEEP_DATA") == "true" {
 			t.Logf("preserved %s", d)
 			return
 		}

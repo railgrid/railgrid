@@ -16,7 +16,7 @@ limitations under the License.
 
 // Package organization implements the bootstrap controller that gives every
 // User a personal Organization on creation (per docs/organizations.md §Personal
-// Org). It reconciles two kinds in root:kedge:users:
+// Org). It reconciles two kinds in root:faros:users:
 //
 //   - User: when a User has no status.personalOrg, the controller creates a
 //     personal Organization for them and patches status.personalOrg with the
@@ -24,7 +24,7 @@ limitations under the License.
 //     status.personalOrg is set.
 //
 //   - Organization: ensures status.workspacePath is set to the canonical
-//     `root:kedge:orgs:{metadata.name}` once and only once. The actual kcp
+//     `root:faros:orgs:{metadata.name}` once and only once. The actual kcp
 //     Workspace at that path is NOT created by this PR — that lands in PR #2
 //     when the `organization` WorkspaceType is registered. Until then the
 //     controller leaves a WorkspaceReady=False condition with reason
@@ -33,7 +33,7 @@ limitations under the License.
 //
 // Scope as of PR #4:
 //   - User → Organization bootstrap (PR #1).
-//   - kcp Workspace creation at root:kedge:orgs:{uuid} of type
+//   - kcp Workspace creation at root:faros:orgs:{uuid} of type
 //     `organization`, idempotent + self-healing per O-11 (PR #2).
 //   - Admin Membership write inside the Org workspace + UserMembershipIndex
 //     entry sync (PR #4). The reconciler is now a four-step state
@@ -68,8 +68,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros-kedge/pkg/hub/quota"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	"github.com/faroshq/faros/pkg/hub/quota"
 )
 
 const (
@@ -78,7 +78,7 @@ const (
 	// orgWorkspaceParent is the kcp path beneath which every Organization
 	// workspace will live. Combined with metadata.name gives the canonical
 	// status.workspacePath value.
-	orgWorkspaceParent = "root:kedge:tenants"
+	orgWorkspaceParent = "root:faros:tenants"
 )
 
 // WorkspaceProvisioner is the slice of the kcp Bootstrapper that this
@@ -91,7 +91,7 @@ const (
 // Implemented by *pkg/hub/kcp.Bootstrapper.
 type WorkspaceProvisioner interface {
 	// EnsureOrgWorkspace materializes the kcp Workspace at
-	// root:kedge:orgs:{orgUUID}. Idempotent (per O-11).
+	// root:faros:orgs:{orgUUID}. Idempotent (per O-11).
 	EnsureOrgWorkspace(ctx context.Context, orgUUID string) error
 
 	// EnsureOrgMembership creates an org-scope Membership CR inside the
@@ -100,18 +100,18 @@ type WorkspaceProvisioner interface {
 	EnsureOrgMembership(ctx context.Context, orgUUID, userName, role string) error
 
 	// EnsureChildWorkspace materializes the kcp Workspace at
-	// root:kedge:orgs:{orgUUID}:{wsUUID} of type `workspace`. Used to
+	// root:faros:orgs:{orgUUID}:{wsUUID} of type `workspace`. Used to
 	// create the user's default team Workspace inside their personal
-	// Org so the portal can pin a default X-Kedge-Workspace header.
+	// Org so the portal can pin a default X-Faros-Workspace header.
 	// Idempotent (per O-11).
 	EnsureChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error
 
-	// EnsureChildWorkspaceKedgeBinding materializes an APIBinding to
-	// root:kedge:providers.core.faros.sh inside the child team
-	// Workspace, with the permission claims kedge controllers need.
+	// EnsureChildWorkspaceFarosBinding materializes an APIBinding to
+	// root:faros:providers.core.faros.sh inside the child team
+	// Workspace, with the permission claims faros controllers need.
 	// This is what makes Edge / MCPServer / Placement / VirtualWorkload
 	// usable inside the user's default Workspace. Idempotent.
-	EnsureChildWorkspaceKedgeBinding(ctx context.Context, orgUUID, wsUUID string) error
+	EnsureChildWorkspaceFarosBinding(ctx context.Context, orgUUID, wsUUID string) error
 
 	// EnsureChildWorkspaceAdmin grants cluster-admin to the User in
 	// the child team Workspace via a ClusterRoleBinding for the User's
@@ -139,7 +139,7 @@ type Reconciler struct {
 
 // SetupWithManager registers the User and Organization watches with mgr.
 // provisioner is invoked from the status-reconcile step to materialize the
-// kcp Workspace at root:kedge:orgs:{uuid}. Pass nil only for tests that
+// kcp Workspace at root:faros:orgs:{uuid}. Pass nil only for tests that
 // don't exercise the workspace-creation path.
 //
 // The controller is keyed on User (the trigger for personal-Org creation)
@@ -165,7 +165,7 @@ func SetupWithManager(mgr manager.Manager, provisioner WorkspaceProvisioner) err
 }
 
 // NewManager constructs a controller-runtime manager bound to a single
-// workspace's rest.Config (typically the root:kedge:users workspace
+// workspace's rest.Config (typically the root:faros:users workspace
 // returned by Bootstrapper.UsersConfig). The hub server calls this and
 // runs the manager in a goroutine alongside the multicluster managers.
 func NewManager(cfg *rest.Config, scheme *runtime.Scheme) (manager.Manager, error) {
@@ -319,7 +319,7 @@ func (r *Reconciler) createPersonalOrg(ctx context.Context, user *tenancyv1alpha
 // reconcileOrganizationStatus is the six-step state machine for a
 // personal Organization:
 //
-//	A. Workspace path        — record the canonical root:kedge:orgs:{uuid}
+//	A. Workspace path        — record the canonical root:faros:orgs:{uuid}
 //	                           in status.workspacePath.
 //	B. EnsureOrgWorkspace    — materialize the kcp Workspace.
 //	                           Sets WorkspaceReady condition.
@@ -328,9 +328,9 @@ func (r *Reconciler) createPersonalOrg(ctx context.Context, user *tenancyv1alpha
 //	                           so the user is the Org's first admin.
 //	                           Sets MembershipReady condition.
 //	E. EnsureChildWorkspace  — materialize the default child team
-//	                           Workspace at root:kedge:orgs:{org}:{ws}
+//	                           Workspace at root:faros:orgs:{org}:{ws}
 //	                           so the portal can pin a default
-//	                           X-Kedge-Workspace header on first login.
+//	                           X-Faros-Workspace header on first login.
 //	                           Sets DefaultWorkspaceReady condition.
 //	F. EnsureWorkspaceMembership — create a Membership{user,
 //	                           scope:workspace, role:admin} inside the
@@ -486,62 +486,62 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 
 	// (Former Step F — workspace-scope Membership CR inside the child
 	// workspace — was dropped when the workspace WorkspaceType stopped
-	// binding tenants.kedge.faros.sh. The tenancy CRDs are system
+	// binding tenants.faros.sh. The tenancy CRDs are system
 	// primitives that the user shouldn't see in their default workspace;
 	// the UMI entry written by Step D below carries the same fact for
 	// the portal switcher to render. Manual workspace-membership
 	// management for additional users lands later via a hub-mediated
 	// API rather than direct in-workspace CR writes.)
 
-	// Step G: kedge APIBinding inside the default child Workspace
+	// Step G: faros APIBinding inside the default child Workspace
 	// (only attempt after E succeeded). Without this binding the user
 	// cannot read/write Edges / MCPServers / Placements in their
 	// default Workspace.
-	var kedgeBindCond metav1.Condition
-	kedgeBindOK := false
+	var farosBindCond metav1.Condition
+	farosBindOK := false
 	switch {
 	case !defaultWorkspaceOK:
-		kedgeBindCond = metav1.Condition{
-			Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceKedgeBound,
+		farosBindCond = metav1.Condition{
+			Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceFarosBound,
 			Status:  metav1.ConditionFalse,
 			Reason:  reasonAwaitingDefaultWorkspace,
-			Message: "kedge APIBinding deferred until the default Workspace is Ready.",
+			Message: "faros APIBinding deferred until the default Workspace is Ready.",
 		}
 	default:
-		if err := r.provisioner.EnsureChildWorkspaceKedgeBinding(ctx, org.Name, wsUUID); err != nil {
-			logger.Error(err, "Writing kedge APIBinding failed; will retry")
-			kedgeBindCond = metav1.Condition{
-				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceKedgeBound,
+		if err := r.provisioner.EnsureChildWorkspaceFarosBinding(ctx, org.Name, wsUUID); err != nil {
+			logger.Error(err, "Writing faros APIBinding failed; will retry")
+			farosBindCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceFarosBound,
 				Status:  metav1.ConditionFalse,
-				Reason:  reasonKedgeBindingFailed,
+				Reason:  reasonFarosBindingFailed,
 				Message: err.Error(),
 			}
 		} else {
-			kedgeBindCond = metav1.Condition{
-				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceKedgeBound,
+			farosBindCond = metav1.Condition{
+				Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceFarosBound,
 				Status:  metav1.ConditionTrue,
-				Reason:  reasonKedgeBindingReady,
-				Message: "kedge APIBinding (core.faros.sh) written to " + desiredPath + ":" + wsUUID + ".",
+				Reason:  reasonFarosBindingReady,
+				Message: "faros APIBinding (core.faros.sh) written to " + desiredPath + ":" + wsUUID + ".",
 			}
-			kedgeBindOK = true
+			farosBindOK = true
 		}
 	}
-	if setCondition(&org.Status.Conditions, kedgeBindCond, org.Generation) {
+	if setCondition(&org.Status.Conditions, farosBindCond, org.Generation) {
 		changed = true
 	}
 
 	// Step H: cluster-admin RBAC for the user in the default Workspace
 	// (only attempt after G succeeded — the rbacIdentity needs the
-	// kedge APIBinding's claim acceptance to write the ClusterRoleBinding).
+	// faros APIBinding's claim acceptance to write the ClusterRoleBinding).
 	var adminCond metav1.Condition
 	workspaceAdminOK := false
 	switch {
-	case !kedgeBindOK:
+	case !farosBindOK:
 		adminCond = metav1.Condition{
 			Type:    tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady,
 			Status:  metav1.ConditionFalse,
-			Reason:  reasonAwaitingKedgeBinding,
-			Message: "Workspace-admin grant deferred until the kedge APIBinding is Bound.",
+			Reason:  reasonAwaitingFarosBinding,
+			Message: "Workspace-admin grant deferred until the faros APIBinding is Bound.",
 		}
 	case user.Spec.RBACIdentity == "":
 		// Sign-in flows that haven't yet set rbacIdentity (a transient
@@ -593,7 +593,7 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 	}
 
 	// Step I: default MCPServer (only after H succeeded — needs admin
-	// claims accepted via the kedge APIBinding).
+	// claims accepted via the faros APIBinding).
 	var mcpCond metav1.Condition
 	mcpOK := false
 	switch {
@@ -630,7 +630,7 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 	// Step J (no condition): patch User.spec.DefaultCluster to the kcp
 	// logical-cluster short hash for the child Workspace so kubectl can
 	// address it as /clusters/{hash}/api... — using the full
-	// root:kedge:orgs:{org}:{ws} path works but makes for ugly
+	// root:faros:orgs:{org}:{ws} path works but makes for ugly
 	// kubeconfig server URLs. Only runs after Step E succeeds; the
 	// lookup uses Workspace.spec.cluster which kcp populates on Ready.
 	if defaultWorkspaceOK {
@@ -691,9 +691,9 @@ func (r *Reconciler) reconcileOrganizationStatus(ctx context.Context, user *tena
 	}
 
 	// Aggregate Ready = all seven business steps green
-	// (workspace, membership, default WS, kedge binding, admin,
+	// (workspace, membership, default WS, faros binding, admin,
 	// MCPServer, index).
-	readyCond := aggregateReady(workspaceOK, membershipOK, defaultWorkspaceOK, kedgeBindOK, workspaceAdminOK, mcpOK, indexCond.Status == metav1.ConditionTrue)
+	readyCond := aggregateReady(workspaceOK, membershipOK, defaultWorkspaceOK, farosBindOK, workspaceAdminOK, mcpOK, indexCond.Status == metav1.ConditionTrue)
 	if setCondition(&org.Status.Conditions, readyCond, org.Generation) {
 		changed = true
 	}
@@ -757,9 +757,9 @@ const (
 	reasonAwaitingDefaultWorkspaceUUID       = "AwaitingDefaultWorkspaceUUID"
 	reasonAwaitingDefaultWorkspace           = "AwaitingDefaultWorkspace"
 
-	// kedge APIBinding reasons (Step G).
-	reasonKedgeBindingReady  = "KedgeBindingWritten"
-	reasonKedgeBindingFailed = "KedgeBindingWriteFailed"
+	// faros APIBinding reasons (Step G).
+	reasonFarosBindingReady  = "FarosBindingWritten"
+	reasonFarosBindingFailed = "FarosBindingWriteFailed"
 
 	// Workspace-admin RBAC reasons (Step H).
 	reasonWorkspaceAdminReady  = "WorkspaceAdminGranted"
@@ -771,7 +771,7 @@ const (
 
 	// Awaiting reasons for downstream steps when the immediate prerequisite
 	// has not yet finished.
-	reasonAwaitingKedgeBinding   = "AwaitingKedgeBinding"
+	reasonAwaitingFarosBinding   = "AwaitingFarosBinding"
 	reasonAwaitingWorkspaceAdmin = "AwaitingWorkspaceAdmin"
 )
 
@@ -810,7 +810,7 @@ func (r *Reconciler) reconcileWorkspace(ctx context.Context, org *tenancyv1alpha
 // rbacIdentity in each (excluding skipWsUUID, which the caller already
 // reconciled as Step H). Pre-PR fix the REST createWorkspace path
 // skipped EnsureChildWorkspaceAdmin entirely, leaving every
-// portal-created workspace without a kedge-cluster-admin
+// portal-created workspace without a faros-cluster-admin
 // ClusterRoleBinding — switching to one of them surfaced as a GraphQL
 // 403 once the workspace switcher actually retargeted /graphql/{cluster}
 // in v0.0.63. This reconciler step self-heals that legacy state.
@@ -844,13 +844,13 @@ func (r *Reconciler) backfillWorkspaceAdmins(ctx context.Context, user *tenancyv
 }
 
 // aggregateReady combines the seven step outcomes (workspace,
-// membership, default child workspace, kedge APIBinding,
+// membership, default child workspace, faros APIBinding,
 // workspace-admin grant, default MCPServer, index) into the overall
 // Ready condition. Ready=True iff all seven are True; otherwise
 // Ready=False with reasonAllStepsNotReady so observers know to
 // consult the granular conditions for the specific failure cause.
-func aggregateReady(workspaceOK, membershipOK, defaultWorkspaceOK, kedgeBindOK, workspaceAdminOK, mcpOK, indexOK bool) metav1.Condition {
-	if workspaceOK && membershipOK && defaultWorkspaceOK && kedgeBindOK && workspaceAdminOK && mcpOK && indexOK {
+func aggregateReady(workspaceOK, membershipOK, defaultWorkspaceOK, farosBindOK, workspaceAdminOK, mcpOK, indexOK bool) metav1.Condition {
+	if workspaceOK && membershipOK && defaultWorkspaceOK && farosBindOK && workspaceAdminOK && mcpOK && indexOK {
 		return metav1.Condition{
 			Type:    tenancyv1alpha1.OrganizationConditionReady,
 			Status:  metav1.ConditionTrue,
@@ -1022,7 +1022,7 @@ func (r *Reconciler) mapOrganizationToUser(_ context.Context, obj client.Object)
 // to. Set on creation and used by the dedup check + the reverse map watch.
 // Not user-facing; the canonical truth is Organization.spec.personal and
 // User.status.personalOrg.
-const labelPersonalOwner = "tenants.kedge.faros.sh/personal-owner"
+const labelPersonalOwner = "tenants.faros.sh/personal-owner"
 
 // personalOrgDisplayName produces the default displayName for a personal
 // Organization (per docs/organizations.md §Personal Org and decision O-12

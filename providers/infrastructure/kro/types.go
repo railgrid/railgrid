@@ -35,19 +35,19 @@ type Template struct {
 	// identifier callers reference when provisioning an instance.
 	Name string `json:"name"`
 	// DisplayName, Description, Category, Cloud are pulled from the
-	// RGD's labels/annotations (see kedge.faros.sh/* convention in
+	// RGD's labels/annotations (see faros.sh/* convention in
 	// docs/credentials.md). Empty strings are valid — the UI falls
 	// back to Name and the "Other" category.
 	DisplayName string `json:"displayName"`
 	Description string `json:"description"`
 	Category    string `json:"category,omitempty"`
 	Cloud       string `json:"cloud,omitempty"`
-	// Version is read from the kedge.faros.sh/template-version label.
+	// Version is read from the faros.sh/template-version label.
 	// Required when provisioning so we never silently provision
 	// against a different RGD generation than the user previewed.
 	Version string `json:"version,omitempty"`
 	// IconURL is an optional asset URL stored in the
-	// kedge.faros.sh/icon-url annotation. The portal falls back to a
+	// faros.sh/icon-url annotation. The portal falls back to a
 	// generic icon when empty.
 	IconURL string `json:"iconURL,omitempty"`
 	// Exposure says whether instances of this template are reachable from
@@ -77,7 +77,7 @@ type Template struct {
 	// properties (per-field), required ([]string).
 	InputsSchema map[string]any `json:"inputsSchema"`
 	// SampleValues is an optional example payload provided by the RGD
-	// author via the kedge.faros.sh/sample-values annotation. The
+	// author via the faros.sh/sample-values annotation. The
 	// portal uses it to seed the form so users see a working example.
 	SampleValues map[string]any `json:"sampleValues,omitempty"`
 	// Agent is operational guidance for AI agents that discover this
@@ -86,7 +86,7 @@ type Template struct {
 	Agent *TemplateAgent `json:"agent,omitempty"`
 	// Development is the template's development-mode contract, read from
 	// spec.development. Non-nil means instances can be provisioned with
-	// kedgeMode "development": image inputs are ignored, each component runs
+	// farosMode "development": image inputs are ignored, each component runs
 	// a platform dev server with hot reload, and source reaches it via the
 	// dev_sync tool routed by each component's workspacePath. nil means the
 	// template has no development mode.
@@ -94,13 +94,13 @@ type Template struct {
 	// ImmutableInputs are value dot-paths this template declares as not
 	// updatable on a live instance (e.g. "database.version" — a Postgres
 	// major upgrade is not an in-place operation), read from the
-	// kedge.faros.sh/immutable-inputs annotation (comma-separated). The
-	// platform's own always-immutable set (name, kedgeMode, platform-stamped
+	// faros.sh/immutable-inputs annotation (comma-separated). The
+	// platform's own always-immutable set (name, farosMode, platform-stamped
 	// fields) applies on top and is not listed here.
 	ImmutableInputs []string `json:"immutableInputs,omitempty"`
 	// View is optional presentation metadata that drives how the portal
 	// renders this template's instances (extra list columns + grouped
-	// detail fields). Read from the kedge.faros.sh/view annotation on the
+	// detail fields). Read from the faros.sh/view annotation on the
 	// RGD (the Template CRD carries the equivalent under spec.view, which
 	// the portal reads directly over GraphQL). nil falls back to the
 	// default raw-values rendering.
@@ -190,7 +190,7 @@ type TemplateDevelopmentComponent struct {
 
 	// Toolchain is the ONLY runtime installed in this component's development
 	// sandbox image (e.g. "node"), from the template's
-	// ${kedge.devImage.<toolchain>} token. Source written in another language
+	// ${faros.devImage.<toolchain>} token. Source written in another language
 	// cannot run in the sandbox regardless of correctness. Empty when the
 	// template declares no parseable devImage.
 	Toolchain string `json:"toolchain,omitempty"`
@@ -263,46 +263,46 @@ type CreateInstanceRequest struct {
 const (
 	// LabelExpose gates RGD visibility. Only RGDs labeled
 	// "true" appear in the catalog. Lets admins stage drafts.
-	LabelExpose = "kedge.faros.sh/expose"
+	LabelExpose = "faros.sh/expose"
 	// LabelTemplateName is the catalog-stable slug. Defaults to
 	// RGD metadata.name; override when the kro name has to change but
 	// you want consumers' bookmarks to keep working.
-	LabelTemplateName = "kedge.faros.sh/template-name"
+	LabelTemplateName = "faros.sh/template-name"
 	// LabelTemplateVersion pins a semver to the RGD revision. Required
 	// when provisioning so a chart bump doesn't silently change
 	// what gets provisioned.
-	LabelTemplateVersion = "kedge.faros.sh/template-version"
+	LabelTemplateVersion = "faros.sh/template-version"
 	// LabelCategory lets the catalog UI render filter chips.
-	LabelCategory = "kedge.faros.sh/category"
+	LabelCategory = "faros.sh/category"
 	// LabelCloud is the target cloud (aws/gcp/azure/k8s/...) — used
 	// for credential schema validation and filtering.
-	LabelCloud = "kedge.faros.sh/cloud"
+	LabelCloud = "faros.sh/cloud"
 
-	AnnotationDisplayName  = "kedge.faros.sh/display-name"
-	AnnotationDescription  = "kedge.faros.sh/description"
-	AnnotationIconURL      = "kedge.faros.sh/icon-url"
-	AnnotationSampleValues = "kedge.faros.sh/sample-values"
+	AnnotationDisplayName  = "faros.sh/display-name"
+	AnnotationDescription  = "faros.sh/description"
+	AnnotationIconURL      = "faros.sh/icon-url"
+	AnnotationSampleValues = "faros.sh/sample-values"
 	// AnnotationView is the JSON-encoded TemplateView the portal uses to
 	// render instances of this template. See TemplateView for the shape.
-	AnnotationView = "kedge.faros.sh/view"
+	AnnotationView = "faros.sh/view"
 
 	// LabelTenant is set on every instance CR + the credentials Secret
 	// the provider creates on the user's behalf, so list operations
 	// can be scoped per-tenant via a label selector. The value is the
-	// tenant kcp workspace path (e.g. root:kedge:orgs:{uuid}).
-	LabelTenant = "kedge.faros.sh/tenant"
+	// tenant kcp workspace path (e.g. root:faros:orgs:{uuid}).
+	LabelTenant = "faros.sh/tenant"
 	// LabelUser records the User CR name of the human who provisioned
 	// the instance. Audit-only — never used for authz.
-	LabelUser = "kedge.faros.sh/user"
+	LabelUser = "faros.sh/user"
 	// LabelTemplate records which template (by Name) produced the
 	// instance, so reverse-lookups don't require parsing the CR's
 	// APIVersion/Kind back into a template name.
-	LabelTemplate = "kedge.faros.sh/template"
+	LabelTemplate = "faros.sh/template"
 	// LabelManagedBy is set on the per-tenant namespace and any
 	// helper resources the provider creates in central kro.
-	LabelManagedBy     = "kedge.faros.sh/managed-by"
+	LabelManagedBy     = "faros.sh/managed-by"
 	ManagedByValue     = "infrastructure-provider"
-	ManagedByNamespace = "kedge-tenants"
+	ManagedByNamespace = "faros-tenants"
 )
 
 // RGD is the kro upstream type expressed as a plain GVR. The provider

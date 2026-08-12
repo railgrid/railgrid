@@ -416,8 +416,8 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 			// org/workspace UUIDs the hub derives from the tenant path.
 			// Commit convergence reads these back.
 			Annotations: map[string]string{
-				"ai.kedge.faros.sh/org-uuid":       id.orgUUID,
-				"ai.kedge.faros.sh/workspace-uuid": id.workspaceUUID,
+				"ai.faros.sh/org-uuid":       id.orgUUID,
+				"ai.faros.sh/workspace-uuid": id.workspaceUUID,
 			},
 		},
 		Spec: defaultProjectSpec(name, req.DisplayName, req.Description, repoPlan.projectBinding()),

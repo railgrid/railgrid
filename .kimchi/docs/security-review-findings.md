@@ -1,4 +1,4 @@
-# Kedge Security Review Findings
+# Faros Security Review Findings
 
 **Review Date:** 2026-05-05  
 **Reviewer:** Security Analysis  
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-The kedge codebase demonstrates good security practices overall with proper OIDC/PKCE flow implementation, constant-time token comparison, and delegated authorization via kcp. However, several security concerns were identified that should be addressed.
+The faros codebase demonstrates good security practices overall with proper OIDC/PKCE flow implementation, constant-time token comparison, and delegated authorization via kcp. However, several security concerns were identified that should be addressed.
 
 ---
 

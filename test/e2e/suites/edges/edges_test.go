@@ -33,12 +33,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	"github.com/faroshq/faros-kedge/pkg/util/identity"
+	"github.com/faroshq/faros/pkg/util/identity"
 )
 
 var (
-	kubernetesClusterGVR = schema.GroupVersionResource{Group: "edges.kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
-	linuxServerGVR       = schema.GroupVersionResource{Group: "edges.kedge.faros.sh", Version: "v1alpha1", Resource: "linuxservers"}
+	kubernetesClusterGVR = schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
+	linuxServerGVR       = schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "linuxservers"}
 	apiBindingGVR        = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}
 )
 
@@ -47,8 +47,8 @@ var (
 // holds the APIResourceSchemas + APIExport (with the 5 permission claims) that
 // `edges-provider init` authored.
 func TestACatalogProvisioning(t *testing.T) {
-	cl := kcpDynamic(t, "root:kedge:system:providers", adminToken)
-	gvr := schema.GroupVersionResource{Group: "providers.kedge.faros.sh", Version: "v1alpha1", Resource: "catalogentries"}
+	cl := kcpDynamic(t, "root:faros:system:providers", adminToken)
+	gvr := schema.GroupVersionResource{Group: "providers.faros.sh", Version: "v1alpha1", Resource: "catalogentries"}
 	ready := waitForCondition(t, 90*time.Second, func() (bool, string) {
 		got, err := cl.Resource(gvr).Get(ctxWithTimeout(t, 5*time.Second), "edges", metav1.GetOptions{})
 		if err != nil {
@@ -78,7 +78,7 @@ func TestACatalogProvisioning(t *testing.T) {
 		want := map[string]bool{"kubernetesclusters": false, "linuxservers": false}
 		for _, it := range list.Items {
 			for k := range want {
-				if strings.Contains(it.GetName(), "."+k+".edges.kedge.faros.sh") {
+				if strings.Contains(it.GetName(), "."+k+".edges.faros.sh") {
 					want[k] = true
 				}
 			}
@@ -215,8 +215,8 @@ func TestCTenantEnableAndCRsUsable(t *testing.T) {
 		name, apiVersion, kind string
 		gvr                    schema.GroupVersionResource
 	}{
-		{"kube-edge-1", "edges.kedge.faros.sh/v1alpha1", "KubernetesCluster", kubernetesClusterGVR},
-		{"srv-edge-1", "edges.kedge.faros.sh/v1alpha1", "LinuxServer", linuxServerGVR},
+		{"kube-edge-1", "edges.faros.sh/v1alpha1", "KubernetesCluster", kubernetesClusterGVR},
+		{"srv-edge-1", "edges.faros.sh/v1alpha1", "LinuxServer", linuxServerGVR},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {
 			cr := &unstructured.Unstructured{Object: map[string]any{
@@ -243,7 +243,7 @@ func TestCTenantEnableAndCRsUsable(t *testing.T) {
 // tenant's edgeproxy is 403 before the grant and 502 after (authorization runs
 // before the tunnel lookup, so a missing tunnel means auth PASSED). Adapted from
 // the pre-decouple hub-served test, now against
-// /services/providers/edges/edgeproxy/... with group edges.kedge.faros.sh.
+// /services/providers/edges/edgeproxy/... with group edges.faros.sh.
 func TestDEdgeProxyAuthBoundary(t *testing.T) {
 	workspaceGVR := schema.GroupVersionResource{Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces"}
 
@@ -254,10 +254,10 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 	// bound before) also avoids the CRD bind/unbind/rebind churn that a shared
 	// static-token workspace would suffer across subtests.
 	// Parent must serve the tenancy API (i.e. allow child workspaces); a
-	// token-login tenant is a leaf `workspace` type that does not. root:kedge
+	// token-login tenant is a leaf `workspace` type that does not. root:faros
 	// already parents the provider/org workspaces, so create the test consumer
 	// there with admin.
-	parentAdmin := kcpDynamic(t, "root:kedge", adminToken)
+	parentAdmin := kcpDynamic(t, "root:faros", adminToken)
 	const childName = "edges-authboundary"
 	_ = parentAdmin.Resource(workspaceGVR).Delete(ctxWithTimeout(t, 5*time.Second), childName, metav1.DeleteOptions{})
 	if _, err := parentAdmin.Resource(workspaceGVR).Create(ctxWithTimeout(t, 10*time.Second), &unstructured.Unstructured{Object: map[string]any{
@@ -324,7 +324,7 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 	// (so tenantConfigFor can resolve it). The probe below targets a different,
 	// non-existent edge — authorization still runs before the tunnel lookup.
 	if _, err := tenant.Resource(kubernetesClusterGVR).Create(ctxWithTimeout(t, 10*time.Second), &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "edges.kedge.faros.sh/v1alpha1",
+		"apiVersion": "edges.faros.sh/v1alpha1",
 		"kind":       "KubernetesCluster",
 		"metadata":   map[string]any{"name": "e2e-engage"},
 		"spec":       map[string]any{},
@@ -334,7 +334,7 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 
 	// Provider workspace cluster ID — the value kcp embeds in the SA token
 	// claims and the grant subject must carry.
-	providersWS := kcpDynamic(t, "root:kedge:providers", adminToken)
+	providersWS := kcpDynamic(t, "root:faros:providers", adminToken)
 	ws, err := providersWS.Resource(workspaceGVR).Get(ctxWithTimeout(t, 10*time.Second), "edges", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get provider workspace: %v", err)
@@ -369,7 +369,7 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 
 	// The edge name is irrelevant: authorization runs BEFORE the tunnel lookup.
 	proxyURL := hubURL + "/services/providers/edges/edgeproxy/clusters/" + tenantWS +
-		"/apis/edges.kedge.faros.sh/v1alpha1/kubernetesclusters/e2e-no-such-edge/k8s/api"
+		"/apis/edges.faros.sh/v1alpha1/kubernetesclusters/e2e-no-such-edge/k8s/api"
 	probe := func() int {
 		req, _ := http.NewRequest(http.MethodGet, proxyURL, nil)
 		req.Header.Set("Authorization", "Bearer "+saToken)
@@ -393,7 +393,7 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 	subject := identity.QualifiedServiceAccount(providerCluster, "default", "provider")
 	t.Logf("grant subject = %s", subject)
 
-	grantName := "kedge:provider:edges:edgeproxy"
+	grantName := "faros:provider:edges:edgeproxy"
 	clusterRoleGVR := schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}
 	clusterRoleBindingGVR := schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
 
@@ -407,7 +407,7 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 			map[string]any{"nonResourceURLs": []any{"/"}, "verbs": []any{"access"}},
 			// The SAR the provider issues checks "proxy" on the edge kind.
 			map[string]any{
-				"apiGroups": []any{"edges.kedge.faros.sh"},
+				"apiGroups": []any{"edges.faros.sh"},
 				"resources": []any{"kubernetesclusters", "linuxservers"},
 				"verbs":     []any{"proxy", "get", "list", "watch"},
 			},

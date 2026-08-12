@@ -21,13 +21,13 @@ import (
 	"net/http"
 	"sort"
 
-	providersv1alpha1 "github.com/faroshq/faros-kedge/apis/providers/v1alpha1"
+	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
 )
 
 // PathListProviders is the portal-facing list endpoint. It returns the names,
 // display labels, and routing metadata for every provider the hub knows
 // about. The portal builds its catalog page and dynamic side-nav from this
-// response. Auth is enforced by the standard kedge token middleware mounted
+// response. Auth is enforced by the standard faros token middleware mounted
 // upstream of this handler.
 const PathListProviders = "/api/providers"
 

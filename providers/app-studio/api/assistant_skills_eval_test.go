@@ -179,7 +179,7 @@ func TestEvaluationSkillExportImportPreservesDocumentAndResources(t *testing.T) 
 	if err := json.Unmarshal(exportResponse.Body.Bytes(), &exported); err != nil {
 		t.Fatalf("decode export: %v", err)
 	}
-	if exported.Format != "kedge.skill.v1" || len(exported.Files) != 2 || exported.Package.Instructions != "body with exact spacing\nsecond line" {
+	if exported.Format != "faros.skill.v1" || len(exported.Files) != 2 || exported.Package.Instructions != "body with exact spacing\nsecond line" {
 		t.Fatalf("export lost package fidelity: %#v", exported)
 	}
 
@@ -254,7 +254,7 @@ func newEvaluationSkillRouter(t *testing.T) (*mux.Router, *workspace.FileStore) 
 		}
 		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(query.Query, "ProjectYaml") {
-			_, _ = w.Write([]byte(`{"data":{"ai_kedge_faros_sh":{"v1alpha1":{"ProjectYaml":"apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: uid-demo\nspec: {}\n"}}}}`))
+			_, _ = w.Write([]byte(`{"data":{"ai_faros_sh":{"v1alpha1":{"ProjectYaml":"apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: uid-demo\nspec: {}\n"}}}}`))
 			return
 		}
 		_, _ = w.Write([]byte(`{"data":{}}`))
@@ -278,9 +278,9 @@ var evaluationSkillRequest = func(method, target, body string) *http.Request {
 	req := httptest.NewRequest(method, target, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer caller-token")
-	req.Header.Set("X-Kedge-User", "alice")
-	req.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
-	req.Header.Set("X-Kedge-Cluster", "cluster-a")
+	req.Header.Set("X-Faros-User", "alice")
+	req.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	req.Header.Set("X-Faros-Cluster", "cluster-a")
 	return req
 }
 

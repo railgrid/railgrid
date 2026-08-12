@@ -1,6 +1,6 @@
 # Published apps: template-native access
 
-This document describes how a kedge app gets its public URL and how access to
+This document describes how a faros app gets its public URL and how access to
 it is controlled. It is an API and template contract; it does not claim
 acceptance in a live cluster.
 
@@ -8,7 +8,7 @@ acceptance in a live cluster.
 
 There is no separate publication plane. A promoted production instance is
 always served on one stable URL through the **access gate** — an
-infrastructure-owned `kedge-access-proxy` container that every publishable
+infrastructure-owned `faros-access-proxy` container that every publishable
 template renders as a component of its own graph. Two native mechanisms
 control who can open that URL:
 
@@ -33,7 +33,7 @@ control who can open that URL:
   beyond the app-access tuple remains denied by ordinary RBAC.
 
   The RBAC **subject** is always the account's kcp username —
-  `User.Spec.RBACIdentity` (`kedge:<email>`, or `kedge:static:<hash>` for
+  `User.Spec.RBACIdentity` (`faros:<email>`, or `faros:static:<hash>` for
   static-token users) — because that is the string every tenant-workspace
   binding (including the workspace-admin ClusterRoleBinding) is written
   against and the string the hub's SubjectAccessReview presents. The User CR
@@ -64,10 +64,10 @@ signing keys — and its availability contract is strict:
   in-memory session locally. A hub outage leaves existing sessions working;
   only new sign-ins fail.
 
-Platform inputs reach the gate as `${kedge.*}` tokens substituted at RGD
-build time (`${kedge.accessProxyImage}`, `${kedge.hubUrl}`,
-`${kedge.hubPublicUrl}`, `${kedge.hubInsecure}`), and the application
-controller stamps `spec.expose.fqdn` plus `spec.kedgeCluster` (the tenant
+Platform inputs reach the gate as `${faros.*}` tokens substituted at RGD
+build time (`${faros.accessProxyImage}`, `${faros.hubUrl}`,
+`${faros.hubPublicUrl}`, `${faros.hubInsecure}`), and the application
+controller stamps `spec.expose.fqdn` plus `spec.farosCluster` (the tenant
 workspace cluster ID) onto the instance. Tenants only ever choose
 `spec.access`.
 
@@ -78,7 +78,7 @@ session (`pkg/hub/appauth`):
 
 1. The gate redirects to `GET /auth/apps/authorize` with the instance
    coordinates (`cluster`, `group`, `resource`, `name`), its callback
-   (`https://<app-host>/__kedge/auth/callback`), and an opaque one-use state
+   (`https://<app-host>/__faros/auth/callback`), and an opaque one-use state
    bound to the initiating browser.
 2. The hub resolves the shared portal browser session (or bounces through the
    normal `/login` flow and back via the portal's `next` continuation), runs
@@ -89,7 +89,7 @@ session (`pkg/hub/appauth`):
 3. The gate exchanges the code server-to-server
    (`POST /auth/apps/exchange`), receives identity metadata plus a session
    TTL (never a credential), and mints its local session cookie
-   (`__Host-kedge-app-session`).
+   (`__Host-faros-app-session`).
 
 Revocation lag is bounded by the granted session TTL (15 minutes): after a
 RoleBinding is deleted, the next silent re-authorize re-runs the SAR and
@@ -107,8 +107,8 @@ thin veneer over the two mechanisms:
   instance); DELETE means "private + delete all grants" — production remains
   deployed and reachable by workspace members.
 - `…/publishing/grants` lists/creates/revokes the RBAC pair
-  (`kedge-app-access.<instance>` ClusterRole, one ClusterRoleBinding per
-  invited member, labeled `kedge.faros.sh/app-access=<instance>`). Grant
+  (`faros-app-access.<instance>` ClusterRole, one ClusterRoleBinding per
+  invited member, labeled `faros.sh/app-access=<instance>`). Grant
   creation validates current org/workspace membership through the hub API and
   requires private access; revocation is allowed in any mode.
 
@@ -125,15 +125,15 @@ by email. Without `invite`, an unknown identifier remains a clean 404 so
 typos cannot mint ghost users.
 
 Because grants are ordinary RBAC objects, they are visible outside App
-Studio too: the kedge portal's Tenant Settings → Members tab lists every
+Studio too: the faros portal's Tenant Settings → Members tab lists every
 app-access grant in the workspace (hub REST
 `GET/DELETE /api/orgs/{org}/workspaces/{ws}/app-access[/{binding}]`, served
 with the hub's kcp-admin client like the providers/enabled endpoints), and
 workspace admins can revoke from there. `kubectl get clusterrolebindings -l
-kedge.faros.sh/app-access` shows the same truth.
+faros.sh/app-access` shows the same truth.
 
 Promotion is unchanged and independent: digest-pinned image resolution and
-`kedgeRedeployRevision` rollouts keep the production instance's identity
+`farosRedeployRevision` rollouts keep the production instance's identity
 stable, which also keeps its URL and its RBAC grants stable across
 re-promotes.
 

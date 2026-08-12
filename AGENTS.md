@@ -1,11 +1,11 @@
 # AGENTS.md
 
-Orientation for AI agents (and humans) working in the **kedge** repo. Read this
+Orientation for AI agents (and humans) working in the **faros** repo. Read this
 before making changes. It explains the architecture, where hub code ends and
 provider code begins, how APIs are constructed, and the exact commands to build,
 test, format, lint, and regenerate code.
 
-> Module: `github.com/faroshq/faros-kedge` · Go workspace (`go.work`) · kcp-based
+> Module: `github.com/faroshq/faros` · Go workspace (`go.work`) · kcp-based
 > multi-tenant control plane.
 
 Deeper references live in [`DEVELOPERS.md`](./DEVELOPERS.md) and [`docs/`](./docs)
@@ -14,12 +14,12 @@ those authoritative — this file is the map, not the territory.
 
 ---
 
-## 1. What kedge is
+## 1. What faros is
 
-kedge connects distributed Kubernetes clusters and bare-metal servers through one
+faros connects distributed Kubernetes clusters and bare-metal servers through one
 control plane (the **hub**). Edge **agents** dial outbound reverse tunnels to the
 hub, so clusters behind NAT/firewalls become reachable through a single
-authenticated endpoint. On top of that core, kedge is also a **multi-tenant
+authenticated endpoint. On top of that core, faros is also a **multi-tenant
 platform** built on [kcp](https://kcp.io): each user/team gets isolated kcp
 workspaces, and **providers** extend the platform with their own APIs, UIs, and
 backends.
@@ -35,15 +35,15 @@ Three planes to keep distinct:
 ## 2. Repository layout
 
 ```
-apis/                 First-party API types (kedge, tenancy, providers groups)
-  kedge/v1alpha1/       Edge, MCPServer, Placement, VirtualWorkload
+apis/                 First-party API types (faros, tenancy, providers groups)
+  faros/v1alpha1/       Edge, MCPServer, Placement, VirtualWorkload
   tenancy/v1alpha1/     Organization, User, Membership, UserMembershipIndex, Auth
   providers/v1alpha1/   CatalogEntry (the provider manifest type)
 cmd/                  Binaries
-  kedge/                CLI (also the agent: `kedge agent run`)
-  kedge-hub/            Hub control-plane server
+  faros/                CLI (also the agent: `faros agent run`)
+  faros-hub/            Hub control-plane server
   graphql/              GraphQL gateway (listener + gateway subcommands)
-  kedge-release/        Release-tagging helper
+  faros-release/        Release-tagging helper
 pkg/                  Hub + agent + shared libraries
   hub/                  Hub server, controllers, provider integration, tenancy
   agent/                Edge agent (tunnel, ssh, reporters)
@@ -76,7 +76,7 @@ demand — never `go install` them globally.
 
 | Task | Command | Notes |
 |------|---------|-------|
-| Build all binaries | `make build` | kedge CLI + hub + graphql |
+| Build all binaries | `make build` | faros CLI + hub + graphql |
 | Build hub | `make build-hub` | also builds built-in provider portals |
 | Build hub w/ embedded portal | `make build-hub-portal` | `portal_embed` build tag |
 | Unit tests | `make test` | all packages except `test/e2e` |
@@ -93,7 +93,7 @@ demand — never `go install` them globally.
 - Linters: `govet`, `errcheck`, `staticcheck` (all checks), `unused`,
   `ineffassign`, `misspell`.
 - Formatter: `goimports` with local-prefix
-  `github.com/faroshq/faros-kedge` (kedge imports group last).
+  `github.com/faroshq/faros` (faros imports group last).
 - Generated files (`zz_generated*`, `vendor/`) are excluded.
 - Before committing Go changes, run **`make fix-lint`** then **`make lint`**.
 
@@ -147,8 +147,8 @@ Rules of thumb:
   segment, so regeneration creates a new schema rather than mutating one.
 - CI runs `make verify-codegen` — an uncommitted generated diff fails the build.
 
-API groups: `kedge.faros.sh`, `tenancy.kedge.faros.sh`,
-`providers.kedge.faros.sh`. Provider APIs use `<name>.providers.kedge.faros.sh`.
+API groups: `faros.sh`, `tenancy.faros.sh`,
+`providers.faros.sh`. Provider APIs use `<name>.providers.faros.sh`.
 
 ---
 
@@ -165,7 +165,7 @@ A **provider** is a pluggable platform extension. It can supply any of:
 ### 5.1 The CatalogEntry manifest
 
 Every provider ships a `manifest.yaml` that is a `CatalogEntry`
-(`providers.kedge.faros.sh/v1alpha1`, type at
+(`providers.faros.sh/v1alpha1`, type at
 `apis/providers/v1alpha1/types_catalogentry.go`). It declares display metadata,
 the UI/backend/virtual-workspace URLs, a health path, the APIExport name +
 permission claims, and inline `APIResourceSchema` bodies. The hub's catalog
@@ -227,19 +227,19 @@ APIExport, schemas) and registers routing/heartbeat state.
 | `provision.go` | Creates kcp sub-workspace, ServiceAccount, APIExport, applies inline schemas; mints the provider kubeconfig |
 | `proxy.go` | UI reverse-proxy (`/ui/providers/{name}/*`) + backend proxy (`/services/providers/{name}/*`); injects tenant/user headers; serves embedded UI for built-ins (`LocalUIAssets`) |
 | registry / controller / heartbeat | In-memory routing table, catalog reconcile, `POST /api/providers/{name}/heartbeat` liveness (TTL ~90s) |
-| `pkg/hub/provider_tenant_resolver.go` | Resolves caller identity → tenant workspace path; injects `X-Kedge-User` / `X-Kedge-Tenant`, strips spoofed inbound copies |
+| `pkg/hub/provider_tenant_resolver.go` | Resolves caller identity → tenant workspace path; injects `X-Faros-User` / `X-Faros-Tenant`, strips spoofed inbound copies |
 
-Heartbeat: standalone providers POST every ~30s with `KEDGE_HUB_URL`,
-`KEDGE_HUB_TOKEN`, `KEDGE_PROVIDER_NAME`. A provider is "Ready" only when its
+Heartbeat: standalone providers POST every ~30s with `FAROS_HUB_URL`,
+`FAROS_HUB_TOKEN`, `FAROS_PROVIDER_NAME`. A provider is "Ready" only when its
 endpoints are valid and (once heartbeats have started) not stale.
 
 ### 5.3 Provider portal micro-frontends
 
 Provider UIs are independent Vite/TS bundles in `providers/{name}/portal/`,
 built to `dist/` and embedded via `//go:embed` in the provider's `assets.go`. The
-portal renders them as **custom elements** (`<kedge-provider-{name}>`) that
-receive a `kedge-context` (user, tenant, theme, basePath) via the
-`postMessage` `kedge.ready` → `kedge.context` handshake.
+portal renders them as **custom elements** (`<faros-provider-{name}>`) that
+receive a `faros-context` (user, tenant, theme, basePath) via the
+`postMessage` `faros.ready` → `faros.context` handshake.
 
 Build chain (Makefile):
 - `make build-{name}-provider-portal` — `vite build` only.
@@ -274,13 +274,13 @@ workspace / symlink — a standalone Docker build context must work). Edit the
 
 **`tenant.ts` is security-critical** and shared by BOTH kinds (plain TS). It owns
 the ONE copy of the hub-proxy contract — `readTenant()` (localStorage
-`kedge:portal:tenant`), `tenantHeaders({token, json})` (`Authorization` +
-`X-Kedge-Org` + `X-Kedge-Workspace`), and `serviceBase()` (`/ui/providers/*` →
+`faros:portal:tenant`), `tenantHeaders({token, json})` (`Authorization` +
+`X-Faros-Org` + `X-Faros-Workspace`), and `serviceBase()` (`/ui/providers/*` →
 `/services/providers/*`). The wrong header/key means 401/403, so **do not
 re-inline this** — call the helper. Two auth models coexist and this only covers
 the first:
 - **hub-proxy model** (uses `tenant.ts`): `agents`, `app-studio` (migrated);
-  `kuery`/`quickstart` read the tenant off `kedge-context` instead, so they only
+  `kuery`/`quickstart` read the tenant off `faros-context` instead, so they only
   use `serviceBase`.
 - **cluster-in-path model** (`code`, `edges`, `infrastructure`, and databricks'
   GraphQL): address kcp by `/graphql/<cluster>` or `/services/providers/<name>`
@@ -293,7 +293,7 @@ it to the canonical source under `provider-sdk/` and re-sync.
 ### 5.4 Tenant isolation in providers
 
 Providers that talk to kcp build a **per-(tenant, caller) dynamic client**: the
-hub forwards the caller's bearer token plus resolved `X-Kedge-Tenant` path; the
+hub forwards the caller's bearer token plus resolved `X-Faros-Tenant` path; the
 provider's `tenant/` package (`client.go`, `credentials.go`) constructs a client
 scoped to `<host>/clusters/<tenantPath>`, acting as the caller in their
 workspace. See `providers/code/tenant/` and `providers/infrastructure/tenant/`
@@ -336,7 +336,7 @@ via their `CatalogEntry`. Per-provider deep docs:
 
 ---
 
-## 6. Hub architecture (`pkg/hub/`, `cmd/kedge-hub/`)
+## 6. Hub architecture (`pkg/hub/`, `cmd/faros-hub/`)
 
 The hub is the only publicly-reachable component. Key areas:
 
@@ -356,7 +356,7 @@ The hub is the only publicly-reachable component. Key areas:
   (tunnel auth, status, SSH creds) and the multi-cluster MCP server.
 
 The **agent** lives in `pkg/agent/` (tunnel, ssh, reporters) and ships inside the
-`kedge` CLI binary (`kedge agent run`). The join-token → kubeconfig exchange and
+`faros` CLI binary (`faros agent run`). The join-token → kubeconfig exchange and
 the SSH/MCP request flows are documented end-to-end in `DEVELOPERS.md`.
 
 ---
@@ -413,7 +413,7 @@ multi-shard stack used by the `tiltcluster` e2e suite.
 > spec. This section is the enforcement summary.
 
 **All UI must be standardized.** The main portal and every provider
-micro-frontend render inside the same DOM (`<kedge-provider-{name}>` custom
+micro-frontend render inside the same DOM (`<faros-provider-{name}>` custom
 elements), so they share one stylesheet and must look like one product. Do **not**
 introduce per-provider fonts, ad-hoc colors, or bespoke modal/table markup. Reuse
 the shared design tokens and the existing components in
@@ -459,7 +459,7 @@ live/active/focused, you are off-system.
 - **Fonts (self-hosted via `@fontsource`, imported in `portal/src/main.ts`):**
   `font-sans` = Instrument Sans Variable (body), `font-display` = Archivo
   Variable used through the `.type-display` utility (width-expanded titles, KPI
-  numerals, the KEDGE wordmark), `font-mono` = IBM Plex Mono. Don't add other
+  numerals, the FAROS wordmark), `font-mono` = IBM Plex Mono. Don't add other
   faces.
 - **Mono:** use `font-mono` for identifiers, names, tokens, URLs, YAML, badges,
   and any technical/copyable value (it's used heavily — keep doing it).
@@ -535,9 +535,9 @@ invent a look. It is bound by the same design system, enforced by these rules:
   `border-accent/30`) use `color-mix(in srgb, var(--color-accent) 30%, transparent)`,
   not a baked-in translucent hex.
 - **Namespace every selector** under the element tag (e.g.
-  `kedge-provider-edges .btn { … }`) so the styles cannot leak into the host.
+  `faros-provider-edges .btn { … }`) so the styles cannot leak into the host.
 - **Match the same recipes** as the shared components, not approximations —
-  the canonical recipes are the `k-*` classes in `portal/src/assets/kedge-ui.css`
+  the canonical recipes are the `k-*` classes in `portal/src/assets/faros-ui.css`
   (`k-card`, `k-table`, `k-badge`, `k-btn`, `k-input`, `k-eyebrow`/`k-kpi`),
   which cascade into every light-DOM provider; prefer using them directly. If
   you must hand-roll: buttons/inputs 4px radius; cards/tables 6px
@@ -563,7 +563,7 @@ new hand-rolled provider stylesheet. When in doubt, open the matching component 
 - After editing any `apis/` Go type, run `make codegen` and commit the generated
   diff; CI enforces `make verify-codegen`.
 - Run `make fix-lint && make lint` before committing Go changes. Match
-  surrounding style; imports group kedge last (goimports local-prefix).
+  surrounding style; imports group faros last (goimports local-prefix).
 - Don't hand-edit `zz_generated*` or `config/crds` / `config/kcp` outputs.
 - License boilerplate is required on Go files (generated files exempt);
   `make boilerplate` adds it.
@@ -576,13 +576,13 @@ new hand-rolled provider stylesheet. When in doubt, open the matching component 
   (boilerplate + codegen + vet + lint + build + test).
 - **Infrastructure templates declare configurable inputs (container images,
   versions, sizes) as `spec.schema` fields with sane defaults** — never via
-  `${kedge.*}` env-substitution tokens. Fixed sidecar images (e.g. the
-  control-token `kubectl` job) are hardcoded literals. `${kedge.*}` tokens are
+  `${faros.*}` env-substitution tokens. Fixed sidecar images (e.g. the
+  control-token `kubectl` job) are hardcoded literals. `${faros.*}` tokens are
   reserved for the handful of genuinely platform-global values with no universal
-  default: the exposure Gateway parent (`${kedge.gatewayName}` /
-  `${kedge.gatewayNamespace}`), the dev-overlay images
-  (`${kedge.devImage.<toolchain>}` / `${kedge.devAgentImage}`), and the
-  exposure-URL port suffix (`${kedge.appPublicPort}`). A missing env must never
+  default: the exposure Gateway parent (`${faros.gatewayName}` /
+  `${faros.gatewayNamespace}`), the dev-overlay images
+  (`${faros.devImage.<toolchain>}` / `${faros.devAgentImage}`), and the
+  exposure-URL port suffix (`${faros.appPublicPort}`). A missing env must never
   be able to produce an empty/invalid field. See
   [`providers/infrastructure/docs/template-conventions.md`](providers/infrastructure/docs/template-conventions.md).
 - **Providers are isolated; never reach into another provider's backend.** A
@@ -602,17 +602,17 @@ new hand-rolled provider stylesheet. When in doubt, open the matching component 
 
 ## 10. Cross-repo boundaries & known gotchas
 
-kedge runs on kcp; some symptoms that look like kedge bugs are actually upstream:
+faros runs on kcp; some symptoms that look like faros bugs are actually upstream:
 
-- **GraphQL / OpenAPI proxy misbehaving** — kedge serves OpenAPI/GraphQL through a
+- **GraphQL / OpenAPI proxy misbehaving** — faros serves OpenAPI/GraphQL through a
   kcp virtual workspace. Broken VW OpenAPI serving surfaces as hub-side proxy
-  issues; the fix is usually kcp-side, not kedge. Check the kcp VW openapi path
-  before assuming the bug is in the kedge gateway.
+  issues; the fix is usually kcp-side, not faros. Check the kcp VW openapi path
+  before assuming the bug is in the faros gateway.
 - **`kubectl get <resource>` "temporarily unavailable" for one resource in an
   APIBinding (e.g. templates), intermittently** — APIExport *virtual storage*
   (CachedResource) discovery fails when the consumer workspace is on a different
-  kcp shard than the provider. It's a kcp cross-shard discovery bug, not kedge
-  config — don't chase the kedge install code. Workaround for local dev: run a
+  kcp shard than the provider. It's a kcp cross-shard discovery bug, not faros
+  config — don't chase the faros install code. Workaround for local dev: run a
   single kcp shard, or co-locate provider + consumer on one shard.
 
 ---

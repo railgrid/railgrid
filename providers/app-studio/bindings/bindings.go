@@ -32,27 +32,27 @@ import (
 )
 
 // ProjectLabel attributes an instance back to its Project.
-const ProjectLabel = "app-studio.kedge.faros.sh/project"
+const ProjectLabel = "app-studio.faros.sh/project"
 
 // Provider Actions fields are platform-owned instance inputs. The prefix is
 // intentionally broader than the currently-known field list: a binding must
 // never be able to smuggle a future reserved Actions field into an instance.
-const ActionsFieldPrefix = "kedgeActions"
+const ActionsFieldPrefix = "farosActions"
 
 const (
-	ActionsExchangeURLField = "kedgeActionsExchangeURL"
-	ActionsBaseURLField     = "kedgeActionsBaseURL"
-	ActionsCABundleField    = "kedgeActionsCABundle"
-	ActionsTenantPathField  = "kedgeActionsTenantPath"
-	ActionsOrgField         = "kedgeActionsOrg"
-	ActionsWorkspaceField   = "kedgeActionsWorkspace"
-	ActionsProjectField     = "kedgeActionsProject"
-	ActionsProjectUIDField  = "kedgeActionsProjectUID"
-	ActionsEnvironmentField = "kedgeActionsEnvironment"
-	ActionsInstanceField    = "kedgeActionsInstance"
+	ActionsExchangeURLField = "farosActionsExchangeURL"
+	ActionsBaseURLField     = "farosActionsBaseURL"
+	ActionsCABundleField    = "farosActionsCABundle"
+	ActionsTenantPathField  = "farosActionsTenantPath"
+	ActionsOrgField         = "farosActionsOrg"
+	ActionsWorkspaceField   = "farosActionsWorkspace"
+	ActionsProjectField     = "farosActionsProject"
+	ActionsProjectUIDField  = "farosActionsProjectUID"
+	ActionsEnvironmentField = "farosActionsEnvironment"
+	ActionsInstanceField    = "farosActionsInstance"
 )
 
-const tenantPathPrefix = "root:kedge:tenants:"
+const tenantPathPrefix = "root:faros:tenants:"
 
 // ActionsIdentity is the server-derived identity bound to one development
 // instance. It is separate from ActionsTransport so action grants can be
@@ -93,14 +93,14 @@ type ActionsOverlay struct {
 func ValidateActionsExternalURL(raw string) (string, error) {
 	origin := strings.TrimRight(strings.TrimSpace(raw), "/")
 	if origin == "" {
-		return "", fmt.Errorf("KEDGE_ACTIONS_EXTERNAL_URL is required for action-enabled development runtimes")
+		return "", fmt.Errorf("FAROS_ACTIONS_EXTERNAL_URL is required for action-enabled development runtimes")
 	}
 	u, err := url.Parse(origin)
 	if err != nil || !u.IsAbs() || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" {
-		return "", fmt.Errorf("KEDGE_ACTIONS_EXTERNAL_URL must be an absolute HTTPS URL")
+		return "", fmt.Errorf("FAROS_ACTIONS_EXTERNAL_URL must be an absolute HTTPS URL")
 	}
 	if !strings.EqualFold(u.Scheme, "https") {
-		return "", fmt.Errorf("KEDGE_ACTIONS_EXTERNAL_URL must use HTTPS")
+		return "", fmt.Errorf("FAROS_ACTIONS_EXTERNAL_URL must use HTTPS")
 	}
 	return origin, nil
 }
@@ -179,7 +179,7 @@ func NewActionsOverlay(identity ActionsIdentity, config ActionsRuntimeConfig, ac
 }
 
 // ApplyActionsOverlay returns a new map. It first removes every reserved
-// kedgeActions* value, including fields unknown to this version, then adds the
+// farosActions* value, including fields unknown to this version, then adds the
 // current server-derived identity and (when active) transport fields. Neither
 // the persisted binding map nor the caller's map is mutated.
 func ApplyActionsOverlay(values map[string]any, overlay ActionsOverlay) map[string]any {
@@ -246,8 +246,8 @@ func actionsOverlayFieldsFor(overlay ActionsOverlay) map[string]string {
 // org/workspace UUIDs the hub derives from the tenant path). Stamped by the
 // API layer at resource creation.
 const (
-	OrgUUIDAnnotation       = "ai.kedge.faros.sh/org-uuid"
-	WorkspaceUUIDAnnotation = "ai.kedge.faros.sh/workspace-uuid"
+	OrgUUIDAnnotation       = "ai.faros.sh/org-uuid"
+	WorkspaceUUIDAnnotation = "ai.faros.sh/workspace-uuid"
 )
 
 // GVR derives the instance GroupVersionResource from a binding's resourceRef

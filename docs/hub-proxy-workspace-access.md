@@ -52,7 +52,7 @@ if clusterID != defaultCluster && !strings.HasPrefix(clusterID, defaultCluster+"
 // bare /api|/apis path → scoped to /clusters/{defaultCluster}/...
 ```
 
-A **second** gate (O-10) refuses any `root:kedge:tenants:*` *path* outright
+A **second** gate (O-10) refuses any `root:faros:tenants:*` *path* outright
 (`OrgWorkspaceNotDirectlyAccessible`), steering Org-scoped operations to the hub
 REST surface.
 
@@ -107,7 +107,7 @@ TTL cache.** The index is continuously reconciled by the Membership controller
 (O-3: it owns the index and keeps it in sync with every Membership write), so an
 informer-backed local view is as fresh as the controller — authorization reads a
 hot in-memory set with no per-request kcp round-trip and no TTL staleness window.
-The proxy already holds `kedgeClient`; add a shared informer for the index and
+The proxy already holds `farosClient`; add a shared informer for the index and
 gate off its lister.
 
 ### A-2 — Cluster → (org, workspace) topology index
@@ -137,7 +137,7 @@ org-scope memberships into synthetic per-workspace entries.
 For a request to `/clusters/{id}`:
 
 1. **Topology (A-2):** `id → (org, ws)`. If `id` isn't in the index it isn't a
-   kedge child workspace → fall through to the existing gates (O-10 / 403).
+   faros child workspace → fall through to the existing gates (O-10 / 403).
 2. **Membership (A-1):** the caller's `UserMembershipIndex` covers `(org, ws)`
    when it holds **either** a workspace-scope entry `(org, ws)` **or** an
    org-scope entry `(org, "")`. Org-scope is just the `(org, *)` case of the
@@ -145,11 +145,11 @@ For a request to `/clusters/{id}`:
 
 **Edges** (`/clusters/{id}:{edgeName}`) are authorized by their parent: an edge
 mounted under a workspace the caller may reach is allowed. (kcp calls this a
-"mount"; in kedge the mounted thing is an **edge**, so the terminology and the
+"mount"; in faros the mounted thing is an **edge**, so the terminology and the
 allowance are stated in edge terms — `{id}:{edgeName}`, not `{id}:{mountName}`.)
 
 O-10 (no direct access to **Org** workspaces) stays: a request whose target
-resolves to the Org workspace itself (`root:kedge:tenants:{org}`, no `:{ws}`)
+resolves to the Org workspace itself (`root:faros:tenants:{org}`, no `:{ws}`)
 never matches a child entry and is refused as today. So the relaxation is
 strictly "a member may reach their **child** workspaces"; the Org workspace
 remains hub-mediated.
@@ -179,7 +179,7 @@ Because these endpoints are already gated by `tenant.Middleware` (the caller
 must hold a Membership in `(org, ws)`), a client can only resolve IDs for
 workspaces it can actually reach — the same authorization the proxy then
 re-checks (A-3), so REST and proxy never disagree. This is the symmetric,
-provider-agnostic equivalent of the `X-Kedge-Cluster` header the backend proxy
+provider-agnostic equivalent of the `X-Faros-Cluster` header the backend proxy
 injects for provider HTTP traffic: REST hands the **client** the ID; the header
 hands the **provider** the ID; both come from the one topology index.
 
@@ -212,7 +212,7 @@ workspaces.
   user is a member of) while still failing closed for everything else.
 - **No new trust in client input.** Authorization keys off the authenticated
   user's `UserMembershipIndex`, which the user cannot forge — exactly the model
-  the tenant resolver already uses for the `X-Kedge-Org`/`X-Kedge-Workspace`
+  the tenant resolver already uses for the `X-Faros-Org`/`X-Faros-Workspace`
   headers ([provider_tenant_resolver.go](../pkg/hub/provider_tenant_resolver.go)).
 - **Org workspaces stay sealed** (A-3 / O-10).
 - **Revocation is reconciler-driven, not time-bounded.** Removing a Membership
@@ -241,7 +241,7 @@ hub's embedded **GraphQL gateway** (`/graphql/{clusterID}`), which serves any
 workspace the caller has RBAC in and is **not** `DefaultCluster`-gated. That
 work added two pieces this proposal builds on:
 
-- The backend proxy injects **`X-Kedge-Cluster`** — the resolved tenant's
+- The backend proxy injects **`X-Faros-Cluster`** — the resolved tenant's
   logical-cluster ID
   ([pkg/hub/provider_cluster_resolver.go](../pkg/hub/provider_cluster_resolver.go),
   wired in [pkg/hub/providers/proxy.go](../pkg/hub/providers/proxy.go)). The
@@ -290,7 +290,7 @@ the hub REST handlers.
   `/clusters/{id}` via the REST-resolved ID (A-1, A-5). `DefaultCluster` becomes
   a UI/CLI landing hint only.
 - **Edges, not "mounts".** The `{id}:{mountName}` allowance is re-expressed in
-  kedge terms as `{id}:{edgeName}`, authorized by the parent workspace's
+  faros terms as `{id}:{edgeName}`, authorized by the parent workspace's
   membership (A-3).
 
 ## Open questions

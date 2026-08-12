@@ -23,18 +23,18 @@ import (
 // request. The hub authenticates the caller and resolves their workspace before
 // forwarding, so these headers are trusted.
 type identity struct {
-	tenantPath    string // X-Kedge-Tenant, e.g. root:kedge:orgs:<org>:<ws>
-	clusterID     string // X-Kedge-Cluster, the workspace's kcp logical-cluster ID
+	tenantPath    string // X-Faros-Tenant, e.g. root:faros:orgs:<org>:<ws>
+	clusterID     string // X-Faros-Cluster, the workspace's kcp logical-cluster ID
 	orgUUID       string // parsed from tenantPath
 	workspaceUUID string // parsed from tenantPath ("" when the path is org-only)
-	user          string // X-Kedge-User
+	user          string // X-Faros-User
 	token         string // bearer token, forwarded as-is from Authorization
 }
 
 // identityFromRequest extracts and validates the tenant context. It writes a
 // 401 and returns ok=false when the tenant header is missing.
 func identityFromRequest(w http.ResponseWriter, r *http.Request) (identity, bool) {
-	tenantPath := strings.TrimSpace(r.Header.Get("X-Kedge-Tenant"))
+	tenantPath := strings.TrimSpace(r.Header.Get("X-Faros-Tenant"))
 	if tenantPath == "" {
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "tenant context missing — the hub did not resolve a workspace for this request")
 		return identity{}, false
@@ -42,18 +42,18 @@ func identityFromRequest(w http.ResponseWriter, r *http.Request) (identity, bool
 	org, ws := parseTenantPath(tenantPath)
 	return identity{
 		tenantPath:    tenantPath,
-		clusterID:     strings.TrimSpace(r.Header.Get("X-Kedge-Cluster")),
+		clusterID:     strings.TrimSpace(r.Header.Get("X-Faros-Cluster")),
 		orgUUID:       org,
 		workspaceUUID: ws,
-		user:          strings.TrimSpace(r.Header.Get("X-Kedge-User")),
+		user:          strings.TrimSpace(r.Header.Get("X-Faros-User")),
 		token:         bearerToken(r),
 	}, true
 }
 
 // tenantPathPrefix is the kcp logical-cluster path prefix for tenant
-// workspaces: root:kedge:tenants:<orgUUID> (org scope) or
-// root:kedge:tenants:<orgUUID>:<ws> (workspace scope). See pkg/kcppaths.
-const tenantPathPrefix = "root:kedge:tenants:"
+// workspaces: root:faros:tenants:<orgUUID> (org scope) or
+// root:faros:tenants:<orgUUID>:<ws> (workspace scope). See pkg/kcppaths.
+const tenantPathPrefix = "root:faros:tenants:"
 
 // parseTenantPath splits a tenant path into its org and workspace segments.
 // Returns ("", "") when the prefix doesn't match and (org, "") for an org-only
@@ -155,7 +155,7 @@ func (s *Server) requireClient(w http.ResponseWriter, r *http.Request) (*agentsc
 		return nil, identity{}, false
 	}
 	if s.gql == nil {
-		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "tenant access not configured — provider has no hub URL (set KEDGE_HUB_URL)")
+		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "tenant access not configured — provider has no hub URL (set FAROS_HUB_URL)")
 		return nil, identity{}, false
 	}
 	if id.workspaceUUID == "" {
@@ -163,7 +163,7 @@ func (s *Server) requireClient(w http.ResponseWriter, r *http.Request) (*agentsc
 		return nil, identity{}, false
 	}
 	if id.clusterID == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Kedge-Cluster missing) — the hub did not resolve a cluster")
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "no workspace cluster on request (X-Faros-Cluster missing) — the hub did not resolve a cluster")
 		return nil, identity{}, false
 	}
 	scope, err := s.gql.For(id.clusterID, id.token)

@@ -32,10 +32,10 @@ import (
 	authorizationv1client "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	k8stesting "k8s.io/client-go/testing"
 
-	"github.com/faroshq/faros-kedge/pkg/browsersession"
+	"github.com/faroshq/faros/pkg/browsersession"
 )
 
-const testAppsDomain = "apps.test.kedge"
+const testAppsDomain = "apps.test.faros"
 
 type fixture struct {
 	handler  *Handler
@@ -74,7 +74,7 @@ func newFixture(t *testing.T) *fixture {
 func (f *fixture) loggedInRequest(t *testing.T, target string) *http.Request {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	if _, err := f.sessions.IssueHTTP(rec, browsersession.Identity{UserID: "user-abc", Email: "abc@example.com", Name: "Ab C", RBACIdentity: "kedge:abc@example.com"}); err != nil {
+	if _, err := f.sessions.IssueHTTP(rec, browsersession.Identity{UserID: "user-abc", Email: "abc@example.com", Name: "Ab C", RBACIdentity: "faros:abc@example.com"}); err != nil {
 		t.Fatalf("issue session: %v", err)
 	}
 	req := httptest.NewRequest(http.MethodGet, target, nil)
@@ -87,7 +87,7 @@ func (f *fixture) loggedInRequest(t *testing.T, target string) *http.Request {
 func authorizeURL(redirect string) string {
 	q := url.Values{}
 	q.Set("cluster", "abc123cluster")
-	q.Set("group", "infrastructure.kedge.faros.sh")
+	q.Set("group", "infrastructure.faros.sh")
 	q.Set("resource", "applications")
 	q.Set("name", "my-shop")
 	q.Set("redirect_uri", redirect)
@@ -148,14 +148,14 @@ func TestAuthorizeMintsCodeAndExchangeReturnsIdentity(t *testing.T) {
 		t.Fatalf("SAR count = %d, want 1", len(f.sars))
 	}
 	attrs := f.sars[0].Spec.ResourceAttributes
-	if f.sars[0].Spec.User != "kedge:abc@example.com" || attrs.Resource != "applications" ||
+	if f.sars[0].Spec.User != "faros:abc@example.com" || attrs.Resource != "applications" ||
 		attrs.Name != "my-shop" || attrs.Subresource != AccessSubresource || attrs.Verb != AccessVerb {
 		t.Fatalf("unexpected SAR: %+v", f.sars[0].Spec)
 	}
 
 	body, _ := json.Marshal(exchangeRequest{
 		Code: code, Host: "my-shop-abcdef123456." + testAppsDomain,
-		Cluster: "abc123cluster", Group: "infrastructure.kedge.faros.sh",
+		Cluster: "abc123cluster", Group: "infrastructure.faros.sh",
 		Resource: "applications", Name: "my-shop",
 	})
 	exRec := httptest.NewRecorder()
@@ -187,7 +187,7 @@ func TestAuthorizeWorksForStaticTokenSessions(t *testing.T) {
 	f := newFixture(t)
 	rec := httptest.NewRecorder()
 	if _, err := f.sessions.IssueHTTP(rec, browsersession.Identity{
-		UserID: "static-user", RBACIdentity: "kedge:static:0123456789abcdef", AuthType: "static-token",
+		UserID: "static-user", RBACIdentity: "faros:static:0123456789abcdef", AuthType: "static-token",
 	}); err != nil {
 		t.Fatalf("issue static-token session: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestAuthorizeWorksForStaticTokenSessions(t *testing.T) {
 	if out.Code != http.StatusFound {
 		t.Fatalf("status = %d body=%s, want 302", out.Code, out.Body.String())
 	}
-	if len(f.sars) != 1 || f.sars[0].Spec.User != "kedge:static:0123456789abcdef" {
+	if len(f.sars) != 1 || f.sars[0].Spec.User != "faros:static:0123456789abcdef" {
 		t.Fatalf("SAR = %+v, want one review for the static RBAC identity", f.sars)
 	}
 	loc, err := url.Parse(out.Header().Get("Location"))
@@ -228,7 +228,7 @@ func TestExchangeBindsRedirectHostIncludingPort(t *testing.T) {
 	}
 	body, _ := json.Marshal(exchangeRequest{
 		Code: loc.Query().Get("code"), Host: "my-shop-abcdef123456." + testAppsDomain + ":10443",
-		Cluster: "abc123cluster", Group: "infrastructure.kedge.faros.sh",
+		Cluster: "abc123cluster", Group: "infrastructure.faros.sh",
 		Resource: "applications", Name: "my-shop",
 	})
 	exRec := httptest.NewRecorder()
@@ -299,7 +299,7 @@ func TestExchangeRejectsMismatchedBinding(t *testing.T) {
 	} {
 		req := exchangeRequest{
 			Code: code, Host: "my-shop-abcdef123456." + testAppsDomain,
-			Cluster: "abc123cluster", Group: "infrastructure.kedge.faros.sh",
+			Cluster: "abc123cluster", Group: "infrastructure.faros.sh",
 			Resource: "applications", Name: "my-shop",
 		}
 		mutate(&req)
@@ -324,7 +324,7 @@ func TestCodeExpires(t *testing.T) {
 	f.handler.now = func() time.Time { return now.Add(codeTTL + time.Second) }
 	body, _ := json.Marshal(exchangeRequest{
 		Code: code, Host: "my-shop-abcdef123456." + testAppsDomain,
-		Cluster: "abc123cluster", Group: "infrastructure.kedge.faros.sh",
+		Cluster: "abc123cluster", Group: "infrastructure.faros.sh",
 		Resource: "applications", Name: "my-shop",
 	})
 	exRec := httptest.NewRecorder()

@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-06-11
 
-kedge is a monorepo, but each provider under `providers/` is also published to
+faros is a monorepo, but each provider under `providers/` is also published to
 its own standalone, **read-only** GitHub repository. This lets external
 consumers depend on (and browse) a single provider without cloning the whole
 monorepo — the same pattern Kubernetes uses with its
@@ -116,7 +116,7 @@ fine — the first run creates the `main` branch.
 ### 2. Generate an SSH deploy key
 
 ```bash
-ssh-keygen -t ed25519 -C "kedge-split-<name>" -f /tmp/<name>_split -N ""
+ssh-keygen -t ed25519 -C "faros-split-<name>" -f /tmp/<name>_split -N ""
 ```
 
 This produces a private key (`/tmp/<name>_split`) and a public key
@@ -134,7 +134,7 @@ broad personal access token.
 
 ### 4. Add the private key as a secret on the monorepo
 
-In **`faroshq/kedge`** → **Settings → Secrets and variables → Actions → New repository secret**:
+In **`faroshq/faros`** → **Settings → Secrets and variables → Actions → New repository secret**:
 
 - Name: the provider's secret from the table (e.g. `CODE_DEPLOY_KEY`).
 - Value: the full contents of `/tmp/<name>_split` (the private key,

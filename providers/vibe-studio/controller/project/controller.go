@@ -42,12 +42,12 @@ import (
 
 const (
 	// finalizer guards instance teardown on Project deletion.
-	finalizer = "vibe.kedge.faros.sh/instances"
+	finalizer = "vibe.faros.sh/instances"
 	// templateLabel matches the infrastructure provider's instance attribution
 	// label so vibe-created instances show up in its listings.
-	templateLabel = "kedge.faros.sh/template"
+	templateLabel = "faros.sh/template"
 	// projectLabel attributes an instance back to its Project.
-	projectLabel = "vibe.kedge.faros.sh/project"
+	projectLabel = "vibe.faros.sh/project"
 	// requeueInterval polls instance status while not Ready. Instances are not
 	// watched (their kinds are per-template and dynamic); polling keeps the
 	// controller simple and deterministic.
@@ -183,7 +183,7 @@ func (r *Reconciler) ensureInstance(ctx context.Context, c client.Client, p *vib
 }
 
 // repositoryGVK is the code provider's Repository resource.
-var repositoryGVK = schema.GroupVersionKind{Group: "code.kedge.faros.sh", Version: "v1alpha1", Kind: "Repository"}
+var repositoryGVK = schema.GroupVersionKind{Group: "code.faros.sh", Version: "v1alpha1", Kind: "Repository"}
 
 // repositoryStatus mirrors the Repository CR into Project status. Pure.
 func repositoryStatus(p *vibev1alpha1.Project, repo *unstructured.Unstructured) *vibev1alpha1.ProjectRepositoryStatus {

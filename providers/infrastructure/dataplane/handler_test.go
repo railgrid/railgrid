@@ -223,7 +223,7 @@ func TestHandlerRejectsMissingToken(t *testing.T) {
 }
 
 func TestHandlerForwardsAuthzDenial(t *testing.T) {
-	denied := apierrors.NewForbidden(schema.GroupResource{Group: "infrastructure.kedge.faros.sh", Resource: "sandboxrunners"}, testNamespace, nil)
+	denied := apierrors.NewForbidden(schema.GroupResource{Group: "infrastructure.faros.sh", Resource: "sandboxrunners"}, testNamespace, nil)
 	h := newTestHandler(t, &fakeInstanceGetter{err: denied}, &fakeRuntime{host: "http://unused"})
 	rec := doRequest(h, http.MethodGet, dataplaneURL("log"))
 	if rec.Code != http.StatusForbidden {
@@ -232,7 +232,7 @@ func TestHandlerForwardsAuthzDenial(t *testing.T) {
 }
 
 func TestHandlerForwardsNotFound(t *testing.T) {
-	missing := apierrors.NewNotFound(schema.GroupResource{Group: "infrastructure.kedge.faros.sh", Resource: "sandboxrunners"}, testNamespace)
+	missing := apierrors.NewNotFound(schema.GroupResource{Group: "infrastructure.faros.sh", Resource: "sandboxrunners"}, testNamespace)
 	h := newTestHandler(t, &fakeInstanceGetter{err: missing}, &fakeRuntime{host: "http://unused"})
 	rec := doRequest(h, http.MethodGet, dataplaneURL("log"))
 	if rec.Code != http.StatusNotFound {
@@ -321,8 +321,8 @@ func TestParsePath(t *testing.T) {
 		ok   bool
 	}{
 		{
-			path: PathPrefix + "clusters/root:kedge:orgs:acme/sandboxrunners/r1/log",
-			want: request{workspace: "root:kedge:orgs:acme", resource: "sandboxrunners", name: "r1", verb: "log"},
+			path: PathPrefix + "clusters/root:faros:orgs:acme/sandboxrunners/r1/log",
+			want: request{workspace: "root:faros:orgs:acme", resource: "sandboxrunners", name: "r1", verb: "log"},
 			ok:   true,
 		},
 		{

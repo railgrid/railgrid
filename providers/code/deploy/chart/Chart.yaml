@@ -1,22 +1,22 @@
 apiVersion: v2
-name: kedge-code-provider
+name: faros-code-provider
 description: |
-  kedge provider that manages source-code repositories and access (deploy
+  faros provider that manages source-code repositories and access (deploy
   keys, collaborators) across git hosting providers (GitHub today). Ships the
   provider Deployment, ClusterIP Service, and the CatalogEntry that registers
   the provider — with its four tenant-authored APIResourceSchemas — with the
-  kedge hub.
+  faros hub.
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
 keywords:
-  - kedge
+  - faros
   - code
   - git
   - github
   - repositories
-home: https://github.com/faroshq/kedge
+home: https://github.com/faroshq/faros
 sources:
-  - https://github.com/faroshq/kedge/tree/main/providers/code
+  - https://github.com/faroshq/faros/tree/main/providers/code
 maintainers:
-  - name: kedge maintainers
+  - name: faros maintainers

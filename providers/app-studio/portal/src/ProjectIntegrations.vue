@@ -21,14 +21,14 @@ import {
   readyProviderActions,
 } from './projectIntegrations'
 import type {
-  KedgeContext,
+  FarosContext,
   ProjectIntegration,
   ProviderAction,
   ProviderItem,
 } from './types'
 
 const props = withDefaults(defineProps<{
-  ctx: KedgeContext | null
+  ctx: FarosContext | null
   projectName: string
   providers: ProviderItem[]
   providersLoading?: boolean

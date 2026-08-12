@@ -1,4 +1,4 @@
-# Providers — extending kedge with provider UIs, virtual workspaces, and APIs
+# Providers — extending faros with provider UIs, virtual workspaces, and APIs
 
 **Status:** Design draft (ready for phase-1 implementation)
 **Owner:** TBD
@@ -14,7 +14,7 @@
 **Where we are:** design phase complete. No code written yet. The branch is
 `mcp.example` on a clean tree apart from this doc and a stray `bob` file.
 
-**Goal in one sentence:** make kedge pluggable so third parties can ship
+**Goal in one sentence:** make faros pluggable so third parties can ship
 "providers" that bring an `APIExport`, optional UI, optional backend HTTP
 service, and optional controllers — all installed via Helm, discovered and
 wired up by hub controllers, surfaced in the portal under
@@ -25,16 +25,16 @@ the how):
 
 | # | Decision | Rationale |
 |---|---|---|
-| 0 | API group = **`providers.kedge.faros.sh`** (separate from `kedge.faros.sh`) | Catalog entries and bindings are platform-owner-only. Excluding them from the `core.faros.sh` merged APIExport keeps them out of tenant workspaces. Tenants interact via portal/hub mediation, not raw CR access |
-| 1 | Terminology = **provider** (not "addon") | `root:kedge:providers` already exists; first-party kedge `APIExport`s already live there |
+| 0 | API group = **`providers.faros.sh`** (separate from `faros.sh`) | Catalog entries and bindings are platform-owner-only. Excluding them from the `core.faros.sh` merged APIExport keeps them out of tenant workspaces. Tenants interact via portal/hub mediation, not raw CR access |
+| 1 | Terminology = **provider** (not "addon") | `root:faros:providers` already exists; first-party faros `APIExport`s already live there |
 | 2 | UI embedding = **iframe via hub proxy** | Same-origin → no CORS. Any frontend stack. Module Federation rejected (Vue lock-in + build coupling) |
-| 3 | Provider workspace = `root:kedge:providers:{name}`, **auto-created by hub** on `CatalogEntry` admission | Chart needs no kcp credentials |
+| 3 | Provider workspace = `root:faros:providers:{name}`, **auto-created by hub** on `CatalogEntry` admission | Chart needs no kcp credentials |
 | 4 | Distribution = **one Helm chart per provider**, targets *host cluster only* | All kcp work owned by hub catalog controller |
 | 5 | Registration = **hybrid**: chart creates `CatalogEntry` shell; provider pod heartbeats every 30s (`POST /api/providers/{name}/heartbeat`, TTL 90s) | Declarative install + runtime liveness |
 | 6 | VW = **APIExport-only by default**; `spec.virtualWorkspace.url` is an opt-in escape hatch under `/services/providers/{name}/vw/*` | Most providers won't need a VW; lowers bar |
-| 7 | Provider→kcp identity = SA `provider` in the provider's workspace; hub mints kubeconfig and writes it as Secret `kedge-provider-kubeconfig` in the provider's host namespace; **24h token rotation** | Reuses existing exec-credential pattern from `pkg/server/proxy/proxy.go` |
+| 7 | Provider→kcp identity = SA `provider` in the provider's workspace; hub mints kubeconfig and writes it as Secret `faros-provider-kubeconfig` in the provider's host namespace; **24h token rotation** | Reuses existing exec-credential pattern from `pkg/server/proxy/proxy.go` |
 | 8 | Schema delivery = **inline** in `CatalogEntry.spec.apiExport.schemas[].body`; hub parses + applies | Solves chicken-and-egg of "chart can't apply to workspace that doesn't exist yet" |
-| 9 | PermissionClaim acceptance = **auto-accept-all** at Enable time, but ONLY for claims marked `tenantScoped: true`. Non-tenant-scoped claims refused unless admin sets `kedge.faros.sh/accept-untrusted-claims=true` on the `CatalogEntry` | Simplest safe default; per-claim toggles deferred to v2 |
+| 9 | PermissionClaim acceptance = **auto-accept-all** at Enable time, but ONLY for claims marked `tenantScoped: true`. Non-tenant-scoped claims refused unless admin sets `faros.sh/accept-untrusted-claims=true` on the `CatalogEntry` | Simplest safe default; per-claim toggles deferred to v2 |
 | 10 | Tenant Enable = **direct kcp `APIBinding` in the tenant workspace**. No `ProviderBinding` CRD — kcp-native. Catalog controller grants tenants `bind` verb on each provider's APIExport once the provider is Ready. Permission-claim safety enforced by `MaximalPermissionPolicy` on the APIExport (kcp). | Simpler, kcp-native; fewer moving parts. Audit/inventory queries fan out across tenant workspaces (acceptable). |
 
 **Deferred (do NOT block phase 1):**
@@ -66,12 +66,12 @@ detailed under §"Portal changes" + §"Phase 2 implementation plan".
 
 ## Goal
 
-Make kedge a pluggable platform. A *provider* is a self-contained extension
+Make faros a pluggable platform. A *provider* is a self-contained extension
 that brings:
 
 1. An **`APIExport`** in kcp that user tenants bind to consume the
    provider — the *one required piece*.
-2. A **UI** (micro-frontend, any stack) shown inside the kedge portal —
+2. A **UI** (micro-frontend, any stack) shown inside the faros portal —
    optional.
 3. Optional **controllers** reconciling the provider's resources.
 4. Optional **custom HTTP backend** (REST/GraphQL/WebSocket) for the UI
@@ -89,13 +89,13 @@ A user opens the portal, browses the "Providers" view (catalog), clicks
 
 ## Why "provider" (terminology)
 
-The kcp workspace `root:kedge:providers` already exists and is where
-kedge's own `APIExport`s live (`kedge.faros.sh`, `tenancy.kedge.faros.sh`,
+The kcp workspace `root:faros:providers` already exists and is where
+faros's own `APIExport`s live (`faros.sh`, `tenancy.faros.sh`,
 `core.faros.sh`). See
 [config/kcp/workspace-providers.yaml](../config/kcp/workspace-providers.yaml)
 and [config/kcp/embed.go](../config/kcp/embed.go).
 
-A third-party provider therefore lives at `root:kedge:providers:{name}` —
+A third-party provider therefore lives at `root:faros:providers:{name}` —
 sibling to the first-party providers, with identical mechanics. No new
 top-level workspace, no new vocabulary.
 
@@ -116,7 +116,7 @@ top-level workspace, no new vocabulary.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                            kedge-hub                                  │
+│                            faros-hub                                  │
 │                                                                       │
 │  /ui/*                       → embedded SPA (Vue portal)              │
 │  /ui/providers/{p}/*         → reverse proxy → catalog.spec.ui.url    │
@@ -125,9 +125,9 @@ top-level workspace, no new vocabulary.
 │  /api/providers/{p}/heartbeat (POST, provider-SA-authed)              │
 │                                                                       │
 │  Catalog controller: watches CatalogEntry                     │
-│    - auto-creates root:kedge:providers:{p} sub-workspace              │
+│    - auto-creates root:faros:providers:{p} sub-workspace              │
 │    - creates `provider` ServiceAccount in that workspace              │
-│    - writes kedge-provider-kubeconfig Secret to provider's namespace  │
+│    - writes faros-provider-kubeconfig Secret to provider's namespace  │
 │    - applies inline bootstrap (APIResourceSchema, APIExport)          │
 │    - rebuilds proxy routing table; tracks heartbeats                  │
 │                                                                       │
@@ -139,8 +139,8 @@ top-level workspace, no new vocabulary.
         │ kcp                              │ HTTP (in-cluster Service)
         ▼                                  ▼
 ┌────────────────────────────┐   ┌────────────────────────────────────┐
-│ root:kedge:providers:cost  │   │ Provider pod (e.g. cost)           │
-│   APIExport cost.faros.sh  │◄──│   - mounts kedge-provider-kubeconfig│
+│ root:faros:providers:cost  │   │ Provider pod (e.g. cost)           │
+│   APIExport cost.faros.sh  │◄──│   - mounts faros-provider-kubeconfig│
 │   APIResourceSchema(s)     │   │   - runs controllers against kcp    │
 │   SA: provider             │   │   - serves UI on :3000 (optional)   │
 └────────────────────────────┘   │   - serves backend HTTP on :8080    │
@@ -148,17 +148,17 @@ top-level workspace, no new vocabulary.
         │ APIBinding (kcp        └────────────────────────────────────┘
         │ serves natively)
 ┌────────────────────────────┐
-│ root:kedge:tenants:alice   │
+│ root:faros:tenants:alice   │
 │   (user workspace — sees   │
 │    cost CRs natively)      │
 └────────────────────────────┘
 ```
 
 Single origin from the browser's perspective: every request goes to
-`kedge.example.com`. The hub fans out to providers internally.
+`faros.example.com`. The hub fans out to providers internally.
 
 **Key clarification on traffic flow:** provider CRs are served by kcp via
-the normal `/clusters/...` path on the hub — the same flow as kedge's own
+the normal `/clusters/...` path on the hub — the same flow as faros's own
 CRDs today. The `/services/providers/{name}` proxy is *only* for the
 provider's own custom HTTP backend (REST/GraphQL/WS), not for CR traffic.
 
@@ -306,17 +306,17 @@ other effects; a skill can never create or widen that authority.
 
 ## CRDs
 
-Two new CRDs, both in the kedge API group, both first-party (added to the
-existing `kedge.faros.sh` `APIExport`).
+Two new CRDs, both in the faros API group, both first-party (added to the
+existing `faros.sh` `APIExport`).
 
-### `CatalogEntry` (cluster-scoped, in `root:kedge:providers`)
+### `CatalogEntry` (cluster-scoped, in `root:faros:providers`)
 
 Installed by an administrator via the provider's Helm chart, which targets
 the host Kubernetes cluster API. The hub's catalog controller projects it
 into kcp.
 
 ```yaml
-apiVersion: providers.kedge.faros.sh/v1alpha1
+apiVersion: providers.faros.sh/v1alpha1
 kind: CatalogEntry
 metadata:
   name: cost-insights
@@ -328,7 +328,7 @@ spec:
   iconURL: "/ui/providers/cost-insights/icon.svg"  # served via UI proxy
 
   # Host-cluster namespace where the provider Deployment runs. Hub writes
-  # the kedge-provider-kubeconfig Secret here.
+  # the faros-provider-kubeconfig Secret here.
   serviceAccountNamespace: "cost-insights"
 
   # OPTIONAL: micro-frontend. Omit if provider has no UI.
@@ -374,9 +374,9 @@ spec:
 
 status:
   # Filled by catalog controller
-  workspace: "root:kedge:providers:cost-insights"
+  workspace: "root:faros:providers:cost-insights"
   apiExportRef:
-    workspace: "root:kedge:providers:cost-insights"
+    workspace: "root:faros:providers:cost-insights"
     name: "cost.faros.sh"
   endpoints:
     ui: "http://cost-insights-ui.cost-insights.svc.cluster.local"
@@ -403,7 +403,7 @@ pointing at the provider's `APIExport`. This is the kcp-native pattern;
 adding a second CRD would only re-wrap what `APIBinding` already does.
 
 ```yaml
-# Created in the tenant's workspace (e.g. root:kedge:tenants:alice)
+# Created in the tenant's workspace (e.g. root:faros:tenants:alice)
 # by the portal, calling kcp as the user when they click Enable.
 apiVersion: apis.kcp.io/v1alpha2
 kind: APIBinding
@@ -412,7 +412,7 @@ metadata:
 spec:
   reference:
     export:
-      path: "root:kedge:providers:cost-insights"
+      path: "root:faros:providers:cost-insights"
       name: "cost.faros.sh"
   permissionClaims:
     - resource: configmaps
@@ -446,10 +446,10 @@ spec:
 
 ### 1. Catalog controller (`pkg/hub/controllers/providercatalog/`)
 
-Watches `CatalogEntry` in `root:kedge:providers`. On each
+Watches `CatalogEntry` in `root:faros:providers`. On each
 reconcile:
 
-1. **Sub-workspace**: ensure `root:kedge:providers:{name}` exists. Use
+1. **Sub-workspace**: ensure `root:faros:providers:{name}` exists. Use
    the existing kcp tenancy client. Created with type `universal`,
    `bootstrap.kcp.io/create-only: "true"`.
 2. **Provider ServiceAccount**: ensure a `ServiceAccount` named
@@ -457,8 +457,8 @@ reconcile:
    workspace (admin within its own sandbox, nothing outside).
 3. **Kubeconfig Secret**: mint a token for the SA, build an exec-credential
    kubeconfig pointing at the hub URL with cluster
-   `root:kedge:providers:{name}`, write it as Secret
-   `kedge-provider-kubeconfig` in `spec.serviceAccountNamespace` of the
+   `root:faros:providers:{name}`, write it as Secret
+   `faros-provider-kubeconfig` in `spec.serviceAccountNamespace` of the
    *host* cluster. Idempotent. Rotate token every 24h (set
    `kubernetes.io/service-account-token` style annotation).
 4. **Schema + APIExport apply**: parse `spec.apiExport.schemas[].body`,
@@ -506,7 +506,7 @@ Content-Type: application/json
 ```
 
 - Authenticates the bearer token against the SA in
-  `root:kedge:providers:{name}`. Rejects any other identity.
+  `root:faros:providers:{name}`. Rejects any other identity.
 - Updates `CatalogEntry.status.lastHeartbeat` and
   `reportedVersion`.
 - TTL: 90 seconds. Catalog controller flips `Ready=false` if no heartbeat
@@ -534,10 +534,10 @@ Proxy behavior:
 
 - Parse `{name}` from path: `/ui/providers/cost-insights/foo` → name=`cost-insights`, rest=`/foo`.
 - Look up in registry; **404** if unknown, **503** if not Ready.
-- Backend proxy: requires standard kedge auth middleware; forwards the
-  user's `Authorization` header and adds `X-Kedge-User`, `X-Kedge-Tenant`.
+- Backend proxy: requires standard faros auth middleware; forwards the
+  user's `Authorization` header and adds `X-Faros-User`, `X-Faros-Tenant`.
 - UI proxy: no auth requirement on static assets; injects
-  `X-Kedge-Base-Path: /ui/providers/{name}` so the provider can rewrite
+  `X-Faros-Base-Path: /ui/providers/{name}` so the provider can rewrite
   absolute links.
 - Standard `httputil.ReverseProxy` with header sanitization.
 
@@ -552,7 +552,7 @@ reconciles a `CatalogEntry`, it additionally:
 
 1. **Grants tenants `bind` verb on the provider's `APIExport`.**
    The controller creates / updates a `ClusterRole` named
-   `kedge:providers:bind:{name}` in the provider's workspace with rules
+   `faros:providers:bind:{name}` in the provider's workspace with rules
    `[apiGroups: ["apis.kcp.io"], resources: ["apiexports"], verbs: ["bind"], resourceNames: ["{name}"]]`,
    and a `ClusterRoleBinding` aggregating that role to the tenant-identity
    group (`system:authenticated` is too broad — we use the same identity
@@ -573,11 +573,11 @@ itself is the reconciled state, and kcp handles its lifecycle.
 ### 6. Bootstrap
 
 The kcp bootstrap in [pkg/hub/bootstrap](../pkg/hub/bootstrap) already
-creates `root:kedge:providers`. We add:
+creates `root:faros:providers`. We add:
 
 - `APIResourceSchema` and `APIExport` for `CatalogEntry` in the
-  `providers.kedge.faros.sh` group (admin-only — bound only in
-  `root:kedge:providers`, never in tenant workspaces, hence excluded from
+  `providers.faros.sh` group (admin-only — bound only in
+  `root:faros:providers`, never in tenant workspaces, hence excluded from
   the merged `core.faros.sh` APIExport).
 - New embed paths for these schemas in
   [config/kcp/embed.go](../config/kcp/embed.go).
@@ -607,7 +607,7 @@ Both become provider-aware.
 | `portal/src/pages/ProvidersPage.vue` | The `/providers` catalog view (grid of cards, Enable/Disable) |
 | `portal/src/pages/ProviderFrame.vue` | Per-provider iframe host; handles postMessage handshake, loading state, theme propagation |
 | `portal/src/components/ProviderEnableDialog.vue` | Modal listing `permissionClaims` (read from `CatalogEntry.spec.apiExport.permissionClaims` via `/api/providers`); on confirm, the portal POSTs an `APIBinding` directly to kcp in the user's workspace with the claims marked `Accepted` |
-| `portal/sdk/index.ts` (new package `@kedge/provider-sdk`) | `useKedge()` composable for providers' UIs: token, user, tenant, theme, `onNavigate` |
+| `portal/sdk/index.ts` (new package `@faros/provider-sdk`) | `useFaros()` composable for providers' UIs: token, user, tenant, theme, `onNavigate` |
 | `portal/sdk/package.json`, `tsconfig.json`, `README.md` | SDK packaging — publish to npm or include as workspace |
 
 ### Files to edit
@@ -636,7 +636,7 @@ sources:
   `/api/providers`, unchanged).
 - `enabled: APIBinding[]` — what the *current user* has bound, queried
   via kcp's APIBinding list in the user's workspace, filtered by
-  `reference.export.path` starting with `root:kedge:providers:`.
+  `reference.export.path` starting with `root:faros:providers:`.
 
 `enabledNavItems` becomes `enabled.filter(ready).map(...)`. The catalog
 page shows union with status badges (Available / Enabled / Pending).
@@ -699,16 +699,16 @@ const src = computed(() => {
 // iframe; only post back to that iframe's contentWindow.
 function onMessage(e: MessageEvent) {
   if (e.source !== iframe.value?.contentWindow) return
-  if (e.data?.type === 'kedge.ready') {
+  if (e.data?.type === 'faros.ready') {
     iframe.value?.contentWindow?.postMessage({
-      type: 'kedge.context',
+      type: 'faros.context',
       token: auth.token,
       user: auth.user,
       tenant: auth.clusterName,
       theme: theme.mode,
       basePath: `/ui/providers/${props.providerName}`,
     }, window.location.origin)
-  } else if (e.data?.type === 'kedge.navigate') {
+  } else if (e.data?.type === 'faros.navigate') {
     // Provider wants to update browser URL (e.g. /providers/cost/foo)
     router.push(`/providers/${props.providerName}/${e.data.path}`)
   }
@@ -735,13 +735,13 @@ onUnmounted(() => window.removeEventListener('message', onMessage))
 </template>
 ```
 
-### Provider SDK (`@kedge/provider-sdk`) — concrete
+### Provider SDK (`@faros/provider-sdk`) — concrete
 
 ```ts
 // portal/sdk/index.ts
 import { ref, onMounted, onUnmounted } from 'vue'
 
-export interface KedgeContext {
+export interface FarosContext {
   token: string
   user: { email: string; userId: string }
   tenant: string         // logical cluster name
@@ -749,23 +749,23 @@ export interface KedgeContext {
   basePath: string       // e.g. /ui/providers/cost
 }
 
-export function useKedge() {
-  const ctx = ref<KedgeContext | null>(null)
+export function useFaros() {
+  const ctx = ref<FarosContext | null>(null)
 
   function onMessage(e: MessageEvent) {
     if (e.source !== window.parent) return
-    if (e.data?.type === 'kedge.context') ctx.value = e.data
+    if (e.data?.type === 'faros.context') ctx.value = e.data
   }
 
   onMounted(() => {
     window.addEventListener('message', onMessage)
     // Tell the shell we're ready to receive context
-    window.parent.postMessage({ type: 'kedge.ready' }, '*')
+    window.parent.postMessage({ type: 'faros.ready' }, '*')
   })
   onUnmounted(() => window.removeEventListener('message', onMessage))
 
   function navigate(path: string) {
-    window.parent.postMessage({ type: 'kedge.navigate', path }, '*')
+    window.parent.postMessage({ type: 'faros.navigate', path }, '*')
   }
 
   return { ctx, navigate }
@@ -777,7 +777,7 @@ state (no token, no theme, no synced URL).
 
 ### Deep-link behavior
 
-User pastes `https://kedge.example.com/ui/#/providers/cost/forecasts`
+User pastes `https://faros.example.com/ui/#/providers/cost/forecasts`
 into a fresh browser. Sequence:
 
 1. Vue boots, `App.vue` `onMounted` calls `auth.detectAuthMode()`.
@@ -865,13 +865,13 @@ provider-cost-insights/
 `helm install cost-insights ./chart` →
 
 1. Provider Deployment starts. Reads
-   `/var/run/secrets/kedge/kedge-provider-kubeconfig` (mounted from the
+   `/var/run/secrets/faros/faros-provider-kubeconfig` (mounted from the
    Secret the hub will write).
 2. `CatalogEntry` is applied to the host cluster API.
 3. Hub catalog controller picks it up:
-   a. Creates `root:kedge:providers:cost-insights` workspace.
+   a. Creates `root:faros:providers:cost-insights` workspace.
    b. Creates `provider` SA in that workspace.
-   c. Mints token, writes `kedge-provider-kubeconfig` Secret to
+   c. Mints token, writes `faros-provider-kubeconfig` Secret to
       `cost-insights` namespace.
    d. Applies `APIResourceSchema` + `APIExport` to the workspace.
 4. Provider pod's controller-runtime manager sees the kubeconfig file
@@ -882,7 +882,7 @@ provider-cost-insights/
 ### Alternative: self-bootstrap via an init container
 
 The flow above is **hub-provisioned** — the hub catalog controller owns
-all kcp interactions and mints `kedge-provider-kubeconfig`. A provider
+all kcp interactions and mints `faros-provider-kubeconfig`. A provider
 may instead **self-bootstrap** with an init container that holds a kcp
 workspace-admin kubeconfig, which lets it be installed into any cluster
 with no hub provisioning step. The infrastructure provider supports this
@@ -900,11 +900,11 @@ Platform admin                         Provider owner
 applies CatalogEntry                   helm install … --set bootstrap.enabled=true
    │                                       │
    ▼  hub catalog controller               ▼  pod scheduled, waits for the Secret
-creates root:kedge:providers:<name>    init container (`<provider> init`)
-mints kubeconfig (cluster-admin          uses kedge-provider-kubeconfig to install
+creates root:faros:providers:<name>    init container (`<provider> init`)
+mints kubeconfig (cluster-admin          uses faros-provider-kubeconfig to install
   in the workspace)                       CRDs / CachedResource / APIExport
 HostSecretWriter writes it as            │
-  kedge-provider-kubeconfig              ▼  serve container, SAME Secret, runs
+  faros-provider-kubeconfig              ▼  serve container, SAME Secret, runs
 ```
 
 The minted `provider` SA is **cluster-admin within the provider
@@ -931,7 +931,7 @@ Trade-offs vs. hub-provisioned (model A):
   manual init.
 
 All models converge on the same runtime contract: the serve container
-mounts a kubeconfig at `/var/run/secrets/kedge/kedge-provider-kubeconfig`
+mounts a kubeconfig at `/var/run/secrets/faros/faros-provider-kubeconfig`
 and talks to kcp with it. Only *which identity* and *who supplies the
 Secret* differ.
 
@@ -945,7 +945,7 @@ A provider's backend (if it declares one) MUST:
 
 A provider's controller (the kcp-talking part) MUST:
 
-- Wait for `kedge-provider-kubeconfig` Secret to appear before starting.
+- Wait for `faros-provider-kubeconfig` Secret to appear before starting.
 - Use the kubeconfig's `provider` SA identity. The SA only has rights in
   the provider's own workspace; cross-workspace access is via the
   `APIExport`'s VirtualWorkspace endpoint (kcp serves this natively
@@ -954,7 +954,7 @@ A provider's controller (the kcp-talking part) MUST:
 A provider's UI MUST:
 
 - Serve static assets such that internal links are relative or rooted at
-  `/ui/providers/{name}/`. Use `X-Kedge-Base-Path` from the proxy if a
+  `/ui/providers/{name}/`. Use `X-Faros-Base-Path` from the proxy if a
   build-time base is needed.
 
 ---
@@ -978,7 +978,7 @@ A provider's UI MUST:
   [Published apps: template-native access](./app-studio-publishing.md).
 - **Permission claim gate**: the binding controller refuses any claim not
   marked `tenantScoped`. An override exists
-  (`kedge.faros.sh/accept-untrusted-claims=true`) but is admin-only
+  (`faros.sh/accept-untrusted-claims=true`) but is admin-only
   (host-cluster RBAC on the `CatalogEntry` resource).
 - **iframe sandboxing**: `sandbox` attribute set; no
   `allow-top-navigation`.
@@ -1007,10 +1007,10 @@ A provider's UI MUST:
    optional. Once a tenant workspace has an `APIBinding` to a provider's
    `APIExport`, the embedded GraphQL gateway MUST expose the bound CRs in
    that workspace's schema. The gateway already discovers schemas via
-   APIExport for first-party kedge resources (see
+   APIExport for first-party faros resources (see
    [pkg/hub/graphql.go](../pkg/hub/graphql.go) and
    [cmd/graphql/main.go](../cmd/graphql/main.go) — points at
-   `root:kedge:providers`). Expected to work transparently, but validate in
+   `root:faros:providers`). Expected to work transparently, but validate in
    phase 3 with the example provider's `Greeting` CR appearing in GraphQL.
    If discovery is not automatic, the binding controller will need to
    trigger a gateway refresh — file as a follow-up task, do NOT block phase
@@ -1034,21 +1034,21 @@ place. The list below is descriptive, not prescriptive.
 
 | Path | Purpose |
 |---|---|
-| [apis/providers/v1alpha1/types_catalogentry.go](../apis/providers/v1alpha1/types_catalogentry.go) | `CatalogEntry` Go type (admin-only group `providers.kedge.faros.sh`) |
+| [apis/providers/v1alpha1/types_catalogentry.go](../apis/providers/v1alpha1/types_catalogentry.go) | `CatalogEntry` Go type (admin-only group `providers.faros.sh`) |
 | [apis/providers/v1alpha1/groupversion_info.go](../apis/providers/v1alpha1/groupversion_info.go) | Scheme registration for the new group |
-| [config/crds/providers.kedge.faros.sh_catalogentries.yaml](../config/crds/providers.kedge.faros.sh_catalogentries.yaml) | Host-cluster CRD (codegen) |
-| [config/kcp/apiresourceschema-catalogentries.providers.kedge.faros.sh.yaml](../config/kcp/apiresourceschema-catalogentries.providers.kedge.faros.sh.yaml) | kcp APIResourceSchema (codegen) |
-| [config/kcp/apiexport-providers.kedge.faros.sh.yaml](../config/kcp/apiexport-providers.kedge.faros.sh.yaml) | Admin-only APIExport (excluded from `core.faros.sh` merge) |
-| [hack/gen-core-apiexport/main.go](../hack/gen-core-apiexport/main.go) | Excludes `apiexport-providers.kedge.faros.sh.yaml` from the merged tenant-facing core export |
+| [config/crds/providers.faros.sh_catalogentries.yaml](../config/crds/providers.faros.sh_catalogentries.yaml) | Host-cluster CRD (codegen) |
+| [config/kcp/apiresourceschema-catalogentries.providers.faros.sh.yaml](../config/kcp/apiresourceschema-catalogentries.providers.faros.sh.yaml) | kcp APIResourceSchema (codegen) |
+| [config/kcp/apiexport-providers.faros.sh.yaml](../config/kcp/apiexport-providers.faros.sh.yaml) | Admin-only APIExport (excluded from `core.faros.sh` merge) |
+| [hack/gen-core-apiexport/main.go](../hack/gen-core-apiexport/main.go) | Excludes `apiexport-providers.faros.sh.yaml` from the merged tenant-facing core export |
 | [pkg/hub/providers/registry.go](../pkg/hub/providers/registry.go) | In-memory routing table |
 | [pkg/hub/providers/proxy.go](../pkg/hub/providers/proxy.go) | `NewUIProxy`, `NewBackendProxy` reverse proxies |
 | [pkg/hub/providers/controller.go](../pkg/hub/providers/controller.go) | Catalog reconciler (Phase 1A: URL parse → registry upsert + Ready condition). Phase 1B will add workspace/SA/Secret/schema apply; Phase 3 will add the RBAC `bind`-verb grant + `MaximalPermissionPolicy` apply. |
 | [pkg/hub/providers/api.go](../pkg/hub/providers/api.go) | `GET /api/providers` admin-mediated list endpoint backing the portal |
 | [pkg/hub/portal_security.go](../pkg/hub/portal_security.go) | `WithPortalSecurityHeaders` middleware (CSP) — applied to both embedded SPA and `--portal-dev-url` proxy |
 | [pkg/apiurl/urls.go](../pkg/apiurl/urls.go) | `PathPrefixProvidersUI`, `PathPrefixProvidersProxy` constants |
-| [pkg/hub/server.go](../pkg/hub/server.go) | Route registration; second multicluster manager bound to `providers.kedge.faros.sh` for the catalog controller |
+| [pkg/hub/server.go](../pkg/hub/server.go) | Route registration; second multicluster manager bound to `providers.faros.sh` for the catalog controller |
 | [pkg/hub/scheme.go](../pkg/hub/scheme.go) | Registers the new providers group |
-| [pkg/hub/kcp/bootstrap.go](../pkg/hub/kcp/bootstrap.go) | `ensureProvidersSelfBinding` — APIBinding in `root:kedge:providers` so catalog entries can live there |
+| [pkg/hub/kcp/bootstrap.go](../pkg/hub/kcp/bootstrap.go) | `ensureProvidersSelfBinding` — APIBinding in `root:faros:providers` so catalog entries can live there |
 | [providers/quickstart/](../providers/quickstart/) | Reference provider — Go binary, Dockerfile, `manifest.yaml`, README |
 | [portal/src/stores/providers.ts](../portal/src/stores/providers.ts) | Pinia store fetching `/api/providers` |
 | [portal/src/router/providers.ts](../portal/src/router/providers.ts) | Dynamic `/providers/:name/:rest(.*)*` route registration |
@@ -1063,7 +1063,7 @@ place. The list below is descriptive, not prescriptive.
 - Exec-credential kubeconfig pattern (model for provider kubeconfig
   minting): [pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)
 - Existing APIExport YAML (template for the new one's permissionClaims):
-  [config/kcp/apiexport-kedge.faros.sh.yaml](../config/kcp/apiexport-kedge.faros.sh.yaml)
+  [config/kcp/apiexport-faros.sh.yaml](../config/kcp/apiexport-faros.sh.yaml)
 - Bootstrap entry point: `pkg/hub/bootstrap` + invocation around
   [pkg/hub/server.go:280-301](../pkg/hub/server.go#L280-L301)
 - kcp embedded FS: [config/kcp/embed.go](../config/kcp/embed.go)
@@ -1076,15 +1076,15 @@ place. The list below is descriptive, not prescriptive.
 
 1. `make codegen && make build` — clean build.
 2. Start the hub against an embedded kcp:
-   `./bin/kedge-hub --embedded-kcp --static-auth-tokens=test:user-default`.
+   `./bin/faros-hub --embedded-kcp --static-auth-tokens=test:user-default`.
 3. Apply a stub `CatalogEntry`:
    ```yaml
-   apiVersion: kedge.faros.sh/v1alpha1
+   apiVersion: faros.sh/v1alpha1
    kind: CatalogEntry
    metadata: { name: hello }
    spec:
      displayName: Hello
-     vendor: kedge
+     vendor: faros
      version: 0.0.1
      serviceAccountNamespace: default
      backend:
@@ -1101,9 +1101,9 @@ place. The list below is descriptive, not prescriptive.
              spec: { ... minimal valid schema ... }
    ```
 4. Observe in hub logs:
-   - workspace `root:kedge:providers:hello` created
+   - workspace `root:faros:providers:hello` created
    - SA `provider` created
-   - Secret `kedge-provider-kubeconfig` written to `default` namespace
+   - Secret `faros-provider-kubeconfig` written to `default` namespace
    - APIResourceSchema + APIExport applied
    - registry shows `hello` once stub backend returns 200 on `/healthz`
 5. `curl -H "Authorization: Bearer test" \
@@ -1158,7 +1158,7 @@ operations:
 1. With phase 1 deployed, install a stub `CatalogEntry` with a
    simple HTTP server behind `spec.ui.url` that serves an
    `index.html` containing `<h1>hello provider</h1>` and a small script
-   that calls `useKedge()` (or just `postMessage({ type: 'kedge.ready' })`
+   that calls `useFaros()` (or just `postMessage({ type: 'faros.ready' })`
    directly).
 2. Open the portal in a browser. Side nav and `/providers` show the new
    provider immediately — Phase 1A/2 do not gate visibility per tenant.
@@ -1169,9 +1169,9 @@ operations:
      iframe's console if the stub echoes it).
    - No CSP violations.
    - No CORS errors.
-6. Toggle theme in the shell — if the stub iframe handles `kedge.context`
+6. Toggle theme in the shell — if the stub iframe handles `faros.context`
    re-broadcasts, its background flips. (Optional check.)
-7. Reload the deep link `https://kedge.example.com/ui/#/providers/hello`
+7. Reload the deep link `https://faros.example.com/ui/#/providers/hello`
    in a fresh tab → still works (proves the store loads before route
    resolution).
 
@@ -1189,5 +1189,5 @@ operations:
 
 Tracked under `examples/provider-hello/` once phase 1 lands. Structure: one
 Go binary serving `/healthz` + `/api/hello` + a static `index.html`; one
-controller using `kedge-provider-kubeconfig` to manage a `Greeting` CR;
+controller using `faros-provider-kubeconfig` to manage a `Greeting` CR;
 Helm chart from §"Provider author experience".

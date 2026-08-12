@@ -38,7 +38,7 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
 
-	fixture "github.com/faroshq/faros-kedge/test/e2e/provideractions"
+	fixture "github.com/faroshq/faros/test/e2e/provideractions"
 )
 
 var (
@@ -62,27 +62,27 @@ const (
 	hubPort = "19463"
 	kcpPort = "16463"
 
-	appStudioWorkspace  = "root:kedge:providers:app-studio"
-	databricksWorkspace = "root:kedge:providers:databricks"
+	appStudioWorkspace  = "root:faros:providers:app-studio"
+	databricksWorkspace = "root:faros:providers:databricks"
 
-	appStudioExport  = "ai.kedge.faros.sh"
-	databricksExport = "databricks.providers.kedge.faros.sh"
+	appStudioExport  = "ai.faros.sh"
+	databricksExport = "databricks.providers.faros.sh"
 )
 
 var (
 	secretGVR       = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 	apiBindingGVR   = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}
-	catalogEntryGVR = schema.GroupVersionResource{Group: "providers.kedge.faros.sh", Version: "v1alpha1", Resource: "catalogentries"}
-	projectGVR      = schema.GroupVersionResource{Group: "ai.kedge.faros.sh", Version: "v1alpha1", Resource: "projects"}
-	connectionGVR   = schema.GroupVersionResource{Group: "databricks.kedge.faros.sh", Version: "v1alpha1", Resource: "connections"}
-	warehouseGVR    = schema.GroupVersionResource{Group: "databricks.kedge.faros.sh", Version: "v1alpha1", Resource: "warehouses"}
-	tableGVR        = schema.GroupVersionResource{Group: "databricks.kedge.faros.sh", Version: "v1alpha1", Resource: "tables"}
+	catalogEntryGVR = schema.GroupVersionResource{Group: "providers.faros.sh", Version: "v1alpha1", Resource: "catalogentries"}
+	projectGVR      = schema.GroupVersionResource{Group: "ai.faros.sh", Version: "v1alpha1", Resource: "projects"}
+	connectionGVR   = schema.GroupVersionResource{Group: "databricks.faros.sh", Version: "v1alpha1", Resource: "connections"}
+	warehouseGVR    = schema.GroupVersionResource{Group: "databricks.faros.sh", Version: "v1alpha1", Resource: "warehouses"}
+	tableGVR        = schema.GroupVersionResource{Group: "databricks.faros.sh", Version: "v1alpha1", Resource: "tables"}
 )
 
 func TestMain(m *testing.M) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	repoRoot = filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..")
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("KEDGE_E2E_PROVIDER_ACTIONS_LIVE_ONLY")), "true") {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_E2E_PROVIDER_ACTIONS_LIVE_ONLY")), "true") {
 		liveOnly = true
 		os.Exit(m.Run())
 	}
@@ -97,7 +97,7 @@ func TestMain(m *testing.M) {
 	}
 	// The default lane builds from source. Local iteration may opt out when
 	// the Make target has already produced the three process binaries.
-	if !strings.EqualFold(strings.TrimSpace(os.Getenv("KEDGE_E2E_PROVIDER_ACTIONS_SKIP_BUILD")), "true") {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_E2E_PROVIDER_ACTIONS_SKIP_BUILD")), "true") {
 		if err := build(repoRoot); err != nil {
 			fmt.Fprintln(os.Stderr, "build failed:", err)
 			os.Exit(1)
@@ -105,12 +105,12 @@ func TestMain(m *testing.M) {
 	}
 
 	var err error
-	dataDir, err = os.MkdirTemp("", "kedge-e2e-provider-actions-")
+	dataDir, err = os.MkdirTemp("", "faros-e2e-provider-actions-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tempdir:", err)
 		os.Exit(1)
 	}
-	keepData := strings.EqualFold(strings.TrimSpace(os.Getenv("KEDGE_E2E_KEEP_DATA")), "true")
+	keepData := strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_E2E_KEEP_DATA")), "true")
 	fakeDB = fixture.NewFakeDatabricks()
 	fakeAttestor = fixture.NewFakeInfrastructureAttestor(bootstrapToken)
 
@@ -119,9 +119,9 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "hub log:", err)
 		os.Exit(1)
 	}
-	hubBinary := strings.TrimSpace(os.Getenv("KEDGE_E2E_HUB_BINARY"))
+	hubBinary := strings.TrimSpace(os.Getenv("FAROS_E2E_HUB_BINARY"))
 	if hubBinary == "" {
-		hubBinary = filepath.Join(repoRoot, "bin", "kedge-hub")
+		hubBinary = filepath.Join(repoRoot, "bin", "faros-hub")
 	}
 	hubCmd := exec.Command(hubBinary,
 		"--embedded-kcp",
@@ -129,7 +129,7 @@ func TestMain(m *testing.M) {
 		"--kcp-secure-port", kcpPort,
 		"--embedded-graphql",
 		"--graphql-apiexport-slice-name", "core.faros.sh",
-		"--graphql-apiexport-logical-cluster", "root:kedge:system:controllers",
+		"--graphql-apiexport-logical-cluster", "root:faros:system:controllers",
 		"--graphql-grpc-addr", "127.0.0.1:"+graphqlGRPCPort,
 		"--listen-addr", ":"+hubPort,
 		"--data-dir", dataDir,
@@ -177,7 +177,7 @@ func TestMain(m *testing.M) {
 		"storage":          map[string]any{"appStudioMessageStore": "in-memory"},
 		"fakeUpstream":     map[string]any{"scheme": "https", "url": fakeDB.URL(), "certificate": "self-signed"},
 		"workloadAttestor": map[string]any{"provider": "infrastructure", "url": fakeAttestor.URL(), "bootstrapToken": "deterministic-fixture-only"},
-		"appInputContract": map[string]any{"base": "hub/services/providers/app-studio", "credentials": "short-lived workload token from exchange file", "tokenFile": "KEDGE_ACTIONS_TOKEN_FILE", "providerURL": false, "pat": false, "mcp": false},
+		"appInputContract": map[string]any{"base": "hub/services/providers/app-studio", "credentials": "short-lived workload token from exchange file", "tokenFile": "FAROS_ACTIONS_TOKEN_FILE", "providerURL": false, "pat": false, "mcp": false},
 	})
 
 	if err := applyProviderManifests(); err != nil {
@@ -223,7 +223,7 @@ func TestMain(m *testing.M) {
 		// The production action-enabled runtime contract requires an HTTPS
 		// external origin. This fixture is only persisted in Project values;
 		// the generated app still enters through the local hub URL below.
-		"KEDGE_ACTIONS_EXTERNAL_URL": "https://actions.invalid",
+		"FAROS_ACTIONS_EXTERNAL_URL": "https://actions.invalid",
 	})
 	if err != nil {
 		cleanup()
@@ -276,7 +276,7 @@ func build(root string) error {
 }
 
 func applyProviderManifests() error {
-	client, err := kcpDynamicRaw("root:kedge:system:providers", adminToken)
+	client, err := kcpDynamicRaw("root:faros:system:providers", adminToken)
 	if err != nil {
 		return err
 	}
@@ -305,7 +305,7 @@ func applyProviderManifests() error {
 					continue
 				}
 				gvr, ok := map[string]schema.GroupVersionResource{
-					"Provider":     {Group: "admin.kedge.faros.sh", Version: "v1alpha1", Resource: "providers"},
+					"Provider":     {Group: "admin.faros.sh", Version: "v1alpha1", Resource: "providers"},
 					"CatalogEntry": catalogEntryGVR,
 				}[obj.GetKind()]
 				if !ok {
@@ -359,8 +359,8 @@ func initProvider(name, kubeconfig, workspace, schemas string) error {
 	binary := filepath.Join(repoRoot, "bin", name+"-provider")
 	cmd := exec.Command(binary, "init")
 	cmd.Env = append(os.Environ(),
-		"KEDGE_PROVIDER_KUBECONFIG="+kubeconfig,
-		"KEDGE_SCHEMAS_DIR="+schemas,
+		"FAROS_PROVIDER_KUBECONFIG="+kubeconfig,
+		"FAROS_SCHEMAS_DIR="+schemas,
 	)
 	if name == "app-studio" {
 		cmd.Env = append(cmd.Env, "APP_STUDIO_WORKSPACE_PATH="+workspace)
@@ -383,11 +383,11 @@ func startProvider(name, port, kubeconfig string, extra map[string]string) (*exe
 	cmd := exec.Command(filepath.Join(repoRoot, "bin", name+"-provider"))
 	env := append(os.Environ(),
 		"PORT="+port,
-		"KEDGE_HUB_URL="+hubURL,
-		"KEDGE_HUB_TOKEN="+staticToken,
-		"KEDGE_HUB_INSECURE=true",
-		"KEDGE_PROVIDER_NAME="+name,
-		"KEDGE_PROVIDER_KUBECONFIG="+kubeconfig,
+		"FAROS_HUB_URL="+hubURL,
+		"FAROS_HUB_TOKEN="+staticToken,
+		"FAROS_HUB_INSECURE=true",
+		"FAROS_PROVIDER_NAME="+name,
+		"FAROS_PROVIDER_KUBECONFIG="+kubeconfig,
 	)
 	for key, value := range extra {
 		env = append(env, key+"="+value)
@@ -407,7 +407,7 @@ func startProvider(name, port, kubeconfig string, extra map[string]string) (*exe
 }
 
 func waitCatalogReady(names []string, timeout time.Duration) error {
-	client, err := kcpDynamicRaw("root:kedge:system:providers", adminToken)
+	client, err := kcpDynamicRaw("root:faros:system:providers", adminToken)
 	if err != nil {
 		return err
 	}
@@ -492,18 +492,18 @@ func mintRuntimeKubeconfig(workspace, path string, timeout time.Duration) error 
 	contents := fmt.Sprintf(`apiVersion: v1
 kind: Config
 clusters:
-- name: kedge
+- name: faros
   cluster:
     server: %s/clusters/%s
     insecure-skip-tls-verify: true
 contexts:
-- name: kedge
+- name: faros
   context:
-    cluster: kedge
-    user: kedge
-current-context: kedge
+    cluster: faros
+    user: faros
+current-context: faros
 users:
-- name: kedge
+- name: faros
   user:
     token: %s
 `, kcpServer, workspace, token)

@@ -1,18 +1,18 @@
 <script setup lang="ts">
 // Tile content for the infrastructure provider's dashboard summary.
-// Mounted by <kedge-dashboard-tile-infrastructure> (see element.ts).
+// Mounted by <faros-dashboard-tile-infrastructure> (see element.ts).
 //
 // Gives the user an at-a-glance read on what they've provisioned in the
 // CURRENT workspace:
 //   - total instances + per-phase breakdown (Ready / Pending / Failed)
 //   - top-4 most-recent instances with template + phase chip and a
-//     click-through that bubbles kedge-navigate up to the portal so it
+//     click-through that bubbles faros-navigate up to the portal so it
 //     pushes /providers/infrastructure/instances/<name>.
 //
-// Auth + workspace headers come from the kedgeContext the host pushed
+// Auth + workspace headers come from the farosContext the host pushed
 // onto the element and the standard portal tenant slot in localStorage
 // (same shape api.ts reads in App.vue). The tile is read-only — even if
-// the workspace isn't bootstrapped yet (X-Kedge-Tenant resolver returns
+// the workspace isn't bootstrapped yet (X-Faros-Tenant resolver returns
 // nothing), we just render an empty state instead of bubbling errors.
 
 import { computed, onMounted, onUnmounted, ref, watch, h } from 'vue'
@@ -119,7 +119,7 @@ const AlertCircle = (props: { class?: string }) =>
     ],
   )
 
-interface KedgeContext {
+interface FarosContext {
   token?: string | null
   // tenant is the kcp cluster name (auth.clusterName in the shell).
   // Used as the /graphql/<cluster> path segment for gateway calls.
@@ -135,7 +135,7 @@ interface Instance {
   createdAt: string
 }
 
-const props = defineProps<{ context: KedgeContext | null }>()
+const props = defineProps<{ context: FarosContext | null }>()
 const rootRef = ref<HTMLElement | null>(null)
 
 const instances = ref<Instance[]>([])
@@ -203,7 +203,7 @@ function dispatchNavigate(path: string) {
   // CustomEvent bubbles up through the mount div → the portal-side
   // DashboardTile.vue listener → router.push('/providers/infrastructure/'+path).
   rootRef.value?.dispatchEvent(
-    new CustomEvent('kedge-navigate', { detail: { path }, bubbles: true }),
+    new CustomEvent('faros-navigate', { detail: { path }, bubbles: true }),
   )
 }
 
@@ -276,7 +276,7 @@ function styleFor(phase: string) {
       </div>
 
       <!-- Recent instances. Click anywhere on the row → instance detail
-           page. Bubbles via kedge-navigate so the portal owns the URL.
+           page. Bubbles via faros-navigate so the portal owns the URL.
            Row style matches the kubernetes-edges "Recent" list: a single
            compact line per item (phase icon · name · template · animated
            chevron) so the dashboard reads consistently across providers. -->
@@ -301,7 +301,7 @@ function styleFor(phase: string) {
       <!-- Explicit empty state. The "scope hint" line covers a real
            migration footgun: instances provisioned before the user
            picked a workspace in the sidebar landed in the personal-org
-           scope (no X-Kedge-Workspace header), and the workspace-aware
+           scope (no X-Faros-Workspace header), and the workspace-aware
            list now reads from a different namespace. The pointer to
            the Instances page lets them at least see their stranded
            CRs via the "no workspace" view there. -->

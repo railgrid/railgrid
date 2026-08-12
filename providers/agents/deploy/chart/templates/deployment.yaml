@@ -30,27 +30,27 @@ spec:
       initContainers:
         # Bootstrap the provider workspace (schemas, APIExport, slice, bind
         # grant) with the onboarded workspace-admin kubeconfig. Schemas baked at
-        # /etc/kedge/schemas (Dockerfile). Idempotent.
+        # /etc/faros/schemas (Dockerfile). Idempotent.
         - name: init
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["init"]
           env:
-            - name: KEDGE_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
-            - name: KEDGE_SCHEMAS_DIR
-              value: /etc/kedge/schemas
+            - name: FAROS_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/faros/faros-provider-kubeconfig
+            - name: FAROS_SCHEMAS_DIR
+              value: /etc/faros/schemas
             {{- if $catalogEntryConfigMap }}
-            - name: KEDGE_CATALOGENTRY_FILE
-              value: /etc/kedge/catalogentry/catalogentry.yaml
+            - name: FAROS_CATALOGENTRY_FILE
+              value: /etc/faros/catalogentry/catalogentry.yaml
             {{- end }}
           volumeMounts:
-            - name: kedge-provider-kubeconfig
-              mountPath: /var/run/secrets/kedge
+            - name: faros-provider-kubeconfig
+              mountPath: /var/run/secrets/faros
               readOnly: true
             {{- if $catalogEntryConfigMap }}
             - name: catalogentry
-              mountPath: /etc/kedge/catalogentry
+              mountPath: /etc/faros/catalogentry
               readOnly: true
             {{- end }}
       containers:
@@ -71,15 +71,15 @@ spec:
           env:
             - name: PORT
               value: "8087"
-            - name: KEDGE_HUB_URL
+            - name: FAROS_HUB_URL
               value: {{ .Values.hub.url | quote }}
-            - name: KEDGE_PROVIDER_NAME
+            - name: FAROS_PROVIDER_NAME
               value: "agents"
             # Provider kubeconfig — used for the kcp front-proxy host + TLS
             # only; the tenant client drops its credential and acts as the
             # calling user via the forwarded bearer token.
-            - name: KEDGE_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            - name: FAROS_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/faros/faros-provider-kubeconfig
             {{- if .Values.store.databaseURL }}
             - name: AGENTS_DATABASE_URL
               value: {{ .Values.store.databaseURL | quote }}
@@ -102,11 +102,11 @@ spec:
                   key: {{ .Values.store.messageEncryptionKeysSecretRef.key }}
             {{- end }}
             {{- if .Values.hub.insecure }}
-            - name: KEDGE_HUB_INSECURE
+            - name: FAROS_HUB_INSECURE
               value: "true"
             {{- end }}
             {{- if .Values.hub.tokenSecretRef.name }}
-            - name: KEDGE_HUB_TOKEN
+            - name: FAROS_HUB_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.hub.tokenSecretRef.name }}
@@ -115,8 +115,8 @@ spec:
           volumeMounts:
             # The onboarded workspace-admin kubeconfig; the SA token inside is
             # what the tenant client presents to reach tenant workspaces.
-            - name: kedge-provider-kubeconfig
-              mountPath: /var/run/secrets/kedge
+            - name: faros-provider-kubeconfig
+              mountPath: /var/run/secrets/faros
               readOnly: true
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -124,12 +124,12 @@ spec:
         # Required input: the workspace-admin kubeconfig minted via /bonkers
         # (admin onboarding), consumed by both init and serve. The onboard
         # response stores it under key "kubeconfig".
-        - name: kedge-provider-kubeconfig
+        - name: faros-provider-kubeconfig
           secret:
             secretName: {{ .Values.providerKubeconfig.secretName }}
             items:
               - key: kubeconfig
-                path: kedge-provider-kubeconfig
+                path: faros-provider-kubeconfig
         {{- if $catalogEntryConfigMap }}
         - name: catalogentry
           configMap:

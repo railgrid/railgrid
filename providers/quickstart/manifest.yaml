@@ -1,7 +1,7 @@
-# Quickstart provider — register with the kedge hub.
+# Quickstart provider — register with the faros hub.
 #
-# Apply this against the kcp workspace where the kedge.faros.sh APIExport is
-# bound (typically the user's tenant workspace, or root:kedge:providers when
+# Apply this against the kcp workspace where the faros.sh APIExport is
+# bound (typically the user's tenant workspace, or root:faros:providers when
 # running embedded kcp for development).
 #
 #   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
@@ -14,11 +14,11 @@
 #   url: http://quickstart.providers.svc.cluster.local:8081
 #
 # ════════════════════════════════════════════════════════════════════════
-# Provider object reference — kind: CatalogEntry (providers.kedge.faros.sh)
+# Provider object reference — kind: CatalogEntry (providers.faros.sh)
 #
-# A CatalogEntry registers one provider ("plugin") with the kedge hub. The
+# A CatalogEntry registers one provider ("plugin") with the faros hub. The
 # hub's catalog controller reconciles it into the provider sub-workspace
-# root:kedge:providers:<name>, a ServiceAccount + runtime kubeconfig, the
+# root:faros:providers:<name>, a ServiceAccount + runtime kubeconfig, the
 # APIExport tenants APIBind to, and a routing entry backing
 # /ui/providers/<name>/* and /services/providers/<name>/*.
 #
@@ -30,7 +30,7 @@
 #   category                 Groups the entry under a portal nav heading.
 #   iconURL                  Portal-relative icon path (served via the UI proxy).
 #   serviceAccountNamespace  Host namespace the provider Deployment runs in;
-#                            the hub writes kedge-provider-kubeconfig here.
+#                            the hub writes faros-provider-kubeconfig here.
 #   ui:                      Micro-frontend (omit for a UI-less provider).
 #     url                      Address the hub reverse-proxies for
 #                              /ui/providers/<name>/* (exclusive with builtinRoute).
@@ -52,14 +52,14 @@
 #                              body}); [] = pure broker, no CRDs leak to tenants.
 # ════════════════════════════════════════════════════════════════════════
 ---
-apiVersion: providers.kedge.faros.sh/v1alpha1
+apiVersion: providers.faros.sh/v1alpha1
 kind: CatalogEntry
 metadata:
   name: quickstart
 spec:
   displayName: "Quickstart"
-  description: "Reference provider demonstrating the kedge plugin surface."
-  vendor: "kedge"
+  description: "Reference provider demonstrating the faros plugin surface."
+  vendor: "faros"
   version: "0.1.0"
   category: "Demo"
   iconURL: "/ui/providers/quickstart/icon.svg"
@@ -70,11 +70,11 @@ spec:
     url: "http://localhost:8081"
     healthPath: "/healthz"
   # Provider-owned APIExport. The hub catalog controller materializes the
-  # sub-workspace root:kedge:providers:quickstart, applies the inline
+  # sub-workspace root:faros:providers:quickstart, applies the inline
   # APIResourceSchema(s), and creates an APIExport that tenants can bind
   # to. Phase 3 will wire the tenant-side Enable flow.
   apiExport:
-    name: "quickstart.providers.kedge.faros.sh"
+    name: "quickstart.providers.faros.sh"
     # Sample permission claim so the portal's Enable dialog has something to
     # render. The quickstart provider does not actually read configmaps —
     # this is purely for demonstration. Marked tenantScoped so the dialog

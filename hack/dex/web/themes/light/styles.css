@@ -1,5 +1,5 @@
 /*
-   Kedge auth pages are intentionally dark-only. Keep Dex's light theme hook
+   Faros auth pages are intentionally dark-only. Keep Dex's light theme hook
    present so the frontend can resolve its stylesheet path, while the local
    Violet Circuit surface remains the single visual source of truth.
 */

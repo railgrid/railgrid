@@ -224,7 +224,7 @@ func ensureServiceAccount(ctx context.Context, c client.Client, name string, own
 
 // desiredAgentRules returns the PolicyRules that the edge agent ClusterRole
 // should have. This ClusterRole is shared by every agent SA (one per edge), so
-// it covers BOTH kinds in the edges provider's group edges.kedge.faros.sh:
+// it covers BOTH kinds in the edges provider's group edges.faros.sh:
 // KubernetesCluster and LinuxServer. The agent reads its own edge and patches
 // its status (edge_reporter heartbeats status.connected/agentVersion/…), so it
 // needs get/list/watch + update/patch on the kinds AND their /status
@@ -233,7 +233,7 @@ func ensureServiceAccount(ctx context.Context, c client.Client, name string, own
 func desiredAgentRules() []rbacv1.PolicyRule {
 	return []rbacv1.PolicyRule{
 		{
-			APIGroups: []string{"edges.kedge.faros.sh"},
+			APIGroups: []string{"edges.faros.sh"},
 			Resources: []string{
 				"kubernetesclusters", "kubernetesclusters/status",
 				"linuxservers", "linuxservers/status",
@@ -247,12 +247,12 @@ func desiredAgentRules() []rbacv1.PolicyRule {
 		// placements/status — otherwise the reporter is "forbidden ... cannot list
 		// resource placements".
 		{
-			APIGroups: []string{"edges.kedge.faros.sh"},
+			APIGroups: []string{"edges.faros.sh"},
 			Resources: []string{"placements", "placements/status"},
 			Verbs:     []string{"get", "list", "watch", "update", "patch"},
 		},
 		{
-			APIGroups: []string{"edges.kedge.faros.sh"},
+			APIGroups: []string{"edges.faros.sh"},
 			Resources: []string{"workloads", "workloads/status"},
 			Verbs:     []string{"get", "list", "watch"},
 		},
@@ -270,7 +270,7 @@ func desiredAgentRules() []rbacv1.PolicyRule {
 	}
 }
 
-// ensureClusterRole creates or updates the shared kedge-edge-agent ClusterRole.
+// ensureClusterRole creates or updates the shared faros-edge-agent ClusterRole.
 // It intentionally carries no owner reference so that it is never garbage-collected
 // when an individual edge is deleted; the role is a cluster-wide shared resource.
 func ensureClusterRole(ctx context.Context, c client.Client) error {
@@ -330,7 +330,7 @@ func slicesEqual(a, b []string) bool {
 }
 
 func ensureClusterRoleBinding(ctx context.Context, c client.Client, saName string, ownerRef metav1.OwnerReference) error {
-	crbName := "kedge-edge-" + saName
+	crbName := "faros-edge-" + saName
 	crb := &rbacv1.ClusterRoleBinding{}
 	if err := c.Get(ctx, client.ObjectKey{Name: crbName}, crb); err == nil {
 		return ensureOwnerRef(ctx, c, crb, ownerRef)
@@ -368,7 +368,7 @@ func ensureClusterRoleBinding(ctx context.Context, c client.Client, saName strin
 // "proxy" on this name and fails the review. Both objects are owned by the edge
 // so deletion revokes the grant.
 func (r *RBACReconciler) ensureEdgeProxyGrant(ctx context.Context, c client.Client, saName, edgeName string, ownerRef metav1.OwnerReference) error {
-	name := "kedge-edge-proxy-" + saName
+	name := "faros-edge-proxy-" + saName
 	desiredRules := []rbacv1.PolicyRule{{
 		APIGroups:     []string{r.gvr.Group},
 		Resources:     []string{r.gvr.Resource},
@@ -469,7 +469,7 @@ func (r *RBACReconciler) ensureKubeconfigSecret(ctx context.Context, c client.Cl
 
 	kubeconfig := clientcmdapi.Config{
 		Clusters: map[string]*clientcmdapi.Cluster{
-			"kedge": clusterDef,
+			"faros": clusterDef,
 		},
 		AuthInfos: map[string]*clientcmdapi.AuthInfo{
 			"edge-agent": {
@@ -477,12 +477,12 @@ func (r *RBACReconciler) ensureKubeconfigSecret(ctx context.Context, c client.Cl
 			},
 		},
 		Contexts: map[string]*clientcmdapi.Context{
-			"kedge": {
-				Cluster:  "kedge",
+			"faros": {
+				Cluster:  "faros",
 				AuthInfo: "edge-agent",
 			},
 		},
-		CurrentContext: "kedge",
+		CurrentContext: "faros",
 	}
 
 	kubeconfigBytes, err := clientcmd.Write(kubeconfig)
@@ -495,7 +495,7 @@ func (r *RBACReconciler) ensureKubeconfigSecret(ctx context.Context, c client.Cl
 			Name:      name,
 			Namespace: edgeNamespace,
 			Labels: map[string]string{
-				"kedge.faros.sh/edge": edgeName,
+				"faros.sh/edge": edgeName,
 			},
 			OwnerReferences: []metav1.OwnerReference{ownerRef},
 		},

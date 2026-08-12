@@ -14,10 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package oidc implements e2e tests for kedge OIDC authentication via Dex.
+// Package oidc implements e2e tests for faros OIDC authentication via Dex.
 // It requires a hub kind cluster with Dex deployed (--with-dex flag).
 //
-// If clusters already exist (KEDGE_USE_EXISTING_CLUSTERS=true) the suite
+// If clusters already exist (FAROS_USE_EXISTING_CLUSTERS=true) the suite
 // skips cluster creation and just waits for Dex to be healthy.
 package oidc
 
@@ -30,7 +30,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 var testenv env.Environment
@@ -46,7 +46,7 @@ func TestMain(m *testing.M) {
 
 	testenv = env.NewWithConfig(cfg)
 
-	if os.Getenv("KEDGE_USE_EXISTING_CLUSTERS") == "true" {
+	if os.Getenv("FAROS_USE_EXISTING_CLUSTERS") == "true" {
 		// Clusters already running — just verify Dex is reachable and wire up
 		// the env objects so tests can find them.
 		testenv.Setup(framework.UseExistingClustersWithOIDC(repoRoot))

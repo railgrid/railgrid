@@ -4,72 +4,72 @@
  * Imported as a string by main.ts and injected as one <style> tag
  * in the host document. The element renders in LIGHT DOM (no Shadow
  * DOM) so the portal's :root CSS custom properties cascade in. Every
- * selector is namespaced under kedge-provider-infrastructure so
+ * selector is namespaced under faros-provider-infrastructure so
  * these styles cannot leak into the portal.
  */
 
-kedge-provider-infrastructure {
+faros-provider-infrastructure {
   display: block;
   font-family: inherit;
   color: var(--color-text-primary, inherit);
 }
 
-kedge-provider-infrastructure .app {
+faros-provider-infrastructure .app {
   padding: 8px 0;
 }
 
-kedge-provider-infrastructure .page {
+faros-provider-infrastructure .page {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
 
-kedge-provider-infrastructure .page-head {
+faros-provider-infrastructure .page-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
 }
 
-kedge-provider-infrastructure .page-title {
+faros-provider-infrastructure .page-title {
   margin: 0 0 4px;
   font-size: 14px;
   font-weight: 600;
 }
 
-kedge-provider-infrastructure .page-meta {
+faros-provider-infrastructure .page-meta {
   margin: 0;
   font-size: 12px;
   color: var(--color-text-muted, #888);
 }
 
-kedge-provider-infrastructure .grid {
+faros-provider-infrastructure .grid {
   display: grid;
   gap: 12px;
   grid-template-columns: 1fr;
 }
 
 @media (min-width: 720px) {
-  kedge-provider-infrastructure .grid {
+  faros-provider-infrastructure .grid {
     grid-template-columns: 1fr 1fr;
   }
 }
 
 @media (min-width: 1080px) {
-  kedge-provider-infrastructure .grid {
+  faros-provider-infrastructure .grid {
     grid-template-columns: 1fr 1fr 1fr;
   }
 }
 
-kedge-provider-infrastructure .filters {
+faros-provider-infrastructure .filters {
   display: flex;
   gap: 8px;
 }
 
-kedge-provider-infrastructure .filters select,
-kedge-provider-infrastructure .dynform-row select,
-kedge-provider-infrastructure .dynform-row input,
-kedge-provider-infrastructure .form input {
+faros-provider-infrastructure .filters select,
+faros-provider-infrastructure .dynform-row select,
+faros-provider-infrastructure .dynform-row input,
+faros-provider-infrastructure .form input {
   background: var(--color-surface-overlay, #171927);
   color: var(--color-text-primary, inherit);
   border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
@@ -81,20 +81,20 @@ kedge-provider-infrastructure .form input {
   box-sizing: border-box;
 }
 
-kedge-provider-infrastructure .filters select:focus,
-kedge-provider-infrastructure .dynform-row select:focus,
-kedge-provider-infrastructure .dynform-row input:focus,
-kedge-provider-infrastructure .form input:focus {
+faros-provider-infrastructure .filters select:focus,
+faros-provider-infrastructure .dynform-row select:focus,
+faros-provider-infrastructure .dynform-row input:focus,
+faros-provider-infrastructure .form input:focus {
   outline: none;
   border-color: var(--color-accent, #8b6bff);
   box-shadow: 0 0 0 3px var(--color-accent-subtle), 0 0 14px var(--color-accent-glow);
 }
 
-kedge-provider-infrastructure .filters select {
+faros-provider-infrastructure .filters select {
   width: auto;
 }
 
-kedge-provider-infrastructure .template-card {
+faros-provider-infrastructure .template-card {
   text-align: left;
   display: flex;
   flex-direction: column;
@@ -109,30 +109,30 @@ kedge-provider-infrastructure .template-card {
   transition: border-color 0.12s ease;
 }
 
-kedge-provider-infrastructure .template-card:hover {
+faros-provider-infrastructure .template-card:hover {
   border-color: var(--color-accent, #8b6bff);
 }
 
-kedge-provider-infrastructure .template-card-head {
+faros-provider-infrastructure .template-card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
 
-kedge-provider-infrastructure .template-card-title {
+faros-provider-infrastructure .template-card-title {
   font-weight: 600;
   font-size: 13px;
 }
 
-kedge-provider-infrastructure .template-card-desc {
+faros-provider-infrastructure .template-card-desc {
   margin: 0;
   font-size: 12px;
   color: var(--color-text-secondary, #aaa);
   line-height: 1.5;
 }
 
-kedge-provider-infrastructure .template-card-foot {
+faros-provider-infrastructure .template-card-foot {
   display: flex;
   justify-content: space-between;
   font-size: 10px;
@@ -141,7 +141,7 @@ kedge-provider-infrastructure .template-card-foot {
   letter-spacing: 0.04em;
 }
 
-kedge-provider-infrastructure .cloud-pill {
+faros-provider-infrastructure .cloud-pill {
   font-family: var(--font-mono);
   font-size: 10px;
   font-weight: 600;
@@ -154,48 +154,48 @@ kedge-provider-infrastructure .cloud-pill {
   color: var(--color-text-muted, currentColor);
 }
 
-kedge-provider-infrastructure .form,
-kedge-provider-infrastructure .dynform {
+faros-provider-infrastructure .form,
+faros-provider-infrastructure .dynform {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-kedge-provider-infrastructure .dynform-row {
+faros-provider-infrastructure .dynform-row {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-kedge-provider-infrastructure .dynform-row label {
+faros-provider-infrastructure .dynform-row label {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
-kedge-provider-infrastructure .dynform-label {
+faros-provider-infrastructure .dynform-label {
   font-size: 11px;
   font-weight: 600;
   color: var(--color-text-secondary, currentColor);
 }
 
-kedge-provider-infrastructure .dynform-label .required {
+faros-provider-infrastructure .dynform-label .required {
   color: var(--color-warning, #f0a63a);
   margin-left: 2px;
 }
 
-kedge-provider-infrastructure .dynform-desc {
+faros-provider-infrastructure .dynform-desc {
   font-size: 11px;
   color: var(--color-text-muted, #888);
 }
 
-kedge-provider-infrastructure .actions {
+faros-provider-infrastructure .actions {
   display: flex;
   gap: 8px;
   margin-top: 8px;
 }
 
-kedge-provider-infrastructure button.primary {
+faros-provider-infrastructure button.primary {
   background: var(--color-accent, #8b6bff);
   color: #fff;
   border: 1px solid var(--color-accent, #8b6bff);
@@ -206,18 +206,18 @@ kedge-provider-infrastructure button.primary {
   box-shadow: 0 0 16px var(--color-accent-glow);
 }
 
-kedge-provider-infrastructure button.primary:hover {
+faros-provider-infrastructure button.primary:hover {
   background: var(--color-accent-hover, #a18aff);
   border-color: var(--color-accent-hover, #a18aff);
   box-shadow: 0 0 22px var(--color-accent-glow);
 }
 
-kedge-provider-infrastructure button.primary:disabled {
+faros-provider-infrastructure button.primary:disabled {
   opacity: 0.6;
   cursor: progress;
 }
 
-kedge-provider-infrastructure button.danger {
+faros-provider-infrastructure button.danger {
   background: transparent;
   color: var(--color-danger, #ff5d5d);
   border: 1px solid var(--color-danger, #ff5d5d);
@@ -227,7 +227,7 @@ kedge-provider-infrastructure button.danger {
   cursor: pointer;
 }
 
-kedge-provider-infrastructure button.link {
+faros-provider-infrastructure button.link {
   background: transparent;
   border: none;
   color: var(--color-accent, #8b6bff);
@@ -237,24 +237,24 @@ kedge-provider-infrastructure button.link {
   padding: 0;
 }
 
-kedge-provider-infrastructure button.link.back {
+faros-provider-infrastructure button.link.back {
   margin-bottom: 4px;
 }
 
-kedge-provider-infrastructure .table {
+faros-provider-infrastructure .table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
 }
 
-kedge-provider-infrastructure .table th,
-kedge-provider-infrastructure .table td {
+faros-provider-infrastructure .table th,
+faros-provider-infrastructure .table td {
   text-align: left;
   padding: 6px 10px;
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.04));
 }
 
-kedge-provider-infrastructure .table th {
+faros-provider-infrastructure .table th {
   font-weight: 600;
   font-size: 10px;
   letter-spacing: 0.04em;
@@ -262,7 +262,7 @@ kedge-provider-infrastructure .table th {
   color: var(--color-text-muted, #888);
 }
 
-kedge-provider-infrastructure .panel {
+faros-provider-infrastructure .panel {
   background: var(--color-surface-raised, #111320);
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
@@ -272,7 +272,7 @@ kedge-provider-infrastructure .panel {
   gap: 8px;
 }
 
-kedge-provider-infrastructure .panel-title {
+faros-provider-infrastructure .panel-title {
   margin: 0;
   font-size: 11px;
   font-weight: 600;
@@ -281,7 +281,7 @@ kedge-provider-infrastructure .panel-title {
   color: var(--color-text-secondary, currentColor);
 }
 
-kedge-provider-infrastructure pre {
+faros-provider-infrastructure pre {
   margin: 0;
   background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
   color: var(--color-text-primary, inherit);
@@ -294,7 +294,7 @@ kedge-provider-infrastructure pre {
   white-space: pre-wrap;
 }
 
-kedge-provider-infrastructure code {
+faros-provider-infrastructure code {
   background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
   color: var(--color-text-secondary, currentColor);
   padding: 1px 5px;
@@ -303,23 +303,23 @@ kedge-provider-infrastructure code {
   font-size: 11px;
 }
 
-kedge-provider-infrastructure .muted {
+faros-provider-infrastructure .muted {
   color: var(--color-text-muted, #888);
   font-size: 12px;
 }
 
-kedge-provider-infrastructure .error {
+faros-provider-infrastructure .error {
   color: var(--color-danger, #ff5d5d);
   font-size: 12px;
 }
 
-kedge-provider-infrastructure .status-message {
+faros-provider-infrastructure .status-message {
   font-size: 12px;
   color: var(--color-text-muted, #888);
   margin: 0;
 }
 
-kedge-provider-infrastructure .badge {
+faros-provider-infrastructure .badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -335,17 +335,17 @@ kedge-provider-infrastructure .badge {
   color: var(--color-text-muted, inherit);
 }
 
-kedge-provider-infrastructure .badge.ok {
+faros-provider-infrastructure .badge.ok {
   background: var(--color-success-subtle, rgba(47, 214, 160, 0.12));
   color: var(--color-success, #2fd6a0);
 }
 
-kedge-provider-infrastructure .badge.warn {
+faros-provider-infrastructure .badge.warn {
   background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12));
   color: var(--color-warning, #f0a63a);
 }
 
-kedge-provider-infrastructure .badge.fail {
+faros-provider-infrastructure .badge.fail {
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   color: var(--color-danger, #ff5d5d);
 }

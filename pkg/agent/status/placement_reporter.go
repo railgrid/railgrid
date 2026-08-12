@@ -39,8 +39,8 @@ import (
 const (
 	placementReporterName = "placement-status-reporter"
 
-	edgesGroup = "edges.kedge.faros.sh"
-	// PlacementLabel identifies local Deployments managed by a kedge Placement.
+	edgesGroup = "edges.faros.sh"
+	// PlacementLabel identifies local Deployments managed by a faros Placement.
 	PlacementLabel               = edgesGroup + "/placement"
 	placementNamespaceAnnotation = edgesGroup + "/placement-namespace"
 )
@@ -103,7 +103,7 @@ func (r *PlacementReporter) enqueueDeployment(obj interface{}) {
 		}
 	}
 
-	// Only process Deployments managed by kedge.
+	// Only process Deployments managed by faros.
 	if _, ok := deployment.Labels[PlacementLabel]; !ok {
 		return
 	}

@@ -1,12 +1,12 @@
-# Kuery provider — register with the kedge hub.
+# Kuery provider — register with the faros hub.
 #
 # Kuery gives tenants (and AI agents via MCP) a single query surface over
 # every object across their connected edge clusters: fleet-wide search,
 # relationship traversal, and impact analysis. See
-# docs/kuery-provider-architecture.md in the kedge repo for the design.
+# docs/kuery-provider-architecture.md in the faros repo for the design.
 #
-# Apply this against the kcp workspace where the kedge.faros.sh APIExport is
-# bound (typically root:kedge:providers when running embedded kcp for
+# Apply this against the kcp workspace where the faros.sh APIExport is
+# bound (typically root:faros:providers when running embedded kcp for
 # development):
 #
 #   kubectl --kubeconfig kcp-admin.kubeconfig apply -f manifest.yaml
@@ -16,7 +16,7 @@
 # deployment, the Helm chart renders the Service DNS instead, e.g.
 #   url: http://kuery.kuery.svc.cluster.local:8081
 ---
-apiVersion: providers.kedge.faros.sh/v1alpha1
+apiVersion: providers.faros.sh/v1alpha1
 kind: CatalogEntry
 metadata:
   name: kuery
@@ -31,7 +31,7 @@ spec:
     # Dev loopback port (KUERY_PORT / Tiltfile run-provider-kuery). Must be
     # 8084, not 8081 — quickstart owns 8081, and the hub reverse-proxies the
     # portal bundle here; pointing at 8081 serves quickstart's bundle and the
-    # kedge-provider-kuery custom element never registers.
+    # faros-provider-kuery custom element never registers.
     url: "http://localhost:8084"
     indexPath: "/"
   backend:
@@ -46,11 +46,11 @@ spec:
   edgeProxyAccess: true
 
   apiExport:
-    name: "kuery.providers.kedge.faros.sh"
+    name: "kuery.providers.faros.sh"
     # The engagement controller watches the tenant's Edge objects (via the
     # APIExport virtual workspace) to know which edges to engage/disengage.
     permissionClaims:
       - resource: edges
-        group: kedge.faros.sh
+        group: faros.sh
         verbs: [get, list, watch]
         tenantScoped: true

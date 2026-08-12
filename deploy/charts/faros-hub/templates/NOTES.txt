@@ -1,0 +1,45 @@
+Faros Hub has been deployed!
+
+{{- if .Values.ingress.enabled }}
+
+Hub is accessible via Ingress:
+{{- range .Values.ingress.hosts }}
+  https://{{ .host }}
+{{- end }}
+
+{{- else }}
+
+Hub service: {{ include "faros-hub.fullname" . }}:{{ .Values.service.hub.port }}
+
+To access the hub locally:
+  kubectl port-forward svc/{{ include "faros-hub.fullname" . }} {{ .Values.service.hub.port }}:{{ .Values.service.hub.port }}
+
+{{- end }}
+
+Install the faros CLI via kubectl krew:
+  kubectl krew index add faros https://github.com/faroshq/krew-index.git
+  kubectl krew install faros/faros
+
+Or update if already installed:
+  kubectl krew upgrade faros/faros
+
+{{- if .Values.hub.staticAuthTokens }}
+
+Login (static token):
+{{- if eq (len .Values.hub.staticAuthTokens) 1 }}
+  kubectl faros login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} --token {{ .Values.hub.staticAuthTokens | first }} {{ if or .Values.hub.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
+{{- else }}
+  kubectl faros login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} --token <your-static-token> {{ if or .Values.hub.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
+{{- end }}
+
+  {{ len .Values.hub.staticAuthTokens }} static token(s) configured.
+
+{{- else }}
+
+IDP (external): {{ .Values.idp.issuerURL }}
+
+Login:
+  kubectl faros login --hub-url {{ .Values.hub.hubExternalURL | default "https://<hub-external-url>" }} {{ if or .Values.hub.tls.selfSigned.enabled .Values.hub.devMode }}--insecure-skip-tls-verify{{ end }}
+
+For identity provider deployment, see docs/idp.md.
+{{- end }}

@@ -19,7 +19,7 @@ func TestLookupModel(t *testing.T) {
 		{"gpt-4o", "gpt-4o", true},
 		{"GPT-4o", "gpt-4o", true},
 		{"openai/gpt-4o", "gpt-4o", true},
-		{"gpt-4o-2024-08-06", "gpt-4o", true},          // date suffix → prefix match
+		{"gpt-4o-2024-08-06", "gpt-4o", true},           // date suffix → prefix match
 		{"gpt-4o-mini-2024-07-18", "gpt-4o-mini", true}, // must prefer the longer id
 		{"openrouter/anthropic/claude-sonnet-4", "claude-sonnet-4", true},
 		{"totally-unknown-model", "", false},

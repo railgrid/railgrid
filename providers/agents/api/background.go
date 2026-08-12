@@ -108,7 +108,7 @@ type background struct {
 // provider then serves per-request traffic only.
 func (s *Server) StartBackground(ctx context.Context) {
 	if s.cfg.ProviderKubeconfig == "" {
-		log.Printf("background executor disabled (set KEDGE_PROVIDER_KUBECONFIG to enable autonomous schedules/webhooks)")
+		log.Printf("background executor disabled (set FAROS_PROVIDER_KUBECONFIG to enable autonomous schedules/webhooks)")
 		return
 	}
 	base, err := clientcmd.BuildConfigFromFlags("", s.cfg.ProviderKubeconfig)
@@ -137,7 +137,7 @@ func (s *Server) webhookKeyBytes() []byte {
 	}
 	if s.cfg.ProviderKubeconfig != "" {
 		if b, err := os.ReadFile(s.cfg.ProviderKubeconfig); err == nil {
-			sum := sha256.Sum256(append(b, []byte("kedge-agents-webhook")...))
+			sum := sha256.Sum256(append(b, []byte("faros-agents-webhook")...))
 			return sum[:]
 		}
 	}
@@ -357,7 +357,7 @@ func (b *background) agentToken(ctx context.Context, dyn dynamic.Interface, clus
 }
 
 // apiExportNameForSlice is the slice name (same as the export by convention).
-const apiExportNameForSlice = "agents.kedge.faros.sh"
+const apiExportNameForSlice = "agents.faros.sh"
 
 // scoped returns a dynamic client bound to one tenant logical cluster, on
 // whichever shard's VW actually serves it.

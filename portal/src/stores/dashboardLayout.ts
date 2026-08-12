@@ -76,7 +76,7 @@ export const GRID_COLS = 3
 const DEFAULT_W = 1
 const DEFAULT_H = 2
 
-const STORAGE_PREFIX = 'kedge-dashboard-layout:'
+const STORAGE_PREFIX = 'faros-dashboard-layout:'
 
 function storageKey(ws: string): string {
   return `${STORAGE_PREFIX}${ws}`
@@ -409,7 +409,7 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   }
 
   // markNoTile is reported by a tile that loaded its bundle but found no
-  // <kedge-dashboard-tile-*> element. Persisted so it doesn't re-probe on
+  // <faros-dashboard-tile-*> element. Persisted so it doesn't re-probe on
   // reload. (No longer used to drop tiles — tileless providers stay on the
   // grid — but kept so a caller can record the fact if desired.)
   function markNoTile(name: string) {

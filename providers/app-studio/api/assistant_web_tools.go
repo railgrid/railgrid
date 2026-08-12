@@ -19,7 +19,7 @@ You may obtain a copy of the License at
 // web_search rides the workspace's shared searxng instance (the Studio
 // singleton, controller/studio) through the infrastructure data plane with
 // the caller's bearer — the instance has no public URL and no credential of
-// its own; the caller's kedge RBAC on the instance is the gate.
+// its own; the caller's faros RBAC on the instance is the gate.
 
 package api
 
@@ -84,7 +84,7 @@ func projectAssistantWebFetch(ctx context.Context, raw string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "kedge-app-studio/0.1 (+https://github.com/faroshq/kedge)")
+	req.Header.Set("User-Agent", "faros-app-studio/0.1 (+https://github.com/faroshq/faros)")
 	resp, err := webGuardedClient.Do(req)
 	if err != nil {
 		return "", err

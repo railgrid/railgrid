@@ -5,7 +5,7 @@
 
 export const LIST_MCP_SERVERS = `
   query ListMCPServers {
-    kedge_faros_sh {
+    faros_sh {
       v1alpha1 {
         MCPServers {
           items {
@@ -58,7 +58,7 @@ export const LIST_MCP_SERVERS = `
 
 export const GET_MCP_SERVER = `
   query GetMCPServer($name: String!) {
-    kedge_faros_sh {
+    faros_sh {
       v1alpha1 {
         MCPServer(name: $name) {
           metadata {
@@ -167,7 +167,7 @@ export interface MCPItem {
 }
 
 export interface ListMCPResult {
-  kedge_faros_sh: {
+  faros_sh: {
     v1alpha1: {
       MCPServers: {
         items: MCPItem[]
@@ -177,7 +177,7 @@ export interface ListMCPResult {
 }
 
 export interface GetMCPResult {
-  kedge_faros_sh: {
+  faros_sh: {
     v1alpha1: {
       MCPServer: MCPItem
     }

@@ -3,19 +3,19 @@
 > [!IMPORTANT]
 > **Read-only mirror — do not push or open PRs here.**
 > The standalone [`faroshq/provider-quickstart`](https://github.com/faroshq/provider-quickstart)
-> repository is **automatically synced** from the kedge monorepo
-> [`faroshq/kedge`](https://github.com/faroshq/kedge) (path `providers/quickstart/`)
+> repository is **automatically synced** from the faros monorepo
+> [`faroshq/faros`](https://github.com/faroshq/faros) (path `providers/quickstart/`)
 > via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
 > the mirror, so any direct change here is overwritten. File issues and PRs
-> against [`faroshq/kedge`](https://github.com/faroshq/kedge) instead.
+> against [`faroshq/faros`](https://github.com/faroshq/faros) instead.
 >
 > This is also the canonical "copy me" template for a standalone provider repo:
 > it ships its own `Dockerfile` and Helm chart (`deploy/chart/`). The image and
-> chart are built and published from the kedge monorepo CI (every PR builds
+> chart are built and published from the faros monorepo CI (every PR builds
 > them, so breaks are caught before the sync); the mirror itself carries no
 > build workflows.
 
-A minimal reference provider proving the kedge plugin surface end-to-end.
+A minimal reference provider proving the faros plugin surface end-to-end.
 See [docs/providers.md](../../docs/providers.md) for the architecture this
 example demonstrates.
 
@@ -24,11 +24,11 @@ example demonstrates.
 - A single binary serving both the **UI** (HTML page, mounted at
   `/ui/providers/quickstart/` in the portal) and the **backend HTTP API**
   (mounted at `/services/providers/quickstart/`).
-- The `postMessage` handshake (`kedge.ready` → `kedge.context`) — the page
+- The `postMessage` handshake (`faros.ready` → `faros.context`) — the page
   receives `{ user, tenant, theme, basePath }` from the portal shell.
 - That the hub's auth middleware forwards the user's bearer token to the
   provider backend (the `/api/hello` response includes the
-  `X-Kedge-User` header and the token length).
+  `X-Faros-User` header and the token length).
 
 ## Run it locally
 
@@ -40,10 +40,10 @@ go run .
 # listening on :8081
 ```
 
-In another, the kedge hub (embedded kcp is the easiest path):
+In another, the faros hub (embedded kcp is the easiest path):
 
 ```sh
-./bin/kedge-hub \
+./bin/faros-hub \
   --embedded-kcp \
   --static-auth-tokens=test:user-default \
   --listen-addr=:9443
@@ -53,8 +53,8 @@ Register the provider via its `ProviderCatalogEntry`:
 
 ```sh
 kubectl --kubeconfig kcp-admin.kubeconfig \
-  --context kedge-admin \
-  ws use root:kedge:providers
+  --context faros-admin \
+  ws use root:faros:providers
 kubectl apply -f providers/quickstart/manifest.yaml
 ```
 
@@ -99,7 +99,7 @@ backend proxy works from the page too.
 ## Build the image
 
 ```sh
-docker build -t kedge-quickstart-provider:dev providers/quickstart
+docker build -t faros-quickstart-provider:dev providers/quickstart
 ```
 
 ## Deploying in-cluster
@@ -117,7 +117,7 @@ chart for this provider arrives in Phase 4 (see `docs/providers.md`).
 
 quickstart uses the **hub-provisioned** model: you apply the
 `CatalogEntry` and the hub catalog controller creates the provider
-workspace, mints the runtime `kedge-provider-kubeconfig` Secret, and
+workspace, mints the runtime `faros-provider-kubeconfig` Secret, and
 applies the APIExport. quickstart doesn't read kcp itself, so it just
 needs the routing — no kubeconfig.
 
@@ -136,7 +136,7 @@ needs kcp access.
 The platform pieces these depend on land in later phases:
 
 - Heartbeat (`POST /api/providers/{name}/heartbeat`) — Phase 1C.
-- Hub-minted `kedge-provider-kubeconfig` Secret — Phase 1B.
+- Hub-minted `faros-provider-kubeconfig` Secret — Phase 1B.
 - A `ProviderBinding` and APIBinding flow — Phase 3.
 - A "Providers" page in the portal — Phase 2.
 - A first-party Helm chart — Phase 4.

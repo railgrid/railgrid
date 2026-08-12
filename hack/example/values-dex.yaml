@@ -26,8 +26,8 @@ config:
 
   enablePasswordDB: true
   staticClients:
-    - id: kedge
-      name: kedge
+    - id: faros
+      name: faros
       secret: "Z2Fyc2lha2FsYmlzdmFuZGVuekWplCg=="
       redirectURIs:
         - https://hub.faros.sh/auth/callback

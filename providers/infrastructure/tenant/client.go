@@ -81,7 +81,7 @@ func NewClientFactory(base *rest.Config) *ClientFactory {
 // authenticating as the caller via token. Cached per (cluster, token) so a
 // stable per-MCPServer SA token reuses one client/transport. An empty token is
 // an error — actions must always carry the caller's identity. The cluster MUST
-// be the kcp logical-cluster ID (X-Kedge-Cluster), never a workspace path — the
+// be the kcp logical-cluster ID (X-Faros-Cluster), never a workspace path — the
 // hub proxy rejects path-form addressing.
 func (f *ClientFactory) For(clusterID, token string) (dynamic.Interface, error) {
 	cfg, err := f.configFor(clusterID, token)

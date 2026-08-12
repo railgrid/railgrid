@@ -7,20 +7,20 @@ their own.
 
 ## What each label / annotation buys you
 
-The kedge provider's RGD discovery (in `providers/infrastructure/
+The faros provider's RGD discovery (in `providers/infrastructure/
 kro/templates.go`) looks for these keys verbatim:
 
 | Key | Purpose |
 |---|---|
-| `kedge.faros.sh/expose=true` (label) | gates visibility — required |
-| `kedge.faros.sh/template-name` (label) | catalog slug; defaults to `metadata.name` |
-| `kedge.faros.sh/template-version` (label) | required when provisioning, for safety |
-| `kedge.faros.sh/category` (label) | filter chip in the catalog grid |
-| `kedge.faros.sh/cloud` (label) | filter chip + maps credential schema |
-| `kedge.faros.sh/display-name` (annotation) | human-readable name |
-| `kedge.faros.sh/description` (annotation) | one-line blurb shown on the card |
-| `kedge.faros.sh/icon-url` (annotation) | optional asset URL |
-| `kedge.faros.sh/sample-values` (annotation) | JSON-encoded form pre-fill |
+| `faros.sh/expose=true` (label) | gates visibility — required |
+| `faros.sh/template-name` (label) | catalog slug; defaults to `metadata.name` |
+| `faros.sh/template-version` (label) | required when provisioning, for safety |
+| `faros.sh/category` (label) | filter chip in the catalog grid |
+| `faros.sh/cloud` (label) | filter chip + maps credential schema |
+| `faros.sh/display-name` (annotation) | human-readable name |
+| `faros.sh/description` (annotation) | one-line blurb shown on the card |
+| `faros.sh/icon-url` (annotation) | optional asset URL |
+| `faros.sh/sample-values` (annotation) | JSON-encoded form pre-fill |
 
 Add your own RGDs here following the same conventions — `dev-kro-seed`
 applies the whole directory recursively.

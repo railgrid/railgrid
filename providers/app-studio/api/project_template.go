@@ -11,7 +11,7 @@ You may obtain a copy of the License at
 // Template-backed development environments
 // (docs/app-studio-template-sandboxes.md §4). A Project that names an
 // infrastructure Template in spec.template gets its development binding
-// generated from that Template's instanceCRD with kedgeMode: development —
+// generated from that Template's instanceCRD with farosMode: development —
 // the dev overlay the infrastructure provider synthesizes runs the declared
 // components on platform dev images. App Studio reads the Template CR live
 // from the tenant workspace catalog (the same CachedResource surface the
@@ -44,7 +44,7 @@ import (
 )
 
 var templatesGVR = schema.GroupVersionResource{
-	Group:    "infrastructure.kedge.faros.sh",
+	Group:    "infrastructure.faros.sh",
 	Version:  "v1alpha1",
 	Resource: "templates",
 }
@@ -89,7 +89,7 @@ type projectTemplateComponent struct {
 	WorkspacePath string `json:"workspacePath"`
 
 	// Toolchain is the component's development runtime, derived from the
-	// template's ${kedge.devImage.<toolchain>} token (e.g. "node"). Empty when
+	// template's ${faros.devImage.<toolchain>} token (e.g. "node"). Empty when
 	// the template declares no parseable devImage.
 	Toolchain string `json:"toolchain,omitempty"`
 
@@ -195,12 +195,12 @@ func (i projectTemplateInfo) WorkspacePaths() map[string]string {
 
 // projectTemplateDevImageTokenPrefix mirrors the infrastructure provider's
 // reserved token family for platform-managed development images. The
-// Template CRD validates devImage against ^\$\{kedge\.devImage\.[a-z][a-z0-9-]*\}$,
+// Template CRD validates devImage against ^\$\{faros\.devImage\.[a-z][a-z0-9-]*\}$,
 // so the toolchain is exactly the token's suffix.
-const projectTemplateDevImageTokenPrefix = "${kedge.devImage."
+const projectTemplateDevImageTokenPrefix = "${faros.devImage."
 
 // projectTemplateToolchain extracts the toolchain name from a component's
-// devImage token ("${kedge.devImage.node}" → "node"). Anything that is not a
+// devImage token ("${faros.devImage.node}" → "node"). Anything that is not a
 // well-formed token yields "" — App Studio never resolves the token to a real
 // image (that is the infrastructure provider's job), it only needs the name to
 // tell an agent which runtime its code has to target.
@@ -316,7 +316,7 @@ func projectTemplateDevBindingWithContext(p *aiv1alpha1.Project, info projectTem
 	}
 	valuesMap := map[string]any{
 		"name":      name,
-		"kedgeMode": "development",
+		"farosMode": "development",
 	}
 	valuesMap = bindings.ApplyActionsOverlay(valuesMap, bindings.ActionsOverlay{
 		ExchangeURL: context.ActionsExchangeURL,
@@ -428,7 +428,7 @@ func (s *Server) projectTemplateBindingContext(p *aiv1alpha1.Project, id identit
 	}
 	externalRaw := strings.TrimSpace(s.actionsExternalURL)
 	if externalRaw == "" {
-		return projectTemplateBindingContext{}, fmt.Errorf("KEDGE_ACTIONS_EXTERNAL_URL is required for action-enabled development runtimes")
+		return projectTemplateBindingContext{}, fmt.Errorf("FAROS_ACTIONS_EXTERNAL_URL is required for action-enabled development runtimes")
 	}
 	transport, err := bindings.ActionsTransportForOrigin(externalRaw)
 	if err != nil {

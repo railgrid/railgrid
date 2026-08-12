@@ -53,7 +53,7 @@ type devSyncFile struct {
 }
 
 type devSyncInput struct {
-	Instance string        `json:"instance" jsonschema:"Development-mode instance name (provisioned with values.kedgeMode=development)"`
+	Instance string        `json:"instance" jsonschema:"Development-mode instance name (provisioned with values.farosMode=development)"`
 	Files    []devSyncFile `json:"files" jsonschema:"Files to sync, paths relative to the workspace root; each is routed to the component whose workspacePath prefixes it"`
 	Restart  string        `json:"restart,omitempty" jsonschema:"auto (default) restarts the dev process when needed per the template's reload rules; none only writes files"`
 }
@@ -120,7 +120,7 @@ func registerDevTools(srv *mcp.Server, deps Deps, ident identity) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "dev_sync",
 		Title:       "Sync source files into a development instance",
-		Description: "Push workspace files into a development-mode instance's sandbox with hot reload — no image build. Files are routed to components by the template's development.components workspacePath prefixes (see describe_template); files outside every component directory are rejected. Requires an instance provisioned with values.kedgeMode=\"development\".",
+		Description: "Push workspace files into a development-mode instance's sandbox with hot reload — no image build. Files are routed to components by the template's development.components workspacePath prefixes (see describe_template); files outside every component directory are rejected. Requires an instance provisioned with values.farosMode=\"development\".",
 		Annotations: &mcp.ToolAnnotations{IdempotentHint: true, DestructiveHint: &no, OpenWorldHint: &yes},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in devSyncInput) (*mcp.CallToolResult, devSyncOutput, error) {
 		target, err := resolveDevTarget(ctx, deps, ident, in.Instance)
@@ -263,7 +263,7 @@ func resolveDevTarget(ctx context.Context, deps Deps, ident identity, instanceNa
 	inst, err := getInstance(ctx, dyn, templates, instanceName)
 	if err != nil {
 		if err == kro.ErrInstanceNotFound {
-			return devTarget{}, fmt.Errorf("instance %q not found — provision it first (values.kedgeMode=\"development\")", instanceName)
+			return devTarget{}, fmt.Errorf("instance %q not found — provision it first (values.farosMode=\"development\")", instanceName)
 		}
 		return devTarget{}, fmt.Errorf("get instance: %w", err)
 	}
@@ -280,8 +280,8 @@ func resolveDevTarget(ctx context.Context, deps Deps, ident identity, instanceNa
 	if tmpl.Development == nil || len(tmpl.Development.Components) == 0 {
 		return devTarget{}, fmt.Errorf("template %q has no development mode — the dev tools only work on development-capable templates (see describe_template)", tmpl.Name)
 	}
-	if mode, _ := inst.Values["kedgeMode"].(string); mode != "development" {
-		return devTarget{}, fmt.Errorf("instance %q is not in development mode (kedgeMode=%q) — provision a dev instance with values.kedgeMode=\"development\"", instanceName, mode)
+	if mode, _ := inst.Values["farosMode"].(string); mode != "development" {
+		return devTarget{}, fmt.Errorf("instance %q is not in development mode (farosMode=%q) — provision a dev instance with values.farosMode=\"development\"", instanceName, mode)
 	}
 	components := make(map[string]kro.TemplateDevelopmentComponent, len(tmpl.Development.Components))
 	maps.Copy(components, tmpl.Development.Components)
@@ -311,7 +311,7 @@ func requireDevComponent(target devTarget, component string) (string, error) {
 // allowlisting, and runtime proxying are all reused rather than duplicated.
 func callDataPlane(ctx context.Context, dp http.Handler, ident identity, method, resource, name, component, verb string, payload []byte) ([]byte, int, error) {
 	if strings.TrimSpace(ident.clusterID) == "" {
-		return nil, 0, fmt.Errorf("no workspace cluster on this request (X-Kedge-Cluster missing) — cannot address the development data plane")
+		return nil, 0, fmt.Errorf("no workspace cluster on this request (X-Faros-Cluster missing) — cannot address the development data plane")
 	}
 	p := "/dataplane/clusters/" + url.PathEscape(ident.clusterID) +
 		"/" + url.PathEscape(resource) + "/" + url.PathEscape(name)
@@ -326,8 +326,8 @@ func callDataPlane(ctx context.Context, dp http.Handler, ident identity, method,
 	}
 	req := httptest.NewRequest(method, p, body).WithContext(ctx)
 	req.Header.Set("Authorization", "Bearer "+ident.token)
-	req.Header.Set("X-Kedge-Tenant", ident.tenantPath)
-	req.Header.Set("X-Kedge-User", ident.user)
+	req.Header.Set("X-Faros-Tenant", ident.tenantPath)
+	req.Header.Set("X-Faros-User", ident.user)
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -361,7 +361,7 @@ func routeDevSyncFiles(files []devSyncFile, components map[string]kro.TemplateDe
 
 // devToolchainManifests names the file each known toolchain needs at a
 // component's root before its start command can run. Keyed by the toolchain
-// from the template's ${kedge.devImage.<toolchain>} token. A toolchain absent
+// from the template's ${faros.devImage.<toolchain>} token. A toolchain absent
 // here is never validated: the template, not this server, is the authority on
 // what its sandbox can run, so an unknown toolchain must not block a sync.
 var devToolchainManifests = map[string]struct {

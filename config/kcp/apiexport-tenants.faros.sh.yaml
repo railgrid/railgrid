@@ -1,0 +1,32 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: tenants.faros.sh
+spec:
+  resources:
+  - group: tenants.faros.sh
+    name: memberships
+    schema: v260615-5246b68.memberships.tenants.faros.sh
+    storage:
+      crd: {}
+  - group: tenants.faros.sh
+    name: organizations
+    schema: v260615-5246b68.organizations.tenants.faros.sh
+    storage:
+      crd: {}
+  - group: tenants.faros.sh
+    name: usermembershipindices
+    schema: v260615-5246b68.usermembershipindices.tenants.faros.sh
+    storage:
+      crd: {}
+  - group: tenants.faros.sh
+    name: userpreferences
+    schema: v260720-6391e6e.userpreferences.tenants.faros.sh
+    storage:
+      crd: {}
+  - group: tenants.faros.sh
+    name: users
+    schema: v260615-5246b68.users.tenants.faros.sh
+    storage:
+      crd: {}
+status: {}

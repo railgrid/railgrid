@@ -39,10 +39,10 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -tags portal_embed \
     -ldflags="-s -w \
-      -X github.com/faroshq/faros-kedge/pkg/version.Version=${VERSION} \
-      -X github.com/faroshq/faros-kedge/pkg/version.GitCommit=${GIT_COMMIT} \
-      -X github.com/faroshq/faros-kedge/pkg/version.BuildDate=${BUILD_DATE}" \
-    -o /kedge-hub ./cmd/kedge-hub/
+      -X github.com/faroshq/faros/pkg/version.Version=${VERSION} \
+      -X github.com/faroshq/faros/pkg/version.GitCommit=${GIT_COMMIT} \
+      -X github.com/faroshq/faros/pkg/version.BuildDate=${BUILD_DATE}" \
+    -o /faros-hub ./cmd/faros-hub/
 
 FROM alpine:3.21
 ARG TARGETARCH
@@ -50,6 +50,6 @@ RUN apk add --no-cache ca-certificates curl && \
     KUBECTL_VERSION=$(curl -fsSL https://dl.k8s.io/release/stable.txt) && \
     curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" -o /usr/local/bin/kubectl && \
     chmod +x /usr/local/bin/kubectl
-COPY --from=builder /kedge-hub /kedge-hub
+COPY --from=builder /faros-hub /faros-hub
 USER 65534:65534
-ENTRYPOINT ["/kedge-hub"]
+ENTRYPOINT ["/faros-hub"]

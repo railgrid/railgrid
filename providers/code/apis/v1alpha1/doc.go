@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // +k8s:deepcopy-gen=package,register
-// +groupName=code.kedge.faros.sh
+// +groupName=code.faros.sh
 
 // Package v1alpha1 contains the tenant-facing API for the code provider —
 // a backend-neutral way to manage source-code repositories across git

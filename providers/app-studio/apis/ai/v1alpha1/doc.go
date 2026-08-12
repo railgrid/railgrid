@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // +k8s:deepcopy-gen=package,register
-// +groupName=ai.kedge.faros.sh
+// +groupName=ai.faros.sh
 
 // Package v1alpha1 contains API types for AI workspace resources.
 package v1alpha1

@@ -19,7 +19,7 @@ package edgectrl
 const (
 	rbacControllerName = "edge-rbac"
 	// edgeNamespace is the namespace where edge credentials are stored.
-	edgeNamespace = "kedge-system"
+	edgeNamespace = "faros-system"
 	// edgeAgentClusterRole is the ClusterRole name for edge agents.
-	edgeAgentClusterRole = "kedge-edge-agent"
+	edgeAgentClusterRole = "faros-edge-agent"
 )

@@ -27,7 +27,7 @@ import (
 
 // modelCredential is a named, reusable set of model credentials the user
 // creates once and assigns to one or more agents. Each is its own Secret
-// (kedge-agents-model-<name>), so credentials can be shared and managed
+// (faros-agents-model-<name>), so credentials can be shared and managed
 // independently. The API key is never returned on reads.
 type modelCredential struct {
 	Name      string `json:"name"`

@@ -1,7 +1,7 @@
 /*
  * App Studio provider styles — self-contained Tailwind build.
  *
- * This provider renders in LIGHT DOM via <kedge-provider-app-studio> and ships
+ * This provider renders in LIGHT DOM via <faros-provider-app-studio> and ships
  * its OWN compiled Tailwind; it is no longer scanned by the host portal's
  * @source directives. main.ts imports this file with ?inline (so the Tailwind
  * Vite plugin processes it at build time) and injects the result as a single
@@ -66,10 +66,10 @@
   --color-danger-subtle: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
 }
 
-kedge-provider-app-studio,
-kedge-provider-app-studio *,
-kedge-provider-app-studio *::before,
-kedge-provider-app-studio *::after {
+faros-provider-app-studio,
+faros-provider-app-studio *,
+faros-provider-app-studio *::before,
+faros-provider-app-studio *::after {
   box-sizing: border-box;
 }
 
@@ -78,7 +78,7 @@ kedge-provider-app-studio *::after {
   to { background-position: -100% 0; }
 }
 
-kedge-provider-app-studio .conversation-running-ripple {
+faros-provider-app-studio .conversation-running-ripple {
   color: transparent;
   background-image: linear-gradient(
     90deg,
@@ -96,7 +96,7 @@ kedge-provider-app-studio .conversation-running-ripple {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  kedge-provider-app-studio .conversation-running-ripple {
+  faros-provider-app-studio .conversation-running-ripple {
     color: var(--color-text-secondary);
     background: none;
     animation: none;

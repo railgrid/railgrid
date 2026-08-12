@@ -1,6 +1,6 @@
-# Kedge Design Book — "Violet Circuit"
+# Faros Design Book — "Violet Circuit"
 
-The canonical reference for every pixel of kedge UI: the host portal, all
+The canonical reference for every pixel of faros UI: the host portal, all
 provider micro-frontends, the portalkit, and the Dex login page. AGENTS.md §8
 is the enforcement summary; this document is the full system with rationale.
 When the two disagree, fix whichever is stale — they describe the same system.
@@ -108,7 +108,7 @@ faces, no CDN fonts.
 | Role | Face | Usage |
 |---|---|---|
 | `font-sans` | Instrument Sans Variable | Body, UI copy |
-| `font-display` (`.type-display`) | Archivo Variable at `font-stretch: 125%` | Page titles, KPI numerals, the KEDGE wordmark |
+| `font-display` (`.type-display`) | Archivo Variable at `font-stretch: 125%` | Page titles, KPI numerals, the FAROS wordmark |
 | `font-mono` | IBM Plex Mono | Identifiers, statuses, badges, table headers, timestamps, code |
 
 Scale (explicit px — the UI is deliberately dense):
@@ -124,7 +124,7 @@ Numbers that align in columns always get `font-variant-numeric: tabular-nums`.
 
 ## 5. The recipes (`k-*` classes)
 
-`portal/src/assets/kedge-ui.css` is the component vocabulary. It cascades into
+`portal/src/assets/faros-ui.css` is the component vocabulary. It cascades into
 every light-DOM provider — **use these classes before writing any CSS**:
 
 | Class | What it is |
@@ -225,7 +225,7 @@ texture (login, empty states — sparingly), `.island` floating dock card,
 | Third-party brand icon tiles (Google/GitHub/etc. on the Dex page) | Brand guidelines beat ours inside a 20px tile |
 | Kuery graph `RELATION_COLORS` | Semantic edge palette, not UI chrome |
 | Decorative blurred accent orbs (`blur-[140px]` circles on login/404) | Ambient ground texture, below the glow rule's radar |
-| Dex auth pages are **dark-only** (`hack/dex/web/static/`) | Standalone pages with no theme toggle; they pin the dark palette via a local `--kedge-*` namespace whose values must track §2's dark column |
+| Dex auth pages are **dark-only** (`hack/dex/web/static/`) | Standalone pages with no theme toggle; they pin the dark palette via a local `--faros-*` namespace whose values must track §2's dark column |
 
 Anything not on this list follows the system.
 
@@ -240,7 +240,7 @@ Two integration modes, one look:
 2. **Self-contained** (code, kuery, app-studio, edges, agents, databricks,
    vibe-studio, quickstart): ship their own namespaced CSS. Rules: colors only
    via `var(--color-*)` (cascades in), fallbacks = dark-base values, every
-   selector namespaced under `kedge-provider-{name}`, radii written per the
+   selector namespaced under `faros-provider-{name}`, radii written per the
    law (or `--radius-*` overrides repeated if they compile their own
    Tailwind), recipes mirror §5 exactly.
 
@@ -253,10 +253,10 @@ never edit the vendored copies under `*/src/portalkit/` — CI's
 ## 10. Extended component specs
 
 Audited Aug 2026, implemented as shared recipes where marked. **Do not
-improvise these.** Implemented ones live in `kedge-ui.css` (§5) or the
+improvise these.** Implemented ones live in `faros-ui.css` (§5) or the
 portalkit; the rest are build-to-this specs for when a consumer appears.
 
-### Tooltip — ✅ implemented as `[data-k-tip]` (kedge-ui.css)
+### Tooltip — ✅ implemented as `[data-k-tip]` (faros-ui.css)
 Native `title=` remains acceptable for plain icon labels; `data-k-tip` is the
 styled variant.
 - Geometry: 4px radius, `padding: 4px 8px`, `max-width: 260px`, offset 6px
@@ -283,7 +283,7 @@ and renders the identical recipe; it can migrate opportunistically. Contract:
   on hover, `role="status"` (`role="alert"` for errors), entry = slide-up
   fade (`agents-toast-in`), exit = fade. Toasts never glow.
 
-### Dropdown / context menu — ✅ implemented as `.k-menu` (kedge-ui.css)
+### Dropdown / context menu — ✅ implemented as `.k-menu` (faros-ui.css)
 App-studio's `PreviewActionsMenu` / `ResponseModePicker` /
 `ApprovalModePicker` follow the same geometry with local Tailwind classes.
 - Panel: 6px radius, `surface-raised`, `border-subtle`, `shadow-2xl`-class
@@ -311,24 +311,24 @@ If a custom one is ever justified (indeterminate states, dense tables):
 `accent` fill + white 10px check, focus = the standard 3px `accent-subtle`
 ring. Label: 12px `text-secondary`, gap 8px.
 
-### Toggle switch — ✅ implemented as `.k-toggle` (kedge-ui.css)
+### Toggle switch — ✅ implemented as `.k-toggle` (faros-ui.css)
 Sharp: 3px track (`bg-accent` when `aria-checked="true"`, `border-default`
 off), 2px `text-primary` knob, standard focus ring. SkillsWorkbench's inline
 Tailwind toggle matches the same shape language.
 
-### Progress bar — ✅ implemented as `.k-progress` (kedge-ui.css)
+### Progress bar — ✅ implemented as `.k-progress` (faros-ui.css)
 2px-radius `surface-overlay` track, semantic fill (`__bar` +
 `--accent/--warning/--danger`), width transition. Not a pill.
 
-### Avatar — ✅ implemented as `.k-avatar` (kedge-ui.css)
+### Avatar — ✅ implemented as `.k-avatar` (faros-ui.css)
 Mono-initials circle, 28px (or `--sm` 20px); presence = 6px `success` dot
 with `.live-dot`. The mono email chip remains preferred for identity.
 
-### `<kbd>` shortcut hint — ✅ implemented as `.k-kbd` (kedge-ui.css)
+### `<kbd>` shortcut hint — ✅ implemented as `.k-kbd` (faros-ui.css)
 Mono 9px uppercase key-cap, 3px radius, `surface-overlay`, hairline with a
 darker bottom edge. Combos are separate kbds joined by a `text-muted` "+".
 
-### File dropzone — ✅ implemented as `.k-dropzone` (kedge-ui.css)
+### File dropzone — ✅ implemented as `.k-dropzone` (faros-ui.css)
 Dashed hairline, verb-first copy ("Drop a file, or browse"); `.is-dragover` =
 accent dashed border + `accent-subtle` tint (a target, not an action — no
 glow); `.is-error` = danger tones. Progress uses `.k-progress`.

@@ -2,13 +2,13 @@
 layout: default
 title: Security
 nav_order: 3
-description: "Authentication options for Kedge — static tokens and OIDC"
+description: "Authentication options for Faros — static tokens and OIDC"
 ---
 
 # Security
 {: .no_toc }
 
-Configure authentication for your Kedge hub.
+Configure authentication for your Faros hub.
 {: .fs-6 .fw-300 }
 
 ## Table of contents
@@ -21,7 +21,7 @@ Configure authentication for your Kedge hub.
 
 ## Overview
 
-Kedge supports two authentication methods:
+Faros supports two authentication methods:
 
 | Method | Use Case | Complexity |
 |:-------|:---------|:-----------|
@@ -69,7 +69,7 @@ hub:
 Or pass it directly when running the binary:
 
 ```bash
-kedge-hub \
+faros-hub \
   --static-auth-token=<your-generated-token> \
   --hub-external-url=https://localhost:9443 \
   --dev-mode
@@ -78,18 +78,18 @@ kedge-hub \
 #### 3. Log in with the token
 
 ```bash
-kedge login \
+faros login \
   --hub-url https://hub.example.com \
   --token <your-generated-token> \
   --insecure-skip-tls-verify  # Only if using self-signed certs
 ```
 
-This writes a kubeconfig context named `kedge` with the token embedded.
+This writes a kubeconfig context named `faros` with the token embedded.
 
 #### 4. Verify
 
 ```bash
-kubectl --context=kedge get namespaces
+kubectl --context=faros get namespaces
 ```
 
 {: .warning }
@@ -167,8 +167,8 @@ config:
     http: 0.0.0.0:5556
 
   staticClients:
-    - id: kedge
-      name: Kedge
+    - id: faros
+      name: Faros
       secret: "<generate-a-secret>"
       redirectURIs:
         - https://hub.example.com/auth/callback
@@ -232,23 +232,23 @@ hub:
 
 idp:
   issuerURL: "https://idp.example.com"
-  clientID: "kedge"
+  clientID: "faros"
   clientSecret: "<same-secret-as-in-dex>"
 ```
 
 Deploy or upgrade the hub:
 
 ```bash
-helm upgrade --install kedge deploy/charts/kedge-hub/ \
+helm upgrade --install faros deploy/charts/faros-hub/ \
   -f values.yaml \
-  --namespace kedge-system \
+  --namespace faros-system \
   --create-namespace
 ```
 
 ### 3. Log in
 
 ```bash
-kedge login --hub-url https://hub.example.com
+faros login --hub-url https://hub.example.com
 ```
 
 This opens a browser for the OIDC flow. After authenticating with your identity provider, you're redirected back and your kubeconfig is configured.

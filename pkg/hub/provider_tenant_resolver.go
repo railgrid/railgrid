@@ -34,10 +34,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
-	"github.com/faroshq/faros-kedge/pkg/hub/providers"
-	"github.com/faroshq/faros-kedge/pkg/hub/serviceaccounts"
-	kcpproxy "github.com/faroshq/faros-kedge/pkg/server/proxy"
+	farosclient "github.com/faroshq/faros/pkg/client"
+	"github.com/faroshq/faros/pkg/hub/providers"
+	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
+	kcpproxy "github.com/faroshq/faros/pkg/server/proxy"
 )
 
 // Headers the portal sends alongside Authorization on provider-proxy
@@ -47,15 +47,15 @@ import (
 // before honoring them — a client can't read or write a workspace it
 // doesn't have a Membership in just by setting these headers.
 const (
-	headerKedgeOrg       = "X-Kedge-Org"
-	headerKedgeWorkspace = "X-Kedge-Workspace"
+	headerFarosOrg       = "X-Faros-Org"
+	headerFarosWorkspace = "X-Faros-Workspace"
 )
 
 // workspacePathRoot is the prefix every org / workspace path lives
 // under in kcp. Kept as a constant so the format stays in sync with
 // the bootstrap controllers (orgWorkspaceParent in
 // pkg/hub/controllers/organization/controller.go).
-const workspacePathRoot = "root:kedge:tenants"
+const workspacePathRoot = "root:faros:tenants"
 
 // kcpTenantResolver implements providers.TenantResolver against the
 // same identity store the rest of the hub uses: bearer token → User CR
@@ -68,13 +68,13 @@ const workspacePathRoot = "root:kedge:tenants"
 // reassigned, so the cache value is safe to keep around for that long.
 type kcpTenantResolver struct {
 	kcpProxy *kcpproxy.KCPProxy
-	client   *kedgeclient.Client
+	client   *farosclient.Client
 	// identifyUser is kept as a narrow seam for tests. Production wiring uses
 	// kcpProxy.IdentifyUser; workload ServiceAccount identities are then
 	// re-verified online in the selected child workspace below.
 	identifyUser func(*http.Request) (string, error)
-	// workloadConfig enables online verification of Kedge-audience workload
-	// tokens in the concrete tenant selected by X-Kedge-Org/Workspace.
+	// workloadConfig enables online verification of Faros-audience workload
+	// tokens in the concrete tenant selected by X-Faros-Org/Workspace.
 	workloadConfig serviceaccounts.WorkspaceConfigBuilder
 
 	mu  sync.RWMutex
@@ -91,11 +91,11 @@ const kcpResolverTTL = 5 * time.Minute
 // newKCPTenantResolver builds a providers.TenantResolver that derives
 // identity from the request's bearer token via kcpProxy.IdentifyUser,
 // then resolves the caller's personal organization workspace path
-// through the kedge typed client. Returns ErrAnonymousProviderCaller
+// through the faros typed client. Returns ErrAnonymousProviderCaller
 // for unauthenticated requests; the backend proxy maps that to
-// "forward without injecting X-Kedge-*" so anonymous /healthz reads
+// "forward without injecting X-Faros-*" so anonymous /healthz reads
 // keep working.
-func newKCPTenantResolver(kcpProxy *kcpproxy.KCPProxy, client *kedgeclient.Client, workloadConfig ...serviceaccounts.WorkspaceConfigBuilder) providers.TenantResolver {
+func newKCPTenantResolver(kcpProxy *kcpproxy.KCPProxy, client *farosclient.Client, workloadConfig ...serviceaccounts.WorkspaceConfigBuilder) providers.TenantResolver {
 	r := &kcpTenantResolver{
 		kcpProxy: kcpProxy,
 		client:   client,
@@ -161,8 +161,8 @@ func (r *kcpTenantResolver) resolve(req *http.Request) (string, string, error) {
 
 	// Honor the portal's sidebar selection before falling back to
 	// the personal-org default. Verifying via UserMembershipIndex
-	// prevents header spoofing — a stranger setting X-Kedge-Org +
-	// X-Kedge-Workspace to someone else's IDs is rejected because
+	// prevents header spoofing — a stranger setting X-Faros-Org +
+	// X-Faros-Workspace to someone else's IDs is rejected because
 	// the index is keyed by the (authenticated) user.
 	if path, ok, err := r.resolveFromHeaders(req.Context(), user, req); err != nil {
 		// Auth failures (membership missing, header malformed) drop
@@ -214,8 +214,8 @@ func (r *kcpTenantResolver) resolveWorkloadServiceAccount(req *http.Request) (st
 	if r == nil || r.workloadConfig == nil || req == nil {
 		return "", "", errors.New("workload identity resolver unavailable")
 	}
-	orgUUID := strings.TrimSpace(req.Header.Get(headerKedgeOrg))
-	wsUUID := strings.TrimSpace(req.Header.Get(headerKedgeWorkspace))
+	orgUUID := strings.TrimSpace(req.Header.Get(headerFarosOrg))
+	wsUUID := strings.TrimSpace(req.Header.Get(headerFarosWorkspace))
 	if orgUUID == "" || wsUUID == "" || strings.ContainsAny(orgUUID+wsUUID, ":\r\n") {
 		return "", "", errors.New("workload identity requires a concrete tenant selection")
 	}
@@ -236,8 +236,8 @@ func (r *kcpTenantResolver) resolveWorkloadServiceAccount(req *http.Request) (st
 	return username, tenantPath, nil
 }
 
-// resolveFromHeaders honors the portal's sidebar-driven X-Kedge-Org
-// (+ optional X-Kedge-Workspace) headers when present. Returns:
+// resolveFromHeaders honors the portal's sidebar-driven X-Faros-Org
+// (+ optional X-Faros-Workspace) headers when present. Returns:
 //
 //	path, true, nil   — headers valid, user is a member, scope used
 //	"",   false, nil  — no headers (caller falls back to default)
@@ -256,11 +256,11 @@ func (r *kcpTenantResolver) resolveWorkloadServiceAccount(req *http.Request) (st
 // (membership revocation, workspace deletion) for very little win on
 // the warm path — the index Get is one apiserver round-trip.
 func (r *kcpTenantResolver) resolveFromHeaders(ctx context.Context, user string, req *http.Request) (string, bool, error) {
-	orgUUID := req.Header.Get(headerKedgeOrg)
+	orgUUID := req.Header.Get(headerFarosOrg)
 	if orgUUID == "" {
 		return "", false, nil
 	}
-	wsUUID := req.Header.Get(headerKedgeWorkspace)
+	wsUUID := req.Header.Get(headerFarosWorkspace)
 
 	idx, err := r.client.UserMembershipIndices().Get(ctx, user, metav1.GetOptions{})
 	if err != nil {
@@ -304,7 +304,7 @@ func (r *kcpTenantResolver) resolveFromHeaders(ctx context.Context, user string,
 	// controllers write into Organization.Status.WorkspacePath and
 	// matches what the MCPServer controller now writes into
 	// status.URL after the kcp.io/path lookup — so UI + MCP land in
-	// the SAME kedge-tenants-<hash> namespace.
+	// the SAME faros-tenants-<hash> namespace.
 	if wsUUID == "" {
 		return workspacePathRoot + ":" + orgUUID, true, nil
 	}

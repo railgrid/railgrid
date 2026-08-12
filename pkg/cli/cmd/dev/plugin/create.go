@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package plugin provides the implementation for kedge dev command plugins.
+// Package plugin provides the implementation for faros dev command plugins.
 package plugin
 
 import (
@@ -84,7 +84,7 @@ type DevOptions struct {
 	// Default is 1 (single agent cluster named AgentClusterName).
 	// When > 1, clusters are named AgentClusterName-1, AgentClusterName-2, …
 	// When 0, no agent clusters are created — useful for end users running a
-	// local hub without any edges (`kedge dev init --worker-count 0`).
+	// local hub without any edges (`faros dev init --worker-count 0`).
 	AgentCount int
 }
 
@@ -95,16 +95,16 @@ const fallbackAssetVersion = "0.0.51"
 const (
 	// HTTPS so embedded kcp's authentication validator (which mandates
 	// scheme=https) accepts the issuer URL. Dex serves TLS using a cert
-	// issued by the kedge-selfsigned ClusterIssuer.
+	// issued by the faros-selfsigned ClusterIssuer.
 	//
 	// Port 5554 matches the dexidp chart's hard-coded --web-https-addr
 	// (https.enabled=true adds `--web-https-addr 0.0.0.0:5554`). The
 	// chart always listens HTTP on 5556 as well, but we leave that
 	// ClusterIP-only (no NodePort) and forget about it.
-	devDexIssuerURL    = "https://dex.kedge-system.svc.cluster.local:5554/dex"
+	devDexIssuerURL    = "https://dex.faros-system.svc.cluster.local:5554/dex"
 	devDexTLSSecret    = "dex-tls"
-	devDexNamespace    = "kedge-system"
-	devDexClientID     = "kedge"
+	devDexNamespace    = "faros-system"
+	devDexClientID     = "faros"
 	devDexChartRef     = "dexidp/dex" // from https://charts.dexidp.io, added as a repo
 	devDexChartVersion = "0.24.0"
 	devDexReleaseName  = "dex"
@@ -122,11 +122,11 @@ type gitHubRelease struct {
 func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 	return &DevOptions{
 		Streams:          streams,
-		HubClusterName:   "kedge-hub",
-		AgentClusterName: "kedge-agent",
+		HubClusterName:   "faros-hub",
+		AgentClusterName: "faros-agent",
 		AgentCount:       0,
-		ChartPath:        "oci://ghcr.io/faroshq/charts/kedge-hub",
-		AgentChartPath:   "oci://ghcr.io/faroshq/charts/kedge-agent",
+		ChartPath:        "oci://ghcr.io/faroshq/charts/faros-hub",
+		AgentChartPath:   "oci://ghcr.io/faroshq/charts/faros-agent",
 		ChartVersion:     fallbackAssetVersion,
 		APIServerPort:    6443,
 		HubHTTPSPort:     9443,
@@ -138,18 +138,18 @@ func NewDevOptions(streams genericclioptions.IOStreams) *DevOptions {
 
 // AddCmdFlags adds command line flags
 func (o *DevOptions) AddCmdFlags(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&o.HubClusterName, "hub-cluster-name", "kedge-hub", "Name of the hub cluster in dev mode")
-	cmd.Flags().StringVar(&o.AgentClusterName, "agent-cluster-name", "kedge-agent", "Name of the agent cluster in dev mode")
+	cmd.Flags().StringVar(&o.HubClusterName, "hub-cluster-name", "faros-hub", "Name of the hub cluster in dev mode")
+	cmd.Flags().StringVar(&o.AgentClusterName, "agent-cluster-name", "faros-agent", "Name of the agent cluster in dev mode")
 	cmd.Flags().DurationVar(&o.WaitForReadyTimeout, "wait-for-ready-timeout", 2*time.Minute, "Timeout for waiting for the cluster to be ready")
 	cmd.Flags().StringVar(&o.ChartPath, "chart-path", o.ChartPath, "Helm chart path or OCI registry URL for hub")
 	cmd.Flags().StringVar(&o.AgentChartPath, "agent-chart-path", o.AgentChartPath, "Helm chart path or OCI registry URL for agent")
 	cmd.Flags().StringVar(&o.ChartVersion, "chart-version", o.ChartVersion, "Helm chart version")
-	cmd.Flags().StringVar(&o.Image, "image", "ghcr.io/faroshq/kedge-hub", "kedge hub image to use in dev mode")
-	cmd.Flags().StringVar(&o.Tag, "tag", "", "kedge hub image tag to use in dev mode")
-	cmd.Flags().StringVar(&o.KindNetwork, "kind-network", "kedge-dev", "kind network to use in dev mode")
+	cmd.Flags().StringVar(&o.Image, "image", "ghcr.io/faroshq/faros-hub", "faros hub image to use in dev mode")
+	cmd.Flags().StringVar(&o.Tag, "tag", "", "faros hub image tag to use in dev mode")
+	cmd.Flags().StringVar(&o.KindNetwork, "kind-network", "faros-dev", "kind network to use in dev mode")
 	cmd.Flags().IntVar(&o.APIServerPort, "api-server-port", 6443, "Kubernetes API server port for hub kind cluster (change if 6443 is already in use)")
-	cmd.Flags().IntVar(&o.HubHTTPSPort, "hub-https-port", 9443, "HTTPS port for kedge hub (change if 9443 is already in use)")
-	cmd.Flags().IntVar(&o.HubHTTPPort, "hub-http-port", 8080, "HTTP port for kedge hub (change if 8080 is already in use)")
+	cmd.Flags().IntVar(&o.HubHTTPSPort, "hub-https-port", 9443, "HTTPS port for faros hub (change if 9443 is already in use)")
+	cmd.Flags().IntVar(&o.HubHTTPPort, "hub-http-port", 8080, "HTTP port for faros hub (change if 8080 is already in use)")
 	cmd.Flags().StringVar(&o.ImagePullPolicy, "image-pull-policy", "IfNotPresent", "Image pull policy for the hub (use Never when the image is pre-loaded into kind)")
 	cmd.Flags().BoolVar(&o.WithDex, "with-dex", false, "Deploy Dex as OIDC identity provider into the hub kind cluster")
 	cmd.Flags().IntVar(&o.DexHTTPPort, "dex-http-port", 5554, "Host port for the Dex NodePort mapping (Dex serves HTTPS on this port; default 5554)")
@@ -191,7 +191,7 @@ func fetchLatestRelease() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/faroshq/kedge/releases/latest", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/repos/faroshq/faros/releases/latest", nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -300,8 +300,8 @@ func (o *DevOptions) agentClusterNames() []string {
 
 func (o *DevOptions) runWithColors(ctx context.Context) error {
 	// Display experimental warning header with red "EXPERIMENTAL"
-	fmt.Fprintf(o.Streams.ErrOut, "kedge Development Environment Setup\n\n")                        // nolint:errcheck
-	fmt.Fprintf(o.Streams.ErrOut, "%s kedge dev command is in preview\n", redText("EXPERIMENTAL:")) // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "faros Development Environment Setup\n\n")                        // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "%s faros dev command is in preview\n", redText("EXPERIMENTAL:")) // nolint:errcheck
 	fmt.Fprintf(o.Streams.ErrOut, "Requirements: Docker must be installed and running\n\n")         // nolint:errcheck
 
 	hostEntryExists := o.setupHostEntries()
@@ -310,12 +310,12 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 		fmt.Fprintf(o.Streams.ErrOut, "Warning: File limit check: %v\n", err) // nolint:errcheck
 	}
 
-	// Create hub cluster with kedge-hub installed
+	// Create hub cluster with faros-hub installed
 	if err := o.createCluster(ctx, o.HubClusterName, o.hubClusterConfig(), true); err != nil {
 		return err
 	}
 
-	// Create agent cluster(s) (no kedge installed, just plain clusters).
+	// Create agent cluster(s) (no faros installed, just plain clusters).
 	for _, agentName := range o.agentClusterNames() {
 		if err := o.createCluster(ctx, agentName, agentClusterConfig, false); err != nil {
 			return err
@@ -329,7 +329,7 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	}
 
 	// Success message
-	_, _ = fmt.Fprint(o.Streams.ErrOut, "kedge dev environment is ready!\n\n")
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "faros dev environment is ready!\n\n")
 
 	// Configuration
 	fmt.Fprint(o.Streams.ErrOut, "Configuration:\n")                                             // nolint:errcheck
@@ -337,8 +337,8 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	for _, agentName := range o.agentClusterNames() {
 		fmt.Fprintf(o.Streams.ErrOut, "  Agent cluster kubeconfig: %s.kubeconfig\n", agentName) // nolint:errcheck
 	}
-	fmt.Fprintf(o.Streams.ErrOut, "  kedge server URL: https://kedge.localhost:%d\n", o.HubHTTPSPort)    // nolint:errcheck
-	fmt.Fprintf(o.Streams.ErrOut, "  kedge UI URL:     https://kedge.localhost:%d/ui\n", o.HubHTTPSPort) // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "  faros server URL: https://faros.localhost:%d\n", o.HubHTTPSPort)    // nolint:errcheck
+	fmt.Fprintf(o.Streams.ErrOut, "  faros UI URL:     https://faros.localhost:%d/ui\n", o.HubHTTPSPort) // nolint:errcheck
 	fmt.Fprint(o.Streams.ErrOut, "  Static auth token: dev-token\n")                                     // nolint:errcheck
 	if hubIP != "" && o.AgentCount > 0 {
 		fmt.Fprintf(o.Streams.ErrOut, "  Hub cluster IP (for agent): %s\n", hubIP) // nolint:errcheck
@@ -353,7 +353,7 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	// Only show /etc/hosts step if entry didn't already exist
 	if !hostEntryExists {
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Add to /etc/hosts (if not already done):\n", stepNum)
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("echo '127.0.0.1 kedge.localhost' | sudo tee -a /etc/hosts"))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("echo '127.0.0.1 faros.localhost' | sudo tee -a /etc/hosts"))
 		stepNum++
 	}
 
@@ -362,54 +362,54 @@ func (o *DevOptions) runWithColors(ctx context.Context) error {
 	stepNum++
 
 	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Login to authenticate to the hub:\n", stepNum)
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge login --hub-url https://kedge.localhost:9443 --insecure-skip-tls-verify --token=dev-token"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("faros login --hub-url https://faros.localhost:9443 --insecure-skip-tls-verify --token=dev-token"))
 	stepNum++
 
 	if o.AgentCount > 0 {
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Create an edge in the hub:\n", stepNum)
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("kedge edge create my-edge --labels env=dev"))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand("faros edge create my-edge --labels env=dev"))
 		stepNum++
 
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Wait for the edge kubeconfig secret and extract it:\n", stepNum)
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kubectl get secret -n kedge-system edge-my-edge-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > edge-kubeconfig"))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n", blueCommand("kubectl get secret -n faros-system edge-my-edge-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > edge-kubeconfig"))
 		_, _ = fmt.Fprint(o.Streams.ErrOut, "   (The secret is created automatically after the edge is registered)\n\n")
 		stepNum++
 
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Deploy the agent into the agent cluster using Helm:\n", stepNum)
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "   First, create a secret with the edge kubeconfig in the agent cluster:\n")
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
-			"kubectl --kubeconfig %s.kubeconfig create namespace kedge-agent && \\\n   kubectl --kubeconfig %s.kubeconfig create secret generic edge-kubeconfig -n kedge-agent --from-file=kubeconfig=edge-kubeconfig",
+			"kubectl --kubeconfig %s.kubeconfig create namespace faros-agent && \\\n   kubectl --kubeconfig %s.kubeconfig create secret generic edge-kubeconfig -n faros-agent --from-file=kubeconfig=edge-kubeconfig",
 			o.AgentClusterName, o.AgentClusterName)))
 
 		_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then install the agent Helm chart:\n")
 		if hubIP != "" {
 			// Use hub.url to override the kubeconfig server URL with the correct NodePort address
-			// The kubeconfig has kedge.localhost:9443 which works from host, but from within
+			// The kubeconfig has faros.localhost:9443 which works from host, but from within
 			// the Docker network we need to use the hub's IP and NodePort 31443
 			_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
-				"helm install kedge-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-agent \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set agent.hub.url=https://%s:31443 \\\n     --set image.tag=%s",
+				"helm install faros-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n faros-agent \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set agent.hub.url=https://%s:31443 \\\n     --set image.tag=%s",
 				o.AgentChartPath, o.ChartVersion, o.AgentClusterName, hubIP, o.Tag)))
 		} else {
 			_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(fmt.Sprintf(
-				"helm install kedge-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n kedge-agent \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set image.tag=%s",
+				"helm install faros-agent %s --version %s \\\n     --kubeconfig %s.kubeconfig \\\n     -n faros-agent \\\n     --set agent.edgeName=my-edge \\\n     --set agent.hub.existingSecret=edge-kubeconfig \\\n     --set image.tag=%s",
 				o.AgentChartPath, o.ChartVersion, o.AgentClusterName, o.Tag)))
 			_, _ = fmt.Fprint(o.Streams.ErrOut, "   Note: You may need to set agent.hub.url to the hub's Docker network IP and NodePort.\n")
-			_, _ = fmt.Fprint(o.Streams.ErrOut, "   Get hub IP: docker inspect kedge-hub-control-plane | jq -r '.[0].NetworkSettings.Networks[\"kedge-dev\"].IPAddress'\n")
+			_, _ = fmt.Fprint(o.Streams.ErrOut, "   Get hub IP: docker inspect faros-hub-control-plane | jq -r '.[0].NetworkSettings.Networks[\"faros-dev\"].IPAddress'\n")
 			_, _ = fmt.Fprint(o.Streams.ErrOut, "   Then add: --set agent.hub.url=https://<HUB_IP>:31443\n\n")
 		}
 	} else {
-		uiURL := fmt.Sprintf("https://kedge.localhost:%d/ui", o.HubHTTPSPort)
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Open the kedge UI in your browser:\n", stepNum)
+		uiURL := fmt.Sprintf("https://faros.localhost:%d/ui", o.HubHTTPSPort)
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%d. Open the faros UI in your browser:\n", stepNum)
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "%s\n\n", blueCommand(uiURL))
 	}
 
 	_, _ = fmt.Fprint(o.Streams.ErrOut, "Useful commands:\n")
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  List edges:       %s\n", blueCommand("kedge edge list"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  List edges:       %s\n", blueCommand("faros edge list"))
 	if o.AgentCount > 0 {
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Get edge info:    %s\n", blueCommand("kedge edge get my-edge"))
-		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Check agent logs: %s\n", blueCommand(fmt.Sprintf("kubectl --kubeconfig %s.kubeconfig logs -n kedge-agent -l app.kubernetes.io/name=kedge-agent -f", o.AgentClusterName)))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Get edge info:    %s\n", blueCommand("faros edge get my-edge"))
+		_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Check agent logs: %s\n", blueCommand(fmt.Sprintf("kubectl --kubeconfig %s.kubeconfig logs -n faros-agent -l app.kubernetes.io/name=faros-agent -f", o.AgentClusterName)))
 	}
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Delete env:       %s\n", blueCommand("kedge dev delete"))
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "  Delete env:       %s\n", blueCommand("faros dev delete"))
 
 	return nil
 }
@@ -419,13 +419,13 @@ func (o *DevOptions) Run(ctx context.Context) error {
 	return o.runWithColors(ctx)
 }
 
-// RunUpdate upgrades the kedge-hub Helm release on the existing hub kind
+// RunUpdate upgrades the faros-hub Helm release on the existing hub kind
 // cluster using current image / chart settings. The cluster itself is not
 // touched; only the hub release is upgraded.
 func (o *DevOptions) RunUpdate(ctx context.Context) error {
 	kubeconfigPath := fmt.Sprintf("%s.kubeconfig", o.HubClusterName)
 	if _, err := os.Stat(kubeconfigPath); err != nil {
-		return fmt.Errorf("hub kubeconfig %s not found (did you run `kedge dev init`?): %w", kubeconfigPath, err)
+		return fmt.Errorf("hub kubeconfig %s not found (did you run `faros dev init`?): %w", kubeconfigPath, err)
 	}
 
 	restConfig, err := loadRestConfigFromFile(kubeconfigPath)
@@ -433,7 +433,7 @@ func (o *DevOptions) RunUpdate(ctx context.Context) error {
 		return fmt.Errorf("loading hub kubeconfig: %w", err)
 	}
 
-	_, _ = fmt.Fprintf(o.Streams.ErrOut, "Upgrading kedge-hub release on cluster %s...\n", o.HubClusterName)
+	_, _ = fmt.Fprintf(o.Streams.ErrOut, "Upgrading faros-hub release on cluster %s...\n", o.HubClusterName)
 	if o.WithExternalKCP {
 		if err := o.installHelmChartWithExternalKCP(ctx, restConfig); err != nil {
 			return err
@@ -443,27 +443,27 @@ func (o *DevOptions) RunUpdate(ctx context.Context) error {
 			return err
 		}
 	}
-	_, _ = fmt.Fprint(o.Streams.ErrOut, "kedge-hub upgraded successfully\n")
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "faros-hub upgraded successfully\n")
 	return nil
 }
 
 func (o *DevOptions) setupHostEntries() bool {
-	if err := addHostEntry("kedge.localhost"); err != nil {
+	if err := addHostEntry("faros.localhost"); err != nil {
 		_, _ = fmt.Fprintf(o.Streams.ErrOut, "Warning: Could not automatically add host entry. Please run:\n")
 		if runtime.GOOS == "windows" {
-			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  echo 127.0.0.1 kedge.localhost >> C:\\Windows\\System32\\drivers\\etc\\hosts\n")
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  echo 127.0.0.1 faros.localhost >> C:\\Windows\\System32\\drivers\\etc\\hosts\n")
 		} else {
-			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  echo '127.0.0.1 kedge.localhost' | sudo tee -a /etc/hosts\n")
+			_, _ = fmt.Fprintf(o.Streams.ErrOut, "  echo '127.0.0.1 faros.localhost' | sudo tee -a /etc/hosts\n")
 		}
 
 		return false
 	}
 
-	_, _ = fmt.Fprint(o.Streams.ErrOut, "Host entry exists for kedge.localhost\n")
+	_, _ = fmt.Fprint(o.Streams.ErrOut, "Host entry exists for faros.localhost\n")
 	return true
 }
 
-func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConfig string, installKedge bool) error {
+func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConfig string, installFaros bool) error {
 	// Set experimental Docker network for kind clusters to communicate
 	_ = os.Setenv("KIND_EXPERIMENTAL_DOCKER_NETWORK", o.KindNetwork)
 
@@ -498,7 +498,7 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 		_, _ = fmt.Fprint(o.Streams.ErrOut, "Kind cluster "+clusterName+" created\n")
 	}
 
-	if installKedge {
+	if installFaros {
 		// When pull policy is Never, pre-load the hub image into the kind cluster
 		// so helm install can start without hitting the registry.
 		if o.ImagePullPolicy == "Never" {
@@ -540,9 +540,9 @@ func (o *DevOptions) createCluster(ctx context.Context, clusterName, clusterConf
 			}
 			_, _ = fmt.Fprintf(o.Streams.ErrOut, "kcp admin kubeconfig written to %s/%s\n", workDir, kcpExternalKubeconfigFile)
 
-			_, _ = fmt.Fprint(o.Streams.ErrOut, "Installing kedge-hub with external kcp...\n")
+			_, _ = fmt.Fprint(o.Streams.ErrOut, "Installing faros-hub with external kcp...\n")
 			if err := o.installHelmChartWithExternalKCP(ctx, restConfig); err != nil {
-				_, _ = fmt.Fprint(o.Streams.ErrOut, "Failed to install kedge-hub Helm chart\n")
+				_, _ = fmt.Fprint(o.Streams.ErrOut, "Failed to install faros-hub Helm chart\n")
 				return err
 			}
 			_, _ = fmt.Fprint(o.Streams.ErrOut, "Helm chart installed successfully\n")
@@ -607,7 +607,7 @@ func ensureDexHelmRepo() error {
 // and blocks until the Dex pod is Running/Ready.
 //
 // Dex is served over TLS so the issuer URL is https — required by embedded
-// kcp's authentication validator. The cert is issued by the kedge-selfsigned
+// kcp's authentication validator. The cert is issued by the faros-selfsigned
 // ClusterIssuer and mounted into the Dex pod; the same cert is later mounted
 // into the hub pod so embedded kcp can verify it (see installHelmChart).
 func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kubeconfigPath string) error {
@@ -628,7 +628,7 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 	}
 	actionConfig.RegistryClient = regClient
 
-	hubExternalURL := fmt.Sprintf("https://kedge.localhost:%d", o.HubHTTPSPort)
+	hubExternalURL := fmt.Sprintf("https://faros.localhost:%d", o.HubHTTPSPort)
 	redirectURI := hubExternalURL + "/auth/callback"
 
 	dexValues := map[string]any{
@@ -669,20 +669,20 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 			"staticClients": []map[string]any{{
 				"id":           devDexClientID,
 				"public":       true,
-				"name":         "Kedge Hub",
+				"name":         "Faros Hub",
 				"redirectURIs": []string{redirectURI},
 			}},
 			"enablePasswordDB": true,
 			"staticPasswords": []map[string]any{
 				{
-					"email":    "admin@test.kedge.local",
+					"email":    "admin@test.faros.local",
 					"hash":     devDexUserHash,
 					"username": "admin",
 					"userID":   "test-user-id-01",
 				},
 				{
 					// Second user for cross-user isolation e2e tests (issue #79).
-					"email":    "user2@test.kedge.local",
+					"email":    "user2@test.faros.local",
 					"hash":     devDexUserHash, // same password "Password1!" — different identity
 					"username": "user2",
 					"userID":   "test-user-id-02",
@@ -710,7 +710,7 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 	hist.Max = 1
 	if _, err := hist.Run(devDexReleaseName); err == nil {
 		upg := action.NewUpgrade(actionConfig)
-		upg.Namespace = "kedge-system"
+		upg.Namespace = "faros-system"
 		upg.Wait = true
 		upg.Timeout = 3 * time.Minute
 		if _, err := upg.Run(devDexReleaseName, chartObj, dexValues); err != nil {
@@ -719,7 +719,7 @@ func (o *DevOptions) deployDex(ctx context.Context, restConfig *rest.Config, kub
 	} else {
 		inst := action.NewInstall(actionConfig)
 		inst.ReleaseName = devDexReleaseName
-		inst.Namespace = "kedge-system"
+		inst.Namespace = "faros-system"
 		inst.CreateNamespace = true // Dex is deployed before the hub; create namespace here.
 		inst.Wait = true
 		inst.Timeout = 3 * time.Minute
@@ -768,14 +768,14 @@ func (o *DevOptions) getClusterIPAddress(ctx context.Context, clusterName, netwo
 	return "", fmt.Errorf("could not find IP address for cluster %s in network %s", clusterName, networkName)
 }
 
-// installHelmChart installs or upgrades the kedge-hub Helm chart.
+// installHelmChart installs or upgrades the faros-hub Helm chart.
 // withIDP controls whether IDP/OIDC values are included; pass false for the
 // initial install (before Dex is deployed) and true for the upgrade after Dex
 // is up, so the hub never tries to contact a non-existent issuer at startup.
 func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config, withIDP bool) error {
 	actionConfig := new(action.Configuration)
 
-	if err := actionConfig.Init(&restConfigGetter{config: restConfig, namespace: "kedge-system"}, "kedge-system", "secret", func(format string, v ...any) {}); err != nil {
+	if err := actionConfig.Init(&restConfigGetter{config: restConfig, namespace: "faros-system"}, "faros-system", "secret", func(format string, v ...any) {}); err != nil {
 		return fmt.Errorf("failed to initialize helm action config: %w", err)
 	}
 
@@ -786,14 +786,14 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 	}
 	actionConfig.RegistryClient = registryClient
 
-	hubExternalURL := fmt.Sprintf("https://kedge.localhost:%d", o.HubHTTPSPort)
+	hubExternalURL := fmt.Sprintf("https://faros.localhost:%d", o.HubHTTPSPort)
 
 	hubValues := map[string]any{
 		"hubExternalURL": hubExternalURL,
 		"listenAddr":     fmt.Sprintf(":%d", o.HubHTTPSPort),
 		"devMode":        true,
 		// The portal makes GraphQL calls under /graphql/{clusterName}; run the
-		// gateway in-process so a default `kedge dev init` setup serves the UI
+		// gateway in-process so a default `faros dev init` setup serves the UI
 		// out of the box.
 		"embeddedGraphQL": true,
 	}
@@ -803,7 +803,7 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 		hubValues["staticAuthTokens"] = devStaticTokens
 	}
 	// IDP settings are passed via the top-level `idp` helm values (not under `hub`).
-	// See deploy/charts/kedge-hub/templates/workload.yaml.
+	// See deploy/charts/faros-hub/templates/workload.yaml.
 
 	values := map[string]any{
 		"image": map[string]any{
@@ -845,9 +845,9 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 			"clientID":  devDexClientID,
 			// Mount Dex's TLS secret into the hub so embedded kcp can verify
 			// the issuer's HTTPS cert. The secret is in the same namespace as
-			// the hub release (kedge-system).
+			// the hub release (faros-system).
 			"caSecretName": devDexTLSSecret,
-			// Self-signed Certificates from the kedge-selfsigned ClusterIssuer
+			// Self-signed Certificates from the faros-selfsigned ClusterIssuer
 			// don't reliably populate ca.crt, but tls.crt itself is the CA
 			// (it's its own root) — use it as the trust anchor.
 			"caSecretKey": "tls.crt",
@@ -877,19 +877,19 @@ func (o *DevOptions) installHelmChart(_ context.Context, restConfig *rest.Config
 
 	histClient := action.NewHistory(actionConfig)
 	histClient.Max = 1
-	if _, err := histClient.Run("kedge-hub"); err == nil {
+	if _, err := histClient.Run("faros-hub"); err == nil {
 		upgradeAction := action.NewUpgrade(actionConfig)
-		upgradeAction.Namespace = "kedge-system"
+		upgradeAction.Namespace = "faros-system"
 		upgradeAction.Wait = true
 		upgradeAction.Timeout = o.WaitForReadyTimeout
-		_, err = upgradeAction.Run("kedge-hub", chartObj, values)
+		_, err = upgradeAction.Run("faros-hub", chartObj, values)
 		if err != nil {
 			return fmt.Errorf("failed to upgrade chart: %w", err)
 		}
 	} else {
 		installAction := action.NewInstall(actionConfig)
-		installAction.ReleaseName = "kedge-hub"
-		installAction.Namespace = "kedge-system"
+		installAction.ReleaseName = "faros-hub"
+		installAction.Namespace = "faros-system"
 		installAction.CreateNamespace = true
 		installAction.Wait = true
 		installAction.Timeout = o.WaitForReadyTimeout

@@ -24,19 +24,19 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 )
 
 const (
-	// HeaderKedgeOrg carries the active Organization UUID. Required for
+	// HeaderFarosOrg carries the active Organization UUID. Required for
 	// any endpoint mounted behind this middleware.
-	HeaderKedgeOrg = "X-Kedge-Org"
+	HeaderFarosOrg = "X-Faros-Org"
 
-	// HeaderKedgeWorkspace carries the active child Workspace UUID.
+	// HeaderFarosWorkspace carries the active child Workspace UUID.
 	// Optional: Org-scoped endpoints can omit it; Workspace-scoped
 	// endpoints must include it (callers downstream of the middleware
 	// can branch on tc.WorkspaceUUID == "").
-	HeaderKedgeWorkspace = "X-Kedge-Workspace"
+	HeaderFarosWorkspace = "X-Faros-Workspace"
 )
 
 // ErrUserNotResolved is returned by a UserResolver when the request
@@ -65,7 +65,7 @@ func (f UserResolverFunc) ResolveUser(r *http.Request) (string, error) { return 
 
 // MembershipLookup reads the UserMembershipIndex CR for the named user.
 // Implementations typically wrap a Kubernetes/kcp dynamic or typed
-// client targeting root:kedge:users.
+// client targeting root:faros:users.
 //
 // Returning a Kubernetes "not found" error (apierrors.IsNotFound) is
 // the convention for "this user has no memberships yet" — the
@@ -122,8 +122,8 @@ func UserOnlyMiddleware(userResolver UserResolver) func(next http.Handler) http.
 //
 //  1. Calls userResolver to identify the caller. 401 on
 //     ErrUserNotResolved; 500 on any other error.
-//  2. Reads X-Kedge-Org; 400 if missing.
-//  3. Reads X-Kedge-Workspace (optional).
+//  2. Reads X-Faros-Org; 400 if missing.
+//  3. Reads X-Faros-Workspace (optional).
 //  4. Calls lookup to fetch UserMembershipIndex for the user. 403 on
 //     "not found"; 500 on other errors.
 //  5. Walks index.spec.entries looking for a (OrgUUID, WorkspaceUUID)
@@ -155,14 +155,14 @@ func Middleware(userResolver UserResolver, lookup MembershipLookup) func(next ht
 				return
 			}
 
-			// Step 2: read X-Kedge-Org.
-			orgUUID := r.Header.Get(HeaderKedgeOrg)
+			// Step 2: read X-Faros-Org.
+			orgUUID := r.Header.Get(HeaderFarosOrg)
 			if orgUUID == "" {
-				writeStatus(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("missing required header %q", HeaderKedgeOrg))
+				writeStatus(w, http.StatusBadRequest, "BadRequest", fmt.Sprintf("missing required header %q", HeaderFarosOrg))
 				return
 			}
-			// Step 3: read X-Kedge-Workspace (optional).
-			workspaceUUID := r.Header.Get(HeaderKedgeWorkspace)
+			// Step 3: read X-Faros-Workspace (optional).
+			workspaceUUID := r.Header.Get(HeaderFarosWorkspace)
 
 			// Step 4: fetch UserMembershipIndex.
 			index, err := lookup.GetUserMembershipIndex(r.Context(), user)
@@ -226,7 +226,7 @@ func matchEntry(index *tenancyv1alpha1.UserMembershipIndex, orgUUID, workspaceUU
 // writeStatus emits a minimal Kubernetes Status envelope so kubectl /
 // other Kubernetes-aware tooling renders the error nicely while plain
 // HTTP clients still see a sensible JSON body. Reason follows the
-// existing kedge convention from pkg/server/proxy/proxy.go.
+// existing faros convention from pkg/server/proxy/proxy.go.
 func writeStatus(w http.ResponseWriter, code int, reason, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)

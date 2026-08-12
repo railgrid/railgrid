@@ -11,7 +11,7 @@ const props = withDefaults(
   { connected: null, tone: null },
 )
 
-// Styling comes from the host-served shared recipe layer (kedge-ui.css:
+// Styling comes from the host-served shared recipe layer (faros-ui.css:
 // .k-badge / .k-badge--*), so this badge matches the host and every other
 // provider without each build compiling its own utility classes.
 const config = computed(() => {

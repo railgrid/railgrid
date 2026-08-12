@@ -1,6 +1,6 @@
 # Databricks provider
 
-A kedge provider that exposes imported Databricks SQL Warehouse tables to kedge
+A faros provider that exposes imported Databricks SQL Warehouse tables to faros
 workspaces. The provider owns Databricks `Connection`, `Warehouse`, and `Table`
 resources in the tenant workspace. App Studio consumes existing `Table`
 resources by exact `tableRef` through the catalog-backed Provider Actions
@@ -98,7 +98,7 @@ type: Opaque
 stringData:
   token: "<databricks bearer token>"
 ---
-apiVersion: databricks.kedge.faros.sh/v1alpha1
+apiVersion: databricks.faros.sh/v1alpha1
 kind: Connection
 metadata:
   name: sales-workspace
@@ -110,7 +110,7 @@ spec:
     namespace: data-creds
     key: token
 ---
-apiVersion: databricks.kedge.faros.sh/v1alpha1
+apiVersion: databricks.faros.sh/v1alpha1
 kind: Warehouse
 metadata:
   name: sales-warehouse
@@ -118,7 +118,7 @@ spec:
   connectionRef: sales-workspace
   warehouseID: "abc123def456"
 ---
-apiVersion: databricks.kedge.faros.sh/v1alpha1
+apiVersion: databricks.faros.sh/v1alpha1
 kind: Table
 metadata:
   name: order-history
@@ -155,7 +155,7 @@ retry instructions.
 
 The companion skill makes the same boundary explicit for app builders: discover
 the existing project grant, use its bound `Table` (never a caller-selected
-table), invoke only from a server route through `@kedge/actions-node`, honor the
+table), invoke only from a server route through `@faros/actions-node`, honor the
 published schema and limits, and handle the structured error envelope. Verify
 the action response first, then runtime/preview reachability, then rendered
 state and interactions; HTTP 200, `Ready`, or a reachable preview alone is not

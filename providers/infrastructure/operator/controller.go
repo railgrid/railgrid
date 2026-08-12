@@ -33,7 +33,7 @@ import (
 )
 
 // APIExportName is the provider's APIExport (manifest.yaml spec.apiExport.name).
-const APIExportName = "infrastructure.providers.kedge.faros.sh"
+const APIExportName = "infrastructure.providers.faros.sh"
 
 // requeueInterval re-runs each CR's reconcile periodically so the bootstrap +
 // kro release + serve Deployment self-heal even without a spec change.

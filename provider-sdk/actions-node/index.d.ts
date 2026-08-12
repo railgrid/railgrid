@@ -73,16 +73,16 @@ export interface ActionsClientOptions extends ActionsRequestOptions {
   /** URL of the authenticated App Studio service, not a provider backend URL. */
   baseURL?: string;
   baseUrl?: string;
-  /** Defaults to KEDGE_PROJECT. */
+  /** Defaults to FAROS_PROJECT. */
   project?: string;
-  /** Defaults to KEDGE_ACTIONS_ORG and KEDGE_ACTIONS_WORKSPACE. */
+  /** Defaults to FAROS_ACTIONS_ORG and FAROS_ACTIONS_WORKSPACE. */
   org?: string;
   organization?: string;
   workspace?: string;
   /** Test/local-only escape hatch for HTTP loopback URLs. */
   allowInsecureLoopback?: boolean;
   token?: string | CredentialProvider;
-  /** Read the atomically refreshed bearer token on every request. Defaults to KEDGE_ACTIONS_TOKEN_FILE. */
+  /** Read the atomically refreshed bearer token on every request. Defaults to FAROS_ACTIONS_TOKEN_FILE. */
   tokenFile?: string;
   getToken?: CredentialProvider;
   credentialProvider?: CredentialProvider | CredentialProviderObject;

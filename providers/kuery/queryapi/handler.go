@@ -32,7 +32,7 @@ type Handler struct {
 }
 
 // Identity is the hub-injected caller identity. The hub's backend proxy
-// sets X-Kedge-Tenant from the authenticated request; without it (direct
+// sets X-Faros-Tenant from the authenticated request; without it (direct
 // pod access) queries are refused.
 type Identity struct {
 	Tenant string
@@ -40,14 +40,14 @@ type Identity struct {
 }
 
 // IdentityFromRequest extracts the proxy-injected identity. With
-// KEDGE_DEV_ALLOW_TENANT_QUERY=true (dev only), ?tenant= substitutes for
+// FAROS_DEV_ALLOW_TENANT_QUERY=true (dev only), ?tenant= substitutes for
 // the header — same escape hatch as the infrastructure provider.
 func IdentityFromRequest(r *http.Request) Identity {
 	id := Identity{
-		Tenant: r.Header.Get("X-Kedge-Tenant"),
-		User:   r.Header.Get("X-Kedge-User"),
+		Tenant: r.Header.Get("X-Faros-Tenant"),
+		User:   r.Header.Get("X-Faros-User"),
 	}
-	if os.Getenv("KEDGE_DEV_ALLOW_TENANT_QUERY") == "true" && id.Tenant == "" {
+	if os.Getenv("FAROS_DEV_ALLOW_TENANT_QUERY") == "true" && id.Tenant == "" {
 		id.Tenant = r.URL.Query().Get("tenant")
 	}
 	return id
@@ -62,7 +62,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	id := IdentityFromRequest(r)
 	if id.Tenant == "" {
-		http.Error(w, "missing tenant identity (X-Kedge-Tenant)", http.StatusUnauthorized)
+		http.Error(w, "missing tenant identity (X-Faros-Tenant)", http.StatusUnauthorized)
 		return
 	}
 

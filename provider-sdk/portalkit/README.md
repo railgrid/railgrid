@@ -27,6 +27,6 @@ which copies them into every vanilla-TS portal's `src/portalkit/`. CI can run
 `make sync-portalkit && git diff --exit-code` to guard against drift.
 
 The Vue portals (`app-studio`, `code`, `databricks`, `edges`, `infrastructure`,
-and the root `kedge-portal`) use `lucide-vue-next` for icons and the
+and the root `faros-portal`) use `lucide-vue-next` for icons and the
 `confirm.ts` + `ConfirmDialog.vue` pattern for modals — they do not consume this
 kit.

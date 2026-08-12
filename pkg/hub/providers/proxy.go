@@ -33,13 +33,13 @@ import (
 
 	"github.com/go-logr/logr"
 
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros/pkg/apiurl"
 )
 
 // NewUIProxy returns an http.Handler serving /ui/providers/{name}/* by reverse
 // proxying to the provider's spec.ui.url. The handler is mounted in the hub
 // router WITHOUT http.StripPrefix; this proxy strips the /ui/providers/{name}
-// segment itself so it can inject X-Kedge-Base-Path before forwarding.
+// segment itself so it can inject X-Faros-Base-Path before forwarding.
 //
 // Routing nuance: the portal SPA also lives at /ui/, with Vue Router serving
 // /providers/{name} (and arbitrary sub-paths) as in-app routes that mount
@@ -57,7 +57,7 @@ func NewUIProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 		pathPrefix: apiurl.PathPrefixProvidersUI,
 		pick:       func(p Provider) *url.URL { return p.UIURL },
 		setHeaders: func(req *http.Request, name, base string) {
-			req.Header.Set("X-Kedge-Base-Path", base)
+			req.Header.Set("X-Faros-Base-Path", base)
 		},
 		// UI proxy reserves only asset-shaped paths; portal SPA routes fall
 		// through (see SetFallback). Backend proxy keeps the default "always
@@ -67,7 +67,7 @@ func NewUIProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 }
 
 // TenantResolver resolves the caller's identity (User CR name) and
-// tenant workspace path (e.g. root:kedge:orgs:{orgUUID}) from an HTTP
+// tenant workspace path (e.g. root:faros:orgs:{orgUUID}) from an HTTP
 // request's bearer token. Implementations typically wrap
 // proxy.KCPProxy.IdentifyUser plus a User → Organization → WorkspacePath
 // lookup; see pkg/hub/server.go for the canonical wiring. Returns an
@@ -92,9 +92,9 @@ func (f TenantResolverFunc) Resolve(r *http.Request) (string, string, error) {
 // by reverse proxying to the provider's spec.backend.url. The user's
 // Authorization header is forwarded as-is. If a TenantResolver is
 // installed via SetTenantResolver, the proxy resolves the caller's
-// identity and injects X-Kedge-User + X-Kedge-Tenant so the provider can
+// identity and injects X-Faros-User + X-Faros-Tenant so the provider can
 // scope work without re-parsing the bearer token. Incoming
-// X-Kedge-User / X-Kedge-Tenant headers are ALWAYS stripped before the
+// X-Faros-User / X-Faros-Tenant headers are ALWAYS stripped before the
 // request is forwarded — a third-party caller can't forge identity by
 // setting those headers directly.
 func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
@@ -106,7 +106,7 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 		denyHubOnlyEndpoints: true,
 	}
 	// setHeaders runs after the Director's URL rewrite. Always strip
-	// inbound X-Kedge-* identity headers (defense in depth — a client
+	// inbound X-Faros-* identity headers (defense in depth — a client
 	// must not be able to spoof identity by setting them at the front
 	// door); if a TenantResolver is installed, populate them from the
 	// resolver. Reading p.tenantResolver via the closure is safe
@@ -114,13 +114,13 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 	// request lands in practice; if the wiring ever needs hot-swap,
 	// switch the field to atomic.Pointer[TenantResolver].
 	p.setHeaders = func(req *http.Request, name, _ string) {
-		req.Header.Del("X-Kedge-User")
-		req.Header.Del("X-Kedge-Tenant")
-		req.Header.Del("X-Kedge-Cluster")
+		req.Header.Del("X-Faros-User")
+		req.Header.Del("X-Faros-Tenant")
+		req.Header.Del("X-Faros-Cluster")
 		if p.tenantResolver == nil {
 			// V(2) so tests / non-bootstrapper hubs don't spam, but
 			// devs can flip on verbosity to see the dropped path.
-			p.log.V(2).Info("no tenant resolver wired; forwarding without X-Kedge-* headers", "provider", name)
+			p.log.V(2).Info("no tenant resolver wired; forwarding without X-Faros-* headers", "provider", name)
 			return
 		}
 		user, tenantPath, err := p.tenantResolver.Resolve(req)
@@ -132,36 +132,36 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 			// TenantMissing error in a provider has a corresponding
 			// hub log line a dev can grep for.
 			if err.Error() == "anonymous caller" {
-				p.log.V(2).Info("anonymous caller — forwarding without X-Kedge-* headers", "provider", name, "path", req.URL.Path)
+				p.log.V(2).Info("anonymous caller — forwarding without X-Faros-* headers", "provider", name, "path", req.URL.Path)
 			} else {
-				p.log.Info("tenant resolve failed — forwarding without X-Kedge-* headers", "provider", name, "path", req.URL.Path, "err", err.Error())
+				p.log.Info("tenant resolve failed — forwarding without X-Faros-* headers", "provider", name, "path", req.URL.Path, "err", err.Error())
 			}
 			// Still inject user when the resolver returned a name
 			// but errored later in the chain. Lets the provider at
 			// least attribute the call even when tenant scoping
 			// isn't available.
 			if user != "" {
-				req.Header.Set("X-Kedge-User", user)
+				req.Header.Set("X-Faros-User", user)
 			}
 			return
 		}
 		if user != "" {
-			req.Header.Set("X-Kedge-User", user)
+			req.Header.Set("X-Faros-User", user)
 		}
 		if tenantPath != "" {
-			req.Header.Set("X-Kedge-Tenant", tenantPath)
+			req.Header.Set("X-Faros-Tenant", tenantPath)
 		} else {
-			p.log.Info("tenant resolved but tenantPath empty — forwarding without X-Kedge-Tenant", "provider", name, "user", user, "hint", "user may not have a personal Organization workspace bootstrapped yet")
+			p.log.Info("tenant resolved but tenantPath empty — forwarding without X-Faros-Tenant", "provider", name, "user", user, "hint", "user may not have a personal Organization workspace bootstrapped yet")
 		}
 		// Resolve the workspace path to its kcp logical-cluster ID and inject
-		// X-Kedge-Cluster. Best-effort: a resolve failure drops only this
-		// header (the provider still has X-Kedge-Tenant), so a provider that
+		// X-Faros-Cluster. Best-effort: a resolve failure drops only this
+		// header (the provider still has X-Faros-Tenant), so a provider that
 		// doesn't need the ID is unaffected.
 		if tenantPath != "" && p.clusterResolver != nil {
 			if clusterID, err := p.clusterResolver(req.Context(), tenantPath); err != nil {
-				p.log.Info("cluster-id resolve failed — forwarding without X-Kedge-Cluster", "provider", name, "tenant", tenantPath, "err", err.Error())
+				p.log.Info("cluster-id resolve failed — forwarding without X-Faros-Cluster", "provider", name, "tenant", tenantPath, "err", err.Error())
 			} else if clusterID != "" {
-				req.Header.Set("X-Kedge-Cluster", clusterID)
+				req.Header.Set("X-Faros-Cluster", clusterID)
 			}
 		}
 	}
@@ -169,8 +169,8 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 }
 
 // SetTenantResolver installs the resolver used to populate
-// X-Kedge-User and X-Kedge-Tenant on proxied requests. Wire after the
-// kcpProxy and kedgeClient are built (see pkg/hub/server.go around the
+// X-Faros-User and X-Faros-Tenant on proxied requests. Wire after the
+// kcpProxy and farosClient are built (see pkg/hub/server.go around the
 // providerRegistry setup). Calling with nil disables injection but the
 // inbound-header stripping below still runs.
 func (p *ProviderProxy) SetTenantResolver(r TenantResolver) {
@@ -178,7 +178,7 @@ func (p *ProviderProxy) SetTenantResolver(r TenantResolver) {
 }
 
 // SetClusterResolver installs an optional resolver mapping a tenant workspace
-// path to its kcp logical-cluster ID, injected as X-Kedge-Cluster on
+// path to its kcp logical-cluster ID, injected as X-Faros-Cluster on
 // backend-proxied requests. Wire alongside SetTenantResolver; without it the
 // header is simply omitted (and any inbound value is still stripped).
 func (p *ProviderProxy) SetClusterResolver(f func(ctx context.Context, tenantPath string) (string, error)) {
@@ -205,14 +205,14 @@ type ProviderProxy struct {
 	// is true. Nil until SetFallback is called; while nil, those paths 404.
 	fallback http.Handler
 
-	// tenantResolver, when set, populates X-Kedge-User / X-Kedge-Tenant
+	// tenantResolver, when set, populates X-Faros-User / X-Faros-Tenant
 	// on backend-proxied requests. Used only by the backend proxy; the
 	// UI proxy serves static assets and has no use for caller identity.
 	// See SetTenantResolver.
 	tenantResolver TenantResolver
 
 	// clusterResolver, when set, maps the resolved tenant workspace path to
-	// its kcp logical-cluster ID, injected as X-Kedge-Cluster. Providers need
+	// its kcp logical-cluster ID, injected as X-Faros-Cluster. Providers need
 	// the ID (not the path) to address per-workspace surfaces that key on it —
 	// notably the hub's GraphQL gateway at /graphql/clusters/{id}, whose
 	// per-cluster schema lookup only matches a cluster ID. See

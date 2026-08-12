@@ -86,7 +86,7 @@ func (c *Client) Ready() bool {
 
 func (c *Client) dataPlaneURL(ref Ref, verb string) (string, error) {
 	if c.HubBase == "" {
-		return "", fmt.Errorf("hub URL is not configured (KEDGE_HUB_URL)")
+		return "", fmt.Errorf("hub URL is not configured (FAROS_HUB_URL)")
 	}
 	if c.ClusterID == "" {
 		return "", fmt.Errorf("no workspace cluster on this call")

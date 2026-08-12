@@ -25,19 +25,19 @@ import (
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
-	"github.com/faroshq/faros-kedge/pkg/hub/providers"
+	farosclient "github.com/faroshq/faros/pkg/client"
+	"github.com/faroshq/faros/pkg/hub/providers"
 )
 
 // Handler serves the /api/admin/* endpoints.
 type Handler struct {
 	svc        *Service
-	userClient *kedgeclient.Client
+	userClient *farosclient.Client
 	registry   *providers.Registry
 }
 
 // NewHandler builds an admin Handler.
-func NewHandler(svc *Service, userClient *kedgeclient.Client, registry *providers.Registry) *Handler {
+func NewHandler(svc *Service, userClient *farosclient.Client, registry *providers.Registry) *Handler {
 	return &Handler{svc: svc, userClient: userClient, registry: registry}
 }
 
@@ -52,7 +52,7 @@ func (h *Handler) Register(r *mux.Router) {
 	r.HandleFunc("/providers", h.listProviders).Methods(http.MethodGet)
 	r.HandleFunc("/identities", h.listIdentities).Methods(http.MethodGet)
 	// Provisioning is declarative: creating a Provider object in
-	// root:kedge:system:providers drives the Provider reconciler
+	// root:faros:system:providers drives the Provider reconciler
 	// (pkg/hub/providers/provider_controller.go) to create the sub-workspace +
 	// ServiceAccount + kubeconfig Secret. These endpoints just create/delete
 	// that object — they do no provisioning themselves.
@@ -223,7 +223,7 @@ type createProviderRequest struct {
 	DisplayName string `json:"displayName"`
 }
 
-// createProvider creates a Provider object in root:kedge:system:providers. The
+// createProvider creates a Provider object in root:faros:system:providers. The
 // Provider reconciler then provisions the sub-workspace + ServiceAccount +
 // kubeconfig Secret. Idempotent.
 func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
@@ -260,7 +260,7 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request) {
 }
 
 // providerKubeconfig streams the minted kubeconfig for a provider, read from
-// the Secret the Provider controller wrote into root:kedge:system:providers.
+// the Secret the Provider controller wrote into root:faros:system:providers.
 // 404 if the Provider isn't provisioned yet (no Secret).
 func (h *Handler) providerKubeconfig(w http.ResponseWriter, r *http.Request) {
 	name := mux.Vars(r)["name"]

@@ -17,7 +17,7 @@
 // run a self-contained MCP server: clients add this endpoint
 // separately, alongside the central aggregator, in their MCP config.
 //
-// Identity: each tool handler captures the X-Kedge-Tenant + X-Kedge-User
+// Identity: each tool handler captures the X-Faros-Tenant + X-Faros-User
 // headers from the incoming HTTP request at server-build time
 // (stateless mode → fresh server per request) and threads them into
 // the kro/tenant clients the tool delegates to.
@@ -58,23 +58,23 @@ func NewHandler(deps Deps) http.Handler {
 
 // newPerRequestServer composes the MCP server for one request,
 // closing the tool handlers over the caller's identity headers so
-// each tool sees its own X-Kedge-Tenant. The model never has to
+// each tool sees its own X-Faros-Tenant. The model never has to
 // supply tenant context explicitly — it inherits from the bearer
 // the user authenticated with.
 func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{
-		Name:    "kedge-infrastructure",
+		Name:    "faros-infrastructure",
 		Version: "0.1.0",
-		Title:   "kedge infrastructure provider",
+		Title:   "faros infrastructure provider",
 	}, &mcp.ServerOptions{
 		Instructions: "This MCP endpoint brokers a curated catalog of kro " +
-			"(Kube Resource Orchestrator) templates into your kedge " +
+			"(Kube Resource Orchestrator) templates into your faros " +
 			"tenant workspace. Use list_templates first to see " +
 			"what's available, then describe_template to inspect a " +
 			"template's inputs schema, then provision to " +
 			"materialize an instance. Templates that report a " +
 			"`development` block support a live dev loop with no image " +
-			"builds: provision with values.kedgeMode=\"development\" " +
+			"builds: provision with values.farosMode=\"development\" " +
 			"(image inputs may be omitted), push source with dev_sync " +
 			"(hot reload), read dev server logs with dev_logs, and " +
 			"preview at the instance's status.url; ship for real by " +
@@ -85,7 +85,7 @@ func newPerRequestServer(deps Deps, r *http.Request) *mcp.Server {
 			"of delete+provision. Cloud credentials are read from " +
 			"a `cloud-credentials` Secret in your workspace's default " +
 			"namespace; if it's missing, ask the user to create it (see " +
-			"the kedge-bound cloud-credentials docs). Tenant identity " +
+			"the faros-bound cloud-credentials docs). Tenant identity " +
 			"is taken from your bearer token — never ask the user for " +
 			"a tenant path.",
 	})

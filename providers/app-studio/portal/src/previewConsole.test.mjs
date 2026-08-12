@@ -76,8 +76,8 @@ test('transfers the capability only to the exact iframe window and preview origi
   })
 
   await controller.connect('project-a')
-  assert.equal(calls[0].message.type, 'kedge.preview-console.probe')
-  const ready = { type: 'kedge.preview-console.ready', version: 1, documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65' }
+  assert.equal(calls[0].message.type, 'faros.preview-console.probe')
+  const ready = { type: 'faros.preview-console.ready', version: 1, documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65' }
   listeners.get('message')({ source: {}, origin: 'https://preview.example.test', data: ready })
   listeners.get('message')({ source: frameWindow, origin: 'https://attacker.example.test', data: ready })
   assert.equal(calls.length, 1)
@@ -112,7 +112,7 @@ test('treats a missing feature endpoint as disabled rather than connected', asyn
   listeners.get('message')({
     source: frameWindow,
     origin: 'https://preview.example.test',
-    data: { type: 'kedge.preview-console.ready', version: 1, documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65' },
+    data: { type: 'faros.preview-console.ready', version: 1, documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65' },
   })
   await new Promise((resolve) => setImmediate(resolve))
   assert.deepEqual(states, ['connecting', 'disabled'])
@@ -150,7 +150,7 @@ test('a stale connect cannot replace the newest project after session deletion',
   listeners.get('message')({
     source: frameWindow,
     origin: 'https://preview.example.test',
-    data: { type: 'kedge.preview-console.ready', version: 1, documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65' },
+    data: { type: 'faros.preview-console.ready', version: 1, documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65' },
   })
   await new Promise((resolve) => setImmediate(resolve))
 
@@ -162,7 +162,7 @@ test('a stale connect cannot replace the newest project after session deletion',
   listeners.get('message')({
     source: frameWindow,
     origin: 'https://preview.example.test',
-    data: { type: 'kedge.preview-console.ready', version: 1, documentID: '5ac4b288-a1fa-4c99-936c-07467cd3cadb' },
+    data: { type: 'faros.preview-console.ready', version: 1, documentID: '5ac4b288-a1fa-4c99-936c-07467cd3cadb' },
   })
   await new Promise((resolve) => setImmediate(resolve))
 
@@ -201,7 +201,7 @@ test('a stale disconnect cannot clear a newer automatic connection', async () =>
   listeners.get('message')({
     source: frameWindow,
     origin: 'https://preview.example.test',
-    data: { type: 'kedge.preview-console.ready', version: 1, documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65' },
+    data: { type: 'faros.preview-console.ready', version: 1, documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65' },
   })
   await new Promise((resolve) => setImmediate(resolve))
 
@@ -213,7 +213,7 @@ test('a stale disconnect cannot clear a newer automatic connection', async () =>
   listeners.get('message')({
     source: frameWindow,
     origin: 'https://preview.example.test',
-    data: { type: 'kedge.preview-console.ready', version: 1, documentID: '5ac4b288-a1fa-4c99-936c-07467cd3cadb' },
+    data: { type: 'faros.preview-console.ready', version: 1, documentID: '5ac4b288-a1fa-4c99-936c-07467cd3cadb' },
   })
   await new Promise((resolve) => setImmediate(resolve))
 
@@ -271,13 +271,13 @@ test('reports dropped events even when no event is uploadable', async () => {
   listeners.get('message')({
     source: frameWindow,
     origin: 'https://preview.example.test',
-    data: { type: 'kedge.preview-console.ready', version: 1, documentID: generation },
+    data: { type: 'faros.preview-console.ready', version: 1, documentID: generation },
   })
   await new Promise((resolve) => setImmediate(resolve))
   const channel = channels.at(-1)
   channel.port1.onmessage({
     data: {
-      type: 'kedge.preview-console.events',
+      type: 'faros.preview-console.events',
       version: 1,
       sessionID: 'session-drops',
       generation,

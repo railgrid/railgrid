@@ -26,7 +26,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // agentKey is a context key for a running Agent in AgentEdgeJoin / EdgeTunnelResilience.
@@ -39,7 +39,7 @@ func EdgeLifecycle() features.Feature {
 	return features.New("edge lifecycle").
 		Assess("create edge", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -51,7 +51,7 @@ func EdgeLifecycle() features.Feature {
 		}).
 		Assess("edge appears in list", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			out, err := client.EdgeList(ctx)
 			if err != nil {
@@ -64,7 +64,7 @@ func EdgeLifecycle() features.Feature {
 		}).
 		Assess("delete edge", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.EdgeDelete(ctx, edgeName); err != nil {
 				t.Fatalf("edge delete failed: %v", err)
@@ -74,7 +74,7 @@ func EdgeLifecycle() features.Feature {
 		Feature()
 }
 
-// AgentEdgeJoin returns a feature that starts a kedge-agent, waits for the
+// AgentEdgeJoin returns a feature that starts a faros-agent, waits for the
 // edge to become Ready, and asserts the edge proxy is reachable.
 // Only use this in suites that set up both a hub and an agent cluster.
 func AgentEdgeJoin() features.Feature {
@@ -83,7 +83,7 @@ func AgentEdgeJoin() features.Feature {
 	return features.New("agent edge join").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -105,7 +105,7 @@ func AgentEdgeJoin() features.Feature {
 		}).
 		Assess("edge becomes Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
@@ -114,7 +114,7 @@ func AgentEdgeJoin() features.Feature {
 		}).
 		Assess("edge proxy is reachable", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			// Get the edge proxy URL from status and run kubectl through it.
 			edgeURL, err := client.GetEdgeURL(ctx, edgeName)
@@ -139,7 +139,7 @@ func AgentEdgeJoin() features.Feature {
 				a.Stop()
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
@@ -154,7 +154,7 @@ func EdgeTunnelResilience() features.Feature {
 	return features.New("edge tunnel resilience").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -176,7 +176,7 @@ func EdgeTunnelResilience() features.Feature {
 		}).
 		Assess("edge becomes Ready initially", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("edge did not become Ready: %v", err)
@@ -186,7 +186,7 @@ func EdgeTunnelResilience() features.Feature {
 		Assess("edge recovers after agent restart", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			agent := ctx.Value(agentKey{}).(*framework.Agent)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			agent.Stop()
 			time.Sleep(5 * time.Second)
@@ -208,7 +208,7 @@ func EdgeTunnelResilience() features.Feature {
 				a.Stop()
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).

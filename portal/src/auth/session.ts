@@ -13,7 +13,7 @@
 // The redirect itself lives in the shell (App.vue), reached via a window
 // event. We deliberately do NOT import `@/router` or any Pinia store
 // here: this module is pulled into provider micro-frontend bundles via
-// the `@kedge-edges` alias, and a static router/store import drags the
+// the `@faros-edges` alias, and a static router/store import drags the
 // entire portal SPA into each provider's IIFE (see the long note in
 // composables/useGraphQL.ts). Depending only on `@/auth/token` (pure
 // functions) and the DOM keeps this leaf-level and cycle-free.
@@ -22,7 +22,7 @@ import { loadAuth, isExpired, refreshToken } from '@/auth/token'
 // Window event the shell listens for to drop a dead session and redirect
 // to /login (see portal/src/App.vue). No-op inside provider
 // micro-frontends, which register no listener.
-export const SESSION_EXPIRED_EVENT = 'kedge-session-expired'
+export const SESSION_EXPIRED_EVENT = 'faros-session-expired'
 
 // One page load can fan out a dozen authenticated requests (provider
 // list + admin probe + N GraphQL queries). When the token dies they all
@@ -66,10 +66,10 @@ export async function getBearerToken(): Promise<string | null> {
 
 // Tenant selection persisted by stores/tenant.ts. Kept as a literal (not
 // imported) for the same cycle-avoidance reason as the rest of this file.
-const TENANT_STORAGE_KEY = 'kedge:portal:tenant'
+const TENANT_STORAGE_KEY = 'faros:portal:tenant'
 
 interface AuthHeaderOptions {
-  // tenant: include X-Kedge-Org / X-Kedge-Workspace from the sidebar
+  // tenant: include X-Faros-Org / X-Faros-Workspace from the sidebar
   // selection so workspace-scoped hub endpoints (/api/orgs/.../providers)
   // target the workspace the user is viewing. The hub re-verifies these
   // against the caller's membership, so they can't be spoofed.
@@ -82,8 +82,8 @@ function tenantHeaders(): Record<string, string> {
     const raw = localStorage.getItem(TENANT_STORAGE_KEY)
     if (raw) {
       const t = JSON.parse(raw) as { orgUUID?: string | null; workspaceUUID?: string | null }
-      if (t.orgUUID) h['X-Kedge-Org'] = t.orgUUID
-      if (t.workspaceUUID) h['X-Kedge-Workspace'] = t.workspaceUUID
+      if (t.orgUUID) h['X-Faros-Org'] = t.orgUUID
+      if (t.workspaceUUID) h['X-Faros-Workspace'] = t.workspaceUUID
     }
   } catch {
     /* ignore parse errors — header is best-effort */

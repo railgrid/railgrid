@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createServer } from 'vite'
 
-const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/kedge-vite-assistant-interrupt', configFile: false, server: { middlewareMode: true } })
+const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/faros-vite-assistant-interrupt', configFile: false, server: { middlewareMode: true } })
 const interrupt = await vite.ssrLoadModule('/src/assistantInterrupt.ts')
 test.after(async () => vite.close())
 

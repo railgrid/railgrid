@@ -30,7 +30,7 @@ import (
 	"golang.org/x/oauth2"
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/faros-kedge/pkg/browsersession"
+	"github.com/faroshq/faros/pkg/browsersession"
 )
 
 func TestBrowserSessionBootstrapAndLogout(t *testing.T) {
@@ -142,7 +142,7 @@ func TestBrowserSessionLogoutGETRedirectsAndExpiresCookie(t *testing.T) {
 
 func TestLegacyAuthorizeForceRequestsFreshIdentityProviderLogin(t *testing.T) {
 	handler := &Handler{
-		oauth2Config:   &oauth2.Config{ClientID: "kedge", Endpoint: oauth2.Endpoint{AuthURL: "https://idp.example.test/auth"}},
+		oauth2Config:   &oauth2.Config{ClientID: "faros", Endpoint: oauth2.Endpoint{AuthURL: "https://idp.example.test/auth"}},
 		hubExternalURL: "https://hub.example.test",
 		rateLimiter:    newRateLimiter(defaultRateLimit, defaultBurstDuration, klog.Background()),
 	}

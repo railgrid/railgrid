@@ -18,8 +18,8 @@
 
 ## Key Context
 
-- Branch: `ssh` — current working branch in `faroshq/kedge`
-- Module: `github.com/faroshq/faros-kedge`
+- Branch: `ssh` — current working branch in `faroshq/faros`
+- Module: `github.com/faroshq/faros`
 - Existing CRDs: `Site` (types_site.go) and `Server` (types_server.go) — both to be deleted
 - Connection pool: `pkg/util/connman/connman.go` — `ConnectionManager` is already in place
 - Virtual workspace builders: 3 currently active — `edge-proxy`, `agent-proxy`, `cluster-proxy`

@@ -25,7 +25,7 @@ import (
 // writeTempKubeconfig writes kubeconfig bytes to a 0600 temp file and returns
 // its path plus a cleanup func. Used to hand a KUBECONFIG path to the helm CLI.
 func writeTempKubeconfig(kubeconfig []byte) (string, func(), error) {
-	f, err := os.CreateTemp("", "kedge-runtime-*.kubeconfig")
+	f, err := os.CreateTemp("", "faros-runtime-*.kubeconfig")
 	if err != nil {
 		return "", func() {}, err
 	}

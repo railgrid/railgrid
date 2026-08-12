@@ -49,7 +49,7 @@ var crdGVR = schema.GroupVersionResource{
 // preserved so the apiserver doesn't reject the update.
 //
 // Callers pass a rest.Config scoped to the provider's own kcp
-// workspace (root:kedge:providers:infrastructure). The hub's catalog
+// workspace (root:faros:providers:infrastructure). The hub's catalog
 // controller has already created that workspace + the APIExport by
 // the time the provider binary runs; we just need to land our
 // platform CRDs inside it.

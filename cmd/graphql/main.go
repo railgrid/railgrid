@@ -38,7 +38,7 @@ import (
 
 func main() {
 	cmd := &cobra.Command{
-		Use:   "kedge-graphql",
+		Use:   "faros-graphql",
 		Short: "Kubernetes GraphQL gateway",
 	}
 
@@ -54,7 +54,7 @@ func main() {
 }
 
 // newRunCmd runs listener and gateway together in a single process.
-// Transport is always gRPC; provider is always kcp (kedge is kcp-based).
+// Transport is always gRPC; provider is always kcp (faros is kcp-based).
 func newRunCmd() *cobra.Command {
 	listenerOpts := listeneroptions.NewOptions()
 	gatewayOpts := gatewayoptions.NewOptions()
@@ -103,7 +103,7 @@ func newRunCmd() *cobra.Command {
 		"name of the APIExport EndpointSlice to watch")
 	fs.StringVar(&listenerOpts.ProviderKcp.APIExportEndpointSliceLogicalCluster, "apiexport-endpoint-slice-logicalcluster",
 		listenerOpts.ProviderKcp.APIExportEndpointSliceLogicalCluster,
-		"logical cluster path where the APIExportEndpointSlice lives, e.g. root:kedge:providers")
+		"logical cluster path where the APIExportEndpointSlice lives, e.g. root:faros:providers")
 	fs.StringVar(&listenerOpts.ProviderKcp.WorkspaceSchemaKubeconfigOverride, "workspace-schema-kubeconfig-override",
 		listenerOpts.ProviderKcp.WorkspaceSchemaKubeconfigOverride,
 		"kubeconfig used by the gateway to proxy API calls (extracts CA + auth); use instead of --workspace-schema-host-override")

@@ -1,8 +1,8 @@
 # Binaries
 bin/
-/kedge
-/kedge-hub
-/kedge-agent
+/faros
+/faros-hub
+/faros-agent
 *.exe
 *.exe~
 *.dll
@@ -82,7 +82,7 @@ dex.db
 .edge-kubeconfig
 .hooks/
 
-.kubeconfig-kedge-agent
+.kubeconfig-faros-agent
 docs/Gemfile.lock
 edge-kubeconfig
 *.kubeconfig

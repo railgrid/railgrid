@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package hub implements the kedge hub server.
+// Package hub implements the faros hub server.
 package hub
 
 import (
@@ -45,32 +45,32 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
-	"github.com/faroshq/faros-kedge/pkg/browsersession"
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
-	"github.com/faroshq/faros-kedge/pkg/hub/admin"
-	"github.com/faroshq/faros-kedge/pkg/hub/appauth"
-	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
-	"github.com/faroshq/faros-kedge/pkg/hub/controllers/mcpserver"
-	"github.com/faroshq/faros-kedge/pkg/hub/controllers/organization"
-	"github.com/faroshq/faros-kedge/pkg/hub/controllers/softdelete"
-	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
-	"github.com/faroshq/faros-kedge/pkg/hub/mcpaggregate"
-	"github.com/faroshq/faros-kedge/pkg/hub/providers"
-	"github.com/faroshq/faros-kedge/pkg/hub/restapi"
-	"github.com/faroshq/faros-kedge/pkg/hub/serviceaccounts"
-	"github.com/faroshq/faros-kedge/pkg/hub/tenant"
-	"github.com/faroshq/faros-kedge/pkg/hub/workloadidentity"
-	"github.com/faroshq/faros-kedge/pkg/kcppaths"
-	"github.com/faroshq/faros-kedge/pkg/server/auth"
-	"github.com/faroshq/faros-kedge/pkg/server/proxy"
-	pkgversion "github.com/faroshq/faros-kedge/pkg/version"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	"github.com/faroshq/faros/pkg/apiurl"
+	"github.com/faroshq/faros/pkg/browsersession"
+	farosclient "github.com/faroshq/faros/pkg/client"
+	"github.com/faroshq/faros/pkg/hub/admin"
+	"github.com/faroshq/faros/pkg/hub/appauth"
+	"github.com/faroshq/faros/pkg/hub/bootstrap"
+	"github.com/faroshq/faros/pkg/hub/controllers/mcpserver"
+	"github.com/faroshq/faros/pkg/hub/controllers/organization"
+	"github.com/faroshq/faros/pkg/hub/controllers/softdelete"
+	"github.com/faroshq/faros/pkg/hub/kcp"
+	"github.com/faroshq/faros/pkg/hub/mcpaggregate"
+	"github.com/faroshq/faros/pkg/hub/providers"
+	"github.com/faroshq/faros/pkg/hub/restapi"
+	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
+	"github.com/faroshq/faros/pkg/hub/tenant"
+	"github.com/faroshq/faros/pkg/hub/workloadidentity"
+	"github.com/faroshq/faros/pkg/kcppaths"
+	"github.com/faroshq/faros/pkg/server/auth"
+	"github.com/faroshq/faros/pkg/server/proxy"
+	pkgversion "github.com/faroshq/faros/pkg/version"
 
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 
-// Server is the kedge hub server orchestrator.
+// Server is the faros hub server orchestrator.
 type Server struct {
 	opts *Options
 }
@@ -86,7 +86,7 @@ func NewServer(opts *Options) (*Server, error) {
 // Run starts the hub server and blocks until the context is cancelled.
 func (s *Server) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
-	logger.Info("Starting kedge hub server",
+	logger.Info("Starting faros hub server",
 		"listenAddr", s.opts.ListenAddr,
 		"embeddedKCP", s.opts.EmbeddedKCP,
 	)
@@ -133,7 +133,7 @@ func (s *Server) Run(ctx context.Context) error {
 			StaticAuthTokens:         s.opts.StaticAuthTokens,
 			// Wire OIDC into kcp so it can authenticate user tokens forwarded
 			// by the proxy natively. The default username mapping (sub →
-			// "kedge:<sub>") matches User.Spec.RBACIdentity issued by the auth
+			// "faros:<sub>") matches User.Spec.RBACIdentity issued by the auth
 			// handler, so existing workspace RBAC bindings keep working.
 			OIDCIssuerURL: s.opts.IDPIssuerURL,
 			OIDCClientID:  s.opts.IDPClientID,
@@ -267,7 +267,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("installing CRDs: %w", err)
 	}
 
-	// 3. Create dynamic client (used by controllers for kedge resources)
+	// 3. Create dynamic client (used by controllers for faros resources)
 	dynamicClient, err := dynamic.NewForConfig(config)
 	if err != nil {
 		return fmt.Errorf("creating dynamic client: %w", err)
@@ -278,12 +278,12 @@ func (s *Server) Run(ctx context.Context) error {
 	// kcp bootstrap creates the per-tenant default MCPServer instead (see
 	// pkg/hub/kcp/bootstrap.go EnsureDefaultMCPServer).
 
-	kedgeClient := kedgeclient.NewFromDynamic(dynamicClient)
+	farosClient := farosclient.NewFromDynamic(dynamicClient)
 
 	// 4. kcp bootstrap (if kcp is configured - either embedded or external)
-	// userClient is a kedge client targeting the workspace where User CRDs live.
-	// Defaults to the base kedgeClient; overridden to root:kedge:users when kcp is configured.
-	userClient := kedgeClient
+	// userClient is a faros client targeting the workspace where User CRDs live.
+	// Defaults to the base farosClient; overridden to root:faros:users when kcp is configured.
+	userClient := farosClient
 	if kcpConfig != nil {
 		bootstrapper = kcp.NewBootstrapper(kcpConfig).WithEnabledProviders(s.opts.Providers)
 		if err := bootstrapper.Bootstrap(ctx); err != nil {
@@ -292,18 +292,18 @@ func (s *Server) Run(ctx context.Context) error {
 		logger.Info("kcp bootstrap complete")
 
 		// The legacy per-tenant BackfillDefaultMCPs walk (which iterated
-		// root:kedge:tenants) was removed when the new multi-org model
+		// root:faros:tenants) was removed when the new multi-org model
 		// retired tenant workspaces. The organization bootstrap controller
 		// now seeds the "default" MCPServer inside each personal Org's
 		// default child Workspace and re-runs idempotently on every
 		// reconcile.
 
-		// Create user client targeting root:kedge:users workspace.
+		// Create user client targeting root:faros:users workspace.
 		userDynamic, err := dynamic.NewForConfig(bootstrapper.UsersConfig())
 		if err != nil {
 			return fmt.Errorf("creating user dynamic client: %w", err)
 		}
-		userClient = kedgeclient.NewFromDynamic(userDynamic)
+		userClient = farosclient.NewFromDynamic(userDynamic)
 	}
 
 	// Create HTTP mux
@@ -353,8 +353,8 @@ func (s *Server) Run(ctx context.Context) error {
 	router.PathPrefix(apiurl.PathPrefixProvidersUI + "/").Handler(uiProxy)
 	// backendProxy is held so we can install the TenantResolver below
 	// once kcpProxy + userClient are wired. Until then the proxy still
-	// works — it just forwards without injecting X-Kedge-User /
-	// X-Kedge-Tenant, which is the Phase 1A behaviour.
+	// works — it just forwards without injecting X-Faros-User /
+	// X-Faros-Tenant, which is the Phase 1A behaviour.
 	backendProxy := providers.NewBackendProxy(providerRegistry, logger)
 	router.PathPrefix(apiurl.PathPrefixProvidersProxy + "/").Handler(backendProxy)
 	router.Handle(providers.PathListProviders, providers.NewListHandler(providerRegistry)).Methods("GET")
@@ -547,7 +547,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 			// Wire the backend-proxy tenant resolver. With this in place
 			// every authenticated request to /services/providers/{name}/*
-			// arrives at the provider with X-Kedge-User and X-Kedge-Tenant
+			// arrives at the provider with X-Faros-User and X-Faros-Tenant
 			// populated, so providers (e.g. infrastructure) can scope
 			// per-tenant work without re-parsing the bearer token.
 			// Anonymous requests pass through with the headers stripped.
@@ -555,7 +555,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// resolver (lives here to avoid a providers→proxy→kcp→providers
 			// import cycle).
 			backendProxy.SetTenantResolver(newKCPTenantResolver(kcpProxy, userClient, bootstrapper))
-			// Inject X-Kedge-Cluster (the resolved tenant's logical-cluster
+			// Inject X-Faros-Cluster (the resolved tenant's logical-cluster
 			// ID) so providers can address per-workspace surfaces that key on
 			// the ID — notably the GraphQL gateway at /graphql/clusters/{id}.
 			backendProxy.SetClusterResolver(newClusterIDResolver(kcpConfig))
@@ -566,7 +566,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// (server-side APIBinding create — see pkg/hub/restapi/providers_enable.go).
 			apiMgr.WithProviderRegistry(providerRegistry)
 			// Per-workspace kubeconfig download — OIDC mode emits an exec
-			// credential plugin entry (kedge get-token), static-token mode
+			// credential plugin entry (faros get-token), static-token mode
 			// embeds the caller's bearer token. Either way the cluster URL
 			// is HubExternalURL + /clusters/<clusterName>.
 			kcCfg := restapi.KubeconfigConfig{
@@ -597,7 +597,7 @@ func (s *Server) Run(ctx context.Context) error {
 			saHandler.Register(tenantSub)
 
 			// Production provider-action runtimes exchange an Infrastructure-owned
-			// bootstrap attestation for a short-lived, audience-bound Kedge token.
+			// bootstrap attestation for a short-lived, audience-bound Faros token.
 			// The attestor resolves the provider's declared virtual workspace from
 			// the catalog; the service-account manager owns deterministic identity
 			// and scoped RBAC in the tenant workspace.
@@ -659,7 +659,7 @@ func (s *Server) Run(ctx context.Context) error {
 		scheme := NewScheme()
 
 		// The multicluster providers watch APIExportEndpointSlices that live in
-		// root:kedge:system:controllers. Route through the front-proxy: it
+		// root:faros:system:controllers. Route through the front-proxy: it
 		// resolves the workspace path and forwards to whichever shard hosts it
 		// (multi-shard safe), and the shards accept the front-proxy client cert
 		// for the shard-direct virtual-workspace endpoints advertised in
@@ -674,14 +674,14 @@ func (s *Server) Run(ctx context.Context) error {
 		// Only the provider-catalog manager (below) remains.
 
 		// Provider-catalog reconciler runs against a SECOND multicluster
-		// manager bound to the providers.kedge.faros.sh APIExport. That
+		// manager bound to the providers.faros.sh APIExport. That
 		// APIExport is intentionally absent from core.faros.sh (see
 		// hack/gen-core-apiexport) so tenants cannot see or create catalog
-		// entries. The hub binds it once in root:kedge:providers (during
+		// entries. The hub binds it once in root:faros:providers (during
 		// kcp bootstrap, ensureProvidersSelfBinding) and reconciles there.
-		providersExportProvider, err := apiexport.New(providersConfig, "providers.kedge.faros.sh", apiexport.Options{Scheme: scheme})
+		providersExportProvider, err := apiexport.New(providersConfig, "providers.faros.sh", apiexport.Options{Scheme: scheme})
 		if err != nil {
-			return fmt.Errorf("creating providers.kedge.faros.sh multicluster provider: %w", err)
+			return fmt.Errorf("creating providers.faros.sh multicluster provider: %w", err)
 		}
 		providersMgr, err := mcmanager.New(providersConfig, providersExportProvider, manager.Options{
 			Scheme:  scheme,
@@ -691,7 +691,7 @@ func (s *Server) Run(ctx context.Context) error {
 			return fmt.Errorf("creating providers multicluster manager: %w", err)
 		}
 		// The hub no longer provisions providers or writes the
-		// kedge-provider-kubeconfig Secret — admin onboarding mints it and the
+		// faros-provider-kubeconfig Secret — admin onboarding mints it and the
 		// provider's Helm init applies the in-workspace objects. The catalog
 		// controller only maintains the registry + resolves the workspace
 		// cluster ID for the Enable flow.
@@ -739,12 +739,12 @@ func (s *Server) Run(ctx context.Context) error {
 		// sub-workspace + ServiceAccount + kubeconfig Secret, then binds the
 		// CatalogEntry export into the sub-workspace so the provider
 		// self-registers. Provider lives in its OWN APIExport
-		// (admin.kedge.faros.sh), bound ONLY in root:kedge:providers (so
+		// (admin.faros.sh), bound ONLY in root:faros:providers (so
 		// a provider cannot create Provider objects from its own sub-workspace),
 		// hence a THIRD multicluster manager bound to the admin export.
-		adminExportProvider, err := apiexport.New(providersConfig, "admin.kedge.faros.sh", apiexport.Options{Scheme: scheme})
+		adminExportProvider, err := apiexport.New(providersConfig, "admin.faros.sh", apiexport.Options{Scheme: scheme})
 		if err != nil {
-			return fmt.Errorf("creating admin.kedge.faros.sh multicluster provider: %w", err)
+			return fmt.Errorf("creating admin.faros.sh multicluster provider: %w", err)
 		}
 		adminMgr, err := mcmanager.New(providersConfig, adminExportProvider, manager.Options{
 			Scheme:  scheme,
@@ -766,7 +766,7 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}()
 
-		// Organization bootstrap controller — runs against root:kedge:users
+		// Organization bootstrap controller — runs against root:faros:users
 		// where the User and (companion) Organization CRs live. This is a
 		// single-cluster controller-runtime manager, separate from the
 		// multicluster managers above which serve the kcp-tenant fleet.

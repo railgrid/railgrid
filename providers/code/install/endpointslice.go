@@ -40,11 +40,11 @@ import (
 
 const (
 	// APIExportName is the provider's APIExport (manifest.yaml spec.apiExport.name).
-	APIExportName = "code.providers.kedge.faros.sh"
+	APIExportName = "code.providers.faros.sh"
 	// APIExportEndpointSliceName is the slice the multicluster manager watches.
 	// Matches controller_manager.go's endpointSliceName and, by convention, the
 	// APIExport name.
-	APIExportEndpointSliceName = "code.providers.kedge.faros.sh"
+	APIExportEndpointSliceName = "code.providers.faros.sh"
 )
 
 var apiExportEndpointSliceGVR = schema.GroupVersionResource{
@@ -55,7 +55,7 @@ var apiExportEndpointSliceGVR = schema.GroupVersionResource{
 
 // EnsureAPIExportEndpointSlice ensures an APIExportEndpointSlice referencing the
 // provider's APIExport exists in the provider workspace. workspacePath is the
-// logical-cluster path the APIExport lives in (root:kedge:providers:code) —
+// logical-cluster path the APIExport lives in (root:faros:providers:code) —
 // REQUIRED so kcp can resolve the export and publish endpoint URLs in status.
 //
 // spec.export is immutable, so a pre-existing slice with a stale path is

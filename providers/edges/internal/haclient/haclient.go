@@ -33,7 +33,7 @@ import (
 // enforces that the target host is loopback. Exported so out-of-package callers
 // that build their own tunnel requests (e.g. the events WebSocket subscriber)
 // set the same header.
-const SvcTargetHeader = "X-Kedge-Svc-Target"
+const SvcTargetHeader = "X-Faros-Svc-Target"
 
 // svcTargetHeader is the internal spelling used throughout this package.
 const svcTargetHeader = SvcTargetHeader
@@ -54,7 +54,7 @@ type Target struct {
 	Token  string // bearer token injected as Authorization; may be empty
 }
 
-// SvcTarget returns the value for the X-Kedge-Svc-Target header. The agent
+// SvcTarget returns the value for the X-Faros-Svc-Target header. The agent
 // validates the host against what its mode permits (loopback always; cluster
 // DNS in kubernetes mode).
 func (t Target) SvcTarget() string {

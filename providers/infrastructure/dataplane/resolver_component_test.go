@@ -65,7 +65,7 @@ func applicationInstance(runtimeNamespace string) *unstructured.Unstructured {
 		return map[string]any{"name": name, "namespace": runtimeNamespace}
 	}
 	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.faros.sh/v1alpha1",
 		"kind":       "Application",
 		"metadata":   map[string]any{"name": "shop"},
 		"status": map[string]any{
@@ -81,7 +81,7 @@ func applicationInstance(runtimeNamespace string) *unstructured.Unstructured {
 }
 
 func TestResolveComponentVerbs(t *testing.T) {
-	ns := "kedge-tenant-shop"
+	ns := "faros-tenant-shop"
 	contract := applicationContract()
 	instance := applicationInstance(ns)
 
@@ -140,7 +140,7 @@ func TestResolveComponentUnknown(t *testing.T) {
 }
 
 func TestResolveComponentRejectsNamespaceEscape(t *testing.T) {
-	instance := applicationInstance("kedge-tenant-shop")
+	instance := applicationInstance("faros-tenant-shop")
 	unstructured.SetNestedField(instance.Object, "kube-system", "status", "components", "backend", "controlServiceRef", "namespace") //nolint:errcheck
 
 	if _, err := ResolveComponent(applicationContract(), instance, "backend", "sync"); err == nil {

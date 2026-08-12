@@ -29,7 +29,7 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // joinTokenEdgeReadyKey is the context key for the TokenAgent used in
@@ -55,7 +55,7 @@ func JoinTokenIsSetAfterEdgeCreation() features.Feature {
 			if clusterEnv == nil {
 				t.Fatal("cluster environment not found in context")
 			}
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -67,7 +67,7 @@ func JoinTokenIsSetAfterEdgeCreation() features.Feature {
 		}).
 		Assess("join_token_is_set", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			token, err := client.WaitForEdgeJoinToken(ctx, edgeName, 2*time.Minute)
 			if err != nil {
@@ -91,14 +91,14 @@ func JoinTokenIsSetAfterEdgeCreation() features.Feature {
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
 		Feature()
 }
 
-// AgentConnectsWithJoinToken verifies that a kedge agent can bootstrap its
+// AgentConnectsWithJoinToken verifies that a faros agent can bootstrap its
 // connection to the hub using only the Edge join token (no hub kubeconfig /
 // service-account token required). After a successful token exchange the edge
 // must reach the Ready phase.
@@ -111,7 +111,7 @@ func AgentConnectsWithJoinToken() features.Feature {
 			if clusterEnv == nil {
 				t.Fatal("cluster environment not found in context")
 			}
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -144,7 +144,7 @@ func AgentConnectsWithJoinToken() features.Feature {
 		}).
 		Assess("edge_becomes_ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("edge %q did not become Ready after connecting with join token: %v", edgeName, err)
@@ -157,7 +157,7 @@ func AgentConnectsWithJoinToken() features.Feature {
 				a.Stop()
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
@@ -179,7 +179,7 @@ func InvalidJoinTokenReturns401() features.Feature {
 			if clusterEnv == nil {
 				t.Fatal("cluster environment not found in context")
 			}
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -199,7 +199,7 @@ func InvalidJoinTokenReturns401() features.Feature {
 		}).
 		Assess("edge_never_becomes_ready_with_bad_token", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			// Poll for a short window (30 s) and assert the edge does NOT reach Ready.
 			// A correctly rejected agent will never push the edge to Ready.
@@ -237,7 +237,7 @@ func InvalidJoinTokenReturns401() features.Feature {
 				a.Stop()
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
@@ -252,7 +252,7 @@ type joinTokenSSHCredsKey struct{}
 // flags, the hub stores those credentials in edge.status.sshCredentials.
 //
 // In join-token mode the agent cannot call the kcp API directly (the token is
-// not a valid kcp credential), so SSH credentials are sent as X-Kedge-SSH-*
+// not a valid kcp credential), so SSH credentials are sent as X-Faros-SSH-*
 // WebSocket headers during the initial tunnel establishment. The hub's
 // agent-proxy builder reads those headers and persists the credentials as a
 // k8s Secret, then links the Secret in edge.status.sshCredentials.
@@ -266,7 +266,7 @@ func JoinTokenSSHCredentialsStoredAfterConnect() features.Feature {
 	return features.New("JoinToken/SSHCredentialsStoredAfterConnect").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -293,7 +293,7 @@ func JoinTokenSSHCredentialsStoredAfterConnect() features.Feature {
 		}).
 		Assess("edge_becomes_ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
@@ -302,9 +302,9 @@ func JoinTokenSSHCredentialsStoredAfterConnect() features.Feature {
 		}).
 		Assess("ssh_credentials_stored_in_status", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
-			// Hub must store the credentials passed via X-Kedge-SSH-* headers.
+			// Hub must store the credentials passed via X-Faros-SSH-* headers.
 			creds, err := client.WaitForEdgeSSHCredentials(ctx, edgeName, 2*time.Minute)
 			if err != nil {
 				t.Fatalf("SSH credentials not stored for edge %q: %v", edgeName, err)
@@ -324,7 +324,7 @@ func JoinTokenSSHCredentialsStoredAfterConnect() features.Feature {
 				a.Stop()
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
@@ -348,7 +348,7 @@ func JoinTokenKubernetesMode() features.Feature {
 				t.Skip("no agent kubeconfig available — skipping kubernetes-mode join-token test")
 			}
 
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -376,7 +376,7 @@ func JoinTokenKubernetesMode() features.Feature {
 		}).
 		Assess("edge_becomes_ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("kubernetes edge %q did not become Ready with join token: %v", edgeName, err)
@@ -386,7 +386,7 @@ func JoinTokenKubernetesMode() features.Feature {
 		}).
 		Assess("k8s_proxy_reachable", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			edgeURL, err := client.GetEdgeURL(ctx, edgeName)
 			if err != nil {
@@ -411,7 +411,7 @@ func JoinTokenKubernetesMode() features.Feature {
 				_ = os.Remove(path)
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
@@ -440,7 +440,7 @@ func JoinTokenClearedAfterRegistration() features.Feature {
 	return features.New("JoinToken/ClearedAfterRegistration").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -465,7 +465,7 @@ func JoinTokenClearedAfterRegistration() features.Feature {
 		}).
 		Assess("edge_becomes_ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
@@ -474,7 +474,7 @@ func JoinTokenClearedAfterRegistration() features.Feature {
 		}).
 		Assess("join_token_is_cleared", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			// Hub should clear status.joinToken after the tunnel comes up to
 			// prevent token reuse (one-shot bootstrap credential).
@@ -486,7 +486,7 @@ func JoinTokenClearedAfterRegistration() features.Feature {
 		}).
 		Assess("registered_condition_is_true", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			// The hub sets Registered=True once the tunnel is established with a
 			// valid join token. This prevents the TokenReconciler from issuing a
@@ -503,7 +503,7 @@ func JoinTokenClearedAfterRegistration() features.Feature {
 				a.Stop()
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
@@ -518,7 +518,7 @@ type reconnectSecondAgentKey struct{}
 // flow:
 //  1. Agent authenticates with a bootstrap join token.
 //  2. Hub exchanges the token for a kubeconfig and returns it in
-//     X-Kedge-Agent-Kubeconfig; the agent saves it to disk.
+//     X-Faros-Agent-Kubeconfig; the agent saves it to disk.
 //  3. Agent process is stopped.
 //  4. A fresh agent process for the same edge starts WITHOUT a token.
 //  5. It auto-detects the saved kubeconfig and reconnects; edge reaches Ready.
@@ -528,7 +528,7 @@ func JoinTokenReconnectWithSavedKubeconfig() features.Feature {
 	return features.New("JoinToken/ReconnectWithSavedKubeconfig").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -553,7 +553,7 @@ func JoinTokenReconnectWithSavedKubeconfig() features.Feature {
 		}).
 		Assess("first_connection_edge_ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("edge %q did not become Ready on first connection: %v", edgeName, err)
@@ -573,7 +573,7 @@ func JoinTokenReconnectWithSavedKubeconfig() features.Feature {
 		}).
 		Assess("reconnects_without_token", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			// Stop the first agent to simulate a restart.
 			if a, ok := ctx.Value(reconnectFirstAgentKey{}).(*framework.TokenAgent); ok {
@@ -610,7 +610,7 @@ func JoinTokenReconnectWithSavedKubeconfig() features.Feature {
 				_ = os.Remove(path)
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
@@ -629,7 +629,7 @@ func TokenReconcilerNoReissueAfterRegistration() features.Feature {
 	return features.New("JoinToken/NoReissueAfterRegistration").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
@@ -653,7 +653,7 @@ func TokenReconcilerNoReissueAfterRegistration() features.Feature {
 		}).
 		Assess("edge_becomes_ready_and_token_cleared", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				t.Fatalf("edge %q did not become Ready: %v", edgeName, err)
@@ -669,7 +669,7 @@ func TokenReconcilerNoReissueAfterRegistration() features.Feature {
 		}).
 		Assess("no_new_token_issued_after_registration", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			// Wait 30s and confirm no join token has been re-issued.
 			// The TokenReconciler must skip edges that have Registered=True.
@@ -693,7 +693,7 @@ func TokenReconcilerNoReissueAfterRegistration() features.Feature {
 				_ = os.Remove(path)
 			}
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
@@ -701,8 +701,8 @@ func TokenReconcilerNoReissueAfterRegistration() features.Feature {
 }
 
 // AgentJoinKubernetes verifies that a kubernetes-type edge agent can be
-// deployed into an agent cluster via `kedge agent join --type kubernetes`.
-// The command installs the agent as a Kubernetes Deployment in kedge-agent and
+// deployed into an agent cluster via `faros agent join --type kubernetes`.
+// The command installs the agent as a Kubernetes Deployment in faros-agent and
 // exits; the test then waits for the Deployment to become available and the
 // hub edge to reach Ready.
 func AgentJoinKubernetes() features.Feature {
@@ -718,7 +718,7 @@ func AgentJoinKubernetes() features.Feature {
 				t.Skip("no agent kubeconfig available — skipping kubernetes agent join test")
 			}
 
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
 			}
@@ -733,9 +733,9 @@ func AgentJoinKubernetes() features.Feature {
 			t.Logf("join token obtained for kubernetes edge %q (len=%d)", edgeName, len(token))
 
 			// Determine the hub URL reachable from inside a pod in the agent cluster.
-			// kedge.localhost does not resolve inside pods; we need the Docker network IP + NodePort.
+			// faros.localhost does not resolve inside pods; we need the Docker network IP + NodePort.
 			// PodHubURLFromKubeconfig reads the cluster path from the hub kubeconfig because
-			// clusterEnv.HubURL is always "https://kedge.localhost:9443" (no cluster path).
+			// clusterEnv.HubURL is always "https://faros.localhost:9443" (no cluster path).
 			podHubURL := framework.PodHubURLFromKubeconfig(clusterEnv.HubKubeconfig)
 			if podHubURL == "" {
 				t.Skip("cannot determine hub Docker network IP; skipping in-cluster agent test")
@@ -744,20 +744,20 @@ func AgentJoinKubernetes() features.Feature {
 
 			agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
 			agentClusterName := clusterEnv.AgentClusters[0].Name
-			kedgeBin := filepath.Join(framework.RepoRoot(), framework.KedgeBin)
+			farosBin := filepath.Join(framework.RepoRoot(), framework.FarosBin)
 
-			// Load agent image into agent cluster (no-op unless KEDGE_AGENT_IMAGE_PULL_POLICY=Never).
+			// Load agent image into agent cluster (no-op unless FAROS_AGENT_IMAGE_PULL_POLICY=Never).
 			if err := framework.LoadAgentImageIntoCluster(agentClusterName); err != nil {
 				t.Fatalf("failed to load agent image into cluster: %v", err)
 			}
 
-			// Run `kedge agent join --type kubernetes` as a one-shot install
+			// Run `faros agent join --type kubernetes` as a one-shot install
 			// command: it deploys the agent Deployment into the agent cluster
 			// and exits once the install is complete.
 			joinCtx, joinCancel := context.WithTimeout(ctx, 2*time.Minute)
 			defer joinCancel()
 
-			cmd := exec.CommandContext(joinCtx, kedgeBin,
+			cmd := exec.CommandContext(joinCtx, farosBin,
 				"agent", "join",
 				"--type", "kubernetes",
 				"--hub-url", podHubURL,
@@ -769,38 +769,38 @@ func AgentJoinKubernetes() features.Feature {
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {
-				t.Fatalf("kedge agent join --type kubernetes failed: %v", err)
+				t.Fatalf("faros agent join --type kubernetes failed: %v", err)
 			}
-			t.Logf("kedge agent join completed for edge %q", edgeName)
+			t.Logf("faros agent join completed for edge %q", edgeName)
 
 			return ctx
 		}).
 		Assess("deployment_available", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
-			deploymentName := "kedge-agent-" + edgeName
+			deploymentName := "faros-agent-" + edgeName
 
-			if err := framework.WaitForDeploymentAvailable(ctx, agentKubeconfig, "kedge-agent", deploymentName, 2*time.Minute); err != nil {
-				t.Fatalf("deployment %q in namespace kedge-agent did not become available: %v", deploymentName, err)
+			if err := framework.WaitForDeploymentAvailable(ctx, agentKubeconfig, "faros-agent", deploymentName, 2*time.Minute); err != nil {
+				t.Fatalf("deployment %q in namespace faros-agent did not become available: %v", deploymentName, err)
 			}
-			t.Logf("deployment %q in kedge-agent is available", deploymentName)
+			t.Logf("deployment %q in faros-agent is available", deploymentName)
 			return ctx
 		}).
 		Assess("edge_becomes_ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				// Collect pod logs to diagnose connectivity issues.
 				if logOut, logErr := framework.KubectlWithConfig(ctx, clusterEnv.AgentClusters[0].Kubeconfig,
-					"logs", "-n", "kedge-agent", "deploy/kedge-agent-"+edgeName, "--tail=50"); logErr == nil {
+					"logs", "-n", "faros-agent", "deploy/faros-agent-"+edgeName, "--tail=50"); logErr == nil {
 					t.Logf("agent pod logs:\n%s", logOut)
 				} else {
 					t.Logf("could not get pod logs: %v", logErr)
 				}
 				// Also describe the pods to see Events and container state.
 				if descOut, descErr := framework.KubectlWithConfig(ctx, clusterEnv.AgentClusters[0].Kubeconfig,
-					"describe", "pods", "-n", "kedge-agent", "-l", "kedge.faros.sh/edge-name="+edgeName); descErr == nil {
+					"describe", "pods", "-n", "faros-agent", "-l", "faros.sh/edge-name="+edgeName); descErr == nil {
 					t.Logf("pod describe:\n%s", descOut)
 				}
 				t.Fatalf("kubernetes edge %q did not become Ready after agent join: %v", edgeName, err)
@@ -812,18 +812,18 @@ func AgentJoinKubernetes() features.Feature {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			if len(clusterEnv.AgentClusters) > 0 && clusterEnv.AgentClusters[0].Kubeconfig != "" {
 				agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
-				deploymentName := "kedge-agent-" + edgeName
+				deploymentName := "faros-agent-" + edgeName
 				// Best-effort cleanup of installed resources.
 				_, _ = framework.KubectlWithConfig(ctx, agentKubeconfig,
 					"delete", "deployment", deploymentName,
-					"-n", "kedge-agent", "--ignore-not-found",
+					"-n", "faros-agent", "--ignore-not-found",
 				)
 				_, _ = framework.KubectlWithConfig(ctx, agentKubeconfig,
 					"delete", "serviceaccount", deploymentName,
-					"-n", "kedge-agent", "--ignore-not-found",
+					"-n", "faros-agent", "--ignore-not-found",
 				)
 			}
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).
@@ -831,7 +831,7 @@ func AgentJoinKubernetes() features.Feature {
 }
 
 // AgentHelmInstall verifies that a kubernetes-type edge agent can be deployed
-// into an agent cluster via the local kedge-agent Helm chart. The helm install
+// into an agent cluster via the local faros-agent Helm chart. The helm install
 // uses --wait so it completes only when the Deployment is ready; the test then
 // waits for the hub edge to reach Ready.
 func AgentHelmInstall() features.Feature {
@@ -847,7 +847,7 @@ func AgentHelmInstall() features.Feature {
 				t.Skip("no agent kubeconfig available — skipping helm agent install test")
 			}
 
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			if err := client.Login(ctx, framework.DevToken); err != nil {
 				t.Fatalf("login failed: %v", err)
 			}
@@ -862,9 +862,9 @@ func AgentHelmInstall() features.Feature {
 			t.Logf("join token obtained for helm install edge %q (len=%d)", edgeName, len(token))
 
 			// Determine the hub URL reachable from inside a pod in the agent cluster.
-			// kedge.localhost does not resolve inside pods; we need the Docker network IP + NodePort.
+			// faros.localhost does not resolve inside pods; we need the Docker network IP + NodePort.
 			// PodHubURLFromKubeconfig reads the cluster path from the hub kubeconfig because
-			// clusterEnv.HubURL is always "https://kedge.localhost:9443" (no cluster path).
+			// clusterEnv.HubURL is always "https://faros.localhost:9443" (no cluster path).
 			podHubURL := framework.PodHubURLFromKubeconfig(clusterEnv.HubKubeconfig)
 			if podHubURL == "" {
 				t.Skip("cannot determine hub Docker network IP; skipping in-cluster helm test")
@@ -873,28 +873,28 @@ func AgentHelmInstall() features.Feature {
 
 			agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
 			agentClusterName := clusterEnv.AgentClusters[0].Name
-			chartPath := filepath.Join(framework.RepoRoot(), "deploy/charts/kedge-agent")
-			releaseName := "kedge-agent-" + edgeName
+			chartPath := filepath.Join(framework.RepoRoot(), "deploy/charts/faros-agent")
+			releaseName := "faros-agent-" + edgeName
 
-			// Load agent image into agent cluster (no-op unless KEDGE_AGENT_IMAGE_PULL_POLICY=Never).
+			// Load agent image into agent cluster (no-op unless FAROS_AGENT_IMAGE_PULL_POLICY=Never).
 			if err := framework.LoadAgentImageIntoCluster(agentClusterName); err != nil {
 				t.Fatalf("failed to load agent image into cluster: %v", err)
 			}
 
-			// Build helm set flags for agent image overrides (mirrors env vars used by kedge agent join).
+			// Build helm set flags for agent image overrides (mirrors env vars used by faros agent join).
 			helmSetArgs := []string{
 				"--set", "agent.edgeName=" + edgeName,
 				"--set", "agent.hub.url=" + podHubURL,
 				"--set", "agent.hub.token=" + token,
 				"--set", "agent.hub.insecureSkipTLSVerify=true",
 			}
-			if repo := os.Getenv("KEDGE_AGENT_IMAGE"); repo != "" {
+			if repo := os.Getenv("FAROS_AGENT_IMAGE"); repo != "" {
 				helmSetArgs = append(helmSetArgs, "--set", "image.repository="+repo)
 			}
-			if tag := os.Getenv("KEDGE_AGENT_IMAGE_TAG"); tag != "" {
+			if tag := os.Getenv("FAROS_AGENT_IMAGE_TAG"); tag != "" {
 				helmSetArgs = append(helmSetArgs, "--set", "image.tag="+tag)
 			}
-			if pullPolicy := os.Getenv("KEDGE_AGENT_IMAGE_PULL_POLICY"); pullPolicy != "" {
+			if pullPolicy := os.Getenv("FAROS_AGENT_IMAGE_PULL_POLICY"); pullPolicy != "" {
 				helmSetArgs = append(helmSetArgs, "--set", "image.pullPolicy="+pullPolicy)
 			}
 
@@ -905,7 +905,7 @@ func AgentHelmInstall() features.Feature {
 
 			helmArgs := append([]string{
 				"install", releaseName, chartPath,
-				"--namespace", "kedge-agent",
+				"--namespace", "faros-agent",
 				"--create-namespace",
 				"--kubeconfig", agentKubeconfig,
 				"--wait",
@@ -916,7 +916,7 @@ func AgentHelmInstall() features.Feature {
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			if err := cmd.Run(); err != nil {
-				t.Fatalf("helm install of kedge-agent for edge %q failed: %v", edgeName, err)
+				t.Fatalf("helm install of faros-agent for edge %q failed: %v", edgeName, err)
 			}
 			t.Logf("helm install of release %q completed", releaseName)
 
@@ -924,20 +924,20 @@ func AgentHelmInstall() features.Feature {
 		}).
 		Assess("edge_becomes_ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 
 			if err := client.WaitForEdgeReady(ctx, edgeName, 3*time.Minute); err != nil {
 				// Collect pod logs to diagnose connectivity issues.
 				if logOut, logErr := framework.KubectlWithConfig(ctx, clusterEnv.AgentClusters[0].Kubeconfig,
-					"logs", "-n", "kedge-agent", "deploy/kedge-agent-"+edgeName, "--tail=50"); logErr == nil {
+					"logs", "-n", "faros-agent", "deploy/faros-agent-"+edgeName, "--tail=50"); logErr == nil {
 					t.Logf("agent pod logs:\n%s", logOut)
 				} else {
 					t.Logf("could not get pod logs: %v", logErr)
 				}
 				// Also describe the pods to see Events and container state.
 				if descOut, descErr := framework.KubectlWithConfig(ctx, clusterEnv.AgentClusters[0].Kubeconfig,
-					"describe", "pods", "-n", "kedge-agent",
-					"-l", "app.kubernetes.io/instance=kedge-agent-"+edgeName); descErr == nil {
+					"describe", "pods", "-n", "faros-agent",
+					"-l", "app.kubernetes.io/instance=faros-agent-"+edgeName); descErr == nil {
 					t.Logf("pod describe:\n%s", descOut)
 				}
 				t.Fatalf("edge %q did not become Ready after helm install: %v", edgeName, err)
@@ -949,7 +949,7 @@ func AgentHelmInstall() features.Feature {
 			clusterEnv := framework.ClusterEnvFrom(ctx)
 			if len(clusterEnv.AgentClusters) > 0 && clusterEnv.AgentClusters[0].Kubeconfig != "" {
 				agentKubeconfig := clusterEnv.AgentClusters[0].Kubeconfig
-				releaseName := "kedge-agent-" + edgeName
+				releaseName := "faros-agent-" + edgeName
 
 				uninstallCtx, uninstallCancel := context.WithTimeout(ctx, 2*time.Minute)
 				defer uninstallCancel()
@@ -957,14 +957,14 @@ func AgentHelmInstall() features.Feature {
 				// Best-effort helm uninstall.
 				cmd := exec.CommandContext(uninstallCtx, "helm",
 					"uninstall", releaseName,
-					"-n", "kedge-agent",
+					"-n", "faros-agent",
 					"--kubeconfig", agentKubeconfig,
 				)
 				cmd.Stdout = os.Stdout
 				cmd.Stderr = os.Stderr
 				_ = cmd.Run()
 			}
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			_ = client.EdgeDelete(ctx, edgeName)
 			return ctx
 		}).

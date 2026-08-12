@@ -157,7 +157,7 @@ func TestFileStoreManagedTransactionRollsBackPackageWhenPolicyCommitFails(t *tes
 	store := NewFileStore(t.TempDir())
 	scope := Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-a", ProjectName: "demo", ProjectUID: "uid-a"}
 	store.managedTransactionHook = func(change ManagedFileChange) error {
-		if change.Path == ".agents/skills/.kedge-catalog.json" {
+		if change.Path == ".agents/skills/.faros-catalog.json" {
 			return errors.New("injected policy failure")
 		}
 		return nil
@@ -165,12 +165,12 @@ func TestFileStoreManagedTransactionRollsBackPackageWhenPolicyCommitFails(t *tes
 	defer func() { store.managedTransactionHook = nil }()
 	_, err := store.ApplyManagedTransaction(ctx, scope, []ManagedFileChange{
 		{Path: ".agents/skills/demo/SKILL.md", Operation: ManagedFileCreate, Content: "---\nname: demo\ndescription: demo\n---\nbody"},
-		{Path: ".agents/skills/.kedge-catalog.json", Operation: ManagedFileCreate, Content: `{"version":1,"packages":{"demo":{"enabled":true}}}`},
+		{Path: ".agents/skills/.faros-catalog.json", Operation: ManagedFileCreate, Content: `{"version":1,"packages":{"demo":{"enabled":true}}}`},
 	})
 	if err == nil || !strings.Contains(err.Error(), "injected policy failure") {
 		t.Fatalf("policy transaction error = %v, want injected policy failure", err)
 	}
-	for _, filePath := range []string{".agents/skills/demo/SKILL.md", ".agents/skills/.kedge-catalog.json"} {
+	for _, filePath := range []string{".agents/skills/demo/SKILL.md", ".agents/skills/.faros-catalog.json"} {
 		if _, readErr := store.ReadFile(ctx, scope, ReadOptions{Path: filePath}); readErr == nil {
 			t.Fatalf("%s survived policy rollback", filePath)
 		}

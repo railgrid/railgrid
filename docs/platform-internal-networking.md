@@ -103,7 +103,7 @@ closes the path to anything not driven by a live human:
 Worse, a provider cannot authenticate to the hub as itself at all: the hub's
 `IdentifyUser` accepts only static dev tokens and OIDC ID tokens
 (`pkg/server/proxy/proxy.go:809-849`), so a kcp ServiceAccount token arrives
-with **no** `X-Kedge-*` headers.
+with **no** `X-Faros-*` headers.
 
 Prior art exists for the missing half: the MCP aggregator already makes direct
 in-cluster calls to providers while **self-asserting** the identity headers the
@@ -166,10 +166,10 @@ Port's execution agent, Cortex's Kubernetes agent, the Humanitec Agent. The
 stated motives are identical each time — no inbound firewall holes, no cluster
 credentials held centrally, tolerance of NAT and intermittent links, and hub
 scalability. argocd-agent's **resource proxy** is the closest analogue to
-kedge's problem: a hub-side UI operating on data-plane pods with zero inbound
+faros's problem: a hub-side UI operating on data-plane pods with zero inbound
 connectivity, riding the agent-initiated stream back down.
 
-kedge already has that machinery in revdial + the edges `Service` CR. This
+faros already has that machinery in revdial + the edges `Service` CR. This
 strengthens both the Phase 3 recommendation (generalise what exists) and issue
 &#35;351's instruction not to build a second tunnel system.
 
@@ -178,7 +178,7 @@ HyperShift, k0smotron, Kamaji and vcluster all invert the connection: the data
 plane dials out, the control plane never dials in. Gardener documented the
 migration cost that forced it — a **public load balancer per tenant cluster, at
 roughly €20/month each**, plus security policies that simply forbade
-inbound — which is the same bill kedge is signing up for with a public HTTPRoute
+inbound — which is the same bill faros is signing up for with a public HTTPRoute
 per workload.
 
 Two ideas from that group are worth stealing:
@@ -195,7 +195,7 @@ Two ideas from that group are worth stealing:
   from an `X-Gardener-Destination` header mapped straight to an Envoy cluster
   name, with a regex allowlist so the port cannot be used as an open proxy —
   far cheaper than HyperShift's per-tenant Route or Kamaji's per-tenant LB. If
-  kedge ever does need public exposure at fleet scale, that is the shape.
+  faros ever does need public exposure at fleet scale, that is the shape.
 
 Note the one dissenter: Gardener evaluated Konnectivity, ran it in alpha for
 about a year, and replaced it with a home-grown reversed OpenVPN over concerns
@@ -213,11 +213,11 @@ tunnel modelled the reverse tunnel as an **RBAC-gated subresource on a
 first-class object** — `synctargets/<name>/tunnel` — with the far end
 re-proxying into the physical cluster's *own* apiserver so authorisation
 composed and no kubelet was ever touched directly. It went per-shard (kcp
-&#35;2946), the same sharding problem kedge has hit. It was removed in June 2023
+&#35;2946), the same sharding problem faros has hit. It was removed in June 2023
 for **lack of maintainers, not because the design failed**, and the code is
 intact and Apache-2.0 on `main-pre-tmc-removal:pkg/tunneler/`. Nothing in the
 kcp ecosystem replaced it: neither api-syncagent nor multicluster-provider nor
-KubeStellar/OCM transport offers logs/exec. That hole is exactly what kedge's
+KubeStellar/OCM transport offers logs/exec. That hole is exactly what faros's
 edges provider fills.
 
 One caution inherited from that history: extending the tunnel to
@@ -360,7 +360,7 @@ workspace X" without a human's token. Two candidate mechanisms, both with
 in-repo precedent:
 
 1. **Hub-vouched provider identity** — the hub accepts a provider's SA token in
-   `IdentifyUser` and asserts `X-Kedge-Provider` alongside the tenant headers,
+   `IdentifyUser` and asserts `X-Faros-Provider` alongside the tenant headers,
    exactly as `mcpaggregate` already does on its own authority.
 2. **Delegated SAR at the receiving provider** — the caller presents its provider
    SA token and the target provider authorises with TokenReview + SAR through
@@ -420,9 +420,9 @@ Two rules to carry over from that design:
 - **A delegation marker must not be self-assertable.** kcp's synthetic groups
   (`system:kcp:initializer:<path>`) are stripped at the front proxy and injected
   only by the in-process component that has already performed the authorisation.
-  Any header or extra kedge uses to say "acting for tenant X" needs the same
+  Any header or extra faros uses to say "acting for tenant X" needs the same
   treatment at the hub boundary — and the hub already strips and re-injects
-  `X-Kedge-*` for exactly this reason.
+  `X-Faros-*` for exactly this reason.
 - **Do not reach for impersonation as the primary mechanism.** It makes the
   caller *become* the target, losing the audit trail and requiring a very
   powerful grant; kcp has already shipped a security advisory where
@@ -453,7 +453,7 @@ server clustering at all** (open feature request since 2025).
 
 Two things to inherit from that landscape when Phase 3 comes:
 
-- **The single-replica constraint is not a kedge failing, it is the shape of the
+- **The single-replica constraint is not a faros failing, it is the shape of the
   problem.** A tunnel is one long-lived connection, so an L4 balancer pins it to
   one backend for its lifetime and scaling out does nothing until connections
   churn. Teleport hit the extreme version of this — every agent dialling every
@@ -465,7 +465,7 @@ Two things to inherit from that landscape when Phase 3 comes:
   storms after a control-plane restart), application-level keepalives (NAT drops
   an idle mapping and both ends still believe the tunnel is alive), and MTU
   (double encapsulation silently blackholes large packets — TLS handshakes hang
-  while small requests succeed). kedge's existing 18s ping / 60s read deadline
+  while small requests succeed). faros's existing 18s ping / 60s read deadline
   already covers the second.
 
 **On tunnel HA there are exactly two options, and no library solves it for

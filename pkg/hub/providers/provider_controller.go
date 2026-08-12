@@ -33,20 +33,20 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	adminv1alpha1 "github.com/faroshq/faros-kedge/apis/admin/v1alpha1"
+	adminv1alpha1 "github.com/faroshq/faros/apis/admin/v1alpha1"
 )
 
 // providerFinalizer gates teardown of the provisioned sub-workspace + Secret
 // when a Provider CR is deleted.
-const providerFinalizer = "admin.kedge.faros.sh/cleanup"
+const providerFinalizer = "admin.faros.sh/cleanup"
 
-// kubeconfigSecretNamespace is the namespace in root:kedge:system:providers the
+// kubeconfigSecretNamespace is the namespace in root:faros:system:providers the
 // minted kubeconfig Secret is written to.
 const kubeconfigSecretNamespace = "default"
 
 // ProviderReconciler provisions the kcp-side scaffolding declared by a Provider
 // CR: the per-provider sub-workspace, the "provider" ServiceAccount, and a
-// minted kubeconfig written into a Secret in root:kedge:system:providers. It is the
+// minted kubeconfig written into a Secret in root:faros:system:providers. It is the
 // level-driven replacement for the former imperative admin "onboard" call — it
 // chains the same Provisioner steps and then persists the kubeconfig instead of
 // returning it over HTTP.
@@ -64,8 +64,8 @@ type ProviderReconciler struct {
 }
 
 // SetupProviderWithManager wires the Provider provisioning reconciler into the
-// admin multicluster manager (bound to admin.kedge.faros.sh, whose Provider
-// objects live in root:kedge:system:providers). kcpConfig is the admin
+// admin multicluster manager (bound to admin.faros.sh, whose Provider
+// objects live in root:faros:system:providers). kcpConfig is the admin
 // rest.Config used to create sub-workspaces and write the kubeconfig Secret
 // with admin credentials.
 func SetupProviderWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, opts CatalogReconcilerOptions) error {

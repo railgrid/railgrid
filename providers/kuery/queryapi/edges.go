@@ -37,7 +37,7 @@ func (h *EdgesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	id := IdentityFromRequest(r)
 	if id.Tenant == "" {
-		http.Error(w, "missing tenant identity (X-Kedge-Tenant)", http.StatusUnauthorized)
+		http.Error(w, "missing tenant identity (X-Faros-Tenant)", http.StatusUnauthorized)
 		return
 	}
 	resp := edgesResponse{Edges: []string{}}

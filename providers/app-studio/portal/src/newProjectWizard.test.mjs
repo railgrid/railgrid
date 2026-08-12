@@ -7,7 +7,7 @@ import { renderToString } from 'vue/server-renderer'
 
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: '/tmp/kedge-vite-new-project-wizard',
+  cacheDir: '/tmp/faros-vite-new-project-wizard',
   server: { middlewareMode: true, hmr: false },
 })
 const { default: NewProjectWizard } = await vite.ssrLoadModule('/src/NewProjectWizard.vue')

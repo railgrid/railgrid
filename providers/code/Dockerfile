@@ -15,7 +15,7 @@ RUN npm run build
 #    //go:embeds portal/dist, overlaid from the node stage so the bundle is fresh.
 #
 # TODO(sdk-publish): this module now depends on
-# github.com/faroshq/kedge-provider-sdk via a `replace => ../../provider-sdk`
+# github.com/faroshq/faros-provider-sdk via a `replace => ../../provider-sdk`
 # that only resolves inside the monorepo (go.work). For a standalone image build
 # the SDK must be published to the module proxy (drop the replace) or vendored
 # into this build context. Host/Tilt dev builds work today via go.work.
@@ -29,10 +29,10 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 
 # 3. Minimal runtime image. The portal assets are baked into the binary; the
 #    APIResourceSchemas the `init` subcommand applies are baked at
-#    /etc/kedge/schemas (KEDGE_SCHEMAS_DIR).
+#    /etc/faros/schemas (FAROS_SCHEMAS_DIR).
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/code-provider /code-provider
-COPY deploy/chart/files/schemas /etc/kedge/schemas
+COPY deploy/chart/files/schemas /etc/faros/schemas
 EXPOSE 8083
 ENV PORT=8083
 USER nonroot:nonroot

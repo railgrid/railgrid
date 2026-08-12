@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Kedge Portal</title>
+    <title>Faros Portal</title>
     <script>
       // Apply theme before first paint to prevent flash. Dark is the hard
       // fallback: any failure (no matchMedia, thrown error) renders dark,
@@ -12,7 +12,7 @@
       // (the product default), not system.
       (function() {
         try {
-          var t = localStorage.getItem('kedge-theme') || 'dark';
+          var t = localStorage.getItem('faros-theme') || 'dark';
           var prefersDark = window.matchMedia
             && window.matchMedia('(prefers-color-scheme: dark)').matches;
           var d = t === 'system' ? (prefersDark ? 'dark' : 'light') : t;

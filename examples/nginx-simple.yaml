@@ -1,4 +1,4 @@
-apiVersion: kedge.faros.sh/v1alpha1
+apiVersion: faros.sh/v1alpha1
 kind: VirtualWorkload
 metadata:
   name: nginx-test

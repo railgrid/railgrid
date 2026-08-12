@@ -19,7 +19,7 @@ rotate?") and a portal UI.
 
 Realistic value ranking, which drives the phasing below:
 
-1. **Fleet-wide search/inventory** — the differentiated piece; nothing in kedge answers
+1. **Fleet-wide search/inventory** — the differentiated piece; nothing in faros answers
    cross-edge questions today without per-edge fan-out.
 2. **MCP query tools** — a far better agent surface than the per-edge `kubernetes_*` tools:
    one query instead of dozens of tunneled kubectl calls (latency *and* token cost).
@@ -49,7 +49,7 @@ Kuery is already kcp-aware (APIExport identity disambiguation in `internal/sync/
 has an Engage/Disengage cluster lifecycle. It has **no UI and no authz** — both are this
 provider's job:
 
-- kedge supplies the **clusters** (connected edges, reachable through the hub's edges-proxy)
+- faros supplies the **clusters** (connected edges, reachable through the hub's edges-proxy)
   and the **tenant boundary**;
 - the provider supplies **tenant-scoped query access** and the **visualization** (inventory,
   object graph, impact view).
@@ -61,7 +61,7 @@ Browser / MCP client
    │  bearer
    ▼
 hub /services/providers/kuery/{api/*, mcp, mcp/sse}
-   │  proxy injects X-Kedge-Tenant + X-Kedge-User
+   │  proxy injects X-Faros-Tenant + X-Faros-User
    ▼
 kuery provider pod
    │
@@ -110,10 +110,10 @@ stale-cluster and stale-object cleanup (TTL-based).
 ### Tenant isolation
 
 Kuery has no authorization of its own, so its API is **never exposed directly**. The
-provider backend is the only entry point: it takes `X-Kedge-Tenant` (injected by the hub's
+provider backend is the only entry point: it takes `X-Faros-Tenant` (injected by the hub's
 backend proxy) and forcibly rewrites every query's `spec.cluster` filter to the tenant's own
 cluster-name prefix (`{tenantCluster}/…`) before forwarding to the engine. One shared store,
-isolation enforced at the single choke point. `KEDGE_DEV_ALLOW_TENANT_QUERY` mirrors the
+isolation enforced at the single choke point. `FAROS_DEV_ALLOW_TENANT_QUERY` mirrors the
 infrastructure provider's dev escape hatch.
 
 Kuery's relationship to the **edge providers** also follows the platform
@@ -180,7 +180,7 @@ There are two halves, both small:
 
 **Authn — teach authorize() about provider SA tokens.** authorize() currently runs the
 TokenReview *in the target tenant workspace*. kcp SA tokens are logical-cluster-scoped, so
-the provider's SA token (home: `root:kedge:providers:kuery`) fails authentication there
+the provider's SA token (home: `root:faros:providers:kuery`) fails authentication there
 before RBAC is consulted. The front proxy already handles this pattern
 (`pkg/server/proxy/proxy.go`: `parseServiceAccountToken` → route to the token's home
 cluster). Extend authorize() the same way:
@@ -196,7 +196,7 @@ cluster). Extend authorize() the same way:
    (`EffectiveUsers` in the fork's `pkg/registry/rbac/validation/kcp.go`; proven
    cross-workspace by kcp's e2e `TestAPIResourceSchemaVirtualWorkspaceAuthorization`).
    Emitting the same format means the Enable-time grant binding also authorizes the
-   provider SA on kcp-native paths, not just kedge's delegated SAR.
+   provider SA on kcp-native paths, not just faros's delegated SAR.
 
 **Authz — materialize the grant on Enable.**
 
@@ -205,8 +205,8 @@ cluster). Extend authorize() the same way:
   your edges" — same consent model as tenant-scoped claims.
 - The existing server-side Enable endpoint (`pkg/hub/restapi/providers_enable.go`, which
   already creates the APIBinding) additionally applies in the tenant workspace:
-  - ClusterRole `kedge:provider:{name}:edges-proxy` — **two rules**: verb `proxy` on
-    `edges.kedge.faros.sh`, plus verb `access` on nonResourceURL `/`. The second is
+  - ClusterRole `faros:provider:{name}:edges-proxy` — **two rules**: verb `proxy` on
+    `edges.faros.sh`, plus verb `access` on nonResourceURL `/`. The second is
     required: kcp's workspaceContentAuthorizer checks `access` before any resource RBAC,
     and a foreign SA is not covered by the tenant workspace's `system:authenticated`
     grants (the SAR also drops its groups). kcp's own cross-workspace SA e2e pairs the
@@ -256,7 +256,7 @@ Full-object sync of every edge through the tunnels is the cost center.
   the portal catalog.
 - **Phase 2 — data + MCP.** **Implemented** (providers/kuery: `core/`, `engagement/`,
   `queryapi/`, `mcpserver/`). Engagement controller (watch Edges via permission claim
-  `edges.kedge.faros.sh` get/list/watch, tenantScoped) + embedded kuery sync +
+  `edges.faros.sh` get/list/watch, tenantScoped) + embedded kuery sync +
   tenant-scoped `/api/query` + MCP tools (`kuery_query`, `kuery_impact`) into the
   aggregator. This is the value milestone: agents can query the fleet.
   Implementation notes vs. this design: tenant scoping rides on kuery *cluster

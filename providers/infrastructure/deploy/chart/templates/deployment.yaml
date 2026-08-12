@@ -38,12 +38,12 @@ spec:
           args: ["init"]
           env:
             # init bootstraps the provider workspace using the SAME kubeconfig
-            # the serve container runs with (mounted at the kedge path below).
-            # hubMinted: the hub-delivered kedge-provider-kubeconfig, which is
+            # the serve container runs with (mounted at the faros path below).
+            # hubMinted: the hub-delivered faros-provider-kubeconfig, which is
             # cluster-admin in the provider workspace — enough to install CRDs,
             # the CachedResource, and the APIExport. supplied: your kcp config.
             - name: INFRASTRUCTURE_ADMIN_KUBECONFIG
-              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+              value: /var/run/secrets/faros/faros-provider-kubeconfig
             {{- if eq .Values.bootstrap.kubeconfigSource "supplied" }}
             # A supplied kubeconfig may be root-scoped, so retarget init at the
             # provider workspace. The hub-minted kubeconfig already targets it.
@@ -62,12 +62,12 @@ spec:
             # the hosting cluster. It is rendered into a ConfigMap (mounted below)
             # and init self-registers it into the provider workspace via the
             # provider kubeconfig.
-            - name: KEDGE_CATALOGENTRY_FILE
-              value: /etc/kedge/catalogentry/catalogentry.yaml
+            - name: FAROS_CATALOGENTRY_FILE
+              value: /etc/faros/catalogentry/catalogentry.yaml
             {{- end }}
           volumeMounts:
-            - name: kedge-provider-kubeconfig
-              mountPath: /var/run/secrets/kedge
+            - name: faros-provider-kubeconfig
+              mountPath: /var/run/secrets/faros
               readOnly: true
             - name: tmp
               mountPath: /tmp
@@ -78,7 +78,7 @@ spec:
             {{- end }}
             {{- if .Values.catalogEntry.enabled }}
             - name: catalogentry
-              mountPath: /etc/kedge/catalogentry
+              mountPath: /etc/faros/catalogentry
               readOnly: true
             {{- end }}
       {{- end }}
@@ -100,23 +100,23 @@ spec:
           env:
             - name: PORT
               value: "8081"
-            - name: KEDGE_HUB_URL
+            - name: FAROS_HUB_URL
               value: {{ .Values.hub.url | quote }}
-            - name: KEDGE_PROVIDER_NAME
+            - name: FAROS_PROVIDER_NAME
               value: "infrastructure"
             {{- if .Values.hub.insecure }}
-            - name: KEDGE_HUB_INSECURE
+            - name: FAROS_HUB_INSECURE
               value: "true"
             {{- end }}
             {{- if .Values.hub.tokenSecretRef.name }}
-            - name: KEDGE_HUB_TOKEN
+            - name: FAROS_HUB_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.hub.tokenSecretRef.name }}
                   key: {{ .Values.hub.tokenSecretRef.key }}
             {{- end }}
-            - name: KEDGE_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            - name: FAROS_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/faros/faros-provider-kubeconfig
             {{- if $centralName }}
             - name: KRO_KUBECONFIG
               value: /var/run/secrets/kro/kubeconfig
@@ -126,81 +126,81 @@ spec:
             # client-secret bridge). Without it (and KRO_KUBECONFIG) the
             # controller stays disabled. The zone apps are served under, e.g.
             # "apps.example.com".
-            - name: KEDGE_APP_BASE_DOMAIN
+            - name: FAROS_APP_BASE_DOMAIN
               value: {{ .Values.application.baseDomain | quote }}
             {{- end }}
             {{- if and .Values.application.gateway.name (not .Values.publishing.gateway.name) }}
             # Gateway API parent the Application HTTPRoutes attach to
-            # (${kedge.gatewayName}); defaults to "cloudflare-tunnel" in-binary.
-            - name: KEDGE_GATEWAY_NAME
+            # (${faros.gatewayName}); defaults to "cloudflare-tunnel" in-binary.
+            - name: FAROS_GATEWAY_NAME
               value: {{ .Values.application.gateway.name | quote }}
             {{- end }}
             {{- if and .Values.application.gateway.namespace (not .Values.publishing.gateway.namespace) }}
-            # The Gateway's namespace (${kedge.gatewayNamespace}); defaults to
+            # The Gateway's namespace (${faros.gatewayNamespace}); defaults to
             # "cfgate-system" in-binary.
-            - name: KEDGE_GATEWAY_NAMESPACE
+            - name: FAROS_GATEWAY_NAMESPACE
               value: {{ .Values.application.gateway.namespace | quote }}
             {{- end }}
             {{- with .Values.publishing.baseDomain }}
-            - name: KEDGE_APP_BASE_DOMAIN
+            - name: FAROS_APP_BASE_DOMAIN
               value: {{ . | quote }}
             {{- end }}
             {{- with .Values.publishing.accessProxyImage }}
-            - name: KEDGE_ACCESS_PROXY_IMAGE
+            - name: FAROS_ACCESS_PROXY_IMAGE
               value: {{ . | quote }}
             {{- end }}
-            - name: KEDGE_ACCESS_HUB_URL
+            - name: FAROS_ACCESS_HUB_URL
               value: {{ default .Values.hub.url .Values.publishing.hubURL | quote }}
             {{- with .Values.publishing.hubPublicURL }}
-            - name: KEDGE_ACCESS_HUB_PUBLIC_URL
+            - name: FAROS_ACCESS_HUB_PUBLIC_URL
               value: {{ . | quote }}
             {{- end }}
             {{- if .Values.publishing.insecure }}
-            - name: KEDGE_ACCESS_HUB_INSECURE
+            - name: FAROS_ACCESS_HUB_INSECURE
               value: "true"
             {{- end }}
-            - name: KEDGE_ACCESS_PUBLIC_SCHEME
+            - name: FAROS_ACCESS_PUBLIC_SCHEME
               value: {{ .Values.publishing.publicScheme | default "https" | quote }}
             {{- if gt (int .Values.publishing.publicPort) 0 }}
-            - name: KEDGE_APP_PUBLIC_PORT
+            - name: FAROS_APP_PUBLIC_PORT
               value: {{ .Values.publishing.publicPort | quote }}
             {{- end }}
             {{- with .Values.publishing.gateway.name }}
-            - name: KEDGE_GATEWAY_NAME
+            - name: FAROS_GATEWAY_NAME
               value: {{ . | quote }}
             {{- end }}
             {{- with .Values.publishing.gateway.namespace }}
-            - name: KEDGE_GATEWAY_NAMESPACE
+            - name: FAROS_GATEWAY_NAMESPACE
               value: {{ . | quote }}
             {{- end }}
             {{- if not .Values.tenantLimitRange.enabled }}
-            # Opt out of stamping the kedge-defaults LimitRange into tenant
+            # Opt out of stamping the faros-defaults LimitRange into tenant
             # namespaces (for clusters that manage resource policy themselves).
-            - name: KEDGE_TENANT_LIMITRANGE
+            - name: FAROS_TENANT_LIMITRANGE
               value: "disabled"
             {{- end }}
             {{- with .Values.development.agentImage }}
-            # Dev-mode agent injector image (${kedge.devAgentImage}).
-            - name: KEDGE_DEV_AGENT_IMAGE
+            # Dev-mode agent injector image (${faros.devAgentImage}).
+            - name: FAROS_DEV_AGENT_IMAGE
               value: {{ . | quote }}
             {{- end }}
             {{- with .Values.development.previewConsole.verificationJWKS }}
             # Current and optional previous public ES256 keys for the
             # development preview-console bridge. Signing keys remain in App
             # Studio and are never passed to the infrastructure provider.
-            - name: KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS
+            - name: FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS
               value: {{ . | quote }}
             {{- end }}
             {{- range $toolchain, $image := .Values.development.images }}
             {{- if $image }}
-            # Dev-mode toolchain image (${kedge.devImage.{{ $toolchain }}}).
-            - name: KEDGE_DEV_IMAGE_{{ $toolchain | upper | replace "-" "_" }}
+            # Dev-mode toolchain image (${faros.devImage.{{ $toolchain }}}).
+            - name: FAROS_DEV_IMAGE_{{ $toolchain | upper | replace "-" "_" }}
               value: {{ $image | quote }}
             {{- end }}
             {{- end }}
           volumeMounts:
-            - name: kedge-provider-kubeconfig
-              mountPath: /var/run/secrets/kedge
+            - name: faros-provider-kubeconfig
+              mountPath: /var/run/secrets/faros
               readOnly: true
             {{- if $centralName }}
             - name: kro-kubeconfig
@@ -219,18 +219,18 @@ spec:
           configMap:
             name: {{ include "infrastructure.fullname" . }}-catalogentry
         {{- end }}
-        - name: kedge-provider-kubeconfig
+        - name: faros-provider-kubeconfig
           secret:
             {{- if .Values.bootstrap.enabled }}
             # init + serve share ONE kubeconfig (resolved by kubeconfigSource).
             # NOT optional: the pod waits for the Secret to exist — in hubMinted
-            # mode that's the hub delivering kedge-provider-kubeconfig after it
+            # mode that's the hub delivering faros-provider-kubeconfig after it
             # reconciles the CatalogEntry, which is exactly the bootstrap
             # ordering we want.
             secretName: {{ include "infrastructure.bootstrapSecretName" . }}
             items:
               - key: {{ include "infrastructure.bootstrapSecretKey" . }}
-                path: kedge-provider-kubeconfig
+                path: faros-provider-kubeconfig
             {{- else }}
             # Hub-provisioned, no init container: optional so the pod stays
             # schedulable while the hub catalog controller mints the Secret.
@@ -240,7 +240,7 @@ spec:
             optional: true
             items:
               - key: kubeconfig
-                path: kedge-provider-kubeconfig
+                path: faros-provider-kubeconfig
             {{- end }}
         {{- if $centralName }}
         - name: kro-kubeconfig

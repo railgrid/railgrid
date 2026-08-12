@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package agent implements the kedge agent that connects edges to the hub.
+// Package agent implements the faros agent that connects edges to the hub.
 package agent
 
 import (
@@ -54,11 +54,11 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	agentReconciler "github.com/faroshq/faros-kedge/pkg/agent/reconciler"
-	agentStatus "github.com/faroshq/faros-kedge/pkg/agent/status"
-	"github.com/faroshq/faros-kedge/pkg/agent/tunnel"
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	agentReconciler "github.com/faroshq/faros/pkg/agent/reconciler"
+	agentStatus "github.com/faroshq/faros/pkg/agent/status"
+	"github.com/faroshq/faros/pkg/agent/tunnel"
+	"github.com/faroshq/faros/pkg/apiurl"
+	farosclient "github.com/faroshq/faros/pkg/client"
 )
 
 // AgentConfig holds the locally persisted agent configuration. It is written
@@ -70,27 +70,27 @@ type AgentConfig struct {
 }
 
 // AgentConfigPath returns the path for the per-edge agent config file.
-// Default location: ~/.kedge/agent-<edgeName>.json
+// Default location: ~/.faros/agent-<edgeName>.json
 func AgentConfigPath(edgeName string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("getting home directory: %w", err)
 	}
-	return filepath.Join(home, ".kedge", "agent-"+edgeName+".json"), nil
+	return filepath.Join(home, ".faros", "agent-"+edgeName+".json"), nil
 }
 
 // AgentKubeconfigPath returns the path for the per-edge agent kubeconfig file.
-// Default location: ~/.kedge/agent-<edgeName>.kubeconfig
+// Default location: ~/.faros/agent-<edgeName>.kubeconfig
 func AgentKubeconfigPath(edgeName string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("getting home directory: %w", err)
 	}
-	return filepath.Join(home, ".kedge", "agent-"+edgeName+".kubeconfig"), nil
+	return filepath.Join(home, ".faros", "agent-"+edgeName+".kubeconfig"), nil
 }
 
 // SaveAgentKubeconfig decodes the base64-encoded kubeconfig returned by the hub
-// (via X-Kedge-Agent-Kubeconfig header) and persists it to disk so the agent
+// (via X-Faros-Agent-Kubeconfig header) and persists it to disk so the agent
 // can reconnect without the bootstrap join token after the first successful auth.
 func SaveAgentKubeconfig(edgeName, kubeconfigB64 string) error {
 	kubeconfigBytes, err := base64.StdEncoding.DecodeString(kubeconfigB64)
@@ -148,7 +148,7 @@ func ValidateAgentKubeconfig(kubeconfigPath string, insecureSkipTLS bool) error 
 	}
 	// A lightweight discovery-style call: list edges with limit=1. Edge moved to
 	// the edges-connectivity provider group.
-	gvr := schema.GroupVersionResource{Group: "edges.kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
+	gvr := schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
 	_, err = dynClient.Resource(gvr).List(context.Background(), metav1.ListOptions{Limit: 1})
 	if err == nil {
 		return nil
@@ -288,7 +288,7 @@ type Options struct {
 	SSHPassword string
 	// SSHPrivateKeyPath is the path to an SSH private key file for key-based auth.
 	SSHPrivateKeyPath string
-	// Cluster is the kcp logical cluster path (e.g., "root:kedge:user-default").
+	// Cluster is the kcp logical cluster path (e.g., "root:faros:user-default").
 	// If not set, it's extracted from the SA token (for kubeconfig-based auth)
 	// or defaults to "default" (for static token auth).
 	Cluster string
@@ -312,7 +312,7 @@ func NewOptions() *Options {
 	}
 }
 
-// Agent is the kedge agent that connects an edge to the hub.
+// Agent is the faros agent that connects an edge to the hub.
 type Agent struct {
 	opts             *Options
 	agentType        AgentType
@@ -348,7 +348,7 @@ func (a *Agent) currentTunnelToken() string {
 }
 
 // extractTokenFromKubeconfigB64 decodes a base64-encoded kubeconfig (as
-// delivered by the hub in the X-Kedge-Agent-Kubeconfig header) and returns the
+// delivered by the hub in the X-Faros-Agent-Kubeconfig header) and returns the
 // bearer token of its current context's AuthInfo.
 func extractTokenFromKubeconfigB64(kubeconfigB64 string) (string, error) {
 	raw, err := base64.StdEncoding.DecodeString(kubeconfigB64)
@@ -390,10 +390,10 @@ func New(opts *Options) (*Agent, error) {
 	}
 
 	// Auto-discover or auto-generate an SSH private key for server-type edges
-	// when no credentials were provided. This makes `kedge agent join --type
+	// when no credentials were provided. This makes `faros agent join --type
 	// server` work out of the box: the agent generates a keypair, installs the
 	// public half into authorized_keys, and ships the private half to the hub
-	// via the X-Kedge-SSH-PrivateKey header (join-token mode) or the
+	// via the X-Faros-SSH-PrivateKey header (join-token mode) or the
 	// SSH-credentials Secret (kubeconfig mode).
 	if agentType == AgentTypeServer && opts.SSHPrivateKeyPath == "" && opts.SSHPassword == "" {
 		home, err := os.UserHomeDir()
@@ -495,7 +495,7 @@ func New(opts *Options) (*Agent, error) {
 // Run starts the agent and blocks until the context is cancelled.
 func (a *Agent) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
-	logger.Info("Starting kedge agent",
+	logger.Info("Starting faros agent",
 		"edgeName", a.opts.EdgeName,
 		"type", a.agentType,
 		"labels", a.opts.Labels,
@@ -509,7 +509,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating hub dynamic client: %w", err)
 	}
-	hubClient := kedgeclient.NewFromDynamic(hubDynamic)
+	hubClient := farosclient.NewFromDynamic(hubDynamic)
 
 	if a.agentType == AgentTypeServer {
 		return a.runServerMode(ctx, logger, hubClient)
@@ -550,7 +550,7 @@ func runDebugServer(ctx context.Context, logger klog.Logger, addr string) {
 }
 
 // runKubernetesMode is the Kubernetes-cluster edge mode.
-func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {
+func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubClient *farosclient.Client) error {
 	// Validate the downstream (target-cluster) config is usable. The client
 	// itself was only consumed by the removed workload reconciler; the tunnel
 	// serves the downstream API over the raw connection, not via this client.
@@ -694,7 +694,7 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 			}
 		}()
 	} else {
-		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, kedgeclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
+		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, farosclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
 		go func() {
 			if err := reporter.Run(ctx); err != nil {
 				logger.Error(err, "Edge status reporter failed")
@@ -710,11 +710,11 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 
 // refreshHubClientFromSavedKubeconfig loads the SA kubeconfig that the tunnel
 // token-exchange callback just saved to disk, builds a fresh rest.Config from
-// it, updates a.hubConfig in place, and returns a kedge client backed by the
+// it, updates a.hubConfig in place, and returns a faros client backed by the
 // new credentials. Used by out-of-cluster join-token startup to transition the
 // agent's in-memory clients from the bootstrap join token (no kcp access) to
 // the durable SA credential without exiting the process.
-func (a *Agent) refreshHubClientFromSavedKubeconfig() (*kedgeclient.Client, error) {
+func (a *Agent) refreshHubClientFromSavedKubeconfig() (*farosclient.Client, error) {
 	kubeconfigPath, err := AgentKubeconfigPath(a.opts.EdgeName)
 	if err != nil {
 		return nil, fmt.Errorf("resolving saved kubeconfig path: %w", err)
@@ -735,11 +735,11 @@ func (a *Agent) refreshHubClientFromSavedKubeconfig() (*kedgeclient.Client, erro
 		return nil, fmt.Errorf("creating dynamic client from saved kubeconfig: %w", err)
 	}
 	a.hubConfig = newCfg
-	return kedgeclient.NewFromDynamic(dynClient), nil
+	return farosclient.NewFromDynamic(dynClient), nil
 }
 
 // runServerMode is the bare-metal / systemd mode: no k8s, just SSH over revdial.
-func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {
+func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient *farosclient.Client) error {
 	// Skip edge registration when:
 	// - join-token mode: edge is pre-provisioned by admin, join token is not a kcp credential
 	// - saved kubeconfig mode: edge was already registered in a previous run
@@ -859,7 +859,7 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 			}
 		}()
 	} else {
-		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, kedgeclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
+		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, farosclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
 		go func() {
 			if err := reporter.Run(ctx); err != nil {
 				logger.Error(err, "Edge status reporter failed")
@@ -873,9 +873,9 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	return nil
 }
 
-// ensureGeneratedAgentKey returns the path to a kedge-managed ed25519 keypair,
-// generating it on first call. The key lives under <homeDir>/.kedge/agents/<edge>/
-// (or /etc/kedge/agents/<edge>/ when no usable home directory is available — typical
+// ensureGeneratedAgentKey returns the path to a faros-managed ed25519 keypair,
+// generating it on first call. The key lives under <homeDir>/.faros/agents/<edge>/
+// (or /etc/faros/agents/<edge>/ when no usable home directory is available — typical
 // for some systemd-hardened sandboxes). Both the private key and a sibling ".pub"
 // are written. Subsequent calls reuse the existing keypair.
 func ensureGeneratedAgentKey(edgeName string) (string, error) {
@@ -907,7 +907,7 @@ func ensureGeneratedAgentKey(edgeName string) (string, error) {
 		return "", fmt.Errorf("generating ed25519 key: %w", err)
 	}
 
-	pemBlock, err := gossh.MarshalPrivateKey(priv, "kedge-agent-"+edgeName)
+	pemBlock, err := gossh.MarshalPrivateKey(priv, "faros-agent-"+edgeName)
 	if err != nil {
 		return "", fmt.Errorf("marshaling private key: %w", err)
 	}
@@ -920,7 +920,7 @@ func ensureGeneratedAgentKey(edgeName string) (string, error) {
 		return "", fmt.Errorf("converting public key: %w", err)
 	}
 	pubLine := strings.TrimRight(string(gossh.MarshalAuthorizedKey(sshPub)), "\n") +
-		" kedge-agent-" + edgeName + "\n"
+		" faros-agent-" + edgeName + "\n"
 	if err := os.WriteFile(pubPath, []byte(pubLine), 0644); err != nil {
 		return "", fmt.Errorf("writing %s: %w", pubPath, err)
 	}
@@ -928,12 +928,12 @@ func ensureGeneratedAgentKey(edgeName string) (string, error) {
 }
 
 // agentKeyDir returns the directory where the agent stores its self-generated
-// SSH keypair. Prefers $HOME/.kedge/agents/<edge>; falls back to /etc/kedge/agents/<edge>.
+// SSH keypair. Prefers $HOME/.faros/agents/<edge>; falls back to /etc/faros/agents/<edge>.
 func agentKeyDir(edgeName string) (string, error) {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".kedge", "agents", edgeName), nil
+		return filepath.Join(home, ".faros", "agents", edgeName), nil
 	}
-	return filepath.Join("/etc", "kedge", "agents", edgeName), nil
+	return filepath.Join("/etc", "faros", "agents", edgeName), nil
 }
 
 // writePubFromPrivate derives the public key from a private key file on disk
@@ -1009,7 +1009,7 @@ func ensureAuthorizedKey(privateKeyPath string) error {
 
 const (
 	// sshCredentialsNamespace is the namespace where SSH credential secrets are stored.
-	sshCredentialsNamespace = "kedge-system"
+	sshCredentialsNamespace = "faros-system"
 )
 
 // buildSSHHeaders returns HTTP headers carrying SSH credentials for the hub
@@ -1024,14 +1024,14 @@ func (a *Agent) buildSSHHeaders() http.Header {
 			sshUser = "root"
 		}
 	}
-	h.Set("X-Kedge-SSH-User", sshUser)
+	h.Set("X-Faros-SSH-User", sshUser)
 	if a.opts.SSHPassword != "" {
-		h.Set("X-Kedge-SSH-Password", base64.StdEncoding.EncodeToString([]byte(a.opts.SSHPassword)))
+		h.Set("X-Faros-SSH-Password", base64.StdEncoding.EncodeToString([]byte(a.opts.SSHPassword)))
 	}
 	if a.opts.SSHPrivateKeyPath != "" {
 		keyData, err := os.ReadFile(a.opts.SSHPrivateKeyPath)
 		if err == nil {
-			h.Set("X-Kedge-SSH-PrivateKey", base64.StdEncoding.EncodeToString(keyData))
+			h.Set("X-Faros-SSH-PrivateKey", base64.StdEncoding.EncodeToString(keyData))
 			klog.Infof("Sending SSH private key to hub via headers (key path: %s)", a.opts.SSHPrivateKeyPath)
 		} else {
 			klog.Warningf("Failed to read SSH private key from %s: %v", a.opts.SSHPrivateKeyPath, err)
@@ -1043,14 +1043,14 @@ func (a *Agent) buildSSHHeaders() http.Header {
 	// result simply leaves the hub on its existing fallback path.
 	if a.opts.SSHProxyPort > 0 {
 		if hostKey := agentStatus.DialAndFetchSSHHostKey(a.opts.SSHProxyPort, klog.Background()); hostKey != "" {
-			h.Set("X-Kedge-SSH-HostKey", base64.StdEncoding.EncodeToString([]byte(hostKey)))
+			h.Set("X-Faros-SSH-HostKey", base64.StdEncoding.EncodeToString([]byte(hostKey)))
 		}
 	}
 	return h
 }
 
 // setupSSHCredentials creates a Secret with SSH credentials and updates the Edge status.
-func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hubClient *kedgeclient.Client) error {
+func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hubClient *farosclient.Client) error {
 	// Determine SSH username.
 	sshUser := a.opts.SSHUser
 	if sshUser == "" {
@@ -1115,7 +1115,7 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 			Name:      secretName,
 			Namespace: sshCredentialsNamespace,
 			Labels: map[string]string{
-				"kedge.faros.sh/edge": a.opts.EdgeName,
+				"faros.sh/edge": a.opts.EdgeName,
 			},
 		},
 		Type: corev1.SecretTypeOpaque,
@@ -1178,7 +1178,7 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 		return fmt.Errorf("marshaling edge status patch: %w", err)
 	}
 
-	_, err = hubClient.Dynamic().Resource(kedgeclient.LinuxServerGVR).Patch(ctx, a.opts.EdgeName,
+	_, err = hubClient.Dynamic().Resource(farosclient.LinuxServerGVR).Patch(ctx, a.opts.EdgeName,
 		types.MergePatchType, patchBytes,
 		metav1.PatchOptions{}, "status")
 	if err != nil {
@@ -1191,8 +1191,8 @@ func (a *Agent) setupSSHCredentials(ctx context.Context, logger klog.Logger, hub
 
 // registerEdge ensures an Edge resource exists on the hub with the correct type.
 // The Edge type lives in the edges-connectivity provider (group
-// edges.kedge.faros.sh); the agent addresses it dynamically (unstructured).
-func (a *Agent) registerEdge(ctx context.Context, client *kedgeclient.Client) error {
+// edges.faros.sh); the agent addresses it dynamically (unstructured).
+func (a *Agent) registerEdge(ctx context.Context, client *farosclient.Client) error {
 	logger := klog.FromContext(ctx)
 
 	edgeType := "kubernetes"
@@ -1200,7 +1200,7 @@ func (a *Agent) registerEdge(ctx context.Context, client *kedgeclient.Client) er
 		edgeType = "server"
 	}
 
-	res := client.Dynamic().Resource(kedgeclient.EdgeGVRForType(edgeType))
+	res := client.Dynamic().Resource(farosclient.EdgeGVRForType(edgeType))
 
 	existing, err := res.Get(ctx, a.opts.EdgeName, metav1.GetOptions{})
 	if err != nil {
@@ -1210,7 +1210,7 @@ func (a *Agent) registerEdge(ctx context.Context, client *kedgeclient.Client) er
 			labels[k] = v
 		}
 		edge := &unstructured.Unstructured{Object: map[string]interface{}{
-			"apiVersion": kedgeclient.KubernetesClusterGVR.GroupVersion().String(),
+			"apiVersion": farosclient.KubernetesClusterGVR.GroupVersion().String(),
 			"kind":       "Edge",
 			"metadata": map[string]interface{}{
 				"name":   a.opts.EdgeName,

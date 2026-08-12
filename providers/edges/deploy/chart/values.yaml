@@ -1,4 +1,4 @@
-## kedge-edges-provider values
+## faros-edges-provider values
 ## Single self-contained edge provider: terminates agent reverse tunnels
 ## (revdial) for both KubernetesCluster + LinuxServer kinds, owns the API, runs
 ## the token/RBAC/lifecycle controllers, and proxies kubectl/SSH/MCP down the
@@ -8,7 +8,7 @@
 # Container image. Build (context = REPO ROOT) with:
 #   docker build -f providers/edges/Dockerfile -t IMAGE .
 image:
-  repository: ghcr.io/faroshq/kedge-edges-provider
+  repository: ghcr.io/faroshq/faros-edges-provider
   tag: ""  # empty → defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
@@ -25,7 +25,7 @@ service:
 # Hub wiring.
 hub:
   # Heartbeat + agent-kubeconfig externalization base. In-cluster Service DNS.
-  url: https://kedge-hub.kedge.svc.cluster.local:9443
+  url: https://faros-hub.faros.svc.cluster.local:9443
   # External URL agents dial (baked into the agent kubeconfig the RBAC
   # reconciler mints). Defaults to hub.url when empty.
   externalURL: ""
@@ -58,7 +58,7 @@ devMode: false
 # the serve container (token validation + cross-tenant controllers). Key must be
 # "kubeconfig".
 providerKubeconfig:
-  secretName: kedge-provider-kubeconfig
+  secretName: faros-provider-kubeconfig
 
 # Render the CatalogEntry into a ConfigMap the init container applies into the
 # provider workspace (it is a kcp resource, not a host-cluster one).

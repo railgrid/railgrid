@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // Package infraprovider implements an end-to-end suite for the infrastructure
-// provider's kcp-side surface. It starts the kedge-hub with embedded kcp and
+// provider's kcp-side surface. It starts the faros-hub with embedded kcp and
 // the infrastructure provider (init + serve) as host subprocesses — the same
 // shape `suites/provider` uses for quickstart — then exercises what the
 // kind/kro template e2e (make e2e-infrastructure) cannot: provisioning
@@ -63,7 +63,7 @@ const (
 	hubPort       = "19453"
 	kcpPort       = "16453"
 	providerPort  = "18086"
-	workspacePath = "root:kedge:providers:infrastructure"
+	workspacePath = "root:faros:providers:infrastructure"
 )
 
 func TestMain(m *testing.M) {
@@ -75,7 +75,7 @@ func TestMain(m *testing.M) {
 
 	for _, p := range []string{hubPort, kcpPort, providerPort, "2380"} {
 		if portInUse(p) {
-			fmt.Fprintf(os.Stderr, "port :%s already in use; run `pkill kedge-hub; pkill infrastructure-provider` and retry\n", p)
+			fmt.Fprintf(os.Stderr, "port :%s already in use; run `pkill faros-hub; pkill infrastructure-provider` and retry\n", p)
 			os.Exit(2)
 		}
 	}
@@ -85,19 +85,19 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	dataDir, err := os.MkdirTemp("", "kedge-e2e-infraprovider-")
+	dataDir, err := os.MkdirTemp("", "faros-e2e-infraprovider-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "tempdir:", err)
 		os.Exit(1)
 	}
-	keepData := os.Getenv("KEDGE_E2E_KEEP_DATA") == "true"
+	keepData := os.Getenv("FAROS_E2E_KEEP_DATA") == "true"
 
 	hubLog, err := os.Create(filepath.Join(dataDir, "hub.log"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "create hub.log:", err)
 		os.Exit(1)
 	}
-	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "kedge-hub"),
+	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "faros-hub"),
 		"--embedded-kcp",
 		"--kcp-bind-address", "127.0.0.1",
 		"--kcp-secure-port", kcpPort,
@@ -142,7 +142,7 @@ func TestMain(m *testing.M) {
 
 	// Provisioning: apply the Provider + CatalogEntry (mirrors
 	// `make install-provider-infrastructure`). The hub's Provider controller
-	// then materializes root:kedge:providers:infrastructure.
+	// then materializes root:faros:providers:infrastructure.
 	if err := applyProviderManifests(); err != nil {
 		cleanup()
 		fmt.Fprintln(os.Stderr, "apply provider manifests:", err)
@@ -192,10 +192,10 @@ func TestMain(m *testing.M) {
 	provCmd = exec.Command(filepath.Join(repoRoot, "bin", "infrastructure-provider"))
 	provCmd.Env = append(os.Environ(),
 		"PORT="+providerPort,
-		"KEDGE_HUB_URL="+hubURL,
-		"KEDGE_HUB_TOKEN="+staticToken,
-		"KEDGE_HUB_INSECURE=true",
-		"KEDGE_PROVIDER_NAME=infrastructure",
+		"FAROS_HUB_URL="+hubURL,
+		"FAROS_HUB_TOKEN="+staticToken,
+		"FAROS_HUB_INSECURE=true",
+		"FAROS_PROVIDER_NAME=infrastructure",
 		"INFRASTRUCTURE_KUBECONFIG="+mintedKubeconfig,
 	)
 	provCmd.Stdout = provLog

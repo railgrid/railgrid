@@ -20,7 +20,7 @@ import (
 // the caller's own bearer token (forwarded as-is by that proxy). Every kcp
 // action runs as this token — there is no provider-wide identity.
 //
-// clusterID (X-Kedge-Cluster) is the workspace's kcp logical-cluster ID. kcp
+// clusterID (X-Faros-Cluster) is the workspace's kcp logical-cluster ID. kcp
 // MUST be addressed by ID (/clusters/<id>), never by the workspace path: the hub
 // proxy's membership gate rejects path-form /clusters/<root:...> with a 403.
 type identity struct {
@@ -37,12 +37,12 @@ type identity struct {
 // not needed).
 func identityFromRequest(r *http.Request) identity {
 	id := identity{
-		tenantPath: r.Header.Get("X-Kedge-Tenant"),
-		clusterID:  r.Header.Get("X-Kedge-Cluster"),
-		user:       r.Header.Get("X-Kedge-User"),
+		tenantPath: r.Header.Get("X-Faros-Tenant"),
+		clusterID:  r.Header.Get("X-Faros-Cluster"),
+		user:       r.Header.Get("X-Faros-User"),
 		token:      bearerToken(r),
 	}
-	if os.Getenv("KEDGE_DEV_ALLOW_TENANT_QUERY") == "true" {
+	if os.Getenv("FAROS_DEV_ALLOW_TENANT_QUERY") == "true" {
 		if id.tenantPath == "" {
 			id.tenantPath = r.URL.Query().Get("tenant")
 		}

@@ -7,5 +7,5 @@ export const API_PATHS = {
 } as const
 
 export const STORAGE_KEYS = {
-  auth: 'kedge-auth',
+  auth: 'faros-auth',
 } as const

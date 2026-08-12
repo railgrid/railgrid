@@ -29,26 +29,26 @@ import (
 	"time"
 )
 
-// KedgeClient wraps the kedge CLI binary for use in e2e tests.
-type KedgeClient struct {
+// FarosClient wraps the faros CLI binary for use in e2e tests.
+type FarosClient struct {
 	bin        string
 	workDir    string
 	kubeconfig string
 	hubURL     string
 }
 
-// NewKedgeClient creates a new KedgeClient.
-func NewKedgeClient(workDir, kubeconfig, hubURL string) *KedgeClient {
-	return &KedgeClient{
-		bin:        filepath.Join(workDir, KedgeBin),
+// NewFarosClient creates a new FarosClient.
+func NewFarosClient(workDir, kubeconfig, hubURL string) *FarosClient {
+	return &FarosClient{
+		bin:        filepath.Join(workDir, FarosBin),
 		workDir:    workDir,
 		kubeconfig: kubeconfig,
 		hubURL:     hubURL,
 	}
 }
 
-// run executes a kedge command and returns stdout+stderr.
-func (k *KedgeClient) run(ctx context.Context, args ...string) (string, error) {
+// run executes a faros command and returns stdout+stderr.
+func (k *FarosClient) run(ctx context.Context, args ...string) (string, error) {
 	var buf bytes.Buffer
 	cmd := exec.CommandContext(ctx, k.bin, args...)
 	cmd.Dir = k.workDir
@@ -56,7 +56,7 @@ func (k *KedgeClient) run(ctx context.Context, args ...string) (string, error) {
 	cmd.Stderr = &buf
 
 	// Ensure the bin/ directory is in PATH so exec credential plugins (e.g.
-	// `kedge get-token`) can be found when the OIDC kubeconfig is used.
+	// `faros get-token`) can be found when the OIDC kubeconfig is used.
 	binDir := filepath.Dir(k.bin)
 	env := os.Environ()
 	pathUpdated := false
@@ -77,19 +77,19 @@ func (k *KedgeClient) run(ctx context.Context, args ...string) (string, error) {
 	cmd.Env = env
 
 	if err := cmd.Run(); err != nil {
-		return buf.String(), fmt.Errorf("kedge %s failed: %w\noutput: %s", strings.Join(args, " "), err, buf.String())
+		return buf.String(), fmt.Errorf("faros %s failed: %w\noutput: %s", strings.Join(args, " "), err, buf.String())
 	}
 	return buf.String(), nil
 }
 
-// Run executes an arbitrary kedge command and returns stdout+stderr combined.
+// Run executes an arbitrary faros command and returns stdout+stderr combined.
 // This is the public variant of the internal run() helper.
-func (k *KedgeClient) Run(ctx context.Context, args ...string) (string, error) {
+func (k *FarosClient) Run(ctx context.Context, args ...string) (string, error) {
 	return k.run(ctx, args...)
 }
 
 // Login authenticates to the hub using a static token.
-func (k *KedgeClient) Login(ctx context.Context, token string) error {
+func (k *FarosClient) Login(ctx context.Context, token string) error {
 	_, err := k.run(ctx,
 		"login",
 		"--hub-url", k.hubURL,
@@ -124,7 +124,7 @@ func KubectlWithConfig(ctx context.Context, kubeconfig string, args ...string) (
 	return buf.String(), nil
 }
 
-func (k *KedgeClient) Kubectl(ctx context.Context, args ...string) (string, error) {
+func (k *FarosClient) Kubectl(ctx context.Context, args ...string) (string, error) {
 	var buf bytes.Buffer
 	allArgs := append([]string{"--kubeconfig", k.kubeconfig}, args...)
 	cmd := exec.CommandContext(ctx, "kubectl", allArgs...)
@@ -138,14 +138,14 @@ func (k *KedgeClient) Kubectl(ctx context.Context, args ...string) (string, erro
 }
 
 // ApplyFile applies a YAML file via kubectl against the hub kubeconfig.
-func (k *KedgeClient) ApplyFile(ctx context.Context, path string) error {
+func (k *FarosClient) ApplyFile(ctx context.Context, path string) error {
 	_, err := k.Kubectl(ctx, "apply", "-f", path)
 	return err
 }
 
 // ApplyManifest writes yaml to a temp file and applies it via kubectl.
-func (k *KedgeClient) ApplyManifest(ctx context.Context, yaml string) error {
-	f, err := os.CreateTemp("", "kedge-e2e-manifest-*.yaml")
+func (k *FarosClient) ApplyManifest(ctx context.Context, yaml string) error {
+	f, err := os.CreateTemp("", "faros-e2e-manifest-*.yaml")
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
 	}
@@ -162,13 +162,13 @@ func (k *KedgeClient) ApplyManifest(ctx context.Context, yaml string) error {
 
 // WaitForPlacement polls until a Placement targeting edgeName exists for the
 // given VirtualWorkload or the timeout expires.
-func (k *KedgeClient) WaitForPlacement(ctx context.Context, vwName, namespace, edgeName string, timeout time.Duration) error {
+func (k *FarosClient) WaitForPlacement(ctx context.Context, vwName, namespace, edgeName string, timeout time.Duration) error {
 	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
 		out, err := k.Kubectl(ctx,
 			"get", "placements",
 			"-n", namespace,
 			"--insecure-skip-tls-verify",
-			"-l", "kedge.faros.sh/virtualworkload="+vwName,
+			"-l", "faros.sh/virtualworkload="+vwName,
 			"-o", "custom-columns=EDGE:.spec.edgeName",
 			"--no-headers",
 		)
@@ -188,13 +188,13 @@ func (k *KedgeClient) WaitForPlacement(ctx context.Context, vwName, namespace, e
 // given VirtualWorkload — i.e. the scheduler has not routed to that edge.
 // Returns nil when the condition is confirmed within timeout; returns an error
 // if a matching placement still exists at deadline.
-func (k *KedgeClient) WaitForNoPlacement(ctx context.Context, vwName, namespace, edgeName string, timeout time.Duration) error {
+func (k *FarosClient) WaitForNoPlacement(ctx context.Context, vwName, namespace, edgeName string, timeout time.Duration) error {
 	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
 		out, err := k.Kubectl(ctx,
 			"get", "placements",
 			"-n", namespace,
 			"--insecure-skip-tls-verify",
-			"-l", "kedge.faros.sh/virtualworkload="+vwName,
+			"-l", "faros.sh/virtualworkload="+vwName,
 			"-o", "custom-columns=EDGE:.spec.edgeName",
 			"--no-headers",
 		)
@@ -212,7 +212,7 @@ func (k *KedgeClient) WaitForNoPlacement(ctx context.Context, vwName, namespace,
 }
 
 // DeleteVirtualWorkload deletes a VirtualWorkload by name and namespace.
-func (k *KedgeClient) DeleteVirtualWorkload(ctx context.Context, name, namespace string) error {
+func (k *FarosClient) DeleteVirtualWorkload(ctx context.Context, name, namespace string) error {
 	_, err := k.Kubectl(ctx,
 		"delete", "virtualworkload", name,
 		"-n", namespace,
@@ -227,7 +227,7 @@ func (k *KedgeClient) DeleteVirtualWorkload(ctx context.Context, name, namespace
 // EdgeCreate creates an Edge resource via kubectl with the given name, type,
 // and optional comma-separated labels.
 // type must be "kubernetes" or "server".
-func (k *KedgeClient) EdgeCreate(ctx context.Context, name, edgeType string, labels ...string) error {
+func (k *FarosClient) EdgeCreate(ctx context.Context, name, edgeType string, labels ...string) error {
 	labelStr := strings.Join(labels, ",")
 	labelsYAML := ""
 	if labelStr != "" {
@@ -240,7 +240,7 @@ func (k *KedgeClient) EdgeCreate(ctx context.Context, name, edgeType string, lab
 		}
 	}
 
-	manifest := fmt.Sprintf(`apiVersion: kedge.faros.sh/v1alpha1
+	manifest := fmt.Sprintf(`apiVersion: faros.sh/v1alpha1
 kind: Edge
 metadata:
   name: %s%s
@@ -252,7 +252,7 @@ spec:
 }
 
 // EdgeList returns raw kubectl output for listing all edges.
-func (k *KedgeClient) EdgeList(ctx context.Context) (string, error) {
+func (k *FarosClient) EdgeList(ctx context.Context) (string, error) {
 	return k.Kubectl(ctx,
 		"get", "edges",
 		"-o", "custom-columns=NAME:.metadata.name,PHASE:.status.phase,CONNECTED:.status.connected",
@@ -262,7 +262,7 @@ func (k *KedgeClient) EdgeList(ctx context.Context) (string, error) {
 }
 
 // EdgeDelete deletes an Edge resource by name.
-func (k *KedgeClient) EdgeDelete(ctx context.Context, name string) error {
+func (k *FarosClient) EdgeDelete(ctx context.Context, name string) error {
 	_, err := k.Kubectl(ctx,
 		"delete", "edge", name,
 		"--ignore-not-found",
@@ -272,7 +272,7 @@ func (k *KedgeClient) EdgeDelete(ctx context.Context, name string) error {
 }
 
 // WaitForEdgeReady polls until the given Edge resource has phase "Ready".
-func (k *KedgeClient) WaitForEdgeReady(ctx context.Context, edgeName string, timeout time.Duration) error {
+func (k *FarosClient) WaitForEdgeReady(ctx context.Context, edgeName string, timeout time.Duration) error {
 	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
 		out, err := k.Kubectl(ctx,
 			"get", "edge", edgeName,
@@ -287,7 +287,7 @@ func (k *KedgeClient) WaitForEdgeReady(ctx context.Context, edgeName string, tim
 }
 
 // WaitForEdgePhase polls until the given Edge resource has the expected phase.
-func (k *KedgeClient) WaitForEdgePhase(ctx context.Context, edgeName, phase string, timeout time.Duration) error {
+func (k *FarosClient) WaitForEdgePhase(ctx context.Context, edgeName, phase string, timeout time.Duration) error {
 	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
 		out, err := k.Kubectl(ctx,
 			"get", "edge", edgeName,
@@ -303,7 +303,7 @@ func (k *KedgeClient) WaitForEdgePhase(ctx context.Context, edgeName, phase stri
 
 // GetEdgeURL polls until edge.status.URL is populated and returns it.
 // It returns an error if the URL is not set within 2 minutes.
-func (k *KedgeClient) GetEdgeURL(ctx context.Context, name string) (string, error) {
+func (k *FarosClient) GetEdgeURL(ctx context.Context, name string) (string, error) {
 	var edgeURL string
 	err := Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
 		out, err := k.Kubectl(ctx,
@@ -330,7 +330,7 @@ func (k *KedgeClient) GetEdgeURL(ctx context.Context, name string) (string, erro
 // KubectlWithURL runs kubectl against a specific server URL using credentials
 // from the hub kubeconfig. The hub bearer token is passed transparently to the
 // edge proxy endpoint on the hub.
-func (k *KedgeClient) KubectlWithURL(ctx context.Context, serverURL string, args ...string) (string, error) {
+func (k *FarosClient) KubectlWithURL(ctx context.Context, serverURL string, args ...string) (string, error) {
 	var buf bytes.Buffer
 	allArgs := append([]string{
 		"--kubeconfig", k.kubeconfig,
@@ -350,7 +350,7 @@ func (k *KedgeClient) KubectlWithURL(ctx context.Context, serverURL string, args
 
 // GetEdgeJoinToken returns the current value of edge.status.joinToken.
 // Returns an empty string (no error) when the field is not yet populated.
-func (k *KedgeClient) GetEdgeJoinToken(ctx context.Context, edgeName string) (string, error) {
+func (k *FarosClient) GetEdgeJoinToken(ctx context.Context, edgeName string) (string, error) {
 	out, err := k.Kubectl(ctx,
 		"get", "edge", edgeName,
 		"-o", "jsonpath={.status.joinToken}",
@@ -364,7 +364,7 @@ func (k *KedgeClient) GetEdgeJoinToken(ctx context.Context, edgeName string) (st
 
 // WaitForEdgeJoinToken polls until edge.status.joinToken is set and returns it.
 // Returns an error if the token is not populated within timeout.
-func (k *KedgeClient) WaitForEdgeJoinToken(ctx context.Context, edgeName string, timeout time.Duration) (string, error) {
+func (k *FarosClient) WaitForEdgeJoinToken(ctx context.Context, edgeName string, timeout time.Duration) (string, error) {
 	var joinToken string
 	err := Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
 		t, err := k.GetEdgeJoinToken(ctx, edgeName)
@@ -385,14 +385,14 @@ func (k *KedgeClient) WaitForEdgeJoinToken(ctx context.Context, edgeName string,
 
 // ExtractEdgeKubeconfig waits for the edge kubeconfig secret to appear in the
 // hub cluster and writes the base64-decoded content to destPath.
-// Secret name format: edge-<edgeName>-kubeconfig in namespace kedge-system.
-func (k *KedgeClient) ExtractEdgeKubeconfig(ctx context.Context, edgeName, destPath string) error {
+// Secret name format: edge-<edgeName>-kubeconfig in namespace faros-system.
+func (k *FarosClient) ExtractEdgeKubeconfig(ctx context.Context, edgeName, destPath string) error {
 	secretName := "edge-" + edgeName + "-kubeconfig"
 
 	return Poll(ctx, 5*time.Second, 5*time.Minute, func(ctx context.Context) (bool, error) {
 		out, err := k.Kubectl(ctx,
 			"get", "secret", secretName,
-			"-n", "kedge-system",
+			"-n", "faros-system",
 			"-o", "json",
 		)
 		if err != nil || out == "" {
@@ -425,7 +425,7 @@ func (k *KedgeClient) ExtractEdgeKubeconfig(ctx context.Context, edgeName, destP
 // WaitForEdgeJoinTokenCleared polls until edge.status.joinToken is empty
 // (cleared after successful registration). Returns an error if the field is
 // still non-empty after timeout.
-func (k *KedgeClient) WaitForEdgeJoinTokenCleared(ctx context.Context, edgeName string, timeout time.Duration) error {
+func (k *FarosClient) WaitForEdgeJoinTokenCleared(ctx context.Context, edgeName string, timeout time.Duration) error {
 	return Poll(ctx, 3*time.Second, timeout, func(ctx context.Context) (bool, error) {
 		token, err := k.GetEdgeJoinToken(ctx, edgeName)
 		if err != nil {
@@ -437,7 +437,7 @@ func (k *KedgeClient) WaitForEdgeJoinTokenCleared(ctx context.Context, edgeName 
 
 // GetEdgeCondition returns the status (True/False/Unknown) of the named
 // condition on the edge, or "" if the condition is not present.
-func (k *KedgeClient) GetEdgeCondition(ctx context.Context, edgeName, conditionType string) (string, error) {
+func (k *FarosClient) GetEdgeCondition(ctx context.Context, edgeName, conditionType string) (string, error) {
 	// jsonpath doesn't support filtering by field value directly, so use
 	// a simple approach: get all conditions as JSON and scan in Go.
 	out, err := k.Kubectl(ctx,
@@ -466,7 +466,7 @@ func (k *KedgeClient) GetEdgeCondition(ctx context.Context, edgeName, conditionT
 
 // WaitForEdgeCondition polls until edge condition conditionType reaches the
 // expected status (e.g. "True"), or returns an error after timeout.
-func (k *KedgeClient) WaitForEdgeCondition(ctx context.Context, edgeName, conditionType, expectedStatus string, timeout time.Duration) error {
+func (k *FarosClient) WaitForEdgeCondition(ctx context.Context, edgeName, conditionType, expectedStatus string, timeout time.Duration) error {
 	return Poll(ctx, 3*time.Second, timeout, func(ctx context.Context) (bool, error) {
 		status, err := k.GetEdgeCondition(ctx, edgeName, conditionType)
 		if err != nil {
@@ -485,7 +485,7 @@ type EdgeSSHCredentials struct {
 
 // GetEdgeSSHCredentials returns the current status.sshCredentials for an edge.
 // Returns nil (no error) when the field is not yet set.
-func (k *KedgeClient) GetEdgeSSHCredentials(ctx context.Context, edgeName string) (*EdgeSSHCredentials, error) {
+func (k *FarosClient) GetEdgeSSHCredentials(ctx context.Context, edgeName string) (*EdgeSSHCredentials, error) {
 	usernameOut, err := k.Kubectl(ctx,
 		"get", "edge", edgeName,
 		"-o", "jsonpath={.status.sshCredentials.username}",
@@ -528,7 +528,7 @@ func (k *KedgeClient) GetEdgeSSHCredentials(ctx context.Context, edgeName string
 
 // WaitForEdgeSSHCredentials polls until edge.status.sshCredentials.username is
 // non-empty and returns the credentials. Returns an error after timeout.
-func (k *KedgeClient) WaitForEdgeSSHCredentials(ctx context.Context, edgeName string, timeout time.Duration) (*EdgeSSHCredentials, error) {
+func (k *FarosClient) WaitForEdgeSSHCredentials(ctx context.Context, edgeName string, timeout time.Duration) (*EdgeSSHCredentials, error) {
 	var result *EdgeSSHCredentials
 	err := Poll(ctx, 3*time.Second, timeout, func(ctx context.Context) (bool, error) {
 		creds, err := k.GetEdgeSSHCredentials(ctx, edgeName)
@@ -569,13 +569,13 @@ func WaitForDeploymentAvailable(ctx context.Context, kubeconfig, namespace, name
 	})
 }
 
-// EdgeJoinCommand runs `kedge edge join-command <name>` and returns the printed output.
-func (k *KedgeClient) EdgeJoinCommand(ctx context.Context, edgeName string) (string, error) {
+// EdgeJoinCommand runs `faros edge join-command <name>` and returns the printed output.
+func (k *FarosClient) EdgeJoinCommand(ctx context.Context, edgeName string) (string, error) {
 	return k.run(ctx, "edge", "join-command", edgeName, "--insecure-skip-tls-verify")
 }
 
-// EdgeKubeconfig runs `kedge kubeconfig edge <name> --output <path>`.
-func (k *KedgeClient) EdgeKubeconfig(ctx context.Context, edgeName, outputPath string) error {
+// EdgeKubeconfig runs `faros kubeconfig edge <name> --output <path>`.
+func (k *FarosClient) EdgeKubeconfig(ctx context.Context, edgeName, outputPath string) error {
 	_, err := k.run(ctx,
 		"kubeconfig", "edge", edgeName,
 		"--output", outputPath,
@@ -585,7 +585,7 @@ func (k *KedgeClient) EdgeKubeconfig(ctx context.Context, edgeName, outputPath s
 }
 
 // WaitForEdgeKubeconfig polls until EdgeKubeconfig successfully writes to outputPath.
-func (k *KedgeClient) WaitForEdgeKubeconfig(ctx context.Context, edgeName, outputPath string, timeout time.Duration) error {
+func (k *FarosClient) WaitForEdgeKubeconfig(ctx context.Context, edgeName, outputPath string, timeout time.Duration) error {
 	return Poll(ctx, 5*time.Second, timeout, func(ctx context.Context) (bool, error) {
 		if err := k.EdgeKubeconfig(ctx, edgeName, outputPath); err != nil {
 			return false, nil

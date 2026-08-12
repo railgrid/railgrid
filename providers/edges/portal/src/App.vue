@@ -8,9 +8,9 @@ import Workloads from './Workloads.vue'
 import Services from './Services.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import { confirmDialog } from './portalkit/confirm'
-import type { Edge, EdgeType, KedgeContext, ErrorResponse } from './types'
+import type { Edge, EdgeType, FarosContext, ErrorResponse } from './types'
 
-const props = defineProps<{ ctx: KedgeContext | null }>()
+const props = defineProps<{ ctx: FarosContext | null }>()
 
 // Top-level view is driven by the shell route: /providers/edges → the edges
 // fleet; /providers/edges/workloads → the workloads scheduled across them. The
@@ -28,7 +28,7 @@ const view = computed<'edges' | 'workloads' | 'services'>(() => {
 // /providers/edges/ (empty = the edges list).
 const rootRef = ref<HTMLElement | null>(null)
 function navigate(path: string) {
-  rootRef.value?.dispatchEvent(new CustomEvent('kedge-navigate', { detail: { path }, bubbles: true }))
+  rootRef.value?.dispatchEvent(new CustomEvent('faros-navigate', { detail: { path }, bubbles: true }))
 }
 
 // The wizard shows automatically on first load when the workspace has no edges,
@@ -166,7 +166,7 @@ function rel(ts?: string): string {
     <div v-else-if="edges.length === 0" class="empty">
       <Boxes :size="28" />
       <div class="empty-title">No edges connected yet</div>
-      <div class="muted">Click <b>Connect edge</b> to onboard one, or run <code>kedge edge create</code>.</div>
+      <div class="muted">Click <b>Connect edge</b> to onboard one, or run <code>faros edge create</code>.</div>
     </div>
 
     <div v-else class="edges-table-wrap">

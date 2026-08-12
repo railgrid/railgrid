@@ -29,7 +29,7 @@ var secretGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 // resolves to when its Namespace field is empty. Overridable so an admin can
 // push credential Secrets into a namespace tenants cannot write to.
 func DefaultCredentialsNamespace() string {
-	if v := os.Getenv("KEDGE_TENANT_CREDENTIALS_NAMESPACE"); v != "" {
+	if v := os.Getenv("FAROS_TENANT_CREDENTIALS_NAMESPACE"); v != "" {
 		return v
 	}
 	return "default"

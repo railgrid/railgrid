@@ -16,7 +16,7 @@ GET   {hub}/services/providers/kuery/api/edges          # engaged edge names
   `QueryStatus` with `objects[]`.
 - **Tenanting is automatic.** The hub authenticates your bearer token, resolves
   your workspace, and injects the tenant scope server-side. Any
-  `X-Kedge-Tenant` you send is stripped — you cannot query another tenant.
+  `X-Faros-Tenant` you send is stripped — you cannot query another tenant.
 
 ## Auth
 
@@ -29,7 +29,7 @@ Send `Authorization: Bearer <token>`:
 
 ```bash
 curl -sS "$HUB/services/providers/kuery/api/query" \
-  -H "Authorization: Bearer $KEDGE_TOKEN" \
+  -H "Authorization: Bearer $FAROS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"filter":{"objects":[{"groupKind":{"kind":"Deployment"}}]},"objects":{"cluster":true}}'
 ```

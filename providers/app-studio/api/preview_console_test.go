@@ -379,7 +379,7 @@ func TestPreviewConsoleSessionHTTPFlowUsesCurrentPreviewAndCallerScope(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	projectYAML := `apiVersion: ai.kedge.faros.sh/v1alpha1
+	projectYAML := `apiVersion: ai.faros.sh/v1alpha1
 kind: Project
 metadata:
   name: demo
@@ -400,16 +400,16 @@ spec:
 		switch {
 		case strings.Contains(request.Query, "ProjectYaml"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
-				"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": projectYAML}},
+				"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": projectYAML}},
 			}})
 		case strings.Contains(request.Query, "TemplateYaml"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
-				"infrastructure_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"TemplateYaml": string(templateJSON)}},
+				"infrastructure_faros_sh": map[string]any{"v1alpha1": map[string]any{"TemplateYaml": string(templateJSON)}},
 			}})
 		case strings.Contains(request.Query, "ApplicationYaml"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
-				"infrastructure_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{
-					"ApplicationYaml": `{"apiVersion":"infrastructure.kedge.faros.sh/v1alpha1","kind":"Application","metadata":{"name":"demo-dev"},"status":{"url":"https://demo.preview.example/app?token=server-only"}}`,
+				"infrastructure_faros_sh": map[string]any{"v1alpha1": map[string]any{
+					"ApplicationYaml": `{"apiVersion":"infrastructure.faros.sh/v1alpha1","kind":"Application","metadata":{"name":"demo-dev"},"status":{"url":"https://demo.preview.example/app?token=server-only"}}`,
 				}},
 			}})
 		default:
@@ -495,7 +495,7 @@ spec:
 func setPreviewConsoleTestHeaders(request *http.Request, actor, clusterID string) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Kedge-User", actor)
-	request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-1:workspace-1")
-	request.Header.Set("X-Kedge-Cluster", clusterID)
+	request.Header.Set("X-Faros-User", actor)
+	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-1:workspace-1")
+	request.Header.Set("X-Faros-Cluster", clusterID)
 }

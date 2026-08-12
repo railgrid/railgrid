@@ -37,11 +37,11 @@ Don't re-litigate; the doc body assumes these.
 | # | Decision | Rationale |
 |---|---|---|
 | P-1 | **CatalogEntry identity = UUID.** `metadata.name` is a server-assigned UUID; `spec.displayName` and `spec.slug` (URL-safe display string) are separate. Two Orgs can each register a "vault" provider with no collision. | Mirrors O-1. Removes the "name collision in URL path" problem entirely; the proxy's `splitProviderPath` resolves by `{entry-uuid}` not slug. |
-| P-2 | **Enforcement of "no provider APIBindings in Org workspaces" = api-proxy mediation.** Tenants never receive a kubeconfig that reaches an Org workspace; all Org-workspace operations (CatalogEntry CRUD, Membership CRUD, child Workspace create) go through hub REST endpoints. The kedge kcp proxy ([pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)) refuses to issue exec-credentials for paths under `root:kedge:orgs:{uuid}` (without a child `:{ws-uuid}` segment). Tenants *physically cannot* `kubectl apply` an APIBinding there. | Strongest possible enforcement (network-level, not RBAC) and zero kcp changes. See [organizations.md](./organizations.md) §"Org workspaces are hub-mediated only." |
-| P-3 | **`bind` verb scope = per-Org `ClusterRole`, controller-maintained.** A controller watches CatalogEntries + Memberships and keeps `kedge:org:{uuid}:bind` up-to-date with `resourceNames` = all that Org's APIExports + the Global ones, subjects = every Org Membership. | Standing privilege but matches the Org-membership model; auditable via `kubectl get clusterrole kedge:org:*:bind`. |
+| P-2 | **Enforcement of "no provider APIBindings in Org workspaces" = api-proxy mediation.** Tenants never receive a kubeconfig that reaches an Org workspace; all Org-workspace operations (CatalogEntry CRUD, Membership CRUD, child Workspace create) go through hub REST endpoints. The faros kcp proxy ([pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)) refuses to issue exec-credentials for paths under `root:faros:orgs:{uuid}` (without a child `:{ws-uuid}` segment). Tenants *physically cannot* `kubectl apply` an APIBinding there. | Strongest possible enforcement (network-level, not RBAC) and zero kcp changes. See [organizations.md](./organizations.md) §"Org workspaces are hub-mediated only." |
+| P-3 | **`bind` verb scope = per-Org `ClusterRole`, controller-maintained.** A controller watches CatalogEntries + Memberships and keeps `faros:org:{uuid}:bind` up-to-date with `resourceNames` = all that Org's APIExports + the Global ones, subjects = every Org Membership. | Standing privilege but matches the Org-membership model; auditable via `kubectl get clusterrole faros:org:*:bind`. |
 | P-4 | **Builtin providers require explicit Enable too** (not auto-bound in new Workspaces). Membership APIs are the only thing the `workspace` WorkspaceType auto-binds. | Consistent rule: every provider, builtin or third-party, Enable is a deliberate Workspace action. Avoids the "this just showed up, what is it?" surprise on new Workspaces. |
 | P-5 | **Permission claim acceptance = per-Workspace Enable** for all scopes (Global, Org, Personal). Same flow as today (`providers.md` #9 auto-accepts `tenantScoped` claims at Enable time). Org admin's CatalogEntry create does *not* pre-accept on behalf of members. | One consistent flow; the trust decision stays with the workspace that gains the binding. |
-| P-6 | **No `requireWorkspaceContext` migration flag.** Workspace headers (`X-Kedge-Org`, `X-Kedge-Workspace`) are **required** from day one. Follows from clean-slate migration (O-2). | No legacy users to keep working; the fallback flag was solving a problem we don't have. |
+| P-6 | **No `requireWorkspaceContext` migration flag.** Workspace headers (`X-Faros-Org`, `X-Faros-Workspace`) are **required** from day one. Follows from clean-slate migration (O-2). | No legacy users to keep working; the fallback flag was solving a problem we don't have. |
 | P-7 | **Disable = kcp handles the cascade; hub gates on confirm.** `DELETE .../providers/{uuid}/enable` returns 409 + a preview body (counts of CRs that will be affected, per kind) unless `?confirm=true` is passed. Hub doesn't try to delete CRs itself — kcp's APIBinding deletion semantics own that. | Fat-finger protection without re-implementing what kcp already does. |
 | P-8 | **Breaking CatalogEntry fields are immutable via CEL.** `spec.apiExport.schemas`, `spec.apiExport.permissionClaims`, `spec.apiExport.path`, `spec.apiExport.name`, and `spec.backend.url` carry a `+kubebuilder:validation:XValidation` rule of `self == oldSelf`. Display fields (`displayName`, `iconURL`, `category`, `version`) stay mutable. Changing a locked field requires deleting the CatalogEntry and creating a new one. | Kcp/CRD-layer enforcement; hub doesn't need to inspect updates. Producers expressing "this is the same provider" by reusing the slug get to control breaking-change UX explicitly. |
 | P-9 | **Org soft-delete grace behavior (during the 30-day O-13 window):** the deleting Org's CatalogEntries are hidden from `/api/providers` everywhere; the per-Org `bind` ClusterRole (P-3) is removed so no *new* `APIBinding` can be created; existing `APIBindings` keep working until cascade-day. Undelete restores listings + RBAC. | Honors deletion intent without breaking running workloads mid-flight. |
@@ -55,9 +55,9 @@ Don't re-litigate; the doc body assumes these.
 
 | Scope | CatalogEntry lives in | Visible to (which workspaces) | Who can register |
 |---|---|---|---|
-| **Global** | `root:kedge:providers` | every Workspace on the platform | platform admin (Helm install) |
-| **Org** | `root:kedge:orgs:{org-uuid}` | every Workspace under that Org | Org admin |
-| **Personal** | `root:kedge:orgs:{personal-org-uuid}` (the Org marked `spec.personal: true` on the User) | every Workspace under the personal Org | the user (sole admin of their personal Org) |
+| **Global** | `root:faros:providers` | every Workspace on the platform | platform admin (Helm install) |
+| **Org** | `root:faros:orgs:{org-uuid}` | every Workspace under that Org | Org admin |
+| **Personal** | `root:faros:orgs:{personal-org-uuid}` (the Org marked `spec.personal: true` on the User) | every Workspace under the personal Org | the user (sole admin of their personal Org) |
 
 Personal collapses to "Org-scoped in the personal Org" — same code
 path, same admission rules. It's only a distinct *user-facing concept*
@@ -99,8 +99,8 @@ type CatalogEntrySpec struct {
     Slug string `json:"slug"`
 
     // Scope is informational. The catalog controller derives it from
-    // the workspace this CatalogEntry lives in (root:kedge:providers
-    // → Global, root:kedge:orgs:{uuid} → Org or Personal depending on
+    // the workspace this CatalogEntry lives in (root:faros:providers
+    // → Global, root:faros:orgs:{uuid} → Org or Personal depending on
     // Organization.spec.personal). Overwritten on reconcile.
     //
     // +kubebuilder:validation:Enum=Global;Org;Personal
@@ -140,10 +140,10 @@ Per [organizations.md](./organizations.md): all tenant work lives in
 **child Workspaces**, not in the Org workspace. That carries straight
 through here:
 
-- A `CatalogEntry` in `root:kedge:orgs:{org-uuid}` says "this provider
+- A `CatalogEntry` in `root:faros:orgs:{org-uuid}` says "this provider
   is *available* to Workspaces under that Org."
 - The `APIBinding` that actually Enables the provider lives in a
-  specific Workspace — `root:kedge:orgs:{org-uuid}:{ws-uuid}`.
+  specific Workspace — `root:faros:orgs:{org-uuid}:{ws-uuid}`.
 - Sibling Workspaces in the same Org are *eligible* to Enable the
   same provider but are not bound until each one explicitly creates
   its own `APIBinding`.
@@ -162,10 +162,10 @@ without.
 
 | You want… | You do… | Who has to approve |
 |---|---|---|
-| The whole platform | Submit a Helm chart that installs a `CatalogEntry` into `root:kedge:providers` on the host cluster | Platform admin |
-| Your Org only | As Org admin, `POST /api/orgs/{org}/catalog` (creates a `CatalogEntry` in `root:kedge:orgs:{org}`) pointing at your backend / chart you've installed | You (Org admin) |
+| The whole platform | Submit a Helm chart that installs a `CatalogEntry` into `root:faros:providers` on the host cluster | Platform admin |
+| Your Org only | As Org admin, `POST /api/orgs/{org}/catalog` (creates a `CatalogEntry` in `root:faros:orgs:{org}`) pointing at your backend / chart you've installed | You (Org admin) |
 | Just yourself | Same as above, in your **personal Org** (the auto-bootstrapped Org with `spec.personal: true`) | You |
-| Promote your Org provider to platform-wide | (v2) `POST /api/orgs/{org}/catalog/{name}/submit` opens a request to the platform admin to clone the entry into `root:kedge:providers` | Platform admin reviews + accepts |
+| Promote your Org provider to platform-wide | (v2) `POST /api/orgs/{org}/catalog/{name}/submit` opens a request to the platform admin to clone the entry into `root:faros:providers` | Platform admin reviews + accepts |
 
 Org-scoped and Personal-scoped providers don't get the same hub-side
 guarantees as Global ones — no host-cluster Helm chart, no managed
@@ -182,8 +182,8 @@ Today: `GET /api/providers` returns the whole registry. After:
 
 ```
 GET /api/providers
-  X-Kedge-Org:        7f3a91d2-...     (required, Org UUID)
-  X-Kedge-Workspace:  9c4b8e1f-...     (required, Workspace UUID)
+  X-Faros-Org:        7f3a91d2-...     (required, Org UUID)
+  X-Faros-Workspace:  9c4b8e1f-...     (required, Workspace UUID)
 ```
 
 Resolution, in order:
@@ -192,10 +192,10 @@ Resolution, in order:
    `{org-uuid}/{ws-uuid}` (per [organizations.md](./organizations.md)
    §Tenant middleware). Else 403.
 2. Catalog list fetches CatalogEntries from:
-   - `root:kedge:providers` (Global)
-   - `root:kedge:orgs:{org-uuid}` (Org)
+   - `root:faros:providers` (Global)
+   - `root:faros:orgs:{org-uuid}` (Org)
 3. Per entry, the list computes `enabled` by checking for an
-   `APIBinding` in `root:kedge:orgs:{org-uuid}:{ws-uuid}` whose
+   `APIBinding` in `root:faros:orgs:{org-uuid}:{ws-uuid}` whose
    `reference.export.path` matches the provider's APIExport. One List
    call total, not one per provider.
 4. Response shape gains:
@@ -236,8 +236,8 @@ no permission-claim dialog, one-click — but never an auto-bind.
 workspace from the tenant middleware. The slug (P-1) is resolved to a
 CatalogEntry UUID by looking it up in:
 
-1. The Global catalog (`root:kedge:providers`), then
-2. The active Org's catalog (`root:kedge:orgs:{org-uuid}`).
+1. The Global catalog (`root:faros:providers`), then
+2. The active Org's catalog (`root:faros:orgs:{org-uuid}`).
 
 First match wins. This means a Global slug shadows a same-named Org
 slug — document this; portal validation rejects Org slug creates that
@@ -313,7 +313,7 @@ DELETE /api/orgs/{org-uuid}/catalog/{entry-uuid}                       delete it
 POST   /api/orgs/{org-uuid}/workspaces/{ws-uuid}/providers/{entry-uuid}/enable   create APIBinding in the workspace
 DELETE /api/orgs/{org-uuid}/workspaces/{ws-uuid}/providers/{entry-uuid}/enable   delete the APIBinding
 
-GET    /api/providers                                                  (existing) — now requires X-Kedge-Org + X-Kedge-Workspace
+GET    /api/providers                                                  (existing) — now requires X-Faros-Org + X-Faros-Workspace
 ```
 
 All identifiers in paths are UUIDs; display names are returned in
@@ -340,7 +340,7 @@ and to centralize permission-claim acceptance.
 ## Migration story
 
 Per O-2 (clean slate), there is no production data to migrate. Existing
-dev/test CatalogEntries in `root:kedge:providers` are already Global
+dev/test CatalogEntries in `root:faros:providers` are already Global
 and stay where they are. There are no production Users whose old
 single-workspace UX needs preserving, so per P-6 the workspace context
 headers are **required** on `/api/providers` and the proxies from day
@@ -351,10 +351,10 @@ Concretely, on first deploy after this lands:
 1. The bootstrap controller creates a personal Org + default Workspace
    for every existing User CR.
 2. The portal pins the User's personal Org UUID as the default
-   `X-Kedge-Org` (from `User.status.personalOrg`, per
+   `X-Faros-Org` (from `User.status.personalOrg`, per
    [organizations.md](./organizations.md)) and the default Workspace
-   UUID as `X-Kedge-Workspace`.
-3. The previous `root:kedge:users:{userId}` workspaces are deleted by
+   UUID as `X-Faros-Workspace`.
+3. The previous `root:faros:users:{userId}` workspaces are deleted by
    a one-shot cleanup job (they were dev data per O-2).
 
 ---
@@ -371,13 +371,13 @@ kcp-proxy Org gate from O-10 don't exist). Then in this doc's order:
    from the workspace path. Bi-directional slug-uniqueness admission
    from P-11 lands here too.
 2. **Multi-source registry.** Catalog controller watches both sources
-   (`root:kedge:providers`, `root:kedge:orgs:*`) and feeds the
+   (`root:faros:providers`, `root:faros:orgs:*`) and feeds the
    in-memory `Registry`. Keys become `(scope, ownerOrg, uuid)`; slug
    resolution lookups happen at request time, not at registry-write
    time. The registry filters out CatalogEntries whose owning Org has
    `status.deletionRequestedAt` set (P-9).
 3. **Per-Org `bind` ClusterRole controller (P-3).** Watches
-   CatalogEntries + Memberships, maintains `kedge:org:{uuid}:bind`.
+   CatalogEntries + Memberships, maintains `faros:org:{uuid}:bind`.
    Also reconciles P-9: when an Org enters soft-delete, the controller
    removes its bind ClusterRole; undelete restores it.
 4. **Backend URL probe controller (P-12).** Periodically GETs
@@ -418,7 +418,7 @@ Open after this round of decisions:
 - **Catalog controller startup cost.** Listing CatalogEntries across
   every Org workspace is O(orgs). Fine for hundreds, awkward at tens
   of thousands. Pre-aggregated index workspace
-  (`root:kedge:catalog-index` mirroring all entries) is the obvious
+  (`root:faros:catalog-index` mirroring all entries) is the obvious
   scale fix; defer until we measure pain.
 - **Empty-state UX details.** Per Q11 the portal renders a "Suggested
   for you" rail (mcp / edges / server-edges) for fresh Workspaces with

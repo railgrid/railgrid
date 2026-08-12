@@ -50,11 +50,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
-	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
-	"github.com/faroshq/faros-kedge/pkg/hub/providers"
-	"github.com/faroshq/faros-kedge/pkg/hub/tenant"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	farosclient "github.com/faroshq/faros/pkg/client"
+	"github.com/faroshq/faros/pkg/hub/kcp"
+	"github.com/faroshq/faros/pkg/hub/providers"
+	"github.com/faroshq/faros/pkg/hub/tenant"
 )
 
 // WorkspaceOps is the slice of *kcp.Bootstrapper the REST handlers
@@ -76,7 +76,7 @@ type WorkspaceOps interface {
 
 	// Child Workspace lifecycle + projections
 	EnsureChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error
-	EnsureChildWorkspaceKedgeBinding(ctx context.Context, orgUUID, wsUUID string) error
+	EnsureChildWorkspaceFarosBinding(ctx context.Context, orgUUID, wsUUID string) error
 	EnsureChildWorkspaceDefaultMCPServer(ctx context.Context, orgUUID, wsUUID string) error
 	// EnsureChildWorkspaceAdmin grants cluster-admin in the child team
 	// Workspace to the given rbacIdentity. Idempotent. Used at workspace
@@ -115,7 +115,7 @@ type WorkspaceOps interface {
 	EnsureProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName, exportPath, exportName string, claims []kcp.ProviderClaim) error
 
 	// ListProviderAPIBindings returns the set of provider APIBindings
-	// (those referencing root:kedge:providers:*) in the target
+	// (those referencing root:faros:providers:*) in the target
 	// workspace, keyed by provider name. Used by the
 	// GET .../providers/enabled handler so the portal can refresh the
 	// "enabled providers" sidebar set on every workspace switch
@@ -144,7 +144,7 @@ type WorkspaceOps interface {
 
 // KubeconfigConfig configures the workspace-scoped kubeconfig download
 // endpoint. When OIDCIssuerURL is set, the generator emits an exec
-// credential plugin entry that runs `kedge get-token` against the issuer
+// credential plugin entry that runs `faros get-token` against the issuer
 // — the same shape the OIDC login flow produces. When unset, the handler
 // embeds the caller's bearer token directly (static-token mode).
 //
@@ -167,20 +167,20 @@ type ProviderLookup interface {
 	Get(name string) (providers.Provider, bool)
 }
 
-// Manager holds the dependencies every handler needs: the kedge
-// typed client (for Org / User / UMI CR access in root:kedge:users)
+// Manager holds the dependencies every handler needs: the faros
+// typed client (for Org / User / UMI CR access in root:faros:users)
 // and the WorkspaceOps (kcp Bootstrapper in production; fake in tests).
 type Manager struct {
-	client       *kedgeclient.Client
+	client       *farosclient.Client
 	bootstrapper WorkspaceOps
 	kubeconfig   KubeconfigConfig
 	providers    ProviderLookup // optional; nil = enableProvider returns 501
 }
 
-// NewManager builds a Manager from the userClient (typed kedge client
-// against root:kedge:users) and the WorkspaceOps. Production callers
+// NewManager builds a Manager from the userClient (typed faros client
+// against root:faros:users) and the WorkspaceOps. Production callers
 // pass a kcp.Bootstrapper; tests pass a fake.
-func NewManager(client *kedgeclient.Client, bootstrapper WorkspaceOps) *Manager {
+func NewManager(client *farosclient.Client, bootstrapper WorkspaceOps) *Manager {
 	return &Manager{client: client, bootstrapper: bootstrapper}
 }
 
@@ -314,7 +314,7 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 
 	// Published-app access grants (labeled ClusterRoleBindings — plain
 	// workspace RBAC). Tenant settings lists them so App Studio's share
-	// invitations are visible and revocable in the kedge UI. See
+	// invitations are visible and revocable in the faros UI. See
 	// app_access.go and docs/app-studio-publishing.md.
 	r.HandleFunc("/{org}/workspaces/{ws}/app-access", h.listAppAccessGrants).Methods(http.MethodGet)
 	r.HandleFunc("/{org}/workspaces/{ws}/app-access/{binding}", h.revokeAppAccessGrant).Methods(http.MethodDelete)
@@ -335,7 +335,7 @@ func (h *Handler) requireUser(w http.ResponseWriter, r *http.Request) (string, b
 
 // requireOrgAdmin returns (TenantContext, true) if the caller is
 // authenticated and has Org admin role. Workspace-scoped requests
-// pass requireWorkspace=true so a missing X-Kedge-Workspace yields
+// pass requireWorkspace=true so a missing X-Faros-Workspace yields
 // 400. requireAdmin gates on Role.
 func (h *Handler) requireTenantContext(w http.ResponseWriter, r *http.Request, requireWorkspace, requireAdmin bool) (tenant.TenantContext, bool) {
 	tc, ok := tenant.FromContext(r.Context())
@@ -346,17 +346,17 @@ func (h *Handler) requireTenantContext(w http.ResponseWriter, r *http.Request, r
 	vars := mux.Vars(r)
 	if pathOrg := vars["org"]; pathOrg != "" && pathOrg != tc.OrgUUID {
 		writeStatus(w, http.StatusBadRequest, "BadRequest",
-			fmt.Sprintf("path org %s must match header X-Kedge-Org %s", pathOrg, tc.OrgUUID))
+			fmt.Sprintf("path org %s must match header X-Faros-Org %s", pathOrg, tc.OrgUUID))
 		return tenant.TenantContext{}, false
 	}
 	if requireWorkspace {
 		if tc.WorkspaceUUID == "" {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "X-Kedge-Workspace header is required for this endpoint")
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "X-Faros-Workspace header is required for this endpoint")
 			return tenant.TenantContext{}, false
 		}
 		if pathWS := vars["ws"]; pathWS != "" && pathWS != tc.WorkspaceUUID {
 			writeStatus(w, http.StatusBadRequest, "BadRequest",
-				fmt.Sprintf("path ws %s must match header X-Kedge-Workspace %s", pathWS, tc.WorkspaceUUID))
+				fmt.Sprintf("path ws %s must match header X-Faros-Workspace %s", pathWS, tc.WorkspaceUUID))
 			return tenant.TenantContext{}, false
 		}
 	}
@@ -560,7 +560,7 @@ func (m *Manager) resolveUser(ctx context.Context, identifier string) (*tenancyv
 		}
 	}
 	return nil, apierrors.NewNotFound(
-		schema.GroupResource{Group: "tenants.kedge.faros.sh", Resource: "users"}, identifier)
+		schema.GroupResource{Group: "tenants.faros.sh", Resource: "users"}, identifier)
 }
 
 // rbacIdentitiesByUserName maps User CR names to their kcp usernames
@@ -608,18 +608,18 @@ func (m *Manager) resolveOrInviteUser(ctx context.Context, identifier string, in
 			GenerateName: "user-",
 			Labels: map[string]string{
 				// Marks the account as awaiting first sign-in. Deliberately
-				// NOT the tenants.kedge.faros.sh/sub label: only the IdP
+				// NOT the tenants.faros.sh/sub label: only the IdP
 				// callback may bind an issuer/subject to this account.
-				"tenants.kedge.faros.sh/invited": "true",
+				"tenants.faros.sh/invited": "true",
 			},
 		},
 		Spec: tenancyv1alpha1.UserSpec{
 			Email:        email,
 			Name:         displayName,
-			RBACIdentity: fmt.Sprintf("kedge:%s", email),
+			RBACIdentity: fmt.Sprintf("faros:%s", email),
 		},
 	}
-	pending.APIVersion = "tenants.kedge.faros.sh/v1alpha1"
+	pending.APIVersion = "tenants.faros.sh/v1alpha1"
 	pending.Kind = "User"
 	created, createErr := m.client.Users().Create(ctx, pending, metav1.CreateOptions{})
 	if createErr != nil {
@@ -682,7 +682,7 @@ type WorkspaceView struct {
 type MembershipView struct {
 	User string `json:"user"`
 	// RBACIdentity is the member's kcp username (User.Spec.RBACIdentity,
-	// "kedge:<email>") — the subject string every tenant-workspace RBAC
+	// "faros:<email>") — the subject string every tenant-workspace RBAC
 	// binding uses. Consumers writing RBAC (e.g. App Studio's app-access
 	// grants) must bind this, never the User CR name.
 	RBACIdentity         string `json:"rbacIdentity,omitempty"`

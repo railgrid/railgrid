@@ -13,7 +13,7 @@
 # is published this replace is dropped in favour of a real version.
 #
 # Prerequisites:
-#   1. provider-sdk/vX.Y.Z tagged in the monorepo (kedge-release provider-sdk)
+#   1. provider-sdk/vX.Y.Z tagged in the monorepo (faros-release provider-sdk)
 #      and split to faroshq/provider-sdk (the split-provider-sdk workflow).
 #   2. That version is resolvable from the module proxy:
 #        GOWORK=off GOFLAGS=-mod=mod go list -m github.com/faroshq/provider-sdk@vX.Y.Z
@@ -71,7 +71,7 @@ COPY portal/ ./
 RUN npm run build
 
 # 2. Build the Go binary. The binary serves `init` + `serve`, so the whole
-#    module source has to be present. The kedge-provider-sdk is now a published
+#    module source has to be present. The faros-provider-sdk is now a published
 #    dependency (no replace), so `go mod download` fetches it from the proxy.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
@@ -102,7 +102,7 @@ COPY portal/ ./
 RUN npm run build
 
 # 2. Build the Go binary. assets.go //go:embeds portal/dist; init_cmd.go uses
-#    the published kedge-provider-sdk (no replace), fetched from the proxy.
+#    the published faros-provider-sdk (no replace), fetched from the proxy.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -112,10 +112,10 @@ COPY --from=portal /portal/dist ./portal/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/quickstart-provider .
 
 # 3. Minimal runtime image. APIResourceSchemas the `init` subcommand applies are
-#    baked at /etc/kedge/schemas (KEDGE_SCHEMAS_DIR).
+#    baked at /etc/faros/schemas (FAROS_SCHEMAS_DIR).
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/quickstart-provider /quickstart-provider
-COPY deploy/chart/files/schemas /etc/kedge/schemas
+COPY deploy/chart/files/schemas /etc/faros/schemas
 EXPOSE 8081
 ENV PORT=8081
 USER nonroot:nonroot

@@ -168,7 +168,7 @@ function dependencyNotice(p: ProviderDTO): string {
           Providers
         </h1>
         <p class="mt-1 text-sm text-text-muted">
-          Extensions registered with this kedge instance. Click <strong>Enable</strong>
+          Extensions registered with this faros instance. Click <strong>Enable</strong>
           to create an APIBinding in your workspace and unlock the provider's CRs;
           <strong>Open</strong> launches its UI in the portal.
         </p>

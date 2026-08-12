@@ -81,11 +81,11 @@ type EmbeddedKCPOptions struct {
 	// configured issuer and run requests as the resulting OIDC identity.
 	//
 	// Defaults are tuned to match the proxy/User CRD identity scheme
-	// (User.Spec.RBACIdentity = "kedge:<email>", see pkg/server/auth/handler.go):
+	// (User.Spec.RBACIdentity = "faros:<email>", see pkg/server/auth/handler.go):
 	//   UsernameClaim  = "email"
-	//   UsernamePrefix = "kedge:"
+	//   UsernamePrefix = "faros:"
 	//   GroupsClaim    = "groups"
-	//   GroupsPrefix   = "kedge:"
+	//   GroupsPrefix   = "faros:"
 	OIDCIssuerURL      string
 	OIDCClientID       string
 	OIDCCAFile         string
@@ -186,7 +186,7 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 			// the kcp-side identity is consistent.
 			h := sha256.Sum256([]byte("static-token/" + token))
 			subHash := hex.EncodeToString(h[:])[:63]
-			user := fmt.Sprintf("kedge:static:%s", subHash[:16])
+			user := fmt.Sprintf("faros:static:%s", subHash[:16])
 			uid := subHash[:16]
 			// Format: token,user,uid,"group1,group2"
 			lines = append(lines, fmt.Sprintf("%s,%s,%s,\"system:authenticated\"", token, user, uid))
@@ -215,7 +215,7 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 		if e.opts.OIDCUsernamePrefix != "" {
 			oidcOpts.UsernamePrefix = e.opts.OIDCUsernamePrefix
 		} else {
-			oidcOpts.UsernamePrefix = "kedge:"
+			oidcOpts.UsernamePrefix = "faros:"
 		}
 		if e.opts.OIDCGroupsClaim != "" {
 			oidcOpts.GroupsClaim = e.opts.OIDCGroupsClaim
@@ -225,7 +225,7 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 		if e.opts.OIDCGroupsPrefix != "" {
 			oidcOpts.GroupsPrefix = e.opts.OIDCGroupsPrefix
 		} else {
-			oidcOpts.GroupsPrefix = "kedge:"
+			oidcOpts.GroupsPrefix = "faros:"
 		}
 		if e.opts.OIDCCAFile != "" {
 			oidcOpts.CAFile = e.opts.OIDCCAFile
@@ -283,7 +283,7 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 	}
 
 	// Add a post-start hook to signal readiness.
-	if err := e.server.AddPostStartHook("kedge-kcp-ready", func(hookContext genericapiserver.PostStartHookContext) error {
+	if err := e.server.AddPostStartHook("faros-kcp-ready", func(hookContext genericapiserver.PostStartHookContext) error {
 		// Wait for kcp phase 1 bootstrap to complete.
 		e.server.WaitForPhase1Finished()
 

@@ -51,7 +51,7 @@ func (f fakeSecrets) GetSecret(context.Context, string, string) (*corev1.Secret,
 	return &corev1.Secret{Data: map[string][]byte{"token": []byte(f.token)}}, nil
 }
 
-// searxngStub mimics the JSON API the kedge searxng Template exposes, including
+// searxngStub mimics the JSON API the faros searxng Template exposes, including
 // its bearer-token gate.
 func searxngStub(t *testing.T, wantToken string) *httptest.Server {
 	t.Helper()
@@ -84,7 +84,7 @@ func searxngDeps(server *httptest.Server, token string) Deps {
 	return Deps{
 		CR:             fakeCR{conns: []agentsv1alpha1.Connection{conn}},
 		Secrets:        fakeSecrets{token: token},
-		ConnSecretName: func(n string) string { return "kedge-agents-conn-" + n },
+		ConnSecretName: func(n string) string { return "faros-agents-conn-" + n },
 	}
 }
 

@@ -35,11 +35,11 @@ import (
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
-	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
-	hubproviders "github.com/faroshq/faros-kedge/pkg/hub/providers"
-	"github.com/faroshq/faros-kedge/pkg/hub/tenant"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	farosclient "github.com/faroshq/faros/pkg/client"
+	"github.com/faroshq/faros/pkg/hub/kcp"
+	hubproviders "github.com/faroshq/faros/pkg/hub/providers"
+	"github.com/faroshq/faros/pkg/hub/tenant"
 )
 
 // ===== fakes =====
@@ -54,7 +54,7 @@ type fakeOps struct {
 	wsDisplayNames    map[wsKey]string             // (org,ws) → display
 	wsDeletionAnnos   map[wsKey]time.Time          // (org,ws) → timestamp
 	mcpServerCalls    map[wsKey]int                // (org,ws) → count
-	kedgeBindingCalls map[wsKey]int                // (org,ws) → count
+	farosBindingCalls map[wsKey]int                // (org,ws) → count
 	workspaceAdmins   map[wsKey]map[string]bool    // (org,ws) → rbacIdentity set
 	providerBindings  map[wsKey]map[string]string  // (org,ws) → provider → binding name
 	providerBindCalls map[wsKey]int                // (org,ws) → count
@@ -70,7 +70,7 @@ func newFakeOps() *fakeOps {
 		wsDisplayNames:    map[wsKey]string{},
 		wsDeletionAnnos:   map[wsKey]time.Time{},
 		mcpServerCalls:    map[wsKey]int{},
-		kedgeBindingCalls: map[wsKey]int{},
+		farosBindingCalls: map[wsKey]int{},
 		workspaceAdmins:   map[wsKey]map[string]bool{},
 		providerBindings:  map[wsKey]map[string]string{},
 		providerBindCalls: map[wsKey]int{},
@@ -144,10 +144,10 @@ func (f *fakeOps) EnsureChildWorkspace(_ context.Context, orgUUID, wsUUID string
 	return nil
 }
 
-func (f *fakeOps) EnsureChildWorkspaceKedgeBinding(_ context.Context, orgUUID, wsUUID string) error {
+func (f *fakeOps) EnsureChildWorkspaceFarosBinding(_ context.Context, orgUUID, wsUUID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.kedgeBindingCalls[wsKey{orgUUID, wsUUID}]++
+	f.farosBindingCalls[wsKey{orgUUID, wsUUID}]++
 	return nil
 }
 
@@ -321,9 +321,9 @@ func newTestManager(t *testing.T, objects ...runtime.Object) (*Manager, *fakeOps
 	t.Helper()
 	scheme := newTestScheme(t)
 	gvrToListKind := map[schema.GroupVersionResource]string{
-		kedgeclient.OrganizationGVR:        "OrganizationList",
-		kedgeclient.UserGVR:                "UserList",
-		kedgeclient.UserMembershipIndexGVR: "UserMembershipIndexList",
+		farosclient.OrganizationGVR:        "OrganizationList",
+		farosclient.UserGVR:                "UserList",
+		farosclient.UserMembershipIndexGVR: "UserMembershipIndexList",
 	}
 	// Use the customListKinds variant with no seed objects, then seed
 	// via the dynamic client so the GVR/Kind mapping is exercised
@@ -348,7 +348,7 @@ func newTestManager(t *testing.T, objects ...runtime.Object) (*Manager, *fakeOps
 		}
 	}
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(scheme, gvrToListKind, typedSeed...)
-	client := kedgeclient.NewFromDynamic(dyn)
+	client := farosclient.NewFromDynamic(dyn)
 	for _, obj := range createSeed {
 		seedObject(t, client, obj)
 	}
@@ -359,7 +359,7 @@ func newTestManager(t *testing.T, objects ...runtime.Object) (*Manager, *fakeOps
 
 // seedObject writes a fixture into the fake via the typed client
 // surface so the GVR mapping is identical to what handlers use.
-func seedObject(t *testing.T, client *kedgeclient.Client, obj runtime.Object) {
+func seedObject(t *testing.T, client *farosclient.Client, obj runtime.Object) {
 	t.Helper()
 	ctx := context.Background()
 	switch o := obj.(type) {
@@ -564,7 +564,7 @@ func TestCreateWorkspace_HappyPath(t *testing.T) {
 	}
 	alice := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
-		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "kedge:alice@example.com"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "faros:alice@example.com"},
 	}
 	mgr, ops, _ := newTestManager(t, org, alice)
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
@@ -589,8 +589,8 @@ func TestCreateWorkspace_HappyPath(t *testing.T) {
 	if !ops.childWorkspaces["org-a"][view.UUID] {
 		t.Error("EnsureChildWorkspace not called")
 	}
-	if ops.kedgeBindingCalls[wsKey{"org-a", view.UUID}] != 1 {
-		t.Errorf("kedge binding call count: got %d", ops.kedgeBindingCalls[wsKey{"org-a", view.UUID}])
+	if ops.farosBindingCalls[wsKey{"org-a", view.UUID}] != 1 {
+		t.Errorf("faros binding call count: got %d", ops.farosBindingCalls[wsKey{"org-a", view.UUID}])
 	}
 	if ops.wsDisplayNames[wsKey{"org-a", view.UUID}] != "platform" {
 		t.Errorf("display name not set: %v", ops.wsDisplayNames)
@@ -599,7 +599,7 @@ func TestCreateWorkspace_HappyPath(t *testing.T) {
 	// must seed the caller's cluster-admin CRB; without it the freshly-
 	// minted workspace 403s from the GraphQL gateway the moment the user
 	// switches into it.
-	if !ops.workspaceAdmins[wsKey{"org-a", view.UUID}]["kedge:alice@example.com"] {
+	if !ops.workspaceAdmins[wsKey{"org-a", view.UUID}]["faros:alice@example.com"] {
 		t.Errorf("EnsureChildWorkspaceAdmin not called for caller; admins=%v",
 			ops.workspaceAdmins[wsKey{"org-a", view.UUID}])
 	}
@@ -669,7 +669,7 @@ func TestAddOrgMembership_ResolvesEmail(t *testing.T) {
 	}
 	bob := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "user-bob"},
-		Spec:       tenancyv1alpha1.UserSpec{Email: "Bob@Example.com", RBACIdentity: "kedge:bob@example.com"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "Bob@Example.com", RBACIdentity: "faros:bob@example.com"},
 	}
 	mgr, ops, _ := newTestManager(t, org, bob)
 	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
@@ -734,7 +734,7 @@ func TestWorkspaceMembership_AddGrantsAccess(t *testing.T) {
 	}
 	bob := &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{Name: "user-bob"},
-		Spec:       tenancyv1alpha1.UserSpec{Email: "bob@example.com", RBACIdentity: "kedge:bob@example.com"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "bob@example.com", RBACIdentity: "faros:bob@example.com"},
 	}
 	mgr, ops, _ := newTestManager(t, org, bob)
 	// The workspace must exist for the RBAC grant + display-name lookup.
@@ -756,7 +756,7 @@ func TestWorkspaceMembership_AddGrantsAccess(t *testing.T) {
 	_ = resp.Body.Close()
 
 	// kcp RBAC granted under the resolved rbacIdentity.
-	if !ops.workspaceAdmins[wsKey{"org-a", "ws-1"}]["kedge:bob@example.com"] {
+	if !ops.workspaceAdmins[wsKey{"org-a", "ws-1"}]["faros:bob@example.com"] {
 		t.Errorf("workspace RBAC not granted: %v", ops.workspaceAdmins)
 	}
 	// UMI ws-scope row keyed by User CR name.
@@ -942,10 +942,10 @@ func TestDownloadKubeconfig_InstallVariant(t *testing.T) {
 		wantStatus  int
 		wantCommand string // empty if status != 200
 	}{
-		{"default", "", http.StatusOK, "kedge"},
-		{"explicit kedge", "?install=kedge", http.StatusOK, "kedge"},
-		{"krew alias", "?install=krew", http.StatusOK, "kubectl-kedge"},
-		{"explicit kubectl-kedge", "?install=kubectl-kedge", http.StatusOK, "kubectl-kedge"},
+		{"default", "", http.StatusOK, "faros"},
+		{"explicit faros", "?install=faros", http.StatusOK, "faros"},
+		{"krew alias", "?install=krew", http.StatusOK, "kubectl-faros"},
+		{"explicit kubectl-faros", "?install=kubectl-faros", http.StatusOK, "kubectl-faros"},
 		{"unknown", "?install=bogus", http.StatusBadRequest, ""},
 	}
 

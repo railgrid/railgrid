@@ -42,7 +42,7 @@ var RESTClient = &http.Client{
 
 // DoRESTRequest performs a JSON request against the hub REST surface and
 // returns the status code + response body. body may be nil for GET/DELETE.
-// tenantHeaders carries X-Kedge-Org / X-Kedge-Workspace as needed.
+// tenantHeaders carries X-Faros-Org / X-Faros-Workspace as needed.
 func DoRESTRequest(
 	ctx context.Context,
 	method, url, bearer string,
@@ -139,7 +139,7 @@ func CreateOrgViaREST(ctx context.Context, hubURL, bearer, displayName string) (
 func CreateWorkspaceViaREST(ctx context.Context, hubURL, bearer, orgUUID, displayName string) (CreateWorkspaceResponse, error) {
 	code, body, err := DoRESTRequest(ctx, http.MethodPost,
 		hubURL+"/api/orgs/"+orgUUID+"/workspaces", bearer,
-		map[string]string{"X-Kedge-Org": orgUUID},
+		map[string]string{"X-Faros-Org": orgUUID},
 		map[string]string{"displayName": displayName})
 	if err != nil {
 		return CreateWorkspaceResponse{}, fmt.Errorf("POST workspaces: %w", err)
@@ -158,7 +158,7 @@ func CreateWorkspaceViaREST(ctx context.Context, hubURL, bearer, orgUUID, displa
 func DeleteOrgViaREST(ctx context.Context, hubURL, bearer, orgUUID string) (int, error) {
 	code, _, err := DoRESTRequest(ctx, http.MethodDelete,
 		hubURL+"/api/orgs/"+orgUUID, bearer,
-		map[string]string{"X-Kedge-Org": orgUUID}, nil)
+		map[string]string{"X-Faros-Org": orgUUID}, nil)
 	return code, err
 }
 

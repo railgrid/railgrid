@@ -58,9 +58,9 @@ func TestSeedTemplatesBuildRGD(t *testing.T) {
 			if _, found, _ := unstructured.NestedSlice(rgd.Object, "spec", "resources"); !found {
 				t.Errorf("%s: RGD has no spec.resources", e.Name())
 			}
-			// No kedge tokens may survive into the authored RGD.
-			if strings.Contains(mustJSON(t, rgd.Object), "${kedge.") {
-				t.Errorf("%s: RGD still contains an unsubstituted ${kedge.*} token", e.Name())
+			// No faros tokens may survive into the authored RGD.
+			if strings.Contains(mustJSON(t, rgd.Object), "${faros.") {
+				t.Errorf("%s: RGD still contains an unsubstituted ${faros.*} token", e.Name())
 			}
 		})
 	}
@@ -84,7 +84,7 @@ func TestSeedTemplatesIncludeStandaloneDatabase(t *testing.T) {
 	if got, want := tmpl.Spec.Category, "Databases"; got != want {
 		t.Fatalf("category = %q, want %q", got, want)
 	}
-	if got, want := tmpl.Spec.InstanceCRD.Group, "infrastructure.kedge.faros.sh"; got != want {
+	if got, want := tmpl.Spec.InstanceCRD.Group, "infrastructure.faros.sh"; got != want {
 		t.Fatalf("instance group = %q, want %q", got, want)
 	}
 	if got, want := tmpl.Spec.InstanceCRD.Kind, "PostgresDatabase"; got != want {
@@ -150,13 +150,13 @@ func TestSeedTemplatesSimpleWebappIsDevelopmentCapable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRGD(simple-webapp): %v", err)
 	}
-	for _, id := range []string{"appDeployment", "appService", "httpRoute", "appDevDeployment", "appDevWorkspace", "appDevControlService", "kedgeDevControlSecret"} {
+	for _, id := range []string{"appDeployment", "appService", "httpRoute", "appDevDeployment", "appDevWorkspace", "appDevControlService", "farosDevControlSecret"} {
 		if findResource(t, rgd, id) == nil {
 			t.Fatalf("simple-webapp RGD missing %s resource", id)
 		}
 	}
-	if _, found, _ := unstructured.NestedFieldNoCopy(rgd.Object, "spec", "schema", "spec", "kedgeMode"); !found {
-		t.Fatal("simple-webapp RGD schema missing kedgeMode (dev overlay not applied)")
+	if _, found, _ := unstructured.NestedFieldNoCopy(rgd.Object, "spec", "schema", "spec", "farosMode"); !found {
+		t.Fatal("simple-webapp RGD schema missing farosMode (dev overlay not applied)")
 	}
 	for _, field := range []string{"url", "host", "ready", "runtimeNamespace", "controlSecretRef", "components"} {
 		if _, found, _ := unstructured.NestedFieldNoCopy(rgd.Object, "spec", "schema", "status", field); !found {
@@ -346,7 +346,7 @@ func TestBuildRGDRejectsSchemaRefsInStatus(t *testing.T) {
 		out := &infrav1alpha1.Template{}
 		out.Name = "t"
 		out.Spec.InstanceCRD = infrav1alpha1.TemplateInstanceCRD{
-			Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Resource: "ts", Kind: "T",
+			Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "ts", Kind: "T",
 		}
 		out.Spec.Schema = &runtime.RawExtension{Raw: []byte(`{"type":"object","properties":{"name":{"type":"string"}}}`)}
 		out.Spec.BackendConfig = &runtime.RawExtension{Raw: []byte(

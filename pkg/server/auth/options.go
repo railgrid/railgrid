@@ -17,7 +17,7 @@ limitations under the License.
 package auth
 
 // OIDCConfig holds OIDC provider configuration.
-// ClientSecret is intentionally absent: kedge uses PKCE (public client flow)
+// ClientSecret is intentionally absent: faros uses PKCE (public client flow)
 // so no client secret is required on the hub side.
 type OIDCConfig struct {
 	IssuerURL      string

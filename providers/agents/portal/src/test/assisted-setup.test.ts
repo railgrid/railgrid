@@ -106,13 +106,13 @@ describe('retiring the assist card', () => {
   // Dismissal is per workspace: setting search up in one says nothing about
   // another, and one dismissal must not hide the card everywhere.
   it('does not leak the dismissal to another workspace', async () => {
-    localStorage.setItem('kedge:portal:tenant', JSON.stringify({ orgUUID: 'o1', workspaceUUID: 'w1' }))
+    localStorage.setItem('faros:portal:tenant', JSON.stringify({ orgUUID: 'o1', workspaceUUID: 'w1' }))
     const first = await mountConnections({ providers: ['infrastructure'] })
     first.el.querySelector<HTMLButtonElement>('.agents-assist button[aria-label="Dismiss this suggestion"]')!.click()
     await settle(first.el, 4)
     expect(first.el.querySelector('.agents-assist')).toBeNull()
 
-    localStorage.setItem('kedge:portal:tenant', JSON.stringify({ orgUUID: 'o1', workspaceUUID: 'w2' }))
+    localStorage.setItem('faros:portal:tenant', JSON.stringify({ orgUUID: 'o1', workspaceUUID: 'w2' }))
     const second = await mountConnections({ providers: ['infrastructure'] })
     expect(second.el.querySelector('.agents-assist')).not.toBeNull()
   })
@@ -147,7 +147,7 @@ describe('composed prompt', () => {
   // "token" and "Secret" do appear — telling the agent there are none.)
   it('asks for no credential input and no URL to copy back', () => {
     expect(prompt).not.toContain('tokenSecretRef')
-    expect(prompt).not.toContain('kedge-agents-conn-')
+    expect(prompt).not.toContain('faros-agents-conn-')
     expect(prompt).not.toContain('status.url')
     expect(prompt).toContain('internal-only')
   })

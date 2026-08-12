@@ -36,21 +36,21 @@ import (
 )
 
 const (
-	codeAPIGroup   = "code.kedge.faros.sh"
+	codeAPIGroup   = "code.faros.sh"
 	codeAPIVersion = "v1alpha1"
 
 	codeConditionReady     = "Ready"
 	codeConditionValidated = "Validated"
-	codeLabelRepository    = "code.kedge.faros.sh/repository"
+	codeLabelRepository    = "code.faros.sh/repository"
 
-	projectRepositoryProjectAnnotation = "app-studio.ai.kedge.faros.sh/project"
+	projectRepositoryProjectAnnotation = "app-studio.ai.faros.sh/project"
 
-	projectRepositoryProjectLabel = "app-studio.ai.kedge.faros.sh/project"
+	projectRepositoryProjectLabel = "app-studio.ai.faros.sh/project"
 
 	// projectRepositoryAdoptedAnnotation marks a Repository App Studio
 	// adopted (repository import) rather than created — deleting the project
 	// releases the claim but never deletes an adopted repository.
-	projectRepositoryAdoptedAnnotation = "app-studio.ai.kedge.faros.sh/adopted"
+	projectRepositoryAdoptedAnnotation = "app-studio.ai.faros.sh/adopted"
 
 	projectRepositoryStatusReady             = "Ready"
 	projectRepositoryStatusProvisioning      = "Provisioning"

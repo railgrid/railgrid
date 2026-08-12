@@ -42,11 +42,11 @@ endif
 # --- Version info ---
 # --match 'v*' excludes the provider-sdk/* submodule tags (e.g.
 # provider-sdk/v0.0.12) that git describe would otherwise latch onto, keeping the
-# version a real kedge release tag (or a bare SHA when none is reachable).
+# version a real faros release tag (or a bare SHA when none is reachable).
 VERSION ?= $(shell git describe --tags --always --dirty --match 'v*' 2>/dev/null || echo dev)
 GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
-LDFLAGS_PKG := github.com/faroshq/faros-kedge/pkg/version
+LDFLAGS_PKG := github.com/faroshq/faros/pkg/version
 LDFLAGS := -s -w -X $(LDFLAGS_PKG).Version=$(VERSION) -X $(LDFLAGS_PKG).GitCommit=$(GIT_COMMIT) -X $(LDFLAGS_PKG).BuildDate=$(BUILD_DATE)
 
 ldflags: ## Print ldflags for goreleaser
@@ -54,22 +54,22 @@ ldflags: ## Print ldflags for goreleaser
 
 all: build
 
-build: build-kedge build-hub build-graphql
+build: build-faros build-hub build-graphql
 
-build-kedge:
-	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge ./cmd/kedge/
+build-faros:
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros ./cmd/faros/
 
-build-kedge-release: ## Build the release-tagging helper (kedge-release <component|all>)
-	go build $(GOFLAGS) -o $(BINDIR)/kedge-release ./cmd/kedge-release/
+build-faros-release: ## Build the release-tagging helper (faros-release <component|all>)
+	go build $(GOFLAGS) -o $(BINDIR)/faros-release ./cmd/faros-release/
 
 build-hub:
-	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros-hub ./cmd/faros-hub/
 
 build-hub-portal: build-portal ## Build hub with embedded portal
 	mkdir -p pkg/hub/portal
 	rm -rf pkg/hub/portal/dist
 	cp -r portal/dist pkg/hub/portal/dist
-	go build $(GOFLAGS) -tags portal_embed -ldflags "$(LDFLAGS)" -o $(BINDIR)/kedge-hub ./cmd/kedge-hub/
+	go build $(GOFLAGS) -tags portal_embed -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros-hub ./cmd/faros-hub/
 
 build-portal: ## Build the portal Vue.js SPA
 	cd portal && npm ci && npm run build
@@ -78,14 +78,14 @@ dev-portal: ## Run the portal dev server
 	cd portal && npm run dev
 
 build-graphql: ## Build the GraphQL gateway binary (listener + gateway subcommands)
-	go build $(GOFLAGS) -o $(BINDIR)/kedge-graphql ./cmd/graphql/
+	go build $(GOFLAGS) -o $(BINDIR)/faros-graphql ./cmd/graphql/
 
 build-access-proxy: ## Build the published-app access-proxy binary (infrastructure module)
-	cd providers/infrastructure && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/kedge-access-proxy ./cmd/access-proxy/
+	cd providers/infrastructure && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/faros-access-proxy ./cmd/access-proxy/
 
-# build-agent is an alias for build-kedge: the agent container image now ships
-# the kedge CLI binary (cmd/kedge/) with ENTRYPOINT [/kedge, agent, run].
-build-agent: build-kedge
+# build-agent is an alias for build-faros: the agent container image now ships
+# the faros CLI binary (cmd/faros/) with ENTRYPOINT [/faros, agent, run].
+build-agent: build-faros
 
 build-quickstart-provider-portal: ## Build the quickstart provider's micro-frontend (Vite + TS → portal/dist)
 	cd providers/quickstart/portal && npm install --no-audit --no-fund && npm run build
@@ -112,7 +112,7 @@ build-edges-provider: build-edges-provider-portal ## Build the edges provider bi
 	cd providers/edges && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/edges-provider .
 
 ## Generate deepcopy + CRD YAML + kcp APIResourceSchemas for the edges provider's
-## API (KubernetesCluster + LinuxServer, both in edges.kedge.faros.sh), then sync
+## API (KubernetesCluster + LinuxServer, both in edges.faros.sh), then sync
 ## the schema bodies into the Helm chart's files/schemas/ directory. Provider
 ## init applies them at runtime so tenants that bind the APIExport get both kinds.
 codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the edges provider's local API (+ chart schemas)
@@ -123,8 +123,8 @@ codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the e
 			output:crd:artifacts:config=$(CURDIR)/providers/edges/config/crds
 	./$(KCP_APIGEN_GEN) --input-dir providers/edges/config/crds --output-dir providers/edges/config/kcp
 	@for r in kubernetesclusters linuxservers workloads placements services; do \
-		cp providers/edges/config/kcp/apiresourceschema-$$r.edges.kedge.faros.sh.yaml \
-		   providers/edges/deploy/chart/files/schemas/$$r.edges.kedge.faros.sh.yaml; \
+		cp providers/edges/config/kcp/apiresourceschema-$$r.edges.faros.sh.yaml \
+		   providers/edges/deploy/chart/files/schemas/$$r.edges.faros.sh.yaml; \
 	done
 	./hack/ensure-boilerplate.sh
 
@@ -132,10 +132,10 @@ codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the e
 	install-provider-edges init-provider-edges run-provider-edges uninstall-provider-edges docker-build-edges-provider
 
 ## --- edges provider dev lifecycle (install → init → run) --------------------
-install-provider-edges: ## Apply edges Provider + CatalogEntry into root:kedge:providers
+install-provider-edges: ## Apply edges Provider + CatalogEntry into root:faros:providers
 	@test -f $(EDGES_KCP_KUBECONFIG) || { echo "kubeconfig not found at $(EDGES_KCP_KUBECONFIG); start the hub first (make run-hub-embedded-static)"; exit 1; }
 	kubectl --kubeconfig=$(EDGES_KCP_KUBECONFIG) \
-		--server=$(EDGES_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(EDGES_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(EDGES_PROVIDER_MANIFEST) -f $(EDGES_MANIFEST)
 
@@ -147,37 +147,37 @@ init-provider-edges: build-edges-provider ## Bootstrap edges APIExport + write d
 		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
 	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
 	mkdir -p $(KCP_DATA_DIR); \
-	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: faros\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: faros\n  context:\n    cluster: faros\n    user: faros\ncurrent-context: faros\nusers:\n- name: faros\n  user:\n    token: %s\n' \
 		"$(EDGES_KCP_SERVER)/clusters/$(EDGES_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(EDGES_RUNTIME_KUBECONFIG)
-	KEDGE_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
-	KEDGE_SCHEMAS_DIR=$(EDGES_SCHEMAS_DIR) \
+	FAROS_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
+	FAROS_SCHEMAS_DIR=$(EDGES_SCHEMAS_DIR) \
 	EDGES_WORKSPACE_PATH=$(EDGES_WORKSPACE_PATH) \
 		$(BINDIR)/edges-provider init
 
 run-provider-edges: build-edges-provider ## Run the edges provider (needs: hub + install + init)
 	@echo "Starting edges provider on :$(EDGES_PORT) (SINGLE-REPLICA)"
 	PORT=$(EDGES_PORT) \
-	KEDGE_HUB_URL=$(EDGES_HUB_URL) \
-	KEDGE_HUB_EXTERNAL_URL=$(EDGES_HUB_EXTERNAL_URL) \
-	KEDGE_HUB_TOKEN=$(EDGES_TOKEN) \
-	KEDGE_HUB_INSECURE=true \
-	KEDGE_PROVIDER_NAME=edges \
-	KEDGE_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
-	KEDGE_STATIC_TOKENS=$(EDGES_TOKEN) \
-	KEDGE_DEV_MODE=true \
+	FAROS_HUB_URL=$(EDGES_HUB_URL) \
+	FAROS_HUB_EXTERNAL_URL=$(EDGES_HUB_EXTERNAL_URL) \
+	FAROS_HUB_TOKEN=$(EDGES_TOKEN) \
+	FAROS_HUB_INSECURE=true \
+	FAROS_PROVIDER_NAME=edges \
+	FAROS_PROVIDER_KUBECONFIG=$(EDGES_RUNTIME_KUBECONFIG) \
+	FAROS_STATIC_TOKENS=$(EDGES_TOKEN) \
+	FAROS_DEV_MODE=true \
 		$(BINDIR)/edges-provider serve
 
 uninstall-provider-edges: ## Delete edges CatalogEntry + Provider
 	-kubectl --kubeconfig=$(EDGES_KCP_KUBECONFIG) \
-		--server=$(EDGES_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(EDGES_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(EDGES_MANIFEST) -f $(EDGES_PROVIDER_MANIFEST)
 
 docker-build-edges-provider: ## Build the edges provider image (context = providers/edges)
 	docker build \
 		--platform $(DOCKER_PLATFORM) \
-		-t ghcr.io/faroshq/kedge-edges-provider:$(VERSION) \
+		-t ghcr.io/faroshq/faros-edges-provider:$(VERSION) \
 		providers/edges
 
 build-app-studio-provider-portal: ## Build the App Studio provider's micro-frontend (Vite + TS → portal/dist)
@@ -229,7 +229,7 @@ codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastruc
 	# host cluster by the chart), so it stays in config/ only. Remove stale embed
 	# files first so deleted platform APIs cannot remain installed accidentally.
 	find providers/infrastructure/install/crds -maxdepth 1 -type f -name '*.yaml' -delete
-	cp providers/infrastructure/config/crds/infrastructure.kedge.faros.sh_templates.yaml \
+	cp providers/infrastructure/config/crds/infrastructure.faros.sh_templates.yaml \
 	   providers/infrastructure/install/crds/
 	./hack/ensure-boilerplate.sh
 
@@ -244,8 +244,8 @@ codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the co
 			output:crd:artifacts:config=$(CURDIR)/providers/code/config/crds
 	./$(KCP_APIGEN_GEN) --input-dir providers/code/config/crds --output-dir providers/code/config/kcp
 	@for r in connections repositories repositorycommits repositorycheckouts repositorybuildstatuses deploykeys collaborators packages; do \
-		cp providers/code/config/kcp/apiresourceschema-$$r.code.kedge.faros.sh.yaml \
-		   providers/code/deploy/chart/files/schemas/$$r.code.kedge.faros.sh.yaml; \
+		cp providers/code/config/kcp/apiresourceschema-$$r.code.faros.sh.yaml \
+		   providers/code/deploy/chart/files/schemas/$$r.code.faros.sh.yaml; \
 	done
 	./hack/ensure-boilerplate.sh
 
@@ -257,8 +257,8 @@ codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the 
 			output:crd:artifacts:config=$(CURDIR)/providers/agents/config/crds
 	./$(KCP_APIGEN_GEN) --input-dir providers/agents/config/crds --output-dir providers/agents/config/kcp
 	@for r in agents connections schedules triggers toolsets; do \
-		cp providers/agents/config/kcp/apiresourceschema-$$r.agents.kedge.faros.sh.yaml \
-		   providers/agents/deploy/chart/files/schemas/$$r.agents.kedge.faros.sh.yaml; \
+		cp providers/agents/config/kcp/apiresourceschema-$$r.agents.faros.sh.yaml \
+		   providers/agents/deploy/chart/files/schemas/$$r.agents.faros.sh.yaml; \
 	done
 	./hack/ensure-boilerplate.sh
 
@@ -269,12 +269,12 @@ codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/app-studio/config/crds
 	./$(KCP_APIGEN_GEN) --input-dir providers/app-studio/config/crds --output-dir providers/app-studio/config/kcp
-	cp providers/app-studio/config/kcp/apiresourceschema-projects.ai.kedge.faros.sh.yaml \
-	   providers/app-studio/deploy/chart/files/schemas/projects.ai.kedge.faros.sh.yaml
-	cp providers/app-studio/config/kcp/apiresourceschema-sessions.ai.kedge.faros.sh.yaml \
-	   providers/app-studio/deploy/chart/files/schemas/sessions.ai.kedge.faros.sh.yaml
-	cp providers/app-studio/config/kcp/apiresourceschema-studios.ai.kedge.faros.sh.yaml \
-	   providers/app-studio/deploy/chart/files/schemas/studios.ai.kedge.faros.sh.yaml
+	cp providers/app-studio/config/kcp/apiresourceschema-projects.ai.faros.sh.yaml \
+	   providers/app-studio/deploy/chart/files/schemas/projects.ai.faros.sh.yaml
+	cp providers/app-studio/config/kcp/apiresourceschema-sessions.ai.faros.sh.yaml \
+	   providers/app-studio/deploy/chart/files/schemas/sessions.ai.faros.sh.yaml
+	cp providers/app-studio/config/kcp/apiresourceschema-studios.ai.faros.sh.yaml \
+	   providers/app-studio/deploy/chart/files/schemas/studios.ai.faros.sh.yaml
 	./hack/ensure-boilerplate.sh
 
 codegen-databricks-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the Databricks provider's local API (+ manifest + chart schemas)
@@ -285,8 +285,8 @@ codegen-databricks-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 			output:crd:artifacts:config=$(CURDIR)/providers/databricks/config/crds
 	./$(KCP_APIGEN_GEN) --input-dir providers/databricks/config/crds --output-dir providers/databricks/config/kcp
 	@for r in connections warehouses tables; do \
-		cp providers/databricks/config/kcp/apiresourceschema-$$r.databricks.kedge.faros.sh.yaml \
-		   providers/databricks/deploy/chart/files/schemas/$$r.databricks.kedge.faros.sh.yaml; \
+		cp providers/databricks/config/kcp/apiresourceschema-$$r.databricks.faros.sh.yaml \
+		   providers/databricks/deploy/chart/files/schemas/$$r.databricks.faros.sh.yaml; \
 	done
 	./hack/ensure-boilerplate.sh
 
@@ -382,11 +382,11 @@ $(KCP):
 	ln -sf $(notdir $(KCP)) $(TOOLSDIR)/kcp
 	@echo "kcp binary: $(KCP)"
 
-dev-login: build-kedge
-	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:9443 --insecure-skip-tls-verify
+dev-login: build-faros
+	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/faros login --hub-url https://localhost:9443 --insecure-skip-tls-verify
 
-dev-login-static: build-kedge ## Login using static token auth (for use with run-hub-static)
-	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/kedge login --hub-url https://localhost:9443 --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
+dev-login-static: build-faros ## Login using static token auth (for use with run-hub-static)
+	PATH=$(CURDIR)/$(BINDIR):$$PATH $(BINDIR)/faros login --hub-url https://localhost:9443 --insecure-skip-tls-verify --token=$(STATIC_AUTH_TOKEN)
 
 # TYPE selects the Edge type for dev-edge-create and dev-run-edge.
 # Values: kubernetes (default) | server
@@ -394,33 +394,33 @@ TYPE ?= kubernetes
 # Default DEV_EDGE_NAME is per-type so kubernetes and server edges can coexist.
 DEV_EDGE_NAME ?= $(if $(filter server,$(TYPE)),dev-edge-server-1,dev-edge-kube-1)
 
-dev-edge-create: build-kedge ## Create an Edge resource: TYPE=kubernetes (default) or TYPE=server
+dev-edge-create: build-faros ## Create an Edge resource: TYPE=kubernetes (default) or TYPE=server
 	PATH=$(CURDIR)/$(BINDIR):$$PATH BINDIR=$(CURDIR)/$(BINDIR) hack/scripts/dev-edge-setup.sh $(DEV_EDGE_NAME) $(TYPE) "env=dev,provider=local"
 
-dev-run-edge: build-kedge ## Run the edge agent: TYPE=kubernetes (default) or TYPE=server
+dev-run-edge: build-faros ## Run the edge agent: TYPE=kubernetes (default) or TYPE=server
 	@test -f .env.edge.$(TYPE) || (echo "Run 'make dev-edge-create TYPE=$(TYPE)' first (expected .env.edge.$(TYPE))"; exit 1)
 ifeq ($(TYPE),server)
-	$(BINDIR)/kedge agent run \
+	$(BINDIR)/faros agent run \
 		--hub-url=https://localhost:9443 \
 		--hub-insecure-skip-tls-verify \
-		--token=$(KEDGE_EDGE_JOIN_TOKEN) \
+		--token=$(FAROS_EDGE_JOIN_TOKEN) \
 		--tunnel-url=https://localhost:9443 \
-		--edge-name=$(KEDGE_EDGE_NAME) \
-		--cluster=$(KEDGE_EDGE_CLUSTER) \
+		--edge-name=$(FAROS_EDGE_NAME) \
+		--cluster=$(FAROS_EDGE_CLUSTER) \
 		--type=server \
 		--ssh-proxy-port=2222 \
-		--ssh-user=kedge \
+		--ssh-user=faros \
 		--ssh-password=password
 else
 	hack/scripts/ensure-kind-cluster.sh
-	$(BINDIR)/kedge agent run \
+	$(BINDIR)/faros agent run \
 		--hub-url=https://localhost:9443 \
 		--hub-insecure-skip-tls-verify \
-		--token=$(KEDGE_EDGE_JOIN_TOKEN) \
+		--token=$(FAROS_EDGE_JOIN_TOKEN) \
 		--tunnel-url=https://localhost:9443 \
-		--edge-name=$(KEDGE_EDGE_NAME) \
-		--kubeconfig=.kubeconfig-kedge-agent \
-		--cluster=$(KEDGE_EDGE_CLUSTER) \
+		--edge-name=$(FAROS_EDGE_NAME) \
+		--kubeconfig=.kubeconfig-faros-agent \
+		--cluster=$(FAROS_EDGE_CLUSTER) \
 		--type=kubernetes
 endif
 
@@ -480,14 +480,14 @@ dev-run-ssh-server:
   -e TZ=Etc/UTC \
   -e PASSWORD_ACCESS=true \
   -e USER_PASSWORD=password \
-  -e USER_NAME=kedge \
+  -e USER_NAME=faros \
   -p 2222:2222 \
   --restart unless-stopped \
   lscr.io/linuxserver/openssh-server:latest
 
 ## --- kube edge agent, in-cluster (dev) --------------------------------------
 # Runs the agent as a Deployment INSIDE the edge's kind cluster, the way the
-# kedge-agent chart does in production — instead of `dev-run-edge`, which runs it
+# faros-agent chart does in production — instead of `dev-run-edge`, which runs it
 # on the host against the cluster's kubeconfig.
 #
 # This matters for the Service kind: a host-run agent can serve the k8s
@@ -496,12 +496,12 @@ dev-run-ssh-server:
 #
 # Networking: in Tiltfile.cluster the hub is a ClusterIP in the `kcp-tilt`
 # cluster, reachable from the host only via Tilt's 127.0.0.1 port-forward — no
-# use to a pod in the `kedge-agent` cluster. Both clusters' nodes share the
+# use to a pod in the `faros-agent` cluster. Both clusters' nodes share the
 # `kind` docker network, so we expose the hub via a NodePort and dial the
 # kcp-tilt node IP directly.
-DEV_AGENT_IMAGE_REPO ?= ghcr.io/faroshq/kedge-agent
-DEV_AGENT_NS         ?= kedge-agent
-DEV_AGENT_KIND       ?= kedge-agent
+DEV_AGENT_IMAGE_REPO ?= ghcr.io/faroshq/faros-agent
+DEV_AGENT_NS         ?= faros-agent
+DEV_AGENT_KIND       ?= faros-agent
 DEV_HUB_KIND         ?= kcp-tilt
 DEV_HUB_NODEPORT     ?= 30443
 # Resolved at recipe time: docker assigns the node IP when the cluster is created.
@@ -519,33 +519,33 @@ dev-edge-agent-incluster: docker-build-agent ## Run the kube edge agent IN the e
 	@echo "         checked from here — if the agent logs 'workspace access not permitted', this is why."
 	hack/scripts/ensure-kind-cluster.sh $(DEV_AGENT_KIND)
 	@echo "==> Exposing the hub to the $(DEV_AGENT_KIND) cluster (NodePort $(DEV_HUB_NODEPORT) on $(DEV_HUB_NODE_IP))"
-	kubectl --context kind-$(DEV_HUB_KIND) apply -f hack/dev/kedge-hub-nodeport.yaml
+	kubectl --context kind-$(DEV_HUB_KIND) apply -f hack/dev/faros-hub-nodeport.yaml
 	@echo "==> Loading $(DEV_AGENT_IMAGE_REPO):$(VERSION) into kind/$(DEV_AGENT_KIND)"
 	kind load docker-image $(DEV_AGENT_IMAGE_REPO):$(VERSION) --name $(DEV_AGENT_KIND)
 	@# Source the edge env in-recipe rather than trusting the global
 	@# `-include .env.edge.$$(TYPE)`: an exported TYPE=server would otherwise
 	@# feed the server edge's name/cluster/token to the kubernetes agent.
 	set -a; . ./.env.edge.kubernetes; set +a; \
-	test -n "$$KEDGE_EDGE_JOIN_TOKEN" || { echo "No KEDGE_EDGE_JOIN_TOKEN in .env.edge.kubernetes — the token is cleared once an agent redeems it; re-run 'make dev-edge-create TYPE=kubernetes'"; exit 1; }; \
-	helm --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) upgrade --install kedge-agent deploy/charts/kedge-agent \
+	test -n "$$FAROS_EDGE_JOIN_TOKEN" || { echo "No FAROS_EDGE_JOIN_TOKEN in .env.edge.kubernetes — the token is cleared once an agent redeems it; re-run 'make dev-edge-create TYPE=kubernetes'"; exit 1; }; \
+	helm --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) upgrade --install faros-agent deploy/charts/faros-agent \
 		--namespace $(DEV_AGENT_NS) --create-namespace \
 		--set image.repository=$(DEV_AGENT_IMAGE_REPO) \
 		--set image.tag=$(VERSION) \
 		--set image.pullPolicy=IfNotPresent \
-		--set agent.edgeName=$$KEDGE_EDGE_NAME \
-		--set agent.cluster=$$KEDGE_EDGE_CLUSTER \
+		--set agent.edgeName=$$FAROS_EDGE_NAME \
+		--set agent.cluster=$$FAROS_EDGE_CLUSTER \
 		--set agent.hub.url=https://$(DEV_HUB_NODE_IP):$(DEV_HUB_NODEPORT) \
-		--set agent.hub.token=$$KEDGE_EDGE_JOIN_TOKEN \
+		--set agent.hub.token=$$FAROS_EDGE_JOIN_TOKEN \
 		--set agent.hub.insecureSkipTLSVerify=true \
 		--wait --timeout=120s
-	@echo "==> Agent deployed. Logs: kubectl --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) -n $(DEV_AGENT_NS) logs -l app.kubernetes.io/name=kedge-agent -f"
+	@echo "==> Agent deployed. Logs: kubectl --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) -n $(DEV_AGENT_NS) logs -l app.kubernetes.io/name=faros-agent -f"
 
 dev-edge-agent-incluster-logs: ## Tail the in-cluster edge agent
 	kubectl --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) -n $(DEV_AGENT_NS) \
-		logs -l app.kubernetes.io/name=kedge-agent --tail=100 -f
+		logs -l app.kubernetes.io/name=faros-agent --tail=100 -f
 
 dev-edge-agent-incluster-down: ## Remove the in-cluster edge agent
-	helm --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) uninstall kedge-agent -n $(DEV_AGENT_NS) --ignore-not-found
+	helm --kubeconfig=.kubeconfig-$(DEV_AGENT_KIND) uninstall faros-agent -n $(DEV_AGENT_NS) --ignore-not-found
 
 .PHONY: dev-edge-agent-incluster dev-edge-agent-incluster-logs dev-edge-agent-incluster-down
 
@@ -556,9 +556,9 @@ dev-edge-agent-incluster-down: ## Remove the in-cluster edge agent
 # providers/edges/contrib/manifests/homeassistant/README.md.
 HA_MANIFESTS  ?= providers/edges/contrib/manifests/homeassistant
 HA_NAMESPACE  ?= home
-HA_KUBECONFIG ?= .kubeconfig-kedge-agent
+HA_KUBECONFIG ?= .kubeconfig-faros-agent
 
-dev-deploy-homeassistant: ## Deploy Home Assistant into the kedge-agent kind cluster
+dev-deploy-homeassistant: ## Deploy Home Assistant into the faros-agent kind cluster
 	hack/scripts/ensure-kind-cluster.sh
 	kubectl --kubeconfig=$(HA_KUBECONFIG) apply -k $(HA_MANIFESTS)
 	@echo "Waiting for Home Assistant (first boot pulls a ~1.5GB image)..."
@@ -579,10 +579,10 @@ dev-undeploy-homeassistant: ## Remove Home Assistant (keeps the PVC's data unles
 
 GRAPHQL_GRPC_ADDR ?= localhost:50051
 GRAPHQL_APIEXPORT_SLICE ?= core.faros.sh
-GRAPHQL_APIEXPORT_LOGICAL_CLUSTER ?= root:kedge:providers
+GRAPHQL_APIEXPORT_LOGICAL_CLUSTER ?= root:faros:providers
 
 dev-run-graphql: build-graphql ## Run GraphQL (listener + gateway, kcp mode, gRPC transport, playground at :8080)
-	$(BINDIR)/kedge-graphql run \
+	$(BINDIR)/faros-graphql run \
 		--kubeconfig=$(KCP_DATA_DIR)/admin.kubeconfig \
 		--grpc-addr=$(GRAPHQL_GRPC_ADDR) \
 		--apiexport-endpoint-slice-name=$(GRAPHQL_APIEXPORT_SLICE) \
@@ -606,7 +606,7 @@ HUB_FLAGS_BASE := \
 # Auth: OIDC via Dex
 HUB_FLAGS_OIDC := \
 	--idp-issuer-url=https://localhost:5554/dex \
-	--idp-client-id=kedge \
+	--idp-client-id=faros \
 	--idp-client-secret=ZXhhbXBsZS1hcHAtc2VjcmV0
 
 # Auth: Static token
@@ -616,9 +616,9 @@ HUB_FLAGS_STATIC := \
 
 # Platform-admin identities allowed at /api/admin/* + the portal /bonkers area.
 # The dev static token "$(STATIC_AUTH_TOKEN)" resolves (proxy.ensureStaticTokenUserOnce)
-# to email static-<first8chars>@kedge.local — for dev-token that's
-# static-dev-toke@kedge.local. Override for OIDC dev with your real email.
-ADMIN_USERS ?= static-dev-toke@kedge.local
+# to email static-<first8chars>@faros.local — for dev-token that's
+# static-dev-toke@faros.local. Override for OIDC dev with your real email.
+ADMIN_USERS ?= static-dev-toke@faros.local
 
 # KCP: External (requires running kcp separately)
 HUB_FLAGS_KCP_EXTERNAL := \
@@ -643,7 +643,7 @@ HUB_FLAGS_KCP_EMBEDDED := \
 
 # GraphQL: Embedded (runs listener+gateway in-process alongside hub)
 GRAPHQL_APIEXPORT_SLICE ?= core.faros.sh
-GRAPHQL_APIEXPORT_LOGICAL_CLUSTER ?= root:kedge:providers
+GRAPHQL_APIEXPORT_LOGICAL_CLUSTER ?= root:faros:providers
 GRAPHQL_GRPC_ADDR ?= localhost:50051
 
 HUB_FLAGS_GRAPHQL_EMBEDDED := \
@@ -669,34 +669,34 @@ HUB_FLAGS_PORTAL_DEV := \
 run-hub: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service dex "make run-dex"
 	@source $(SERVICE_HOOKS) && require_service kcp "make dev-run-kcp"
-	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EXTERNAL)
+	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EXTERNAL)
 
 ## External KCP + static token auth (requires: make dev-run-kcp)
 run-hub-static: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service kcp "make dev-run-kcp"
-	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EXTERNAL)
+	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EXTERNAL)
 
 ## Embedded KCP + OIDC auth (requires: make run-dex)
 run-hub-embedded: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service dex "make run-dex"
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED)
+	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED)
 
 ## Embedded KCP + static token auth + embedded GraphQL + portal dev proxy (standalone - no external deps)
 run-hub-embedded-static: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED) $(HUB_FLAGS_PORTAL_DEV)
+	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED) $(HUB_FLAGS_PORTAL_DEV)
 
 ## Embedded KCP + static token + embedded GraphQL (fully standalone)
 run-hub-standalone: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
+	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
 
 ## Embedded KCP + OIDC + embedded GraphQL
 run-hub-embedded-graphql: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service dex "make run-dex"
 	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	$(BINDIR)/kedge-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
+	$(BINDIR)/faros-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_GRAPHQL_EMBEDDED)
 
 # Local kcp checkout to iterate against. Defaults to the standard per-user Go
 # workspace path. Override on the CLI or via env:
@@ -707,7 +707,7 @@ TILT_KCP_DIR ?= $(or $(KCP_DIR),$(HOME)/go/src/github.com/kcp-dev/kcp)
 # that payload off capacity-limited /tmp tmpfs mounts used by development hosts.
 TILT_TMPDIR ?= $(CURDIR)/.kcp/tmp/tilt
 
-## Full multi-shard kcp in a kind cluster + kedge-hub in-cluster, against a local kcp checkout
+## Full multi-shard kcp in a kind cluster + faros-hub in-cluster, against a local kcp checkout
 tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TILT_KCP_DIR=... or KCP_DIR=...)
 	@# Create the kind cluster + context BEFORE `tilt up`. If the cluster is
 	@# created from inside the Tiltfile, Tilt initializes its deploy client
@@ -746,13 +746,13 @@ QUICKSTART_MANIFEST ?= providers/quickstart/manifest.yaml
 # Declarative provisioning record: the hub's Provider controller creates the
 # sub-workspace + ServiceAccount + kubeconfig Secret from this.
 QUICKSTART_PROVIDER_MANIFEST ?= providers/quickstart/provider.yaml
-QUICKSTART_WORKSPACE_PATH ?= root:kedge:providers:quickstart
+QUICKSTART_WORKSPACE_PATH ?= root:faros:providers:quickstart
 QUICKSTART_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/quickstart-runtime.kubeconfig
 
 # --- edges provider (single provider, both kinds) --------------------------
 # Runs SINGLE-REPLICA (revdial global dialer map). Reads a provider kubeconfig at
 # runtime (token validation + cross-tenant controllers), so the run target passes
-# KEDGE_PROVIDER_KUBECONFIG unlike the broker providers.
+# FAROS_PROVIDER_KUBECONFIG unlike the broker providers.
 EDGES_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 EDGES_KCP_SERVER ?= https://localhost:6443
 EDGES_HUB_URL ?= https://localhost:9443
@@ -761,7 +761,7 @@ EDGES_TOKEN ?= $(STATIC_AUTH_TOKEN)
 EDGES_PORT ?= 8088
 EDGES_MANIFEST ?= providers/edges/manifest.yaml
 EDGES_PROVIDER_MANIFEST ?= providers/edges/provider.yaml
-EDGES_WORKSPACE_PATH ?= root:kedge:providers:edges
+EDGES_WORKSPACE_PATH ?= root:faros:providers:edges
 EDGES_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/edges-runtime.kubeconfig
 EDGES_SCHEMAS_DIR ?= $(CURDIR)/providers/edges/deploy/chart/files/schemas
 
@@ -772,32 +772,32 @@ run-provider-quickstart: build-quickstart-provider ## Run the quickstart provide
 	@echo "  hub:   $(QUICKSTART_HUB_URL)"
 	@echo "  token: $(QUICKSTART_TOKEN)"
 	PORT=$(QUICKSTART_PORT) \
-	KEDGE_HUB_URL=$(QUICKSTART_HUB_URL) \
-	KEDGE_HUB_TOKEN=$(QUICKSTART_TOKEN) \
-	KEDGE_HUB_INSECURE=true \
-	KEDGE_PROVIDER_NAME=quickstart \
+	FAROS_HUB_URL=$(QUICKSTART_HUB_URL) \
+	FAROS_HUB_TOKEN=$(QUICKSTART_TOKEN) \
+	FAROS_HUB_INSECURE=true \
+	FAROS_PROVIDER_NAME=quickstart \
 		$(BINDIR)/quickstart-provider
 
-## Apply the quickstart CatalogEntry into root:kedge:providers. Idempotent.
+## Apply the quickstart CatalogEntry into root:faros:providers. Idempotent.
 ## Requires the hub to be running so the admin kubeconfig exists.
-install-provider-quickstart: ## Apply quickstart Provider + CatalogEntry into root:kedge:providers
+install-provider-quickstart: ## Apply quickstart Provider + CatalogEntry into root:faros:providers
 	@test -f $(QUICKSTART_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(QUICKSTART_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(QUICKSTART_KCP_KUBECONFIG) \
-		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(QUICKSTART_PROVIDER_MANIFEST) -f $(QUICKSTART_MANIFEST)
 
 ## Run provider e2e suite (embedded kcp + quickstart-provider subprocess).
 ## Lightweight — no kind/Helm, just two host binaries the suite drives over
-## HTTP + kcp dynamic clients. KEDGE_E2E_KEEP_DATA=true preserves logs/data.
+## HTTP + kcp dynamic clients. FAROS_E2E_KEEP_DATA=true preserves logs/data.
 E2E_PROVIDER_TIMEOUT ?= 10m
 e2e-provider: build-hub build-quickstart-provider ## Run provider e2e suite
 	@test -z "$$(lsof -ti :19443 :16443 :18081 :2380 2>/dev/null)" || { \
-		echo "ports 19443/16443/18081/2380 are in use; stop any running kedge-hub/quickstart-provider first"; \
+		echo "ports 19443/16443/18081/2380 are in use; stop any running faros-hub/quickstart-provider first"; \
 		exit 1; \
 	}
 	go test ./test/e2e/suites/provider/... -v -timeout $(E2E_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
@@ -809,7 +809,7 @@ e2e-provider: build-hub build-quickstart-provider ## Run provider e2e suite
 E2E_PROVIDER_FLAGS_TIMEOUT ?= 10m
 e2e-provider-flags: build-hub ## Run --providers flag mechanics suite
 	@test -z "$$(lsof -ti :19443 :16443 :2380 2>/dev/null)" || { \
-		echo "ports 19443/16443/2380 are in use; stop any running kedge-hub first (e.g. pkill kedge-hub)"; \
+		echo "ports 19443/16443/2380 are in use; stop any running faros-hub first (e.g. pkill faros-hub)"; \
 		exit 1; \
 	}
 	go test ./test/e2e/suites/providerflags/... -v -timeout $(E2E_PROVIDER_FLAGS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
@@ -827,14 +827,14 @@ e2e-provider-all: e2e-provider e2e-provider-flags ## Run provider + provider-fla
 E2E_INFRA_PROVIDER_TIMEOUT ?= 15m
 e2e-infra-provider: build-hub build-infrastructure-provider ## Run infrastructure provider e2e suite
 	@test -z "$$(lsof -ti :19453 :16453 :18086 :2380 2>/dev/null)" || { \
-		echo "ports 19453/16453/18086/2380 are in use; stop any running kedge-hub/infrastructure-provider first"; \
+		echo "ports 19453/16453/18086/2380 are in use; stop any running faros-hub/infrastructure-provider first"; \
 		exit 1; \
 	}
 	go test ./test/e2e/suites/infraprovider/... -v -timeout $(E2E_INFRA_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Provider-actions E2E: embedded hub plus host-process App Studio and
 ## Databricks providers, a local TLS fake upstream, and a generated Node app
-## invoking the action through the hub. KEDGE_E2E_KEEP_DATA=true preserves
+## invoking the action through the hub. FAROS_E2E_KEEP_DATA=true preserves
 ## logs and source/readiness/interaction evidence under the suite temp dir.
 E2E_PROVIDER_ACTIONS_TIMEOUT ?= 20m
 .PHONY: e2e-provider-actions e2e-provider-actions-live e2e-provider-actions-npm
@@ -846,17 +846,17 @@ e2e-provider-actions: build-hub build-app-studio-provider build-databricks-provi
 	go test ./test/e2e/suites/provideractions/... -v -timeout $(E2E_PROVIDER_ACTIONS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Optional bounded smoke against an already-running local hub/provider setup.
-## Set KEDGE_E2E_PROVIDER_ACTIONS_LIVE=true plus KEDGE_LIVE_HUB_URL,
-## KEDGE_LIVE_PROJECT, and KEDGE_LIVE_ACTIONS_TOKEN_FILE.
+## Set FAROS_E2E_PROVIDER_ACTIONS_LIVE=true plus FAROS_LIVE_HUB_URL,
+## FAROS_LIVE_PROJECT, and FAROS_LIVE_ACTIONS_TOKEN_FILE.
 e2e-provider-actions-live: ## Run the opt-in live generated-app provider-actions smoke
-	KEDGE_E2E_PROVIDER_ACTIONS_LIVE_ONLY=true KEDGE_E2E_PROVIDER_ACTIONS_LIVE=true \
+	FAROS_E2E_PROVIDER_ACTIONS_LIVE_ONLY=true FAROS_E2E_PROVIDER_ACTIONS_LIVE=true \
 		go test ./test/e2e/suites/provideractions/... -run '^TestOptionalLiveProviderActionSDK$$' -v -timeout $(E2E_PROVIDER_ACTIONS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Optional registry-backed package smoke. The live-only flag keeps TestMain
-## from starting the full hub/provider stack; set KEDGE_E2E_PROVIDER_ACTIONS_NPM_REGISTRY
+## from starting the full hub/provider stack; set FAROS_E2E_PROVIDER_ACTIONS_NPM_REGISTRY
 ## to use a non-default registry mirror.
 e2e-provider-actions-npm: ## Verify the published Actions SDK alias with a clean npm install
-	KEDGE_E2E_PROVIDER_ACTIONS_LIVE_ONLY=true KEDGE_E2E_PROVIDER_ACTIONS_NPM_SMOKE=true \
+	FAROS_E2E_PROVIDER_ACTIONS_LIVE_ONLY=true FAROS_E2E_PROVIDER_ACTIONS_NPM_SMOKE=true \
 		go test ./test/e2e/suites/provideractions/... -run '^TestOptionalPublishedActionsSDKCleanInstall$$' -v -timeout $(E2E_PROVIDER_ACTIONS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Edges provider e2e (embedded kcp + edges-provider init/serve subprocesses).
@@ -870,22 +870,22 @@ e2e-provider-actions-npm: ## Verify the published Actions SDK alias with a clean
 E2E_EDGES_TIMEOUT ?= 15m
 e2e-edges: build-hub build-edges-provider ## Run edges provider e2e suite
 	@test -z "$$(lsof -ti :19463 :16463 :18088 :2380 2>/dev/null)" || { \
-		echo "ports 19463/16463/18088/2380 are in use; stop any running kedge-hub/edges-provider first"; \
+		echo "ports 19463/16463/18088/2380 are in use; stop any running faros-hub/edges-provider first"; \
 		exit 1; \
 	}
 	go test ./test/e2e/suites/edges/... -v -timeout $(E2E_EDGES_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Edges DATA-PLANE connectivity e2e (embedded kcp over HTTPS + edges-provider
-## + a real kedge agent against a kind cluster). Proves the reverse tunnel:
+## + a real faros agent against a kind cluster). Proves the reverse tunnel:
 ## registers a KubernetesCluster, enables edges + the edge-proxy grant, runs the
 ## agent, and streams `kubectl get nodes` down the tunnel (agent -> hub backend
 ## proxy -> out-of-process edges provider -> agent -> kind API server). Needs
 ## kind + docker + kubectl on PATH. Shares embedded-kcp etcd port 2380 — do not
 ## run concurrently with the other subprocess suites.
 E2E_EDGES_CONN_TIMEOUT ?= 15m
-e2e-edges-connectivity: build-hub build-edges-provider build-kedge certs ## Run edges data-plane connectivity e2e (needs kind)
+e2e-edges-connectivity: build-hub build-edges-provider build-faros certs ## Run edges data-plane connectivity e2e (needs kind)
 	@test -z "$$(lsof -ti :19473 :16473 :18098 :2380 2>/dev/null)" || { \
-		echo "ports 19473/16473/18098/2380 are in use; stop any running kedge-hub/edges-provider first"; \
+		echo "ports 19473/16473/18098/2380 are in use; stop any running faros-hub/edges-provider first"; \
 		exit 1; \
 	}
 	go test ./test/e2e/suites/edgesconn/... -v -timeout $(E2E_EDGES_CONN_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
@@ -896,7 +896,7 @@ e2e-edges-connectivity: build-hub build-edges-provider build-kedge certs ## Run 
 ## to the live stack (kcp front-proxy via tilt-frontproxy.kubeconfig, the
 ## in-cluster hub, the host-run providers) and verifies the providers end-to-end:
 ## provider registration, the templates catalog/projection, MCP tool federation,
-## and the per-tenant identity gate. Endpoints override via KEDGE_E2E_* env.
+## and the per-tenant identity gate. Endpoints override via FAROS_E2E_* env.
 E2E_TILT_TIMEOUT ?= 10m
 E2E_TILT_HUB_URL ?= https://localhost:9443
 E2E_TILT_INFRA_URL ?= http://localhost:8082
@@ -931,21 +931,21 @@ init-provider-quickstart: build-quickstart-provider ## Bootstrap quickstart APIE
 		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
 	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
 	mkdir -p $(KCP_DATA_DIR); \
-	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: faros\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: faros\n  context:\n    cluster: faros\n    user: faros\ncurrent-context: faros\nusers:\n- name: faros\n  user:\n    token: %s\n' \
 		"$(QUICKSTART_KCP_SERVER)/clusters/$(QUICKSTART_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(QUICKSTART_RUNTIME_KUBECONFIG)
 	@echo "Running quickstart-provider init (creates APIExport + endpoint slice + bind grant)"
-	KEDGE_PROVIDER_KUBECONFIG=$(QUICKSTART_RUNTIME_KUBECONFIG) \
+	FAROS_PROVIDER_KUBECONFIG=$(QUICKSTART_RUNTIME_KUBECONFIG) \
 	QUICKSTART_WORKSPACE_PATH=$(QUICKSTART_WORKSPACE_PATH) \
-	KEDGE_SCHEMAS_DIR=/nonexistent \
+	FAROS_SCHEMAS_DIR=/nonexistent \
 		$(BINDIR)/quickstart-provider init
 
 ## Delete the quickstart CatalogEntry + Provider. Deleting the Provider triggers
-## full teardown of root:kedge:providers:quickstart (workspace, SA, APIExport)
+## full teardown of root:faros:providers:quickstart (workspace, SA, APIExport)
 ## via the controller's finalizer.
 uninstall-provider-quickstart: ## Delete quickstart CatalogEntry + Provider (full teardown)
 	-kubectl --kubeconfig=$(QUICKSTART_KCP_KUBECONFIG) \
-		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(QUICKSTART_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(QUICKSTART_MANIFEST) -f $(QUICKSTART_PROVIDER_MANIFEST)
 
@@ -961,7 +961,7 @@ KUERY_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 KUERY_KCP_SERVER ?= https://localhost:6443
 KUERY_MANIFEST ?= providers/kuery/manifest.yaml
 KUERY_PROVIDER_MANIFEST ?= providers/kuery/provider.yaml
-KUERY_WORKSPACE_PATH ?= root:kedge:providers:kuery
+KUERY_WORKSPACE_PATH ?= root:faros:providers:kuery
 KUERY_SCHEMAS_DIR ?= providers/kuery/deploy/chart/files/schemas
 # Optional: identityHash of the edges export for kuery's first-party edges
 # permission claim (copy from /bonkers Root identities). Empty → APIExport is
@@ -975,7 +975,7 @@ KUERY_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/kuery-runtime.kubeconfig
 # production — because Postgres-only SQL (jsonb_array_elements, uuid columns,
 # …) diverges from SQLite and passing on SQLite has shipped real query bugs.
 # kuery-db-up starts a throwaway container matching KUERY_DEV_DATABASE_URL.
-KUERY_POSTGRES_CONTAINER ?= kedge-kuery-postgres
+KUERY_POSTGRES_CONTAINER ?= faros-kuery-postgres
 # Pulled from Google's Docker Hub mirror (same official image, more reliable
 # pulls — Docker Hub has been dropping them with "unexpected EOF").
 KUERY_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
@@ -1048,29 +1048,29 @@ run-provider-kuery: build-kuery-provider kuery-db-up ## Run the kuery provider (
 	fi; \
 	echo "  store: postgres ($$STORE_DSN)"; \
 	PORT=$(KUERY_PORT) \
-	KEDGE_HUB_URL=$(KUERY_HUB_URL) \
-	KEDGE_HUB_TOKEN=$(KUERY_TOKEN) \
-	KEDGE_HUB_INSECURE=true \
-	KEDGE_PROVIDER_NAME=kuery \
-	KEDGE_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
-	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
+	FAROS_HUB_URL=$(KUERY_HUB_URL) \
+	FAROS_HUB_TOKEN=$(KUERY_TOKEN) \
+	FAROS_HUB_INSECURE=true \
+	FAROS_PROVIDER_NAME=kuery \
+	FAROS_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
+	FAROS_DEV_ALLOW_TENANT_QUERY=true \
 	KUERY_STORE_DRIVER=postgres \
 	KUERY_STORE_DSN="$$STORE_DSN" \
 		$(BINDIR)/kuery-provider
 
-install-provider-kuery: ## Apply kuery Provider + CatalogEntry into root:kedge:providers
+install-provider-kuery: ## Apply kuery Provider + CatalogEntry into root:faros:providers
 	@test -f $(KUERY_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KUERY_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
-		--server=$(KUERY_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(KUERY_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(KUERY_PROVIDER_MANIFEST) -f $(KUERY_MANIFEST)
 
 ## Dev bootstrap for the engagement controller. The Provider controller writes
-## the minted kubeconfig into a Secret in root:kedge:providers, but host-binary
+## the minted kubeconfig into a Secret in root:faros:providers, but host-binary
 ## dev needs a host-reachable server URL — so we read the provider SA token from
 ## the sub-workspace (the same token the Provider controller minted) and write a
 ## dev kubeconfig with the local server URL, plus the APIExportEndpointSlice the
@@ -1091,7 +1091,7 @@ init-provider-kuery: build-kuery-provider ## Bootstrap kuery APIExport (schemas+
 		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
 	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
 	mkdir -p $(KCP_DATA_DIR); \
-	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: faros\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: faros\n  context:\n    cluster: faros\n    user: faros\ncurrent-context: faros\nusers:\n- name: faros\n  user:\n    token: %s\n' \
 		"$(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(KUERY_RUNTIME_KUBECONFIG)
 	@# kcp requires kuery's first-party edges permissionClaim to carry the
@@ -1104,21 +1104,21 @@ init-provider-kuery: build-kuery-provider ## Bootstrap kuery APIExport (schemas+
 	@HASH="$(KUERY_EDGES_IDENTITY_HASH)"; \
 	if [ -z "$$HASH" ]; then \
 		HASH=$$(kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
-			--server=$(KUERY_KCP_SERVER)/clusters/root:kedge:system:controllers \
+			--server=$(KUERY_KCP_SERVER)/clusters/root:faros:system:controllers \
 			--insecure-skip-tls-verify \
 			get apiexport core.faros.sh -o jsonpath='{.status.identityHash}'); \
 		echo "resolved edges identityHash from core.faros.sh: $$HASH"; \
 	fi; \
 	test -n "$$HASH" || { echo "could not resolve core.faros.sh identityHash — is the hub bootstrapped?"; exit 1; }; \
-	KEDGE_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
+	FAROS_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
 	KUERY_WORKSPACE_PATH=$(KUERY_WORKSPACE_PATH) \
-	KEDGE_SCHEMAS_DIR=$(KUERY_SCHEMAS_DIR) \
+	FAROS_SCHEMAS_DIR=$(KUERY_SCHEMAS_DIR) \
 	KUERY_EDGES_IDENTITY_HASH=$$HASH \
 		$(BINDIR)/kuery-provider init
 
 uninstall-provider-kuery: ## Delete kuery CatalogEntry + Provider (full teardown)
 	-kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
-		--server=$(KUERY_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(KUERY_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(KUERY_MANIFEST) -f $(KUERY_PROVIDER_MANIFEST)
 
@@ -1150,10 +1150,10 @@ APP_STUDIO_TOKEN ?= $(STATIC_AUTH_TOKEN)
 # Optional external HTTPS hub origin for generated development runtimes. Keep
 # unset unless the operator has configured a pod-reachable, certificate-valid
 # URL; the App Studio launcher must not invent an insecure localhost default.
-KEDGE_ACTIONS_EXTERNAL_URL ?=
+FAROS_ACTIONS_EXTERNAL_URL ?=
 APP_STUDIO_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 APP_STUDIO_KCP_SERVER ?= https://localhost:6443
-APP_STUDIO_WORKSPACE_PATH ?= root:kedge:providers:app-studio
+APP_STUDIO_WORKSPACE_PATH ?= root:faros:providers:app-studio
 APP_STUDIO_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/app-studio-provider.kubeconfig
 APP_STUDIO_SCHEMAS_DIR ?= providers/app-studio/deploy/chart/files/schemas
 APP_STUDIO_MANIFEST ?= providers/app-studio/manifest.yaml
@@ -1161,7 +1161,7 @@ APP_STUDIO_PROVIDER_MANIFEST ?= providers/app-studio/provider.yaml
 APP_STUDIO_DATABASE_URL ?=
 APP_STUDIO_IN_MEMORY_MESSAGE_STORE ?=
 APP_STUDIO_DEV_DATABASE_URL ?= postgres://appstudio:appstudio@localhost:55432/appstudio?sslmode=disable
-APP_STUDIO_POSTGRES_CONTAINER ?= kedge-app-studio-postgres
+APP_STUDIO_POSTGRES_CONTAINER ?= faros-app-studio-postgres
 APP_STUDIO_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
 APP_STUDIO_POSTGRES_PORT ?= 55432
 APP_STUDIO_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/app-studio-postgres
@@ -1179,7 +1179,7 @@ AGENTS_HUB_URL ?= https://localhost:9443
 AGENTS_TOKEN ?= $(STATIC_AUTH_TOKEN)
 AGENTS_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 AGENTS_KCP_SERVER ?= https://localhost:6443
-AGENTS_WORKSPACE_PATH ?= root:kedge:providers:agents
+AGENTS_WORKSPACE_PATH ?= root:faros:providers:agents
 AGENTS_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/agents-provider.kubeconfig
 AGENTS_SCHEMAS_DIR ?= providers/agents/deploy/chart/files/schemas
 AGENTS_MANIFEST ?= providers/agents/manifest.yaml
@@ -1188,7 +1188,7 @@ AGENTS_PROVIDER_MANIFEST ?= providers/agents/provider.yaml
 # app-studio). Set AGENTS_IN_MEMORY_STORE=true for a non-durable quick run.
 AGENTS_IN_MEMORY_STORE ?=
 AGENTS_DEV_DATABASE_URL ?= postgres://agents:agents@localhost:55434/agents?sslmode=disable
-AGENTS_POSTGRES_CONTAINER ?= kedge-agents-postgres
+AGENTS_POSTGRES_CONTAINER ?= faros-agents-postgres
 AGENTS_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
 AGENTS_POSTGRES_PORT ?= 55434
 AGENTS_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/agents-postgres
@@ -1214,19 +1214,19 @@ run-provider-infrastructure: build-infrastructure-provider app-studio-preview-co
 		echo "  kro:   <unset → stub catalog; run 'make dev-kro-up' for real RGDs>"; \
 	fi
 	PORT=$(KROMC_PORT) \
-	KEDGE_HUB_URL=$(KROMC_HUB_URL) \
-	KEDGE_HUB_TOKEN=$(KROMC_TOKEN) \
-	KEDGE_HUB_INSECURE=true \
-	KEDGE_PROVIDER_NAME=infrastructure \
-	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
+	FAROS_HUB_URL=$(KROMC_HUB_URL) \
+	FAROS_HUB_TOKEN=$(KROMC_TOKEN) \
+	FAROS_HUB_INSECURE=true \
+	FAROS_PROVIDER_NAME=infrastructure \
+	FAROS_DEV_ALLOW_TENANT_QUERY=true \
 	INFRASTRUCTURE_WORKSPACE_PATH=$${INFRASTRUCTURE_WORKSPACE_PATH:-$(INFRASTRUCTURE_WORKSPACE_PATH)} \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
 	INFRASTRUCTURE_KUBECONFIG=$${INFRASTRUCTURE_KUBECONFIG:-$$( [ -f "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" ] && echo "$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)" )} \
-	KEDGE_APP_BASE_DOMAIN=$${KEDGE_APP_BASE_DOMAIN:-apps.127.0.0.1.sslip.io} \
-	KEDGE_GATEWAY_NAME=$${KEDGE_GATEWAY_NAME:-cloudflare-tunnel} \
-	KEDGE_GATEWAY_NAMESPACE=$${KEDGE_GATEWAY_NAMESPACE:-cfgate-system} \
-	KEDGE_APP_PUBLIC_PORT=$${KEDGE_APP_PUBLIC_PORT:-10443} \
-	KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_CONSOLE_DEV_JWKS)")" \
+	FAROS_APP_BASE_DOMAIN=$${FAROS_APP_BASE_DOMAIN:-apps.127.0.0.1.sslip.io} \
+	FAROS_GATEWAY_NAME=$${FAROS_GATEWAY_NAME:-cloudflare-tunnel} \
+	FAROS_GATEWAY_NAMESPACE=$${FAROS_GATEWAY_NAMESPACE:-cfgate-system} \
+	FAROS_APP_PUBLIC_PORT=$${FAROS_APP_PUBLIC_PORT:-10443} \
+	FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_CONSOLE_DEV_JWKS)")" \
 		$(BINDIR)/infrastructure-provider
 
 run-provider-infrastructure-operator: build-infrastructure-provider app-studio-preview-console-dev-key ## Run the infrastructure provider in OPERATOR mode (bootstrap reconcile + serve from a provider + runtime kubeconfig)
@@ -1239,29 +1239,29 @@ run-provider-infrastructure-operator: build-infrastructure-provider app-studio-p
 	@# `make install-provider-infrastructure` (admin-portal onboarding in prod)
 	@# first. It then reconciles the in-workspace bootstrap and seeds kro itself.
 	PORT=$(KROMC_PORT) \
-	KEDGE_HUB_URL=$(KROMC_HUB_URL) \
-	KEDGE_HUB_TOKEN=$(KROMC_TOKEN) \
-	KEDGE_HUB_INSECURE=true \
-	KEDGE_PROVIDER_NAME=infrastructure \
-	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
+	FAROS_HUB_URL=$(KROMC_HUB_URL) \
+	FAROS_HUB_TOKEN=$(KROMC_TOKEN) \
+	FAROS_HUB_INSECURE=true \
+	FAROS_PROVIDER_NAME=infrastructure \
+	FAROS_DEV_ALLOW_TENANT_QUERY=true \
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
 	INFRASTRUCTURE_PROVIDER_KUBECONFIG=$${INFRASTRUCTURE_PROVIDER_KUBECONFIG:-$(KROMC_KCP_KUBECONFIG)} \
 	INFRASTRUCTURE_RUNTIME_KUBECONFIG=$${INFRASTRUCTURE_RUNTIME_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
-	KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_CONSOLE_DEV_JWKS)")" \
+	FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_CONSOLE_DEV_JWKS)")" \
 		$(BINDIR)/infrastructure-provider operator
 
 # ── CRD-driven operator (controller) dev flow ───────────────────────────────
 # Replaces kro-mgmt-up + infrastructure-init: one host-binary controller that
 # bootstraps the workspace, helm-installs kro (with the kind hostAliases +
 # self-cluster patches), and (skip-serve in dev) leaves serve to the host binary.
-INFRA_OPERATOR_NS ?= kedge-infrastructure-operator
+INFRA_OPERATOR_NS ?= faros-infrastructure-operator
 INFRA_OPERATOR_PROVIDER_KC ?= $(KROMC_KCP_KUBECONFIG)
 INFRA_OPERATOR_RUNTIME_KC ?= $(KRO_KIND_KUBECONFIG)
 INFRA_OPERATOR_KIND_NAME ?= $(KRO_KIND_NAME)
 INFRA_OPERATOR_SELF_KC ?= $(KCP_DATA_DIR)/kro-self.kubeconfig
 INFRA_OPERATOR_HOSTALIASES_IP ?= 10.96.2.2
 INFRA_OPERATOR_HOSTALIASES_NAMES ?= kcp.localhost,root.kcp.localhost,theseus.kcp.localhost
-INFRA_OPERATOR_CRD ?= providers/infrastructure/config/crds/infrastructure.kedge.faros.sh_infrastructureproviders.yaml
+INFRA_OPERATOR_CRD ?= providers/infrastructure/config/crds/infrastructure.faros.sh_infrastructureproviders.yaml
 
 run-provider-infrastructure-controller: build-infrastructure-provider app-studio-preview-console-dev-key ## Apply the operator CRD/Secrets/CR into the runtime cluster and run the controller (dev)
 	@echo "Applying operator CRD + Secrets + CR into runtime cluster ($(INFRA_OPERATOR_RUNTIME_KC))"
@@ -1271,7 +1271,7 @@ run-provider-infrastructure-controller: build-infrastructure-provider app-studio
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl -n $(INFRA_OPERATOR_NS) create secret generic runtime-kubeconfig --from-file=kubeconfig=$(INFRA_OPERATOR_RUNTIME_KC) --dry-run=client -o yaml | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
 	@# kind-internal kubeconfig for the kro local-runtime self-member.
 	kind get kubeconfig --internal --name $(INFRA_OPERATOR_KIND_NAME) > $(INFRA_OPERATOR_SELF_KC)
-	@printf 'apiVersion: infrastructure.kedge.faros.sh/v1alpha1\nkind: InfrastructureProvider\nmetadata:\n  name: infrastructure\n  namespace: %s\nspec:\n  providerWorkspace: %s\n  providerKubeconfigSecret:\n    name: provider-kubeconfig\n  runtimeKubeconfigSecret:\n    name: runtime-kubeconfig\n  kro:\n    chart: %s\n    version: %s\n    image:\n      repository: %s\n      tag: %s\n  provider:\n    image:\n      repository: ghcr.io/faroshq/kedge-infrastructure-provider\n      tag: dev\n' "$(INFRA_OPERATOR_NS)" "$(INFRASTRUCTURE_WORKSPACE_PATH)" "$(KRO_CHART)" "$(KRO_CHART_VERSION)" "$(KRO_IMAGE_REPO)" "$(KRO_IMAGE_TAG)" | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
+	@printf 'apiVersion: infrastructure.faros.sh/v1alpha1\nkind: InfrastructureProvider\nmetadata:\n  name: infrastructure\n  namespace: %s\nspec:\n  providerWorkspace: %s\n  providerKubeconfigSecret:\n    name: provider-kubeconfig\n  runtimeKubeconfigSecret:\n    name: runtime-kubeconfig\n  kro:\n    chart: %s\n    version: %s\n    image:\n      repository: %s\n      tag: %s\n  provider:\n    image:\n      repository: ghcr.io/faroshq/faros-infrastructure-provider\n      tag: dev\n' "$(INFRA_OPERATOR_NS)" "$(INFRASTRUCTURE_WORKSPACE_PATH)" "$(KRO_CHART)" "$(KRO_CHART_VERSION)" "$(KRO_IMAGE_REPO)" "$(KRO_IMAGE_TAG)" | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
 	@echo "Running infrastructure operator controller (KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC), skip-serve)"
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) \
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
@@ -1279,7 +1279,7 @@ run-provider-infrastructure-controller: build-infrastructure-provider app-studio
 	INFRASTRUCTURE_KRO_HOSTALIASES_IP=$(INFRA_OPERATOR_HOSTALIASES_IP) \
 	INFRASTRUCTURE_KRO_HOSTALIASES_NAMES=$(INFRA_OPERATOR_HOSTALIASES_NAMES) \
 	INFRASTRUCTURE_KRO_SELF_CLUSTER_KUBECONFIG=$(INFRA_OPERATOR_SELF_KC) \
-	KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_CONSOLE_DEV_JWKS)")" \
+	FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_CONSOLE_DEV_JWKS)")" \
 		$(BINDIR)/infrastructure-provider controller
 
 ## Run the App Studio provider binary locally. Mirrors the other external
@@ -1365,7 +1365,7 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 	@# workspace and silently never engage. The retry loop tolerates the file
 	@# being absent until init writes it.
 	set -a; [ -f providers/app-studio/.env ] && . ./providers/app-studio/.env || true; set +a; \
-	KEDGE_ACTIONS_EXTERNAL_URL="$${KEDGE_ACTIONS_EXTERNAL_URL:-$(KEDGE_ACTIONS_EXTERNAL_URL)}"; \
+	FAROS_ACTIONS_EXTERNAL_URL="$${FAROS_ACTIONS_EXTERNAL_URL:-$(FAROS_ACTIONS_EXTERNAL_URL)}"; \
 	APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DATABASE_URL)}"; \
 	APP_STUDIO_IN_MEMORY_MESSAGE_STORE="$${APP_STUDIO_IN_MEMORY_MESSAGE_STORE:-$(APP_STUDIO_IN_MEMORY_MESSAGE_STORE)}"; \
 	APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY="$$(cat "$(APP_STUDIO_PREVIEW_CONSOLE_DEV_PRIVATE_KEY)")"; \
@@ -1374,12 +1374,12 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 		echo "  store: in-memory (non-durable)"; \
 		APP_STUDIO_DATABASE_URL= \
 		PORT=$(APP_STUDIO_PORT) \
-		KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
-		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
-		KEDGE_ACTIONS_EXTERNAL_URL="$${KEDGE_ACTIONS_EXTERNAL_URL}" \
-		KEDGE_HUB_INSECURE=true \
-		KEDGE_PROVIDER_NAME=app-studio \
-		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
+		FAROS_HUB_URL=$(APP_STUDIO_HUB_URL) \
+		FAROS_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
+		FAROS_ACTIONS_EXTERNAL_URL="$${FAROS_ACTIONS_EXTERNAL_URL}" \
+		FAROS_HUB_INSECURE=true \
+		FAROS_PROVIDER_NAME=app-studio \
+		FAROS_PROVIDER_KUBECONFIG=$${FAROS_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
 		APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
@@ -1389,12 +1389,12 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 	else \
 		echo "  store: $${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}"; \
 		PORT=$(APP_STUDIO_PORT) \
-		KEDGE_HUB_URL=$(APP_STUDIO_HUB_URL) \
-		KEDGE_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
-		KEDGE_ACTIONS_EXTERNAL_URL="$${KEDGE_ACTIONS_EXTERNAL_URL}" \
-		KEDGE_HUB_INSECURE=true \
-		KEDGE_PROVIDER_NAME=app-studio \
-		KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
+		FAROS_HUB_URL=$(APP_STUDIO_HUB_URL) \
+		FAROS_HUB_TOKEN=$(APP_STUDIO_TOKEN) \
+		FAROS_ACTIONS_EXTERNAL_URL="$${FAROS_ACTIONS_EXTERNAL_URL}" \
+		FAROS_HUB_INSECURE=true \
+		FAROS_PROVIDER_NAME=app-studio \
+		FAROS_PROVIDER_KUBECONFIG=$${FAROS_PROVIDER_KUBECONFIG:-$(APP_STUDIO_PROVIDER_KUBECONFIG)} \
 		APP_STUDIO_DATABASE_URL="$${APP_STUDIO_DATABASE_URL:-$(APP_STUDIO_DEV_DATABASE_URL)}" \
 		APP_STUDIO_MCP_INSECURE_SKIP_TLS_VERIFY=true \
 		APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY=true \
@@ -1403,15 +1403,15 @@ run-provider-app-studio: build-app-studio-provider app-studio-db-up app-studio-p
 			$(BINDIR)/app-studio-provider; \
 	fi
 
-## Apply the App Studio CatalogEntry into root:kedge:providers. Idempotent.
-install-provider-app-studio: ## Apply App Studio Provider + CatalogEntry into root:kedge:providers
+## Apply the App Studio CatalogEntry into root:faros:providers. Idempotent.
+install-provider-app-studio: ## Apply App Studio Provider + CatalogEntry into root:faros:providers
 	@test -f $(APP_STUDIO_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(APP_STUDIO_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
-		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(APP_STUDIO_PROVIDER_MANIFEST) -f $(APP_STUDIO_MANIFEST)
 
@@ -1419,7 +1419,7 @@ install-provider-app-studio: ## Apply App Studio Provider + CatalogEntry into ro
 ## its provider workspace so tenants can Enable it. Reads the provider-token the
 ## Provider controller minted on register, writes a dev provider kubeconfig, and
 ## runs the provider's `init` (sdkinstall.Bootstrap) with the shipped schemas.
-## KEDGE_CATALOGENTRY_FILE is intentionally unset — the dev install target
+## FAROS_CATALOGENTRY_FILE is intentionally unset — the dev install target
 ## already applied the CatalogEntry to system:providers. Idempotent.
 init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIExport + write dev provider kubeconfig
 	@test -f $(APP_STUDIO_KCP_KUBECONFIG) || { \
@@ -1434,7 +1434,7 @@ init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIE
 		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
 	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
 	mkdir -p $(KCP_DATA_DIR); \
-	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: faros\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: faros\n  context:\n    cluster: faros\n    user: faros\ncurrent-context: faros\nusers:\n- name: faros\n  user:\n    token: %s\n' \
 		"$(APP_STUDIO_KCP_SERVER)/clusters/$(APP_STUDIO_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(APP_STUDIO_PROVIDER_KUBECONFIG)
 	@echo "Running app-studio-provider init (creates APIExport + schemas + endpoint slice + bind grant + instance claims)"
@@ -1442,18 +1442,18 @@ init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIE
 	@# identityHash. Auto-discover it in dev; APP_STUDIO_INFRA_IDENTITY_HASH
 	@# in the environment wins (prod supplies it via Helm).
 	INFRA_HASH=$${APP_STUDIO_INFRA_IDENTITY_HASH:-$$(kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
-		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:providers:infrastructure \
+		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:faros:providers:infrastructure \
 		--insecure-skip-tls-verify \
-		get apiexport infrastructure.providers.kedge.faros.sh -o jsonpath='{.status.identityHash}' 2>/dev/null)}; \
+		get apiexport infrastructure.providers.faros.sh -o jsonpath='{.status.identityHash}' 2>/dev/null)}; \
 	if [ -z "$$INFRA_HASH" ]; then echo "WARNING: could not discover the infrastructure APIExport identityHash — instance claims will be hash-less"; fi; \
 	CODE_HASH=$${APP_STUDIO_CODE_IDENTITY_HASH:-$$(kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
-		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:providers:code \
+		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:faros:providers:code \
 		--insecure-skip-tls-verify \
-		get apiexport code.providers.kedge.faros.sh -o jsonpath='{.status.identityHash}' 2>/dev/null)}; \
+		get apiexport code.providers.faros.sh -o jsonpath='{.status.identityHash}' 2>/dev/null)}; \
 	if [ -z "$$CODE_HASH" ]; then echo "WARNING: could not discover the code APIExport identityHash — the repositories claim will be hash-less"; fi; \
-	KEDGE_PROVIDER_KUBECONFIG=$(APP_STUDIO_PROVIDER_KUBECONFIG) \
+	FAROS_PROVIDER_KUBECONFIG=$(APP_STUDIO_PROVIDER_KUBECONFIG) \
 	APP_STUDIO_WORKSPACE_PATH=$(APP_STUDIO_WORKSPACE_PATH) \
-	KEDGE_SCHEMAS_DIR=$(APP_STUDIO_SCHEMAS_DIR) \
+	FAROS_SCHEMAS_DIR=$(APP_STUDIO_SCHEMAS_DIR) \
 	APP_STUDIO_INFRA_IDENTITY_HASH="$$INFRA_HASH" \
 	APP_STUDIO_CODE_IDENTITY_HASH="$$CODE_HASH" \
 		$(BINDIR)/app-studio-provider init
@@ -1466,7 +1466,7 @@ uninstall-provider-app-studio: ## Delete App Studio CatalogEntry
 		exit 1; \
 	}
 	-kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
-		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(APP_STUDIO_MANIFEST) -f $(APP_STUDIO_PROVIDER_MANIFEST)
 
@@ -1507,23 +1507,23 @@ run-provider-agents: build-agents-provider agents-db-up ## Run the agents provid
 		echo "  store: $$AGENTS_DATABASE_URL"; \
 	fi; \
 	PORT=$(AGENTS_PORT) \
-	KEDGE_HUB_URL=$(AGENTS_HUB_URL) \
-	KEDGE_HUB_TOKEN=$(AGENTS_TOKEN) \
-	KEDGE_HUB_INSECURE=true \
-	KEDGE_PROVIDER_NAME=agents \
-	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( for f in "$(AGENTS_PROVIDER_KUBECONFIG)" "$(AGENTS_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
+	FAROS_HUB_URL=$(AGENTS_HUB_URL) \
+	FAROS_HUB_TOKEN=$(AGENTS_TOKEN) \
+	FAROS_HUB_INSECURE=true \
+	FAROS_PROVIDER_NAME=agents \
+	FAROS_PROVIDER_KUBECONFIG=$${FAROS_PROVIDER_KUBECONFIG:-$$( for f in "$(AGENTS_PROVIDER_KUBECONFIG)" "$(AGENTS_KCP_KUBECONFIG)" "$(CURDIR)/tilt-frontproxy.kubeconfig"; do [ -f "$$f" ] && echo "$$f" && break; done )} \
 	AGENTS_DATABASE_URL="$$AGENTS_DATABASE_URL" \
 	AGENTS_IN_MEMORY_STORE="$$AGENTS_IN_MEMORY_STORE" \
 		$(BINDIR)/agents-provider
 
-install-provider-agents: ## Apply agents Provider + CatalogEntry into root:kedge:providers
+install-provider-agents: ## Apply agents Provider + CatalogEntry into root:faros:providers
 	@test -f $(AGENTS_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(AGENTS_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(AGENTS_KCP_KUBECONFIG) \
-		--server=$(AGENTS_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(AGENTS_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(AGENTS_PROVIDER_MANIFEST) -f $(AGENTS_MANIFEST)
 
@@ -1540,13 +1540,13 @@ init-provider-agents: build-agents-provider ## Bootstrap agents APIExport + writ
 		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
 	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
 	mkdir -p $(KCP_DATA_DIR); \
-	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: faros\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: faros\n  context:\n    cluster: faros\n    user: faros\ncurrent-context: faros\nusers:\n- name: faros\n  user:\n    token: %s\n' \
 		"$(AGENTS_KCP_SERVER)/clusters/$(AGENTS_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(AGENTS_PROVIDER_KUBECONFIG)
 	@echo "Running agents-provider init (creates APIExport + schemas + endpoint slice + bind grant)"
-	KEDGE_PROVIDER_KUBECONFIG=$(AGENTS_PROVIDER_KUBECONFIG) \
+	FAROS_PROVIDER_KUBECONFIG=$(AGENTS_PROVIDER_KUBECONFIG) \
 	AGENTS_WORKSPACE_PATH=$(AGENTS_WORKSPACE_PATH) \
-	KEDGE_SCHEMAS_DIR=$(AGENTS_SCHEMAS_DIR) \
+	FAROS_SCHEMAS_DIR=$(AGENTS_SCHEMAS_DIR) \
 		$(BINDIR)/agents-provider init
 
 uninstall-provider-agents: ## Delete the agents CatalogEntry + Provider
@@ -1556,7 +1556,7 @@ uninstall-provider-agents: ## Delete the agents CatalogEntry + Provider
 		exit 1; \
 	}
 	-kubectl --kubeconfig=$(AGENTS_KCP_KUBECONFIG) \
-		--server=$(AGENTS_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(AGENTS_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(AGENTS_MANIFEST) -f $(AGENTS_PROVIDER_MANIFEST)
 
@@ -1569,7 +1569,7 @@ VIBE_STUDIO_HUB_URL ?= https://localhost:9443
 VIBE_STUDIO_TOKEN ?= $(STATIC_AUTH_TOKEN)
 VIBE_STUDIO_KCP_KUBECONFIG ?= $(KCP_DATA_DIR)/admin.kubeconfig
 VIBE_STUDIO_KCP_SERVER ?= https://localhost:6443
-VIBE_STUDIO_WORKSPACE_PATH ?= root:kedge:providers:vibe-studio
+VIBE_STUDIO_WORKSPACE_PATH ?= root:faros:providers:vibe-studio
 VIBE_STUDIO_PROVIDER_KUBECONFIG ?= $(KCP_DATA_DIR)/vibe-studio-provider.kubeconfig
 VIBE_STUDIO_SCHEMAS_DIR ?= providers/vibe-studio/deploy/chart/files/schemas
 VIBE_STUDIO_MANIFEST ?= providers/vibe-studio/manifest.yaml
@@ -1578,7 +1578,7 @@ VIBE_STUDIO_PROVIDER_MANIFEST ?= providers/vibe-studio/provider.yaml
 # agents). Set VIBE_STUDIO_IN_MEMORY_STORE=true for a non-durable quick run.
 VIBE_STUDIO_IN_MEMORY_STORE ?=
 VIBE_STUDIO_DEV_DATABASE_URL ?= postgres://vibestudio:vibestudio@localhost:55435/vibestudio?sslmode=disable
-VIBE_STUDIO_POSTGRES_CONTAINER ?= kedge-vibe-studio-postgres
+VIBE_STUDIO_POSTGRES_CONTAINER ?= faros-vibe-studio-postgres
 VIBE_STUDIO_POSTGRES_IMAGE ?= mirror.gcr.io/library/postgres:16-alpine
 VIBE_STUDIO_POSTGRES_PORT ?= 55435
 VIBE_STUDIO_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/vibe-studio-postgres
@@ -1622,22 +1622,22 @@ run-provider-vibe-studio: build-vibe-studio-provider vibe-studio-db-up ## Run th
 		echo "  store: $$VIBE_STUDIO_DATABASE_URL"; \
 	fi; \
 	PORT=$(VIBE_STUDIO_PORT) \
-	KEDGE_HUB_URL=$(VIBE_STUDIO_HUB_URL) \
-	KEDGE_HUB_TOKEN=$(VIBE_STUDIO_TOKEN) \
-	KEDGE_HUB_INSECURE=true \
-	KEDGE_PROVIDER_NAME=vibe-studio \
-	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$(VIBE_STUDIO_PROVIDER_KUBECONFIG)} \
+	FAROS_HUB_URL=$(VIBE_STUDIO_HUB_URL) \
+	FAROS_HUB_TOKEN=$(VIBE_STUDIO_TOKEN) \
+	FAROS_HUB_INSECURE=true \
+	FAROS_PROVIDER_NAME=vibe-studio \
+	FAROS_PROVIDER_KUBECONFIG=$${FAROS_PROVIDER_KUBECONFIG:-$(VIBE_STUDIO_PROVIDER_KUBECONFIG)} \
 	VIBE_STUDIO_DATABASE_URL="$$VIBE_STUDIO_DATABASE_URL" \
 		$(BINDIR)/vibe-studio-provider
 
-install-provider-vibe-studio: ## Apply vibe-studio Provider + CatalogEntry into root:kedge:providers
+install-provider-vibe-studio: ## Apply vibe-studio Provider + CatalogEntry into root:faros:providers
 	@test -f $(VIBE_STUDIO_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(VIBE_STUDIO_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(VIBE_STUDIO_KCP_KUBECONFIG) \
-		--server=$(VIBE_STUDIO_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(VIBE_STUDIO_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(VIBE_STUDIO_PROVIDER_MANIFEST) -f $(VIBE_STUDIO_MANIFEST)
 
@@ -1654,7 +1654,7 @@ init-provider-vibe-studio: build-vibe-studio-provider ## Bootstrap vibe-studio A
 		get secret -n default provider-token -o jsonpath='{.data.token}' | base64 -d); \
 	test -n "$$TOKEN" || { echo "provider-token Secret empty — wait for the Provider controller to provision the workspace"; exit 1; }; \
 	mkdir -p $(KCP_DATA_DIR); \
-	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: kedge\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: kedge\n  context:\n    cluster: kedge\n    user: kedge\ncurrent-context: kedge\nusers:\n- name: kedge\n  user:\n    token: %s\n' \
+	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: faros\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: faros\n  context:\n    cluster: faros\n    user: faros\ncurrent-context: faros\nusers:\n- name: faros\n  user:\n    token: %s\n' \
 		"$(VIBE_STUDIO_KCP_SERVER)/clusters/$(VIBE_STUDIO_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(VIBE_STUDIO_PROVIDER_KUBECONFIG)
 	@echo "Running vibe-studio-provider init (creates APIExport + schemas + endpoint slice + bind grant + instance claims)"
@@ -1662,18 +1662,18 @@ init-provider-vibe-studio: build-vibe-studio-provider ## Bootstrap vibe-studio A
 	@# identityHash. Auto-discover it in dev; VIBE_STUDIO_INFRA_IDENTITY_HASH
 	@# in the environment wins (prod supplies it via Helm).
 	INFRA_HASH=$${VIBE_STUDIO_INFRA_IDENTITY_HASH:-$$(kubectl --kubeconfig=$(VIBE_STUDIO_KCP_KUBECONFIG) \
-		--server=$(VIBE_STUDIO_KCP_SERVER)/clusters/root:kedge:providers:infrastructure \
+		--server=$(VIBE_STUDIO_KCP_SERVER)/clusters/root:faros:providers:infrastructure \
 		--insecure-skip-tls-verify \
-		get apiexport infrastructure.providers.kedge.faros.sh -o jsonpath='{.status.identityHash}' 2>/dev/null)}; \
+		get apiexport infrastructure.providers.faros.sh -o jsonpath='{.status.identityHash}' 2>/dev/null)}; \
 	if [ -z "$$INFRA_HASH" ]; then echo "WARNING: could not discover the infrastructure APIExport identityHash — instance claims will be hash-less"; fi; \
 	CODE_HASH=$${VIBE_STUDIO_CODE_IDENTITY_HASH:-$$(kubectl --kubeconfig=$(VIBE_STUDIO_KCP_KUBECONFIG) \
-		--server=$(VIBE_STUDIO_KCP_SERVER)/clusters/root:kedge:providers:code \
+		--server=$(VIBE_STUDIO_KCP_SERVER)/clusters/root:faros:providers:code \
 		--insecure-skip-tls-verify \
-		get apiexport code.providers.kedge.faros.sh -o jsonpath='{.status.identityHash}' 2>/dev/null)}; \
+		get apiexport code.providers.faros.sh -o jsonpath='{.status.identityHash}' 2>/dev/null)}; \
 	if [ -z "$$CODE_HASH" ]; then echo "WARNING: could not discover the code APIExport identityHash — the repositories claim will be hash-less"; fi; \
-	KEDGE_PROVIDER_KUBECONFIG=$(VIBE_STUDIO_PROVIDER_KUBECONFIG) \
+	FAROS_PROVIDER_KUBECONFIG=$(VIBE_STUDIO_PROVIDER_KUBECONFIG) \
 	VIBE_STUDIO_WORKSPACE_PATH=$(VIBE_STUDIO_WORKSPACE_PATH) \
-	KEDGE_SCHEMAS_DIR=$(VIBE_STUDIO_SCHEMAS_DIR) \
+	FAROS_SCHEMAS_DIR=$(VIBE_STUDIO_SCHEMAS_DIR) \
 	VIBE_STUDIO_INFRA_IDENTITY_HASH="$$INFRA_HASH" \
 	VIBE_STUDIO_CODE_IDENTITY_HASH="$$CODE_HASH" \
 		$(BINDIR)/vibe-studio-provider init
@@ -1685,7 +1685,7 @@ uninstall-provider-vibe-studio: ## Delete the vibe-studio CatalogEntry + Provide
 		exit 1; \
 	}
 	-kubectl --kubeconfig=$(VIBE_STUDIO_KCP_KUBECONFIG) \
-		--server=$(VIBE_STUDIO_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(VIBE_STUDIO_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(VIBE_STUDIO_MANIFEST) -f $(VIBE_STUDIO_PROVIDER_MANIFEST)
 
@@ -1695,10 +1695,10 @@ uninstall-provider-vibe-studio: ## Delete the vibe-studio CatalogEntry + Provide
 # stdlib-only module; application dependencies are installed by each component
 # from its declared package manifest, not projected by this image.
 DEV_AGENT_DIR ?= providers/infrastructure/dev-agent
-DEV_AGENT_IMAGE ?= ghcr.io/faroshq/kedge-dev-agent:latest
+DEV_AGENT_IMAGE ?= ghcr.io/faroshq/faros-dev-agent:latest
 DEV_AGENT_PLATFORM ?= linux/$(ARCH)
 
-docker-build-dev-agent: ## Build the kedge-dev-agent injector image used by dev-mode components
+docker-build-dev-agent: ## Build the faros-dev-agent injector image used by dev-mode components
 	docker build -f $(DEV_AGENT_DIR)/Dockerfile \
 		--platform $(DEV_AGENT_PLATFORM) \
 		--provenance=false \
@@ -1708,16 +1708,16 @@ load-dev-agent-image: docker-build-dev-agent ## Load the dev agent image into th
 	@echo ">>> loading $(DEV_AGENT_IMAGE) into kind cluster $(KRO_KIND_NAME)"
 	kind load docker-image $(DEV_AGENT_IMAGE) --name $(KRO_KIND_NAME)
 
-## Apply the infrastructure CatalogEntry into root:kedge:providers. Idempotent.
+## Apply the infrastructure CatalogEntry into root:faros:providers. Idempotent.
 ## Requires the hub to be running so the admin kubeconfig exists.
-install-provider-infrastructure: ## Apply infrastructure Provider + CatalogEntry into root:kedge:providers
+install-provider-infrastructure: ## Apply infrastructure Provider + CatalogEntry into root:faros:providers
 	@test -f $(KROMC_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		apply --validate=false -f $(KROMC_PROVIDER_MANIFEST) -f $(KROMC_MANIFEST)
 
@@ -1725,7 +1725,7 @@ install-provider-infrastructure: ## Apply infrastructure Provider + CatalogEntry
 ## full teardown of the sub-workspace via the controller's finalizer).
 uninstall-provider-infrastructure: ## Delete infrastructure CatalogEntry + Provider (full teardown)
 	-kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(KROMC_MANIFEST) -f $(KROMC_PROVIDER_MANIFEST)
 
@@ -1737,7 +1737,7 @@ uninstall-provider-infrastructure: ## Delete infrastructure CatalogEntry + Provi
 ##
 ## When KRO_KUBECONFIG is set, also seeds the kro cluster with a
 ## kro.run/cluster=true Secret pointing at this workspace's VW.
-INFRASTRUCTURE_WORKSPACE_PATH ?= root:kedge:providers:infrastructure
+INFRASTRUCTURE_WORKSPACE_PATH ?= root:faros:providers:infrastructure
 INFRASTRUCTURE_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/infrastructure-runtime.kubeconfig
 init-provider-infrastructure: build-infrastructure-provider ## Bootstrap infrastructure provider workspace (CRDs, APIExport, SA, kubeconfig)
 	@test -f $(KROMC_KCP_KUBECONFIG) || { \
@@ -1770,44 +1770,44 @@ run-provider-code: build-code-provider ## Run the code provider (requires: make 
 	@# env reach the provider without a manual export. See .env.example.
 	set -a; [ -f providers/code/.env ] && . ./providers/code/.env || true; set +a; \
 	PORT=$(CODE_PORT) \
-	KEDGE_HUB_URL=$(KROMC_HUB_URL) \
-	KEDGE_HUB_TOKEN=$(KROMC_TOKEN) \
-	KEDGE_HUB_INSECURE=true \
-	KEDGE_PROVIDER_NAME=code \
-	KEDGE_DEV_ALLOW_TENANT_QUERY=true \
+	FAROS_HUB_URL=$(KROMC_HUB_URL) \
+	FAROS_HUB_TOKEN=$(KROMC_TOKEN) \
+	FAROS_HUB_INSECURE=true \
+	FAROS_PROVIDER_NAME=code \
+	FAROS_DEV_ALLOW_TENANT_QUERY=true \
 	CODE_COMMIT_BUNDLE_DIR=$${CODE_COMMIT_BUNDLE_DIR:-$(KCP_DATA_DIR)/code-commit-bundles} \
-	KEDGE_PROVIDER_KUBECONFIG=$${KEDGE_PROVIDER_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
+	FAROS_PROVIDER_KUBECONFIG=$${FAROS_PROVIDER_KUBECONFIG:-$$( [ -f "$(CODE_RUNTIME_KUBECONFIG)" ] && echo "$(CODE_RUNTIME_KUBECONFIG)" )} \
 	GITHUB_OAUTH_CLIENT_ID=$${GITHUB_OAUTH_CLIENT_ID:-} \
 	GITHUB_OAUTH_CLIENT_SECRET=$${GITHUB_OAUTH_CLIENT_SECRET:-} \
 	GITHUB_OAUTH_REDIRECT_URL=$${GITHUB_OAUTH_REDIRECT_URL:-http://localhost:$(CODE_PORT)/oauth/github/callback} \
 	GITHUB_OAUTH_PORTAL_ORIGIN=$${GITHUB_OAUTH_PORTAL_ORIGIN:-$(KROMC_HUB_URL)} \
 		$(BINDIR)/code-provider serve
 
-install-provider-code: ## Apply the code Provider + CatalogEntry into root:kedge:providers
+install-provider-code: ## Apply the code Provider + CatalogEntry into root:faros:providers
 	@test -f $(KROMC_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(CODE_PROVIDER_MANIFEST) -f $(CODE_MANIFEST)
 
 uninstall-provider-code: ## Delete the code CatalogEntry + Provider (full teardown)
 	-kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(CODE_MANIFEST) -f $(CODE_PROVIDER_MANIFEST)
 
-CODE_WORKSPACE_PATH ?= root:kedge:providers:code
+CODE_WORKSPACE_PATH ?= root:faros:providers:code
 ## Dev bootstrap for the code provider. The hub mints a real provider
 ## kubeconfig only when it runs with a host cluster (--kubeconfig); the dev hubs
 ## (embedded + Tiltfile.cluster) do not, so we derive a runtime kubeconfig from
 ## the admin kubeconfig — reusing its working credential (a static token in
 ## embedded mode, a client cert in cluster mode) and retargeting only the server
 ## URL to the provider workspace — and ensure the APIExportEndpointSlice the
-## controller manager needs. run-provider-code reads it via KEDGE_PROVIDER_KUBECONFIG.
+## controller manager needs. run-provider-code reads it via FAROS_PROVIDER_KUBECONFIG.
 ## Order: install-provider-code (creates the workspace) → init-provider-code →
 ## run-provider-code. Re-runnable. The Tiltfile.cluster flow reuses this target
 ## verbatim, overriding KROMC_KCP_KUBECONFIG / KROMC_KCP_SERVER.
@@ -1818,7 +1818,7 @@ init-provider-code: build-code-provider ## Write the dev kubeconfig + ensure the
 		exit 1; \
 	}
 	@mkdir -p $(KCP_DATA_DIR)
-	@# The provider workspace (root:kedge:providers:code) is created
+	@# The provider workspace (root:faros:providers:code) is created
 	@# declaratively by the Provider controller when code-register applies the
 	@# Provider CR — no need to create it here.
 	@echo "Writing dev kubeconfig $(CODE_RUNTIME_KUBECONFIG) (workspace $(CODE_WORKSPACE_PATH), server $(KROMC_KCP_SERVER))"
@@ -1827,43 +1827,43 @@ init-provider-code: build-code-provider ## Write the dev kubeconfig + ensure the
 		kubectl --kubeconfig=$(CODE_RUNTIME_KUBECONFIG) config set-cluster "$$CL" \
 			--server=$(KROMC_KCP_SERVER)/clusters/$(CODE_WORKSPACE_PATH) \
 			--insecure-skip-tls-verify=true >/dev/null
-	KEDGE_PROVIDER_KUBECONFIG=$(CODE_RUNTIME_KUBECONFIG) \
+	FAROS_PROVIDER_KUBECONFIG=$(CODE_RUNTIME_KUBECONFIG) \
 	CODE_WORKSPACE_PATH=$(CODE_WORKSPACE_PATH) \
-	KEDGE_SCHEMAS_DIR=$(CURDIR)/providers/code/deploy/chart/files/schemas \
+	FAROS_SCHEMAS_DIR=$(CURDIR)/providers/code/deploy/chart/files/schemas \
 		$(BINDIR)/code-provider init
 
 # --- Provider Databricks (local dev) ---
 DATABRICKS_PORT ?= 8086
 DATABRICKS_MANIFEST ?= providers/databricks/manifest.yaml
 DATABRICKS_PROVIDER_MANIFEST ?= providers/databricks/provider.yaml
-DATABRICKS_WORKSPACE_PATH ?= root:kedge:providers:databricks
+DATABRICKS_WORKSPACE_PATH ?= root:faros:providers:databricks
 DATABRICKS_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/databricks-runtime.kubeconfig
 
 run-provider-databricks: build-databricks-provider ## Run the Databricks provider (requires: make run-hub-embedded-static + make install-provider-databricks)
 	@echo "Starting Databricks provider on :$(DATABRICKS_PORT) (hub $(KROMC_HUB_URL))"
 	PORT=$(DATABRICKS_PORT) \
-	KEDGE_HUB_URL=$(KROMC_HUB_URL) \
-	KEDGE_HUB_TOKEN=$(KROMC_TOKEN) \
-	KEDGE_HUB_INSECURE=true \
-	KEDGE_PROVIDER_NAME=databricks \
+	FAROS_HUB_URL=$(KROMC_HUB_URL) \
+	FAROS_HUB_TOKEN=$(KROMC_TOKEN) \
+	FAROS_HUB_INSECURE=true \
+	FAROS_PROVIDER_NAME=databricks \
 	DATABRICKS_MCP_DISABLE_LOCALHOST_PROTECTION=true \
-	KEDGE_PROVIDER_KUBECONFIG=$$( [ -f "$(DATABRICKS_RUNTIME_KUBECONFIG)" ] && echo "$(DATABRICKS_RUNTIME_KUBECONFIG)" ) \
+	FAROS_PROVIDER_KUBECONFIG=$$( [ -f "$(DATABRICKS_RUNTIME_KUBECONFIG)" ] && echo "$(DATABRICKS_RUNTIME_KUBECONFIG)" ) \
 		$(BINDIR)/databricks-provider serve
 
-install-provider-databricks: ## Apply the Databricks Provider + CatalogEntry into root:kedge:providers
+install-provider-databricks: ## Apply the Databricks Provider + CatalogEntry into root:faros:providers
 	@test -f $(KROMC_KCP_KUBECONFIG) || { \
 		echo "kubeconfig not found at $(KROMC_KCP_KUBECONFIG)"; \
 		echo "start the hub first with: make run-hub-embedded-static"; \
 		exit 1; \
 	}
 	kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		apply -f $(DATABRICKS_PROVIDER_MANIFEST) -f $(DATABRICKS_MANIFEST)
 
 uninstall-provider-databricks: ## Delete the Databricks CatalogEntry + Provider
 	-kubectl --kubeconfig=$(KROMC_KCP_KUBECONFIG) \
-		--server=$(KROMC_KCP_SERVER)/clusters/root:kedge:system:providers \
+		--server=$(KROMC_KCP_SERVER)/clusters/root:faros:system:providers \
 		--insecure-skip-tls-verify \
 		delete -f $(DATABRICKS_MANIFEST) -f $(DATABRICKS_PROVIDER_MANIFEST)
 
@@ -1880,29 +1880,29 @@ init-provider-databricks: build-databricks-provider ## Bootstrap Databricks APIE
 		kubectl --kubeconfig=$(DATABRICKS_RUNTIME_KUBECONFIG) config set-cluster "$$CL" \
 			--server=$(KROMC_KCP_SERVER)/clusters/$(DATABRICKS_WORKSPACE_PATH) \
 			--insecure-skip-tls-verify=true >/dev/null
-	KEDGE_PROVIDER_KUBECONFIG=$(DATABRICKS_RUNTIME_KUBECONFIG) \
+	FAROS_PROVIDER_KUBECONFIG=$(DATABRICKS_RUNTIME_KUBECONFIG) \
 	DATABRICKS_WORKSPACE_PATH=$(DATABRICKS_WORKSPACE_PATH) \
-	KEDGE_SCHEMAS_DIR=$(CURDIR)/providers/databricks/deploy/chart/files/schemas \
+	FAROS_SCHEMAS_DIR=$(CURDIR)/providers/databricks/deploy/chart/files/schemas \
 		$(BINDIR)/databricks-provider init
 
 # --- Experimental: run the infrastructure provider as a POD (init-container
 #     bootstrap) instead of a host binary. Exercises the full hub-minted
-#     flow: CatalogEntry -> hub mints + delivers kedge-provider-kubeconfig
+#     flow: CatalogEntry -> hub mints + delivers faros-provider-kubeconfig
 #     (HostSecretWriter) -> init container bootstraps with it -> serve runs.
-#     Reuses the kedge-kro kind cluster as the host cluster. Requires the hub
+#     Reuses the faros-kro kind cluster as the host cluster. Requires the hub
 #     to run with --kubeconfig=$(KRO_KIND_KUBECONFIG) and
 #     --provider-internal-url=$(PROVIDER_INTERNAL_HUB_URL) (the Tiltfile sets
 #     both). Apply the CatalogEntry first: make install-provider-infrastructure
 INFRASTRUCTURE_NAMESPACE ?= infrastructure
-INFRASTRUCTURE_IMAGE ?= kedge-infrastructure-provider:dev
+INFRASTRUCTURE_IMAGE ?= faros-infrastructure-provider:dev
 INFRASTRUCTURE_CHART ?= providers/infrastructure/deploy/chart
 # Address provider pods in the kind cluster use to reach the hub front-proxy
 # (browsers use https://localhost:9443; host.docker.internal resolves to the
 # host from inside kind on Docker Desktop / Colima / OrbStack).
 PROVIDER_INTERNAL_HUB_URL ?= https://host.docker.internal:9443
-helm-deploy-provider-infrastructure: ## (experimental) Build+load image, helm install the provider as a pod into kedge-kro (hub-minted bootstrap)
+helm-deploy-provider-infrastructure: ## (experimental) Build+load image, helm install the provider as a pod into faros-kro (hub-minted bootstrap)
 	@command -v kind >/dev/null || { echo "kind not found; brew install kind"; exit 1; }
-	@test -f $(KRO_KIND_KUBECONFIG) || { echo "kedge-kro cluster missing; run 'make dev-kro-up' first"; exit 1; }
+	@test -f $(KRO_KIND_KUBECONFIG) || { echo "faros-kro cluster missing; run 'make dev-kro-up' first"; exit 1; }
 	@echo ">>> building $(INFRASTRUCTURE_IMAGE)"
 	docker build -t $(INFRASTRUCTURE_IMAGE) providers/infrastructure
 	@echo ">>> loading image into kind cluster $(KRO_KIND_NAME)"
@@ -1910,13 +1910,13 @@ helm-deploy-provider-infrastructure: ## (experimental) Build+load image, helm in
 	@echo ">>> ensuring namespace + heartbeat token Secret in $(INFRASTRUCTURE_NAMESPACE)"
 	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl create namespace $(INFRASTRUCTURE_NAMESPACE) \
 		--dry-run=client -o yaml | KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f -
-	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(INFRASTRUCTURE_NAMESPACE) create secret generic kedge-infrastructure-hub-token \
+	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(INFRASTRUCTURE_NAMESPACE) create secret generic faros-infrastructure-hub-token \
 		--from-literal=token=$(STATIC_AUTH_TOKEN) \
 		--dry-run=client -o yaml | KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f -
 	@echo ">>> helm install (bootstrap.enabled=true, kubeconfigSource=hubMinted)"
 	KUBECONFIG=$(KRO_KIND_KUBECONFIG) helm upgrade --install infrastructure $(INFRASTRUCTURE_CHART) \
 		--namespace $(INFRASTRUCTURE_NAMESPACE) \
-		--set image.repository=kedge-infrastructure-provider \
+		--set image.repository=faros-infrastructure-provider \
 		--set image.tag=dev \
 		--set image.pullPolicy=Never \
 		--set replicaCount=1 \
@@ -1925,7 +1925,7 @@ helm-deploy-provider-infrastructure: ## (experimental) Build+load image, helm in
 		--set hub.insecure=true \
 		--set catalogEntry.enabled=false
 	@echo ">>> deployed. The pod stays in ContainerCreating until the hub delivers"
-	@echo "    the kedge-provider-kubeconfig Secret (apply the CatalogEntry first:"
+	@echo "    the faros-provider-kubeconfig Secret (apply the CatalogEntry first:"
 	@echo "    make install-provider-infrastructure). Watch:"
 	@echo "    KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(INFRASTRUCTURE_NAMESPACE) get pods -w"
 
@@ -1945,13 +1945,13 @@ helm-undeploy-provider-infrastructure: ## (experimental) helm uninstall the infr
 #     multicluster — turnkey for dev without standing up two clusters)
 #
 # Seeds the cluster with the sample ResourceGraphDefinitions under
-# providers/infrastructure/examples/rgds/. The kedge infrastructure
+# providers/infrastructure/examples/rgds/. The faros infrastructure
 # provider points at this cluster via KRO_KUBECONFIG so the catalog UI
 # shows real templates and provision materializes real Deployments /
 # Services.
 #
-KRO_KIND_NAME ?= kedge-kro
-KRO_KIND_KUBECONFIG ?= $(CURDIR)/.kedge-kro.kubeconfig
+KRO_KIND_NAME ?= faros-kro
+KRO_KIND_KUBECONFIG ?= $(CURDIR)/.faros-kro.kubeconfig
 KRO_CHART ?= oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro
 KRO_CHART_VERSION ?= v0.0.1-mc.7
 KRO_IMAGE_REPO ?= ghcr.io/faroshq/kro-multicluster/kro
@@ -1963,14 +1963,14 @@ KRO_SEED_DIR ?= providers/infrastructure/examples/rgds
 # A throwaway kind cluster running STANDALONE kro (no kcp) — enough to validate
 # that every seeded Template authors a kro graph kro accepts. See
 # providers/infrastructure/backend/kro/e2e_test.go.
-E2E_KRO_KIND_NAME ?= kedge-kro-e2e
-E2E_KRO_KUBECONFIG ?= $(CURDIR)/.kedge-kro-e2e.kubeconfig
+E2E_KRO_KIND_NAME ?= faros-kro-e2e
+E2E_KRO_KUBECONFIG ?= $(CURDIR)/.faros-kro-e2e.kubeconfig
 GATEWAY_API_VERSION ?= v1.2.1
 
 ## Bring up the management kro cluster + install kro (fork w/ multicluster) +
 ## register the cluster as a self-member + seed RGDs. Idempotent: re-running
 ## just helm-upgrades the chart and re-applies the RGDs.
-dev-kro-up: ## Bring up the kedge-kro kind cluster + install kro (multicluster) + apply seed RGDs
+dev-kro-up: ## Bring up the faros-kro kind cluster + install kro (multicluster) + apply seed RGDs
 	@command -v kind >/dev/null || { echo "kind not found; install: brew install kind"; exit 1; }
 	@command -v helm >/dev/null || { echo "helm not found; install: brew install helm"; exit 1; }
 	@if ! kind get clusters | grep -qx "$(KRO_KIND_NAME)"; then \
@@ -2069,7 +2069,7 @@ dev-kro-seed: ## Apply seed RGDs (providers/infrastructure/examples/rgds/) into 
 	done
 
 ## Tear down the management cluster + delete the kubeconfig file.
-dev-kro-down: ## Delete the kedge-kro kind cluster + kubeconfig file
+dev-kro-down: ## Delete the faros-kro kind cluster + kubeconfig file
 	-kind delete cluster --name $(KRO_KIND_NAME)
 	-rm -f $(KRO_KIND_KUBECONFIG)
 
@@ -2169,7 +2169,7 @@ dev-clean-hooks: ## Clean up stale service hooks
 
 help-dev: ## Show development environment options
 	@echo ""
-	@echo "=== Kedge Hub Development Modes ==="
+	@echo "=== Faros Hub Development Modes ==="
 	@echo ""
 	@echo "STANDALONE (no external dependencies):"
 	@echo "  make run-hub-standalone         - Embedded kcp + static token + embedded GraphQL"
@@ -2213,41 +2213,41 @@ DOCKER_PLATFORM ?= linux/amd64
 
 docker-build: docker-build-hub docker-build-agent ## Build all container images
 
-docker-build-hub: ## Build kedge-hub container image
+docker-build-hub: ## Build faros-hub container image
 	docker build -f deploy/Dockerfile.hub \
 		--platform $(DOCKER_PLATFORM) \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
-		-t ghcr.io/faroshq/kedge-hub:$(VERSION) .
+		-t ghcr.io/faroshq/faros-hub:$(VERSION) .
 
-docker-build-agent: ## Build kedge-agent container image
+docker-build-agent: ## Build faros-agent container image
 	docker build -f deploy/Dockerfile.agent \
 		--platform $(DOCKER_PLATFORM) \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
-		-t ghcr.io/faroshq/kedge-agent:$(VERSION) .
+		-t ghcr.io/faroshq/faros-agent:$(VERSION) .
 
 docker-build-access-proxy: ## Build published-app access-proxy container image (infrastructure module)
 	docker build -f providers/infrastructure/Dockerfile.access-proxy \
 		--platform $(DOCKER_PLATFORM) \
-		-t ghcr.io/faroshq/kedge-access-proxy:$(VERSION) providers/infrastructure
+		-t ghcr.io/faroshq/faros-access-proxy:$(VERSION) providers/infrastructure
 
-docker-push-hub: docker-build-hub ## Build and push kedge-hub container image
-	docker push ghcr.io/faroshq/kedge-hub:$(VERSION)
+docker-push-hub: docker-build-hub ## Build and push faros-hub container image
+	docker push ghcr.io/faroshq/faros-hub:$(VERSION)
 
-docker-push-agent: docker-build-agent ## Build and push kedge-agent container image
-	docker push ghcr.io/faroshq/kedge-agent:$(VERSION)
+docker-push-agent: docker-build-agent ## Build and push faros-agent container image
+	docker push ghcr.io/faroshq/faros-agent:$(VERSION)
 
-docker-build-dex: ## Build kedge-dex container image (custom dex with branded web overlay)
+docker-build-dex: ## Build faros-dex container image (custom dex with branded web overlay)
 	cd hack/dex && docker build \
 		--platform $(DOCKER_PLATFORM) \
 		-f Dockerfile \
-		-t ghcr.io/faroshq/kedge-dex:$(VERSION) .
+		-t ghcr.io/faroshq/faros-dex:$(VERSION) .
 
-docker-push-dex: docker-build-dex ## Build and push kedge-dex container image
-	docker push ghcr.io/faroshq/kedge-dex:$(VERSION)
+docker-push-dex: docker-build-dex ## Build and push faros-dex container image
+	docker push ghcr.io/faroshq/faros-dex:$(VERSION)
 
 docker-push: docker-push-hub docker-push-agent ## Build and push all container images
 
@@ -2255,7 +2255,7 @@ clean:
 	rm -rf $(BINDIR)
 	rm -rf $(TOOLSDIR)
 	rm -rf tmp
-	-kind delete cluster --name kedge-agent 2>/dev/null
+	-kind delete cluster --name faros-agent 2>/dev/null
 
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
@@ -2281,46 +2281,46 @@ E2E_TIMEOUT ?= 20m
 e2e: e2e-standalone ## Run default e2e suite (standalone)
 
 e2e-standalone: build ## Run standalone e2e suite (embedded kcp + static token, no Dex)
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/kedge-hub:test .
-	docker build -f deploy/Dockerfile.agent -t ghcr.io/faroshq/kedge-agent:test .
-	KEDGE_HUB_IMAGE=ghcr.io/faroshq/kedge-hub \
-	KEDGE_HUB_IMAGE_TAG=test \
-	KEDGE_HUB_IMAGE_PULL_POLICY=Never \
-	KEDGE_AGENT_IMAGE=ghcr.io/faroshq/kedge-agent \
-	KEDGE_AGENT_IMAGE_TAG=test \
-	KEDGE_AGENT_IMAGE_PULL_POLICY=Never \
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .
+	docker build -f deploy/Dockerfile.agent -t ghcr.io/faroshq/faros-agent:test .
+	FAROS_HUB_IMAGE=ghcr.io/faroshq/faros-hub \
+	FAROS_HUB_IMAGE_TAG=test \
+	FAROS_HUB_IMAGE_PULL_POLICY=Never \
+	FAROS_AGENT_IMAGE=ghcr.io/faroshq/faros-agent \
+	FAROS_AGENT_IMAGE_TAG=test \
+	FAROS_AGENT_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-ssh: build ## Run SSH server-mode e2e suite (hub-only cluster)
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/kedge-hub:test .
-	KEDGE_HUB_IMAGE=ghcr.io/faroshq/kedge-hub \
-	KEDGE_HUB_IMAGE_TAG=test \
-	KEDGE_HUB_IMAGE_PULL_POLICY=Never \
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .
+	FAROS_HUB_IMAGE=ghcr.io/faroshq/faros-hub \
+	FAROS_HUB_IMAGE_TAG=test \
+	FAROS_HUB_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/ssh/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-oidc: build ## Run OIDC e2e suite (Dex OIDC provider, requires --with-dex cluster)
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/kedge-hub:test .
-	KEDGE_HUB_IMAGE=ghcr.io/faroshq/kedge-hub \
-	KEDGE_HUB_IMAGE_TAG=test \
-	KEDGE_HUB_IMAGE_PULL_POLICY=Never \
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .
+	FAROS_HUB_IMAGE=ghcr.io/faroshq/faros-hub \
+	FAROS_HUB_IMAGE_TAG=test \
+	FAROS_HUB_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-external-kcp: build ## Run external KCP e2e suite (kcp via Helm in kind, push-to-main only in CI)
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/kedge-hub:test .
-	KEDGE_HUB_IMAGE=ghcr.io/faroshq/kedge-hub \
-	KEDGE_HUB_IMAGE_TAG=test \
-	KEDGE_HUB_IMAGE_PULL_POLICY=Never \
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .
+	FAROS_HUB_IMAGE=ghcr.io/faroshq/faros-hub \
+	FAROS_HUB_IMAGE_TAG=test \
+	FAROS_HUB_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-all: build ## Run all e2e suites
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/kedge-hub:test .
-	docker build -f deploy/Dockerfile.agent -t ghcr.io/faroshq/kedge-agent:test .
-	KEDGE_HUB_IMAGE=ghcr.io/faroshq/kedge-hub \
-	KEDGE_HUB_IMAGE_TAG=test \
-	KEDGE_HUB_IMAGE_PULL_POLICY=Never \
-	KEDGE_AGENT_IMAGE=ghcr.io/faroshq/kedge-agent \
-	KEDGE_AGENT_IMAGE_TAG=test \
-	KEDGE_AGENT_IMAGE_PULL_POLICY=Never \
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .
+	docker build -f deploy/Dockerfile.agent -t ghcr.io/faroshq/faros-agent:test .
+	FAROS_HUB_IMAGE=ghcr.io/faroshq/faros-hub \
+	FAROS_HUB_IMAGE_TAG=test \
+	FAROS_HUB_IMAGE_PULL_POLICY=Never \
+	FAROS_AGENT_IMAGE=ghcr.io/faroshq/faros-agent \
+	FAROS_AGENT_IMAGE_TAG=test \
+	FAROS_AGENT_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/... -v -timeout 30m $(E2E_FLAGS)
 
 e2e-keep: ## Run standalone e2e, keep clusters on failure for debugging

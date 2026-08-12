@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	apiExportName        = "quickstart.providers.kedge.faros.sh"
-	defaultWorkspacePath = "root:kedge:providers:quickstart"
+	apiExportName        = "quickstart.providers.faros.sh"
+	defaultWorkspacePath = "root:faros:providers:quickstart"
 )
 
 // runInitCmd applies the provider's in-workspace objects (APIResourceSchemas,
@@ -31,19 +31,19 @@ const (
 func runInitCmd(ctx context.Context) error {
 	config, err := loadInitConfig()
 	if err != nil {
-		return fmt.Errorf("init needs a kubeconfig (set KEDGE_PROVIDER_KUBECONFIG): %w", err)
+		return fmt.Errorf("init needs a kubeconfig (set FAROS_PROVIDER_KUBECONFIG): %w", err)
 	}
 	workspacePath := os.Getenv("QUICKSTART_WORKSPACE_PATH")
 	if workspacePath == "" {
 		workspacePath = defaultWorkspacePath
 	}
-	schemasDir := os.Getenv("KEDGE_SCHEMAS_DIR")
+	schemasDir := os.Getenv("FAROS_SCHEMAS_DIR")
 	if schemasDir == "" {
-		schemasDir = "/etc/kedge/schemas"
+		schemasDir = "/etc/faros/schemas"
 	}
 	// CatalogEntry self-registration: the provider applies its own CatalogEntry
 	// into its workspace (the hub watches it there). Empty → skip.
-	catalogEntryFile := os.Getenv("KEDGE_CATALOGENTRY_FILE")
+	catalogEntryFile := os.Getenv("FAROS_CATALOGENTRY_FILE")
 
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
 		Config:        config,
@@ -64,7 +64,7 @@ func runInitCmd(ctx context.Context) error {
 
 // loadInitConfig resolves the workspace-admin kubeconfig for init.
 func loadInitConfig() (*rest.Config, error) {
-	if p := os.Getenv("KEDGE_PROVIDER_KUBECONFIG"); p != "" {
+	if p := os.Getenv("FAROS_PROVIDER_KUBECONFIG"); p != "" {
 		return clientcmd.BuildConfigFromFlags("", p)
 	}
 	if p := os.Getenv("KUBECONFIG"); p != "" {

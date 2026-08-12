@@ -9,7 +9,7 @@
 /* Full-bleed provider: the portal frame gives us the whole content area
    (overflow hidden, no padding). Home/wizard views self-center to a readable
    measure; the studio uses the full width. */
-kedge-provider-vibe-studio {
+faros-provider-vibe-studio {
   display: block;
   height: 100%;
   padding: 1rem 1.25rem;
@@ -26,33 +26,33 @@ kedge-provider-vibe-studio {
 }
 
 /* Every view uses the full provider canvas. */
-kedge-provider-vibe-studio .vibe-shell {
+faros-provider-vibe-studio .vibe-shell {
   height: 100%;
   display: flex;
   flex-direction: column;
 }
 
-kedge-provider-vibe-studio .vibe-main {
+faros-provider-vibe-studio .vibe-main {
   flex: 1;
   min-height: 0;
 }
 
 /* ── header ─────────────────────────────────────────────────────────── */
 
-kedge-provider-vibe-studio .vibe-head {
+faros-provider-vibe-studio .vibe-head {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   margin-bottom: 1rem;
 }
 
-kedge-provider-vibe-studio .vibe-head h1 {
+faros-provider-vibe-studio .vibe-head h1 {
   font-size: 1.15rem;
   margin: 0;
   letter-spacing: -0.01em;
 }
 
-kedge-provider-vibe-studio .head-status {
+faros-provider-vibe-studio .head-status {
   margin-left: auto;
   display: flex;
   align-items: center;
@@ -61,23 +61,23 @@ kedge-provider-vibe-studio .head-status {
   color: var(--vibe-muted);
 }
 
-kedge-provider-vibe-studio .head-dot {
+faros-provider-vibe-studio .head-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   display: inline-block;
 }
 
-kedge-provider-vibe-studio .head-dot.ok { background: var(--color-success, #2fd6a0); }
-kedge-provider-vibe-studio .head-dot.bad { background: var(--color-danger, #ff5d5d); }
-kedge-provider-vibe-studio .head-dot.wait { background: var(--color-warning, #f0a63a); }
+faros-provider-vibe-studio .head-dot.ok { background: var(--color-success, #2fd6a0); }
+faros-provider-vibe-studio .head-dot.bad { background: var(--color-danger, #ff5d5d); }
+faros-provider-vibe-studio .head-dot.wait { background: var(--color-warning, #f0a63a); }
 
-kedge-provider-vibe-studio .head-link {
+faros-provider-vibe-studio .head-link {
   color: var(--vibe-accent);
   text-decoration: none;
 }
 
-kedge-provider-vibe-studio .phase-chip {
+faros-provider-vibe-studio .phase-chip {
   font-family: var(--vibe-mono);
   font-size: 10px;
   font-weight: 600;
@@ -90,7 +90,7 @@ kedge-provider-vibe-studio .phase-chip {
   white-space: nowrap;
 }
 
-kedge-provider-vibe-studio .vibe-error {
+faros-provider-vibe-studio .vibe-error {
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
   color: var(--color-danger, #ff5d5d);
@@ -102,23 +102,23 @@ kedge-provider-vibe-studio .vibe-error {
 
 /* ── shared chrome ──────────────────────────────────────────────────── */
 
-kedge-provider-vibe-studio .panel {
+faros-provider-vibe-studio .panel {
   background: var(--vibe-surface);
   border: 1px solid var(--vibe-border);
   border-radius: 6px;
   padding: 1.25rem;
 }
 
-kedge-provider-vibe-studio .panel h2 {
+faros-provider-vibe-studio .panel h2 {
   margin: 0 0 0.5rem;
   font-size: 1.05rem;
 }
 
-kedge-provider-vibe-studio .muted { color: var(--vibe-muted); font-size: 0.9rem; }
-kedge-provider-vibe-studio .pad { padding: 1rem; }
+faros-provider-vibe-studio .muted { color: var(--vibe-muted); font-size: 0.9rem; }
+faros-provider-vibe-studio .pad { padding: 1rem; }
 
-kedge-provider-vibe-studio textarea,
-kedge-provider-vibe-studio input[type='text'] {
+faros-provider-vibe-studio textarea,
+faros-provider-vibe-studio input[type='text'] {
   width: 100%;
   box-sizing: border-box;
   padding: 0.6rem 0.7rem;
@@ -131,8 +131,8 @@ kedge-provider-vibe-studio input[type='text'] {
   resize: none;
 }
 
-kedge-provider-vibe-studio textarea:focus-visible,
-kedge-provider-vibe-studio input[type='text']:focus-visible {
+faros-provider-vibe-studio textarea:focus-visible,
+faros-provider-vibe-studio input[type='text']:focus-visible {
   outline: none;
   border-color: var(--vibe-accent);
   box-shadow:
@@ -140,12 +140,12 @@ kedge-provider-vibe-studio input[type='text']:focus-visible {
     0 0 14px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
 }
 
-kedge-provider-vibe-studio button:focus-visible {
+faros-provider-vibe-studio button:focus-visible {
   outline: 2px solid var(--vibe-accent);
   outline-offset: 1px;
 }
 
-kedge-provider-vibe-studio button {
+faros-provider-vibe-studio button {
   padding: 0.5rem 1.1rem;
   border-radius: 4px;
   border: none;
@@ -157,14 +157,14 @@ kedge-provider-vibe-studio button {
 }
 
 /* Glow-means-alive: only the solid accent (primary) buttons emit light. */
-kedge-provider-vibe-studio button:hover:not(:disabled):not(.ghost):not(.tab):not(.file-row) {
+faros-provider-vibe-studio button:hover:not(:disabled):not(.ghost):not(.tab):not(.file-row) {
   box-shadow: 0 0 22px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
 }
 
-kedge-provider-vibe-studio button:disabled { opacity: 0.5; cursor: default; }
+faros-provider-vibe-studio button:disabled { opacity: 0.5; cursor: default; }
 
-kedge-provider-vibe-studio button.ghost,
-kedge-provider-vibe-studio .btnlike {
+faros-provider-vibe-studio button.ghost,
+faros-provider-vibe-studio .btnlike {
   background: transparent;
   color: inherit;
   border: 1px solid var(--vibe-border);
@@ -175,11 +175,11 @@ kedge-provider-vibe-studio .btnlike {
   box-shadow: none;
 }
 
-kedge-provider-vibe-studio .row { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem; }
-kedge-provider-vibe-studio .row.end { justify-content: flex-end; }
-kedge-provider-vibe-studio .row input[type='text'] { flex: 1; margin: 0; }
+faros-provider-vibe-studio .row { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.75rem; }
+faros-provider-vibe-studio .row.end { justify-content: flex-end; }
+faros-provider-vibe-studio .row input[type='text'] { flex: 1; margin: 0; }
 
-kedge-provider-vibe-studio .spinner {
+faros-provider-vibe-studio .spinner {
   width: 22px;
   height: 22px;
   border: 2.5px solid var(--vibe-border);
@@ -188,15 +188,15 @@ kedge-provider-vibe-studio .spinner {
   animation: vibe-spin 0.8s linear infinite;
 }
 
-kedge-provider-vibe-studio .spinner.tiny { width: 12px; height: 12px; border-width: 2px; }
+faros-provider-vibe-studio .spinner.tiny { width: 12px; height: 12px; border-width: 2px; }
 
 @keyframes vibe-spin { to { transform: rotate(360deg); } }
 
 @media (prefers-reduced-motion: reduce) {
-  kedge-provider-vibe-studio .spinner { animation-duration: 2.4s; }
+  faros-provider-vibe-studio .spinner { animation-duration: 2.4s; }
 }
 
-kedge-provider-vibe-studio .center-panel {
+faros-provider-vibe-studio .center-panel {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -206,7 +206,7 @@ kedge-provider-vibe-studio .center-panel {
 
 /* ── home ───────────────────────────────────────────────────────────── */
 
-kedge-provider-vibe-studio .section-label {
+faros-provider-vibe-studio .section-label {
   font-size: 0.78rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -214,13 +214,13 @@ kedge-provider-vibe-studio .section-label {
   margin: 1.5rem 0 0.6rem;
 }
 
-kedge-provider-vibe-studio .project-grid {
+faros-provider-vibe-studio .project-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 0.75rem;
 }
 
-kedge-provider-vibe-studio .project-card {
+faros-provider-vibe-studio .project-card {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
@@ -234,12 +234,12 @@ kedge-provider-vibe-studio .project-card {
   transition: border-color 0.15s ease, transform 0.15s ease;
 }
 
-kedge-provider-vibe-studio .project-card:hover {
+faros-provider-vibe-studio .project-card:hover {
   border-color: var(--vibe-accent);
   transform: translateY(-1px);
 }
 
-kedge-provider-vibe-studio .project-title {
+faros-provider-vibe-studio .project-title {
   font-weight: 600;
   line-height: 1.3;
   display: -webkit-box;
@@ -248,7 +248,7 @@ kedge-provider-vibe-studio .project-title {
   overflow: hidden;
 }
 
-kedge-provider-vibe-studio .project-meta {
+faros-provider-vibe-studio .project-meta {
   display: flex;
   gap: 0.6rem;
   align-items: center;
@@ -256,7 +256,7 @@ kedge-provider-vibe-studio .project-meta {
   flex-wrap: wrap;
 }
 
-kedge-provider-vibe-studio .project-live {
+faros-provider-vibe-studio .project-live {
   display: flex;
   align-items: center;
   gap: 0.35rem;
@@ -266,19 +266,19 @@ kedge-provider-vibe-studio .project-live {
 
 /* ── models menu + pickers ──────────────────────────────────────────── */
 
-kedge-provider-vibe-studio .home-tabs {
+faros-provider-vibe-studio .home-tabs {
   border-bottom: 1px solid var(--vibe-border);
   padding: 0 0 0.5rem;
   margin-bottom: 1rem;
 }
 
-kedge-provider-vibe-studio .nav-hint {
+faros-provider-vibe-studio .nav-hint {
   font-size: 0.78rem;
   color: var(--vibe-muted);
   margin-left: 0.5rem;
 }
 
-kedge-provider-vibe-studio .model-form .field {
+faros-provider-vibe-studio .model-form .field {
   display: grid;
   grid-template-columns: 8rem 1fr;
   align-items: center;
@@ -286,14 +286,14 @@ kedge-provider-vibe-studio .model-form .field {
   margin: 0.4rem 0;
 }
 
-kedge-provider-vibe-studio .model-form .field span {
+faros-provider-vibe-studio .model-form .field span {
   font-size: 0.85rem;
   color: var(--vibe-muted);
 }
 
-kedge-provider-vibe-studio .model-form .field input { margin: 0; }
+faros-provider-vibe-studio .model-form .field input { margin: 0; }
 
-kedge-provider-vibe-studio .chat-foot {
+faros-provider-vibe-studio .chat-foot {
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -301,13 +301,13 @@ kedge-provider-vibe-studio .chat-foot {
   font-size: 0.78rem;
 }
 
-kedge-provider-vibe-studio .model-picker {
+faros-provider-vibe-studio .model-picker {
   display: flex;
   align-items: center;
   gap: 0.4rem;
 }
 
-kedge-provider-vibe-studio select {
+faros-provider-vibe-studio select {
   font: inherit;
   font-size: 0.78rem;
   padding: 0.2rem 0.4rem;
@@ -317,9 +317,9 @@ kedge-provider-vibe-studio select {
   color: inherit;
 }
 
-/* ── resource table (kedge portal idiom) ────────────────────────────── */
+/* ── resource table (faros portal idiom) ────────────────────────────── */
 
-kedge-provider-vibe-studio table.res-table {
+faros-provider-vibe-studio table.res-table {
   width: 100%;
   border-collapse: collapse;
   background: var(--vibe-surface);
@@ -329,7 +329,7 @@ kedge-provider-vibe-studio table.res-table {
   font-size: 0.88rem;
 }
 
-kedge-provider-vibe-studio .res-table th {
+faros-provider-vibe-studio .res-table th {
   text-align: left;
   font-size: 0.72rem;
   text-transform: uppercase;
@@ -340,31 +340,31 @@ kedge-provider-vibe-studio .res-table th {
   border-bottom: 1px solid var(--vibe-border);
 }
 
-kedge-provider-vibe-studio .res-table td {
+faros-provider-vibe-studio .res-table td {
   padding: 0.6rem 0.9rem;
   border-bottom: 1px solid var(--vibe-border);
   vertical-align: middle;
 }
 
-kedge-provider-vibe-studio .res-table tbody tr:last-child td { border-bottom: none; }
+faros-provider-vibe-studio .res-table tbody tr:last-child td { border-bottom: none; }
 
-kedge-provider-vibe-studio .res-row { cursor: pointer; }
-kedge-provider-vibe-studio .res-row:hover { background: var(--vibe-surface-2); }
-kedge-provider-vibe-studio .res-row.stale { opacity: 0.6; }
+faros-provider-vibe-studio .res-row { cursor: pointer; }
+faros-provider-vibe-studio .res-row:hover { background: var(--vibe-surface-2); }
+faros-provider-vibe-studio .res-row.stale { opacity: 0.6; }
 
-kedge-provider-vibe-studio .res-name { font-weight: 600; }
-kedge-provider-vibe-studio .res-sub { font-weight: 400; font-size: 0.75rem; color: var(--vibe-muted); }
+faros-provider-vibe-studio .res-name { font-weight: 600; }
+faros-provider-vibe-studio .res-sub { font-weight: 400; font-size: 0.75rem; color: var(--vibe-muted); }
 
-kedge-provider-vibe-studio .res-actions {
+faros-provider-vibe-studio .res-actions {
   text-align: right;
   white-space: nowrap;
 }
 
-kedge-provider-vibe-studio .res-actions .ghost { margin-left: 0.35rem; }
-kedge-provider-vibe-studio .ghost.danger { color: var(--color-danger, #ff5d5d); border-color: color-mix(in srgb, currentColor 35%, transparent); }
-kedge-provider-vibe-studio .ghost.danger:hover { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); }
+faros-provider-vibe-studio .res-actions .ghost { margin-left: 0.35rem; }
+faros-provider-vibe-studio .ghost.danger { color: var(--color-danger, #ff5d5d); border-color: color-mix(in srgb, currentColor 35%, transparent); }
+faros-provider-vibe-studio .ghost.danger:hover { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); }
 
-kedge-provider-vibe-studio .status-badge {
+faros-provider-vibe-studio .status-badge {
   display: inline-block;
   font-family: var(--vibe-mono);
   font-size: 10px;
@@ -377,37 +377,37 @@ kedge-provider-vibe-studio .status-badge {
   background: var(--vibe-surface-2);
 }
 
-kedge-provider-vibe-studio .status-badge.ok { background: var(--color-success-subtle, rgba(47, 214, 160, 0.12)); color: var(--color-success, #2fd6a0); }
-kedge-provider-vibe-studio .status-badge.warn { background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); color: var(--color-warning, #f0a63a); }
+faros-provider-vibe-studio .status-badge.ok { background: var(--color-success-subtle, rgba(47, 214, 160, 0.12)); color: var(--color-success, #2fd6a0); }
+faros-provider-vibe-studio .status-badge.warn { background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); color: var(--color-warning, #f0a63a); }
 
 /* ── wizard ─────────────────────────────────────────────────────────── */
 
-kedge-provider-vibe-studio fieldset.question {
+faros-provider-vibe-studio fieldset.question {
   border: 1px solid var(--vibe-border);
   border-radius: 6px;
   margin: 0.75rem 0;
   padding: 0.75rem 1rem;
 }
 
-kedge-provider-vibe-studio .option { display: block; padding: 0.25rem 0; }
-kedge-provider-vibe-studio .rec { color: var(--vibe-accent); font-size: 0.8rem; }
-kedge-provider-vibe-studio .custom-text { width: auto; margin-left: 0.4rem; }
+faros-provider-vibe-studio .option { display: block; padding: 0.25rem 0; }
+faros-provider-vibe-studio .rec { color: var(--vibe-accent); font-size: 0.8rem; }
+faros-provider-vibe-studio .custom-text { width: auto; margin-left: 0.4rem; }
 
-kedge-provider-vibe-studio dl {
+faros-provider-vibe-studio dl {
   display: grid;
   grid-template-columns: max-content 1fr;
   gap: 0.35rem 1rem;
   margin: 0.75rem 0;
 }
 
-kedge-provider-vibe-studio dt { font-weight: 600; font-size: 0.85rem; color: var(--vibe-muted); }
-kedge-provider-vibe-studio dd { margin: 0; font-size: 0.9rem; overflow-wrap: anywhere; }
+faros-provider-vibe-studio dt { font-weight: 600; font-size: 0.85rem; color: var(--vibe-muted); }
+faros-provider-vibe-studio dd { margin: 0; font-size: 0.9rem; overflow-wrap: anywhere; }
 
 /* ── checkpoints ────────────────────────────────────────────────────── */
 
-kedge-provider-vibe-studio ul.checkpoints { list-style: none; margin: 0.5rem 0; padding: 0; }
+faros-provider-vibe-studio ul.checkpoints { list-style: none; margin: 0.5rem 0; padding: 0; }
 
-kedge-provider-vibe-studio .cp {
+faros-provider-vibe-studio .cp {
   display: grid;
   grid-template-columns: 18px max-content 1fr;
   gap: 0.6rem;
@@ -415,17 +415,17 @@ kedge-provider-vibe-studio .cp {
   padding: 0.35rem 0;
 }
 
-kedge-provider-vibe-studio .cp-icon { font-size: 0.8rem; text-align: center; }
-kedge-provider-vibe-studio .cp-icon.ok { color: var(--color-success, #2fd6a0); }
-kedge-provider-vibe-studio .cp-icon.bad { color: var(--color-danger, #ff5d5d); }
-kedge-provider-vibe-studio .cp-icon.warn { color: var(--color-warning, #f0a63a); }
-kedge-provider-vibe-studio .cp-icon.idle { color: var(--vibe-muted); }
-kedge-provider-vibe-studio .cp-name { font-weight: 600; font-size: 0.85rem; }
-kedge-provider-vibe-studio .cp-reason { font-size: 0.8rem; }
+faros-provider-vibe-studio .cp-icon { font-size: 0.8rem; text-align: center; }
+faros-provider-vibe-studio .cp-icon.ok { color: var(--color-success, #2fd6a0); }
+faros-provider-vibe-studio .cp-icon.bad { color: var(--color-danger, #ff5d5d); }
+faros-provider-vibe-studio .cp-icon.warn { color: var(--color-warning, #f0a63a); }
+faros-provider-vibe-studio .cp-icon.idle { color: var(--vibe-muted); }
+faros-provider-vibe-studio .cp-name { font-weight: 600; font-size: 0.85rem; }
+faros-provider-vibe-studio .cp-reason { font-size: 0.8rem; }
 
 /* ── studio layout ──────────────────────────────────────────────────── */
 
-kedge-provider-vibe-studio .studio-grid {
+faros-provider-vibe-studio .studio-grid {
   display: grid;
   grid-template-columns: minmax(360px, 34rem) 1fr;
   gap: 1rem;
@@ -435,13 +435,13 @@ kedge-provider-vibe-studio .studio-grid {
 }
 
 @media (max-width: 900px) {
-  kedge-provider-vibe-studio .studio-grid { grid-template-columns: 1fr; height: auto; }
-  kedge-provider-vibe-studio .chat-pane { height: 60vh; }
-  kedge-provider-vibe-studio .side-pane { height: 70vh; }
+  faros-provider-vibe-studio .studio-grid { grid-template-columns: 1fr; height: auto; }
+  faros-provider-vibe-studio .chat-pane { height: 60vh; }
+  faros-provider-vibe-studio .side-pane { height: 70vh; }
 }
 
-kedge-provider-vibe-studio .chat-pane,
-kedge-provider-vibe-studio .side-pane {
+faros-provider-vibe-studio .chat-pane,
+faros-provider-vibe-studio .side-pane {
   display: flex;
   flex-direction: column;
   padding: 0;
@@ -451,7 +451,7 @@ kedge-provider-vibe-studio .side-pane {
 
 /* ── chat ───────────────────────────────────────────────────────────── */
 
-kedge-provider-vibe-studio .chat-scroll {
+faros-provider-vibe-studio .chat-scroll {
   flex: 1;
   overflow-y: auto;
   padding: 1rem;
@@ -462,12 +462,12 @@ kedge-provider-vibe-studio .chat-scroll {
   overscroll-behavior: contain;
 }
 
-kedge-provider-vibe-studio .chat-empty { margin: auto; text-align: center; max-width: 34ch; }
+faros-provider-vibe-studio .chat-empty { margin: auto; text-align: center; max-width: 34ch; }
 
-kedge-provider-vibe-studio .bubble-row { display: flex; flex-direction: column; align-items: flex-start; }
-kedge-provider-vibe-studio .bubble-row.user { align-items: flex-end; }
+faros-provider-vibe-studio .bubble-row { display: flex; flex-direction: column; align-items: flex-start; }
+faros-provider-vibe-studio .bubble-row.user { align-items: flex-end; }
 
-kedge-provider-vibe-studio .bubble {
+faros-provider-vibe-studio .bubble {
   max-width: 88%;
   padding: 0.55rem 0.85rem;
   border-radius: 14px;
@@ -476,25 +476,25 @@ kedge-provider-vibe-studio .bubble {
   overflow-wrap: anywhere;
 }
 
-kedge-provider-vibe-studio .bubble-row.user .bubble {
+faros-provider-vibe-studio .bubble-row.user .bubble {
   background: var(--vibe-accent);
   color: #fff;
   border-bottom-right-radius: 4px;
 }
 
-kedge-provider-vibe-studio .bubble-row.assistant .bubble {
+faros-provider-vibe-studio .bubble-row.assistant .bubble {
   background: var(--vibe-surface-2);
   border-bottom-left-radius: 4px;
 }
 
-kedge-provider-vibe-studio .stamp {
+faros-provider-vibe-studio .stamp {
   font-size: 0.68rem;
   color: var(--vibe-muted);
   margin-top: 0.15rem;
   padding: 0 0.3rem;
 }
 
-kedge-provider-vibe-studio .bubble pre.code {
+faros-provider-vibe-studio .bubble pre.code {
   background: var(--vibe-surface);
   border: 1px solid var(--vibe-border);
   border-radius: 6px;
@@ -505,7 +505,7 @@ kedge-provider-vibe-studio .bubble pre.code {
   overflow-x: auto;
 }
 
-kedge-provider-vibe-studio .bubble code {
+faros-provider-vibe-studio .bubble code {
   background: color-mix(in srgb, currentColor 10%, transparent);
   border-radius: 4px;
   padding: 0.05rem 0.3rem;
@@ -513,11 +513,11 @@ kedge-provider-vibe-studio .bubble code {
   font-size: 0.85em;
 }
 
-kedge-provider-vibe-studio .bubble-row.user .bubble code { background: rgba(255, 255, 255, 0.2); }
+faros-provider-vibe-studio .bubble-row.user .bubble code { background: rgba(255, 255, 255, 0.2); }
 
 /* ── the build ledger ───────────────────────────────────────────────── */
 
-kedge-provider-vibe-studio .ledger {
+faros-provider-vibe-studio .ledger {
   align-self: stretch;
   margin: 0.1rem 0 0.1rem 0.25rem;
   border-left: 2px solid var(--vibe-border);
@@ -525,7 +525,7 @@ kedge-provider-vibe-studio .ledger {
   font-family: var(--vibe-mono);
 }
 
-kedge-provider-vibe-studio .ledger summary {
+faros-provider-vibe-studio .ledger summary {
   cursor: pointer;
   font-size: 0.78rem;
   color: var(--vibe-muted);
@@ -533,13 +533,13 @@ kedge-provider-vibe-studio .ledger summary {
   list-style: none;
 }
 
-kedge-provider-vibe-studio .ledger summary::-webkit-details-marker { display: none; }
+faros-provider-vibe-studio .ledger summary::-webkit-details-marker { display: none; }
 
-kedge-provider-vibe-studio .ledger[open] summary { color: inherit; }
+faros-provider-vibe-studio .ledger[open] summary { color: inherit; }
 
-kedge-provider-vibe-studio .ledger ul { list-style: none; margin: 0.35rem 0 0; padding: 0; }
+faros-provider-vibe-studio .ledger ul { list-style: none; margin: 0.35rem 0 0; padding: 0; }
 
-kedge-provider-vibe-studio .ledger-row {
+faros-provider-vibe-studio .ledger-row {
   display: grid;
   grid-template-columns: 14px minmax(7ch, max-content) 1fr max-content;
   gap: 0.6rem;
@@ -548,20 +548,20 @@ kedge-provider-vibe-studio .ledger-row {
   color: var(--vibe-muted);
 }
 
-kedge-provider-vibe-studio .ledger-row .ledger-mark { color: var(--color-success, #2fd6a0); }
-kedge-provider-vibe-studio .ledger-row.failed { color: var(--color-danger, #ff5d5d); }
-kedge-provider-vibe-studio .ledger-row.failed .ledger-mark { color: var(--color-danger, #ff5d5d); }
-kedge-provider-vibe-studio .ledger-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+faros-provider-vibe-studio .ledger-row .ledger-mark { color: var(--color-success, #2fd6a0); }
+faros-provider-vibe-studio .ledger-row.failed { color: var(--color-danger, #ff5d5d); }
+faros-provider-vibe-studio .ledger-row.failed .ledger-mark { color: var(--color-danger, #ff5d5d); }
+faros-provider-vibe-studio .ledger-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-kedge-provider-vibe-studio .ledger-error {
+faros-provider-vibe-studio .ledger-error {
   font-size: 0.72rem;
   color: var(--color-danger, #ff5d5d);
   padding: 0 0 0.25rem 1.4rem;
   overflow-wrap: anywhere;
 }
-kedge-provider-vibe-studio .ledger-dur { font-variant-numeric: tabular-nums; }
+faros-provider-vibe-studio .ledger-dur { font-variant-numeric: tabular-nums; }
 
-kedge-provider-vibe-studio .tool-chip {
+faros-provider-vibe-studio .tool-chip {
   display: inline-block;
   font-size: 10px;
   font-weight: 600;
@@ -577,7 +577,7 @@ kedge-provider-vibe-studio .tool-chip {
 
 /* ── thinking strip + input ─────────────────────────────────────────── */
 
-kedge-provider-vibe-studio .thinking {
+faros-provider-vibe-studio .thinking {
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -587,16 +587,16 @@ kedge-provider-vibe-studio .thinking {
   color: var(--vibe-muted);
 }
 
-kedge-provider-vibe-studio .thinking-partial {
+faros-provider-vibe-studio .thinking-partial {
   flex: 1;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-kedge-provider-vibe-studio .thinking-time { font-variant-numeric: tabular-nums; font-family: var(--vibe-mono); }
+faros-provider-vibe-studio .thinking-time { font-variant-numeric: tabular-nums; font-family: var(--vibe-mono); }
 
-kedge-provider-vibe-studio .chat-input {
+faros-provider-vibe-studio .chat-input {
   display: flex;
   gap: 0.5rem;
   align-items: flex-end;
@@ -604,14 +604,14 @@ kedge-provider-vibe-studio .chat-input {
   border-top: 1px solid var(--vibe-border);
 }
 
-kedge-provider-vibe-studio .chat-input textarea {
+faros-provider-vibe-studio .chat-input textarea {
   flex: 1;
   margin: 0;
   max-height: 140px;
   line-height: 1.4;
 }
 
-kedge-provider-vibe-studio .chat-input button {
+faros-provider-vibe-studio .chat-input button {
   width: 2.4rem;
   height: 2.4rem;
   padding: 0;
@@ -622,7 +622,7 @@ kedge-provider-vibe-studio .chat-input button {
 
 /* ── right pane tabs ────────────────────────────────────────────────── */
 
-kedge-provider-vibe-studio .tabs {
+faros-provider-vibe-studio .tabs {
   display: flex;
   gap: 0.25rem;
   align-items: center;
@@ -630,7 +630,7 @@ kedge-provider-vibe-studio .tabs {
   border-bottom: 1px solid var(--vibe-border);
 }
 
-kedge-provider-vibe-studio .tab {
+faros-provider-vibe-studio .tab {
   background: transparent;
   color: var(--vibe-muted);
   border: none;
@@ -640,17 +640,17 @@ kedge-provider-vibe-studio .tab {
   box-shadow: none;
 }
 
-kedge-provider-vibe-studio .tab.active {
+faros-provider-vibe-studio .tab.active {
   background: var(--vibe-surface-2);
   color: inherit;
   font-weight: 600;
 }
 
-kedge-provider-vibe-studio .tab-actions { margin-left: auto; display: flex; gap: 0.35rem; }
+faros-provider-vibe-studio .tab-actions { margin-left: auto; display: flex; gap: 0.35rem; }
 
-kedge-provider-vibe-studio .tab-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+faros-provider-vibe-studio .tab-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
-kedge-provider-vibe-studio .tab-placeholder {
+faros-provider-vibe-studio .tab-placeholder {
   margin: auto;
   display: flex;
   flex-direction: column;
@@ -660,7 +660,7 @@ kedge-provider-vibe-studio .tab-placeholder {
   text-align: center;
 }
 
-kedge-provider-vibe-studio iframe.preview {
+faros-provider-vibe-studio iframe.preview {
   flex: 1;
   width: 100%;
   border: none;
@@ -669,20 +669,20 @@ kedge-provider-vibe-studio iframe.preview {
 
 /* ── code tab ───────────────────────────────────────────────────────── */
 
-kedge-provider-vibe-studio .code-split {
+faros-provider-vibe-studio .code-split {
   display: grid;
   grid-template-columns: minmax(160px, 15rem) 1fr;
   flex: 1;
   min-height: 0;
 }
 
-kedge-provider-vibe-studio .file-tree {
+faros-provider-vibe-studio .file-tree {
   border-right: 1px solid var(--vibe-border);
   overflow-y: auto;
   padding: 0.5rem 0;
 }
 
-kedge-provider-vibe-studio .file-row {
+faros-provider-vibe-studio .file-row {
   display: block;
   width: 100%;
   text-align: left;
@@ -699,37 +699,37 @@ kedge-provider-vibe-studio .file-row {
   white-space: nowrap;
 }
 
-kedge-provider-vibe-studio .file-row:hover { background: var(--vibe-surface-2); }
-kedge-provider-vibe-studio .file-row.active { background: var(--vibe-surface-2); font-weight: 600; }
+faros-provider-vibe-studio .file-row:hover { background: var(--vibe-surface-2); }
+faros-provider-vibe-studio .file-row.active { background: var(--vibe-surface-2); font-weight: 600; }
 
-kedge-provider-vibe-studio .file-view { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+faros-provider-vibe-studio .file-view { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
-kedge-provider-vibe-studio .file-head {
+faros-provider-vibe-studio .file-head {
   padding: 0.5rem 0.9rem;
   border-bottom: 1px solid var(--vibe-border);
   font-size: 0.78rem;
 }
 
-kedge-provider-vibe-studio .file-head {
+faros-provider-vibe-studio .file-head {
   display: flex;
   align-items: center;
   gap: 0.6rem;
 }
 
-kedge-provider-vibe-studio .file-head code { flex: 1; overflow: hidden; text-overflow: ellipsis; }
-kedge-provider-vibe-studio .file-state { font-size: 0.72rem; white-space: nowrap; }
-kedge-provider-vibe-studio .file-head button { padding: 0.2rem 0.7rem; font-size: 0.78rem; }
+faros-provider-vibe-studio .file-head code { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+faros-provider-vibe-studio .file-state { font-size: 0.72rem; white-space: nowrap; }
+faros-provider-vibe-studio .file-head button { padding: 0.2rem 0.7rem; font-size: 0.78rem; }
 
-kedge-provider-vibe-studio .editor-mount {
+faros-provider-vibe-studio .editor-mount {
   flex: 1;
   min-height: 0;
   overflow: hidden;
 }
 
-kedge-provider-vibe-studio .editor-mount .cm-editor { height: 100%; }
-kedge-provider-vibe-studio .editor-mount .cm-editor.cm-focused { outline: none; }
+faros-provider-vibe-studio .editor-mount .cm-editor { height: 100%; }
+faros-provider-vibe-studio .editor-mount .cm-editor.cm-focused { outline: none; }
 
-kedge-provider-vibe-studio .code-body {
+faros-provider-vibe-studio .code-body {
   flex: 1;
   margin: 0;
   padding: 0.9rem;
@@ -742,31 +742,31 @@ kedge-provider-vibe-studio .code-body {
 
 /* ── status tab facts ───────────────────────────────────────────────── */
 
-kedge-provider-vibe-studio dl.facts { margin-top: 1rem; }
+faros-provider-vibe-studio dl.facts { margin-top: 1rem; }
 
 /* ── ship panel (promotion) ─────────────────────────────────────────── */
 
-kedge-provider-vibe-studio .ship {
+faros-provider-vibe-studio .ship {
   margin-top: 1.25rem;
   padding-top: 1rem;
   border-top: 1px solid var(--vibe-border);
 }
-kedge-provider-vibe-studio .ship h3 { margin: 0 0 0.25rem; font-size: 0.95rem; }
-kedge-provider-vibe-studio .ship p.muted { margin: 0 0 0.75rem; }
-kedge-provider-vibe-studio .ship-field {
+faros-provider-vibe-studio .ship h3 { margin: 0 0 0.25rem; font-size: 0.95rem; }
+faros-provider-vibe-studio .ship p.muted { margin: 0 0 0.75rem; }
+faros-provider-vibe-studio .ship-field {
   display: grid;
   grid-template-columns: 5.5rem 1fr;
   align-items: center;
   gap: 0.15rem 0.5rem;
   margin-bottom: 0.5rem;
 }
-kedge-provider-vibe-studio .ship-field span {
+faros-provider-vibe-studio .ship-field span {
   font-family: var(--vibe-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 0.8rem;
 }
-kedge-provider-vibe-studio .ship-field input { margin: 0; width: 100%; }
-kedge-provider-vibe-studio .ship .row { flex-wrap: wrap; }
-kedge-provider-vibe-studio .ship-msg {
+faros-provider-vibe-studio .ship-field input { margin: 0; width: 100%; }
+faros-provider-vibe-studio .ship .row { flex-wrap: wrap; }
+faros-provider-vibe-studio .ship-msg {
   margin: 0.6rem 0 0;
   padding: 0.5rem 0.6rem;
   border-radius: 6px;
@@ -774,10 +774,10 @@ kedge-provider-vibe-studio .ship-msg {
   font-size: 0.85rem;
 }
 
-kedge-provider-vibe-studio .ship-origin {
+faros-provider-vibe-studio .ship-origin {
   grid-column: 2;
   font-style: normal;
   font-size: 0.75rem;
   opacity: 0.65;
 }
-kedge-provider-vibe-studio .ship-origin.ok { color: var(--vibe-accent); opacity: 0.9; }
+faros-provider-vibe-studio .ship-origin.ok { color: var(--vibe-accent); opacity: 0.9; }

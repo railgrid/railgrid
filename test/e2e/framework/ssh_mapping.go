@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package framework provides shared test infrastructure for kedge e2e tests.
+// Package framework provides shared test infrastructure for faros e2e tests.
 package framework
 
 import (

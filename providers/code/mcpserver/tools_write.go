@@ -249,7 +249,7 @@ func registerWriteTools(srv *mcp.Server, deps Deps, ident identity) {
 	})
 }
 
-// createCR creates a cluster-scoped CR in group code.kedge.faros.sh.
+// createCR creates a cluster-scoped CR in group code.faros.sh.
 func createCR(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, kind, name string, spec map[string]any) (*mcp.CallToolResult, createOutput, error) {
 	if name == "" {
 		return nil, createOutput{}, fmt.Errorf("name is required")
@@ -316,7 +316,7 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 	if err != nil {
 		_ = bundles.Delete(ctx, tenantScope, bundle.Name, bundle.Digest)
 		if apierrors.IsNotFound(err) {
-			return nil, commitFilesOutput{}, fmt.Errorf("create RepositoryCommit: RepositoryCommit API is not available in this workspace; enable or re-register the Code provider so repositorycommits.code.kedge.faros.sh is published: %w", err)
+			return nil, commitFilesOutput{}, fmt.Errorf("create RepositoryCommit: RepositoryCommit API is not available in this workspace; enable or re-register the Code provider so repositorycommits.code.faros.sh is published: %w", err)
 		}
 		return nil, commitFilesOutput{}, fmt.Errorf("create RepositoryCommit: %w", err)
 	}
@@ -334,7 +334,7 @@ func commitFiles(ctx context.Context, dyn dynamic.Interface, bundles commitbundl
 	// Remove the staging copy only when it lives under a different scope
 	// than the controller will read. The RepositoryCommit controller reads
 	// the bundle under storageScope (the commit's kcp.io/cluster ID). When
-	// X-Kedge-Tenant and X-Kedge-Cluster resolve to the same scope — e.g.
+	// X-Faros-Tenant and X-Faros-Cluster resolve to the same scope — e.g.
 	// the MCP federation forwards the logical-cluster ID as both — then
 	// tenantScope == storageScope, and deleting here would remove the only
 	// bundle copy, leaving the controller to fail with "bundle not found".

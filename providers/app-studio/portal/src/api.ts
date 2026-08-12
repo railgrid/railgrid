@@ -1,7 +1,7 @@
 import type {
   DevelopmentTemplate,
   ImportRepository,
-  KedgeContext,
+  FarosContext,
   ListResponse,
   Project,
   ProjectHydrateResult,
@@ -75,24 +75,24 @@ function tenantSelection(): TenantSelection {
 // providerBase resolves the hub backend-proxy prefix for this provider from the
 // micro-frontend basePath the host injects (/ui/providers/app-studio →
 // /services/providers/app-studio). The hub strips that prefix, injects the
-// verified X-Kedge-Tenant/X-Kedge-User headers, and forwards to the provider's
+// verified X-Faros-Tenant/X-Faros-User headers, and forwards to the provider's
 // /api/* routes. Falls back to the well-known prefix if no basePath arrived yet.
-function providerBase(ctx: KedgeContext | null): string {
+function providerBase(ctx: FarosContext | null): string {
   const derived = ctx?.basePath ? serviceBase(ctx.basePath) : ''
   return (derived || '/services/providers/app-studio').replace(/\/$/, '')
 }
 
-function baseURL(ctx: KedgeContext | null): string {
+function baseURL(ctx: FarosContext | null): string {
   const t = tenantSelection()
   if (!t.orgUUID || !t.workspaceUUID) {
     throw new Error('select an organization and workspace first')
   }
-  // org/workspace travel as X-Kedge-Org / X-Kedge-Workspace headers (see
+  // org/workspace travel as X-Faros-Org / X-Faros-Workspace headers (see
   // request()); the hub resolves them to the workspace the provider acts on.
   return `${providerBase(ctx)}/api/projects`
 }
 
-async function request<T>(ctx: KedgeContext | null, method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(ctx: FarosContext | null, method: string, path: string, body?: unknown): Promise<T> {
   const headers = tenantHeaders({ token: ctx?.token, json: body !== undefined })
 
   const res = await fetch(path, {
@@ -130,7 +130,7 @@ function isProjectAPIInitializingResponse(status: number, reason: string, messag
 }
 
 async function requestAssistantThreadEventStream(
-  ctx: KedgeContext | null,
+  ctx: FarosContext | null,
   name: string,
   threadID: string,
   afterSequence: number,
@@ -318,18 +318,18 @@ function normalizeExportPackage(value: unknown, fallback?: Record<string, unknow
 }
 
 export const api = {
-  async listProviders(ctx: KedgeContext | null): Promise<ProviderItem[]> {
+  async listProviders(ctx: FarosContext | null): Promise<ProviderItem[]> {
     const body = await request<ListResponse<ProviderItem>>(ctx, 'GET', '/api/providers')
     return body.items ?? []
   },
 
-  async listProjects(ctx: KedgeContext | null): Promise<Project[]> {
+  async listProjects(ctx: FarosContext | null): Promise<Project[]> {
     const body = await request<ListResponse<Project>>(ctx, 'GET', baseURL(ctx))
     return body.items ?? []
   },
 
   async createProject(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     body: {
       displayName?: string
       description?: string
@@ -348,7 +348,7 @@ export const api = {
   // …) via onStatus, and resolves with the created Project. Same inputs as
   // createProject; the caller starts the first assistant turn afterward.
   async createProjectStream(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     body: {
       displayName?: string
       description?: string
@@ -418,7 +418,7 @@ export const api = {
   // template, whether starter code will be attached) WITHOUT creating —
   // the wizard's confirm step. See ProjectPlan in the backend.
   async planProject(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     body: { prompt?: string; templateName?: string },
   ): Promise<ProjectPlan> {
     return request<ProjectPlan>(ctx, 'POST', `${baseURL(ctx)}/plan`, body)
@@ -427,7 +427,7 @@ export const api = {
   // reseedScaffold re-attaches the template's starter code to an empty
   // workspace (retry after a failed seed, or seed a legacy project).
   async reseedScaffold(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
   ): Promise<{ template: string; scaffold: { repository: string; ref?: string }; seeded: number }> {
     return request(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/scaffold`, {})
@@ -435,12 +435,12 @@ export const api = {
 
   // listProjectFiles returns the live dev workspace file tree (flat, sorted
   // paths with sizes) for the code explorer.
-  async listProjectFiles(ctx: KedgeContext | null, name: string): Promise<ProjectFileList> {
+  async listProjectFiles(ctx: FarosContext | null, name: string): Promise<ProjectFileList> {
     return request<ProjectFileList>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/files`)
   },
 
   // readProjectFile returns one workspace file's bounded content.
-  async readProjectFile(ctx: KedgeContext | null, name: string, path: string): Promise<ProjectFileContent> {
+  async readProjectFile(ctx: FarosContext | null, name: string, path: string): Promise<ProjectFileContent> {
     return request<ProjectFileContent>(
       ctx,
       'GET',
@@ -448,7 +448,7 @@ export const api = {
     )
   },
 
-  async listDevelopmentTemplates(ctx: KedgeContext | null): Promise<DevelopmentTemplate[]> {
+  async listDevelopmentTemplates(ctx: FarosContext | null): Promise<DevelopmentTemplate[]> {
     const body = await request<{ templates: DevelopmentTemplate[] }>(
       ctx,
       'GET',
@@ -457,7 +457,7 @@ export const api = {
     return body.templates ?? []
   },
 
-  async listImportRepositories(ctx: KedgeContext | null): Promise<ImportRepository[]> {
+  async listImportRepositories(ctx: FarosContext | null): Promise<ImportRepository[]> {
     const body = await request<{ repositories: ImportRepository[] }>(
       ctx,
       'GET',
@@ -467,7 +467,7 @@ export const api = {
   },
 
   async setProjectTemplate(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     template: string,
   ): Promise<{ template: string; components: Record<string, string> }> {
@@ -479,7 +479,7 @@ export const api = {
     )
   },
 
-  async hydrateWorkspace(ctx: KedgeContext | null, name: string, ref?: string): Promise<ProjectHydrateResult> {
+  async hydrateWorkspace(ctx: FarosContext | null, name: string, ref?: string): Promise<ProjectHydrateResult> {
     return request<ProjectHydrateResult>(
       ctx,
       'POST',
@@ -488,7 +488,7 @@ export const api = {
     )
   },
 
-  async getPromotion(ctx: KedgeContext | null, name: string): Promise<ProjectPromotionReadiness> {
+  async getPromotion(ctx: FarosContext | null, name: string): Promise<ProjectPromotionReadiness> {
     return request<ProjectPromotionReadiness>(
       ctx,
       'GET',
@@ -496,7 +496,7 @@ export const api = {
     )
   },
 
-  async getCheckpoints(ctx: KedgeContext | null, name: string): Promise<ProjectCheckpoints> {
+  async getCheckpoints(ctx: FarosContext | null, name: string): Promise<ProjectCheckpoints> {
     return request<ProjectCheckpoints>(
       ctx,
       'GET',
@@ -505,7 +505,7 @@ export const api = {
   },
 
   async promoteProject(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     values?: Record<string, unknown>,
   ): Promise<ProjectPromoteResult> {
@@ -517,7 +517,7 @@ export const api = {
     )
   },
 
-  async getPublishing(ctx: KedgeContext | null, name: string): Promise<ProjectPublishing> {
+  async getPublishing(ctx: FarosContext | null, name: string): Promise<ProjectPublishing> {
     return request<ProjectPublishing>(
       ctx,
       'GET',
@@ -526,7 +526,7 @@ export const api = {
   },
 
   async publishProject(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     mode: ProjectPublishingMode,
   ): Promise<ProjectPublishing> {
@@ -538,7 +538,7 @@ export const api = {
     )
   },
 
-  async unpublishProject(ctx: KedgeContext | null, name: string): Promise<ProjectPublishing> {
+  async unpublishProject(ctx: FarosContext | null, name: string): Promise<ProjectPublishing> {
     return request<ProjectPublishing>(
       ctx,
       'DELETE',
@@ -546,7 +546,7 @@ export const api = {
     )
   },
 
-  async listPublishingMembers(ctx: KedgeContext | null, name: string): Promise<ProjectPublishingMember[]> {
+  async listPublishingMembers(ctx: FarosContext | null, name: string): Promise<ProjectPublishingMember[]> {
     const body = await request<{ items?: ProjectPublishingMember[] }>(
       ctx,
       'GET',
@@ -555,7 +555,7 @@ export const api = {
     return body.items ?? []
   },
 
-  async listPublishingGrants(ctx: KedgeContext | null, name: string): Promise<ProjectPublishingGrant[]> {
+  async listPublishingGrants(ctx: FarosContext | null, name: string): Promise<ProjectPublishingGrant[]> {
     const body = await request<{ items?: ProjectPublishingGrant[] }>(
       ctx,
       'GET',
@@ -565,7 +565,7 @@ export const api = {
   },
 
   async grantPublishingAccess(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     user: string,
     invite = false,
@@ -581,7 +581,7 @@ export const api = {
     )
   },
 
-  async revokePublishingAccess(ctx: KedgeContext | null, name: string, grant: string): Promise<ProjectPublishingGrant> {
+  async revokePublishingAccess(ctx: FarosContext | null, name: string, grant: string): Promise<ProjectPublishingGrant> {
     return request<ProjectPublishingGrant>(
       ctx,
       'POST',
@@ -589,11 +589,11 @@ export const api = {
     )
   },
 
-  async getProjectCreateReadiness(ctx: KedgeContext | null): Promise<ProjectCreateReadiness> {
+  async getProjectCreateReadiness(ctx: FarosContext | null): Promise<ProjectCreateReadiness> {
     return request<ProjectCreateReadiness>(ctx, 'GET', `${baseURL(ctx)}/create-readiness`)
   },
 
-  async listAssistantSkills(ctx: KedgeContext | null, name: string): Promise<ProjectAssistantSkillsResponse> {
+  async listAssistantSkills(ctx: FarosContext | null, name: string): Promise<ProjectAssistantSkillsResponse> {
     const body = await request<ProjectAssistantSkillsResponse>(
       ctx,
       'GET',
@@ -606,7 +606,7 @@ export const api = {
     }
   },
 
-  async getAssistantSkill(ctx: KedgeContext | null, name: string, packageName: string): Promise<ProjectAssistantSkillDetail> {
+  async getAssistantSkill(ctx: FarosContext | null, name: string, packageName: string): Promise<ProjectAssistantSkillDetail> {
     const body = await request<ProjectAssistantSkillDetail>(
       ctx,
       'GET',
@@ -616,7 +616,7 @@ export const api = {
   },
 
   /** Fetch author-visible detail for a catalog entry by its qualified ID. */
-  async getAssistantSkillDetail(ctx: KedgeContext | null, name: string, id: string): Promise<ProjectAssistantSkillDetail> {
+  async getAssistantSkillDetail(ctx: FarosContext | null, name: string, id: string): Promise<ProjectAssistantSkillDetail> {
     const body = await request<ProjectAssistantSkillDetail>(
       ctx,
       'GET',
@@ -626,7 +626,7 @@ export const api = {
   },
 
   async createAssistantSkill(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     body: ProjectAssistantSkillPackage,
   ): Promise<ProjectAssistantSkillDetail> {
@@ -641,7 +641,7 @@ export const api = {
 
   /** Import uses the same bounded package payload as create, on its dedicated route. */
   async importAssistantSkill(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     body: ProjectAssistantSkillPackage,
   ): Promise<ProjectAssistantSkillDetail> {
@@ -655,7 +655,7 @@ export const api = {
   },
 
   async updateAssistantSkill(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     packageName: string,
     body: ProjectAssistantSkillPackage,
@@ -671,7 +671,7 @@ export const api = {
   },
 
   async setAssistantSkillActivation(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     id: string,
     enabled: boolean,
@@ -685,7 +685,7 @@ export const api = {
     return normalizeAssistantSkillDetail(result)
   },
 
-  async exportAssistantSkill(ctx: KedgeContext | null, name: string, packageName: string): Promise<ProjectAssistantSkillExport> {
+  async exportAssistantSkill(ctx: FarosContext | null, name: string, packageName: string): Promise<ProjectAssistantSkillExport> {
     const result = await request<Record<string, unknown>>(
       ctx,
       'GET',
@@ -694,7 +694,7 @@ export const api = {
     return normalizeAssistantSkillExport(result)
   },
 
-  async deleteAssistantSkill(ctx: KedgeContext | null, name: string, packageName: string, expectedDigest: string): Promise<void> {
+  async deleteAssistantSkill(ctx: FarosContext | null, name: string, packageName: string, expectedDigest: string): Promise<void> {
     await request<null>(
       ctx,
       'DELETE',
@@ -702,22 +702,22 @@ export const api = {
     )
   },
 
-  async getLLMSettings(ctx: KedgeContext | null): Promise<ProjectLLMSettings> {
+  async getLLMSettings(ctx: FarosContext | null): Promise<ProjectLLMSettings> {
     return request<ProjectLLMSettings>(ctx, 'GET', `${baseURL(ctx)}/llm-settings`)
   },
 
   async patchLLMSettings(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     body: { provider?: string; baseURL?: string; model?: string; apiKey?: string },
   ): Promise<ProjectLLMSettings> {
     return request<ProjectLLMSettings>(ctx, 'PATCH', `${baseURL(ctx)}/llm-settings`, body)
   },
 
-  async getProject(ctx: KedgeContext | null, name: string): Promise<Project> {
+  async getProject(ctx: FarosContext | null, name: string): Promise<Project> {
     return request<Project>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}`)
   },
 
-  async listProjectIntegrations(ctx: KedgeContext | null, name: string): Promise<ProjectIntegration[]> {
+  async listProjectIntegrations(ctx: FarosContext | null, name: string): Promise<ProjectIntegration[]> {
     const body = await request<ListResponse<ProjectIntegration>>(
       ctx,
       'GET',
@@ -727,7 +727,7 @@ export const api = {
   },
 
   async createProjectIntegration(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     body: {
       alias: string
@@ -747,7 +747,7 @@ export const api = {
   },
 
   async patchProjectIntegration(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     alias: string,
     body: { allowedActions: ProjectProviderActionGrant[]; consentAccepted?: boolean },
@@ -760,7 +760,7 @@ export const api = {
     )
   },
 
-  async removeProjectIntegration(ctx: KedgeContext | null, name: string, alias: string): Promise<void> {
+  async removeProjectIntegration(ctx: FarosContext | null, name: string, alias: string): Promise<void> {
     await request<null>(
       ctx,
       'DELETE',
@@ -769,26 +769,26 @@ export const api = {
   },
 
   async patchProject(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     body: { displayName?: string; description?: string },
   ): Promise<Project> {
     return request<Project>(ctx, 'PATCH', `${baseURL(ctx)}/${encodeURIComponent(name)}`, body)
   },
 
-  async deleteProject(ctx: KedgeContext | null, name: string): Promise<void> {
+  async deleteProject(ctx: FarosContext | null, name: string): Promise<void> {
     await request<null>(ctx, 'DELETE', `${baseURL(ctx)}/${encodeURIComponent(name)}`)
   },
 
-  async syncDevelopment(ctx: KedgeContext | null, name: string): Promise<unknown> {
+  async syncDevelopment(ctx: FarosContext | null, name: string): Promise<unknown> {
     return request<unknown>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/sync-development`)
   },
 
-  async authorizeDevelopmentPreview(ctx: KedgeContext | null, name: string): Promise<unknown> {
+  async authorizeDevelopmentPreview(ctx: FarosContext | null, name: string): Promise<unknown> {
     return request<unknown>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/authorize-development-preview`)
   },
 
-  async listAssistantThreads(ctx: KedgeContext | null, name: string, includeArchived = false): Promise<ProjectAssistantThread[]> {
+  async listAssistantThreads(ctx: FarosContext | null, name: string, includeArchived = false): Promise<ProjectAssistantThread[]> {
     const page = await request<{ items: ProjectAssistantThread[] }>(
       ctx,
       'GET',
@@ -797,12 +797,12 @@ export const api = {
     return page.items ?? []
   },
 
-  async createAssistantThread(ctx: KedgeContext | null, name: string, title?: string): Promise<ProjectAssistantThread> {
+  async createAssistantThread(ctx: FarosContext | null, name: string, title?: string): Promise<ProjectAssistantThread> {
     return request<ProjectAssistantThread>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads`, { title })
   },
 
   async patchAssistantThread(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     threadID: string,
     body: { title: string },
@@ -815,7 +815,7 @@ export const api = {
     )
   },
 
-  async deleteAssistantThread(ctx: KedgeContext | null, name: string, threadID: string): Promise<void> {
+  async deleteAssistantThread(ctx: FarosContext | null, name: string, threadID: string): Promise<void> {
     await request<null>(
       ctx,
       'DELETE',
@@ -823,20 +823,20 @@ export const api = {
     )
   },
 
-  async listAssistantThreadItems(ctx: KedgeContext | null, name: string, threadID: string): Promise<ProjectAssistantThreadItem[]> {
+  async listAssistantThreadItems(ctx: FarosContext | null, name: string, threadID: string): Promise<ProjectAssistantThreadItem[]> {
     const body = await request<{ items: ProjectAssistantThreadItem[] }>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/items`)
     return body.items ?? []
   },
 
-  async startAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string, body: { content: string; clientUserMessageID: string; collaborationMode: ProjectAssistantRunMode; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+  async startAssistantTurn(ctx: FarosContext | null, name: string, threadID: string, body: { content: string; clientUserMessageID: string; collaborationMode: ProjectAssistantRunMode; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
     return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns`, body)
   },
 
-  async startAssistantReview(ctx: KedgeContext | null, name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+  async startAssistantReview(ctx: FarosContext | null, name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
     return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/reviews`, body)
   },
 
-  async getActiveAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string): Promise<ProjectAssistantTurn | undefined> {
+  async getActiveAssistantTurn(ctx: FarosContext | null, name: string, threadID: string): Promise<ProjectAssistantTurn | undefined> {
     const headers = tenantHeaders({ token: ctx?.token })
     const res = await fetch(`${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/active`, { credentials: 'same-origin', headers })
     if (res.status === 204) return undefined
@@ -844,27 +844,27 @@ export const api = {
     return res.json() as Promise<ProjectAssistantTurn>
   },
 
-  async steerAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string, turnID: string, body: { content: string; clientUserMessageID: string }): Promise<ProjectAssistantTurn> {
+  async steerAssistantTurn(ctx: FarosContext | null, name: string, threadID: string, turnID: string, body: { content: string; clientUserMessageID: string }): Promise<ProjectAssistantTurn> {
     return request<ProjectAssistantTurn>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/steer`, body)
   },
 
-  async interruptAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string, turnID: string, clientRequestID: string): Promise<{ turnID: string; status: ProjectAssistantRunStatus }> {
+  async interruptAssistantTurn(ctx: FarosContext | null, name: string, threadID: string, turnID: string, clientRequestID: string): Promise<{ turnID: string; status: ProjectAssistantRunStatus }> {
     return request<{ turnID: string; status: ProjectAssistantRunStatus }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/interrupt`, { clientRequestID })
   },
 
-  async continueAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string, turnID: string, body: { content?: string; clientUserMessageID: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }> {
+  async continueAssistantTurn(ctx: FarosContext | null, name: string, threadID: string, turnID: string, body: { content?: string; clientUserMessageID: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }> {
     return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn; continuationOfTurnID?: string }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/continue`, body)
   },
 
-  async respondAssistantTurn(ctx: KedgeContext | null, name: string, threadID: string, turnID: string, kind: 'approval' | 'input', body: { requestID: string; decision?: 'allow' | 'deny'; answer?: string; answers?: Record<string, { answers: string[] }> }): Promise<ProjectAssistantTurn> {
+  async respondAssistantTurn(ctx: FarosContext | null, name: string, threadID: string, turnID: string, kind: 'approval' | 'input', body: { requestID: string; decision?: 'allow' | 'deny'; answer?: string; answers?: Record<string, { answers: string[] }> }): Promise<ProjectAssistantTurn> {
     return request<ProjectAssistantTurn>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns/${encodeURIComponent(turnID)}/${kind}`, body)
   },
 
-  async streamAssistantThread(ctx: KedgeContext | null, name: string, threadID: string, afterSequence: number, onEvent: (event: ProjectAssistantThreadEvent) => void, signal?: AbortSignal): Promise<void> {
+  async streamAssistantThread(ctx: FarosContext | null, name: string, threadID: string, afterSequence: number, onEvent: (event: ProjectAssistantThreadEvent) => void, signal?: AbortSignal): Promise<void> {
     return requestAssistantThreadEventStream(ctx, name, threadID, afterSequence, onEvent, signal)
   },
 
-  async getAssistantApprovalMode(ctx: KedgeContext | null, name: string): Promise<ProjectAssistantApprovalPreference> {
+  async getAssistantApprovalMode(ctx: FarosContext | null, name: string): Promise<ProjectAssistantApprovalPreference> {
     return request<ProjectAssistantApprovalPreference>(
       ctx,
       'GET',
@@ -873,7 +873,7 @@ export const api = {
   },
 
   async patchAssistantApprovalMode(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     mode: ProjectAssistantApprovalMode,
   ): Promise<ProjectAssistantApprovalPreference> {
@@ -886,7 +886,7 @@ export const api = {
   },
 
   async createPreviewConsoleSession(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     generation: string,
   ): Promise<PreviewConsoleSession> {
@@ -899,7 +899,7 @@ export const api = {
   },
 
   async uploadPreviewConsoleEvents(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     sessionID: string,
     generation: string,
@@ -915,7 +915,7 @@ export const api = {
   },
 
   async deletePreviewConsoleSession(
-    ctx: KedgeContext | null,
+    ctx: FarosContext | null,
     name: string,
     sessionID: string,
   ): Promise<void> {

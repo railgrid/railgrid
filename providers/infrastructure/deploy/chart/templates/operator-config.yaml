@@ -33,7 +33,7 @@ stringData:
 {{- end }}
 # The InfrastructureProvider CR the operator reconciles. Image versions and the
 # kro release config live here so upgrades are a CR edit (or a helm value bump).
-apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+apiVersion: infrastructure.faros.sh/v1alpha1
 kind: InfrastructureProvider
 metadata:
   name: {{ include "infrastructure.fullname" . }}
@@ -85,7 +85,7 @@ spec:
     port: {{ .Values.operator.provider.port }}
   {{- if or .Values.operator.application.baseDomain .Values.operator.application.gateway.name .Values.operator.application.gateway.namespace }}
   # Exposure layer for the `application` template (serve container's
-  # KEDGE_APP_BASE_DOMAIN / KEDGE_GATEWAY_NAME / KEDGE_GATEWAY_NAMESPACE).
+  # FAROS_APP_BASE_DOMAIN / FAROS_GATEWAY_NAME / FAROS_GATEWAY_NAMESPACE).
   # baseDomain gates the feature.
   application:
     {{- with .Values.operator.application.baseDomain }}

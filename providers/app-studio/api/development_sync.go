@@ -358,7 +358,7 @@ func routeProjectSyncDeletedPaths(paths []string, components map[string]projectT
 // immediately (or never starts), the port stays closed, and the only symptom is
 // an app that "looks up" while every request to it fails.
 //
-// Keyed by the toolchain half of the template's ${kedge.devImage.<toolchain>}
+// Keyed by the toolchain half of the template's ${faros.devImage.<toolchain>}
 // token. A toolchain absent from this map is not validated — an unknown
 // toolchain must never block a sync, since the template, not App Studio, is the
 // authority on what its sandbox can run.

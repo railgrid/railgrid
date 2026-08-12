@@ -9,7 +9,7 @@
 // Package core wires the embedded kuery engine: SQL store, query engine,
 // multi-cluster sync controller, and the stale-cluster garbage collector.
 // The engagement controller feeds clusters in; the query API and MCP tools
-// read out. See docs/kuery-provider-architecture.md (kedge repo).
+// read out. See docs/kuery-provider-architecture.md (faros repo).
 package core
 
 import (

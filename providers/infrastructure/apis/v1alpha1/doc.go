@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 // +k8s:deepcopy-gen=package,register
-// +groupName=infrastructure.kedge.faros.sh
+// +groupName=infrastructure.faros.sh
 
 // Package v1alpha1 contains the platform-facing API for the
 // infrastructure provider — a small, backend-neutral catalog system

@@ -8,9 +8,9 @@ import type {
   Warehouse,
 } from './types'
 
-const GROUP = 'databricks.kedge.faros.sh'
+const GROUP = 'databricks.faros.sh'
 const VERSION = 'v1alpha1'
-const GRAPHQL_GROUP = 'databricks_kedge_faros_sh'
+const GRAPHQL_GROUP = 'databricks_faros_sh'
 const DEFAULT_SECRET_NAMESPACE = 'default'
 const DEFAULT_SECRET_KEY = 'token'
 
@@ -73,8 +73,8 @@ export function setTenantSelection(org?: string | null, workspace?: string | nul
 function serviceHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { Accept: 'application/json', ...(extra ?? {}) }
   if (bearerToken) headers.Authorization = 'Bearer ' + bearerToken
-  if (orgUUID) headers['X-Kedge-Org'] = orgUUID
-  if (workspaceUUID) headers['X-Kedge-Workspace'] = workspaceUUID
+  if (orgUUID) headers['X-Faros-Org'] = orgUUID
+  if (workspaceUUID) headers['X-Faros-Workspace'] = workspaceUUID
   return headers
 }
 
@@ -262,20 +262,20 @@ const F_TABLE = `${GQL_META} spec { connectionRef warehouseRef catalog schema ta
 
 async function gqlList(kind: string, fields: string): Promise<RawCR[]> {
   const query = `query { ${GRAPHQL_GROUP} { ${VERSION} { ${kind} { items { ${fields} } } } } }`
-  const data = await graphqlQuery<{ databricks_kedge_faros_sh?: { v1alpha1?: Record<string, { items?: RawCR[] }> } }>(
+  const data = await graphqlQuery<{ databricks_faros_sh?: { v1alpha1?: Record<string, { items?: RawCR[] }> } }>(
     query,
     {},
   )
-  return data.databricks_kedge_faros_sh?.v1alpha1?.[kind]?.items ?? []
+  return data.databricks_faros_sh?.v1alpha1?.[kind]?.items ?? []
 }
 
 async function gqlGet(kind: string, name: string, fields: string): Promise<RawCR> {
   const query = `query($n: String!) { ${GRAPHQL_GROUP} { ${VERSION} { ${kind}(name: $n) { ${fields} } } } }`
-  const data = await graphqlQuery<{ databricks_kedge_faros_sh?: { v1alpha1?: Record<string, RawCR | null> } }>(
+  const data = await graphqlQuery<{ databricks_faros_sh?: { v1alpha1?: Record<string, RawCR | null> } }>(
     query,
     { n: name },
   )
-  const obj = data.databricks_kedge_faros_sh?.v1alpha1?.[kind]
+  const obj = data.databricks_faros_sh?.v1alpha1?.[kind]
   if (!obj) throw <ErrorResponse>{ reason: 'NotFound', message: `${kind} "${name}" not found` }
   return obj
 }

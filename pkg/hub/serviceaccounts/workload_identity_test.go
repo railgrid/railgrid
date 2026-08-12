@@ -32,13 +32,13 @@ func TestEnsureWorkloadIdentityIsDeterministicScopedAndShortLived(t *testing.T) 
 	defer resetTestClientset()
 
 	scope := WorkloadIdentityScope{
-		TenantPath:  "root:kedge:tenants:org:workspace",
+		TenantPath:  "root:faros:tenants:org:workspace",
 		Project:     "project",
 		ProjectUID:  "project-uid",
 		Environment: "development",
 		Instance:    "project-dev",
 		ProviderResources: []ProviderResourceScope{{
-			APIVersion: "example.kedge.faros.sh/v1alpha1",
+			APIVersion: "example.faros.sh/v1alpha1",
 			Kind:       "Example",
 			Resource:   "examples",
 			Name:       "example",
@@ -115,7 +115,7 @@ func TestEnsureWorkloadIdentityIsDeterministicScopedAndShortLived(t *testing.T) 
 }
 
 func TestWorkloadServiceAccountNameChangesWhenProjectUIDChanges(t *testing.T) {
-	scope := WorkloadIdentityScope{TenantPath: "root:kedge:tenants:o:w", Project: "p", ProjectUID: "uid-a", Environment: "development", Instance: "p-dev"}
+	scope := WorkloadIdentityScope{TenantPath: "root:faros:tenants:o:w", Project: "p", ProjectUID: "uid-a", Environment: "development", Instance: "p-dev"}
 	other := scope
 	other.ProjectUID = "uid-b"
 	if WorkloadServiceAccountName(scope) == WorkloadServiceAccountName(other) {
@@ -133,7 +133,7 @@ func TestEnsureWorkloadIdentityRejectsTokenExpiryBeyondPolicy(t *testing.T) {
 		}}, nil
 	})
 	_, err := m.EnsureWorkloadIdentity(context.Background(), "org", "workspace", WorkloadIdentityScope{
-		TenantPath:  "root:kedge:tenants:org:workspace",
+		TenantPath:  "root:faros:tenants:org:workspace",
 		Project:     "project",
 		ProjectUID:  "project-uid",
 		Environment: "development",

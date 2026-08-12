@@ -1,6 +1,6 @@
 # Giving agents web access
 
-A kedge agent starts out unable to see the web. It can reason and it can call
+A faros agent starts out unable to see the web. It can reason and it can call
 whatever tools its Connections give it, but "look this up" and "open that page"
 need a backend. This document covers the two infrastructure templates that
 provide them, and how to wire each to an agent.
@@ -79,7 +79,7 @@ anything you paste anywhere.
 ### SearXNG → a `websearch` Connection
 
 ```yaml
-apiVersion: agents.kedge.faros.sh/v1alpha1
+apiVersion: agents.faros.sh/v1alpha1
 kind: Connection
 metadata:
   name: search
@@ -118,7 +118,7 @@ Connection Secret if it is gated) and leave `instance` unset.
 ### Browser → an `mcp` Connection
 
 ```yaml
-apiVersion: agents.kedge.faros.sh/v1alpha1
+apiVersion: agents.faros.sh/v1alpha1
 kind: Connection
 metadata:
   name: browser
@@ -154,9 +154,9 @@ What gets created, once per agent, in the `default` namespace:
 
 | Object | Name | Purpose |
 |---|---|---|
-| ServiceAccount | `kedge-agent-<agent>` | the identity |
-| Secret | `kedge-agent-<agent>-token` | its token, populated by kcp's token controller |
-| ClusterRole + binding | `kedge-agent-<agent>` | `get`/`list` on `infrastructure.kedge.faros.sh` |
+| ServiceAccount | `faros-agent-<agent>` | the identity |
+| Secret | `faros-agent-<agent>-token` | its token, populated by kcp's token controller |
+| ClusterRole + binding | `faros-agent-<agent>` | `get`/`list` on `infrastructure.faros.sh` |
 
 Things worth knowing before you rely on it:
 

@@ -1,13 +1,13 @@
-project_name: kubectl-kedge
+project_name: kubectl-faros
 version: 2
 env:
   - CGO_ENABLED=0
   - LDFLAGS={{ .Env.LDFLAGS }}
 
 builds:
-  - id: kubectl-kedge
-    dir: cmd/kedge
-    binary: kubectl-kedge
+  - id: kubectl-faros
+    dir: cmd/faros
+    binary: kubectl-faros
     ldflags: "{{ .Env.LDFLAGS }}"
     goos:
       - linux
@@ -24,15 +24,15 @@ builds:
         goarch: ppc64le
 
 archives:
-  - id: kubectl-kedge-plugin
+  - id: kubectl-faros-plugin
     ids:
-    - kubectl-kedge
-    # uname-compatible names so `curl .../kubectl-kedge_$(uname -s)_$(uname -m).tar.gz`
+    - kubectl-faros
+    # uname-compatible names so `curl .../kubectl-faros_$(uname -s)_$(uname -m).tar.gz`
     # resolves: title-case OS (Linux/Darwin/Windows) and map Go's arch names to
     # what `uname -m` reports — amd64→x86_64 everywhere, arm64→aarch64 on Linux
     # (macOS keeps arm64), 386→i386.
     name_template: >-
-      kubectl-kedge_
+      kubectl-faros_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else if and (eq .Arch "arm64") (eq .Os "linux") }}aarch64
@@ -50,24 +50,24 @@ blobs:
     endpoint: https://d7fc6dd1a6252d2a0ea1a629770cd3a8.r2.cloudflarestorage.com
     region: auto
     ids:
-    - kubectl-kedge-plugin
+    - kubectl-faros-plugin
     bucket: faros
-    directory: "cli/kedge/{{.Tag}}"
+    directory: "cli/faros/{{.Tag}}"
 
 krews:
-- name: kedge
+- name: faros
   ids:
-  - kubectl-kedge-plugin
+  - kubectl-faros-plugin
   repository:
     owner: faroshq
     name: krew-index
     token: "{{ .Env.KREW_GITHUB_TOKEN }}"
   homepage: "https://faros.sh/"
-  url_template: "https://downloads.faros.sh/cli/kedge/{{ .Tag }}/{{ .ArtifactName }}"
+  url_template: "https://downloads.faros.sh/cli/faros/{{ .Tag }}/{{ .ArtifactName }}"
   description: |
-    Manage kedge edges and workloads from the command line.
-    kubectl kedge login - Log in to a kedge hub
-    kubectl kedge ws - Navigate kcp workspaces
-    kubectl kedge edge - Manage edges
-  short_description: "Manage kedge edges and workloads from the command line."
+    Manage faros edges and workloads from the command line.
+    kubectl faros login - Log in to a faros hub
+    kubectl faros ws - Navigate kcp workspaces
+    kubectl faros edge - Manage edges
+  short_description: "Manage faros edges and workloads from the command line."
   skip_upload: auto

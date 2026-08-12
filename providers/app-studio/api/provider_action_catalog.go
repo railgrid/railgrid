@@ -306,19 +306,19 @@ func (s *Server) fetchProviderCatalog(ctx context.Context, id identity) (provide
 		req.Header.Set("Authorization", "Bearer "+id.token)
 	}
 	if id.tenantPath != "" {
-		req.Header.Set("X-Kedge-Tenant", id.tenantPath)
+		req.Header.Set("X-Faros-Tenant", id.tenantPath)
 	}
 	if id.clusterID != "" {
-		req.Header.Set("X-Kedge-Cluster", id.clusterID)
+		req.Header.Set("X-Faros-Cluster", id.clusterID)
 	}
 	if id.orgUUID != "" {
-		req.Header.Set("X-Kedge-Org", id.orgUUID)
+		req.Header.Set("X-Faros-Org", id.orgUUID)
 	}
 	if id.workspaceUUID != "" {
-		req.Header.Set("X-Kedge-Workspace", id.workspaceUUID)
+		req.Header.Set("X-Faros-Workspace", id.workspaceUUID)
 	}
 	if id.user != "" {
-		req.Header.Set("X-Kedge-User", id.user)
+		req.Header.Set("X-Faros-User", id.user)
 	}
 	client := &http.Client{
 		Timeout: providerCatalogCallTimeout,

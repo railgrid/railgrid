@@ -1,4 +1,4 @@
-apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+apiVersion: infrastructure.faros.sh/v1alpha1
 kind: Template
 metadata:
   name: simple-webapp
@@ -40,7 +40,7 @@ spec:
         • The platform provisions the Service, the public route, and the URL;
           you do NOT create Services, Ingresses, or routes.
 
-      DEVELOPMENT MODE (provision with kedgeMode: development): the image input
+      DEVELOPMENT MODE (provision with farosMode: development): the image input
       is ignored (and may be omitted) — the platform runs a Node.js dev
       container against the project workspace and serves it on the same public
       URL a production instance would get. Push source with the dev_sync tool
@@ -52,8 +52,8 @@ spec:
       production, ignored in development), port, replicas, env (env-var map;
       not for secrets), expose.hostnamePrefix, access (public|private; default
       public — private requires platform sign-in and an RBAC grant on this
-      instance). The platform stamps spec.expose.fqdn and spec.kedgeCluster —
-      do not set them. All except name and kedgeMode can be changed later with
+      instance). The platform stamps spec.expose.fqdn and spec.farosCluster —
+      do not set them. All except name and farosMode can be changed later with
       update_instance; flipping access is an in-place update.
     outputs:
       - "status.url is the public HTTPS URL (status.host = bare hostname) in every mode; requests enter through the platform access gate."
@@ -78,7 +78,7 @@ spec:
           - label: App
             path: status.ready
   instanceCRD:
-    group: infrastructure.kedge.faros.sh
+    group: infrastructure.faros.sh
     version: v1alpha1
     resource: simplewebapps
     kind: SimpleWebApp
@@ -93,11 +93,11 @@ spec:
       name:
         type: string
         description: "Logical name; used as the resource-name prefix in the tenant namespace and the default hostname prefix."
-      kedgeRedeployRevision:
+      farosRedeployRevision:
         type: string
         default: initial
         description: "Computed by the platform — do NOT set. Non-secret rollout revision used to redeploy the application workload without changing the instance identity."
-      kedgeCluster:
+      farosCluster:
         type: string
         default: pending
         description: "Computed by the platform — do NOT set. Tenant workspace cluster ID the embedded access gate presents to the hub for sign-in authorization."
@@ -108,7 +108,7 @@ spec:
         description: "Who can reach the app URL. public: anyone with the link. private: platform sign-in required; access is granted by kcp RBAC on this instance's access subresource (App Studio's share dialog, or a ClusterRole/ClusterRoleBinding pair). Flipping the value is an in-place update — no redeploy, no data loss."
       image:
         type: string
-        description: "Container image serving HTTP. Required in production mode; ignored (and may be omitted) when kedgeMode is development — dev mode runs the platform dev image against the project workspace."
+        description: "Container image serving HTTP. Required in production mode; ignored (and may be omitted) when farosMode is development — dev mode runs the platform dev image against the project workspace."
       port:
         type: integer
         default: 8080
@@ -142,10 +142,10 @@ spec:
       - name
     # The image is only required when the instance actually runs it: production
     # mode. Development mode swaps the workload onto the platform dev image, so
-    # a dev-only project needs none. Enforced on the kcp-side CRD; kedgeMode
+    # a dev-only project needs none. Enforced on the kcp-side CRD; farosMode
     # defaults to "production".
     x-kubernetes-validations:
-      - rule: "(has(self.kedgeMode) && self.kedgeMode == 'development') || has(self.image)"
+      - rule: "(has(self.farosMode) && self.farosMode == 'development') || has(self.image)"
         message: "image is required in production mode"
 
   # ── Development mode (docs/app-studio-template-sandboxes.md) ──────────
@@ -162,15 +162,15 @@ spec:
     # scripts). Tag-locked — bump this ref together with the sampleValues
     # image tag. Without this block a new project gets an EMPTY sandbox.
     scaffold:
-      repository: https://github.com/faroshq/kedge-scaffold-simple-webapp
-      ref: v0.1.2
+      repository: https://github.com/faroshq/faros-scaffold-simple-webapp
+      ref: v0.1.3
     components:
       app:
         workspacePath: .
         imageInput: image
-        devImage: "${kedge.devImage.node}"
+        devImage: "${faros.devImage.node}"
         workingDir: /workspace
-        startCommand: "SHIM=.kedge-vite.config.mjs; printf '%s' 'ZXhwb3J0IGRlZmF1bHQgYXN5bmMgKGVudikgPT4gewogIGNvbnN0IGZvcmNlZCA9IHsgc2VydmVyOiB7IGhvc3Q6IHRydWUsIGFsbG93ZWRIb3N0czogdHJ1ZSB9IH0KICB0cnkgewogICAgY29uc3QgeyBkZWZhdWx0OiBwcmV2aWV3Q29uc29sZVBsdWdpbiB9ID0gYXdhaXQgaW1wb3J0KCdmaWxlOi8vL2tlZGdlL2Jpbi9wcmV2aWV3LWNvbnNvbGUtcGx1Z2luLm1qcycpCiAgICBmb3JjZWQucGx1Z2lucyA9IFtwcmV2aWV3Q29uc29sZVBsdWdpbigpXQogIH0gY2F0Y2ggKGUpIHsKICAgIC8vIE9wdGlvbmFsIGluc3RydW1lbnRhdGlvbiBpcyBkaXNhYmxlZCBvciB1bmF2YWlsYWJsZS4KICB9CiAgbGV0IGxvYWRDb25maWdGcm9tRmlsZSwgbWVyZ2VDb25maWcKICB0cnkgewogICAgKHsgbG9hZENvbmZpZ0Zyb21GaWxlLCBtZXJnZUNvbmZpZyB9ID0gYXdhaXQgaW1wb3J0KCd2aXRlJykpCiAgfSBjYXRjaCAoZSkgewogICAgcmV0dXJuIGZvcmNlZAogIH0KICBsZXQgYmFzZSA9IHt9CiAgdHJ5IHsKICAgIGNvbnN0IGxvYWRlZCA9IGF3YWl0IGxvYWRDb25maWdGcm9tRmlsZShlbnYsIHVuZGVmaW5lZCwgcHJvY2Vzcy5jd2QoKSkKICAgIGlmIChsb2FkZWQgJiYgbG9hZGVkLmNvbmZpZykgYmFzZSA9IGxvYWRlZC5jb25maWcKICB9IGNhdGNoIChlKSB7CiAgICBjb25zb2xlLmVycm9yKCdba2VkZ2VdIGNvdWxkIG5vdCBsb2FkIHByb2plY3Qgdml0ZSBjb25maWc6JywgZSkKICB9CiAgcmV0dXJuIG1lcmdlQ29uZmlnKGJhc2UsIGZvcmNlZCkKfQo=' | base64 -d > $SHIM; grep -qxF $SHIM .gitignore 2>/dev/null || echo $SHIM >> .gitignore; if [ -f package.json ]; then (npm run dev -- --host 0.0.0.0 --port $PORT --config $SHIM || npm run dev -- --host 0.0.0.0 --port $PORT || npm start); else npx --yes vite --host 0.0.0.0 --port $PORT --config $SHIM || npx --yes vite --host 0.0.0.0 --port $PORT; fi"
+        startCommand: "SHIM=.faros-vite.config.mjs; printf '%s' 'ZXhwb3J0IGRlZmF1bHQgYXN5bmMgKGVudikgPT4gewogIGNvbnN0IGZvcmNlZCA9IHsgc2VydmVyOiB7IGhvc3Q6IHRydWUsIGFsbG93ZWRIb3N0czogdHJ1ZSB9IH0KICB0cnkgewogICAgY29uc3QgeyBkZWZhdWx0OiBwcmV2aWV3Q29uc29sZVBsdWdpbiB9ID0gYXdhaXQgaW1wb3J0KCdmaWxlOi8vL2Zhcm9zL2Jpbi9wcmV2aWV3LWNvbnNvbGUtcGx1Z2luLm1qcycpCiAgICBmb3JjZWQucGx1Z2lucyA9IFtwcmV2aWV3Q29uc29sZVBsdWdpbigpXQogIH0gY2F0Y2ggKGUpIHsKICAgIC8vIE9wdGlvbmFsIGluc3RydW1lbnRhdGlvbiBpcyBkaXNhYmxlZCBvciB1bmF2YWlsYWJsZS4KICB9CiAgbGV0IGxvYWRDb25maWdGcm9tRmlsZSwgbWVyZ2VDb25maWcKICB0cnkgewogICAgKHsgbG9hZENvbmZpZ0Zyb21GaWxlLCBtZXJnZUNvbmZpZyB9ID0gYXdhaXQgaW1wb3J0KCd2aXRlJykpCiAgfSBjYXRjaCAoZSkgewogICAgcmV0dXJuIGZvcmNlZAogIH0KICBsZXQgYmFzZSA9IHt9CiAgdHJ5IHsKICAgIGNvbnN0IGxvYWRlZCA9IGF3YWl0IGxvYWRDb25maWdGcm9tRmlsZShlbnYsIHVuZGVmaW5lZCwgcHJvY2Vzcy5jd2QoKSkKICAgIGlmIChsb2FkZWQgJiYgbG9hZGVkLmNvbmZpZykgYmFzZSA9IGxvYWRlZC5jb25maWcKICB9IGNhdGNoIChlKSB7CiAgICBjb25zb2xlLmVycm9yKCdbZmFyb3NdIGNvdWxkIG5vdCBsb2FkIHByb2plY3Qgdml0ZSBjb25maWc6JywgZSkKICB9CiAgcmV0dXJuIG1lcmdlQ29uZmlnKGJhc2UsIGZvcmNlZCkKfQo=' | base64 -d > $SHIM; grep -qxF $SHIM .gitignore 2>/dev/null || echo $SHIM >> .gitignore; if [ -f package.json ]; then (npm run dev -- --host 0.0.0.0 --port $PORT --config $SHIM || npm run dev -- --host 0.0.0.0 --port $PORT || npm start); else npx --yes vite --host 0.0.0.0 --port $PORT --config $SHIM || npx --yes vite --host 0.0.0.0 --port $PORT; fi"
         port: app
         reload:
           strategy: process
@@ -225,7 +225,7 @@ spec:
   # ── backendConfig: the kro resource graph ─────────────────────────────
   # Every resource sets namespace: default — the control-plane/data-plane split
   # materializes these on the runtime cluster and remaps that to the per-tenant
-  # namespace. ${kedge.gatewayName} / ${kedge.gatewayNamespace} are substituted
+  # namespace. ${faros.gatewayName} / ${faros.gatewayNamespace} are substituted
   # for the platform's configured Gateway API parent before the RGD is authored.
   backendConfig:
     resources:
@@ -257,7 +257,7 @@ spec:
             template:
               metadata:
                 annotations:
-                  kedge.faros.sh/redeploy-revision: ${schema.spec.kedgeRedeployRevision}
+                  faros.sh/redeploy-revision: ${schema.spec.farosRedeployRevision}
                 labels:
                   app: ${schema.spec.name}
               spec:
@@ -294,7 +294,7 @@ spec:
                 port: ${schema.spec.port}
                 targetPort: ${schema.spec.port}
 
-      # ──────────────── Access gate (kedge-access-proxy) ──────────────────
+      # ──────────────── Access gate (faros-access-proxy) ──────────────────
       # The platform-owned gate every request enters through, in every mode.
       # public (default): pure passthrough — the gate never contacts the hub,
       # so a hub outage cannot affect a public app. private: the gate runs the
@@ -327,36 +327,36 @@ spec:
                   # Stable across all gates: lets platform tooling (and the
                   # local Tilt image-reload) find/recycle every gate pod with
                   # one selector regardless of instance name.
-                  app.kubernetes.io/name: kedge-access-proxy
+                  app.kubernetes.io/name: faros-access-proxy
               spec:
                 automountServiceAccountToken: false
                 containers:
                   - name: gate
-                    image: ${kedge.accessProxyImage}
+                    image: ${faros.accessProxyImage}
                     env:
-                      - name: KEDGE_ACCESS_PROXY_MODE
+                      - name: FAROS_ACCESS_PROXY_MODE
                         value: ${schema.spec.access}
-                      - name: KEDGE_ACCESS_PROXY_HOST
+                      - name: FAROS_ACCESS_PROXY_HOST
                         # The exact external host, including the local
                         # Gateway's forwarded port when one is configured
-                        # (${kedge.appPublicPort} is ":<port>" or "").
-                        value: ${schema.spec.expose.fqdn + "${kedge.appPublicPort}"}
-                      - name: KEDGE_ACCESS_PROXY_ROUTES
+                        # (${faros.appPublicPort} is ":<port>" or "").
+                        value: ${schema.spec.expose.fqdn + "${faros.appPublicPort}"}
+                      - name: FAROS_ACCESS_PROXY_ROUTES
                         value: ${"/=http://" + appService.metadata.name + "." + appService.metadata.namespace + ".svc.cluster.local:" + string(schema.spec.port)}
-                      - name: KEDGE_ACCESS_PROXY_INSTANCE_CLUSTER
-                        value: ${schema.spec.kedgeCluster}
-                      - name: KEDGE_ACCESS_PROXY_INSTANCE_GROUP
-                        value: infrastructure.kedge.faros.sh
-                      - name: KEDGE_ACCESS_PROXY_INSTANCE_RESOURCE
+                      - name: FAROS_ACCESS_PROXY_INSTANCE_CLUSTER
+                        value: ${schema.spec.farosCluster}
+                      - name: FAROS_ACCESS_PROXY_INSTANCE_GROUP
+                        value: infrastructure.faros.sh
+                      - name: FAROS_ACCESS_PROXY_INSTANCE_RESOURCE
                         value: simplewebapps
-                      - name: KEDGE_ACCESS_PROXY_INSTANCE_NAME
+                      - name: FAROS_ACCESS_PROXY_INSTANCE_NAME
                         value: ${schema.spec.name}
-                      - name: KEDGE_HUB_URL
-                        value: ${kedge.hubUrl}
-                      - name: KEDGE_HUB_PUBLIC_URL
-                        value: ${kedge.hubPublicUrl}
-                      - name: KEDGE_HUB_INSECURE_SKIP_TLS_VERIFY
-                        value: ${kedge.hubInsecure}
+                      - name: FAROS_HUB_URL
+                        value: ${faros.hubUrl}
+                      - name: FAROS_HUB_PUBLIC_URL
+                        value: ${faros.hubPublicUrl}
+                      - name: FAROS_HUB_INSECURE_SKIP_TLS_VERIFY
+                        value: ${faros.hubInsecure}
                     ports:
                       - name: http
                         containerPort: 8080
@@ -409,8 +409,8 @@ spec:
             parentRefs:
               - group: gateway.networking.k8s.io
                 kind: Gateway
-                name: ${kedge.gatewayName}
-                namespace: ${kedge.gatewayNamespace}
+                name: ${faros.gatewayName}
+                namespace: ${faros.gatewayNamespace}
             hostnames:
               - ${schema.spec.expose.fqdn}
             rules:
@@ -422,10 +422,10 @@ spec:
                   - name: ${gateService.metadata.name}
                     port: 8080
     # url/host are read from the HTTPRoute (this kro fork forbids ${schema.*}
-    # in status), same as the application template. ${kedge.appPublicPort} is
+    # in status), same as the application template. ${faros.appPublicPort} is
     # substituted by the kro backend before kro sees this CEL.
     status:
-      url: ${"https://" + httpRoute.spec.hostnames[0] + "${kedge.appPublicPort}"}
+      url: ${"https://" + httpRoute.spec.hostnames[0] + "${faros.appPublicPort}"}
       host: ${httpRoute.spec.hostnames[0]}
       ready: ${appDeployment.status.readyReplicas}
       # Always project the runtime confinement boundary from an unconditional

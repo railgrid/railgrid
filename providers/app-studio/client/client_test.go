@@ -46,7 +46,7 @@ func TestGraphQLStatusPatchReturnsCompleteProject(t *testing.T) {
 		case strings.Contains(req.Query, "applyStatusYaml"):
 			_, _ = w.Write([]byte(`{"data":{"applyStatusYaml":"ok"}}`))
 		case strings.Contains(req.Query, "ProjectYaml"):
-			_, _ = w.Write([]byte(`{"data":{"ai_kedge_faros_sh":{"v1alpha1":{"ProjectYaml":"apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: complete-project\n  resourceVersion: \"43\"\nspec:\n  displayName: Complete Project\n  repository:\n    repositoryRef: complete-project\n  environments:\n  - name: development\n    mode: live\nstatus:\n  phase: Ready\n"}}}}`))
+			_, _ = w.Write([]byte(`{"data":{"ai_faros_sh":{"v1alpha1":{"ProjectYaml":"apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: complete-project\n  resourceVersion: \"43\"\nspec:\n  displayName: Complete Project\n  repository:\n    repositoryRef: complete-project\n  environments:\n  - name: development\n    mode: live\nstatus:\n  phase: Ready\n"}}}}`))
 		default:
 			t.Fatalf("unexpected GraphQL query: %s", req.Query)
 		}
@@ -89,21 +89,21 @@ func TestGraphQLStatusPatchReturnsCompleteProject(t *testing.T) {
 }
 
 func TestGraphQLResourceListForwardsAndAppliesLabelSelector(t *testing.T) {
-	const selector = "code.kedge.faros.sh/repository=repo-a"
-	const listYAML = `- apiVersion: code.kedge.faros.sh/v1alpha1
+	const selector = "code.faros.sh/repository=repo-a"
+	const listYAML = `- apiVersion: code.faros.sh/v1alpha1
   kind: Package
   metadata:
     name: app-a
     labels:
-      code.kedge.faros.sh/repository: repo-a
+      code.faros.sh/repository: repo-a
   spec:
     repositoryRef: repo-a
-- apiVersion: code.kedge.faros.sh/v1alpha1
+- apiVersion: code.faros.sh/v1alpha1
   kind: Package
   metadata:
     name: app-b
     labels:
-      code.kedge.faros.sh/repository: repo-b
+      code.faros.sh/repository: repo-b
   spec:
     repositoryRef: repo-b
 `
@@ -123,7 +123,7 @@ func TestGraphQLResourceListForwardsAndAppliesLabelSelector(t *testing.T) {
 			t.Fatalf("labelSelector variable = %#v, want %q", got, selector)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{"data":{"code_kedge_faros_sh":{"v1alpha1":{"PackagesYaml":%q}}}}`, listYAML)
+		_, _ = fmt.Fprintf(w, `{"data":{"code_faros_sh":{"v1alpha1":{"PackagesYaml":%q}}}}`, listYAML)
 	}))
 	t.Cleanup(server.Close)
 
@@ -134,7 +134,7 @@ func TestGraphQLResourceListForwardsAndAppliesLabelSelector(t *testing.T) {
 	}
 	client := NewFromGraphQL(scope)
 	res := tenant.Resource{
-		GVR:    schema.GroupVersionResource{Group: "code.kedge.faros.sh", Version: "v1alpha1", Resource: "packages"},
+		GVR:    schema.GroupVersionResource{Group: "code.faros.sh", Version: "v1alpha1", Resource: "packages"},
 		Kind:   "Package",
 		Plural: "Packages",
 	}

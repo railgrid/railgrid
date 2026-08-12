@@ -69,7 +69,7 @@ watch(
 //   1. useGraphQLQuery's watchEffect (which reads auth.isAuthenticated, a
 //      getter over s.clusterName) re-fires and re-queries the new cluster.
 //   2. ProviderFrame's watch on auth.clusterName pushes a fresh
-//      kedgeContext to the mounted provider element; its auth-adapter
+//      farosContext to the mounted provider element; its auth-adapter
 //      hydrates and its useGraphQLQuery re-fires the same way.
 // The hub omits clusterName until the workspace reports Ready, so guard on
 // a non-empty value to avoid clearing a working selection during the brief

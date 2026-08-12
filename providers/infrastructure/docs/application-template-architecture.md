@@ -17,7 +17,7 @@ For each `Application` instance the kro RGD materializes (see
 public host (fqdn)
    │
    ▼
-HTTPRoute  ── parentRefs: <KEDGE_GATEWAY_NAME>/<KEDGE_GATEWAY_NAMESPACE>
+HTTPRoute  ── parentRefs: <FAROS_GATEWAY_NAME>/<FAROS_GATEWAY_NAMESPACE>
    │            hostnames: [expose.fqdn]
    ▼
 Service  <name>-oauth : 4180
@@ -46,14 +46,14 @@ All are environment variables on the **provider serve** container.
 
 | Env var | Default | What it does |
 |---|---|---|
-| `KEDGE_GATEWAY_NAME` | `cloudflare-tunnel` | Substituted for the reserved `${kedge.gatewayName}` token in a Template's `backendConfig` before the kro RGD is authored. Ends up as the HTTPRoute `parentRefs[].name`. kro never sees the token — substitution happens in [backend/kro/rgd.go](../backend/kro/rgd.go) (`substituteTokens`). |
-| `KEDGE_GATEWAY_NAMESPACE` | `cfgate-system` | Same, for the reserved `${kedge.gatewayNamespace}` token → HTTPRoute `parentRefs[].namespace`. |
-| `KEDGE_APP_BASE_DOMAIN` | _(unset)_ | The DNS zone apps are served under, e.g. `apps.example.com`. **Also gates the Application instance controller** — see below. |
+| `FAROS_GATEWAY_NAME` | `cloudflare-tunnel` | Substituted for the reserved `${faros.gatewayName}` token in a Template's `backendConfig` before the kro RGD is authored. Ends up as the HTTPRoute `parentRefs[].name`. kro never sees the token — substitution happens in [backend/kro/rgd.go](../backend/kro/rgd.go) (`substituteTokens`). |
+| `FAROS_GATEWAY_NAMESPACE` | `cfgate-system` | Same, for the reserved `${faros.gatewayNamespace}` token → HTTPRoute `parentRefs[].namespace`. |
+| `FAROS_APP_BASE_DOMAIN` | _(unset)_ | The DNS zone apps are served under, e.g. `apps.example.com`. **Also gates the Application instance controller** — see below. |
 
-### `KEDGE_APP_BASE_DOMAIN` gates the whole feature
+### `FAROS_APP_BASE_DOMAIN` gates the whole feature
 
 The Application instance controller is **opt-in**. It starts only when BOTH
-`KEDGE_APP_BASE_DOMAIN` and a runtime kubeconfig (`KRO_KUBECONFIG`, or the
+`FAROS_APP_BASE_DOMAIN` and a runtime kubeconfig (`KRO_KUBECONFIG`, or the
 in-cluster runtime) are present
 ([application_controller.go:37](../application_controller.go#L37)). Without the
 base domain it logs `application controller: disabled` and Application
@@ -63,7 +63,7 @@ The controller computes the public hostname as
 ([apps/host.go:58](../apps/host.go#L58)):
 
 ```
-<hostnamePrefix | name>-<tenantHash>.<KEDGE_APP_BASE_DOMAIN>
+<hostnamePrefix | name>-<tenantHash>.<FAROS_APP_BASE_DOMAIN>
 ```
 
 and stamps it onto `spec.expose.fqdn`. The RGD then reads
@@ -71,11 +71,11 @@ and stamps it onto `spec.expose.fqdn`. The RGD then reads
 `--redirect-url`, and the reported `status.url`. The tenant must NOT set `fqdn`
 or `credentialsSecretName` by hand — the controller owns both.
 
-So to turn on app exposure you must set **`KEDGE_APP_BASE_DOMAIN`**;
-`KEDGE_GATEWAY_NAME` / `KEDGE_GATEWAY_NAMESPACE` only change *which* Gateway the
+So to turn on app exposure you must set **`FAROS_APP_BASE_DOMAIN`**;
+`FAROS_GATEWAY_NAME` / `FAROS_GATEWAY_NAMESPACE` only change *which* Gateway the
 HTTPRoutes attach to.
 
-A wildcard DNS record `*.<KEDGE_APP_BASE_DOMAIN>` (or per-app records created by
+A wildcard DNS record `*.<FAROS_APP_BASE_DOMAIN>` (or per-app records created by
 your Gateway, as Cloudflare Tunnel does) must resolve to your Gateway edge.
 
 ## Configuring it — by deploy mode
@@ -84,8 +84,8 @@ your Gateway, as Cloudflare Tunnel does) must resolve to your Gateway edge.
 
 Set the values; the chart's
 [deployment.yaml](../deploy/chart/templates/deployment.yaml) renders them onto
-the serve container as `KEDGE_APP_BASE_DOMAIN` / `KEDGE_GATEWAY_NAME` /
-`KEDGE_GATEWAY_NAMESPACE`:
+the serve container as `FAROS_APP_BASE_DOMAIN` / `FAROS_GATEWAY_NAME` /
+`FAROS_GATEWAY_NAMESPACE`:
 
 ```yaml
 # values.yaml
@@ -98,7 +98,7 @@ application:
 
 ```sh
 helm upgrade --install infrastructure \
-  oci://ghcr.io/faroshq/charts/kedge-infrastructure-provider --version 0.0.13 \
+  oci://ghcr.io/faroshq/charts/faros-infrastructure-provider --version 0.0.13 \
   --set application.baseDomain=apps.example.com \
   --set application.gateway.name=my-gateway \
   --set application.gateway.namespace=my-gateway-system \
@@ -129,10 +129,10 @@ operator:
 
 ```sh
 helm upgrade --install infrastructure \
-  oci://ghcr.io/faroshq/charts/kedge-infrastructure-provider --version 0.0.13 \
-  -n kedge-prod-infrastructure-operator --create-namespace \
+  oci://ghcr.io/faroshq/charts/faros-infrastructure-provider --version 0.0.13 \
+  -n faros-prod-infrastructure-operator --create-namespace \
   --set operator.enabled=true \
-  --set-file operator.providerKubeconfig=./kedge/provider-infrastructure.kubeconfig \
+  --set-file operator.providerKubeconfig=./faros/provider-infrastructure.kubeconfig \
   --set operator.application.baseDomain=apps.example.com \
   --set operator.application.gateway.name=cloudflare-tunnel \
   ...
@@ -141,7 +141,7 @@ helm upgrade --install infrastructure \
 Equivalently, edit the CR directly:
 
 ```yaml
-apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+apiVersion: infrastructure.faros.sh/v1alpha1
 kind: InfrastructureProvider
 spec:
   application:
@@ -152,7 +152,7 @@ spec:
 ```
 
 The operator re-reconciles the serve Deployment on the next pass (≤2 min), which
-sets `KEDGE_APP_BASE_DOMAIN` / `KEDGE_GATEWAY_NAME` / `KEDGE_GATEWAY_NAMESPACE`
+sets `FAROS_APP_BASE_DOMAIN` / `FAROS_GATEWAY_NAME` / `FAROS_GATEWAY_NAMESPACE`
 and rolls the pods. Leaving `baseDomain` empty keeps the Application controller
 disabled; leaving the `gateway` fields empty falls back to the in-binary
 `cloudflare-tunnel` / `cfgate-system` defaults.
@@ -175,8 +175,8 @@ by writing the reserved tokens in the HTTPRoute:
       parentRefs:
         - group: gateway.networking.k8s.io
           kind: Gateway
-          name: ${kedge.gatewayName}            # ← substituted at RGD-author time
-          namespace: ${kedge.gatewayNamespace}  # ← substituted at RGD-author time
+          name: ${faros.gatewayName}            # ← substituted at RGD-author time
+          namespace: ${faros.gatewayNamespace}  # ← substituted at RGD-author time
       hostnames:
         - ${schema.spec.expose.fqdn}             # ← stamped by the controller
       rules:
@@ -187,7 +187,7 @@ by writing the reserved tokens in the HTTPRoute:
               port: ${schema.spec.frontendPort}
 ```
 
-`${kedge.gatewayName}` / `${kedge.gatewayNamespace}` are the only `${kedge.*}`
+`${faros.gatewayName}` / `${faros.gatewayNamespace}` are the only `${faros.*}`
 tokens today. They are replaced by a plain string substitution on the
 backendConfig JSON before kro parses it, so they are safe to use anywhere a
 name is valid. kro's own `${...}` references (`${schema.spec.*}`,
@@ -195,7 +195,7 @@ name is valid. kro's own `${...}` references (`${schema.spec.*}`,
 
 ## Using a non-Cloudflare Gateway
 
-Pointing `KEDGE_GATEWAY_NAME` / `KEDGE_GATEWAY_NAMESPACE` at a different Gateway
+Pointing `FAROS_GATEWAY_NAME` / `FAROS_GATEWAY_NAMESPACE` at a different Gateway
 (nginx-gateway-fabric, Envoy Gateway, Traefik, etc.) only changes the HTTPRoute
 `parentRefs`. The shipped `application` template assumes edge TLS and
 edge-managed DNS (the Cloudflare model), so for a generic in-cluster Gateway you

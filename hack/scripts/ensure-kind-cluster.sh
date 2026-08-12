@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-CLUSTER_NAME="${1:-kedge-agent}"
+CLUSTER_NAME="${1:-faros-agent}"
 KUBECONFIG_FILE=".kubeconfig-${CLUSTER_NAME}"
 
 if ! command -v kind &>/dev/null; then

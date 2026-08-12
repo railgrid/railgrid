@@ -32,8 +32,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
-	"github.com/faroshq/faros-kedge/pkg/apiurl"
-	"github.com/faroshq/faros-kedge/pkg/kcppaths"
+	"github.com/faroshq/faros/pkg/apiurl"
+	"github.com/faroshq/faros/pkg/kcppaths"
 )
 
 // Provisioner owns the kcp-side side-effects of provisioning a provider:
@@ -54,9 +54,9 @@ func NewProvisioner(kcpConfig *rest.Config) *Provisioner {
 }
 
 // providersParentWorkspace is the parent of per-provider sub-workspaces
-// (root:kedge:providers:<name>). NOTE: APIExports and Provider/CatalogEntry
-// objects no longer live here — they live in root:kedge:system:controllers and
-// root:kedge:system:providers respectively.
+// (root:faros:providers:<name>). NOTE: APIExports and Provider/CatalogEntry
+// objects no longer live here — they live in root:faros:system:controllers and
+// root:faros:system:providers respectively.
 const providersParentWorkspace = kcppaths.ProvidersParent
 
 var (
@@ -125,7 +125,7 @@ func (p *Provisioner) EnsureProviderSA(ctx context.Context, providerName string)
 	// cluster-admin in the sub-workspace only. The provider pod reaches
 	// other workspaces via the APIExport's virtual workspace + accepted
 	// permission claims — NOT via this SA.
-	crbName := "kedge:providers:sa:" + ProviderSAName
+	crbName := "faros:providers:sa:" + ProviderSAName
 	crb := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "rbac.authorization.k8s.io/v1",
 		"kind":       "ClusterRoleBinding",
@@ -194,18 +194,18 @@ func (p *Provisioner) MintProviderKubeconfig(ctx context.Context, providerName, 
 	kc := fmt.Sprintf(`apiVersion: v1
 kind: Config
 clusters:
-- name: kedge
+- name: faros
   cluster:
     server: %s
     insecure-skip-tls-verify: true
 contexts:
-- name: kedge
+- name: faros
   context:
-    cluster: kedge
-    user: kedge
-current-context: kedge
+    cluster: faros
+    user: faros
+current-context: faros
 users:
-- name: kedge
+- name: faros
   user:
     token: %s
 `, server, token)
@@ -281,7 +281,7 @@ func EncodeKubeconfig(kc []byte) string {
 	return base64.StdEncoding.EncodeToString(kc)
 }
 
-// EnsureProviderWorkspace creates root:kedge:providers/{name} if it does not
+// EnsureProviderWorkspace creates root:faros:providers/{name} if it does not
 // exist and waits for it to reach phase Ready. Idempotent. Returns the
 // workspace's logical cluster ID (Workspace.spec.cluster) — the cluster name
 // kcp embeds in the provider SA's token claims, which the Enable-time
@@ -292,7 +292,7 @@ func (p *Provisioner) EnsureProviderWorkspace(ctx context.Context, name string) 
 		return "", err
 	}
 	// Use the restricted `provider` WorkspaceType (config/kcp/workspacetype-provider.yaml,
-	// defined under root:kedge): no universal → the provider cannot create
+	// defined under root:faros): no universal → the provider cannot create
 	// Workspaces; a defaultAPIBinding pulls in the CatalogEntry export.
 	ws := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "tenancy.kcp.io/v1alpha1",
@@ -324,7 +324,7 @@ func (p *Provisioner) EnsureProviderWorkspace(ctx context.Context, name string) 
 }
 
 // ResolveWorkspaceCluster returns the logical cluster ID of the provider's
-// sub-workspace (root:kedge:providers/{name}), read-only. Returns "" (no error)
+// sub-workspace (root:faros:providers/{name}), read-only. Returns "" (no error)
 // when the workspace does not exist yet — i.e. the provider has not been
 // onboarded. The catalog reconciler feeds this into the registry so the Enable
 // endpoint can build the edges-proxy RBAC subject without the hub provisioning
@@ -345,7 +345,7 @@ func (p *Provisioner) ResolveWorkspaceCluster(ctx context.Context, name string) 
 	return cluster, nil
 }
 
-// OnboardedWorkspace is a provider sub-workspace under root:kedge:providers
+// OnboardedWorkspace is a provider sub-workspace under root:faros:providers
 // created by onboarding (independent of whether a CatalogEntry has registered
 // the provider yet).
 type OnboardedWorkspace struct {
@@ -355,7 +355,7 @@ type OnboardedWorkspace struct {
 }
 
 // ListProviderWorkspaces returns the provider sub-workspaces under
-// root:kedge:providers. Used by the admin UI so onboarded providers appear even
+// root:faros:providers. Used by the admin UI so onboarded providers appear even
 // before their Helm chart (and CatalogEntry) is installed.
 func (p *Provisioner) ListProviderWorkspaces(ctx context.Context) ([]OnboardedWorkspace, error) {
 	parent, err := p.clientFor(providersParentWorkspace)
@@ -378,14 +378,14 @@ func (p *Provisioner) ListProviderWorkspaces(ctx context.Context) ([]OnboardedWo
 
 // The provider's CatalogEntry APIBinding is no longer created imperatively —
 // the `provider` WorkspaceType declares a defaultAPIBinding to
-// providers.kedge.faros.sh (in system:controllers), so kcp's WorkspaceType
+// providers.faros.sh (in system:controllers), so kcp's WorkspaceType
 // initializer binds it automatically when the sub-workspace is created.
 
 // ProviderKubeconfigSecretKey is the data key the provider kubeconfig is stored
 // under in the Secret the Provider controller writes into system:providers.
 const ProviderKubeconfigSecretKey = "kubeconfig"
 
-// WriteKubeconfigSecret create-or-updates a Secret in root:kedge:system:providers
+// WriteKubeconfigSecret create-or-updates a Secret in root:faros:system:providers
 // (where the Provider CR lives, NOT the provider sub-workspace) holding the
 // provider's minted kubeconfig under key. The Secret lives next to the Provider
 // CR so a provider pod (or dev tooling) can read its credentials from one
@@ -409,8 +409,8 @@ func (p *Provisioner) WriteKubeconfigSecret(ctx context.Context, namespace, name
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"providers.kedge.faros.sh/provider":   providerName,
-				"providers.kedge.faros.sh/managed-by": "provider-controller",
+				"providers.faros.sh/provider":   providerName,
+				"providers.faros.sh/managed-by": "provider-controller",
 			},
 		},
 		Type: corev1.SecretTypeOpaque,
@@ -434,7 +434,7 @@ func (p *Provisioner) WriteKubeconfigSecret(ctx context.Context, namespace, name
 }
 
 // DeleteKubeconfigSecret removes the kubeconfig Secret from
-// root:kedge:system:providers. Idempotent (NotFound tolerated).
+// root:faros:system:providers. Idempotent (NotFound tolerated).
 func (p *Provisioner) DeleteKubeconfigSecret(ctx context.Context, namespace, name string) error {
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = apiurl.KCPClusterURL(cfg.Host, kcppaths.SystemProviders)
@@ -449,7 +449,7 @@ func (p *Provisioner) DeleteKubeconfigSecret(ctx context.Context, namespace, nam
 }
 
 // DeleteProviderWorkspace deletes the provider sub-workspace
-// root:kedge:providers/{name}. kcp cascades the ServiceAccount, its token
+// root:faros:providers/{name}. kcp cascades the ServiceAccount, its token
 // Secret, and any APIExport / APIResourceSchemas the provider created there.
 // Idempotent (NotFound tolerated).
 func (p *Provisioner) DeleteProviderWorkspace(ctx context.Context, name string) error {

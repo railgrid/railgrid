@@ -1,5 +1,5 @@
 apiVersion: v2
-name: kedge-app-studio-provider
+name: faros-app-studio-provider
 description: |
   App Studio provider chart. Ships the provider Deployment, Service,
   and CatalogEntry. Configure durable App Studio message storage with
@@ -9,11 +9,11 @@ version: 0.1.0
 appVersion: "0.1.0"
 icon: https://example.com/app-studio-icon.png
 keywords:
-  - kedge
+  - faros
   - app-studio
   - ai
-home: https://github.com/faroshq/kedge
+home: https://github.com/faroshq/faros
 sources:
-  - https://github.com/faroshq/kedge/tree/main/providers/app-studio
+  - https://github.com/faroshq/faros/tree/main/providers/app-studio
 maintainers:
-  - name: kedge maintainers
+  - name: faros maintainers

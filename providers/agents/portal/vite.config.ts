@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite'
 
-// The kedge hub serves this provider under /ui/providers/agents/. The
+// The faros hub serves this provider under /ui/providers/agents/. The
 // ProviderFrame injects a <script src="/ui/providers/agents/main.js"> tag once
-// and waits for the kedge-provider-agents custom element to be defined. So the
+// and waits for the faros-provider-agents custom element to be defined. So the
 // build must:
 //   1. Emit the entry script at exactly /main.js (no hash) so the hard-coded
 //      portal URL keeps working across rebuilds.
@@ -18,7 +18,7 @@ export default defineConfig({
     lib: {
       entry: 'src/main.ts',
       formats: ['iife'],
-      name: 'KedgeProviderAgents',
+      name: 'FarosProviderAgents',
       fileName: () => 'main.js',
     },
     rollupOptions: {

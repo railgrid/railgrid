@@ -114,7 +114,7 @@ func (s *ScriptedEngine) IntakeTurn(_ context.Context, _ TurnContext, state Sess
 // echo reads as a broken product; this reads as a missing setting.)
 func (s *ScriptedEngine) StudioTurn(_ context.Context, _ TurnContext, _ SessionState, _ string) (string, error) {
 	return "**No model is configured for this workspace, so I can't change the code yet.**\n\n" +
-		"Add a Secret named `kedge-vibe-studio-llm` (or `kedge-projects-llm`) in the `default` " +
+		"Add a Secret named `faros-vibe-studio-llm` (or `faros-projects-llm`) in the `default` " +
 		"namespace of this workspace with keys `provider`, `baseURL`, `model`, and `apiKey`, " +
 		"then send your message again. Everything else — the sandbox, preview, and repository — " +
 		"is already running.", nil

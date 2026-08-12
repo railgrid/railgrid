@@ -1,4 +1,4 @@
-// VibeStudioElement is the custom element the kedge portal renders for this
+// VibeStudioElement is the custom element the faros portal renders for this
 // provider — the wizard + studio UI. The host portal owns all state
 // transitions; this element renders views, posts submissions, and polls the
 // session view + event log.
@@ -9,14 +9,14 @@
 // tabs: Preview (live iframe) / Code (read-only workspace browser) / Status
 // (checkpoints + project facts).
 //
-// Auth model: "hub-proxy" (see portalkit/tenant.ts) — bearer + X-Kedge-Org/
-// -Workspace on every call; the hub resolves them into X-Kedge-Tenant.
+// Auth model: "hub-proxy" (see portalkit/tenant.ts) — bearer + X-Faros-Org/
+// -Workspace on every call; the hub resolves them into X-Faros-Tenant.
 
 import { hasWorkspace, serviceBase, tenantHeaders } from './portalkit/tenant'
 import { ic } from './portalkit/icons'
 import { createEditor, type EditorHandle } from './editor'
 
-export interface KedgeContext {
+export interface FarosContext {
   token?: string | null
   user?: { email?: string; sub?: string } | null
   tenant?: string | null
@@ -152,7 +152,7 @@ const MODEL_PRESETS: ModelPreset[] = [
 ]
 
 export class VibeStudioElement extends HTMLElement {
-  private _ctx: KedgeContext | null = null
+  private _ctx: FarosContext | null = null
   private _view: SessionView | null = null
   private _events: SessionEvent[] = []
   private _sessions: SessionRecord[] = []
@@ -184,7 +184,7 @@ export class VibeStudioElement extends HTMLElement {
   private _addingModel = false
   private _modelsUnavailable = ''
 
-  set kedgeContext(v: KedgeContext | null) {
+  set farosContext(v: FarosContext | null) {
     // The portal sets this property AFTER appending the element; the token
     // arrives here. (Re)load the home list once real credentials land.
     const hadToken = !!this._ctx?.token
@@ -196,7 +196,7 @@ export class VibeStudioElement extends HTMLElement {
     // the context whenever subPath changes).
     this._applyRoute(v?.subPath || '')
   }
-  get kedgeContext(): KedgeContext | null {
+  get farosContext(): FarosContext | null {
     return this._ctx
   }
 
@@ -334,7 +334,7 @@ export class VibeStudioElement extends HTMLElement {
   private _navigate(path: string): void {
     this._appliedRoute = path
     this.dispatchEvent(
-      new CustomEvent('kedge-navigate', { detail: { path }, bubbles: true, composed: true }),
+      new CustomEvent('faros-navigate', { detail: { path }, bubbles: true, composed: true }),
     )
   }
 
@@ -851,7 +851,7 @@ export class VibeStudioElement extends HTMLElement {
     const claimed = new Set(this._projects.map((p) => p.sessionID).filter(Boolean))
     const drafts = this._sessions.filter((s) => !claimed.has(s.id))
 
-    // Resource-table listing, matching the kedge portal idiom (name /
+    // Resource-table listing, matching the faros portal idiom (name /
     // status badge / facts / age / row actions) used by the other providers.
     const appRows = this._projects
       .map(

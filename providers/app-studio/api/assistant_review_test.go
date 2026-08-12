@@ -87,7 +87,7 @@ func newAssistantReviewHTTPTest(t *testing.T) (*mux.Router, *store.MemoryStore, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	projectYAML := "apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
+	projectYAML := "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
 	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Query string `json:"query"`
@@ -99,7 +99,7 @@ func newAssistantReviewHTTPTest(t *testing.T) (*mux.Router, *store.MemoryStore, 
 		}
 		switch {
 		case strings.Contains(request.Query, "ProjectYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": projectYAML}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": projectYAML}}}})
 		case strings.Contains(request.Query, "SecretYaml"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}})
 		default:
@@ -123,9 +123,9 @@ func assistantReviewHTTPTestRequest(method, path, body string) *http.Request {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Kedge-User", "test-user")
-	request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
-	request.Header.Set("X-Kedge-Cluster", "cluster-a")
+	request.Header.Set("X-Faros-User", "test-user")
+	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	return request
 }
 

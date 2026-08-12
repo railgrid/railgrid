@@ -1,11 +1,11 @@
 # GraphQL Gateway
 
-Kedge ships a GraphQL gateway that exposes kcp virtual workspace APIs as a GraphQL endpoint. It is built on top of [kubernetes-graphql-gateway](https://github.com/platform-mesh/kubernetes-graphql-gateway) and runs as a single binary alongside the hub.
+Faros ships a GraphQL gateway that exposes kcp virtual workspace APIs as a GraphQL endpoint. It is built on top of [kubernetes-graphql-gateway](https://github.com/platform-mesh/kubernetes-graphql-gateway) and runs as a single binary alongside the hub.
 
 ## Architecture
 
 ```
-kedge-graphql run
+faros-graphql run
   ├── listener  – watches a kcp APIExportEndpointSlice, discovers workspace clusters,
   │               fetches their OpenAPI schemas and publishes them over gRPC
   └── gateway   – subscribes to schemas over gRPC, serves GraphQL at :8080
@@ -24,11 +24,11 @@ make dev-run-graphql
 This runs:
 
 ```bash
-bin/kedge-graphql run \
+bin/faros-graphql run \
   --kubeconfig=.kcp/admin.kubeconfig \
   --grpc-addr=localhost:50051 \
   --apiexport-endpoint-slice-name=core.faros.sh \
-  --apiexport-endpoint-slice-logicalcluster=root:kedge:providers \
+  --apiexport-endpoint-slice-logicalcluster=root:faros:providers \
   --workspace-schema-kubeconfig-override=.kcp/admin.kubeconfig \
   --enable-playground \
   --gateway-port=8080
@@ -38,16 +38,16 @@ Key flags:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--apiexport-endpoint-slice-name` | `core.faros.sh` | Which APIExportEndpointSlice to watch. Use `kedge.faros.sh` to expose Edge/Placement/VirtualWorkload resources. |
-| `--apiexport-endpoint-slice-logicalcluster` | `root:kedge:providers` | Logical cluster path where that endpointslice lives. |
+| `--apiexport-endpoint-slice-name` | `core.faros.sh` | Which APIExportEndpointSlice to watch. Use `faros.sh` to expose Edge/Placement/VirtualWorkload resources. |
+| `--apiexport-endpoint-slice-logicalcluster` | `root:faros:providers` | Logical cluster path where that endpointslice lives. |
 | `--workspace-schema-kubeconfig-override` | `.kcp/admin.kubeconfig` | Kubeconfig the gateway uses to proxy API calls. CA and credentials are extracted from it automatically. |
 | `--grpc-addr` | `localhost:50051` | gRPC address shared between listener and gateway. |
 | `--gateway-port` | `8080` | Port for the GraphQL HTTP server. |
 
-To expose kedge CRDs (Edges, Placements, VirtualWorkloads) instead of kcp core resources:
+To expose faros CRDs (Edges, Placements, VirtualWorkloads) instead of kcp core resources:
 
 ```bash
-make dev-run-graphql GRAPHQL_APIEXPORT_SLICE=kedge.faros.sh
+make dev-run-graphql GRAPHQL_APIEXPORT_SLICE=faros.sh
 ```
 
 ## Playground
@@ -115,7 +115,7 @@ In the GraphQL Playground, set the HTTP headers:
 
 ## Accessing via kubectl
 
-The GraphQL endpoint is proxied through the hub at `/graphql`. This means you can use `kubectl` with your normal kedge kubeconfig to send GraphQL queries.
+The GraphQL endpoint is proxied through the hub at `/graphql`. This means you can use `kubectl` with your normal faros kubeconfig to send GraphQL queries.
 
 ### Discover the cluster ID
 
@@ -233,11 +233,11 @@ This confirms the endpoint is reachable. To run a real query use `kubectl create
 }
 ```
 
-### List Edges (requires `--apiexport-endpoint-slice-name=kedge.faros.sh`)
+### List Edges (requires `--apiexport-endpoint-slice-name=faros.sh`)
 
 ```graphql
 {
-  kedge_faros_sh {
+  faros_sh {
     v1alpha1 {
       Edges {
         items {
@@ -258,11 +258,11 @@ This confirms the endpoint is reachable. To run a real query use `kubectl create
 }
 ```
 
-### List Placements (requires `--apiexport-endpoint-slice-name=kedge.faros.sh`)
+### List Placements (requires `--apiexport-endpoint-slice-name=faros.sh`)
 
 ```graphql
 {
-  kedge_faros_sh {
+  faros_sh {
     v1alpha1 {
       Placements {
         items {
@@ -325,7 +325,7 @@ The GraphQL schema reflects Kubernetes API group names with dots replaced by und
 | API group | GraphQL field |
 |-----------|--------------|
 | *(core)* | `v1` |
-| `kedge.faros.sh` | `kedge_faros_sh` |
+| `faros.sh` | `faros_sh` |
 | `apis.kcp.io` | `apis_kcp_io` |
 | `tenancy.kcp.io` | `tenancy_kcp_io` |
 
@@ -336,5 +336,5 @@ Resource names follow PascalCase. List queries use the plural form (`Edges`), si
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GRAPHQL_APIEXPORT_SLICE` | `core.faros.sh` | APIExportEndpointSlice to watch |
-| `GRAPHQL_APIEXPORT_LOGICAL_CLUSTER` | `root:kedge:providers` | Logical cluster of that endpointslice |
+| `GRAPHQL_APIEXPORT_LOGICAL_CLUSTER` | `root:faros:providers` | Logical cluster of that endpointslice |
 | `GRAPHQL_GRPC_ADDR` | `localhost:50051` | Internal gRPC address |

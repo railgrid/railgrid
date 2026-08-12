@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { ArrowLeft, ArrowRight, Check, Layers, Loader2, Package, Sparkles } from 'lucide-vue-next'
-import type { KedgeContext, ProjectPlan } from './types'
+import type { FarosContext, ProjectPlan } from './types'
 import { api } from './api'
 
 // The wizard owns planning and review only. Project creation stays in App.vue
@@ -9,7 +9,7 @@ import { api } from './api'
 // by the landing composer and retries.
 
 const props = defineProps<{
-  ctx: KedgeContext | null
+  ctx: FarosContext | null
   // disabled blocks Create while the parent isn't ready (setup incomplete).
   disabled?: boolean
   disabledReason?: string

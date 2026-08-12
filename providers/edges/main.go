@@ -8,7 +8,7 @@
 //
 // edges is the single, privileged, single-replica provider that owns the whole
 // edge connectivity plane for BOTH connectable kinds — KubernetesCluster and
-// LinuxServer, under one group edges.kedge.faros.sh. It terminates agent reverse
+// LinuxServer, under one group edges.faros.sh. It terminates agent reverse
 // tunnels (revdial) with one in-process ConnManager, runs the token/RBAC/
 // lifecycle controllers per kind, and serves the k8s/ssh/mcp data-plane
 // subresources. The tunnel Server dispatches by the resource segment in the URL
@@ -17,7 +17,7 @@
 // Routes (all behind the hub backend proxy at /services/providers/edges/*):
 //
 //   - /healthz                                          liveness/readiness gate
-//   - /agent/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/{kubernetesclusters|linuxservers}/{name}/proxy  agent control-tunnel ingress
+//   - /agent/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers}/{name}/proxy  agent control-tunnel ingress
 //   - /agent/proxy?revdial.dialer=<id>                  agent revdial pickup ingress
 //   - /edgeproxy/clusters/{cluster}/.../{name}/{k8s|ssh|mcp}  consumer egress
 //
@@ -109,7 +109,7 @@ func runServe() error {
 	// the tunnel server (token validation + Edge reads) and the edge controller
 	// manager (Edge reconcilers across tenant workspaces).
 	kcpConfig := loadKCPConfig(log)
-	hubExternalURL := os.Getenv("KEDGE_HUB_EXTERNAL_URL")
+	hubExternalURL := os.Getenv("FAROS_HUB_EXTERNAL_URL")
 
 	// Tunnel plane. The provider owns the ConnManager and terminates agent
 	// reverse tunnels in-process (single-replica). Both prefixes sit behind the
@@ -122,9 +122,9 @@ func runServe() error {
 		AgentPickupPath:     agentPickupPath,
 		EdgeProxyPublicPath: edgeProxyPublicPath,
 		KCPConfig:           kcpConfig,
-		StaticTokens:        splitEnv(os.Getenv("KEDGE_STATIC_TOKENS")),
+		StaticTokens:        splitEnv(os.Getenv("FAROS_STATIC_TOKENS")),
 		HubExternalURL:      hubExternalURL,
-		HubInternalURL:      os.Getenv("KEDGE_HUB_INTERNAL_URL"),
+		HubInternalURL:      os.Getenv("FAROS_HUB_INTERNAL_URL"),
 		Logger:              log,
 	})
 	if err != nil {
@@ -136,7 +136,7 @@ func runServe() error {
 	// APIExportEndpointSlice multicluster manager. Best-effort: a missing
 	// kubeconfig just disables the manager (healthz + tunnel still serve).
 	if cerr := startEdgeControllerManager(ctx, kcpConfig, tsrv,
-		hubExternalURL, hubCAData(log), os.Getenv("KEDGE_DEV_MODE") == "true"); cerr != nil {
+		hubExternalURL, hubCAData(log), os.Getenv("FAROS_DEV_MODE") == "true"); cerr != nil {
 		if errors.Is(cerr, errControllerDisabled) {
 			log.Info("edge controller manager disabled (no kcp kubeconfig)")
 		} else {
@@ -150,7 +150,7 @@ func runServe() error {
 	// Consumer egress: k8s/ssh/mcp subresources on the Edge CR.
 	mux.Handle("/edgeproxy/", http.StripPrefix("/edgeproxy", tsrv.EdgeProxyHandler()))
 	// Provider aggregate MCP: the hub's MCP aggregate federates this endpoint
-	// (POST tools/list with the caller's token + X-Kedge-Cluster). Exposes kube
+	// (POST tools/list with the caller's token + X-Faros-Cluster). Exposes kube
 	// tools across the tenant's connected KubernetesCluster edges AND the Home
 	// Assistant tools of every Ready home-assistant EdgeService.
 	mux.Handle("/mcp", tsrv.RootMCPHandler())
@@ -174,7 +174,7 @@ func runServe() error {
 
 	// Provider portal micro-frontend (embedded Vite bundle). The hub proxies
 	// /ui/providers/edges/* here; ProviderFrame injects <script src=".../main.js">
-	// and mounts <kedge-provider-edges>. Serve /main.js, /assets/*, /icon.svg from
+	// and mounts <faros-provider-edges>. Serve /main.js, /assets/*, /icon.svg from
 	// portal/dist with an index.html fallback. Best-effort: a missing/empty bundle
 	// just disables the UI (healthz + tunnel still serve).
 	if fileServer, distFS, perr := portalHandler(); perr != nil {
@@ -230,13 +230,13 @@ func runServe() error {
 // kubeconfig) for token validation and Edge reads/writes. Best-effort: returns
 // nil (with a warning) when no kubeconfig is available, so the binary still
 // serves /healthz in environments where kcp isn't wired yet. Resolution order:
-// KEDGE_PROVIDER_KUBECONFIG, KUBECONFIG, in-cluster.
+// FAROS_PROVIDER_KUBECONFIG, KUBECONFIG, in-cluster.
 func loadKCPConfig(log logr.Logger) *rest.Config {
-	if p := os.Getenv("KEDGE_PROVIDER_KUBECONFIG"); p != "" {
+	if p := os.Getenv("FAROS_PROVIDER_KUBECONFIG"); p != "" {
 		if c, err := clientcmd.BuildConfigFromFlags("", p); err == nil {
 			return c
 		} else {
-			log.Error(err, "KEDGE_PROVIDER_KUBECONFIG set but unusable")
+			log.Error(err, "FAROS_PROVIDER_KUBECONFIG set but unusable")
 		}
 	}
 	if p := os.Getenv("KUBECONFIG"); p != "" {
@@ -253,17 +253,17 @@ func loadKCPConfig(log logr.Logger) *rest.Config {
 
 // hubCAData resolves the hub's CA bundle (PEM), embedded by the RBAC reconciler
 // into the per-edge agent kubeconfig so agents trust the hub's serving cert.
-// Source: KEDGE_HUB_CA_FILE (path) or KEDGE_HUB_CA_DATA (raw PEM). Best-effort:
+// Source: FAROS_HUB_CA_FILE (path) or FAROS_HUB_CA_DATA (raw PEM). Best-effort:
 // returns nil when neither is set (dev with insecure/skip-verify agents).
 func hubCAData(log logr.Logger) []byte {
-	if p := os.Getenv("KEDGE_HUB_CA_FILE"); p != "" {
+	if p := os.Getenv("FAROS_HUB_CA_FILE"); p != "" {
 		if b, err := os.ReadFile(p); err == nil {
 			return b
 		} else {
-			log.Error(err, "KEDGE_HUB_CA_FILE set but unreadable")
+			log.Error(err, "FAROS_HUB_CA_FILE set but unreadable")
 		}
 	}
-	if d := os.Getenv("KEDGE_HUB_CA_DATA"); d != "" {
+	if d := os.Getenv("FAROS_HUB_CA_DATA"); d != "" {
 		return []byte(d)
 	}
 	return nil

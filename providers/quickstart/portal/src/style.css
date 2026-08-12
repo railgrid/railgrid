@@ -6,28 +6,28 @@
  * the portal's :root CSS custom properties (--color-accent, etc.) cascade
  * in for free — palette parity with the portal without re-declaring tokens.
  *
- * Every selector is namespaced under the kedge-provider-quickstart tag so
+ * Every selector is namespaced under the faros-provider-quickstart tag so
  * these styles cannot leak into the portal even though they live in the
  * portal's stylesheet scope.
  */
 
-kedge-provider-quickstart {
+faros-provider-quickstart {
   display: block;
 }
 
-kedge-provider-quickstart .grid {
+faros-provider-quickstart .grid {
   display: grid;
   gap: 12px;
   grid-template-columns: 1fr;
 }
 
 @media (min-width: 720px) {
-  kedge-provider-quickstart .grid {
+  faros-provider-quickstart .grid {
     grid-template-columns: 1fr 1fr;
   }
 }
 
-kedge-provider-quickstart .panel {
+faros-provider-quickstart .panel {
   background: var(--color-surface-raised, #111320);
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
@@ -35,7 +35,7 @@ kedge-provider-quickstart .panel {
   color: var(--color-text-primary, inherit);
 }
 
-kedge-provider-quickstart .panel-head {
+faros-provider-quickstart .panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -43,7 +43,7 @@ kedge-provider-quickstart .panel-head {
   margin-bottom: 10px;
 }
 
-kedge-provider-quickstart .panel-title {
+faros-provider-quickstart .panel-title {
   margin: 0;
   font-size: 11px;
   font-weight: 600;
@@ -52,7 +52,7 @@ kedge-provider-quickstart .panel-title {
   text-transform: uppercase;
 }
 
-kedge-provider-quickstart .badge {
+faros-provider-quickstart .badge {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -68,17 +68,17 @@ kedge-provider-quickstart .badge {
   color: var(--color-text-muted, inherit);
 }
 
-kedge-provider-quickstart .badge.ok {
+faros-provider-quickstart .badge.ok {
   color: var(--color-success);
   background: var(--color-success-subtle);
 }
 
-kedge-provider-quickstart .badge.warn {
+faros-provider-quickstart .badge.warn {
   color: var(--color-warning);
   background: var(--color-warning-subtle);
 }
 
-kedge-provider-quickstart pre {
+faros-provider-quickstart pre {
   margin: 0;
   background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
   color: var(--color-text-primary, inherit);
@@ -90,7 +90,7 @@ kedge-provider-quickstart pre {
   overflow-x: auto;
 }
 
-kedge-provider-quickstart code {
+faros-provider-quickstart code {
   background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
   color: var(--color-text-secondary, currentColor);
   padding: 1px 5px;
@@ -99,12 +99,12 @@ kedge-provider-quickstart code {
   font-size: 11px;
 }
 
-kedge-provider-quickstart .meta {
+faros-provider-quickstart .meta {
   margin: 0 0 8px;
   font-size: 11px;
   color: var(--color-text-muted, inherit);
 }
 
-kedge-provider-quickstart .muted {
+faros-provider-quickstart .muted {
   color: var(--color-text-muted, inherit);
 }

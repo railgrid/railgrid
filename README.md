@@ -1,6 +1,6 @@
-# kedge
+# faros
 
-kedge connects your distributed Kubernetes clusters and servers through a single control plane — no VPNs, no open firewall ports, no kubeconfig juggling. Agents running on each edge establish outbound reverse tunnels to the hub, so clusters behind NAT, home-lab Raspberry Pis, and bare-metal machines in remote sites all become reachable through one authenticated endpoint.
+faros connects your distributed Kubernetes clusters and servers through a single control plane — no VPNs, no open firewall ports, no kubeconfig juggling. Agents running on each edge establish outbound reverse tunnels to the hub, so clusters behind NAT, home-lab Raspberry Pis, and bare-metal machines in remote sites all become reachable through one authenticated endpoint.
 
 ## Features
 
@@ -17,10 +17,10 @@ kedge connects your distributed Kubernetes clusters and servers through a single
 
 ```
    [ your laptop ]
-        │  kedge CLI
+        │  faros CLI
         ▼
    ┌─────────────┐
-   │  kedge hub  │  ◄── central control plane (Kubernetes + kcp + OIDC)
+   │  faros hub  │  ◄── central control plane (Kubernetes + kcp + OIDC)
    └──────┬──────┘
           │  reverse tunnels (outbound from agents)
     ┌─────┴──────────────────┐
@@ -40,25 +40,25 @@ The hub is the only component that needs to be publicly reachable. Agents connec
 
 The hub is the only component that needs a public endpoint. Any device you're comfortable exposing works — a VPS, cloud VM, home server, or anything behind a Cloudflare Tunnel or ingress controller.
 
-→ **[Installation](https://faroshq.github.io/kedge/helm.html)**
+→ **[Installation](https://faroshq.github.io/faros/helm.html)**
 
 ### CLI
 
-Install the `kedge` CLI on any machine you want to interact with the hub from:
+Install the `faros` CLI on any machine you want to interact with the hub from:
 
-**Binary (recommended)** — download from the [releases page](https://github.com/faroshq/kedge/releases) and put the binary in your `$PATH`.
+**Binary (recommended)** — download from the [releases page](https://github.com/faroshq/faros/releases) and put the binary in your `$PATH`.
 
 **krew:**
 
 ```bash
 kubectl krew index add faros https://github.com/faroshq/krew-index.git
-kubectl krew install faros/kedge
+kubectl krew install faros/faros
 ```
 
 **From source:**
 
 ```bash
-go install github.com/faroshq/kedge/cmd/kedge@latest
+go install github.com/faroshq/faros/cmd/faros@latest
 ```
 
 ## Quickstart
@@ -69,50 +69,50 @@ go install github.com/faroshq/kedge/cmd/kedge@latest
 
 ```bash
 # Hosted hub
-kedge login
+faros login
 
 # Self-hosted hub
-kedge login --hub-url https://kedge.example.com
+faros login --hub-url https://faros.example.com
 ```
 
 ### 2. Connect a Kubernetes cluster
 
 ```bash
 # Register the edge on the hub
-kedge edge create my-cluster --type kubernetes
+faros edge create my-cluster --type kubernetes
 
 # Print the agent install command (includes the one-time join token)
-kedge edge join-command my-cluster
+faros edge join-command my-cluster
 ```
 
 Copy the printed command and run it on the target cluster. Once the agent connects:
 
 ```bash
-kedge edge list                                # should show my-cluster as Ready
-kedge kubeconfig edge my-cluster > kc.yaml    # get a kubeconfig for the edge
+faros edge list                                # should show my-cluster as Ready
+faros kubeconfig edge my-cluster > kc.yaml    # get a kubeconfig for the edge
 kubectl --kubeconfig kc.yaml get nodes
 ```
 
 ### 3. Use MCP with AI agents (Claude, Cursor, …)
 
-kedge exposes all your connected Kubernetes clusters as a single MCP server, letting AI coding assistants interact with your clusters directly.
+faros exposes all your connected Kubernetes clusters as a single MCP server, letting AI coding assistants interact with your clusters directly.
 
 ```bash
 # Print the MCP endpoint URL + ready-to-use setup commands
-kedge mcp url --name default
+faros mcp url --name default
 ```
 
 Example output:
 ```
-https://hub.example.com/services/mcp/root:kedge:user-default/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp
+https://hub.example.com/services/mcp/root:faros:user-default/apis/faros.sh/v1alpha1/kubernetesmcps/default/mcp
 
 To add this MCP server to Claude Code:
-  claude mcp add --transport http kedge "https://hub.example.com/..." -H "Authorization: Bearer <token>"
+  claude mcp add --transport http faros "https://hub.example.com/..." -H "Authorization: Bearer <token>"
 
 To add to Claude Desktop (claude_desktop_config.json):
   {
     "mcpServers": {
-      "kedge": {
+      "faros": {
         "url": "https://hub.example.com/...",
         "headers": { "Authorization": "Bearer <token>" }
       }
@@ -125,42 +125,42 @@ The MCP server aggregates **all connected kubernetes-type clusters** into one en
 ### 4. Connect a server (SSH mode)
 
 ```bash
-kedge edge create my-server --type server
-kedge edge join-command my-server
+faros edge create my-server --type server
+faros edge join-command my-server
 ```
 
 Run the printed command on the target host, then:
 
 ```bash
-kedge ssh my-server              # interactive shell
-kedge ssh my-server -- df -h     # single command
+faros ssh my-server              # interactive shell
+faros ssh my-server -- df -h     # single command
 ```
 
 ## CLI Reference
 
 | Command | Description |
 |---|---|
-| `kedge login` | Authenticate with the hub (OIDC or static token) |
-| `kedge edge create <name>` | Register a new edge |
-| `kedge edge join-command <name>` | Print the agent run command with join token |
-| `kedge edge list` | List all edges and their connection status |
-| `kedge edge get <name>` | Show details for a specific edge |
-| `kedge edge delete <name>` | Remove an edge |
-| `kedge kubeconfig edge <name>` | Generate a kubeconfig for a Kubernetes-type edge |
-| `kedge ssh <name>` | Open an SSH session to a server-mode edge |
-| `kedge ssh <name> -- <cmd>` | Run a single command on a server-mode edge |
-| `kedge agent run` | Start the agent as a foreground process |
-| `kedge agent join` | Install the agent as a persistent service (systemd / Deployment) |
-| `kedge mcp url --name <name>` | Print the Kubernetes multi-cluster MCP endpoint URL |
-| `kedge mcp url --edge <name>` | Print the per-edge MCP endpoint URL |
+| `faros login` | Authenticate with the hub (OIDC or static token) |
+| `faros edge create <name>` | Register a new edge |
+| `faros edge join-command <name>` | Print the agent run command with join token |
+| `faros edge list` | List all edges and their connection status |
+| `faros edge get <name>` | Show details for a specific edge |
+| `faros edge delete <name>` | Remove an edge |
+| `faros kubeconfig edge <name>` | Generate a kubeconfig for a Kubernetes-type edge |
+| `faros ssh <name>` | Open an SSH session to a server-mode edge |
+| `faros ssh <name> -- <cmd>` | Run a single command on a server-mode edge |
+| `faros agent run` | Start the agent as a foreground process |
+| `faros agent join` | Install the agent as a persistent service (systemd / Deployment) |
+| `faros mcp url --name <name>` | Print the Kubernetes multi-cluster MCP endpoint URL |
+| `faros mcp url --edge <name>` | Print the per-edge MCP endpoint URL |
 
 ## Documentation
 
-- [Getting Started](https://faroshq.github.io/kedge/getting-started.html)
-- [Helm Deployment](https://faroshq.github.io/kedge/helm.html)
-- [Security & Auth](https://faroshq.github.io/kedge/security.html)
-- [Ingress Setup](https://faroshq.github.io/kedge/ingress/)
-- [Developer Guide](https://faroshq.github.io/kedge/developers.html)
+- [Getting Started](https://faroshq.github.io/faros/getting-started.html)
+- [Helm Deployment](https://faroshq.github.io/faros/helm.html)
+- [Security & Auth](https://faroshq.github.io/faros/security.html)
+- [Ingress Setup](https://faroshq.github.io/faros/ingress/)
+- [Developer Guide](https://faroshq.github.io/faros/developers.html)
 
 ## Contributing
 

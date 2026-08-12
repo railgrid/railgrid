@@ -1,0 +1,47 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: code.faros.sh
+spec:
+  resources:
+  - group: code.faros.sh
+    name: collaborators
+    schema: v260609-fc69fa2.collaborators.code.faros.sh
+    storage:
+      crd: {}
+  - group: code.faros.sh
+    name: connections
+    schema: v260609-fc69fa2.connections.code.faros.sh
+    storage:
+      crd: {}
+  - group: code.faros.sh
+    name: deploykeys
+    schema: v260609-fc69fa2.deploykeys.code.faros.sh
+    storage:
+      crd: {}
+  - group: code.faros.sh
+    name: packages
+    schema: v260712-dabfd8e.packages.code.faros.sh
+    storage:
+      crd: {}
+  - group: code.faros.sh
+    name: repositories
+    schema: v260609-fc69fa2.repositories.code.faros.sh
+    storage:
+      crd: {}
+  - group: code.faros.sh
+    name: repositorybuildstatuses
+    schema: v260712-dabfd8e.repositorybuildstatuses.code.faros.sh
+    storage:
+      crd: {}
+  - group: code.faros.sh
+    name: repositorycheckouts
+    schema: v260704-6d52bca.repositorycheckouts.code.faros.sh
+    storage:
+      crd: {}
+  - group: code.faros.sh
+    name: repositorycommits
+    schema: v260802-8d0bfc17.repositorycommits.code.faros.sh
+    storage:
+      crd: {}
+status: {}

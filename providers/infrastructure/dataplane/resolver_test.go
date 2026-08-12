@@ -45,7 +45,7 @@ func sandboxRunnerContract() *infrav1alpha1.TemplateDataPlane {
 // backend publishes, all in the runner's runtime namespace.
 func runnerInstance(runtimeNamespace string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
+		"apiVersion": "infrastructure.faros.sh/v1alpha1",
 		"kind":       "SandboxRunner",
 		"metadata":   map[string]any{"name": runtimeNamespace},
 		"status": map[string]any{
@@ -58,7 +58,7 @@ func runnerInstance(runtimeNamespace string) *unstructured.Unstructured {
 }
 
 func TestResolveControlVerbs(t *testing.T) {
-	ns := "kedge-sandbox-a1c31ddaaaa007d4"
+	ns := "faros-sandbox-a1c31ddaaaa007d4"
 	contract := sandboxRunnerContract()
 	instance := runnerInstance(ns)
 
@@ -94,7 +94,7 @@ func TestResolveControlVerbs(t *testing.T) {
 }
 
 func TestResolvePreviewProxy(t *testing.T) {
-	ns := "kedge-sandbox-a1c31ddaaaa007d4"
+	ns := "faros-sandbox-a1c31ddaaaa007d4"
 	got, err := Resolve(sandboxRunnerContract(), runnerInstance(ns), "proxy")
 	if err != nil {
 		t.Fatalf("Resolve(proxy) error: %v", err)
@@ -124,7 +124,7 @@ func TestResolveFromStatus(t *testing.T) {
 }
 
 func TestResolveRejectsNamespaceEscape(t *testing.T) {
-	ns := "kedge-sandbox-a1c31ddaaaa007d4"
+	ns := "faros-sandbox-a1c31ddaaaa007d4"
 	instance := runnerInstance(ns)
 	// Forge the control service ref to point at kube-system.
 	unstructured.SetNestedField(instance.Object, "kube-system", "status", "controlServiceRef", "namespace") //nolint:errcheck
@@ -145,7 +145,7 @@ func TestValidateRuntimeNamespaceRejectsForgedStatusBoundary(t *testing.T) {
 }
 
 func TestResolveRejectsTokenSecretEscape(t *testing.T) {
-	ns := "kedge-sandbox-a1c31ddaaaa007d4"
+	ns := "faros-sandbox-a1c31ddaaaa007d4"
 	instance := runnerInstance(ns)
 	unstructured.SetNestedField(instance.Object, "kube-system", "status", "controlSecretRef", "namespace") //nolint:errcheck
 
@@ -155,7 +155,7 @@ func TestResolveRejectsTokenSecretEscape(t *testing.T) {
 }
 
 func TestResolveDefaultsRefNamespaceToRuntime(t *testing.T) {
-	ns := "kedge-sandbox-a1c31ddaaaa007d4"
+	ns := "faros-sandbox-a1c31ddaaaa007d4"
 	instance := runnerInstance(ns)
 	// A ref that omits its namespace defaults to the runtime namespace.
 	unstructured.RemoveNestedField(instance.Object, "status", "controlServiceRef", "namespace")

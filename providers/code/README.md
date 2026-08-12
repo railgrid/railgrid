@@ -3,18 +3,18 @@
 > [!IMPORTANT]
 > **Read-only mirror — do not push or open PRs here.**
 > The standalone [`faroshq/provider-code`](https://github.com/faroshq/provider-code)
-> repository is **automatically synced** from the kedge monorepo
-> [`faroshq/kedge`](https://github.com/faroshq/kedge) (path `providers/code/`)
+> repository is **automatically synced** from the faros monorepo
+> [`faroshq/faros`](https://github.com/faroshq/faros) (path `providers/code/`)
 > via [splitsh-lite](https://github.com/splitsh/lite). Every sync force-updates
 > the mirror, so any direct change here is overwritten. File issues and PRs
-> against [`faroshq/kedge`](https://github.com/faroshq/kedge) instead.
+> against [`faroshq/faros`](https://github.com/faroshq/faros) instead.
 > See [docs/provider-publishing.md](../../docs/provider-publishing.md) for how
 > the mirror is published.
 
-A kedge provider that manages source-code repositories and their access —
+A faros provider that manages source-code repositories and their access —
 deploy keys, collaborators, and (read-only) published packages — across git
-hosting providers (**GitHub** today) on behalf of kedge tenants. A tenant adds a
-**Connection** (a credential for one git account) in the kedge portal — or via
+hosting providers (**GitHub** today) on behalf of faros tenants. A tenant adds a
+**Connection** (a credential for one git account) in the faros portal — or via
 an MCP-driven LLM — then declares **Repositories**, **DeployKeys**, and
 **Collaborators** as Kubernetes-style resources in their own kcp workspace. The
 provider's controllers reconcile those into real GitHub state.
@@ -48,7 +48,7 @@ Browser / MCP client
    │  bearer
    ▼
 hub /services/providers/code/{mcp, mcp/sse, oauth/github/*}
-   │  proxy injects X-Kedge-Tenant + X-Kedge-User
+   │  proxy injects X-Faros-Tenant + X-Faros-User
    ▼
 this provider pod
    │
@@ -58,7 +58,7 @@ this provider pod
    │    DeployKey   → register/generate keys
    │    Collaborator→ invite/manage access
    │    Package     → crawl host packages on a timer → Package CRs
-   │      └ kubeconfig: /var/run/secrets/kedge/kedge-provider-kubeconfig
+   │      └ kubeconfig: /var/run/secrets/faros/faros-provider-kubeconfig
    │
    └  MCP (AS THE CALLER, caller's own bearer token)
 ```
@@ -66,7 +66,7 @@ this provider pod
 CRUD does **not** go through this pod's HTTP surface: the portal drives every CR —
 Connections, Repositories, DeployKeys, Collaborators, and the crawled Packages —
 through the hub's GraphQL gateway at `/graphql/<workspace>`. Reads are
-`code_kedge_faros_sh { v1alpha1 { … } }` queries; writes are create/update/delete
+`code_faros_sh { v1alpha1 { … } }` queries; writes are create/update/delete
 mutations (plus `applyYaml` for create-or-update, which also writes the credential
 Secret). The pod's HTTP surface is only for the MCP tools and the GitHub OAuth
 callback.
@@ -89,7 +89,7 @@ curl -s localhost:8083/healthz
 
 `make run-provider-code` auto-sources `providers/code/.env` (gitignored) so
 GitHub OAuth + other dev env reach the provider — copy `.env.example` to `.env`
-to enable "Connect with GitHub" locally. In dev, `KEDGE_DEV_ALLOW_TENANT_QUERY=true`
+to enable "Connect with GitHub" locally. In dev, `FAROS_DEV_ALLOW_TENANT_QUERY=true`
 lets `?tenant=` / `?token=` stand in for the hub-injected identity headers.
 
 ## Connecting an account
@@ -114,7 +114,7 @@ it into a ConfigMap and the init container self-registers it into the workspace
 via the provider kubeconfig; alternatively apply the raw manifest yourself:
 
 ```sh
-kubectl --kubeconfig kcp-admin.kubeconfig ws use root:kedge:providers
+kubectl --kubeconfig kcp-admin.kubeconfig ws use root:faros:providers
 kubectl apply -f manifest.yaml
 kubectl get catalogentry code -o yaml   # Ready flips True once heartbeats land
 ```
@@ -127,7 +127,7 @@ A three-stage build (portal → Go binary → distroless) that bakes the portal
 into the binary. Listens on `:8083`.
 
 ```sh
-docker build -t ghcr.io/faroshq/kedge-code-provider:dev providers/code/
+docker build -t ghcr.io/faroshq/faros-code-provider:dev providers/code/
 ```
 
 ## Deploy with Helm
@@ -136,7 +136,7 @@ The chart ships the provider Deployment, a ClusterIP Service, the ServiceAccount
 and (optionally) the CatalogEntry ConfigMap the init container applies to kcp.
 The runtime kubeconfig the controllers need
 is **minted by the hub** when it reconciles the CatalogEntry and mounted from the
-`kedge-provider-kubeconfig` Secret — the volume is `optional`, so the pod serves
+`faros-provider-kubeconfig` Secret — the volume is `optional`, so the pod serves
 portal/MCP/packages reads immediately and the controller manager engages once
 the Secret appears.
 
@@ -145,8 +145,8 @@ the Secret appears.
 ```sh
 helm install code providers/code/deploy/chart \
   -n code --create-namespace \
-  --set hub.url=https://kedge-hub.kedge.svc.cluster.local:9443 \
-  --set hub.tokenSecretRef.name=kedge-code-hub-token \
+  --set hub.url=https://faros-hub.faros.svc.cluster.local:9443 \
+  --set hub.tokenSecretRef.name=faros-code-hub-token \
   --set image.tag=0.1.0
 ```
 
@@ -158,23 +158,23 @@ through the hub; once OAuth is enabled and the provider backend is reachable, th
 **Connect with GitHub** button appears.
 
 ```sh
-kubectl -n code create secret generic kedge-code-github-oauth \
+kubectl -n code create secret generic faros-code-github-oauth \
   --from-literal=clientSecret=<oauth-app-client-secret>
 
 helm install code providers/code/deploy/chart \
   -n code --create-namespace \
-  --set hub.url=https://kedge-hub.kedge.svc.cluster.local:9443 \
-  --set hub.tokenSecretRef.name=kedge-code-hub-token \
+  --set hub.url=https://faros-hub.faros.svc.cluster.local:9443 \
+  --set hub.tokenSecretRef.name=faros-code-hub-token \
   --set githubOAuth.enabled=true \
   --set githubOAuth.clientId=<oauth-app-client-id> \
-  --set githubOAuth.clientSecretRef.name=kedge-code-github-oauth \
+  --set githubOAuth.clientSecretRef.name=faros-code-github-oauth \
   --set githubOAuth.redirectURL=https://<hub-host>/services/providers/code/oauth/github/callback \
   --set githubOAuth.portalOrigin=https://<hub-host>
 ```
 
 #### Choosing `redirectURL`
 
-GitHub's callback is a **top-level browser redirect with no kedge auth**, so
+GitHub's callback is a **top-level browser redirect with no faros auth**, so
 `redirectURL` must be publicly reachable and forward to the provider's HTTP
 backend (`:8083`). It must end in `/callback`; the matching `/start` URL is
 derived automatically by swapping `/callback` → `/start` under the **same host
@@ -203,26 +203,26 @@ your portal.
 
 Provider running in its own namespace, registered against an already-running hub,
 with OAuth routed through the hub ingress (no per-provider ingress). The runtime
-kubeconfig the controllers need is supplied as the `kedge-provider-kubeconfig`
+kubeconfig the controllers need is supplied as the `faros-provider-kubeconfig`
 Secret (its key **must** be `kubeconfig`) — mint it via the admin onboarding flow
 (`/bonkers`).
 
 ```sh
 # 1. Namespace.
-kubectl create namespace kedge-prod-provider-code
+kubectl create namespace faros-prod-provider-code
 
 # 2. Provider kubeconfig Secret (key MUST be "kubeconfig").
-kubectl -n kedge-prod-provider-code create secret generic kedge-provider-kubeconfig \
-  --from-file=kubeconfig=kedge/provider-code.kubeconfig
+kubectl -n faros-prod-provider-code create secret generic faros-provider-kubeconfig \
+  --from-file=kubeconfig=faros/provider-code.kubeconfig
 
 # 3. GitHub OAuth App client secret.
-kubectl -n kedge-prod-provider-code create secret generic code-github-oauth \
+kubectl -n faros-prod-provider-code create secret generic code-github-oauth \
   --from-literal=clientSecret=<oauth-app-client-secret>
 
 # 4. Install the chart from the published OCI registry.
-helm upgrade --install code oci://ghcr.io/faroshq/charts/kedge-code-provider:0.0.82 \
-  -n kedge-prod-provider-code \
-  --set hub.url=https://kedge-kedge-hub.kedge-prod.svc.cluster.local:9443 \
+helm upgrade --install code oci://ghcr.io/faroshq/charts/faros-code-provider:0.0.82 \
+  -n faros-prod-provider-code \
+  --set hub.url=https://faros-faros-hub.faros-prod.svc.cluster.local:9443 \
   --set hub.insecure=true \
   --set hub.tokenSecretRef.name="" \
   --set image.tag=v0.0.82 \
@@ -242,7 +242,7 @@ Notes:
 - `catalogEntry.enabled=false` means the chart does **not** manage the
   CatalogEntry — the hub uses whatever `backend.url` the existing CatalogEntry
   declares. **Make sure that `backend.url` points at this deployment's Service**
-  (`http://code-kedge-code-provider.<namespace>.svc.cluster.local:8083`); a stale
+  (`http://code-faros-code-provider.<namespace>.svc.cluster.local:8083`); a stale
   namespace there makes the hub→provider proxy return **502** (and the OAuth
   button stays hidden). Leaving `catalogEntry.enabled=true` lets the init
   container keep `backend.url` in sync with the release namespace automatically.
@@ -260,9 +260,9 @@ tenant credential namespace, and the CatalogEntry toggle.
 ```jsonc
 {
   "mcpServers": {
-    "kedge-code": {
-      "url": "https://<your-kedge-hub>/services/providers/code/mcp",
-      "headers": { "Authorization": "Bearer <kedge-bearer>" }
+    "faros-code": {
+      "url": "https://<your-faros-hub>/services/providers/code/mcp",
+      "headers": { "Authorization": "Bearer <faros-bearer>" }
     }
   }
 }
@@ -283,9 +283,9 @@ Rather than hitting GitHub on every page view (GitHub has no per-repo packages
 API and rate-limits the per-ecosystem listing hard), the **packages controller**
 crawls each Repository on a timer (`CODE_PACKAGE_CRAWL_INTERVAL`, default 2m) and
 reconciles one **Package CR** per artifact, owned by the Repository (so they're
-garbage-collected with it) and labelled `code.kedge.faros.sh/repository=<repo>`.
+garbage-collected with it) and labelled `code.faros.sh/repository=<repo>`.
 The portal then reads those CRs through the hub's GraphQL gateway
-(`/graphql/<workspace>`, `code_kedge_faros_sh { v1alpha1 { Packages(labelselector: …) } }`)
+(`/graphql/<workspace>`, `code_faros_sh { v1alpha1 { Packages(labelselector: …) } }`)
 like any other CRD — no provider round-trip, no throttling. Crawling still needs
 the connection token's `read:packages` scope.
 
@@ -294,15 +294,15 @@ the connection token's `read:packages` scope.
 | Var | Default | Purpose |
 |---|---|---|
 | `PORT` | `8083` | Listen port |
-| `KEDGE_HUB_URL` | (unset → heartbeat off) | Hub base URL for heartbeats |
-| `KEDGE_HUB_TOKEN` | (unset) | Bearer token for heartbeats |
-| `KEDGE_PROVIDER_NAME` | `code` | CatalogEntry name |
-| `KEDGE_HUB_INSECURE` | (unset) | `true` skips TLS verify on heartbeats |
+| `FAROS_HUB_URL` | (unset → heartbeat off) | Hub base URL for heartbeats |
+| `FAROS_HUB_TOKEN` | (unset) | Bearer token for heartbeats |
+| `FAROS_PROVIDER_NAME` | `code` | CatalogEntry name |
+| `FAROS_HUB_INSECURE` | (unset) | `true` skips TLS verify on heartbeats |
 | `CODE_KUBECONFIG` | (unset → controllers disabled) | kcp kubeconfig for the multicluster controller manager |
-| `CODE_WORKSPACE_PATH` | `root:kedge:providers:code` | Workspace the APIExportEndpointSlice is ensured in |
+| `CODE_WORKSPACE_PATH` | `root:faros:providers:code` | Workspace the APIExportEndpointSlice is ensured in |
 | `CODE_COMMIT_BUNDLE_DIR` | system temp dir | Directory for provider-owned RepositoryCommit source bundles; use shared storage before running multiple replicas |
-| `KEDGE_TENANT_CREDENTIALS_NAMESPACE` | `default` | Namespace the Connection credential Secret lives in |
-| `KEDGE_DEV_ALLOW_TENANT_QUERY` | (unset) | `true` lets `?tenant=`/`?token=` replace identity headers (dev only) |
+| `FAROS_TENANT_CREDENTIALS_NAMESPACE` | `default` | Namespace the Connection credential Secret lives in |
+| `FAROS_DEV_ALLOW_TENANT_QUERY` | (unset) | `true` lets `?tenant=`/`?token=` replace identity headers (dev only) |
 | `GITHUB_OAUTH_CLIENT_ID` | (unset → OAuth off) | GitHub OAuth App client ID |
 | `GITHUB_OAUTH_CLIENT_SECRET` | (unset) | GitHub OAuth App client secret |
 | `GITHUB_OAUTH_REDIRECT_URL` | (unset) | Absolute callback URL (must end in `/callback`); either the hub `/services/providers/code/oauth/github/callback` proxy route or the provider's own host. `/start` is derived from it |

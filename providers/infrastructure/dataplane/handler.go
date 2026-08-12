@@ -35,7 +35,7 @@ import (
 // PathPrefix is where the handler is mounted on the provider's serve mux. It is
 // reached through the hub backend proxy at
 // /services/providers/infrastructure/dataplane/... with the caller's bearer
-// token forwarded as-is and X-Kedge-* identity headers injected.
+// token forwarded as-is and X-Faros-* identity headers injected.
 const PathPrefix = "/dataplane/"
 
 // InstanceGetter authorizes and fetches a workload instance AS THE CALLER. The
@@ -364,7 +364,7 @@ func resolveExecWorkdir(requested, base string) (string, error) {
 //	/dataplane/clusters/<id>/<resource>/<name>/components/<component>/<verb>[/<tail...>]
 //
 // The cluster segment is the workspace's kcp logical-cluster ID (the hub-injected
-// X-Kedge-Cluster that app-studio puts in the URL), NOT a workspace path — the
+// X-Faros-Cluster that app-studio puts in the URL), NOT a workspace path — the
 // instance getter addresses kcp by /clusters/<id>, which the hub proxy requires.
 // "components" is reserved as a verb name by the second form.
 func parsePath(p string) (request, bool) {

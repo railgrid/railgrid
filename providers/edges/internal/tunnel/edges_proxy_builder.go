@@ -49,7 +49,7 @@ import (
 //
 // Path (relative to /services/edges-proxy/ mount point):
 //
-//	/clusters/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/edges/{name}/{subresource}[/...]
+//	/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/edges/{name}/{subresource}[/...]
 //
 // Supported subresources:
 //   - k8s  — reverse-proxy to the Kubernetes API of a type=kubernetes edge
@@ -74,7 +74,7 @@ func (p *Server) buildEdgesProxyHandler() http.Handler {
 		// 2. Parse cluster, resource (kind), name, and subresource from the URL path.
 		cluster, resource, name, subresource, ok := p.parseEdgesProxyPath(r.URL.Path)
 		if !ok {
-			http.Error(w, "invalid path: expected /clusters/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/{kubernetesclusters|linuxservers}/{name}/{subresource}[/...]", http.StatusBadRequest)
+			http.Error(w, "invalid path: expected /clusters/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers}/{name}/{subresource}[/...]", http.StatusBadRequest)
 			return
 		}
 
@@ -169,7 +169,7 @@ func (p *Server) edgesSSHHandler(ctx context.Context, w http.ResponseWriter, r *
 	// Parse cluster and edge name from the key (format: "edges/{cluster}/{name}")
 	cluster, edgeName := parseEdgeConnKey(key)
 
-	// Optional non-interactive exec mode (e.g. `kedge ssh <name> -- <cmd>`).
+	// Optional non-interactive exec mode (e.g. `faros ssh <name> -- <cmd>`).
 	remoteCmd := r.URL.Query().Get("cmd")
 
 	// Fetch SSH credentials from Edge status, applying the configured user mapping.
@@ -546,7 +546,7 @@ func (t *edgeDeviceConnTransport) RoundTrip(req *http.Request) (*http.Response, 
 //
 // Expected format:
 //
-//	/clusters/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/{kubernetesclusters|linuxservers}/{name}/{subresource}[/...]
+//	/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers}/{name}/{subresource}[/...]
 func (p *Server) parseEdgesProxyPath(path string) (cluster, resource, name, subresource string, ok bool) {
 	// Segments: [0]clusters [1]cluster [2]apis [3]group [4]version [5]resource
 	//           [6]name [7]subresource (may have more after for k8s pass-through)
@@ -592,7 +592,7 @@ func (p *Server) edgeProxyStatusURL(gvr schema.GroupVersionResource, cluster, na
 // extractEdgeK8sPath strips the edges-proxy prefix from the request path,
 // keeping the /k8s/ prefix that the agent expects.
 //
-// Input:  /clusters/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/edges/{name}/k8s/api/v1/pods
+// Input:  /clusters/{cluster}/apis/edges.faros.sh/v1alpha1/edges/{name}/k8s/api/v1/pods
 // Output: /k8s/api/v1/pods
 func extractEdgeK8sPath(path string) string {
 	idx := strings.Index(path, "/k8s/")

@@ -4,7 +4,7 @@ import { createServer } from 'vite'
 
 const vite = await createServer({
   appType: 'custom',
-  cacheDir: '/tmp/kedge-vite-promotion-state',
+  cacheDir: '/tmp/faros-vite-promotion-state',
   configFile: false,
   server: { middlewareMode: true },
 })

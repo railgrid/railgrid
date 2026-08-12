@@ -16,8 +16,8 @@ limitations under the License.
 
 // Package tenant implements the hub-side tenant middleware described in
 // docs/organizations.md §Switch the active context. It resolves the active
-// Organization + Workspace from request headers (X-Kedge-Org and
-// X-Kedge-Workspace), validates them against the caller's
+// Organization + Workspace from request headers (X-Faros-Org and
+// X-Faros-Workspace), validates them against the caller's
 // UserMembershipIndex, and stuffs the resolved (user, orgUUID,
 // workspaceUUID, role) tuple into the request context for downstream
 // handlers to consume.
@@ -37,19 +37,19 @@ import (
 // Organization-Workspace-Role triple they're claiming via headers.
 //
 // WorkspaceUUID is empty for Org-scoped requests (the caller sent
-// X-Kedge-Org without X-Kedge-Workspace — valid for org-management
+// X-Faros-Org without X-Faros-Workspace — valid for org-management
 // endpoints).
 type TenantContext struct {
 	// User is the metadata.name (UUID) of the caller's User CR.
 	User string
 
 	// OrgUUID is the metadata.name (UUID) of the caller's active
-	// Organization, taken from X-Kedge-Org. Always set in a successful
+	// Organization, taken from X-Faros-Org. Always set in a successful
 	// TenantContext.
 	OrgUUID string
 
 	// WorkspaceUUID is the metadata.name (UUID) of the caller's active
-	// child Workspace, taken from X-Kedge-Workspace. Empty for
+	// child Workspace, taken from X-Faros-Workspace. Empty for
 	// Org-scoped requests.
 	WorkspaceUUID string
 

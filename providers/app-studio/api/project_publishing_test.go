@@ -37,7 +37,7 @@ import (
 )
 
 var (
-	publishingTestTargetGVR = schema.GroupVersionResource{Group: "infrastructure.kedge.faros.sh", Version: "v1alpha1", Resource: "applications"}
+	publishingTestTargetGVR = schema.GroupVersionResource{Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "applications"}
 	clusterRoleGVR          = clusterRoleResource.GVR
 	clusterRoleBindingGVR   = clusterRoleBindingResource.GVR
 )
@@ -120,9 +120,9 @@ func rawJSONForPublishing(value any) runtime.RawExtension {
 }
 
 func setPublishingIdentity(r *http.Request) {
-	r.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:ws-1")
-	r.Header.Set("X-Kedge-Cluster", "cluster-a")
-	r.Header.Set("X-Kedge-User", "alice")
+	r.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:ws-1")
+	r.Header.Set("X-Faros-Cluster", "cluster-a")
+	r.Header.Set("X-Faros-User", "alice")
 	r.Header.Set("Authorization", "Bearer test-token")
 }
 
@@ -254,7 +254,7 @@ func TestGrantLifecycleWritesRBACOnly(t *testing.T) {
 		publishingTestProject("demo", "project-uid", "private"),
 		publishingTestTarget("demo-prod", "runtime-uid-1", "private", "https://demo-prod-abc.apps.test"),
 	)
-	router := publishingTestServer(t, dyn, publishingMember{User: "bob", RBACIdentity: "kedge:bob@example.com", Role: "member"})
+	router := publishingTestServer(t, dyn, publishingMember{User: "bob", RBACIdentity: "faros:bob@example.com", Role: "member"})
 
 	// Email identities are rejected.
 	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants", `{"user":"bob@example.com"}`)
@@ -312,8 +312,8 @@ func TestGrantLifecycleWritesRBACOnly(t *testing.T) {
 	subject, _ := subjects[0].(map[string]any)
 	// The subject must be the kcp RBAC identity — the username kcp actually
 	// evaluates — never the User CR name (no kcp binding references it).
-	if subject["kind"] != "User" || subject["name"] != "kedge:bob@example.com" {
-		t.Fatalf("binding subject = %#v, want User kedge:bob@example.com", subject)
+	if subject["kind"] != "User" || subject["name"] != "faros:bob@example.com" {
+		t.Fatalf("binding subject = %#v, want User faros:bob@example.com", subject)
 	}
 
 	// Idempotent re-grant.
@@ -346,7 +346,7 @@ func TestGrantInviteByEmailProvisionsThroughHubAndWritesRBAC(t *testing.T) {
 		},
 		publishingMemberInviter: func(_ context.Context, _ identity, email string) (publishingMember, error) {
 			invitedEmail = email
-			return publishingMember{User: "user-carol", RBACIdentity: "kedge:carol@example.com"}, nil
+			return publishingMember{User: "user-carol", RBACIdentity: "faros:carol@example.com"}, nil
 		},
 	}
 	router := mux.NewRouter()
@@ -384,7 +384,7 @@ func TestGrantCreationRequiresPrivateAccess(t *testing.T) {
 		publishingTestProject("demo", "project-uid", "public"),
 		publishingTestTarget("demo-prod", "runtime-uid-1", "public", "https://demo-prod-abc.apps.test"),
 	)
-	router := publishingTestServer(t, dyn, publishingMember{User: "bob", RBACIdentity: "kedge:bob@example.com"})
+	router := publishingTestServer(t, dyn, publishingMember{User: "bob", RBACIdentity: "faros:bob@example.com"})
 	rec := publishingDo(t, router, http.MethodPost, "/api/projects/demo/publishing/grants", `{"user":"bob"}`)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "private access") {
 		t.Fatalf("public-mode grant status = %d: %s", rec.Code, rec.Body.String())

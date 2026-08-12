@@ -185,7 +185,7 @@ func (c StatementClient) validateCurrentUser(ctx context.Context, client *http.C
 }
 
 // ValidateWarehouse checks that the token can see the configured SQL warehouse
-// and returns the Databricks-reported state for kedge status.
+// and returns the Databricks-reported state for faros status.
 func (c StatementClient) ValidateWarehouse(ctx context.Context, target WarehouseValidationTarget) (WarehouseValidationResult, error) {
 	if strings.TrimSpace(target.BearerToken) == "" {
 		return WarehouseValidationResult{}, fmt.Errorf("databricks bearer token is required")

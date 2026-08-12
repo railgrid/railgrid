@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // tenancyBearer obtains a bearer token suitable for the hub REST surface,
@@ -127,17 +127,17 @@ func saTokenURL(hubURL, orgUUID, wsUUID, saUUID string) string {
 	return saURL(hubURL, orgUUID, wsUUID, saUUID) + "/tokens"
 }
 
-// orgWSHeaders returns the X-Kedge-{Org,Workspace} headers a
+// orgWSHeaders returns the X-Faros-{Org,Workspace} headers a
 // workspace-scoped REST call needs.
 func orgWSHeaders(orgUUID, wsUUID string) map[string]string {
 	return map[string]string{
-		"X-Kedge-Org":       orgUUID,
-		"X-Kedge-Workspace": wsUUID,
+		"X-Faros-Org":       orgUUID,
+		"X-Faros-Workspace": wsUUID,
 	}
 }
 
 func orgHeaders(orgUUID string) map[string]string {
-	return map[string]string{"X-Kedge-Org": orgUUID}
+	return map[string]string{"X-Faros-Org": orgUUID}
 }
 
 // _ status code constants exposed as ints. Unused locally but keep the

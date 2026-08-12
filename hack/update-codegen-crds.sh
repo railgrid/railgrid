@@ -31,7 +31,7 @@ echo "Generating deepcopy methods with controller-gen..."
 )
 
 # Step 1: Generate CRDs from Go types using controller-gen.
-# Run from kedge API dir so paths resolve correctly.
+# Run from faros API dir so paths resolve correctly.
 echo "Generating CRDs with controller-gen..."
 (
     cd "${REPO_ROOT}/apis"

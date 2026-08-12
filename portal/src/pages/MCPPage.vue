@@ -229,7 +229,7 @@ async function remove(name: string) {
 
 // ---- connect snippets (token masked on screen, injected on copy) ----
 const TOKEN_PLACEHOLDER = '<token>'
-const codexTokenEnvVar = 'KEDGE_MCP_TOKEN'
+const codexTokenEnvVar = 'FAROS_MCP_TOKEN'
 function shellQuote(v: string) {
   return `'${v.replace(/'/g, `'\\''`)}'`
 }

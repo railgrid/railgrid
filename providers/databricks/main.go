@@ -6,7 +6,7 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// databricks-provider is the native kedge provider for imported Databricks
+// databricks-provider is the native faros provider for imported Databricks
 // Table resources. V1 exposes existing Table handles to App Studio as metadata;
 // table import/pinning is owned by this provider's UX/API, not App Studio.
 package main
@@ -164,7 +164,7 @@ func newServeMux(tables map[string]queryapi.TableRef, devStaticTables bool, tena
 		if devStaticTables || tenantFactory == nil {
 			return nil
 		}
-		return tenantFactory.ActionExecutorForRoute(r, r.Header.Get("X-Kedge-Cluster"), actionExecutor)
+		return tenantFactory.ActionExecutorForRoute(r, r.Header.Get("X-Faros-Cluster"), actionExecutor)
 	}
 
 	mux := http.NewServeMux()
@@ -177,7 +177,7 @@ func newServeMux(tables map[string]queryapi.TableRef, devStaticTables bool, tena
 			Message:    "databricks provider ready",
 			Provider:   "databricks",
 			ServedAt:   time.Now().UTC(),
-			UserHeader: r.Header.Get("X-Kedge-User"),
+			UserHeader: r.Header.Get("X-Faros-User"),
 		}
 		if devStaticTables {
 			resp.Tables = len(tables)
@@ -244,10 +244,10 @@ func seedTablesFromEnv() map[string]queryapi.TableRef {
 }
 
 func loadControllerConfig() (*rest.Config, error) {
-	if p := os.Getenv("KEDGE_PROVIDER_KUBECONFIG"); p != "" {
+	if p := os.Getenv("FAROS_PROVIDER_KUBECONFIG"); p != "" {
 		c, err := clientcmd.BuildConfigFromFlags("", p)
 		if err != nil {
-			return nil, fmt.Errorf("KEDGE_PROVIDER_KUBECONFIG: %w", err)
+			return nil, fmt.Errorf("FAROS_PROVIDER_KUBECONFIG: %w", err)
 		}
 		return c, nil
 	}
@@ -288,17 +288,17 @@ const (
 )
 
 func runHeartbeat(ctx context.Context) {
-	hub := os.Getenv("KEDGE_HUB_URL")
-	token := os.Getenv("KEDGE_HUB_TOKEN")
-	name := envOr("KEDGE_PROVIDER_NAME", "databricks")
+	hub := os.Getenv("FAROS_HUB_URL")
+	token := os.Getenv("FAROS_HUB_TOKEN")
+	name := envOr("FAROS_PROVIDER_NAME", "databricks")
 	if hub == "" {
-		log.Printf("heartbeat disabled (set KEDGE_HUB_URL to enable)")
+		log.Printf("heartbeat disabled (set FAROS_HUB_URL to enable)")
 		return
 	}
 	url := strings.TrimRight(hub, "/") + "/api/providers/" + name + "/heartbeat"
 	body, _ := json.Marshal(map[string]string{"version": heartbeatVersion, "status": "healthy"})
 	client := &http.Client{Timeout: 5 * time.Second}
-	if os.Getenv("KEDGE_HUB_INSECURE") == "true" {
+	if os.Getenv("FAROS_HUB_INSECURE") == "true" {
 		client.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev-only opt-in
 		}

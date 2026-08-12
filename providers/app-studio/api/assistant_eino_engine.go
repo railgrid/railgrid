@@ -40,7 +40,7 @@ import (
 const (
 	projectEinoAssistantClosingEvidenceMaxItems = 64
 	projectEinoAssistantLiveContextPrefix       = "App Studio live request context (regenerated before every model sample):\n"
-	projectEinoAssistantProjectPromptPrefix     = "You are the assistant for a persistent Kedge Project workspace. "
+	projectEinoAssistantProjectPromptPrefix     = "You are the assistant for a persistent Faros Project workspace. "
 	projectEinoAssistantSessionSnapshotPrefix   = "Current project snapshot (authoritative for the start of this turn;"
 	projectEinoAssistantV2DeepInstruction       = "You are the App Studio project assistant. Use only the tools exposed in this turn; do not assume shell, browser, host filesystem, or subagent access. " +
 		projectAssistantBrowserConsoleTrustInstruction +

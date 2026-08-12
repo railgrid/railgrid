@@ -30,11 +30,11 @@ import (
 )
 
 const (
-	testHost    = "my-shop-abcdef123456.apps.test.kedge"
+	testHost    = "my-shop-abcdef123456.apps.test.faros"
 	testHubURL  = "https://hub.internal.test"
 	testHubPub  = "https://hub.public.test"
 	testCluster = "abc123cluster"
-	testGroup   = "infrastructure.kedge.faros.sh"
+	testGroup   = "infrastructure.faros.sh"
 	testRes     = "applications"
 	testName    = "my-shop"
 )
@@ -148,13 +148,13 @@ func publicConfig(target string) Config {
 
 func privateConfig(target string, hub *fakeHub) Config {
 	return Config{
-		Host:      testHost,
-		Mode:      ModePrivate,
-		Instance:  testInstance(),
-		HubURL:    testHubURL,
+		Host:         testHost,
+		Mode:         ModePrivate,
+		Instance:     testInstance(),
+		HubURL:       testHubURL,
 		HubPublicURL: testHubPub,
-		Routes:    []Route{{Prefix: "/", Target: target}},
-		HubClient: &http.Client{Transport: hub},
+		Routes:       []Route{{Prefix: "/", Target: target}},
+		HubClient:    &http.Client{Transport: hub},
 	}
 }
 
@@ -264,7 +264,7 @@ func TestHostMismatchIsRejectedBeforeUpstream(t *testing.T) {
 	upstream, record := newUpstream(t, nil)
 	p := newProxy(t, publicConfig(upstream.URL))
 	r := appRequest("/")
-	r.Host = "other-app.apps.test.kedge"
+	r.Host = "other-app.apps.test.faros"
 	rec := doRequest(p, r)
 	if rec.Code != http.StatusMisdirectedRequest {
 		t.Fatalf("status = %d, want 421", rec.Code)
@@ -469,7 +469,7 @@ func TestReservedAndIdentityHeadersNeverReachUpstream(t *testing.T) {
 	r := appRequest("/")
 	r.Header.Set("Authorization", "Bearer user-token")
 	r.Header.Set("X-Forwarded-For", "6.6.6.6")
-	r.Header.Set("X-Kedge-Anything", "spoof")
+	r.Header.Set("X-Faros-Anything", "spoof")
 	r.Header.Set("Via", "evil")
 	r.Header.Set("X-Custom-App", "keep-me")
 	rec := doRequest(p, r)
@@ -479,7 +479,7 @@ func TestReservedAndIdentityHeadersNeverReachUpstream(t *testing.T) {
 	record.mu.Lock()
 	defer record.mu.Unlock()
 	h := record.headers[0]
-	for _, banned := range []string{"Authorization", "X-Forwarded-For", "X-Kedge-Anything", "Via"} {
+	for _, banned := range []string{"Authorization", "X-Forwarded-For", "X-Faros-Anything", "Via"} {
 		if h.Get(banned) != "" {
 			t.Errorf("%s reached upstream: %q", banned, h.Get(banned))
 		}
@@ -491,7 +491,7 @@ func TestReservedAndIdentityHeadersNeverReachUpstream(t *testing.T) {
 
 func TestUpstreamSetCookieDomainIsStripped(t *testing.T) {
 	upstream, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Add("Set-Cookie", "appsession=1; Domain=apps.test.kedge; Path=/; Secure")
+		w.Header().Add("Set-Cookie", "appsession=1; Domain=apps.test.faros; Path=/; Secure")
 		w.Header().Add("Set-Cookie", SessionCookieName+"=forged; Path=/")
 		_, _ = w.Write([]byte("ok"))
 	})

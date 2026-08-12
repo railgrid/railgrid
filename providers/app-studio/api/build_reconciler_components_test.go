@@ -126,7 +126,7 @@ func TestProjectBuildWorkflowYAMLComponents(t *testing.T) {
 		}
 	}
 	// The workflow only builds and pushes — it must not write into the repo.
-	for _, absent := range []string{"paths-ignore", "git push", "git commit", "[skip ci]", "record:", ".kedge/build-artifact.json"} {
+	for _, absent := range []string{"paths-ignore", "git push", "git commit", "[skip ci]", "record:", ".faros/build-artifact.json"} {
 		if strings.Contains(wf, absent) {
 			t.Fatalf("workflow should no longer contain %q (build+push only)\n%s", absent, wf)
 		}

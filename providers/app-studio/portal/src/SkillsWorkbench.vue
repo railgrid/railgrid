@@ -12,14 +12,14 @@ import {
 import { api, ProjectAPIRequestError } from './api'
 import { filterAssistantSkills } from './skillsSearch'
 import type {
-  KedgeContext,
+  FarosContext,
   ProjectAssistantSkill,
   ProjectAssistantSkillDetail,
   ProjectAssistantSkillsResponse,
 } from './types'
 
 const props = withDefaults(defineProps<{
-  ctx: KedgeContext | null
+  ctx: FarosContext | null
   projectName: string
   skills: ProjectAssistantSkill[]
   loading?: boolean

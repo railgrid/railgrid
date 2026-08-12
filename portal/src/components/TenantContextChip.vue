@@ -125,16 +125,16 @@ function onWorkspaceChange(e: Event) {
 
 const downloading = ref(false)
 // 'install' picks the exec credential plugin Command in the downloaded
-// kubeconfig: 'kedge' for the curl/tar.gz binary on PATH, 'krew' for
-// kubectl-kedge (the krew plugin, which never installs a `kedge`
+// kubeconfig: 'faros' for the curl/tar.gz binary on PATH, 'krew' for
+// kubectl-faros (the krew plugin, which never installs a `faros`
 // symlink). Persisted so the user doesn't have to re-pick on every
 // download.
-const INSTALL_STORAGE_KEY = 'kedge:portal:kubeconfig:install'
-function loadInstall(): 'kedge' | 'krew' {
+const INSTALL_STORAGE_KEY = 'faros:portal:kubeconfig:install'
+function loadInstall(): 'faros' | 'krew' {
   const v = localStorage.getItem(INSTALL_STORAGE_KEY)
-  return v === 'krew' ? 'krew' : 'kedge'
+  return v === 'krew' ? 'krew' : 'faros'
 }
-const installVariant = ref<'kedge' | 'krew'>(loadInstall())
+const installVariant = ref<'faros' | 'krew'>(loadInstall())
 watch(installVariant, (v) => {
   try {
     localStorage.setItem(INSTALL_STORAGE_KEY, v)
@@ -265,10 +265,10 @@ onUnmounted(() => {
             v-model="installVariant"
             class="rounded-md border border-border-default/50 bg-surface-overlay/60 px-1 py-1 text-[10px] text-text-muted focus:border-accent focus:outline-none"
             :title="installVariant === 'krew'
-              ? 'Exec plugin will call kubectl-kedge (krew install)'
-              : 'Exec plugin will call kedge (curl/tar.gz install)'"
+              ? 'Exec plugin will call kubectl-faros (krew install)'
+              : 'Exec plugin will call faros (curl/tar.gz install)'"
           >
-            <option value="kedge">kedge</option>
+            <option value="faros">faros</option>
             <option value="krew">krew</option>
           </select>
         </div>

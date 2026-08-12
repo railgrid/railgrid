@@ -100,7 +100,7 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 			delete(status, "joinToken")
 		}
 
-		// Stamp the public proxy URL so `kedge kubeconfig edge` / `kedge ssh`
+		// Stamp the public proxy URL so `faros kubeconfig edge` / `faros ssh`
 		// have an address to externalize. This was previously set by the hub's
 		// (now-deleted) mount_reconciler; it moved here when the edge plane
 		// became a standalone provider. Idempotent: same value on every
@@ -181,7 +181,7 @@ func (p *Server) storeSSHCredentials(ctx context.Context, cfg *rest.Config, clus
 		return fmt.Errorf("creating kubernetes client: %w", err)
 	}
 
-	const ns = "kedge-system"
+	const ns = "faros-system"
 	// Ensure namespace exists.
 	_, err = k8sClient.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -208,7 +208,7 @@ func (p *Server) storeSSHCredentials(ctx context.Context, cfg *rest.Config, clus
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      secretName,
 			Namespace: ns,
-			Labels:    map[string]string{"edges.kedge.faros.sh/edge": edgeName},
+			Labels:    map[string]string{"edges.faros.sh/edge": edgeName},
 		},
 		Type: corev1.SecretTypeOpaque,
 		Data: secretData,

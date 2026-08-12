@@ -18,7 +18,7 @@ import (
 
 	"k8s.io/klog/v2"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 )
 
 // fakeAuthorizer builds a clusterAuthorizer over in-memory fixtures. entries is
@@ -157,12 +157,12 @@ func TestAuthorizeKCPPath(t *testing.T) {
 		},
 		{
 			name:       "org workspace path is refused (O-10)",
-			urlPath:    "/clusters/root:kedge:tenants:org1/api/v1/pods",
+			urlPath:    "/clusters/root:faros:tenants:org1/api/v1/pods",
 			wantStatus: http.StatusForbidden,
 		},
 		{
 			name:       "tenant path-form is refused (address by id)",
-			urlPath:    "/clusters/root:kedge:tenants:org1:ws1/api/v1/pods",
+			urlPath:    "/clusters/root:faros:tenants:org1:ws1/api/v1/pods",
 			wantStatus: http.StatusForbidden,
 		},
 		{

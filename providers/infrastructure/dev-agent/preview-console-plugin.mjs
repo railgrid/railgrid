@@ -16,18 +16,18 @@ limitations under the License.
 
 import { readFileSync } from "node:fs";
 
-export const previewConsoleJWKSPath = "/kedge/bin/preview-console-jwks.json";
+export const previewConsoleJWKSPath = "/faros/bin/preview-console-jwks.json";
 
 const previewConsoleClient = String.raw`(() => {
   "use strict";
 
-  const TRUSTED_VERIFICATION_KEYS = __KEDGE_PREVIEW_CONSOLE_VERIFICATION_KEYS__;
+  const TRUSTED_VERIFICATION_KEYS = __FAROS_PREVIEW_CONSOLE_VERIFICATION_KEYS__;
   const VERSION = 1;
-  const READY = "kedge.preview-console.ready";
-  const PROBE = "kedge.preview-console.probe";
-  const START = "kedge.preview-console.start";
-  const CONNECTED = "kedge.preview-console.connected";
-  const EVENTS = "kedge.preview-console.events";
+  const READY = "faros.preview-console.ready";
+  const PROBE = "faros.preview-console.probe";
+  const START = "faros.preview-console.start";
+  const CONNECTED = "faros.preview-console.connected";
+  const EVENTS = "faros.preview-console.events";
   const MAX_EVENTS = 200;
   const MAX_PORT_BATCH_EVENTS = 16;
   const MAX_PROPERTIES = 20;
@@ -476,19 +476,19 @@ function verificationKeys(configuration) {
 export function previewConsoleClientSource(configuration) {
   const keys = verificationKeys(configuration);
   const encoded = JSON.stringify(keys).replaceAll("<", "\\u003c");
-  return previewConsoleClient.replace("__KEDGE_PREVIEW_CONSOLE_VERIFICATION_KEYS__", encoded);
+  return previewConsoleClient.replace("__FAROS_PREVIEW_CONSOLE_VERIFICATION_KEYS__", encoded);
 }
 
 export function createPreviewConsolePlugin(configuration) {
   const client = previewConsoleClientSource(configuration);
   return {
-    name: "kedge-preview-console-v1",
+    name: "faros-preview-console-v1",
     enforce: "pre",
     apply: "serve",
     transformIndexHtml() {
       return [{
         tag: "script",
-        attrs: { "data-kedge-preview-console": "v1" },
+        attrs: { "data-faros-preview-console": "v1" },
         children: client,
         injectTo: "head-prepend",
       }];

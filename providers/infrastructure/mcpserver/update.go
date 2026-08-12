@@ -16,8 +16,8 @@ package mcpserver
 // agents had to delete+re-provision, wiping managed state.
 //
 // Guardrails: identity and platform-owned fields are always immutable
-// (name, kedgeMode, expose, credentialsSecretName); templates declare their
-// own immutable inputs via the kedge.faros.sh/immutable-inputs annotation
+// (name, farosMode, expose, credentialsSecretName); templates declare their
+// own immutable inputs via the faros.sh/immutable-inputs annotation
 // (e.g. database.version — a Postgres major upgrade is not an in-place
 // operation). A rejected update names the offending path and why.
 
@@ -37,10 +37,10 @@ import (
 )
 
 // alwaysImmutableInputs are denied on every template. name is child-resource
-// (and host) identity; kedgeMode is a lifecycle transition (dev↔production
+// (and host) identity; farosMode is a lifecycle transition (dev↔production
 // swaps the resource graph — recreate instead); expose/credentialsSecretName
 // are platform-stamped.
-var alwaysImmutableInputs = []string{"name", "kedgeMode", "expose", "credentialsSecretName"}
+var alwaysImmutableInputs = []string{"name", "farosMode", "expose", "credentialsSecretName"}
 
 // updateInstance locates the named instance, merge-patches its spec, rejects
 // immutable-path changes, and writes the CR back. Returns the refreshed
@@ -101,7 +101,7 @@ func immutableReason(input string) string {
 	switch input {
 	case "name":
 		return "it is the instance's identity — child resources and the public hostname derive from it"
-	case "kedgeMode":
+	case "farosMode":
 		return "development↔production is a lifecycle transition that swaps the resource graph, not a config edit"
 	case "expose", "credentialsSecretName":
 		return "it is platform-stamped"

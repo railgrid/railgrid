@@ -26,7 +26,7 @@ import (
 const StudioName = "default"
 
 // StudioFinalizer guards teardown of the services a Studio owns.
-const StudioFinalizer = "vibe.kedge.faros.sh/studio"
+const StudioFinalizer = "vibe.faros.sh/studio"
 
 // +genclient
 // +genclient:nonNamespaced

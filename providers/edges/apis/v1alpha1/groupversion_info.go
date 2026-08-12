@@ -24,7 +24,7 @@ import (
 
 const (
 	// GroupName is the single API group for the edges provider's kinds.
-	GroupName = "edges.kedge.faros.sh"
+	GroupName = "edges.faros.sh"
 	// Version pins the served + storage version.
 	Version = "v1alpha1"
 )

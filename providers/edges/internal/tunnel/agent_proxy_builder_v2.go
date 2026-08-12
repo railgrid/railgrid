@@ -50,7 +50,7 @@ var secretGVR = schema.GroupVersionResource{Group: "", Version: "v1", Resource: 
 //
 // Agents connect via WebSocket to:
 //
-//	/services/agent-proxy/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/edges/{name}/proxy
+//	/services/agent-proxy/{cluster}/apis/edges.faros.sh/v1alpha1/edges/{name}/proxy
 //
 // The hub upgrades the connection, wraps it in a revdial.Dialer, and stores
 // it in p.edgeConnManager keyed by "edges/{cluster}/{name}". Subsequent
@@ -77,13 +77,13 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 
 	// / — initial agent connection handler.
 	// Path (after mount-prefix stripping):
-	//   /{cluster}/apis/edges.kedge.faros.sh/v1alpha1/edges/{name}/proxy
+	//   /{cluster}/apis/edges.faros.sh/v1alpha1/edges/{name}/proxy
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Dispatch MCP requests before agent auth — MCP handler has its own auth.
 		if strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/mcp") {
 			cluster, resource, name, ok := p.parseEdgeMCPPath(r.URL.Path)
 			if !ok {
-				http.Error(w, "invalid path: expected /{cluster}/apis/edges.kedge.faros.sh/v1alpha1/{resource}/{name}/mcp", http.StatusBadRequest)
+				http.Error(w, "invalid path: expected /{cluster}/apis/edges.faros.sh/v1alpha1/{resource}/{name}/mcp", http.StatusBadRequest)
 				return
 			}
 			p.buildMCPHandler(cluster, resource, name).ServeHTTP(w, r)
@@ -112,7 +112,7 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 		_, isStaticToken := p.staticTokens[token]
 		// authenticatedByJoinToken tracks whether the agent was authenticated via a
 		// bootstrap join token. When true, the hub echoes the token back in the
-		// X-Kedge-Agent-Token upgrade response header so the agent can persist it
+		// X-Faros-Agent-Token upgrade response header so the agent can persist it
 		// as its durable credential (token-exchange flow).
 		authenticatedByJoinToken := false
 		if !isStaticToken {
@@ -157,7 +157,7 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 			kubeconfigHeader := p.buildAgentKubeconfigHeader(cluster, name, token)
 			upgradeHeaders = http.Header{}
 			if kubeconfigHeader != "" {
-				upgradeHeaders.Set("X-Kedge-Agent-Kubeconfig", kubeconfigHeader)
+				upgradeHeaders.Set("X-Faros-Agent-Kubeconfig", kubeconfigHeader)
 				kubeconfigDelivered = true
 			}
 		}
@@ -226,7 +226,7 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 //
 // Expected format:
 //
-//	/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/edges/{name}/proxy
+//	/{cluster}/apis/edges.faros.sh/v1alpha1/edges/{name}/proxy
 //
 // parseEdgeAgentPath validates the path against this Server's configured kinds
 // and returns (cluster, resource, name). resource is one of the served kinds'
@@ -273,7 +273,7 @@ func edgeConnKey(resource, cluster, name string) string {
 
 // buildAgentKubeconfigHeader reads the ServiceAccount token from the kubeconfig
 // secret created by the RBAC controller, builds a minimal kubeconfig with it,
-// and returns the result base64-encoded for the X-Kedge-Agent-Kubeconfig header.
+// and returns the result base64-encoded for the X-Faros-Agent-Kubeconfig header.
 // Returns an empty string if the SA token is not yet available.
 func (p *Server) buildAgentKubeconfigHeader(cluster, edgeName, _ string) string {
 	if p.kcpConfig == nil {
@@ -296,11 +296,11 @@ func (p *Server) buildAgentKubeconfigHeader(cluster, edgeName, _ string) string 
 	}
 
 	secretName := "edge-" + edgeName + "-kubeconfig"
-	secret, err := dynClient.Resource(secretGVR).Namespace("kedge-system").Get(
+	secret, err := dynClient.Resource(secretGVR).Namespace("faros-system").Get(
 		context.Background(), secretName, metav1.GetOptions{})
 	if err != nil {
 		p.logger.Error(err, "failed to get kubeconfig secret for token-exchange",
-			"secret", "kedge-system/"+secretName)
+			"secret", "faros-system/"+secretName)
 		return ""
 	}
 
@@ -338,18 +338,18 @@ func buildAgentKubeconfig(hubURL, cluster, edgeName, token string) *clientcmdapi
 	if cluster != "" && cluster != "default" {
 		serverURL = strings.TrimRight(hubURL, "/") + "/clusters/" + cluster
 	}
-	contextName := "kedge-" + edgeName
+	contextName := "faros-" + edgeName
 	return &clientcmdapi.Config{
 		APIVersion: "v1",
 		Kind:       "Config",
 		Clusters: map[string]*clientcmdapi.Cluster{
-			"kedge-hub": {Server: serverURL, InsecureSkipTLSVerify: true},
+			"faros-hub": {Server: serverURL, InsecureSkipTLSVerify: true},
 		},
 		AuthInfos: map[string]*clientcmdapi.AuthInfo{
 			contextName: {Token: token},
 		},
 		Contexts: map[string]*clientcmdapi.Context{
-			"default": {Cluster: "kedge-hub", AuthInfo: contextName},
+			"default": {Cluster: "faros-hub", AuthInfo: contextName},
 		},
 		CurrentContext: "default",
 	}
@@ -438,24 +438,24 @@ type sshCredsFromAgent struct {
 
 // extractSSHCredsFromHeaders reads SSH credential headers set by the agent.
 func extractSSHCredsFromHeaders(r *http.Request) *sshCredsFromAgent {
-	user := r.Header.Get("X-Kedge-SSH-User")
+	user := r.Header.Get("X-Faros-SSH-User")
 	if user == "" {
 		return nil
 	}
 	creds := &sshCredsFromAgent{User: user}
-	if pw := r.Header.Get("X-Kedge-SSH-Password"); pw != "" {
+	if pw := r.Header.Get("X-Faros-SSH-Password"); pw != "" {
 		decoded, err := base64.StdEncoding.DecodeString(pw)
 		if err == nil {
 			creds.Password = string(decoded)
 		}
 	}
-	if pk := r.Header.Get("X-Kedge-SSH-PrivateKey"); pk != "" {
+	if pk := r.Header.Get("X-Faros-SSH-PrivateKey"); pk != "" {
 		decoded, err := base64.StdEncoding.DecodeString(pk)
 		if err == nil {
 			creds.PrivateKey = decoded
 		}
 	}
-	if hk := r.Header.Get("X-Kedge-SSH-HostKey"); hk != "" {
+	if hk := r.Header.Get("X-Faros-SSH-HostKey"); hk != "" {
 		decoded, err := base64.StdEncoding.DecodeString(hk)
 		if err == nil {
 			creds.HostKey = string(decoded)

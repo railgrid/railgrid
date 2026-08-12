@@ -17,7 +17,7 @@ package main
 //
 // This is where the deterministic lifecycle lives: the wizard only writes
 // Project spec; the reconciler converges infrastructure instances and mirrors
-// their status back. OPT-IN via KEDGE_PROVIDER_KUBECONFIG — without it the
+// their status back. OPT-IN via FAROS_PROVIDER_KUBECONFIG — without it the
 // provider runs REST/portal-only.
 
 import (
@@ -92,13 +92,13 @@ func startControllerManager(ctx context.Context, config *rest.Config, st store.S
 }
 
 // loadControllerConfig resolves the rest.Config for the provider's kcp
-// workspace: KEDGE_PROVIDER_KUBECONFIG → KUBECONFIG → in-cluster SA. Returns
+// workspace: FAROS_PROVIDER_KUBECONFIG → KUBECONFIG → in-cluster SA. Returns
 // errControllerDisabled when none resolve.
 func loadControllerConfig() (*rest.Config, error) {
-	if p := os.Getenv("KEDGE_PROVIDER_KUBECONFIG"); p != "" {
+	if p := os.Getenv("FAROS_PROVIDER_KUBECONFIG"); p != "" {
 		c, err := clientcmd.BuildConfigFromFlags("", p)
 		if err != nil {
-			return nil, fmt.Errorf("KEDGE_PROVIDER_KUBECONFIG: %w", err)
+			return nil, fmt.Errorf("FAROS_PROVIDER_KUBECONFIG: %w", err)
 		}
 		return c, nil
 	}

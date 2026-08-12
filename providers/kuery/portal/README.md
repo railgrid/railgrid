@@ -1,17 +1,17 @@
 # Kuery provider portal
 
 Self-contained Vite + TypeScript project that builds the custom element the
-kedge portal loads under `/ui/providers/kuery/`. The build output
+faros portal loads under `/ui/providers/kuery/`. The build output
 (`dist/`) is embedded into the provider binary via `//go:embed` (see
 `../assets.go`), so `npm run build` must run before `go build` — the
-`make build-kuery-provider` target from the kedge repo root chains the two.
+`make build-kuery-provider` target from the faros repo root chains the two.
 
 The UI is a fleet inventory table plus an impact drill-down. The impact view
 renders the selected object's declared blast radius as an interactive
 node-link graph (anchor in the center, related objects as nodes, edges
 colored by relation type); tapping a node re-anchors on it. A List/Graph
 toggle keeps the original grouped-list view as a fallback. See
-`docs/kuery-provider-architecture.md` in the kedge repo.
+`docs/kuery-provider-architecture.md` in the faros repo.
 
 The graph uses Cytoscape, but the portal build is IIFE library mode and can't
 emit lazy bundler chunks, so Cytoscape is vendored as a static asset rather

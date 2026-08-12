@@ -23,58 +23,58 @@ import (
 	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
 )
 
-// Reserved ${kedge.*} placeholders a Template author writes in backendConfig to
+// Reserved ${faros.*} placeholders a Template author writes in backendConfig to
 // defer a platform-owned value (the exposure Gateway, the sandbox runner images)
 // out of per-tenant data. They are substituted for the configured value before
-// the RGD is authored. The "kedge." namespace keeps them from colliding with
+// the RGD is authored. The "faros." namespace keeps them from colliding with
 // kro's own ${...} reference syntax (${schema.spec.x}, ${res.metadata.name}).
 const (
-	gatewayNameToken      = "${kedge.gatewayName}"
-	gatewayNamespaceToken = "${kedge.gatewayNamespace}"
+	gatewayNameToken      = "${faros.gatewayName}"
+	gatewayNamespaceToken = "${faros.gatewayNamespace}"
 
 	// devImageTokenPrefix is the reserved token family template authors put in
-	// spec.development.components[].devImage — ${kedge.devImage.<toolchain>},
-	// resolved from KEDGE_DEV_IMAGE_<TOOLCHAIN>. Platform-managed: tenants
+	// spec.development.components[].devImage — ${faros.devImage.<toolchain>},
+	// resolved from FAROS_DEV_IMAGE_<TOOLCHAIN>. Platform-managed: tenants
 	// never pick dev images (docs/app-studio-template-sandboxes.md §1).
-	devImageTokenPrefix = "${kedge.devImage."
+	devImageTokenPrefix = "${faros.devImage."
 
 	// devAgentImageToken is the injector image carrying the static
-	// kedge-dev-agent binary every dev-mode component runs
-	// (KEDGE_DEV_AGENT_IMAGE).
-	devAgentImageToken = "${kedge.devAgentImage}"
+	// faros-dev-agent binary every dev-mode component runs
+	// (FAROS_DEV_AGENT_IMAGE).
+	devAgentImageToken = "${faros.devAgentImage}"
 
 	// previewConsoleVerificationJWKSConfigKey is internal backend configuration,
 	// not a template substitution token. The provider passes the platform-owned
 	// current/previous public ES256 keys to dev-agent init containers, which
 	// install them beside the Vite plugin. Private signing keys never enter the
 	// infrastructure provider or tenant pod.
-	previewConsoleVerificationJWKSConfigKey = "kedge.previewConsoleVerificationJWKS"
+	previewConsoleVerificationJWKSConfigKey = "faros.previewConsoleVerificationJWKS"
 
 	// appPublicPortToken is the ":<port>" suffix templates append to
 	// synthesized exposure URLs (status.url). Empty in production — the
 	// Gateway serves on 443 and the URL implies it — and ":10443" style when
 	// the Gateway is only reachable on a forwarded port (local kind).
-	// Resolved from KEDGE_APP_PUBLIC_PORT (the bare port number).
-	appPublicPortToken = "${kedge.appPublicPort}"
+	// Resolved from FAROS_APP_PUBLIC_PORT (the bare port number).
+	appPublicPortToken = "${faros.appPublicPort}"
 
 	// Access-gate token family. Publishable templates render the platform
-	// kedge-access-proxy as a component of their own graph (the gate) and the
+	// faros-access-proxy as a component of their own graph (the gate) and the
 	// shared-Gateway HTTPRoute always points at it. These tokens carry the
 	// platform-owned gate configuration; tenants never choose the gate image
 	// or the hub endpoints.
 	//
 	//   - accessProxyImageToken — the gate container image
-	//     (KEDGE_ACCESS_PROXY_IMAGE).
+	//     (FAROS_ACCESS_PROXY_IMAGE).
 	//   - hubURLToken — in-cluster hub origin the gate exchanges sign-in codes
-	//     against (KEDGE_ACCESS_HUB_URL, falling back to KEDGE_HUB_URL).
+	//     against (FAROS_ACCESS_HUB_URL, falling back to FAROS_HUB_URL).
 	//   - hubPublicURLToken — browser-reachable hub origin for sign-in
-	//     redirects (KEDGE_ACCESS_HUB_PUBLIC_URL, falling back to hubURLToken).
+	//     redirects (FAROS_ACCESS_HUB_PUBLIC_URL, falling back to hubURLToken).
 	//   - hubInsecureToken — "true"/"false" TLS-verification skip for gate→hub
-	//     calls (KEDGE_ACCESS_HUB_INSECURE; local self-signed hubs only).
-	accessProxyImageToken = "${kedge.accessProxyImage}"
-	hubURLToken           = "${kedge.hubUrl}"
-	hubPublicURLToken     = "${kedge.hubPublicUrl}"
-	hubInsecureToken      = "${kedge.hubInsecure}"
+	//     calls (FAROS_ACCESS_HUB_INSECURE; local self-signed hubs only).
+	accessProxyImageToken = "${faros.accessProxyImage}"
+	hubURLToken           = "${faros.hubUrl}"
+	hubPublicURLToken     = "${faros.hubPublicUrl}"
+	hubInsecureToken      = "${faros.hubInsecure}"
 )
 
 const (
@@ -128,7 +128,7 @@ func buildRGD(tmpl *infrav1alpha1.Template, tokens map[string]string) (*unstruct
 
 	// A development block extends the graph with the mechanically synthesized
 	// dev overlay (mode-gated dev workloads, workspace PVCs, control plane)
-	// and injects the kedgeMode field into the RGD schema. See devoverlay.go.
+	// and injects the farosMode field into the RGD schema. See devoverlay.go.
 	if tmpl.Spec.Development != nil {
 		resources, status, err = applyDevOverlay(tmpl, simpleSpec, resources, status, tokens)
 		if err != nil {
@@ -153,12 +153,12 @@ func buildRGD(tmpl *infrav1alpha1.Template, tokens map[string]string) (*unstruct
 		"metadata": map[string]any{
 			"name": tmpl.Name,
 			// Trace the RGD back to its Template + version, and mark it
-			// kedge-authored so a human (or a future GC) can tell these
+			// faros-authored so a human (or a future GC) can tell these
 			// apart from hand-applied RGDs on the runtime cluster.
 			"labels": map[string]any{
-				"kedge.faros.sh/template":         tmpl.Name,
-				"kedge.faros.sh/template-version": tmpl.Spec.Version,
-				"app.kubernetes.io/managed-by":    "kedge-infrastructure",
+				"faros.sh/template":            tmpl.Name,
+				"faros.sh/template-version":    tmpl.Spec.Version,
+				"app.kubernetes.io/managed-by": "faros-infrastructure",
 			},
 		},
 		"spec": map[string]any{
@@ -284,9 +284,9 @@ func backendConfig(tmpl *infrav1alpha1.Template, tokens map[string]string) (reso
 	return res, status, nil
 }
 
-// substituteTokens replaces reserved kedge ${kedge.*} placeholders in a raw
+// substituteTokens replaces reserved faros ${faros.*} placeholders in a raw
 // backendConfig with the configured platform values, before the JSON is parsed
-// into the RGD. Only the kedge namespace is touched; kro's own ${...} references
+// into the RGD. Only the faros namespace is touched; kro's own ${...} references
 // pass through untouched for kro to resolve at reconcile time.
 //
 // The replacement is a plain string substitution on the JSON bytes — safe

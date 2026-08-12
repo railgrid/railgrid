@@ -4,7 +4,7 @@ name: Provider release (image + chart)
 # the monorepo, stamped with that provider's OWN version — not the hub version.
 #
 # Triggered by a per-provider release tag `providers/<name>/v<X.Y.Z>` (cut by
-# `cmd/kedge-release`). The provider name and version are parsed from the tag;
+# `cmd/faros-release`). The provider name and version are parsed from the tag;
 # the image is tagged `vX.Y.Z` and `X.Y.Z`, and the chart's version/appVersion
 # are set to that version. Because every provider chart leaves `image.tag` empty
 # (→ defaults to `.Chart.AppVersion`), the deployed chart resolves to the
@@ -63,8 +63,8 @@ jobs:
           # Image repo matches the provider chart's values.yaml image.repository.
           # app-studio is published under a nested path; the rest are flat.
           case "${PROVIDER}" in
-            app-studio) IMAGE="${{ github.repository_owner }}/kedge/app-studio-provider" ;;
-            *)          IMAGE="${{ github.repository_owner }}/kedge-${PROVIDER}-provider" ;;
+            app-studio) IMAGE="${{ github.repository_owner }}/faros/app-studio-provider" ;;
+            *)          IMAGE="${{ github.repository_owner }}/faros-${PROVIDER}-provider" ;;
           esac
           echo "provider=${PROVIDER}"   >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}"     >> "$GITHUB_OUTPUT"   # v0.0.9 (chart appVersion + image tag)
@@ -175,7 +175,7 @@ jobs:
       # kro backend injects into development-mode pods (providers/infrastructure/
       # dev-agent, a scratch image carrying one static binary). It versions with
       # the provider — publish it on the same tag so deployments can pin
-      # KEDGE_DEV_AGENT_IMAGE / development.agentImage to vX.Y.Z, and refresh
+      # FAROS_DEV_AGENT_IMAGE / development.agentImage to vX.Y.Z, and refresh
       # :latest, which backs the in-binary default for stock deployments.
       #
       # It's a tiny stdlib-only Go binary, so multi-arch via QEMU here is cheap
@@ -195,14 +195,14 @@ jobs:
           cache-from: type=gha,scope=dev-agent
           cache-to: type=gha,mode=max,scope=dev-agent
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-dev-agent:${{ needs.meta.outputs.version }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-dev-agent:${{ needs.meta.outputs.semver }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-dev-agent:latest
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/faros-dev-agent:${{ needs.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/faros-dev-agent:${{ needs.meta.outputs.semver }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/faros-dev-agent:latest
 
-      # Second companion image: the access gate (kedge-access-proxy) that
+      # Second companion image: the access gate (faros-access-proxy) that
       # publishable templates render in front of every app
       # (providers/infrastructure/accessproxy — see docs/app-studio-publishing.md).
-      # It versions with the provider — the ${kedge.accessProxyImage} token the
+      # It versions with the provider — the ${faros.accessProxyImage} token the
       # kro backend substitutes should pin the same vX.Y.Z via
       # publishing.accessProxyImage; :latest backs the in-binary default for
       # stock deployments.
@@ -217,9 +217,9 @@ jobs:
           cache-from: type=gha,scope=access-proxy
           cache-to: type=gha,mode=max,scope=access-proxy
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-access-proxy:${{ needs.meta.outputs.version }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-access-proxy:${{ needs.meta.outputs.semver }}
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-access-proxy:latest
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/faros-access-proxy:${{ needs.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/faros-access-proxy:${{ needs.meta.outputs.semver }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/faros-access-proxy:latest
 
       - name: Install Helm
         uses: azure/setup-helm@v3

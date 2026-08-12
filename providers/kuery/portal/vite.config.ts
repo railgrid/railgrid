@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite'
 
-// The kedge hub serves this provider under /ui/providers/kuery/. The
+// The faros hub serves this provider under /ui/providers/kuery/. The
 // ProviderFrame component injects a <script src="/ui/providers/kuery/main.js">
-// tag once and waits for the kedge-provider-kuery custom element to be
+// tag once and waits for the faros-provider-kuery custom element to be
 // defined. So the build needs to:
 //
 //   1. Emit the entry script at exactly /main.js (no hash, no /assets/ prefix)
@@ -25,7 +25,7 @@ export default defineConfig({
     lib: {
       entry: 'src/main.ts',
       formats: ['iife'],
-      name: 'KedgeProviderKuery',
+      name: 'FarosProviderKuery',
       fileName: () => 'main.js',
     },
     rollupOptions: {

@@ -23,7 +23,7 @@ const insets = useLayoutInsets()
 
 // Bridge: provider micro-frontends can't reach this Pinia store from
 // inside their isolated Vue apps, so they dispatch a
-// "kedge-terminal-open" CustomEvent (see e.g.
+// "faros-terminal-open" CustomEvent (see e.g.
 // providers/kubernetesedges/portal/src/terminal-adapter.ts) which the
 // dock catches here and forwards to its real openSession path. Listener
 // is window-scoped because the provider's custom element lives in
@@ -40,8 +40,8 @@ function onProviderTerminalOpen(e: Event) {
   if (!ce.detail?.edgeName || !ce.detail?.cluster) return
   store.openSession(ce.detail)
 }
-onMounted(() => window.addEventListener('kedge-terminal-open', onProviderTerminalOpen))
-onUnmounted(() => window.removeEventListener('kedge-terminal-open', onProviderTerminalOpen))
+onMounted(() => window.addEventListener('faros-terminal-open', onProviderTerminalOpen))
+onUnmounted(() => window.removeEventListener('faros-terminal-open', onProviderTerminalOpen))
 
 type InstanceRef = InstanceType<typeof TerminalInstance> | null
 const instanceRefs = new Map<string, InstanceRef>()

@@ -68,7 +68,7 @@ inspector makes (see Phase 1 spike).
 - [ ] Verify `browser` template + `Browser` CRD are seeded in the infra provider
   (`seedtemplates_test.go` references it; confirm the RGD reconciles and an
   instance reaches `status.ready`).
-- [ ] Confirm app-studio's export can claim `browsers.infrastructure.kedge.faros.sh`
+- [ ] Confirm app-studio's export can claim `browsers.infrastructure.faros.sh`
   — the infra identityHash is the same one already used for
   `applications`/`searxngs` (`372fcfe2…` in dev).
 
@@ -90,11 +90,11 @@ inspector makes (see Phase 1 spike).
   and `browserTemplate = "browser"`.
 - [ ] `api/studio_sessions.go`: add `browserResourceRef` →
   `fetchProjectTemplate("browser")`, set it on Studio create alongside search.
-- [ ] Regenerate CRDs/schemas (`studios.ai.kedge.faros.sh`) — note this bumps the
+- [ ] Regenerate CRDs/schemas (`studios.ai.faros.sh`) — note this bumps the
   studios APIResourceSchema; re-bootstrap the export (see Ops caveat).
 
 ### Phase 3 — permission claim + bootstrap (0.5d)
-- [ ] Add `browsers.infrastructure.kedge.faros.sh` to the export's permission
+- [ ] Add `browsers.infrastructure.faros.sh` to the export's permission
   claims in the **three** sync points: `init_cmd.go`
   (`instanceClaimResources`), `manifest.yaml`, `catalogentry.yaml` — with the
   infra identityHash (same as the other infra claims).
@@ -131,7 +131,7 @@ Re-bootstrapping the app-studio export is **not** free:
   in-flight Projects. Do Phase 2–3 bootstraps in a quiet window.
 - Every non-built-in permission claim needs the **current** owning-export
   `identityHash`. The `browsers` claim uses the infra hash — discover it live
-  (`get apiexport infrastructure.providers.kedge.faros.sh -o jsonpath=…`), never
+  (`get apiexport infrastructure.providers.faros.sh -o jsonpath=…`), never
   a memorized value; infra's hash has already rotated once (`4d31761a…` →
   `372fcfe2…`).
 - After the export changes, tenant bindings may re-add the claim as `Rejected`

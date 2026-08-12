@@ -12,7 +12,7 @@ import {
 } from './assistantCommandPalette'
 import { assistantResourceSelectionKey } from './assistantResources'
 import type {
-  KedgeContext,
+  FarosContext,
   ProjectAssistantContentPart,
   ProjectAssistantContextResource,
   ProjectAssistantRunMode,
@@ -28,7 +28,7 @@ const props = withDefaults(defineProps<{
   skills: ProjectAssistantSkill[]
   selectedSkills?: ProjectAssistantSkill[]
   selectedResources?: ProjectAssistantContextResource[]
-  ctx: KedgeContext | null
+  ctx: FarosContext | null
   providers: ProviderItem[]
   disabled?: boolean
   activeRun?: boolean

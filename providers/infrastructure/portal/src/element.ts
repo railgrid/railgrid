@@ -1,14 +1,14 @@
-// InfrastructureElement is the custom element the kedge portal
+// InfrastructureElement is the custom element the faros portal
 // renders. Mounts a Vue 3 app rooted in the element's own light-DOM
 // container. The element survives portal re-renders by keeping a
 // single Vue app instance whose props are driven by the
-// .kedgeContext setter.
+// .farosContext setter.
 
 import { createApp, h, reactive, type App as VueApp } from 'vue'
 import App from './App.vue'
 import DashboardTile from './DashboardTile.vue'
 
-export interface KedgeContext {
+export interface FarosContext {
   token?: string | null
   user?: { email?: string; sub?: string } | null
   tenant?: string | null
@@ -22,13 +22,13 @@ export class InfrastructureElement extends HTMLElement {
   private _vueApp: VueApp | null = null
   // Reactive container shared with the Vue app — assigning to
   // _ctx.value triggers re-renders without re-mounting.
-  private _state = reactive<{ ctx: KedgeContext | null }>({ ctx: null })
+  private _state = reactive<{ ctx: FarosContext | null }>({ ctx: null })
   private _host: HTMLDivElement | null = null
 
-  set kedgeContext(v: KedgeContext | null) {
+  set farosContext(v: FarosContext | null) {
     this._state.ctx = v
   }
-  get kedgeContext(): KedgeContext | null {
+  get farosContext(): FarosContext | null {
     return this._state.ctx
   }
 
@@ -57,7 +57,7 @@ export class InfrastructureElement extends HTMLElement {
 
 // InfrastructureDashboardTileElement is the per-provider tile the
 // portal's <DashboardTile> component mounts on the dashboard page.
-// Same kedgeContext setter contract as the page element above so the
+// Same farosContext setter contract as the page element above so the
 // shell can push token / theme / basePath through the identical hook
 // — only the rendered component differs.
 //
@@ -67,13 +67,13 @@ export class InfrastructureElement extends HTMLElement {
 // the full provider app.
 export class InfrastructureDashboardTileElement extends HTMLElement {
   private _vueApp: VueApp | null = null
-  private _state = reactive<{ ctx: KedgeContext | null }>({ ctx: null })
+  private _state = reactive<{ ctx: FarosContext | null }>({ ctx: null })
   private _host: HTMLDivElement | null = null
 
-  set kedgeContext(v: KedgeContext | null) {
+  set farosContext(v: FarosContext | null) {
     this._state.ctx = v
   }
-  get kedgeContext(): KedgeContext | null {
+  get farosContext(): FarosContext | null {
     return this._state.ctx
   }
 

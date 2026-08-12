@@ -274,7 +274,7 @@ func writeKubeconfigTemp(cfg *rest.Config) (path string, cleanup func(), err err
 		return "", func() {}, fmt.Errorf("serialising kubeconfig: %w", err)
 	}
 
-	f, err := os.CreateTemp("", "kedge-graphql-kubeconfig-*.yaml")
+	f, err := os.CreateTemp("", "faros-graphql-kubeconfig-*.yaml")
 	if err != nil {
 		return "", func() {}, fmt.Errorf("creating temp kubeconfig: %w", err)
 	}

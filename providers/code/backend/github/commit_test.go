@@ -172,7 +172,7 @@ func TestShouldReuseHeadCommitWhenDesiredTreeAlreadyAtHead(t *testing.T) {
 
 func TestCommitMessageWithIdempotencyKey(t *testing.T) {
 	got := commitMessageWithIdempotencyKey("Initial app", "root:acme/demo")
-	if got != "Initial app\n\nKedge-RepositoryCommit: root:acme/demo" {
+	if got != "Initial app\n\nFaros-RepositoryCommit: root:acme/demo" {
 		t.Fatalf("message = %q", got)
 	}
 	if got := commitMessageWithIdempotencyKey("Initial app", ""); got != "Initial app" {
@@ -181,14 +181,14 @@ func TestCommitMessageWithIdempotencyKey(t *testing.T) {
 }
 
 func TestCommitMessageHasIdempotencyKey(t *testing.T) {
-	message := "Initial app\n\nKedge-RepositoryCommit: root:acme/demo"
+	message := "Initial app\n\nFaros-RepositoryCommit: root:acme/demo"
 	if !commitMessageHasIdempotencyKey(message, "root:acme/demo") {
 		t.Fatal("commitMessageHasIdempotencyKey returned false for matching trailer")
 	}
 	if commitMessageHasIdempotencyKey(message, "root:acme/other") {
 		t.Fatal("commitMessageHasIdempotencyKey returned true for a different key")
 	}
-	if commitMessageHasIdempotencyKey("Initial app Kedge-RepositoryCommit: root:acme/demo", "root:acme/demo") {
+	if commitMessageHasIdempotencyKey("Initial app Faros-RepositoryCommit: root:acme/demo", "root:acme/demo") {
 		t.Fatal("commitMessageHasIdempotencyKey returned true for an inline substring")
 	}
 }

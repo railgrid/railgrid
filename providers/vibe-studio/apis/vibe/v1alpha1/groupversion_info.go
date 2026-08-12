@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	GroupName = "vibe.kedge.faros.sh"
+	GroupName = "vibe.faros.sh"
 	Version   = "v1alpha1"
 )
 

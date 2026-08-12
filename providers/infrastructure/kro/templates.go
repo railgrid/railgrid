@@ -58,7 +58,7 @@ func (c *realClient) ListTemplates(ctx context.Context, filter TemplateFilter) (
 func (c *realClient) GetTemplate(ctx context.Context, name, version string) (*Template, error) {
 	// In kro, the RGD's metadata.name is unique cluster-wide. The
 	// {name, version} pair maps to either a single RGD with that
-	// kedge.faros.sh/template-version label, OR (for templates
+	// faros.sh/template-version label, OR (for templates
 	// without explicit versioning) the RGD whose metadata.name
 	// matches and whose label is the empty string. List + filter
 	// rather than Get-by-name so we honour the version label

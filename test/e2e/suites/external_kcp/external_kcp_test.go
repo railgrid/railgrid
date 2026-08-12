@@ -25,8 +25,8 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
-	"github.com/faroshq/faros-kedge/test/e2e/cases"
-	"github.com/faroshq/faros-kedge/test/e2e/framework"
+	"github.com/faroshq/faros/test/e2e/cases"
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // TestHubHealth verifies that the hub's health endpoints return 200.
@@ -40,13 +40,13 @@ func TestStaticTokenLogin(t *testing.T) {
 }
 
 // edgeSkip marks an edge-connectivity test as parked while edge connectivity is
-// brought up as the standalone edges provider (group edges.kedge.faros.sh).
+// brought up as the standalone edges provider (group edges.faros.sh).
 // These cases will be relocated to the dedicated edges suite that bootstraps
 // that provider. See docs/edges-providers-testing.md.
 func edgeSkip(t *testing.T) {
 	t.Helper()
 	t.Skip("edge connectivity moved to the standalone edges provider " +
-		"(edges.kedge.faros.sh); e2e coverage pending the dedicated edges suite — " +
+		"(edges.faros.sh); e2e coverage pending the dedicated edges suite — " +
 		"see docs/edges-providers-testing.md")
 }
 
@@ -160,7 +160,7 @@ func TestKCPResilience(t *testing.T) {
 			// succeed once the front-proxy path is healthy again. apibindings is a
 			// built-in kcp API present in every logical cluster, so it's a reliable
 			// reachability probe (unlike the removed edges API this used to poll).
-			client := framework.NewKedgeClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
+			client := framework.NewFarosClient(framework.RepoRoot(), clusterEnv.HubKubeconfig, clusterEnv.HubURL)
 			err = framework.Poll(ctx, 5*time.Second, 2*time.Minute, func(ctx context.Context) (bool, error) {
 				_, err := client.Kubectl(ctx, "get", "apibindings.apis.kcp.io", "--insecure-skip-tls-verify")
 				return err == nil, nil

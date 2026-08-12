@@ -9,7 +9,7 @@ You may obtain a copy of the License at
 */
 
 // Package scheme builds the runtime.Scheme the code provider's controller
-// manager and clients share: the provider's own code.kedge.faros.sh types
+// manager and clients share: the provider's own code.faros.sh types
 // plus core/v1 (the controllers read/write Secrets in tenant workspaces) and
 // the kcp apis.kcp.io types the multicluster apiexport provider needs.
 package scheme

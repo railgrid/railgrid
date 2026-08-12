@@ -44,12 +44,12 @@ type listTablesOutput struct {
 }
 
 type describeTableInput struct {
-	TableRef string `json:"tableRef" jsonschema:"Exact imported kedge Table resource name (the name returned by list_tables or the grant), e.g. order-history; never an App Studio integration alias"`
+	TableRef string `json:"tableRef" jsonschema:"Exact imported faros Table resource name (the name returned by list_tables or the grant), e.g. order-history; never an App Studio integration alias"`
 }
 
 type queryTableInput struct {
 	ActionVersion string   `json:"actionVersion" jsonschema:"Pinned provider action contract version; currently v1"`
-	TableRef      string   `json:"tableRef" jsonschema:"Exact imported kedge Table resource name (the name returned by list_tables or the grant), e.g. order-history; never an App Studio integration alias"`
+	TableRef      string   `json:"tableRef" jsonschema:"Exact imported faros Table resource name (the name returned by list_tables or the grant), e.g. order-history; never an App Studio integration alias"`
 	Columns       []string `json:"columns,omitempty" jsonschema:"Optional exact column-name projection; SQL expressions are not accepted"`
 	Limit         int      `json:"limit,omitempty" jsonschema:"Maximum 100 rows; defaults to 100"`
 }
@@ -67,7 +67,7 @@ func registerTools(srv *mcp.Server, resolver queryapi.TableResolver, executor ac
 		mcp.AddTool(srv, &mcp.Tool{
 			Name:        "list_tables",
 			Title:       "List imported Databricks tables",
-			Description: "List Databricks tables already imported into this kedge workspace. The returned tables[].name is the exact kedge Table resource name to copy as tableRef; never substitute an App Studio integration alias or another binding identifier.",
+			Description: "List Databricks tables already imported into this faros workspace. The returned tables[].name is the exact faros Table resource name to copy as tableRef; never substitute an App Studio integration alias or another binding identifier.",
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
 		}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listTablesOutput, error) {
 			tables, err := resolver.ListTables(ctx)
@@ -87,7 +87,7 @@ func registerTools(srv *mcp.Server, resolver queryapi.TableResolver, executor ac
 		mcp.AddTool(srv, &mcp.Tool{
 			Name:        "describe_table",
 			Title:       "Describe an imported Databricks table",
-			Description: "Describe one imported kedge Databricks Table resource by its exact tableRef (the name returned by list_tables or the project grant). Returns the cached column schema (columns[].name/type) — use exactly these names for query_table projections; requesting a column not in this list fails the query, and an App Studio integration alias is never a tableRef.",
+			Description: "Describe one imported faros Databricks Table resource by its exact tableRef (the name returned by list_tables or the project grant). Returns the cached column schema (columns[].name/type) — use exactly these names for query_table projections; requesting a column not in this list fails the query, and an App Studio integration alias is never a tableRef.",
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
 		}, func(ctx context.Context, _ *mcp.CallToolRequest, in describeTableInput) (*mcp.CallToolResult, tableSummary, error) {
 			ref, ok, err := resolver.GetTable(ctx, in.TableRef)
@@ -130,7 +130,7 @@ func registerTools(srv *mcp.Server, resolver queryapi.TableResolver, executor ac
 				return nil, queryTableOutput{}, fmt.Errorf("databricks table query is unavailable")
 			}
 			result, err := executor.QueryTable(ctx, actions.ResourceRef{
-				APIVersion: "databricks.kedge.faros.sh/v1alpha1",
+				APIVersion: "databricks.faros.sh/v1alpha1",
 				Kind:       "Table",
 				Resource:   "tables",
 				Name:       request.TableRef,

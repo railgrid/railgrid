@@ -66,7 +66,7 @@
   <rect x="520" y="460" width="140" height="90" class="box" fill="#ffec99"/>
   <text x="590" y="495" class="text title" text-anchor="middle">You</text>
   <text x="590" y="520" class="text subtitle" text-anchor="middle">(anywhere)</text>
-  <text x="590" y="540" class="text small" text-anchor="middle">kedge CLI</text>
+  <text x="590" y="540" class="text small" text-anchor="middle">faros CLI</text>
 
   <!-- User to Hub arrow -->
   <path d="M 590 455 L 590 385" stroke="#1971c2" stroke-width="2" fill="none" marker-end="url(#arrowhead-blue)"/>

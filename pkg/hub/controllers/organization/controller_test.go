@@ -29,8 +29,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
-	"github.com/faroshq/faros-kedge/pkg/hub/quota"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	"github.com/faroshq/faros/pkg/hub/quota"
 )
 
 // fakeProvisioner is the test double for WorkspaceProvisioner. By default
@@ -41,14 +41,14 @@ type fakeProvisioner struct {
 	wsCalls        []string
 	memCalls       []membershipCall
 	childCalls     []childWorkspaceCall
-	kedgeBindCalls []childWorkspaceCall
+	farosBindCalls []childWorkspaceCall
 	adminCalls     []workspaceAdminCall
 	mcpCalls       []childWorkspaceCall
 	clusterCalls   []childWorkspaceCall
 	wsErr          error
 	memErr         error
 	childErr       error
-	kedgeBindErr   error
+	farosBindErr   error
 	adminErr       error
 	mcpErr         error
 	clusterErr     error
@@ -95,11 +95,11 @@ func (f *fakeProvisioner) EnsureChildWorkspace(_ context.Context, orgUUID, wsUUI
 	return f.childErr
 }
 
-func (f *fakeProvisioner) EnsureChildWorkspaceKedgeBinding(_ context.Context, orgUUID, wsUUID string) error {
+func (f *fakeProvisioner) EnsureChildWorkspaceFarosBinding(_ context.Context, orgUUID, wsUUID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.kedgeBindCalls = append(f.kedgeBindCalls, childWorkspaceCall{OrgUUID: orgUUID, WSUUID: wsUUID})
-	return f.kedgeBindErr
+	f.farosBindCalls = append(f.farosBindCalls, childWorkspaceCall{OrgUUID: orgUUID, WSUUID: wsUUID})
+	return f.farosBindErr
 }
 
 func (f *fakeProvisioner) EnsureChildWorkspaceAdmin(_ context.Context, orgUUID, wsUUID, rbacIdentity string) error {
@@ -153,11 +153,11 @@ func (f *fakeProvisioner) ChildWorkspaceCalls() []childWorkspaceCall {
 	return out
 }
 
-func (f *fakeProvisioner) KedgeBindCalls() []childWorkspaceCall {
+func (f *fakeProvisioner) FarosBindCalls() []childWorkspaceCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	out := make([]childWorkspaceCall, len(f.kedgeBindCalls))
-	copy(out, f.kedgeBindCalls)
+	out := make([]childWorkspaceCall, len(f.farosBindCalls))
+	copy(out, f.farosBindCalls)
 	return out
 }
 
@@ -248,8 +248,8 @@ func TestReconciler_CreatesPersonalOrgForNewUser(t *testing.T) {
 	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceReady, metav1.ConditionTrue, reasonDefaultWorkspaceProvisioned) {
 		t.Errorf("expected DefaultWorkspaceReady=True/DefaultWorkspaceProvisioned condition, got %#v", org.Status.Conditions)
 	}
-	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceKedgeBound, metav1.ConditionTrue, reasonKedgeBindingReady) {
-		t.Errorf("expected DefaultWorkspaceKedgeBound=True/KedgeBindingWritten condition, got %#v", org.Status.Conditions)
+	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceFarosBound, metav1.ConditionTrue, reasonFarosBindingReady) {
+		t.Errorf("expected DefaultWorkspaceFarosBound=True/FarosBindingWritten condition, got %#v", org.Status.Conditions)
 	}
 	if !hasCondition(org.Status.Conditions, tenancyv1alpha1.OrganizationConditionDefaultWorkspaceAdminReady, metav1.ConditionTrue, reasonWorkspaceAdminReady) {
 		t.Errorf("expected DefaultWorkspaceAdminReady=True/WorkspaceAdminGranted condition, got %#v", org.Status.Conditions)
@@ -281,9 +281,9 @@ func TestReconciler_CreatesPersonalOrgForNewUser(t *testing.T) {
 	if len(childCalls) != 1 || childCalls[0].OrgUUID != org.Name || childCalls[0].WSUUID != wsUUID {
 		t.Errorf("expected exactly one EnsureChildWorkspace call for %s/%s, got %v", org.Name, wsUUID, childCalls)
 	}
-	kedgeCalls := prov.KedgeBindCalls()
-	if len(kedgeCalls) != 1 || kedgeCalls[0].OrgUUID != org.Name || kedgeCalls[0].WSUUID != wsUUID {
-		t.Errorf("expected exactly one EnsureChildWorkspaceKedgeBinding call for %s/%s, got %v", org.Name, wsUUID, kedgeCalls)
+	farosCalls := prov.FarosBindCalls()
+	if len(farosCalls) != 1 || farosCalls[0].OrgUUID != org.Name || farosCalls[0].WSUUID != wsUUID {
+		t.Errorf("expected exactly one EnsureChildWorkspaceFarosBinding call for %s/%s, got %v", org.Name, wsUUID, farosCalls)
 	}
 	adminCalls := prov.AdminCalls()
 	if len(adminCalls) != 1 || adminCalls[0].OrgUUID != org.Name || adminCalls[0].WSUUID != wsUUID || adminCalls[0].RBACIdentity != "rbac-alice" {
@@ -676,7 +676,7 @@ func hasCondition(conds []metav1.Condition, t string, status metav1.ConditionSta
 // Sanity check that the package-level constants stay in sync — if anyone
 // changes the parent path they likely also need to update docs/.
 func TestOrgWorkspaceParentConstant(t *testing.T) {
-	if !strings.HasPrefix(orgWorkspaceParent, "root:kedge:") {
-		t.Errorf("orgWorkspaceParent should live under root:kedge, got %q", orgWorkspaceParent)
+	if !strings.HasPrefix(orgWorkspaceParent, "root:faros:") {
+		t.Errorf("orgWorkspaceParent should live under root:faros, got %q", orgWorkspaceParent)
 	}
 }

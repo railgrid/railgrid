@@ -1,0 +1,22 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: ai.faros.sh
+spec:
+  resources:
+  - group: ai.faros.sh
+    name: projects
+    schema: v260808-50d90fba.projects.ai.faros.sh
+    storage:
+      crd: {}
+  - group: ai.faros.sh
+    name: sessions
+    schema: v260806-59f3b567.sessions.ai.faros.sh
+    storage:
+      crd: {}
+  - group: ai.faros.sh
+    name: studios
+    schema: v260809-dbe6b457.studios.ai.faros.sh
+    storage:
+      crd: {}
+status: {}

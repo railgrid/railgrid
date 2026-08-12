@@ -1,5 +1,5 @@
 apiVersion: v2
-name: kedge-agents-provider
+name: faros-agents-provider
 description: |
   Agents provider chart. Ships the provider Deployment, Service, and
   CatalogEntry for long-running personal AI agents. Configure durable storage
@@ -10,11 +10,11 @@ version: 0.1.0
 appVersion: "0.1.0"
 icon: https://example.com/agents-icon.png
 keywords:
-  - kedge
+  - faros
   - agents
   - ai
-home: https://github.com/faroshq/kedge
+home: https://github.com/faroshq/faros
 sources:
-  - https://github.com/faroshq/kedge/tree/main/providers/agents
+  - https://github.com/faroshq/faros/tree/main/providers/agents
 maintainers:
-  - name: kedge maintainers
+  - name: faros maintainers

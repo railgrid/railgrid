@@ -4,12 +4,12 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
-// kuery is the kedge provider for fleet-wide object search, relationship
+// kuery is the faros provider for fleet-wide object search, relationship
 // traversal, and impact analysis across connected edge clusters, built on
 // github.com/faroshq/kuery. See docs/kuery-provider-architecture.md in the
-// kedge repo for the design and phasing.
+// faros repo for the design and phasing.
 //
 // Phase 1 skeleton: registration surface only (healthz, heartbeat, portal
 // placeholder, /api/status). Phase 2 embeds the kuery engine + the Edge
@@ -66,12 +66,12 @@ func envOr(key, def string) string {
 
 // loadProviderConfig loads the minted provider kubeconfig — the credential
 // whose SA token the Enable-time edges-proxy grant authorizes. Resolution
-// order matches the other providers: KEDGE_PROVIDER_KUBECONFIG, then the
+// order matches the other providers: FAROS_PROVIDER_KUBECONFIG, then the
 // conventional mount path, then KUBECONFIG.
 func loadProviderConfig() (*rest.Config, error) {
 	candidates := []string{
-		os.Getenv("KEDGE_PROVIDER_KUBECONFIG"),
-		"/var/run/secrets/kedge/kedge-provider-kubeconfig",
+		os.Getenv("FAROS_PROVIDER_KUBECONFIG"),
+		"/var/run/secrets/faros/faros-provider-kubeconfig",
 		os.Getenv("KUBECONFIG"),
 	}
 	for _, path := range candidates {
@@ -87,7 +87,7 @@ func loadProviderConfig() (*rest.Config, error) {
 		}
 		return cfg, nil
 	}
-	return nil, fmt.Errorf("no kubeconfig found (set KEDGE_PROVIDER_KUBECONFIG)")
+	return nil, fmt.Errorf("no kubeconfig found (set FAROS_PROVIDER_KUBECONFIG)")
 }
 
 type statusResponse struct {
@@ -104,7 +104,7 @@ type statusResponse struct {
 //
 //	kuery-provider init   — one-shot: apply APIResourceSchemas, APIExport,
 //	    APIExportEndpointSlice, and bind grant into the provider workspace using
-//	    KEDGE_PROVIDER_KUBECONFIG (+ KUERY_EDGES_IDENTITY_HASH). See init_cmd.go.
+//	    FAROS_PROVIDER_KUBECONFIG (+ KUERY_EDGES_IDENTITY_HASH). See init_cmd.go.
 //	kuery-provider serve  — runtime (default).
 func main() {
 	if len(os.Args) > 1 {
@@ -162,8 +162,8 @@ func runServe() {
 		ctrl.SetLogger(klog.NewKlogr())
 		engagementCtl, err = engagement.New(engagement.Config{
 			ProviderConfig: providerCfg,
-			HubBaseURL:     os.Getenv("KEDGE_HUB_URL"),
-			APIExportName:  envOr("KUERY_APIEXPORT_NAME", "kuery.providers.kedge.faros.sh"),
+			HubBaseURL:     os.Getenv("FAROS_HUB_URL"),
+			APIExportName:  envOr("KUERY_APIEXPORT_NAME", "kuery.providers.faros.sh"),
 			Sync:           kc.Sync,
 			Store:          kc.Store,
 		})
@@ -214,7 +214,7 @@ func runServe() {
 			Message:     "kuery provider: fleet query engine",
 			Provider:    "kuery",
 			ServedAt:    time.Now().UTC(),
-			UserHeader:  r.Header.Get("X-Kedge-User"),
+			UserHeader:  r.Header.Get("X-Faros-User"),
 			StoreDriver: storeDriver,
 		}
 		if engagementCtl != nil {
@@ -274,9 +274,9 @@ func runServe() {
 
 	// Heartbeat goroutine — POSTs to the hub every 30s so the catalog
 	// controller's TTL doesn't flip us to NotReady. Configurable via env:
-	//   KEDGE_HUB_URL   - base URL of the hub (e.g. http://localhost:19443)
-	//   KEDGE_HUB_TOKEN - bearer token for the heartbeat request
-	//   KEDGE_PROVIDER_NAME - this provider's CatalogEntry name (default: kuery)
+	//   FAROS_HUB_URL   - base URL of the hub (e.g. http://localhost:19443)
+	//   FAROS_HUB_TOKEN - bearer token for the heartbeat request
+	//   FAROS_PROVIDER_NAME - this provider's CatalogEntry name (default: kuery)
 	// All empty → heartbeats disabled (useful for tests / dry-run).
 	go runHeartbeat(ctx)
 
@@ -304,34 +304,34 @@ const (
 )
 
 // runHeartbeat POSTs to /api/providers/{name}/heartbeat every 30s. Skips
-// silently when KEDGE_HUB_URL is empty so test invocations don't need a hub.
+// silently when FAROS_HUB_URL is empty so test invocations don't need a hub.
 // Logs errors but keeps trying — losing a beat just means the hub flips us
 // to NotReady until the next successful POST.
 //
 // Env:
 //
-//	KEDGE_HUB_URL        - hub base URL (https://localhost:9443 in dev)
-//	KEDGE_HUB_TOKEN      - bearer token for the heartbeat request
-//	KEDGE_PROVIDER_NAME  - this provider's CatalogEntry name (default: kuery)
-//	KEDGE_HUB_INSECURE   - "true" → skip TLS verification (dev with self-signed certs)
+//	FAROS_HUB_URL        - hub base URL (https://localhost:9443 in dev)
+//	FAROS_HUB_TOKEN      - bearer token for the heartbeat request
+//	FAROS_PROVIDER_NAME  - this provider's CatalogEntry name (default: kuery)
+//	FAROS_HUB_INSECURE   - "true" → skip TLS verification (dev with self-signed certs)
 func runHeartbeat(ctx context.Context) {
-	hub := os.Getenv("KEDGE_HUB_URL")
-	token := os.Getenv("KEDGE_HUB_TOKEN")
-	name := os.Getenv("KEDGE_PROVIDER_NAME")
+	hub := os.Getenv("FAROS_HUB_URL")
+	token := os.Getenv("FAROS_HUB_TOKEN")
+	name := os.Getenv("FAROS_PROVIDER_NAME")
 	if name == "" {
 		name = "kuery"
 	}
 	if hub == "" {
-		log.Printf("heartbeat disabled (set KEDGE_HUB_URL to enable)")
+		log.Printf("heartbeat disabled (set FAROS_HUB_URL to enable)")
 		return
 	}
 	url := hub + "/api/providers/" + name + "/heartbeat"
 	body, _ := json.Marshal(map[string]string{"version": heartbeatVersion, "status": "healthy"})
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	if os.Getenv("KEDGE_HUB_INSECURE") == "true" {
+	if os.Getenv("FAROS_HUB_INSECURE") == "true" {
 		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev-only; opt-in via KEDGE_HUB_INSECURE
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev-only; opt-in via FAROS_HUB_INSECURE
 		}
 	}
 

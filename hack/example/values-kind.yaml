@@ -1,6 +1,6 @@
 image:
   hub:
-    repository: ghcr.io/faroshq/kedge-hub
+    repository: ghcr.io/faroshq/faros-hub
     tag: "7558a55-dirty"  # defaults to .Chart.AppVersion
     pullPolicy: IfNotPresent
   kcp:
@@ -27,7 +27,7 @@ hub:
     
 #idp:
 #  issuerURL: "https://idp.faros.sh"
-#  clientID: "kedge"
+#  clientID: "faros"
 #  clientSecret: "Z2Fyc2lha2FsYmlzdmFuZGVuekWplCg=="
 
 ingress:

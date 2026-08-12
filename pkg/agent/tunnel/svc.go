@@ -28,13 +28,13 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/faroshq/faros-kedge/pkg/agent/discovery"
+	"github.com/faroshq/faros/pkg/agent/discovery"
 )
 
 // svcTargetHeader carries the provider-computed upstream target for the /svc
 // reverse proxy, e.g. "http://127.0.0.1:8123". The provider is the only writer;
 // the agent enforces that the target host is loopback (see isLoopbackHost).
-const svcTargetHeader = "X-Kedge-Svc-Target"
+const svcTargetHeader = "X-Faros-Svc-Target"
 
 // servicesResponse is the JSON body of GET /api/v1/services.
 type servicesResponse struct {
@@ -52,7 +52,7 @@ func newServicesHandler() http.HandlerFunc {
 }
 
 // newSvcProxyHandler reverse-proxies requests arriving over the tunnel under
-// /svc/ to a service named by the X-Kedge-Svc-Target header.
+// /svc/ to a service named by the X-Faros-Svc-Target header.
 //
 // The provider resolves a Service CR to a target and sets the header; the agent
 // decides what it is willing to dial. In server mode that is loopback only, so

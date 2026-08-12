@@ -2,7 +2,7 @@
 // inventory over every edge connected to the workspace, with an impact
 // drill-down (declared blast radius of one object). Backed by the
 // provider's tenant-scoped /api/query + /api/edges (proxied by the hub
-// at /services/providers/kuery/*, which injects X-Kedge-Tenant).
+// at /services/providers/kuery/*, which injects X-Faros-Tenant).
 //
 // Plain custom element in light DOM (the portal's CSS variables cascade
 // in); see main.ts for registration and style.css for the rules.
@@ -21,13 +21,13 @@ import {
 } from './graph'
 import { loadCodeMirror, collectSchemaWords, createEditor, EXAMPLES, type EditorHandle } from './playground'
 
-export interface KedgeContext {
+export interface FarosContext {
   token?: string | null
   user?: { email?: string; sub?: string } | null
   tenant?: string | null
-  // Sidebar-selected org/workspace UUIDs. Forwarded as X-Kedge-Org /
-  // X-Kedge-Workspace so the hub backend proxy can resolve and inject
-  // X-Kedge-Tenant; without them the resolver falls back to the user's
+  // Sidebar-selected org/workspace UUIDs. Forwarded as X-Faros-Org /
+  // X-Faros-Workspace so the hub backend proxy can resolve and inject
+  // X-Faros-Tenant; without them the resolver falls back to the user's
   // personal org (often unset in dev) and the backend 401s.
   orgUUID?: string | null
   workspaceUUID?: string | null
@@ -71,7 +71,7 @@ const RELATION_TITLES: Record<string, string> = {
 }
 
 export class KueryElement extends HTMLElement {
-  private _ctx: KedgeContext | null = null
+  private _ctx: FarosContext | null = null
   private _booted = false
 
   private _edges: string[] = []
@@ -131,12 +131,12 @@ export class KueryElement extends HTMLElement {
   private _fNamespace = ''
   private _fName = ''
 
-  set kedgeContext(v: KedgeContext | null) {
+  set farosContext(v: FarosContext | null) {
     this._ctx = v
     this._render()
     this._boot()
   }
-  get kedgeContext(): KedgeContext | null {
+  get farosContext(): FarosContext | null {
     return this._ctx
   }
 
@@ -169,14 +169,14 @@ export class KueryElement extends HTMLElement {
   }
 
   // _tenantHeaders carries the identity the hub backend proxy needs to
-  // inject X-Kedge-Tenant: the bearer token (to identify the user) plus
+  // inject X-Faros-Tenant: the bearer token (to identify the user) plus
   // the sidebar-selected org/workspace (to pick the tenant). Mirrors what
   // the console's own /api/orgs/* requests send.
   private _tenantHeaders(): Record<string, string> {
     const h: Record<string, string> = {}
     if (this._ctx?.token) h['Authorization'] = `Bearer ${this._ctx.token}`
-    if (this._ctx?.orgUUID) h['X-Kedge-Org'] = this._ctx.orgUUID
-    if (this._ctx?.workspaceUUID) h['X-Kedge-Workspace'] = this._ctx.workspaceUUID
+    if (this._ctx?.orgUUID) h['X-Faros-Org'] = this._ctx.orgUUID
+    if (this._ctx?.workspaceUUID) h['X-Faros-Workspace'] = this._ctx.workspaceUUID
     return h
   }
 
@@ -846,7 +846,7 @@ export class KueryElement extends HTMLElement {
     return `
       <p>The same query API is reachable programmatically. The hub authenticates your bearer token and scopes the query to your workspace — you never send a tenant header yourself.</p>
       <pre class="pg-result">curl -sS ${esc(origin)}${esc(base)}/api/query \\
-  -H "Authorization: Bearer $KEDGE_TOKEN" \\
+  -H "Authorization: Bearer $FAROS_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{"filter":{"objects":[{"groupKind":{"kind":"Deployment"}}]},"objects":{"cluster":true}}'</pre>
       <ul class="rel-list">

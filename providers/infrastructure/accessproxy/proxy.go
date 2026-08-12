@@ -562,7 +562,7 @@ func joinTargetPath(base, suffix string) string {
 func stripUpstreamRequestHeaders(headers http.Header) {
 	for key := range headers {
 		lower := strings.ToLower(key)
-		if strings.HasPrefix(lower, "x-kedge-") || isProxyReservedHeader(lower) {
+		if strings.HasPrefix(lower, "x-faros-") || isProxyReservedHeader(lower) {
 			delete(headers, key)
 		}
 	}
@@ -607,7 +607,7 @@ func filterCookieHeader(headers http.Header) {
 func stripUpstreamResponseHeaders(headers http.Header) {
 	for key := range headers {
 		lower := strings.ToLower(key)
-		if strings.HasPrefix(lower, "x-kedge-") || lower == "authorization" || lower == "proxy-authenticate" || lower == "www-authenticate" {
+		if strings.HasPrefix(lower, "x-faros-") || lower == "authorization" || lower == "proxy-authenticate" || lower == "www-authenticate" {
 			delete(headers, key)
 		}
 	}

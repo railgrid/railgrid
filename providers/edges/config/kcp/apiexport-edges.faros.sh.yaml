@@ -1,0 +1,32 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: edges.faros.sh
+spec:
+  resources:
+  - group: edges.faros.sh
+    name: kubernetesclusters
+    schema: v260715-d4e8aa2.kubernetesclusters.edges.faros.sh
+    storage:
+      crd: {}
+  - group: edges.faros.sh
+    name: linuxservers
+    schema: v260715-d4e8aa2.linuxservers.edges.faros.sh
+    storage:
+      crd: {}
+  - group: edges.faros.sh
+    name: placements
+    schema: v260718-e83a64f.placements.edges.faros.sh
+    storage:
+      crd: {}
+  - group: edges.faros.sh
+    name: services
+    schema: v260719-c339afb.services.edges.faros.sh
+    storage:
+      crd: {}
+  - group: edges.faros.sh
+    name: workloads
+    schema: v260718-e83a64f.workloads.edges.faros.sh
+    storage:
+      crd: {}
+status: {}

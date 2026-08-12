@@ -27,7 +27,7 @@ import (
 )
 
 var (
-	catalogEntryGVR   = schema.GroupVersionResource{Group: "providers.kedge.faros.sh", Version: "v1alpha1", Resource: "catalogentries"}
+	catalogEntryGVR   = schema.GroupVersionResource{Group: "providers.faros.sh", Version: "v1alpha1", Resource: "catalogentries"}
 	apiExportGVR      = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports"}
 	cachedResGVR      = schema.GroupVersionResource{Group: "cache.kcp.io", Version: "v1alpha1", Resource: "cachedresources"}
 	templatesGVR      = schema.GroupVersionResource{Group: infraGroup, Version: "v1alpha1", Resource: "templates"}
@@ -116,7 +116,7 @@ func TestInfraMCPToolsFederatable(t *testing.T) {
 }
 
 // TestTenantIsolationRequiresIdentity asserts the provider refuses tenant work
-// without a caller identity: a tools/call with neither X-Kedge-Tenant nor a
+// without a caller identity: a tools/call with neither X-Faros-Tenant nor a
 // bearer token is rejected, rather than silently acting cross-tenant. This is
 // the per-tenant isolation gate that backs the "act as the caller" model.
 func TestTenantIsolationRequiresIdentity(t *testing.T) {
@@ -145,7 +145,7 @@ func looksLikeIdentityRefusal(s string) bool {
 	s = strings.ToLower(s)
 	return strings.Contains(s, "tenant") || strings.Contains(s, "bearer token") ||
 		strings.Contains(s, "identity") || strings.Contains(s, "unauthorized") ||
-		strings.Contains(s, "x-kedge-tenant")
+		strings.Contains(s, "x-faros-tenant")
 }
 
 // --- MCP-over-HTTP (mirrors providers/mcp/aggregate/provider_proxy.go rpc) --
@@ -192,7 +192,7 @@ func mcpRPC(mcpURL, method string, params json.RawMessage, token, tenant string)
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	if tenant != "" {
-		req.Header.Set("X-Kedge-Tenant", tenant)
+		req.Header.Set("X-Faros-Tenant", tenant)
 	}
 	resp, err := insecureClient(30 * time.Second).Do(req)
 	if err != nil {

@@ -26,14 +26,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	farosclient "github.com/faroshq/faros/pkg/client"
 )
 
-// edgeKindGVRs are the connectable kinds a `kedge edge`/`kedge agent` command
+// edgeKindGVRs are the connectable kinds a `faros edge`/`faros agent` command
 // may address by name. KubernetesCluster is tried first (the common case).
 var edgeKindGVRs = []schema.GroupVersionResource{
-	kedgeclient.KubernetesClusterGVR,
-	kedgeclient.LinuxServerGVR,
+	farosclient.KubernetesClusterGVR,
+	farosclient.LinuxServerGVR,
 }
 
 // getEdgeByName fetches a connectable resource by name across both kinds

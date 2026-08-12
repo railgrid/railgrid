@@ -28,10 +28,10 @@ COPY --from=portal /portal/dist ./portal/dist
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/agents-provider .
 
 # 3. Minimal runtime image. APIResourceSchemas the `init` subcommand applies are
-#    baked at /etc/kedge/schemas (KEDGE_SCHEMAS_DIR).
+#    baked at /etc/faros/schemas (FAROS_SCHEMAS_DIR).
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/agents-provider /agents-provider
-COPY deploy/chart/files/schemas /etc/kedge/schemas
+COPY deploy/chart/files/schemas /etc/faros/schemas
 EXPOSE 8087
 ENV PORT=8087
 USER nonroot:nonroot

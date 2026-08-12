@@ -4,7 +4,7 @@
 // (same origin as the portal). The gateway serves every CRD bound in the tenant
 // workspace — including the edges provider's two kinds — so the portal pulls
 // KubernetesClusters + LinuxServers without a custom REST endpoint. Auth is the
-// caller's bearer token (from KedgeContext); the workspace is the path segment.
+// caller's bearer token (from FarosContext); the workspace is the path segment.
 
 import type { Edge, EdgeDetail, EdgeType, ErrorResponse } from './types'
 
@@ -59,7 +59,7 @@ const STATUS_SEL = `
 
 const LIST_QUERY = `
   query ListEdges {
-    edges_kedge_faros_sh {
+    edges_faros_sh {
       v1alpha1 {
         KubernetesClusters { items { ${STATUS_SEL} } }
         LinuxServers { items { ${STATUS_SEL} } }
@@ -86,14 +86,14 @@ function toEdge(it: RawItem, type: EdgeType): Edge {
 // listEdges returns both kinds merged into one list, each stamped with its type.
 export async function listEdges(): Promise<Edge[]> {
   const data = await graphql<{
-    edges_kedge_faros_sh?: {
+    edges_faros_sh?: {
       v1alpha1?: {
         KubernetesClusters?: { items?: RawItem[] }
         LinuxServers?: { items?: RawItem[] }
       }
     }
   }>(LIST_QUERY)
-  const v = data.edges_kedge_faros_sh?.v1alpha1
+  const v = data.edges_faros_sh?.v1alpha1
   const kube = (v?.KubernetesClusters?.items ?? []).map((it) => toEdge(it, 'kubernetes'))
   const server = (v?.LinuxServers?.items ?? []).map((it) => toEdge(it, 'server'))
   return [...kube, ...server].sort((a, b) => a.name.localeCompare(b.name))
@@ -103,7 +103,7 @@ export async function listEdges(): Promise<Edge[]> {
 export async function getEdge(name: string, type: EdgeType): Promise<EdgeDetail> {
   const kind = type === 'server' ? 'LinuxServer' : 'KubernetesCluster'
   const data = await graphql<{
-    edges_kedge_faros_sh?: {
+    edges_faros_sh?: {
       v1alpha1?: Record<string, {
         metadata: { name: string; creationTimestamp?: string; labels?: Record<string, string> }
         status?: {
@@ -115,7 +115,7 @@ export async function getEdge(name: string, type: EdgeType): Promise<EdgeDetail>
     }
   }>(
     `query GetEdge($name: String!) {
-       edges_kedge_faros_sh { v1alpha1 { ${kind}(name: $name) {
+       edges_faros_sh { v1alpha1 { ${kind}(name: $name) {
          metadata { name creationTimestamp labels }
          status {
            phase connected hostname agentVersion lastHeartbeatTime joinToken workspacePath
@@ -125,7 +125,7 @@ export async function getEdge(name: string, type: EdgeType): Promise<EdgeDetail>
      }`,
     { name },
   )
-  const cr = data.edges_kedge_faros_sh?.v1alpha1?.[kind]
+  const cr = data.edges_faros_sh?.v1alpha1?.[kind]
   if (!cr) throw <ErrorResponse>{ reason: 'NotFound', message: `${kind} ${name} not found` }
   const s = cr.status ?? {}
   return {
@@ -147,14 +147,14 @@ export async function getEdge(name: string, type: EdgeType): Promise<EdgeDetail>
 export async function deleteEdge(edge: Edge): Promise<void> {
   const field = edge.type === 'server' ? 'deleteLinuxServer' : 'deleteKubernetesCluster'
   await graphql(
-    `mutation Del($name: String!) { edges_kedge_faros_sh { v1alpha1 { ${field}(name: $name) } } }`,
+    `mutation Del($name: String!) { edges_faros_sh { v1alpha1 { ${field}(name: $name) } } }`,
     { name: edge.name },
   )
 }
 
 // createEdge creates a KubernetesCluster or LinuxServer. Only name + optional
 // labels are set here; the rest defaults server-side. The GraphQL input type
-// names follow the gateway convention (EdgesKedgeFarosShV1alpha1<Kind>_Input).
+// names follow the gateway convention (EdgesFarosShV1alpha1<Kind>_Input).
 export async function createEdge(
   name: string,
   type: EdgeType,
@@ -167,8 +167,8 @@ export async function createEdge(
     spec: type === 'kubernetes' && labels && Object.keys(labels).length ? { labels } : {},
   }
   await graphql(
-    `mutation Create($object: EdgesKedgeFarosShV1alpha1${kind}_Input!) {
-       edges_kedge_faros_sh { v1alpha1 { ${field}(object: $object) { metadata { name } } } }
+    `mutation Create($object: EdgesFarosShV1alpha1${kind}_Input!) {
+       edges_faros_sh { v1alpha1 { ${field}(object: $object) { metadata { name } } } }
      }`,
     { object },
   )
@@ -185,18 +185,18 @@ export interface EdgeProbe {
 export async function probeEdge(name: string, type: EdgeType): Promise<EdgeProbe | null> {
   const kind = type === 'server' ? 'LinuxServer' : 'KubernetesCluster'
   const data = await graphql<{
-    edges_kedge_faros_sh?: {
+    edges_faros_sh?: {
       v1alpha1?: Record<string, { status?: { joinToken?: string; connected?: boolean; agentVersion?: string } } | null>
     }
   }>(
     `query Probe($name: String!) {
-       edges_kedge_faros_sh { v1alpha1 { ${kind}(name: $name) {
+       edges_faros_sh { v1alpha1 { ${kind}(name: $name) {
          status { joinToken connected agentVersion }
        } } }
      }`,
     { name },
   )
-  const cr = data.edges_kedge_faros_sh?.v1alpha1?.[kind]
+  const cr = data.edges_faros_sh?.v1alpha1?.[kind]
   if (!cr) return null
   return {
     joinToken: cr.status?.joinToken,
@@ -272,7 +272,7 @@ import type { EdgeService, EdgeServiceDraft } from './types'
 
 // Secrets holding EdgeService credentials live in this namespace (where the
 // edge SA secrets already live).
-const EDGE_SVC_SECRET_NS = 'kedge-system'
+const EDGE_SVC_SECRET_NS = 'faros-system'
 
 interface RawEdgeService {
   metadata: { name: string; creationTimestamp?: string; labels?: Record<string, string> }
@@ -332,9 +332,9 @@ function toEdgeService(it: RawEdgeService): EdgeService {
 // Services view).
 export async function listServices(): Promise<EdgeService[]> {
   const data = await graphql<{
-    edges_kedge_faros_sh?: { v1alpha1?: { Services?: { items?: RawEdgeService[] } } }
-  }>(`query ListServices { edges_kedge_faros_sh { v1alpha1 { Services { items { ${EDGE_SVC_SEL} } } } } }`)
-  const items = data.edges_kedge_faros_sh?.v1alpha1?.Services?.items ?? []
+    edges_faros_sh?: { v1alpha1?: { Services?: { items?: RawEdgeService[] } } }
+  }>(`query ListServices { edges_faros_sh { v1alpha1 { Services { items { ${EDGE_SVC_SEL} } } } } }`)
+  const items = data.edges_faros_sh?.v1alpha1?.Services?.items ?? []
   return items.map(toEdgeService).sort((a, b) => a.name.localeCompare(b.name))
 }
 
@@ -348,8 +348,8 @@ export async function listEdgeServices(edgeName: string): Promise<EdgeService[]>
 // of the spec untouched.
 export async function updateEdgeServiceInstructions(name: string, instructions: string): Promise<void> {
   await graphql(
-    `mutation SetInstructions($name: String!, $object: EdgesKedgeFarosShV1alpha1Service_Input!) {
-       edges_kedge_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
+    `mutation SetInstructions($name: String!, $object: EdgesFarosShV1alpha1Service_Input!) {
+       edges_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
      }`,
     { name, object: { metadata: { name }, spec: { instructions } } },
   )
@@ -385,8 +385,8 @@ export async function updateEdgeService(name: string, e: EdgeServiceEdit): Promi
         : null,
   }
   await graphql(
-    `mutation UpdateService($name: String!, $object: EdgesKedgeFarosShV1alpha1Service_Input!) {
-       edges_kedge_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
+    `mutation UpdateService($name: String!, $object: EdgesFarosShV1alpha1Service_Input!) {
+       edges_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
      }`,
     { name, object: { metadata: { name }, spec } },
   )
@@ -416,13 +416,13 @@ export async function createKubeEdgeService(d: EdgeServiceDraft): Promise<void> 
   const object: Record<string, unknown> = {
     metadata: {
       name: d.name,
-      labels: { 'edges.kedge.faros.sh/edge': d.edgeName },
+      labels: { 'edges.faros.sh/edge': d.edgeName },
     },
     spec,
   }
   await graphql(
-    `mutation CreateService($object: EdgesKedgeFarosShV1alpha1Service_Input!) {
-       edges_kedge_faros_sh { v1alpha1 { createService(object: $object) { metadata { name } } } }
+    `mutation CreateService($object: EdgesFarosShV1alpha1Service_Input!) {
+       edges_faros_sh { v1alpha1 { createService(object: $object) { metadata { name } } } }
      }`,
     { object },
   )
@@ -432,7 +432,7 @@ export async function createKubeEdgeService(d: EdgeServiceDraft): Promise<void> 
 export async function deleteEdgeService(name: string): Promise<void> {
   await graphql(
     `mutation DelService($name: String!) {
-       edges_kedge_faros_sh { v1alpha1 { deleteService(name: $name) } }
+       edges_faros_sh { v1alpha1 { deleteService(name: $name) } }
      }`,
     { name },
   )
@@ -442,7 +442,7 @@ export async function deleteEdgeService(name: string): Promise<void> {
 // spec.authSecretRef so the validation reconciler can authenticate the service.
 // The secret key is "token" (e.g. a Home Assistant long-lived access token).
 export async function connectEdgeService(name: string, token: string): Promise<void> {
-  const secretName = `kedge-edges-svc-${name}`
+  const secretName = `faros-edges-svc-${name}`
 
   // 1. Upsert the Secret holding the token.
   //
@@ -455,7 +455,7 @@ export async function connectEdgeService(name: string, token: string): Promise<v
   // settles every quoting question about whatever characters the token holds.
   // Hand-built YAML would need escaping rules we'd get wrong eventually.
   //
-  // The kedge-system namespace already exists in the tenant workspace — the
+  // The faros-system namespace already exists in the tenant workspace — the
   // edges RBAC reconciler creates it when an edge registers, which always
   // precedes a Service.
   await graphql(`mutation ApplySecret($yaml: String!) { applyYaml(yaml: $yaml) }`, {
@@ -472,8 +472,8 @@ export async function connectEdgeService(name: string, token: string): Promise<v
   //    patch, so spec.authSecretRef is added without disturbing the rest of the
   //    spec (edgeRef/type/port).
   await graphql(
-    `mutation SetAuth($name: String!, $object: EdgesKedgeFarosShV1alpha1Service_Input!) {
-       edges_kedge_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
+    `mutation SetAuth($name: String!, $object: EdgesFarosShV1alpha1Service_Input!) {
+       edges_faros_sh { v1alpha1 { updateService(name: $name, object: $object) { metadata { name } } } }
      }`,
     {
       name,
@@ -536,22 +536,22 @@ const WORKLOAD_SEL = `
 
 export async function listWorkloads(): Promise<Workload[]> {
   const data = await graphql<{
-    edges_kedge_faros_sh?: { v1alpha1?: { Workloads?: { items?: RawWorkload[] } } }
-  }>(`query ListWorkloads { edges_kedge_faros_sh { v1alpha1 { Workloads { items { ${WORKLOAD_SEL} } } } } }`)
-  const items = data.edges_kedge_faros_sh?.v1alpha1?.Workloads?.items ?? []
+    edges_faros_sh?: { v1alpha1?: { Workloads?: { items?: RawWorkload[] } } }
+  }>(`query ListWorkloads { edges_faros_sh { v1alpha1 { Workloads { items { ${WORKLOAD_SEL} } } } } }`)
+  const items = data.edges_faros_sh?.v1alpha1?.Workloads?.items ?? []
   return items.map(toWorkload).sort((a, b) => a.name.localeCompare(b.name))
 }
 
 export async function getWorkload(name: string): Promise<Workload | null> {
   const data = await graphql<{
-    edges_kedge_faros_sh?: { v1alpha1?: { Workload?: RawWorkload | null } }
+    edges_faros_sh?: { v1alpha1?: { Workload?: RawWorkload | null } }
   }>(
     `query GetWorkload($namespace: String!, $name: String!) {
-       edges_kedge_faros_sh { v1alpha1 { Workload(namespace: $namespace, name: $name) { ${WORKLOAD_SEL} } } }
+       edges_faros_sh { v1alpha1 { Workload(namespace: $namespace, name: $name) { ${WORKLOAD_SEL} } } }
      }`,
     { namespace: WORKLOAD_NS, name },
   )
-  const cr = data.edges_kedge_faros_sh?.v1alpha1?.Workload
+  const cr = data.edges_faros_sh?.v1alpha1?.Workload
   return cr ? toWorkload(cr) : null
 }
 
@@ -581,8 +581,8 @@ export async function createWorkload(d: WorkloadDraft): Promise<void> {
     },
   }
   await graphql(
-    `mutation CreateWorkload($namespace: String!, $object: EdgesKedgeFarosShV1alpha1Workload_Input!) {
-       edges_kedge_faros_sh { v1alpha1 { createWorkload(namespace: $namespace, object: $object) { metadata { name } } } }
+    `mutation CreateWorkload($namespace: String!, $object: EdgesFarosShV1alpha1Workload_Input!) {
+       edges_faros_sh { v1alpha1 { createWorkload(namespace: $namespace, object: $object) { metadata { name } } } }
      }`,
     { namespace: WORKLOAD_NS, object },
   )
@@ -591,7 +591,7 @@ export async function createWorkload(d: WorkloadDraft): Promise<void> {
 export async function deleteWorkload(name: string): Promise<void> {
   await graphql(
     `mutation DelWorkload($namespace: String!, $name: String!) {
-       edges_kedge_faros_sh { v1alpha1 { deleteWorkload(namespace: $namespace, name: $name) } }
+       edges_faros_sh { v1alpha1 { deleteWorkload(namespace: $namespace, name: $name) } }
      }`,
     { namespace: WORKLOAD_NS, name },
   )
@@ -624,13 +624,13 @@ export async function deployMarketplaceApp(opts: {
         strategy: 'Singleton',
         // Target this one edge by its self-name label (stamped by the edge
         // lifecycle reconciler).
-        edgeSelector: { matchLabels: { 'edges.kedge.faros.sh/name': opts.edgeName } },
+        edgeSelector: { matchLabels: { 'edges.faros.sh/name': opts.edgeName } },
       },
     },
   }
   await graphql(
-    `mutation CreateHelmWorkload($namespace: String!, $object: EdgesKedgeFarosShV1alpha1Workload_Input!) {
-       edges_kedge_faros_sh { v1alpha1 { createWorkload(namespace: $namespace, object: $object) { metadata { name } } } }
+    `mutation CreateHelmWorkload($namespace: String!, $object: EdgesFarosShV1alpha1Workload_Input!) {
+       edges_faros_sh { v1alpha1 { createWorkload(namespace: $namespace, object: $object) { metadata { name } } } }
      }`,
     { namespace: WORKLOAD_NS, object: workload },
   )

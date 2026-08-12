@@ -129,7 +129,7 @@ onUnmounted(() => window.clearInterval(timer))
         <div class="field">
           <span class="field-label">Object name</span>
           <input v-model="form.name" placeholder="orders-sql" autocomplete="off" />
-          <span class="field-hint">How this warehouse is referred to from kedge — lowercase, stable, yours to choose.</span>
+          <span class="field-hint">How this warehouse is referred to from faros — lowercase, stable, yours to choose.</span>
         </div>
         <div class="field">
           <span class="field-label">Warehouse ID</span>

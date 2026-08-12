@@ -26,7 +26,7 @@ limitations under the License.
 //     expressions referencing mode-excluded resources (GraphAccepted=True —
 //     already implied by TestE2ESeedTemplates now that seed templates carry
 //     the overlay, asserted here explicitly per mode).
-//  2. A PRODUCTION-mode instance (kedgeMode defaulted) materializes the
+//  2. A PRODUCTION-mode instance (farosMode defaulted) materializes the
 //     production workloads and NONE of the synthesized dev resources, and
 //     reconciles cleanly even though the status mapping references dev-only
 //     resources (they resolve to unset, not an error).
@@ -168,7 +168,7 @@ func TestE2EDevelopmentMode(t *testing.T) {
 }
 
 // e2eDevInstance builds a development-mode instance: the standard sample spec
-// with kedgeMode=development and — for templates listed in
+// with farosMode=development and — for templates listed in
 // e2eDevImageStripped — the production image fields removed.
 func e2eDevInstance(t *testing.T, tmpl *infrav1alpha1.Template, runID string) *unstructured.Unstructured {
 	t.Helper()
@@ -177,7 +177,7 @@ func e2eDevInstance(t *testing.T, tmpl *infrav1alpha1.Template, runID string) *u
 	for _, field := range e2eDevImageStripped[tmpl.Name] {
 		delete(spec, field)
 	}
-	spec[infrav1alpha1.KedgeModeField] = infrav1alpha1.KedgeModeDevelopment
+	spec[infrav1alpha1.FarosModeField] = infrav1alpha1.FarosModeDevelopment
 	_ = unstructured.SetNestedMap(inst.Object, spec, "spec")
 	return inst
 }

@@ -31,10 +31,10 @@ already excludes `test/e2e`.)
 
 | what | default | env |
 | --- | --- | --- |
-| kcp admin kubeconfig | `tilt-frontproxy.kubeconfig` | `KEDGE_E2E_TILT_KUBECONFIG` |
-| hub REST + MCP | `https://localhost:9443` | `KEDGE_E2E_HUB_URL` |
-| infrastructure `/mcp` | `http://localhost:8082` | `KEDGE_E2E_INFRA_URL` |
-| hub static token | `dev-token` | `KEDGE_E2E_STATIC_TOKEN` |
+| kcp admin kubeconfig | `tilt-frontproxy.kubeconfig` | `FAROS_E2E_TILT_KUBECONFIG` |
+| hub REST + MCP | `https://localhost:9443` | `FAROS_E2E_HUB_URL` |
+| infrastructure `/mcp` | `http://localhost:8082` | `FAROS_E2E_INFRA_URL` |
+| hub static token | `dev-token` | `FAROS_E2E_STATIC_TOKEN` |
 
 ## What it asserts
 
@@ -48,7 +48,7 @@ already excludes `test/e2e`.)
   exposes `list_templates` / `describe_template` / `provision`, the tools the
   hub aggregate federates as `infrastructure__<tool>`.
 - **Tenant isolation** (`TestTenantIsolationRequiresIdentity`) — a tool call
-  with no caller identity (no `X-Kedge-Tenant`, no bearer token) is refused
+  with no caller identity (no `X-Faros-Tenant`, no bearer token) is refused
   rather than silently acting cross-tenant.
 
 ## Possible follow-ups

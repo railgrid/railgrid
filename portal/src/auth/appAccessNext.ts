@@ -3,7 +3,7 @@
 // stashes that hub-relative continuation here and resumes it once the hub
 // browser session exists. Only the exact published-app authorize path is
 // ever honored, so the login page cannot be used as an open redirector.
-const STORAGE_KEY = 'kedge.app-access-next'
+const STORAGE_KEY = 'faros.app-access-next'
 const AUTHORIZE_PATTERN = /^\/auth\/apps\/authorize\?/
 
 export function rememberAppAccessNext(next: string | null): void {

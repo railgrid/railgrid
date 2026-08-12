@@ -24,14 +24,14 @@ import (
 )
 
 func testServer(edgeProxyPublicPath string) *Server {
-	kube := schema.GroupVersionResource{Group: "edges.kedge.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
-	linux := schema.GroupVersionResource{Group: "edges.kedge.faros.sh", Version: "v1alpha1", Resource: "linuxservers"}
+	kube := schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "kubernetesclusters"}
+	linux := schema.GroupVersionResource{Group: "edges.faros.sh", Version: "v1alpha1", Resource: "linuxservers"}
 	return &Server{
 		kinds: map[string]KindConfig{
 			kube.Resource:  {GVR: kube, Kind: "KubernetesCluster"},
 			linux.Resource: {GVR: linux, Kind: "LinuxServer"},
 		},
-		group:               "edges.kedge.faros.sh",
+		group:               "edges.faros.sh",
 		version:             "v1alpha1",
 		edgeProxyPublicPath: edgeProxyPublicPath,
 	}
@@ -53,14 +53,14 @@ func TestEdgeProxyStatusURL(t *testing.T) {
 			gvr:     s.kinds["kubernetesclusters"].GVR,
 			cluster: "11tcw27t4rdtnacy",
 			obj:     "dev-edge-kube-1",
-			want:    base + "/clusters/11tcw27t4rdtnacy/apis/edges.kedge.faros.sh/v1alpha1/kubernetesclusters/dev-edge-kube-1/k8s",
+			want:    base + "/clusters/11tcw27t4rdtnacy/apis/edges.faros.sh/v1alpha1/kubernetesclusters/dev-edge-kube-1/k8s",
 		},
 		{
 			name:    "linux server maps to ssh subresource",
 			gvr:     s.kinds["linuxservers"].GVR,
 			cluster: "11tcw27t4rdtnacy",
 			obj:     "dev-edge-srv-1",
-			want:    base + "/clusters/11tcw27t4rdtnacy/apis/edges.kedge.faros.sh/v1alpha1/linuxservers/dev-edge-srv-1/ssh",
+			want:    base + "/clusters/11tcw27t4rdtnacy/apis/edges.faros.sh/v1alpha1/linuxservers/dev-edge-srv-1/ssh",
 		},
 	}
 

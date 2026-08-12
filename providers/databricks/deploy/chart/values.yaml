@@ -1,5 +1,5 @@
 image:
-  repository: ghcr.io/faroshq/kedge-databricks-provider
+  repository: ghcr.io/faroshq/faros-databricks-provider
   tag: ""
   pullPolicy: IfNotPresent
 
@@ -10,14 +10,14 @@ service:
   port: 8081
 
 hub:
-  url: https://kedge-hub.kedge.svc.cluster.local:9443
+  url: https://faros-hub.faros.svc.cluster.local:9443
   tokenSecretRef:
-    name: kedge-databricks-hub-token
+    name: faros-databricks-hub-token
     key: token
   insecure: false
 
 providerKubeconfig:
-  secretName: kedge-provider-kubeconfig
+  secretName: faros-provider-kubeconfig
 
 catalogEntry:
   enabled: true

@@ -21,14 +21,14 @@ import (
 )
 
 // TestEnsureTenantNamespaceStampsLimitRange pins the tenant resource policy:
-// creating a tenant namespace also creates the kedge-defaults LimitRange
+// creating a tenant namespace also creates the faros-defaults LimitRange
 // (the noisy-neighbor bound), idempotently, and an existing — possibly
 // operator-tuned — LimitRange is never overwritten.
 func TestEnsureTenantNamespaceStampsLimitRange(t *testing.T) {
 	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	c := &realClient{dyn: dyn}
 
-	const tenant = "root:kedge:orgs:test"
+	const tenant = "root:faros:orgs:test"
 	ns, err := c.EnsureTenantNamespace(context.Background(), tenant)
 	if err != nil {
 		t.Fatalf("EnsureTenantNamespace: %v", err)
@@ -82,18 +82,18 @@ func TestEnsureTenantNamespaceStampsLimitRange(t *testing.T) {
 }
 
 // TestEnsureTenantNamespaceLimitRangeDisabled pins the opt-out: with
-// KEDGE_TENANT_LIMITRANGE=disabled no LimitRange is stamped.
+// FAROS_TENANT_LIMITRANGE=disabled no LimitRange is stamped.
 func TestEnsureTenantNamespaceLimitRangeDisabled(t *testing.T) {
 	t.Setenv(tenantLimitRangeDisableEnv, "disabled")
 	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	c := &realClient{dyn: dyn}
 
-	ns, err := c.EnsureTenantNamespace(context.Background(), "root:kedge:orgs:optout")
+	ns, err := c.EnsureTenantNamespace(context.Background(), "root:faros:orgs:optout")
 	if err != nil {
 		t.Fatalf("EnsureTenantNamespace: %v", err)
 	}
 	if _, err := dyn.Resource(limitRangeGVR).Namespace(ns).Get(context.Background(), tenantLimitRangeName, metav1.GetOptions{}); err == nil {
-		t.Fatal("LimitRange was created despite KEDGE_TENANT_LIMITRANGE=disabled")
+		t.Fatal("LimitRange was created despite FAROS_TENANT_LIMITRANGE=disabled")
 	}
 }
 

@@ -11,7 +11,7 @@ You may obtain a copy of the License at
 package install
 
 // PlatformSchemaInAPIExport: register the platform's own catalog CRD
-// (templates.infrastructure.kedge.faros.sh) as a resource on the
+// (templates.infrastructure.faros.sh) as a resource on the
 // provider's APIExport. The Template controller (which mints
 // per-template entries dynamically) deliberately does NOT do this —
 // otherwise tenants who APIBind before the FIRST Template is applied
@@ -49,7 +49,7 @@ import (
 
 // APIExportName must match the provider's CatalogEntry.spec.apiExport.name.
 // Hardcoded constant — the hub catalog controller is the canonical writer.
-const APIExportName = "infrastructure.providers.kedge.faros.sh"
+const APIExportName = "infrastructure.providers.faros.sh"
 
 var (
 	apiExportGVR = schema.GroupVersionResource{
@@ -71,7 +71,7 @@ var (
 // resource entry is left alone.
 //
 // templatesIdentityHash, when non-empty, switches the
-// templates.infrastructure.kedge.faros.sh entry to use storage.virtual
+// templates.infrastructure.faros.sh entry to use storage.virtual
 // (backed by the CachedResourceEndpointSlice from
 // install/endpointslice.go) so tenants who APIBind see Templates as
 // a read-only projection of the provider workspace. Empty falls back

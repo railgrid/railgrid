@@ -1,8 +1,8 @@
 {
-  "name": "kedge-provider-kuery-portal",
+  "name": "faros-provider-kuery-portal",
   "version": "0.1.0",
   "private": true,
-  "description": "Kuery provider's portal-side micro-frontend. Built with Vite into a single main.js custom-element bundle plus static assets the kedge hub serves under /ui/providers/kuery/.",
+  "description": "Kuery provider's portal-side micro-frontend. Built with Vite into a single main.js custom-element bundle plus static assets the faros hub serves under /ui/providers/kuery/.",
   "type": "module",
   "scripts": {
     "build": "vite build && npm run vendor-cytoscape && npm run vendor-codemirror",

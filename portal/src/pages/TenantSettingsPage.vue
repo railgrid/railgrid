@@ -254,8 +254,8 @@ async function onDownloadKubeconfig(uuid: string) {
   try {
     // Reuse the install variant the user picked in the TenantContextChip
     // (persisted under the same key) so the per-row download in this
-    // page matches the chip's dropdown. Defaults to 'kedge'.
-    const install = (localStorage.getItem('kedge:portal:kubeconfig:install') === 'krew' ? 'krew' : 'kedge') as 'kedge' | 'krew'
+    // page matches the chip's dropdown. Defaults to 'faros'.
+    const install = (localStorage.getItem('faros:portal:kubeconfig:install') === 'krew' ? 'krew' : 'faros') as 'faros' | 'krew'
     const ok = await tenant.downloadKubeconfig(tenant.orgUUID, uuid, install)
     if (!ok) flash('error', tenant.error ?? 'Failed to download kubeconfig.')
   } finally {
@@ -399,7 +399,7 @@ watch([() => tenant.orgUUID, () => tenant.workspaceUUID, tab], async ([org, ws, 
 // ===== App access grants (private published apps) =====
 // Plain workspace RBAC (labeled ClusterRoleBindings) written by App Studio's
 // share dialog; listed here so invitations are visible and revocable in the
-// kedge UI. Granting stays app-scoped in the share dialog, where the app and
+// faros UI. Granting stays app-scoped in the share dialog, where the app and
 // member context live.
 const appAccessGrants = ref<AppAccessGrantRow[]>([])
 const appAccessLoading = ref(false)
@@ -1207,7 +1207,7 @@ function fmtDate(s?: string | null): string {
           </h2>
           <p class="mb-3 text-[12px] text-text-muted">
             Service accounts are scoped to the active workspace and authenticate via short-lived
-            bearer tokens. The role controls what kedge APIs the token can call.
+            bearer tokens. The role controls what faros APIs the token can call.
           </p>
           <div v-if="!tenant.orgUUID || !tenant.workspaceUUID" class="text-sm text-text-muted">
             Select an organization and workspace first.

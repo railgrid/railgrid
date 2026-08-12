@@ -1,10 +1,10 @@
-## kedge-infrastructure-provider values
+## faros-infrastructure-provider values
 ## See README.md and docs/credentials.md for the credential conventions
 ## the central kro RGD templates expect.
 
 # Container image. Build with: docker build -t IMAGE providers/infrastructure/
 image:
-  repository: ghcr.io/faroshq/kedge-infrastructure-provider
+  repository: ghcr.io/faroshq/faros-infrastructure-provider
   tag: ""  # empty → defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
@@ -20,11 +20,11 @@ service:
 # Hub the provider POSTs heartbeats to. Must be reachable from the
 # provider pod (in-cluster Service DNS works).
 hub:
-  url: https://kedge-hub.kedge.svc.cluster.local:9443
+  url: https://faros-hub.faros.svc.cluster.local:9443
   # Bearer token used in the heartbeat POST. Provided as a Secret
   # because it MUST NOT land in values.yaml in plaintext for prod.
   tokenSecretRef:
-    name: kedge-infrastructure-hub-token
+    name: faros-infrastructure-hub-token
     key: token
   # Skip TLS verification on heartbeat — dev only, defaults off.
   insecure: false
@@ -50,8 +50,8 @@ application:
   # <prefix|name>-<tenantHash>.<baseDomain>. Empty → feature disabled.
   baseDomain: ""
   # Gateway API parent the generated Application HTTPRoutes attach to
-  # (substituted into Application RGDs as ${kedge.gatewayName} /
-  # ${kedge.gatewayNamespace}). Defaults to the cfgate Cloudflare Tunnel
+  # (substituted into Application RGDs as ${faros.gatewayName} /
+  # ${faros.gatewayNamespace}). Defaults to the cfgate Cloudflare Tunnel
   # Gateway in-binary; override to point apps at a different Gateway without
   # touching the template.
   gateway:
@@ -60,13 +60,13 @@ application:
 
 # Platform-owned access-gate configuration shared by simple-webapp,
 # application, and future publishable templates. Templates render the gate
-# (kedge-access-proxy) as a component of their own graph via the
-# ${kedge.accessProxyImage}/${kedge.hubUrl}/${kedge.hubPublicUrl} tokens; all
+# (faros-access-proxy) as a component of their own graph via the
+# ${faros.accessProxyImage}/${faros.hubUrl}/${faros.hubPublicUrl} tokens; all
 # app traffic enters through it in every mode. Public apps never contact the
 # hub; private apps use the hub sign-in flow once per visitor session.
 publishing:
   baseDomain: ""
-  accessProxyImage: ghcr.io/faroshq/kedge-access-proxy:latest
+  accessProxyImage: ghcr.io/faroshq/faros-access-proxy:latest
   # Internal hub address used for the app-access protocol. Empty falls back to
   # hub.url. In production, use a trusted cluster CA and keep insecure=false.
   hubURL: ""
@@ -82,7 +82,7 @@ publishing:
     namespace: "cfgate-system"
 
 # Default container resource policy stamped into every tenant namespace as a
-# LimitRange named "kedge-defaults" (defaultRequest 50m/128Mi, default limit
+# LimitRange named "faros-defaults" (defaultRequest 50m/128Mi, default limit
 # 500m/512Mi, max 2cpu/2Gi per container). Create-only — operators may
 # hand-tune a tenant's copy without it being overwritten. Disable when the
 # runtime cluster manages its own resource policy.
@@ -92,10 +92,10 @@ tenantLimitRange:
 # Development-mode images (docs/app-studio-template-sandboxes.md). These run
 # TENANT code, so production deployments should pin them by digest. Empty
 # values fall back to the in-binary defaults (node → docker.io/library/node:22-bookworm,
-# agent → ghcr.io/faroshq/kedge-dev-agent:latest).
+# agent → ghcr.io/faroshq/faros-dev-agent:latest).
 development:
-  # The injector image carrying the static kedge-dev-agent binary
-  # (KEDGE_DEV_AGENT_IMAGE).
+  # The injector image carrying the static faros-dev-agent binary
+  # (FAROS_DEV_AGENT_IMAGE).
   agentImage: ""
   # Public ES256 JSON Web Key Set used by the injected preview-console bridge
   # to verify short-lived capabilities issued by App Studio. Configure the
@@ -104,8 +104,8 @@ development:
   # development applications from starting.
   previewConsole:
     verificationJWKS: ""
-  # Toolchain image per ${kedge.devImage.<toolchain>} token — each key K maps
-  # to KEDGE_DEV_IMAGE_<K>. A template referencing an unconfigured toolchain
+  # Toolchain image per ${faros.devImage.<toolchain>} token — each key K maps
+  # to FAROS_DEV_IMAGE_<K>. A template referencing an unconfigured toolchain
   # (other than node) fails setup with a pointer to the missing env var.
   images:
     node: ""
@@ -119,7 +119,7 @@ development:
 # template default, to pin a digest.
 
 # Secret the provider mounts read-only at
-# /var/run/secrets/kedge/kedge-provider-kubeconfig to reach kcp. How it is
+# /var/run/secrets/faros/faros-provider-kubeconfig to reach kcp. How it is
 # populated depends on bootstrap.enabled:
 #   - bootstrap.enabled=false (hub-provisioned): the hub catalog controller
 #     mints it (pkg/hub/providers/provision.go) when the CatalogEntry is
@@ -128,7 +128,7 @@ development:
 #     reuses the same kcp admin kubeconfig the init container used, so there
 #     is no separately-minted runtime Secret.
 providerKubeconfig:
-  secretName: kedge-provider-kubeconfig
+  secretName: faros-provider-kubeconfig
 
 # Self-bootstrap via an init container. When enabled, an init container runs
 # `infrastructure init` BEFORE the serve container: it installs the CRDs,
@@ -138,7 +138,7 @@ bootstrap:
   enabled: false
 
   # Where the shared kubeconfig comes from:
-  #   hubMinted  - (default) the hub-delivered kedge-provider-kubeconfig
+  #   hubMinted  - (default) the hub-delivered faros-provider-kubeconfig
   #                (providerKubeconfig.secretName). A platform admin applies the
   #                CatalogEntry; the hub creates the provider workspace, mints a
   #                cluster-admin-in-workspace kubeconfig, and writes it as that
@@ -154,7 +154,7 @@ bootstrap:
   # Only used when kubeconfigSource=supplied.
   # kcp workspace the provider is installed into (init retargets the supplied
   # kubeconfig at this path; the workspace must already exist).
-  workspacePath: "root:kedge:providers:infrastructure"
+  workspacePath: "root:faros:providers:infrastructure"
   # Provide exactly ONE of:
   #   kcpKubeconfig          - inline content, rendered into a Secret by the
   #                            chart (convenient for dev; avoid for prod).
@@ -265,8 +265,8 @@ operator:
   # Application-template exposure layer (the `application` template's public URL
   # + Gateway API parent). This is the operator-mode equivalent of the top-level
   # `application.*` values: the operator owns the serve Deployment, so these land
-  # on the InfrastructureProvider CR (KEDGE_APP_BASE_DOMAIN / KEDGE_GATEWAY_NAME /
-  # KEDGE_GATEWAY_NAMESPACE) rather than via the chart's deployment.yaml. See
+  # on the InfrastructureProvider CR (FAROS_APP_BASE_DOMAIN / FAROS_GATEWAY_NAME /
+  # FAROS_GATEWAY_NAMESPACE) rather than via the chart's deployment.yaml. See
   # docs/application-template-architecture.md.
   application:
     # DNS zone apps are served under, e.g. "apps.example.com". REQUIRED to enable
@@ -281,7 +281,7 @@ operator:
 
   publishing:
     baseDomain: ""
-    accessProxyImage: ghcr.io/faroshq/kedge-access-proxy:latest
+    accessProxyImage: ghcr.io/faroshq/faros-access-proxy:latest
     hubURL: ""
     hubPublicURL: ""
     insecure: false

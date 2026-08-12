@@ -19,18 +19,18 @@ if grep -Fq -- '--from-literal' "${SCRIPT}"; then
   echo "tenant setup must not put credential values in kubectl arguments" >&2
   exit 1
 fi
-if grep -Eq 'curl[^\n]*(STATIC_TOKEN|KEDGE_BOOTSTRAP_(GITHUB|LLM|DATABRICKS).*TOKEN)' "${SCRIPT}"; then
+if grep -Eq 'curl[^\n]*(STATIC_TOKEN|FAROS_BOOTSTRAP_(GITHUB|LLM|DATABRICKS).*TOKEN)' "${SCRIPT}"; then
   echo "tenant setup must not pass a credential-bearing argument to curl" >&2
   exit 1
 fi
 
 grep -Fq -- '--header @-' "${SCRIPT}"
 grep -Fq -- 'chmod 600' "${SCRIPT}"
-grep -Fq -- 'KEDGE_BOOTSTRAP_CA_CERT' "${SCRIPT}"
-grep -Fq -- 'KEDGE_BOOTSTRAP_HUB_URL must be an HTTPS URL' "${SCRIPT}"
+grep -Fq -- 'FAROS_BOOTSTRAP_CA_CERT' "${SCRIPT}"
+grep -Fq -- 'FAROS_BOOTSTRAP_HUB_URL must be an HTTPS URL' "${SCRIPT}"
 grep -Fq -- 'wait_for_provider_binding' "${SCRIPT}"
-grep -Fq -- 'KEDGE_BOOTSTRAP_INSECURE_TLS=true' "${ENV_EXAMPLE}"
-grep -Fq -- 'KEDGE_BOOTSTRAP_CA_CERT=' "${ENV_EXAMPLE}"
-grep -Fq -- "resource_deps=['kedge-hub', 'code-init', 'databricks-init']" "${TILTFILE}"
+grep -Fq -- 'FAROS_BOOTSTRAP_INSECURE_TLS=true' "${ENV_EXAMPLE}"
+grep -Fq -- 'FAROS_BOOTSTRAP_CA_CERT=' "${ENV_EXAMPLE}"
+grep -Fq -- "resource_deps=['faros-hub', 'code-init', 'databricks-init']" "${TILTFILE}"
 
 echo "dev tenant setup static checks passed"

@@ -9,7 +9,7 @@ You may obtain a copy of the License at
 */
 
 // Package scheme builds the runtime.Scheme the app-studio controller manager
-// shares: the provider's own ai.kedge.faros.sh types plus core/v1 and the
+// shares: the provider's own ai.faros.sh types plus core/v1 and the
 // kcp apis.kcp.io types the multicluster apiexport provider needs.
 package scheme
 

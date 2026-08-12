@@ -1,19 +1,19 @@
 import { createApp, h, reactive, type App as VueApp } from 'vue'
 import App from './App.vue'
-import type { KedgeContext } from './types'
+import type { FarosContext } from './types'
 
-const TAG = 'kedge-provider-app-studio'
+const TAG = 'faros-provider-app-studio'
 
 class ProjectsElement extends HTMLElement {
   private app: VueApp | null = null
   private host: HTMLDivElement | null = null
-  private state = reactive<{ ctx: KedgeContext | null }>({ ctx: null })
+  private state = reactive<{ ctx: FarosContext | null }>({ ctx: null })
 
-  set kedgeContext(v: KedgeContext | null) {
+  set farosContext(v: FarosContext | null) {
     this.state.ctx = v
   }
 
-  get kedgeContext(): KedgeContext | null {
+  get farosContext(): FarosContext | null {
     return this.state.ctx
   }
 
@@ -45,7 +45,7 @@ class ProjectsElement extends HTMLElement {
 
   private navigate(path: string): void {
     this.dispatchEvent(
-      new CustomEvent('kedge-navigate', {
+      new CustomEvent('faros-navigate', {
         detail: { path },
         bubbles: true,
       }),

@@ -51,7 +51,7 @@ func ParseDevInfo(tmpl *unstructured.Unstructured) (DevInfo, error) {
 	info.Resource, _, _ = unstructured.NestedString(tmpl.Object, "spec", "instanceCRD", "resource")
 	info.Kind, _, _ = unstructured.NestedString(tmpl.Object, "spec", "instanceCRD", "kind")
 	if info.Group == "" {
-		info.Group = "infrastructure.kedge.faros.sh"
+		info.Group = "infrastructure.faros.sh"
 	}
 	if info.Version == "" {
 		info.Version = "v1alpha1"

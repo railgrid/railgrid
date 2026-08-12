@@ -2,7 +2,7 @@ name: Tilt E2E
 
 # End-to-end test against the operator-deployed, multi-shard Tilt stack
 # (Tiltfile.cluster / `make tilt-cluster`): kcp-operator + root/theseus shards +
-# front-proxy + the in-cluster kedge hub + the host-run providers + the kro
+# front-proxy + the in-cluster faros hub + the host-run providers + the kro
 # runtime cluster. This is the only suite that exercises the real multi-shard
 # operator topology (cross-shard CachedResource projection, MCP federation, the
 # caller-identity gate) — the embedded-kcp suites can't.
@@ -56,10 +56,10 @@ jobs:
     # is trimmed to fit (shared etcd ✓, observability off ✓, replicas=1 TODO).
     continue-on-error: true
     steps:
-      - name: Checkout kedge
+      - name: Checkout faros
         uses: actions/checkout@v4
         with:
-          path: kedge
+          path: faros
 
       - name: Checkout kcp (for the Tilt operator setup)
         uses: actions/checkout@v4
@@ -71,7 +71,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: v1.26.1
-          cache-dependency-path: kedge/go.sum
+          cache-dependency-path: faros/go.sum
 
       # Node + npm are needed by `make build-portal` (vite), which the Tilt
       # `portal-build` resource runs before compiling the hub binary.
@@ -103,7 +103,7 @@ jobs:
       # loopback. Matches the local-dev /etc/hosts the README documents.
       - name: Map kcp + hub hostnames to loopback
         run: |
-          echo "127.0.0.1 kcp.localhost root.kcp.localhost theseus.kcp.localhost kedge.localhost" \
+          echo "127.0.0.1 kcp.localhost root.kcp.localhost theseus.kcp.localhost faros.localhost" \
             | sudo tee -a /etc/hosts
 
       # Bring the stack up. Tiltfile.cluster creates the `kcp-tilt` kind cluster
@@ -113,7 +113,7 @@ jobs:
       # detached so we can drive it with `tilt wait` / `tilt trigger` from the
       # following steps; the process keeps running across steps on the runner.
       - name: Bring up the Tilt stack
-        working-directory: kedge
+        working-directory: faros
         run: |
           set -euo pipefail
           kind get clusters 2>/dev/null | grep -qx kcp-tilt || kind create cluster --name kcp-tilt
@@ -164,7 +164,7 @@ jobs:
           cat > "${GITHUB_WORKSPACE}/tilt-helpers.sh" <<'SH'
           # dump_diag prints why a resource is stuck. A resource at
           # update=pending never STARTED — it's blocked behind an upstream
-          # resource_dep (for kedge-hub: hub-kcp-secrets → 'kcp-admin extract'
+          # resource_dep (for faros-hub: hub-kcp-secrets → 'kcp-admin extract'
           # → the operator's rootshard/front-proxy). So `tilt logs <name>` is
           # empty in that case; the signal lives in the OTHER resources. We
           # therefore dump: (1) the status of EVERY tilt resource (pinpoints
@@ -224,8 +224,8 @@ jobs:
 
           echo "Waiting for the kcp + hub + provider stack to become Ready..."
           # Generous: covers Tiltfile load (cert-manager/operator/kcp install) +
-          # hub image build + in-cluster deploy before kedge-hub even appears.
-          wait_resource kedge-hub 1800
+          # hub image build + in-cluster deploy before faros-hub even appears.
+          wait_resource faros-hub 1800
           wait_resource kro-mgmt-up 600
           wait_resource infrastructure 600
 
@@ -238,7 +238,7 @@ jobs:
       # (register/init) AND the e2e suite both need kcp.localhost:8443, so run
       # our own self-healing port-forward to the gateway service instead.
       - name: Port-forward the kcp gateway to localhost:8443
-        working-directory: kedge
+        working-directory: faros
         run: |
           set -euo pipefail
           echo "waiting for the envoy gateway service..."
@@ -274,7 +274,7 @@ jobs:
       # the provider watches, so the `infrastructure` resource restarts and
       # re-enables its controllers afterwards.
       - name: Register + initialize the infrastructure provider
-        working-directory: kedge
+        working-directory: faros
         run: |
           set -euo pipefail
           source "${GITHUB_WORKSPACE}/tilt-helpers.sh"
@@ -294,15 +294,15 @@ jobs:
       # Ready before running it. This absorbs the controller/CachedResource
       # settle time between init finishing and the catalog being projected.
       - name: Wait for the CatalogEntry to reconcile Ready
-        working-directory: kedge
+        working-directory: faros
         run: |
           set -euo pipefail
           deadline=$(( $(date +%s) + 600 ))
           while :; do
             status=$(kubectl --kubeconfig=tilt-frontproxy.kubeconfig \
-              --server=https://kcp.localhost:8443/clusters/root:kedge:providers \
+              --server=https://kcp.localhost:8443/clusters/root:faros:providers \
               --insecure-skip-tls-verify \
-              get catalogentries.providers.kedge.faros.sh infrastructure \
+              get catalogentries.providers.faros.sh infrastructure \
               -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
             if [ "$status" = "True" ]; then
               echo "CatalogEntry infrastructure is Ready."
@@ -311,9 +311,9 @@ jobs:
             if [ "$(date +%s)" -ge "$deadline" ]; then
               echo "timed out waiting for CatalogEntry Ready (last status: '${status:-<none>}')"
               kubectl --kubeconfig=tilt-frontproxy.kubeconfig \
-                --server=https://kcp.localhost:8443/clusters/root:kedge:providers \
+                --server=https://kcp.localhost:8443/clusters/root:faros:providers \
                 --insecure-skip-tls-verify \
-                get catalogentries.providers.kedge.faros.sh infrastructure -o yaml || true
+                get catalogentries.providers.faros.sh infrastructure -o yaml || true
               exit 1
             fi
             sleep 10
@@ -323,7 +323,7 @@ jobs:
       # suite against the live stack. Retry a couple of times to absorb any
       # last-moment reconcile lag (the tests are read-only and idempotent).
       - name: Run tilt-cluster e2e
-        working-directory: kedge
+        working-directory: faros
         run: |
           set -euo pipefail
           for attempt in 1 2 3; do
@@ -339,12 +339,12 @@ jobs:
 
       - name: Tilt resource status on failure
         if: failure()
-        working-directory: kedge
+        working-directory: faros
         run: tilt get uiresources -o json || true
 
       - name: Collect logs
         if: failure()
-        working-directory: kedge
+        working-directory: faros
         run: |
           mkdir -p "${GITHUB_WORKSPACE}/tilt-logs"
           cp "${GITHUB_WORKSPACE}/tilt-up.log" "${GITHUB_WORKSPACE}/tilt-logs/" 2>/dev/null || true
@@ -366,7 +366,7 @@ jobs:
       # half-up stack still cleans up.
       - name: Tear down
         if: always()
-        working-directory: kedge
+        working-directory: faros
         run: |
           tilt down -f Tiltfile.cluster -- --kcp-dir="${GITHUB_WORKSPACE}/kcp" || true
           [ -f "${GITHUB_WORKSPACE}/pf8443.pid" ] && kill "$(cat "${GITHUB_WORKSPACE}/pf8443.pid")" 2>/dev/null || true

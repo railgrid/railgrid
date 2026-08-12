@@ -1,6 +1,6 @@
 <script setup lang="ts">
 defineProps<{ phase: string }>()
-// Map kro / kedge phase strings to one of three visual buckets. Unknown
+// Map kro / faros phase strings to one of three visual buckets. Unknown
 // strings render in the neutral bucket so a kro upgrade that introduces
 // new phases still shows them without breaking the UI.
 const okPhases = new Set(['Ready', 'Active', 'Succeeded', 'True'])

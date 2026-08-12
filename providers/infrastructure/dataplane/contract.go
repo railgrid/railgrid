@@ -47,7 +47,7 @@ type DevelopmentGetter interface {
 }
 
 var templateGVR = schema.GroupVersionResource{
-	Group:    "infrastructure.kedge.faros.sh",
+	Group:    "infrastructure.faros.sh",
 	Version:  "v1alpha1",
 	Resource: "templates",
 }

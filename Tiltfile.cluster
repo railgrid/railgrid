@@ -1,9 +1,9 @@
 # Tiltfile.cluster — full-fledged kcp running in a local kind cluster.
 #
-# Unlike the default ./Tiltfile (which runs the kedge hub with an *embedded*
+# Unlike the default ./Tiltfile (which runs the faros hub with an *embedded*
 # kcp as a local process), this one stands up a complete multi-shard kcp the
 # way upstream does: deployed into a kind cluster via the kcp-operator, with
-# cert-manager, an Envoy gateway, etcd and the observability stack. The kedge
+# cert-manager, an Envoy gateway, etcd and the observability stack. The faros
 # hub then runs IN-CLUSTER as a container pointed at that external kcp, with
 # Tilt live_update syncing the rebuilt binary into the pod — so editing hub
 # code reloads the process in seconds and leaves kcp running (small hot-reload
@@ -121,7 +121,7 @@ if 'docker desktop' not in docker_operating_system and 'orbstack' not in docker_
 # kro into, and by the infrastructure provider so it can list/create RGD
 # instances over the same host port. We write a dedicated file in the project
 # dir so we don't depend on whatever ~/.kube/config holds.
-KIND_HOST_KUBECONFIG = os.path.abspath('.kedge-cluster.kubeconfig')
+KIND_HOST_KUBECONFIG = os.path.abspath('.faros-cluster.kubeconfig')
 local('kind get kubeconfig --name %s > %s' % (cluster_name, KIND_HOST_KUBECONFIG),
       quiet=True, echo_off=True)
 local('kind export kubeconfig --name %s' % cluster_name, quiet=False)
@@ -153,7 +153,7 @@ include(kcp_tilt)
 # The upstream KCP Tiltfile defines an `ingress` forward, but this stack imports
 # it from another checkout and the command relies on ambient kubectl context.
 # After a kind repave that can leave host-side provider jobs with a kubeconfig
-# pointing at kcp.localhost:8443 while no host listener exists. Keep a Kedge-
+# pointing at kcp.localhost:8443 while no host listener exists. Keep a Faros-
 # owned forward for the endpoint used by provider registration and runtime
 # kubeconfigs. Resolve the Envoy service on every reconnect because both the
 # service name and backing pod can change during a repave.
@@ -191,7 +191,7 @@ done
 )
 
 # ---------------------------------------------------------------------------
-# hub — kedge-hub running IN-CLUSTER as a container, against the external kcp.
+# hub — faros-hub running IN-CLUSTER as a container, against the external kcp.
 #
 # Everything runs inside the kind cluster (kcp + hub). To keep the hot-reload
 # footprint small we DON'T rebuild the multi-stage production image on every
@@ -211,19 +211,19 @@ done
 
 load('ext://restart_process', 'docker_build_with_restart')
 
-hub_namespace = 'kedge-system'
-hub_image = 'ghcr.io/faroshq/kedge-hub'
-hub_tls_secret_name = 'kedge-hub-tls'
+hub_namespace = 'faros-system'
+hub_image = 'ghcr.io/faroshq/faros-hub'
+hub_tls_secret_name = 'faros-hub-tls'
 hub_tls_state_dir = '.kcp/tilt-hub-tls'
-access_proxy_image = 'ghcr.io/faroshq/kedge-access-proxy:dev'
-dex_image = 'ghcr.io/faroshq/kedge-dex:dev'
+access_proxy_image = 'ghcr.io/faroshq/faros-access-proxy:dev'
+dex_image = 'ghcr.io/faroshq/faros-dex:dev'
 dex_namespace = hub_namespace
 dex_secret_name = hub_tls_secret_name
 dex_config_name = 'dex-config'
-dex_issuer = 'https://dex.kedge-system.svc.cluster.local:5554/dex'
+dex_issuer = 'https://dex.faros-system.svc.cluster.local:5554/dex'
 dex_browser_auth_url = 'https://localhost:5554/dex/auth'
-app_studio_provider_image = 'ghcr.io/faroshq/kedge/app-studio-provider:dev'
-app_studio_preview_namespace = 'kedge-preview'
+app_studio_provider_image = 'ghcr.io/faroshq/faros/app-studio-provider:dev'
+app_studio_preview_namespace = 'faros-preview'
 app_studio_preview_parent_gateway_name = 'app-studio-preview'
 app_studio_preview_tls_secret = 'app-studio-preview-localhost-tls'
 app_studio_preview_listener = 'app-studio-preview-https'
@@ -235,12 +235,12 @@ app_studio_preview_public_port = '10443'
 # prod, where both attach to cfgate's cloudflare-tunnel Gateway.
 app_base_domain = 'apps.127.0.0.1.sslip.io'
 
-# The kedge-hub chart deploys namespaced objects (TLS Certificate + Secret,
+# The faros-hub chart deploys namespaced objects (TLS Certificate + Secret,
 # selfsigned Issuer, StatefulSet) into hub_namespace but ships NO Namespace
 # object. The namespace is otherwise only created by the hub-kcp-secrets
 # local_resource via kubectl — which is gated on `kcp-admin extract` and so
 # runs much later. Without the namespace up front, Tilt's apply of the chart's
-# cert/secret objects fails with `namespaces "kedge-system" not found`. Create
+# cert/secret objects fails with `namespaces "faros-system" not found`. Create
 # it as a Tilt-managed object so Tilt applies it FIRST. We deliberately leave it
 # UNGROUPED so it lands in the same "uncategorized" apply batch as the chart's
 # cert/secret/issuer objects; within a single batch Tilt kind-sorts Namespaces
@@ -309,19 +309,19 @@ data:
     oauth2:
       skipApprovalScreen: true
     staticClients:
-      - id: kedge
+      - id: faros
         public: true
-        name: Kedge
+        name: Faros
         redirectURIs:
           - https://localhost:9443/auth/callback
           - https://localhost:9443/auth/apps/callback
     enablePasswordDB: true
     staticPasswords:
-      - email: admin@test.kedge.local
+      - email: admin@test.faros.local
         hash: "$2a$10$ntVcHD0gEYObjVin2ti7XuMILVz0rTQl//HVPc3cR8z7AAVbQGrkO"
         username: admin
         userID: test-user-id-01
-      - email: user2@test.kedge.local
+      - email: user2@test.faros.local
         hash: "$2a$10$ntVcHD0gEYObjVin2ti7XuMILVz0rTQl//HVPc3cR8z7AAVbQGrkO"
         username: user2
         userID: test-user-id-02
@@ -484,9 +484,9 @@ local_resource(
 # portal build rebuilds the binary and live_update re-syncs it.
 local_resource(
     'hub-compile',
-    cmd='CGO_ENABLED=0 GOOS=linux go build -tags portal_embed -o bin/kedge-hub-linux ./cmd/kedge-hub',
+    cmd='CGO_ENABLED=0 GOOS=linux go build -tags portal_embed -o bin/faros-hub-linux ./cmd/faros-hub',
     deps=[
-        'cmd/kedge-hub',
+        'cmd/faros-hub',
         'pkg',
         'apis',
         # config/kcp is go:embed'd into the hub binary (kcp.ProvidersFS — the
@@ -515,18 +515,18 @@ RUN apk add --no-cache ca-certificates && \
     touch /tmp/.restart-proc && \
     chown 65534:65534 /tmp/.restart-proc && \
     chmod 0666 /tmp/.restart-proc
-COPY --chown=65534:65534 bin/kedge-hub-linux /tmp/kedge-hub
-RUN chmod 0755 /tmp/kedge-hub
+COPY --chown=65534:65534 bin/faros-hub-linux /tmp/faros-hub
+RUN chmod 0755 /tmp/faros-hub
 ''',
     # The restart wrapper runs the entrypoint as `sh -c <entrypoint>` and the
     # chart's container args get appended AFTER it. With a bare binary path
     # those args become sh's positional params ($0, $1, …) and never reach the
     # binary. The `exec ... "$0" "$@"` form forwards them all: the first
     # appended arg lands in $0, the rest in $@.
-    entrypoint='exec /tmp/kedge-hub "$0" "$@"',
-    only=['bin/kedge-hub-linux'],
+    entrypoint='exec /tmp/faros-hub "$0" "$@"',
+    only=['bin/faros-hub-linux'],
     live_update=[
-        sync('bin/kedge-hub-linux', '/tmp/kedge-hub'),
+        sync('bin/faros-hub-linux', '/tmp/faros-hub'),
     ],
 )
 
@@ -558,20 +558,20 @@ k8s_yaml(blob('''
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: kedge-access-proxy-image
+  name: faros-access-proxy-image
   namespace: %s
   labels:
-    app.kubernetes.io/name: kedge-access-proxy-image
+    app.kubernetes.io/name: faros-access-proxy-image
     app.kubernetes.io/managed-by: tilt
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: kedge-access-proxy-image
+      app.kubernetes.io/name: faros-access-proxy-image
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: kedge-access-proxy-image
+        app.kubernetes.io/name: faros-access-proxy-image
     spec:
       containers:
         - name: image-cache
@@ -581,15 +581,15 @@ spec:
           # proxy itself with a throwaway public config: it listens on :8080,
           # never receives traffic, and keeps the image pinned on the node.
           env:
-            - name: KEDGE_ACCESS_PROXY_MODE
+            - name: FAROS_ACCESS_PROXY_MODE
               value: public
-            - name: KEDGE_ACCESS_PROXY_HOST
+            - name: FAROS_ACCESS_PROXY_HOST
               value: image-cache.invalid
-            - name: KEDGE_ACCESS_PROXY_ROUTES
-              value: /=http://image-cache.kedge-system.svc.cluster.local:1
+            - name: FAROS_ACCESS_PROXY_ROUTES
+              value: /=http://image-cache.faros-system.svc.cluster.local:1
 '''.strip() % (hub_namespace, access_proxy_image)))
 k8s_resource(
-    'kedge-access-proxy-image',
+    'faros-access-proxy-image',
     resource_deps=['hub-tls'],
     labels=['hub'],
 )
@@ -604,7 +604,7 @@ local_resource(
 set -eu
 docker exec %s-control-plane crictl rmi %s >/dev/null 2>&1 || true
 kind load docker-image %s --name %s
-kubectl --context %s delete pods -A -l app.kubernetes.io/name=kedge-access-proxy --wait=false >/dev/null 2>&1 || true
+kubectl --context %s delete pods -A -l app.kubernetes.io/name=faros-access-proxy --wait=false >/dev/null 2>&1 || true
 '''.strip() % (cluster_name, access_proxy_image, access_proxy_image, cluster_name, k8s_context()),
     # resource_deps orders the load after Tilt's image build, while deps makes
     # this local resource itself dirty on every proxy source change. Without
@@ -617,7 +617,7 @@ kubectl --context %s delete pods -A -l app.kubernetes.io/name=kedge-access-proxy
         'providers/infrastructure/go.mod',
         'providers/infrastructure/go.sum',
     ],
-    resource_deps=['kedge-access-proxy-image'],
+    resource_deps=['faros-access-proxy-image'],
     labels=['hub'],
 )
 
@@ -771,7 +771,7 @@ done
 # --- kcp kubeconfig → in-cluster Secret the chart mounts ---
 # We use ONLY the front-proxy kubeconfig, for both the primary connection AND
 # the GraphQL listener. The listener locates the APIExportEndpointSlice by
-# workspace PATH (root:kedge:providers); only the front-proxy resolves paths to
+# workspace PATH (root:faros:providers); only the front-proxy resolves paths to
 # cluster-IDs — shards serve cluster-IDs directly and 404 on a path. So we do
 # NOT set --kcp-shard-kubeconfig (the hub then uses front-proxy for both).
 local_resource(
@@ -788,16 +788,16 @@ kubectl create secret generic kcp-frontproxy-admin -n %s \
 )
 
 # --- RBAC: let the hub manage CRDs etc. in the kind (hub) cluster ---
-# The hub installs the kedge CRDs into its own "hub cluster" (here, the kind
+# The hub installs the faros CRDs into its own "hub cluster" (here, the kind
 # cluster) using its in-cluster client. The chart ships no ServiceAccount/RBAC,
-# so the pod runs as kedge-system:default with no permissions. Grant it
+# so the pod runs as faros-system:default with no permissions. Grant it
 # cluster-admin — dev-only; a real deploy should scope this down (and the chart
 # arguably should template a ServiceAccount + Role).
 k8s_yaml(blob('''
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: kedge-hub-dev-cluster-admin
+  name: faros-hub-dev-cluster-admin
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -810,34 +810,34 @@ subjects:
 
 k8s_resource(
     new_name='hub-rbac',
-    objects=['kedge-hub-dev-cluster-admin:clusterrolebinding'],
+    objects=['faros-hub-dev-cluster-admin:clusterrolebinding'],
     resource_deps=['hub-kcp-secrets'],
     labels=['hub'],
 )
 
-# --- deploy the kedge-hub chart in external-kcp mode ---
+# --- deploy the faros-hub chart in external-kcp mode ---
 # SSO is opt-in (`tilt up -f Tiltfile.cluster -- --sso`). Default: NO idp.*
 # values → the hub is token-login only and the portal shows the historical
 # dev-token form. With --sso the hub also accepts the local Dex
-# (admin@test.kedge.local / user2@test.kedge.local, Password1!), and the Dex
+# (admin@test.faros.local / user2@test.faros.local, Password1!), and the Dex
 # admin gets /bonkers alongside the static-token identity.
 hub_sso_values = [
     'idp.issuerURL=%s' % dex_issuer,
     'idp.browserAuthURL=%s' % dex_browser_auth_url,
-    'idp.clientID=kedge',
+    'idp.clientID=faros',
     'idp.caSecretName=%s' % dex_secret_name,
     'idp.caSecretKey=ca.crt',
-    'hub.adminUsers={admin@test.kedge.local,static-dev-token@kedge.local}',
+    'hub.adminUsers={admin@test.faros.local,static-dev-token@faros.local}',
 ] if sso_enabled else [
     # /bonkers admin access for the first dev static token (resolves to
-    # static-dev-token@kedge.local — see proxy.ensureStaticTokenUserOnce).
+    # static-dev-token@faros.local — see proxy.ensureStaticTokenUserOnce).
     # dev-token2 is intentionally left off the allowlist so it acts as a
     # plain, non-admin second user for membership/user-adding tests.
-    'hub.adminUsers={static-dev-token@kedge.local}',
+    'hub.adminUsers={static-dev-token@faros.local}',
 ]
 k8s_yaml(helm(
-    'deploy/charts/kedge-hub',
-    name='kedge-hub',
+    'deploy/charts/faros-hub',
+    name='faros-hub',
     namespace=hub_namespace,
     set=[
         'image.hub.tag=dev',
@@ -865,7 +865,7 @@ k8s_yaml(helm(
 ))
 
 k8s_resource(
-    'kedge-hub',
+    'faros-hub',
     port_forwards=['9443:9443'],
     resource_deps=['hub-compile', 'hub-kcp-secrets', 'hub-rbac', 'hub-tls', 'dex'],
     labels=['hub'],
@@ -886,7 +886,7 @@ k8s_resource(
 # Our only job is to create that Secret. CRITICAL: the token must map to the
 # SAME kcp identity the hub provisions RBAC for, or you authenticate but get
 # "access denied". The hub derives a deterministic user from the token (see
-# pkg/hub/kcp/embedded.go): user = kedge:static:<first16 hex of
+# pkg/hub/kcp/embedded.go): user = faros:static:<first16 hex of
 # sha256("static-token/"+token)>, group system:authenticated. The hub's proxy
 # then creates that user's tenant workspace and grants it admin there. We
 # compute the same identity below so the existing RBAC applies.
@@ -905,7 +905,7 @@ set -eu
 CSV=""
 for TOKEN in dev-token dev-token2; do
   HASH=$(printf 'static-token/%s' "$TOKEN" | openssl dgst -sha256 | awk '{print $NF}' | cut -c1-16)
-  CSV="${CSV}${TOKEN},kedge:static:${HASH},${HASH},system:authenticated
+  CSV="${CSV}${TOKEN},faros:static:${HASH},${HASH},system:authenticated
 "
 done
 kubectl create secret generic kcp-static-tokens -n default \
@@ -920,8 +920,8 @@ kubectl create secret generic kcp-static-tokens -n default \
 # providers — external (Helm-style) provider binaries that register with
 # the hub via a CatalogEntry and serve their UI + HTTP API on a host port.
 # Same shape as the embedded-kcp ./Tiltfile (lines ~66-222). Resource_deps
-# point at `kedge-hub` here (vs `hub` in that file) since this Tiltfile's
-# hub workload is named kedge-hub.
+# point at `faros-hub` here (vs `hub` in that file) since this Tiltfile's
+# hub workload is named faros-hub.
 #
 #   providers-quickstart   — reference example (port :8081)
 #   providers-app-studio   — AI workspace provider (port :8085) +
@@ -948,7 +948,7 @@ kubectl create secret generic kcp-static-tokens -n default \
 # which the watchdog above keeps wired up to kcp.
 #
 # CatalogEntry install/uninstall talks DIRECTLY to kcp (not via the hub) — it
-# needs cluster-admin to write into root:kedge:providers. The embedded-kcp
+# needs cluster-admin to write into root:faros:providers. The embedded-kcp
 # Tiltfile gets that for free via .kcp/admin.kubeconfig on :6443; here we
 # repoint at the operator-issued admin kubeconfig (tilt-frontproxy.kubeconfig,
 # written by `kcp-admin extract` into the project root) and the envoy gateway
@@ -967,7 +967,7 @@ KCP_ADMIN_SERVER = 'https://kcp.localhost:8443'
 # on the host) works out-of-the-box. We rewrite at install time here instead
 # of templating the manifest, so neither flow needs the other's URLs.
 def rewrite_manifest_cmd(src):
-    out = '/tmp/kedge-{}.yaml'.format(src.replace('/', '_'))
+    out = '/tmp/faros-{}.yaml'.format(src.replace('/', '_'))
     return ("sed 's|http://localhost:|http://host.docker.internal:|g' " +
             "{src} > {out}").format(src=src, out=out), out
 
@@ -992,7 +992,7 @@ local_resource(
         'providers/quickstart/portal/package.json',
         'providers/quickstart/go.mod',
     ],
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8081, path='/healthz'),
@@ -1009,7 +1009,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=QUICKSTART_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-quickstart'],
 )
 
@@ -1020,7 +1020,7 @@ local_resource(
              kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub', 'quickstart-register'],
+    resource_deps=['faros-hub', 'quickstart-register'],
     labels=['providers-quickstart'],
 )
 
@@ -1033,11 +1033,11 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=QUICKSTART_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-quickstart'],
 )
 
-# --- edges (KubernetesCluster + LinuxServer, one group edges.kedge.faros.sh) ---
+# --- edges (KubernetesCluster + LinuxServer, one group edges.faros.sh) ---
 # Single, self-contained, SINGLE-REPLICA provider: terminates agent reverse
 # tunnels (revdial) and serves kubectl/ssh/mcp. Runs on the host like the other
 # providers here; agents dial it through the hub backend proxy.
@@ -1057,7 +1057,7 @@ local_resource(
         'providers/edges/portal/package.json',
         'providers/edges/go.mod',
     ],
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8088, path='/healthz'),
@@ -1074,7 +1074,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=EDGES_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['edges'],
 )
 
@@ -1085,7 +1085,7 @@ local_resource(
              kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub', 'edges-register'],
+    resource_deps=['faros-hub', 'edges-register'],
     labels=['edges'],
 )
 
@@ -1098,7 +1098,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=EDGES_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['edges'],
 )
 
@@ -1140,7 +1140,7 @@ local_resource(
         'providers/agents/portal/vite.config.ts',
         'providers/agents/.env',
     ],
-    resource_deps=['kedge-hub', 'agents-db'],
+    resource_deps=['faros-hub', 'agents-db'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8087, path='/healthz'),
@@ -1157,7 +1157,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=AGENTS_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-agents'],
 )
 
@@ -1168,7 +1168,7 @@ local_resource(
              kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub', 'agents-register'],
+    resource_deps=['faros-hub', 'agents-register'],
     labels=['providers-agents'],
 )
 
@@ -1181,7 +1181,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=AGENTS_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-agents'],
 )
 
@@ -1212,7 +1212,7 @@ local_resource(
         'providers/app-studio/.env',
         'providers/app-studio/.env.example',
     ],
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-app-studio'],
 )
 
@@ -1227,7 +1227,7 @@ set -eu
 mkdir -p .kcp
 tmp_file="$(mktemp .kcp/app-studio-actions-ca.XXXXXX)"
 trap 'rm -f "$tmp_file"' EXIT
-kubectl -n %s get secret kedge-hub-tls -o go-template='{{ index .data "ca.crt" | base64decode }}' > "$tmp_file"
+kubectl -n %s get secret faros-hub-tls -o go-template='{{ index .data "ca.crt" | base64decode }}' > "$tmp_file"
 chmod 0644 "$tmp_file"
 
 # Updating the mounted Secret does not restart the Go server that already
@@ -1237,15 +1237,15 @@ chmod 0644 "$tmp_file"
 verify_live_hub_tls() {
   openssl s_client \
     -connect 127.0.0.1:9443 \
-    -servername kedge-hub.%s.svc \
+    -servername faros-hub.%s.svc \
     -CAfile "$tmp_file" \
     -verify_return_error </dev/null >/dev/null 2>&1
 }
 
 if ! verify_live_hub_tls; then
-  echo "hub serving certificate does not match kedge-hub-tls; restarting hub"
-  kubectl -n %s rollout restart deployment/kedge-hub
-  kubectl -n %s rollout status deployment/kedge-hub --timeout=120s
+  echo "hub serving certificate does not match faros-hub-tls; restarting hub"
+  kubectl -n %s rollout restart deployment/faros-hub
+  kubectl -n %s rollout status deployment/faros-hub --timeout=120s
 
   verified=false
   for _ in $(seq 1 30); do
@@ -1256,7 +1256,7 @@ if ! verify_live_hub_tls; then
     sleep 1
   done
   if [ "$verified" != true ]; then
-    echo "hub serving certificate still does not match kedge-hub-tls after restart" >&2
+    echo "hub serving certificate still does not match faros-hub-tls after restart" >&2
     exit 1
   fi
 fi
@@ -1279,7 +1279,7 @@ trap - EXIT
 local_resource(
     'app-studio-actions-ca',
     cmd=app_studio_actions_ca_cmd,
-    resource_deps=['hub-tls', 'kedge-hub'],
+    resource_deps=['hub-tls', 'faros-hub'],
     labels=['providers-app-studio'],
 )
 
@@ -1295,8 +1295,8 @@ local_resource(
     # workspace and silently never engage. Development previews are the
     # template instance's own public URL — no preview-gateway env.
     serve_cmd=(app_studio_actions_ca_cmd +
-               'KEDGE_ACTIONS_EXTERNAL_URL=https://kedge-hub.%s.svc:9443 ' +
-               'KEDGE_ACTIONS_CA_BUNDLE_FILE=%s ' +
+               'FAROS_ACTIONS_EXTERNAL_URL=https://faros-hub.%s.svc:9443 ' +
+               'FAROS_ACTIONS_CA_BUNDLE_FILE=%s ' +
                'make run-provider-app-studio') % (
                    hub_namespace,
                    app_studio_actions_ca_file),
@@ -1323,7 +1323,7 @@ local_resource(
         app_studio_actions_ca_file,
     ],
     resource_deps=[
-        'kedge-hub',
+        'faros-hub',
         'app-studio-db',
         'app-studio-actions-ca',
         'dev-agent-image',
@@ -1353,7 +1353,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=APP_STUDIO_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-app-studio'],
 )
 
@@ -1364,7 +1364,7 @@ local_resource(
              kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub', 'app-studio-register'],
+    resource_deps=['faros-hub', 'app-studio-register'],
     labels=['providers-app-studio'],
 )
 
@@ -1377,7 +1377,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=APP_STUDIO_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-app-studio'],
 )
 
@@ -1389,7 +1389,7 @@ local_resource(
     'kuery-db',
     cmd='make kuery-db-up',
     deps=['Makefile'],
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-kuery'],
 )
 
@@ -1412,7 +1412,7 @@ local_resource(
         'providers/kuery/go.mod',
         '.kcp/kuery-runtime.kubeconfig',
     ],
-    resource_deps=['kedge-hub', 'kuery-db'],
+    resource_deps=['faros-hub', 'kuery-db'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8084, path='/healthz'),
@@ -1437,7 +1437,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=KUERY_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-kuery'],
 )
 
@@ -1448,7 +1448,7 @@ local_resource(
              kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub', 'kuery-register'],
+    resource_deps=['faros-hub', 'kuery-register'],
     labels=['providers-kuery'],
 )
 
@@ -1461,13 +1461,13 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=KUERY_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-kuery'],
 )
 
 # --- providers-kro ---
 # Management kro: installed INTO the same kind cluster kcp lives in (no
-# separate kedge-kro cluster like the embedded Tiltfile uses). That way
+# separate faros-kro cluster like the embedded Tiltfile uses). That way
 # kro reaches kcp via in-cluster Service DNS — no cross-kind networking.
 # The infrastructure provider on the host still reaches kro via the kind
 # cluster's host-published apiserver (KIND_HOST_KUBECONFIG).
@@ -1503,26 +1503,26 @@ local_resource(
     # (INFRASTRUCTURE_WORKSPACE_PATH), so no init-minted kubeconfig is needed.
     # KRO_KUBECONFIG points at the kind cluster's host kubeconfig (where kro is).
     serve_cmd=('KRO_KUBECONFIG={kro} INFRASTRUCTURE_KUBECONFIG={kc} ' +
-               'INFRASTRUCTURE_WORKSPACE_PATH=root:kedge:providers:infrastructure ' +
-               'KEDGE_APP_BASE_DOMAIN={apps_domain} ' +
+               'INFRASTRUCTURE_WORKSPACE_PATH=root:faros:providers:infrastructure ' +
+               'FAROS_APP_BASE_DOMAIN={apps_domain} ' +
                # PublishedApp proxies run in the runtime kind cluster and
                # therefore call the in-cluster hub Service rather than the
                # host port-forward. The proxy has no mounted dev CA, so this
                # explicit dev-only switch is required for its hub call.
-               'KEDGE_ACCESS_PROXY_IMAGE={proxy_image} ' +
-               'KEDGE_ACCESS_HUB_URL=https://kedge-hub.kedge-system.svc:9443 ' +
-               'KEDGE_ACCESS_HUB_PUBLIC_URL=https://localhost:9443 ' +
-               'KEDGE_ACCESS_HUB_INSECURE=true ' +
-               'KEDGE_ACCESS_PUBLIC_SCHEME=https ' +
+               'FAROS_ACCESS_PROXY_IMAGE={proxy_image} ' +
+               'FAROS_ACCESS_HUB_URL=https://faros-hub.faros-system.svc:9443 ' +
+               'FAROS_ACCESS_HUB_PUBLIC_URL=https://localhost:9443 ' +
+               'FAROS_ACCESS_HUB_INSECURE=true ' +
+               'FAROS_ACCESS_PUBLIC_SCHEME=https ' +
                # The ONE platform Gateway all template HTTPRoutes attach to —
                # locally the envoy Gateway above, in prod cfgate's
                # cloudflare-tunnel (the in-binary default).
-               'KEDGE_GATEWAY_NAME={gateway} ' +
-               'KEDGE_GATEWAY_NAMESPACE=envoy-gateway-system ' +
+               'FAROS_GATEWAY_NAME={gateway} ' +
+               'FAROS_GATEWAY_NAMESPACE=envoy-gateway-system ' +
                # Locally the Gateway is only reachable via the envoy
                # port-forward — templates append this to status.url
-               # (${kedge.appPublicPort}); prod leaves it unset (443).
-               'KEDGE_APP_PUBLIC_PORT={port} ' +
+               # (${faros.appPublicPort}); prod leaves it unset (443).
+               'FAROS_APP_PUBLIC_PORT={port} ' +
                'make run-provider-infrastructure').format(
                    kro=KIND_HOST_KUBECONFIG, kc=KCP_ADMIN_KUBECONFIG,
                    apps_domain=app_base_domain,
@@ -1547,9 +1547,9 @@ local_resource(
         'providers/infrastructure/go.mod',
         'providers/infrastructure/go.sum',
     ],
-    # kedge-hub for the CatalogEntry registration target; infrastructure-operator
+    # faros-hub for the CatalogEntry registration target; infrastructure-operator
     # for the workspace bootstrap + kro install the serve process depends on.
-    resource_deps=['kedge-hub', 'infrastructure-operator', 'app-studio-preview-console-key', 'access-proxy-image-load'],
+    resource_deps=['faros-hub', 'infrastructure-operator', 'app-studio-preview-console-key', 'access-proxy-image-load'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8082, path='/healthz'),
@@ -1565,7 +1565,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=INFRA_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-kro'],
 )
 
@@ -1582,13 +1582,13 @@ local_resource(
     # init reads kcp server URL from the kubeconfig — only the path needs
     # overriding. KRO_KUBECONFIG is also forwarded so init writes the seed
     # kro.run/cluster=true Secret into the same in-cluster kro install
-    # (not the legacy kedge-kro cluster).
+    # (not the legacy faros-kro cluster).
     cmd=('KROMC_KCP_KUBECONFIG={kc} KRO_KUBECONFIG={kro} ' +
          'make init-provider-infrastructure').format(
              kc=KCP_ADMIN_KUBECONFIG, kro=KIND_HOST_KUBECONFIG),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub', 'infrastructure-register'],
+    resource_deps=['faros-hub', 'infrastructure-register'],
     labels=['providers-kro'],
 )
 
@@ -1600,7 +1600,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=INFRA_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-kro'],
 )
 
@@ -1638,7 +1638,7 @@ local_resource(
         'providers/infrastructure/go.mod',
         'providers/infrastructure/go.sum',
     ],
-    resource_deps=['kedge-hub', 'app-studio-preview-console-key'],
+    resource_deps=['faros-hub', 'app-studio-preview-console-key'],
     labels=['providers-kro'],
 )
 
@@ -1673,7 +1673,7 @@ local_resource(
         'providers/code/go.sum',
         '.kcp/code-runtime.kubeconfig',
     ],
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8083, path='/healthz'),
@@ -1689,13 +1689,13 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=CODE_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-code'],
 )
 
 # Writes the runtime kubeconfig (derived from the front-proxy admin kubeconfig)
 # and ensures the APIExportEndpointSlice. Order:
-#   code-register → creates root:kedge:providers:code
+#   code-register → creates root:faros:providers:code
 #   code-init     → writes kubeconfig + endpoint slice
 #   code (serve)  → restarts when the kubeconfig dep appears
 local_resource(
@@ -1705,7 +1705,7 @@ local_resource(
              kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub', 'code-register'],
+    resource_deps=['faros-hub', 'code-register'],
     labels=['providers-code'],
 )
 
@@ -1717,7 +1717,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=CODE_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-code'],
 )
 
@@ -1743,7 +1743,7 @@ local_resource(
         'providers/databricks/go.sum',
         '.kcp/databricks-runtime.kubeconfig',
     ],
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8086, path='/healthz'),
@@ -1759,7 +1759,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=DATABRICKS_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-databricks'],
 )
 
@@ -1770,7 +1770,7 @@ local_resource(
              kc=KCP_ADMIN_KUBECONFIG, sv=KCP_ADMIN_SERVER),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub', 'databricks-register'],
+    resource_deps=['faros-hub', 'databricks-register'],
     labels=['providers-databricks'],
 )
 
@@ -1782,7 +1782,7 @@ local_resource(
              sv=KCP_ADMIN_SERVER, mf=DATABRICKS_MANIFEST_REWRITTEN),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['providers-databricks'],
 )
 
@@ -1802,7 +1802,7 @@ local_resource(
     ],
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub', 'code-init', 'databricks-init'],
+    resource_deps=['faros-hub', 'code-init', 'databricks-init'],
     labels=['bootstrap'],
 )
 
@@ -1831,7 +1831,7 @@ local_resource(
 #   1. Click ▶ on `edge-{kube,server}-create` to log in via static token,
 #      register the Edge with the hub, and write .env.edge.<type>.
 #   2. Click ▶ on `edge-{kube,server}-agent` to run the agent.
-#        - kubernetes: also spins up a `kedge-agent` kind cluster on first run.
+#        - kubernetes: also spins up a `faros-agent` kind cluster on first run.
 #        - server: also click ▶ on `ssh-server` so the agent has an SSH target.
 #   3. Home Assistant (to exercise the Service kind + its MCP tools):
 #        - kube edge:   ▶ `ha-kube-deploy`, then ▶ `ha-kube-forward` to onboard
@@ -1844,23 +1844,23 @@ local_resource(
 #        - server edge: install HA on the host; the agent discovers it and the
 #          Service appears on its own — only the token needs attaching.
 #
-# `resource_deps=['kedge-hub']` because the hub workload here is named
-# kedge-hub (it's `hub` in the embedded-kcp Tiltfile).
+# `resource_deps=['faros-hub']` because the hub workload here is named
+# faros-hub (it's `hub` in the embedded-kcp Tiltfile).
 # ---------------------------------------------------------------------------
 local_resource(
     'edge-kube-create',
     # 1. Drop any saved agent kubeconfig from a previous hub/kcp incarnation.
-    #    A stale ~/.kedge/agent-<edge>.kubeconfig points at an old workspace +
+    #    A stale ~/.faros/agent-<edge>.kubeconfig points at an old workspace +
     #    revoked SA token; the agent would load it, skip re-registration, and
     #    fail every call with "workspace access not permitted" (User "").
     # 2. DEV_EDGE_NAME is passed explicitly (not left to the Makefile's `?=`
     #    default) because an inherited DEV_EDGE_NAME in the env defeats the
     #    TYPE-based default — a server create would otherwise reuse the kube
     #    name. Command-line vars win over both env and `?=`.
-    cmd='rm -f ~/.kedge/agent-dev-edge-kube-1.kubeconfig ~/.kedge/agent-dev-edge-kube-1.json && make dev-login-static && make dev-edge-create TYPE=kubernetes DEV_EDGE_NAME=dev-edge-kube-1',
+    cmd='rm -f ~/.faros/agent-dev-edge-kube-1.kubeconfig ~/.faros/agent-dev-edge-kube-1.json && make dev-login-static && make dev-edge-create TYPE=kubernetes DEV_EDGE_NAME=dev-edge-kube-1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['edges'],
 )
 
@@ -1869,12 +1869,12 @@ local_resource(
     serve_cmd='make dev-run-edge TYPE=kubernetes',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['edges'],
 )
 
 # Same agent, but as a Deployment INSIDE the edge cluster — the way the
-# kedge-agent chart runs it in production.
+# faros-agent chart runs it in production.
 #
 # Use this instead of `edge-kube-agent` when you need the Service (svc) path:
 # a Service on a kube edge is dialled over cluster DNS
@@ -1895,7 +1895,7 @@ local_resource(
     cmd='make dev-edge-agent-incluster',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['edges'],
 )
 
@@ -1904,10 +1904,10 @@ local_resource(
     # Same stale-kubeconfig cleanup + explicit DEV_EDGE_NAME as edge-kube-create
     # (see note there). The explicit name is what keeps a server create from
     # reusing the kube edge name when DEV_EDGE_NAME leaks in from the env.
-    cmd='rm -f ~/.kedge/agent-dev-edge-server-1.kubeconfig ~/.kedge/agent-dev-edge-server-1.json && make dev-login-static && make dev-edge-create TYPE=server DEV_EDGE_NAME=dev-edge-server-1',
+    cmd='rm -f ~/.faros/agent-dev-edge-server-1.kubeconfig ~/.faros/agent-dev-edge-server-1.json && make dev-login-static && make dev-edge-create TYPE=server DEV_EDGE_NAME=dev-edge-server-1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['edges'],
 )
 
@@ -1916,7 +1916,7 @@ local_resource(
     serve_cmd='make dev-run-edge TYPE=server',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['kedge-hub'],
+    resource_deps=['faros-hub'],
     labels=['edges'],
 )
 
@@ -1931,7 +1931,7 @@ local_resource(
     labels=['edges'],
 )
 
-# Home Assistant inside the `kedge-agent` kind cluster — a real target for the
+# Home Assistant inside the `faros-agent` kind cluster — a real target for the
 # kube-edge Service path (spec.targetRef → home-assistant.home.svc:8123). Note
 # this is the *agent's* kind cluster, not the one hosting kcp + the hub here.
 # Creates it if edge-kube-agent hasn't yet, so no resource_deps; first run pulls
@@ -1957,4 +1957,4 @@ local_resource(
     labels=['edges'],
 )
 
-print('  kedge-hub:      https://localhost:9443 (in-cluster, static token: dev-token)')
+print('  faros-hub:      https://localhost:9443 (in-cluster, static token: dev-token)')

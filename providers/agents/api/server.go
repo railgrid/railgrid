@@ -8,7 +8,7 @@
 
 // Package api serves the agents provider's backend HTTP surface. The hub
 // forwards /services/providers/agents/* here, injecting the verified
-// X-Kedge-Tenant/X-Kedge-User headers and the caller's bearer token; handlers
+// X-Faros-Tenant/X-Faros-User headers and the caller's bearer token; handlers
 // act as the calling user against the tenant workspace and the provider's own
 // store.
 package api
@@ -29,7 +29,7 @@ import (
 // URL is optional; an empty store config falls back to in-memory persistence so
 // the provider boots against a bare hub for development.
 type Config struct {
-	// HubURL is the kedge hub base URL. Empty disables tenant-workspace access
+	// HubURL is the faros hub base URL. Empty disables tenant-workspace access
 	// (resource endpoints return 501).
 	HubURL string
 	// HubInsecure skips TLS verification against the hub (dev self-signed certs).
@@ -174,7 +174,7 @@ func (s *Server) Routes() http.Handler {
 	// Service-to-service: callers that are not a signed-in user (another provider,
 	// a job) present their own ServiceAccount token and name the target workspace
 	// in the path. The provider authenticates and authorizes them itself — these
-	// routes deliberately do NOT use the hub's X-Kedge-* identity headers, which
+	// routes deliberately do NOT use the hub's X-Faros-* identity headers, which
 	// only exist for users. See api/s2s.go.
 	mux.HandleFunc("POST /s2s/clusters/{cluster}/agents/{name}/runs", s.s2sInvoke)
 	mux.HandleFunc("GET /s2s/clusters/{cluster}/runs/{id}", s.s2sGetRun)

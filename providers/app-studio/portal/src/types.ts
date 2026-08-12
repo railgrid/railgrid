@@ -1,4 +1,4 @@
-export interface KedgeContext {
+export interface FarosContext {
   token?: string | null
   user?: { email?: string; sub?: string; userId?: string } | null
   tenant?: string | null

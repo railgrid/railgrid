@@ -14,8 +14,8 @@ package main
 // dance, the operator is given exactly two kubeconfigs and does the rest:
 //
 //	INFRASTRUCTURE_PROVIDER_KUBECONFIG  kcp, scoped to the provider workspace
-//	                                    (root:kedge:providers:infrastructure).
-//	                                    What the kedge admin portal issues.
+//	                                    (root:faros:providers:infrastructure).
+//	                                    What the faros admin portal issues.
 //	INFRASTRUCTURE_RUNTIME_KUBECONFIG   the cluster where kro (and this
 //	                                    operator) run. Used to seed kro.
 //
@@ -135,7 +135,7 @@ func bootstrapOnce(ctx context.Context, providerCfg, runtimeCfg *rest.Config, pr
 	if err := operator.Bootstrap(ctx, providerCfg, operator.BootstrapOptions{
 		WorkspacePath:     workspacePath,
 		APIExportName:     apiExportName,
-		CatalogEntryFile:  os.Getenv("KEDGE_CATALOGENTRY_FILE"),
+		CatalogEntryFile:  os.Getenv("FAROS_CATALOGENTRY_FILE"),
 		SkipSeedTemplates: os.Getenv("INFRASTRUCTURE_SKIP_SEED_TEMPLATES") != "",
 	}); err != nil {
 		return err

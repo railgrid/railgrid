@@ -7,7 +7,7 @@ fullnameOverride: ""
 replicaCount: 1
 
 image:
-  repository: ghcr.io/faroshq/kedge/app-studio-provider
+  repository: ghcr.io/faroshq/faros/app-studio-provider
   tag: ""
   pullPolicy: IfNotPresent
 
@@ -38,13 +38,13 @@ catalogEntry:
 
 apiExport:
   # REQUIRED for instance lifecycling: identityHash of the infrastructure
-  # provider's APIExport (infrastructure.providers.kedge.faros.sh), read from
-  # its status.identityHash in root:kedge:providers:infrastructure (or copy it
+  # provider's APIExport (infrastructure.providers.faros.sh), read from
+  # its status.identityHash in root:faros:providers:infrastructure (or copy it
   # from /bonkers root-identities). kcp rejects first-party permission claims
   # without it — with an empty value the Project reconciler cannot create
   # instances in tenant workspaces.
   infraIdentityHash: ""
-  # Same, for the code provider's APIExport (code.providers.kedge.faros.sh):
+  # Same, for the code provider's APIExport (code.providers.faros.sh):
   # backs the repositories claim the Project reconciler needs to create the
   # git backing repo.
   codeIdentityHash: ""
@@ -53,7 +53,7 @@ apiExport:
 # via /bonkers (admin onboarding). Consumed by both the init container and the
 # serve container. Key must be "kubeconfig".
 providerKubeconfig:
-  secretName: kedge-provider-kubeconfig
+  secretName: faros-provider-kubeconfig
 
 # Assistant chat behavior.
 assistant:
@@ -83,7 +83,7 @@ previewConsole:
 # See docs/app-studio-runtime-decoupling.md.
 
 # Development runtime images are NOT configured here — the infrastructure
-# provider owns them (its chart's development.images / KEDGE_DEV_IMAGE_*).
+# provider owns them (its chart's development.images / FAROS_DEV_IMAGE_*).
 # App Studio passes only the project reference. See
 # providers/infrastructure/docs/template-conventions.md.
 
@@ -104,7 +104,7 @@ store:
 # App Studio project workspaces. The provider stores checked-out/generated
 # project files here so the agent can list, read, search, and later mutate them.
 workspace:
-  path: /var/lib/kedge-app-studio/workspaces
+  path: /var/lib/faros-app-studio/workspaces
   existingClaim: ""
   emptyDir: false
   persistence:
@@ -115,7 +115,7 @@ workspace:
     storageClassName: ""
 
 hub:
-  url: "http://kedge-hub.kedge.svc.cluster.local:8080"
+  url: "http://faros-hub.faros.svc.cluster.local:8080"
   # Public hub origin used by action-enabled development runtimes. Keep this
   # separate from hub.url: the latter is an internal provider-to-hub address.
   # Production action-enabled projects require an absolute HTTPS origin.

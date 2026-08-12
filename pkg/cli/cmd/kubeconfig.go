@@ -26,13 +26,13 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
-	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
+	farosclient "github.com/faroshq/faros/pkg/client"
 )
 
 func newKubeconfigCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "kubeconfig",
-		Short: "Generate kubeconfig files for kedge resources",
+		Short: "Generate kubeconfig files for faros resources",
 	}
 
 	cmd.AddCommand(newKubeconfigEdgeCommand())
@@ -57,13 +57,13 @@ edge proxy with the same authentication token used for the hub.
 
 Examples:
   # Print kubeconfig to stdout
-  kedge kubeconfig edge my-edge
+  faros kubeconfig edge my-edge
 
   # Write kubeconfig to a file
-  kedge kubeconfig edge my-edge --output ~/.kube/my-edge.kubeconfig
+  faros kubeconfig edge my-edge --output ~/.kube/my-edge.kubeconfig
 
   # Use with kubectl
-  KUBECONFIG=$(kedge kubeconfig edge my-edge) kubectl get pods`,
+  KUBECONFIG=$(faros kubeconfig edge my-edge) kubectl get pods`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -75,7 +75,7 @@ Examples:
 				return err
 			}
 
-			edge, err := dynClient.Resource(kedgeclient.KubernetesClusterGVR).Get(ctx, name, metav1.GetOptions{})
+			edge, err := dynClient.Resource(farosclient.KubernetesClusterGVR).Get(ctx, name, metav1.GetOptions{})
 			if err != nil {
 				return fmt.Errorf("getting edge %q: %w", name, err)
 			}

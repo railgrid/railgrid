@@ -106,7 +106,7 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
-  // createProvider creates a Provider object in root:kedge:system:providers.
+  // createProvider creates a Provider object in root:faros:system:providers.
   // The hub's Provider controller then provisions the sub-workspace +
   // ServiceAccount + kubeconfig Secret. Declarative — no imperative onboard.
   async function createProvider(name: string, displayName: string): Promise<void> {
@@ -138,7 +138,7 @@ export const useAdminStore = defineStore('admin', () => {
   }
 
   // downloadProviderKubeconfig fetches the minted kubeconfig (read from the
-  // Secret the Provider controller wrote into root:kedge:system:providers) and
+  // Secret the Provider controller wrote into root:faros:system:providers) and
   // triggers a browser download.
   async function downloadProviderKubeconfig(name: string): Promise<void> {
     const resp = await authFetch(`/api/admin/providers/${encodeURIComponent(name)}/kubeconfig`)

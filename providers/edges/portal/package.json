@@ -1,8 +1,8 @@
 {
-  "name": "kedge-provider-edges-portal",
+  "name": "faros-provider-edges-portal",
   "version": "0.1.0",
   "private": true,
-  "description": "edges provider's portal-side micro-frontend. Built with Vite into a single main.js custom-element bundle the kedge hub serves under /ui/providers/edges/.",
+  "description": "edges provider's portal-side micro-frontend. Built with Vite into a single main.js custom-element bundle the faros hub serves under /ui/providers/edges/.",
   "type": "module",
   "scripts": {
     "build": "vite build",

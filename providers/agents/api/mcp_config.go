@@ -32,15 +32,15 @@ import (
 
 // mcpIdentity reconstructs the caller identity for tools that touch
 // store-scoped data or mint cluster-scoped URLs. MCP federation forwards the
-// cluster ID in both X-Kedge-Tenant and X-Kedge-Cluster, so the org/workspace
+// cluster ID in both X-Faros-Tenant and X-Faros-Cluster, so the org/workspace
 // UUIDs usually cannot be parsed from the header — they come from the
 // cluster→tenant mapping the portal records on every REST call (the same
 // mapping background execution uses).
 func (s *Server) mcpIdentity(ctx context.Context, r *http.Request) identity {
 	id := identity{
-		tenantPath: strings.TrimSpace(r.Header.Get("X-Kedge-Tenant")),
-		clusterID:  strings.TrimSpace(r.Header.Get("X-Kedge-Cluster")),
-		user:       strings.TrimSpace(r.Header.Get("X-Kedge-User")),
+		tenantPath: strings.TrimSpace(r.Header.Get("X-Faros-Tenant")),
+		clusterID:  strings.TrimSpace(r.Header.Get("X-Faros-Cluster")),
+		user:       strings.TrimSpace(r.Header.Get("X-Faros-User")),
 		token:      bearerToken(r),
 	}
 	id.orgUUID, id.workspaceUUID = parseTenantPath(id.tenantPath)
@@ -198,7 +198,7 @@ type toolFamilyInfo struct {
 
 type listToolFamiliesOutput struct {
 	Families []toolFamilyInfo `json:"families"`
-	// Providers are the kedge providers reachable through the hub's aggregate
+	// Providers are the faros providers reachable through the hub's aggregate
 	// tool endpoint, which every interactive run gets for free.
 	Providers []string `json:"providers,omitempty"`
 	Note      string   `json:"note,omitempty"`
@@ -578,7 +578,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 			Families: toolFamilyDocs,
 			Note:     "core is always granted and cannot be removed.",
 		}
-		// Best-effort, cache-only: the aggregate endpoint knows which kedge
+		// Best-effort, cache-only: the aggregate endpoint knows which faros
 		// providers an interactive run reaches without any grant. Probing it
 		// live would put a network round-trip inside a discovery call, so an
 		// empty list here means "not probed recently", not "nothing enabled".

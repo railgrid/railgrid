@@ -44,11 +44,11 @@ test('recognizes a caret-relative slash token only at start or after whitespace'
 test('builds metadata-only GraphQL from validated Provider Action identifiers', async () => {
   const { buildAssistantResourceQuery } = await vite.ssrLoadModule('/src/assistantResources.ts')
   const built = buildAssistantResourceQuery({
-    apiVersion: 'databricks.kedge.faros.sh/v1alpha1',
+    apiVersion: 'databricks.faros.sh/v1alpha1',
     kind: 'Table',
     resource: 'tables',
   })
-  assert.equal(built.groupField, 'databricks_kedge_faros_sh')
+  assert.equal(built.groupField, 'databricks_faros_sh')
   assert.equal(built.versionField, 'v1alpha1')
   assert.equal(built.listField, 'Tables')
   assert.match(built.query, /items \{ metadata \{ name uid resourceVersion \} \}/)

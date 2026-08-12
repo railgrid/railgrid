@@ -49,9 +49,9 @@ func EnsureCatalogEntry(ctx context.Context, providerCfg *rest.Config, manifest 
 		// Stamp the release version. The embedded manifest.yaml carries a
 		// placeholder (spec.version: 0.1.0); the chart injects the real
 		// .Chart.AppVersion (stamped by `helm package --app-version` at
-		// release) via KEDGE_PROVIDER_VERSION so the portal shows the same
+		// release) via FAROS_PROVIDER_VERSION so the portal shows the same
 		// version as the chart-templated providers.
-		if v := os.Getenv("KEDGE_PROVIDER_VERSION"); v != "" {
+		if v := os.Getenv("FAROS_PROVIDER_VERSION"); v != "" {
 			spec["version"] = v
 		}
 	}
@@ -61,7 +61,7 @@ func EnsureCatalogEntry(ctx context.Context, providerCfg *rest.Config, manifest 
 	}
 
 	// sdkinstall.ApplyCatalogEntry reads a file; round-trip through a temp file.
-	f, err := os.CreateTemp("", "kedge-catalogentry-*.yaml")
+	f, err := os.CreateTemp("", "faros-catalogentry-*.yaml")
 	if err != nil {
 		return err
 	}

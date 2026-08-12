@@ -10,8 +10,8 @@ import { Puzzle, ChevronRight, X } from 'lucide-vue-next'
 // dashboard summary. Mirrors ProviderFrame.vue's lifecycle but for the
 // tile element instead of the full-page element: each provider's
 // /main.js may register a second custom element
-// <kedge-dashboard-tile-{name}>; if it does we mount that here, push
-// the same kedgeContext shape, and proxy kedge-navigate events to the
+// <faros-dashboard-tile-{name}>; if it does we mount that here, push
+// the same farosContext shape, and proxy faros-navigate events to the
 // portal router.
 //
 // A provider that ships NO tile element is still a first-class tile: the
@@ -40,7 +40,7 @@ const elementRef = ref<HTMLElement | null>(null)
 const loadState = ref<'idle' | 'loading' | 'ready' | 'no-tile' | 'error'>('idle')
 const loadError = ref<string | null>(null)
 
-const tagFor = (name: string) => `kedge-dashboard-tile-${name}`
+const tagFor = (name: string) => `faros-dashboard-tile-${name}`
 
 // Route the tile's "Open" link and sub-page shortcuts point at. Mirrors the
 // side nav's rule (providers.ts): built-in providers route to /{builtinRoute},
@@ -79,7 +79,7 @@ async function loadAndMount(name: string, version: string | undefined) {
   // when both the tile and the page are visible (e.g. user is on the
   // provider page and the dashboard pre-fetches tiles). customElements
   // is idempotent — second define() is a no-op.
-  const scriptID = `kedge-provider-script-${name}`
+  const scriptID = `faros-provider-script-${name}`
   const tag = tagFor(name)
 
   if (!customElements.get(tag) && !document.getElementById(scriptID)) {
@@ -126,9 +126,9 @@ async function loadAndMount(name: string, version: string | undefined) {
 }
 
 function pushContext() {
-  const el = elementRef.value as HTMLElement & { kedgeContext?: unknown } | null
+  const el = elementRef.value as HTMLElement & { farosContext?: unknown } | null
   if (!el) return
-  el.kedgeContext = {
+  el.farosContext = {
     token: auth.token,
     user: auth.user,
     tenant: auth.clusterName,
@@ -144,9 +144,9 @@ function onNavigate(e: Event) {
   router.push(`/providers/${props.provider.name}/${p.replace(/^\//, '')}`)
 }
 
-onMounted(() => mountRef.value?.addEventListener('kedge-navigate', onNavigate))
+onMounted(() => mountRef.value?.addEventListener('faros-navigate', onNavigate))
 onBeforeUnmount(() => {
-  mountRef.value?.removeEventListener('kedge-navigate', onNavigate)
+  mountRef.value?.removeEventListener('faros-navigate', onNavigate)
   if (elementRef.value && mountRef.value?.contains(elementRef.value)) {
     mountRef.value.removeChild(elementRef.value)
   }

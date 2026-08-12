@@ -1,6 +1,6 @@
 # Developer Reference
 
-Deep-dive reference for contributors working on kedge internals.
+Deep-dive reference for contributors working on faros internals.
 
 ## Table of Contents
 
@@ -30,7 +30,7 @@ This starts two local resources:
 1. **`portal`** — Vite dev server on `http://localhost:3000/ui/`  
    Builds provider portal symlinks automatically and watches `portal/src/` for hot reload.
 
-2. **`hub`** — `kedge-hub` binary with embedded KCP, static auth, embedded GraphQL, and portal dev proxy  
+2. **`hub`** — `faros-hub` binary with embedded KCP, static auth, embedded GraphQL, and portal dev proxy  
    Serves HTTPS on `https://localhost:9443`. The hub depends on the portal resource and rebuilds on Go file changes.
 
 ### Smoke test
@@ -53,7 +53,7 @@ tilt down
 
 ---
 
-**API group:** `kedge.faros.sh/v1alpha1`  
+**API group:** `faros.sh/v1alpha1`  
 **Kind:** `Edge`
 
 ### Spec fields
@@ -77,7 +77,7 @@ status:
   URL: ""                # proxy URL for kubernetes-type edges (kubectl endpoint)
   sshCredentials:        # populated when agent sends SSH creds via WebSocket headers
     username: ""
-    secretRef: ""        # name of Secret in kedge-system holding the SSH password/key
+    secretRef: ""        # name of Secret in faros-system holding the SSH password/key
   conditions:
   - type: Registered     # True once the agent has completed its first join
     status: "False"      # False = AwaitingAgent, True = registered
@@ -90,7 +90,7 @@ status:
 **Kubernetes-type edge:**
 
 ```yaml
-apiVersion: kedge.faros.sh/v1alpha1
+apiVersion: faros.sh/v1alpha1
 kind: Edge
 metadata:
   name: my-cluster
@@ -104,7 +104,7 @@ spec:
 **Server-type edge:**
 
 ```yaml
-apiVersion: kedge.faros.sh/v1alpha1
+apiVersion: faros.sh/v1alpha1
 kind: Edge
 metadata:
   name: my-server
@@ -121,7 +121,7 @@ spec:
 ## Join Token Flow
 
 ```
-kedge edge create <name>
+faros edge create <name>
         │
         ▼
 TokenReconciler (pkg/hub/controllers/edge/token_reconciler.go)
@@ -130,8 +130,8 @@ TokenReconciler (pkg/hub/controllers/edge/token_reconciler.go)
   - sets Registered=False condition
         │
         ▼
-kedge edge join-command <name>
-  → prints: kedge agent run --token <joinToken> --edge-name <name> ...
+faros edge join-command <name>
+  → prints: faros agent run --token <joinToken> --edge-name <name> ...
         │
         ▼
 Agent starts (pkg/agent/agent.go)
@@ -148,16 +148,16 @@ pkg/agent/tunnel/tunneler.go: StartProxyTunnel(extraHeaders)
         ▼
 pkg/virtual/builder/agent_proxy_builder_v2.go: ServeHTTP
   - authorizeByJoinToken validates token against edge.status.joinToken
-  - extractSSHCredsFromHeaders reads X-Kedge-SSH-* headers
+  - extractSSHCredsFromHeaders reads X-Faros-SSH-* headers
   - markEdgeConnected(edge, sshCreds):
       • builds agent kubeconfig (SA token from edge-<name>-kubeconfig secret)
-      • sends kubeconfig back to agent in X-Kedge-Agent-Kubeconfig response header
+      • sends kubeconfig back to agent in X-Faros-Agent-Kubeconfig response header
       • storeSSHCredentials → creates Secret, writes status.sshCredentials
       • clears joinToken, sets Registered=True, sets phase=Ready
         │
         ▼
-Agent receives kubeconfig (cmd/kedge-agent/main.go)
-  - saves to ~/.kedge/agent-<name>.kubeconfig
+Agent receives kubeconfig (cmd/faros-agent/main.go)
+  - saves to ~/.faros/agent-<name>.kubeconfig
   - clears opts.Token (reconnect without token from now on)
         │
         ▼
@@ -178,7 +178,7 @@ After token exchange, the agent holds a real kcp SA kubeconfig and future reconn
 Once an Edge is `Ready`, `edge.status.URL` is set to:
 
 ```
-https://<hub-external-url>/clusters/<workspace-id>/apis/kedge.faros.sh/v1alpha1/edges/<name>/proxy/k8s
+https://<hub-external-url>/clusters/<workspace-id>/apis/faros.sh/v1alpha1/edges/<name>/proxy/k8s
 ```
 
 This URL is a virtual workspace endpoint served by the hub's agent-proxy virtual workspace handler. The hub:
@@ -188,7 +188,7 @@ This URL is a virtual workspace endpoint served by the hub's agent-proxy virtual
 3. Forwards the raw TCP stream to the agent over the revdial tunnel.
 4. The agent forwards to `localhost:<kubeAPIPort>` on the target cluster.
 
-`kedge kubeconfig edge <name>` generates a kubeconfig pointing to this URL with the user's hub bearer token embedded.
+`faros kubeconfig edge <name>` generates a kubeconfig pointing to this URL with the user's hub bearer token embedded.
 
 ---
 
@@ -197,7 +197,7 @@ This URL is a virtual workspace endpoint served by the hub's agent-proxy virtual
 ### Connection path
 
 ```
-kedge ssh <name>
+faros ssh <name>
     │
     │  WebSocket upgrade → hub /clusters/<ws>/…/edges/<name>/proxy/ssh
     ▼
@@ -205,7 +205,7 @@ hub agent-proxy handler (pkg/virtual/builder/agent_proxy_builder_v2.go)
     │
     │  dials agent over revdial tunnel
     ▼
-kedge-agent (server mode, pkg/agent/agent.go)
+faros-agent (server mode, pkg/agent/agent.go)
     │
     │  forwards raw TCP to localhost:<ssh-proxy-port> (default 22)
     ▼
@@ -216,10 +216,10 @@ sshd on the target host
 
 When the agent starts with `--token` and `--ssh-user`/`--ssh-password`:
 
-1. Agent builds `X-Kedge-SSH-User` and `X-Kedge-SSH-Password` headers.
+1. Agent builds `X-Faros-SSH-User` and `X-Faros-SSH-Password` headers.
 2. These are passed to `StartProxyTunnel` as `extraHeaders`.
 3. Hub's `extractSSHCredsFromHeaders` reads them on the first connection.
-4. `storeSSHCredentials` creates a `kedge-ssh-<name>` Secret in `kedge-system`.
+4. `storeSSHCredentials` creates a `faros-ssh-<name>` Secret in `faros-system`.
 5. `edge.status.sshCredentials` is populated with the username and secret ref.
 
 ### SSH username mapping (OIDC)
@@ -238,7 +238,7 @@ The SSH test suite holds connections open for `--ssh-keepalive-duration` (defaul
 
 ## kcp Workspace Hierarchy
 
-kedge uses kcp for multi-tenant API isolation. Each user/team gets a dedicated kcp workspace:
+faros uses kcp for multi-tenant API isolation. Each user/team gets a dedicated kcp workspace:
 
 ```
 root workspace
@@ -248,14 +248,14 @@ root workspace
     └── Placement resources
 ```
 
-The hub deploys kcp's `APIBinding` resources to make the kedge CRDs available in each workspace.
+The hub deploys kcp's `APIBinding` resources to make the faros CRDs available in each workspace.
 
 ### Static token scoping
 
 Static dev tokens (e.g. `dev-token`) are scoped to a specific kcp workspace path. The workspace path appears in the kubeconfig server URL:
 
 ```
-https://kedge.localhost:9443/clusters/<workspace-id>/...
+https://faros.localhost:9443/clusters/<workspace-id>/...
 ```
 
 `ClusterNameFromKubeconfig` (in `test/e2e/framework/cluster.go`) extracts the workspace ID from the server URL.
@@ -264,17 +264,17 @@ https://kedge.localhost:9443/clusters/<workspace-id>/...
 
 ## MCP Integration
 
-kedge exposes all connected Kubernetes clusters as a single [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server. AI agents (Claude, Cursor, Copilot, etc.) connect to this endpoint and can interact with all registered clusters using natural language.
+faros exposes all connected Kubernetes clusters as a single [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server. AI agents (Claude, Cursor, Copilot, etc.) connect to this endpoint and can interact with all registered clusters using natural language.
 
-### KubernetesMCP CRD (kedge.faros.sh/v1alpha1)
+### KubernetesMCP CRD (faros.sh/v1alpha1)
 
-**API group:** `kedge.faros.sh/v1alpha1`  
+**API group:** `faros.sh/v1alpha1`  
 **Kind:** `KubernetesMCP`
 
 The `KubernetesMCP` object is automatically created as `default` in every tenant workspace by the hub bootstrapper. It acts as the configuration object for the multi-cluster MCP endpoint.
 
 ```yaml
-apiVersion: kedge.faros.sh/v1alpha1
+apiVersion: faros.sh/v1alpha1
 kind: KubernetesMCP
 metadata:
   name: default
@@ -282,7 +282,7 @@ spec:
   edgeSelector: {}   # empty = all kubernetes-type edges; use label selectors to restrict
   readOnly: false    # set true to disable write operations (create/delete/apply)
 status:
-  URL: "https://hub.example.com/services/mcp/root:kedge:user-<id>/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp"
+  URL: "https://hub.example.com/services/mcp/root:faros:user-<id>/apis/faros.sh/v1alpha1/kubernetesmcps/default/mcp"
   connectedEdges:
   - my-cluster
   - home-lab
@@ -291,7 +291,7 @@ status:
 ### MCP URL structure
 
 ```
-https://<hub>/services/mcp/<workspace-cluster-id>/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/<name>/mcp
+https://<hub>/services/mcp/<workspace-cluster-id>/apis/faros.sh/v1alpha1/kubernetesmcps/<name>/mcp
 ```
 
 - `<workspace-cluster-id>` — kcp logical cluster name for the tenant workspace (from the server URL in the user's kubeconfig)
@@ -311,14 +311,14 @@ hub MCP virtual workspace handler (pkg/virtual/builder/mcp_builder.go)
     │  3. Fetch KubernetesMCP object for edgeSelector
     │  4. List all edges in the workspace
     │  5. Filter: kubernetes-type only + connected (tunnel active) + label selector
-    │  6. Build MultiEdgeKedgeEdgeProvider (one per request)
+    │  6. Build MultiEdgeFarosEdgeProvider (one per request)
     │
     ▼
 kubernetes-mcp-server (github.com/containers/kubernetes-mcp-server)
     │  MCP Streamable-HTTP protocol (tools/list, tools/call)
     │
     ▼
-KedgeEdgeProvider / MultiEdgeKedgeEdgeProvider (pkg/virtual/builder/mcp_provider.go)
+FarosEdgeProvider / MultiEdgeFarosEdgeProvider (pkg/virtual/builder/mcp_provider.go)
     │  GetTargets() → list of connected cluster names
     │  GetDerivedKubernetes(cluster) → rest.Config via revdial tunnel
     │
@@ -348,15 +348,15 @@ Each toolset registers its tools via `init()`. Without the blank imports, `tools
 ### Adding to Claude Code
 
 ```bash
-kedge mcp url --name default
+faros mcp url --name default
 # prints URL + ready-to-use claude mcp add command with your token
 ```
 
 Or manually:
 
 ```bash
-claude mcp add --transport http kedge \
-  "https://hub.example.com/services/mcp/<cluster-id>/apis/kedge.faros.sh/v1alpha1/kubernetesmcps/default/mcp" \
+claude mcp add --transport http faros \
+  "https://hub.example.com/services/mcp/<cluster-id>/apis/faros.sh/v1alpha1/kubernetesmcps/default/mcp" \
   -H "Authorization: Bearer <token-from-kubeconfig>"
 ```
 
@@ -365,11 +365,11 @@ claude mcp add --transport http kedge \
 Each edge also exposes a direct MCP endpoint (independent of the multi-edge `Kubernetes` resource):
 
 ```
-https://<hub>/services/agent-proxy/<workspace-cluster-id>/apis/kedge.faros.sh/v1alpha1/edges/<name>/mcp
+https://<hub>/services/agent-proxy/<workspace-cluster-id>/apis/faros.sh/v1alpha1/edges/<name>/mcp
 ```
 
 ```bash
-kedge mcp url --edge my-cluster
+faros mcp url --edge my-cluster
 ```
 
 This bypasses the `Kubernetes` MCP resource and connects directly to a single edge's Kubernetes API.

@@ -28,31 +28,31 @@ spec:
         # kubeconfig the serve container runs with. The kubeconfig is minted by
         # the platform admin via /bonkers (admin onboarding) and supplied as the
         # providerKubeconfig Secret. Schemas are baked into the image at
-        # /etc/kedge/schemas (see Dockerfile). Idempotent.
+        # /etc/faros/schemas (see Dockerfile). Idempotent.
         - name: init
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["init"]
           env:
-            - name: KEDGE_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
-            - name: KEDGE_SCHEMAS_DIR
-              value: /etc/kedge/schemas
+            - name: FAROS_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/faros/faros-provider-kubeconfig
+            - name: FAROS_SCHEMAS_DIR
+              value: /etc/faros/schemas
             {{- if .Values.catalogEntry.enabled }}
             # The CatalogEntry is a kcp resource, so the chart cannot apply it to
             # the hosting cluster. It is rendered into a ConfigMap (mounted below)
             # and init self-registers it into the provider workspace via the
             # provider kubeconfig.
-            - name: KEDGE_CATALOGENTRY_FILE
-              value: /etc/kedge/catalogentry/catalogentry.yaml
+            - name: FAROS_CATALOGENTRY_FILE
+              value: /etc/faros/catalogentry/catalogentry.yaml
             {{- end }}
           volumeMounts:
-            - name: kedge-provider-kubeconfig
-              mountPath: /var/run/secrets/kedge
+            - name: faros-provider-kubeconfig
+              mountPath: /var/run/secrets/faros
               readOnly: true
             {{- if .Values.catalogEntry.enabled }}
             - name: catalogentry
-              mountPath: /etc/kedge/catalogentry
+              mountPath: /etc/faros/catalogentry
               readOnly: true
             {{- end }}
       containers:
@@ -74,16 +74,16 @@ spec:
           env:
             - name: PORT
               value: "8083"
-            - name: KEDGE_HUB_URL
+            - name: FAROS_HUB_URL
               value: {{ .Values.hub.url | quote }}
-            - name: KEDGE_PROVIDER_NAME
+            - name: FAROS_PROVIDER_NAME
               value: "code"
             {{- if .Values.hub.insecure }}
-            - name: KEDGE_HUB_INSECURE
+            - name: FAROS_HUB_INSECURE
               value: "true"
             {{- end }}
             {{- if .Values.hub.tokenSecretRef.name }}
-            - name: KEDGE_HUB_TOKEN
+            - name: FAROS_HUB_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ .Values.hub.tokenSecretRef.name }}
@@ -91,12 +91,12 @@ spec:
             {{- end }}
             # Points the multicluster controller manager at the onboarded
             # provider kubeconfig (mounted below).
-            - name: KEDGE_PROVIDER_KUBECONFIG
-              value: /var/run/secrets/kedge/kedge-provider-kubeconfig
+            - name: FAROS_PROVIDER_KUBECONFIG
+              value: /var/run/secrets/faros/faros-provider-kubeconfig
             - name: CODE_COMMIT_BUNDLE_DIR
               value: {{ .Values.bundleStore.path | quote }}
             {{- if .Values.tenant.credentialsNamespace }}
-            - name: KEDGE_TENANT_CREDENTIALS_NAMESPACE
+            - name: FAROS_TENANT_CREDENTIALS_NAMESPACE
               value: {{ .Values.tenant.credentialsNamespace | quote }}
             {{- end }}
             {{- if .Values.githubOAuth.enabled }}
@@ -123,15 +123,15 @@ spec:
             {{- end }}
             {{- end }}
           volumeMounts:
-            - name: kedge-provider-kubeconfig
-              mountPath: /var/run/secrets/kedge
+            - name: faros-provider-kubeconfig
+              mountPath: /var/run/secrets/faros
               readOnly: true
             - name: commit-bundles
               mountPath: {{ .Values.bundleStore.path | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       volumes:
-        - name: kedge-provider-kubeconfig
+        - name: faros-provider-kubeconfig
           secret:
             # Required input: the workspace-admin kubeconfig minted by the
             # platform admin via /bonkers (admin onboarding). Both the init
@@ -141,7 +141,7 @@ spec:
             secretName: {{ .Values.providerKubeconfig.secretName }}
             items:
               - key: kubeconfig
-                path: kedge-provider-kubeconfig
+                path: faros-provider-kubeconfig
         {{- if .Values.catalogEntry.enabled }}
         - name: catalogentry
           configMap:

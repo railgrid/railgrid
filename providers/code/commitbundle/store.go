@@ -113,7 +113,7 @@ type FileStore struct {
 func NewFileStoreFromEnv() (*FileStore, error) {
 	dir := strings.TrimSpace(os.Getenv(EnvDir))
 	if dir == "" {
-		dir = filepath.Join(os.TempDir(), "kedge-code-commit-bundles")
+		dir = filepath.Join(os.TempDir(), "faros-code-commit-bundles")
 	}
 	return NewFileStore(dir)
 }

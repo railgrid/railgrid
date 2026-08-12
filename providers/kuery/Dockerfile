@@ -19,7 +19,7 @@ RUN npm run build
 #    distroless/base glibc matches.
 FROM golang:1.26 AS build
 WORKDIR /src
-# TODO(sdk-publish): depends on github.com/faroshq/kedge-provider-sdk via a
+# TODO(sdk-publish): depends on github.com/faroshq/faros-provider-sdk via a
 # `replace => ../../provider-sdk` that only resolves in the monorepo (go.work).
 # Standalone image builds need the SDK published (drop the replace) or vendored.
 COPY go.mod go.sum ./
@@ -35,10 +35,10 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 # 3. Runtime image: distroless/base (NOT static) for the glibc the CGO
 #    sqlite driver links against. /data is the conventional store mount. The
 #    APIResourceSchemas the `init` subcommand applies are baked at
-#    /etc/kedge/schemas (KEDGE_SCHEMAS_DIR).
+#    /etc/faros/schemas (FAROS_SCHEMAS_DIR).
 FROM gcr.io/distroless/base-debian12:nonroot
 COPY --from=build /out/kuery-provider /kuery-provider
-COPY deploy/chart/files/schemas /etc/kedge/schemas
+COPY deploy/chart/files/schemas /etc/faros/schemas
 EXPOSE 8081
 ENV PORT=8081
 ENV KUERY_STORE_DSN=/data/kuery.db

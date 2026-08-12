@@ -126,7 +126,7 @@ func exchangeActionsToken(ctx context.Context, cfg *agentConfig) (time.Time, err
 	}
 	bootstrapPath := strings.TrimSpace(cfg.ActionsBootstrapTokenFile)
 	if bootstrapPath == "" {
-		return time.Time{}, errors.New("KEDGE_ACTIONS_BOOTSTRAP_TOKEN_FILE is required")
+		return time.Time{}, errors.New("FAROS_ACTIONS_BOOTSTRAP_TOKEN_FILE is required")
 	}
 	bootstrap, err := os.ReadFile(bootstrapPath)
 	if err != nil {
@@ -215,35 +215,35 @@ func exchangeActionsToken(ctx context.Context, cfg *agentConfig) (time.Time, err
 func validateActionsExchangeEndpoint(exchangeRaw, baseRaw string) (string, error) {
 	exchangeRaw = strings.TrimSpace(exchangeRaw)
 	if exchangeRaw == "" {
-		return "", errors.New("KEDGE_ACTIONS_EXCHANGE_URL is required")
+		return "", errors.New("FAROS_ACTIONS_EXCHANGE_URL is required")
 	}
 	exchange, err := url.Parse(exchangeRaw)
 	if err != nil || !exchange.IsAbs() || exchange.Host == "" || exchange.User != nil || exchange.RawQuery != "" || exchange.Fragment != "" || exchange.RawPath != "" {
-		return "", errors.New("KEDGE_ACTIONS_EXCHANGE_URL must be an absolute HTTPS exchange endpoint")
+		return "", errors.New("FAROS_ACTIONS_EXCHANGE_URL must be an absolute HTTPS exchange endpoint")
 	}
 	if !strings.EqualFold(exchange.Scheme, "https") {
-		return "", errors.New("KEDGE_ACTIONS_EXCHANGE_URL must use HTTPS")
+		return "", errors.New("FAROS_ACTIONS_EXCHANGE_URL must use HTTPS")
 	}
 	if exchange.Path != actionsExchangePath {
-		return "", fmt.Errorf("KEDGE_ACTIONS_EXCHANGE_URL must use path %q", actionsExchangePath)
+		return "", fmt.Errorf("FAROS_ACTIONS_EXCHANGE_URL must use path %q", actionsExchangePath)
 	}
 
 	baseRaw = strings.TrimRight(strings.TrimSpace(baseRaw), "/")
 	if baseRaw == "" {
-		return "", errors.New("KEDGE_ACTIONS_BASE_URL is required when Provider Actions are enabled")
+		return "", errors.New("FAROS_ACTIONS_BASE_URL is required when Provider Actions are enabled")
 	}
 	base, err := url.Parse(baseRaw)
 	if err != nil || !base.IsAbs() || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" || base.RawPath != "" {
-		return "", errors.New("KEDGE_ACTIONS_BASE_URL must be an absolute HTTPS provider base URL")
+		return "", errors.New("FAROS_ACTIONS_BASE_URL must be an absolute HTTPS provider base URL")
 	}
 	if !strings.EqualFold(base.Scheme, "https") {
-		return "", errors.New("KEDGE_ACTIONS_BASE_URL must use HTTPS")
+		return "", errors.New("FAROS_ACTIONS_BASE_URL must use HTTPS")
 	}
 	if base.Path != actionsBasePath {
-		return "", fmt.Errorf("KEDGE_ACTIONS_BASE_URL must use path %q", actionsBasePath)
+		return "", fmt.Errorf("FAROS_ACTIONS_BASE_URL must use path %q", actionsBasePath)
 	}
 	if !strings.EqualFold(exchange.Host, base.Host) {
-		return "", errors.New("KEDGE_ACTIONS_EXCHANGE_URL host must match KEDGE_ACTIONS_BASE_URL")
+		return "", errors.New("FAROS_ACTIONS_EXCHANGE_URL host must match FAROS_ACTIONS_BASE_URL")
 	}
 	return exchange.String(), nil
 }
@@ -340,7 +340,7 @@ func writeActionsTokenAtomic(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".kedge-actions-token-*")
+	tmp, err := os.CreateTemp(dir, ".faros-actions-token-*")
 	if err != nil {
 		return err
 	}

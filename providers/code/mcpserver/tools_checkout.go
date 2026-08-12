@@ -95,7 +95,7 @@ func checkoutRepository(ctx context.Context, dyn dynamic.Interface, bundles comm
 	created, err := dyn.Resource(repositoryCheckoutsGVR).Create(ctx, obj, metav1.CreateOptions{})
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, checkoutRepositoryOutput{}, fmt.Errorf("create RepositoryCheckout: RepositoryCheckout API is not available in this workspace; re-register the Code provider so repositorycheckouts.code.kedge.faros.sh is published: %w", err)
+			return nil, checkoutRepositoryOutput{}, fmt.Errorf("create RepositoryCheckout: RepositoryCheckout API is not available in this workspace; re-register the Code provider so repositorycheckouts.code.faros.sh is published: %w", err)
 		}
 		return nil, checkoutRepositoryOutput{}, fmt.Errorf("create RepositoryCheckout: %w", err)
 	}

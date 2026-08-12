@@ -143,11 +143,11 @@ POST …/sandboxrunners/{name}/restart
      …/sandboxrunners/{name}/status     (served from the instance status; no runtime hop)
 ```
 
-The `/services/providers/infrastructure` prefix is the hub backend proxy; the provider's serve mux sees `/dataplane/clusters/{ws}/{resource}/{name}/{verb}[/{tail}]` (§6.1). The `{ws}` segment carries colons (`root:kedge:orgs:acme`) and is a single path segment.
+The `/services/providers/infrastructure` prefix is the hub backend proxy; the provider's serve mux sees `/dataplane/clusters/{ws}/{resource}/{name}/{verb}[/{tail}]` (§6.1). The `{ws}` segment carries colons (`root:faros:orgs:acme`) and is a single path segment.
 
 ### 4.2 Per-request flow
 
-1. **Identity** — extract `X-Kedge-{Tenant,User}` + bearer token (reuse `providers/infrastructure/mcpserver/context.go` `identityFromRequest`).
+1. **Identity** — extract `X-Faros-{Tenant,User}` + bearer token (reuse `providers/infrastructure/mcpserver/context.go` `identityFromRequest`).
 2. **Authorize** — `GET` the instance CR through the tenant client `For(tenantPath, token)` ([`providers/infrastructure/tenant/client.go`](../providers/infrastructure/tenant/client.go)). Success means the caller has RBAC on the instance; failure short-circuits. **This is the authz gate** — no provider-wide credential is consulted to decide access.
 3. **Resolve** — load the instance's Template `dataPlane` contract; resolve the requested endpoint to a runtime Service/Secret/port (§3).
 4. **Token** — read the control-token Secret from the **runtime cluster** (the provider holds this client; App Studio no longer does).
@@ -198,7 +198,7 @@ The "subresource on the instance" semantics can be realized two ways:
 
 ### 6.2 Move runner config ownership to infra
 
-- **Images — DONE (Phase 2a).** The kro backend now substitutes `${kedge.sandboxRunnerImage}` / `${kedge.sandboxTokenGeneratorImage}` (from `KEDGE_SANDBOX_RUNNER_IMAGE` / `KEDGE_SANDBOX_TOKEN_GENERATOR_IMAGE`) into the sandbox-runner RGD, and the instance-schema image fields are now optional (deprecated, ignored). App Studio's continued injection is harmless dead data removed in Phase 3; its `#362` chart guard remains the safety net until then. The infra chart wires the env on both serve paths and rejects partial image config. The `runnerImage`/`tokenGeneratorImage` schema fields are removed in a later cleanup once App Studio stops sending them.
+- **Images — DONE (Phase 2a).** The kro backend now substitutes `${faros.sandboxRunnerImage}` / `${faros.sandboxTokenGeneratorImage}` (from `FAROS_SANDBOX_RUNNER_IMAGE` / `FAROS_SANDBOX_TOKEN_GENERATOR_IMAGE`) into the sandbox-runner RGD, and the instance-schema image fields are now optional (deprecated, ignored). App Studio's continued injection is harmless dead data removed in Phase 3; its `#362` chart guard remains the safety net until then. The infra chart wires the env on both serve paths and rejects partial image config. The `runnerImage`/`tokenGeneratorImage` schema fields are removed in a later cleanup once App Studio stops sending them.
 - **Preview routing — TODO (Phase 2b).** `previewRouteEnabled` + host / parentGateway / backend derivation move from App Studio (`normalizeSandboxRunnerPreviewRouteValues`) to infra, which already has `application.baseDomain` + gateway in its `InfrastructureProvider` spec. Needs kro RGD CEL work (compute the per-instance host from `${schema.spec.name}` + a base-domain token), best validated against a runtime cluster.
 - **ReferenceGrant — TODO (Phase 2b).** Fold the cross-namespace `ReferenceGrant` into the sandbox-runner kro RGD (it already emits the HTTPRoute) rather than App Studio creating it imperatively.
 

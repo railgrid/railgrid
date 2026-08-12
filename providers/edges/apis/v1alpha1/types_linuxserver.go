@@ -39,11 +39,11 @@ import (
 //
 // Agents register via the provider's agent-ingress endpoint:
 //
-//	/services/providers/edges/agent/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/linuxservers/{name}/proxy
+//	/services/providers/edges/agent/{cluster}/apis/edges.faros.sh/v1alpha1/linuxservers/{name}/proxy
 //
 // Users access it via the ssh subresource:
 //
-//	/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.kedge.faros.sh/v1alpha1/linuxservers/{name}/ssh
+//	/services/providers/edges/edgeproxy/clusters/{cluster}/apis/edges.faros.sh/v1alpha1/linuxservers/{name}/ssh
 type LinuxServer struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

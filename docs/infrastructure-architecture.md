@@ -10,7 +10,7 @@ Related: `providers/infrastructure/` (current REST-broker implementation), kcp `
 
 The infrastructure provider today is a REST broker: tenants don't see Templates or Instances as Kubernetes resources, the "tenant" identifier is derived per request from headers, and isolation hinges on a SHA-hashed label inside a single shared management cluster. This document proposes moving the provider to a kcp-native shape with two layers:
 
-- A **platform layer**: a `Template` CRD plus per-template CRDs (`Redis`, `Postgres`, `Application`, …), all in group `infrastructure.kedge.faros.sh`. This is the entire surface tenants and the portal see. Backend choice is a platform concern, expressed via `Template.spec.backend`, never surfaced through a tenant API.
+- A **platform layer**: a `Template` CRD plus per-template CRDs (`Redis`, `Postgres`, `Application`, …), all in group `infrastructure.faros.sh`. This is the entire surface tenants and the portal see. Backend choice is a platform concern, expressed via `Template.spec.backend`, never surfaced through a tenant API.
 - A **backend layer**: a small in-process interface implemented today by **kro** (via the multicluster-runtime fork already in dev), and tomorrow by terraform / cloud / whatever else. Each backend takes a platform `Template` and is responsible for reconciling instances of the per-template CRD into actual infrastructure.
 
 The "tenant" is the kcp logical-cluster name of the workspace the instance lives in. No headers, no hashing.
@@ -23,21 +23,21 @@ A user with an instance `test` in their workspace saw `0 / 0 / 0 / 0` on the das
 
 | Action | Tenant header sent | Tenant string resolver returned | `tenantHash()` → namespace |
 |---|---|---|---|
-| `test` provisioned (no workspace selected in sidebar) | `X-Kedge-Org: <org>` only | `root:kedge:orgs:<org>` | `b0308307e326` |
-| Dashboard tile queried (after sidebar workspace pick) | `X-Kedge-Org` + `X-Kedge-Workspace` | `root:kedge:orgs:<org>:<ws>` | `9f2db7ed8014` |
+| `test` provisioned (no workspace selected in sidebar) | `X-Faros-Org: <org>` only | `root:faros:orgs:<org>` | `b0308307e326` |
+| Dashboard tile queried (after sidebar workspace pick) | `X-Faros-Org` + `X-Faros-Workspace` | `root:faros:orgs:<org>:<ws>` | `9f2db7ed8014` |
 
 Same user, same workspace, two different namespaces. The instance is real, the proxy is happy, every isolation check passes — and the data is invisible. We built a parallel identity system on top of kcp that disagrees with kcp.
 
 ### 1.2 Other costs of the current design
 
 - **No `kubectl get`**: the catalog is hidden behind a provider-specific REST call.
-- **Single-backend assumption**: REST endpoints + `tenantHash` + `kedge-tenants-*` namespacing all assume kro's flavour of "instance = label-selected CR in a shared cluster". Adding a second backend means reinventing all of it.
+- **Single-backend assumption**: REST endpoints + `tenantHash` + `faros-tenants-*` namespacing all assume kro's flavour of "instance = label-selected CR in a shared cluster". Adding a second backend means reinventing all of it.
 - **Instances aren't first-class Kubernetes objects** — no GC, no ownership graph, no audit story.
 - **Per-tenant secrets via a permission claim are the only kcp-native thing happening.** The APIExport's `schemas: []` is a tell.
 
 ## 2. Design principles
 
-1. **The platform is a small set of well-known CRDs.** Tenants and the portal only ever interact with `Template` and per-template instance kinds in group `infrastructure.kedge.faros.sh`. Nothing else is part of the public API.
+1. **The platform is a small set of well-known CRDs.** Tenants and the portal only ever interact with `Template` and per-template instance kinds in group `infrastructure.faros.sh`. Nothing else is part of the public API.
 2. **Backend choice is metadata on a Template, not a separate user-facing concept.** A `Redis` template might be backed by kro today, by a managed Redis API tomorrow. The tenant CR they apply doesn't change.
 3. **Backends implement a narrow interface, not a data model.** Each backend is responsible for taking a `Template` and serving instances of the corresponding per-template CRD. *How* it does that — RGDs, terraform modules, cloud SDK calls — is its own business.
 4. **kcp is the source of truth for identity.** Tenant = workspace logical-cluster name, embedded in the URL. No headers. No hashing.
@@ -47,14 +47,14 @@ Same user, same workspace, two different namespaces. The instance is real, the p
 ## 3. Architecture
 
 ```
-provider workspace (root:kedge:providers:infrastructure)
+provider workspace (root:faros:providers:infrastructure)
   │
-  ├─ APIExport  infrastructure.providers.kedge.faros.sh
-  │    schemas (every entry in group infrastructure.kedge.faros.sh):
-  │      ├─ templates.infrastructure.kedge.faros.sh        ← catalog
-  │      ├─ redis.infrastructure.kedge.faros.sh            ← per-template, dynamic
-  │      ├─ postgres.infrastructure.kedge.faros.sh
-  │      └─ application.infrastructure.kedge.faros.sh
+  ├─ APIExport  infrastructure.providers.faros.sh
+  │    schemas (every entry in group infrastructure.faros.sh):
+  │      ├─ templates.infrastructure.faros.sh        ← catalog
+  │      ├─ redis.infrastructure.faros.sh            ← per-template, dynamic
+  │      ├─ postgres.infrastructure.faros.sh
+  │      └─ application.infrastructure.faros.sh
   │    permissionClaims:
   │      - secrets    (unchanged — cloud-credentials resolution)
   │
@@ -65,7 +65,7 @@ provider workspace (root:kedge:providers:infrastructure)
   │      spec.backendConfig = opaque, only the backend interprets
   │
   ├─ CachedResource publish-templates      ← projects Templates read-only
-  │      spec.resource: templates.infrastructure.kedge.faros.sh
+  │      spec.resource: templates.infrastructure.faros.sh
   │
   └─ <hidden, backend-private state>       ← NOT tenant-visible
         kro RGDs / kro Helm release / terraform state buckets / etc.
@@ -74,7 +74,7 @@ provider workspace (root:kedge:providers:infrastructure)
         public API never mentions it.
 
 
-tenant workspace (root:kedge:orgs:<org>:<ws>)
+tenant workspace (root:faros:orgs:<org>:<ws>)
   │
   ├─ APIBinding infrastructure                       ← user clicks Enable
   │
@@ -119,7 +119,7 @@ The "kro" word appears in exactly two places: the implementation of one backend 
 ### 4.1 `Template` CRD (cluster-scoped, in provider workspace)
 
 ```yaml
-apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+apiVersion: infrastructure.faros.sh/v1alpha1
 kind: Template
 metadata:
   name: redis
@@ -156,7 +156,7 @@ spec:
   # name + group + version + kind together specify the per-template
   # CRD that goes into APIExport.spec.schemas.
   instanceCRD:
-    group: infrastructure.kedge.faros.sh
+    group: infrastructure.faros.sh
     version: v1alpha1
     kind: Redis
     resource: redis
@@ -196,7 +196,7 @@ status:
 ### 4.2 Per-template instance CRDs (cluster-scoped, in provider workspace; visible to tenants via APIBinding)
 
 ```yaml
-apiVersion: infrastructure.kedge.faros.sh/v1alpha1
+apiVersion: infrastructure.faros.sh/v1alpha1
 kind: Redis
 metadata:
   name: my-cache
@@ -225,7 +225,7 @@ Total surface area of the platform's tenant-facing API:
 - `kubectl get redis my-cache`                                 (status)
 - `kubectl delete redis my-cache`                              (deprovision)
 
-No `kro`, no `rgd`, no `tenant-hash`, no `kedge-tenants-*` namespace. The portal renders Templates as catalog cards and per-template CRs as instance cards. MCP tools wrap the same kcp APIs.
+No `kro`, no `rgd`, no `tenant-hash`, no `faros-tenants-*` namespace. The portal renders Templates as catalog cards and per-template CRs as instance cards. MCP tools wrap the same kcp APIs.
 
 ## 5. Component contracts
 
@@ -271,7 +271,7 @@ kind: CachedResource
 metadata:
   name: publish-templates
 spec:
-  group: infrastructure.kedge.faros.sh
+  group: infrastructure.faros.sh
   resource: templates
   version: v1alpha1
   # No label selector for v1; per-tenant allowlists are §9.
@@ -335,7 +335,7 @@ Run:                  Start the faroshq/kro-multicluster runtime
                       does today.
 ```
 
-Key property: the kro RGD declares the SAME group/version/kind as the platform's per-template CRD (`Redis.infrastructure.kedge.faros.sh`). kro's multicluster-runtime watches that CRD across tenant workspaces and reconciles directly. There's no in-process translation step — the CRD identity is shared, but it was authored by the platform's Template controller, not by the operator.
+Key property: the kro RGD declares the SAME group/version/kind as the platform's per-template CRD (`Redis.infrastructure.faros.sh`). kro's multicluster-runtime watches that CRD across tenant workspaces and reconciles directly. There's no in-process translation step — the CRD identity is shared, but it was authored by the platform's Template controller, not by the operator.
 
 ### 5.5 Other backends (sketch)
 
@@ -393,7 +393,7 @@ operator                provider workspace                    APIExport         
                                                                   │
                                                                   ▼
                                                   tenants who APIBind now see
-                                                  redis.infrastructure.kedge.
+                                                  redis.infrastructure.faros.
                                                   faros.sh in their workspace
                                                   AND the Template via CachedResource
 ```
@@ -436,13 +436,13 @@ Note what tenants and the portal know about: `Template`, `Redis`. Nothing in thi
 | **B** | CachedResource publishing Templates | A tenant workspace with the APIBinding sees Templates as a read-only resource. `kubectl get templates -A` from a tenant returns the catalog. |
 | **C** | kro backend + APIExport VW wiring | Backend interface implemented for kro. The platform binary starts the kro multicluster-runtime pointed at the provider's APIExport VW. A tenant applies a Redis CR; kro reconciles it in the management cluster within 10s; status syncs back; delete propagates. Orphan sweeper for deleted tenant workspaces in scope. |
 | **D** | UI + MCP migration | Portal main app and dashboard tile read Templates + per-template CRs via GraphQL. MCP tools (`infrastructure__list_templates`, `__provision`, …) become kcp API calls. Old REST endpoints get a deprecation banner. |
-| **E** | Cleanup | REST handlers gone. `tenantHash`, `kedge-tenants-*` convention, per-request header identity all gone. The REST-surface e2e suite (`make e2e-infrastructure`) is removed; isolation is exercised via the kcp path. |
+| **E** | Cleanup | REST handlers gone. `tenantHash`, `faros-tenants-*` convention, per-request header identity all gone. The REST-surface e2e suite (`make e2e-infrastructure`) is removed; isolation is exercised via the kcp path. |
 
 A through C land the new platform + the first backend (~2.5 weeks). D adds another week (mostly portal rewrites). E is a day of deletions.
 
 ## 8. Migration
 
-Pre-v1. Clean break. PR A through C ship the new architecture in parallel with the legacy REST surface; PR D moves the UI; PR E deletes the legacy code. Existing `kedge-tenants-*` namespaces in any test cluster are orphaned and `kubectl delete ns`-able once tenants re-provision via the new path. No data-migration controller.
+Pre-v1. Clean break. PR A through C ship the new architecture in parallel with the legacy REST surface; PR D moves the UI; PR E deletes the legacy code. Existing `faros-tenants-*` namespaces in any test cluster are orphaned and `kubectl delete ns`-able once tenants re-provision via the new path. No data-migration controller.
 
 ## 9. Open questions
 
@@ -453,14 +453,14 @@ Pre-v1. Clean break. PR A through C ship the new architecture in parallel with t
 2. **CRD versioning across templates.** When a Template's `spec.schema` changes, the CRD's served version may need to grow. Template controller needs to handle adding a new served version + marking the old one deprecated rather than overwriting; existing instances mustn't fail validation.
 3. **Per-tenant catalog (allowlist).** Future feature: admin restricts which Templates a tenant can use. With this design it's a per-tenant CachedResource with a label selector, or an admission webhook on the per-template CRDs. Out of scope for v1.
 4. **Cross-field validation webhooks.** OpenAPI validation in the per-template CRD covers per-field rules. Cross-field rules (e.g. "if `persistent=true`, `size` must be `large`") need an admission webhook. Each backend may want to add its own. Out of scope for v1.
-5. **Backend-private state location.** The kro backend authors RGDs somewhere; where? Options: a sibling workspace `root:kedge:providers:infrastructure-kro-state`, a hidden namespace in the provider workspace, or a dedicated CRD owned by the backend. Default proposal: separate workspace per backend, owned by the platform, never bound by tenants — operational discoverability is highest there.
+5. **Backend-private state location.** The kro backend authors RGDs somewhere; where? Options: a sibling workspace `root:faros:providers:infrastructure-kro-state`, a hidden namespace in the provider workspace, or a dedicated CRD owned by the backend. Default proposal: separate workspace per backend, owned by the platform, never bound by tenants — operational discoverability is highest there.
 6. **Workspace-deletion → backend-state GC cadence.** 5-minute sweep vs. finalizer-driven. Each backend implements its own sweeper interface; the kro backend's first version is sweep-based; PR C scope.
 
 ## 10. Decisions captured
 
 - **Tenant identity** = kcp logical-cluster name of the workspace the instance CR lives in. No headers. No hashing.
-- **Templates** = `Template` CRs in the provider workspace, group `infrastructure.kedge.faros.sh`. Projected read-only via `CachedResource`. The catalog.
-- **Instances** = per-template CRDs in `infrastructure.kedge.faros.sh`, declared by `Template.spec.instanceCRD`, registered by the Template controller, projected via APIExport. Tenants apply these.
+- **Templates** = `Template` CRs in the provider workspace, group `infrastructure.faros.sh`. Projected read-only via `CachedResource`. The catalog.
+- **Instances** = per-template CRDs in `infrastructure.faros.sh`, declared by `Template.spec.instanceCRD`, registered by the Template controller, projected via APIExport. Tenants apply these.
 - **Backends** = a Go interface with three methods (`SetupTemplate`, `TeardownTemplate`, `Run`). One implementation today (kro), the seam exists for terraform / cloud / others.
 - **kro backend** uses the `faroshq/kro-multicluster` fork and authors RGDs in non-tenant-visible state. Tenants never see RGDs or anything `kro.run/*`.
 - **Provider binary** = Template controller + CachedResource provisioner + backend dispatcher + registered backends + SPA + MCP host. No business logic outside backends.

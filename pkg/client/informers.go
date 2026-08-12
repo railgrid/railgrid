@@ -31,12 +31,12 @@ const (
 )
 
 // InformerFactory wraps a dynamic shared informer factory and provides
-// convenience methods for getting informers for kedge resources.
+// convenience methods for getting informers for faros resources.
 type InformerFactory struct {
 	factory dynamicinformer.DynamicSharedInformerFactory
 }
 
-// NewInformerFactory creates a new InformerFactory for kedge resources.
+// NewInformerFactory creates a new InformerFactory for faros resources.
 func NewInformerFactory(client dynamic.Interface, resyncPeriod time.Duration) *InformerFactory {
 	return &InformerFactory{
 		factory: dynamicinformer.NewDynamicSharedInformerFactory(client, resyncPeriod),

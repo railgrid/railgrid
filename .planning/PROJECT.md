@@ -2,9 +2,9 @@
 
 ## Overview
 
-Refactor the two separate resource types (`Site` = Kubernetes cluster, `Server` = SSH host) into a single unified `Edge` resource for faroshq/kedge. This reduces API surface, eliminates duplicate controllers/builders/reporters, and gives both connection paths a consistent registration and access model.
+Refactor the two separate resource types (`Site` = Kubernetes cluster, `Server` = SSH host) into a single unified `Edge` resource for faroshq/faros. This reduces API surface, eliminates duplicate controllers/builders/reporters, and gives both connection paths a consistent registration and access model.
 
-**Issue:** https://github.com/faroshq/kedge/issues/72
+**Issue:** https://github.com/faroshq/faros/issues/72
 **Branch:** `ssh` (current working branch)
 **Stack:** Go 1.22+, controller-runtime, kcp virtual workspaces, gorilla/websocket, multicluster-runtime
 
@@ -12,7 +12,7 @@ Refactor the two separate resource types (`Site` = Kubernetes cluster, `Server` 
 
 ## Problem Statement
 
-Currently kedge maintains two parallel resource types:
+Currently faros maintains two parallel resource types:
 
 | Resource | Purpose | Agent mode | VW path |
 |----------|---------|------------|---------|
@@ -25,7 +25,7 @@ This duplication manifests as:
 - Two virtual workspace builders (`edge_proxy_builder.go`, `agent_proxy_builder.go`) with `?site=` / `?server=` branch logic
 - Two status reporters (`status/reporter.go`, `status/server_reporter.go`)
 - Branching `if serverName != "" { ... } else { ... }` code throughout
-- CLI `kedge ssh` needing to probe which resource kind the name belongs to
+- CLI `faros ssh` needing to probe which resource kind the name belongs to
 
 ---
 
@@ -34,7 +34,7 @@ This duplication manifests as:
 ### New `Edge` CRD
 
 ```yaml
-apiVersion: kedge.faros.sh/v1alpha1
+apiVersion: faros.sh/v1alpha1
 kind: Edge
 metadata:
   name: my-cluster
@@ -70,8 +70,8 @@ POST /services/edges-proxy/register?edge=<name>&cluster=<cluster>
 
 **Resource access** (user → hub):
 ```
-/services/edges-proxy/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/k8s   # k8s only
-/services/edges-proxy/clusters/{cluster}/apis/kedge.faros.sh/v1alpha1/edges/{name}/ssh   # server only
+/services/edges-proxy/clusters/{cluster}/apis/faros.sh/v1alpha1/edges/{name}/k8s   # k8s only
+/services/edges-proxy/clusters/{cluster}/apis/faros.sh/v1alpha1/edges/{name}/ssh   # server only
 ```
 
 ### Connection pool
@@ -95,7 +95,7 @@ Single registration path. Agent flag `--type=kubernetes|server` (replaces `--mod
 
 ### CLI
 
-`kedge ssh <name>` calls `/ssh` subresource on the `edges` resource — no probe needed.
+`faros ssh <name>` calls `/ssh` subresource on the `edges` resource — no probe needed.
 `kubectl` access via workspace URL as before (workspace created by mount reconciler for `type=kubernetes`).
 
 ---
@@ -133,8 +133,8 @@ Single registration path. Agent flag `--type=kubernetes|server` (replaces `--mod
 - [ ] `agent_proxy_builder.go` deleted; `edge_proxy_builder.go` replaced by `edges_proxy_builder.go`
 - [ ] Agent `--type=kubernetes|server` flag (replaces `--mode`)
 - [ ] Agent `edge_reporter.go` replaces `reporter.go` + `server_reporter.go`
-- [ ] `kedge ssh <name>` uses `/edges/{name}/ssh` directly (no resource-kind probe)
-- [ ] `kedge agent join --type=kubernetes|server` help text updated
+- [ ] `faros ssh <name>` uses `/edges/{name}/ssh` directly (no resource-kind probe)
+- [ ] `faros agent join --type=kubernetes|server` help text updated
 - [ ] `pkg/client/` updated: `Sites()` / `Servers()` replaced by `Edges()`
 - [ ] e2e tests updated: `site.go`, `multisite.go`, `ssh.go` test cases
 - [ ] e2e framework updated: agent framework uses `--type` flag

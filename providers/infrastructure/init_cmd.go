@@ -44,7 +44,7 @@ import (
 
 // apiExportName is the infrastructure provider's APIExport (manifest.yaml
 // spec.apiExport.name).
-const apiExportName = "infrastructure.providers.kedge.faros.sh"
+const apiExportName = "infrastructure.providers.faros.sh"
 
 // runInitCmd drives the bootstrap chain. Reads admin credentials from
 // INFRASTRUCTURE_ADMIN_KUBECONFIG (preferred) or the standard
@@ -138,10 +138,10 @@ func runInitCmd(ctx context.Context) error {
 	}
 
 	// CatalogEntry self-registration: apply the provider's CatalogEntry into its
-	// own workspace (the Provider controller bound providers.kedge.faros.sh
+	// own workspace (the Provider controller bound providers.faros.sh
 	// here). adminConfig.Host already targets the provider workspace. Empty
-	// KEDGE_CATALOGENTRY_FILE → skip.
-	if f := os.Getenv("KEDGE_CATALOGENTRY_FILE"); f != "" {
+	// FAROS_CATALOGENTRY_FILE → skip.
+	if f := os.Getenv("FAROS_CATALOGENTRY_FILE"); f != "" {
 		log.Printf("init: self-registering CatalogEntry from %s", f)
 		if err := sdkinstall.ApplyCatalogEntry(ctx, dynCl, f); err != nil {
 			return fmt.Errorf("apply CatalogEntry: %w", err)

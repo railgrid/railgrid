@@ -352,7 +352,7 @@ func (s *Server) enableInbound(w http.ResponseWriter, r *http.Request) {
 	}
 	token := s.webhookToken(id.clusterID, channelWebhookName(name))
 	if token == "" {
-		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "webhook signing unavailable — the provider needs KEDGE_PROVIDER_KUBECONFIG (or AGENTS_WEBHOOK_KEY)")
+		writeStatus(w, http.StatusServiceUnavailable, "Unavailable", "webhook signing unavailable — the provider needs FAROS_PROVIDER_KUBECONFIG (or AGENTS_WEBHOOK_KEY)")
 		return
 	}
 	var req enableInboundRequest

@@ -33,7 +33,7 @@ import (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=kedge,shortName=gkey
+// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=gkey
 // +kubebuilder:printcolumn:name="Repository",type=string,JSONPath=`.spec.repositoryRef`
 // +kubebuilder:printcolumn:name="ReadOnly",type=boolean,JSONPath=`.spec.readOnly`
 // +kubebuilder:printcolumn:name="KeyID",type=string,JSONPath=`.status.keyID`
@@ -109,4 +109,4 @@ type DeployKeyStatus struct {
 
 // FinalizerDeployKey is added by the DeployKeyController so the host-side
 // key is removed before the CR disappears.
-const FinalizerDeployKey = "deploykeys.code.kedge.faros.sh/finalizer"
+const FinalizerDeployKey = "deploykeys.code.faros.sh/finalizer"

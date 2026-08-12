@@ -217,7 +217,7 @@ func runPersistentExec(parent context.Context, workspace string, req persistentE
 	cmd.Dir = workPath
 	cmd.Env = env
 	execMarker := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
-	cmd.Env = append(cmd.Env, "KEDGE_EXEC_SESSION="+execMarker)
+	cmd.Env = append(cmd.Env, "FAROS_EXEC_SESSION="+execMarker)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

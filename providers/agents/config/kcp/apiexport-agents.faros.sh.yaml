@@ -1,0 +1,32 @@
+apiVersion: apis.kcp.io/v1alpha2
+kind: APIExport
+metadata:
+  name: agents.faros.sh
+spec:
+  resources:
+  - group: agents.faros.sh
+    name: agents
+    schema: v260802-57900880.agents.agents.faros.sh
+    storage:
+      crd: {}
+  - group: agents.faros.sh
+    name: connections
+    schema: v260731-8b9a2703.connections.agents.faros.sh
+    storage:
+      crd: {}
+  - group: agents.faros.sh
+    name: schedules
+    schema: v260801-3863009e.schedules.agents.faros.sh
+    storage:
+      crd: {}
+  - group: agents.faros.sh
+    name: toolsets
+    schema: v260714-8e565fc.toolsets.agents.faros.sh
+    storage:
+      crd: {}
+  - group: agents.faros.sh
+    name: triggers
+    schema: v260724-50c73a4.triggers.agents.faros.sh
+    storage:
+      crd: {}
+status: {}

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { RefreshCw, Folder, FolderOpen, File as FileIcon, Loader2 } from 'lucide-vue-next'
-import type { KedgeContext, ProjectFileInfo, ProjectFileContent } from './types'
+import type { FarosContext, ProjectFileInfo, ProjectFileContent } from './types'
 import { api } from './api'
 
 // A minimal read-only explorer of the live development workspace — the same
@@ -10,7 +10,7 @@ import { api } from './api'
 // file's content. No editing; this is a window into what the dev env runs.
 
 const props = defineProps<{
-  ctx: KedgeContext | null
+  ctx: FarosContext | null
   projectName: string
 }>()
 

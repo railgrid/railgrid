@@ -20,5 +20,5 @@ limitations under the License.
 // (docs/vibe-studio-design.md §4.1).
 //
 // +k8s:deepcopy-gen=package
-// +groupName=vibe.kedge.faros.sh
+// +groupName=vibe.faros.sh
 package v1alpha1

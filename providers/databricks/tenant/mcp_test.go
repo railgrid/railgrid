@@ -44,7 +44,7 @@ func TestMCPQueryUsesDirectActionExecutorWithoutControlPlaneWrites(t *testing.T)
 	actionExecutor := &ActionExecutor{
 		factory:         &ClientFactory{},
 		authorityClient: authority,
-		identity:        identity{tenantPath: "root:kedge:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
+		identity:        identity{tenantPath: "root:faros:tenants:org:workspace", clusterID: "cluster-a", token: "caller-token"},
 		executor:        executor,
 		authorizer:      &actionTestAuthorizer{},
 	}

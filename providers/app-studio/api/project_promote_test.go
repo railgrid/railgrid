@@ -32,7 +32,7 @@ import (
 
 func applicationTemplateForPromote() projectTemplateInfo {
 	info := applicationTemplateInfo()
-	info.APIVersion = "infrastructure.kedge.faros.sh/v1alpha1"
+	info.APIVersion = "infrastructure.faros.sh/v1alpha1"
 	info.Kind = "Application"
 	info.Resource = "applications"
 	return info
@@ -63,7 +63,7 @@ func TestProjectTemplateProdBindingFillsImagesAndForcesMode(t *testing.T) {
 		"frontendPort":               float64(8080),
 		"backendPort":                float64(3000),
 		"name":                       "attacker-name",
-		"kedgeMode":                  "development",
+		"farosMode":                  "development",
 		"frontendImage":              "ghcr.io/evil/x@sha256:ccc",
 		projectRedeployRevisionField: "attacker-revision",
 	}
@@ -85,8 +85,8 @@ func TestProjectTemplateProdBindingFillsImagesAndForcesMode(t *testing.T) {
 	if vals["name"] != "shop-prod" {
 		t.Fatalf("name = %v, want shop-prod (platform-owned, user override ignored)", vals["name"])
 	}
-	if vals["kedgeMode"] != "production" {
-		t.Fatalf("kedgeMode = %v, want production", vals["kedgeMode"])
+	if vals["farosMode"] != "production" {
+		t.Fatalf("farosMode = %v, want production", vals["farosMode"])
 	}
 	if vals["frontendImage"] != "ghcr.io/acme/shop/frontend@sha256:aaa" {
 		t.Fatalf("frontendImage = %v, want the built digest (user override ignored)", vals["frontendImage"])

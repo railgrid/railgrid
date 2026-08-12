@@ -35,7 +35,7 @@ const (
 	ConnectionAuthPAT ConnectionAuthType = "pat"
 )
 
-// Connection configures a Databricks workspace for one kedge tenant. It points
+// Connection configures a Databricks workspace for one faros tenant. It points
 // at tenant-owned Secrets for auth material; credentials never live on the CR.
 //
 // +crd
@@ -44,7 +44,7 @@ const (
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=kedge,shortName=dbxconn
+// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=dbxconn
 // +kubebuilder:printcolumn:name="Host",type=string,JSONPath=`.spec.host`
 // +kubebuilder:printcolumn:name="Auth",type=string,JSONPath=`.spec.authType`
 // +kubebuilder:printcolumn:name="Validated",type=string,JSONPath=`.status.conditions[?(@.type=="Validated")].status`
@@ -92,7 +92,7 @@ type ConnectionStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// Warehouse binds a tenant-visible kedge handle to a Databricks SQL warehouse.
+// Warehouse binds a tenant-visible faros handle to a Databricks SQL warehouse.
 //
 // +crd
 // +genclient
@@ -100,7 +100,7 @@ type ConnectionStatus struct {
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=kedge,shortName=dbxwh
+// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=dbxwh
 // +kubebuilder:printcolumn:name="Connection",type=string,JSONPath=`.spec.connectionRef`
 // +kubebuilder:printcolumn:name="Warehouse",type=string,JSONPath=`.spec.warehouseID`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
@@ -140,7 +140,7 @@ type WarehouseStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// Table imports a Databricks table into kedge as a stable resource handle. It
+// Table imports a Databricks table into faros as a stable resource handle. It
 // is a governed pointer plus cached schema, not a copy of table data.
 //
 // +crd
@@ -149,7 +149,7 @@ type WarehouseStatus struct {
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,categories=kedge,shortName=dbxtbl
+// +kubebuilder:resource:scope=Cluster,categories=faros,shortName=dbxtbl
 // +kubebuilder:printcolumn:name="Table",type=string,JSONPath=`.spec.table`
 // +kubebuilder:printcolumn:name="Catalog",type=string,JSONPath=`.spec.catalog`
 // +kubebuilder:printcolumn:name="Schema",type=string,JSONPath=`.spec.schema`

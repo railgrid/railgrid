@@ -13,8 +13,8 @@ enters conversational building ("vibing") with live preview, build, and promotio
 to production.
 
 The pipeline it automates already exists and is proven — it is exactly the
-`kedge-create-app` skill flow (`list_templates → describe_template → provision
-kedgeMode=development → dev_sync → dev_logs → preview → repo → CI image →
+`faros-create-app` skill flow (`list_templates → describe_template → provision
+farosMode=development → dev_sync → dev_logs → preview → repo → CI image →
 provision production`). vibe-studio is that flow with a product UI on top and a
 thin harness in the middle.
 
@@ -33,7 +33,7 @@ Key decisions (details in §4–§6):
 | Run model | runs/messages/events in Postgres; **one CRD** (`Project`) in kcp |
 | Data plane | reuse infra provider dataplane verbs via `dataplane_client.go` — no runtime kubeconfig |
 | Preview | instance `status.url` + edge-readiness probe (no preview-gateway, no console signer) |
-| Promotion | app-studio's second-environment model (`kedgeMode: production` + built digests), kept |
+| Promotion | app-studio's second-environment model (`farosMode: production` + built digests), kept |
 
 ## 1. Market analysis
 
@@ -75,7 +75,7 @@ downloads) and Sandboxd ("self-hosted Lovable") prove the no-lock-in appetite.
    machinery, and same-template-same-substrate erases the "works in preview,
    breaks in prod" class that is architectural (unfixable) for WebContainers.
 4. **BYO compute / self-host has zero commercial coverage** below enterprise
-   tier. kedge's edges + BYO-cluster direction is the only native story here.
+   tier. faros's edges + BYO-cluster direction is the only native story here.
 5. **Pricing rage is universal** (Lovable credit burn on failed fixes, v0
    billing failed generations, Replit's effort-based $1,000-weeks). Two lessons
    to bake in: never bill the user for the model repairing its own mistakes
@@ -103,7 +103,7 @@ sandbox provisions concurrently with the final wizard step.
 
 **Decision: keep Eino, but consume it the way the agents provider does** — raw
 `BaseChatModel` + `schema.Message`, own ~500-LOC loop, own 140-LOC durable
-interrupt checkpoint. Both kedge harnesses converge on one dependency and one
+interrupt checkpoint. Both faros harnesses converge on one dependency and one
 engine idiom. The `adk`/`deep`/middleware stack that app-studio uses is where
 its 19.6k LOC came from; none of it is required for this product. MCP surfaces
 (serving `/mcp`) follow the existing provider pattern; prefer the official
@@ -159,14 +159,14 @@ single-replica-only due to no durable run lease; four list-response shapes and
    provision, success criteria. Buttons: **Create app** / **Adjust**. This is
    the billing meter's starting line.
 3. **Provision.** On approval, concurrently: create `Project`, create/adopt the
-   repo (code provider), provision the template with `kedgeMode: development`,
+   repo (code provider), provision the template with `farosMode: development`,
    hydrate the workspace from the scaffold tag, run the initial commit, write
-   `.kedge/build.json` + the Railpack workflow. The portal shows the four
+   `.faros/build.json` + the Railpack workflow. The portal shows the four
    lifecycle checkpoints (template / git / ci / production) filling in.
 4. **Studio.** Chat + file tools + `dev_sync` + preview pane (instance
    `status.url`) + logs/verify tools. Undo = workspace snapshot restore.
 5. **Ship.** `check_build` waits for digests; **Promote** creates/updates the
-   artifact-mode prod environment (same template, `kedgeMode: production`,
+   artifact-mode prod environment (same template, `farosMode: production`,
    pinned digests). Promotion is repeatable; dev keeps running.
 
 The wizard is skippable for experts: "I know what I want" jumps straight to a
@@ -177,9 +177,9 @@ DynamicForm pattern) and an empty-or-scaffold choice.
 
 ### 4.1 Provider shape
 
-Standard kedge provider (quickstart pattern): own Go module
+Standard faros provider (quickstart pattern): own Go module
 `github.com/faroshq/provider-vibe-studio`, subcommands `init | serve`, one port
-serving portal element `kedge-provider-vibe-studio`, `/api/*`, `/mcp`,
+serving portal element `faros-provider-vibe-studio`, `/api/*`, `/mcp`,
 `/healthz`; `sdkinstall.Bootstrap` init; CatalogEntry with permission claims on
 infrastructure (templates, instances, dataplane), code (repositories, commits,
 checkouts, packages), and its own APIExport.
@@ -187,7 +187,7 @@ checkouts, packages), and its own APIExport.
 State stores, mirroring the agents decision ("runs are not CRDs so schema and
 execution reality cannot drift"):
 
-- **kcp**: one CRD, `Project` (`vibe.kedge.faros.sh/v1alpha1`) — a trimmed copy
+- **kcp**: one CRD, `Project` (`vibe.faros.sh/v1alpha1`) — a trimmed copy
   of app-studio's `Project` (repository binding, template name, environments +
   bindings, sharing intent). No message/run types in kube.
 - **Postgres**: `sessions`, `session_events` (append-only, ordinal-keyed),
@@ -425,7 +425,7 @@ gate. app-studio stays untouched and running throughout.
   never in the CR; a Models menu configures them, and each project picks its
   model from a picker, changeable mid-project. Resolution: session's model →
   workspace default (annotation) → only model → legacy single Secret
-  (`kedge-projects-llm`, so app-studio-configured workspaces keep working).
+  (`faros-projects-llm`, so app-studio-configured workspaces keep working).
 - **ONE NAME RULE for template components** (2026-08-01). Component name ==
   its workspace directory, enforced by CEL on
   `Template.spec.development.components` (`.` allowed for a single root
@@ -436,7 +436,7 @@ gate. app-studio stays untouched and running throughout.
   one description. vibe-studio fails loudly when a scaffold's layout matches
   no component. Rationale: the name/path duality caused repeated bugs (sync
   routing, then `get_logs api` vs component `backend`). **Breaking**:
-  existing instances and `.kedge/build.json` must be recreated.
+  existing instances and `.faros/build.json` must be recreated.
 
 Non-goals for v1: multi-user collaboration on one session, browser-console
 capture (returns as an infra dataplane verb), per-message billing/metering
@@ -464,7 +464,7 @@ agents provider's "runs are not CRDs" and Argo/Tekton keeping logs out of CRs).
 Object model:
 
 ```
-Session (vibe.kedge.faros.sh, cluster-scoped)         ← NEW: the root object
+Session (vibe.faros.sh, cluster-scoped)         ← NEW: the root object
   spec:  intent, projectRef{name}, paused
   status: phase (Intake|Review|Provisioning|Studio), checkpoints[],
           activeTurn{id,startedAt}, messageCount, lastOrdinal, conditions
@@ -509,7 +509,7 @@ per-project SA; (C) delete the HTTP-side provision/preview/seed backfills.
 (A) landed as `Session` (cluster-scoped, `vsess`): `spec.intent`,
 `spec.projectRef`, `spec.modelRef`; `status` mirrors phase / active turn /
 last ordinal / checkpoints, refreshed by the Session reconciler every 30s.
-Its `vibe.kedge.faros.sh/purge` finalizer **purges the store** (events,
+Its `vibe.faros.sh/purge` finalizer **purges the store** (events,
 workspace files, listing row — keyed by session id + the tenant annotation
 that bridges the CR and store keyspaces), and `Project` carries an
 ownerReference to it, so `kubectl delete session X` cascades:
@@ -518,7 +518,7 @@ project → instances → sandbox, with the repository deliberately surviving.
 UI's delete actions go through the same CR deletion — no UI-only path.
 
 (B) landed: provisioning convergence runs in the Session reconciler under a
-per-session ServiceAccount (`kedge-vibe-<hash>`, minted with its ClusterRole,
+per-session ServiceAccount (`faros-vibe-<hash>`, minted with its ClusterRole,
 binding, and legacy token Secret as children of the Session — kcp has no
 TokenRequest). The caller's bearer is now used exactly once, at approve, to
 write the Session/Project pair. Git commits converge on the same loop: the
@@ -534,7 +534,7 @@ reconciler now duplicates.
 Promotion is a **spec write**, and that is the whole design. The Project
 reconciler already converges every binding in every environment, so appending
 a `production` environment to `Project.spec.environments` — same template,
-`kedgeMode: production`, images pinned into the inputs the template declares —
+`farosMode: production`, images pinned into the inputs the template declares —
 is enough to get a production instance created, updated, and torn down by
 exactly the machinery that runs the development sandbox. There is no
 promotion controller, no promotion pipeline, and re-promoting a newer image is

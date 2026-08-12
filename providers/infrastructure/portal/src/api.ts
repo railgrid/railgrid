@@ -2,11 +2,11 @@
 //
 // Every read and write goes through the hub's embedded GraphQL gateway at
 // /graphql/<cluster> — the same workspace-scoped, caller-authenticated path the
-// rest of the platform uses. The shell pushes kedgeContext.tenant (kcp cluster
-// name, used as the /graphql path segment) and kedgeContext.token (bearer).
+// rest of the platform uses. The shell pushes farosContext.tenant (kcp cluster
+// name, used as the /graphql path segment) and farosContext.token (bearer).
 //
 // Templates and per-template instance CRDs live in the infrastructure group, so
-// they surface under the GraphQL field `infrastructure_kedge_faros_sh`. Instance
+// they surface under the GraphQL field `infrastructure_faros_sh`. Instance
 // kinds are declared per Template, so their list field (`<Plural>`) is discovered
 // by introspection; reads of an instance's arbitrary spec use the gateway's raw
 // `<Kind>Yaml` escape hatch (parsed with js-yaml), and writes use `applyYaml` /
@@ -16,10 +16,10 @@ import { load as yamlLoad } from 'js-yaml'
 import type { ErrorResponse, Instance, JSONSchema, Template, TemplateExposure, TemplateView } from './types'
 import { columnsNeedInstanceData } from './view'
 
-const GROUP = 'infrastructure.kedge.faros.sh'
+const GROUP = 'infrastructure.faros.sh'
 const VERSION = 'v1alpha1'
 // GraphQL field for the group (dots → underscores, per the gateway's sanitizer).
-const GROUP_FIELD = 'infrastructure_kedge_faros_sh'
+const GROUP_FIELD = 'infrastructure_faros_sh'
 
 let bearerToken: string | null = null
 let clusterName: string | null = null
@@ -85,7 +85,7 @@ async function applyCR(manifest: Record<string, unknown>): Promise<RawObject> {
 // Infra<V> shapes a gateway response nested under the infra group/version. The
 // literal keys match GROUP_FIELD / VERSION, which are literal-typed consts, so
 // `data[GROUP_FIELD]?.[VERSION]` indexes cleanly.
-type Infra<V> = { infrastructure_kedge_faros_sh?: { v1alpha1?: V } }
+type Infra<V> = { infrastructure_faros_sh?: { v1alpha1?: V } }
 
 interface RawObject {
   apiVersion?: string
@@ -165,10 +165,10 @@ function templateFromGQL(name: string, spec: Record<string, unknown>): Template 
 
 // instanceFromObj collapses a per-template CR (any object with metadata/spec/
 // status) into the Instance shape the views read. The originating Template is
-// taken from the kedge.faros.sh/template label, falling back to the kind.
+// taken from the faros.sh/template label, falling back to the kind.
 function instanceFromObj(c: RawObject, templateByKind: Map<string, string>): Instance {
   const labels = c.metadata?.labels ?? {}
-  const tmpl = labels['kedge.faros.sh/template'] || (c.kind ? templateByKind.get(c.kind) ?? c.kind : '')
+  const tmpl = labels['faros.sh/template'] || (c.kind ? templateByKind.get(c.kind) ?? c.kind : '')
   const conditions = (c.status?.conditions ?? []).map(cond => ({
     type: cond.type,
     status: cond.status,
@@ -213,7 +213,7 @@ interface InfraIndex {
 let cachedIndex: InfraIndex | null = null
 const INDEX_TTL_MS = 10_000
 
-// introspectVersionFields walks Query → infrastructure_kedge_faros_sh → v1alpha1
+// introspectVersionFields walks Query → infrastructure_faros_sh → v1alpha1
 // in a single introspection query and returns its fields with (unwrapped) type
 // names, so we can map each instance kind to its list field.
 async function introspectVersionFields(): Promise<Array<{ name: string; typeName: string }>> {
@@ -329,7 +329,7 @@ function buildInstanceManifest(kind: string, name: string, templateName: string,
   return {
     apiVersion: GROUP + '/' + VERSION,
     kind,
-    metadata: { name, labels: { 'kedge.faros.sh/template': templateName } },
+    metadata: { name, labels: { 'faros.sh/template': templateName } },
     spec: values,
   }
 }

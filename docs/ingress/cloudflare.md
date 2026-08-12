@@ -3,7 +3,7 @@ layout: default
 title: Cloudflare Tunnel
 parent: Ingress
 nav_order: 1
-description: "Expose Kedge Hub via Cloudflare Tunnel"
+description: "Expose Faros Hub via Cloudflare Tunnel"
 ---
 
 # Cloudflare Tunnel
@@ -160,7 +160,7 @@ helm upgrade --install --wait \
   strrl.dev/cloudflare-tunnel-ingress-controller \
   --set=cloudflare.apiToken="YOUR_CLOUDFLARE_API_TOKEN" \
   --set=cloudflare.accountId="YOUR_CLOUDFLARE_ACCOUNT_ID" \
-  --set=cloudflare.tunnelName="kedge-tunnel"
+  --set=cloudflare.tunnelName="faros-tunnel"
 ```
 
 Verify it's running:
@@ -173,7 +173,7 @@ kubectl -n cloudflare-tunnel-ingress-controller get pods
 
 Check the tunnel in [Cloudflare Zero Trust](https://one.dash.cloudflare.com):
 - Go to **Networks** → **Tunnels**
-- You should see `kedge-tunnel` with status **Healthy**
+- You should see `faros-tunnel` with status **Healthy**
 
 ---
 
@@ -216,9 +216,9 @@ ingress:
 Deploy:
 
 ```bash
-helm upgrade --install kedge oci://ghcr.io/faroshq/charts/kedge-hub \
+helm upgrade --install faros oci://ghcr.io/faroshq/charts/faros-hub \
   -f values.yaml \
-  --namespace kedge-system \
+  --namespace faros-system \
   --create-namespace
 ```
 
@@ -231,23 +231,23 @@ Set `--set image.hub.tag=v0.0.1` to override image
 ### Check certificate status
 
 ```bash
-kubectl -n kedge-system get certificate
+kubectl -n faros-system get certificate
 # NAME                  READY   SECRET                AGE
-# kedge-kedge-hub-tls   True    kedge-kedge-hub-tls   2m
+# faros-faros-hub-tls   True    faros-faros-hub-tls   2m
 ```
 
 If not ready, check the certificate request:
 
 ```bash
-kubectl -n kedge-system describe certificaterequest
+kubectl -n faros-system describe certificaterequest
 ```
 
 ### Check ingress status
 
 ```bash
-kubectl get ingress -n kedge-system
+kubectl get ingress -n faros-system
 # NAME              CLASS               HOSTS                ADDRESS                              PORTS     AGE
-# kedge-kedge-hub   cloudflare-tunnel   hub.yourdomain.com   xxxx.cfargotunnel.com               80, 443   5m
+# faros-faros-hub   cloudflare-tunnel   hub.yourdomain.com   xxxx.cfargotunnel.com               80, 443   5m
 ```
 
 ### Test connectivity
@@ -260,7 +260,7 @@ curl -s https://hub.faros.sh/healthz
 ### Log in
 
 ```bash
-kedge login --hub-url https://hub.yourdomain.com
+faros login --hub-url https://hub.yourdomain.com
 ```
 
 ---
@@ -330,8 +330,8 @@ kubectl -n cert-manager logs -l app=cert-manager
 Check certificate status:
 
 ```bash
-kubectl -n kedge-system describe certificate
-kubectl -n kedge-system get certificaterequest,order,challenge
+kubectl -n faros-system describe certificate
+kubectl -n faros-system get certificaterequest,order,challenge
 ```
 
 Common issues:

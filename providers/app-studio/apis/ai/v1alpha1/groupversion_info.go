@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	GroupName = "ai.kedge.faros.sh"
+	GroupName = "ai.faros.sh"
 	Version   = "v1alpha1"
 )
 

@@ -4,9 +4,9 @@ set -euo pipefail
 
 trap 'kill 0; wait' EXIT
 
-./bin/kedge-hub \
+./bin/faros-hub \
   --idp-issuer-url=https://localhost:5554/dex \
-  --idp-client-id=kedge \
+  --idp-client-id=faros \
   --idp-client-secret=ZXhhbXBsZS1hcHAtc2VjcmV0 \
   --serving-cert-file=certs/apiserver.crt \
   --serving-key-file=certs/apiserver.key \

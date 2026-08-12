@@ -22,7 +22,7 @@ import (
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
+	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 )
 
 // MembershipAddRequest is the POST body for adding a Membership.
@@ -226,9 +226,9 @@ func (h *Handler) selfLeaveOrg(w http.ResponseWriter, r *http.Request) {
 
 // listWorkspaceMemberships returns the workspace-scope members.
 // Workspace-scope Memberships don't have an in-workspace CR (the
-// workspace WorkspaceType no longer binds tenants.kedge.faros.sh per
+// workspace WorkspaceType no longer binds tenants.faros.sh per
 // PR #211), so the source of truth is each member's UMI. The hub
-// client has cluster-wide read on the UMIs in root:kedge:users, so we
+// client has cluster-wide read on the UMIs in root:faros:users, so we
 // list them all and project the rows matching this (org, workspace).
 // This is O(users) — fine at current scale; swap for a Workspace →
 // []user reverse index (or a workspaceRef CR in the Org) if the user
@@ -297,7 +297,7 @@ func (h *Handler) addWorkspaceMembership(w http.ResponseWriter, r *http.Request)
 	// GraphQL gateway 403s the moment the member tries to switch to
 	// this workspace. SAs currently map both admin+member to
 	// cluster-admin (see serviceaccounts.buildCRB); we follow the same
-	// posture until the kedge:workspace:admin/member ClusterRoles are
+	// posture until the faros:workspace:admin/member ClusterRoles are
 	// bootstrapped.
 	if target.Spec.RBACIdentity != "" {
 		if err := h.mgr.bootstrapper.EnsureChildWorkspaceAdmin(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, target.Spec.RBACIdentity); err != nil {

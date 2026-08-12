@@ -1109,7 +1109,7 @@ func TestProjectAssistantThreadStartConsumesServerOwnedInitialBootstrap(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	projectYAML := "apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
+	projectYAML := "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
 	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Query string `json:"query"`
@@ -1119,7 +1119,7 @@ func TestProjectAssistantThreadStartConsumesServerOwnedInitialBootstrap(t *testi
 		}
 		switch {
 		case strings.Contains(request.Query, "ProjectYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": projectYAML}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": projectYAML}}}})
 		case strings.Contains(request.Query, "applyYaml"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"applyYaml": projectYAML}})
 		case strings.Contains(request.Query, "SecretYaml"):
@@ -1146,9 +1146,9 @@ func TestProjectAssistantThreadStartConsumesServerOwnedInitialBootstrap(t *testi
 		request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/"+threadID+"/turns", strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Authorization", "Bearer caller-token")
-		request.Header.Set("X-Kedge-User", "test-user")
-		request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
-		request.Header.Set("X-Kedge-Cluster", "cluster-a")
+		request.Header.Set("X-Faros-User", "test-user")
+		request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+		request.Header.Set("X-Faros-Cluster", "cluster-a")
 		recorder := httptest.NewRecorder()
 		router.ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusAccepted {
@@ -1229,7 +1229,7 @@ func TestProjectAssistantSnapshotStreamReconcilesRestartedRunningRun(t *testing.
 			t.Fatalf("unexpected GraphQL query: %s", request.Query)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
-			"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}},
+			"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}},
 		}})
 	}))
 	defer graphQL.Close()
@@ -1249,9 +1249,9 @@ func TestProjectAssistantSnapshotStreamReconcilesRestartedRunningRun(t *testing.
 	server.Register(router)
 	request := httptest.NewRequest(http.MethodGet, "/api/projects/demo/assistant/threads/thread-1/events", nil)
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Kedge-User", "test-user")
-	request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
-	request.Header.Set("X-Kedge-Cluster", "cluster-a")
+	request.Header.Set("X-Faros-User", "test-user")
+	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -1275,7 +1275,7 @@ func TestProjectAssistantSnapshotStreamReconcilesRestartedRunningRun(t *testing.
 }
 
 func TestProjectAssistantThreadInterruptReattachesPendingRun(t *testing.T) {
-	projectYAML := "apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
+	projectYAML := "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"
 	graphQL := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Query string `json:"query"`
@@ -1287,7 +1287,7 @@ func TestProjectAssistantThreadInterruptReattachesPendingRun(t *testing.T) {
 			t.Fatalf("unexpected GraphQL query: %s", request.Query)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
-			"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": projectYAML}},
+			"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": projectYAML}},
 		}})
 	}))
 	defer graphQL.Close()
@@ -1316,9 +1316,9 @@ func TestProjectAssistantThreadInterruptReattachesPendingRun(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-1/turns/run-pending/interrupt", strings.NewReader(`{"clientRequestID":"stop-1"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Kedge-User", "test-user")
-	request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
-	request.Header.Set("X-Kedge-Cluster", "cluster-a")
+	request.Header.Set("X-Faros-User", "test-user")
+	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusAccepted {
@@ -1477,7 +1477,7 @@ func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 		}
 		switch {
 		case strings.Contains(request.Query, "ProjectYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}}}})
 		case strings.Contains(request.Query, "SecretYaml"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}})
 		default:
@@ -1504,9 +1504,9 @@ func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-1/turns", strings.NewReader(`{"content":"finish the plan","clientUserMessageID":"plan-request","collaborationMode":"plan"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Kedge-User", "test-user")
-	request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
-	request.Header.Set("X-Kedge-Cluster", "cluster-a")
+	request.Header.Set("X-Faros-User", "test-user")
+	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted {
@@ -1577,7 +1577,7 @@ func TestProjectAssistantWorkerPersistsCodexTerminalContract(t *testing.T) {
 		}
 		switch {
 		case strings.Contains(request.Query, "ProjectYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}}}})
 		case strings.Contains(request.Query, "SecretYaml"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}})
 		default:
@@ -1609,9 +1609,9 @@ func TestProjectAssistantWorkerPersistsCodexTerminalContract(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-1/turns", strings.NewReader(`{"content":"answer this","clientUserMessageID":"terminal-request","collaborationMode":"default"}`))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Bearer caller-token")
-			request.Header.Set("X-Kedge-User", "test-user")
-			request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
-			request.Header.Set("X-Kedge-Cluster", "cluster-a")
+			request.Header.Set("X-Faros-User", "test-user")
+			request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+			request.Header.Set("X-Faros-Cluster", "cluster-a")
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)
 			if response.Code != http.StatusAccepted {
@@ -1653,7 +1653,7 @@ func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(
 		}
 		switch {
 		case strings.Contains(request.Query, "ProjectYaml"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_kedge_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.kedge.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ai_faros_sh": map[string]any{"v1alpha1": map[string]any{"ProjectYaml": "apiVersion: ai.faros.sh/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"}}}})
 		case strings.Contains(request.Query, "SecretYaml"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"v1": map[string]any{"SecretYaml": string(secret)}}})
 		default:
@@ -1694,9 +1694,9 @@ func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/demo/assistant/threads/thread-1/turns/run-1/input", strings.NewReader(`{"requestID":"follow-up-1","answer":"Continue with the plan."}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer caller-token")
-	request.Header.Set("X-Kedge-User", "test-user")
-	request.Header.Set("X-Kedge-Tenant", "root:kedge:tenants:org-a:workspace-a")
-	request.Header.Set("X-Kedge-Cluster", "cluster-a")
+	request.Header.Set("X-Faros-User", "test-user")
+	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:workspace-a")
+	request.Header.Set("X-Faros-Cluster", "cluster-a")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted {

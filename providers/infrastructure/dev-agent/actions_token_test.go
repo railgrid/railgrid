@@ -80,7 +80,7 @@ func actionsReadinessConfig(t *testing.T, enabled bool, client *http.Client) (*a
 		ActionsTokenFile:          filepath.Join(dir, "actions", "token"),
 		ActionsExchangeURL:        exchangeURL,
 		ActionsBaseURL:            baseURL,
-		ActionsTenantPath:         "root:kedge:tenants:org:workspace",
+		ActionsTenantPath:         "root:faros:tenants:org:workspace",
 		ActionsProject:            "demo",
 		ActionsProjectUID:         "project-uid",
 		ActionsEnvironment:        "development",
@@ -137,7 +137,7 @@ func TestExchangeActionsTokenPublishesTokenAndExactIdentity(t *testing.T) {
 		ActionsTokenFile:          filepath.Join(dir, "actions", "token"),
 		ActionsExchangeURL:        exchangeURL,
 		ActionsBaseURL:            baseURL,
-		ActionsTenantPath:         "root:kedge:tenants:org:ws",
+		ActionsTenantPath:         "root:faros:tenants:org:ws",
 		ActionsProject:            "demo",
 		ActionsProjectUID:         "project-uid",
 		ActionsEnvironment:        "development",
@@ -155,7 +155,7 @@ func TestExchangeActionsTokenPublishesTokenAndExactIdentity(t *testing.T) {
 		t.Fatalf("authorization = %q", gotAuth)
 	}
 	want := actionsExchangeRequest{
-		TenantPath: "root:kedge:tenants:org:ws", Project: "demo", ProjectUID: "project-uid", Environment: "development", Instance: "demo-dev",
+		TenantPath: "root:faros:tenants:org:ws", Project: "demo", ProjectUID: "project-uid", Environment: "development", Instance: "demo-dev",
 	}
 	if gotRequest != want {
 		t.Fatalf("request = %+v, want %+v", gotRequest, want)
@@ -228,7 +228,7 @@ func TestExchangeActionsTokenDoesNotFollowRedirectOrForwardBootstrap(t *testing.
 		ActionsTokenFile:          filepath.Join(dir, "actions", "token"),
 		ActionsExchangeURL:        exchangeURL,
 		ActionsBaseURL:            baseURL,
-		ActionsTenantPath:         "root:kedge:tenants:org:ws",
+		ActionsTenantPath:         "root:faros:tenants:org:ws",
 		ActionsProject:            "demo",
 		ActionsProjectUID:         "project-uid",
 		ActionsEnvironment:        "development",

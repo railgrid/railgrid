@@ -104,8 +104,8 @@ type TemplateStatus struct {
 // concurrent reconciles; registration itself is expected to happen
 // during single-threaded startup so the mutex is for paranoia.
 type Registry struct {
-	mu       sync.RWMutex
-	byName   map[string]Backend
+	mu     sync.RWMutex
+	byName map[string]Backend
 }
 
 // NewRegistry returns an empty Registry.
