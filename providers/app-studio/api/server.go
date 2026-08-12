@@ -97,7 +97,17 @@ type Server struct {
 	previewConsoleSigner        *previewConsoleCapabilitySigner
 	previewInspector            projectAssistantPreviewInspector
 	previewInspectionResolveURL func(context.Context, identity, *aiv1alpha1.Project) (string, error)
-	mu                          sync.Mutex
+	// publishingMembershipFetcher is a test seam for the hub-mediated
+	// membership lookup used by the publishing API. Production resolves the
+	// current org/workspace membership through hubBase with the caller's bearer
+	// token; App Studio never treats an email address as a grant identity.
+	publishingMembershipFetcher func(context.Context, identity) ([]publishingMember, error)
+	// publishingMemberInviter is the matching test seam for invite-by-email:
+	// production POSTs the hub org-membership endpoint with invite semantics
+	// and returns the pending User's stable name.
+	publishingMemberInviter func(context.Context, identity, string) (publishingMember, error)
+	publishingHTTPClient    *http.Client
+	mu                      sync.Mutex
 }
 
 // New constructs a Server.
@@ -123,6 +133,7 @@ func NewWithWorkspaceContext(parent context.Context, gql *tenant.GraphQLClient, 
 		actionsCABundleErr:       actionsCABundleErr,
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
 	}
+	s.publishingHTTPClient = newPublishingHTTPClient()
 	s.assistantEngine = NewEinoAssistantEngine(s)
 	s.assistantRunManager = newProjectAssistantRunManager()
 	s.assistantSupervisor = newProjectAssistantSupervisor(parent, msgStore)
@@ -225,6 +236,13 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/promotion", s.getProjectPromotion).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/checkpoints", s.getProjectCheckpoints).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/promote", s.promoteProjectHandler).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/publishing", s.getProjectPublishing).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/publishing", s.publishProject).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/publishing", s.unpublishProject).Methods(http.MethodDelete)
+	r.HandleFunc("/api/projects/{project}/publishing/members", s.listProjectPublishingMembers).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/publishing/grants", s.listProjectPublishingGrants).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/publishing/grants", s.createProjectPublishingGrant).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/publishing/grants/{grant}", s.revokeProjectPublishingGrant).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/hydrate-workspace", s.hydrateProjectWorkspace).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/scaffold", s.reseedProjectScaffold).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/sync-development", s.syncProjectDevelopment).Methods(http.MethodPost)

@@ -47,12 +47,12 @@ func runnerInstance(runtimeNamespace string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "infrastructure.kedge.faros.sh/v1alpha1",
 		"kind":       "SandboxRunner",
-		"metadata":   map[string]any{"name": "kedge-sandbox-a1c31ddaaaa007d4"},
+		"metadata":   map[string]any{"name": runtimeNamespace},
 		"status": map[string]any{
 			"runtimeNamespace":  runtimeNamespace,
-			"controlServiceRef": map[string]any{"name": "kedge-sandbox-a1c31ddaaaa007d4-control", "namespace": runtimeNamespace},
-			"previewServiceRef": map[string]any{"name": "kedge-sandbox-a1c31ddaaaa007d4-preview", "namespace": runtimeNamespace},
-			"controlSecretRef":  map[string]any{"name": "kedge-sandbox-a1c31ddaaaa007d4-control", "namespace": runtimeNamespace},
+			"controlServiceRef": map[string]any{"name": runtimeNamespace + "-control", "namespace": runtimeNamespace},
+			"previewServiceRef": map[string]any{"name": runtimeNamespace + "-preview", "namespace": runtimeNamespace},
+			"controlSecretRef":  map[string]any{"name": runtimeNamespace + "-control", "namespace": runtimeNamespace},
 		},
 	}}
 }
@@ -131,6 +131,16 @@ func TestResolveRejectsNamespaceEscape(t *testing.T) {
 
 	if _, err := Resolve(sandboxRunnerContract(), instance, "log"); err == nil {
 		t.Fatal("Resolve(log): expected error for a ref escaping the runtime namespace, got nil")
+	}
+}
+
+func TestValidateRuntimeNamespaceRejectsForgedStatusBoundary(t *testing.T) {
+	instance := runnerInstance("victim-default")
+	if err := ValidateRuntimeNamespace(sandboxRunnerContract(), instance, "attacker-default"); err == nil {
+		t.Fatal("ValidateRuntimeNamespace: expected forged runtime namespace rejection")
+	}
+	if err := ValidateRuntimeNamespace(sandboxRunnerContract(), instance, "victim-default"); err != nil {
+		t.Fatalf("ValidateRuntimeNamespace valid boundary: %v", err)
 	}
 }
 

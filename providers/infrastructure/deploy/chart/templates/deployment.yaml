@@ -121,23 +121,55 @@ spec:
             - name: KRO_KUBECONFIG
               value: /var/run/secrets/kro/kubeconfig
             {{- end }}
-            {{- with .Values.application.baseDomain }}
+            {{- if and .Values.application.baseDomain (not .Values.publishing.baseDomain) }}
             # Enables the Application instance controller (fqdn stamp + OIDC
             # client-secret bridge). Without it (and KRO_KUBECONFIG) the
             # controller stays disabled. The zone apps are served under, e.g.
             # "apps.example.com".
             - name: KEDGE_APP_BASE_DOMAIN
-              value: {{ . | quote }}
+              value: {{ .Values.application.baseDomain | quote }}
             {{- end }}
-            {{- with .Values.application.gateway.name }}
+            {{- if and .Values.application.gateway.name (not .Values.publishing.gateway.name) }}
             # Gateway API parent the Application HTTPRoutes attach to
             # (${kedge.gatewayName}); defaults to "cloudflare-tunnel" in-binary.
             - name: KEDGE_GATEWAY_NAME
-              value: {{ . | quote }}
+              value: {{ .Values.application.gateway.name | quote }}
             {{- end }}
-            {{- with .Values.application.gateway.namespace }}
+            {{- if and .Values.application.gateway.namespace (not .Values.publishing.gateway.namespace) }}
             # The Gateway's namespace (${kedge.gatewayNamespace}); defaults to
             # "cfgate-system" in-binary.
+            - name: KEDGE_GATEWAY_NAMESPACE
+              value: {{ .Values.application.gateway.namespace | quote }}
+            {{- end }}
+            {{- with .Values.publishing.baseDomain }}
+            - name: KEDGE_APP_BASE_DOMAIN
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.publishing.accessProxyImage }}
+            - name: KEDGE_ACCESS_PROXY_IMAGE
+              value: {{ . | quote }}
+            {{- end }}
+            - name: KEDGE_ACCESS_HUB_URL
+              value: {{ default .Values.hub.url .Values.publishing.hubURL | quote }}
+            {{- with .Values.publishing.hubPublicURL }}
+            - name: KEDGE_ACCESS_HUB_PUBLIC_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.publishing.insecure }}
+            - name: KEDGE_ACCESS_HUB_INSECURE
+              value: "true"
+            {{- end }}
+            - name: KEDGE_ACCESS_PUBLIC_SCHEME
+              value: {{ .Values.publishing.publicScheme | default "https" | quote }}
+            {{- if gt (int .Values.publishing.publicPort) 0 }}
+            - name: KEDGE_APP_PUBLIC_PORT
+              value: {{ .Values.publishing.publicPort | quote }}
+            {{- end }}
+            {{- with .Values.publishing.gateway.name }}
+            - name: KEDGE_GATEWAY_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.publishing.gateway.namespace }}
             - name: KEDGE_GATEWAY_NAMESPACE
               value: {{ . | quote }}
             {{- end }}

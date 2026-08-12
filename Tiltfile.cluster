@@ -30,7 +30,15 @@
 config.define_string('kcp-dir')
 config.define_string('kcp-image-tag')
 config.define_string('kcp-image-repo')
+# Opt-in SSO for the local stack: `tilt up -f Tiltfile.cluster -- --sso` wires
+# the hub to the local Dex (username/password login, browser SSO for private
+# published apps). Default OFF: the hub runs token-login only, exactly the
+# historical local flow — private-app sign-in still works by pasting
+# dev-token at /login. Dex itself always runs so toggling doesn't rebuild
+# the resource graph.
+config.define_bool('sso')
 cfg = config.parse()
+sso_enabled = cfg.get('sso', False)
 
 default_kcp_dir = os.path.join(os.getenv('HOME', ''), 'go', 'src', 'github.com', 'kcp-dev', 'kcp')
 kcp_dir = cfg.get('kcp-dir', os.getenv('KCP_DIR', default_kcp_dir))
@@ -207,6 +215,14 @@ hub_namespace = 'kedge-system'
 hub_image = 'ghcr.io/faroshq/kedge-hub'
 hub_tls_secret_name = 'kedge-hub-tls'
 hub_tls_state_dir = '.kcp/tilt-hub-tls'
+access_proxy_image = 'ghcr.io/faroshq/kedge-access-proxy:dev'
+dex_image = 'ghcr.io/faroshq/kedge-dex:dev'
+dex_namespace = hub_namespace
+dex_secret_name = hub_tls_secret_name
+dex_config_name = 'dex-config'
+dex_issuer = 'https://dex.kedge-system.svc.cluster.local:5554/dex'
+dex_browser_auth_url = 'https://localhost:5554/dex/auth'
+app_studio_provider_image = 'ghcr.io/faroshq/kedge/app-studio-provider:dev'
 app_studio_preview_namespace = 'kedge-preview'
 app_studio_preview_parent_gateway_name = 'app-studio-preview'
 app_studio_preview_tls_secret = 'app-studio-preview-localhost-tls'
@@ -255,6 +271,148 @@ k8s_yaml(blob(hub_tls_yaml))
 k8s_resource(
     new_name='hub-tls',
     objects=['%s:secret' % hub_tls_secret_name],
+    labels=['hub'],
+)
+
+# --- Dex (shared local OIDC issuer for hub + app-access broker) ---
+# Dex reuses the stable local hub leaf certificate so a browser that already
+# accepted the App Studio certificate for localhost does not encounter a
+# second local CA. The hub's dev-only OIDC transport skips verification when it
+# calls the canonical cluster-internal issuer hostname.
+# Build the repository overlay in Tilt so changes to the templates or CSS are
+# rebuilt and loaded before the Deployment rolls. The build context is kept to
+# hack/dex: no provider or hub source change can spuriously rebuild the IdP.
+docker_build(
+    dex_image,
+    context='hack/dex',
+    dockerfile='hack/dex/Dockerfile',
+)
+k8s_yaml(blob('''
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    app.kubernetes.io/name: dex
+    app.kubernetes.io/instance: dex
+data:
+  config.yaml: |
+    issuer: %s
+    storage:
+      type: memory
+    web:
+      https: 0.0.0.0:5554
+      http: 0.0.0.0:5556
+      tlsCert: /etc/dex/tls/tls.crt
+      tlsKey: /etc/dex/tls/tls.key
+    oauth2:
+      skipApprovalScreen: true
+    staticClients:
+      - id: kedge
+        public: true
+        name: Kedge
+        redirectURIs:
+          - https://localhost:9443/auth/callback
+          - https://localhost:9443/auth/apps/callback
+    enablePasswordDB: true
+    staticPasswords:
+      - email: admin@test.kedge.local
+        hash: "$2a$10$ntVcHD0gEYObjVin2ti7XuMILVz0rTQl//HVPc3cR8z7AAVbQGrkO"
+        username: admin
+        userID: test-user-id-01
+      - email: user2@test.kedge.local
+        hash: "$2a$10$ntVcHD0gEYObjVin2ti7XuMILVz0rTQl//HVPc3cR8z7AAVbQGrkO"
+        username: user2
+        userID: test-user-id-02
+'''.strip() % (dex_config_name, dex_namespace, dex_issuer)))
+k8s_yaml(blob('''
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dex
+  namespace: %s
+  labels:
+    app.kubernetes.io/name: dex
+    app.kubernetes.io/instance: dex
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dex
+      app.kubernetes.io/instance: dex
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dex
+        app.kubernetes.io/instance: dex
+    spec:
+      containers:
+        - name: dex
+          image: %s
+          imagePullPolicy: IfNotPresent
+          # The v2.44 image entrypoint expects the executable name as argv[1]
+          # (its baked-in Cmd is `dex serve ...`). Supplying only `serve`
+          # makes the entrypoint try to exec a non-existent binary.
+          args: [dex, serve, /etc/dex/config/config.yaml]
+          ports:
+            - name: https
+              containerPort: 5554
+            - name: http
+              containerPort: 5556
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dex/config
+              readOnly: true
+            - name: tls
+              mountPath: /etc/dex/tls
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /dex/.well-known/openid-configuration
+              port: https
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /dex/.well-known/openid-configuration
+              port: https
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: %s
+        - name: tls
+          secret:
+            secretName: %s
+'''.strip() % (dex_namespace, dex_image, dex_config_name, dex_secret_name)))
+k8s_yaml(blob('''
+apiVersion: v1
+kind: Service
+metadata:
+  name: dex
+  namespace: %s
+  labels:
+    app.kubernetes.io/name: dex
+    app.kubernetes.io/instance: dex
+spec:
+  selector:
+    app.kubernetes.io/name: dex
+    app.kubernetes.io/instance: dex
+  ports:
+    - name: https
+      port: 5554
+      targetPort: https
+    - name: http
+      port: 5556
+      targetPort: http
+'''.strip() % dex_namespace))
+k8s_resource(
+    'dex',
+    objects=['%s:configmap' % dex_config_name],
+    resource_deps=['hub-tls'],
+    port_forwards=['5554:5554'],
     labels=['hub'],
 )
 
@@ -370,6 +528,103 @@ RUN chmod 0755 /tmp/kedge-hub
     live_update=[
         sync('bin/kedge-hub-linux', '/tmp/kedge-hub'),
     ],
+)
+
+docker_build(
+    access_proxy_image,
+    context='providers/infrastructure',
+    dockerfile='providers/infrastructure/Dockerfile.access-proxy',
+    # Tilt deploys an immutable :tilt-<digest> tag into the image-cache pod.
+    # Keep the stable :dev tag too because gate Deployments are rendered by
+    # template graphs (kro) after Tilt's object graph and reference that tag.
+    extra_tag=access_proxy_image,
+    only=[
+        'cmd/access-proxy',
+        'accessproxy',
+        'Dockerfile.access-proxy',
+        'go.mod',
+        'go.sum',
+    ],
+)
+
+# Tilt only materializes an image target when a workload references that image.
+# The real gate Deployments are rendered later by template graphs on the
+# runtime cluster, so keep one sleeping image-cache pod solely to make the
+# build/load and dependency edge explicit. A zero-replica Deployment never
+# reaches Tilt's ready state and would permanently block
+# access-proxy-image-load. This pod never serves traffic or creates tenant
+# state; every live gate still comes from a template graph.
+k8s_yaml(blob('''
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kedge-access-proxy-image
+  namespace: %s
+  labels:
+    app.kubernetes.io/name: kedge-access-proxy-image
+    app.kubernetes.io/managed-by: tilt
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kedge-access-proxy-image
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kedge-access-proxy-image
+    spec:
+      containers:
+        - name: image-cache
+          image: %s
+          imagePullPolicy: IfNotPresent
+          # The image is distroless (no shell), so idle the pod by running the
+          # proxy itself with a throwaway public config: it listens on :8080,
+          # never receives traffic, and keeps the image pinned on the node.
+          env:
+            - name: KEDGE_ACCESS_PROXY_MODE
+              value: public
+            - name: KEDGE_ACCESS_PROXY_HOST
+              value: image-cache.invalid
+            - name: KEDGE_ACCESS_PROXY_ROUTES
+              value: /=http://image-cache.kedge-system.svc.cluster.local:1
+'''.strip() % (hub_namespace, access_proxy_image)))
+k8s_resource(
+    'kedge-access-proxy-image',
+    resource_deps=['hub-tls'],
+    labels=['hub'],
+)
+local_resource(
+    'access-proxy-image-load',
+    # kind skips a load when the stable tag already exists, even when Docker's
+    # tag now points at a new image. Remove only that node-local dev tag first,
+    # load the replacement, then recycle generated proxy pods so their
+    # IfNotPresent pull resolves the new image. Production pins a digest and
+    # does not use this development-only path.
+    cmd='''
+set -eu
+docker exec %s-control-plane crictl rmi %s >/dev/null 2>&1 || true
+kind load docker-image %s --name %s
+kubectl --context %s delete pods -A -l app.kubernetes.io/name=kedge-access-proxy --wait=false >/dev/null 2>&1 || true
+'''.strip() % (cluster_name, access_proxy_image, access_proxy_image, cluster_name, k8s_context()),
+    # resource_deps orders the load after Tilt's image build, while deps makes
+    # this local resource itself dirty on every proxy source change. Without
+    # both, Docker gets a new :dev tag but kind can retain the previous stable
+    # tag used by controller-authored PublishedApp Deployments.
+    deps=[
+        'providers/infrastructure/cmd/access-proxy',
+        'providers/infrastructure/accessproxy',
+        'providers/infrastructure/Dockerfile.access-proxy',
+        'providers/infrastructure/go.mod',
+        'providers/infrastructure/go.sum',
+    ],
+    resource_deps=['kedge-access-proxy-image'],
+    labels=['hub'],
+)
+
+docker_build(
+    app_studio_provider_image,
+    context='providers/app-studio',
+    dockerfile='providers/app-studio/Dockerfile',
 )
 
 k8s_yaml(blob('''
@@ -561,6 +816,25 @@ k8s_resource(
 )
 
 # --- deploy the kedge-hub chart in external-kcp mode ---
+# SSO is opt-in (`tilt up -f Tiltfile.cluster -- --sso`). Default: NO idp.*
+# values → the hub is token-login only and the portal shows the historical
+# dev-token form. With --sso the hub also accepts the local Dex
+# (admin@test.kedge.local / user2@test.kedge.local, Password1!), and the Dex
+# admin gets /bonkers alongside the static-token identity.
+hub_sso_values = [
+    'idp.issuerURL=%s' % dex_issuer,
+    'idp.browserAuthURL=%s' % dex_browser_auth_url,
+    'idp.clientID=kedge',
+    'idp.caSecretName=%s' % dex_secret_name,
+    'idp.caSecretKey=ca.crt',
+    'hub.adminUsers={admin@test.kedge.local,static-dev-token@kedge.local}',
+] if sso_enabled else [
+    # /bonkers admin access for the first dev static token (resolves to
+    # static-dev-token@kedge.local — see proxy.ensureStaticTokenUserOnce).
+    # dev-token2 is intentionally left off the allowlist so it acts as a
+    # plain, non-admin second user for membership/user-adding tests.
+    'hub.adminUsers={static-dev-token@kedge.local}',
+]
 k8s_yaml(helm(
     'deploy/charts/kedge-hub',
     name='kedge-hub',
@@ -578,22 +852,22 @@ k8s_yaml(helm(
         # Match the plain Tiltfile's App Studio in-memory message store wiring.
         'hub.appStudio.inMemoryMessageStore=true',
         'hub.staticAuthTokens={dev-token,dev-token2}',
-        # /bonkers admin access for the first dev static token (resolves to
-        # static-dev-token@kedge.local — see proxy.ensureStaticTokenUserOnce).
-        # dev-token2 is intentionally left off the allowlist so it acts as a
-        # plain, non-admin second user for membership/user-adding tests.
-        'hub.adminUsers={static-dev-token@kedge.local}',
         # Development previews render the app's own exposure URL (status.url)
         # in the portal iframe — allow the local apps domain on the envoy
         # port-forward. (preview.localhost was the deleted preview-gateway.)
         'hub.portalFrameSources={https://*.%s:%s}' % (app_base_domain, app_studio_preview_public_port),
-    ] + hub_host_aliases,
+        # Private published apps: the hub only issues sign-in redirects back to
+        # hosts under the apps zone, and mounts /auth/apps/* only when set.
+        # Works with token login too: /login?next completes the app authorize
+        # continuation after pasting dev-token.
+        'hub.publishedAppsDomain=%s' % app_base_domain,
+    ] + hub_sso_values + hub_host_aliases,
 ))
 
 k8s_resource(
     'kedge-hub',
     port_forwards=['9443:9443'],
-    resource_deps=['hub-compile', 'hub-kcp-secrets', 'hub-rbac', 'hub-tls'],
+    resource_deps=['hub-compile', 'hub-kcp-secrets', 'hub-rbac', 'hub-tls', 'dex'],
     labels=['hub'],
 )
 
@@ -1231,6 +1505,15 @@ local_resource(
     serve_cmd=('KRO_KUBECONFIG={kro} INFRASTRUCTURE_KUBECONFIG={kc} ' +
                'INFRASTRUCTURE_WORKSPACE_PATH=root:kedge:providers:infrastructure ' +
                'KEDGE_APP_BASE_DOMAIN={apps_domain} ' +
+               # PublishedApp proxies run in the runtime kind cluster and
+               # therefore call the in-cluster hub Service rather than the
+               # host port-forward. The proxy has no mounted dev CA, so this
+               # explicit dev-only switch is required for its hub call.
+               'KEDGE_ACCESS_PROXY_IMAGE={proxy_image} ' +
+               'KEDGE_ACCESS_HUB_URL=https://kedge-hub.kedge-system.svc:9443 ' +
+               'KEDGE_ACCESS_HUB_PUBLIC_URL=https://localhost:9443 ' +
+               'KEDGE_ACCESS_HUB_INSECURE=true ' +
+               'KEDGE_ACCESS_PUBLIC_SCHEME=https ' +
                # The ONE platform Gateway all template HTTPRoutes attach to —
                # locally the envoy Gateway above, in prod cfgate's
                # cloudflare-tunnel (the in-binary default).
@@ -1243,6 +1526,7 @@ local_resource(
                'make run-provider-infrastructure').format(
                    kro=KIND_HOST_KUBECONFIG, kc=KCP_ADMIN_KUBECONFIG,
                    apps_domain=app_base_domain,
+                   proxy_image=access_proxy_image,
                    gateway=app_studio_preview_parent_gateway_name,
                    port=app_studio_preview_public_port),
     deps=[
@@ -1265,7 +1549,7 @@ local_resource(
     ],
     # kedge-hub for the CatalogEntry registration target; infrastructure-operator
     # for the workspace bootstrap + kro install the serve process depends on.
-    resource_deps=['kedge-hub', 'infrastructure-operator', 'app-studio-preview-console-key'],
+    resource_deps=['kedge-hub', 'infrastructure-operator', 'app-studio-preview-console-key', 'access-proxy-image-load'],
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8082, path='/healthz'),

@@ -3,7 +3,7 @@ import { ref, computed } from 'vue'
 import type { AuthMode, HealthzResponse, StoredAuth } from '@/auth/types'
 import { loadAuth, saveAuth, clearAuth, parseClusterName } from '@/auth/token'
 import { getBearerToken, resetSessionExpired } from '@/auth/session'
-import { fetchHealthz, loginWithToken } from '@/lib/api'
+import { bootstrapBrowserSession, fetchHealthz, loginWithToken } from '@/lib/api'
 import { STORAGE_KEYS } from '@/lib/constants'
 
 export const useAuthStore = defineStore('auth', () => {
@@ -24,7 +24,23 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const h = await fetchHealthz()
       healthz.value = h
-      authMode.value = h.oidc ? 'both' : 'token'
+      // tokenLogin === false means the hub explicitly disabled interactive
+      // token login (e.g. OIDC-only deployments); absent = legacy hub that
+      // always offered it.
+      const tokenLoginOffered = h.tokenLogin !== false
+      authMode.value = h.oidc ? (tokenLoginOffered ? 'both' : 'oidc') : 'token'
+      // A hard refresh may retain a portal bearer while the hub's opaque
+      // session cookie has expired or was cleared. Re-establish it through a
+      // same-origin request; failures are non-fatal because the bearer-backed
+      // portal can still complete its normal API bootstrap.
+      if (stored?.idToken) {
+        try {
+          const valid = await getBearerToken()
+          if (valid) await bootstrapBrowserSession(valid)
+        } catch {
+          /* authFetch will surface a real token failure through the session event */
+        }
+      }
     } catch {
       authMode.value = 'token'
     }
@@ -86,6 +102,9 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function logout() {
+    void fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {
+      /* local logout must still complete when the hub is unavailable */
+    })
     clearAuth()
     token.value = null
     user.value = null

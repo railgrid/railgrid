@@ -108,21 +108,41 @@ func (s *Server) rebuildProject(ctx context.Context, id identity, p *aiv1alpha1.
 	return callProjectMCPTool(ctx, s.mcpEndpoint(id.clusterID), httpReq, id.tenantPath, s.mcpInsecureSkipTLSVerify, projectToolCodeRebuild, args)
 }
 
-// componentImageRef is a component's most-recent published image.
+// componentImageRef is a component's published image for the reviewed source
+// commit. The package crawler returns versions most-recent first, but recency
+// is not provenance: a newer push for another commit must never be promoted.
 type componentImageRef struct {
 	Image  string // pullable reference "<imageRepository>@<digest>"
 	Digest string
 	Tag    string // a human-facing tag on that digest (e.g. "sha-<commit>")
 }
 
-// resolveProjectComponentImages reads the project repository's published
-// packages (Code provider Package CRs, labelled with the Repository ref) and
-// maps each launchable component to its most-recent image. Components with no
-// published package are absent from the result (not yet built). Returns an
-// empty map (not an error) when the project has no repository.
+// resolveProjectComponentImages reads the project repository's reviewed Git
+// commit and published packages (Code provider Package CRs, labelled with the
+// Repository ref), then maps each launchable component to the image version
+// tagged for that exact commit. Components without an exact commit-tagged
+// version are absent from the result (not yet built). Returns an empty map (not
+// an error) when the project has no repository or no successful repository
+// commit is available.
 func (s *Server) resolveProjectComponentImages(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, components []projectBuildComponent) (map[string]componentImageRef, error) {
 	repoRef := projectLinkedRepositoryRef(p)
 	if repoRef == "" || c == nil {
+		return map[string]componentImageRef{}, nil
+	}
+	commitSHA, err := currentProjectRepositoryCommitSHA(ctx, c, repoRef)
+	if err != nil {
+		return nil, err
+	}
+	return s.resolveProjectComponentImagesForCommit(ctx, c, p, components, commitSHA)
+}
+
+// resolveProjectComponentImagesForCommit resolves package versions only after
+// the caller has selected the authoritative reviewed commit. Keeping the
+// commit selection separate lets checkProjectBuild expose that commit without
+// issuing a second repository-commit list request.
+func (s *Server) resolveProjectComponentImagesForCommit(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, components []projectBuildComponent, commitSHA string) (map[string]componentImageRef, error) {
+	repoRef := projectLinkedRepositoryRef(p)
+	if repoRef == "" || c == nil || strings.TrimSpace(commitSHA) == "" {
 		return map[string]componentImageRef{}, nil
 	}
 	list, err := c.Resource(codePackageResource, "").List(ctx, metav1.ListOptions{LabelSelector: codeLabelRepository + "=" + repoRef})
@@ -132,12 +152,12 @@ func (s *Server) resolveProjectComponentImages(ctx context.Context, c *asclient.
 
 	out := make(map[string]componentImageRef, len(components))
 	for _, comp := range components {
-		pkg := findPackageForComponent(list.Items, comp.Name)
+		pkg := findPackageForComponentInRepository(list.Items, comp.Name, repoRef)
 		if pkg == nil {
 			continue
 		}
 		imageRepo, _, _ := unstructured.NestedString(pkg.Object, "status", "imageRepository")
-		digest, tag := latestPackageVersion(pkg)
+		digest, tag := packageVersionForCommit(pkg, commitSHA)
 		if strings.TrimSpace(imageRepo) == "" || strings.TrimSpace(digest) == "" {
 			continue
 		}
@@ -148,6 +168,102 @@ func (s *Server) resolveProjectComponentImages(ctx context.Context, c *asclient.
 		}
 	}
 	return out, nil
+}
+
+// currentProjectRepositoryCommitSHA returns the newest successful
+// RepositoryCommit for the project's repository. RepositoryCommit is the
+// Code provider's durable commit record and its status.commitSHA is the
+// source revision the user reviewed. Both the label and spec.repositoryRef
+// are checked because a list transport may return objects outside its selector
+// (or stale objects may have inconsistent metadata).
+func currentProjectRepositoryCommitSHA(ctx context.Context, c *asclient.Client, repositoryRef string) (string, error) {
+	repositoryRef = strings.TrimSpace(repositoryRef)
+	if c == nil || repositoryRef == "" {
+		return "", nil
+	}
+	list, err := c.Resource(codeRepositoryCommitResource, "").List(ctx, metav1.ListOptions{LabelSelector: codeLabelRepository + "=" + repositoryRef})
+	if err != nil {
+		return "", fmt.Errorf("list repository commits: %w", err)
+	}
+	var selected *unstructured.Unstructured
+	for i := range list.Items {
+		item := &list.Items[i]
+		if !repositoryCommitBelongsToRepository(item, repositoryRef) {
+			continue
+		}
+		phase, _, _ := unstructured.NestedString(item.Object, "status", "phase")
+		if strings.TrimSpace(phase) != "Succeeded" {
+			continue
+		}
+		if selected == nil || newerRepositoryCommit(item, selected) {
+			selected = item
+		}
+	}
+	if selected == nil {
+		return "", nil
+	}
+	commitSHA, _, _ := unstructured.NestedString(selected.Object, "status", "commitSHA")
+	return strings.TrimSpace(commitSHA), nil
+}
+
+func repositoryCommitBelongsToRepository(commit *unstructured.Unstructured, repositoryRef string) bool {
+	if commit == nil || strings.TrimSpace(repositoryRef) == "" {
+		return false
+	}
+	if commit.GetLabels()[codeLabelRepository] != repositoryRef {
+		return false
+	}
+	specRef, _, _ := unstructured.NestedString(commit.Object, "spec", "repositoryRef")
+	return strings.TrimSpace(specRef) == repositoryRef
+}
+
+func newerRepositoryCommit(candidate, selected *unstructured.Unstructured) bool {
+	if candidate == nil {
+		return false
+	}
+	if selected == nil {
+		return true
+	}
+	candidateTime := candidate.GetCreationTimestamp().Time
+	selectedTime := selected.GetCreationTimestamp().Time
+	if candidateTime.After(selectedTime) {
+		return true
+	}
+	if candidateTime.Before(selectedTime) {
+		return false
+	}
+	// Creation timestamps can be absent in synthetic/test objects. Keep the
+	// choice deterministic in that case without treating list order as
+	// provenance.
+	return candidate.GetName() > selected.GetName()
+}
+
+// findPackageForComponentInRepository narrows the package match to the
+// project repository before looking at the host package name. The GraphQL
+// gateway normally applies the label selector server-side, but a transport
+// can return extra objects (and stale Package objects can have inconsistent
+// metadata), so both the label and spec.repositoryRef are required here.
+func findPackageForComponentInRepository(items []unstructured.Unstructured, component, repositoryRef string) *unstructured.Unstructured {
+	for i := range items {
+		if !packageBelongsToRepository(&items[i], repositoryRef) {
+			continue
+		}
+		if pkg := findPackageForComponent(items[i:i+1], component); pkg != nil {
+			return pkg
+		}
+	}
+	return nil
+}
+
+func packageBelongsToRepository(pkg *unstructured.Unstructured, repositoryRef string) bool {
+	if pkg == nil || repositoryRef == "" {
+		return false
+	}
+	if pkg.GetLabels()[codeLabelRepository] != repositoryRef {
+		return false
+	}
+	specRef, _, _ := unstructured.NestedString(pkg.Object, "spec", "repositoryRef")
+	return specRef == repositoryRef
 }
 
 // findPackageForComponent picks the Package whose host package name identifies
@@ -165,31 +281,54 @@ func findPackageForComponent(items []unstructured.Unstructured, component string
 	return nil
 }
 
-// latestPackageVersion returns the digest and a representative tag of a
-// package's most-recent version (the crawler records versions most-recent
-// first), preferring a non-"latest" tag so the commit tag surfaces.
-func latestPackageVersion(pkg *unstructured.Unstructured) (digest, tag string) {
+// packageVersionForCommit returns the immutable digest whose tag is exactly
+// the build workflow's sha-<GITHUB_SHA> tag for commitSHA. It scans every
+// package version rather than assuming status.versions[0] is the requested
+// build; the crawler's ordering only describes recency.
+func packageVersionForCommit(pkg *unstructured.Unstructured, commitSHA string) (digest, tag string) {
+	if pkg == nil {
+		return "", ""
+	}
+	commitSHA = strings.TrimSpace(commitSHA)
+	if commitSHA == "" {
+		return "", ""
+	}
+	wantTag := "sha-" + commitSHA
 	versions, _, _ := unstructured.NestedSlice(pkg.Object, "status", "versions")
-	if len(versions) == 0 {
-		return "", ""
-	}
-	v, ok := versions[0].(map[string]any)
-	if !ok {
-		return "", ""
-	}
-	digest, _ = v["digest"].(string)
-	tags, _ := v["tags"].([]any)
-	for _, t := range tags {
-		ts, _ := t.(string)
-		if ts != "" && ts != "latest" {
-			return digest, ts
+	for _, raw := range versions {
+		version, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		candidateDigest, _ := version["digest"].(string)
+		candidateDigest = strings.TrimSpace(candidateDigest)
+		if candidateDigest == "" {
+			continue
+		}
+		for _, rawTag := range packageVersionTags(version["tags"]) {
+			if rawTag == wantTag {
+				return candidateDigest, rawTag
+			}
 		}
 	}
-	if len(tags) > 0 {
-		ts, _ := tags[0].(string)
-		return digest, ts
+	return "", ""
+}
+
+func packageVersionTags(raw any) []string {
+	switch tags := raw.(type) {
+	case []any:
+		out := make([]string, 0, len(tags))
+		for _, rawTag := range tags {
+			if tag, ok := rawTag.(string); ok {
+				out = append(out, tag)
+			}
+		}
+		return out
+	case []string:
+		return tags
+	default:
+		return nil
 	}
-	return digest, ""
 }
 
 // projectBuildCheckComponent is one launchable component's build state.
@@ -207,7 +346,10 @@ type projectBuildCheckResult struct {
 	// Status is one of: built (every launchable component has a published
 	// image), incomplete (some do), none (none published yet), or unsupported
 	// (template-less project).
-	Status     string                       `json:"status"`
+	Status string `json:"status"`
+	// CommitSHA is the exact reviewed repository commit whose sha-<commit>
+	// package tags were used for the component image plan.
+	CommitSHA  string                       `json:"commitSHA,omitempty"`
 	Components []projectBuildCheckComponent `json:"components,omitempty"`
 	Missing    []string                     `json:"missing,omitempty"`
 	Note       string                       `json:"note"`
@@ -241,12 +383,16 @@ func (s *Server) checkProjectBuild(ctx context.Context, c *asclient.Client, id i
 		}, nil
 	}
 
-	images, err := s.resolveProjectComponentImages(ctx, c, p, components)
+	commitSHA, err := currentProjectRepositoryCommitSHA(ctx, c, projectLinkedRepositoryRef(p))
+	if err != nil {
+		return projectBuildCheckResult{}, err
+	}
+	images, err := s.resolveProjectComponentImagesForCommit(ctx, c, p, components, commitSHA)
 	if err != nil {
 		return projectBuildCheckResult{}, err
 	}
 
-	result := projectBuildCheckResult{Components: make([]projectBuildCheckComponent, 0, len(components))}
+	result := projectBuildCheckResult{CommitSHA: commitSHA, Components: make([]projectBuildCheckComponent, 0, len(components))}
 	builtCount := 0
 	for _, comp := range components {
 		row := projectBuildCheckComponent{Name: comp.Name, ImageInput: comp.ImageInput}
@@ -272,7 +418,11 @@ func (s *Server) checkProjectBuild(ctx context.Context, c *asclient.Client, id i
 		result.Note = fmt.Sprintf("%d of %d component images are published (missing: %s). GitHub Actions builds each component on commit and publishes it to the registry; check the repository's Actions tab — the missing builds may be running or may have failed", builtCount, len(components), strings.Join(result.Missing, ", "))
 	default:
 		result.Status = "none"
-		result.Note = "no component images are published yet. Committing your app runs a GitHub Actions build that publishes one container image per component to the registry; they appear here once built. If images never appear, check the repository's Actions tab (Actions and package publishing must be enabled)."
+		if commitSHA == "" {
+			result.Note = "no successful repository commit is available to identify the reviewed source revision; commit the project before promoting"
+		} else {
+			result.Note = fmt.Sprintf("no component images are published for reviewed commit %s yet. Committing your app runs a GitHub Actions build that publishes one container image per component to the registry; they appear here once built. If images never appear, check the repository's Actions tab (Actions and package publishing must be enabled)", commitSHA)
+		}
 	}
 	return result, nil
 }

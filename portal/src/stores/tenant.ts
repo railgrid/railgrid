@@ -81,6 +81,17 @@ export interface MemberRow {
   workspaceDisplayName?: string
 }
 
+// AppAccessGrantRow is one published-app invitation: plain workspace RBAC (a
+// labeled ClusterRoleBinding granting `get` on the app instance's `access`
+// subresource), surfaced so tenant settings shows who can open which private
+// app. Created by App Studio's share dialog; revocable here.
+export interface AppAccessGrantRow {
+  binding: string
+  app: string
+  user: string
+  createdAt?: string
+}
+
 export interface SARow {
   uuid: string
   displayName: string
@@ -540,6 +551,34 @@ export const useTenantStore = defineStore('tenant', () => {
     return data.items ?? []
   }
 
+  async function listAppAccessGrants(targetOrgUUID: string, wsUUID: string): Promise<AppAccessGrantRow[]> {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/app-access`, {
+      headers: { 'X-Kedge-Org': targetOrgUUID, 'X-Kedge-Workspace': wsUUID },
+    })
+    if (!resp.ok) {
+      error.value = `failed to list app access grants: ${resp.status}`
+      return []
+    }
+    const data = (await resp.json()) as { items: AppAccessGrantRow[] }
+    return data.items ?? []
+  }
+
+  async function revokeAppAccessGrant(targetOrgUUID: string, wsUUID: string, binding: string): Promise<boolean> {
+    const resp = await authFetch(
+      `/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/app-access/${encodeURIComponent(binding)}`,
+      {
+        method: 'DELETE',
+        headers: { 'X-Kedge-Org': targetOrgUUID, 'X-Kedge-Workspace': wsUUID },
+      },
+    )
+    if (!resp.ok) {
+      const msg = await statusMessage(resp)
+      error.value = msg ? `failed to revoke app access: ${msg}` : `failed to revoke app access: ${resp.status}`
+      return false
+    }
+    return true
+  }
+
   async function addWorkspaceMember(
     targetOrgUUID: string,
     wsUUID: string,
@@ -764,6 +803,8 @@ export const useTenantStore = defineStore('tenant', () => {
     removeOrgMember,
     leaveOrg,
     listWorkspaceMembers,
+    listAppAccessGrants,
+    revokeAppAccessGrant,
     addWorkspaceMember,
     patchWorkspaceMemberRole,
     removeWorkspaceMember,

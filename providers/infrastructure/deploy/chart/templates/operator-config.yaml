@@ -101,4 +101,27 @@ spec:
       {{- end }}
     {{- end }}
   {{- end }}
+  {{- if or .Values.operator.publishing.baseDomain .Values.operator.publishing.accessProxyImage }}
+  publishing:
+    baseDomain: {{ .Values.operator.publishing.baseDomain | quote }}
+    accessProxyImage: {{ .Values.operator.publishing.accessProxyImage | quote }}
+    hubURL: {{ default .Values.hub.url .Values.operator.publishing.hubURL | quote }}
+    {{- with .Values.operator.publishing.hubPublicURL }}
+    hubPublicURL: {{ . | quote }}
+    {{- end }}
+    hubInsecure: {{ .Values.operator.publishing.insecure }}
+    publicScheme: {{ .Values.operator.publishing.publicScheme | default "https" | quote }}
+    {{- if gt (int .Values.operator.publishing.publicPort) 0 }}
+    publicPort: {{ .Values.operator.publishing.publicPort }}
+    {{- end }}
+    {{- if or .Values.operator.publishing.gateway.name .Values.operator.publishing.gateway.namespace }}
+    gateway:
+      {{- with .Values.operator.publishing.gateway.name }}
+      name: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.operator.publishing.gateway.namespace }}
+      namespace: {{ . | quote }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
 {{- end }}

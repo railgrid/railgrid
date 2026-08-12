@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { consumeAppAccessNext } from '@/auth/appAccessNext'
 import { parseClusterName } from '@/auth/token'
 import type { LoginResponse, StoredAuth } from '@/auth/types'
 import { AlertCircle, ArrowLeft, Hexagon } from 'lucide-vue-next'
@@ -41,6 +42,14 @@ onMounted(() => {
     auth.loginFromOIDCResponse(stored)
     sessionStorage.removeItem('oidc_verifier')
     sessionStorage.removeItem('oidc_session')
+    // A private published app started this login; the hub callback that
+    // brought us here also set the shared session cookie, so the authorize
+    // continuation completes without another prompt.
+    const next = consumeAppAccessNext()
+    if (next) {
+      window.location.assign(next)
+      return
+    }
     router.push('/')
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'Failed to process auth callback'

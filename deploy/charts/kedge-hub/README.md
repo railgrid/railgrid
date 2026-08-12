@@ -55,7 +55,8 @@ For a complete production setup (TLS, OIDC, ingress) see the [full docs](https:/
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `idp.issuerURL` | `""` | OIDC issuer URL (must be reachable by hub and user browsers) |
+| `idp.issuerURL` | `""` | Canonical OIDC issuer URL used by discovery, token exchange, JWKS, and issuer validation; must be reachable by the hub |
+| `idp.browserAuthURL` | `""` | Optional public HTTPS authorization endpoint for browser redirects when the issuer uses cluster-internal DNS |
 | `idp.clientID` | `kedge` | OIDC client ID (register as a public client — no client secret needed) |
 
 ### kcp (Embedded)
@@ -143,6 +144,8 @@ kcp:
 
 idp:
   issuerURL: https://dex.example.com/dex
+  # Only needed when issuerURL is not browser-reachable:
+  # browserAuthURL: https://login.example.com/dex/auth
   clientID: kedge
 ```
 

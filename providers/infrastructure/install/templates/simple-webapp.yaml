@@ -50,11 +50,13 @@ spec:
 
       INPUTS you set when provisioning: name (required); image (required in
       production, ignored in development), port, replicas, env (env-var map;
-      not for secrets), expose.hostnamePrefix. The platform stamps
-      spec.expose.fqdn — do not set it. All except name and kedgeMode can be
-      changed later with update_instance.
+      not for secrets), expose.hostnamePrefix, access (public|private; default
+      public — private requires platform sign-in and an RBAC grant on this
+      instance). The platform stamps spec.expose.fqdn and spec.kedgeCluster —
+      do not set them. All except name and kedgeMode can be changed later with
+      update_instance; flipping access is an in-place update.
     outputs:
-      - "status.url — the public HTTPS URL the app is served on (status.host = bare hostname)."
+      - "status.url is the public HTTPS URL (status.host = bare hostname) in every mode; requests enter through the platform access gate."
       - "status.ready — ready replica count for the app Deployment."
   # ── Portal presentation ───────────────────────────────────────────────
   view:
@@ -91,6 +93,19 @@ spec:
       name:
         type: string
         description: "Logical name; used as the resource-name prefix in the tenant namespace and the default hostname prefix."
+      kedgeRedeployRevision:
+        type: string
+        default: initial
+        description: "Computed by the platform — do NOT set. Non-secret rollout revision used to redeploy the application workload without changing the instance identity."
+      kedgeCluster:
+        type: string
+        default: pending
+        description: "Computed by the platform — do NOT set. Tenant workspace cluster ID the embedded access gate presents to the hub for sign-in authorization."
+      access:
+        type: string
+        enum: ["public", "private"]
+        default: public
+        description: "Who can reach the app URL. public: anyone with the link. private: platform sign-in required; access is granted by kcp RBAC on this instance's access subresource (App Studio's share dialog, or a ClusterRole/ClusterRoleBinding pair). Flipping the value is an in-place update — no redeploy, no data loss."
       image:
         type: string
         description: "Container image serving HTTP. Required in production mode; ignored (and may be omitted) when kedgeMode is development — dev mode runs the platform dev image against the project workspace."
@@ -241,6 +256,8 @@ spec:
                 app: ${schema.spec.name}
             template:
               metadata:
+                annotations:
+                  kedge.faros.sh/redeploy-revision: ${schema.spec.kedgeRedeployRevision}
                 labels:
                   app: ${schema.spec.name}
               spec:
@@ -273,12 +290,114 @@ spec:
             selector:
               app: ${schema.spec.name}
             ports:
-              - port: ${schema.spec.port}
+              - name: http
+                port: ${schema.spec.port}
                 targetPort: ${schema.spec.port}
+
+      # ──────────────── Access gate (kedge-access-proxy) ──────────────────
+      # The platform-owned gate every request enters through, in every mode.
+      # public (default): pure passthrough — the gate never contacts the hub,
+      # so a hub outage cannot affect a public app. private: the gate runs the
+      # hub sign-in flow once per visitor and keeps a bounded local session;
+      # access = kcp RBAC (`get` on simplewebapps/<name> subresource `access`)
+      # evaluated by the hub at sign-in time. Image and hub endpoints are
+      # platform tokens; tenants only ever choose spec.access.
+      - id: gateDeployment
+        template:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${schema.spec.name}-gate
+            namespace: default
+          spec:
+            replicas: 1
+            # Recreate: a public gate pod and a private gate pod must never
+            # serve behind the Service at once (a rolling flip would bounce
+            # the browser between contradictory auth behaviours), and the
+            # gate's sessions/states are in-memory anyway.
+            strategy:
+              type: Recreate
+            selector:
+              matchLabels:
+                app: ${schema.spec.name}-gate
+            template:
+              metadata:
+                labels:
+                  app: ${schema.spec.name}-gate
+                  # Stable across all gates: lets platform tooling (and the
+                  # local Tilt image-reload) find/recycle every gate pod with
+                  # one selector regardless of instance name.
+                  app.kubernetes.io/name: kedge-access-proxy
+              spec:
+                automountServiceAccountToken: false
+                containers:
+                  - name: gate
+                    image: ${kedge.accessProxyImage}
+                    env:
+                      - name: KEDGE_ACCESS_PROXY_MODE
+                        value: ${schema.spec.access}
+                      - name: KEDGE_ACCESS_PROXY_HOST
+                        # The exact external host, including the local
+                        # Gateway's forwarded port when one is configured
+                        # (${kedge.appPublicPort} is ":<port>" or "").
+                        value: ${schema.spec.expose.fqdn + "${kedge.appPublicPort}"}
+                      - name: KEDGE_ACCESS_PROXY_ROUTES
+                        value: ${"/=http://" + appService.metadata.name + "." + appService.metadata.namespace + ".svc.cluster.local:" + string(schema.spec.port)}
+                      - name: KEDGE_ACCESS_PROXY_INSTANCE_CLUSTER
+                        value: ${schema.spec.kedgeCluster}
+                      - name: KEDGE_ACCESS_PROXY_INSTANCE_GROUP
+                        value: infrastructure.kedge.faros.sh
+                      - name: KEDGE_ACCESS_PROXY_INSTANCE_RESOURCE
+                        value: simplewebapps
+                      - name: KEDGE_ACCESS_PROXY_INSTANCE_NAME
+                        value: ${schema.spec.name}
+                      - name: KEDGE_HUB_URL
+                        value: ${kedge.hubUrl}
+                      - name: KEDGE_HUB_PUBLIC_URL
+                        value: ${kedge.hubPublicUrl}
+                      - name: KEDGE_HUB_INSECURE_SKIP_TLS_VERIFY
+                        value: ${kedge.hubInsecure}
+                    ports:
+                      - name: http
+                        containerPort: 8080
+                    readinessProbe:
+                      tcpSocket:
+                        port: http
+                      periodSeconds: 5
+                    resources:
+                      requests:
+                        cpu: 10m
+                        memory: 32Mi
+                      limits:
+                        memory: 128Mi
+                    securityContext:
+                      runAsNonRoot: true
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: ["ALL"]
+      - id: gateService
+        template:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${schema.spec.name}-gate
+            namespace: default
+          spec:
+            type: ClusterIP
+            selector:
+              app: ${schema.spec.name}-gate
+            ports:
+              - name: http
+                port: 8080
+                targetPort: http
 
       # ──────────────── HTTPRoute (Gateway API exposure layer) ────────────────
       # Attaches to the platform Gateway; TLS terminates at the Gateway edge,
-      # which programs the DNS record + tunnel route from this hostname.
+      # which programs the DNS record + tunnel route from this hostname. The
+      # backend is ALWAYS the access gate — in development and production, in
+      # public and private mode — so flipping spec.access never rewires the
+      # route and no tenant workload is ever the direct route backend.
       - id: httpRoute
         template:
           apiVersion: gateway.networking.k8s.io/v1
@@ -300,8 +419,8 @@ spec:
                       type: PathPrefix
                       value: /
                 backendRefs:
-                  - name: ${schema.spec.name}
-                    port: ${schema.spec.port}
+                  - name: ${gateService.metadata.name}
+                    port: 8080
     # url/host are read from the HTTPRoute (this kro fork forbids ${schema.*}
     # in status), same as the application template. ${kedge.appPublicPort} is
     # substituted by the kro backend before kro sees this CEL.
@@ -309,3 +428,11 @@ spec:
       url: ${"https://" + httpRoute.spec.hostnames[0] + "${kedge.appPublicPort}"}
       host: ${httpRoute.spec.hostnames[0]}
       ready: ${appDeployment.status.readyReplicas}
+      # Always project the runtime confinement boundary from an unconditional
+      # backend-owned resource. The development overlay also publishes this
+      # field, but production has no direct HTTPRoute and still needs it for
+      # the platform publication controller's Service validation.
+      runtimeNamespace: ${appService.metadata.namespace}
+      appServiceRef:
+        name: ${appService.metadata.name}
+        namespace: ${appService.metadata.namespace}

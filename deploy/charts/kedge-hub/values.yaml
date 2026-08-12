@@ -61,6 +61,10 @@ hub:
   embeddedGraphQL: false
   # Static bearer tokens for access (each token creates its own user/workspace. Example: openssl rand -base64 32)
   staticAuthTokens: []
+  # Disable the interactive static-token login (endpoint + portal form) so
+  # humans must sign in through the IdP with a username and password. Static
+  # bearer tokens above still authenticate API/MCP/CLI calls.
+  disableTokenLogin: false
   # Platform-admin identities allowed at /api/admin/* + the portal /bonkers area.
   # Each entry matches a User by name, email, or rbacIdentity (case-insensitive).
   # Empty disables the admin surface entirely (the /bonkers menu item stays hidden).
@@ -70,6 +74,13 @@ hub:
   # Additional Content-Security-Policy frame-src entries allowed in the portal.
   # Use this for platform-owned preview hosts that are rendered inside the portal.
   portalFrameSources: []
+  # DNS zone published apps are served under (the infrastructure provider's
+  # apps base domain, e.g. apps.example.com). Enables the login-time
+  # published-app authorize/exchange endpoints; sign-in redirects are only
+  # ever issued to hosts directly under this zone. Empty disables private
+  # published-app access (public apps are unaffected — they never touch the
+  # hub).
+  publishedAppsDomain: ""
   resources:
     requests:
       cpu: 100m
@@ -98,8 +109,12 @@ hub:
 
 # -- Identity provider (OIDC) settings (see docs/idp.md)
 idp:
-  # Required: OIDC issuer URL reachable by hub and end-user browsers
+  # Required: canonical OIDC issuer URL reachable by the hub. Tokens must use
+  # this exact issuer; discovery, token exchange, and JWKS use it.
   issuerURL: ""
+  # Optional: public HTTPS authorization endpoint used only in browser redirects.
+  # Set this for split-horizon IdPs whose issuerURL is cluster-internal.
+  browserAuthURL: ""
   # Client ID for the OIDC provider. Must be registered as a public client
   # (no client secret) in your IdP (e.g. Dex: public: true).
   clientID: "kedge"

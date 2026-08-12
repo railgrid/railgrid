@@ -1,4 +1,5 @@
 .PHONY: sync-portalkit verify-portalkit
+.PHONY: build-access-proxy docker-build-access-proxy
 .PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-console-dev-key verify-app-studio-preview-console-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-vibe-studio-provider build-vibe-studio-provider-portal vibe-studio-db-up vibe-studio-db-down run-provider-vibe-studio install-provider-vibe-studio init-provider-vibe-studio uninstall-provider-vibe-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
@@ -78,6 +79,9 @@ dev-portal: ## Run the portal dev server
 
 build-graphql: ## Build the GraphQL gateway binary (listener + gateway subcommands)
 	go build $(GOFLAGS) -o $(BINDIR)/kedge-graphql ./cmd/graphql/
+
+build-access-proxy: ## Build the published-app access-proxy binary (infrastructure module)
+	cd providers/infrastructure && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/kedge-access-proxy ./cmd/access-proxy/
 
 # build-agent is an alias for build-kedge: the agent container image now ships
 # the kedge CLI binary (cmd/kedge/) with ENTRYPOINT [/kedge, agent, run].
@@ -217,14 +221,16 @@ codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastruc
 		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/infrastructure/config/crds
-	# The provider embeds the Template CRD from install/crds/ (//go:embed in
-	# install/crds.go) and applies it into the kcp provider workspace at init.
-	# Keep that embed copy in lockstep with the generated schema — otherwise the
-	# operator installs a stale Template CRD and kcp silently prunes new fields
-	# (e.g. spec.sampleValues). The InfrastructureProvider CRD is NOT embedded
-	# (it's applied to the host cluster by the chart), so it stays in config/ only.
+	# The provider embeds its platform-facing CRDs from install/crds/ (//go:embed
+	# in install/crds.go) and applies them into the kcp provider workspace at
+	# init. Keep the embed copy in lockstep with generated schemas — otherwise
+	# the operator installs stale CRDs and kcp silently prunes new fields.
+	# InfrastructureProvider is intentionally NOT embedded (it is applied to the
+	# host cluster by the chart), so it stays in config/ only. Remove stale embed
+	# files first so deleted platform APIs cannot remain installed accidentally.
+	find providers/infrastructure/install/crds -maxdepth 1 -type f -name '*.yaml' -delete
 	cp providers/infrastructure/config/crds/infrastructure.kedge.faros.sh_templates.yaml \
-	   providers/infrastructure/install/crds/infrastructure.kedge.faros.sh_templates.yaml
+	   providers/infrastructure/install/crds/
 	./hack/ensure-boilerplate.sh
 
 ## Generate deepcopy + CRD YAML + kcp APIResourceSchemas for the code
@@ -2222,6 +2228,11 @@ docker-build-agent: ## Build kedge-agent container image
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
 		-t ghcr.io/faroshq/kedge-agent:$(VERSION) .
+
+docker-build-access-proxy: ## Build published-app access-proxy container image (infrastructure module)
+	docker build -f providers/infrastructure/Dockerfile.access-proxy \
+		--platform $(DOCKER_PLATFORM) \
+		-t ghcr.io/faroshq/kedge-access-proxy:$(VERSION) providers/infrastructure
 
 docker-push-hub: docker-build-hub ## Build and push kedge-hub container image
 	docker push ghcr.io/faroshq/kedge-hub:$(VERSION)

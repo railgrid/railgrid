@@ -28,6 +28,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -240,12 +241,26 @@ func (g *gqlResource) Get(ctx context.Context, name string, _ metav1.GetOptions,
 	return g.scope.Get(ctx, g.res, g.namespace, name)
 }
 
-func (g *gqlResource) List(ctx context.Context, _ metav1.ListOptions) (*unstructured.UnstructuredList, error) {
-	items, err := g.scope.List(ctx, g.res, g.namespace)
+func (g *gqlResource) List(ctx context.Context, opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+	selector := labels.Everything()
+	if opts.LabelSelector != "" {
+		parsed, err := labels.Parse(opts.LabelSelector)
+		if err != nil {
+			return nil, fmt.Errorf("graphql client: invalid label selector %q: %w", opts.LabelSelector, err)
+		}
+		selector = parsed
+	}
+	items, err := g.scope.ListWithOptions(ctx, g.res, g.namespace, opts)
 	if err != nil {
 		return nil, err
 	}
-	return &unstructured.UnstructuredList{Items: items}, nil
+	filtered := make([]unstructured.Unstructured, 0, len(items))
+	for i := range items {
+		if selector.Matches(labels.Set(items[i].GetLabels())) {
+			filtered = append(filtered, items[i])
+		}
+	}
+	return &unstructured.UnstructuredList{Items: filtered}, nil
 }
 
 func (g *gqlResource) Create(ctx context.Context, obj *unstructured.Unstructured, _ metav1.CreateOptions, subresources ...string) (*unstructured.Unstructured, error) {

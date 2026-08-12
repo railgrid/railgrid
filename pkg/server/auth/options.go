@@ -20,10 +20,11 @@ package auth
 // ClientSecret is intentionally absent: kedge uses PKCE (public client flow)
 // so no client secret is required on the hub side.
 type OIDCConfig struct {
-	IssuerURL   string
-	ClientID    string
-	RedirectURL string
-	Scopes      []string
+	IssuerURL      string
+	BrowserAuthURL string
+	ClientID       string
+	RedirectURL    string
+	Scopes         []string
 }
 
 // DefaultOIDCConfig returns default OIDC configuration.

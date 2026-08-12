@@ -89,12 +89,20 @@ import AssistantPlanDisclosure from './AssistantPlanDisclosure.vue'
 import SkillsWorkbench from './SkillsWorkbench.vue'
 import CodeExplorer from './CodeExplorer.vue'
 import ThreadsWorkbench from './ThreadsWorkbench.vue'
+import ProjectShareDialog from './ProjectShareDialog.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
 import ResponseModePicker, { type AssistantResponseMode } from './ResponseModePicker.vue'
 import AssistantRichComposer from './AssistantRichComposer.vue'
 import { MAX_ASSISTANT_COMPOSER_PARTS, projectAssistantComposerParts, type AssistantComposerState } from './assistantCommandPalette'
 import { assistantResourceSelectionKey } from './assistantResources'
 import PreviewActionsMenu from './PreviewActionsMenu.vue'
+import {
+  productionAccessState,
+  productionDeploymentDescription,
+  productionDeploymentState,
+  publishingAccessSelection,
+  shouldPollPublishing,
+} from './publishingState'
 import NewProjectWizard from './NewProjectWizard.vue'
 import ProjectIntegrations from './ProjectIntegrations.vue'
 import {
@@ -124,7 +132,6 @@ import {
 } from './conversationResilience'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import StatusBadge from '@/components/StatusBadge.vue'
-import CheckpointChip from '@/components/CheckpointChip.vue'
 import { useEscapeKey } from '@/composables/useEscapeKey'
 import {
   activateWorkbenchTab,
@@ -146,6 +153,16 @@ import {
 } from './previewState'
 import { DevelopmentPreviewRefreshController } from './previewRefresh'
 import { PreviewConsoleController } from './previewConsole'
+import {
+  advancePromotionPoll,
+  beginPromotionPoll,
+  promotionAcceptedFeedback,
+  promotionPollExhaustedFeedback,
+  promotionObservationMatches,
+  promotionReadyFeedback,
+  type PromotionFeedback,
+  type PromotionPollState,
+} from './promotionState'
 import type {
   DevelopmentTemplate,
   ImportRepository,
@@ -170,7 +187,9 @@ import type {
   ProjectLLMSettings,
   ProjectMessage,
   ProjectPromotionReadiness,
-  ProjectCheckpoint,
+  ProjectPublishing,
+  ProjectPublishingMode,
+  ProjectPublishingMember,
   ProviderItem,
 } from './types'
 
@@ -407,6 +426,15 @@ const initializingMessage = ref('App Studio is preparing this workspace...')
 const error = ref<string | null>(null)
 const toolError = ref<string | null>(null)
 const showSettings = ref(false)
+type ProjectSettingsPane = 'project' | 'production' | 'model'
+const projectSettingsPane = ref<ProjectSettingsPane>('project')
+const projectSettingsPaneAnnouncement = ref('')
+const productionSettingsPaneRef = ref<HTMLElement | null>(null)
+const projectSettingsPanes: ReadonlyArray<readonly [ProjectSettingsPane, string]> = [
+  ['project', 'Project'],
+  ['production', 'Production'],
+  ['model', 'Model'],
+]
 const projectSettingsName = ref('')
 const projectSettingsDescription = ref('')
 const projectSettingsSaving = ref(false)
@@ -437,17 +465,29 @@ const developmentPreviewOverrideURL = ref<string | null>(null)
 const developmentPreviewAuthorizationKey = ref('')
 const developmentPreviewFrameKey = ref(0)
 const developmentPreviewFrameRef = ref<HTMLIFrameElement | null>(null)
-const publishingAccess = ref<'public' | 'members' | 'private'>('members')
+const shareMode = ref<ProjectPublishingMode>('restricted')
+const publishing = ref<ProjectPublishing | null>(null)
+const publishingMembers = ref<ProjectPublishingMember[]>([])
+const publishingActionBusy = ref(false)
+const publishingActionError = ref<string | null>(null)
+const shareDialogOpen = ref(false)
+const shareButtonRef = ref<HTMLButtonElement | null>(null)
+const productionTechnicalOpen = ref(false)
 
-// Promote to Prod (the publishing tab's real action): read build readiness +
+// Promote to Prod (the production surface's deployment action): read build readiness +
 // the live production environment, and stand up / redeploy production.
-const checkpoints = ref<ProjectCheckpoint[]>([])
 const promotion = ref<ProjectPromotionReadiness | null>(null)
 const promotionBusy = ref(false)
+const publishingRefreshBusy = ref(false)
 const promotionError = ref<string | null>(null)
+const promotionFeedback = ref<PromotionFeedback | null>(null)
 const promotionValuesText = ref('')
-const promotionAdvancedOpen = ref(false)
 let promotionPollTimer: number | undefined
+let promotionPollState: PromotionPollState | null = null
+let promotionLastTarget: PromotionPollState | null = null
+let promotionLoadSerial = 0
+let publishingPollTimer: number | undefined
+let publishingLoadSerial = 0
 const conversationStatus = ref('')
 const permissionBusy = ref<Record<string, 'allow' | 'deny'>>({})
 const permissionErrors = ref<Record<string, string>>({})
@@ -770,19 +810,12 @@ const deleteProjectMessage = computed(() => {
   const repositoryNote = repositoryName ? ` The associated repository resource (${repositoryName})` : ' The associated repository resource'
   return `Are you sure you want to delete ${projectName}? This removes the App Studio project and its conversation history.${repositoryNote} will be orphaned and will not be deleted.`
 })
-const publishingProjectName = computed(() => selected.value?.displayName || selected.value?.name || '')
-const publishingProjectSlug = computed(() => projectToSlug(publishingProjectName.value || 'app-studio-project'))
-const publishingDefaultDomain = computed(() => `${publishingProjectSlug.value}${PUBLISHING_DOMAIN_SUFFIX}`)
-const publishingPreviewSummary = computed(() => developmentPreviewRawURL.value || developmentPreviewURL.value || '')
-const publishingAvailability = computed(() => {
-  if (!publishingProjectName.value) return 'Unavailable'
-  if (!developmentBinding.value) return 'Needs preview binding'
-  if (!publishingPreviewSummary.value) return 'Preview unavailable'
-  if (developmentPreviewNeedsAuthorization.value) return `Development ${developmentPreviewPhase.value}`
-  return 'Development ready'
-})
-const publishingSummaryTarget = computed(() => {
-  const previewURL = publishingPreviewSummary.value
+const productionProjectName = computed(() => selected.value?.displayName || selected.value?.name || '')
+const productionProjectSlug = computed(() => projectToSlug(productionProjectName.value || 'app-studio-project'))
+const productionDefaultDomain = computed(() => `${productionProjectSlug.value}${PUBLISHING_DOMAIN_SUFFIX}`)
+const productionPreviewSummary = computed(() => developmentPreviewRawURL.value || developmentPreviewURL.value || '')
+const productionSummaryTarget = computed(() => {
+  const previewURL = productionPreviewSummary.value
   return previewURL || 'Project has no deployable preview URL yet.'
 })
 const isGoogleGeminiProvider = computed(() => llmProvider.value.trim().toLowerCase() === GOOGLE_AI_STUDIO_PROVIDER)
@@ -927,6 +960,8 @@ const activeWorkbenchTab = computed<WorkbenchTabDescriptor | null>(() => {
   return workbench.value.tabs.find((tab) => tab.id === workbench.value.activeTabID) ?? workbench.value.tabs[0] ?? null
 })
 const settingsInWorkbench = computed(() => !!settingsProject.value && activeWorkbenchTab.value?.kind === 'settings')
+const productionSettingsVisible = computed(() => settingsInWorkbench.value && projectSettingsPane.value === 'production')
+const productionSurfaceActive = computed(() => productionSettingsVisible.value || shareDialogOpen.value)
 
 const activeProviderToolRef = computed(() => {
   const tab = activeWorkbenchTab.value
@@ -974,16 +1009,9 @@ const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
     builtInTab: 'integrations',
   },
   {
-    id: 'builtin:publishing',
-    title: 'Publish & Promote',
-    subtitle: 'Check the build and promote your app to production',
-    icon: Globe,
-    builtInTab: 'publishing',
-  },
-  {
     id: 'builtin:settings',
     title: 'Project Settings',
-    subtitle: 'Manage project details, repository status, and model configuration',
+    subtitle: 'Manage project details, production, and model configuration',
     icon: Settings2,
     builtInTab: 'settings',
   },
@@ -1185,6 +1213,25 @@ watch(
 watch(
   () => selected.value?.name,
   () => {
+    const shareWasOpen = shareDialogOpen.value
+    promotionLoadSerial += 1
+    promotion.value = null
+    promotionFeedback.value = null
+    promotionError.value = null
+    promotionPollState = null
+    promotionLastTarget = null
+    clearPromotionPoll()
+    publishingLoadSerial += 1
+    publishing.value = null
+    publishingMembers.value = []
+    shareMode.value = 'restricted'
+    projectSettingsPane.value = 'project'
+    projectSettingsPaneAnnouncement.value = ''
+    publishingActionError.value = null
+    shareDialogOpen.value = false
+    productionTechnicalOpen.value = false
+    clearPublishingPoll()
+    if (shareWasOpen) void nextTick(() => shareButtonRef.value?.focus())
     assistantWorkedDurationClock.clear()
     developmentPreviewRefreshController.invalidate()
     developmentPreviewAuthorizationSerial += 1
@@ -1538,9 +1585,80 @@ const promotionBuildLabel = computed(() => {
 })
 const promotionComponents = computed(() => promotion.value?.build?.components ?? [])
 const canPromote = computed(() => !!promotion.value?.promotable && !promotionBusy.value)
+const promotionDisabledReason = computed(() => {
+  if (promotionBusy.value) return 'Promotion is in progress.'
+  if (!selected.value?.name) return 'Select a project before checking its build status.'
+  if (!promotion.value) return 'Checking the build status before enabling promotion…'
+  if (promotion.value.promotable) return ''
+  const note = promotionBuild.value?.note?.trim()
+  if (note) return note
+  switch (promotionBuildStatus.value) {
+    case 'incomplete':
+      return 'The build is incomplete; build every component before promoting.'
+    case 'none':
+      return 'No component image has been built yet; commit the project and wait for its build.'
+    case 'unsupported':
+      return 'This project has no production-capable template.'
+    default:
+      return 'The build is not ready for promotion.'
+  }
+})
 const productionBinding = computed(() => promotion.value?.production ?? null)
-const productionURL = computed(() => productionBinding.value?.url ?? '')
-const productionPhase = computed(() => productionBinding.value?.phase ?? '')
+const productionDeployment = computed(() => productionDeploymentState(productionBinding.value))
+const productionAccess = computed(() => productionAccessState(productionBinding.value, publishing.value))
+const productionURL = computed(() => productionAccess.value.url)
+const productionPublicationReady = computed(() => Boolean(publishing.value?.published && publishing.value.publication?.ready))
+const productionDescription = computed(() => {
+  if (productionPublicationReady.value && !productionURL.value) {
+    return 'The publication is ready; the production link is still being resolved.'
+  }
+  return productionDeploymentDescription(productionBinding.value, publishing.value)
+})
+const productionPublicationStatus = computed(() => {
+  if (productionPublicationReady.value) {
+    return { label: productionURL.value ? 'Live' : 'Ready', tone: 'success' as const }
+  }
+  if (publishing.value?.publication?.error) return { label: 'Error', tone: 'danger' as const }
+  return { label: productionAccess.value.label, tone: productionAccess.value.tone }
+})
+const productionOverview = computed(() => {
+  if (!productionBinding.value) return { label: 'Not deployed', tone: 'muted' as const }
+  if (!productionDeployment.value.ready) {
+    return { label: productionDeployment.value.label, tone: productionDeployment.value.tone }
+  }
+  if (!publishing.value) return { label: 'Checking access', tone: 'muted' as const }
+  if (!publishing.value.published) return { label: 'Ready to publish', tone: 'success' as const }
+  if (productionPublicationReady.value) {
+    return { label: productionURL.value ? 'Live' : 'Ready', tone: 'success' as const }
+  }
+  if (publishing.value.publication?.error) return { label: 'Access error', tone: 'danger' as const }
+  return { label: 'Enabling access', tone: 'warning' as const }
+})
+const productionOverviewDescription = computed(() => {
+  if (!productionBinding.value) {
+    return 'No production deployment yet. Build every component before deploying this app.'
+  }
+  if (!productionDeployment.value.ready) return productionDescription.value
+  if (!publishing.value) return 'The production deployment is running. Checking external access…'
+  if (!publishing.value.published) {
+    return 'Ready to publish. The production deployment will keep running while you turn on external access.'
+  }
+  if (productionPublicationReady.value) return productionDescription.value
+  if (publishing.value.publication?.error) {
+    return `Production is running, but external access reported an error: ${publishing.value.publication.error}`
+  }
+  return productionDescription.value
+})
+const productionViewerCount = computed(() => {
+  if (!publishing.value?.published || publishing.value.publication?.mode !== 'restricted') return '—'
+  return String((publishing.value.grants ?? []).filter((grant) => !grant.revoked).length)
+})
+const productionURLPlaceholder = computed(() => {
+  if (!publishing.value) return 'Checking external access…'
+  if (productionPublicationReady.value && !productionURL.value) return 'Publication is ready; the production link is still being resolved.'
+  if (productionAccess.value.label === 'Offline') return 'No production URL is active.'
+  return 'Production URL will appear when external access is ready.'
+})
 const promoteButtonLabel = computed(() => {
   if (promotionBusy.value) return 'Promoting…'
   return productionBinding.value ? 'Redeploy to production' : 'Promote to production'
@@ -1553,8 +1671,21 @@ function clearPromotionPoll() {
   }
 }
 
+function promotionObservation(readiness: ProjectPromotionReadiness) {
+  return {
+    instance: readiness.instance,
+    phase: readiness.production?.phase,
+    rolloutRevision: readiness.observedRolloutRevision,
+  }
+}
+
 function schedulePromotionPoll() {
   clearPromotionPoll()
+  if (!productionSurfaceActive.value) return
+  if (promotionPollState && promotionPollState.attempts < promotionPollState.maxAttempts) {
+    promotionPollTimer = window.setTimeout(() => { void loadPromotion() }, 4000)
+    return
+  }
   const prod = promotion.value?.production
   // Poll while production is still coming up so the URL appears without a
   // manual refresh; stop once it is serving.
@@ -1564,64 +1695,255 @@ function schedulePromotionPoll() {
   }
 }
 
+function clearPublishingPoll() {
+  if (publishingPollTimer !== undefined) {
+    window.clearTimeout(publishingPollTimer)
+    publishingPollTimer = undefined
+  }
+}
+
+function schedulePublishingPoll() {
+  clearPublishingPoll()
+  if (productionSurfaceActive.value && shouldPollPublishing(publishing.value)) {
+    publishingPollTimer = window.setTimeout(loadPublishing, 4000)
+  }
+}
+
 async function loadPromotion() {
   const name = selected.value?.name
   if (!name) {
     promotion.value = null
+    promotionFeedback.value = null
+    promotionPollState = null
+    promotionLastTarget = null
+    promotionLoadSerial += 1
     clearPromotionPoll()
     return
   }
+  const requestSerial = ++promotionLoadSerial
+  const pollAtStart = promotionPollState
   try {
-    promotion.value = await api.getPromotion(props.ctx, name)
+    const readiness = await api.getPromotion(props.ctx, name)
+    if (requestSerial !== promotionLoadSerial || selected.value?.name !== name) return
+    promotion.value = readiness
+    const observation = promotionObservation(readiness)
+    if (pollAtStart && promotionPollState === pollAtStart) {
+      const progress = advancePromotionPoll(pollAtStart, observation)
+      promotionLastTarget = progress.state
+      if (progress.matched) {
+        promotionFeedback.value = promotionReadyFeedback(progress.state, observation)
+      } else if (progress.done) {
+        promotionFeedback.value = promotionPollExhaustedFeedback(progress.state, observation)
+      }
+      promotionPollState = progress.done ? null : progress.state
+    } else if (promotionLastTarget && promotionObservationMatches(promotionLastTarget, observation)) {
+      // The bounded post-action window may expire while the provider is still
+      // converging. Keep a later ordinary status poll honest if it eventually
+      // reports the target revision.
+      promotionFeedback.value = promotionReadyFeedback(promotionLastTarget, observation)
+    }
     promotionError.value = null
   } catch (err) {
+    if (requestSerial !== promotionLoadSerial || selected.value?.name !== name) return
+    // A successful acknowledgement must not survive an error for the same
+    // project: it would make a failed refresh look like a completed rollout.
+    promotionFeedback.value = null
     if (!isProjectAPIInitializingError(err)) {
       promotionError.value = err instanceof Error ? err.message : String(err)
     }
+    if (pollAtStart && promotionPollState === pollAtStart) {
+      const progress = advancePromotionPoll(pollAtStart, null)
+      promotionLastTarget = progress.state
+      promotionPollState = progress.done ? null : progress.state
+    }
   }
+  if (requestSerial !== promotionLoadSerial || selected.value?.name !== name) return
   schedulePromotionPoll()
 }
 
-// Lifecycle checkpoints (Template / Git / CI / Production) shown as header chips.
-async function loadCheckpoints() {
+async function loadPublishing() {
   const name = selected.value?.name
   if (!name) {
-    checkpoints.value = []
+    publishingLoadSerial += 1
+    publishing.value = null
+    publishingMembers.value = []
+    publishingActionError.value = null
+    clearPublishingPoll()
     return
   }
+  const requestSerial = ++publishingLoadSerial
   try {
-    const resp = await api.getCheckpoints(props.ctx, name)
-    checkpoints.value = resp.items ?? []
-  } catch (err) {
-    if (!isProjectAPIInitializingError(err)) {
-      checkpoints.value = []
+    const [state, members] = await Promise.all([
+      api.getPublishing(props.ctx, name),
+      api.listPublishingMembers(props.ctx, name),
+    ])
+    if (requestSerial !== publishingLoadSerial || selected.value?.name !== name) return
+    publishing.value = state
+    publishingMembers.value = members
+    if (!shareDialogOpen.value) {
+      shareMode.value = publishingAccessSelection(state) === 'public' ? 'public' : 'restricted'
     }
+    publishingActionError.value = null
+  } catch (err) {
+    if (requestSerial !== publishingLoadSerial || selected.value?.name !== name) return
+    if (!isProjectAPIInitializingError(err)) {
+      publishingActionError.value = err instanceof Error ? err.message : String(err)
+    }
+  }
+  if (requestSerial !== publishingLoadSerial || selected.value?.name !== name) return
+  schedulePublishingPoll()
+}
+
+async function refreshProduction() {
+  if (publishingRefreshBusy.value || promotionBusy.value) return
+  publishingRefreshBusy.value = true
+  try {
+    await Promise.allSettled([loadPromotion(), loadPublishing()])
+  } finally {
+    publishingRefreshBusy.value = false
   }
 }
 
-// Clicking a not-yet-done checkpoint chip advances it: "auto" remediation seeds
-// the assistant with a request to fix it; "manual" routes the user to the
-// action they must take themselves (connect Git, click Promote).
-function actOnCheckpoint(cp: ProjectCheckpoint) {
-  const rem = cp.remediation
-  if (!rem) return
-  if (rem.kind === 'manual') {
-    if (cp.key === 'production') {
-      openBuiltInWorkbenchTab('publishing')
-      return
+// setProductionVisibility is the settings pane's inline public/invite-only
+// switch: it applies immediately (no dialog round-trip). Grants/invites stay
+// in the Share dialog; visibility itself is a one-select decision.
+async function setProductionVisibility(mode: ProjectPublishingMode) {
+  const name = selected.value?.name
+  if (!name || publishingActionBusy.value) return
+  publishingActionBusy.value = true
+  publishingActionError.value = null
+  try {
+    const state = await api.publishProject(props.ctx, name, mode)
+    if (selected.value?.name !== name) return
+    publishing.value = state
+    shareMode.value = mode
+    await loadPublishing()
+  } catch (err) {
+    if (selected.value?.name === name) {
+      publishingActionError.value = err instanceof Error ? err.message : String(err)
     }
-    const url = rem.actionUrl || (cp.key === 'git' ? CODE_CONNECTIONS_URL : '')
-    if (url) window.location.assign(url)
+  } finally {
+    publishingActionBusy.value = false
+  }
+}
+
+function onProductionVisibilityChange(event: Event) {
+  const value = (event.target as HTMLSelectElement).value === 'public' ? 'public' : 'restricted'
+  void setProductionVisibility(value)
+}
+
+async function publishCurrentProject() {
+  const name = selected.value?.name
+  if (!name || publishingActionBusy.value) return
+  publishingActionBusy.value = true
+  publishingActionError.value = null
+  try {
+    const state = await api.publishProject(props.ctx, name, shareMode.value)
+    if (selected.value?.name !== name) return
+    publishing.value = state
+    await loadPublishing()
+  } catch (err) {
+    if (selected.value?.name === name) {
+      publishingActionError.value = err instanceof Error ? err.message : String(err)
+    }
+  } finally {
+    publishingActionBusy.value = false
+  }
+}
+
+async function unpublishCurrentProject() {
+  const name = selected.value?.name
+  if (!name || publishingActionBusy.value) return
+  const disableAccessTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  const confirmed = await confirmDialog({
+    title: 'Disable external access?',
+    message: 'Nobody will be able to access the production URL. The production deployment will keep running.',
+    confirmLabel: 'Disable access',
+    danger: true,
+  })
+  if (!confirmed) {
+    await nextTick()
+    if (disableAccessTrigger?.isConnected) disableAccessTrigger.focus()
     return
   }
-  // auto: seed the chat composer so the user can review and send.
-  const detail = cp.remediation?.message || cp.reason || ''
-  replaceAssistantComposerText(`Advance the "${cp.label}" checkpoint${detail ? `: ${detail}` : '.'}`)
+  if (selected.value?.name !== name) return
+  publishingActionBusy.value = true
+  publishingActionError.value = null
+  let disableSucceeded = false
+  try {
+    const state = await api.unpublishProject(props.ctx, name)
+    if (selected.value?.name !== name) return
+    publishing.value = state
+    await loadPublishing()
+    disableSucceeded = true
+  } catch (err) {
+    if (selected.value?.name === name) {
+      publishingActionError.value = err instanceof Error ? err.message : String(err)
+    }
+  } finally {
+    publishingActionBusy.value = false
+    if (disableSucceeded) closeShareDialog()
+  }
+}
+
+async function grantCurrentProjectAccess(user: string) {
+  await grantOrInviteProjectAccess(user, false)
+}
+
+// Invite-by-email: the platform pre-provisions the account and org
+// membership; the grant applies the moment the invitee first signs in.
+async function inviteCurrentProjectAccess(email: string) {
+  await grantOrInviteProjectAccess(email, true)
+}
+
+async function grantOrInviteProjectAccess(user: string, invite: boolean) {
+  const name = selected.value?.name
+  const selectedUser = user.trim()
+  if (!name || !selectedUser || publishingActionBusy.value) return
+  publishingActionBusy.value = true
+  publishingActionError.value = null
+  try {
+    await api.grantPublishingAccess(props.ctx, name, selectedUser, invite)
+    if (selected.value?.name !== name) return
+    await loadPublishing()
+  } catch (err) {
+    if (selected.value?.name === name) {
+      publishingActionError.value = err instanceof Error ? err.message : String(err)
+    }
+  } finally {
+    publishingActionBusy.value = false
+  }
+}
+
+async function revokeCurrentProjectAccess(grant: string) {
+  const name = selected.value?.name
+  if (!name || publishingActionBusy.value) return
+  publishingActionBusy.value = true
+  publishingActionError.value = null
+  try {
+    await api.revokePublishingAccess(props.ctx, name, grant)
+    if (selected.value?.name !== name) return
+    await loadPublishing()
+  } catch (err) {
+    if (selected.value?.name === name) {
+      publishingActionError.value = err instanceof Error ? err.message : String(err)
+    }
+  } finally {
+    publishingActionBusy.value = false
+  }
 }
 
 async function promoteToProd() {
   const name = selected.value?.name
   if (!name || !canPromote.value) return
+  promotionFeedback.value = null
+  promotionError.value = null
+  promotionPollState = null
+  promotionLastTarget = null
+  clearPromotionPoll()
+  // Invalidate a status request that may have started before this action. Its
+  // old Ready response must not consume the new rollout's poll budget.
+  promotionLoadSerial += 1
   let values: Record<string, unknown> | undefined
   const text = promotionValuesText.value.trim()
   if (text) {
@@ -1633,26 +1955,37 @@ async function promoteToProd() {
     }
   }
   promotionBusy.value = true
-  promotionError.value = null
   try {
-    await api.promoteProject(props.ctx, name, values)
+    const result = await api.promoteProject(props.ctx, name, values)
+    if (selected.value?.name !== name) return
+    promotionLastTarget = beginPromotionPoll(result)
+    promotionPollState = promotionLastTarget
+    promotionFeedback.value = promotionAcceptedFeedback(result)
     await loadPromotion()
-    void loadCheckpoints()
   } catch (err) {
-    promotionError.value = err instanceof Error ? err.message : String(err)
+    if (selected.value?.name === name) {
+      promotionFeedback.value = null
+      promotionError.value = err instanceof Error ? err.message : String(err)
+    }
   } finally {
     promotionBusy.value = false
   }
 }
 
-// Load promotion status when the publishing tab opens or the project changes.
+// Load production/access status when the production surface opens or the
+// project changes. Opening Share while Production is already active keeps the
+// same surface alive and must not duplicate either request.
 watch(
-  () => [activeWorkbenchTab.value?.kind, selected.value?.name] as const,
-  ([kind]) => {
-    if (kind === 'publishing') {
+  () => [productionSurfaceActive.value, selected.value?.name, activeWorkbenchTab.value?.kind, projectSettingsPane.value] as const,
+  ([surfaceActive, projectName, kind], previous) => {
+    const [previousSurfaceActive, previousProjectName] = previous ?? [false, undefined]
+    const surfaceOrProjectChanged = surfaceActive && (!previousSurfaceActive || projectName !== previousProjectName)
+    if (surfaceOrProjectChanged) {
       void loadPromotion()
-    } else {
+      void loadPublishing()
+    } else if (!surfaceActive) {
       clearPromotionPoll()
+      clearPublishingPoll()
     }
     if (kind === 'settings' && settingsProject.value) {
       syncProjectSettingsForm()
@@ -1663,17 +1996,10 @@ watch(
   },
 )
 
-// Refresh lifecycle checkpoints whenever the open project changes.
-watch(
-  () => selected.value?.name,
-  (name) => {
-    if (name) void loadCheckpoints()
-    else checkpoints.value = []
-  },
-  { immediate: true },
-)
-
-onBeforeUnmount(clearPromotionPoll)
+onBeforeUnmount(() => {
+  clearPromotionPoll()
+  clearPublishingPoll()
+})
 
 // hydrateDevelopmentWorkspace replace-loads the workspace from the project's
 // git repository (the durable source of truth) and re-syncs the runtime.
@@ -2147,10 +2473,18 @@ async function createProjectAndStartConversation(
 async function openSettings() {
   syncProjectSettingsForm()
   if (settingsProject.value) {
+    projectSettingsPane.value = 'project'
+    projectSettingsPaneAnnouncement.value = ''
     openBuiltInWorkbenchTab('settings')
     await nextTick()
   }
   showSettings.value = true
+}
+
+function selectProjectSettingsPane(pane: ProjectSettingsPane) {
+  projectSettingsPane.value = pane
+  projectSettingsPaneAnnouncement.value = `${pane === 'production' ? 'Production' : pane === 'model' ? 'Model' : 'Project'} settings selected.`
+  if (pane === 'production') void nextTick(() => productionSettingsPaneRef.value?.focus())
 }
 
 function closeSettings() {
@@ -2539,7 +2873,6 @@ function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName 
   if (assistantRunTerminal(normalized.run.status) && acceptedTerminal) {
     conversationStatus.value = ''
     assistantRunController.disconnect()
-    void loadCheckpoints()
     if (normalized.message.metadata?.previewRefreshNeeded === true) {
       void refreshDevelopmentPreviewFrame('Preview refreshed', { refreshProject: true })
     }
@@ -2886,6 +3219,31 @@ function developmentPreviewAuthorizationRetryable(error: unknown): boolean {
   return !(error instanceof ProjectAPIRequestError) || error.status === 408 || error.status === 429 || error.status >= 500
 }
 
+function openShareDialog() {
+  if (!selected.value?.name) return
+  shareDialogOpen.value = true
+}
+
+function closeShareDialog() {
+  if (publishingActionBusy.value) return
+  shareDialogOpen.value = false
+  void nextTick(() => shareButtonRef.value?.focus())
+  if (!productionSettingsVisible.value) {
+    clearPromotionPoll()
+    clearPublishingPoll()
+  }
+}
+
+function openProductionSettingsFromShare() {
+  if (publishingActionBusy.value) return
+  shareDialogOpen.value = false
+  projectSettingsPane.value = 'production'
+  projectSettingsPaneAnnouncement.value = 'Production settings opened from Share.'
+  openBuiltInWorkbenchTab('settings')
+  showSettings.value = true
+  void nextTick(() => productionSettingsPaneRef.value?.focus())
+}
+
 function resetWorkbench() {
   workbench.value = createDefaultWorkbenchState()
 }
@@ -2979,7 +3337,6 @@ function workbenchTabIcon(tab: WorkbenchTabDescriptor): Component {
   if (tab.kind === 'review') return ClipboardList
   if (tab.kind === 'providers') return PanelRight
   if (tab.kind === 'integrations') return Link2
-  if (tab.kind === 'publishing') return Globe
   if (tab.kind === 'settings') return Settings2
   if (tab.kind === 'skills') return Plug
   if (tab.kind === 'threads') return MessageSquare
@@ -3206,9 +3563,6 @@ async function sendMessage() {
     messageStreaming.value = false
   } finally {
     busy.value = false
-    // The assistant may have advanced a checkpoint (selected a template,
-    // committed CI, …); refresh the header chips to reflect it.
-    void loadCheckpoints()
   }
 }
 
@@ -4995,7 +5349,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <div
             v-for="tab in workbench.tabs"
             :key="tab.id"
-            class="inline-flex h-8 shrink-0 cursor-grab items-center overflow-hidden rounded-md border text-[12px] font-medium transition active:cursor-grabbing"
+            class="inline-flex h-8 min-w-[7rem] max-w-[15rem] shrink cursor-grab items-center overflow-hidden rounded-md border text-[12px] font-medium transition active:cursor-grabbing"
             :class="workbenchTabButtonClass(tab)"
             draggable="true"
             @dragstart="startWorkbenchTabDrag($event, tab)"
@@ -5007,7 +5361,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             <button
               type="button"
               role="tab"
-              class="inline-flex h-full min-w-0 items-center gap-1.5 px-2 outline-none"
+              class="inline-flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 outline-none"
               :id="workbenchTabControlID(tab)"
               :aria-selected="workbench.activeTabID === tab.id"
               :aria-controls="workbenchTabPanelID(tab)"
@@ -5016,7 +5370,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             >
               <img v-if="tab.kind === 'provider' && tab.providerTool?.iconURL" :src="tab.providerTool.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
               <component v-else :is="workbenchTabIcon(tab)" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-              <span class="max-w-[9rem] truncate">{{ tab.title }}</span>
+              <span class="min-w-0 max-w-[9rem] flex-1 truncate">{{ tab.title }}</span>
               <span
                 v-if="tab.kind === 'review' && hasPendingReview"
                 class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
@@ -5050,17 +5404,29 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             aria-hidden="true"
           />
         </button>
-        <div class="flex shrink-0 items-center gap-1">
           <button
-            v-if="activeProviderTool"
-            class="flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
-            title="Open full provider"
-            aria-label="Open full provider"
-            @click="openToolFull"
+            type="button"
+            class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-accent bg-accent px-3 text-[12px] font-semibold text-white shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+            ref="shareButtonRef"
+            title="Share project"
+            aria-label="Share project"
+            :disabled="!selected"
+            @click="openShareDialog"
           >
-            <ExternalLink class="h-4 w-4" :stroke-width="1.75" />
+            <Users class="h-3.5 w-3.5" :stroke-width="1.75" />
+            <span>Share</span>
           </button>
-        </div>
+          <div class="flex shrink-0 items-center gap-1">
+            <button
+              v-if="activeProviderTool"
+              class="flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
+              title="Open full provider"
+              aria-label="Open full provider"
+              @click="openToolFull"
+            >
+              <ExternalLink class="h-4 w-4" :stroke-width="1.75" />
+            </button>
+          </div>
       </header>
 
       <div
@@ -5276,216 +5642,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
       >
         <div id="app-studio-project-settings-host" class="h-full min-h-0 overflow-hidden" />
-      </div>
-
-      <div
-        v-else-if="activeWorkbenchTab?.kind === 'publishing'"
-        class="min-h-0 flex-1 overflow-auto p-3"
-        role="tabpanel"
-        :id="workbenchTabPanelID(activeWorkbenchTab)"
-        :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
-      >
-        <div class="grid gap-3">
-          <section class="flex flex-wrap items-center gap-2 rounded-md border border-border-subtle bg-surface p-3" aria-label="Project lifecycle">
-            <div class="mr-auto min-w-36">
-              <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Project lifecycle</div>
-              <div class="mt-0.5 text-[11px] text-text-secondary">Template, source, build, and production readiness</div>
-            </div>
-            <div v-if="checkpoints.length" class="flex flex-wrap items-center gap-1.5">
-              <CheckpointChip
-                v-for="cp in checkpoints"
-                :key="cp.key"
-                :checkpoint="cp"
-                @act="actOnCheckpoint"
-              />
-            </div>
-          </section>
-
-          <section class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3">
-            <div class="flex min-w-0 items-start justify-between gap-2">
-              <div class="min-w-0">
-                <div class="text-[13px] font-semibold text-text-primary">Publish your app</div>
-                <div class="text-[12px] leading-5 text-text-muted">
-                  Prepare a production URL and review what App Studio needs before this development project is ready to share.
-                </div>
-              </div>
-              <StatusBadge :status="publishingAvailability" />
-            </div>
-
-            <div class="grid gap-2">
-              <label class="text-[11px] font-semibold uppercase tracking-wide text-text-muted" for="publishing-domain">
-                Domain
-              </label>
-              <div class="flex items-center gap-2">
-                <Globe class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" />
-                <input
-                  id="publishing-domain"
-                  :value="publishingDefaultDomain"
-                  class="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
-                  :aria-describedby="`publishing-${workbenchTabPanelID(activeWorkbenchTab)}-domain-help`"
-                  readonly
-                />
-                <span class="text-[11px] text-text-muted">(suggested)</span>
-              </div>
-              <p
-                :id="`publishing-${workbenchTabPanelID(activeWorkbenchTab)}-domain-help`"
-                class="text-[11px] leading-4 text-text-muted"
-              >
-                Domain suggestions are generated from your project name. App Studio will use this as the proposed production URL when publishing is connected.
-              </p>
-            </div>
-          </section>
-
-          <section class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3">
-            <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">What you're publishing</div>
-            <dl class="grid gap-2 text-[12px]">
-              <div class="grid gap-1 md:grid-cols-[150px_minmax(0,1fr)]">
-                <dt class="text-text-muted">Project</dt>
-                <dd class="font-medium text-text-primary">{{ publishingProjectName || 'No project selected' }}</dd>
-              </div>
-              <div class="grid gap-1 md:grid-cols-[150px_minmax(0,1fr)]">
-                <dt class="text-text-muted">Development preview</dt>
-                <dd class="truncate text-text-primary">{{ publishingSummaryTarget }}</dd>
-              </div>
-            </dl>
-          </section>
-
-          <section class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3">
-            <div class="flex min-w-0 items-start justify-between gap-2">
-              <div class="min-w-0">
-                <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Build</div>
-                <div class="text-[12px] leading-5 text-text-muted">
-                  Committing your app writes a GitHub Actions workflow into the repository; GitHub builds and publishes a container image per component and records the versions back here. Promote once every component is built.
-                </div>
-              </div>
-              <StatusBadge :status="promotionBuildLabel" />
-            </div>
-
-            <p v-if="promotionBuild?.note" class="text-[12px] leading-5 text-text-secondary">
-              {{ promotionBuild.note }}
-            </p>
-
-            <ul v-if="promotionComponents.length" class="grid gap-1.5">
-              <li
-                v-for="component in promotionComponents"
-                :key="component.name"
-                class="flex items-center justify-between gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-[12px]"
-              >
-                <span class="flex min-w-0 items-center gap-2">
-                  <span
-                    class="inline-block h-2 w-2 shrink-0 rounded-full"
-                    :class="component.built ? 'bg-success' : 'bg-warning'"
-                  />
-                  <span class="font-medium text-text-primary">{{ component.name }}</span>
-                </span>
-                <span class="truncate text-text-muted" :title="component.image || 'not built yet'">
-                  {{ component.built ? (component.digest || component.image) : 'not built' }}
-                </span>
-              </li>
-            </ul>
-          </section>
-
-          <section
-            v-if="productionBinding"
-            class="grid gap-2 rounded-md border border-success/30 bg-success-subtle p-3"
-          >
-            <div class="flex min-w-0 items-start justify-between gap-2">
-              <div class="min-w-0">
-                <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Production</div>
-                <div class="text-[12px] leading-5 text-text-muted">The long-running production deployment of this app.</div>
-              </div>
-              <StatusBadge :status="productionPhase || 'Provisioning'" />
-            </div>
-            <div class="flex items-center gap-2 text-[12px]">
-              <Globe class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" />
-              <a
-                v-if="productionURL"
-                :href="productionURL"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="min-w-0 truncate font-medium text-accent hover:underline"
-              >{{ productionURL }}</a>
-              <span v-else class="text-text-muted">Production URL will appear here once it is serving traffic.</span>
-            </div>
-          </section>
-
-          <section class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3">
-            <button
-              type="button"
-              class="flex w-full items-center justify-between gap-2 text-left"
-              @click="promotionAdvancedOpen = !promotionAdvancedOpen"
-            >
-              <span class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Production settings (optional)</span>
-              <span class="text-[11px] text-text-muted">{{ promotionAdvancedOpen ? 'Hide' : 'Show' }}</span>
-            </button>
-            <div v-if="promotionAdvancedOpen" class="grid gap-1.5">
-              <p class="text-[11px] leading-4 text-text-muted">
-                Template production inputs as JSON (for example ports or replicas). Leave blank to use the template defaults. Image versions, the instance name, and production mode are set automatically.
-              </p>
-              <textarea
-                v-model="promotionValuesText"
-                class="min-h-20 w-full resize-y rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 font-mono text-[12px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-                placeholder='{ "frontendPort": 8080 }'
-                spellcheck="false"
-              />
-            </div>
-          </section>
-
-          <section class="grid gap-2 rounded-md border border-border-subtle bg-surface p-3">
-            <div class="flex items-center justify-between gap-2">
-              <div>
-                <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Access</div>
-                <div class="text-[12px] text-text-muted">Choose the intended audience for the production URL.</div>
-              </div>
-            </div>
-            <div class="grid gap-1.5 sm:grid-cols-3" role="radiogroup" aria-label="Publishing access">
-              <label class="inline-flex items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 text-[12px]">
-                <input v-model="publishingAccess" type="radio" value="public" name="publishing-access" class="h-3.5 w-3.5" />
-                <span>Public</span>
-              </label>
-              <label class="inline-flex items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 text-[12px]">
-                <input v-model="publishingAccess" type="radio" value="members" name="publishing-access" class="h-3.5 w-3.5" />
-                <Users class="h-3.5 w-3.5" :stroke-width="1.75" />
-                <span>Members only</span>
-              </label>
-              <label class="inline-flex items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 text-[12px]">
-                <input v-model="publishingAccess" type="radio" value="private" name="publishing-access" class="h-3.5 w-3.5" />
-                <span>Private</span>
-              </label>
-            </div>
-          </section>
-
-          <div v-if="promotionError" class="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-[12px] leading-5 text-danger">
-            {{ promotionError }}
-          </div>
-
-          <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-1">
-            <div class="text-[12px] text-text-muted">
-              Promotion creates a production deployment alongside your development instance; the development instance keeps running. You can redeploy any time.
-            </div>
-            <div class="flex items-center gap-2">
-              <button
-                type="button"
-                class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-                :disabled="promotionBusy"
-                @click="loadPromotion"
-              >
-                <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                Refresh
-              </button>
-              <button
-                type="button"
-                class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent bg-accent/15 px-4 text-[12px] font-semibold text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                :disabled="!canPromote"
-                :title="canPromote ? '' : 'Commit your app and wait for every component image to build first'"
-                @click="promoteToProd"
-              >
-                <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                {{ promoteButtonLabel }}
-              </button>
-            </div>
-          </div>
-        </div>
       </div>
 
       <div
@@ -5738,8 +5894,35 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
         <div class="min-h-0 overflow-auto p-4">
           <div class="grid gap-4">
-          <form
+          <nav
             v-if="settingsProject"
+            class="flex flex-wrap items-center gap-1 border-b border-border-subtle pb-3"
+            role="tablist"
+            aria-label="Project Settings sections"
+          >
+            <button
+              v-for="pane in projectSettingsPanes"
+              :key="pane[0]"
+              type="button"
+              role="tab"
+              :id="`project-settings-tab-${pane[0]}`"
+              class="rounded-md px-3 py-1.5 text-[12px] font-medium transition"
+              :class="projectSettingsPane === pane[0] ? 'bg-accent-subtle text-accent' : 'text-text-muted hover:bg-surface-hover hover:text-text-primary'"
+              :aria-selected="projectSettingsPane === pane[0]"
+              :aria-controls="`project-settings-pane-${pane[0]}`"
+              @click="selectProjectSettingsPane(pane[0])"
+            >
+              {{ pane[1] }}
+            </button>
+          </nav>
+          <p v-if="projectSettingsPaneAnnouncement" class="sr-only" aria-live="polite">
+            {{ projectSettingsPaneAnnouncement }}
+          </p>
+          <form
+            v-if="settingsProject && projectSettingsPane === 'project'"
+            id="project-settings-pane-project"
+            role="tabpanel"
+            aria-labelledby="project-settings-tab-project"
             class="grid gap-3 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3"
             @submit.prevent="saveProjectSettings"
           >
@@ -5787,7 +5970,160 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </div>
           </form>
 
-          <form class="grid gap-4 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3" @submit.prevent="saveLLMSettings">
+          <section
+            v-else-if="settingsProject && projectSettingsPane === 'production'"
+            id="project-settings-pane-production"
+            ref="productionSettingsPaneRef"
+            role="tabpanel"
+            tabindex="-1"
+            aria-labelledby="project-settings-tab-production"
+            class="grid gap-3 outline-none"
+          >
+            <section class="grid gap-3 rounded-md border border-accent/30 bg-surface p-4" aria-label="Production overview">
+              <div class="flex min-w-0 items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="flex items-center gap-2">
+                    <Globe class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
+                    <h3 id="project-settings-pane-production-title" class="text-[14px] font-semibold text-text-primary">Production</h3>
+                  </div>
+                  <p class="mt-1 max-w-2xl text-[12px] leading-5 text-text-muted">{{ productionOverviewDescription }}</p>
+                </div>
+                <StatusBadge :status="productionOverview.label" :tone="productionOverview.tone" />
+              </div>
+              <div v-if="productionPublicationReady" class="rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-[12px] leading-5 text-success" role="status">
+                {{ productionURL ? 'The publication is ready at the production URL.' : 'The publication is ready; the production link is still being resolved.' }}
+              </div>
+              <div v-if="productionAccess.label === 'Live'" class="grid gap-3">
+                <div class="flex min-w-0 items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-3 py-2.5">
+                  <Link2 class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" />
+                  <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono text-[13px] font-medium text-accent hover:underline">{{ productionURL }}</a>
+                </div>
+                <dl class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div class="rounded-md border border-border-subtle bg-surface-overlay px-3 py-2">
+                    <dt class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">Visibility</dt>
+                    <dd class="mt-1">
+                      <select
+                        :value="publishing?.publication?.mode === 'public' ? 'public' : 'restricted'"
+                        class="h-8 w-full rounded-md border border-border-subtle bg-surface px-2 text-[12px] font-medium text-text-primary outline-none transition focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
+                        aria-label="Production visibility"
+                        :disabled="publishingActionBusy"
+                        @change="onProductionVisibilityChange"
+                      >
+                        <option value="restricted">Invite-only</option>
+                        <option value="public">Public — anyone with the link</option>
+                      </select>
+                    </dd>
+                  </div>
+                  <div v-if="publishing?.publication?.mode === 'restricted'" class="rounded-md border border-border-subtle bg-surface-overlay px-3 py-2">
+                    <dt class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">Viewers</dt>
+                    <dd class="mt-1 text-[12px] font-medium text-text-primary">{{ productionViewerCount }}</dd>
+                  </div>
+                </dl>
+                <div class="flex flex-wrap items-center justify-end gap-2">
+                  <!-- Visibility and viewers are managed in the Share dialog;
+                       surface it right where those facts are displayed so
+                       invite/grant is one click away from this pane. -->
+                  <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary" @click="openShareDialog">
+                    <Users class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    Manage access
+                  </button>
+                  <a :href="productionURL" target="_blank" rel="noopener noreferrer" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary">
+                    <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    Open app
+                  </a>
+                  <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent bg-accent/15 px-4 text-[12px] font-semibold text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60" :disabled="!canPromote || publishingActionBusy" @click="promoteToProd">
+                    <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+                    Redeploy
+                  </button>
+                </div>
+              </div>
+              <div v-else class="grid gap-3">
+                <div v-if="publishing?.published" class="grid gap-2 rounded-md border border-border-subtle bg-surface-overlay p-3">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">External access</div>
+                      <div class="mt-0.5 text-[12px] text-text-muted">{{ productionDescription }}</div>
+                    </div>
+                    <StatusBadge :status="productionPublicationStatus.label" :tone="productionPublicationStatus.tone" />
+                  </div>
+                  <div v-if="productionURL" class="flex min-w-0 items-center gap-2 text-[12px]"><Link2 class="h-4 w-4 shrink-0 text-text-muted" :stroke-width="1.75" /><a :href="productionURL" target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono font-medium text-accent hover:underline">{{ productionURL }}</a></div>
+                  <p v-else class="text-[11px] text-text-muted">{{ productionURLPlaceholder }}</p>
+                  <label class="grid max-w-xs gap-1">
+                    <span class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">Visibility</span>
+                    <select
+                      :value="publishing?.publication?.mode === 'public' ? 'public' : 'restricted'"
+                      class="h-8 w-full rounded-md border border-border-subtle bg-surface px-2 text-[12px] font-medium text-text-primary outline-none transition focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
+                      aria-label="Production visibility"
+                      :disabled="publishingActionBusy"
+                      @change="onProductionVisibilityChange"
+                    >
+                      <option value="restricted">Invite-only</option>
+                      <option value="public">Public — anyone with the link</option>
+                    </select>
+                  </label>
+                  <p v-if="publishing?.publication?.error && !publishing?.publication?.ready" class="text-[11px] leading-4 text-danger" role="alert">{{ publishing.publication.error }}</p>
+                  <div class="flex flex-wrap items-center justify-end gap-2">
+                    <a v-if="productionURL" :href="productionURL" target="_blank" rel="noopener noreferrer" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"><ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />Open app</a>
+                    <button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent bg-accent/15 px-4 text-[12px] font-semibold text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60" :disabled="!canPromote || publishingActionBusy" @click="promoteToProd"><Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />Redeploy</button>
+                  </div>
+                </div>
+                <div v-else class="grid gap-2 rounded-md border border-success/30 bg-success-subtle p-3 text-success">
+                  <div v-if="publishing && !publishing.published">
+                    <div class="text-[11px] font-semibold uppercase tracking-wide">Publication is ready</div>
+                    <div class="mt-0.5 text-[12px] leading-5">Open Share to choose who can view this production app. Redeploying later does not change access.</div>
+                  </div>
+                  <div v-else class="text-[12px]">Checking external access before showing the Share controls…</div>
+                </div>
+                <div v-if="!productionBinding || !productionDeployment.ready" class="flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/30 bg-warning-subtle px-3 py-2 text-[11px] leading-4 text-warning">
+                  <span>{{ promotionDisabledReason || 'Production is not ready yet.' }}</span>
+                  <button v-if="canPromote" type="button" class="inline-flex h-7 items-center gap-1.5 rounded-md border border-warning/50 px-2.5 text-[11px] font-semibold text-warning transition hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-60" :disabled="promotionBusy" @click="promoteToProd"><Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />{{ promoteButtonLabel }}</button>
+                </div>
+              </div>
+              <div v-if="publishingActionError" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ publishingActionError }}</div>
+            </section>
+            <div v-if="promotionError" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ promotionError }}</div>
+            <section class="grid gap-3 rounded-md border border-border-subtle bg-surface p-3" aria-label="Technical details">
+              <button type="button" class="flex w-full items-center justify-between gap-2 text-left" :aria-expanded="productionTechnicalOpen" @click="productionTechnicalOpen = !productionTechnicalOpen">
+                <span class="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted"><Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />Technical details</span>
+                <span class="text-[11px] text-text-muted">{{ productionTechnicalOpen ? 'Hide' : 'Show' }}</span>
+              </button>
+              <div v-if="productionTechnicalOpen" class="grid gap-3 border-t border-border-subtle pt-3">
+                <div class="grid gap-2">
+                  <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Project and preview</div>
+                  <dl class="grid gap-2 text-[12px]">
+                    <div class="grid gap-1 md:grid-cols-[150px_minmax(0,1fr)]"><dt class="text-text-muted">Project</dt><dd class="font-medium text-text-primary">{{ productionProjectName || 'No project selected' }}</dd></div>
+                    <div class="grid gap-1 md:grid-cols-[150px_minmax(0,1fr)]"><dt class="text-text-muted">Development preview</dt><dd class="truncate text-text-primary">{{ productionSummaryTarget }}</dd></div>
+                    <div class="grid gap-1 md:grid-cols-[150px_minmax(0,1fr)]"><dt class="text-text-muted">Suggested domain</dt><dd class="font-mono text-text-primary">{{ productionDefaultDomain }}</dd></div>
+                  </dl>
+                  <p class="text-[11px] leading-4 text-text-muted">The authoritative production URL appears above only after the publication reports Ready.</p>
+                </div>
+                <div class="grid gap-2">
+                  <div class="flex flex-wrap items-center justify-between gap-2"><div><div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Build</div><div class="text-[11px] leading-4 text-text-muted">Commit the app and wait for every component image before promoting.</div></div><StatusBadge :status="promotionBuildLabel" /></div>
+                  <p v-if="promotionBuild?.note" class="text-[12px] leading-5 text-text-secondary">{{ promotionBuild.note }}</p>
+                  <ul v-if="promotionComponents.length" class="grid gap-1.5"><li v-for="component in promotionComponents" :key="component.name" class="flex items-center justify-between gap-2 rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-1.5 text-[12px]"><span class="flex min-w-0 items-center gap-2"><span class="inline-block h-2 w-2 shrink-0 rounded-full" :class="component.built ? 'bg-success' : 'bg-warning'" /><span class="font-medium text-text-primary">{{ component.name }}</span></span><span class="truncate font-mono text-[11px] text-text-muted" :title="component.image || 'not built yet'">{{ component.built ? (component.digest || component.image) : 'not built' }}</span></li></ul>
+                </div>
+                <div class="grid gap-2">
+                  <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Production settings</div>
+                  <p class="text-[11px] leading-4 text-text-muted">Optional template inputs as JSON (for example ports or replicas). Leave blank to use template defaults.</p>
+                  <textarea v-model="promotionValuesText" class="min-h-20 w-full resize-y rounded-md border border-border-subtle bg-surface-overlay px-2.5 py-2 font-mono text-[12px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50" placeholder='{ "frontendPort": 8080 }' spellcheck="false" />
+                </div>
+                <div v-if="productionBinding" class="grid gap-2"><div class="flex flex-wrap items-center justify-between gap-2"><div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Provider binding</div><span class="font-mono text-[11px] text-text-muted">Revision {{ promotion?.observedRolloutRevision || 'not observed' }}</span></div><pre class="max-h-56 overflow-auto rounded-md border border-border-subtle bg-surface-overlay p-2.5 font-mono text-[11px] leading-4 text-text-secondary">{{ JSON.stringify(productionBinding, null, 2) }}</pre></div>
+                <div v-if="promotionFeedback" role="status" aria-live="polite" class="rounded-md border px-3 py-2 text-[12px] leading-5" :class="promotionFeedback.tone === 'success' ? 'border-success/30 bg-success-subtle text-success' : 'border-warning/30 bg-warning-subtle text-warning'">{{ promotionFeedback.message }}</div>
+                <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-2"><p class="text-[11px] leading-4 text-text-muted">Redeploy updates the production deployment only. It does not publish or change access.</p><div class="flex items-center gap-2"><button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60" :disabled="promotionBusy || publishingRefreshBusy" @click="refreshProduction"><Loader2 v-if="promotionBusy || publishingRefreshBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />Refresh</button><button type="button" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent bg-accent/15 px-4 text-[12px] font-semibold text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60" :disabled="!canPromote" @click="promoteToProd"><Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />{{ promoteButtonLabel }}</button></div></div>
+                <p v-if="!canPromote && promotionDisabledReason" role="status" class="text-[11px] leading-4 text-text-muted">{{ promotionDisabledReason }}</p>
+              </div>
+            </section>
+            <p class="text-[11px] leading-4 text-text-muted">Your development instance keeps running while production is deployed and published.</p>
+          </section>
+
+          <form
+            v-if="!settingsProject || projectSettingsPane === 'model'"
+            id="project-settings-pane-model"
+            role="tabpanel"
+            :aria-labelledby="settingsProject ? 'project-settings-tab-model' : undefined"
+            class="grid gap-4 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3"
+            @submit.prevent="saveLLMSettings"
+          >
             <section class="grid gap-1">
               <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">LLM</div>
               <p class="text-[12px] text-text-muted">Configure the model credentials App Studio uses for this workspace.</p>
@@ -5937,7 +6273,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </footer>
           </form>
 
-          <footer v-if="settingsProject" class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-4">
+          <footer v-if="settingsProject && projectSettingsPane === 'project'" class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-4">
             <div class="min-w-0">
               <div class="text-[12px] font-medium text-text-primary">Delete project</div>
               <p class="mt-1 text-[12px] text-text-muted">
@@ -5970,5 +6306,29 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     @cancel="closeDeleteProjectDialog"
     @confirm="confirmDeleteProject"
   />
-  <PkConfirmDialog />
+  <Teleport to="body">
+    <PkConfirmDialog />
+  </Teleport>
+  <ProjectShareDialog
+    v-if="shareDialogOpen"
+    :open="shareDialogOpen"
+    :project-name="productionProjectName"
+    v-model:mode="shareMode"
+    :published="Boolean(publishing?.published)"
+    :publication="publishing?.publication"
+    :production-url="productionURL"
+    :production-ready="Boolean(productionBinding && productionDeployment.ready)"
+    :members="publishingMembers"
+    :grants="publishing?.grants ?? []"
+    :busy="publishingActionBusy"
+    :loading="publishing === null"
+    :error="publishingActionError"
+    @close="closeShareDialog"
+    @save="publishCurrentProject"
+    @grant="grantCurrentProjectAccess"
+    @invite="inviteCurrentProjectAccess"
+    @revoke="revokeCurrentProjectAccess"
+    @disable="unpublishCurrentProject"
+    @open-production-settings="openProductionSettingsFromShare"
+  />
 </template>

@@ -256,6 +256,71 @@ spec:
                   only when supplying a root-scoped (admin) kubeconfig that must be retargeted
                   at a workspace.
                 type: string
+              publishing:
+                description: |-
+                  Publishing configures the template-embedded access gate. The provider
+                  substitutes these values into template graphs as ${kedge.*} tokens
+                  (gate image, hub endpoints); tenants cannot override them.
+                properties:
+                  accessProxyImage:
+                    description: |-
+                      AccessProxyImage is the complete image reference for
+                      kedge-access-proxy, preferably pinned by digest.
+                    maxLength: 512
+                    type: string
+                  baseDomain:
+                    description: BaseDomain is the DNS zone allocated to published
+                      apps.
+                    type: string
+                  gateway:
+                    description: Gateway is the shared platform Gateway parent for
+                      publication routes.
+                    properties:
+                      name:
+                        description: Name of the Gateway. Empty → "cloudflare-tunnel"
+                          (the in-binary default).
+                        type: string
+                      namespace:
+                        description: Namespace of the Gateway. Empty → "cfgate-system"
+                          (the in-binary default).
+                        type: string
+                    type: object
+                  hubInsecure:
+                    description: |-
+                      HubInsecure skips TLS verification between access proxies and the hub.
+                      Development only; production should mount a trusted cluster CA.
+                    type: boolean
+                  hubPublicURL:
+                    description: |-
+                      HubPublicURL is the browser-reachable Kedge hub origin used for login
+                      redirects. It may differ from HubURL, which access proxies use for
+                      in-cluster exchange and authorization checks.
+                    maxLength: 2048
+                    type: string
+                  hubURL:
+                    description: |-
+                      HubURL is the internal Kedge hub URL used only for the app-access
+                      authorize/callback/check protocol.
+                    maxLength: 2048
+                    type: string
+                  publicPort:
+                    description: |-
+                      PublicPort is the optional externally visible port appended to published
+                      app URLs. Leave unset for the scheme default (normally 443); local
+                      Gateways commonly expose HTTPS on a high port such as 10443.
+                    format: int32
+                    maximum: 65535
+                    minimum: 1
+                    type: integer
+                  publicScheme:
+                    default: https
+                    description: PublicScheme is the external scheme used for app
+                      callbacks and URLs.
+                    enum:
+                    - http
+                    - https
+                    type: string
+                type: object
               runtimeKubeconfigSecret:
                 description: |-
                   RuntimeKubeconfigSecret references a Secret holding the kubeconfig of the

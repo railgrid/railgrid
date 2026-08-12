@@ -25,7 +25,24 @@ type Options struct {
 	Kubeconfig            string
 	ExternalKCPKubeconfig string
 	IDPIssuerURL          string
-	IDPClientID           string
+	// IDPBrowserAuthURL optionally overrides only the OIDC authorization
+	// endpoint placed in browser redirects. Discovery, token exchange, JWKS,
+	// and issuer validation continue to use IDPIssuerURL.
+	IDPBrowserAuthURL string
+	IDPClientID       string
+	// DisableTokenLogin removes the interactive static-token login: the
+	// /auth/token-login endpoint is not registered and /healthz advertises
+	// tokenLogin=false so the portal hides its token form. Static bearer
+	// tokens keep authenticating API/MCP/CLI calls — only the browser login
+	// path is disabled. Use with OIDC so humans sign in with a username and
+	// password at the IdP.
+	DisableTokenLogin bool
+	// PublishedAppsDomain is the DNS zone published template instances are
+	// served under (e.g. "apps.kedge.example"). When set, the hub mounts the
+	// login-time published-app authorize/exchange endpoints and only ever
+	// redirects sign-ins back to hosts directly under this zone. Empty
+	// disables published-app auth entirely.
+	PublishedAppsDomain string
 	// IDPCAFile is a path to a PEM-encoded CA bundle used to verify the IdP's
 	// TLS certificate. Required when IDPIssuerURL is https and uses a cert
 	// not signed by a system trust anchor (e.g. the dev Dex deployment).

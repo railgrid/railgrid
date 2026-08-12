@@ -179,6 +179,11 @@ function handleLogout() {
   router.push('/login')
 }
 
+function handleAccountSwitch() {
+  auth.logout()
+  void router.replace('/login?switch=1')
+}
+
 const showCliModal = ref(false)
 const showProfileModal = ref(false)
 
@@ -1012,7 +1017,7 @@ watchEffect(() => {
     <CliQuickstartModal v-if="showCliModal" @close="showCliModal = false" />
 
     <!-- User identity modal (email / user ID for sharing) -->
-    <UserProfileModal v-if="showProfileModal" @close="showProfileModal = false" />
+    <UserProfileModal v-if="showProfileModal" @close="showProfileModal = false" @switch="handleAccountSwitch" />
   </div>
 </template>
 

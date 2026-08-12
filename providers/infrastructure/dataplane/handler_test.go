@@ -31,7 +31,10 @@ import (
 	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
 )
 
-const testNamespace = "kedge-sandbox-a1c31ddaaaa007d4"
+const (
+	testWorkspace = "tenant-a"
+	testNamespace = "tenant-a-default"
+)
 
 type fakeInstanceGetter struct {
 	instance *unstructured.Unstructured
@@ -91,7 +94,7 @@ func doRequest(h *Handler, method, target string) *httptest.ResponseRecorder {
 }
 
 func dataplaneURL(verb string) string {
-	return PathPrefix + "clusters/root:kedge:orgs:acme/sandboxrunners/" + testNamespace + "/" + verb
+	return PathPrefix + "clusters/" + testWorkspace + "/sandboxrunners/" + testNamespace + "/" + verb
 }
 
 func TestHandlerProxiesControlVerb(t *testing.T) {
@@ -125,8 +128,8 @@ func TestHandlerProxiesControlVerb(t *testing.T) {
 		t.Errorf("caller Authorization leaked to runtime: %q", gotAuth)
 	}
 	// Authz used the path workspace + caller token.
-	if ig.gotWorkspace != "root:kedge:orgs:acme" || ig.gotToken != "caller-token" {
-		t.Errorf("authz used ws=%q token=%q, want acme/caller-token", ig.gotWorkspace, ig.gotToken)
+	if ig.gotWorkspace != testWorkspace || ig.gotToken != "caller-token" {
+		t.Errorf("authz used ws=%q token=%q, want %s/caller-token", ig.gotWorkspace, ig.gotToken, testWorkspace)
 	}
 	if ig.gotResource != "sandboxrunners" || ig.gotName != testNamespace {
 		t.Errorf("authz used resource=%q name=%q", ig.gotResource, ig.gotName)
@@ -281,7 +284,7 @@ func TestHandlerProxiesComponentVerb(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	ns := "kedge-tenant-shop"
+	ns := "ws-default"
 	ig := &fakeInstanceGetter{instance: applicationInstance(ns)}
 	rt := &fakeRuntime{host: upstream.URL, token: "control-secret-token"}
 	h := NewHandler(ig, &fakeContractGetter{contract: applicationContract()}, rt)

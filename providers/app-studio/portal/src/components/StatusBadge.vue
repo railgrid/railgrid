@@ -6,8 +6,9 @@ const props = withDefaults(
   defineProps<{
     status: string
     connected?: boolean | null
+    tone?: 'success' | 'warning' | 'danger' | 'muted' | null
   }>(),
-  { connected: null },
+  { connected: null, tone: null },
 )
 
 // Styling comes from the host-served shared recipe layer (kedge-ui.css:
@@ -15,6 +16,18 @@ const props = withDefaults(
 // provider without each build compiling its own utility classes.
 const config = computed(() => {
   if (props.connected === false) return { cls: 'k-badge--danger', icon: XCircle }
+  if (props.tone) {
+    switch (props.tone) {
+      case 'success':
+        return { cls: 'k-badge--success', icon: CheckCircle }
+      case 'warning':
+        return { cls: 'k-badge--warning', icon: Clock }
+      case 'danger':
+        return { cls: 'k-badge--danger', icon: AlertTriangle }
+      default:
+        return { cls: 'k-badge--muted', icon: Circle }
+    }
+  }
 
   switch (props.status?.toLowerCase()) {
     case 'ready':

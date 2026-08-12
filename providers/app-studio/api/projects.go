@@ -727,6 +727,8 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	defer releaseAssistantReservation()
 	// Instances are torn down by the Project reconciler's finalizer when the
 	// CR below is deleted (ownerReferences cover the no-controller case).
+	// App-access RBAC grants reference the instance by name only and become
+	// inert once it is gone; the share dialog can always clean strays.
 	// Repositories deliberately SURVIVE project deletion — git is the durable
 	// source of truth, and deleting a workspace UI concept must never destroy
 	// the user's code. Deletion only releases the claim on a repository this

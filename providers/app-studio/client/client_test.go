@@ -19,12 +19,14 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
@@ -83,5 +85,64 @@ func TestGraphQLStatusPatchReturnsCompleteProject(t *testing.T) {
 	}
 	if got.ResourceVersion != "43" {
 		t.Fatalf("ResourceVersion = %q, want 43", got.ResourceVersion)
+	}
+}
+
+func TestGraphQLResourceListForwardsAndAppliesLabelSelector(t *testing.T) {
+	const selector = "code.kedge.faros.sh/repository=repo-a"
+	const listYAML = `- apiVersion: code.kedge.faros.sh/v1alpha1
+  kind: Package
+  metadata:
+    name: app-a
+    labels:
+      code.kedge.faros.sh/repository: repo-a
+  spec:
+    repositoryRef: repo-a
+- apiVersion: code.kedge.faros.sh/v1alpha1
+  kind: Package
+  metadata:
+    name: app-b
+    labels:
+      code.kedge.faros.sh/repository: repo-b
+  spec:
+    repositoryRef: repo-b
+`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode GraphQL request: %v", err)
+		}
+		if !strings.Contains(req.Query, "$labelSelector: String") ||
+			!strings.Contains(req.Query, "PackagesYaml(labelselector: $labelSelector)") {
+			t.Fatalf("query = %q, want labelselector argument", req.Query)
+		}
+		if got := req.Variables["labelSelector"]; got != selector {
+			t.Fatalf("labelSelector variable = %#v, want %q", got, selector)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"data":{"code_kedge_faros_sh":{"v1alpha1":{"PackagesYaml":%q}}}}`, listYAML)
+	}))
+	t.Cleanup(server.Close)
+
+	graphQL := tenant.NewGraphQLClient(server.URL, false)
+	scope, err := graphQL.For("cluster-id", "caller-token")
+	if err != nil {
+		t.Fatalf("create GraphQL scope: %v", err)
+	}
+	client := NewFromGraphQL(scope)
+	res := tenant.Resource{
+		GVR:    schema.GroupVersionResource{Group: "code.kedge.faros.sh", Version: "v1alpha1", Resource: "packages"},
+		Kind:   "Package",
+		Plural: "Packages",
+	}
+	got, err := client.Resource(res, "").List(context.Background(), metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		t.Fatalf("list packages: %v", err)
+	}
+	if len(got.Items) != 1 || got.Items[0].GetName() != "app-a" {
+		t.Fatalf("packages = %#v, want only app-a", got.Items)
 	}
 }

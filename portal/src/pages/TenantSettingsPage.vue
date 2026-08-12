@@ -31,7 +31,7 @@ UI reflects that.
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
-import { useTenantStore, type MemberRow, type SARow, type TokenResponse } from '@/stores/tenant'
+import { useTenantStore, type AppAccessGrantRow, type MemberRow, type SARow, type TokenResponse } from '@/stores/tenant'
 import { confirmDialog } from '@/portalkit/confirm'
 import {
   Building2,
@@ -393,8 +393,55 @@ async function reloadWsMembers() {
 
 // Reload when the Members tab is active and the org/workspace changes.
 watch([() => tenant.orgUUID, () => tenant.workspaceUUID, tab], async ([org, ws, t]) => {
-  if (t === 'members' && org && ws) await reloadWsMembers()
+  if (t === 'members' && org && ws) await Promise.all([reloadWsMembers(), reloadAppAccessGrants()])
 })
+
+// ===== App access grants (private published apps) =====
+// Plain workspace RBAC (labeled ClusterRoleBindings) written by App Studio's
+// share dialog; listed here so invitations are visible and revocable in the
+// kedge UI. Granting stays app-scoped in the share dialog, where the app and
+// member context live.
+const appAccessGrants = ref<AppAccessGrantRow[]>([])
+const appAccessLoading = ref(false)
+const appAccessBusy = ref<Record<string, boolean>>({})
+
+async function reloadAppAccessGrants() {
+  if (!tenant.orgUUID || !tenant.workspaceUUID) {
+    appAccessGrants.value = []
+    return
+  }
+  appAccessLoading.value = true
+  try {
+    appAccessGrants.value = await tenant.listAppAccessGrants(tenant.orgUUID, tenant.workspaceUUID)
+  } finally {
+    appAccessLoading.value = false
+  }
+}
+
+async function onRevokeAppAccess(grant: AppAccessGrantRow) {
+  if (!tenant.orgUUID || !tenant.workspaceUUID) return
+  const confirmed = await confirmDialog({
+    title: 'Revoke app access',
+    message: `Remove ${grant.user}'s access to “${grant.app}”? They can be re-invited from the app's share dialog.`,
+    confirmLabel: 'Revoke',
+    danger: true,
+  })
+  if (!confirmed) return
+  appAccessBusy.value = { ...appAccessBusy.value, [grant.binding]: true }
+  try {
+    const ok = await tenant.revokeAppAccessGrant(tenant.orgUUID, tenant.workspaceUUID, grant.binding)
+    if (ok) {
+      flash('info', `Revoked ${grant.user}'s access to ${grant.app}.`)
+      await reloadAppAccessGrants()
+    } else {
+      flash('error', tenant.error || 'Failed to revoke app access.')
+    }
+  } finally {
+    const next = { ...appAccessBusy.value }
+    delete next[grant.binding]
+    appAccessBusy.value = next
+  }
+}
 
 async function onAddWsMember() {
   const u = newWsMemberUser.value.trim()
@@ -1081,6 +1128,68 @@ function fmtDate(s?: string | null): string {
                       <Loader2 v-if="wsMemberBusy[m.user]" class="inline h-3 w-3 animate-spin" :stroke-width="2" />
                       <Trash2 v-else class="inline h-3 w-3" :stroke-width="2" />
                       Remove
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
+        </div>
+
+        <!-- App access grants: who can open private published apps. These are
+             plain workspace RBAC (labeled ClusterRoleBindings on the app
+             instance's access subresource) written by App Studio's share
+             dialog — listed here so invitations stay visible and revocable
+             outside the app workbench. -->
+        <div class="rounded-xl border border-border-subtle bg-surface-raised/60 p-5">
+          <h2 class="mb-1 text-sm font-semibold text-text-primary">App access</h2>
+          <p class="mb-3 text-[12px] text-text-muted">
+            Members invited to open <span class="font-medium text-text-secondary">private published apps</span>
+            in this workspace. Each grant is a workspace RBAC role binding on the app instance;
+            invite members from the app's Share dialog in App Studio. Workspace members can open
+            every app here without an explicit grant.
+          </p>
+
+          <div v-if="!tenant.orgUUID || !tenant.workspaceUUID" class="text-sm text-text-muted">
+            Select an organization and workspace on the left first.
+          </div>
+          <template v-else>
+            <div v-if="appAccessLoading" class="text-sm text-text-muted">Loading app access grants…</div>
+            <div v-else-if="appAccessGrants.length === 0" class="text-sm text-text-muted">
+              No app access grants. Public apps need none; private apps grant access per member.
+            </div>
+            <table v-else class="w-full text-sm">
+              <thead>
+                <tr class="text-left text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                  <th class="py-2 pr-3">App</th>
+                  <th class="py-2 pr-3">User</th>
+                  <th class="py-2 pr-3">Role binding</th>
+                  <th class="py-2 pr-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-border-default/30">
+                <tr v-for="grant in appAccessGrants" :key="grant.binding">
+                  <td class="py-2 pr-3">
+                    <span class="font-mono text-[12px] text-text-secondary">{{ grant.app }}</span>
+                  </td>
+                  <td class="py-2 pr-3">
+                    <div class="flex items-center gap-2">
+                      <UserIcon class="h-3.5 w-3.5 text-text-muted/70" :stroke-width="1.75" />
+                      <span class="font-mono text-[12px] text-text-secondary">{{ grant.user }}</span>
+                    </div>
+                  </td>
+                  <td class="py-2 pr-3">
+                    <span class="font-mono text-[11px] text-text-muted">{{ grant.binding }}</span>
+                  </td>
+                  <td class="py-2 pr-0 text-right">
+                    <button
+                      class="rounded-md border border-danger/30 bg-danger-subtle px-2 py-1 text-[11px] font-medium text-danger hover:bg-danger/15 disabled:opacity-50"
+                      :disabled="!!appAccessBusy[grant.binding]"
+                      @click="onRevokeAppAccess(grant)"
+                    >
+                      <Loader2 v-if="appAccessBusy[grant.binding]" class="inline h-3 w-3 animate-spin" :stroke-width="2" />
+                      <Trash2 v-else class="inline h-3 w-3" :stroke-width="2" />
+                      Revoke
                     </button>
                   </td>
                 </tr>

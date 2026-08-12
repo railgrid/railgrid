@@ -149,6 +149,8 @@ hub:
 # For OIDC (optional)
 idp:
   issuerURL: "https://idp.example.com"
+  # Optional for split-horizon IdPs:
+  # browserAuthURL: "https://login.example.com/oauth2/auth"
   clientID: "kedge"
   clientSecret: "<secret>"
 
@@ -225,8 +227,11 @@ kind delete cluster --name kedge
 | Key | Description | Default |
 |:----|:------------|:--------|
 | `idp.issuerURL` | OIDC issuer URL | `""` |
+| `idp.browserAuthURL` | Public HTTPS browser authorization endpoint; discovery and token operations still use `issuerURL` | `""` |
 | `idp.clientID` | OIDC client ID | `"kedge"` |
 | `idp.clientSecret` | OIDC client secret | `""` |
+| `hub.publishedAppsDomain` | DNS zone published apps are served under; enables private published-app sign-in (`/auth/apps/*`) | `""` |
+| `hub.disableTokenLogin` | Disable interactive static-token login (endpoint + portal form); bearer tokens still work for APIs | `false` |
 
 ### TLS Configuration
 

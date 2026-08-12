@@ -25,6 +25,9 @@ export type AuthMode = 'oidc' | 'token' | 'both'
 export interface HealthzResponse {
   status: string
   oidc: boolean
+  // Whether the hub offers interactive static-token login. Absent on older
+  // hubs, which always offered it when reachable — treat undefined as true.
+  tokenLogin?: boolean
   issuerUrl?: string
   clientId?: string
 }
@@ -33,4 +36,12 @@ export interface VersionResponse {
   version: string
   gitCommit: string
   buildDate: string
+}
+
+export interface BrowserSessionResponse {
+  authenticated: boolean
+  userId?: string
+  email?: string
+  name?: string
+  expiresAt?: number
 }

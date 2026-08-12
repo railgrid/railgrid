@@ -973,6 +973,9 @@ A provider's UI MUST:
   `APIExport` resources + VW subresources, as the tenant user — see
   §"Provider isolation". This contains blast radius (one owner per backend)
   and is what makes BYO compute work.
+- How published apps get their URL and access control (the template-embedded
+  access gate + kcp RBAC grants) is documented in
+  [Published apps: template-native access](./app-studio-publishing.md).
 - **Permission claim gate**: the binding controller refuses any claim not
   marked `tenantScoped`. An override exists
   (`kedge.faros.sh/accept-untrusted-claims=true`) but is admin-only

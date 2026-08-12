@@ -8,12 +8,11 @@ metadata:
     kedge.faros.sh/immutable-inputs: "database.version"
 spec:
   displayName: "Web application"
-  description: "A 3-tier app — frontend + backend + Postgres — exposed on a URL guarded by OIDC (oauth2-proxy). Authenticated users only; the backend and database are never exposed."
+  description: "A 3-tier app — frontend + backend + Postgres — served through the platform access gate. spec.access chooses public or invite-only (kcp RBAC) reachability; the backend and database are never separately exposed."
   category: Workloads
   version: 0.1.0
-  # exposure: what the platform tells callers about reaching an instance.
-  # Every instance gets an HTTPRoute. The template brings its own gate
-  # (oauth2-proxy, oidc.mode) — the platform adds none.
+  # Every instance is exposed through its embedded access gate on one public
+  # URL; spec.access (public|private) chooses who can reach it.
   exposure: public
   backend: kro
   # Example payload the portal pre-fills the provision form with, so the 3-tier
@@ -51,8 +50,10 @@ spec:
       PRODUCTION MODE — YOU SUPPLY exactly two container images — webImage
       and apiImage —
       and nothing else app-side. The platform provisions Postgres, injects the DB
-      connection, path-routes one URL to both tiers, and (in byo mode) authenticates
-      in front; you do NOT create the database, Secrets, Services, or routes. This
+      connection and publishes one URL to both tiers; you do NOT create the
+      database, Secrets, Services, or routes. The access input (public|private)
+      chooses who can open the URL; private apps require platform sign-in and
+      an RBAC grant on this instance. This
       contract is fully self-contained — build BOTH images from it BEFORE you
       provision; the only runtime couplings are the env var and ports below.
 
@@ -88,11 +89,14 @@ spec:
           `fetch("/api/items")`). There is NO separate backend host/URL — do not
           hardcode one or expect a backend env var. No database access.
 
-      EXPOSURE & AUTH (oidc.mode input):
-        • none — no auth gate; the URL is public. Demo/dev only.
-        • byo  — oauth2-proxy gates BOTH `/` and `/api` with the caller's OIDC IdP
-          (set oidc.issuerURL + oidc.clientID; client secret via prerequisites).
-        • platform — kedge SSO; NOT yet supported.
+      DEVELOPMENT PREVIEW AUTH (oidc.mode input):
+        • none — no extra auth gate on the development preview.
+        • byo  — oauth2-proxy gates BOTH `/` and `/api` in development with the
+          caller's OIDC IdP (set issuerURL + clientID; client secret via
+          prerequisites).
+      This setting does NOT choose who can reach the app — that is the access
+      input (public|private). Private apps reuse the platform sign-in through
+      the embedded access gate; no per-app OIDC client is ever provisioned.
 
       COMPONENTS: this template has exactly two — "web" (the UI, its files
       live in web/) and "api" (the server, its files live in api/). A
@@ -130,15 +134,18 @@ spec:
       the scaffold hello-world images — supply your own to run real code; omit
       in development mode); name, webPort,
       apiPort, webReplicas, apiReplicas, webEnv, apiEnv
-      (per-component env-var maps; not for secrets), database.version, oidc.*. The
-      platform stamps spec.expose.fqdn and spec.credentialsSecretName — do not
+      (per-component env-var maps; not for secrets), database.version, oidc.*,
+      access (public|private; default public — private requires platform
+      sign-in and an RBAC grant on this instance). The
+      platform stamps spec.expose.fqdn, spec.kedgeCluster, and
+      spec.credentialsSecretName — do not
       set those. All except name, kedgeMode, and database.version can be
-      changed later with update_instance.
+      changed later with update_instance; flipping access is an in-place update.
     prerequisites:
       - "oidc.mode=byo only: a Secret named 'cloud-credentials' in the tenant's default namespace, key 'oidc_client_secret' = the OAuth2 client secret for your oidc.clientID."
     outputs:
-      - "status.url — the public HTTPS URL the app is served on (status.host = bare hostname)."
-      - "status.redirectURL — the OIDC redirect/callback URL to register with your IdP (byo mode)."
+      - "status.url is the public HTTPS URL (status.host = bare hostname) in every mode; requests enter through the platform access gate."
+      - "Development BYO only: status.redirectURL is the OIDC redirect/callback URL to register with your IdP."
       - "Per-component readiness: status.webReady / apiReady / databaseReady / oauthReady (ready replica counts)."
       - "The api component's DATABASE_URL env is sourced from Secret '<name>-db-credentials' (key 'uri') in the instance namespace — informational; the image just reads the DATABASE_URL env, it never reads the Secret."
   # ── Portal presentation ───────────────────────────────────────────────
@@ -152,7 +159,7 @@ spec:
       - header: URL
         value: "${status.url}"
         type: link
-      - header: Auth
+      - header: Dev auth
         path: spec.oidc.mode
         type: badge
     # Field groups on the instance detail page (replace the raw values dump).
@@ -170,7 +177,7 @@ spec:
             type: link
       - title: Configuration
         fields:
-          - label: Auth mode
+          - label: Development auth mode
             path: spec.oidc.mode
             type: badge
           - label: Postgres version
@@ -210,6 +217,19 @@ spec:
       name:
         type: string
         description: "Logical name; used as the resource-name prefix in the tenant namespace and the default hostname prefix."
+      kedgeRedeployRevision:
+        type: string
+        default: initial
+        description: "Computed by the platform — do NOT set. Non-secret rollout revision used to redeploy the application workloads without changing the instance identity."
+      kedgeCluster:
+        type: string
+        default: pending
+        description: "Computed by the platform — do NOT set. Tenant workspace cluster ID the embedded access gate presents to the hub for sign-in authorization."
+      access:
+        type: string
+        enum: ["public", "private"]
+        default: public
+        description: "Who can reach the app URL. public: anyone with the link. private: platform sign-in required; access is granted by kcp RBAC on this instance's access subresource (App Studio's share dialog, or a ClusterRole/ClusterRoleBinding pair). Flipping the value is an in-place update — no redeploy, no data loss."
 
       # ── Frontend tier (the only tier exposed, behind oauth2-proxy) ──
       webImage:
@@ -295,9 +315,9 @@ spec:
         properties:
           mode:
             type: string
-            enum: ["none", "byo", "platform"]
+            enum: ["none", "byo"]
             default: "none"
-            description: "none (default) = NO auth gate; the HTTPRoute routes straight to the frontend so anyone with the URL can reach it (demo/dev only). byo = your own IdP; set issuerURL + clientID and put the client secret in your cloud-credentials Secret under key oidc_client_secret. platform = guard with kedge SSO — NOT yet supported (requires the hub Dex gRPC client-management API; tracked separately)."
+            description: "Development preview auth only. none (default) adds no preview gate. byo uses your IdP; set issuerURL + clientID and put the client secret in cloud-credentials key oidc_client_secret. Platform-managed access control is the spec.access field instead — it never provisions an OIDC client per app."
           issuerURL:
             type: string
             description: "BYO mode: your IdP's OIDC issuer URL (required)."
@@ -653,6 +673,8 @@ spec:
                 app: ${schema.spec.name}-api
             template:
               metadata:
+                annotations:
+                  kedge.faros.sh/redeploy-revision: ${schema.spec.kedgeRedeployRevision}
                 labels:
                   app: ${schema.spec.name}-api
               spec:
@@ -690,7 +712,8 @@ spec:
             selector:
               app: ${schema.spec.name}-api
             ports:
-              - port: ${schema.spec.apiPort}
+              - name: http
+                port: ${schema.spec.apiPort}
                 targetPort: ${schema.spec.apiPort}
 
       # ───────────────────── Frontend tier ─────────────────────
@@ -716,6 +739,8 @@ spec:
                 app: ${schema.spec.name}-web
             template:
               metadata:
+                annotations:
+                  kedge.faros.sh/redeploy-revision: ${schema.spec.kedgeRedeployRevision}
                 labels:
                   app: ${schema.spec.name}-web
               spec:
@@ -748,7 +773,8 @@ spec:
             selector:
               app: ${schema.spec.name}-web
             ports:
-              - port: ${schema.spec.webPort}
+              - name: http
+                port: ${schema.spec.webPort}
                 targetPort: ${schema.spec.webPort}
 
       # ───────────────────── oauth2-proxy (the gate) ─────────────────────
@@ -757,6 +783,7 @@ spec:
       # so the Job no-ops if it's already set.
       - id: oauthCookieSecret
         includeWhen:
+          - '${schema.spec.kedgeMode == "development"}'
           - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: v1
@@ -766,6 +793,7 @@ spec:
             namespace: default
       - id: oauthPwgenAccount
         includeWhen:
+          - '${schema.spec.kedgeMode == "development"}'
           - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: v1
@@ -775,6 +803,7 @@ spec:
             namespace: default
       - id: oauthPwgenRole
         includeWhen:
+          - '${schema.spec.kedgeMode == "development"}'
           - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: rbac.authorization.k8s.io/v1
@@ -788,6 +817,7 @@ spec:
               verbs: ["get", "patch"]
       - id: oauthPwgenBinding
         includeWhen:
+          - '${schema.spec.kedgeMode == "development"}'
           - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: rbac.authorization.k8s.io/v1
@@ -805,6 +835,7 @@ spec:
               namespace: default
       - id: oauthPwgen
         includeWhen:
+          - '${schema.spec.kedgeMode == "development"}'
           - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: batch/v1
@@ -838,6 +869,7 @@ spec:
                         fi
       - id: oauthDeployment
         includeWhen:
+          - '${schema.spec.kedgeMode == "development"}'
           - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: apps/v1
@@ -897,6 +929,7 @@ spec:
                       - containerPort: 4180
       - id: oauthService
         includeWhen:
+          - '${schema.spec.kedgeMode == "development"}'
           - '${schema.spec.oidc.mode != "none"}'
         template:
           apiVersion: v1
@@ -912,15 +945,120 @@ spec:
               - port: 4180
                 targetPort: 4180
 
+      # ──────────────── Access gate (kedge-access-proxy) ──────────────────
+      # The platform-owned gate every request enters through, in every mode.
+      # public (default): pure passthrough — the gate never contacts the hub,
+      # so a hub outage cannot affect a public app. private: the gate runs the
+      # hub sign-in flow once per visitor and keeps a bounded local session;
+      # access = kcp RBAC (`get` on applications/<name> subresource `access`)
+      # evaluated by the hub at sign-in time.
+      #
+      # Route table: /api → backend, / → frontend. In development with a BYO
+      # OIDC preview gate, everything routes to oauth2-proxy instead, which
+      # authenticates and path-routes itself (its upstreams cover /api). The
+      # names are composed from schema values rather than resource refs so the
+      # conditional oauth2-proxy resources are never graph dependencies of the
+      # unconditional gate.
+      - id: gateDeployment
+        template:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${schema.spec.name}-gate
+            namespace: default
+          spec:
+            replicas: 1
+            # Recreate: a public gate pod and a private gate pod must never
+            # serve behind the Service at once (a rolling flip would bounce
+            # the browser between contradictory auth behaviours), and the
+            # gate's sessions/states are in-memory anyway.
+            strategy:
+              type: Recreate
+            selector:
+              matchLabels:
+                app: ${schema.spec.name}-gate
+            template:
+              metadata:
+                labels:
+                  app: ${schema.spec.name}-gate
+                  # Stable across all gates: lets platform tooling (and the
+                  # local Tilt image-reload) find/recycle every gate pod with
+                  # one selector regardless of instance name.
+                  app.kubernetes.io/name: kedge-access-proxy
+              spec:
+                automountServiceAccountToken: false
+                containers:
+                  - name: gate
+                    image: ${kedge.accessProxyImage}
+                    env:
+                      - name: KEDGE_ACCESS_PROXY_MODE
+                        value: ${schema.spec.access}
+                      - name: KEDGE_ACCESS_PROXY_HOST
+                        # The exact external host, including the local
+                        # Gateway's forwarded port when one is configured
+                        # (${kedge.appPublicPort} is ":<port>" or "").
+                        value: ${schema.spec.expose.fqdn + "${kedge.appPublicPort}"}
+                      - name: KEDGE_ACCESS_PROXY_ROUTES
+                        value: '${schema.spec.kedgeMode == "development" && schema.spec.oidc.mode != "none" ? "/=http://" + schema.spec.name + "-oauth." + webService.metadata.namespace + ".svc.cluster.local:4180" : "/api=http://" + schema.spec.name + "-api." + webService.metadata.namespace + ".svc.cluster.local:" + string(schema.spec.apiPort) + ",/=http://" + schema.spec.name + "-web." + webService.metadata.namespace + ".svc.cluster.local:" + string(schema.spec.webPort)}'
+                      - name: KEDGE_ACCESS_PROXY_INSTANCE_CLUSTER
+                        value: ${schema.spec.kedgeCluster}
+                      - name: KEDGE_ACCESS_PROXY_INSTANCE_GROUP
+                        value: infrastructure.kedge.faros.sh
+                      - name: KEDGE_ACCESS_PROXY_INSTANCE_RESOURCE
+                        value: applications
+                      - name: KEDGE_ACCESS_PROXY_INSTANCE_NAME
+                        value: ${schema.spec.name}
+                      - name: KEDGE_HUB_URL
+                        value: ${kedge.hubUrl}
+                      - name: KEDGE_HUB_PUBLIC_URL
+                        value: ${kedge.hubPublicUrl}
+                      - name: KEDGE_HUB_INSECURE_SKIP_TLS_VERIFY
+                        value: ${kedge.hubInsecure}
+                    ports:
+                      - name: http
+                        containerPort: 8080
+                    readinessProbe:
+                      tcpSocket:
+                        port: http
+                      periodSeconds: 5
+                    resources:
+                      requests:
+                        cpu: 10m
+                        memory: 32Mi
+                      limits:
+                        memory: 128Mi
+                    securityContext:
+                      runAsNonRoot: true
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: true
+                      capabilities:
+                        drop: ["ALL"]
+      - id: gateService
+        template:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ${schema.spec.name}-gate
+            namespace: default
+          spec:
+            type: ClusterIP
+            selector:
+              app: ${schema.spec.name}-gate
+            ports:
+              - name: http
+                port: 8080
+                targetPort: http
+
       # ──────────────── HTTPRoute (Gateway API exposure layer) ────────────────
       # Attaches to the platform Gateway (parentRefs computed from platform
       # config: ${kedge.gatewayName} in ${kedge.gatewayNamespace}, substituted
       # before the RGD is authored). No TLS config here — TLS terminates at the
       # Gateway edge (cfgate / Cloudflare Tunnel), which programs the DNS record
-      # + tunnel route from this hostname. The backend is mode-dependent:
-      # oidc.mode=none routes the public host straight to the frontend Service
-      # (no gate — demo/dev); otherwise it routes to oauth2-proxy, which
-      # authenticates and then proxies to the frontend.
+      # + tunnel route from this hostname. The backend is ALWAYS the access
+      # gate — in development and production, in public and private mode — so
+      # flipping spec.access never rewires the route and no tenant workload is
+      # ever the direct route backend. Path fan-out (/api vs /) lives in the
+      # gate's route table above.
       - id: httpRoute
         template:
           apiVersion: gateway.networking.k8s.io/v1
@@ -942,48 +1080,14 @@ spec:
                       type: PathPrefix
                       value: /
                 backendRefs:
-                  # Single-quoted: the CEL ternary contains ": " which YAML
-                  # would otherwise read as a mapping. kro resolves the ${...}
-                  # expression regardless of YAML scalar type.
-                  - name: '${schema.spec.oidc.mode == "none" ? schema.spec.name + "-web" : schema.spec.name + "-oauth"}'
-                    port: '${schema.spec.oidc.mode == "none" ? schema.spec.webPort : 4180}'
-
-      # In mode=none there is no oauth2-proxy to path-route, so a second
-      # HTTPRoute adds /api → backend alongside the "/" → frontend rule above
-      # (same host + parent Gateway; Gateway API merges routes and the more
-      # specific /api prefix wins). Gated to none — in byo this path would
-      # bypass the gate, so there oauth2-proxy does the /api routing instead
-      # (see its upstreams).
-      - id: httpRouteAPI
-        includeWhen:
-          - '${schema.spec.oidc.mode == "none"}'
-        template:
-          apiVersion: gateway.networking.k8s.io/v1
-          kind: HTTPRoute
-          metadata:
-            name: ${schema.spec.name}-api
-            namespace: default
-          spec:
-            parentRefs:
-              - group: gateway.networking.k8s.io
-                kind: Gateway
-                name: ${kedge.gatewayName}
-                namespace: ${kedge.gatewayNamespace}
-            hostnames:
-              - ${schema.spec.expose.fqdn}
-            rules:
-              - matches:
-                  - path:
-                      type: PathPrefix
-                      value: /api
-                backendRefs:
-                  - name: ${schema.spec.name}-api
-                    port: ${schema.spec.apiPort}
+                  - name: ${gateService.metadata.name}
+                    port: 8080
     # Projected onto the instance in the tenant's kcp workspace. url/host are
     # read from the HTTPRoute (this kro fork forbids ${schema.*} in status —
     # status may reference resources only — so we source the controller-stamped
     # fqdn from the HTTPRoute's hostnames rather than schema.spec.expose.fqdn).
-    # The HTTPRoute is always created (only its backend changes by mode).
+    # The HTTPRoute is unconditional and always fronts the access gate, so
+    # status.url is the app's URL in every mode.
     # Per-tier readiness lets the portal show progress. No secret values are
     # surfaced.
     # ${kedge.appPublicPort} is substituted by the kro backend BEFORE kro sees
@@ -998,6 +1102,15 @@ spec:
       apiReady: ${apiDeployment.status.readyReplicas}
       databaseReady: ${dbStatefulSet.status.readyReplicas}
       oauthReady: ${oauthDeployment.status.readyReplicas}
+      # Unconditional backend-owned boundary used to confine all publication
+      # origins even when the development-only HTTPRoute is absent.
+      runtimeNamespace: ${webService.metadata.namespace}
       dbConnectionSecretRef:
         name: ${dbCredentials.metadata.name}
         namespace: ${dbCredentials.metadata.namespace}
+      webServiceRef:
+        name: ${webService.metadata.name}
+        namespace: ${webService.metadata.namespace}
+      apiServiceRef:
+        name: ${apiService.metadata.name}
+        namespace: ${apiService.metadata.namespace}

@@ -202,6 +202,14 @@ func (f *fakeOps) RemoveProviderEdgeProxyGrant(_ context.Context, _, _, _ string
 	return nil
 }
 
+func (f *fakeOps) ListAppAccessGrants(_ context.Context, _, _ string) ([]kcp.AppAccessGrant, error) {
+	return nil, nil
+}
+
+func (f *fakeOps) RemoveAppAccessGrant(_ context.Context, _, _, _ string) error {
+	return nil
+}
+
 func (f *fakeOps) ListChildWorkspaces(_ context.Context, orgUUID string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

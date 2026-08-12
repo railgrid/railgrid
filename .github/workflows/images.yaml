@@ -102,6 +102,13 @@ jobs:
           # provider-release.yaml on the infrastructure provider's tag.
           - name: infrastructure/dev-agent
             image: ${{ github.repository_owner }}/kedge-dev-agent
+          # Second infrastructure companion: the access gate every publishable
+          # template renders in front of its app. Non-default Dockerfile in the
+          # provider module root, hence the explicit context/dockerfile.
+          - name: access-proxy
+            image: ${{ github.repository_owner }}/kedge-access-proxy
+            context: ./providers/infrastructure
+            dockerfile: ./providers/infrastructure/Dockerfile.access-proxy
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -126,8 +133,8 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
-          context: ./providers/${{ matrix.name }}
-          file: ./providers/${{ matrix.name }}/Dockerfile
+          context: ${{ matrix.context || format('./providers/{0}', matrix.name) }}
+          file: ${{ matrix.dockerfile || format('./providers/{0}/Dockerfile', matrix.name) }}
           # Multi-arch on release; single-arch build-only on PRs (no QEMU emulation cost).
           platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
           push: ${{ github.event_name != 'pull_request' }}

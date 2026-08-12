@@ -17,10 +17,14 @@ limitations under the License.
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
@@ -41,6 +45,12 @@ func projectForPromote(name string) *aiv1alpha1.Project {
 	}
 }
 
+func projectForPromoteWithRepository(name, repositoryRef string) *aiv1alpha1.Project {
+	p := projectForPromote(name)
+	p.Spec.Repository = &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: repositoryRef}
+	return p
+}
+
 func TestProjectTemplateProdBindingFillsImagesAndForcesMode(t *testing.T) {
 	p := projectForPromote("shop")
 	images := map[string]string{
@@ -50,11 +60,12 @@ func TestProjectTemplateProdBindingFillsImagesAndForcesMode(t *testing.T) {
 	// User form values: production knobs, plus an attempt to override
 	// platform-owned fields that must be ignored.
 	values := map[string]any{
-		"frontendPort":  float64(8080),
-		"backendPort":   float64(3000),
-		"name":          "attacker-name",
-		"kedgeMode":     "development",
-		"frontendImage": "ghcr.io/evil/x@sha256:ccc",
+		"frontendPort":               float64(8080),
+		"backendPort":                float64(3000),
+		"name":                       "attacker-name",
+		"kedgeMode":                  "development",
+		"frontendImage":              "ghcr.io/evil/x@sha256:ccc",
+		projectRedeployRevisionField: "attacker-revision",
 	}
 	binding, err := projectTemplateProdBinding(p, applicationTemplateForPromote(), images, values)
 	if err != nil {
@@ -83,9 +94,171 @@ func TestProjectTemplateProdBindingFillsImagesAndForcesMode(t *testing.T) {
 	if vals["backendImage"] != "ghcr.io/acme/shop/backend@sha256:bbb" {
 		t.Fatalf("backendImage = %v", vals["backendImage"])
 	}
+	if revision, _ := vals[projectRedeployRevisionField].(string); revision == "" || revision == "attacker-revision" {
+		t.Fatalf("%s = %q, want a non-empty platform revision that ignores the user value", projectRedeployRevisionField, revision)
+	}
 	// Non-reserved production knobs pass through.
 	if vals["frontendPort"] != float64(8080) || vals["backendPort"] != float64(3000) {
 		t.Fatalf("ports not preserved: %v / %v", vals["frontendPort"], vals["backendPort"])
+	}
+}
+
+func TestProjectTemplateProdBindingMintsDistinctRevisionsAndHonorsExplicitRevision(t *testing.T) {
+	p := projectForPromote("shop")
+	images := map[string]string{"frontendImage": "frontend@sha256:aaa"}
+
+	first, err := projectTemplateProdBinding(p, applicationTemplateForPromote(), images, nil)
+	if err != nil {
+		t.Fatalf("first projectTemplateProdBinding: %v", err)
+	}
+	second, err := projectTemplateProdBinding(p, applicationTemplateForPromote(), images, nil)
+	if err != nil {
+		t.Fatalf("second projectTemplateProdBinding: %v", err)
+	}
+	firstValues, err := aiv1alpha1BindingValues(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondValues, err := aiv1alpha1BindingValues(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRevision, _ := firstValues[projectRedeployRevisionField].(string)
+	secondRevision, _ := secondValues[projectRedeployRevisionField].(string)
+	if firstRevision == "" || secondRevision == "" {
+		t.Fatalf("generated revisions = %q / %q, want both non-empty", firstRevision, secondRevision)
+	}
+	if firstRevision == secondRevision {
+		t.Fatalf("generated revisions = %q / %q, want distinct revisions", firstRevision, secondRevision)
+	}
+
+	const explicitRevision = "rollout-explicit-42"
+	explicit, err := projectTemplateProdBinding(p, applicationTemplateForPromote(), images,
+		map[string]any{projectRedeployRevisionField: "user-value"}, explicitRevision)
+	if err != nil {
+		t.Fatalf("explicit projectTemplateProdBinding: %v", err)
+	}
+	explicitValues, err := aiv1alpha1BindingValues(explicit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := explicitValues[projectRedeployRevisionField].(string); got != explicitRevision {
+		t.Fatalf("explicit %s = %q, want %q", projectRedeployRevisionField, got, explicitRevision)
+	}
+}
+
+func TestProjectPromoteResponseIncludesRolloutRevision(t *testing.T) {
+	const revision = "rollout-response-42"
+	raw, err := json.Marshal(projectPromoteResponse{
+		Environment:     projectProductionEnvironmentName,
+		Instance:        "shop-prod",
+		RolloutRevision: revision,
+	})
+	if err != nil {
+		t.Fatalf("marshal projectPromoteResponse: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("decode projectPromoteResponse: %v", err)
+	}
+	if got, _ := decoded["rolloutRevision"].(string); got != revision {
+		t.Fatalf("rolloutRevision = %q, want %q", got, revision)
+	}
+}
+
+func TestProjectObservedRedeployRevisionReadsProviderInstanceSpec(t *testing.T) {
+	instance := &unstructured.Unstructured{Object: map[string]any{
+		"spec": map[string]any{projectRedeployRevisionField: " rollout-observed-42 "},
+	}}
+	if got := projectObservedRedeployRevision(instance); got != "rollout-observed-42" {
+		t.Fatalf("observed rollout revision = %q, want rollout-observed-42", got)
+	}
+	if got := projectObservedRedeployRevision(nil); got != "" {
+		t.Fatalf("nil instance revision = %q, want empty", got)
+	}
+}
+
+func TestProjectBuildAndPromotionRequireExactReviewedCommitImages(t *testing.T) {
+	base := metav1.Now().Time
+	tests := []struct {
+		name          string
+		commits       []*unstructured.Unstructured
+		packages      []*unstructured.Unstructured
+		wantBuild     string
+		wantPromotErr bool
+	}{
+		{
+			name: "no successful commit",
+			commits: []*unstructured.Unstructured{
+				repositoryCommitForBuildTest("failed", "repo-a", "repo-a", "Failed", "commit-failed", base),
+			},
+			wantBuild:     "none",
+			wantPromotErr: true,
+		},
+		{
+			name: "newest successful empty SHA",
+			commits: []*unstructured.Unstructured{
+				repositoryCommitForBuildTest("older", "repo-a", "repo-a", "Succeeded", "commit-old", base.Add(-time.Hour)),
+				repositoryCommitForBuildTest("newest-empty", "repo-a", "repo-a", "Succeeded", "", base),
+			},
+			packages: []*unstructured.Unstructured{
+				projectBuildPackageForTest("repo-a", "frontend", "ghcr.io/acme/shop/frontend", map[string]any{"digest": "sha256:old-front", "tags": []any{"sha-commit-old"}}),
+				projectBuildPackageForTest("repo-a", "backend", "ghcr.io/acme/shop/backend", map[string]any{"digest": "sha256:old-back", "tags": []any{"sha-commit-old"}}),
+			},
+			wantBuild:     "none",
+			wantPromotErr: true,
+		},
+		{
+			name: "missing exact component tag",
+			commits: []*unstructured.Unstructured{
+				repositoryCommitForBuildTest("current", "repo-a", "repo-a", "Succeeded", "commit-current", base),
+			},
+			packages: []*unstructured.Unstructured{
+				projectBuildPackageForTest("repo-a", "frontend", "ghcr.io/acme/shop/frontend", map[string]any{"digest": "sha256:front", "tags": []any{"latest", "sha-commit-current"}}),
+				projectBuildPackageForTest("repo-a", "backend", "ghcr.io/acme/shop/backend", map[string]any{"digest": "sha256:other", "tags": []any{"latest", "sha-other"}}),
+			},
+			wantBuild:     "incomplete",
+			wantPromotErr: true,
+		},
+		{
+			name: "complete exact component tags",
+			commits: []*unstructured.Unstructured{
+				repositoryCommitForBuildTest("current", "repo-a", "repo-a", "Succeeded", "commit-current", base),
+			},
+			packages: []*unstructured.Unstructured{
+				projectBuildPackageForTest("repo-a", "frontend", "ghcr.io/acme/shop/frontend", map[string]any{"digest": "sha256:front", "tags": []any{"latest", "sha-commit-current"}}),
+				projectBuildPackageForTest("repo-a", "backend", "ghcr.io/acme/shop/backend", map[string]any{"digest": "sha256:back", "tags": []any{"latest", "sha-commit-current"}}),
+			},
+			wantBuild:     "built",
+			wantPromotErr: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			project := projectForPromoteWithRepository("shop", "repo-a")
+			client := newProjectBuildProvenanceClient(project, tc.commits, tc.packages)
+			persisted, err := client.Projects().Get(context.Background(), project.Name, metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("get test project: %v", err)
+			}
+			check, err := (&Server{}).checkProjectBuild(context.Background(), client, identity{}, persisted)
+			if err != nil {
+				t.Fatalf("checkProjectBuild: %v", err)
+			}
+			if check.Status != tc.wantBuild {
+				t.Fatalf("build status = %q, want %q (check=%+v)", check.Status, tc.wantBuild, check)
+			}
+
+			_, _, promoteErr := (&Server{}).promoteProject(context.Background(), client, identity{}, persisted, nil, nil)
+			if tc.wantPromotErr {
+				if promoteErr == nil || !strings.Contains(promoteErr.Error(), "not ready to promote") {
+					t.Fatalf("promoteProject error = %v, want not-ready validation error", promoteErr)
+				}
+			} else if promoteErr != nil {
+				t.Fatalf("promoteProject returned error for complete exact tags: %v", promoteErr)
+			}
+		})
 	}
 }
 
@@ -135,6 +308,14 @@ func rawJSON(t *testing.T, v any) runtime.RawExtension {
 		t.Fatalf("marshal: %v", err)
 	}
 	return runtime.RawExtension{Raw: b}
+}
+
+func aiv1alpha1BindingValues(binding aiv1alpha1.ProjectProviderBindingSpec) (map[string]any, error) {
+	values := map[string]any{}
+	if err := json.Unmarshal(binding.Values.Raw, &values); err != nil {
+		return nil, err
+	}
+	return values, nil
 }
 
 func findEnv(t *testing.T, p *aiv1alpha1.Project, name string) aiv1alpha1.ProjectEnvironmentSpec {

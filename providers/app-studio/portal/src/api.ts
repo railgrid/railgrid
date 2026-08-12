@@ -28,6 +28,10 @@ import type {
   ProjectProviderResourceReference,
   ProjectCheckpoints,
   ProjectPromotionReadiness,
+  ProjectPublishing,
+  ProjectPublishingGrant,
+  ProjectPublishingMember,
+  ProjectPublishingMode,
   ProjectPromoteResult,
   ProviderItem,
   ProjectPlan,
@@ -510,6 +514,78 @@ export const api = {
       'POST',
       `${baseURL(ctx)}/${encodeURIComponent(name)}/promote`,
       values ? { values } : {},
+    )
+  },
+
+  async getPublishing(ctx: KedgeContext | null, name: string): Promise<ProjectPublishing> {
+    return request<ProjectPublishing>(
+      ctx,
+      'GET',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/publishing`,
+    )
+  },
+
+  async publishProject(
+    ctx: KedgeContext | null,
+    name: string,
+    mode: ProjectPublishingMode,
+  ): Promise<ProjectPublishing> {
+    return request<ProjectPublishing>(
+      ctx,
+      'POST',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/publishing`,
+      { mode },
+    )
+  },
+
+  async unpublishProject(ctx: KedgeContext | null, name: string): Promise<ProjectPublishing> {
+    return request<ProjectPublishing>(
+      ctx,
+      'DELETE',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/publishing`,
+    )
+  },
+
+  async listPublishingMembers(ctx: KedgeContext | null, name: string): Promise<ProjectPublishingMember[]> {
+    const body = await request<{ items?: ProjectPublishingMember[] }>(
+      ctx,
+      'GET',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/publishing/members`,
+    )
+    return body.items ?? []
+  },
+
+  async listPublishingGrants(ctx: KedgeContext | null, name: string): Promise<ProjectPublishingGrant[]> {
+    const body = await request<{ items?: ProjectPublishingGrant[] }>(
+      ctx,
+      'GET',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/publishing/grants`,
+    )
+    return body.items ?? []
+  },
+
+  async grantPublishingAccess(
+    ctx: KedgeContext | null,
+    name: string,
+    user: string,
+    invite = false,
+  ): Promise<{ items?: ProjectPublishingGrant[] }> {
+    // invite=true lets `user` be an email of someone not on the platform
+    // yet: the hub pre-provisions their account and org membership, and the
+    // grant applies the moment they first sign in.
+    return request<{ items?: ProjectPublishingGrant[] }>(
+      ctx,
+      'POST',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/publishing/grants`,
+      invite ? { user, invite: true } : { user },
+    )
+  },
+
+  async revokePublishingAccess(ctx: KedgeContext | null, name: string, grant: string): Promise<ProjectPublishingGrant> {
+    return request<ProjectPublishingGrant>(
+      ctx,
+      'POST',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/publishing/grants/${encodeURIComponent(grant)}`,
     )
   },
 

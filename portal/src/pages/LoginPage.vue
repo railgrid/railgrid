@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
+import { consumeAppAccessNext, rememberAppAccessNext } from '@/auth/appAccessNext'
 import { API_PATHS } from '@/lib/constants'
 import { Hexagon, KeyRound, ShieldCheck, Loader2, AlertCircle, Sun, Moon, Monitor, Plus } from 'lucide-vue-next'
 
@@ -22,29 +23,55 @@ const showTokenForm = ref(false)
 const oidcAvailable = computed(
   () => auth.authMode === 'oidc' || auth.authMode === 'both',
 )
+// Interactive token login exists only when the hub offers it; OIDC-only hubs
+// (authMode 'oidc') ask for a username and password at the IdP instead.
+const tokenAvailable = computed(
+  () => auth.authMode === 'token' || auth.authMode === 'both',
+)
 const tokenFormVisible = computed(
-  () => !oidcAvailable.value || showTokenForm.value,
+  () => tokenAvailable.value && (!oidcAvailable.value || showTokenForm.value),
 )
 
 onMounted(async () => {
-  if (auth.isAuthenticated) {
+  const search = new URLSearchParams(window.location.search)
+  const switching = search.get('switch') === '1'
+  // A private published app sent the browser here to establish the shared
+  // hub session; remember the hub-relative continuation across the flow.
+  rememberAppAccessNext(search.get('next'))
+  if (auth.isAuthenticated && !switching) {
+    const next = consumeAppAccessNext()
+    if (next) {
+      window.location.assign(next)
+      return
+    }
     router.push('/')
     return
   }
   await auth.detectAuthMode()
+  if (switching && oidcAvailable.value) handleOIDCLogin(true)
 })
+
+function resumeAfterLogin() {
+  const next = consumeAppAccessNext()
+  if (next) {
+    window.location.assign(next)
+    return true
+  }
+  return false
+}
 
 async function handleTokenLogin() {
   loginError.value = null
   try {
     await auth.loginStatic(tokenInput.value)
+    if (resumeAfterLogin()) return
     router.push('/')
   } catch (e) {
     loginError.value = e instanceof Error ? e.message : 'Login failed'
   }
 }
 
-function handleOIDCLogin() {
+function handleOIDCLogin(force = false) {
   const array = new Uint8Array(32)
   crypto.getRandomValues(array)
   const codeVerifier = btoa(String.fromCharCode(...array))
@@ -63,8 +90,13 @@ function handleOIDCLogin() {
     s: sessionId,
     v: codeVerifier,
   })
+  if (force) params.set('force', '1')
 
   window.location.href = `${API_PATHS.authorize}?${params.toString()}`
+}
+
+function startOIDCLogin() {
+  handleOIDCLogin(false)
 }
 </script>
 
@@ -123,7 +155,7 @@ function handleOIDCLogin() {
             <button
               v-if="auth.authMode === 'both' || auth.authMode === 'oidc'"
               class="group flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-[13px] font-semibold text-white shadow-[0_0_16px_var(--color-accent-glow)] transition-all duration-200 hover:bg-accent-hover active:scale-[0.98]"
-              @click="handleOIDCLogin"
+              @click="startOIDCLogin"
             >
               <ShieldCheck class="h-4 w-4 transition-transform duration-200 group-hover:scale-110" :stroke-width="1.75" />
               Sign in with SSO
@@ -138,7 +170,7 @@ function handleOIDCLogin() {
 
             <!-- Toggle to reveal bearer token form when OIDC is available -->
             <button
-              v-if="oidcAvailable && !showTokenForm"
+              v-if="oidcAvailable && tokenAvailable && !showTokenForm"
               type="button"
               class="group flex w-full items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:text-text-secondary"
               @click="showTokenForm = true"

@@ -36,6 +36,8 @@ import (
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+	authorizationv1client "k8s.io/client-go/kubernetes/typed/authorization/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
@@ -45,8 +47,10 @@ import (
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros-kedge/pkg/browsersession"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/admin"
+	"github.com/faroshq/faros-kedge/pkg/hub/appauth"
 	"github.com/faroshq/faros-kedge/pkg/hub/bootstrap"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/mcpserver"
 	"github.com/faroshq/faros-kedge/pkg/hub/controllers/organization"
@@ -86,6 +90,10 @@ func (s *Server) Run(ctx context.Context) error {
 		"listenAddr", s.opts.ListenAddr,
 		"embeddedKCP", s.opts.EmbeddedKCP,
 	)
+	// One process-wide store backs the host-only portal cookie, app-access SSO,
+	// and static-token login. Credentials remain in the existing auth/proxy
+	// paths; this store contains only bounded opaque handles and user metadata.
+	browserSessionStore := browsersession.New(browsersession.Config{})
 
 	// Validate --providers BEFORE any expensive init (embedded kcp takes
 	// ~60s to bootstrap). A typo or dep violation should error in
@@ -306,6 +314,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.opts.IDPIssuerURL != "" {
 		oidcConfig := auth.DefaultOIDCConfig()
 		oidcConfig.IssuerURL = s.opts.IDPIssuerURL
+		oidcConfig.BrowserAuthURL = s.opts.IDPBrowserAuthURL
 		oidcConfig.ClientID = s.opts.IDPClientID
 		oidcConfig.RedirectURL = s.opts.HubExternalURL + apiurl.PathAuthCallback
 
@@ -313,10 +322,9 @@ func (s *Server) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("creating auth handler: %w", err)
 		}
+		authHandler.SetBrowserSessionStore(browserSessionStore)
 		// Auth routes registered below on the main router with /api/ prefix.
-		router.HandleFunc(apiurl.PathAuthAuthorize, authHandler.HandleAuthorize).Methods("GET")
-		router.HandleFunc(apiurl.PathAuthCallback, authHandler.HandleCallback).Methods("GET")
-		router.HandleFunc(apiurl.PathAuthRefresh, authHandler.HandleRefresh).Methods("POST")
+		authHandler.RegisterRoutes(router)
 		logger.Info("OIDC auth routes registered", "issuer", s.opts.IDPIssuerURL)
 	}
 
@@ -426,10 +434,13 @@ func (s *Server) Run(ctx context.Context) error {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		oidcEnabled := authHandler != nil
+		// tokenLogin tells the portal whether the interactive token form is
+		// worth rendering; bearer-token API auth is independent of it.
+		tokenLogin := len(s.opts.StaticAuthTokens) > 0 && !s.opts.DisableTokenLogin
 		if oidcEnabled {
-			_, _ = fmt.Fprintf(w, `{"status":"ok","oidc":true,"issuerUrl":%q,"clientId":%q}`, s.opts.IDPIssuerURL, s.opts.IDPClientID)
+			_, _ = fmt.Fprintf(w, `{"status":"ok","oidc":true,"tokenLogin":%t,"issuerUrl":%q,"clientId":%q}`, tokenLogin, s.opts.IDPIssuerURL, s.opts.IDPClientID)
 		} else {
-			_, _ = fmt.Fprint(w, `{"status":"ok","oidc":false}`)
+			_, _ = fmt.Fprintf(w, `{"status":"ok","oidc":false,"tokenLogin":%t}`, tokenLogin)
 		}
 	})
 	router.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -458,10 +469,56 @@ func (s *Server) Run(ctx context.Context) error {
 			return fmt.Errorf("creating kcp proxy: %w", err)
 		}
 		logger.Info("kcp API proxy enabled")
+		kcpProxy.SetBrowserSessionStore(browserSessionStore)
+		authRateLimit := authHandler.RateLimitMiddleware()
+		if authHandler != nil {
+			authHandler.SetBrowserIdentityResolver(kcpProxy.BrowserIdentity)
+		} else {
+			// Static-token-only hubs still expose the same bootstrap/logout
+			// contract even though no OIDC Handler exists.
+			sessionHandler := auth.NewBrowserSessionHandler(browserSessionStore, kcpProxy.BrowserIdentity)
+			sessionHandler.RegisterBrowserSessionRoutes(router)
+			authRateLimit = sessionHandler.RateLimitMiddleware()
+		}
 
-		// Register static token login endpoint if static tokens are configured.
-		// Use HandleTokenLoginRateLimited to protect against brute force attacks.
-		if len(s.opts.StaticAuthTokens) > 0 {
+		// Published-app login-time authorization: one shared-session check and
+		// one SubjectAccessReview per private-app sign-in, then the app's
+		// access proxy keeps its own bounded session. The hub is never on the
+		// published apps' per-request path (public apps never call it at all).
+		//
+		// Deliberately auth-mode agnostic: the shared browser session is
+		// issued by BOTH the OIDC callback and static-token login, so
+		// private apps work identically on Dex/OIDC hubs and token-only
+		// hubs — an unauthenticated visitor bounces through /login?next=…,
+		// signs in with whichever mode the hub offers, and the authorize
+		// continuation completes.
+		if s.opts.PublishedAppsDomain != "" {
+			sarFactory := func(clusterID string) (authorizationv1client.SubjectAccessReviewInterface, error) {
+				cfg := rest.CopyConfig(kcpConfig)
+				cfg.Host = apiurl.KCPClusterURL(cfg.Host, clusterID)
+				clientset, err := kubernetes.NewForConfig(cfg)
+				if err != nil {
+					return nil, err
+				}
+				return clientset.AuthorizationV1().SubjectAccessReviews(), nil
+			}
+			appAuth, err := appauth.New(appauth.Config{
+				Sessions:   browserSessionStore,
+				SARClient:  sarFactory,
+				AppsDomain: s.opts.PublishedAppsDomain,
+			})
+			if err != nil {
+				return fmt.Errorf("creating published-app auth handler: %w", err)
+			}
+			appAuth.RegisterRoutes(router, authRateLimit)
+			logger.Info("published-app auth routes registered", "appsDomain", s.opts.PublishedAppsDomain)
+		}
+
+		// Register static token login endpoint if static tokens are configured
+		// and interactive token login is not disabled (bearer API auth is
+		// unaffected either way). Use HandleTokenLoginRateLimited to protect
+		// against brute force attacks.
+		if len(s.opts.StaticAuthTokens) > 0 && !s.opts.DisableTokenLogin {
 			router.HandleFunc(apiurl.PathAuthTokenLogin, kcpProxy.HandleTokenLoginRateLimited).Methods("POST")
 			logger.Info("Static token login endpoint registered at " + apiurl.PathAuthTokenLogin)
 		}

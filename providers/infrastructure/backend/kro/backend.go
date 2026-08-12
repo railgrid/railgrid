@@ -116,8 +116,43 @@ func New(runtime dynamic.Interface) *Backend {
 			os.Getenv("KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS"),
 		),
 	}
+	maps.Copy(tokens, accessGateTokens())
 	maps.Copy(tokens, devImageTokens())
 	return &Backend{runtime: runtime, tokens: tokens}
+}
+
+// DefaultAccessProxyImage backs ${kedge.accessProxyImage} when
+// KEDGE_ACCESS_PROXY_IMAGE is unset. Production should pin a digest — the
+// gate fronts every published app.
+const DefaultAccessProxyImage = "ghcr.io/faroshq/kedge-access-proxy:latest"
+
+// accessGateTokens resolves the access-gate token family (see rgd.go). The
+// hub URLs may legitimately be empty on hubs that never publish privately;
+// the gate only requires them in private mode, so empty substitution renders
+// a public-only gate rather than failing template setup.
+func accessGateTokens() map[string]string {
+	image := strings.TrimSpace(os.Getenv("KEDGE_ACCESS_PROXY_IMAGE"))
+	if image == "" {
+		image = DefaultAccessProxyImage
+	}
+	hubURL := strings.TrimSpace(os.Getenv("KEDGE_ACCESS_HUB_URL"))
+	if hubURL == "" {
+		hubURL = strings.TrimSpace(os.Getenv("KEDGE_HUB_URL"))
+	}
+	hubPublicURL := strings.TrimSpace(os.Getenv("KEDGE_ACCESS_HUB_PUBLIC_URL"))
+	if hubPublicURL == "" {
+		hubPublicURL = hubURL
+	}
+	hubInsecure := "false"
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("KEDGE_ACCESS_HUB_INSECURE")), "true") {
+		hubInsecure = "true"
+	}
+	return map[string]string{
+		accessProxyImageToken: image,
+		hubURLToken:           hubURL,
+		hubPublicURLToken:     hubPublicURL,
+		hubInsecureToken:      hubInsecure,
+	}
 }
 
 // appPublicPortSuffix turns KEDGE_APP_PUBLIC_PORT into the ":<port>" suffix

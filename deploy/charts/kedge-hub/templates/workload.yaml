@@ -80,8 +80,14 @@ spec:
             - --serving-key-file=/tls/tls.key
             {{- end }}
             - --hub-external-url={{ required "hub.hubExternalURL is required" .Values.hub.hubExternalURL }}
+            {{- if .Values.hub.publishedAppsDomain }}
+            - --published-apps-domain={{ .Values.hub.publishedAppsDomain }}
+            {{- end }}
             {{- if .Values.idp.issuerURL }}
             - --idp-issuer-url={{ .Values.idp.issuerURL }}
+            {{- if .Values.idp.browserAuthURL }}
+            - --idp-browser-auth-url={{ .Values.idp.browserAuthURL }}
+            {{- end }}
             - --idp-client-id={{ .Values.idp.clientID }}
             {{- if .Values.idp.caSecretName }}
             - --idp-ca-file=/idp-ca/{{ .Values.idp.caSecretKey }}
@@ -89,6 +95,9 @@ spec:
             {{- end }}
             {{- range .Values.hub.staticAuthTokens }}
             - --static-auth-token={{ . }}
+            {{- end }}
+            {{- if .Values.hub.disableTokenLogin }}
+            - --disable-token-login
             {{- end }}
             {{- range .Values.hub.adminUsers }}
             - --admin-users={{ . }}

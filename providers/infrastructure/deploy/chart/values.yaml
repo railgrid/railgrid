@@ -58,6 +58,29 @@ application:
     name: "cloudflare-tunnel"
     namespace: "cfgate-system"
 
+# Platform-owned access-gate configuration shared by simple-webapp,
+# application, and future publishable templates. Templates render the gate
+# (kedge-access-proxy) as a component of their own graph via the
+# ${kedge.accessProxyImage}/${kedge.hubUrl}/${kedge.hubPublicUrl} tokens; all
+# app traffic enters through it in every mode. Public apps never contact the
+# hub; private apps use the hub sign-in flow once per visitor session.
+publishing:
+  baseDomain: ""
+  accessProxyImage: ghcr.io/faroshq/kedge-access-proxy:latest
+  # Internal hub address used for the app-access protocol. Empty falls back to
+  # hub.url. In production, use a trusted cluster CA and keep insecure=false.
+  hubURL: ""
+  # Browser-reachable hub origin used for authorization redirects. Empty
+  # defaults to hubURL; set it when the provider uses an in-cluster hub URL.
+  hubPublicURL: ""
+  insecure: false
+  publicScheme: https
+  # Optional externally visible port, e.g. 10443 for a local Gateway.
+  publicPort: 0
+  gateway:
+    name: "cloudflare-tunnel"
+    namespace: "cfgate-system"
+
 # Default container resource policy stamped into every tenant namespace as a
 # LimitRange named "kedge-defaults" (defaultRequest 50m/128Mi, default limit
 # 500m/512Mi, max 2cpu/2Gi per container). Create-only — operators may
@@ -252,6 +275,18 @@ operator:
     baseDomain: ""
     # Gateway API parent the generated HTTPRoutes attach to. Empty fields →
     # "cloudflare-tunnel" / "cfgate-system" (the in-binary defaults).
+    gateway:
+      name: ""
+      namespace: ""
+
+  publishing:
+    baseDomain: ""
+    accessProxyImage: ghcr.io/faroshq/kedge-access-proxy:latest
+    hubURL: ""
+    hubPublicURL: ""
+    insecure: false
+    publicScheme: https
+    publicPort: 0
     gateway:
       name: ""
       namespace: ""

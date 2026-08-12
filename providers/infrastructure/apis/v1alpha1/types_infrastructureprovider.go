@@ -92,6 +92,12 @@ type InfrastructureProviderSpec struct {
 	// +optional
 	Application ApplicationSpec `json:"application,omitempty"`
 
+	// Publishing configures the template-embedded access gate. The provider
+	// substitutes these values into template graphs as ${kedge.*} tokens
+	// (gate image, hub endpoints); tenants cannot override them.
+	// +optional
+	Publishing PublishingSpec `json:"publishing,omitempty"`
+
 	// Development configures the platform-managed development-mode images
 	// (docs/app-studio-template-sandboxes.md): the kedge-dev-agent injector
 	// and the per-toolchain dev images substituted for
@@ -101,6 +107,56 @@ type InfrastructureProviderSpec struct {
 	// run tenant code — production should pin digests.
 	// +optional
 	Development DevelopmentSpec `json:"development,omitempty"`
+}
+
+// PublishingSpec is operator-owned configuration for the template-embedded
+// access gate (kedge-access-proxy).
+type PublishingSpec struct {
+	// BaseDomain is the DNS zone allocated to published apps.
+	// +optional
+	BaseDomain string `json:"baseDomain,omitempty"`
+
+	// AccessProxyImage is the complete image reference for
+	// kedge-access-proxy, preferably pinned by digest.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	AccessProxyImage string `json:"accessProxyImage,omitempty"`
+
+	// HubURL is the internal Kedge hub URL used only for the app-access
+	// authorize/callback/check protocol.
+	// +optional
+	// +kubebuilder:validation:MaxLength=2048
+	HubURL string `json:"hubURL,omitempty"`
+
+	// HubPublicURL is the browser-reachable Kedge hub origin used for login
+	// redirects. It may differ from HubURL, which access proxies use for
+	// in-cluster exchange and authorization checks.
+	// +optional
+	// +kubebuilder:validation:MaxLength=2048
+	HubPublicURL string `json:"hubPublicURL,omitempty"`
+
+	// HubInsecure skips TLS verification between access proxies and the hub.
+	// Development only; production should mount a trusted cluster CA.
+	// +optional
+	HubInsecure bool `json:"hubInsecure,omitempty"`
+
+	// PublicScheme is the external scheme used for app callbacks and URLs.
+	// +optional
+	// +kubebuilder:default=https
+	// +kubebuilder:validation:Enum=http;https
+	PublicScheme string `json:"publicScheme,omitempty"`
+
+	// PublicPort is the optional externally visible port appended to published
+	// app URLs. Leave unset for the scheme default (normally 443); local
+	// Gateways commonly expose HTTPS on a high port such as 10443.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	PublicPort int32 `json:"publicPort,omitempty"`
+
+	// Gateway is the shared platform Gateway parent for publication routes.
+	// +optional
+	Gateway GatewayRef `json:"gateway,omitempty"`
 }
 
 // DevelopmentSpec configures the dev-mode image set.

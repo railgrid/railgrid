@@ -48,14 +48,14 @@ const maxPrefixLen = 63 - tenantHashLen - 1 // 50
 //	<prefix>-<tenantHash>.<baseDomain>
 //
 // prefix defaults to instanceName when empty (the common case — the
-// Application template's expose.hostnamePrefix is optional). tenantPath is
-// the kcp workspace path the instance lives in; its hash is the same one
-// kro uses for the per-tenant runtime namespace, so the suffix that appears
-// in the hostname also appears in `kubectl get ns` — a deliberate aid to
-// tracing an app back to its tenant. baseDomain is the zone apps are served
-// under (KEDGE_APP_BASE_DOMAIN, e.g. "apps.example.com"); it is NOT
-// re-prefixed with "apps." here — callers pass the full suffix.
-func Host(prefix, instanceName, tenantPath, baseDomain string) (string, error) {
+// Application template's expose.hostnamePrefix is optional). tenantIdentity
+// is a stable platform-owned tenant key — the logical-cluster ID the
+// application controller passes from req.ClusterName. The resulting suffix
+// is deterministic and tenant-distinct.
+// baseDomain is the zone apps are served under (KEDGE_APP_BASE_DOMAIN, e.g.
+// "apps.example.com"); it is NOT re-prefixed with "apps." here — callers pass
+// the full suffix.
+func Host(prefix, instanceName, tenantIdentity, baseDomain string) (string, error) {
 	if prefix == "" {
 		prefix = instanceName
 	}
@@ -68,7 +68,7 @@ func Host(prefix, instanceName, tenantPath, baseDomain string) (string, error) {
 	if baseDomain == "" {
 		return "", fmt.Errorf("base domain is empty (set KEDGE_APP_BASE_DOMAIN)")
 	}
-	return fmt.Sprintf("%s-%s.%s", prefix, kro.LabelTenantValue(tenantPath), baseDomain), nil
+	return fmt.Sprintf("%s-%s.%s", prefix, kro.LabelTenantValue(tenantIdentity), baseDomain), nil
 }
 
 // URL is the https URL for a host returned by Host.

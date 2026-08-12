@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -1930,6 +1931,115 @@ func (b *Bootstrapper) RemoveProviderEdgeProxyGrant(ctx context.Context, orgUUID
 	}
 	if err := wsClient.Resource(clusterRoleGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("deleting ClusterRole %q: %w", name, err)
+	}
+	return nil
+}
+
+// appAccessGrantLabel marks the ClusterRoleBindings that invite one platform
+// user into one private published app (`get` on the instance's `access`
+// subresource). App Studio's share dialog authors them; this label is the
+// shared contract that makes them enumerable here without any provider
+// coupling. Must stay in lockstep with providers/app-studio/api
+// (appAccessLabel) and docs/app-studio-publishing.md.
+const (
+	appAccessGrantLabel     = "kedge.faros.sh/app-access"
+	appAccessGrantUserLabel = "app-studio.kedge.faros.sh/user"
+)
+
+// AppAccessGrant is the portal-facing view of one published-app invitation:
+// plain workspace RBAC, surfaced so tenant settings can show who can open
+// which private app.
+type AppAccessGrant struct {
+	// Binding is the ClusterRoleBinding name (the revocation handle).
+	Binding string `json:"binding"`
+	// App is the published instance name the grant opens.
+	App string `json:"app"`
+	// User is the platform User metadata.name the grant was issued to.
+	User string `json:"user"`
+	// CreatedAt is the binding's creation timestamp.
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+// ListAppAccessGrants lists the published-app access grants (labeled
+// ClusterRoleBindings) in the child workspace. Same kcp-admin/proxy-avoidance
+// rationale as ListProviderAPIBindings.
+func (b *Bootstrapper) ListAppAccessGrants(ctx context.Context, orgUUID, wsUUID string) ([]AppAccessGrant, error) {
+	if orgUUID == "" || wsUUID == "" {
+		return nil, fmt.Errorf("ListAppAccessGrants: orgUUID and wsUUID are required")
+	}
+	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
+	wsClient, err := dynamic.NewForConfig(wsConfig)
+	if err != nil {
+		return nil, fmt.Errorf("creating child workspace client: %w", err)
+	}
+	list, err := wsClient.Resource(clusterRoleBindingGVR).List(ctx, metav1.ListOptions{LabelSelector: appAccessGrantLabel})
+	if err != nil {
+		return nil, fmt.Errorf("listing app-access grants in %s/%s: %w", orgUUID, wsUUID, err)
+	}
+	out := make([]AppAccessGrant, 0, len(list.Items))
+	for i := range list.Items {
+		item := &list.Items[i]
+		app := item.GetLabels()[appAccessGrantLabel]
+		if app == "" {
+			continue
+		}
+		user := item.GetLabels()[appAccessGrantUserLabel]
+		if user == "" {
+			// Fall back to the binding's User subject for grants authored
+			// outside App Studio (kubectl and friends).
+			subjects, _, _ := unstructured.NestedSlice(item.Object, "subjects")
+			for _, rawSubject := range subjects {
+				subject, _ := rawSubject.(map[string]any)
+				if subject["kind"] == "User" {
+					user, _ = subject["name"].(string)
+					break
+				}
+			}
+		}
+		if user == "" {
+			continue
+		}
+		out = append(out, AppAccessGrant{
+			Binding:   item.GetName(),
+			App:       app,
+			User:      user,
+			CreatedAt: item.GetCreationTimestamp().Time,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].App != out[j].App {
+			return out[i].App < out[j].App
+		}
+		return out[i].User < out[j].User
+	})
+	return out, nil
+}
+
+// RemoveAppAccessGrant revokes one published-app invitation by deleting its
+// ClusterRoleBinding. It refuses to touch bindings that do not carry the
+// app-access label so this endpoint can never delete unrelated RBAC.
+// NotFound is a no-op for idempotent revocation.
+func (b *Bootstrapper) RemoveAppAccessGrant(ctx context.Context, orgUUID, wsUUID, bindingName string) error {
+	if orgUUID == "" || wsUUID == "" || bindingName == "" {
+		return fmt.Errorf("RemoveAppAccessGrant: orgUUID, wsUUID, bindingName are required")
+	}
+	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
+	wsClient, err := dynamic.NewForConfig(wsConfig)
+	if err != nil {
+		return fmt.Errorf("creating child workspace client: %w", err)
+	}
+	binding, err := wsClient.Resource(clusterRoleBindingGVR).Get(ctx, bindingName, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("getting ClusterRoleBinding %q: %w", bindingName, err)
+	}
+	if binding.GetLabels()[appAccessGrantLabel] == "" {
+		return fmt.Errorf("ClusterRoleBinding %q is not an app-access grant", bindingName)
+	}
+	if err := wsClient.Resource(clusterRoleBindingGVR).Delete(ctx, bindingName, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+		return fmt.Errorf("deleting ClusterRoleBinding %q: %w", bindingName, err)
 	}
 	return nil
 }

@@ -56,6 +56,25 @@ const (
 	// the Gateway is only reachable on a forwarded port (local kind).
 	// Resolved from KEDGE_APP_PUBLIC_PORT (the bare port number).
 	appPublicPortToken = "${kedge.appPublicPort}"
+
+	// Access-gate token family. Publishable templates render the platform
+	// kedge-access-proxy as a component of their own graph (the gate) and the
+	// shared-Gateway HTTPRoute always points at it. These tokens carry the
+	// platform-owned gate configuration; tenants never choose the gate image
+	// or the hub endpoints.
+	//
+	//   - accessProxyImageToken — the gate container image
+	//     (KEDGE_ACCESS_PROXY_IMAGE).
+	//   - hubURLToken — in-cluster hub origin the gate exchanges sign-in codes
+	//     against (KEDGE_ACCESS_HUB_URL, falling back to KEDGE_HUB_URL).
+	//   - hubPublicURLToken — browser-reachable hub origin for sign-in
+	//     redirects (KEDGE_ACCESS_HUB_PUBLIC_URL, falling back to hubURLToken).
+	//   - hubInsecureToken — "true"/"false" TLS-verification skip for gate→hub
+	//     calls (KEDGE_ACCESS_HUB_INSECURE; local self-signed hubs only).
+	accessProxyImageToken = "${kedge.accessProxyImage}"
+	hubURLToken           = "${kedge.hubUrl}"
+	hubPublicURLToken     = "${kedge.hubPublicUrl}"
+	hubInsecureToken      = "${kedge.hubInsecure}"
 )
 
 const (

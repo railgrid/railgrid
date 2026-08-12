@@ -218,6 +218,7 @@ func testTokens() map[string]string {
 		gatewayNameToken:      DefaultGatewayName,
 		gatewayNamespaceToken: DefaultGatewayNamespace,
 	}
+	maps.Copy(tokens, accessGateTokens())
 	maps.Copy(tokens, devImageTokens())
 	return tokens
 }

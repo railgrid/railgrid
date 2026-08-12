@@ -338,13 +338,12 @@ func (r *instanceReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 			return ctrl.Result{}, err
 		}
 	case modePlatform:
-		// Platform SSO needs the hub Dex gRPC client-management API, which
-		// isn't provisioned yet. Surface that clearly on the instance rather
-		// than silently leaving the oauth2-proxy pod stuck on a missing
-		// secret. Tracked as a separate Dex-infra epic; use oidc.mode=byo.
-		log.Info("oidc.mode=platform is not yet supported; set oidc.mode=byo")
+		// Kept only to fail closed for an instance created from the retired
+		// schema value. Platform sign-in now belongs to the template access
+		// gate (spec.access); templates never provision a Dex client per app.
+		log.Info("oidc.mode=platform was retired; use App Studio publishing access")
 		if err := c.setOIDCCondition(ctx, tenantClient, app, "False", "PlatformSSOUnsupported",
-			"oidc.mode=platform is not yet supported (needs the hub Dex gRPC API); use oidc.mode=byo"); err != nil {
+			"oidc.mode=platform was retired; configure public or organization invite-only access when publishing the app"); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil // terminal: nothing to retry until BYO is chosen
@@ -369,7 +368,15 @@ func (c *Controller) stampSpec(ctx context.Context, tenantClient client.Client, 
 		return fmt.Errorf("computing fqdn: %w", err)
 	}
 
-	current := curFQDN == fqdn
+	// Publishable templates declare spec.kedgeCluster (CRD-defaulted to
+	// "pending") so their embedded access gate learns the tenant workspace
+	// cluster ID for sign-in authorization. Stamp only when the schema
+	// declares the field — an absent field would be pruned server-side and
+	// re-stamping it every pass would hot-loop the reconciler.
+	curCluster, hasClusterField, _ := unstructured.NestedString(app.Object, "spec", "kedgeCluster")
+	stampCluster := hasClusterField && curCluster != tenant
+
+	current := curFQDN == fqdn && !stampCluster
 	if withCredentials {
 		current = current && nestedString(app, "spec", "credentialsSecretName") == kro.CredentialsSecretName(app.GetName())
 	}
@@ -378,6 +385,11 @@ func (c *Controller) stampSpec(ctx context.Context, tenantClient client.Client, 
 	}
 	if err := unstructured.SetNestedField(app.Object, fqdn, "spec", "expose", "fqdn"); err != nil {
 		return fmt.Errorf("set spec.expose.fqdn: %w", err)
+	}
+	if stampCluster {
+		if err := unstructured.SetNestedField(app.Object, tenant, "spec", "kedgeCluster"); err != nil {
+			return fmt.Errorf("set spec.kedgeCluster: %w", err)
+		}
 	}
 	if withCredentials {
 		if err := unstructured.SetNestedField(app.Object, kro.CredentialsSecretName(app.GetName()), "spec", "credentialsSecretName"); err != nil {

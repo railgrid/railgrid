@@ -90,30 +90,6 @@ test('providers is a closeable built-in tab that opens from the launcher catalog
   assert.equal(closedProviders.activeTabID, 'launcher')
 })
 
-test('publishing is a closeable built-in tab that opens from the launcher catalog', () => {
-  const withPublishing = openWorkbenchBuiltInTab(createDefaultWorkbenchState(), 'publishing')
-  const closedPublishing = closeWorkbenchTab(withPublishing, 'publishing')
-
-  assert.deepEqual(withPublishing.tabs[withPublishing.tabs.length - 1], {
-    id: 'publishing',
-    kind: 'publishing',
-    title: 'Publish & Promote',
-    closeable: true,
-  })
-  assert.equal(withPublishing.activeTabID, 'publishing')
-  assert.equal(closedPublishing.tabs.some((tab) => tab.id === 'publishing'), false)
-  assert.equal(closedPublishing.activeTabID, 'launcher')
-})
-
-test('opens publishing once and activates it when requested again', () => {
-  const initial = createDefaultWorkbenchState()
-  const once = openWorkbenchBuiltInTab(initial, 'publishing')
-  const twice = openWorkbenchBuiltInTab(once, 'publishing')
-
-  assert.equal(twice.tabs.filter((tab) => tab.id === 'publishing').length, 1)
-  assert.equal(twice.activeTabID, 'publishing')
-})
-
 test('opens project settings as a closeable built-in tab', () => {
   const settings = openWorkbenchBuiltInTab(createDefaultWorkbenchState(), 'settings')
   assert.equal(settings.activeTabID, 'settings')
@@ -121,7 +97,7 @@ test('opens project settings as a closeable built-in tab', () => {
     id: 'settings',
     kind: 'settings',
     title: 'Project Settings',
-    subtitle: 'Manage project details, repository status, and model configuration',
+    subtitle: 'Manage project details, production, and model configuration',
     closeable: true,
   })
 })

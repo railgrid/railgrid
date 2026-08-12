@@ -2,9 +2,9 @@
 import { ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useEscapeKey } from '@/composables/useEscapeKey'
-import { UserRound, X, Copy, Check } from 'lucide-vue-next'
+import { UserRound, X, Copy, Check, LogIn } from 'lucide-vue-next'
 
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; switch: [] }>()
 
 useEscapeKey(() => emit('close'))
 
@@ -95,6 +95,14 @@ async function copy(text: string, field: string) {
               </div>
             </div>
           </div>
+
+          <button
+            class="mt-5 flex w-full items-center justify-center gap-2 rounded-lg border border-border-subtle px-3 py-2 text-[11px] font-medium text-text-secondary transition-colors hover:border-accent/40 hover:text-accent"
+            @click="emit('switch')"
+          >
+            <LogIn class="h-3.5 w-3.5" :stroke-width="1.75" />
+            Switch account
+          </button>
         </div>
       </div>
     </div>

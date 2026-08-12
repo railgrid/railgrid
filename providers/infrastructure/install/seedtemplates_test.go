@@ -18,6 +18,7 @@ package install
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"io/fs"
 	"regexp"
 	"strings"
@@ -72,6 +73,234 @@ func TestSeedTemplatesDecodeAndValidate(t *testing.T) {
 					if strings.TrimSpace(comp.DevImage) == "" {
 						t.Errorf("development.components[%s].devImage is empty", name)
 					}
+				}
+			}
+		})
+	}
+}
+
+// TestApplicationSeedsRouteEverythingThroughTheAccessGate encodes the
+// exposure invariants of the template-native access design:
+//
+//   - the schema declares platform-owned access + kedgeCluster fields;
+//   - a gate (kedge-access-proxy) component exists, its image and hub
+//     endpoints are platform tokens, and its mode is the tenant's
+//     spec.access value;
+//   - every HTTPRoute is unconditional and its only backend is the gate
+//     Service — no tenant workload is ever the direct route backend, in any
+//     mode, so flipping spec.access can never be routed around.
+func TestApplicationSeedsRouteEverythingThroughTheAccessGate(t *testing.T) {
+	instanceResource := map[string]string{
+		"simple-webapp.yaml": "simplewebapps",
+		"application.yaml":   "applications",
+	}
+	for _, file := range []string{"simple-webapp.yaml", "application.yaml"} {
+		t.Run(file, func(t *testing.T) {
+			raw, err := fs.ReadFile(seedTemplatesFS, "templates/"+file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var tmpl infrav1alpha1.Template
+			if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
+				t.Fatal(err)
+			}
+
+			var schema map[string]any
+			if err := json.Unmarshal(tmpl.Spec.Schema.Raw, &schema); err != nil {
+				t.Fatal(err)
+			}
+			properties, _ := schema["properties"].(map[string]any)
+			access, ok := properties["access"].(map[string]any)
+			if !ok {
+				t.Fatal("seed schema has no access property")
+			}
+			if access["default"] != "public" {
+				t.Fatalf("access default = %#v, want public", access["default"])
+			}
+			enum, _ := access["enum"].([]any)
+			if len(enum) != 2 || enum[0] != "public" || enum[1] != "private" {
+				t.Fatalf("access enum = %#v, want [public private]", enum)
+			}
+			cluster, ok := properties["kedgeCluster"].(map[string]any)
+			if !ok {
+				t.Fatal("seed schema has no kedgeCluster property")
+			}
+			if desc, _ := cluster["description"].(string); !strings.Contains(desc, "Computed by the platform") {
+				t.Fatalf("kedgeCluster description = %q, want platform-computed guidance", desc)
+			}
+
+			var backend map[string]any
+			if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &backend); err != nil {
+				t.Fatal(err)
+			}
+			resources, _ := backend["resources"].([]any)
+
+			var gateEnv map[string]string
+			routeCount := 0
+			for _, rawResource := range resources {
+				resource, _ := rawResource.(map[string]any)
+				id, _ := resource["id"].(string)
+				template, _ := resource["template"].(map[string]any)
+				switch template["kind"] {
+				case "Deployment":
+					if id != "gateDeployment" {
+						continue
+					}
+					gateEnv = containerEnv(t, template)
+				case "HTTPRoute":
+					routeCount++
+					if include, present := resource["includeWhen"]; present {
+						t.Fatalf("HTTPRoute %v is conditional (%v); routes must exist in every mode", id, include)
+					}
+					routeJSON := mustJSONString(t, template)
+					if !strings.Contains(routeJSON, "gateService.metadata.name") {
+						t.Fatalf("HTTPRoute %v does not back onto the gate Service: %s", id, routeJSON)
+					}
+					for _, workloadRef := range []string{`-web"`, `-api"`, `-oauth"`, "schema.spec.webPort", "schema.spec.apiPort", "schema.spec.port"} {
+						if strings.Contains(routeJSON, workloadRef) {
+							t.Fatalf("HTTPRoute %v references a tenant workload (%s) directly", id, workloadRef)
+						}
+					}
+				}
+			}
+			if routeCount == 0 {
+				t.Fatal("seed has no HTTPRoute")
+			}
+			if gateEnv == nil {
+				t.Fatal("seed has no gateDeployment component")
+			}
+			wantEnv := map[string]string{
+				"KEDGE_ACCESS_PROXY_MODE": "${schema.spec.access}",
+				// The external host includes the local Gateway's forwarded
+				// port when configured (${kedge.appPublicPort} → ":<port>"
+				// or "", substituted before kro sees the CEL).
+				"KEDGE_ACCESS_PROXY_HOST":              `${schema.spec.expose.fqdn + "${kedge.appPublicPort}"}`,
+				"KEDGE_ACCESS_PROXY_INSTANCE_CLUSTER":  "${schema.spec.kedgeCluster}",
+				"KEDGE_ACCESS_PROXY_INSTANCE_GROUP":    "infrastructure.kedge.faros.sh",
+				"KEDGE_ACCESS_PROXY_INSTANCE_RESOURCE": instanceResource[file],
+				"KEDGE_HUB_URL":                        "${kedge.hubUrl}",
+				"KEDGE_HUB_PUBLIC_URL":                 "${kedge.hubPublicUrl}",
+			}
+			for name, want := range wantEnv {
+				if gateEnv[name] != want {
+					t.Errorf("gate env %s = %q, want %q", name, gateEnv[name], want)
+				}
+			}
+			if !strings.Contains(gateEnv["KEDGE_ACCESS_PROXY_ROUTES"], ".svc.cluster.local:") {
+				t.Errorf("gate routes are not cluster-local Service targets: %q", gateEnv["KEDGE_ACCESS_PROXY_ROUTES"])
+			}
+		})
+	}
+}
+
+func containerEnv(t *testing.T, deployment map[string]any) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	spec, _ := deployment["spec"].(map[string]any)
+	podTemplate, _ := spec["template"].(map[string]any)
+	podSpec, _ := podTemplate["spec"].(map[string]any)
+	containers, _ := podSpec["containers"].([]any)
+	for _, rawContainer := range containers {
+		container, _ := rawContainer.(map[string]any)
+		env, _ := container["env"].([]any)
+		for _, rawVar := range env {
+			envVar, _ := rawVar.(map[string]any)
+			name, _ := envVar["name"].(string)
+			value, _ := envVar["value"].(string)
+			if name != "" {
+				out[name] = value
+			}
+		}
+	}
+	return out
+}
+
+func mustJSONString(t *testing.T, v any) string {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func TestApplicationSeedsDeclareAndProjectRedeployRevision(t *testing.T) {
+	wantWorkloads := map[string]map[string]bool{
+		"simple-webapp.yaml": {"appDeployment": true},
+		"application.yaml":   {"webDeployment": true, "apiDeployment": true},
+	}
+	const annotationKey = "kedge.faros.sh/redeploy-revision"
+
+	for file, want := range wantWorkloads {
+		t.Run(file, func(t *testing.T) {
+			raw, err := fs.ReadFile(seedTemplatesFS, "templates/"+file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var tmpl infrav1alpha1.Template
+			if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
+				t.Fatal(err)
+			}
+
+			var schema map[string]any
+			if tmpl.Spec.Schema == nil {
+				t.Fatal("seed schema is missing or malformed")
+			}
+			if err := json.Unmarshal(tmpl.Spec.Schema.Raw, &schema); err != nil {
+				t.Fatalf("decode seed schema: %v", err)
+			}
+			properties, ok := schema["properties"].(map[string]any)
+			if !ok {
+				t.Fatal("seed schema has no properties")
+			}
+			revisionProperty, ok := properties["kedgeRedeployRevision"].(map[string]any)
+			if !ok {
+				t.Fatal("seed schema has no kedgeRedeployRevision property")
+			}
+			if revisionProperty["type"] != "string" || revisionProperty["default"] != "initial" {
+				t.Fatalf("kedgeRedeployRevision property = %#v, want string default initial", revisionProperty)
+			}
+			description, _ := revisionProperty["description"].(string)
+			if !strings.Contains(description, "Computed by the platform") || !strings.Contains(description, "do NOT set") {
+				t.Fatalf("kedgeRedeployRevision description = %q, want platform-computed/not-user-set guidance", description)
+			}
+
+			var backend map[string]any
+			if tmpl.Spec.BackendConfig == nil {
+				t.Fatal("seed backendConfig is missing or malformed")
+			}
+			if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &backend); err != nil {
+				t.Fatalf("decode seed backendConfig: %v", err)
+			}
+			resources, ok := backend["resources"].([]any)
+			if !ok {
+				t.Fatal("seed backendConfig has no resources")
+			}
+			found := map[string]bool{}
+			for _, rawResource := range resources {
+				resource, _ := rawResource.(map[string]any)
+				id, _ := resource["id"].(string)
+				template, _ := resource["template"].(map[string]any)
+				spec, _ := template["spec"].(map[string]any)
+				podTemplate, _ := spec["template"].(map[string]any)
+				podMetadata, _ := podTemplate["metadata"].(map[string]any)
+				annotations, _ := podMetadata["annotations"].(map[string]any)
+				gotRevision, annotated := annotations[annotationKey]
+				if annotated {
+					if !want[id] {
+						t.Errorf("resource %q has unexpected rollout annotation", id)
+					}
+					if gotRevision != "${schema.spec.kedgeRedeployRevision}" {
+						t.Errorf("resource %q rollout annotation = %#v, want schema revision expression", id, gotRevision)
+					}
+					found[id] = true
+				} else if want[id] {
+					t.Errorf("resource %q is missing rollout annotation", id)
+				}
+			}
+			for id := range want {
+				if !found[id] {
+					t.Errorf("resource %q was not found with rollout annotation", id)
 				}
 			}
 		})

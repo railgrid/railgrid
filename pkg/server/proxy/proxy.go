@@ -47,6 +47,7 @@ import (
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros-kedge/pkg/browsersession"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 )
@@ -75,6 +76,16 @@ type KCPProxy struct {
 	authorizer *clusterAuthorizer
 	// staticTokenRateLimiter protects the token-login endpoint against brute force attacks
 	staticTokenRateLimiter *tokenRateLimiter
+	browserSessions        *browsersession.Store
+}
+
+// SetBrowserSessionStore wires the hub-wide opaque browser-session store used
+// by static-token portal login.  The proxy never places the static bearer in
+// that store or in the cookie; it records only the resolved User identity.
+func (p *KCPProxy) SetBrowserSessionStore(store *browsersession.Store) {
+	if p != nil {
+		p.browserSessions = store
+	}
 }
 
 // tokenRateLimiter wraps the auth rate limiter for static token endpoints.
@@ -807,9 +818,23 @@ var ErrIdentifyNoBearer = errors.New("no Authorization: Bearer token")
 // endpoints are addressed by humans (or by their portal session) and
 // not by edge-side bots.
 func (p *KCPProxy) IdentifyUser(r *http.Request) (string, error) {
+	identity, err := p.BrowserIdentity(r)
+	if err != nil {
+		return "", err
+	}
+	return identity.UserID, nil
+}
+
+// BrowserIdentity validates a portal bearer and resolves it to the stable
+// platform user identity used by the shared browser-session store.  The
+// returned value contains no bearer, kubeconfig, or OIDC token.
+func (p *KCPProxy) BrowserIdentity(r *http.Request) (browsersession.Identity, error) {
+	if r == nil {
+		return browsersession.Identity{}, ErrIdentifyNoBearer
+	}
 	authHeader := r.Header.Get("Authorization")
 	if !strings.HasPrefix(authHeader, "Bearer ") {
-		return "", ErrIdentifyNoBearer
+		return browsersession.Identity{}, ErrIdentifyNoBearer
 	}
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 
@@ -820,9 +845,9 @@ func (p *KCPProxy) IdentifyUser(r *http.Request) (string, error) {
 			subHash := hex.EncodeToString(tokenHash[:])[:63]
 			user, err := p.ensureStaticTokenUser(r.Context(), token, subHash)
 			if err != nil {
-				return "", fmt.Errorf("resolving static-token user: %w", err)
+				return browsersession.Identity{}, fmt.Errorf("resolving static-token user: %w", err)
 			}
-			return user.Name, nil
+			return browsersession.Identity{UserID: user.Name, Email: user.Spec.Email, Name: user.Spec.Name, RBACIdentity: user.Spec.RBACIdentity, AuthType: "static-token"}, nil
 		}
 	}
 
@@ -830,22 +855,24 @@ func (p *KCPProxy) IdentifyUser(r *http.Request) (string, error) {
 	if p.verifier != nil {
 		idToken, err := p.verifier.Verify(p.verifyCtx, token)
 		if err != nil {
-			return "", fmt.Errorf("verifying OIDC token: %w", err)
+			return browsersession.Identity{}, fmt.Errorf("verifying OIDC token: %w", err)
 		}
 		var claims struct {
-			Sub string `json:"sub"`
+			Sub   string `json:"sub"`
+			Email string `json:"email"`
+			Name  string `json:"name"`
 		}
 		if err := idToken.Claims(&claims); err != nil {
-			return "", fmt.Errorf("parsing OIDC claims: %w", err)
+			return browsersession.Identity{}, fmt.Errorf("parsing OIDC claims: %w", err)
 		}
 		user, err := p.resolveUser(r.Context(), idToken.Issuer, claims.Sub)
 		if err != nil {
-			return "", fmt.Errorf("resolving OIDC user: %w", err)
+			return browsersession.Identity{}, fmt.Errorf("resolving OIDC user: %w", err)
 		}
-		return user.Name, nil
+		return browsersession.Identity{UserID: user.Name, Email: user.Spec.Email, Name: user.Spec.Name, RBACIdentity: user.Spec.RBACIdentity, Issuer: idToken.Issuer, Subject: claims.Sub, AuthType: "oidc"}, nil
 	}
 
-	return "", ErrIdentifyNoBearer
+	return browsersession.Identity{}, ErrIdentifyNoBearer
 }
 
 // resolveUser looks up the User CRD by OIDC issuer+sub hash and returns the full User object.
@@ -985,6 +1012,17 @@ func (p *KCPProxy) HandleTokenLogin(w http.ResponseWriter, r *http.Request) {
 		Kubeconfig: kubeconfigBytes,
 		Email:      user.Spec.Email,
 		UserID:     user.Name,
+	}
+	if p.browserSessions != nil {
+		if _, sessionErr := p.browserSessions.IssueHTTP(w, browsersession.Identity{
+			UserID: user.Name, Email: user.Spec.Email, Name: user.Spec.Name,
+			RBACIdentity: user.Spec.RBACIdentity,
+			AuthType:     "static-token",
+		}); sessionErr != nil {
+			p.logger.Error(sessionErr, "failed to issue shared browser session")
+			http.Error(w, "failed to create browser session", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

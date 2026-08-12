@@ -29,6 +29,13 @@ import (
 type MembershipAddRequest struct {
 	User string `json:"user"`
 	Role string `json:"role"` // admin | member
+	// Invite pre-provisions a pending User when the identifier is an email
+	// with no matching account. The pending User carries the email-derived
+	// RBAC identity immediately (so memberships and app grants written now
+	// apply on arrival) and is adopted by the first OIDC sign-in with that
+	// email. Without this flag an unknown identifier stays a clean 404 so
+	// typos cannot mint ghost users.
+	Invite bool `json:"invite,omitempty"`
 }
 
 // MembershipPatchRequest is the PATCH body for role changes (O-12).
@@ -49,13 +56,14 @@ func (h *Handler) listOrgMemberships(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	rbacByUser := h.mgr.rbacIdentitiesByUserName(r.Context())
 	out := make([]MembershipView, 0, len(users))
 	for _, user := range users {
 		role, err := h.mgr.bootstrapper.GetOrgMembershipRole(r.Context(), orgUUID, user)
 		if err != nil {
 			continue
 		}
-		out = append(out, MembershipView{User: user, Role: role, OrgUUID: orgUUID})
+		out = append(out, MembershipView{User: user, RBACIdentity: rbacByUser[user], Role: role, OrgUUID: orgUUID})
 	}
 	writeJSON(w, http.StatusOK, ListResponse[MembershipView]{Items: out})
 }
@@ -77,7 +85,9 @@ func (h *Handler) addOrgMembership(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve the identifier (email / UUID / rbacIdentity) to the User CR
 	// so every object we write below is named after a valid User name.
-	target, err := h.mgr.resolveUser(r.Context(), req.User)
+	// With invite set, an unknown email pre-provisions a pending User that
+	// the first matching OIDC sign-in adopts.
+	target, err := h.mgr.resolveOrInviteUser(r.Context(), req.User, req.Invite)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -105,7 +115,8 @@ func (h *Handler) addOrgMembership(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, MembershipView{
-		User: target.Name, Role: req.Role, OrgUUID: orgUUID, OrgDisplayName: org.Spec.DisplayName,
+		User: target.Name, RBACIdentity: target.Spec.RBACIdentity,
+		Role: req.Role, OrgUUID: orgUUID, OrgDisplayName: org.Spec.DisplayName,
 	})
 }
 
@@ -232,6 +243,7 @@ func (h *Handler) listWorkspaceMemberships(w http.ResponseWriter, r *http.Reques
 		writeError(w, err)
 		return
 	}
+	rbacByUser := h.mgr.rbacIdentitiesByUserName(r.Context())
 	out := make([]MembershipView, 0)
 	for i := range list.Items {
 		idx := &list.Items[i]
@@ -240,7 +252,7 @@ func (h *Handler) listWorkspaceMemberships(w http.ResponseWriter, r *http.Reques
 				continue
 			}
 			out = append(out, MembershipView{
-				User: idx.Name, Role: e.Role,
+				User: idx.Name, RBACIdentity: rbacByUser[idx.Name], Role: e.Role,
 				OrgUUID: e.OrgUUID, WorkspaceUUID: e.WorkspaceUUID,
 				OrgDisplayName: e.OrgDisplayName, WorkspaceDisplayName: e.WorkspaceDisplayName,
 			})
@@ -266,8 +278,9 @@ func (h *Handler) addWorkspaceMembership(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	// Resolve the identifier (email / UUID / rbacIdentity) to the User CR
-	// before writing anything named after it.
-	target, err := h.mgr.resolveUser(r.Context(), req.User)
+	// before writing anything named after it. With invite set, an unknown
+	// email pre-provisions a pending User adopted at first sign-in.
+	target, err := h.mgr.resolveOrInviteUser(r.Context(), req.User, req.Invite)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -304,7 +317,7 @@ func (h *Handler) addWorkspaceMembership(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusCreated, MembershipView{
-		User: target.Name, Role: req.Role,
+		User: target.Name, RBACIdentity: target.Spec.RBACIdentity, Role: req.Role,
 		OrgUUID: tc.OrgUUID, WorkspaceUUID: tc.WorkspaceUUID,
 		OrgDisplayName: org.Spec.DisplayName, WorkspaceDisplayName: dn,
 	})

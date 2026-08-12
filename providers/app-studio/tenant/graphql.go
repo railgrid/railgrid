@@ -34,6 +34,7 @@ import (
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/yaml"
@@ -215,23 +216,40 @@ func (s *Scope) Get(ctx context.Context, res Resource, namespace, name string) (
 }
 
 // List fetches all objects via the <Plural>Yaml query. namespace is optional
-// (empty lists across all namespaces for namespaced resources).
+// (empty lists across all namespaces for namespaced resources). It preserves
+// the original three-argument API; callers that need list filters should use
+// ListWithOptions.
 func (s *Scope) List(ctx context.Context, res Resource, namespace string) ([]unstructured.Unstructured, error) {
+	return s.ListWithOptions(ctx, res, namespace, metav1.ListOptions{})
+}
+
+// ListWithOptions fetches objects via the <Plural>Yaml query and forwards
+// supported list filters to the GraphQL gateway.
+func (s *Scope) ListWithOptions(ctx context.Context, res Resource, namespace string, listOptions metav1.ListOptions) ([]unstructured.Unstructured, error) {
 	field := res.Plural + "Yaml"
 	var (
-		varDefs string
-		inner   = field
+		varDefs []string
+		args    []string
 		vars    = map[string]any{}
 	)
 	if res.Namespaced && namespace != "" {
-		varDefs = "$namespace: String"
-		inner = field + "(namespace: $namespace)"
+		varDefs = append(varDefs, "$namespace: String")
+		args = append(args, "namespace: $namespace")
 		vars["namespace"] = namespace
+	}
+	if listOptions.LabelSelector != "" {
+		varDefs = append(varDefs, "$labelSelector: String")
+		args = append(args, "labelselector: $labelSelector")
+		vars["labelSelector"] = listOptions.LabelSelector
+	}
+	inner := field
+	if len(args) > 0 {
+		inner += "(" + strings.Join(args, ", ") + ")"
 	}
 	sel, path := wrapSelection(res, inner)
 	q := ""
-	if varDefs != "" {
-		q = fmt.Sprintf("query(%s) { %s }", varDefs, sel)
+	if len(varDefs) > 0 {
+		q = fmt.Sprintf("query(%s) { %s }", strings.Join(varDefs, ", "), sel)
 	} else {
 		q = fmt.Sprintf("query { %s }", sel)
 	}

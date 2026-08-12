@@ -86,18 +86,50 @@ func EnsureProviderServe(
 	if cr.Spec.Hub.Insecure {
 		env = append(env, corev1.EnvVar{Name: "KEDGE_HUB_INSECURE", Value: "true"})
 	}
-	// Application-template exposure layer. KEDGE_APP_BASE_DOMAIN also gates the
-	// Application instance controller (it stays disabled when unset);
-	// KEDGE_GATEWAY_NAME / KEDGE_GATEWAY_NAMESPACE fall back to the in-binary
-	// "cloudflare-tunnel" / "cfgate-system" defaults when left empty.
-	if cr.Spec.Application.BaseDomain != "" {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_APP_BASE_DOMAIN", Value: cr.Spec.Application.BaseDomain})
+	// Template-generic publishing access layer. Keep Application fields as a
+	// compatibility fallback while operators move to spec.publishing.
+	publishingBaseDomain := cr.Spec.Publishing.BaseDomain
+	if publishingBaseDomain == "" {
+		publishingBaseDomain = cr.Spec.Application.BaseDomain
 	}
-	if cr.Spec.Application.Gateway.Name != "" {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_GATEWAY_NAME", Value: cr.Spec.Application.Gateway.Name})
+	if publishingBaseDomain != "" {
+		env = append(env, corev1.EnvVar{Name: "KEDGE_APP_BASE_DOMAIN", Value: publishingBaseDomain})
 	}
-	if cr.Spec.Application.Gateway.Namespace != "" {
-		env = append(env, corev1.EnvVar{Name: "KEDGE_GATEWAY_NAMESPACE", Value: cr.Spec.Application.Gateway.Namespace})
+	if cr.Spec.Publishing.AccessProxyImage != "" {
+		env = append(env, corev1.EnvVar{Name: "KEDGE_ACCESS_PROXY_IMAGE", Value: cr.Spec.Publishing.AccessProxyImage})
+	}
+	publishingHubURL := cr.Spec.Publishing.HubURL
+	if publishingHubURL == "" {
+		publishingHubURL = cr.Spec.Hub.URL
+	}
+	if publishingHubURL != "" {
+		env = append(env, corev1.EnvVar{Name: "KEDGE_ACCESS_HUB_URL", Value: publishingHubURL})
+	}
+	if cr.Spec.Publishing.HubPublicURL != "" {
+		env = append(env, corev1.EnvVar{Name: "KEDGE_ACCESS_HUB_PUBLIC_URL", Value: cr.Spec.Publishing.HubPublicURL})
+	}
+	if cr.Spec.Publishing.HubInsecure {
+		env = append(env, corev1.EnvVar{Name: "KEDGE_ACCESS_HUB_INSECURE", Value: "true"})
+	}
+	if cr.Spec.Publishing.PublicScheme != "" {
+		env = append(env, corev1.EnvVar{Name: "KEDGE_ACCESS_PUBLIC_SCHEME", Value: cr.Spec.Publishing.PublicScheme})
+	}
+	if cr.Spec.Publishing.PublicPort > 0 {
+		env = append(env, corev1.EnvVar{Name: "KEDGE_APP_PUBLIC_PORT", Value: fmt.Sprintf("%d", cr.Spec.Publishing.PublicPort)})
+	}
+	publishingGatewayName := cr.Spec.Publishing.Gateway.Name
+	if publishingGatewayName == "" {
+		publishingGatewayName = cr.Spec.Application.Gateway.Name
+	}
+	if publishingGatewayName != "" {
+		env = append(env, corev1.EnvVar{Name: "KEDGE_GATEWAY_NAME", Value: publishingGatewayName})
+	}
+	publishingGatewayNamespace := cr.Spec.Publishing.Gateway.Namespace
+	if publishingGatewayNamespace == "" {
+		publishingGatewayNamespace = cr.Spec.Application.Gateway.Namespace
+	}
+	if publishingGatewayNamespace != "" {
+		env = append(env, corev1.EnvVar{Name: "KEDGE_GATEWAY_NAMESPACE", Value: publishingGatewayNamespace})
 	}
 	// Dev-mode image set (${kedge.devAgentImage} / ${kedge.devImage.*}); empty
 	// values fall back to the in-binary defaults (node toolchain + agent).

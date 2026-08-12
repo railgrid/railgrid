@@ -549,6 +549,7 @@ export interface ProjectBuildCheck {
 export interface ProjectPromotionReadiness {
   template?: string
   instance?: string
+  observedRolloutRevision?: string
   promotable: boolean
   build: ProjectBuildCheck
   production?: ProjectProviderBinding
@@ -578,6 +579,51 @@ export interface ProjectCheckpoints {
 export interface ProjectPromoteResult {
   environment: string
   instance: string
+  rolloutRevision?: string
   commit?: string
   components?: ProjectBuildComponent[]
+}
+
+export type ProjectPublishingMode = 'public' | 'restricted'
+
+export interface ProjectPublishingMember {
+  user: string
+  role?: string
+}
+
+export interface ProjectPublishingTarget {
+  apiVersion: string
+  kind: string
+  resource: string
+  name: string
+  uid: string
+}
+
+export interface ProjectPublishingPublication {
+  name: string
+  uid: string
+  mode: ProjectPublishingMode
+  host?: string
+  url?: string
+  ready: boolean
+  phase?: string
+  error?: string
+  target: ProjectPublishingTarget
+}
+
+export interface ProjectPublishingGrant {
+  name: string
+  uid?: string
+  user: string
+  publication: string
+  publicationUID: string
+  revoked: boolean
+  phase?: string
+  reason?: string
+}
+
+export interface ProjectPublishing {
+  published: boolean
+  publication?: ProjectPublishingPublication
+  grants?: ProjectPublishingGrant[]
 }

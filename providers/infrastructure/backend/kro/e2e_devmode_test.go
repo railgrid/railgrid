@@ -199,13 +199,20 @@ func overlayNodeIDs(t *testing.T, rgd *unstructured.Unstructured) (prodIDs, devI
 		}
 		id, _, _ := unstructured.NestedString(rm, "id")
 		conds, _, _ := unstructured.NestedStringSlice(rm, "includeWhen")
-		for _, c := range conds {
-			switch c {
-			case prodModeCondition:
-				prodIDs = append(prodIDs, id)
-			case devModeCondition:
-				devIDs = append(devIDs, id)
-			}
+		// Only resources gated SOLELY by the mode condition belong in the
+		// awaited sets. A resource carrying additional conditions (e.g. the
+		// application template's oauth2-proxy pieces, dev-gated AND
+		// oidc.mode != none) legitimately stays absent when the sample spec
+		// doesn't satisfy the extra condition — awaiting it would fail the
+		// test for objects kro is right not to create.
+		if len(conds) != 1 {
+			continue
+		}
+		switch conds[0] {
+		case prodModeCondition:
+			prodIDs = append(prodIDs, id)
+		case devModeCondition:
+			devIDs = append(devIDs, id)
 		}
 	}
 	sort.Strings(prodIDs)

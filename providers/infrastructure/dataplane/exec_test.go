@@ -120,17 +120,21 @@ func execRequest(t *testing.T, action ExecAction) *http.Request {
 
 func newExecHandler(t *testing.T, executor *fakeExecutor, authorizer *fakeExecAuthorizer, development *fakeDevelopmentGetter) *Handler {
 	t.Helper()
-	instance := &fakeInstanceGetter{instance: &unstructured.Unstructured{Object: map[string]any{
+	instance := &fakeInstanceGetter{instance: execInstance()}
+	return NewHandler(instance, &fakeContractGetter{contract: execContract()}, &fakeRuntime{}, WithExec(executor, authorizer), WithDevelopmentGetter(development))
+}
+
+func execInstance() *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
 		"metadata": map[string]any{"name": "app"},
 		"status": map[string]any{
-			"runtimeNamespace": "tenant-app",
-			"controlSecretRef": map[string]any{"name": "app-control", "namespace": "tenant-app"},
+			"runtimeNamespace": "ws-default",
+			"controlSecretRef": map[string]any{"name": "app-control", "namespace": "ws-default"},
 			"components": map[string]any{"backend": map[string]any{
-				"controlServiceRef": map[string]any{"name": "app-backend-control", "namespace": "tenant-app"},
+				"controlServiceRef": map[string]any{"name": "app-backend-control", "namespace": "ws-default"},
 			}},
 		},
-	}}}
-	return NewHandler(instance, &fakeContractGetter{contract: execContract()}, &fakeRuntime{}, WithExec(executor, authorizer), WithDevelopmentGetter(development))
+	}}
 }
 
 func TestHandlerExecStartAuthorizesAndPassesPlatformDevelopment(t *testing.T) {
@@ -192,7 +196,7 @@ func TestHandlerExecRejectsMissingIdempotencyAndTail(t *testing.T) {
 }
 
 func TestHandlerExecRequiresAuthorizer(t *testing.T) {
-	h := NewHandler(&fakeInstanceGetter{instance: &unstructured.Unstructured{}}, &fakeContractGetter{contract: execContract()}, &fakeRuntime{}, WithExec(&fakeExecutor{}, nil), WithDevelopmentGetter(&fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}}))
+	h := NewHandler(&fakeInstanceGetter{instance: execInstance()}, &fakeContractGetter{contract: execContract()}, &fakeRuntime{}, WithExec(&fakeExecutor{}, nil), WithDevelopmentGetter(&fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}}))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
 	if rec.Code != http.StatusServiceUnavailable {

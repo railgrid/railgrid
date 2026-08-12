@@ -41,12 +41,16 @@ import (
 
 	tenancyv1alpha1 "github.com/faroshq/faros-kedge/apis/tenancy/v1alpha1"
 	"github.com/faroshq/faros-kedge/pkg/apiurl"
+	"github.com/faroshq/faros-kedge/pkg/browsersession"
 	kedgeclient "github.com/faroshq/faros-kedge/pkg/client"
 	"github.com/faroshq/faros-kedge/pkg/hub/kcp"
 )
 
-// defaultRateLimit is the default number of requests allowed per minute per IP.
-const defaultRateLimit = 20
+// defaultRateLimit is the default number of requests allowed per minute per
+// IP. Sized to tolerate several browsers reloading behind one NAT'd IP (each
+// portal reload hits /auth/session) while still smothering brute force on
+// the endpoints that keep the limiter.
+const defaultRateLimit = 60
 
 // defaultBurstDuration is the default time window for rate limiting.
 const defaultBurstDuration = time.Minute
@@ -63,6 +67,12 @@ type Handler struct {
 	logger         klog.Logger
 	// rateLimiter protects auth endpoints against brute force attacks
 	rateLimiter *rateLimiter
+	// browserSessions is the hub-wide opaque portal session store.  It is
+	// shared by legacy OIDC, static-token bootstrap, and published-app SSO.
+	browserSessions *browsersession.Store
+	// browserIdentity resolves an already-authenticated portal bearer without
+	// exposing that bearer to any app or session cookie.
+	browserIdentity func(*http.Request) (browsersession.Identity, error)
 }
 
 // NewHandler creates a new OIDC auth handler.
@@ -85,13 +95,17 @@ func NewHandler(ctx context.Context, config *OIDCConfig, kedgeClient *kedgeclien
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OIDC provider: %w", err)
 	}
+	endpoint, err := oauth2EndpointWithBrowserAuthURL(provider.Endpoint(), config.BrowserAuthURL)
+	if err != nil {
+		return nil, err
+	}
 
 	// No ClientSecret: kedge uses PKCE (public client). Dex must be configured
 	// with public: true for this client ID.
 	oauth2Config := &oauth2.Config{
 		ClientID:    config.ClientID,
 		RedirectURL: config.RedirectURL,
-		Endpoint:    provider.Endpoint(),
+		Endpoint:    endpoint,
 		Scopes:      config.Scopes,
 	}
 
@@ -109,6 +123,51 @@ func NewHandler(ctx context.Context, config *OIDCConfig, kedgeClient *kedgeclien
 	}
 
 	return handler, nil
+}
+
+// SetBrowserSessionStore wires the hub-owned opaque browser session store.
+// Keeping this explicit lets static-only hubs use the same store even when no
+// OIDC Handler is constructed.
+func (h *Handler) SetBrowserSessionStore(store *browsersession.Store) {
+	if h != nil {
+		h.browserSessions = store
+	}
+}
+
+// SetBrowserIdentityResolver wires the bearer validation seam used by the
+// same-origin bootstrap endpoint.  The resolver must return only a stable
+// identity; it must never return a raw token.
+func (h *Handler) SetBrowserIdentityResolver(resolve func(*http.Request) (browsersession.Identity, error)) {
+	if h != nil {
+		h.browserIdentity = resolve
+	}
+}
+
+// NewBrowserSessionHandler creates the session-only portion of auth for hubs
+// running in static-token mode without an OIDC provider.
+func NewBrowserSessionHandler(store *browsersession.Store, resolve func(*http.Request) (browsersession.Identity, error)) *Handler {
+	return &Handler{
+		browserSessions: store,
+		browserIdentity: resolve,
+		rateLimiter:     newRateLimiter(defaultRateLimit, defaultBurstDuration, klog.Background().WithName("auth-rate-limit")),
+		logger:          klog.Background().WithName("auth-handler"),
+	}
+}
+
+// oauth2EndpointWithBrowserAuthURL keeps discovery-derived token exchange and
+// issuer verification internal while optionally replacing only the endpoint
+// emitted in browser redirects. This supports split-horizon IdPs without
+// changing the issuer claim that tokens must contain.
+func oauth2EndpointWithBrowserAuthURL(endpoint oauth2.Endpoint, rawURL string) (oauth2.Endpoint, error) {
+	if rawURL == "" {
+		return endpoint, nil
+	}
+	browserURL, err := url.Parse(rawURL)
+	if err != nil || browserURL.Host == "" || browserURL.Scheme != "https" || browserURL.User != nil || browserURL.Fragment != "" {
+		return oauth2.Endpoint{}, fmt.Errorf("invalid OIDC browser authorization URL")
+	}
+	endpoint.AuthURL = browserURL.String()
+	return endpoint, nil
 }
 
 // HandleAuthorize redirects to the OIDC provider for authentication.
@@ -174,7 +233,13 @@ func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 	state := base64.URLEncoding.EncodeToString(stateJSON)
 
 	// Include S256 code_challenge derived from the verifier in the auth URL.
-	authURL := h.oauth2Config.AuthCodeURL(state, oauth2.S256ChallengeOption(codeVerifier))
+	options := []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(codeVerifier)}
+	// Account switching is an explicit user action.  Force the IdP to show its
+	// login/account chooser instead of silently reusing an existing IdP cookie.
+	if force := r.URL.Query().Get("force"); force == "1" || strings.EqualFold(force, "true") || r.URL.Query().Get("switch") == "1" {
+		options = append(options, oauth2.SetAuthURLParam("prompt", "login"), oauth2.SetAuthURLParam("max_age", "0"))
+	}
+	authURL := h.oauth2Config.AuthCodeURL(state, options...)
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
@@ -323,12 +388,92 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	encoded := base64.URLEncoding.EncodeToString(respJSON)
 	redirectURL := authCode.RedirectURL + "?response=" + encoded
+	if h.browserSessions != nil {
+		if _, sessionErr := h.browserSessions.IssueHTTP(w, browsersession.Identity{
+			UserID: userID, Email: claims.Email, Name: claims.Name,
+			// Matches what seedUser reconciles onto the User CR; workspace
+			// RBAC and app-access authorization key off this string.
+			RBACIdentity: fmt.Sprintf("kedge:%s", claims.Email),
+			Issuer:       idToken.Issuer, Subject: claims.Sub, AuthType: "oidc",
+		}); sessionErr != nil {
+			h.logger.Error(sessionErr, "failed to issue shared browser session")
+			http.Error(w, "failed to create browser session", http.StatusInternalServerError)
+			return
+		}
+	}
+	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
 // HandleRefresh handles token refresh requests.
 func (h *Handler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "not implemented", http.StatusNotImplemented)
+}
+
+// HandleSessionBootstrap establishes or refreshes the hub-wide browser
+// session from an already-authenticated portal bearer.  The bearer is used
+// only by the resolver and is never returned, persisted, or forwarded to an
+// application.  A valid shared cookie can also bootstrap a refreshed UI
+// session without requiring the portal to expose its bearer again.
+func (h *Handler) HandleSessionBootstrap(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.browserSessions == nil {
+		http.Error(w, "browser session unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var identity browsersession.Identity
+	var err error
+	if h.browserIdentity != nil {
+		identity, err = h.browserIdentity(r)
+	}
+	if err != nil || strings.TrimSpace(identity.UserID) == "" {
+		// A live shared cookie is sufficient for an idempotent same-origin
+		// bootstrap.  This path is useful after a page reload when localStorage
+		// still contains only non-sensitive user metadata.
+		if session, cookieErr := h.browserSessions.ResolveRequest(r); cookieErr == nil {
+			writeBrowserSessionJSON(w, session)
+			return
+		}
+		browsersession.ClearCookie(w)
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	session, issueErr := h.browserSessions.IssueHTTP(w, identity)
+	if issueErr != nil {
+		http.Error(w, "failed to create browser session", http.StatusInternalServerError)
+		return
+	}
+	writeBrowserSessionJSON(w, session)
+}
+
+// HandleLogout revokes the shared browser session and expires its cookie.
+// It accepts GET for a browser navigation fallback and POST for the portal's
+// normal same-origin action.
+func (h *Handler) HandleLogout(w http.ResponseWriter, r *http.Request) {
+	if h != nil && h.browserSessions != nil {
+		h.browserSessions.RevokeRequest(w, r)
+	} else {
+		browsersession.ClearCookie(w)
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	if r.Method == http.MethodGet {
+		// The portal SPA is mounted under /ui/ — a root-level /login 404s.
+		http.Redirect(w, r, "/ui/login", http.StatusFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func writeBrowserSessionJSON(w http.ResponseWriter, session browsersession.Session) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"authenticated": true,
+		"userId":        session.Identity.UserID,
+		"email":         session.Identity.Email,
+		"name":          session.Identity.Name,
+		"expiresAt":     session.ExpiresAt.Unix(),
+	})
 }
 
 // Verifier returns the OIDC token verifier for use by other components (e.g., API proxy).
@@ -339,12 +484,87 @@ func (h *Handler) Verifier() *oidc.IDTokenVerifier {
 // RegisterRoutes registers auth routes on the given gorilla/mux router.
 // Auth endpoints are protected by per-IP rate limiting to prevent brute force attacks.
 func (h *Handler) RegisterRoutes(router *mux.Router) {
-	router.HandleFunc(apiurl.PathAuthAuthorize, h.rateLimiter.middleware(h.HandleAuthorize)).Methods("GET")
-	router.HandleFunc(apiurl.PathAuthCallback, h.rateLimiter.middleware(h.HandleCallback)).Methods("GET")
+	// authorize/callback are deliberately NOT rate-limited (matching the
+	// pre-session-store wiring): they carry no guessable secret — authorize
+	// only mints a redirect to the IdP and callback consumes a one-use
+	// PKCE-bound state — while a per-IP budget breaks legitimate bursts
+	// (CI suites, NAT'd offices, several first-time users behind one IP).
+	// Brute-forceable endpoints (token login) keep their limiter.
+	router.HandleFunc(apiurl.PathAuthAuthorize, h.HandleAuthorize).Methods("GET")
+	router.HandleFunc(apiurl.PathAuthCallback, h.HandleCallback).Methods("GET")
 	router.HandleFunc(apiurl.PathAuthRefresh, h.rateLimiter.middleware(h.HandleRefresh)).Methods("POST")
+	h.RegisterBrowserSessionRoutes(router)
+}
+
+// RateLimitMiddleware exposes the auth rate limiter so auth-adjacent routes
+// mounted outside this package (published-app authorize/exchange) share the
+// same per-IP budget as the interactive auth endpoints.
+func (h *Handler) RateLimitMiddleware() func(http.HandlerFunc) http.HandlerFunc {
+	if h == nil || h.rateLimiter == nil {
+		return nil
+	}
+	return h.rateLimiter.middleware
+}
+
+// RegisterBrowserSessionRoutes mounts only the shared session endpoints. It is
+// used by static-token-only hubs that do not construct a full OIDC Handler.
+func (h *Handler) RegisterBrowserSessionRoutes(router *mux.Router) {
+	if h == nil || router == nil {
+		return
+	}
+	if h.rateLimiter == nil {
+		h.rateLimiter = newRateLimiter(defaultRateLimit, defaultBurstDuration, klog.Background().WithName("auth-rate-limit"))
+	}
+	router.HandleFunc("/auth/session/bootstrap", h.rateLimiter.middleware(h.HandleSessionBootstrap)).Methods("GET", "POST")
+	router.HandleFunc("/auth/session", h.rateLimiter.middleware(h.HandleSessionBootstrap)).Methods("GET", "POST")
+	router.HandleFunc("/auth/logout", h.rateLimiter.middleware(h.HandleLogout)).Methods("GET", "POST")
 }
 
 // seedUser creates or updates a User CRD based on OIDC claims.
+// adoptInvitedUser finds a pending invited User (matching email,
+// case-insensitive, and crucially NO issuer/sub label yet) and binds it to
+// the just-verified OIDC subject: it stamps the sub label, records the OIDC
+// provider, and drops the invited marker. Returns nil when no adoptable user
+// exists. Bound accounts are never matched by email — the sub label is the
+// only credential-grade identity link.
+func (h *Handler) adoptInvitedUser(ctx context.Context, email, subHash, sub string) (*tenancyv1alpha1.User, error) {
+	list, err := h.kedgeClient.Users().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing users for invite adoption: %w", err)
+	}
+	want := strings.ToLower(strings.TrimSpace(email))
+	if want == "" {
+		return nil, nil
+	}
+	for i := range list.Items {
+		user := &list.Items[i]
+		if strings.ToLower(user.Spec.Email) != want {
+			continue
+		}
+		if user.Labels["tenants.kedge.faros.sh/sub"] != "" {
+			// Already bound to an IdP subject; email similarity grants
+			// nothing.
+			continue
+		}
+		if user.Labels == nil {
+			user.Labels = map[string]string{}
+		}
+		user.Labels["tenants.kedge.faros.sh/sub"] = subHash
+		delete(user.Labels, "tenants.kedge.faros.sh/invited")
+		user.Spec.OIDCProviders = append(user.Spec.OIDCProviders, tenancyv1alpha1.OIDCProvider{
+			Name:       "dex",
+			ProviderID: sub,
+			Email:      email,
+		})
+		updated, err := h.kedgeClient.Users().Update(ctx, user, metav1.UpdateOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("adopting invited user %s: %w", user.Name, err)
+		}
+		return updated, nil
+	}
+	return nil, nil
+}
+
 func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string) (string, error) {
 	// Hash issuer+sub for a label-safe lookup key.
 	hash := sha256.Sum256([]byte(issuer + "/" + sub))
@@ -357,6 +577,20 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 	}
 
 	now := metav1.Now()
+
+	if len(users.Items) == 0 {
+		// No account bound to this issuer/subject yet. Before creating one,
+		// adopt a pending invited User with the same (IdP-verified) email:
+		// invitations pre-provision the account so memberships and app-access
+		// grants written before first sign-in apply immediately. Only users
+		// WITHOUT a sub label are adoptable — an email match must never
+		// re-bind an account that already belongs to another IdP subject.
+		if adopted, err := h.adoptInvitedUser(ctx, email, subHash, sub); err != nil {
+			return "", err
+		} else if adopted != nil {
+			users.Items = append(users.Items, *adopted)
+		}
+	}
 
 	if len(users.Items) > 0 {
 		user := &users.Items[0]

@@ -199,6 +199,28 @@ jobs:
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-dev-agent:${{ needs.meta.outputs.semver }}
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-dev-agent:latest
 
+      # Second companion image: the access gate (kedge-access-proxy) that
+      # publishable templates render in front of every app
+      # (providers/infrastructure/accessproxy — see docs/app-studio-publishing.md).
+      # It versions with the provider — the ${kedge.accessProxyImage} token the
+      # kro backend substitutes should pin the same vX.Y.Z via
+      # publishing.accessProxyImage; :latest backs the in-binary default for
+      # stock deployments.
+      - name: Build and push access-proxy image
+        if: needs.meta.outputs.provider == 'infrastructure'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./providers/infrastructure
+          file: ./providers/infrastructure/Dockerfile.access-proxy
+          platforms: linux/amd64,linux/arm64
+          push: true
+          cache-from: type=gha,scope=access-proxy
+          cache-to: type=gha,mode=max,scope=access-proxy
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-access-proxy:${{ needs.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-access-proxy:${{ needs.meta.outputs.semver }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/kedge-access-proxy:latest
+
       - name: Install Helm
         uses: azure/setup-helm@v3
         with:

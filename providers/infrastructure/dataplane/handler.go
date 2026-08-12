@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
+	"github.com/faroshq/provider-infrastructure/kro"
 )
 
 // PathPrefix is where the handler is mounted on the provider's serve mux. It is
@@ -50,7 +51,7 @@ type InstanceGetter interface {
 //
 //	/dataplane/clusters/<ws>/<resource>/<name>/<verb>[/<caller-path...>]
 //
-// e.g. /dataplane/clusters/root:kedge:orgs:acme/simplewebapps/my-site-dev/components/app/log
+// e.g. /dataplane/clusters/rgl3jcl2cfl3xa5p/simplewebapps/my-site-dev/components/app/log
 //
 // It authorizes the caller against the instance, resolves the verb to a runtime
 // target via the template contract, and reverse-proxies to the runtime cluster
@@ -143,6 +144,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if contract == nil {
 		http.Error(w, "resource "+req.resource+" exposes no data plane", http.StatusNotFound)
+		return
+	}
+	expectedRuntimeNamespace := kro.RuntimeNamespace(req.workspace, instance.GetNamespace())
+	if err := ValidateRuntimeNamespace(contract, instance, expectedRuntimeNamespace); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 

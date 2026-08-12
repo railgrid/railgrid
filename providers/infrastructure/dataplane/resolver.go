@@ -23,10 +23,9 @@ limitations under the License.
 //
 // The single security invariant this package enforces is namespace
 // confinement: every Service and Secret a verb resolves to MUST live in the
-// instance's backend-owned runtime namespace (the value at
-// RuntimeNamespacePath). A forged or mutated instance status therefore cannot
-// redirect a proxy to an arbitrary Service or Secret elsewhere in the runtime
-// cluster.
+// backend-derived runtime namespace. The handler first verifies that the
+// tenant-writable status value at RuntimeNamespacePath equals that derived
+// namespace, then these resolvers confine all references to it.
 //
 // See docs/app-studio-runtime-decoupling.md for the end-to-end design.
 package dataplane
@@ -103,6 +102,31 @@ type objectRef struct {
 	Name      string
 }
 
+// ValidateRuntimeNamespace verifies the instance's published runtime namespace
+// against the namespace independently derived by the provider from the request
+// workspace and instance namespace. It must run before any status-published
+// Service or Secret reference is used.
+func ValidateRuntimeNamespace(contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured, expected string) error {
+	if contract == nil || instance == nil {
+		return fmt.Errorf("template contract and instance are required")
+	}
+	expected = strings.TrimSpace(expected)
+	if expected == "" {
+		return fmt.Errorf("expected runtime namespace is required")
+	}
+	actual, err := nestedString(instance, contract.RuntimeNamespacePath)
+	if err != nil {
+		return err
+	}
+	if actual == "" {
+		return fmt.Errorf("runtime namespace at %q is empty; instance is not ready", contract.RuntimeNamespacePath)
+	}
+	if actual != expected {
+		return fmt.Errorf("runtime namespace at %q is %q, want provider-derived namespace %q", contract.RuntimeNamespacePath, actual, expected)
+	}
+	return nil
+}
+
 // Resolve resolves a single instance-level verb of the contract against the
 // instance. It returns an error when the verb is unknown, the contract is
 // malformed, a required status ref is absent, or a resolved ref escapes the
@@ -149,30 +173,20 @@ func resolveEndpoint(contract *infrav1alpha1.TemplateDataPlane, instance *unstru
 		return ResolvedTarget{FromStatus: true}, nil
 	}
 
-	// Every proxying verb is confined to the instance's backend-owned runtime
-	// namespace, read authoritatively from the instance status.
-	runtimeNamespace, err := nestedString(instance, contract.RuntimeNamespacePath)
-	if err != nil {
-		return ResolvedTarget{}, fmt.Errorf("verb %q: %w", verb, err)
-	}
-	if runtimeNamespace == "" {
-		return ResolvedTarget{}, fmt.Errorf("verb %q: runtime namespace at %q is empty; instance is not ready", verb, contract.RuntimeNamespacePath)
-	}
-
 	if strings.TrimSpace(endpoint.ServicePath) == "" {
 		return ResolvedTarget{}, fmt.Errorf("verb %q: servicePath is required for a proxy endpoint", verb)
 	}
 	if strings.TrimSpace(endpoint.Port) == "" {
 		return ResolvedTarget{}, fmt.Errorf("verb %q: port is required for a proxy endpoint", verb)
 	}
-	service, err := refInNamespace(instance, endpoint.ServicePath, runtimeNamespace)
+	serviceNamespace, serviceName, err := ResolveServiceReference(contract, instance, endpoint.ServicePath)
 	if err != nil {
 		return ResolvedTarget{}, fmt.Errorf("verb %q service: %w", verb, err)
 	}
 
 	target := ResolvedTarget{
-		ServiceNamespace: service.Namespace,
-		ServiceName:      service.Name,
+		ServiceNamespace: serviceNamespace,
+		ServiceName:      serviceName,
 		ServicePort:      strings.TrimSpace(endpoint.Port),
 		UpstreamPath:     normalizeUpstreamPath(endpoint.UpstreamPath),
 		Stream:           endpoint.Stream,
@@ -180,6 +194,10 @@ func resolveEndpoint(contract *infrav1alpha1.TemplateDataPlane, instance *unstru
 	}
 
 	if path := strings.TrimSpace(contract.TokenSecretPath); path != "" {
+		runtimeNamespace, err := nestedString(instance, contract.RuntimeNamespacePath)
+		if err != nil {
+			return ResolvedTarget{}, fmt.Errorf("verb %q: %w", verb, err)
+		}
 		secret, err := refInNamespace(instance, path, runtimeNamespace)
 		if err != nil {
 			return ResolvedTarget{}, fmt.Errorf("verb %q token secret: %w", verb, err)
@@ -189,6 +207,34 @@ func resolveEndpoint(contract *infrav1alpha1.TemplateDataPlane, instance *unstru
 	}
 
 	return target, nil
+}
+
+// ResolveServiceReference resolves a status-published Service reference and
+// enforces the TemplateDataPlane runtime namespace boundary. Publication and
+// live data-plane proxying share this helper so neither can be redirected by a
+// forged status ref to another tenant namespace.
+func ResolveServiceReference(contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured, servicePath string) (namespace, name string, err error) {
+	if contract == nil {
+		return "", "", fmt.Errorf("data-plane contract is nil")
+	}
+	if instance == nil {
+		return "", "", fmt.Errorf("instance is nil")
+	}
+	runtimeNamespace, err := nestedString(instance, contract.RuntimeNamespacePath)
+	if err != nil {
+		return "", "", err
+	}
+	if runtimeNamespace == "" {
+		return "", "", fmt.Errorf("runtime namespace at %q is empty; instance is not ready", contract.RuntimeNamespacePath)
+	}
+	if strings.TrimSpace(servicePath) == "" {
+		return "", "", fmt.Errorf("servicePath is required")
+	}
+	service, err := refInNamespace(instance, servicePath, runtimeNamespace)
+	if err != nil {
+		return "", "", err
+	}
+	return service.Namespace, service.Name, nil
 }
 
 // MethodAllowed reports whether method is permitted for the named

@@ -41,6 +41,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -133,6 +134,12 @@ type WorkspaceOps interface {
 	// declares spec.edgeProxyAccess; removed on Disable.
 	EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName, subject string) error
 	RemoveProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName string) error
+
+	// ListAppAccessGrants / RemoveAppAccessGrant surface the published-app
+	// invitations (labeled ClusterRoleBindings, plain workspace RBAC) so
+	// tenant settings can show and revoke them. See app_access.go.
+	ListAppAccessGrants(ctx context.Context, orgUUID, wsUUID string) ([]kcp.AppAccessGrant, error)
+	RemoveAppAccessGrant(ctx context.Context, orgUUID, wsUUID, bindingName string) error
 }
 
 // KubeconfigConfig configures the workspace-scoped kubeconfig download
@@ -304,6 +311,13 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	// workspace. Same proxy-avoidance rationale. Portal calls this
 	// on every workspace switch to refresh the sidebar's enabled-set.
 	r.HandleFunc("/{org}/workspaces/{ws}/providers/enabled", h.listEnabledProviders).Methods(http.MethodGet)
+
+	// Published-app access grants (labeled ClusterRoleBindings — plain
+	// workspace RBAC). Tenant settings lists them so App Studio's share
+	// invitations are visible and revocable in the kedge UI. See
+	// app_access.go and docs/app-studio-publishing.md.
+	r.HandleFunc("/{org}/workspaces/{ws}/app-access", h.listAppAccessGrants).Methods(http.MethodGet)
+	r.HandleFunc("/{org}/workspaces/{ws}/app-access/{binding}", h.revokeAppAccessGrant).Methods(http.MethodDelete)
 }
 
 // ===== shared helpers =====
@@ -549,6 +563,71 @@ func (m *Manager) resolveUser(ctx context.Context, identifier string) (*tenancyv
 		schema.GroupResource{Group: "tenants.kedge.faros.sh", Resource: "users"}, identifier)
 }
 
+// rbacIdentitiesByUserName maps User CR names to their kcp usernames
+// (User.Spec.RBACIdentity) in one list call, so membership projections can
+// carry the subject string RBAC consumers must bind. Best-effort: an empty
+// map on error just omits rbacIdentity from the views.
+func (m *Manager) rbacIdentitiesByUserName(ctx context.Context) map[string]string {
+	out := map[string]string{}
+	list, err := m.client.Users().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return out
+	}
+	for i := range list.Items {
+		user := &list.Items[i]
+		if user.Spec.RBACIdentity != "" {
+			out[user.Name] = user.Spec.RBACIdentity
+		}
+	}
+	return out
+}
+
+// inviteEmailRE is deliberately conservative: one "@", no whitespace, a dot
+// in the domain. The IdP remains the authority on the address at sign-in.
+var inviteEmailRE = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+
+// resolveOrInviteUser is resolveUser plus opt-in invitation: when the
+// identifier matches no account, invite is set, and the identifier is an
+// email, it pre-provisions a pending User for that email. Pending means: no
+// issuer/sub label yet — the first OIDC sign-in whose verified email matches
+// adopts the account (see auth.Handler seedUser). The pending User already
+// carries the email-derived RBAC identity, so workspace RBAC and app-access
+// grants written against it are live the moment the person first signs in.
+func (m *Manager) resolveOrInviteUser(ctx context.Context, identifier string, invite bool) (*tenancyv1alpha1.User, error) {
+	user, err := m.resolveUser(ctx, identifier)
+	if err == nil || !invite || !apierrors.IsNotFound(err) {
+		return user, err
+	}
+	email := strings.ToLower(strings.TrimSpace(identifier))
+	if !inviteEmailRE.MatchString(email) {
+		return nil, newValidationError("inviting a new user requires their email address")
+	}
+	displayName := email[:strings.Index(email, "@")]
+	pending := &tenancyv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "user-",
+			Labels: map[string]string{
+				// Marks the account as awaiting first sign-in. Deliberately
+				// NOT the tenants.kedge.faros.sh/sub label: only the IdP
+				// callback may bind an issuer/subject to this account.
+				"tenants.kedge.faros.sh/invited": "true",
+			},
+		},
+		Spec: tenancyv1alpha1.UserSpec{
+			Email:        email,
+			Name:         displayName,
+			RBACIdentity: fmt.Sprintf("kedge:%s", email),
+		},
+	}
+	pending.APIVersion = "tenants.kedge.faros.sh/v1alpha1"
+	pending.Kind = "User"
+	created, createErr := m.client.Users().Create(ctx, pending, metav1.CreateOptions{})
+	if createErr != nil {
+		return nil, fmt.Errorf("creating invited user: %w", createErr)
+	}
+	return created, nil
+}
+
 // ===== shared response types =====
 
 // OrgView is the REST projection of an Organization.
@@ -601,7 +680,12 @@ type WorkspaceView struct {
 // MembershipView is the REST projection of a single org-or-workspace
 // scope membership.
 type MembershipView struct {
-	User                 string `json:"user"`
+	User string `json:"user"`
+	// RBACIdentity is the member's kcp username (User.Spec.RBACIdentity,
+	// "kedge:<email>") — the subject string every tenant-workspace RBAC
+	// binding uses. Consumers writing RBAC (e.g. App Studio's app-access
+	// grants) must bind this, never the User CR name.
+	RBACIdentity         string `json:"rbacIdentity,omitempty"`
 	Role                 string `json:"role"`
 	OrgUUID              string `json:"orgUUID"`
 	WorkspaceUUID        string `json:"workspaceUUID,omitempty"`

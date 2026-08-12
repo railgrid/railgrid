@@ -60,3 +60,53 @@ func TestEnsureProviderServePropagatesPlatformPreviewConsoleJWKS(t *testing.T) {
 	}
 	t.Error("managed provider Deployment lacks KEDGE_PREVIEW_CONSOLE_VERIFICATION_JWKS")
 }
+
+func TestEnsureProviderServePropagatesPlatformPublishingConfig(t *testing.T) {
+	client := fake.NewSimpleClientset()
+	provider := &v1alpha1.InfrastructureProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-infrastructure"},
+		Spec: v1alpha1.InfrastructureProviderSpec{
+			Hub: v1alpha1.HubSpec{URL: "https://heartbeat-hub.internal"},
+			Provider: v1alpha1.ProviderServeSpec{
+				Image: v1alpha1.ImageSpec{Repository: "example.test/infrastructure", Tag: "test"},
+			},
+			Application: v1alpha1.ApplicationSpec{BaseDomain: "legacy.example.test"},
+			Publishing: v1alpha1.PublishingSpec{
+				BaseDomain: "apps.example.test", AccessProxyImage: "example.test/access-proxy@sha256:deadbeef",
+				HubURL: "https://access-hub.internal", HubInsecure: true, PublicScheme: "https", PublicPort: 10443,
+				Gateway: v1alpha1.GatewayRef{Name: "shared", Namespace: "gateway-system"},
+			},
+		},
+	}
+	if err := EnsureProviderServe(context.Background(), client, provider, []byte("provider-kubeconfig"), nil, nil); err != nil {
+		t.Fatalf("EnsureProviderServe: %v", err)
+	}
+	deployment, err := client.AppsV1().Deployments(ServeNamespace).Get(context.Background(), provider.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{}
+	counts := map[string]int{}
+	for _, variable := range deployment.Spec.Template.Spec.Containers[0].Env {
+		env[variable.Name] = variable.Value
+		counts[variable.Name]++
+	}
+	want := map[string]string{
+		"KEDGE_APP_BASE_DOMAIN":      "apps.example.test",
+		"KEDGE_ACCESS_PROXY_IMAGE":   "example.test/access-proxy@sha256:deadbeef",
+		"KEDGE_ACCESS_HUB_URL":       "https://access-hub.internal",
+		"KEDGE_ACCESS_HUB_INSECURE":  "true",
+		"KEDGE_ACCESS_PUBLIC_SCHEME": "https",
+		"KEDGE_APP_PUBLIC_PORT":      "10443",
+		"KEDGE_GATEWAY_NAME":         "shared",
+		"KEDGE_GATEWAY_NAMESPACE":    "gateway-system",
+	}
+	for name, value := range want {
+		if env[name] != value {
+			t.Errorf("%s = %q, want %q", name, env[name], value)
+		}
+		if counts[name] != 1 {
+			t.Errorf("%s occurs %d times, want once", name, counts[name])
+		}
+	}
+}

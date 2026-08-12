@@ -35,6 +35,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -136,34 +137,61 @@ func (s *Server) ensureProjectRegistryPullSecret(ctx context.Context, c *asclien
 const (
 	projectProductionEnvironmentName = "production"
 	projectProductionBindingName     = "prod"
+	// projectRedeployRevisionField is a platform-owned input on the
+	// infrastructure Template instance. A fresh value is minted for every
+	// accepted promotion so a provider can roll only the application workload
+	// pods without recreating the production instance (or its database).
+	projectRedeployRevisionField = "kedgeRedeployRevision"
 
 	projectToolPromoteProject = "promote_project"
 )
 
 // projectPromoteRequest is the "Promote to Prod" form submission: the
 // template's production inputs (ports, replicas, oidc, …). The instance name,
-// kedgeMode, and per-component image fields are platform-owned and ignored if
-// supplied — name/kedgeMode are deterministic and images come from the build.
+// kedgeMode, per-component image fields, and kedgeRedeployRevision are
+// platform-owned and ignored if supplied — name/kedgeMode are deterministic,
+// images come from the build, and the revision is minted for this promotion.
 type projectPromoteRequest struct {
 	Values map[string]any `json:"values,omitempty"`
 }
 
 type projectPromoteResponse struct {
-	Environment string                       `json:"environment"`
-	Instance    string                       `json:"instance"`
-	Components  []projectBuildCheckComponent `json:"components,omitempty"`
-	Project     json.RawMessage              `json:"project,omitempty"`
+	Environment     string                       `json:"environment"`
+	Instance        string                       `json:"instance"`
+	RolloutRevision string                       `json:"rolloutRevision"`
+	Components      []projectBuildCheckComponent `json:"components,omitempty"`
+	Project         json.RawMessage              `json:"project,omitempty"`
+}
+
+// newProjectRedeployRevision mints an opaque, non-secret rollout token. It is
+// deliberately independent of the production instance identity: re-promoting
+// must preserve the instance name/UID while still changing its workload pod
+// template.
+func newProjectRedeployRevision() string {
+	return uuid.NewString()
 }
 
 // projectTemplateProdBinding builds the production binding: an instance of the
 // template kind named "<project>-prod", provisioned with kedgeMode: production,
 // the user's production input values, and each imageInput set to the built
-// digest. Platform-owned fields (name, kedgeMode, image inputs) always win over
-// anything in values.
-func projectTemplateProdBinding(p *aiv1alpha1.Project, info projectTemplateInfo, images map[string]string, values map[string]any) (aiv1alpha1.ProjectProviderBindingSpec, error) {
+// digest. Platform-owned fields (name, kedgeMode, image inputs, and the
+// rollout revision) always win over anything in values. The optional revision
+// argument exists so promoteProject can mint once and return the exact value
+// written to the binding; callers that omit it get a fresh revision too.
+func projectTemplateProdBinding(p *aiv1alpha1.Project, info projectTemplateInfo, images map[string]string, values map[string]any, rolloutRevisions ...string) (aiv1alpha1.ProjectProviderBindingSpec, error) {
 	name := projectTemplateProdInstanceName(p)
 	if name == "" {
 		return aiv1alpha1.ProjectProviderBindingSpec{}, fmt.Errorf("project has no name")
+	}
+	rolloutRevision := ""
+	for _, candidate := range rolloutRevisions {
+		if candidate = strings.TrimSpace(candidate); candidate != "" {
+			rolloutRevision = candidate
+			break
+		}
+	}
+	if rolloutRevision == "" {
+		rolloutRevision = newProjectRedeployRevision()
 	}
 	merged := map[string]any{}
 	for k, v := range values {
@@ -174,6 +202,7 @@ func projectTemplateProdBinding(p *aiv1alpha1.Project, info projectTemplateInfo,
 	}
 	merged["name"] = name
 	merged["kedgeMode"] = "production"
+	merged[projectRedeployRevisionField] = rolloutRevision
 	raw, err := json.Marshal(merged)
 	if err != nil {
 		return aiv1alpha1.ProjectProviderBindingSpec{}, err
@@ -236,7 +265,8 @@ func (s *Server) promoteProject(ctx context.Context, c *asclient.Client, id iden
 		return nil, projectPromoteResponse{}, newValidationError("no built component images recorded for this project")
 	}
 
-	binding, err := projectTemplateProdBinding(p, info, images, values)
+	rolloutRevision := newProjectRedeployRevision()
+	binding, err := projectTemplateProdBinding(p, info, images, values, rolloutRevision)
 	if err != nil {
 		return nil, projectPromoteResponse{}, err
 	}
@@ -262,10 +292,11 @@ func (s *Server) promoteProject(ctx context.Context, c *asclient.Client, id iden
 
 	raw, _ := json.Marshal(reconciled)
 	return reconciled, projectPromoteResponse{
-		Environment: projectProductionEnvironmentName,
-		Instance:    projectTemplateProdInstanceName(p),
-		Components:  check.Components,
-		Project:     raw,
+		Environment:     projectProductionEnvironmentName,
+		Instance:        projectTemplateProdInstanceName(p),
+		RolloutRevision: rolloutRevision,
+		Components:      check.Components,
+		Project:         raw,
 	}, nil
 }
 
@@ -322,10 +353,11 @@ func (s *Server) promoteProjectHandler(w http.ResponseWriter, r *http.Request) {
 // button and seeds its form: whether the build is green, the component image
 // plan, and the production instance name.
 type projectPromotionReadinessResponse struct {
-	Template   string                  `json:"template,omitempty"`
-	Instance   string                  `json:"instance,omitempty"`
-	Promotable bool                    `json:"promotable"`
-	Build      projectBuildCheckResult `json:"build"`
+	Template                string                  `json:"template,omitempty"`
+	Instance                string                  `json:"instance,omitempty"`
+	ObservedRolloutRevision string                  `json:"observedRolloutRevision,omitempty"`
+	Promotable              bool                    `json:"promotable"`
+	Build                   projectBuildCheckResult `json:"build"`
 	// Production reports the live production environment when the project has
 	// been promoted at least once: its phase and, once serving, its URL. Nil
 	// when the project has never been promoted.
@@ -379,8 +411,22 @@ func (s *Server) getProjectPromotion(w http.ResponseWriter, r *http.Request) {
 	if prod := findProjectProductionBinding(p); prod != nil {
 		st := projectProviderBindingStatus(r.Context(), c, p, *prod, id)
 		resp.Production = &st
+		// Read the provider instance's spec, not the desired Project binding,
+		// so clients can distinguish the old Ready deployment from a rollout
+		// revision the Project controller has actually delivered downstream.
+		if instance, observeErr := observeProjectProviderBinding(r.Context(), c, p, *prod, id); observeErr == nil {
+			resp.ObservedRolloutRevision = projectObservedRedeployRevision(instance)
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func projectObservedRedeployRevision(instance *unstructured.Unstructured) string {
+	if instance == nil {
+		return ""
+	}
+	revision, _, _ := unstructured.NestedString(instance.Object, "spec", projectRedeployRevisionField)
+	return strings.TrimSpace(revision)
 }
 
 func writeProjectPromoteError(w http.ResponseWriter, err error) {
