@@ -30,11 +30,15 @@ func TestAssistantThreadAgentMessageCarriesWorkedDuration(t *testing.T) {
 		MessageSequences: []int{},
 		WorkedDurationMS: 83_400,
 	}
+	verification := projectAssistantVerificationView{Outcome: "rendered_verified", RenderedStateObserved: true}
 	item := assistantThreadItemWithMessagePresentation(assistantThreadItem{
 		ID:     "assistant-1",
 		Type:   assistantThreadEventAssistantMessage,
 		Status: "completed",
-	}, map[string]any{projectAssistantMetadataProgress: progress})
+	}, map[string]any{
+		projectAssistantMetadataProgress:     progress,
+		projectAssistantMetadataVerification: verification,
+	})
 
 	var data map[string]any
 	if err := json.Unmarshal(item.Data, &data); err != nil {
@@ -46,6 +50,10 @@ func TestAssistantThreadAgentMessageCarriesWorkedDuration(t *testing.T) {
 	}
 	if got.WorkedDurationMS != progress.WorkedDurationMS {
 		t.Fatalf("worked duration = %d, want %d", got.WorkedDurationMS, progress.WorkedDurationMS)
+	}
+	gotVerification, ok := projectAssistantVerificationFromMetadata(data[projectAssistantMetadataVerification])
+	if !ok || gotVerification.Outcome != verification.Outcome || !gotVerification.RenderedStateObserved {
+		t.Fatalf("verification = %#v, want %#v", gotVerification, verification)
 	}
 }
 

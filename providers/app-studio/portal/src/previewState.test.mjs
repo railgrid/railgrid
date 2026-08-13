@@ -26,6 +26,7 @@ test('reports synced files without claiming preview refresh when route binding i
       previewURL: '',
       readinessMessage: '',
       authorizationError: '',
+		documentState: 'disabled',
     }, 'Synced and refreshed preview'),
     'Synced project files. Preview routing is not configured yet.',
   )
@@ -54,6 +55,7 @@ test('reports refreshed preview only after authorization returns a preview URL',
       previewURL: 'https://preview.example.com/',
       readinessMessage: '',
       authorizationError: '',
+		documentState: 'connected',
     }, 'Synced and refreshed preview'),
     'Synced and refreshed preview',
   )
@@ -66,6 +68,7 @@ test('keeps readiness detail when sync succeeds before preview is ready', () => 
       previewURL: '',
       readinessMessage: 'Preview is getting ready.',
       authorizationError: '',
+		documentState: 'connecting',
     }, 'Synced and refreshed preview'),
     'Synced project files. Preview is getting ready.',
   )
@@ -76,19 +79,38 @@ test('keeps preview badge pending when the development instance has no URL', () 
     developmentPreviewDisplayPhase({
       previewURL: '',
       authorizationError: '',
+		documentState: 'disabled',
     }),
     'Pending',
   )
 })
 
-test('marks preview badge ready only when an authorized preview URL exists', () => {
+test('marks preview starting while runtime authorization is pending', () => {
+	assert.equal(developmentPreviewDisplayPhase({
+		previewURL: '',
+		authorizationError: '',
+		documentState: 'connecting',
+		starting: true,
+	}), 'Starting')
+})
+
+test('an authorized URL remains loading until the current document connects', () => {
   assert.equal(
     developmentPreviewDisplayPhase({
       previewURL: 'https://preview.example.com/',
       authorizationError: '',
+		documentState: 'connecting',
     }),
-    'Ready',
+	'Loading',
   )
+})
+
+test('marks preview loaded only after the current document connects', () => {
+	assert.equal(developmentPreviewDisplayPhase({
+		previewURL: 'https://preview.example.com/',
+		authorizationError: '',
+		documentState: 'connected',
+	}), 'Loaded')
 })
 
 test('marks preview badge error when authorization failed', () => {
@@ -96,6 +118,7 @@ test('marks preview badge error when authorization failed', () => {
     developmentPreviewDisplayPhase({
       previewURL: '',
       authorizationError: 'preview authorization failed',
+		documentState: 'unavailable',
     }),
     'Error',
   )
@@ -108,6 +131,7 @@ test('refreshes a pending development instance when the browser wakes', () => {
       authorizing: false,
       previewURL: '',
       authorizationError: '',
+		documentState: 'disabled',
     }),
     true,
   )
@@ -120,21 +144,33 @@ test('refreshes an errored development instance when the browser wakes', () => {
       authorizing: false,
       previewURL: '',
       authorizationError: 'temporary gateway failure',
+		documentState: 'unavailable',
     }),
     true,
   )
 })
 
-test('does not reauthorize a ready tokenless template preview on every wake', () => {
+test('does not reauthorize a loaded tokenless template preview on every wake', () => {
   assert.equal(
     developmentPreviewShouldRefreshOnWake({
       needsAuthorization: true,
       authorizing: false,
       previewURL: 'https://preview.example.com/',
       authorizationError: '',
+		documentState: 'connected',
     }),
     false,
   )
+})
+
+test('reauthorizes a URL whose document handshake never completed', () => {
+	assert.equal(developmentPreviewShouldRefreshOnWake({
+		needsAuthorization: true,
+		authorizing: false,
+		previewURL: 'https://preview.example.com/',
+		authorizationError: '',
+		documentState: 'unavailable',
+	}), true)
 })
 
 test('authorization request failures only keep polling when transient', () => {
@@ -146,6 +182,13 @@ test('authorization request failures only keep polling when transient', () => {
     appSource,
     /error\.status === 408 \|\| error\.status === 429 \|\| error\.status >= 500/,
   )
+})
+
+test('current document handshake is wired to bounded preview recovery', () => {
+	assert.match(appSource, /onState: handleDevelopmentPreviewConsoleState/)
+	assert.match(appSource, /const delays = \[1_000, 2_000, 4_000\]/)
+	assert.match(appSource, /if \(attempt >= delays\.length\) \{[\s\S]*?developmentPreviewRecoveryError\.value =/)
+	assert.match(appSource, /v-if="developmentPreviewRecoveryError"[\s\S]*?Retry preview/)
 })
 
 test('terminal preview refresh hydrates the selected project before authorizing', () => {

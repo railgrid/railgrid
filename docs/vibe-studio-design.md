@@ -123,10 +123,10 @@ Measured on 2026-08-01:
   admits still isn't closed, and a ~2,200-LOC audit/disclosure pipeline.
 - The portal's `App.vue` is a single 5,100-LOC file; `node_modules` is in-tree.
 - Meanwhile the parts that deliver the actual product are small and good:
-  scaffold hydration (405), build-config generation (342), promotion (390),
-  data-plane client (156), lifecycle checkpoints (247), workspace FileStore
-  with snapshot/undo (~1,400). The agents provider proves the harness itself
-  needs ~840 LOC, not 19,617.
+  scaffold hydration, declared-workflow build observation, promotion, the
+  data-plane client, lifecycle checkpoints, and the workspace FileStore with
+  snapshot/undo. The agents provider proves the harness itself needs a small
+  fraction of the surrounding product code.
 
 Live bugs vibe-studio must not re-inherit: promote can ship an untethered image
 digest; `delete_file` never propagates to git (commit bundle carries only
@@ -160,9 +160,11 @@ single-replica-only due to no durable run lease; four list-response shapes and
    the billing meter's starting line.
 3. **Provision.** On approval, concurrently: create `Project`, create/adopt the
    repo (code provider), provision the template with `farosMode: development`,
-   hydrate the workspace from the scaffold tag, run the initial commit, write
-   `.faros/build.json` + the Railpack workflow. The portal shows the four
-   lifecycle checkpoints (template / git / ci / production) filling in.
+   hydrate the workspace from the scaffold tag, and run the initial commit.
+   The scaffold owns its declared `spec.development.build.workflowPath`; App
+   Studio neither generates nor injects CI. The portal shows the four
+   lifecycle checkpoints (template / git / source / production) filling in;
+   the source checkpoint retains the historic `ci` API key for compatibility.
 4. **Studio.** Chat + file tools + `dev_sync` + preview pane (instance
    `status.url`) + logs/verify tools. Undo = workspace snapshot restore.
 5. **Ship.** `check_build` waits for digests; **Promote** creates/updates the
@@ -260,7 +262,8 @@ sessions render a form; MCP/API sessions get an auto-answer policy.
 
 `dataplane_client.go`, `project_checkpoints.go` (the 4-checkpoint model with
 auto/manual remediation is the product's progress UI), `project_scaffold.go`,
-`project_build_config.go` (Railpack workflow gen), `project_promote.go`,
+`project_build_status.go` (declared-workflow observation plus exact-commit
+package evidence), `project_promote.go`,
 `project_hydrate.go`, `preview_edge.go`, `deployment_defaults.go`, the
 workspacePath→component routing core of `development_sync.go`, `workspace/`
 FileStore + snapshots, provider skeleton files. Fix on the way in: `delete_file`
@@ -371,11 +374,12 @@ gate. app-studio stays untouched and running throughout.
   (autoInit) and the provision flow seeds it once with the scaffold through
   the code provider's `commit_files` MCP tool (bundle contents are
   code-provider-local, so CR-only seeding is impossible).
-- **Phase 3 — ship (medium). 🟡 IN PROGRESS.** Commit-from-workspace ✅,
-  promote ✅ (see 6c), build ⬜ (the `ci` checkpoint stays `pending` until it
-  lands, and promotion currently takes image references from the user rather
-  than from a build).
-  Exit criterion: prod URL serving the built digest; repeat-promotion works.
+- **Phase 3 — ship (medium). ✅ DONE 2026-08-13.** Commit-from-workspace,
+  exact-commit build evidence, and repeatable promotion are implemented (see
+  6c). The third checkpoint is presented as **Source** while retaining the
+  historic `ci` API key for compatibility. Promotion derives each launchable
+  component's immutable image digest from registry evidence for the reviewed
+  commit; callers cannot substitute arbitrary image references.
 
   **No build-config generator is needed** (2026-08-02). Every scaffold already
   ships `.github/workflows/build.yaml`: smoke test, then one Railpack image
@@ -389,14 +393,11 @@ gate. app-studio stays untouched and running throughout.
   host rejects the *whole* commit, so the git checkpoint explains that in
   those words (`explainGitError`).
 
-  What remains for build: resolve each component's digest from the Code
-  provider's `Package.status.versions[]` by the tag `sha-<committedRevision>`
-  into `Project.status.build`, mirror run state into the `ci` checkpoint via
-  `RepositoryBuildStatus` (including the failure-log tail, so the model can
-  fix its own build), and prefill/enforce promote from those digests. One more
-  gap: Actions-published ghcr packages are private, so production needs an
-  imagePullSecret minted from the connection token (app-studio's
-  cross-provider bridge pattern) before a promoted image will pull.
+  Build readiness resolves each component's digest from Code-provider Package
+  versions for the exact committed revision. Declared workflow status and
+  bounded failure details supplement that registry evidence, but never replace
+  the artifact gate. Promotion also prepares the production image-pull secret
+  through the existing cross-provider connection bridge.
 - **Phase 4 — hardening + surfaces (medium). ⬜.** MCP surface (`vibe__*`
   tools so agents/CLI can drive the same flow — the Session CR makes a CLI
   attach trivial), approval preferences, retention, multi-replica soak,
@@ -436,7 +437,8 @@ gate. app-studio stays untouched and running throughout.
   one description. vibe-studio fails loudly when a scaffold's layout matches
   no component. Rationale: the name/path duality caused repeated bugs (sync
   routing, then `get_logs api` vs component `backend`). **Breaking**:
-  existing instances and `.faros/build.json` must be recreated.
+  existing instances must be recreated. Build workflow ownership now lives in
+  each scaffold and is declared by the Template.
 
 Non-goals for v1: multi-user collaboration on one session, browser-console
 capture (returns as an infra dataplane verb), per-message billing/metering
@@ -444,13 +446,13 @@ capture (returns as an infra dataplane verb), per-message billing/metering
 re-architecture), mobile targets. (BYO model keys is no longer a non-goal —
 it shipped as the `Model` CRD + Models menu.)
 
-Known gaps worth naming: studio edits never reach git after the seed commit
-(Phase 3); the workspace is per-session, so a new session does not inherit an
-existing project's files (reopen the project's session to iterate); file
-tools write whole files with no patch/diff tool; there is no stop button for
-a running turn (needs a cancel op); real VS Code in the browser would mean
-running openvscode-server as a template component behind the data-plane
-proxy rather than bundling Monaco in the micro-frontend.
+Known gaps worth naming: the workspace is per-session, so a new session does
+not inherit an existing project's files (reopen the project's session to
+iterate); file tools write whole files with no patch/diff tool; there is no
+stop button for a running turn (needs a cancel op); real VS Code in the browser
+would mean running openvscode-server as a template component behind the
+data-plane proxy rather than bundling Monaco in the micro-frontend. Completed
+turns do converge workspace revisions into git through the Session reconciler.
 
 ## 6b. KRM-first revision (2026-08-01)
 
@@ -565,9 +567,9 @@ production environment's status into the `production` checkpoint, so the
 Status tab reports "live on 2613af6 — https://…" without the API server
 watching anything.
 
-The remaining gap is where the image references come from: until build lands
-they are typed into the ship panel. The API shape does not change when builds
-arrive — the build status simply fills the same map.
+Image references come from exact-commit Code-provider Package versions. The
+ship panel renders that build status, and promotion fails closed when any
+launchable component lacks its required artifact.
 
 ## 7. Risks
 

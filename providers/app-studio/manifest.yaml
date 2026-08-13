@@ -45,9 +45,10 @@ spec:
   backend:
     # The hub backend proxy forwards /services/providers/app-studio/* here,
     # injecting the verified X-Faros-Tenant/X-Faros-User headers and the
-    # caller's bearer token. The provider serves /api/projects/* + /healthz.
+    # caller's bearer token. The provider serves /api/projects/*, /healthz
+    # (liveness), and /readyz (controller-aware readiness).
     url: "http://localhost:8085"
-    healthPath: "/healthz"
+    healthPath: "/readyz"
 
   apiExport:
     name: "ai.faros.sh"

@@ -34,6 +34,10 @@ VUE_PORTALS=(
 )
 VUE_FILES=(confirm.ts ConfirmDialog.vue ResourceTable.vue ConditionsPanel.vue StatusBadge.vue)
 
+# vibe-studio's vanilla-TS portal consumes tenant.ts + icons.ts (no modal).
+VIBE_PORTALS=("providers/vibe-studio/portal")
+VIBE_FILES=(tenant.ts icons.ts)
+
 sync_group() {
   local src="$1"; shift
   local -n portals=$1; shift
@@ -48,12 +52,89 @@ sync_group() {
   done
 }
 
+verify_file() {
+  local src="$1"
+  local dst="$2"
+  local source_rel="${src#"$ROOT"/}"
+  local target_rel="${dst#"$ROOT"/}"
+
+  if [[ ! -f "$src" ]]; then
+    printf 'missing canonical portalkit file: %s\n' "$source_rel" >&2
+    return 1
+  fi
+  if [[ ! -f "$dst" ]]; then
+    printf 'stale portalkit copy: %s (missing; expected %s)\n' "$target_rel" "$source_rel" >&2
+    return 1
+  fi
+  if ! cmp -s "$src" "$dst"; then
+    printf 'stale portalkit copy: %s (does not match %s)\n' "$target_rel" "$source_rel" >&2
+    return 1
+  fi
+}
+
+verify_group() {
+  local src="$1"
+  local -n portals=$2
+  local -n files=$3
+  local stale=0
+
+  for p in "${portals[@]}"; do
+    local dst="$ROOT/$p/src/portalkit"
+    for f in "${files[@]}"; do
+      if ! verify_file "$src/$f" "$dst/$f"; then
+        stale=1
+      fi
+    done
+  done
+  return "$stale"
+}
+
+verify_all() {
+  local stale=0
+
+  if ! verify_group "$TS_SRC" TS_PORTALS TS_FILES; then
+    stale=1
+  fi
+  if ! verify_group "$VUE_SRC" VUE_PORTALS VUE_FILES; then
+    stale=1
+  fi
+  if ! verify_group "$TS_SRC" VIBE_PORTALS VIBE_FILES; then
+    stale=1
+  fi
+  # tenant.ts and toast.ts are plain TS (no framework) and shared by portals of
+  # BOTH kinds, so the vanilla canonicals are also vendored into the Vue portals.
+  local vue_shared_files=(tenant.ts toast.ts)
+  if ! verify_group "$TS_SRC" VUE_PORTALS vue_shared_files; then
+    stale=1
+  fi
+
+  if (( stale )); then
+    printf "ERROR: portalkit copies are stale. Run 'make sync-portalkit' to update them.\n" >&2
+    return 1
+  fi
+  echo "portalkit copies are in sync"
+}
+
+case "${1:-}" in
+"")
+  ;;
+--verify)
+  if [[ "$#" -ne 1 ]]; then
+    echo "usage: $0 [--verify]" >&2
+    exit 2
+  fi
+  verify_all
+  exit $?
+  ;;
+*)
+  echo "usage: $0 [--verify]" >&2
+  exit 2
+  ;;
+esac
+
 sync_group "$TS_SRC" TS_PORTALS TS_FILES
 sync_group "$VUE_SRC" VUE_PORTALS VUE_FILES
 
-# vibe-studio's vanilla-TS portal consumes tenant.ts + icons.ts (no modal).
-VIBE_PORTALS=("providers/vibe-studio/portal")
-VIBE_FILES=(tenant.ts icons.ts)
 sync_group "$TS_SRC" VIBE_PORTALS VIBE_FILES
 
 # tenant.ts and toast.ts are plain TS (no framework) and shared by portals of

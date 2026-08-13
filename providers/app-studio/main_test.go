@@ -64,24 +64,69 @@ func TestHealthz(t *testing.T) {
 		t.Fatalf("newHandler: %v", err)
 	}
 
-	srv := httptest.NewServer(h)
-	t.Cleanup(srv.Close)
-
-	res, err := srv.Client().Get(srv.URL + "/healthz")
-	if err != nil {
-		t.Fatalf("GET /healthz: %v", err)
-	}
-	defer func() {
-		if err := res.Body.Close(); err != nil {
-			t.Errorf("close /healthz response body: %v", err)
-		}
-	}()
-	if got, want := res.StatusCode, http.StatusOK; got != want {
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if got, want := res.Code, http.StatusOK; got != want {
 		t.Fatalf("GET /healthz status = %d, want %d", got, want)
 	}
-	body, _ := io.ReadAll(res.Body)
-	if !strings.Contains(string(body), `"status":"ok"`) {
-		t.Fatalf("GET /healthz body = %q, want status ok", string(body))
+	if !strings.Contains(res.Body.String(), `"status":"ok"`) {
+		t.Fatalf("GET /healthz body = %q, want status ok", res.Body.String())
+	}
+}
+
+func TestReadinessRequiresControllerButLivenessStaysProcessLevel(t *testing.T) {
+	health := newControllerHealth(true)
+	h, err := newHandler(nil, health)
+	if err != nil {
+		t.Fatalf("newHandler: %v", err)
+	}
+
+	liveness := httptest.NewRecorder()
+	h.ServeHTTP(liveness, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if got, want := liveness.Code, http.StatusOK; got != want {
+		t.Fatalf("GET /healthz status = %d, want %d", got, want)
+	}
+
+	readiness := httptest.NewRecorder()
+	h.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if got, want := readiness.Code, http.StatusServiceUnavailable; got != want {
+		t.Fatalf("GET /readyz while starting status = %d, want %d", got, want)
+	}
+	if body := readiness.Body.String(); !strings.Contains(body, `"controller":"starting"`) || !strings.Contains(body, `"status":"not_ready"`) {
+		t.Fatalf("GET /readyz while starting body = %q, want starting/not_ready", body)
+	}
+
+	health.markReady()
+	readiness = httptest.NewRecorder()
+	h.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if got, want := readiness.Code, http.StatusOK; got != want {
+		t.Fatalf("GET /readyz while running status = %d, want %d", got, want)
+	}
+
+	health.markFailed(errors.New("manager exited"))
+	readiness = httptest.NewRecorder()
+	h.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if got, want := readiness.Code, http.StatusServiceUnavailable; got != want {
+		t.Fatalf("GET /readyz after manager exit status = %d, want %d", got, want)
+	}
+	if body := readiness.Body.String(); !strings.Contains(body, `"controller":"failed"`) || !strings.Contains(body, "manager exited") {
+		t.Fatalf("GET /readyz after manager exit body = %q, want failure detail", body)
+	}
+}
+
+func TestRESTOnlyReadinessIsIntentional(t *testing.T) {
+	health := newControllerHealth(false)
+	h, err := newHandler(nil, health)
+	if err != nil {
+		t.Fatalf("newHandler: %v", err)
+	}
+	readiness := httptest.NewRecorder()
+	h.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if got, want := readiness.Code, http.StatusOK; got != want {
+		t.Fatalf("GET /readyz in REST-only mode status = %d, want %d", got, want)
+	}
+	if body := readiness.Body.String(); !strings.Contains(body, `"controller":"rest-only"`) {
+		t.Fatalf("GET /readyz in REST-only mode body = %q, want rest-only controller", body)
 	}
 }
 

@@ -29,15 +29,15 @@ import (
 // keeps reporting "provisioning" — with a reason the portal can render —
 // until the edge actually serves it.
 //
-// Successes are cached per URL for the process lifetime: certificates and
-// tunnel routes persist once provisioned, so after the first success the
-// probe adds no latency to preview calls. Failures are re-probed on every
-// call (that's the polling the portal already does).
+// Successes are cached per URL for a short TTL. This avoids repeated probe
+// latency during tight portal polling while still observing runtime restarts
+// and later gateway regressions. Failures are re-probed on every call.
 
 const (
 	// previewEdgeProbeTimeout bounds one probe attempt. The portal polls, so
 	// a slow edge costs one bounded round-trip per poll, never a hang.
 	previewEdgeProbeTimeout = 4 * time.Second
+	previewEdgeReadyTTL     = 15 * time.Second
 
 	// previewReasonEdgeProvisioning is the machine-readable reason the
 	// portal and the assistant's preview tool receive while the edge is
@@ -54,14 +54,17 @@ const (
 // on. Local development can reuse the server's explicit insecure-TLS setting
 // because the local Gateway terminates with a self-signed certificate.
 func (s *Server) previewEdgeReady(ctx context.Context, url string) bool {
-	if _, ok := s.edgeReadyURLs.Load(url); ok {
-		return true
+	if observedAt, ok := s.edgeReadyURLs.Load(url); ok {
+		if timestamp, valid := observedAt.(time.Time); valid && time.Since(timestamp) < previewEdgeReadyTTL {
+			return true
+		}
+		s.edgeReadyURLs.Delete(url)
 	}
 	probe := s.previewEdgeProbeHook()
 	if err := probe(ctx, url); err != nil {
 		return false
 	}
-	s.edgeReadyURLs.Store(url, struct{}{})
+	s.edgeReadyURLs.Store(url, time.Now())
 	return true
 }
 
@@ -99,9 +102,9 @@ func (s *Server) SetPreviewEdgeProbe(probe func(context.Context, string) error) 
 // case) means not-yet-provisioned. An HTTP response means the edge
 // terminated TLS and routed somewhere — except Cloudflare's 52x range, which
 // is the edge itself reporting the origin/tunnel isn't wired yet (520-527,
-// 530). Application-level statuses (200/302/404/503 from the app or the dev
-// server) all count as served: the dev-runtime data plane owns app
-// readiness, this probe owns the edge.
+// 530). Only 2xx/3xx proves that the preview document is currently being
+// served. A 4xx/5xx proves the edge answered, but must remain retryable rather
+// than handing the portal a gateway or application error page as Ready.
 func defaultPreviewEdgeProbe(ctx context.Context, url string) error {
 	return probePreviewEdge(ctx, url, false)
 }
@@ -128,8 +131,8 @@ func probePreviewEdge(ctx context.Context, url string, insecureSkipTLSVerify boo
 		return err
 	}
 	_ = resp.Body.Close()
-	if resp.StatusCode >= 520 && resp.StatusCode <= 530 {
-		return fmt.Errorf("edge answered %d (origin/tunnel not provisioned)", resp.StatusCode)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusBadRequest {
+		return fmt.Errorf("preview document answered %d", resp.StatusCode)
 	}
 	return nil
 }

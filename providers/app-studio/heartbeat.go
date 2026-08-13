@@ -24,7 +24,12 @@ const (
 	heartbeatInterval = 30 * time.Second
 )
 
-func runHeartbeat(ctx context.Context) {
+// runHeartbeat emits heartbeats only while the provider is eligible to be
+// considered healthy by the hub. The hub currently ignores the heartbeat body
+// status, so a required controller that is starting, failed, or stopped must
+// stop sending beats and let the hub's TTL mark the provider stale. A
+// nil/omitted health dependency remains compatible with REST-only callers.
+func runHeartbeat(ctx context.Context, healthStates ...*controllerHealth) {
 	hub := os.Getenv("FAROS_HUB_URL")
 	token := os.Getenv("FAROS_HUB_TOKEN")
 	name := os.Getenv("FAROS_PROVIDER_NAME")
@@ -37,7 +42,10 @@ func runHeartbeat(ctx context.Context) {
 	}
 
 	url := hub + "/api/providers/" + name + "/heartbeat"
-	body, _ := json.Marshal(map[string]string{"version": heartbeatVersion, "status": "healthy"})
+	var health *controllerHealth
+	if len(healthStates) > 0 {
+		health = healthStates[0]
+	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	if os.Getenv("FAROS_HUB_INSECURE") == "true" {
@@ -47,6 +55,14 @@ func runHeartbeat(ctx context.Context) {
 	}
 
 	send := func() {
+		if !heartbeatCanSend(health) {
+			return
+		}
+		body, err := json.Marshal(map[string]string{"version": heartbeatVersion, "status": "healthy"})
+		if err != nil {
+			log.Printf("heartbeat encode: %v", err)
+			return
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
 			log.Printf("heartbeat build req: %v", err)
@@ -83,4 +99,12 @@ func runHeartbeat(ctx context.Context) {
 			send()
 		}
 	}
+}
+
+// heartbeatCanSend is intentionally stricter than the payload contract: the
+// hub records any received heartbeat as liveness and does not inspect its
+// status field. REST-only mode (or a legacy caller without a health dependency)
+// is always eligible; a required controller must already be running.
+func heartbeatCanSend(health *controllerHealth) bool {
+	return health == nil || health.ready()
 }

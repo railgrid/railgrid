@@ -89,7 +89,7 @@ func (s *Server) interactProjectDevelopmentPreview(ctx context.Context, req proj
 		return "", err
 	}
 	result.EvidenceScope = "post_interaction_state"
-	result.InteractionEvidence = true
+	result.InteractionEvidence = result.Status == "succeeded"
 	result.Limitations = []string{
 		"Evidence reflects the page state after the listed actions were applied in order. Only these actions were performed; no other interaction was exercised.",
 	}

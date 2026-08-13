@@ -323,9 +323,12 @@ interface ConversationRunTransport {
   connect(runID: string, afterRevision: number, setDisconnect: (disconnect: () => void) => void): Promise<void>
   abort(runID: string): Promise<void>
   recover?(): Promise<void>
+  onState?(state: ConversationConnectionState): void
   setTimeout(fn: () => void, delay: number): ReturnType<typeof setTimeout>
   clearTimeout(timer: ReturnType<typeof setTimeout>): void
 }
+
+export type ConversationConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting'
 
 export class ConversationRunController {
   private runID = ''
@@ -335,8 +338,15 @@ export class ConversationRunController {
   private disconnected = false
   private disconnectStream: (() => void) | undefined
   private generation = 0
+  private connectionState: ConversationConnectionState = 'idle'
 
   constructor(private readonly transport: ConversationRunTransport) {}
+
+  private setConnectionState(state: ConversationConnectionState) {
+    if (this.connectionState === state) return
+    this.connectionState = state
+    this.transport.onState?.(state)
+  }
 
   start(runID: string, revision: number) {
     this.disconnect()
@@ -345,6 +355,7 @@ export class ConversationRunController {
     this.revision = revision
     this.retry = 0
     this.disconnected = false
+    this.setConnectionState('connecting')
     void this.connect(this.generation)
   }
 
@@ -352,6 +363,7 @@ export class ConversationRunController {
   markHealthySnapshot(revision: number) {
     this.setRevision(revision)
     this.retry = 0
+    this.setConnectionState('connected')
   }
   setDisconnect(disconnect: () => void) { this.disconnectStream = disconnect }
 
@@ -361,6 +373,7 @@ export class ConversationRunController {
     this.retryTimer = undefined
     this.disconnectStream?.()
     this.disconnectStream = undefined
+    this.setConnectionState('idle')
   }
 
   async stop() {
@@ -394,6 +407,7 @@ export class ConversationRunController {
         this.setDisconnect(disconnect)
       })
       if (this.disconnected || generation !== this.generation) return
+      this.setConnectionState('connected')
       this.scheduleReconnect(generation)
     } catch {
       if (this.disconnected || generation !== this.generation) return
@@ -404,6 +418,7 @@ export class ConversationRunController {
   private scheduleReconnect(generation: number) {
     const delay = Math.min(1_000 * 2 ** this.retry, 10_000)
     this.retry++
+    this.setConnectionState('reconnecting')
     this.retryTimer = this.transport.setTimeout(() => { void this.connect(generation) }, delay)
   }
 }

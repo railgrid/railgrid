@@ -1,3 +1,30 @@
+<script lang="ts">
+export type CodeExplorerTreeState =
+  | 'initial-loading'
+  | 'initial-error'
+  | 'refreshing'
+  | 'refresh-error'
+  | 'empty'
+  | 'ready'
+
+/**
+ * Keep a cached tree visible while a refresh is in flight or has failed. The
+ * initial load is the only state where loading/error replaces the tree body.
+ */
+export function codeExplorerTreeState(
+  loading: boolean,
+  hasFiles: boolean,
+  error: string | null,
+): CodeExplorerTreeState {
+  if (error && hasFiles) return 'refresh-error'
+  if (error) return 'initial-error'
+  if (loading && hasFiles) return 'refreshing'
+  if (loading) return 'initial-loading'
+  if (hasFiles) return 'ready'
+  return 'empty'
+}
+</script>
+
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { RefreshCw, Folder, FolderOpen, File as FileIcon, Loader2 } from 'lucide-vue-next'
@@ -17,11 +44,13 @@ const props = defineProps<{
 const files = ref<ProjectFileInfo[]>([])
 const loadingTree = ref(false)
 const treeError = ref<string | null>(null)
+let treeRequestSerial = 0
 
 const selectedPath = ref<string>('')
 const content = ref<ProjectFileContent | null>(null)
 const loadingFile = ref(false)
 const fileError = ref<string | null>(null)
+let fileRequestSerial = 0
 
 const collapsed = ref<Set<string>>(new Set())
 
@@ -87,48 +116,82 @@ function toggleDir(path: string) {
   collapsed.value = next
 }
 
+function isCurrentProject(projectName: string, ctx: FarosContext | null): boolean {
+  return props.projectName === projectName && props.ctx === ctx
+}
+
 async function loadTree() {
-  if (!props.projectName) return
+  const projectName = props.projectName
+  const requestContext = props.ctx
+  if (!projectName) {
+    treeRequestSerial++
+    loadingTree.value = false
+    treeError.value = null
+    return
+  }
+  const serial = ++treeRequestSerial
   loadingTree.value = true
   treeError.value = null
   try {
-    const list = await api.listProjectFiles(props.ctx, props.projectName)
-    files.value = list.files ?? []
+    const list = await api.listProjectFiles(requestContext, projectName)
+    if (serial !== treeRequestSerial || !isCurrentProject(projectName, requestContext)) return
+    const nextFiles = list.files ?? []
+    files.value = nextFiles
+    if (selectedPath.value && !nextFiles.some((file) => file.path === selectedPath.value)) {
+      fileRequestSerial++
+      selectedPath.value = ''
+      content.value = null
+      fileError.value = null
+      loadingFile.value = false
+    }
     // Auto-open the first file for orientation.
     if (!selectedPath.value && files.value.length > 0) {
-      void openFile(files.value.slice().sort((a, b) => a.path.localeCompare(b.path))[0].path)
+      void openFile(files.value.slice().sort((a, b) => a.path.localeCompare(b.path))[0].path, projectName, requestContext)
     }
   } catch (e) {
+    if (serial !== treeRequestSerial || !isCurrentProject(projectName, requestContext)) return
     treeError.value = e instanceof Error ? e.message : 'Could not load the workspace files.'
   } finally {
-    loadingTree.value = false
+    if (serial === treeRequestSerial && isCurrentProject(projectName, requestContext)) loadingTree.value = false
   }
 }
 
-async function openFile(path: string) {
+async function openFile(path: string, projectName = props.projectName, requestContext = props.ctx) {
+  if (!projectName) return
+  const serial = ++fileRequestSerial
   selectedPath.value = path
   loadingFile.value = true
   fileError.value = null
   content.value = null
   try {
-    content.value = await api.readProjectFile(props.ctx, props.projectName, path)
+    const nextContent = await api.readProjectFile(requestContext, projectName, path)
+    if (serial !== fileRequestSerial || !isCurrentProject(projectName, requestContext) || selectedPath.value !== path) return
+    content.value = nextContent
   } catch (e) {
+    if (serial !== fileRequestSerial || !isCurrentProject(projectName, requestContext) || selectedPath.value !== path) return
     fileError.value = e instanceof Error ? e.message : 'Could not read this file.'
   } finally {
-    loadingFile.value = false
+    if (serial === fileRequestSerial && isCurrentProject(projectName, requestContext) && selectedPath.value === path) loadingFile.value = false
   }
 }
 
 const contentLines = computed(() => (content.value?.content ?? '').split('\n'))
+const treeState = computed(() => codeExplorerTreeState(loadingTree.value, files.value.length > 0, treeError.value))
 
 watch(
   () => [props.projectName, props.ctx] as const,
   () => {
+    treeRequestSerial++
+    fileRequestSerial++
     files.value = []
     selectedPath.value = ''
     content.value = null
+    loadingTree.value = false
+    loadingFile.value = false
+    treeError.value = null
+    fileError.value = null
     collapsed.value = new Set()
-    void loadTree()
+    if (props.projectName) void loadTree()
   },
   { immediate: true },
 )
@@ -140,6 +203,7 @@ watch(
     <aside class="flex w-64 shrink-0 flex-col border-r border-border-subtle">
       <div class="flex items-center justify-between gap-2 border-b border-border-subtle px-3 py-2">
         <span class="text-[12px] font-semibold text-text-secondary">Workspace files</span>
+        <span v-if="treeState === 'refreshing'" class="mr-auto text-[11px] text-text-muted" role="status" aria-live="polite">Refreshing…</span>
         <button
           type="button"
           class="flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary disabled:opacity-50"
@@ -152,8 +216,20 @@ watch(
         </button>
       </div>
       <div class="min-h-0 flex-1 overflow-auto py-1">
-        <p v-if="treeError" class="px-3 py-2 text-[12px] text-danger">{{ treeError }}</p>
-        <p v-else-if="!loadingTree && rows.length === 0" class="px-3 py-2 text-[12px] text-text-muted">
+        <p v-if="treeState === 'initial-error'" class="px-3 py-2 text-[12px] text-danger" role="alert">{{ treeError }}</p>
+        <div v-else-if="treeState === 'refresh-error'" class="mx-2 mb-2 grid gap-1 rounded-md border border-warning/30 bg-warning-subtle px-2.5 py-2 text-[11px] leading-4 text-warning" role="alert" aria-live="polite">
+          <span>{{ treeError }}</span>
+          <span class="text-text-muted">Showing the last loaded tree.</span>
+          <button type="button" class="w-fit font-medium underline underline-offset-2" @click="loadTree">Retry refresh</button>
+        </div>
+        <div v-else-if="treeState === 'initial-loading'" class="grid gap-2 px-3 py-3" role="status" aria-live="polite" aria-label="Loading workspace files">
+          <span class="sr-only">Loading workspace files…</span>
+          <div v-for="width in ['w-4/5', 'w-3/5', 'w-2/3', 'w-1/2', 'w-3/4']" :key="width" class="shimmer h-4 rounded bg-surface-overlay" :class="width" />
+        </div>
+        <p v-else-if="!projectName" class="px-3 py-2 text-[12px] text-text-muted" role="status">
+          Select a project to browse its workspace files.
+        </p>
+        <p v-else-if="treeState === 'empty'" class="px-3 py-2 text-[12px] text-text-muted" role="status">
           No files yet. Starter code appears here once a template with scaffolding is bound.
         </p>
         <button
@@ -181,10 +257,10 @@ watch(
         <span v-if="content?.truncated" class="ml-auto rounded bg-surface-overlay px-1.5 py-0.5 text-[11px] text-text-muted">truncated</span>
       </div>
       <div class="min-h-0 flex-1 overflow-auto">
-        <div v-if="loadingFile" class="flex items-center gap-2 px-4 py-3 text-[13px] text-text-muted">
+        <div v-if="loadingFile" class="flex items-center gap-2 px-4 py-3 text-[13px] text-text-muted" role="status" aria-live="polite">
           <Loader2 class="h-4 w-4 animate-spin" /> Loading…
         </div>
-        <p v-else-if="fileError" class="px-4 py-3 text-[13px] text-danger">{{ fileError }}</p>
+        <p v-else-if="fileError" class="px-4 py-3 text-[13px] text-danger" role="alert">{{ fileError }}</p>
         <p v-else-if="content?.binary" class="px-4 py-3 text-[13px] text-text-muted">Binary file — not shown.</p>
         <p v-else-if="!selectedPath" class="px-4 py-3 text-[13px] text-text-muted">Pick a file from the tree to view it.</p>
         <pre v-else class="m-0 flex text-[12px] leading-5"><code class="block w-full">

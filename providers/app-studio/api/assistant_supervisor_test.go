@@ -26,7 +26,10 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/adk"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
+	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/store"
 	"github.com/faroshq/provider-app-studio/tenant"
 	"github.com/faroshq/provider-app-studio/workspace"
@@ -1063,8 +1066,8 @@ func TestResumeSnapshotPersistenceFailurePreventsSuccessfulTerminalTransition(t 
 	if err := accumulator.UpdateText(context.Background(), "partial", true); err == nil {
 		t.Fatal("expected snapshot persistence error")
 	}
-	if err := accumulator.SetStatus(context.Background(), store.AssistantRunStatusCompleted); err != nil {
-		t.Fatal(err)
+	if err := accumulator.SetStatus(context.Background(), store.AssistantRunStatusCompleted); !errors.Is(err, store.ErrAssistantRunNotFound) {
+		t.Fatalf("post-failure terminal update error = %v, want detached accumulator", err)
 	}
 	persisted, err := inner.GetAssistantRun(context.Background(), scope, run.ID)
 	if err != nil {
@@ -1101,6 +1104,98 @@ func TestConversationPersistenceFailureTerminalizesWorkerOwnedRun(t *testing.T) 
 	if persisted.Status != store.AssistantRunStatusFailed || len(persisted.Error) == 0 {
 		t.Fatalf("conversation persistence failure left nonterminal run: %#v", persisted)
 	}
+}
+
+type failAssistantSnapshotSavesStore struct {
+	store.Store
+	failures int
+	calls    int
+}
+
+func (s *failAssistantSnapshotSavesStore) SaveAssistantRunSnapshot(ctx context.Context, scope store.Scope, run store.AssistantRun, messages []store.Message, expectedRevision int64) error {
+	s.calls++
+	if s.calls <= s.failures {
+		return errors.New("snapshot unavailable")
+	}
+	return s.Store.SaveAssistantRunSnapshot(ctx, scope, run, messages, expectedRevision)
+}
+
+func TestDoubleSnapshotPersistenceFailureDetachesRunForRecoveryAndUnblocksProjectAction(t *testing.T) {
+	inner := store.NewMemoryStore()
+	failing := &failAssistantSnapshotSavesStore{Store: inner, failures: 2}
+	supervisor := newProjectAssistantSupervisor(context.Background(), failing)
+	server := NewWithWorkspace(nil, failing, nil, "", false)
+	server.assistantSupervisor = supervisor
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+	now := time.Now().UTC()
+	run := store.AssistantRun{ID: "run-double-save-failure", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: run.UserMessageID, Role: "user", ActorID: "test-user", Content: "build it", CreatedAt: now, UpdatedAt: now}
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", CreatedAt: now, UpdatedAt: now}
+	if _, err := inner.CreateAssistantRun(context.Background(), scope, user, assistant, run); err != nil {
+		t.Fatalf("CreateAssistantRun: %v", err)
+	}
+
+	workerStarted := make(chan struct{})
+	workerCanceled := make(chan struct{})
+	if err := supervisor.Start(context.Background(), scope, run, assistant, func(ctx context.Context, _ *projectAssistantSnapshotAccumulator) {
+		close(workerStarted)
+		<-ctx.Done()
+		close(workerCanceled)
+	}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	<-workerStarted
+	accumulator := supervisor.accumulatorFor(scope, run.ID)
+	if accumulator == nil {
+		t.Fatal("worker accumulator was not attached")
+	}
+	if err := accumulator.UpdateText(context.Background(), "partial", true); err == nil {
+		t.Fatal("UpdateText succeeded despite the injected primary snapshot failure")
+	}
+	select {
+	case <-workerCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("persistence failure did not cancel the worker")
+	}
+	if failing.calls != 2 {
+		t.Fatalf("snapshot save calls = %d, want primary plus detached terminal save", failing.calls)
+	}
+
+	key := projectAssistantRunKey{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, ProjectName: scope.ProjectName, ProjectUID: scope.ProjectUID}
+	supervisor.mu.Lock()
+	_, attached := supervisor.runs[key]
+	supervisor.mu.Unlock()
+	if attached {
+		t.Fatal("failed detached save left the stale durable row shielded by the supervisor")
+	}
+	persisted, err := inner.GetAssistantRun(context.Background(), scope, run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun before recovery: %v", err)
+	}
+	if persisted.Status != store.AssistantRunStatusRunning || persisted.Revision != run.Revision {
+		t.Fatalf("durable row before recovery = %#v, want original running revision", persisted)
+	}
+
+	if err := server.reconcileOrphanedProjectAssistantRun(context.Background(), scope, run.ID); err != nil {
+		t.Fatalf("reconcileOrphanedProjectAssistantRun: %v", err)
+	}
+	recovered, err := inner.GetAssistantRun(context.Background(), scope, run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun after recovery: %v", err)
+	}
+	if recovered.Status != store.AssistantRunStatusInterrupted || recovered.Revision != run.Revision+1 {
+		t.Fatalf("recovered run = %#v, want interrupted at revision %d", recovered, run.Revision+1)
+	}
+
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: scope.ProjectName, UID: types.UID(scope.ProjectUID)}}
+	// The same reconciliation boundary is used by project-level actions. A
+	// terminal durable row must release the action reservation rather than
+	// returning the stale active-run conflict.
+	release, ok := server.reserveProjectExternalOperation(httptest.NewRecorder(), context.Background(), identity{orgUUID: scope.OrgUUID, workspaceUUID: scope.WorkspaceUUID}, project, "deleting this project")
+	if !ok || release == nil {
+		t.Fatal("project action remained blocked after orphan recovery")
+	}
+	release()
 }
 
 func TestProjectAssistantThreadStartConsumesServerOwnedInitialBootstrap(t *testing.T) {

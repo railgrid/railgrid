@@ -1144,15 +1144,21 @@ func assistantThreadItemWithMessagePresentation(item assistantThreadItem, metada
 	if item.Type != assistantThreadEventAssistantMessage {
 		return item
 	}
-	progress, ok := projectAssistantProgressSnapshotFromMetadata(metadata[projectAssistantMetadataProgress])
-	if !ok {
+	progress, progressOK := projectAssistantProgressSnapshotFromMetadata(metadata[projectAssistantMetadataProgress])
+	verification, verificationOK := projectAssistantVerificationFromMetadata(metadata[projectAssistantMetadataVerification])
+	if !progressOK && !verificationOK {
 		return item
 	}
 	data := map[string]any{}
 	if len(item.Data) > 0 {
 		_ = json.Unmarshal(item.Data, &data)
 	}
-	data[projectAssistantMetadataProgress] = *progress
+	if progressOK {
+		data[projectAssistantMetadataProgress] = *progress
+	}
+	if verificationOK {
+		data[projectAssistantMetadataVerification] = verification
+	}
 	encoded, err := json.Marshal(data)
 	if err == nil {
 		item.Data = encoded
@@ -1173,6 +1179,9 @@ func (s *Server) attachAssistantThreadMessagePresentation(ctx context.Context, s
 		var data map[string]any
 		if len(item.Data) > 0 && json.Unmarshal(item.Data, &data) == nil {
 			if _, ok := projectAssistantProgressSnapshotFromMetadata(data[projectAssistantMetadataProgress]); ok {
+				continue
+			}
+			if _, ok := projectAssistantVerificationFromMetadata(data[projectAssistantMetadataVerification]); ok {
 				continue
 			}
 		}

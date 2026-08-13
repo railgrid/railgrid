@@ -101,6 +101,7 @@ type projectEinoAssistantRunState struct {
 	verificationOutcome              string
 	verificationSummary              string
 	verificationBlockers             []string
+	previewEvidence                  projectAssistantPreviewEvidence
 	developmentSyncRevision          uint64
 	developmentSyncStatus            string
 	developmentSyncFailure           string
@@ -859,6 +860,10 @@ func (s *projectEinoAssistantRunState) RestoreCheckpointState(state projectAssis
 	s.verificationOutcome = strings.TrimSpace(state.VerificationOutcome)
 	s.verificationSummary = strings.TrimSpace(state.VerificationSummary)
 	s.verificationBlockers = append([]string(nil), state.VerificationBlockers...)
+	s.previewEvidence = state.PreviewEvidence
+	if s.previewEvidence.Revision != s.sourceMutationRevision {
+		s.previewEvidence = projectAssistantPreviewEvidence{}
+	}
 	s.repeatedActionSignature = projectEinoAssistantSanitizeActionSignature(state.RepeatedActionSignature)
 	s.repeatedActionToolName = projectToolBaseName(state.RepeatedActionToolName)
 	s.repeatedActionCount = min(max(state.RepeatedActionCount, 0), projectEinoAssistantRepeatedActionLimit)
@@ -1075,6 +1080,7 @@ func (s *projectEinoAssistantRunState) RecordSourceMutation() {
 	s.verificationOutcome = ""
 	s.verificationSummary = ""
 	s.verificationBlockers = nil
+	s.previewEvidence = projectAssistantPreviewEvidence{}
 	s.runtimeWarmupAttempts = 0
 	s.verifiedWorkspaceDigest = ""
 	s.completedReadCalls = map[string]uint64{}
@@ -1344,17 +1350,26 @@ func (s *projectEinoAssistantRunState) CompletionEvidence() projectAssistantComp
 		outcome = "not_run"
 	}
 	evidence := projectAssistantCompletionEvidence{
-		PlanDefined:               planDefined,
-		PlanComplete:              planComplete,
-		SourceMutationRevision:    s.sourceMutationRevision,
-		VerifiedMutationRevision:  s.verifiedMutationRevision,
-		LatestMutationVerified:    latestVerified,
-		CommitRequired:            s.commitRequired,
-		CommittedMutationRevision: s.committedMutationRevision,
-		LatestMutationCommitted:   !s.commitRequired || (s.sourceMutationRevision > 0 && s.committedMutationRevision == s.sourceMutationRevision),
-		VerificationOutcome:       outcome,
-		VerificationSummary:       strings.TrimSpace(s.verificationSummary),
-		Blockers:                  append([]string(nil), s.verificationBlockers...),
+		PlanDefined:                  planDefined,
+		PlanComplete:                 planComplete,
+		SourceMutationRevision:       s.sourceMutationRevision,
+		VerifiedMutationRevision:     s.verifiedMutationRevision,
+		LatestMutationVerified:       latestVerified,
+		CommitRequired:               s.commitRequired,
+		CommittedMutationRevision:    s.committedMutationRevision,
+		LatestMutationCommitted:      !s.commitRequired || (s.sourceMutationRevision > 0 && s.committedMutationRevision == s.sourceMutationRevision),
+		VerificationOutcome:          outcome,
+		VerificationSummary:          strings.TrimSpace(s.verificationSummary),
+		Blockers:                     append([]string(nil), s.verificationBlockers...),
+		PreviewEvidenceRevision:      s.previewEvidence.Revision,
+		PreviewEvidenceScope:         s.previewEvidence.Scope,
+		PreviewEvidenceOutcome:       s.previewEvidence.Outcome,
+		PreviewRenderedStateObserved: s.previewEvidence.RenderedStateObserved,
+		PreviewInteractionVerified:   s.previewEvidence.InteractionVerified,
+		PreviewAssertionsObserved:    s.previewEvidence.AssertionsObserved,
+		PreviewAssertionsPassed:      s.previewEvidence.AssertionsPassed,
+		PreviewAssertionCount:        s.previewEvidence.AssertionCount,
+		PreviewFailedAssertionCount:  s.previewEvidence.FailedAssertionCount,
 	}
 	if outcome == "provisioning" {
 		evidence.Blockers = append(evidence.Blockers, "runtime provisioning")
@@ -2106,32 +2121,74 @@ func (s *projectEinoAssistantRunState) RecordToolMessage(msg chatMessage) {
 	s.messages = append(s.messages, cloned)
 	s.lastToolMessages = []chatMessage{cloned}
 	s.toolEvidence = append(s.toolEvidence, cloned)
+	s.recordPreviewEvidenceLocked(cloned)
 	if len(s.toolEvidence) > projectEinoAssistantClosingEvidenceMaxItems {
 		s.toolEvidence = cloneChatMessages(s.toolEvidence[len(s.toolEvidence)-projectEinoAssistantClosingEvidenceMaxItems:])
 	}
 }
 
-func (s *projectEinoAssistantRunState) ReadOnlyPreviewInspectionObserved() bool {
-	if s == nil {
-		return false
+func (s *projectEinoAssistantRunState) recordPreviewEvidenceLocked(message chatMessage) {
+	toolName := projectToolBaseName(message.Name)
+	if toolName != projectToolInspectDevelopmentPreview && toolName != projectToolInteractDevelopmentPreview {
+		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for index := len(s.toolEvidence) - 1; index >= 0; index-- {
-		message := s.toolEvidence[index]
-		if projectToolBaseName(message.Name) != projectToolInspectDevelopmentPreview {
-			continue
-		}
-		var evidence struct {
-			EvidenceScope       string `json:"evidenceScope"`
-			InteractionEvidence bool   `json:"interactionEvidence"`
-		}
-		if json.Unmarshal([]byte(strings.TrimSpace(message.Content)), &evidence) == nil &&
-			evidence.EvidenceScope == "rendered_state_only" && !evidence.InteractionEvidence {
-			return true
+	var result struct {
+		Status              string                                             `json:"status"`
+		FailureKind         string                                             `json:"failureKind,omitempty"`
+		EvidenceScope       string                                             `json:"evidenceScope,omitempty"`
+		InteractionEvidence bool                                               `json:"interactionEvidence"`
+		Assertions          []projectAssistantPreviewInspectionAssertionResult `json:"assertions,omitempty"`
+		Steps               []projectAssistantPreviewInteractionStepResult     `json:"steps,omitempty"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(message.Content)), &result) != nil {
+		return
+	}
+	evidence := projectAssistantPreviewEvidence{
+		Revision:       s.sourceMutationRevision,
+		Scope:          strings.TrimSpace(result.EvidenceScope),
+		AssertionCount: len(result.Assertions),
+	}
+	for _, assertion := range result.Assertions {
+		if !assertion.Passed {
+			evidence.FailedAssertionCount++
 		}
 	}
-	return false
+	evidence.AssertionsObserved = evidence.AssertionCount > 0
+	evidence.AssertionsPassed = evidence.AssertionsObserved && evidence.FailedAssertionCount == 0
+
+	status := strings.TrimSpace(result.Status)
+	if status != "succeeded" {
+		evidence.Outcome = "failed"
+		if strings.TrimSpace(result.FailureKind) == "not_current" {
+			evidence.Outcome = "stale"
+		}
+		// Interaction/assertion failures happen after navigation and preserve
+		// evidence that the application document rendered. Navigation,
+		// availability, and freshness failures do not.
+		evidence.RenderedStateObserved = result.FailureKind == "interaction" || result.FailureKind == "assertion"
+		s.previewEvidence = evidence
+		return
+	}
+
+	evidence.RenderedStateObserved = true
+	evidence.Outcome = "rendered_verified"
+	if toolName == projectToolInteractDevelopmentPreview {
+		allStepsApplied := len(result.Steps) > 0
+		for _, step := range result.Steps {
+			allStepsApplied = allStepsApplied && step.Applied
+		}
+		evidence.InteractionVerified = result.InteractionEvidence && allStepsApplied
+		if evidence.InteractionVerified {
+			evidence.Outcome = "interactions_verified"
+		}
+	} else if s.previewEvidence.Revision == s.sourceMutationRevision && s.previewEvidence.InteractionVerified {
+		// A later read-only observation may strengthen rendered/assertion
+		// evidence, but it cannot erase a successful interaction receipt for
+		// the same source revision.
+		evidence.InteractionVerified = true
+		evidence.Outcome = "interactions_verified"
+	}
+	s.previewEvidence = evidence
 }
 
 func (s *projectEinoAssistantRunState) PermissionBarrierActive() bool {
@@ -2236,6 +2293,7 @@ func (s *projectEinoAssistantRunState) CheckpointState() projectAssistantCheckpo
 		VerificationOutcome:              strings.TrimSpace(s.verificationOutcome),
 		VerificationSummary:              strings.TrimSpace(s.verificationSummary),
 		VerificationBlockers:             append([]string(nil), s.verificationBlockers...),
+		PreviewEvidence:                  s.previewEvidence,
 		RepeatedActionSignature:          s.repeatedActionSignature,
 		RepeatedActionToolName:           s.repeatedActionToolName,
 		RepeatedActionCount:              s.repeatedActionCount,

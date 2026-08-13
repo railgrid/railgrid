@@ -2385,6 +2385,22 @@ func TestProjectRepositoryViewPreservesCommitListFailure(t *testing.T) {
 	}
 }
 
+func TestCheckpointCIReportsOnlyVerifiedSourceState(t *testing.T) {
+	view := &ProjectRepositoryView{
+		Commits: []ProjectRepositoryCommitView{{Phase: "Succeeded", CommitSHA: "abc123"}},
+	}
+	cp := (&Server{}).checkpointCI(view, projectCheckpointStateDone)
+	if cp.Key != projectCheckpointCI || cp.Label != "Source" || cp.State != projectCheckpointStateDone {
+		t.Fatalf("checkpoint = %#v, want compatible ci key with done Source label", cp)
+	}
+	if cp.Reason != "Repository source is committed." {
+		t.Fatalf("reason = %q, want source-only fact", cp.Reason)
+	}
+	if strings.Contains(strings.ToLower(cp.Reason), "ci") || strings.Contains(strings.ToLower(cp.Reason), "workflow") {
+		t.Fatalf("reason = %q, must not infer CI from a source commit", cp.Reason)
+	}
+}
+
 func projectWithRepository(ref, name, connectionRef string) *aiv1alpha1.Project {
 	return &aiv1alpha1.Project{
 		Spec: aiv1alpha1.ProjectSpec{

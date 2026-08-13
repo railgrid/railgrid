@@ -94,24 +94,49 @@ export function createDefaultWorkbenchState(): WorkbenchState {
   }
 }
 
+/**
+ * Return the canonical descriptor for a built-in tab.
+ *
+ * Workbench persistence stores the stable kind rather than this presentation
+ * metadata. Keeping reconstruction here means restored tabs use the same
+ * labels, subtitles, and closeability as tabs opened during the current
+ * session.
+ */
+export function canonicalWorkbenchBuiltInTab(kind: WorkbenchBuiltInTab): WorkbenchTabDescriptor {
+  return cloneWorkbenchTab(builtInTabs[kind])
+}
+
+/**
+ * Build a canonical provider tab from the current provider catalog entry.
+ * The provider tool ref is deliberately copied so runtime/provider objects
+ * cannot become part of the workbench state or its persistence boundary.
+ */
+export function canonicalWorkbenchProviderTab(tool: WorkbenchProviderToolRef): WorkbenchTabDescriptor {
+  const { id, providerName, title, subtitle, path, iconURL } = tool
+  return {
+    id: providerWorkbenchTabID({ id }),
+    kind: 'provider',
+    title,
+    subtitle,
+    closeable: true,
+    providerTool: {
+      id,
+      providerName,
+      title,
+      subtitle,
+      path,
+      ...(iconURL ? { iconURL } : {}),
+    },
+  }
+}
+
 export function openWorkbenchBuiltInTab(state: WorkbenchState, kind: WorkbenchBuiltInTab): WorkbenchState {
-  const tab = cloneWorkbenchTab(builtInTabs[kind])
+  const tab = canonicalWorkbenchBuiltInTab(kind)
   return upsertWorkbenchTab(state, tab, true)
 }
 
 export function openWorkbenchProviderTool(state: WorkbenchState, tool: WorkbenchProviderToolRef): WorkbenchState {
-  return upsertWorkbenchTab(
-    state,
-    {
-      id: providerWorkbenchTabID(tool),
-      kind: 'provider',
-      title: tool.title,
-      subtitle: tool.subtitle,
-      closeable: true,
-      providerTool: { ...tool },
-    },
-    true,
-  )
+  return upsertWorkbenchTab(state, canonicalWorkbenchProviderTab(tool), true)
 }
 
 export function activateWorkbenchTab(state: WorkbenchState, tabID: string): WorkbenchState {

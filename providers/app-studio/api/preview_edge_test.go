@@ -16,13 +16,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // TestPreviewEdgeReadyGatesAndCaches pins the edge-readiness contract: a
 // failing probe keeps the preview not-ready, a succeeding probe flips it, and
-// the success is cached — once provisioned, the edge is never probed again
-// for that URL (certificates persist; polling must not pay probe latency
-// forever).
+// the success is cached briefly. The bounded cache avoids probe latency on
+// tight polls without hiding a later runtime restart or regression.
 func TestPreviewEdgeReadyGatesAndCaches(t *testing.T) {
 	s := &Server{}
 	probeErr := errors.New("tls handshake failure")
@@ -55,6 +55,11 @@ func TestPreviewEdgeReadyGatesAndCaches(t *testing.T) {
 	if !s.previewEdgeReady(context.Background(), url) {
 		t.Fatal("cached readiness lost")
 	}
+	s.edgeReadyURLs.Store(url, time.Now().Add(-previewEdgeReadyTTL-time.Second))
+	s.SetPreviewEdgeProbe(func(_ context.Context, _ string) error { return probeErr })
+	if s.previewEdgeReady(context.Background(), url) {
+		t.Fatal("expired readiness cache hid a later probe failure")
+	}
 
 	// A different URL starts cold.
 	s.SetPreviewEdgeProbe(func(_ context.Context, _ string) error { return probeErr })
@@ -63,17 +68,25 @@ func TestPreviewEdgeReadyGatesAndCaches(t *testing.T) {
 	}
 }
 
-// TestDefaultPreviewEdgeProbe pins the classification: an HTTP answer is
-// served (whatever the app-level status), Cloudflare's 52x edge range is
-// not-provisioned, and transport errors (connection refused — the same class
-// as a TLS handshake failure) are not-provisioned.
+// TestDefaultPreviewEdgeProbe pins the classification: only a successful or
+// redirect response serves the preview document. Error documents and
+// transport failures remain not-ready.
 func TestDefaultPreviewEdgeProbe(t *testing.T) {
 	served := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound) // app-level 404 still means the edge serves
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer served.Close()
 	if err := defaultPreviewEdgeProbe(context.Background(), served.URL); err != nil {
-		t.Fatalf("app-level 404 must count as served: %v", err)
+		t.Fatalf("2xx must count as served: %v", err)
+	}
+
+	for _, status := range []int{http.StatusNotFound, http.StatusServiceUnavailable} {
+		errorDocument := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) }))
+		if err := defaultPreviewEdgeProbe(context.Background(), errorDocument.URL); err == nil {
+			errorDocument.Close()
+			t.Fatalf("HTTP %d must remain not-ready", status)
+		}
+		errorDocument.Close()
 	}
 
 	edge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

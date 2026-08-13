@@ -43,7 +43,55 @@ func TestValidateDevelopment(t *testing.T) {
 			name: "single root component",
 			spec: TemplateSpec{Development: &TemplateDevelopment{
 				Components: map[string]TemplateDevelopmentComponent{"app": devComponent(".")},
+				Build:      &TemplateDevelopmentBuild{WorkflowPath: ".github/workflows/build.yaml"},
 			}},
+		},
+		{
+			name: "workflow path yml is valid",
+			spec: TemplateSpec{Development: &TemplateDevelopment{
+				Components: map[string]TemplateDevelopmentComponent{"app": devComponent(".")},
+				Build:      &TemplateDevelopmentBuild{WorkflowPath: ".github/workflows/release.yml"},
+			}},
+		},
+		{
+			name: "workflow path is required when build declared",
+			spec: TemplateSpec{Development: &TemplateDevelopment{
+				Components: map[string]TemplateDevelopmentComponent{"app": devComponent(".")},
+				Build:      &TemplateDevelopmentBuild{},
+			}},
+			wantErr: "workflowPath: is required",
+		},
+		{
+			name: "workflow path must be repository relative",
+			spec: TemplateSpec{Development: &TemplateDevelopment{
+				Components: map[string]TemplateDevelopmentComponent{"app": devComponent(".")},
+				Build:      &TemplateDevelopmentBuild{WorkflowPath: "/.github/workflows/build.yaml"},
+			}},
+			wantErr: "directly under .github/workflows",
+		},
+		{
+			name: "workflow path must be directly under workflows",
+			spec: TemplateSpec{Development: &TemplateDevelopment{
+				Components: map[string]TemplateDevelopmentComponent{"app": devComponent(".")},
+				Build:      &TemplateDevelopmentBuild{WorkflowPath: ".github/workflows/nested/build.yaml"},
+			}},
+			wantErr: "directly under .github/workflows",
+		},
+		{
+			name: "workflow path rejects traversal",
+			spec: TemplateSpec{Development: &TemplateDevelopment{
+				Components: map[string]TemplateDevelopmentComponent{"app": devComponent(".")},
+				Build:      &TemplateDevelopmentBuild{WorkflowPath: ".github/workflows/../build.yaml"},
+			}},
+			wantErr: "directly under .github/workflows",
+		},
+		{
+			name: "workflow path requires yaml extension",
+			spec: TemplateSpec{Development: &TemplateDevelopment{
+				Components: map[string]TemplateDevelopmentComponent{"app": devComponent(".")},
+				Build:      &TemplateDevelopmentBuild{WorkflowPath: ".github/workflows/build.json"},
+			}},
+			wantErr: "directly under .github/workflows",
 		},
 		{
 			name: "multi component with distinct paths",

@@ -243,6 +243,125 @@ func TestProjectAssistantDurableMetadataFromExistingPreservesPlanAcrossTransitio
 	}
 }
 
+func TestProjectAssistantVerificationMetadataSeparatesRunAndEvidenceOutcome(t *testing.T) {
+	interaction := projectAssistantVerificationFromCompletionEvidence(projectAssistantCompletionEvidence{
+		PreviewEvidenceOutcome:       "interactions_verified",
+		PreviewRenderedStateObserved: true,
+		PreviewInteractionVerified:   true,
+	})
+	if interaction.Outcome != "interactions_verified" || !interaction.RenderedStateObserved || !interaction.InteractionVerified {
+		t.Fatalf("interaction verification = %#v", interaction)
+	}
+	if got := projectAssistantVerificationFromCompletionEvidence(projectAssistantCompletionEvidence{}); got.Outcome != "not_verified" {
+		t.Fatalf("empty evidence outcome = %q, want not_verified", got.Outcome)
+	}
+	if got := projectAssistantVerificationFromCompletionEvidence(projectAssistantCompletionEvidence{LatestMutationVerified: true}); got.Outcome != "runtime_verified" {
+		t.Fatalf("runtime-only outcome = %q, want runtime_verified", got.Outcome)
+	}
+	if got := projectAssistantVerificationFromCompletionEvidence(projectAssistantCompletionEvidence{VerificationOutcome: "ready"}); got.Outcome != "runtime_verified" {
+		t.Fatalf("ready no-mutation outcome = %q, want runtime_verified", got.Outcome)
+	}
+
+	existing := map[string]any{projectAssistantMetadataVerification: interaction}
+	metadata := projectAssistantDurableMetadataFromExisting(
+		store.AssistantRun{ID: "run-1", Status: store.AssistantRunStatusCompleted, Revision: 2},
+		"Completed",
+		false,
+		existing,
+	)
+	if !reflect.DeepEqual(metadata[projectAssistantMetadataVerification], interaction) {
+		t.Fatalf("verification metadata = %#v, want %#v", metadata[projectAssistantMetadataVerification], interaction)
+	}
+}
+
+func TestProjectAssistantAbortPreservesComputedPreviewVerification(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "project-uid-1"}
+	run := store.AssistantRun{
+		ID:              "run-abort-verification",
+		Mode:            store.AssistantRunModeDefault,
+		Status:          store.AssistantRunStatusRunning,
+		ClientRequestID: "request-abort-verification",
+		UserMessageID:   "user-abort-verification",
+		ActiveMessageID: "assistant-abort-verification",
+		Revision:        1,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	user := store.Message{ID: run.UserMessageID, Role: "user", ActorID: "test-user", CreatedAt: now, UpdatedAt: now}
+	plan := projectAssistantPlanSnapshot{Steps: []projectAssistantPlanStep{{
+		Content:    "Verify the preview",
+		ActiveForm: "Verifying the preview",
+		Status:     "in_progress",
+	}}}
+	assistant := store.Message{
+		ID:        run.ActiveMessageID,
+		Role:      "assistant",
+		Content:   "Checking the preview.",
+		Metadata:  projectAssistantDurableMetadataForTransition(run, "Working", false, false, nil, nil),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	assistant.Metadata[projectAssistantMetadataPlan] = plan
+	messageStore := store.NewMemoryStore()
+	if _, err := messageStore.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {
+		t.Fatalf("CreateAssistantRun: %v", err)
+	}
+	supervisor := newProjectAssistantSupervisor(ctx, messageStore)
+	if _, err := supervisor.Attach(scope, run, assistant); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	verification := &projectAssistantVerificationView{
+		Outcome:               "interactions_verified",
+		RenderedStateObserved: true,
+		InteractionVerified:   true,
+		AssertionsObserved:    true,
+		AssertionsPassed:      true,
+		AssertionCount:        2,
+	}
+	const finalContent = "Preview verification completed before cancellation."
+	if _, err := supervisor.AbortWith(scope, run.ID, func(_ *store.AssistantRun, message *store.Message) error {
+		if strings.TrimSpace(finalContent) != "" {
+			message.Content = finalContent
+		}
+		message.Metadata = projectAssistantMergeTerminalVerification(message.Metadata, verification)
+		return nil
+	}); err != nil {
+		t.Fatalf("AbortWith: %v", err)
+	}
+
+	persisted, err := messageStore.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil {
+		t.Fatalf("GetAssistantRun: %v", err)
+	}
+	if persisted.Status != store.AssistantRunStatusInterrupted {
+		t.Fatalf("persisted status = %q, want interrupted", persisted.Status)
+	}
+	page, err := messageStore.ListMessages(ctx, scope, 10, "")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	for _, message := range page.Items {
+		if message.ID != run.ActiveMessageID {
+			continue
+		}
+		if message.Content != finalContent {
+			t.Fatalf("terminal content = %q, want %q", message.Content, finalContent)
+		}
+		gotPlan, planOK := projectAssistantPlanSnapshotFromMetadata(message.Metadata[projectAssistantMetadataPlan])
+		if !planOK || !reflect.DeepEqual(gotPlan, &plan) {
+			t.Fatalf("terminal plan = %#v, accepted = %t, want %#v", gotPlan, planOK, plan)
+		}
+		got, ok := projectAssistantVerificationFromMetadata(message.Metadata[projectAssistantMetadataVerification])
+		if !ok || !reflect.DeepEqual(got, *verification) {
+			t.Fatalf("terminal verification = %#v, accepted = %t, want %#v", got, ok, *verification)
+		}
+		return
+	}
+	t.Fatal("terminal assistant message was not persisted")
+}
+
 func TestProjectAssistantProgressMetadataIsBoundedAndPreserved(t *testing.T) {
 	valid := projectAssistantProgressSnapshot{
 		Version:          1,

@@ -7,7 +7,9 @@
   "scripts": {
     "build": "vite build && cp index.html icon.svg dist/ && touch dist/.gitkeep",
     "dev": "vite",
+    "test": "node run-tests.mjs",
     "test:workbench": "node --test src/workbench.test.mjs",
+    "test:workbench-persistence": "node src/workbenchPersistence.test.mjs",
     "test:preview-state": "node --test src/previewState.test.mjs",
     "test:preview-refresh": "node --test src/previewRefresh.test.mjs src/previewState.test.mjs",
     "test:preview-console": "node --test src/previewConsole.test.mjs",

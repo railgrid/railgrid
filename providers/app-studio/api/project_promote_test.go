@@ -19,6 +19,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -100,6 +102,261 @@ func TestProjectTemplateProdBindingFillsImagesAndForcesMode(t *testing.T) {
 	// Non-reserved production knobs pass through.
 	if vals["frontendPort"] != float64(8080) || vals["backendPort"] != float64(3000) {
 		t.Fatalf("ports not preserved: %v / %v", vals["frontendPort"], vals["backendPort"])
+	}
+}
+
+func TestProjectProductionInputValuesExcludePlatformAndImageOwnedFields(t *testing.T) {
+	info := applicationTemplateForPromote()
+	info.ProductionSchema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"access":       map[string]any{"type": "string"},
+			"webImage":     map[string]any{"type": "string"},
+			"farosCluster": map[string]any{"type": "string", "description": "Computed by the platform — do NOT set."},
+			"expose": map[string]any{"type": "object", "properties": map[string]any{
+				"hostnamePrefix": map[string]any{"type": "string"},
+				// Keep the schema description neutral: fqdn is reserved by the
+				// explicit nested platform-ownership map, not by prose matching.
+				"fqdn": map[string]any{"type": "string", "description": "Public hostname"},
+			}},
+		},
+	}
+	values := projectProductionInputValues(info, map[string]string{"webImage": "web@sha256:built"}, map[string]any{
+		"access":       "private",
+		"webImage":     "web@sha256:attacker",
+		"farosCluster": "attacker-cluster",
+		"name":         "attacker-name",
+		"expose":       map[string]any{"hostnamePrefix": "shop", "fqdn": "attacker.example"},
+	})
+	want := map[string]any{"access": "private", "expose": map[string]any{"hostnamePrefix": "shop"}}
+	if !reflect.DeepEqual(values, want) {
+		t.Fatalf("filtered production values = %#v, want %#v", values, want)
+	}
+}
+
+func TestProjectTemplateProdBindingLocksHostnamePrefixAfterFirstDeploy(t *testing.T) {
+	p := projectForPromote("shop")
+	info := applicationTemplateForPromote()
+	info.ProductionSchema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":          map[string]any{"type": "string"},
+			"farosMode":     map[string]any{"type": "string"},
+			"frontendImage": map[string]any{"type": "string"},
+			"expose": map[string]any{"type": "object", "properties": map[string]any{
+				"hostnamePrefix": map[string]any{"type": "string"},
+				"fqdn":           map[string]any{"type": "string"},
+			}},
+		},
+		"required": []any{"name"},
+	}
+	images := map[string]string{"frontendImage": "frontend@sha256:built"}
+
+	first, err := projectTemplateProdBinding(p, info, images, map[string]any{
+		"expose": map[string]any{"hostnamePrefix": "shop-live"},
+	})
+	if err != nil {
+		t.Fatalf("initial hostname prefix: %v", err)
+	}
+	firstValues, err := aiv1alpha1BindingValues(first)
+	if err != nil {
+		t.Fatalf("decode initial binding: %v", err)
+	}
+	firstExpose, _ := firstValues["expose"].(map[string]any)
+	if firstExpose["hostnamePrefix"] != "shop-live" {
+		t.Fatalf("initial hostnamePrefix = %#v, want shop-live", firstExpose["hostnamePrefix"])
+	}
+	upsertProjectProductionBinding(p, first)
+
+	unchanged, err := projectTemplateProdBinding(p, info, images, map[string]any{
+		"expose": map[string]any{"hostnamePrefix": "shop-live"},
+	})
+	if err != nil {
+		t.Fatalf("unchanged hostname prefix on re-promote: %v", err)
+	}
+	unchangedValues, err := aiv1alpha1BindingValues(unchanged)
+	if err != nil {
+		t.Fatalf("decode unchanged binding: %v", err)
+	}
+	unchangedExpose, _ := unchangedValues["expose"].(map[string]any)
+	if unchangedExpose["hostnamePrefix"] != "shop-live" {
+		t.Fatalf("unchanged hostnamePrefix = %#v, want shop-live", unchangedExpose["hostnamePrefix"])
+	}
+
+	_, err = projectTemplateProdBinding(p, info, images, map[string]any{
+		"expose": map[string]any{"hostnamePrefix": "shop-new"},
+	})
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || !strings.Contains(err.Error(), projectProductionHostnamePrefixPath) {
+		t.Fatalf("mutated hostname prefix error = %v, want immutable validation naming %s", err, projectProductionHostnamePrefixPath)
+	}
+}
+
+func TestProjectTemplateProdBindingDoesNotInjectUndeclaredHostnamePrefix(t *testing.T) {
+	p := projectForPromote("worker")
+	info := applicationTemplateForPromote()
+	info.ProductionSchema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":                  map[string]any{"type": "string"},
+			"farosMode":             map[string]any{"type": "string"},
+			"farosRedeployRevision": map[string]any{"type": "string"},
+			"frontendImage":         map[string]any{"type": "string"},
+		},
+		"required":             []any{"name"},
+		"additionalProperties": false,
+	}
+	images := map[string]string{"frontendImage": "frontend@sha256:built"}
+
+	first, err := projectTemplateProdBinding(p, info, images, nil)
+	if err != nil {
+		t.Fatalf("initial production binding without exposure: %v", err)
+	}
+	upsertProjectProductionBinding(p, first)
+
+	repromoted, err := projectTemplateProdBinding(p, info, images, nil)
+	if err != nil {
+		t.Fatalf("re-promote without exposure: %v", err)
+	}
+	values, err := aiv1alpha1BindingValues(repromoted)
+	if err != nil {
+		t.Fatalf("decode re-promoted binding: %v", err)
+	}
+	if _, found := values["expose"]; found {
+		t.Fatalf("re-promote injected undeclared expose object: %#v", values["expose"])
+	}
+}
+
+func TestProjectProductionImmutableInputPathsAdvertiseDeclaredHostnamePrefixOnly(t *testing.T) {
+	base := projectTemplateInfo{ImmutableProductionInputs: []string{"database.size"}}
+	withoutExposure := projectProductionImmutableInputPaths(base)
+	if !reflect.DeepEqual(withoutExposure, []string{"database.size"}) {
+		t.Fatalf("immutable inputs without exposure = %#v, want only declared inputs", withoutExposure)
+	}
+
+	withExposure := base
+	withExposure.ProductionSchema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"expose": map[string]any{"type": "object", "properties": map[string]any{
+				"hostnamePrefix": map[string]any{"type": "string"},
+			}},
+		},
+	}
+	got := projectProductionImmutableInputPaths(withExposure)
+	want := []string{"database.size", projectProductionHostnamePrefixPath}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("immutable inputs with exposure = %#v, want %#v", got, want)
+	}
+}
+
+func TestProjectProductionInputValuesSanitizeObjectsInsideArrays(t *testing.T) {
+	info := applicationTemplateForPromote()
+	info.ProductionSchema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"routes": map[string]any{"type": "array", "items": map[string]any{
+				"type": "object", "properties": map[string]any{
+					"path": map[string]any{"type": "string"},
+					"fqdn": map[string]any{"type": "string", "description": "Computed by the platform — do NOT set."},
+				},
+			}},
+		},
+	}
+	values := projectProductionInputValues(info, nil, map[string]any{
+		"routes": []any{map[string]any{"path": "/", "fqdn": "attacker.example"}},
+	})
+	want := map[string]any{"routes": []any{map[string]any{"path": "/"}}}
+	if !reflect.DeepEqual(values, want) {
+		t.Fatalf("filtered array values = %#v, want %#v", values, want)
+	}
+}
+
+func TestProjectTemplateProdBindingRejectsInvalidSchemaValues(t *testing.T) {
+	info := applicationTemplateForPromote()
+	info.ProductionSchema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":          map[string]any{"type": "string"},
+			"farosMode":     map[string]any{"type": "string"},
+			"frontendImage": map[string]any{"type": "string"},
+			"replicas":      map[string]any{"type": "integer", "minimum": float64(1)},
+		},
+		"required": []any{"name"},
+	}
+	_, err := projectTemplateProdBinding(projectForPromote("shop"), info, map[string]string{"frontendImage": "image@sha256:built"}, map[string]any{"replicas": 1.5})
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || !strings.Contains(err.Error(), "replicas") {
+		t.Fatalf("invalid replicas error = %v, want ValidationError naming replicas", err)
+	}
+}
+
+func TestProjectTemplateProdBindingPreservesAndEnforcesImmutableInputs(t *testing.T) {
+	p := projectForPromote("shop")
+	info := applicationTemplateForPromote()
+	info.ImmutableProductionInputs = []string{"database.size"}
+	info.ProductionSchema = map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"name":          map[string]any{"type": "string"},
+			"farosMode":     map[string]any{"type": "string"},
+			"frontendImage": map[string]any{"type": "string"},
+			"database": map[string]any{"type": "object", "properties": map[string]any{
+				"size": map[string]any{"type": "string", "enum": []any{"small", "medium", "large"}, "default": "small"},
+			}},
+		},
+		"required": []any{"name"},
+	}
+	upsertProjectProductionBinding(p, aiv1alpha1.ProjectProviderBindingSpec{
+		Name:   projectProductionBindingName,
+		Values: runtime.RawExtension{Raw: []byte(`{"database":{"size":"large"},"name":"shop-prod","farosMode":"production"}`)},
+	})
+
+	_, err := projectTemplateProdBinding(p, info, map[string]string{"frontendImage": "image@sha256:new"}, map[string]any{"database": map[string]any{"size": "medium"}})
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || !strings.Contains(err.Error(), "database.size") {
+		t.Fatalf("immutable size error = %v", err)
+	}
+
+	binding, err := projectTemplateProdBinding(p, info, map[string]string{"frontendImage": "image@sha256:new"}, nil)
+	if err != nil {
+		t.Fatalf("omitted immutable size: %v", err)
+	}
+	values, err := aiv1alpha1BindingValues(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database, _ := values["database"].(map[string]any)
+	if database["size"] != "large" {
+		t.Fatalf("preserved database size = %#v, want large", database["size"])
+	}
+}
+
+func TestProjectTemplateInfoCarriesProductionSchema(t *testing.T) {
+	obj := applicationTemplateObject()
+	obj.SetAnnotations(map[string]string{projectTemplateImmutableInputsAnnotation: " database.version, database.size "})
+	obj.Object["spec"].(map[string]any)["schema"] = map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"access": map[string]any{"type": "string", "default": "public"}},
+	}
+	info, err := projectTemplateInfoFromUnstructured(obj)
+	if err != nil {
+		t.Fatalf("projectTemplateInfoFromUnstructured: %v", err)
+	}
+	if got := info.ProductionSchema["type"]; got != "object" {
+		t.Fatalf("production schema type = %#v, want object", got)
+	}
+	if want := []string{"database.size", "database.version"}; !reflect.DeepEqual(info.ImmutableProductionInputs, want) {
+		t.Fatalf("immutable production inputs = %#v, want %#v", info.ImmutableProductionInputs, want)
+	}
+}
+
+func TestProjectRequestedRedeployRevisionReadsPersistedProductionValues(t *testing.T) {
+	binding := &aiv1alpha1.ProjectProviderBindingSpec{
+		Values: runtime.RawExtension{Raw: []byte(`{"farosRedeployRevision":" rollout-42 "}`)},
+	}
+	if got := projectRequestedRedeployRevision(binding); got != "rollout-42" {
+		t.Fatalf("requested revision = %q, want rollout-42", got)
 	}
 }
 

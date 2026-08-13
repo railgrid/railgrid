@@ -307,6 +307,59 @@ func TestApplicationSeedsDeclareAndProjectRedeployRevision(t *testing.T) {
 	}
 }
 
+func TestApplicationDatabaseSizeMapsToPersistentStorage(t *testing.T) {
+	raw, err := fs.ReadFile(seedTemplatesFS, "templates/application.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tmpl infrav1alpha1.Template
+	if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
+		t.Fatal(err)
+	}
+	var backend map[string]any
+	if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &backend); err != nil {
+		t.Fatalf("decode backendConfig: %v", err)
+	}
+	resources, _ := backend["resources"].([]any)
+	for _, rawResource := range resources {
+		resource, _ := rawResource.(map[string]any)
+		if resource["id"] != "dbStatefulSet" {
+			continue
+		}
+		template, _ := resource["template"].(map[string]any)
+		spec, _ := template["spec"].(map[string]any)
+		claims, _ := spec["volumeClaimTemplates"].([]any)
+		if len(claims) != 1 {
+			t.Fatalf("db volumeClaimTemplates = %#v, want one", claims)
+		}
+		claim, _ := claims[0].(map[string]any)
+		claimSpec, _ := claim["spec"].(map[string]any)
+		resourcesMap, _ := claimSpec["resources"].(map[string]any)
+		requests, _ := resourcesMap["requests"].(map[string]any)
+		storage, _ := requests["storage"].(string)
+		want := `${schema.spec.database.size == "small" ? "1Gi" : (schema.spec.database.size == "medium" ? "5Gi" : "20Gi")}`
+		if storage != want {
+			t.Fatalf("database storage expression = %q, want %q", storage, want)
+		}
+		return
+	}
+	t.Fatal("dbStatefulSet resource not found")
+}
+
+func TestApplicationLocksStatefulDatabaseInputsAfterCreation(t *testing.T) {
+	raw, err := fs.ReadFile(seedTemplatesFS, "templates/application.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tmpl infrav1alpha1.Template
+	if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
+		t.Fatal(err)
+	}
+	if got := tmpl.Annotations["faros.sh/immutable-inputs"]; got != "database.size,database.version" {
+		t.Fatalf("immutable database inputs = %q", got)
+	}
+}
+
 func TestPreviewConsolePluginIsLimitedToBuiltInViteComponents(t *testing.T) {
 	want := map[string]string{
 		"simple-webapp": "app",

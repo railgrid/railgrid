@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { createServer } from 'vite'
 
@@ -7,6 +8,13 @@ test.before(async () => {
   vite = await createServer({ appType: 'custom', server: { middlewareMode: true, hmr: false } })
 })
 test.after(async () => vite?.close())
+
+test('does not render internal verification metadata as a conversation banner', async () => {
+  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  assert.doesNotMatch(appSource, /message\.verification/)
+  assert.doesNotMatch(appSource, /Interactions verified/)
+  assert.doesNotMatch(appSource, /The current preview was loaded and exercised/)
+})
 
 test('projects terminal worked duration from canonical agent message data', async () => {
   const { assistantThreadItemsToMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
@@ -32,6 +40,21 @@ test('projects terminal worked duration from canonical agent message data', asyn
   assert.equal(messages.length, 1)
   assert.equal(messages[0].metadata.assistantStatus, 'completed')
   assert.equal(parseAssistantProgress(messages[0].metadata.assistantProgress)?.workedDurationMs, 83_400)
+})
+
+test('projects durable verification metadata after a hard refresh', async () => {
+  const { assistantThreadItemsToMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const [message] = assistantThreadItemsToMessages([{
+    id: 'assistant-verified', turnID: 'run-verified', type: 'agentMessage', status: 'completed', content: 'Done',
+    data: { assistantVerification: { outcome: 'rendered_verified', renderedStateObserved: true } },
+    sequence: 1,
+    createdAt: '2026-08-02T17:42:09Z',
+  }], 'demo')
+
+  assert.deepEqual(message.metadata.assistantVerification, {
+    outcome: 'rendered_verified',
+    renderedStateObserved: true,
+  })
 })
 
 test('projects only canonical context-resource references on user messages', async () => {

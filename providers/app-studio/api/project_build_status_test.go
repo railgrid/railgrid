@@ -22,7 +22,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +38,444 @@ import (
 	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/tenant"
 )
+
+func TestFetchProjectBuildRunNormalizesStructuredCodeStatus(t *testing.T) {
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer caller-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		var request struct {
+			Params struct {
+				Arguments struct {
+					RepositoryRef    string `json:"repositoryRef"`
+					WorkflowFileName string `json:"workflowFileName"`
+					Ref              string `json:"ref"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode MCP request: %v", err)
+		}
+		args := request.Params.Arguments
+		if args.RepositoryRef != "repo-a" || args.WorkflowFileName != projectBuildWorkflowFileName || args.Ref != "70aed526" {
+			t.Fatalf("build status arguments = %#v, want repository/workflow/exact reviewed ref", args)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"repositoryRef":"repo-a","found":true,"runID":42,"htmlURL":"https://example.test/actions/42","headSHA":"70aed526","status":"in_progress","jobs":[{"name":"web","status":"completed","conclusion":"success"},{"name":"api","status":"in_progress"}]}}}`)
+	}))
+	t.Cleanup(mcp.Close)
+
+	s := &Server{hubBase: mcp.URL}
+	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
+	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
+	req.Header.Set("Authorization", "Bearer caller-token")
+	run, err := s.fetchProjectBuildRun(context.Background(), identity{clusterID: "cluster-a", tenantPath: "root:tenant-a"}, p, req, "70aed526")
+	if err != nil {
+		t.Fatalf("fetchProjectBuildRun: %v", err)
+	}
+	if !run.Found || run.RunID != 42 || run.URL != "https://example.test/actions/42" || run.HeadSHA != "70aed526" || run.Status != "in_progress" {
+		t.Fatalf("normalized run = %#v", run)
+	}
+	if len(run.Jobs) != 2 || run.Jobs[1].Name != "api" {
+		t.Fatalf("normalized jobs = %#v", run.Jobs)
+	}
+}
+
+func TestDeclaredWorkflowPathIsPassedAsWorkflowFileName(t *testing.T) {
+	var gotWorkflow string
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Params struct {
+				Arguments struct {
+					Workflow string `json:"workflowFileName"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		gotWorkflow = request.Params.Arguments.Workflow
+		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"found":false}}}`)
+	}))
+	t.Cleanup(mcp.Close)
+
+	template := applicationTemplateObject()
+	dynamicClient := fake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{templatesGVR: "TemplateList"},
+		template,
+	)
+	s := &Server{
+		hubBase: mcp.URL,
+		projectClientFor: func(identity) (*asclient.Client, error) {
+			return asclient.NewFromDynamic(dynamicClient), nil
+		},
+	}
+	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{
+		Template:   &aiv1alpha1.ProjectTemplateSpec{Name: "application"},
+		Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
+	req.Header.Set("Authorization", "Bearer caller-token")
+	if _, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenantPath: "root:tenant-a"}, p, req, "reviewed-sha"); err != nil {
+		t.Fatalf("getProjectBuildLogs: %v", err)
+	}
+	if gotWorkflow != "build.yaml" {
+		t.Fatalf("workflowFileName = %q, want declared path basename build.yaml", gotWorkflow)
+	}
+}
+
+func TestDeclaredWorkflowErrorDoesNotFallBackToCompatibilityNames(t *testing.T) {
+	var workflows []string
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Params struct {
+				Arguments struct {
+					Workflow string `json:"workflowFileName"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		workflows = append(workflows, request.Params.Arguments.Workflow)
+		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"declared workflow unavailable"}}`)
+	}))
+	t.Cleanup(mcp.Close)
+
+	template := applicationTemplateObject()
+	dynamicClient := fake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{templatesGVR: "TemplateList"},
+		template,
+	)
+	s := &Server{
+		hubBase: mcp.URL,
+		projectClientFor: func(identity) (*asclient.Client, error) {
+			return asclient.NewFromDynamic(dynamicClient), nil
+		},
+	}
+	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{
+		Template:   &aiv1alpha1.ProjectTemplateSpec{Name: "application"},
+		Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
+	req.Header.Set("Authorization", "Bearer caller-token")
+	if _, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenantPath: "root:tenant-a"}, p, req, "reviewed-sha"); err == nil {
+		t.Fatal("getProjectBuildLogs succeeded, want declared workflow error")
+	}
+	if !reflect.DeepEqual(workflows, []string{"build.yaml"}) {
+		t.Fatalf("workflow calls = %#v, want only declared build.yaml", workflows)
+	}
+}
+
+func TestProjectBuildWorkflowUsesCanonicalWithoutLegacyFallback(t *testing.T) {
+	tests := []struct {
+		name         string
+		response     string
+		wantFound    bool
+		wantWorkflow string
+	}{
+		{name: "canonical run", response: `{"found":true,"headSHA":"reviewed-sha"}`, wantFound: true, wantWorkflow: projectBuildWorkflowFileName},
+		{name: "canonical no run", response: `{"found":false}`, wantFound: false, wantWorkflow: projectBuildWorkflowFileName},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			type workflowCall struct {
+				workflow string
+				ref      string
+			}
+			var calls []workflowCall
+			mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					Params struct {
+						Arguments struct {
+							Workflow string `json:"workflowFileName"`
+							Ref      string `json:"ref"`
+						} `json:"arguments"`
+					} `json:"params"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Errorf("decode MCP request: %v", err)
+					return
+				}
+				calls = append(calls, workflowCall{workflow: request.Params.Arguments.Workflow, ref: request.Params.Arguments.Ref})
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":%s}}`, tt.response)
+			}))
+			t.Cleanup(mcp.Close)
+
+			s := &Server{hubBase: mcp.URL}
+			p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
+			req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
+			req.Header.Set("Authorization", "Bearer caller-token")
+			raw, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenantPath: "root:tenant-a"}, p, req, "  reviewed-sha  ")
+			if err != nil {
+				t.Fatalf("getProjectBuildLogs: %v", err)
+			}
+			var got struct {
+				Found bool `json:"found"`
+			}
+			if err := json.Unmarshal([]byte(raw), &got); err != nil {
+				t.Fatalf("decode status response %q: %v", raw, err)
+			}
+			if got.Found != tt.wantFound {
+				t.Fatalf("found = %v, want %v", got.Found, tt.wantFound)
+			}
+			if len(calls) != 1 || calls[0].workflow != tt.wantWorkflow || calls[0].ref != "reviewed-sha" {
+				t.Fatalf("workflow calls = %#v, want one canonical call with exact ref", calls)
+			}
+		})
+	}
+}
+
+func TestProjectBuildWorkflowFallsBackToLegacyOnStatusError(t *testing.T) {
+	type workflowCall struct {
+		workflow string
+		ref      string
+	}
+	var calls []workflowCall
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Params struct {
+				Arguments struct {
+					Workflow string `json:"workflowFileName"`
+					Ref      string `json:"ref"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode MCP request: %v", err)
+			return
+		}
+		call := workflowCall{workflow: request.Params.Arguments.Workflow, ref: request.Params.Arguments.Ref}
+		calls = append(calls, call)
+		w.Header().Set("Content-Type", "application/json")
+		if call.workflow == projectBuildWorkflowFileName {
+			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"canonical workflow unavailable"}}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"found":true,"headSHA":"reviewed-sha"}}}`)
+	}))
+	t.Cleanup(mcp.Close)
+
+	s := &Server{hubBase: mcp.URL}
+	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
+	req := httptest.NewRequest(http.MethodGet, "/promotion", nil)
+	req.Header.Set("Authorization", "Bearer caller-token")
+	raw, err := s.getProjectBuildLogs(context.Background(), identity{clusterID: "cluster-a", tenantPath: "root:tenant-a"}, p, req, "reviewed-sha")
+	if err != nil {
+		t.Fatalf("getProjectBuildLogs: %v", err)
+	}
+	if !strings.Contains(raw, `"headSHA":"reviewed-sha"`) {
+		t.Fatalf("legacy response = %q, want fallback response", raw)
+	}
+	if len(calls) != 2 || calls[0].workflow != projectBuildWorkflowFileName || calls[1].workflow != projectLegacyBuildWorkflowFileName {
+		t.Fatalf("workflow calls = %#v, want canonical then legacy", calls)
+	}
+	for _, call := range calls {
+		if call.ref != "reviewed-sha" {
+			t.Fatalf("workflow call ref = %q, want exact reviewed-sha", call.ref)
+		}
+	}
+}
+
+func TestProjectBuildWorkflowFallsBackToLegacyOnRebuildError(t *testing.T) {
+	var workflows []string
+	var refs []string
+	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Params struct {
+				Name      string `json:"name"`
+				Arguments struct {
+					Workflow string `json:"workflowFileName"`
+					Ref      string `json:"ref"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode MCP request: %v", err)
+			return
+		}
+		if request.Params.Name != projectToolCodeRebuild {
+			t.Errorf("tool name = %q, want %q", request.Params.Name, projectToolCodeRebuild)
+		}
+		workflows = append(workflows, request.Params.Arguments.Workflow)
+		refs = append(refs, request.Params.Arguments.Ref)
+		w.Header().Set("Content-Type", "application/json")
+		if request.Params.Arguments.Workflow == projectBuildWorkflowFileName {
+			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"canonical dispatch unavailable"}}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"dispatched":true}}}`)
+	}))
+	t.Cleanup(mcp.Close)
+
+	s := &Server{hubBase: mcp.URL}
+	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
+	req := httptest.NewRequest(http.MethodPost, "/rebuild", nil)
+	req.Header.Set("Authorization", "Bearer caller-token")
+	if _, err := s.rebuildProject(context.Background(), identity{clusterID: "cluster-a", tenantPath: "root:tenant-a"}, p, req, "  reviewed-sha  "); err != nil {
+		t.Fatalf("rebuildProject: %v", err)
+	}
+	if len(workflows) != 2 || workflows[0] != projectBuildWorkflowFileName || workflows[1] != projectLegacyBuildWorkflowFileName {
+		t.Fatalf("workflow calls = %#v, want canonical then legacy", workflows)
+	}
+	for _, ref := range refs {
+		if ref != "reviewed-sha" {
+			t.Fatalf("workflow call ref = %q, want exact reviewed-sha", ref)
+		}
+	}
+}
+
+func TestObserveProjectBuildRunSingleflightsAndCachesExactCommit(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	started := make(chan struct{})
+	release := make(chan struct{})
+	s := &Server{projectBuildRunResolver: func(_ context.Context, _ identity, _ *aiv1alpha1.Project, _ *http.Request, commit string) (*projectBuildRunObservation, error) {
+		mu.Lock()
+		calls++
+		if calls == 1 {
+			close(started)
+		}
+		mu.Unlock()
+		<-release
+		return &projectBuildRunObservation{Found: true, HeadSHA: commit, Status: "queued"}, nil
+	}}
+	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
+	id := identity{tenantPath: "root:tenant-a", clusterID: "cluster-a", user: "alice"}
+
+	results := make(chan *projectBuildRunObservation, 2)
+	for range 2 {
+		go func() {
+			run, errorText := s.observeProjectBuildRun(context.Background(), id, p, httptest.NewRequest(http.MethodGet, "/", nil), "70aed526")
+			if errorText != "" {
+				t.Errorf("errorText = %q", errorText)
+			}
+			results <- run
+		}()
+	}
+	<-started
+	close(release)
+	for range 2 {
+		if run := <-results; run == nil || run.HeadSHA != "70aed526" {
+			t.Fatalf("run = %#v", run)
+		}
+	}
+	// A third read is served by the short-lived cache.
+	if run, errorText := s.observeProjectBuildRun(context.Background(), id, p, nil, "70aed526"); run == nil || errorText != "" {
+		t.Fatalf("cached run = %#v, error = %q", run, errorText)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("resolver calls = %d, want 1", calls)
+	}
+}
+
+func TestObserveProjectBuildRunCacheScopesClusterIdentity(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	s := &Server{projectBuildRunResolver: func(_ context.Context, id identity, _ *aiv1alpha1.Project, _ *http.Request, commit string) (*projectBuildRunObservation, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		return &projectBuildRunObservation{Found: true, RunID: int64(calls), HeadSHA: commit + "-" + id.clusterID, Status: "queued"}, nil
+	}}
+	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
+	commit := "70aed526"
+
+	first, firstErr := s.observeProjectBuildRun(context.Background(), identity{tenantPath: "root:tenant-a", clusterID: "cluster-a", user: "alice"}, p, nil, commit)
+	second, secondErr := s.observeProjectBuildRun(context.Background(), identity{tenantPath: "root:tenant-a", clusterID: "cluster-b", user: "alice"}, p, nil, commit)
+	if firstErr != "" || secondErr != "" {
+		t.Fatalf("errors = %q, %q", firstErr, secondErr)
+	}
+	if first == nil || first.RunID != 1 || first.HeadSHA != commit+"-cluster-a" {
+		t.Fatalf("first run = %#v", first)
+	}
+	if second == nil || second.RunID != 2 || second.HeadSHA != commit+"-cluster-b" {
+		t.Fatalf("second run = %#v; cache must not cross cluster identities", second)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("resolver calls = %d, want one per cluster", calls)
+	}
+}
+
+func TestObserveProjectBuildRunCacheIncludesDeclaredWorkflowIdentity(t *testing.T) {
+	var mu sync.Mutex
+	workflowPath := ".github/workflows/build.yaml"
+	calls := 0
+	s := &Server{
+		projectClientFor: func(identity) (*asclient.Client, error) {
+			obj := applicationTemplateObject()
+			_ = unstructured.SetNestedField(obj.Object, workflowPath, "spec", "development", "build", "workflowPath")
+			client := fake.NewSimpleDynamicClientWithCustomListKinds(
+				runtime.NewScheme(),
+				map[schema.GroupVersionResource]string{templatesGVR: "TemplateList"},
+				obj,
+			)
+			return asclient.NewFromDynamic(client), nil
+		},
+		projectBuildRunResolver: func(_ context.Context, _ identity, _ *aiv1alpha1.Project, _ *http.Request, commit string) (*projectBuildRunObservation, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			calls++
+			return &projectBuildRunObservation{Found: true, RunID: int64(calls), HeadSHA: commit}, nil
+		},
+	}
+	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{
+		Template:   &aiv1alpha1.ProjectTemplateSpec{Name: "application"},
+		Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"},
+	}}
+	id := identity{tenantPath: "root:tenant-a", clusterID: "cluster-a", user: "alice"}
+	first, firstErr := s.observeProjectBuildRun(context.Background(), id, p, nil, "70aed526")
+	workflowPath = ".github/workflows/release.yml"
+	second, secondErr := s.observeProjectBuildRun(context.Background(), id, p, nil, "70aed526")
+	if firstErr != "" || secondErr != "" {
+		t.Fatalf("errors = %q, %q", firstErr, secondErr)
+	}
+	if first == nil || first.RunID != 1 || second == nil || second.RunID != 2 {
+		t.Fatalf("runs = %#v, %#v; workflow identity must isolate cache entries", first, second)
+	}
+}
+
+func TestObserveProjectBuildRunDegradesTemplateFetchFailure(t *testing.T) {
+	resolverCalled := false
+	s := &Server{
+		projectClientFor: func(identity) (*asclient.Client, error) {
+			return nil, fmt.Errorf("template catalog unavailable")
+		},
+		projectBuildRunResolver: func(context.Context, identity, *aiv1alpha1.Project, *http.Request, string) (*projectBuildRunObservation, error) {
+			resolverCalled = true
+			return nil, nil
+		},
+	}
+	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{
+		Template:   &aiv1alpha1.ProjectTemplateSpec{Name: "application"},
+		Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"},
+	}}
+	run, errorText := s.observeProjectBuildRun(context.Background(), identity{tenantPath: "root:tenant-a", clusterID: "cluster-a"}, p, nil, "70aed526")
+	if run != nil || errorText != "Build status temporarily unavailable." {
+		t.Fatalf("run = %#v, error = %q", run, errorText)
+	}
+	if resolverCalled {
+		t.Fatal("CI resolver called after template fetch failed")
+	}
+}
+
+func TestObserveProjectBuildRunDegradesLookupFailureWithoutChangingArtifacts(t *testing.T) {
+	s := &Server{projectBuildRunResolver: func(context.Context, identity, *aiv1alpha1.Project, *http.Request, string) (*projectBuildRunObservation, error) {
+		return nil, fmt.Errorf("github unavailable")
+	}}
+	p := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}
+	run, errorText := s.observeProjectBuildRun(context.Background(), identity{tenantPath: "root:tenant-a", clusterID: "cluster-a"}, p, nil, "70aed526")
+	if run != nil || errorText != "Build status temporarily unavailable." {
+		t.Fatalf("run = %#v, error = %q", run, errorText)
+	}
+}
 
 // packageCR builds a minimal Code provider Package CR (as the crawler writes
 // it) for one component, with a single published version.

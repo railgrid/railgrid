@@ -349,6 +349,23 @@ spec:
 
                   See docs/app-studio-template-sandboxes.md for the end-to-end design.
                 properties:
+                  build:
+                    description: |-
+                      Build optionally declares the repository-owned GitHub Actions workflow
+                      that builds this template's production images. App Studio observes and
+                      dispatches this workflow; it never authors or rewrites it. Absence means
+                      the template declares no CI workflow.
+                    properties:
+                      workflowPath:
+                        description: |-
+                          WorkflowPath is a repository-relative GitHub Actions workflow path. It
+                          must live directly under .github/workflows and end in .yml or .yaml.
+                        maxLength: 256
+                        pattern: ^\.github/workflows/[^/]+\.ya?ml$
+                        type: string
+                    required:
+                    - workflowPath
+                    type: object
                   components:
                     additionalProperties:
                       description: |-
@@ -488,8 +505,9 @@ spec:
                       Scaffold optionally names starter code for a fresh project built on
                       this template. Its layout MUST match the components' workspacePaths and
                       it SHOULD ship CI workflows that build each component's production
-                      image (see docs/app-studio-template-sandboxes.md §4.1a). Consumed by
-                      App Studio at project bootstrap; opaque to the infrastructure provider.
+                      image, with the owned workflow declared by Build (see
+                      docs/app-studio-template-sandboxes.md §4.1a). Consumed by App Studio at
+                      project bootstrap; opaque to the infrastructure provider.
                     properties:
                       ref:
                         description: Ref pins a branch or tag. Empty means the repository

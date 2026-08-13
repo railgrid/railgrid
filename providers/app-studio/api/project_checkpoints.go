@@ -86,9 +86,8 @@ func (s *Server) projectCheckpoints(ctx context.Context, c *asclient.Client, id 
 	git := s.checkpointGit(repo)
 	ci := s.checkpointCI(repo, git.State)
 
-	// The build check is the promotion gate; compute it once and share it
-	// between the CI-context reason and the production checkpoint. It is a
-	// no-op ("unsupported") for template-less projects.
+	// The build check is the promotion gate used by the production checkpoint.
+	// It is a no-op ("unsupported") for template-less projects.
 	build, err := s.checkProjectBuild(ctx, c, id, p)
 	if err != nil {
 		build = projectBuildCheckResult{Status: "unavailable", Note: err.Error()}
@@ -152,14 +151,14 @@ func (s *Server) checkpointGit(repo *ProjectRepositoryView) projectCheckpoint {
 	return cp
 }
 
-// checkpointCI reports whether CI is established in the repository. App Studio
-// commits generated GitHub Actions workflow(s) alongside the source, so a
-// successful RepositoryCommit is the "CI committed in git" signal.
+// checkpointCI retains its historic API key but reports only whether source
+// has landed. A successful source commit does not prove that CI is configured;
+// App Studio never authors or repairs repository CI configuration.
 func (s *Server) checkpointCI(repo *ProjectRepositoryView, gitState string) projectCheckpoint {
-	cp := projectCheckpoint{Key: projectCheckpointCI, Label: "CI"}
+	cp := projectCheckpoint{Key: projectCheckpointCI, Label: "Source"}
 	if gitState != projectCheckpointStateDone {
 		cp.State = projectCheckpointStateBlocked
-		cp.Reason = "Connect a repository before committing CI."
+		cp.Reason = "Connect a repository before committing project source."
 		return cp
 	}
 	if repo != nil && repo.commitsErr != nil {
@@ -171,17 +170,17 @@ func (s *Server) checkpointCI(repo *ProjectRepositoryView, gitState string) proj
 		for _, commit := range repo.Commits {
 			if commit.Phase == "Succeeded" {
 				cp.State = projectCheckpointStateDone
-				cp.Reason = "CI workflow committed to the repository."
+				cp.Reason = "Repository source is committed."
 				return cp
 			}
 		}
 	}
 	cp.State = projectCheckpointStatePending
-	cp.Reason = "No commit has landed yet; committing the project adds the CI workflow."
+	cp.Reason = "No source commit has landed yet."
 	cp.Remediation = &projectCheckpointRemediation{
 		Kind:    projectCheckpointFixAuto,
 		Tool:    projectToolCommitProjectFiles,
-		Message: "Commit the project to establish CI (grant the connection 'workflow' scope if the commit is rejected).",
+		Message: "Commit the project source, including any repository-owned workflow supplied by its template.",
 	}
 	return cp
 }

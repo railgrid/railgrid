@@ -103,5 +103,6 @@ test('App restores, persists, and guards thread focus through project/thread tra
   assert.match(appSource, /persistAssistantThreadFocus\(assistantThreadFocusScope\(projectName\), threadID\)/)
   assert.ok((appSource.match(/persistAssistantThreadFocus\(assistantThreadFocusScope\(projectName\), thread\.id\)/g) ?? []).length >= 3)
   assert.match(appSource, /const assistantThreadLoadSerial = \+\+assistantThreadRequestSerial/)
-  assert.match(appSource, /if \(assistantThreadLoadSerial !== assistantThreadRequestSerial \|\| selected\.value\?\.name !== name\) return/)
+  assert.match(appSource, /!projectRequestIsCurrent\(requestGuard, name\)/)
+  assert.match(appSource, /assistantThreadLoadSerial !== assistantThreadRequestSerial/)
 })

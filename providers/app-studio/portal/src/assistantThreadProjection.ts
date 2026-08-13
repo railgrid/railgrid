@@ -428,6 +428,7 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
       }
       if (item.error) metadata.assistantError = item.error
       if (item.data?.assistantProgress) metadata.assistantProgress = item.data.assistantProgress
+	  if (item.data?.assistantVerification) metadata.assistantVerification = item.data.assistantVerification
       const existingIndex = !isCommentaryItem(item) ? assistantByID.get(itemOwnMessageID(item)) : undefined
       if (existingIndex !== undefined) {
         const existing = result[existingIndex]

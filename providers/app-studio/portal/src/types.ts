@@ -1,3 +1,5 @@
+import type { JSONSchema } from './productionForm'
+
 export interface FarosContext {
   token?: string | null
   user?: { email?: string; sub?: string; userId?: string } | null
@@ -531,17 +533,41 @@ export interface ProjectBuildComponent {
   built: boolean
   image?: string
   digest?: string
+  /** Human-facing immutable tag that identifies the reviewed commit. */
+  tag?: string
 }
 
-// Deterministic build status: built | incomplete | none | unsupported.
+export interface ProjectBuildRunJob {
+  name?: string
+  status?: string
+  conclusion?: string
+  failureLog?: string
+}
+
+export interface ProjectBuildRun {
+  found: boolean
+  runID?: number
+  url?: string
+  headSHA?: string
+  status?: 'queued' | 'in_progress' | 'completed' | string
+  conclusion?: 'success' | 'failure' | 'cancelled' | 'neutral' | 'skipped' | string
+  jobs?: ProjectBuildRunJob[]
+}
+
+export type ProjectBuildCheckStatus = 'built' | 'incomplete' | 'none' | 'unsupported'
+
+// Deterministic artifact status. The workflow run below is explanatory only;
+// exact-commit Package images remain the promotion authority.
 export interface ProjectBuildCheck {
-  status: string
-  commit?: string
+  status: ProjectBuildCheckStatus
+  commitSHA?: string
   builder?: string
   registry?: string
   components?: ProjectBuildComponent[]
   missing?: string[]
   note: string
+  run?: ProjectBuildRun
+  runError?: string
 }
 
 // Result of GET /api/projects/{name}/promotion — gates the Promote to Prod
@@ -549,13 +575,19 @@ export interface ProjectBuildCheck {
 export interface ProjectPromotionReadiness {
   template?: string
   instance?: string
+  productionSchema?: JSONSchema
+  productionValues?: Record<string, unknown>
+  immutableProductionInputs?: string[]
+  requestedRolloutRevision?: string
   observedRolloutRevision?: string
   promotable: boolean
   build: ProjectBuildCheck
   production?: ProjectProviderBinding
 }
 
-// One of the four project lifecycle checkpoints (template, git, ci, production).
+// One of the four project lifecycle checkpoints. The API key remains `ci` for
+// compatibility, but its user-facing label is `Source`: it reports whether
+// project source has been committed, not whether CI is configured.
 // state: done | pending | blocked | error.
 export interface ProjectCheckpoint {
   key: string

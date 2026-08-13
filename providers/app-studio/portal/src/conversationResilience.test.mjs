@@ -67,6 +67,47 @@ test('accepted start failures consume the rich draft and use server-derived conf
   assert.match(sendMessage, /persistedPrompt\?\.content === expectedServerContent/)
 })
 
+test('App keeps central loading surfaces honest while project state hydrates', async () => {
+  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const productionLoadingSource = await readFile(new URL('./ProductionSettingsLoadingShell.vue', import.meta.url), 'utf8')
+  assert.match(appSource, /const conversationLoading = computed\(\(\) => projectRouteLoading\.value \|\| threadHistoryLoading\.value \|\| !!selectingThreadID\.value\)/)
+  assert.match(appSource, /function appContextFingerprint\(ctx: FarosContext \| null\)/)
+  assert.match(appSource, /function projectContextFingerprint\(ctx: FarosContext \| null\)/)
+  assert.match(appSource, /function beginProjectRequest\(\): ProjectRequestGuard/)
+  assert.match(appSource, /function projectRequestIsCurrent\(guard: ProjectRequestGuard, projectName = ''\)/)
+  assert.match(appSource, /watch\(\s*\(\) => props\.ctx\?\.subPath \?\? ''[\s\S]*flush: 'sync'/)
+  assert.match(appSource, /invalidateProjectContextState\(\)[\s\S]*void load\(\)[\s\S]*flush: 'sync'/)
+  assert.match(appSource, /activeProjectContextFingerprint === appContextFingerprint\(props\.ctx\)/)
+  assert.match(appSource, /selectingThreadID\.value === threadID/)
+  assert.match(appSource, /const conversationRefreshing = ref\(false\)/)
+  assert.match(appSource, /Updating conversation…/)
+  assert.match(appSource, /v-if="initializing && !loading && !selectedNameFromPath"/)
+  assert.doesNotMatch(appSource, /v-else-if="projectRouteLoading"/)
+  assert.match(appSource, /function enterProject\(project: Project\)[\s\S]*selected\.value = project[\s\S]*projectOpenLoading\.value = true[\s\S]*props\.navigate\(encodeURIComponent\(project\.name\)\)/)
+  assert.match(appSource, /@click="enterProject\(project\)"/)
+  assert.match(appSource, /<template v-if="projectRouteLoading">[\s\S]*Loading project workspace…/)
+  assert.match(appSource, /<template v-else>[\s\S]*activeWorkbenchTab\?\.kind === 'launcher'/)
+  assert.match(appSource, /v-if="providersLoading && !providerCatalogLoaded"/)
+  assert.match(appSource, /v-else-if="providerCatalogLoaded \|\| !providerCatalogError"/)
+  assert.match(appSource, /v-if="providerCatalogError && providerCatalogLoaded"/)
+  assert.match(appSource, /v-else-if="importRepositoriesError && importRepositories\.length === 0"/)
+  assert.match(appSource, /v-if="importRepositoriesError"/)
+  assert.match(appSource, /Updating repositories…/)
+  assert.match(appSource, /:loading="threadHistoryLoading \|\| projectOpenLoading"/)
+  assert.match(appSource, /:selecting-thread-i-d="selectingThreadID"/)
+  assert.match(appSource, /<ProductionSettingsLoadingShell v-if="promotionLoading && !promotion"/)
+  assert.match(productionLoadingSource, /Loading production settings…/)
+  assert.match(productionLoadingSource, /aria-busy="true"/)
+  assert.match(appSource, /Production status is unavailable\. Refresh to retry\./)
+  assert.match(appSource, /Production settings are unavailable\. Refresh to retry\./)
+  assert.match(appSource, /if \(isProjectAPIInitializingError\(err\)\)[\s\S]*promotionError\.value/)
+  assert.match(appSource, /Connecting to preview…/)
+  assert.match(appSource, /!!activeAssistantRun\?\.id && !assistantRunTerminal/)
+  assert.match(appSource, /Loading provider catalog…/)
+  assert.match(appSource, /class="shimmer aspect-\[16\/9\]/)
+  assert.match(appSource, /:busy-action="publishingBusyAction"[\s\S]*:busy-target="publishingBusyTarget \?\? undefined"/)
+})
+
 test('assistantRunTerminal recognizes run and display forms of every closed outcome', () => {
   for (const status of ['completed', 'failed', 'interrupted', 'aborted', 'Completed', 'Failed', 'Interrupted', 'Aborted']) {
     assert.equal(state.assistantRunTerminal(status), true, status)
@@ -360,6 +401,28 @@ test('conversation run controller reconnects from the accepted revision with cap
   assert.deepEqual(calls, [3, 3, 3, 3, 3])
   assert.deepEqual(delays, [1_000, 2_000, 4_000, 8_000, 10_000])
   controller.disconnect()
+})
+
+test('conversation run controller reports reconnecting until a healthy snapshot arrives', async () => {
+  const states = []
+  const scheduled = []
+  const controller = new state.ConversationRunController({
+    onState: (connectionState) => states.push(connectionState),
+    connect: async () => { throw new Error('network') },
+    abort: async () => {},
+    setTimeout: (fn, delay) => { scheduled.push({ fn, delay }); return scheduled.length },
+    clearTimeout: () => {},
+  })
+
+  controller.start('run-1', 2)
+  await Promise.resolve()
+  assert.deepEqual(states, ['connecting', 'reconnecting'])
+  scheduled.shift().fn()
+  await Promise.resolve()
+  controller.markHealthySnapshot(3)
+  assert.equal(states.at(-1), 'connected')
+  controller.disconnect()
+  assert.equal(states.at(-1), 'idle')
 })
 
 test('a healthy snapshot resets reconnect backoff and stale callbacks are ignored after a new run starts', async () => {

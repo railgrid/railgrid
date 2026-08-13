@@ -51,6 +51,8 @@ var templatesGVR = schema.GroupVersionResource{
 
 var templateResource = tenant.Resource{GVR: templatesGVR, Kind: "Template", Plural: "Templates"}
 
+const projectTemplateImmutableInputsAnnotation = "faros.sh/immutable-inputs"
+
 // projectTemplateInfo is the slice of an infrastructure Template App Studio
 // needs: the instance kind the development binding creates, and the declared
 // development components keyed by name with their workspace subdirectories.
@@ -62,6 +64,16 @@ type projectTemplateInfo struct {
 	Kind       string
 	Resource   string
 
+	// ProductionSchema is the Template's tenant-facing production input
+	// contract. App Studio forwards it to the portal so production settings are
+	// rendered from the selected Template rather than from a provider-specific
+	// JSON blob.
+	ProductionSchema map[string]any
+
+	// ImmutableProductionInputs are tenant-facing schema paths that cannot be
+	// changed after the first production instance is created.
+	ImmutableProductionInputs []string
+
 	// Components maps a development component name to its contract. Non-empty
 	// iff the template declares spec.development.
 	Components map[string]projectTemplateComponent
@@ -72,6 +84,10 @@ type projectTemplateInfo struct {
 	// the assistant generates from scratch.
 	ScaffoldRepo string
 	ScaffoldRef  string
+
+	// BuildWorkflowPath is the repository-owned CI workflow declared by
+	// spec.development.build. Empty means the Template declares no CI.
+	BuildWorkflowPath string
 }
 
 // projectTemplateComponent is one development component's contract: where its
@@ -139,6 +155,20 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 	}
 	info.APIVersion = group + "/" + version
 
+	productionSchema, found, err := unstructured.NestedMap(obj.Object, "spec", "schema")
+	if err != nil {
+		return projectTemplateInfo{}, fmt.Errorf("template %q spec.schema is malformed: %w", info.Name, err)
+	}
+	if found {
+		info.ProductionSchema = productionSchema
+	}
+	for _, path := range strings.Split(obj.GetAnnotations()[projectTemplateImmutableInputsAnnotation], ",") {
+		if path = strings.TrimSpace(path); path != "" {
+			info.ImmutableProductionInputs = append(info.ImmutableProductionInputs, path)
+		}
+	}
+	sort.Strings(info.ImmutableProductionInputs)
+
 	components, found, err := unstructured.NestedMap(obj.Object, "spec", "development", "components")
 	if err != nil {
 		return projectTemplateInfo{}, fmt.Errorf("template %q spec.development is malformed: %w", info.Name, err)
@@ -175,6 +205,8 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 	ref, _, _ := unstructured.NestedString(obj.Object, "spec", "development", "scaffold", "ref")
 	info.ScaffoldRepo = strings.TrimSpace(repo)
 	info.ScaffoldRef = strings.TrimSpace(ref)
+	workflowPath, _, _ := unstructured.NestedString(obj.Object, "spec", "development", "build", "workflowPath")
+	info.BuildWorkflowPath = strings.TrimSpace(workflowPath)
 
 	return info, nil
 }
@@ -721,11 +753,6 @@ func (s *Server) putProjectTemplate(w http.ResponseWriter, r *http.Request) {
 	// ordered queue. Failures are non-fatal because the instance may still be
 	// provisioning and operational verification will surface the blocker.
 	s.scheduleDevelopmentSyncAfterMutation(id, updated, projectToolSelectTemplate)
-
-	// Wire the CI build into the repository now that the project has a template
-	// (and, if bound, a repository). Best-effort: build setup can also be
-	// triggered from the Publish & Promote tab or the next commit.
-	_, _ = s.ensureProjectBuildConfig(r.Context(), id, updated, r)
 
 	raw, _ := json.Marshal(updated)
 	writeJSON(w, http.StatusOK, projectTemplateSelectResponse{

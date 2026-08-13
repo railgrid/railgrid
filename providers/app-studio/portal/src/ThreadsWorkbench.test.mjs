@@ -34,4 +34,32 @@ test('keeps rename/delete confirmation and orchestration in the shared component
   assert.match(source, /@submit\.prevent="commitRename"/)
   assert.match(source, /title="Delete thread"/)
   assert.match(source, /:disabled="disabled \|\| busy/)
+  assert.match(source, /defineExpose\(\{ focusActiveThread \}\)/)
+  assert.match(source, /button\[aria-current="page"\].*\.focus\(\)/)
+})
+
+test('reserves the thread list while hydrating and marks only the selected row busy', async () => {
+  const { default: ThreadsWorkbench } = await vite.ssrLoadModule('/src/ThreadsWorkbench.vue')
+  const loadingHTML = await renderToString(createSSRApp(ThreadsWorkbench, {
+    threads: [],
+    activeThreadID: '',
+    loading: true,
+  }))
+  assert.match(loadingHTML, /Loading threads/)
+  assert.match(loadingHTML, /shimmer/)
+  assert.doesNotMatch(loadingHTML, /No threads yet/)
+
+  const selectingHTML = await renderToString(createSSRApp(ThreadsWorkbench, {
+    threads: [
+      { id: 'thread-1', title: 'Selected later', status: 'idle', createdAt: '2026-08-06T00:00:00Z', updatedAt: '2026-08-06T00:00:00Z' },
+      { id: 'thread-2', title: 'Current', status: 'idle', createdAt: '2026-08-06T00:00:00Z', updatedAt: '2026-08-06T00:00:00Z' },
+    ],
+    activeThreadID: 'thread-2',
+    selectingThreadID: 'thread-1',
+  }))
+  assert.match(selectingHTML, /aria-busy="true"/)
+  assert.match(selectingHTML, /Loading thread/)
+  assert.match(selectingHTML, /Current/)
+  assert.match(selectingHTML, /aria-current="page"/)
+  assert.doesNotMatch(selectingHTML, /aria-current="page"[^>]*disabled/)
 })

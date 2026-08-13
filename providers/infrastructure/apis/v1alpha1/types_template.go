@@ -279,6 +279,13 @@ const (
 // instances. The backend synthesizes the dev overlay from it mechanically at
 // RGD build time — template authors write this block, never a second graph.
 type TemplateDevelopment struct {
+	// Build optionally declares the repository-owned GitHub Actions workflow
+	// that builds this template's production images. App Studio observes and
+	// dispatches this workflow; it never authors or rewrites it. Absence means
+	// the template declares no CI workflow.
+	// +optional
+	Build *TemplateDevelopmentBuild `json:"build,omitempty"`
+
 	// Components maps a component name to its development behavior. Each key
 	// MUST name a workload resource the template's graph emits (by the
 	// backend's component→resource naming convention, e.g. "frontend" names
@@ -297,10 +304,22 @@ type TemplateDevelopment struct {
 	// Scaffold optionally names starter code for a fresh project built on
 	// this template. Its layout MUST match the components' workspacePaths and
 	// it SHOULD ship CI workflows that build each component's production
-	// image (see docs/app-studio-template-sandboxes.md §4.1a). Consumed by
-	// App Studio at project bootstrap; opaque to the infrastructure provider.
+	// image, with the owned workflow declared by Build (see
+	// docs/app-studio-template-sandboxes.md §4.1a). Consumed by App Studio at
+	// project bootstrap; opaque to the infrastructure provider.
 	// +optional
 	Scaffold *TemplateDevelopmentScaffold `json:"scaffold,omitempty"`
+}
+
+// TemplateDevelopmentBuild identifies repository-owned CI for projects based
+// on a template.
+type TemplateDevelopmentBuild struct {
+	// WorkflowPath is a repository-relative GitHub Actions workflow path. It
+	// must live directly under .github/workflows and end in .yml or .yaml.
+	// +required
+	// +kubebuilder:validation:Pattern=`^\.github/workflows/[^/]+\.ya?ml$`
+	// +kubebuilder:validation:MaxLength=256
+	WorkflowPath string `json:"workflowPath"`
 }
 
 // TemplateDevelopmentComponent describes one hot-swappable component of the

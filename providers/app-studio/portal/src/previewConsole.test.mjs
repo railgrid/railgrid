@@ -41,7 +41,7 @@ const { PreviewConsoleController, takePreviewConsoleUploadBatch } = await import
 test('App preview automatically shares console evidence without a capture control', async () => {
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   const apiSource = await readFile(new URL('./api.ts', import.meta.url), 'utf8')
-  assert.match(appSource, /if \(projectName\) void previewConsoleController\.connect\(projectName\)/)
+	assert.match(appSource, /if \(projectName\) \{[\s\S]*?previewConsoleController\.connect\(projectName\)/)
   assert.doesNotMatch(appSource, /Share console/)
   assert.doesNotMatch(appSource, /Console shared/)
   assert.doesNotMatch(apiSource, /userConsent/)

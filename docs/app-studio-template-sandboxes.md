@@ -88,6 +88,8 @@ development:
     repository: https://github.com/faroshq/scaffold-web-api
     ref: v1                          # incl. .github/workflows building each
                                      # component's image (see §4.1a)
+  build:
+    workflowPath: .github/workflows/build.yaml
 ```
 
 Rules:
@@ -106,6 +108,12 @@ Rules:
   process by default; `rules` name path patterns that require a command first.
   `strategy: container` is the escape hatch for toolchains that cannot hot
   reload in place.
+- `build.workflowPath` is an optional, typed declaration of repository-owned
+  GitHub Actions CI. It must name a `.yml` or `.yaml` file directly under
+  `.github/workflows/`. App Studio observes and dispatches that path but never
+  creates, edits, or repairs it. A Template without the declaration has no
+  declared CI; compatibility lookup for existing projects is an App Studio
+  migration concern, not Template ownership.
 
 **Instance dev mode.** Instances gain a platform-reserved spec field
 `farosMode: production | development` (injected into every template's CRD
@@ -259,14 +267,14 @@ instance-level ones.
 The platform does not build images. The Template's scaffold ships
 **GitHub Actions workflows** that build and push each component's image from
 its `workspacePath` (so scaffold layout, `development.components`, and CI
-stay coupled on the Template — §6.3). The assistant's bootstrap context
-prompt instructs it to create and maintain these workflows as the project
-evolves (new component ⇒ new build job). Flipping an instance to
-`farosMode: production` supplies the CI-built image refs to the template's
-image fields, which become **optional while `farosMode: development`**
-(ignored by the dev overlay). Promotion mechanics — where image tags land,
-how the flip is triggered — are a follow-up design; this document only
-guarantees every project has buildable images from day one.
+stay coupled on the Template — §6.3). The Template declares the repository-
+owned workflow through `development.build.workflowPath`; App Studio observes
+and dispatches that workflow but does not synthesize, inject, or automatically
+repair it. Flipping an instance to `farosMode: production` supplies exact-
+commit, registry-backed image refs to the template's image fields, which are
+**optional while `farosMode: development`** (ignored by the dev overlay).
+Promotion is repeatable and updates the same production binding while keeping
+the development environment running.
 
 ### 4.2 Development loop: component-aware
 
@@ -369,8 +377,6 @@ BYO-compute validation.
   Deployments to zero after inactivity, wake on preview/sync) is deliberately
   deferred to its own design; nothing here precludes it, since the dev agent
   already fronts every component's traffic.
-- **Promotion mechanics.** How CI-built images flow back into a
-  `farosMode: production` flip (registries, tags, triggers) — see §4.1a.
 
 ## 9. Security notes
 

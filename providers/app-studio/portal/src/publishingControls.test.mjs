@@ -4,6 +4,9 @@ import test from 'node:test'
 
 const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 const dialog = await readFile(new URL('./ProjectShareDialog.vue', import.meta.url), 'utf8')
+const releasePipeline = await readFile(new URL('./ReleasePipeline.vue', import.meta.url), 'utf8')
+const promotionState = await readFile(new URL('./promotionState.ts', import.meta.url), 'utf8')
+const productionSettings = await readFile(new URL('./useProductionSettings.ts', import.meta.url), 'utf8')
 
 test('keeps Production inside Project Settings and removes the standalone workbench surface', () => {
   assert.match(app, /type ProjectSettingsPane = 'project' \| 'production' \| 'model'/)
@@ -22,6 +25,30 @@ test('keeps Production inside Project Settings and removes the standalone workbe
   assert.doesNotMatch(app, /builtInTab: 'publishing'/)
   assert.doesNotMatch(app, /title: 'Publishing'/)
   assert.doesNotMatch(app, /activeWorkbenchTab\?\.kind === 'publishing'/)
+})
+
+test('closes project settings before the landing route can render them as an LLM modal', () => {
+  const watcherStart = app.indexOf('watch(settingsProject, (project, previousProject) =>')
+  const watcherEnd = app.indexOf('\n\nuseEscapeKey', watcherStart)
+  assert.ok(watcherStart >= 0 && watcherEnd > watcherStart)
+  const watcher = app.slice(watcherStart, watcherEnd)
+
+  assert.match(watcher, /if \(!project && previousProject\)/)
+  assert.match(watcher, /showSettings\.value = false/)
+
+  const openStart = app.indexOf('async function openSettings()')
+  const openEnd = app.indexOf('function selectProjectSettingsPane', openStart)
+  assert.ok(openStart >= 0 && openEnd > openStart)
+  assert.match(app.slice(openStart, openEnd), /showSettings\.value = true/)
+})
+
+test('defers the project-settings Teleport until its restored workbench host exists', () => {
+  assert.match(app, /<Teleport defer :to="settingsInWorkbench \? '#app-studio-project-settings-host' : 'body'">/)
+  const hostStart = app.indexOf('v-show="!projectRouteLoading && !projectRouteFailure && activeWorkbenchTab?.kind === \'settings\'"')
+  const loadingPanelStart = app.indexOf('<template v-if="projectRouteLoading">', hostStart)
+  assert.ok(hostStart >= 0 && loadingPanelStart > hostStart)
+  assert.match(app.slice(hostStart, loadingPanelStart), /id="app-studio-project-settings-host"/)
+  assert.doesNotMatch(app, /v-else-if="activeWorkbenchTab\?\.kind === 'settings'"/)
 })
 
 test('keeps the plus in the scrolling tab strip and exposes a solid Share anchor', () => {
@@ -50,11 +77,18 @@ test('keeps Production focused on deployment and technical details inside Settin
   assert.ok(productionStart >= 0 && productionEnd > productionStart)
   const pane = app.slice(productionStart, productionEnd)
   assert.match(pane, /aria-label="Production overview"/)
+  assert.match(pane, /aria-label="Release evidence"/)
+  assert.match(pane, /Reviewed commit/)
+  assert.match(pane, /Built images/)
+  assert.match(pane, /releasePipeline\.builtCount[\s\S]*releasePipeline\.totalCount/)
   assert.match(pane, /Redeploy/)
   assert.match(pane, /Open app/)
   assert.match(pane, /aria-label="Technical details"/)
+  assert.match(pane, /<ReleasePipeline :pipeline="releasePipeline"/)
   assert.match(pane, /Redeploy updates the production deployment only\. It does not publish or change access\./)
-  assert.match(pane, /Publication is ready/)
+  assert.match(pane, /The publication is ready/)
+  assert.doesNotMatch(pane, /publishing && !publishing\.published[\s\S]{0,240}Publication is ready/)
+  assert.match(pane, /Production is running/)
   assert.match(pane, /bg-success-subtle[^\n]*text-success/)
   assert.match(pane, /publishing\?\.publication\?\.error && !publishing\?\.publication\?\.ready/)
   assert.match(pane, /publishingActionError[^\n]*text-danger/)
@@ -72,26 +106,44 @@ test('keeps Production focused on deployment and technical details inside Settin
   assert.doesNotMatch(pane, /Disable access/)
   assert.doesNotMatch(pane, /role="radiogroup"/)
   assert.doesNotMatch(pane, /@click="publishCurrentProject"/)
+  assert.match(pane, /<ProductionForm[\s\S]*:schema="promotion\?\.productionSchema \?\? null"/)
+  assert.match(pane, /Platform-owned names, rollout revisions, and component images are managed automatically\./)
+  assert.doesNotMatch(pane, /<textarea[^>]*promotionValuesText/)
 })
 
-test('treats a ready publication without a URL as calm success while Live remains URL-dependent', () => {
-  assert.match(app, /const productionPublicationReady = computed\(\(\) => Boolean\(publishing\.value\?\.published && publishing\.value\.publication\?\.ready\)\)/)
-  assert.match(app, /return \{ label: productionURL\.value \? 'Live' : 'Ready', tone: 'success' as const \}/)
-  assert.match(app, /productionPublicationReady\.value && !productionURL\.value/)
-  assert.match(app, /const productionPublicationStatus = computed\(\(\) => \{[\s\S]*if \(productionPublicationReady\.value\)[\s\S]*tone: 'success'/)
-  assert.match(app, /if \(publishing\.value\?\.publication\?\.error\) return \{ label: 'Error', tone: 'danger' as const \}/)
-  const overviewStart = app.indexOf('const productionOverview = computed')
-  const overviewEnd = app.indexOf('const productionOverviewDescription = computed', overviewStart)
+test('renders release progress as an announced four-stage pipeline with build drill-through', () => {
+  for (const label of ['Commit', 'Build images', 'Deploy', 'Enable access']) {
+    assert.match(promotionState, new RegExp(`label: '${label}'`))
+  }
+  assert.match(releasePipeline, /aria-label="Release pipeline"/)
+  assert.match(releasePipeline, /aria-live=/)
+  assert.match(releasePipeline, /pipeline\.state === 'failed' \? 'alert' : 'status'/)
+  assert.match(releasePipeline, />View build<\/a>/)
+  assert.match(releasePipeline, /Taking longer than usual/)
+})
+
+test('keeps publication success deployment-scoped while Live remains URL-dependent', () => {
+  assert.match(app, /useProductionSettings\(\{/)
+  assert.match(productionSettings, /const productionPublicationReady = computed\(\(\) => Boolean\([\s\S]*productionBinding\.value[\s\S]*productionDeployment\.value\.ready[\s\S]*input\.publishing\.value\?\.published[\s\S]*input\.publishing\.value\.publication\?\.ready[\s\S]*\)\)/)
+  assert.match(productionSettings, /return \{ label: productionURL\.value \? 'Live' : 'Ready', tone: 'success' \}/)
+  assert.match(productionSettings, /productionPublicationReady\.value && !productionURL\.value/)
+  assert.match(productionSettings, /const productionPublicationStatus = computed<ProductionStatusPresentation>\(\(\) => \{[\s\S]*if \(productionPublicationReady\.value\)[\s\S]*tone: 'success'/)
+  assert.match(productionSettings, /if \(input\.publishing\.value\?\.publication\?\.error\) return \{ label: 'Error', tone: 'danger' \}/)
+  const overviewStart = productionSettings.indexOf('const productionOverview = computed')
+  const overviewEnd = productionSettings.indexOf('const productionOverviewDescription = computed', overviewStart)
   assert.ok(overviewStart >= 0 && overviewEnd > overviewStart)
-  assert.match(app.slice(overviewStart, overviewEnd), /productionPublicationReady\.value[\s\S]*publishing\.value\.publication\?\.error/)
-  assert.match(app, /The publication is ready; the production link is still being resolved\./)
+  assert.match(productionSettings.slice(overviewStart, overviewEnd), /productionPublicationReady\.value[\s\S]*input\.publishing\.value\.publication\?\.error/)
+  assert.match(productionSettings, /The publication is ready; the production link is still being resolved\./)
+  // A stale publication object must not make the not-yet-deployed panel claim
+  // that the app is ready. The binding/readiness guard above is the boundary.
+  assert.match(productionSettings, /if \(!productionBinding\.value\) return \{ label: 'Not deployed'/)
 })
 
 test('routes sharing through the modular dialog and current access contracts only', () => {
   assert.match(app, /import ProjectShareDialog from '\.\/ProjectShareDialog\.vue'/)
   assert.match(app, /<ProjectShareDialog[\s\S]*v-model:mode="shareMode"[\s\S]*@save="publishCurrentProject"[\s\S]*@grant="grantCurrentProjectAccess"[\s\S]*@invite="inviteCurrentProjectAccess"[\s\S]*@revoke="revokeCurrentProjectAccess"[\s\S]*@disable="unpublishCurrentProject"/)
   assert.match(app, /@open-production-settings="openProductionSettingsFromShare"/)
-  assert.match(app, /api\.publishProject\(props\.ctx, name, shareMode\.value\)/)
+  assert.match(app, /const mode = shareMode\.value[\s\S]*api\.publishProject\(props\.ctx, name, mode\)/)
   assert.match(dialog, /General access/)
   assert.match(dialog, /value="restricted">Restricted/)
   assert.match(dialog, /value="public">Anyone with the link/)
@@ -135,20 +187,69 @@ test('suppresses stale publication errors for a ready URL and keeps Copy link in
   const copyStart = dialog.indexOf('aria-label="Copy production link"')
   assert.ok(footerStart >= 0 && copyStart > footerStart)
   assert.match(dialog.slice(copyStart, copyStart + 240), /:disabled="!link \|\| busy \|\| loading"/)
-  assert.match(dialog, /await navigator\.clipboard\.writeText\(link\.value\)/)
+  assert.match(dialog, /copyTextWithFallback\(link\.value\)/)
+  assert.match(dialog, /props\.productionURL\.trim\(\) \|\| props\.publication\?\.url\?\.trim\(\)/)
+  assert.match(dialog, /aria-label="Production app link"/)
+  assert.match(dialog, /linkInput\.value\?\.select\(\)/)
   assert.match(dialog, /Link copied\./)
-  assert.match(dialog, /Copy is unavailable in this browser\./)
+  assert.match(dialog, /Select the link above and copy it manually\./)
+})
+
+test('keeps Share independently useful through partial loads and traps modal keyboard input', () => {
+  assert.match(app, /Promise\.allSettled\(\[\s*api\.getPublishing[\s\S]*api\.listPublishingMembers/)
+  assert.match(app, /publishingLoadState\.value = stateSucceeded && membersSucceeded[\s\S]*'partial'[\s\S]*'error'/)
+  assert.match(app, /:load-state="publishingLoadState"/)
+  assert.match(app, /@retry="retryPublishing"/)
+  assert.match(dialog, /loadState === 'error'/)
+  assert.match(dialog, /loadState === 'partial'/)
+  assert.match(dialog, /membersError/)
+  assert.match(dialog, /@click="emit\('retry'\)"/)
+  assert.match(dialog, /event\.defaultPrevented/)
+  assert.match(dialog, /event\.defaultPrevented \|\| confirmState\.open/)
+  assert.match(dialog, /querySelectorAll<HTMLElement>/)
+  assert.match(dialog, /event\.shiftKey && document\.activeElement === first/)
+})
+
+test('keeps members from a state-failed initial load but blocks publication mutations', () => {
+  assert.match(app, /const publishingStateAvailable = ref\(false\)/)
+  const loadStart = app.indexOf('async function loadPublishing()')
+  const loadEnd = app.indexOf('\n\nfunction retryPublishing()', loadStart)
+  assert.ok(loadStart >= 0 && loadEnd > loadStart)
+  const load = app.slice(loadStart, loadEnd)
+  assert.match(load, /const stateSucceeded = stateResult\.status === 'fulfilled'/)
+  assert.match(load, /const membersSucceeded = membersResult\.status === 'fulfilled'/)
+  assert.match(load, /if \(membersSucceeded\) \{[\s\S]*publishingMembers\.value = membersResult\.value[\s\S]*publishingMembersLoaded\.value = true/)
+  assert.match(load, /if \(stateSucceeded\) \{[\s\S]*publishingStateAvailable\.value = true/)
+  assert.match(load, /const stateAvailable = publishingStateAvailable\.value/)
+  assert.doesNotMatch(load, /if \(!stateSucceeded\) \{[\s\S]*publishingStateAvailable\.value = false/)
+  assert.match(load, /publishingLoadState\.value = stateSucceeded && membersSucceeded[\s\S]*'partial'[\s\S]*'error'/)
+  assert.match(app, /:publication-state-available="publishingStateAvailable"/)
+  for (const action of [
+    'setProductionVisibility',
+    'publishCurrentProject',
+    'unpublishCurrentProject',
+    'grantOrInviteProjectAccess',
+    'revokeCurrentProjectAccess',
+  ]) {
+    const actionStart = app.indexOf(`async function ${action}`)
+    assert.ok(actionStart >= 0, `${action} exists`)
+    const nextAction = app.indexOf('\nasync function ', actionStart + 1)
+    const actionSource = app.slice(actionStart, nextAction >= 0 ? nextAction : undefined)
+    assert.match(actionSource, /!publishingStateAvailable\.value/, `${action} requires known publication state`)
+  }
+  assert.match(app, /aria-label="Production visibility"\s+:disabled="publishingActionBusy \|\| !publishingStateAvailable"/)
+  assert.match(dialog, /props\.publicationStateAvailable &&[\s\S]*\(props\.published \|\| props\.productionReady\)/)
 })
 
 test('published apps can change access anytime; only first publish waits for production readiness', () => {
   // An access flip on a promoted app is an intent write — a rolling or
   // briefly-unready deployment must not block it (the publication state
   // machine reports Pending honestly while the gate converges).
-  assert.match(dialog, /!props\.loading && !props\.busy && \(props\.published \|\| props\.productionReady\)/)
+  assert.match(dialog, /!props\.loading && props\.loadState !== 'error' && !props\.busy && \(props\.published \|\| props\.productionReady\)/)
   // The deploy-first warning is reserved for never-promoted projects.
   assert.match(dialog, /v-if="!published && !productionReady"/)
   assert.match(dialog, /const modeDirty = computed\(\(\) => props\.published && selectedMode\.value !== initialMode\.value\)/)
-  assert.match(dialog, /const canAddMember = computed\(\(\) => \(\s*savedRestricted\.value && !modeDirty\.value/s)
+  assert.match(dialog, /const canAddMember = computed\(\(\) => \(\s*props\.publicationStateAvailable && savedRestricted\.value && !modeDirty\.value/s)
 })
 
 test('restores the Share trigger after confirmed disable and uses one production-surface polling transition', () => {
@@ -161,6 +262,8 @@ test('restores the Share trigger after confirmed disable and uses one production
   assert.doesNotMatch(unpublish, /shareDialogOpen\.value = false/)
 
   assert.match(app, /const productionSurfaceActive = computed\(\(\) => productionSettingsVisible\.value \|\| shareDialogOpen\.value\)/)
+  assert.match(app, /if \(releasePipeline\.value\.transitional\)/)
+  assert.match(app, /releaseTakingLonger\.value \? PROMOTION_POLL_MAX_DELAY_MS : promotionPollDelay\(0\)/)
   const watcherStart = app.indexOf('watch(\n  () => [productionSurfaceActive.value')
   const watcherEnd = app.indexOf('\n\n onBeforeUnmount', watcherStart)
   assert.ok(watcherStart >= 0)
@@ -205,4 +308,106 @@ test('layers the shared confirm dialog at body and restores Disable access focus
   assert.match(unpublish, /const disableAccessTrigger = document\.activeElement instanceof HTMLElement \? document\.activeElement : null/)
   assert.match(unpublish, /const confirmed = await confirmDialog\(/)
   assert.match(unpublish, /if \(!confirmed\) \{[\s\S]*await nextTick\(\)[\s\S]*disableAccessTrigger\?\.isConnected[\s\S]*disableAccessTrigger\.focus\(\)[\s\S]*return/)
+})
+
+test('closes inline Settings by removing its active tab through the normalized fallback', () => {
+  const closeStart = app.indexOf('function closeSettings()')
+  const closeEnd = app.indexOf('\n\nfunction syncProjectSettingsForm', closeStart)
+  assert.ok(closeStart >= 0 && closeEnd > closeStart)
+  const close = app.slice(closeStart, closeEnd)
+  assert.ok(close.includes('showSettings.value = false'))
+  assert.ok(close.includes("workbench.value.tabs.some((tab) => tab.id === 'settings')"))
+  assert.ok(close.includes("closeWorkbenchTabByID('settings')"))
+  assert.ok(app.includes('@click.self="closeSettings"'))
+  const escapeStart = app.indexOf('useEscapeKey(() => {')
+  const escapeEnd = app.indexOf('\n})', escapeStart)
+  assert.ok(escapeStart >= 0 && escapeEnd > escapeStart)
+  assert.ok(app.slice(escapeStart, escapeEnd).includes('closeSettings()'))
+
+  const tabCloseStart = app.indexOf('function closeWorkbenchTabByID')
+  const tabCloseEnd = app.indexOf('\n\nfunction startWorkbenchTabDrag', tabCloseStart)
+  assert.ok(tabCloseStart >= 0 && tabCloseEnd > tabCloseStart)
+  assert.ok(app.slice(tabCloseStart, tabCloseEnd).includes("workbench.value = closeWorkbenchTab(workbench.value, tabID)"))
+})
+
+test('guards project settings saves by serial, project, and context without stale busy cleanup', () => {
+  const saveStart = app.indexOf('async function saveProjectSettings()')
+  const saveEnd = app.indexOf('\n\nfunction enterProject', saveStart)
+  assert.ok(saveStart >= 0 && saveEnd > saveStart)
+  const save = app.slice(saveStart, saveEnd)
+  for (const contract of [
+    'const saveSerial = ++projectSettingsSaveSerial',
+    'const projectName = project.name',
+    'const contextFingerprint = projectContextFingerprint(props.ctx)',
+    'saveSerial === projectSettingsSaveSerial',
+    'contextFingerprint === projectContextFingerprint(props.ctx)',
+    'selected.value?.name === projectName',
+  ]) assert.ok(save.includes(contract), contract)
+  const requestIndex = save.indexOf('await api.patchProject')
+  const responseGuardIndex = save.indexOf('if (!isCurrentSave()) return', requestIndex)
+  const catchIndex = save.indexOf('} catch (e) {')
+  const catchGuardIndex = save.indexOf('if (!isCurrentSave()) return', catchIndex)
+  const finallyIndex = save.indexOf('} finally {')
+  assert.ok(requestIndex >= 0 && responseGuardIndex > requestIndex)
+  assert.ok(catchIndex > responseGuardIndex && catchGuardIndex > catchIndex)
+  assert.ok(finallyIndex > catchGuardIndex)
+  assert.ok(save.slice(finallyIndex).includes('if (isCurrentSave()) projectSettingsSaving.value = false'))
+})
+
+test('settles terminal project-list failures and keeps a visible Retry action', () => {
+  const loadStart = app.indexOf('async function load()')
+  const catchStart = app.indexOf('} catch (e) {', loadStart)
+  const finallyStart = app.indexOf('} finally {', catchStart)
+  assert.ok(loadStart >= 0 && catchStart > loadStart && finallyStart > catchStart)
+  const loadCatch = app.slice(catchStart, finallyStart)
+  assert.ok(loadCatch.indexOf('clearInitializationRetry()') < loadCatch.indexOf('initializing.value = false'))
+  assert.ok(loadCatch.includes("initializingMessage.value = 'App Studio is preparing this workspace...'"))
+  assert.ok(loadCatch.includes('projectsLoaded.value = true'))
+
+  const landingStart = app.indexOf('<div v-else-if="!isBuilderVisible"')
+  const errorStart = app.indexOf('<div v-if="error"', landingStart)
+  const skeletonStart = app.indexOf('<div v-if="(loading || !projectsLoaded) && projects.length === 0"', errorStart)
+  assert.ok(landingStart >= 0 && errorStart > landingStart && skeletonStart > errorStart)
+  const listError = app.slice(errorStart, skeletonStart)
+  assert.ok(listError.includes('@click="load"'))
+  assert.ok(app.slice(skeletonStart, app.indexOf('>', skeletonStart)).includes('projects.length === 0'))
+})
+
+test('commits a thread selection only after history succeeds and restores prior focus on failure', () => {
+  const selectStart = app.indexOf('async function selectAssistantThread')
+  const selectEnd = app.indexOf('\n\nasync function createAssistantThread', selectStart)
+  assert.ok(selectStart >= 0 && selectEnd > selectStart)
+  const select = app.slice(selectStart, selectEnd)
+  const requestIndex = select.indexOf('const items = await api.listAssistantThreadItems')
+  const commitIndex = select.indexOf('activeAssistantThreadID.value = threadID')
+  assert.ok(requestIndex >= 0 && commitIndex > requestIndex)
+  assert.ok(select.includes('const previousThreadID = activeAssistantThreadID.value'))
+  assert.ok(select.includes('let restorePriorThreadFocus = false'))
+  assert.ok(select.includes('restorePriorThreadFocus = true'))
+  assert.ok(select.includes('threadsWorkbenchRef.value?.focusActiveThread?.()'))
+  assert.ok(select.includes("selectingThreadID.value = ''"))
+})
+
+test('restores the opening Share mode on every unsaved exit while reflecting successful saves', () => {
+  const closeStart = dialog.indexOf('function close()')
+  const settingsStart = dialog.indexOf('function openProductionSettings()', closeStart)
+  assert.ok(closeStart >= 0 && settingsStart > closeStart)
+  const close = dialog.slice(closeStart, settingsStart)
+  assert.ok(close.includes('modeTouched.value && selectedMode.value !== initialMode.value'))
+  assert.ok(close.includes("emit('update:mode', initialMode.value)"))
+
+  const settingsEnd = dialog.indexOf('\n\nfunction addMember', settingsStart)
+  assert.ok(settingsEnd > settingsStart)
+  const settingsExit = dialog.slice(settingsStart, settingsEnd)
+  assert.ok(settingsExit.includes("emit('update:mode', initialMode.value)"))
+  assert.ok(settingsExit.includes("emit('open-production-settings')"))
+
+  const parentCloseStart = app.indexOf('function closeShareDialog()')
+  const parentSettingsStart = app.indexOf('function openProductionSettingsFromShare()', parentCloseStart)
+  assert.ok(parentCloseStart >= 0 && parentSettingsStart > parentCloseStart)
+  assert.ok(app.slice(parentCloseStart, parentSettingsStart).includes('restoreShareModeFromPublication()'))
+  const publishStart = app.indexOf('async function publishCurrentProject()')
+  const publishEnd = app.indexOf('\n\nasync function unpublishCurrentProject', publishStart)
+  assert.ok(publishEnd > publishStart)
+  assert.ok(app.slice(publishStart, publishEnd).includes("shareMode.value = state.publication?.mode === 'public' ? 'public' : mode"))
 })

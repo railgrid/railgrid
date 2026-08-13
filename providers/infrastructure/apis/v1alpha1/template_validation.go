@@ -54,6 +54,11 @@ func (s *TemplateSpec) ValidateDevelopment() error {
 	if len(s.Development.Components) == 0 {
 		return fmt.Errorf("spec.development.components must declare at least one component")
 	}
+	if s.Development.Build != nil {
+		if err := validateDevelopmentWorkflowPath(s.Development.Build.WorkflowPath); err != nil {
+			return fmt.Errorf("spec.development.build.workflowPath: %w", err)
+		}
+	}
 
 	seenPaths := map[string]string{}
 	for name, comp := range s.Development.Components {
@@ -111,6 +116,19 @@ func (s *TemplateSpec) ValidateDevelopment() error {
 		}
 	}
 
+	return nil
+}
+
+var developmentWorkflowPathRE = regexp.MustCompile(`^\.github/workflows/[^/]+\.ya?ml$`)
+
+func validateDevelopmentWorkflowPath(workflowPath string) error {
+	workflowPath = strings.TrimSpace(workflowPath)
+	if workflowPath == "" {
+		return fmt.Errorf("is required")
+	}
+	if !developmentWorkflowPathRE.MatchString(workflowPath) || path.Clean(workflowPath) != workflowPath {
+		return fmt.Errorf("%q must name a repository-relative .yml or .yaml file directly under .github/workflows", workflowPath)
+	}
 	return nil
 }
 

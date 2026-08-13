@@ -31,13 +31,13 @@ service-account escalation.
 |---|---|
 | Provider binary | `main.go` — loads the provider kubeconfig, opens the message store, mounts `/api` + the embedded portal, heartbeats the hub |
 | REST / LLM / message API | `api/` — Project CRUD, memory, LLM settings, streaming chat (`/api/projects/*`) |
-| API type | `apis/ai/v1alpha1/` — the `Project` CRD type (deepcopy generated) |
+| API types | `apis/ai/v1alpha1/` — the `Project`, `Session`, and `Studio` CRD types (deepcopy generated) |
 | Typed client | `client/` — trimmed dynamic client for the Project resource |
 | Tenant client | `tenant/` — token-forwarding `ClientFactory` (host+TLS from the provider kubeconfig, caller token per request) |
 | Message store | `store/` — Postgres + in-memory + envelope-encryption implementations |
 | Development runtime | `api/development_*` + `api/dataplane_client.go` — template-selected development instances, component-aware sync, restart/log/status calls, and edge-checked preview authorization |
 | Portal | `portal/` — the Vue micro-frontend (`<faros-provider-app-studio>`), embedded via `assets.go` |
-| Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.faros.sh`) + Code and Infrastructure provider dependencies + the Project APIResourceSchema + `secrets` claim |
+| Registration | `manifest.yaml` — CatalogEntry + APIExport (`ai.faros.sh`) + Code and Infrastructure dependencies + Project/Session/Studio schemas + tenant-scoped Infrastructure, Code Repository, ServiceAccount, Secret, and RBAC claims |
 | Deploy | `deploy/chart/` — Helm chart (Deployment, Service, CatalogEntry) |
 | CI (mirror) | `.github/workflows/{image,chart}.yaml` — publish the image + chart to GHCR (run only in the mirror) |
 
@@ -120,6 +120,8 @@ Environment variables consumed by the binary:
 | `FAROS_ACTIONS_CA_BUNDLE` | Optional direct PEM equivalent for local launches; when both CA settings are present they must match |
 | `APP_STUDIO_DATABASE_URL` | Postgres DSN for the message store |
 | `APP_STUDIO_IN_MEMORY_MESSAGE_STORE` | `true` → non-durable in-memory store (dev) |
+| `APP_STUDIO_CONTROLLER_MODE` | Controller lifecycle policy: `required` requires the multicluster controller to become ready; `rest-only` intentionally disables it for local REST/portal development. Helm deployments set `required`. |
+| `APP_STUDIO_REST_ONLY` | Legacy local-development compatibility flag. Used only when `APP_STUDIO_CONTROLLER_MODE` is unset; `true` selects `rest-only`. |
 | `APP_STUDIO_MESSAGE_ENCRYPTION_KEYS` | Comma-separated `key-id:base64-aes-key` entries for message content and metadata encryption at rest |
 | `APP_STUDIO_MESSAGE_RETENTION` | Retention window (`time.ParseDuration`, e.g. `720h`) |
 | `APP_STUDIO_WORKSPACE_ROOT` | Filesystem root for App Studio project workspaces and local file tools |
@@ -131,6 +133,17 @@ Environment variables consumed by the binary:
 | `APP_STUDIO_PREVIEW_CONSOLE_ENABLED` | Automatically shares bounded browser-console evidence while the embedded preview is open; set `false` for a deployment-wide kill switch. |
 | `APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY` | PEM-encoded P-256 private key used to sign short-lived ES256 iframe capabilities |
 | `APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID` | Stable key ID matching the public JWK independently deployed to the preview bridge |
+
+## Health and readiness
+
+`GET /healthz` is process liveness: it remains successful while a required
+controller is starting or retrying. `GET /readyz` is the provider readiness
+contract used by the CatalogEntry and Kubernetes readiness probe. In
+`required` mode it returns success only while the multicluster controller is
+running; startup, setup failure, retry, and unexpected controller exit remain
+not ready. In intentional `rest-only` mode it reports ready with that mode in
+the response. This separation keeps the process alive for recovery without
+advertising a provider whose reconciliation plane is unavailable.
 
 ## Local message history
 

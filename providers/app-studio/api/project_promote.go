@@ -32,8 +32,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"reflect"
+	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -137,6 +141,10 @@ func (s *Server) ensureProjectRegistryPullSecret(ctx context.Context, c *asclien
 const (
 	projectProductionEnvironmentName = "production"
 	projectProductionBindingName     = "prod"
+	// projectProductionHostnamePrefixPath is tenant-selected on the first
+	// production deployment, then becomes part of the instance's public
+	// identity. Re-promoting must not silently move that identity.
+	projectProductionHostnamePrefixPath = "expose.hostnamePrefix"
 	// projectRedeployRevisionField is a platform-owned input on the
 	// infrastructure Template instance. A fresh value is minted for every
 	// accepted promotion so a provider can roll only the application workload
@@ -145,6 +153,21 @@ const (
 
 	projectToolPromoteProject = "promote_project"
 )
+
+var projectPlatformOwnedProductionFields = map[string]struct{}{
+	"name":                       {},
+	"farosMode":                  {},
+	projectRedeployRevisionField: {},
+	"farosCluster":               {},
+	"credentialsSecretName":      {},
+}
+
+// Nested platform-owned fields need explicit paths because expose itself is a
+// mixed-ownership object: hostnamePrefix is a first-deploy tenant input, while
+// fqdn is stamped by the infrastructure controller.
+var projectPlatformOwnedProductionPaths = map[string]struct{}{
+	"expose.fqdn": {},
+}
 
 // projectPromoteRequest is the "Promote to Prod" form submission: the
 // template's production inputs (ports, replicas, oidc, …). The instance name,
@@ -193,9 +216,9 @@ func projectTemplateProdBinding(p *aiv1alpha1.Project, info projectTemplateInfo,
 	if rolloutRevision == "" {
 		rolloutRevision = newProjectRedeployRevision()
 	}
-	merged := map[string]any{}
-	for k, v := range values {
-		merged[k] = v
+	merged := projectProductionInputValues(info, images, values)
+	if err := preserveAndValidateProjectImmutableInputs(p, info, merged); err != nil {
+		return aiv1alpha1.ProjectProviderBindingSpec{}, err
 	}
 	for imageInput, image := range images {
 		merged[imageInput] = image
@@ -203,6 +226,9 @@ func projectTemplateProdBinding(p *aiv1alpha1.Project, info projectTemplateInfo,
 	merged["name"] = name
 	merged["farosMode"] = "production"
 	merged[projectRedeployRevisionField] = rolloutRevision
+	if err := validateProjectProductionValue(info.ProductionSchema, merged, "production settings"); err != nil {
+		return aiv1alpha1.ProjectProviderBindingSpec{}, newValidationError(err.Error())
+	}
 	raw, err := json.Marshal(merged)
 	if err != nil {
 		return aiv1alpha1.ProjectProviderBindingSpec{}, err
@@ -219,6 +245,323 @@ func projectTemplateProdBinding(p *aiv1alpha1.Project, info projectTemplateInfo,
 		},
 		Values: runtime.RawExtension{Raw: raw},
 	}, nil
+}
+
+// projectProductionInputValues keeps the promotion boundary honest even when
+// a caller bypasses the portal form. Template fields computed by the platform,
+// and image inputs owned by the reviewed build, never become tenant-authored
+// production configuration. Nested computed fields (for example expose.fqdn)
+// are removed recursively.
+func projectProductionInputValues(info projectTemplateInfo, images map[string]string, values map[string]any) map[string]any {
+	return filterProjectProductionObject(info.ProductionSchema, images, values, "")
+}
+
+func filterProjectProductionObject(schema map[string]any, images map[string]string, values map[string]any, paths ...string) map[string]any {
+	if values == nil {
+		return map[string]any{}
+	}
+	path := ""
+	if len(paths) > 0 {
+		path = paths[0]
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	out := make(map[string]any, len(values))
+	for name, value := range values {
+		fieldPath := name
+		if path != "" {
+			fieldPath = path + "." + name
+		}
+		if _, reserved := projectPlatformOwnedProductionFields[name]; reserved {
+			continue
+		}
+		if _, reserved := projectPlatformOwnedProductionPaths[fieldPath]; reserved {
+			continue
+		}
+		if _, imageOwned := images[name]; imageOwned {
+			continue
+		}
+		field, _ := properties[name].(map[string]any)
+		description, _ := field["description"].(string)
+		if strings.HasPrefix(strings.TrimSpace(description), "Computed by the platform") {
+			continue
+		}
+		out[name] = filterProjectProductionValue(field, images, value, fieldPath)
+	}
+	return out
+}
+
+func filterProjectProductionValue(schema map[string]any, images map[string]string, value any, paths ...string) any {
+	path := ""
+	if len(paths) > 0 {
+		path = paths[0]
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		return filterProjectProductionObject(schema, images, typed, path)
+	case []any:
+		items, _ := schema["items"].(map[string]any)
+		out := make([]any, len(typed))
+		for i := range typed {
+			out[i] = filterProjectProductionValue(items, images, typed[i], path)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func projectNestedValue(values map[string]any, path string) (any, bool) {
+	var current any = values
+	for _, segment := range strings.Split(path, ".") {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current, ok = object[segment]
+		if !ok {
+			return nil, false
+		}
+	}
+	return current, true
+}
+
+func projectSetNestedValue(values map[string]any, path string, value any) {
+	segments := strings.Split(path, ".")
+	current := values
+	for _, segment := range segments[:len(segments)-1] {
+		nested, _ := current[segment].(map[string]any)
+		if nested == nil {
+			nested = map[string]any{}
+			current[segment] = nested
+		}
+		current = nested
+	}
+	current[segments[len(segments)-1]] = value
+}
+
+func projectSchemaDefault(schema map[string]any, path string) (any, bool) {
+	current := schema
+	for _, segment := range strings.Split(path, ".") {
+		properties, _ := current["properties"].(map[string]any)
+		current, _ = properties[segment].(map[string]any)
+		if current == nil {
+			return nil, false
+		}
+	}
+	value, ok := current["default"]
+	return value, ok
+}
+
+func projectSchemaPathDeclared(schema map[string]any, path string) bool {
+	current := schema
+	for _, segment := range strings.Split(path, ".") {
+		properties, _ := current["properties"].(map[string]any)
+		next, ok := properties[segment].(map[string]any)
+		if !ok {
+			return false
+		}
+		current = next
+	}
+	return true
+}
+
+func projectProductionImmutableInputPaths(info projectTemplateInfo) []string {
+	paths := append([]string(nil), info.ImmutableProductionInputs...)
+	if !projectSchemaPathDeclared(info.ProductionSchema, projectProductionHostnamePrefixPath) {
+		return paths
+	}
+	for _, path := range paths {
+		if path == projectProductionHostnamePrefixPath {
+			return paths
+		}
+	}
+	return append(paths, projectProductionHostnamePrefixPath)
+}
+
+func projectProductionHostnamePrefixDefault(p *aiv1alpha1.Project, info projectTemplateInfo) (any, bool) {
+	if value, ok := projectSchemaDefault(info.ProductionSchema, projectProductionHostnamePrefixPath); ok {
+		return value, true
+	}
+	if !projectSchemaPathDeclared(info.ProductionSchema, projectProductionHostnamePrefixPath) {
+		return nil, false
+	}
+	if instance := projectTemplateProdInstanceName(p); instance != "" {
+		// The infrastructure controller uses the instance name when the optional
+		// prefix is omitted. Treat that effective value as the first-deploy input.
+		return instance, true
+	}
+	return nil, false
+}
+
+func preserveAndValidateProjectImmutableInputs(p *aiv1alpha1.Project, info projectTemplateInfo, values map[string]any) error {
+	existing := findProjectProductionBinding(p)
+	if existing == nil {
+		return nil
+	}
+	previous := projectBindingValues(existing)
+	for _, path := range projectProductionImmutableInputPaths(info) {
+		oldValue, oldFound := projectNestedValue(previous, path)
+		if !oldFound {
+			oldValue, oldFound = projectSchemaDefault(info.ProductionSchema, path)
+		}
+		if !oldFound && path == projectProductionHostnamePrefixPath {
+			oldValue, oldFound = projectProductionHostnamePrefixDefault(p, info)
+		}
+		newValue, newFound := projectNestedValue(values, path)
+		if !newFound {
+			if oldFound {
+				projectSetNestedValue(values, path, oldValue)
+			}
+			continue
+		}
+		if !oldFound {
+			oldValue, oldFound = projectSchemaDefault(info.ProductionSchema, path)
+		}
+		if oldFound && !reflect.DeepEqual(oldValue, newValue) {
+			return newValidationError(fmt.Sprintf("production setting %q is locked after the first deployment", path))
+		}
+	}
+	return nil
+}
+
+func projectSchemaNumber(value any) (float64, bool) {
+	switch number := value.(type) {
+	case float64:
+		return number, true
+	case float32:
+		return float64(number), true
+	case int:
+		return float64(number), true
+	case int64:
+		return float64(number), true
+	default:
+		return 0, false
+	}
+}
+
+func projectSchemaStrings(value any) []string {
+	switch list := value.(type) {
+	case []string:
+		return list
+	case []any:
+		out := make([]string, 0, len(list))
+		for _, item := range list {
+			if text, ok := item.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func validateProjectProductionValue(schema map[string]any, value any, path string) error {
+	if len(schema) == 0 {
+		return nil
+	}
+	if enum, ok := schema["enum"].([]any); ok {
+		matched := false
+		for _, candidate := range enum {
+			matched = matched || reflect.DeepEqual(candidate, value)
+		}
+		if !matched {
+			return fmt.Errorf("%s must be one of the allowed values", path)
+		}
+	}
+	typeName, _ := schema["type"].(string)
+	switch typeName {
+	case "object":
+		object, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s must be an object", path)
+		}
+		properties, _ := schema["properties"].(map[string]any)
+		for _, name := range projectSchemaStrings(schema["required"]) {
+			if name != "" {
+				if _, found := object[name]; !found {
+					return fmt.Errorf("%s.%s is required", path, name)
+				}
+			}
+		}
+		for name, nested := range object {
+			field, found := properties[name].(map[string]any)
+			if !found {
+				if allowed, ok := schema["additionalProperties"].(bool); ok && !allowed {
+					return fmt.Errorf("%s.%s is not supported", path, name)
+				}
+				field, _ = schema["additionalProperties"].(map[string]any)
+			}
+			if err := validateProjectProductionValue(field, nested, path+"."+name); err != nil {
+				return err
+			}
+		}
+	case "array":
+		items, ok := value.([]any)
+		if !ok {
+			return fmt.Errorf("%s must be a list", path)
+		}
+		itemSchema, _ := schema["items"].(map[string]any)
+		for i := range items {
+			if err := validateProjectProductionValue(itemSchema, items[i], fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	case "string":
+		text, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("%s must be text", path)
+		}
+		length := float64(utf8.RuneCountInString(text))
+		if minimum, ok := projectSchemaNumber(schema["minLength"]); ok && length < minimum {
+			return fmt.Errorf("%s is too short", path)
+		}
+		if maximum, ok := projectSchemaNumber(schema["maxLength"]); ok && length > maximum {
+			return fmt.Errorf("%s is too long", path)
+		}
+		if pattern, _ := schema["pattern"].(string); pattern != "" {
+			expression, err := regexp.Compile(pattern)
+			if err != nil {
+				return fmt.Errorf("template schema pattern for %s is invalid: %w", path, err)
+			}
+			if !expression.MatchString(text) {
+				return fmt.Errorf("%s has an invalid format", path)
+			}
+		}
+	case "number", "integer":
+		number, ok := projectSchemaNumber(value)
+		if !ok || (typeName == "integer" && math.Trunc(number) != number) {
+			return fmt.Errorf("%s must be a %s", path, typeName)
+		}
+		if minimum, ok := projectSchemaNumber(schema["minimum"]); ok && number < minimum {
+			return fmt.Errorf("%s must be at least %v", path, minimum)
+		}
+		if maximum, ok := projectSchemaNumber(schema["maximum"]); ok && number > maximum {
+			return fmt.Errorf("%s must be no more than %v", path, maximum)
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("%s must be true or false", path)
+		}
+	}
+	return nil
+}
+
+func projectBindingValues(binding *aiv1alpha1.ProjectProviderBindingSpec) map[string]any {
+	if binding == nil || len(binding.Values.Raw) == 0 {
+		return nil
+	}
+	var values map[string]any
+	if err := json.Unmarshal(binding.Values.Raw, &values); err != nil {
+		return nil
+	}
+	return values
+}
+
+func projectRequestedRedeployRevision(binding *aiv1alpha1.ProjectProviderBindingSpec) string {
+	values := projectBindingValues(binding)
+	revision, _ := values[projectRedeployRevisionField].(string)
+	return strings.TrimSpace(revision)
 }
 
 // promoteProject stands up (or re-deploys) the project's production
@@ -353,11 +696,15 @@ func (s *Server) promoteProjectHandler(w http.ResponseWriter, r *http.Request) {
 // button and seeds its form: whether the build is green, the component image
 // plan, and the production instance name.
 type projectPromotionReadinessResponse struct {
-	Template                string                  `json:"template,omitempty"`
-	Instance                string                  `json:"instance,omitempty"`
-	ObservedRolloutRevision string                  `json:"observedRolloutRevision,omitempty"`
-	Promotable              bool                    `json:"promotable"`
-	Build                   projectBuildCheckResult `json:"build"`
+	Template                  string                  `json:"template,omitempty"`
+	Instance                  string                  `json:"instance,omitempty"`
+	ProductionSchema          map[string]any          `json:"productionSchema,omitempty"`
+	ImmutableProductionInputs []string                `json:"immutableProductionInputs,omitempty"`
+	ProductionValues          map[string]any          `json:"productionValues,omitempty"`
+	RequestedRolloutRevision  string                  `json:"requestedRolloutRevision,omitempty"`
+	ObservedRolloutRevision   string                  `json:"observedRolloutRevision,omitempty"`
+	Promotable                bool                    `json:"promotable"`
+	Build                     projectBuildCheckResult `json:"build"`
 	// Production reports the live production environment when the project has
 	// been promoted at least once: its phase and, once serving, its URL. Nil
 	// when the project has never been promoted.
@@ -405,10 +752,24 @@ func (s *Server) getProjectPromotion(w http.ResponseWriter, r *http.Request) {
 		Promotable: check.Status == "built",
 		Build:      check,
 	}
+	if template != "" {
+		info, templateErr := fetchProjectTemplate(r.Context(), c, template)
+		if templateErr != nil {
+			writeProjectPromoteError(w, templateErr)
+			return
+		}
+		resp.ProductionSchema = info.ProductionSchema
+		resp.ImmutableProductionInputs = projectProductionImmutableInputPaths(info)
+	}
+	// CI explains absent artifacts but never overrides the Package-based gate.
+	// Keep lookup failure additive so a registry-ready release stays deployable.
+	resp.Build.Run, resp.Build.RunError = s.observeProjectBuildRun(r.Context(), id, p, r, check.CommitSHA)
 	// Artifact-mode (production) environments are not reported by the live
 	// (development) environment status surface, so read the production
 	// binding's status directly for its phase and serving URL.
 	if prod := findProjectProductionBinding(p); prod != nil {
+		resp.ProductionValues = projectBindingValues(prod)
+		resp.RequestedRolloutRevision = projectRequestedRedeployRevision(prod)
 		st := projectProviderBindingStatus(r.Context(), c, p, *prod, id)
 		resp.Production = &st
 		// Read the provider instance's spec, not the desired Project binding,

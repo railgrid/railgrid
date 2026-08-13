@@ -719,23 +719,7 @@ func projectEinoAssistantResultWithCompletion(
 		result.InitialBuild = true
 	}
 	result.CompletionEvidence = runState.CompletionEvidence()
-	result.Content = projectEinoAssistantFinalContentWithEvidenceScope(result.Content, runState)
 	return result
-}
-
-func projectEinoAssistantFinalContentWithEvidenceScope(content string, runState *projectEinoAssistantRunState) string {
-	content = strings.TrimSpace(content)
-	if runState == nil || !runState.ReadOnlyPreviewInspectionObserved() {
-		return content
-	}
-	const note = "Verification scope: rendered state and accessibility assertions passed. Keyboard, click, and form behavior was source-reviewed but not exercised by the read-only preview inspector."
-	if strings.Contains(content, note) {
-		return content
-	}
-	if content == "" {
-		return note
-	}
-	return content + "\n\n" + note
 }
 
 func projectEinoAssistantResumeTurnItem(items []projectAssistantTurnItem) (projectAssistantTurnItem, []projectAssistantTurnItem, bool) {

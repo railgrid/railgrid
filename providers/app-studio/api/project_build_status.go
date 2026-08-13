@@ -14,11 +14,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Build verification. The per-component build workflow (build_reconciler.go)
-// builds and pushes one container image per component to the registry — it
-// writes nothing back into the repository. The published packages ARE the
-// build evidence: the Code provider's packages controller crawls them into
-// Package CRs (name, image repository, and per-version tags + digests), which
+// Build verification. A template may declare a repository-owned GitHub Actions
+// workflow that builds and pushes component images. The published packages
+// ARE the build evidence: the Code provider's packages controller crawls them
+// into Package CRs (name, image repository, and per-version tags + digests), which
 // App Studio reads via the tenant client to answer "which components have a
 // built image, and what is its digest". check_project_build turns that into a
 // deterministic status the assistant polls, and launch (promote) consumes the
@@ -28,10 +27,13 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"path"
 	"sort"
 	"strings"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -45,9 +47,14 @@ const (
 	projectToolGetBuildLogs      = "get_build_logs"
 	projectToolRebuildProject    = "rebuild_project"
 
-	// projectBuildWorkflowFileName is the basename of the build workflow the
-	// scaffold commits — the Actions API addresses workflows by file name.
+	// projectBuildWorkflowFileName is the canonical compatibility workflow used
+	// by App Studio projects created before templates declared repository CI.
 	projectBuildWorkflowFileName = "faros-app-studio-build.yml"
+	// projectLegacyBuildWorkflowFileName is the workflow used by older project
+	// repositories. It is only attempted when the canonical workflow lookup or
+	// dispatch returns an error; a successful canonical lookup with found=false
+	// is authoritative and must not be masked by this compatibility path.
+	projectLegacyBuildWorkflowFileName = "build.yaml"
 
 	// projectToolCodeBuildStatus / projectToolCodeRebuild are the Code
 	// provider's Actions tools exposed through the tenant MCP federation.
@@ -81,14 +88,17 @@ func (s *Server) getProjectBuildLogs(ctx context.Context, id identity, p *aiv1al
 		return "", err
 	}
 	args := map[string]any{
-		"repositoryRef":    repositoryRef,
-		"workflowFileName": projectBuildWorkflowFileName,
-		"maxLogLines":      200,
+		"repositoryRef": repositoryRef,
+		"maxLogLines":   200,
 	}
 	if ref = strings.TrimSpace(ref); ref != "" {
 		args["ref"] = ref
 	}
-	return callProjectMCPTool(ctx, s.mcpEndpoint(id.clusterID), httpReq, id.tenantPath, s.mcpInsecureSkipTLSVerify, projectToolCodeBuildStatus, args)
+	candidates, err := s.projectBuildWorkflowCandidates(ctx, id, p)
+	if err != nil {
+		return "", err
+	}
+	return s.callProjectBuildWorkflow(ctx, id, httpReq, projectToolCodeBuildStatus, args, candidates)
 }
 
 // rebuildProject re-runs the build workflow without a code change (retry a
@@ -99,13 +109,78 @@ func (s *Server) rebuildProject(ctx context.Context, id identity, p *aiv1alpha1.
 		return "", err
 	}
 	args := map[string]any{
-		"repositoryRef":    repositoryRef,
-		"workflowFileName": projectBuildWorkflowFileName,
+		"repositoryRef": repositoryRef,
 	}
 	if ref = strings.TrimSpace(ref); ref != "" {
 		args["ref"] = ref
 	}
-	return callProjectMCPTool(ctx, s.mcpEndpoint(id.clusterID), httpReq, id.tenantPath, s.mcpInsecureSkipTLSVerify, projectToolCodeRebuild, args)
+	candidates, err := s.projectBuildWorkflowCandidates(ctx, id, p)
+	if err != nil {
+		return "", err
+	}
+	return s.callProjectBuildWorkflow(ctx, id, httpReq, projectToolCodeRebuild, args, candidates)
+}
+
+func (s *Server) projectBuildWorkflowCandidates(ctx context.Context, id identity, p *aiv1alpha1.Project) ([]string, error) {
+	declared := ""
+	if p != nil && p.Spec.Template != nil && strings.TrimSpace(p.Spec.Template.Name) != "" {
+		c, err := s.clientFor(id)
+		if err != nil {
+			return nil, err
+		}
+		info, err := fetchProjectTemplate(ctx, c, p.Spec.Template.Name)
+		if err != nil {
+			return nil, err
+		}
+		declared = info.BuildWorkflowPath
+	}
+
+	if declared != "" {
+		return []string{path.Base(strings.TrimSpace(declared))}, nil
+	}
+
+	candidates := make([]string, 0, 2)
+	seenFiles := map[string]struct{}{}
+	for _, candidate := range []string{projectBuildWorkflowFileName, projectLegacyBuildWorkflowFileName} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		candidate = path.Base(candidate)
+		if _, seen := seenFiles[candidate]; seen {
+			continue
+		}
+		seenFiles[candidate] = struct{}{}
+		candidates = append(candidates, candidate)
+	}
+	return candidates, nil
+}
+
+// callProjectBuildWorkflow tries workflow candidates in order. A declared
+// template workflow is the only candidate; undeclared historical templates
+// receive compatibility candidates. Fallback happens only on an error; every
+// successful response, including found=false, is authoritative. args retains
+// the caller's exact ref.
+func (s *Server) callProjectBuildWorkflow(ctx context.Context, id identity, httpReq *http.Request, toolName string, args map[string]any, candidates []string) (string, error) {
+	endpoint := s.mcpEndpoint(id.clusterID)
+	errorsByCandidate := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		raw, err := callProjectMCPTool(ctx, endpoint, httpReq, id.tenantPath, s.mcpInsecureSkipTLSVerify, toolName, cloneProjectBuildWorkflowArgs(args, candidate))
+		if err == nil {
+			return raw, nil
+		}
+		errorsByCandidate = append(errorsByCandidate, fmt.Sprintf("workflow %q failed: %v", candidate, err))
+	}
+	return "", fmt.Errorf("build workflow candidates failed: %s", strings.Join(errorsByCandidate, "; "))
+}
+
+func cloneProjectBuildWorkflowArgs(args map[string]any, workflowFileName string) map[string]any {
+	cloned := make(map[string]any, len(args)+1)
+	for key, value := range args {
+		cloned[key] = value
+	}
+	cloned["workflowFileName"] = workflowFileName
+	return cloned
 }
 
 // componentImageRef is a component's published image for the reviewed source
@@ -341,6 +416,42 @@ type projectBuildCheckComponent struct {
 	Tag        string `json:"tag,omitempty"`
 }
 
+// projectBuildRunObservation is explanatory evidence from the Code provider.
+// Artifact presence below remains authoritative: a completed CI run does not
+// make a release promotable until every exact-commit Package is observable.
+type projectBuildRunObservation struct {
+	Found      bool                            `json:"found"`
+	RunID      int64                           `json:"runID,omitempty"`
+	URL        string                          `json:"url,omitempty"`
+	HeadSHA    string                          `json:"headSHA,omitempty"`
+	Status     string                          `json:"status,omitempty"`
+	Conclusion string                          `json:"conclusion,omitempty"`
+	Jobs       []projectBuildRunJobObservation `json:"jobs,omitempty"`
+}
+
+type projectBuildRunJobObservation struct {
+	Name       string `json:"name,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Conclusion string `json:"conclusion,omitempty"`
+	FailureLog string `json:"failureLog,omitempty"`
+}
+
+type projectBuildRunCacheEntry struct {
+	run       *projectBuildRunObservation
+	errorText string
+	expiresAt time.Time
+}
+
+type projectBuildRunInflight struct {
+	done chan struct{}
+}
+
+const (
+	projectBuildRunCacheTTL      = 8 * time.Second
+	projectBuildRunErrorCacheTTL = 3 * time.Second
+	projectBuildRunLookupTimeout = 12 * time.Second
+)
+
 // projectBuildCheckResult is the deterministic build status the assistant polls.
 type projectBuildCheckResult struct {
 	// Status is one of: built (every launchable component has a published
@@ -353,6 +464,107 @@ type projectBuildCheckResult struct {
 	Components []projectBuildCheckComponent `json:"components,omitempty"`
 	Missing    []string                     `json:"missing,omitempty"`
 	Note       string                       `json:"note"`
+	Run        *projectBuildRunObservation  `json:"run,omitempty"`
+	RunError   string                       `json:"runError,omitempty"`
+}
+
+// observeProjectBuildRun returns a short-lived, singleflight CI observation.
+// Failures are values rather than request failures so already-observed package
+// artifacts stay visible and authoritative when GitHub/Code is unavailable.
+func (s *Server) observeProjectBuildRun(ctx context.Context, id identity, p *aiv1alpha1.Project, r *http.Request, commitSHA string) (*projectBuildRunObservation, string) {
+	commitSHA = strings.TrimSpace(commitSHA)
+	repositoryRef := projectLinkedRepositoryRef(p)
+	if commitSHA == "" || repositoryRef == "" || strings.TrimSpace(id.clusterID) == "" {
+		return nil, ""
+	}
+	candidates, err := s.projectBuildWorkflowCandidates(ctx, id, p)
+	if err != nil {
+		return nil, "Build status temporarily unavailable."
+	}
+	key := strings.Join([]string{id.tenantPath, id.clusterID, id.user, repositoryRef, strings.Join(candidates, "\x1f"), commitSHA}, "\x00")
+
+	for {
+		now := time.Now()
+		s.mu.Lock()
+		if entry, ok := s.projectBuildRunCache[key]; ok && now.Before(entry.expiresAt) {
+			s.mu.Unlock()
+			return entry.run, entry.errorText
+		}
+		if pending := s.projectBuildRunInflight[key]; pending != nil {
+			done := pending.done
+			s.mu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return nil, "Build status temporarily unavailable."
+			}
+		}
+		if s.projectBuildRunCache == nil {
+			s.projectBuildRunCache = map[string]projectBuildRunCacheEntry{}
+		} else {
+			// This cache is process-local and keyed by immutable commits. Sweep
+			// expired entries when admitting a new lookup so long-lived providers
+			// do not retain every release ever observed.
+			for cacheKey, entry := range s.projectBuildRunCache {
+				if !now.Before(entry.expiresAt) {
+					delete(s.projectBuildRunCache, cacheKey)
+				}
+			}
+		}
+		if s.projectBuildRunInflight == nil {
+			s.projectBuildRunInflight = map[string]*projectBuildRunInflight{}
+		}
+		pending := &projectBuildRunInflight{done: make(chan struct{})}
+		s.projectBuildRunInflight[key] = pending
+		s.mu.Unlock()
+
+		lookupCtx, cancel := context.WithTimeout(ctx, projectBuildRunLookupTimeout)
+		resolver := s.projectBuildRunResolver
+		if resolver == nil {
+			resolver = s.fetchProjectBuildRun
+		}
+		run, err := resolver(lookupCtx, id, p, r, commitSHA)
+		cancel()
+		errorText := ""
+		ttl := projectBuildRunCacheTTL
+		if err != nil {
+			errorText = "Build status temporarily unavailable."
+			ttl = projectBuildRunErrorCacheTTL
+			run = nil
+		}
+
+		s.mu.Lock()
+		s.projectBuildRunCache[key] = projectBuildRunCacheEntry{run: run, errorText: errorText, expiresAt: time.Now().Add(ttl)}
+		delete(s.projectBuildRunInflight, key)
+		close(pending.done)
+		s.mu.Unlock()
+		return run, errorText
+	}
+}
+
+func (s *Server) fetchProjectBuildRun(ctx context.Context, id identity, p *aiv1alpha1.Project, r *http.Request, commitSHA string) (*projectBuildRunObservation, error) {
+	raw, err := s.getProjectBuildLogs(ctx, id, p, r, commitSHA)
+	if err != nil {
+		return nil, err
+	}
+	var wire struct {
+		Found      bool                            `json:"found"`
+		RunID      int64                           `json:"runID,omitempty"`
+		HTMLURL    string                          `json:"htmlURL,omitempty"`
+		HeadSHA    string                          `json:"headSHA,omitempty"`
+		Status     string                          `json:"status,omitempty"`
+		Conclusion string                          `json:"conclusion,omitempty"`
+		Jobs       []projectBuildRunJobObservation `json:"jobs,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(raw), &wire); err != nil {
+		return nil, fmt.Errorf("decode Code build status: %w", err)
+	}
+	return &projectBuildRunObservation{
+		Found: wire.Found, RunID: wire.RunID, URL: strings.TrimSpace(wire.HTMLURL),
+		HeadSHA: strings.TrimSpace(wire.HeadSHA), Status: strings.TrimSpace(wire.Status),
+		Conclusion: strings.TrimSpace(wire.Conclusion), Jobs: wire.Jobs,
+	}, nil
 }
 
 // checkProjectBuild reports which of the project template's launchable
@@ -415,13 +627,13 @@ func (s *Server) checkProjectBuild(ctx context.Context, c *asclient.Client, id i
 		result.Note = fmt.Sprintf("all %d component image(s) are published; the project can be promoted to production", builtCount)
 	case builtCount > 0:
 		result.Status = "incomplete"
-		result.Note = fmt.Sprintf("%d of %d component images are published (missing: %s). GitHub Actions builds each component on commit and publishes it to the registry; check the repository's Actions tab — the missing builds may be running or may have failed", builtCount, len(components), strings.Join(result.Missing, ", "))
+		result.Note = fmt.Sprintf("%d of %d component images are published (missing: %s). If the template declares repository-owned CI, check its Actions workflow; the missing images may still be building or the workflow may have failed", builtCount, len(components), strings.Join(result.Missing, ", "))
 	default:
 		result.Status = "none"
 		if commitSHA == "" {
 			result.Note = "no successful repository commit is available to identify the reviewed source revision; commit the project before promoting"
 		} else {
-			result.Note = fmt.Sprintf("no component images are published for reviewed commit %s yet. Committing your app runs a GitHub Actions build that publishes one container image per component to the registry; they appear here once built. If images never appear, check the repository's Actions tab (Actions and package publishing must be enabled)", commitSHA)
+			result.Note = fmt.Sprintf("no component images are published for reviewed commit %s yet. If the template declares repository-owned CI, its GitHub Actions workflow publishes one container image per component; they appear here once built. If images never appear, check the repository's Actions tab (Actions and package publishing must be enabled)", commitSHA)
 		}
 	}
 	return result, nil

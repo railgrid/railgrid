@@ -3,9 +3,10 @@ kind: Template
 metadata:
   name: application
   annotations:
-    # database.version: a Postgres major upgrade is not an in-place operation;
-    # update_instance rejects it (recreate — and migrate — instead).
-    faros.sh/immutable-inputs: "database.version"
+    # StatefulSet volumeClaimTemplates and Postgres major versions are not
+    # safely mutable. App Studio exposes both choices before the first deploy
+    # and locks them afterwards instead of promising a redeploy that will fail.
+    faros.sh/immutable-inputs: "database.size,database.version"
 spec:
   displayName: "Web application"
   description: "A 3-tier app — frontend + backend + Postgres — served through the platform access gate. spec.access chooses public or invite-only (kcp RBAC) reachability; the backend and database are never separately exposed."
@@ -284,7 +285,7 @@ spec:
             type: string
             enum: ["small", "medium", "large"]
             default: "small"
-            description: "Reserved for v1 (accepted but not yet wired to resources/storage), mirroring redis-cache."
+            description: "Database storage tier: small provisions 1Gi, medium 5Gi, or large 20Gi of persistent PostgreSQL storage."
           version:
             type: string
             enum: ["15", "16"]
@@ -364,6 +365,10 @@ spec:
   # platform preview-console plugin when trusted keys are installed. Missing
   # plugin/config fails open and leaves the ordinary preview intact.
   development:
+    # CI is scaffold-owned. App Studio observes/dispatches this exact workflow
+    # path and never injects or rewrites build configuration.
+    build:
+      workflowPath: .github/workflows/build.yaml
     # Starter source new projects are seeded from: a working web+api+Postgres
     # hello-world honoring the full platform contract (PORT, same-origin
     # /api/*, DATABASE_URL with startup retry, dev+start scripts). Locked by
@@ -630,7 +635,10 @@ spec:
                   accessModes: ["ReadWriteOnce"]
                   resources:
                     requests:
-                      storage: 1Gi
+                      # The logical tier is part of the production contract;
+                      # map it to an actual PVC request so changing size is
+                      # observable in the database resources.
+                      storage: '${schema.spec.database.size == "small" ? "1Gi" : (schema.spec.database.size == "medium" ? "5Gi" : "20Gi")}'
       - id: dbService
         template:
           apiVersion: v1

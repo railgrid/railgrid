@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { createServer } from 'vite'
+
+const vite = await createServer({ appType: 'custom', server: { middlewareMode: true, hmr: false } })
+const { assistantSkillsRequestIsCurrent } = await vite.ssrLoadModule('/src/SkillsWorkbench.vue')
+test.after(async () => vite.close())
 
 const [app, api, workbench] = await Promise.all([
   readFile(new URL('./App.vue', import.meta.url), 'utf8'),
@@ -51,6 +56,28 @@ test('preserves loading, empty, error, and refresh states', () => {
   const refreshBody = workbench.slice(refreshStart, refreshEnd)
   assert.match(refreshBody, /emit\('catalogUpdated', response\)/)
   assert.match(refreshBody, /return false/)
+  assert.match(refreshBody, /assistantSkillsRequestIsCurrent\(requestScope, catalogRequestSerial, props\.projectName, props\.ctx\)/)
+  assert.ok((refreshBody.match(/assistantSkillsRequestIsCurrent\(requestScope, catalogRequestSerial, props\.projectName, props\.ctx\)/g) || []).length >= 3)
+})
+
+test('keeps activation feedback scoped to the changing skill and preserves detail content', () => {
+  assert.match(workbench, /const activationSkillID = ref\(''\)/)
+  assert.match(workbench, /activationSkillID === skill\.id/)
+  assert.match(workbench, /Saving…/)
+  assert.match(workbench, /refreshCatalog\(skill\.id, \{ preserveDetail: true \}\)/)
+  assert.match(workbench, /options\.preserveDetail && selectedSkillID\.value === selectSkillID/)
+  assert.match(workbench, /:aria-busy="activationSkillID === selectedSkill\.id/)
+})
+
+test('rejects stale catalog responses when serial, project, or context changes', () => {
+  const oldContext = { token: 'old' }
+  const currentContext = { token: 'current' }
+  const scope = { serial: 7, projectName: 'old-project', ctx: oldContext }
+
+  assert.equal(assistantSkillsRequestIsCurrent(scope, 7, 'old-project', oldContext), true)
+  assert.equal(assistantSkillsRequestIsCurrent(scope, 8, 'old-project', oldContext), false)
+  assert.equal(assistantSkillsRequestIsCurrent(scope, 7, 'current-project', oldContext), false)
+  assert.equal(assistantSkillsRequestIsCurrent(scope, 7, 'old-project', currentContext), false)
 })
 
 test('binds search input to the filtered catalog and exposes a clear action', () => {

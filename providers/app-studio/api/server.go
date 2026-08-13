@@ -88,6 +88,13 @@ type Server struct {
 	// sandbox; logging it alone made that invisible to the user AND to the
 	// model, which would then diagnose a stale runtime as a code bug.
 	developmentSyncFailures map[string]string
+	// projectBuildRunCache keeps the explanatory CI observation short-lived.
+	// Registry Package objects remain the promotion authority; this cache only
+	// prevents the Production surface's polling loop from creating duplicate
+	// Code-provider status requests for the same exact commit.
+	projectBuildRunCache    map[string]projectBuildRunCacheEntry
+	projectBuildRunInflight map[string]*projectBuildRunInflight
+	projectBuildRunResolver func(context.Context, identity, *aiv1alpha1.Project, *http.Request, string) (*projectBuildRunObservation, error)
 	// previewEdgeProbe + edgeReadyURLs implement the preview edge-readiness
 	// gate (see preview_edge.go). Nil probe → the real HTTPS probe.
 	previewEdgeProbe            func(context.Context, string) error

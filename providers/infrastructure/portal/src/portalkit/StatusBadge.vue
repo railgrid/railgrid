@@ -35,15 +35,18 @@ const config = computed(() => {
     case 'ready':
     case 'succeeded':
     case 'committed':
+    case 'active':
+    case 'loaded':
       return { ...toneConfig.success, icon: CheckCircle }
     case 'scheduling':
     case 'pending':
     case 'provisioning':
     case 'running':
     case 'status unavailable':
+    case 'loading':
+    case 'starting':
+    case 'loaded unverified':
       return { ...toneConfig.warning, icon: Clock }
-    case 'active':
-      return { ...toneConfig.success, icon: CheckCircle }
     case 'terminating':
     case 'failed':
     case 'error':

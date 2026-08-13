@@ -1,3 +1,28 @@
+<script lang="ts">
+import type { FarosContext as SkillsFarosContext } from './types'
+
+export interface AssistantSkillsRequestScope {
+  serial: number
+  projectName: string
+  ctx: SkillsFarosContext | null
+}
+
+/**
+ * A catalog response may only update the view that initiated it. Keep this
+ * pure so request-race behavior can be checked without a browser mount.
+ */
+export function assistantSkillsRequestIsCurrent(
+  scope: AssistantSkillsRequestScope,
+  currentSerial: number,
+  currentProjectName: string,
+  currentContext: SkillsFarosContext | null,
+): boolean {
+  return scope.serial === currentSerial &&
+    scope.projectName === currentProjectName &&
+    scope.ctx === currentContext
+}
+</script>
+
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
@@ -44,7 +69,10 @@ const detailLoading = ref(false)
 const detailError = ref<string | null>(null)
 let detailLoadSerial = 0
 const catalogLoading = ref(false)
+let catalogRequestSerial = 0
 const actionBusy = ref(false)
+const activationSkillID = ref('')
+let activationRequestSerial = 0
 const managementError = ref<string | null>(null)
 const statusMessage = ref<string | null>(null)
 
@@ -59,8 +87,10 @@ watch(() => props.skills, (skills) => {
   }
 }, { deep: true })
 
-watch(() => props.projectName, () => {
+watch(() => [props.projectName, props.ctx] as const, () => {
   detailLoadSerial++
+  catalogRequestSerial++
+  activationRequestSerial++
   localSkills.value = [...props.skills]
   query.value = ''
   selectedSkillID.value = ''
@@ -69,6 +99,9 @@ watch(() => props.projectName, () => {
   detailError.value = null
   managementError.value = null
   statusMessage.value = null
+  catalogLoading.value = false
+  actionBusy.value = false
+  activationSkillID.value = ''
 })
 
 const normalizedQuery = computed(() => query.value.trim().toLowerCase())
@@ -107,6 +140,7 @@ function clearFeedback() {
 }
 
 function selectSkill(skill: ProjectAssistantSkill, options: { clearFeedback?: boolean } = {}) {
+  if (actionBusy.value) return
   if (options.clearFeedback !== false) clearFeedback()
   selectedSkillID.value = skill.id
   focusedSkill.value = skill
@@ -116,6 +150,7 @@ function selectSkill(skill: ProjectAssistantSkill, options: { clearFeedback?: bo
 }
 
 function closeSkillDetail() {
+  if (actionBusy.value) return
   selectedSkillID.value = ''
   focusedSkill.value = null
   selectedDetail.value = null
@@ -123,7 +158,7 @@ function closeSkillDetail() {
 }
 
 function handleDetailKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && selectedSkill.value) closeSkillDetail()
+  if (event.key === 'Escape' && selectedSkill.value && !actionBusy.value) closeSkillDetail()
 }
 
 onMounted(() => document.addEventListener('keydown', handleDetailKeydown))
@@ -147,20 +182,30 @@ async function loadDetail(skill: ProjectAssistantSkill) {
   }
 }
 
-async function refreshCatalog(selectSkillID = selectedSkillID.value): Promise<boolean> {
-  if (!props.projectName || catalogLoading.value) return false
+async function refreshCatalog(selectSkillID = selectedSkillID.value, options: { preserveDetail?: boolean } = {}): Promise<boolean> {
+  const projectName = props.projectName
+  const requestContext = props.ctx
+  if (!projectName || catalogLoading.value) return false
+  const requestScope: AssistantSkillsRequestScope = {
+    serial: ++catalogRequestSerial,
+    projectName,
+    ctx: requestContext,
+  }
   catalogLoading.value = true
   // Refreshing the catalog may be part of a successful lifecycle action. It
   // should clear a stale error, but must not erase the action result before
   // the user can read it.
   clearManagementError()
   try {
-    const response = await api.listAssistantSkills(props.ctx, props.projectName)
+    const response = await api.listAssistantSkills(requestContext, projectName)
+    if (!assistantSkillsRequestIsCurrent(requestScope, catalogRequestSerial, props.projectName, props.ctx)) return false
     localSkills.value = response.skills
     emit('catalogUpdated', response)
     if (selectSkillID) {
       const next = response.skills.find((skill) => skill.id === selectSkillID)
-      if (next) selectSkill(next, { clearFeedback: false })
+      if (next && options.preserveDetail && selectedSkillID.value === selectSkillID) {
+        focusedSkill.value = next
+      } else if (next) selectSkill(next, { clearFeedback: false })
       else {
         selectedSkillID.value = ''
         selectedDetail.value = null
@@ -168,26 +213,37 @@ async function refreshCatalog(selectSkillID = selectedSkillID.value): Promise<bo
     }
     return true
   } catch (error) {
+    if (!assistantSkillsRequestIsCurrent(requestScope, catalogRequestSerial, props.projectName, props.ctx)) return false
     managementError.value = friendlyError(error, 'Could not refresh the skill catalog.')
     return false
   } finally {
-    catalogLoading.value = false
+    if (assistantSkillsRequestIsCurrent(requestScope, catalogRequestSerial, props.projectName, props.ctx)) catalogLoading.value = false
   }
 }
 
 async function toggleSelectedSkill() {
   const skill = selectedSkill.value
-  if (!skill || !props.projectName || actionBusy.value) return
+  const projectName = props.projectName
+  const requestContext = props.ctx
+  if (!skill || !projectName || actionBusy.value) return
+  const serial = ++activationRequestSerial
   actionBusy.value = true
+  activationSkillID.value = skill.id
   clearFeedback()
   try {
     await api.setAssistantSkillActivation(props.ctx, props.projectName, skill.id, skill.enabled === false)
+    if (serial !== activationRequestSerial || props.projectName !== projectName || props.ctx !== requestContext) return
     const successMessage = skill.enabled === false ? 'Skill enabled for future turns.' : 'Skill disabled for future turns.'
-    if (await refreshCatalog(skill.id)) statusMessage.value = successMessage
+    if (await refreshCatalog(skill.id, { preserveDetail: true })) statusMessage.value = successMessage
   } catch (error) {
-    managementError.value = friendlyError(error, 'Could not update skill activation.')
+    if (serial === activationRequestSerial && props.projectName === projectName && props.ctx === requestContext) {
+      managementError.value = friendlyError(error, 'Could not update skill activation.')
+    }
   } finally {
-    actionBusy.value = false
+    if (serial === activationRequestSerial) {
+      actionBusy.value = false
+      activationSkillID.value = ''
+    }
   }
 }
 
@@ -279,6 +335,8 @@ function friendlyError(error: unknown, fallback: string): string {
             role="listitem"
             class="group flex min-w-0 items-center gap-2.5 rounded-xl px-2.5 py-2.5 text-left transition hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             :class="skill.id === selectedSkillID ? 'bg-accent-subtle' : ''"
+            :disabled="actionBusy"
+            :aria-busy="activationSkillID === skill.id ? 'true' : undefined"
             :aria-label="`${skill.name}, ${statusLabel(skill)}. Select to view details.`"
             :aria-pressed="skill.id === selectedSkillID"
             @click="selectSkill(skill)"
@@ -299,6 +357,10 @@ function friendlyError(error: unknown, fallback: string): string {
             </span>
             <Check v-if="skill.enabled !== false" class="h-5 w-5 shrink-0 text-text-muted" :stroke-width="1.75" aria-label="Enabled" />
             <span v-else class="h-5 w-5 shrink-0 rounded-full border border-border-default" aria-label="Disabled" />
+            <span v-if="activationSkillID === skill.id" class="flex shrink-0 items-center gap-1 text-[11px] text-accent" role="status" aria-label="Saving skill">
+              <Loader2 class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
+              <span>Saving…</span>
+            </span>
           </button>
         </div>
       </div>
@@ -306,7 +368,7 @@ function friendlyError(error: unknown, fallback: string): string {
     </section>
 
     <div v-if="selectedSkill" class="fixed inset-0 z-[100] flex items-center justify-center bg-surface/60 p-4 backdrop-blur-[2px]" @mousedown.self="closeSkillDetail">
-        <section class="flex max-h-[min(860px,calc(100vh-2rem))] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border-default bg-surface-raised shadow-2xl" role="dialog" aria-modal="true" :aria-labelledby="`skill-detail-title-${selectedSkill.id}`">
+        <section class="flex max-h-[min(860px,calc(100vh-2rem))] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border-default bg-surface-raised shadow-2xl" role="dialog" aria-modal="true" :aria-labelledby="`skill-detail-title-${selectedSkill.id}`" :aria-busy="activationSkillID === selectedSkill.id ? 'true' : undefined">
           <header class="flex items-start gap-4 px-6 pb-5 pt-6">
             <span class="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-border-subtle bg-accent-subtle text-accent">
               <Plug class="h-7 w-7" :stroke-width="1.5" aria-hidden="true" />
@@ -318,19 +380,25 @@ function friendlyError(error: unknown, fallback: string): string {
               </div>
               <p class="mt-1 text-[13px] leading-5 text-text-secondary">{{ selectedSkill.description || 'No description provided.' }}</p>
             </div>
-            <button
-              type="button"
-              role="switch"
-              :aria-checked="selectedSkill.enabled !== false"
-              :aria-label="selectedSkill.enabled === false ? 'Enable skill' : 'Disable skill'"
-              class="relative mt-1 h-7 w-12 shrink-0 rounded-sm transition disabled:cursor-not-allowed disabled:opacity-60"
-              :class="selectedSkill.enabled === false ? 'bg-border-default' : 'bg-accent'"
-              :disabled="actionBusy"
-              @click="toggleSelectedSkill"
-            >
-              <span class="absolute top-1 h-5 w-5 rounded-xs bg-text-primary shadow-sm transition-all" :class="selectedSkill.enabled === false ? 'left-1' : 'left-6'" />
-            </button>
-            <button type="button" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-muted transition hover:bg-surface-hover hover:text-text-primary" aria-label="Close skill details" @click="closeSkillDetail">
+            <div class="mt-1 flex shrink-0 items-center gap-2">
+              <span v-if="activationSkillID === selectedSkill.id" class="flex items-center gap-1 text-[11px] text-text-muted" role="status" aria-live="polite">
+                <Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" aria-hidden="true" />
+                <span>Saving…</span>
+              </span>
+              <button
+                type="button"
+                role="switch"
+                :aria-checked="selectedSkill.enabled !== false"
+                :aria-label="selectedSkill.enabled === false ? 'Enable skill' : 'Disable skill'"
+                class="relative h-7 w-12 shrink-0 rounded-sm transition disabled:cursor-not-allowed disabled:opacity-60"
+                :class="selectedSkill.enabled === false ? 'bg-border-default' : 'bg-accent'"
+                :disabled="actionBusy"
+                @click="toggleSelectedSkill"
+              >
+                <span class="absolute top-1 h-5 w-5 rounded-xs bg-text-primary shadow-sm transition-all" :class="selectedSkill.enabled === false ? 'left-1' : 'left-6'" />
+              </button>
+            </div>
+            <button type="button" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-muted transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60" :disabled="actionBusy" aria-label="Close skill details" @click="closeSkillDetail">
               <X class="h-5 w-5" :stroke-width="1.75" />
             </button>
           </header>

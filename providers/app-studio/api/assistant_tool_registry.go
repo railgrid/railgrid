@@ -347,9 +347,6 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				// this and subsequent workspace mutations sync to the selected
 				// development target.
 				refreshProjectToolSnapshot(req.Project, updated)
-				// Wire the CI build into the repository now that a template is
-				// bound (best-effort; a no-op without a repository).
-				_, _ = server.ensureProjectBuildConfig(ctx, req.Identity, updated, req.HTTPRequest)
 				return projectAssistantToolJSONResult(map[string]any{
 					"template":     info.Name,
 					"components":   info.Components,
@@ -361,7 +358,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:         projectToolGetCheckpoints,
-				Description:  "Report the project's four lifecycle checkpoints — Template bound, Git established, CI committed, Production running — each with a state (done/pending/blocked/error), a human-readable reason, and remediation. Use this when the user explicitly asks \"where is this project\"/\"what's left\", or after a lifecycle-changing operation; do not poll it when the supplied current project snapshot already answers the question. For a pending checkpoint whose remediation.kind is \"auto\", call the named remediation.tool to advance it; for \"manual\", tell the user the exact action to take. Prefer advancing checkpoints in order (template → git → ci → production).",
+				Description:  "Report the project's four lifecycle checkpoints — Template bound, Git established, Source committed, Production running — each with a state (done/pending/blocked/error), a human-readable reason, and remediation. Use this when the user explicitly asks \"where is this project\"/\"what's left\", or after a lifecycle-changing operation; do not poll it when the supplied current project snapshot already answers the question. For a pending checkpoint whose remediation.kind is \"auto\", call the named remediation.tool to advance it; for \"manual\", tell the user the exact action to take. Prefer advancing checkpoints in order (template → git → source → production).",
 				Parameters:   json.RawMessage(`{"type":"object","properties":{}}`),
 				Risk:         projectAssistantToolRiskRead,
 				ParallelSafe: true,
@@ -384,7 +381,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:         projectToolCheckProjectBuild,
-				Description:  "Check whether the project's launchable components have a built container image recorded in git. The per-component build runs in CI after commit_files and, on success, commits per-component image digests back to the repository; this tool reads them. Use it after committing to confirm the build succeeded before launching, and to drive the build-fix loop: status \"built\" means every component has an image (ready to launch); \"incomplete\"/\"none\" means some or all builds are still running or have failed — re-check shortly, and if they stay unbuilt inspect the failing component's build inputs and commit a fix.",
+				Description:  "Check whether the project's launchable components have exact-commit container images recorded as Code provider Package resources. The per-component build runs in CI after commit_files and publishes immutable images to the registry. Use it after committing to confirm artifact readiness before launching: status \"built\" means every component has an exact-commit image; \"incomplete\"/\"none\" means artifacts are not all observable yet and does not, by itself, prove CI failed.",
 				Parameters:   json.RawMessage(`{"type":"object","properties":{}}`),
 				Risk:         projectAssistantToolRiskRead,
 				ParallelSafe: true,

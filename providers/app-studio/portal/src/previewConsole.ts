@@ -168,7 +168,7 @@ export class PreviewConsoleController {
       return
     }
     if (session.status !== 'available') {
-      this.onState('unavailable')
+	  this.onState('disabled')
       void this.closeSession()
       return
     }

@@ -545,7 +545,7 @@ func TestEinoV2SuccessfulCommitClearsMutationLedger(t *testing.T) {
 	}
 }
 
-func TestProjectEinoAssistantFinalContentCarriesServerOwnedPreviewEvidenceScope(t *testing.T) {
+func TestProjectEinoAssistantFinalContentDoesNotRewriteModelProse(t *testing.T) {
 	runState := newProjectEinoAssistantRunState()
 	runState.RecordToolMessage(chatMessage{
 		Role:       "tool",
@@ -554,17 +554,64 @@ func TestProjectEinoAssistantFinalContentCarriesServerOwnedPreviewEvidenceScope(
 		Content:    `{"status":"succeeded","evidenceScope":"rendered_state_only","interactionEvidence":false}`,
 	})
 	result := projectEinoAssistantResultWithCompletion(projectAssistantRunResult{Content: "Everything is working."}, runState)
-	for _, want := range []string{
-		"Everything is working.",
-		"Verification scope: rendered state and accessibility assertions passed.",
-		"source-reviewed but not exercised by the read-only preview inspector",
-	} {
-		if !strings.Contains(result.Content, want) {
-			t.Fatalf("final content = %q, want %q", result.Content, want)
-		}
+	if result.Content != "Everything is working." {
+		t.Fatalf("final content = %q, want unchanged model prose", result.Content)
 	}
-	if duplicated := projectEinoAssistantFinalContentWithEvidenceScope(result.Content, runState); duplicated != result.Content {
-		t.Fatalf("evidence note duplicated: %q", duplicated)
+	if result.CompletionEvidence.PreviewEvidenceOutcome != "rendered_verified" || !result.CompletionEvidence.PreviewRenderedStateObserved {
+		t.Fatalf("preview evidence = %#v, want rendered verification", result.CompletionEvidence)
+	}
+	if result.CompletionEvidence.PreviewAssertionsPassed {
+		t.Fatal("assertion-free inspection must not claim assertions passed")
+	}
+}
+
+func TestProjectEinoAssistantPreviewEvidenceTracksCurrentMutation(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	runState.RecordSourceMutation()
+	runState.RecordToolMessage(chatMessage{
+		Role: "tool", Name: projectToolInteractDevelopmentPreview, ToolCallID: "interact-1",
+		Content: `{"status":"succeeded","evidenceScope":"post_interaction_state","interactionEvidence":true,"steps":[{"action":"click","applied":true}],"assertions":[{"kind":"text","text":"Saved","passed":true}]}`,
+	})
+	evidence := runState.CompletionEvidence()
+	if evidence.PreviewEvidenceRevision != 1 || evidence.PreviewEvidenceOutcome != "interactions_verified" || !evidence.PreviewInteractionVerified || !evidence.PreviewAssertionsPassed {
+		t.Fatalf("interaction evidence = %#v, want successful current-revision receipt", evidence)
+	}
+
+	runState.RecordToolMessage(chatMessage{
+		Role: "tool", Name: projectToolInspectDevelopmentPreview, ToolCallID: "inspect-1",
+		Content: `{"status":"succeeded","evidenceScope":"rendered_state_only","interactionEvidence":false}`,
+	})
+	evidence = runState.CompletionEvidence()
+	if evidence.PreviewEvidenceOutcome != "interactions_verified" || !evidence.PreviewInteractionVerified {
+		t.Fatalf("read-only inspection downgraded same-revision interaction evidence: %#v", evidence)
+	}
+	if evidence.PreviewAssertionsPassed {
+		t.Fatal("assertion-free inspection must not claim assertions passed")
+	}
+
+	checkpoint := runState.CheckpointState()
+	restored := newProjectEinoAssistantRunState()
+	restored.RestoreCheckpointState(checkpoint)
+	if got := restored.CompletionEvidence(); got.PreviewEvidenceOutcome != "interactions_verified" || !got.PreviewInteractionVerified {
+		t.Fatalf("restored evidence = %#v, want interaction receipt", got)
+	}
+
+	restored.RecordSourceMutation()
+	if got := restored.CompletionEvidence(); got.PreviewEvidenceOutcome != "" || got.PreviewRenderedStateObserved || got.PreviewInteractionVerified {
+		t.Fatalf("new mutation retained stale preview evidence: %#v", got)
+	}
+}
+
+func TestProjectEinoAssistantFailedPreviewEvidenceCannotVerify(t *testing.T) {
+	runState := newProjectEinoAssistantRunState()
+	runState.RecordSourceMutation()
+	runState.RecordToolMessage(chatMessage{
+		Role: "tool", Name: projectToolInspectDevelopmentPreview, ToolCallID: "inspect-failed",
+		Content: `{"status":"failed","failureKind":"assertion","evidenceScope":"rendered_state_only","assertions":[{"kind":"text","text":"Saved","passed":false}]}`,
+	})
+	evidence := runState.CompletionEvidence()
+	if evidence.PreviewEvidenceOutcome != "failed" || !evidence.PreviewRenderedStateObserved || evidence.PreviewAssertionsPassed || evidence.PreviewFailedAssertionCount != 1 {
+		t.Fatalf("failed assertion evidence = %#v", evidence)
 	}
 }
 

@@ -115,6 +115,33 @@ func TestSeedTemplatesIncludeStandaloneDatabase(t *testing.T) {
 	}
 }
 
+func TestSeedTemplateBuildWorkflowDeclarations(t *testing.T) {
+	dir := filepath.Join("..", "..", "install", "templates")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read templates dir: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", entry.Name(), err)
+		}
+		tmpl := decodeTemplate(t, raw)
+		wantDeclared := tmpl.Name == "application" || tmpl.Name == "simple-webapp"
+		declared := tmpl.Spec.Development != nil && tmpl.Spec.Development.Build != nil
+		if declared != wantDeclared {
+			t.Errorf("template %q build declaration = %t, want %t", tmpl.Name, declared, wantDeclared)
+			continue
+		}
+		if declared && tmpl.Spec.Development.Build.WorkflowPath != ".github/workflows/build.yaml" {
+			t.Errorf("template %q workflowPath = %q", tmpl.Name, tmpl.Spec.Development.Build.WorkflowPath)
+		}
+	}
+}
+
 // TestSeedTemplatesSimpleWebappIsDevelopmentCapable pins the simple-webapp
 // contract App Studio depends on: a single dev component ("app") claiming the
 // workspace root, the synthesized dev overlay in the RGD, public exposure via

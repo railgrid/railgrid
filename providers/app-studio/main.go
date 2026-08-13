@@ -7,8 +7,9 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 
 // app-studio is the runtime for the App Studio provider. It serves the project
-// REST + LLM API, the embedded App Studio portal, and the provider health
-// endpoint from a single port, and keeps the hub heartbeat alive.
+// REST + LLM API, the embedded App Studio portal, and the provider
+// liveness/readiness endpoints from a single port, and keeps the hub heartbeat
+// alive.
 //
 // Two surfaces share the port, split only by URL — the hub's CatalogEntry
 // routes the same Service to both proxies:
@@ -16,7 +17,8 @@
 //   - /, /main.js, /icon.svg, /assets/* — the portal micro-frontend (Vite
 //     build embedded via portal/dist, see assets.go). Mounted under
 //     /ui/providers/app-studio/.
-//   - /healthz, /api/projects/* — the backend API. Mounted under
+//   - /healthz, /readyz, /api/projects/* — the backend API, liveness probe, and
+//     controller-backed readiness probe. Mounted under
 //     /services/providers/app-studio/; the hub backend proxy strips that prefix
 //     and injects X-Faros-Tenant/X-Faros-User plus the caller's bearer token.
 package main
@@ -185,7 +187,8 @@ func runServe() {
 	// subresources on the template instance, reached through the hub as the
 	// calling user. See docs/app-studio-template-sandboxes.md.
 
-	handler, err := newHandler(apiServer)
+	controllerHealth := newControllerHealth(controllerModeFromEnv() == controllerModeRequired)
+	handler, err := newHandler(apiServer, controllerHealth)
 	if err != nil {
 		log.Fatalf("portal embed: %v", err)
 	}
@@ -203,16 +206,16 @@ func runServe() {
 		}
 	}()
 
-	go runHeartbeat(ctx)
+	go runHeartbeat(ctx, controllerHealth)
 
 	// Deterministic lifecycle: the Project reconciler converges instances
 	// across every tenant workspace. Opt-in via FAROS_PROVIDER_KUBECONFIG.
 	//
 	// Started in a retry loop because ordering is not guaranteed: the
 	// provider frequently comes up before `init` has created its workspace,
-	// APIExport, and endpoint slice (fresh cluster, first deploy), and a
-	// one-shot start would leave the provider serving HTTP with no
-	// controller — silently, forever.
+	// APIExport, and endpoint slice (fresh cluster, first deploy). The loop
+	// owns manager.Start synchronously, so setup failures and post-start exits
+	// both transition readiness and re-enter recovery.
 	go func() {
 		deps := controllerDeps{
 			Actions:     apiServer.ActionsRuntimeConfig(),
@@ -222,29 +225,10 @@ func runServe() {
 			HubBase:     strings.TrimRight(os.Getenv("FAROS_HUB_URL"), "/"),
 			HubInsecure: os.Getenv("FAROS_HUB_INSECURE") == "true",
 		}
-		for attempt := 1; ; attempt++ {
-			// A missing kubeconfig is retried, not fatal: on a fresh stack
-			// the provider comes up before `init` has written the
-			// workspace-scoped kubeconfig, and giving up here would leave
-			// the provider serving HTTP with no controller — silently,
-			// forever (the exact failure mode this loop exists to prevent).
-			kcpConfig, err := loadProviderConfig()
-			if err == nil {
-				if err = startControllerManager(ctx, kcpConfig, deps); err == nil {
-					return
-				}
-			}
-			if errors.Is(err, errControllerDisabled) {
-				log.Printf("controller manager disabled: no kubeconfig in scope")
-				return
-			}
-			log.Printf("controller manager not ready (attempt %d): %v; retrying in 15s", attempt, err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(15 * time.Second):
-			}
+		start := func(startCtx context.Context, config *rest.Config, startDeps controllerDeps) error {
+			return startControllerManager(startCtx, config, startDeps, controllerHealth)
 		}
+		runControllerManager(ctx, controllerHealth, loadProviderConfig, start, deps, controllerRetryInterval)
 	}()
 
 	<-ctx.Done()
@@ -260,12 +244,34 @@ func runServe() {
 // newHandler builds the combined backend-API + portal handler. apiServer may be
 // nil (the portal still serves), which keeps the asset tests independent of the
 // kube/store wiring.
-func newHandler(apiServer *api.Server) (http.Handler, error) {
+func newHandler(apiServer *api.Server, healthStates ...*controllerHealth) (http.Handler, error) {
 	r := mux.NewRouter()
+	health := (*controllerHealth)(nil)
+	if len(healthStates) > 0 {
+		health = healthStates[0]
+	}
 
 	r.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+	r.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		snapshot := health.snapshot()
+		if !health.ready() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status":     "not_ready",
+				"controller": string(snapshot.State),
+				"error":      snapshot.Error,
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":     "ready",
+			"controller": string(snapshot.State),
+		})
 	})
 
 	if apiServer != nil {

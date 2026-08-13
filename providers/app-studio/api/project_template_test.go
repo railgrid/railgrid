@@ -43,6 +43,7 @@ func applicationTemplateObject() *unstructured.Unstructured {
 				"kind":     "Application",
 			},
 			"development": map[string]any{
+				"build": map[string]any{"workflowPath": ".github/workflows/build.yaml"},
 				"components": map[string]any{
 					"frontend": map[string]any{
 						"workspacePath": "web",
@@ -82,6 +83,9 @@ func TestProjectTemplateInfoFromUnstructured(t *testing.T) {
 	if !reflect.DeepEqual(info.Components, want) {
 		t.Errorf("components = %v, want %v", info.Components, want)
 	}
+	if info.BuildWorkflowPath != ".github/workflows/build.yaml" {
+		t.Errorf("BuildWorkflowPath = %q", info.BuildWorkflowPath)
+	}
 	if got, want := info.WorkspacePaths(), map[string]string{"frontend": "web", "backend": "api"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("WorkspacePaths = %v, want %v", got, want)
 	}
@@ -95,6 +99,9 @@ func TestProjectTemplateInfoFromUnstructured(t *testing.T) {
 	}
 	if len(info.Components) != 0 {
 		t.Errorf("components = %v, want none", info.Components)
+	}
+	if info.BuildWorkflowPath != "" {
+		t.Errorf("BuildWorkflowPath without development = %q, want empty", info.BuildWorkflowPath)
 	}
 
 	// Incomplete instanceCRD is rejected.

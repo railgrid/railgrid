@@ -717,9 +717,25 @@ func (s *projectAssistantSupervisor) finish(key projectAssistantRunKey, runID st
 	active.workerStarted = false
 	active.acceptingSteering = false
 	if assistantRunTerminal(active.run.Status) {
-		delete(s.runs, key)
+		s.removeRunLocked(key, active)
 	}
 	s.mu.Unlock()
+}
+
+// removeRunLocked releases a supervised owner and closes every subscriber
+// exactly once. The caller must hold s.mu. expected, when non-nil, prevents a
+// late finish or persistence callback from removing a replacement owner that
+// reused the same project key.
+func (s *projectAssistantSupervisor) removeRunLocked(key projectAssistantRunKey, expected *projectAssistantSupervisedRun) {
+	active := s.runs[key]
+	if active == nil || (expected != nil && active != expected) {
+		return
+	}
+	delete(s.runs, key)
+	for _, subscriber := range active.subscribers {
+		close(subscriber)
+	}
+	active.subscribers = nil
 }
 
 func assistantRunTerminal(status store.AssistantRunStatus) bool {
@@ -926,7 +942,7 @@ func (s *projectAssistantSupervisor) AbortWith(scope store.Scope, runID string, 
 			s.sendCoalesced(subscriber, projectAssistantRunSnapshot{Run: run, Message: message})
 		}
 		if wasPaused && !current.workerStarted {
-			delete(s.runs, key)
+			s.removeRunLocked(key, current)
 		}
 	}
 	s.mu.Unlock()
@@ -956,6 +972,7 @@ func (s *projectAssistantSupervisor) Subscribe(scope store.Scope, runID string, 
 	}
 	id := active.nextSubID
 	active.nextSubID++
+	owner := active
 	ch := make(chan projectAssistantRunSnapshot, 1)
 	active.subscribers[id] = ch
 	snapshot := projectAssistantRunSnapshot{Run: active.committedRun, Message: active.committedMessage}
@@ -966,7 +983,7 @@ func (s *projectAssistantSupervisor) Subscribe(scope store.Scope, runID string, 
 	return ch, func() {
 		once.Do(func() {
 			s.mu.Lock()
-			if current := s.runs[key]; current != nil && current.run.ID == runID {
+			if current := s.runs[key]; current == owner && current.run.ID == runID {
 				delete(current.subscribers, id)
 			}
 			s.mu.Unlock()
@@ -1215,6 +1232,14 @@ func (s *projectAssistantSupervisor) recordPersistenceFailure(key projectAssista
 		s.mu.Unlock()
 		return
 	}
+	// A persistence failure is terminal for this in-memory owner. A second
+	// callback can race the first one while the detached fallback save is in
+	// flight; do not manufacture another revision or overwrite a successfully
+	// recorded terminal state.
+	if assistantRunTerminal(active.run.Status) {
+		s.mu.Unlock()
+		return
+	}
 	active.run, active.message = active.committedRun, active.committedMessage
 	active.run.Status = store.AssistantRunStatusFailed
 	active.run.Error = projectAssistantRunErrorJSON(cause, "internal_server_error")
@@ -1230,6 +1255,17 @@ func (s *projectAssistantSupervisor) recordPersistenceFailure(key projectAssista
 	ctx, cancel := context.WithTimeout(context.Background(), projectMessagePersistTimeout)
 	defer cancel()
 	if s.store.SaveAssistantRunSnapshot(ctx, scope, run, []store.Message{message}, run.Revision-1) != nil {
+		// The durable row is still running because both the originating snapshot
+		// and the detached terminal fallback failed. The worker has already been
+		// canceled above, so it no longer owns this run. Remove this process-local
+		// owner to let the next authenticated read/action reconcile the stale row.
+		// Match the original object and revision: a replacement owner must never
+		// be stolen by a late persistence failure from the old worker.
+		s.mu.Lock()
+		if current := s.runs[key]; current == active && current.run.ID == runID && current.run.Revision == run.Revision {
+			s.removeRunLocked(key, active)
+		}
+		s.mu.Unlock()
 		return
 	}
 	s.mu.Lock()

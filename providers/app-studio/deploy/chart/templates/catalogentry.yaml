@@ -21,9 +21,10 @@ spec:
   backend:
     # The hub backend proxy forwards /services/providers/app-studio/* here,
     # injecting the verified X-Faros-Tenant/X-Faros-User headers and the
-    # caller's bearer token. The provider serves /api/projects/* + /healthz.
+    # caller's bearer token. The provider serves /api/projects/*, /healthz
+    # (liveness), and /readyz (controller-aware readiness).
     url: {{ default (printf "http://%s.%s.svc.cluster.local:%v" (include "appstudio.fullname" .) .Release.Namespace .Values.service.port) .Values.catalogEntry.backendURL | quote }}
-    healthPath: "/healthz"
+    healthPath: "/readyz"
   # Reference-only: the APIExport, schemas, slice, and bind grant are created by
   # this chart's init container (provider `init`, via the faros-provider-sdk).
   apiExport:

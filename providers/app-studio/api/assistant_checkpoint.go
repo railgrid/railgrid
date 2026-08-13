@@ -72,6 +72,7 @@ type projectAssistantCheckpointState struct {
 	VerificationOutcome              string                                              `json:"verificationOutcome,omitempty"`
 	VerificationSummary              string                                              `json:"verificationSummary,omitempty"`
 	VerificationBlockers             []string                                            `json:"verificationBlockers,omitempty"`
+	PreviewEvidence                  projectAssistantPreviewEvidence                     `json:"previewEvidence,omitempty"`
 	RepeatedActionSignature          string                                              `json:"repeatedActionSignature,omitempty"`
 	RepeatedActionToolName           string                                              `json:"repeatedActionToolName,omitempty"`
 	RepeatedActionCount              int                                                 `json:"repeatedActionCount,omitempty"`
@@ -1185,6 +1186,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	if out.Progress != nil {
 		messageMetadata[projectAssistantMetadataProgress] = *out.Progress
 	}
+	messageMetadata[projectAssistantMetadataVerification] = projectAssistantVerificationFromCompletionEvidence(result.CompletionEvidence)
 	if assistantMessage, err := s.appendResumedProjectAssistantMessageFromContent(persistCtx, messageScope, assistantID, resultContent, streamedContent, messageMetadata); err != nil {
 		return projectAssistantResumeResponse{}, err
 	} else if assistantMessage != nil {

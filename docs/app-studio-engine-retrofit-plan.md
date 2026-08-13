@@ -171,9 +171,9 @@ NOT ported, deliberately:
   app-studio's promote-time minting already covers the need.
 - Session CR mirror/purge: app-studio sessions are Postgres rows with no CR;
   nothing to mirror until that model changes.
-- Build-config commits stay on the request path: they piggyback the
-  interactive commit flow (`ensureProjectBuildConfig` after commit_files
-  succeeds), and vibe has no build reconciler to port yet either.
+- Build configuration is template/scaffold-owned. App Studio no longer
+  generates or injects workflow/config commits; ordinary file edits plus the
+  explicit `commit_project_files` flow are the only mutation path.
 
 Behavior change to socialize: any workspace edit left uncommitted after a
 turn ends is now committed automatically ("chore: sync workspace (...)") by

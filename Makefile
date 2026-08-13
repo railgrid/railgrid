@@ -316,7 +316,7 @@ verify-boilerplate: ## Verify license boilerplate on all Go files
 crds: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Generate CRDs and kcp APIResourceSchemas
 	./hack/update-codegen-crds.sh
 
-codegen: crds codegen-code-provider codegen-app-studio-provider codegen-databricks-provider boilerplate ## Generate all (CRDs + kcp resources + provider schemas + boilerplate)
+codegen: crds codegen-code-provider codegen-app-studio-provider codegen-databricks-provider codegen-infrastructure-provider boilerplate ## Generate all (CRDs + kcp resources + provider schemas + boilerplate)
 
 verify-codegen: codegen ## Verify codegen is up to date
 	@if ! git diff --quiet HEAD; then \
@@ -325,15 +325,11 @@ verify-codegen: codegen ## Verify codegen is up to date
 		exit 1; \
 	fi
 
-sync-portalkit: ## Vendor the shared portalkit (provider-sdk/portalkit) into vanilla-TS portals
+sync-portalkit: ## Vendor the shared portalkit UI kits into provider portals
 	@hack/sync-portalkit.sh
 
-verify-portalkit: sync-portalkit ## Verify vendored portalkit copies are in sync with the canonical source
-	@if ! git diff --quiet HEAD; then \
-		echo "ERROR: portalkit copies are stale. Please run 'make sync-portalkit' and commit the result."; \
-		git diff --stat; \
-		exit 1; \
-	fi
+verify-portalkit: ## Verify vendored portalkit copies are in sync with the canonical source
+	@hack/sync-portalkit.sh --verify
 
 # --- Tool installation ---
 

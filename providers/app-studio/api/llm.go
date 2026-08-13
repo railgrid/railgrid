@@ -842,13 +842,6 @@ func (s *Server) commitProjectWorkspaceFiles(ctx context.Context, id identity, s
 	if err != nil {
 		return "", err
 	}
-	// Keep the CI build wired in and current: idempotent, a no-op when the
-	// workflow is already present (so no extra commit in steady state), and it
-	// self-heals a missing/stale workflow. Best-effort — a failure here never
-	// fails the user's source commit. No-op for template-less projects.
-	if projectToolCallResultStatus(projectToolCodeCommitFiles, resp) == "succeeded" {
-		_, _ = s.ensureProjectBuildConfig(ctx, id, project, r)
-	}
 	return resp, nil
 }
 

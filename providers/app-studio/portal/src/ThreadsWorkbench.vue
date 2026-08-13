@@ -9,10 +9,14 @@ const props = withDefaults(defineProps<{
   activeThreadID: string
   disabled?: boolean
   busy?: boolean
+  loading?: boolean
+  selectingThreadID?: string
   error?: string | null
 }>(), {
   disabled: false,
   busy: false,
+  loading: false,
+  selectingThreadID: '',
   error: null,
 })
 
@@ -35,7 +39,7 @@ function displayTitle(thread: ProjectAssistantThread): string {
 }
 
 function beginRename(thread: ProjectAssistantThread) {
-  if (props.disabled || props.busy) return
+  if (props.disabled || props.busy || props.selectingThreadID) return
   editingThreadID.value = thread.id
   draftTitle.value = displayTitle(thread) === 'New thread' ? '' : displayTitle(thread)
   void nextTick(() => {
@@ -48,6 +52,12 @@ function beginRename(thread: ProjectAssistantThread) {
 function cancelRename() {
   editingThreadID.value = ''
   draftTitle.value = ''
+}
+
+function focusActiveThread() {
+  void nextTick(() => {
+    root.value?.querySelector<HTMLButtonElement>('button[aria-current="page"]')?.focus()
+  })
 }
 
 function commitRename() {
@@ -63,7 +73,7 @@ function commitRename() {
 }
 
 async function requestDelete(thread: ProjectAssistantThread) {
-  if (props.disabled || props.busy || deletingThreadID.value) return
+  if (props.disabled || props.busy || props.selectingThreadID || deletingThreadID.value) return
   const title = displayTitle(thread)
   const confirmed = await confirmDialog({
     title: 'Delete thread?',
@@ -84,6 +94,7 @@ watch(() => props.threads.map((thread) => `${thread.id}:${thread.title ?? ''}`).
   const thread = editingThread()
   if (thread && thread.title?.trim() === draftTitle.value.trim()) cancelRename()
 })
+defineExpose({ focusActiveThread })
 </script>
 
 <template>
@@ -98,26 +109,40 @@ watch(() => props.threads.map((thread) => `${thread.id}:${thread.title ?? ''}`).
           <p class="mt-0.5 text-[12px] leading-5 text-text-muted">Switch conversations or start a new one.</p>
         </div>
       </div>
-      <button
-        type="button"
-        class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
-        :disabled="disabled || busy"
-        title="New thread"
-        @click="emit('create')"
-      >
-        <Loader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-        <Plus v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-        New thread
-      </button>
+      <div class="flex shrink-0 items-center gap-2">
+        <span v-if="loading && threads.length" class="text-[11px] text-text-muted" role="status" aria-live="polite">Refreshing…</span>
+        <button
+          type="button"
+          class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 text-[12px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+          :disabled="disabled || busy || Boolean(selectingThreadID)"
+          title="New thread"
+          @click="emit('create')"
+        >
+          <Loader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+          <Plus v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+          New thread
+        </button>
+      </div>
     </div>
 
     <div v-if="error" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">
       {{ error }}
     </div>
 
-    <div v-if="threads.length" class="min-h-0 flex-1 overflow-auto rounded-md border border-border-subtle bg-surface">
+    <div
+      v-if="loading && !threads.length"
+      class="grid min-h-0 flex-1 content-start gap-2 rounded-md border border-border-subtle bg-surface p-3"
+      role="status"
+      aria-live="polite"
+      aria-label="Loading threads"
+    >
+      <span class="sr-only">Loading threads…</span>
+      <div v-for="width in ['w-4/5', 'w-3/5', 'w-2/3', 'w-1/2']" :key="width" class="shimmer h-9 rounded-md border border-border-subtle bg-surface-overlay" :class="width" />
+    </div>
+
+    <div v-else-if="threads.length" class="min-h-0 flex-1 overflow-auto rounded-md border border-border-subtle bg-surface" :aria-busy="loading ? 'true' : undefined">
       <ul class="divide-y divide-border-subtle" aria-label="Assistant threads">
-        <li v-for="thread in threads" :key="thread.id" class="group p-1.5">
+        <li v-for="thread in threads" :key="thread.id" class="group p-1.5" :aria-busy="selectingThreadID === thread.id ? 'true' : undefined">
           <div
             class="flex min-w-0 items-center gap-2 rounded-md px-2 py-2 text-left transition"
             :class="activeThreadID === thread.id ? 'bg-accent-subtle text-text-primary' : 'hover:bg-surface-hover'"
@@ -125,8 +150,9 @@ watch(() => props.threads.map((thread) => `${thread.id}:${thread.title ?? ''}`).
             <button
               type="button"
               class="min-w-0 flex-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-              :disabled="disabled || busy || activeThreadID === thread.id"
+              :disabled="disabled || busy || Boolean(selectingThreadID)"
               :aria-current="activeThreadID === thread.id ? 'page' : undefined"
+              :aria-busy="selectingThreadID === thread.id ? 'true' : undefined"
               :title="displayTitle(thread)"
               @click="emit('select', thread.id)"
             >
@@ -146,7 +172,7 @@ watch(() => props.threads.map((thread) => `${thread.id}:${thread.title ?? ''}`).
                 maxlength="120"
                 @keydown.esc.prevent="cancelRename"
               />
-              <button type="submit" class="flex h-7 w-7 shrink-0 items-center justify-center rounded text-accent hover:bg-accent-subtle disabled:opacity-50" :disabled="!draftTitle.trim() || busy" title="Save thread name" aria-label="Save thread name">
+              <button type="submit" class="flex h-7 w-7 shrink-0 items-center justify-center rounded text-accent hover:bg-accent-subtle disabled:opacity-50" :disabled="!draftTitle.trim() || busy || Boolean(selectingThreadID)" title="Save thread name" aria-label="Save thread name">
                 <Check class="h-3.5 w-3.5" :stroke-width="2" />
               </button>
               <button type="button" class="flex h-7 w-7 shrink-0 items-center justify-center rounded text-text-muted hover:bg-surface-hover hover:text-text-primary" title="Cancel rename" aria-label="Cancel rename" @click="cancelRename">
@@ -155,11 +181,15 @@ watch(() => props.threads.map((thread) => `${thread.id}:${thread.title ?? ''}`).
             </form>
 
             <template v-if="editingThreadID !== thread.id">
+              <span v-if="selectingThreadID === thread.id" class="flex shrink-0 items-center gap-1 text-[11px] text-accent" role="status" aria-label="Loading thread">
+                <Loader2 class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
+                <span class="sr-only">Loading thread…</span>
+              </span>
               <span v-if="activeThreadID === thread.id" class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" aria-label="Current thread" />
               <button
                 type="button"
                 class="flex h-7 w-7 shrink-0 items-center justify-center rounded text-text-muted opacity-0 transition hover:bg-surface-hover hover:text-text-primary focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-accent/50 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
-                :disabled="disabled || busy"
+                :disabled="disabled || busy || Boolean(selectingThreadID)"
                 title="Rename thread"
                 :aria-label="`Rename ${displayTitle(thread)}`"
                 @click="beginRename(thread)"
@@ -169,7 +199,7 @@ watch(() => props.threads.map((thread) => `${thread.id}:${thread.title ?? ''}`).
               <button
                 type="button"
                 class="flex h-7 w-7 shrink-0 items-center justify-center rounded text-text-muted opacity-0 transition hover:bg-danger-subtle hover:text-danger focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-accent/50 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
-                :disabled="disabled || busy || deletingThreadID === thread.id"
+                :disabled="disabled || busy || Boolean(selectingThreadID) || deletingThreadID === thread.id"
                 title="Delete thread"
                 :aria-label="`Delete ${displayTitle(thread)}`"
                 @click="requestDelete(thread)"

@@ -159,6 +159,34 @@ type projectAssistantCompletionEvidence struct {
 	VerificationOutcome       string   `json:"verificationOutcome,omitempty"`
 	VerificationSummary       string   `json:"verificationSummary,omitempty"`
 	Blockers                  []string `json:"blockers,omitempty"`
+	// Preview evidence is server-owned and additive to the operational
+	// verification fields above. It is deliberately a bounded summary rather
+	// than a browser snapshot or model-authored claim.
+	PreviewEvidenceRevision      uint64 `json:"previewEvidenceRevision,omitempty"`
+	PreviewEvidenceScope         string `json:"previewEvidenceScope,omitempty"`
+	PreviewEvidenceOutcome       string `json:"previewEvidenceOutcome,omitempty"`
+	PreviewRenderedStateObserved bool   `json:"previewRenderedStateObserved,omitempty"`
+	PreviewInteractionVerified   bool   `json:"previewInteractionVerified,omitempty"`
+	PreviewAssertionsObserved    bool   `json:"previewAssertionsObserved,omitempty"`
+	PreviewAssertionsPassed      bool   `json:"previewAssertionsPassed,omitempty"`
+	PreviewAssertionCount        int    `json:"previewAssertionCount,omitempty"`
+	PreviewFailedAssertionCount  int    `json:"previewFailedAssertionCount,omitempty"`
+}
+
+// projectAssistantPreviewEvidence is a bounded, server-owned record of the
+// latest preview evidence observed for one source mutation
+// revision. It intentionally contains no page content, URLs, console text,
+// screenshots, or model prose.
+type projectAssistantPreviewEvidence struct {
+	Revision              uint64 `json:"revision,omitempty"`
+	Scope                 string `json:"scope,omitempty"`
+	Outcome               string `json:"outcome,omitempty"`
+	RenderedStateObserved bool   `json:"renderedStateObserved,omitempty"`
+	InteractionVerified   bool   `json:"interactionVerified,omitempty"`
+	AssertionsObserved    bool   `json:"assertionsObserved,omitempty"`
+	AssertionsPassed      bool   `json:"assertionsPassed,omitempty"`
+	AssertionCount        int    `json:"assertionCount,omitempty"`
+	FailedAssertionCount  int    `json:"failedAssertionCount,omitempty"`
 }
 
 type projectAssistantEvent struct {
