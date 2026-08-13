@@ -121,6 +121,104 @@ func TestAuthorizeRedirectsToLoginWithoutSession(t *testing.T) {
 	}
 }
 
+// The login bounce must carry a marker so the second unresolved attempt can be
+// told apart from the first. Without it the browser ping-pongs between the hub
+// and the portal at request speed.
+func TestAuthorizeLoginBounceCarriesRetryMarker(t *testing.T) {
+	f := newFixture(t)
+	req := httptest.NewRequest(http.MethodGet, authorizeURL(validRedirect()), nil)
+	rec := httptest.NewRecorder()
+	f.handler.HandleAuthorize(rec, req)
+
+	next, err := url.QueryUnescape(strings.TrimPrefix(rec.Header().Get("Location"), "/ui/login?next="))
+	if err != nil {
+		t.Fatalf("unescape next: %v", err)
+	}
+	parsed, err := url.Parse(next)
+	if err != nil {
+		t.Fatalf("parse next: %v", err)
+	}
+	if parsed.Query().Get(retriedParam) != "1" {
+		t.Fatalf("next = %q, want the %s marker", next, retriedParam)
+	}
+	// The marker must be purely additive — every parameter authorize validates
+	// has to survive the round trip unchanged.
+	for _, key := range []string{"cluster", "group", "resource", "name", "redirect_uri", "state"} {
+		if got, want := parsed.Query().Get(key), mustQueryOf(t, authorizeURL(validRedirect()), key); got != want {
+			t.Fatalf("%s = %q after marking, want %q", key, got, want)
+		}
+	}
+}
+
+func TestAuthorizeRefusesToBounceTwice(t *testing.T) {
+	f := newFixture(t)
+	// A request that already came back from login, still with no usable
+	// session: answer it instead of redirecting into a loop.
+	req := httptest.NewRequest(http.MethodGet, authorizeURL(validRedirect())+"&"+retriedParam+"=1", nil)
+	rec := httptest.NewRecorder()
+	f.handler.HandleAuthorize(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "" {
+		t.Fatalf("second unresolved attempt redirected to %q", loc)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "cookies") {
+		t.Fatalf("error page does not mention cookies: %q", body)
+	}
+	if len(f.sars) != 0 {
+		t.Fatalf("SAR ran without a session")
+	}
+}
+
+// A browser that does have a session must not be penalised for carrying the
+// marker: the retry itself is the success case.
+func TestAuthorizeWithMarkerAndSessionStillMintsCode(t *testing.T) {
+	f := newFixture(t)
+	req := f.loggedInRequest(t, authorizeURL(validRedirect())+"&"+retriedParam+"=1")
+	rec := httptest.NewRecorder()
+	f.handler.HandleAuthorize(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d body=%q, want 302", rec.Code, rec.Body.String())
+	}
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse redirect: %v", err)
+	}
+	if loc.Query().Get("code") == "" {
+		t.Fatalf("redirect carries no code: %q", rec.Header().Get("Location"))
+	}
+	if got := loc.Query().Get("state"); got != "proxystate123" {
+		t.Fatalf("state = %q, want the proxy's state echoed back", got)
+	}
+}
+
+func TestResolveFailureReasonDistinguishesCauses(t *testing.T) {
+	f := newFixture(t)
+	noCookie := httptest.NewRequest(http.MethodGet, AuthorizePath, nil)
+	if got := resolveFailureReason(noCookie, browsersession.ErrNotFound); !strings.Contains(got, "no "+browsersession.CookieName) {
+		t.Errorf("missing-cookie reason = %q", got)
+	}
+	withCookie := f.loggedInRequest(t, AuthorizePath)
+	if got := resolveFailureReason(withCookie, browsersession.ErrNotFound); !strings.Contains(got, "no session record") {
+		t.Errorf("unknown-record reason = %q", got)
+	}
+	if got := resolveFailureReason(withCookie, browsersession.ErrExpired); !strings.Contains(got, "expired") {
+		t.Errorf("expired reason = %q", got)
+	}
+}
+
+func mustQueryOf(t *testing.T, rawURL, key string) string {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse %q: %v", rawURL, err)
+	}
+	return u.Query().Get(key)
+}
+
 func TestAuthorizeMintsCodeAndExchangeReturnsIdentity(t *testing.T) {
 	f := newFixture(t)
 	req := f.loggedInRequest(t, authorizeURL(validRedirect()))

@@ -168,6 +168,10 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		Category:     entry.Spec.Category,
 		Dependencies: dependencies,
 		Version:      entry.Spec.Version,
+		// The cluster this entry was observed in is where a heartbeat must be
+		// written back. Providers register their CatalogEntry in their own
+		// workspace, so there is no single path the recorder could assume.
+		CatalogEntryCluster: string(req.ClusterName),
 	}
 	prov.EdgeProxyAccess = entry.Spec.EdgeProxyAccess
 	// Liveness travels through status so it reaches every hub replica, not just

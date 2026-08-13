@@ -42,6 +42,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -55,6 +56,7 @@ import (
 	authorizationv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	authorizationv1client "k8s.io/client-go/kubernetes/typed/authorization/v1"
+	"k8s.io/klog/v2"
 
 	"github.com/faroshq/faros/pkg/browsersession"
 )
@@ -238,6 +240,41 @@ func (h *Handler) RegisterRoutes(router *mux.Router, limit func(http.HandlerFunc
 	router.HandleFunc(ExchangePath, wrap(h.HandleExchange)).Methods("POST")
 }
 
+// retriedParam marks an authorize URL that has already been through the login
+// bounce once. It rides in the `next` URL the portal returns to, so it survives
+// exactly one round trip and needs no server-side state.
+const retriedParam = "faros_retried"
+
+// withRetriedMarker returns the request URI with the retry marker set. The
+// marker is additive: cluster/group/resource/name/state/redirect_uri are
+// untouched, so the authorize request that comes back validates identically.
+func withRetriedMarker(u *url.URL) string {
+	marked := *u
+	q := marked.Query()
+	q.Set(retriedParam, "1")
+	marked.RawQuery = q.Encode()
+	return marked.RequestURI()
+}
+
+// resolveFailureReason classifies why a session did not resolve, for the log
+// line only. The three cases have very different causes — no cookie at all
+// points at the browser or a cross-site hop, a missing record points at the
+// store, and an expired one is routine — and they were previously
+// indistinguishable from outside.
+func resolveFailureReason(r *http.Request, err error) string {
+	if _, cookieErr := r.Cookie(browsersession.CookieName); cookieErr != nil {
+		return "request carried no " + browsersession.CookieName + " cookie"
+	}
+	switch {
+	case errors.Is(err, browsersession.ErrExpired):
+		return "session expired"
+	case errors.Is(err, browsersession.ErrNotFound):
+		return "cookie present but no session record found (issued by another store, or already revoked)"
+	default:
+		return "session lookup failed: " + err.Error()
+	}
+}
+
 // HandleAuthorize is the browser entry point.
 //
 //	GET /auth/apps/authorize?cluster=&group=&resource=&name=&redirect_uri=&state=
@@ -261,11 +298,29 @@ func (h *Handler) HandleAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	session, err := h.sessions.ResolveRequest(r)
 	if err != nil {
+		logger := klog.FromContext(r.Context())
+		// One bounce through login is the normal path for an anonymous browser
+		// (and for every browser at once after the session store changes, when
+		// no existing cookie resolves any more). A SECOND unresolved session on
+		// a request that already came back from login means the hand-off is not
+		// working, and redirecting again spins the browser between the hub and
+		// the portal at request speed — this loop has been observed minting
+		// ~8 sessions/second until the per-IP rate limiter stopped it. Stop it
+		// here instead: the limiter is a backstop, not a control.
+		if q.Get(retriedParam) != "" {
+			logger.Info("app authorize: session still unresolved after login, refusing to bounce again",
+				"reason", resolveFailureReason(r, err), "app", ref.Name)
+			h.renderError(w, http.StatusUnauthorized, "Sign-in could not be completed",
+				"The sign-in did not carry a usable session. Check that cookies are enabled for this site, then open the app again.")
+			return
+		}
 		// No usable shared session: send the browser through the normal hub
 		// login. The portal redirects back to this exact hub-relative URL
 		// afterwards, so the flow resumes with a fresh session cookie.
+		logger.V(2).Info("app authorize: no usable session, sending to login",
+			"reason", resolveFailureReason(r, err), "app", ref.Name)
 		browsersession.ClearCookie(w)
-		next := r.URL.RequestURI() // hub-relative; never an absolute URL
+		next := withRetriedMarker(r.URL) // hub-relative; never an absolute URL
 		http.Redirect(w, r, h.loginPath+"?next="+url.QueryEscape(next), http.StatusFound)
 		return
 	}

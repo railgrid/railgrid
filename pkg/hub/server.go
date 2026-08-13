@@ -415,7 +415,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// would time a healthy provider out and start refusing to proxy to it.
 	var heartbeatRecorder providers.HeartbeatRecorder
 	if kcpConfig != nil {
-		heartbeatRecorder, err = providers.NewCatalogHeartbeatRecorder(kcpConfig)
+		heartbeatRecorder, err = providers.NewCatalogHeartbeatRecorder(kcpConfig, providerRegistry)
 		if err != nil {
 			return fmt.Errorf("creating provider heartbeat recorder: %w", err)
 		}

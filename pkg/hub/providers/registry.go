@@ -84,6 +84,14 @@ type Provider struct {
 	// via SetWorkspaceCluster after provisioning; empty until then.
 	WorkspaceCluster string
 
+	// CatalogEntryCluster is the logical cluster the provider's CatalogEntry
+	// was observed in, recorded by the catalog reconciler from the multicluster
+	// request. The heartbeat recorder patches the entry there; a fixed
+	// workspace path is wrong, because each provider's `init` registers its
+	// entry in the provider's own workspace. Empty until the catalog watch has
+	// seen the entry.
+	CatalogEntryCluster string
+
 	// LocalUIAssets, when non-nil, is an embedded fs.FS that the UI proxy
 	// serves under /ui/providers/{Name}/* instead of forwarding to UIURL.
 	// Populated for first-party providers whose Vite-built portal/dist is
@@ -431,6 +439,9 @@ func (r *Registry) Upsert(p Provider) {
 			// don't lose it on the next reconcile's fresh Provider value.
 			p.WorkspaceCluster = existing.WorkspaceCluster
 		}
+		if p.CatalogEntryCluster == "" {
+			p.CatalogEntryCluster = existing.CatalogEntryCluster
+		}
 	}
 	cp := p
 	cp.AssistantSkills = cloneProviderAssistantSkills(p.AssistantSkills)
@@ -465,6 +476,19 @@ func cloneProvider(p Provider) Provider {
 	}
 	p.AssistantSkills = cloneProviderAssistantSkills(p.AssistantSkills)
 	return p
+}
+
+// CatalogEntryCluster returns the logical cluster the provider's CatalogEntry
+// lives in, and whether it is known yet. It satisfies the heartbeat recorder's
+// ClusterResolver.
+func (r *Registry) CatalogEntryCluster(name string) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.byName[name]
+	if !ok || p.CatalogEntryCluster == "" {
+		return "", false
+	}
+	return p.CatalogEntryCluster, true
 }
 
 // SetWorkspaceCluster records the logical cluster ID of the provider's

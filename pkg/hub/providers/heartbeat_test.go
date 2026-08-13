@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"k8s.io/client-go/rest"
 )
 
 func heartbeatRequestFor(name string) *http.Request {
@@ -132,5 +133,60 @@ func TestHeartbeatWithoutRecorder(t *testing.T) {
 	}
 	if got, _ := reg.Get("cost"); !got.HeartbeatRequired {
 		t.Fatal("local registry not updated")
+	}
+}
+
+// The recorder must address a provider's CatalogEntry by the cluster the
+// catalog watch observed it in. An earlier version wrote to a fixed workspace
+// path (root:faros:system:providers) that serves the API but holds no entries,
+// so every beat 404'd and liveness never reached the other replicas.
+func TestCatalogEntryClusterComesFromTheObservedEntry(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "1axwjxprfb96jgta"})
+
+	cluster, ok := reg.CatalogEntryCluster("code")
+	if !ok || cluster != "1axwjxprfb96jgta" {
+		t.Fatalf("CatalogEntryCluster = %q, %t; want the observed cluster", cluster, ok)
+	}
+
+	// A later reconcile that rebuilds the record without the field must not
+	// erase it, exactly as WorkspaceCluster is preserved.
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true})
+	if cluster, ok := reg.CatalogEntryCluster("code"); !ok || cluster != "1axwjxprfb96jgta" {
+		t.Fatalf("after re-upsert: %q, %t; want the cluster preserved", cluster, ok)
+	}
+
+	// Unknown provider, and known provider whose entry has not been seen yet,
+	// both report "not known" so the recorder can say so instead of guessing.
+	if _, ok := reg.CatalogEntryCluster("nope"); ok {
+		t.Fatal("unknown provider reported a cluster")
+	}
+	reg.Upsert(Provider{Name: "fresh", EndpointsValid: true})
+	if _, ok := reg.CatalogEntryCluster("fresh"); ok {
+		t.Fatal("provider with no observed entry reported a cluster")
+	}
+}
+
+func TestCatalogHeartbeatRecorderRequiresAResolver(t *testing.T) {
+	if _, err := NewCatalogHeartbeatRecorder(nil, NewRegistry()); err == nil {
+		t.Fatal("nil kcp config accepted")
+	}
+	if _, err := NewCatalogHeartbeatRecorder(&rest.Config{Host: "https://example.test"}, nil); err == nil {
+		t.Fatal("nil cluster resolver accepted")
+	}
+}
+
+// A beat for a provider whose entry has not been observed yet must fail with a
+// message that names the cause, not a 404 from a workspace that never had it.
+func TestRecorderReportsUnknownCluster(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true})
+	recorder, err := NewCatalogHeartbeatRecorder(&rest.Config{Host: "https://example.test"}, reg)
+	if err != nil {
+		t.Fatalf("NewCatalogHeartbeatRecorder: %v", err)
+	}
+	err = recorder(context.Background(), "code", "v1", time.Now())
+	if err == nil || !strings.Contains(err.Error(), "no CatalogEntry cluster known") {
+		t.Fatalf("err = %v, want an unknown-cluster error", err)
 	}
 }
