@@ -27,6 +27,13 @@ import (
 
 // rateLimiter implements a per-IP rate limiter for authentication endpoints.
 // It uses a sliding window rate limiter to prevent brute force attacks.
+//
+// The budget is per hub replica, so a hub scaled to N replicas admits up to N
+// times the configured burst for a client the load balancer spreads across
+// pods. That is a deliberate trade: a shared counter would put a control-plane
+// round trip on every unauthenticated request, and this limiter is defence in
+// depth behind bearer-token and OIDC verification, not the primary control.
+// Deployments that need a hard global bound should enforce it at the ingress.
 type rateLimiter struct {
 	limiters map[string]*rate.Limiter
 	mu       sync.RWMutex

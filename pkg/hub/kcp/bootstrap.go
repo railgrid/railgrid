@@ -257,7 +257,51 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		return fmt.Errorf("binding tenants.faros.sh in system:tenants: %w", err)
 	}
 
+	// 7. Namespace in system:controllers for the hub's own replica-coordination
+	//    objects (leader-election Lease, shared session/code Secrets). Every hub
+	//    replica needs it before it can join the election, so it is created
+	//    during bootstrap rather than lazily.
+	logger.Info("Ensuring hub coordination namespace in system:controllers")
+	if err := b.EnsureHubSystemNamespace(ctx); err != nil {
+		return fmt.Errorf("ensuring hub coordination namespace: %w", err)
+	}
+
 	logger.Info("kcp bootstrap complete")
+	return nil
+}
+
+// HubSystemNamespace is the namespace inside root:faros:system:controllers that
+// holds the hub's cross-replica coordination state: the controller
+// leader-election Lease and the shared browser-session / app-access-code
+// Secrets. It is hub-internal — no tenant, provider, or user identity is ever
+// granted access to system:controllers.
+const HubSystemNamespace = "faros-hub"
+
+// ControllersConfig returns a rest.Config targeting root:faros:system:controllers,
+// where the platform APIExports and the hub's own coordination objects live.
+func (b *Bootstrapper) ControllersConfig() *rest.Config {
+	return configForPath(b.config, kcppaths.SystemControllers)
+}
+
+// EnsureHubSystemNamespace creates HubSystemNamespace in system:controllers.
+// Idempotent on AlreadyExists, so every replica can call it concurrently at
+// startup.
+func (b *Bootstrapper) EnsureHubSystemNamespace(ctx context.Context) error {
+	client, err := dynamic.NewForConfig(b.ControllersConfig())
+	if err != nil {
+		return fmt.Errorf("creating system:controllers client: %w", err)
+	}
+	ns := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Namespace",
+			"metadata":   map[string]interface{}{"name": HubSystemNamespace},
+		},
+	}
+	if _, err := client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}).
+		Create(ctx, ns, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating namespace %s: %w", HubSystemNamespace, err)
+	}
 	return nil
 }
 

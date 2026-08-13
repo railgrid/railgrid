@@ -3,12 +3,16 @@ Workload kind depends on the kcp mode:
   - Embedded kcp (default): StatefulSet. kcp's embedded etcd lives on a
     per-replica PVC (volumeClaimTemplates) and needs a stable network identity
     (headless serviceName) so the embedded kcp TLS cert stays valid across
-    restarts.
-  - External kcp: Deployment. The hub is stateless (no embedded etcd, no
-    persistent data-dir), so it needs no PVC and no stable identity. Uses the
-    Recreate strategy because the hub runs controllers without leader election;
-    a rolling update would briefly run two active instances.
+    restarts. Each replica would be its own control plane, so this mode is
+    always single-replica.
+  - External kcp: Deployment, scalable via replicaCount. The hub keeps no local
+    state: singleton controllers run behind a kcp-held leader-election Lease,
+    and browser sessions / app-access codes live in a shared kcp-backed store,
+    so any replica can serve any request.
 */ -}}
+{{- if and (gt (int .Values.replicaCount) 1) (not .Values.kcp.external.enabled) }}
+{{- fail "replicaCount > 1 requires kcp.external.enabled=true: embedded kcp keeps a per-replica etcd on its own PVC and cannot be scaled." }}
+{{- end }}
 apiVersion: apps/v1
 {{- if .Values.kcp.external.enabled }}
 kind: Deployment
@@ -22,11 +26,12 @@ metadata:
 spec:
   {{- if .Values.kcp.external.enabled }}
   strategy:
-    type: Recreate
+    type: RollingUpdate
+  replicas: {{ .Values.replicaCount }}
   {{- else }}
   serviceName: {{ include "faros-hub.fullname" . }}-kcp
-  {{- end }}
   replicas: 1
+  {{- end }}
   selector:
     matchLabels:
       {{- include "faros-hub.selectorLabels" . | nindent 6 }}

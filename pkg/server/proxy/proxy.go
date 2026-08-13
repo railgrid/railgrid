@@ -1014,7 +1014,7 @@ func (p *KCPProxy) HandleTokenLogin(w http.ResponseWriter, r *http.Request) {
 		UserID:     user.Name,
 	}
 	if p.browserSessions != nil {
-		if _, sessionErr := p.browserSessions.IssueHTTP(w, browsersession.Identity{
+		if _, sessionErr := p.browserSessions.IssueHTTP(r.Context(), w, browsersession.Identity{
 			UserID: user.Name, Email: user.Spec.Email, Name: user.Spec.Name,
 			RBACIdentity: user.Spec.RBACIdentity,
 			AuthType:     "static-token",

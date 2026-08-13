@@ -389,7 +389,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	encoded := base64.URLEncoding.EncodeToString(respJSON)
 	redirectURL := authCode.RedirectURL + "?response=" + encoded
 	if h.browserSessions != nil {
-		if _, sessionErr := h.browserSessions.IssueHTTP(w, browsersession.Identity{
+		if _, sessionErr := h.browserSessions.IssueHTTP(ctx, w, browsersession.Identity{
 			UserID: userID, Email: claims.Email, Name: claims.Name,
 			// Matches what seedUser reconciles onto the User CR; workspace
 			// RBAC and app-access authorization key off this string.
@@ -437,7 +437,7 @@ func (h *Handler) HandleSessionBootstrap(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
-	session, issueErr := h.browserSessions.IssueHTTP(w, identity)
+	session, issueErr := h.browserSessions.IssueHTTP(r.Context(), w, identity)
 	if issueErr != nil {
 		http.Error(w, "failed to create browser session", http.StatusInternalServerError)
 		return

@@ -18,6 +18,7 @@ package browsersession
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -53,7 +54,7 @@ func TestIssueUsesOpaqueHostOnlyCookieAndServerSideIdentity(t *testing.T) {
 	clock := &testClock{now: time.Unix(100, 0)}
 	store := New(Config{TTL: time.Hour, Now: clock.Now})
 	response := httptest.NewRecorder()
-	session, err := store.IssueHTTP(response, Identity{UserID: "user-1", Email: "one@example.test", AuthType: "oidc"})
+	session, err := store.IssueHTTP(context.Background(), response, Identity{UserID: "user-1", Email: "one@example.test", AuthType: "oidc"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,9 +69,9 @@ func TestIssueUsesOpaqueHostOnlyCookieAndServerSideIdentity(t *testing.T) {
 	if !cookie.Secure || !cookie.HttpOnly || cookie.Path != "/" || cookie.Domain != "" || cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("cookie security attributes = %#v", cookie)
 	}
-	stored, ok := store.sessions[tokenKey(cookie.Value)]
-	if !ok {
-		t.Fatalf("stored session missing for issued cookie")
+	stored, err := store.backend.Get(context.Background(), tokenKey(cookie.Value))
+	if err != nil {
+		t.Fatalf("stored session missing for issued cookie: %v", err)
 	}
 	if strings.Contains(fmt.Sprintf("%#v", stored), cookie.Value) {
 		t.Fatalf("raw cookie handle retained in stored session: %#v", stored)
@@ -91,7 +92,7 @@ func TestIssueHTTPCookieMaxAgeMatchesStoreTTL(t *testing.T) {
 	const ttl = time.Hour
 	store := New(Config{TTL: ttl, Now: clock.Now})
 	response := httptest.NewRecorder()
-	if _, err := store.IssueHTTP(response, Identity{UserID: "user-1"}); err != nil {
+	if _, err := store.IssueHTTP(context.Background(), response, Identity{UserID: "user-1"}); err != nil {
 		t.Fatal(err)
 	}
 	cookies := response.Result().Cookies()
@@ -106,22 +107,22 @@ func TestIssueHTTPCookieMaxAgeMatchesStoreTTL(t *testing.T) {
 func TestExpiryAndRevokeAreAuthoritative(t *testing.T) {
 	clock := &testClock{now: time.Unix(200, 0)}
 	store := New(Config{TTL: time.Minute, Now: clock.Now})
-	value, _, err := store.Issue(Identity{UserID: "user-1"})
+	value, _, err := store.Issue(context.Background(), Identity{UserID: "user-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Revoke(value); err != nil {
+	if err := store.Revoke(context.Background(), value); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Resolve(value); !errors.Is(err, ErrRevoked) {
+	if _, err := store.Resolve(context.Background(), value); !errors.Is(err, ErrRevoked) {
 		t.Fatalf("revoked resolve error = %v, want ErrRevoked", err)
 	}
-	value, _, err = store.Issue(Identity{UserID: "user-1"})
+	value, _, err = store.Issue(context.Background(), Identity{UserID: "user-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	clock.now = clock.now.Add(2 * time.Minute)
-	if _, err := store.Resolve(value); !errors.Is(err, ErrExpired) {
+	if _, err := store.Resolve(context.Background(), value); !errors.Is(err, ErrExpired) {
 		t.Fatalf("expired resolve error = %v, want ErrExpired", err)
 	}
 }
@@ -129,19 +130,19 @@ func TestExpiryAndRevokeAreAuthoritative(t *testing.T) {
 func TestStoreEvictsOldestAtBound(t *testing.T) {
 	clock := &testClock{now: time.Unix(300, 0)}
 	store := New(Config{TTL: time.Hour, MaxEntries: 1, Now: clock.Now})
-	first, _, err := store.Issue(Identity{UserID: "first"})
+	first, _, err := store.Issue(context.Background(), Identity{UserID: "first"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	clock.now = clock.now.Add(time.Second)
-	second, _, err := store.Issue(Identity{UserID: "second"})
+	second, _, err := store.Issue(context.Background(), Identity{UserID: "second"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Resolve(first); !errors.Is(err, ErrNotFound) {
+	if _, err := store.Resolve(context.Background(), first); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("evicted first session error = %v, want ErrNotFound", err)
 	}
-	if _, err := store.Resolve(second); err != nil {
+	if _, err := store.Resolve(context.Background(), second); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -150,11 +151,15 @@ func TestRevokedValuesAreBounded(t *testing.T) {
 	clock := &testClock{now: time.Unix(400, 0)}
 	store := New(Config{TTL: time.Hour, MaxEntries: 2, Now: clock.Now})
 	for _, value := range []string{"unknown-1", "unknown-2", "unknown-3"} {
-		if err := store.Revoke(value); err != nil {
+		if err := store.Revoke(context.Background(), value); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got, want := len(store.revoked), 2; got > want {
+	memory, ok := store.backend.(*memoryBackend)
+	if !ok {
+		t.Fatalf("default backend = %T, want *memoryBackend", store.backend)
+	}
+	if got, want := len(memory.revoked), 2; got > want {
 		t.Fatalf("revoked entries = %d, want at most %d", got, want)
 	}
 }
@@ -163,22 +168,22 @@ func TestIssueRetriesExistingCollisionWithoutOverwriting(t *testing.T) {
 	clock := &testClock{now: time.Unix(500, 0)}
 	random := bytes.NewReader(append(append(secretBytes(1), secretBytes(1)...), secretBytes(2)...))
 	store := New(Config{TTL: time.Hour, Now: clock.Now, Random: random})
-	first, _, err := store.Issue(Identity{UserID: "first"})
+	first, _, err := store.Issue(context.Background(), Identity{UserID: "first"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, _, err := store.Issue(Identity{UserID: "second"})
+	second, _, err := store.Issue(context.Background(), Identity{UserID: "second"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first == second {
 		t.Fatalf("collision retry returned the existing handle %q", first)
 	}
-	resolvedFirst, err := store.Resolve(first)
+	resolvedFirst, err := store.Resolve(context.Background(), first)
 	if err != nil || resolvedFirst.Identity.UserID != "first" {
 		t.Fatalf("first session after collision = %#v, err=%v", resolvedFirst, err)
 	}
-	resolvedSecond, err := store.Resolve(second)
+	resolvedSecond, err := store.Resolve(context.Background(), second)
 	if err != nil || resolvedSecond.Identity.UserID != "second" {
 		t.Fatalf("second session after collision = %#v, err=%v", resolvedSecond, err)
 	}
@@ -188,24 +193,24 @@ func TestIssueRetriesRevokedCollisionWithoutResurrection(t *testing.T) {
 	clock := &testClock{now: time.Unix(600, 0)}
 	random := bytes.NewReader(append(append(secretBytes(3), secretBytes(3)...), secretBytes(4)...))
 	store := New(Config{TTL: time.Hour, Now: clock.Now, Random: random})
-	revoked, _, err := store.Issue(Identity{UserID: "revoked"})
+	revoked, _, err := store.Issue(context.Background(), Identity{UserID: "revoked"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Revoke(revoked); err != nil {
+	if err := store.Revoke(context.Background(), revoked); err != nil {
 		t.Fatal(err)
 	}
-	fresh, _, err := store.Issue(Identity{UserID: "fresh"})
+	fresh, _, err := store.Issue(context.Background(), Identity{UserID: "fresh"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fresh == revoked {
 		t.Fatalf("collision retry resurrected revoked handle %q", revoked)
 	}
-	if _, err := store.Resolve(revoked); !errors.Is(err, ErrRevoked) {
+	if _, err := store.Resolve(context.Background(), revoked); !errors.Is(err, ErrRevoked) {
 		t.Fatalf("revoked handle after collision = %v, want ErrRevoked", err)
 	}
-	resolved, err := store.Resolve(fresh)
+	resolved, err := store.Resolve(context.Background(), fresh)
 	if err != nil || resolved.Identity.UserID != "fresh" {
 		t.Fatalf("fresh session after revoked collision = %#v, err=%v", resolved, err)
 	}
@@ -215,17 +220,17 @@ func TestIssueFailsClosedAfterBoundedCollisions(t *testing.T) {
 	clock := &testClock{now: time.Unix(700, 0)}
 	random := &repeatingSecretReader{secret: secretBytes(5)}
 	store := New(Config{TTL: time.Hour, Now: clock.Now, Random: random})
-	first, _, err := store.Issue(Identity{UserID: "first"})
+	first, _, err := store.Issue(context.Background(), Identity{UserID: "first"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.Issue(Identity{UserID: "second"}); err == nil {
+	if _, _, err := store.Issue(context.Background(), Identity{UserID: "second"}); err == nil {
 		t.Fatal("repeated token collision unexpectedly issued a session")
 	}
 	if got, want := random.reads, 1+maxIssueAttempts; got != want {
 		t.Fatalf("random reads after collision exhaustion = %d, want %d", got, want)
 	}
-	resolved, err := store.Resolve(first)
+	resolved, err := store.Resolve(context.Background(), first)
 	if err != nil || resolved.Identity.UserID != "first" {
 		t.Fatalf("first session after collision exhaustion = %#v, err=%v", resolved, err)
 	}

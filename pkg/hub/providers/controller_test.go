@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -194,5 +195,89 @@ func TestCatalogReconcilerOmitsInvalidAssistantSkillAndKeepsValidSibling(t *test
 	}
 	if len(got.AssistantSkills) != 1 || got.AssistantSkills[0].PackageName != "valid" || got.AssistantSkills[0].Digest != digest {
 		t.Fatalf("assistant skills = %#v, want only valid sibling", got.AssistantSkills)
+	}
+}
+
+// Every replica runs the catalog reconciler, so an unconditional status write
+// is a cross-replica write storm: each Update bumps the resource version, every
+// peer's watch fires, and they all write again. A steady-state reconcile must
+// therefore leave the object untouched.
+func TestCatalogReconcilerDoesNotRewriteUnchangedStatus(t *testing.T) {
+	reg := NewRegistry()
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "cost"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			DisplayName: "Cost",
+			Backend:     &providersv1alpha1.ProviderBackend{URL: "http://cost.invalid"},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).
+		WithObjects(entry).
+		Build()
+
+	r := &CatalogReconciler{mgr: testfakes.NewManager(c), reg: reg, noKCP: true}
+	req := testfakes.NewRequest("cluster", "", "cost")
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+
+	var afterFirst providersv1alpha1.CatalogEntry
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "cost"}, &afterFirst); err != nil {
+		t.Fatalf("get after first reconcile: %v", err)
+	}
+
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	var afterSecond providersv1alpha1.CatalogEntry
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "cost"}, &afterSecond); err != nil {
+		t.Fatalf("get after second reconcile: %v", err)
+	}
+
+	if afterFirst.ResourceVersion != afterSecond.ResourceVersion {
+		t.Fatalf("status rewritten with no change: resourceVersion %s -> %s",
+			afterFirst.ResourceVersion, afterSecond.ResourceVersion)
+	}
+}
+
+// The status heartbeat is how a beat served by one replica reaches the others;
+// the reconciler has to carry it into the registry.
+func TestCatalogReconcilerAdoptsStatusHeartbeat(t *testing.T) {
+	beat := metav1.NewTime(time.Now().Add(-time.Second).Truncate(time.Second))
+	reg := NewRegistry()
+	scheme := newProviderTestScheme(t)
+	entry := &providersv1alpha1.CatalogEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: "cost"},
+		Spec: providersv1alpha1.CatalogEntrySpec{
+			Backend: &providersv1alpha1.ProviderBackend{URL: "http://cost.invalid"},
+		},
+		Status: providersv1alpha1.CatalogEntryStatus{
+			LastHeartbeat:   &beat,
+			ReportedVersion: "v4.5.6",
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).
+		WithObjects(entry).
+		Build()
+
+	r := &CatalogReconciler{mgr: testfakes.NewManager(c), reg: reg, noKCP: true}
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "cost")); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	got, ok := reg.Get("cost")
+	if !ok {
+		t.Fatal("cost missing from registry")
+	}
+	if !got.LastHeartbeat.Equal(beat.Time) || got.ReportedVersion != "v4.5.6" || !got.HeartbeatRequired {
+		t.Fatalf("registry did not adopt status heartbeat: %+v", got)
+	}
+	if !got.Ready() {
+		t.Fatal("provider with a fresh heartbeat should be Ready on every replica")
 	}
 }

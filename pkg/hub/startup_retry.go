@@ -96,6 +96,12 @@ func isRetriableKCPBootstrapError(err error) bool {
 		apierrors.IsInternalError(err) {
 		return true
 	}
+	// Hub replicas bootstrap concurrently and every bootstrap write is
+	// idempotent, so losing a write race to a peer is a retry, not a failure.
+	// Without this a second replica starting alongside the first crash-loops.
+	if apierrors.IsConflict(err) || apierrors.IsAlreadyExists(err) {
+		return true
+	}
 
 	lowerErr := strings.ToLower(err.Error())
 	if apierrors.IsForbidden(err) && strings.Contains(lowerErr, "not yet ready") {

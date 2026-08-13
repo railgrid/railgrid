@@ -23,11 +23,13 @@ import (
 	"sort"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -121,6 +123,14 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		return ctrl.Result{}, err
 	}
 
+	// Snapshot the status as observed. Every hub replica runs this reconciler
+	// (the registry it maintains is request-path state, so it cannot be
+	// leader-gated), which makes an unconditional status write a cross-replica
+	// write storm: each Update bumps the resource version, every other
+	// replica's watch fires, and they all write again. Every exit path below
+	// goes through updateStatusIfChanged, which writes only a real diff.
+	observedStatus := *entry.Status.DeepCopy()
+
 	// Validate the action map before any endpoint is admitted into the
 	// registry. A malformed declaration must fail closed: keeping a previous
 	// registry record would allow an action whose contract no longer matches
@@ -137,11 +147,10 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 			LastTransitionTime: now,
 			ObservedGeneration: entry.Generation,
 		})
-		if statusErr := c.Status().Update(ctx, &entry); statusErr != nil {
-			if apierrors.IsConflict(statusErr) {
-				return ctrl.Result{Requeue: true}, nil
-			}
+		if requeue, statusErr := updateStatusIfChanged(ctx, c, &entry, observedStatus); statusErr != nil {
 			return ctrl.Result{}, fmt.Errorf("updating invalid-action status: %w", statusErr)
+		} else if requeue {
+			return ctrl.Result{Requeue: true}, nil
 		}
 		logger.Info("Rejected invalid provider action declarations", "error", err.Error())
 		return ctrl.Result{}, nil
@@ -161,6 +170,13 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		Version:      entry.Spec.Version,
 	}
 	prov.EdgeProxyAccess = entry.Spec.EdgeProxyAccess
+	// Liveness travels through status so it reaches every hub replica, not just
+	// the one whose heartbeat endpoint the provider happened to hit.
+	if entry.Status.LastHeartbeat != nil {
+		prov.LastHeartbeat = entry.Status.LastHeartbeat.Time
+		prov.HeartbeatRequired = true
+		prov.ReportedVersion = entry.Status.ReportedVersion
+	}
 	if entry.Spec.APIExport != nil {
 		prov.APIExportName = entry.Spec.APIExport.Name
 		prov.APIExportPath = providersParentWorkspace + ":" + entry.Name
@@ -199,11 +215,10 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 			LastTransitionTime: now,
 			ObservedGeneration: entry.Generation,
 		})
-		if statusErr := c.Status().Update(ctx, &entry); statusErr != nil {
-			if apierrors.IsConflict(statusErr) {
-				return ctrl.Result{Requeue: true}, nil
-			}
+		if requeue, statusErr := updateStatusIfChanged(ctx, c, &entry, observedStatus); statusErr != nil {
 			return ctrl.Result{}, fmt.Errorf("updating invalid-action-schema status: %w", statusErr)
+		} else if requeue {
+			return ctrl.Result{Requeue: true}, nil
 		}
 		logger.Info("Rejected provider action schemas", "error", actionSchemaErr.Error())
 		return ctrl.Result{}, nil
@@ -345,13 +360,34 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	}
 	setCondition(&entry.Status.Conditions, cond)
 
-	if err := c.Status().Update(ctx, &entry); err != nil {
-		if apierrors.IsConflict(err) {
-			return ctrl.Result{Requeue: true}, nil
-		}
+	if requeue, err := updateStatusIfChanged(ctx, c, &entry, observedStatus); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
+	} else if requeue {
+		return ctrl.Result{Requeue: true}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// updateStatusIfChanged writes entry's status only when it differs from what
+// was observed, and reports whether the caller should requeue after a conflict.
+// Skipping no-op writes is what keeps N hub replicas reconciling the same
+// CatalogEntry from bumping its resource version in a loop.
+func updateStatusIfChanged(
+	ctx context.Context,
+	c client.Client,
+	entry *providersv1alpha1.CatalogEntry,
+	observed providersv1alpha1.CatalogEntryStatus,
+) (requeue bool, err error) {
+	if equality.Semantic.DeepEqual(observed, entry.Status) {
+		return false, nil
+	}
+	if err := c.Status().Update(ctx, entry); err != nil {
+		if apierrors.IsConflict(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
 }
 
 // urlString renders a *url.URL for logging, returning "" for nil (a nil

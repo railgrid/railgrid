@@ -17,8 +17,10 @@ limitations under the License.
 package accessproxy
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -135,6 +137,10 @@ func newUpstream(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *ups
 func newProxy(t *testing.T, config Config) *Proxy {
 	t.Helper()
 	config.AllowNonClusterTargets = true // httptest targets are 127.0.0.1
+	if config.Logf == nil {
+		// Rejection reasons belong with the failing test, not on stderr.
+		config.Logf = t.Logf
+	}
 	proxy, err := New(config)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -602,12 +608,13 @@ func TestConfigValidation(t *testing.T) {
 	}
 }
 
-func TestReturnStateMapIsBoundedWithO1RequestCost(t *testing.T) {
+func TestAnonymousFloodStoresNothingServerSide(t *testing.T) {
 	upstream, _ := newUpstream(t, nil)
 	hub := newFakeHub("code-1")
 	p := newProxy(t, privateConfig(upstream.URL, hub))
-	// Simulate an anonymous flood far past the cap.
-	for i := 0; i < maxReturnStates+500; i++ {
+	// Simulate an anonymous flood far past the old cap. Sign-in state now
+	// rides the browser's cookie, so none of this can grow the process.
+	for i := 0; i < maxUsedStates+500; i++ {
 		rec := doRequest(p, appRequest("/"))
 		if rec.Code != http.StatusFound {
 			t.Fatalf("request %d status = %d", i, rec.Code)
@@ -615,8 +622,150 @@ func TestReturnStateMapIsBoundedWithO1RequestCost(t *testing.T) {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if len(p.returnStates) > maxReturnStates {
-		t.Fatalf("returnStates = %d, want <= %d", len(p.returnStates), maxReturnStates)
+	if len(p.usedStates) != 0 {
+		t.Fatalf("usedStates = %d, want 0 — unauthenticated traffic must not allocate", len(p.usedStates))
+	}
+}
+
+func TestUsedStateCacheIsBounded(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	hub := newFakeHub("code-1")
+	p := newProxy(t, privateConfig(upstream.URL, hub))
+	expiry := p.now().Add(stateTTL)
+	for i := 0; i < maxUsedStates+500; i++ {
+		if !p.markStateUsed(fmt.Sprintf("nonce-%d", i), expiry) {
+			t.Fatalf("nonce %d reported as already used", i)
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.usedStates) > maxUsedStates {
+		t.Fatalf("usedStates = %d, want <= %d", len(p.usedStates), maxUsedStates)
+	}
+}
+
+// The bug this replaced: the gate's state lived in a per-pod map, so any
+// restart between the authorize redirect and the callback failed the sign-in
+// with "invalid app access state". Flipping an app's access mode rolls the
+// deployment, which made it routine.
+func TestCallbackCompletesOnAFreshProcess(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	hub := newFakeHub("code-1")
+	config := privateConfig(upstream.URL, hub)
+
+	before := newProxy(t, config)
+	first := doRequest(before, appRequest("/deep/link?q=1"))
+	if first.Code != http.StatusFound {
+		t.Fatalf("initial request status = %d, want 302", first.Code)
+	}
+	returnCookie := cookieFromResponse(t, first, ReturnCookieName)
+	state := mustQuery(t, first.Header().Get("Location"), "state")
+
+	// The pod is replaced; the replacement shares no memory with it.
+	after := newProxy(t, config)
+	callback := doRequest(after, appRequest(CallbackPath+"?code="+hub.code+"&state="+state, returnCookie))
+	if callback.Code != http.StatusFound {
+		t.Fatalf("callback on fresh process = %d body=%q, want 302", callback.Code, callback.Body.String())
+	}
+	if got := callback.Header().Get("Location"); got != "/deep/link?q=1" {
+		t.Fatalf("post-login redirect = %q, want the original deep link", got)
+	}
+	if cookieFromResponse(t, callback, SessionCookieName) == nil {
+		t.Fatal("callback minted no session cookie")
+	}
+}
+
+func TestReturnCookieWithTamperedPathRedirectsSameOrigin(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	hub := newFakeHub("code-1")
+	p := newProxy(t, privateConfig(upstream.URL, hub))
+
+	first := doRequest(p, appRequest("/"))
+	state := mustQuery(t, first.Header().Get("Location"), "state")
+
+	// An off-origin return path in a hand-built cookie must not survive the
+	// re-sanitisation on the callback.
+	raw, err := json.Marshal(returnStatePayload{
+		Nonce:     state,
+		Path:      "https://evil.example/steal",
+		ExpiresAt: p.now().Add(stateTTL).Unix(),
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	forged := &http.Cookie{Name: ReturnCookieName, Value: base64.RawURLEncoding.EncodeToString(raw)}
+
+	callback := doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state, forged))
+	if callback.Code != http.StatusFound {
+		t.Fatalf("callback status = %d, want 302", callback.Code)
+	}
+	if got := callback.Header().Get("Location"); got != "/" {
+		t.Fatalf("post-login redirect = %q, want / (off-origin path discarded)", got)
+	}
+}
+
+func TestExpiredReturnStateIsRejected(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	hub := newFakeHub("code-1")
+	p := newProxy(t, privateConfig(upstream.URL, hub))
+
+	first := doRequest(p, appRequest("/"))
+	returnCookie := cookieFromResponse(t, first, ReturnCookieName)
+	state := mustQuery(t, first.Header().Get("Location"), "state")
+
+	// The browser dawdles at the IdP for longer than the state TTL.
+	base := p.now()
+	p.now = func() time.Time { return base.Add(stateTTL + time.Second) }
+
+	rec := doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state, returnCookie))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if hub.exchangeCount() != 0 {
+		t.Fatalf("expired state reached the hub exchange")
+	}
+}
+
+func TestCallbackRejectionsAreLoggedWithReasons(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	hub := newFakeHub("code-1")
+	config := privateConfig(upstream.URL, hub)
+
+	var logged []string
+	config.Logf = func(format string, args ...any) {
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}
+	p := newProxy(t, config)
+
+	first := doRequest(p, appRequest("/"))
+	returnCookie := cookieFromResponse(t, first, ReturnCookieName)
+	state := mustQuery(t, first.Header().Get("Location"), "state")
+
+	// No cookie, bad cookie, mismatched state, then a successful use followed
+	// by a replay — four distinct reasons, all surfaced as the same 400.
+	doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state))
+	doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state,
+		&http.Cookie{Name: ReturnCookieName, Value: "not-base64-at-all!!"}))
+	doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state=someone-elses", returnCookie))
+	doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state, returnCookie))
+	doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state, returnCookie))
+
+	for _, want := range []string{"carried no", "malformed", "does not match", "already used"} {
+		found := false
+		for _, line := range logged {
+			if strings.Contains(line, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("no log line mentioning %q; got %q", want, logged)
+		}
+	}
+	for _, line := range logged {
+		if strings.Contains(line, state) {
+			t.Errorf("log line leaks the state nonce: %q", line)
+		}
 	}
 }
 

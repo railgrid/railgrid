@@ -17,6 +17,7 @@ limitations under the License.
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -68,14 +69,14 @@ func TestBrowserSessionBootstrapAndLogout(t *testing.T) {
 	if logout.Code != http.StatusNoContent {
 		t.Fatalf("logout status = %d; body=%s", logout.Code, logout.Body.String())
 	}
-	if _, err := store.Resolve(cookie.Value); err == nil {
+	if _, err := store.Resolve(context.Background(), cookie.Value); err == nil {
 		t.Fatal("logout left browser session live")
 	}
 }
 
 func TestBrowserSessionBootstrapFallsBackToLiveCookieWhenBearerIsUnavailable(t *testing.T) {
 	store := browsersession.New(browsersession.Config{TTL: time.Hour})
-	value, _, err := store.Issue(browsersession.Identity{UserID: "user-1", Email: "one@example.test"})
+	value, _, err := store.Issue(context.Background(), browsersession.Identity{UserID: "user-1", Email: "one@example.test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestBrowserSessionBootstrapFallsBackToLiveCookieWhenBearerIsUnavailable(t *
 
 func TestBrowserSessionLogoutGETRedirectsAndExpiresCookie(t *testing.T) {
 	store := browsersession.New(browsersession.Config{TTL: time.Hour})
-	value, _, err := store.Issue(browsersession.Identity{UserID: "user-1"})
+	value, _, err := store.Issue(context.Background(), browsersession.Identity{UserID: "user-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +136,7 @@ func TestBrowserSessionLogoutGETRedirectsAndExpiresCookie(t *testing.T) {
 	if cookie.Name != browsersession.CookieName || cookie.MaxAge != -1 || !cookie.Secure || !cookie.HttpOnly || cookie.Path != "/" {
 		t.Fatalf("logout cookie = %#v", cookie)
 	}
-	if _, err := store.Resolve(value); !errors.Is(err, browsersession.ErrRevoked) {
+	if _, err := store.Resolve(context.Background(), value); !errors.Is(err, browsersession.ErrRevoked) {
 		t.Fatalf("logout session error = %v, want ErrRevoked", err)
 	}
 }

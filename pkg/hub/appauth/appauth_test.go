@@ -18,6 +18,7 @@ package appauth
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -74,7 +75,7 @@ func newFixture(t *testing.T) *fixture {
 func (f *fixture) loggedInRequest(t *testing.T, target string) *http.Request {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	if _, err := f.sessions.IssueHTTP(rec, browsersession.Identity{UserID: "user-abc", Email: "abc@example.com", Name: "Ab C", RBACIdentity: "faros:abc@example.com"}); err != nil {
+	if _, err := f.sessions.IssueHTTP(context.Background(), rec, browsersession.Identity{UserID: "user-abc", Email: "abc@example.com", Name: "Ab C", RBACIdentity: "faros:abc@example.com"}); err != nil {
 		t.Fatalf("issue session: %v", err)
 	}
 	req := httptest.NewRequest(http.MethodGet, target, nil)
@@ -186,7 +187,7 @@ func TestAuthorizeMintsCodeAndExchangeReturnsIdentity(t *testing.T) {
 func TestAuthorizeWorksForStaticTokenSessions(t *testing.T) {
 	f := newFixture(t)
 	rec := httptest.NewRecorder()
-	if _, err := f.sessions.IssueHTTP(rec, browsersession.Identity{
+	if _, err := f.sessions.IssueHTTP(context.Background(), rec, browsersession.Identity{
 		UserID: "static-user", RBACIdentity: "faros:static:0123456789abcdef", AuthType: "static-token",
 	}); err != nil {
 		t.Fatalf("issue static-token session: %v", err)
@@ -337,14 +338,18 @@ func TestCodeExpires(t *testing.T) {
 func TestCodeStoreIsBounded(t *testing.T) {
 	f := newFixture(t)
 	for i := 0; i < maxCodes+50; i++ {
-		if _, err := f.handler.mintCode(InstanceRef{Cluster: "c1", Group: "g", Resource: "r", Name: "n"},
+		if _, err := f.handler.mintCode(context.Background(), InstanceRef{Cluster: "c1", Group: "g", Resource: "r", Name: "n"},
 			"h."+testAppsDomain, browsersession.Identity{UserID: "u"}); err != nil {
 			t.Fatalf("mint %d: %v", i, err)
 		}
 	}
-	f.handler.mu.Lock()
-	defer f.handler.mu.Unlock()
-	if len(f.handler.codes) > maxCodes {
-		t.Fatalf("codes = %d, want <= %d", len(f.handler.codes), maxCodes)
+	memory, ok := f.handler.codes.(*memoryCodeStore)
+	if !ok {
+		t.Fatalf("default code store = %T, want *memoryCodeStore", f.handler.codes)
+	}
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+	if len(memory.codes) > maxCodes {
+		t.Fatalf("codes = %d, want <= %d", len(memory.codes), maxCodes)
 	}
 }

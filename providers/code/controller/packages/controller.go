@@ -46,10 +46,13 @@ import (
 )
 
 // defaultCrawlInterval is how often each Repository is re-crawled for packages.
-// Short enough that the portal sees fresh artifacts soon after a push, long
-// enough that a workspace full of repos stays well under the host's rate limit.
-// Override with CODE_PACKAGE_CRAWL_INTERVAL (any time.ParseDuration string).
-const defaultCrawlInterval = 2 * time.Minute
+// Kept short so App Studio's publish check sees a build's images promptly after
+// GitHub Actions pushes them — at 2m the lag read as "no images published" for
+// minutes after a successful build. The cost is one host package listing per
+// repository per interval, so a workspace with many repos may need this raised
+// to stay under the host's rate limit: override with CODE_PACKAGE_CRAWL_INTERVAL
+// (any time.ParseDuration string).
+const defaultCrawlInterval = 30 * time.Second
 
 // Reconciler crawls each Repository's host packages into Package CRs.
 type Reconciler struct {

@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -38,14 +39,20 @@ import (
 const (
 	// stateTTL bounds the authorize round-trip through the hub and IdP.
 	stateTTL = 5 * time.Minute
-	// maxReturnStates / maxSessions bound the two in-memory maps. Return
-	// states are minted for unauthenticated traffic, so the cap plus the
-	// time-gated sweep keeps anonymous request floods from growing the map or
-	// buying O(N) work per request.
-	maxReturnStates = 5000
-	maxSessions     = 20000
+	// maxUsedStates / maxSessions bound the two in-memory maps. Used states are
+	// only recorded for callbacks that already matched their cookie, so the cap
+	// plus the time-gated sweep keeps anonymous request floods from growing the
+	// map or buying O(N) work per request.
+	maxUsedStates = 5000
+	maxSessions   = 20000
 	// sweepInterval gates how often either map is fully swept.
 	sweepInterval = 30 * time.Second
+	// maxReturnPathBytes caps the deep link carried in the return cookie so the
+	// cookie stays well inside browser size limits. A longer path resumes at
+	// "/" — resuming the exact deep link is a convenience, signing in is not.
+	maxReturnPathBytes = 1024
+	// maxReturnCookieBytes bounds the work a forged cookie can buy.
+	maxReturnCookieBytes = 4096
 )
 
 // Proxy is a host-bound reverse proxy for one published template instance.
@@ -56,15 +63,20 @@ type Proxy struct {
 	random RandomSource
 
 	mu               sync.Mutex
-	returnStates     map[string]returnState
+	usedStates       map[string]time.Time
 	sessions         map[string]appSession
-	lastReturnSweep  time.Time
+	lastUsedSweep    time.Time
 	lastSessionSweep time.Time
 }
 
-type returnState struct {
-	path      string
-	expiresAt time.Time
+// returnStatePayload is the entire content of the return cookie: the nonce
+// echoed to the hub as `state`, the clean path to resume on success, and the
+// absolute expiry. Keeping it in the cookie rather than a server-side map is
+// what lets a sign-in survive a gate restart or land on a different replica.
+type returnStatePayload struct {
+	Nonce     string `json:"n"`
+	Path      string `json:"p"`
+	ExpiresAt int64  `json:"e"`
 }
 
 type appSession struct {
@@ -96,11 +108,11 @@ func New(config Config) (*Proxy, error) {
 		return nil, err
 	}
 	proxy := &Proxy{
-		config:       normalized,
-		now:          time.Now,
-		random:       config.Random,
-		returnStates: make(map[string]returnState),
-		sessions:     make(map[string]appSession),
+		config:     normalized,
+		now:        time.Now,
+		random:     config.Random,
+		usedStates: make(map[string]time.Time),
+		sessions:   make(map[string]appSession),
 	}
 	if proxy.random == nil {
 		proxy.random = rand.Reader
@@ -227,19 +239,19 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, route normalized
 	proxy.ServeHTTP(w, r)
 }
 
-// redirectToAuthorize starts the hub login flow: it parks the clean return
-// path server-side under a one-use state handle, mirrors the handle in a
-// short-lived cookie, and sends the browser to the hub authorize endpoint.
+// redirectToAuthorize starts the hub login flow: it packs the clean return
+// path and a fresh nonce into a short-lived cookie, echoes the nonce to the hub
+// as `state`, and sends the browser to the hub authorize endpoint.
 func (p *Proxy) redirectToAuthorize(w http.ResponseWriter, r *http.Request, path string) {
 	if path == "" {
 		path = "/"
 	}
-	handle, err := p.putReturnState(path)
+	handle, cookieValue, err := p.newReturnState(path)
 	if err != nil {
 		http.Error(w, "app access state unavailable", http.StatusInternalServerError)
 		return
 	}
-	p.setReturnCookie(w, handle)
+	p.setReturnCookie(w, cookieValue)
 	callbackURL := p.config.publicScheme + "://" + p.config.host + CallbackPath
 	query := url.Values{}
 	query.Set("cluster", p.config.Instance.Cluster)
@@ -293,6 +305,11 @@ func (p *Proxy) handleCallback(w http.ResponseWriter, r *http.Request) {
 	request.Header.Set("Content-Type", "application/json")
 	response, err := p.config.hubClient.Do(request)
 	if err != nil {
+		// Includes the TLS case: a hub certificate that does not cover the
+		// in-cluster URL this gate was configured with fails every sign-in
+		// here, and the 502 reaches the browser as a generic bad-gateway page
+		// with no hint of the cause. Name the URL and the error.
+		p.logf("app access exchange failed: %s is unreachable from this gate (host=%s): %v", p.config.hubURL+hubExchangePath, p.config.host, err)
 		p.clearReturnCookie(w)
 		p.clearSessionCookie(w)
 		http.Error(w, "app access exchange unavailable", http.StatusBadGateway)
@@ -307,13 +324,21 @@ func (p *Proxy) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		p.logf("app access exchange refused: hub answered %d (host=%s)", response.StatusCode, p.config.host)
 		p.clearReturnCookie(w)
 		p.clearSessionCookie(w)
 		http.Error(w, "app access exchange denied", http.StatusBadGateway)
 		return
 	}
 	var exchange exchangeResponse
-	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&exchange); err != nil || !exchange.Allowed || strings.TrimSpace(exchange.UserID) == "" {
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&exchange); err != nil {
+		p.logf("app access exchange returned an unreadable body (host=%s): %v", p.config.host, err)
+		p.clearReturnCookie(w)
+		http.Error(w, "invalid app access exchange", http.StatusBadGateway)
+		return
+	}
+	if !exchange.Allowed || strings.TrimSpace(exchange.UserID) == "" {
+		p.logf("app access exchange returned no grant: allowed=%t userID-empty=%t (host=%s)", exchange.Allowed, strings.TrimSpace(exchange.UserID) == "", p.config.host)
 		p.clearReturnCookie(w)
 		http.Error(w, "invalid app access exchange", http.StatusBadGateway)
 		return
@@ -337,64 +362,115 @@ func (p *Proxy) handleCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, returnPath, http.StatusFound)
 }
 
-// consumeReturnState binds a callback to a browser that completed the app's
-// authorization redirect. The cookie is only an opaque lookup key; the live
-// server-side state is the authority. Taking the state under the map lock
-// consumes it exactly once, so copied callback URLs, forged cookies, expired
-// handles, and replayed callbacks cannot reach the hub exchange endpoint.
-// A mismatched cookie/state pair deliberately does NOT consume the victim's
-// live state.
+// consumeReturnState binds a callback to the browser that started the app's
+// authorization redirect. The cookie carries the state itself, so the check is
+// purely local: a callback completes against whichever pod happens to serve it,
+// including one that started after the redirect was issued. Copied callback
+// URLs (no cookie), forged or mismatched pairs, and expired states are all
+// rejected before the hub exchange is reached.
+//
+// The state is nonce-bound but deliberately unsigned — the proxy holds no keys
+// (see the package doc), and every field is either compared against the query
+// parameter or re-sanitised here, so a tampered cookie can only produce a
+// same-origin return path.
+//
+// A mismatched cookie/state pair does NOT clear the cookie: the browser may
+// still be able to complete its own sign-in. Single use is enforced by the
+// usedStates cache below, which is a best-effort optimisation rather than the
+// authority — see markStateUsed.
 func (p *Proxy) consumeReturnState(w http.ResponseWriter, r *http.Request, state string) (string, bool) {
 	cookie, err := r.Cookie(ReturnCookieName)
 	if err != nil {
+		p.logf("app access callback rejected: request carried no %s cookie (host=%s) — a copied callback URL, or the cookie was blocked", ReturnCookieName, p.config.host)
 		p.clearReturnCookie(w)
 		return "", false
 	}
-	handle := strings.TrimSpace(cookie.Value)
-	if state == "" || subtle.ConstantTimeCompare([]byte(handle), []byte(state)) != 1 {
-		return "", false
-	}
-	path, ok := p.takeReturnState(handle)
+	payload, ok := decodeReturnState(cookie.Value)
 	if !ok {
+		p.logf("app access callback rejected: %s cookie is malformed (host=%s)", ReturnCookieName, p.config.host)
 		p.clearReturnCookie(w)
 		return "", false
+	}
+	if state == "" || subtle.ConstantTimeCompare([]byte(payload.Nonce), []byte(state)) != 1 {
+		p.logf("app access callback rejected: state parameter does not match the %s cookie (host=%s)", ReturnCookieName, p.config.host)
+		return "", false
+	}
+	if !p.now().Before(time.Unix(payload.ExpiresAt, 0)) {
+		p.logf("app access callback rejected: sign-in state expired (host=%s) — the round trip through the hub took longer than %s", p.config.host, stateTTL)
+		p.clearReturnCookie(w)
+		return "", false
+	}
+	if !p.markStateUsed(payload.Nonce, time.Unix(payload.ExpiresAt, 0)) {
+		p.logf("app access callback rejected: sign-in state already used (host=%s) — replayed callback", p.config.host)
+		p.clearReturnCookie(w)
+		return "", false
+	}
+	// Re-sanitise rather than trust: the path round-tripped through a cookie.
+	path := cleanReturnPath(payload.Path)
+	if path == "" {
+		path = "/"
 	}
 	return path, true
 }
 
-func (p *Proxy) putReturnState(path string) (string, error) {
+// newReturnState mints the nonce echoed to the hub and the cookie value that
+// carries the whole state back to the callback.
+func (p *Proxy) newReturnState(path string) (nonce, cookieValue string, err error) {
 	if path == "" {
-		return "", errors.New("empty return path")
+		return "", "", errors.New("empty return path")
 	}
-	handle, err := p.randomString(32)
+	if len(path) > maxReturnPathBytes {
+		path = "/"
+	}
+	nonce, err = p.randomString(32)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	now := p.now()
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.sweepReturnStatesLocked(now)
-	for len(p.returnStates) >= maxReturnStates {
-		evictOldestReturnLocked(p.returnStates)
+	raw, err := json.Marshal(returnStatePayload{
+		Nonce:     nonce,
+		Path:      path,
+		ExpiresAt: p.now().Add(stateTTL).Unix(),
+	})
+	if err != nil {
+		return "", "", err
 	}
-	p.returnStates[handle] = returnState{path: path, expiresAt: now.Add(stateTTL)}
-	return handle, nil
+	return nonce, base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func (p *Proxy) takeReturnState(handle string) (string, bool) {
-	if handle == "" {
-		return "", false
+func decodeReturnState(value string) (returnStatePayload, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > maxReturnCookieBytes {
+		return returnStatePayload{}, false
 	}
+	raw, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return returnStatePayload{}, false
+	}
+	var payload returnStatePayload
+	if err := json.Unmarshal(raw, &payload); err != nil || payload.Nonce == "" || payload.ExpiresAt == 0 {
+		return returnStatePayload{}, false
+	}
+	return payload, true
+}
+
+// markStateUsed records a nonce as spent and reports whether it was still
+// unused. Unlike the map it replaces, losing this cache costs nothing but
+// replay detection: the hub's authorization code is itself one-use, so a replay
+// that slips through a restart or an eviction is answered with 410 and simply
+// restarts the flow.
+func (p *Proxy) markStateUsed(nonce string, expiresAt time.Time) bool {
 	now := p.now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	state, ok := p.returnStates[handle]
-	if !ok || !now.Before(state.expiresAt) {
-		delete(p.returnStates, handle)
-		return "", false
+	p.sweepUsedStatesLocked(now)
+	if _, used := p.usedStates[nonce]; used {
+		return false
 	}
-	delete(p.returnStates, handle)
-	return state.path, true
+	for len(p.usedStates) >= maxUsedStates {
+		evictOldestUsedLocked(p.usedStates)
+	}
+	p.usedStates[nonce] = expiresAt
+	return true
 }
 
 func (p *Proxy) putSession(userID string, ttlSeconds int64) (string, error) {
@@ -420,17 +496,17 @@ func (p *Proxy) putSession(userID string, ttlSeconds int64) (string, error) {
 	return value, nil
 }
 
-// sweepReturnStatesLocked and sweepSessionsLocked are time-gated full sweeps:
+// sweepUsedStatesLocked and sweepSessionsLocked are time-gated full sweeps:
 // at most one O(N) pass per sweepInterval, so per-request work stays O(1)
 // even under an anonymous request flood.
-func (p *Proxy) sweepReturnStatesLocked(now time.Time) {
-	if now.Sub(p.lastReturnSweep) < sweepInterval && len(p.returnStates) < maxReturnStates {
+func (p *Proxy) sweepUsedStatesLocked(now time.Time) {
+	if now.Sub(p.lastUsedSweep) < sweepInterval && len(p.usedStates) < maxUsedStates {
 		return
 	}
-	p.lastReturnSweep = now
-	for handle, state := range p.returnStates {
-		if !now.Before(state.expiresAt) {
-			delete(p.returnStates, handle)
+	p.lastUsedSweep = now
+	for nonce, expiresAt := range p.usedStates {
+		if !now.Before(expiresAt) {
+			delete(p.usedStates, nonce)
 		}
 	}
 }
@@ -447,12 +523,12 @@ func (p *Proxy) sweepSessionsLocked(now time.Time) {
 	}
 }
 
-func evictOldestReturnLocked(states map[string]returnState) {
+func evictOldestUsedLocked(states map[string]time.Time) {
 	var oldestKey string
 	var oldest time.Time
-	for key, state := range states {
-		if oldestKey == "" || state.expiresAt.Before(oldest) {
-			oldestKey, oldest = key, state.expiresAt
+	for key, expiresAt := range states {
+		if oldestKey == "" || expiresAt.Before(oldest) {
+			oldestKey, oldest = key, expiresAt
 		}
 	}
 	if oldestKey != "" {
@@ -471,6 +547,18 @@ func evictOldestSessionLocked(sessions map[string]appSession) {
 	if oldestKey != "" {
 		delete(sessions, oldestKey)
 	}
+}
+
+// logf reports an operational event. Callback rejections are otherwise
+// invisible: the browser sees one opaque 400 whichever check failed, so the
+// reason has to reach the operator through the log.  Never log the nonce or
+// the state parameter — they are the browser's binding secret.
+func (p *Proxy) logf(format string, args ...any) {
+	if p.config.Logf != nil {
+		p.config.Logf(format, args...)
+		return
+	}
+	log.Printf("faros-access-proxy: "+format, args...)
 }
 
 func sessionKey(value string) string {

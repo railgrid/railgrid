@@ -21,9 +21,16 @@ limitations under the License.
 // key and the identity server-side.  This package deliberately has no OIDC,
 // Kubernetes, or hub dependencies so every HTTP boundary can share the same
 // session contract without creating an import cycle.
+//
+// Where the server-side records live is a Backend decision.  The default is
+// process-local memory, which is correct for a single hub replica.  A hub
+// scaled to several replicas must supply a shared Backend (see
+// pkg/hub/sharedstore): a cookie is issued by whichever replica handled the
+// login, and every other replica has to resolve and revoke it.
 package browsersession
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -90,45 +97,56 @@ type Session struct {
 	ExpiresAt time.Time
 }
 
-// storedSession is deliberately separate from Session: the raw opaque handle
-// is returned transiently to the caller that needs to set a cookie, but the
-// in-memory store retains only the hash-keyed identity and lifecycle fields.
-type storedSession struct {
+// Record is what a Backend persists for one session.  The raw opaque handle is
+// returned transiently to the caller that needs to set a cookie; a Backend only
+// ever sees the hash-derived key, never the handle itself.
+type Record struct {
 	Identity  Identity
 	IssuedAt  time.Time
 	ExpiresAt time.Time
 }
 
+// Backend is the authoritative store for session records.  Implementations are
+// keyed by an opaque, already-hashed lookup key and must be safe for concurrent
+// use.
+//
+// Get reports ErrNotFound, ErrExpired, or ErrRevoked; any other error is
+// treated as a store failure and fails the request closed.
+type Backend interface {
+	Put(ctx context.Context, key string, record Record) error
+	Get(ctx context.Context, key string) (Record, error)
+	// Revoke invalidates key.  It is idempotent, which makes logout safe to
+	// retry.  expiresAt is the horizon past which the implementation may drop
+	// any tombstone it keeps.
+	Revoke(ctx context.Context, key string, expiresAt time.Time) error
+}
+
 // Config configures a Store.  Now and Random are test seams; production uses
-// time.Now and crypto/rand.Reader.  MaxEntries bounds process-local memory so
-// an unbounded stream of logins cannot grow the store indefinitely.
+// time.Now and crypto/rand.Reader.  MaxEntries bounds the default in-memory
+// backend so an unbounded stream of logins cannot grow it indefinitely; it is
+// ignored when Backend is supplied.
 type Config struct {
 	TTL        time.Duration
 	MaxEntries int
 	Now        func() time.Time
 	Random     io.Reader
+	// Backend, when set, replaces the process-local memory backend.  Required
+	// for a hub running more than one replica.
+	Backend Backend
 }
 
-// Store is a concurrency-safe, process-local browser-session store.  It is
-// intentionally an in-memory implementation: deployments that need durable
-// sessions can replace the store behind the same HTTP integration without
-// changing the browser contract.
+// Store is the concurrency-safe front end for browser sessions: it owns handle
+// generation, the cookie contract, and TTL policy, and delegates record storage
+// to a Backend.
 type Store struct {
-	mu         sync.Mutex
-	ttl        time.Duration
-	maxEntries int
-	now        func() time.Time
-	random     io.Reader
-	sessions   map[string]storedSession
-	revoked    map[string]time.Time
-	// revokedUnknown identifies markers created for handles that did not map
-	// to a live session. Unknown markers are the first entries evicted when
-	// the bounded revocation map reaches capacity, preserving known logout
-	// revocations during arbitrary-cookie floods.
-	revokedUnknown map[string]struct{}
+	ttl     time.Duration
+	now     func() time.Time
+	random  io.Reader
+	backend Backend
 }
 
-// New creates a bounded browser-session store.
+// New creates a browser-session store.  Without Config.Backend it keeps records
+// in bounded process-local memory.
 func New(config Config) *Store {
 	ttl := config.TTL
 	if ttl <= 0 {
@@ -146,11 +164,11 @@ func New(config Config) *Store {
 	if random == nil {
 		random = rand.Reader
 	}
-	return &Store{
-		ttl: ttl, maxEntries: maxEntries, now: now, random: random,
-		sessions: make(map[string]storedSession), revoked: make(map[string]time.Time),
-		revokedUnknown: make(map[string]struct{}),
+	backend := config.Backend
+	if backend == nil {
+		backend = newMemoryBackend(maxEntries, now)
 	}
+	return &Store{ttl: ttl, now: now, random: random, backend: backend}
 }
 
 // TTL returns the configured lifetime for newly issued sessions.
@@ -164,14 +182,11 @@ func (s *Store) TTL() time.Duration {
 // Issue stores identity and returns the opaque cookie value plus its
 // server-side view.  It rejects empty stable identities so callers cannot
 // accidentally mint an anonymous session.
-func (s *Store) Issue(identity Identity) (string, Session, error) {
+func (s *Store) Issue(ctx context.Context, identity Identity) (string, Session, error) {
 	if s == nil || strings.TrimSpace(identity.UserID) == "" {
 		return "", Session{}, fmt.Errorf("%w: user id is required", ErrInvalid)
 	}
 	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cleanupLocked(now)
 	for attempt := 0; attempt < maxIssueAttempts; attempt++ {
 		raw, err := s.randomSecret()
 		if err != nil {
@@ -181,18 +196,17 @@ func (s *Store) Issue(identity Identity) (string, Session, error) {
 		// Never overwrite a live session or resurrect a revoked handle.  A
 		// collision is exceptionally unlikely with crypto/rand, but the
 		// bounded retry keeps the invariant true even with a faulty source.
-		if _, exists := s.sessions[key]; exists {
+		if _, err := s.backend.Get(ctx, key); err == nil ||
+			errors.Is(err, ErrRevoked) || errors.Is(err, ErrExpired) {
 			continue
+		} else if !errors.Is(err, ErrNotFound) {
+			return "", Session{}, fmt.Errorf("checking browser session handle: %w", err)
 		}
-		if _, revoked := s.revoked[key]; revoked {
-			continue
+		record := Record{Identity: identity, IssuedAt: now, ExpiresAt: now.Add(s.ttl)}
+		if err := s.backend.Put(ctx, key, record); err != nil {
+			return "", Session{}, fmt.Errorf("storing browser session: %w", err)
 		}
-		if len(s.sessions) >= s.maxEntries {
-			s.evictOldestLocked()
-		}
-		session := Session{ID: raw, Identity: identity, IssuedAt: now, ExpiresAt: now.Add(s.ttl)}
-		s.sessions[key] = storedSession{Identity: identity, IssuedAt: now, ExpiresAt: session.ExpiresAt}
-		return raw, session, nil
+		return raw, Session{ID: raw, Identity: identity, IssuedAt: record.IssuedAt, ExpiresAt: record.ExpiresAt}, nil
 	}
 	return "", Session{}, fmt.Errorf("generating browser session secret: no fresh handle after %d attempts", maxIssueAttempts)
 }
@@ -208,8 +222,8 @@ func setCookie(w http.ResponseWriter, value string, maxAge int) {
 }
 
 // IssueHTTP creates a session and writes its secure cookie.
-func (s *Store) IssueHTTP(w http.ResponseWriter, identity Identity) (Session, error) {
-	value, session, err := s.Issue(identity)
+func (s *Store) IssueHTTP(ctx context.Context, w http.ResponseWriter, identity Identity) (Session, error) {
+	value, session, err := s.Issue(ctx, identity)
 	if err != nil {
 		return Session{}, err
 	}
@@ -222,29 +236,18 @@ func (s *Store) IssueHTTP(w http.ResponseWriter, identity Identity) (Session, er
 }
 
 // Resolve returns a live session for an opaque cookie value.
-func (s *Store) Resolve(value string) (Session, error) {
+func (s *Store) Resolve(ctx context.Context, value string) (Session, error) {
 	if s == nil || strings.TrimSpace(value) == "" {
 		return Session{}, ErrNotFound
 	}
-	now := s.now()
-	key := tokenKey(value)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Inspect the requested entry before sweeping the rest of the bounded
-	// store so callers can distinguish an expired cookie from an unknown one.
-	if stored, ok := s.sessions[key]; ok {
-		if !now.Before(stored.ExpiresAt) {
-			delete(s.sessions, key)
-			return Session{}, ErrExpired
-		}
-		s.cleanupLocked(now)
-		return Session{ID: value, Identity: stored.Identity, IssuedAt: stored.IssuedAt, ExpiresAt: stored.ExpiresAt}, nil
+	record, err := s.backend.Get(ctx, tokenKey(value))
+	if err != nil {
+		return Session{}, err
 	}
-	if _, ok := s.revoked[key]; ok {
-		return Session{}, ErrRevoked
+	if !s.now().Before(record.ExpiresAt) {
+		return Session{}, ErrExpired
 	}
-	s.cleanupLocked(now)
-	return Session{}, ErrNotFound
+	return Session{ID: value, Identity: record.Identity, IssuedAt: record.IssuedAt, ExpiresAt: record.ExpiresAt}, nil
 }
 
 // ResolveRequest resolves the shared cookie from an HTTP request.
@@ -256,29 +259,16 @@ func (s *Store) ResolveRequest(r *http.Request) (Session, error) {
 	if err != nil {
 		return Session{}, ErrNotFound
 	}
-	return s.Resolve(cookie.Value)
+	return s.Resolve(r.Context(), cookie.Value)
 }
 
 // Revoke invalidates a session immediately.  Repeated revocation is
 // idempotent, which makes logout safe to retry.
-func (s *Store) Revoke(value string) error {
+func (s *Store) Revoke(ctx context.Context, value string) error {
 	if s == nil || strings.TrimSpace(value) == "" {
 		return nil
 	}
-	now := s.now()
-	key := tokenKey(value)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.cleanupLocked(now)
-	if session, ok := s.sessions[key]; ok {
-		delete(s.sessions, key)
-		s.addRevocationLocked(key, session.ExpiresAt, false)
-		return nil
-	}
-	// Keep a short marker for an unknown value so a stale cookie cannot be
-	// accepted if a random-value collision ever occurs after logout.
-	s.addRevocationLocked(key, now.Add(s.ttl), true)
-	return nil
+	return s.backend.Revoke(ctx, tokenKey(value), s.now().Add(s.ttl))
 }
 
 // RevokeRequest revokes the shared cookie, if one is present, and emits an
@@ -286,7 +276,7 @@ func (s *Store) Revoke(value string) error {
 func (s *Store) RevokeRequest(w http.ResponseWriter, r *http.Request) {
 	if r != nil {
 		if cookie, err := r.Cookie(CookieName); err == nil {
-			_ = s.Revoke(cookie.Value)
+			_ = s.Revoke(r.Context(), cookie.Value)
 		}
 	}
 	if w != nil {
@@ -315,16 +305,87 @@ func tokenKey(value string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-func (s *Store) cleanupLocked(now time.Time) {
-	for key, session := range s.sessions {
-		if !now.Before(session.ExpiresAt) {
-			delete(s.sessions, key)
+// memoryBackend is the default, process-local Backend.  It is correct for a
+// single hub replica only; see the package doc.
+type memoryBackend struct {
+	mu         sync.Mutex
+	maxEntries int
+	now        func() time.Time
+	sessions   map[string]Record
+	revoked    map[string]time.Time
+	// revokedUnknown identifies markers created for handles that did not map
+	// to a live session. Unknown markers are the first entries evicted when
+	// the bounded revocation map reaches capacity, preserving known logout
+	// revocations during arbitrary-cookie floods.
+	revokedUnknown map[string]struct{}
+}
+
+func newMemoryBackend(maxEntries int, now func() time.Time) *memoryBackend {
+	return &memoryBackend{
+		maxEntries: maxEntries, now: now,
+		sessions: map[string]Record{}, revoked: map[string]time.Time{},
+		revokedUnknown: map[string]struct{}{},
+	}
+}
+
+func (m *memoryBackend) Put(_ context.Context, key string, record Record) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupLocked(m.now())
+	if len(m.sessions) >= m.maxEntries {
+		m.evictOldestLocked()
+	}
+	m.sessions[key] = record
+	return nil
+}
+
+func (m *memoryBackend) Get(_ context.Context, key string) (Record, error) {
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Inspect the requested entry before sweeping the rest of the bounded
+	// store so callers can distinguish an expired cookie from an unknown one.
+	if record, ok := m.sessions[key]; ok {
+		if !now.Before(record.ExpiresAt) {
+			delete(m.sessions, key)
+			return Record{}, ErrExpired
+		}
+		m.cleanupLocked(now)
+		return record, nil
+	}
+	if _, ok := m.revoked[key]; ok {
+		return Record{}, ErrRevoked
+	}
+	m.cleanupLocked(now)
+	return Record{}, ErrNotFound
+}
+
+func (m *memoryBackend) Revoke(_ context.Context, key string, expiresAt time.Time) error {
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cleanupLocked(now)
+	if record, ok := m.sessions[key]; ok {
+		delete(m.sessions, key)
+		m.addRevocationLocked(key, record.ExpiresAt, false)
+		return nil
+	}
+	// Keep a short marker for an unknown value so a stale cookie cannot be
+	// accepted if a random-value collision ever occurs after logout.
+	m.addRevocationLocked(key, expiresAt, true)
+	return nil
+}
+
+func (m *memoryBackend) cleanupLocked(now time.Time) {
+	for key, record := range m.sessions {
+		if !now.Before(record.ExpiresAt) {
+			delete(m.sessions, key)
 		}
 	}
-	for key, expiresAt := range s.revoked {
+	for key, expiresAt := range m.revoked {
 		if !now.Before(expiresAt) {
-			delete(s.revoked, key)
-			delete(s.revokedUnknown, key)
+			delete(m.revoked, key)
+			delete(m.revokedUnknown, key)
 		}
 	}
 }
@@ -334,53 +395,53 @@ func (s *Store) cleanupLocked(now time.Time) {
 // must not create an unbounded memory sink. Unknown markers are preferentially
 // evicted; if the map contains only known logout revocations, a new unknown
 // marker is dropped rather than weakening those revocations.
-func (s *Store) addRevocationLocked(key string, expiresAt time.Time, unknown bool) {
-	if _, exists := s.revoked[key]; exists {
-		s.revoked[key] = expiresAt
+func (m *memoryBackend) addRevocationLocked(key string, expiresAt time.Time, unknown bool) {
+	if _, exists := m.revoked[key]; exists {
+		m.revoked[key] = expiresAt
 		if !unknown {
-			delete(s.revokedUnknown, key)
+			delete(m.revokedUnknown, key)
 		}
 		return
 	}
-	if len(s.revoked) >= s.maxEntries {
-		if !s.evictUnknownRevocationLocked() && unknown {
+	if len(m.revoked) >= m.maxEntries {
+		if !m.evictUnknownRevocationLocked() && unknown {
 			return
 		}
-		if len(s.revoked) >= s.maxEntries {
+		if len(m.revoked) >= m.maxEntries {
 			// A newly revoked live session takes precedence over an older
 			// marker once every slot is occupied by known revocations.
-			for oldestKey := range s.revoked {
-				delete(s.revoked, oldestKey)
-				delete(s.revokedUnknown, oldestKey)
+			for oldestKey := range m.revoked {
+				delete(m.revoked, oldestKey)
+				delete(m.revokedUnknown, oldestKey)
 				break
 			}
 		}
 	}
-	s.revoked[key] = expiresAt
+	m.revoked[key] = expiresAt
 	if unknown {
-		s.revokedUnknown[key] = struct{}{}
+		m.revokedUnknown[key] = struct{}{}
 	}
 }
 
-func (s *Store) evictUnknownRevocationLocked() bool {
-	for key := range s.revokedUnknown {
-		delete(s.revokedUnknown, key)
-		delete(s.revoked, key)
+func (m *memoryBackend) evictUnknownRevocationLocked() bool {
+	for key := range m.revokedUnknown {
+		delete(m.revokedUnknown, key)
+		delete(m.revoked, key)
 		return true
 	}
 	return false
 }
 
-func (s *Store) evictOldestLocked() {
+func (m *memoryBackend) evictOldestLocked() {
 	var oldestKey string
 	var oldest time.Time
-	for key, session := range s.sessions {
-		if oldestKey == "" || session.IssuedAt.Before(oldest) {
-			oldestKey, oldest = key, session.IssuedAt
+	for key, record := range m.sessions {
+		if oldestKey == "" || record.IssuedAt.Before(oldest) {
+			oldestKey, oldest = key, record.IssuedAt
 		}
 	}
 	if oldestKey != "" {
-		delete(s.sessions, oldestKey)
+		delete(m.sessions, oldestKey)
 	}
 }
 

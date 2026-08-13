@@ -28,6 +28,11 @@ limitations under the License.
 //     then maintains its own bounded in-memory session for the granted TTL.
 //     A hub outage leaves existing sessions working; only new sign-ins fail.
 //
+// An in-flight sign-in carries its own state in the browser's return cookie, so
+// it completes against any pod — including one that started after the redirect
+// was issued. Established sessions are still process-local: a restart signs
+// users out and they sign back in, it does not strand them mid-flow.
+//
 // The proxy holds no credentials of any kind: no service-account token, no
 // kubeconfig, no signing keys. Access policy is kcp RBAC evaluated by the hub
 // at sign-in time (SubjectAccessReview on the instance's `access`
@@ -48,9 +53,12 @@ const (
 	// SessionCookieName is intentionally a __Host cookie: Secure, Path=/, and
 	// no Domain attribute are mandatory.  The app proxy never forwards it.
 	SessionCookieName = "__Host-faros-app-session"
-	// ReturnCookieName is a short-lived opaque handle for the original clean
-	// path while the browser completes the hub sign-in flow.
-	ReturnCookieName = "faros-app-return"
+	// ReturnCookieName carries the whole sign-in state — nonce, clean return
+	// path and expiry — while the browser completes the hub flow, so no
+	// server-side handle has to survive between the authorize redirect and the
+	// callback (see consumeReturnState). Also a __Host cookie: host-only, so a
+	// sibling app under the same published-apps zone cannot plant one.
+	ReturnCookieName = "__Host-faros-app-return"
 	// CallbackPath is the reserved platform path on the app host. It must stay
 	// in lockstep with the hub's appauth.CallbackPath.
 	CallbackPath = "/__faros/auth/callback"
@@ -148,6 +156,12 @@ type Config struct {
 	// client with a bounded timeout and optional TLS verification skip.
 	HubClient *http.Client
 	Random    RandomSource
+
+	// Logf receives the proxy's operational messages — today only the reason a
+	// sign-in callback was rejected, which is otherwise invisible because every
+	// rejection is the same opaque 400 to the browser. Nil logs through the
+	// standard logger with the binary's prefix.
+	Logf func(format string, args ...any)
 
 	HubTimeout time.Duration
 }

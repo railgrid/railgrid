@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -68,5 +69,70 @@ func TestParseProviderActionsRejectsExternalSchemaReferences(t *testing.T) {
 	}})
 	if err == nil || !strings.Contains(err.Error(), "local fragment") {
 		t.Fatalf("external schema reference error = %v, want local-fragment rejection", err)
+	}
+}
+
+// The registry receives liveness from two directions: the beat this replica
+// served directly, and CatalogEntry status arriving over the catalog watch.
+// Merging them must be monotone, or a status write that predates a local beat
+// (or was throttled away entirely) would drag the provider backwards and let
+// the sweeper mark a healthy provider stale.
+func TestUpsertKeepsNewestHeartbeat(t *testing.T) {
+	base := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	reg := NewRegistry()
+
+	reg.Upsert(Provider{Name: "cost", EndpointsValid: true})
+	reg.Heartbeat("cost", "v2", base.Add(time.Minute))
+
+	// A status update carrying an older (throttled) timestamp arrives.
+	reg.Upsert(Provider{
+		Name: "cost", EndpointsValid: true,
+		LastHeartbeat: base, HeartbeatRequired: true, ReportedVersion: "v1",
+	})
+
+	got, ok := reg.Get("cost")
+	if !ok {
+		t.Fatal("cost missing from registry")
+	}
+	if !got.LastHeartbeat.Equal(base.Add(time.Minute)) {
+		t.Fatalf("LastHeartbeat = %v, want the newer local beat %v", got.LastHeartbeat, base.Add(time.Minute))
+	}
+	if got.ReportedVersion != "v2" {
+		t.Fatalf("ReportedVersion = %q, want v2", got.ReportedVersion)
+	}
+}
+
+// The converse: a replica that never served a beat learns liveness purely from
+// status, which is the whole point of routing it through the API.
+func TestUpsertAdoptsHeartbeatFromStatus(t *testing.T) {
+	beat := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	reg := NewRegistry()
+	reg.Upsert(Provider{Name: "cost", EndpointsValid: true})
+
+	reg.Upsert(Provider{
+		Name: "cost", EndpointsValid: true,
+		LastHeartbeat: beat, HeartbeatRequired: true, ReportedVersion: "v9",
+	})
+
+	got, _ := reg.Get("cost")
+	if !got.LastHeartbeat.Equal(beat) || got.ReportedVersion != "v9" || !got.HeartbeatRequired {
+		t.Fatalf("registry did not adopt status heartbeat: %+v", got)
+	}
+	if !got.Ready() {
+		t.Fatal("provider with a fresh status heartbeat should be Ready")
+	}
+}
+
+// HeartbeatRequired must never regress: a provider that has beaten once is
+// expected to keep beating, whichever replica observed the first one.
+func TestUpsertKeepsHeartbeatRequired(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{Name: "cost", EndpointsValid: true})
+	reg.Heartbeat("cost", "", time.Now())
+
+	reg.Upsert(Provider{Name: "cost", EndpointsValid: true})
+
+	if got, _ := reg.Get("cost"); !got.HeartbeatRequired {
+		t.Fatal("HeartbeatRequired regressed to false on a spec-only upsert")
 	}
 }

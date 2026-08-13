@@ -56,10 +56,12 @@ import (
 	"github.com/faroshq/faros/pkg/hub/controllers/organization"
 	"github.com/faroshq/faros/pkg/hub/controllers/softdelete"
 	"github.com/faroshq/faros/pkg/hub/kcp"
+	"github.com/faroshq/faros/pkg/hub/leaderelection"
 	"github.com/faroshq/faros/pkg/hub/mcpaggregate"
 	"github.com/faroshq/faros/pkg/hub/providers"
 	"github.com/faroshq/faros/pkg/hub/restapi"
 	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
+	"github.com/faroshq/faros/pkg/hub/sharedstore"
 	"github.com/faroshq/faros/pkg/hub/tenant"
 	"github.com/faroshq/faros/pkg/hub/workloadidentity"
 	"github.com/faroshq/faros/pkg/kcppaths"
@@ -68,6 +70,19 @@ import (
 	pkgversion "github.com/faroshq/faros/pkg/version"
 
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+)
+
+const (
+	// controllerLeaseName is the Lease every hub replica campaigns for before
+	// running the singleton (write-side) controllers. One lease covers all of
+	// them: they are started and stopped as a unit, so splitting the lock per
+	// manager would only add failure modes.
+	controllerLeaseName = "faros-hub-controllers"
+
+	// sharedStoreGCInterval is how often the leader reclaims expired session
+	// and authorization-code records. Readers already refuse expired entries,
+	// so this cadence only affects storage, never correctness.
+	sharedStoreGCInterval = 10 * time.Minute
 )
 
 // Server is the faros hub server orchestrator.
@@ -90,11 +105,6 @@ func (s *Server) Run(ctx context.Context) error {
 		"listenAddr", s.opts.ListenAddr,
 		"embeddedKCP", s.opts.EmbeddedKCP,
 	)
-	// One process-wide store backs the host-only portal cookie, app-access SSO,
-	// and static-token login. Credentials remain in the existing auth/proxy
-	// paths; this store contains only bounded opaque handles and user metadata.
-	browserSessionStore := browsersession.New(browsersession.Config{})
-
 	// Validate --providers BEFORE any expensive init (embedded kcp takes
 	// ~60s to bootstrap). A typo or dep violation should error in
 	// milliseconds, not after the user watches kcp boot.
@@ -286,7 +296,15 @@ func (s *Server) Run(ctx context.Context) error {
 	userClient := farosClient
 	if kcpConfig != nil {
 		bootstrapper = kcp.NewBootstrapper(kcpConfig).WithEnabledProviders(s.opts.Providers)
-		if err := bootstrapper.Bootstrap(ctx); err != nil {
+		// Retry for the same reason InstallCRDs does: sibling replicas bootstrap
+		// the same idempotent objects concurrently, so a lost write race is a
+		// transient condition, not a fatal one.
+		if err := runStartupStepWithRetry(ctx, startupRetryPolicy{
+			Name:      "bootstrap kcp",
+			Interval:  5 * time.Second,
+			Timeout:   10 * time.Minute,
+			Retryable: isRetriableKCPBootstrapError,
+		}, bootstrapper.Bootstrap); err != nil {
 			return fmt.Errorf("bootstrapping kcp: %w", err)
 		}
 		logger.Info("kcp bootstrap complete")
@@ -304,6 +322,37 @@ func (s *Server) Run(ctx context.Context) error {
 			return fmt.Errorf("creating user dynamic client: %w", err)
 		}
 		userClient = farosclient.NewFromDynamic(userDynamic)
+	}
+
+	// One process-wide store backs the host-only portal cookie, app-access SSO,
+	// and static-token login. Credentials remain in the existing auth/proxy
+	// paths; this store contains only bounded opaque handles and user metadata.
+	//
+	// A cookie is minted by whichever replica served the login and resolved by
+	// whichever replica the load balancer picks next, so once kcp is available
+	// the records go into a shared kcp-backed store. Only a hub with no kcp at
+	// all — which cannot be scaled anyway — falls back to process-local memory.
+	var (
+		browserSessionStore *browsersession.Store
+		appCodeStore        *sharedstore.AppCodeStore
+		sharedStores        []*sharedstore.Store
+	)
+	if kcpConfig != nil {
+		sessionBackend, err := sharedstore.NewSessionBackend(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace)
+		if err != nil {
+			return fmt.Errorf("creating shared browser-session store: %w", err)
+		}
+		appCodeStore, err = sharedstore.NewAppCodeStore(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace)
+		if err != nil {
+			return fmt.Errorf("creating shared app-code store: %w", err)
+		}
+		browserSessionStore = browsersession.New(browsersession.Config{Backend: sessionBackend})
+		sharedStores = append(sharedStores, sessionBackend.Store(), appCodeStore.Store())
+		logger.Info("Browser sessions and app-access codes are shared across replicas",
+			"workspace", kcppaths.SystemControllers, "namespace", kcp.HubSystemNamespace)
+	} else {
+		browserSessionStore = browsersession.New(browsersession.Config{})
+		logger.Info("Browser sessions are process-local (no kcp configured); do not run more than one hub replica")
 	}
 
 	// Create HTTP mux
@@ -360,8 +409,21 @@ func (s *Server) Run(ctx context.Context) error {
 	router.Handle(providers.PathListProviders, providers.NewListHandler(providerRegistry)).Methods("GET")
 	// Heartbeat endpoint matches /api/providers/{name}/heartbeat. The
 	// parsing happens inside the handler; gorilla/mux just needs the prefix.
-	router.PathPrefix(providers.PathProviderHeartbeat + "/").Handler(providers.NewHeartbeatHandler(providerRegistry, logger)).Methods("POST")
-	// Background sweeper marks providers stale when heartbeats stop.
+	// A heartbeat lands on exactly one replica but every replica routes provider
+	// traffic, so the recorder persists it to CatalogEntry.status and the catalog
+	// watch fans it back out. Without that, replicas that never saw the beat
+	// would time a healthy provider out and start refusing to proxy to it.
+	var heartbeatRecorder providers.HeartbeatRecorder
+	if kcpConfig != nil {
+		heartbeatRecorder, err = providers.NewCatalogHeartbeatRecorder(kcpConfig)
+		if err != nil {
+			return fmt.Errorf("creating provider heartbeat recorder: %w", err)
+		}
+	}
+	router.PathPrefix(providers.PathProviderHeartbeat + "/").Handler(providers.NewHeartbeatHandler(providerRegistry, heartbeatRecorder, logger)).Methods("POST")
+	// Background sweeper marks providers stale when heartbeats stop. Every
+	// replica runs one: it only reads timestamps the registry already holds, so
+	// all replicas reach the same verdict without coordinating.
 	go providers.RunSweeper(ctx, providerRegistry, logger)
 
 	// Aggregate MCP endpoint — a base-layer hub capability, always on. It
@@ -502,11 +564,18 @@ func (s *Server) Run(ctx context.Context) error {
 				}
 				return clientset.AuthorizationV1().SubjectAccessReviews(), nil
 			}
-			appAuth, err := appauth.New(appauth.Config{
+			appAuthCfg := appauth.Config{
 				Sessions:   browserSessionStore,
 				SARClient:  sarFactory,
 				AppsDomain: s.opts.PublishedAppsDomain,
-			})
+			}
+			if appCodeStore != nil {
+				// authorize and exchange are separate requests that a scaled hub
+				// serves from different replicas; the shared store makes the code
+				// redeemable exactly once, wherever it lands.
+				appAuthCfg.Codes = appCodeStore
+			}
+			appAuth, err := appauth.New(appAuthCfg)
 			if err != nil {
 				return fmt.Errorf("creating published-app auth handler: %w", err)
 			}
@@ -708,96 +777,132 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}()
 
-		// MCPServer reconciler: MCPServer is a built-in, core-hosted provider —
-		// its CRD is distributed to tenants via core.faros.sh, so we re-introduce
-		// a core.faros.sh multicluster manager (removed in the edge extraction)
-		// to run it. It provisions each server's identity across all tenant
-		// workspaces. The aggregate serving lives in pkg/hub/mcpaggregate.
-		coreExportProvider, err := apiexport.New(providersConfig, "core.faros.sh", apiexport.Options{Scheme: scheme})
-		if err != nil {
-			return fmt.Errorf("creating core.faros.sh multicluster provider: %w", err)
-		}
-		coreMgr, err := mcmanager.New(providersConfig, coreExportProvider, manager.Options{
-			Scheme:  scheme,
-			Metrics: metricsserver.Options{BindAddress: "0"},
-		})
-		if err != nil {
-			return fmt.Errorf("creating core multicluster manager: %w", err)
-		}
-		if err := mcpserver.SetupWithManager(coreMgr, kcpConfig, s.opts.HubExternalURL, mcpProviderEnumerator); err != nil {
-			return fmt.Errorf("setting up mcpserver controller: %w", err)
-		}
-		go func() {
-			logger.Info("Starting core multicluster manager (mcpserver)")
-			if err := coreMgr.Start(ctx); err != nil {
-				logger.Error(err, "Core multicluster manager failed")
-			}
-		}()
+		// Everything below writes: it provisions workspaces, mints identities,
+		// seeds organizations, and purges soft-deleted objects. Running it on
+		// every replica of a scaled hub would mean N reconcilers racing on the
+		// same objects, so it is gated behind a single lease.
+		//
+		// The catalog manager above is deliberately NOT gated: the registry it
+		// maintains is request-path state, and a non-leader with an empty
+		// routing table would 404 every provider request it served.
+		startLeaderOnlyControllers := func(ctx context.Context) {
+			logger.Info("Elected leader; starting singleton controllers")
 
-		// Provider provisioning reconciler: the declarative replacement for
-		// the former admin "onboard" call. Provisions each provider's
-		// sub-workspace + ServiceAccount + kubeconfig Secret, then binds the
-		// CatalogEntry export into the sub-workspace so the provider
-		// self-registers. Provider lives in its OWN APIExport
-		// (admin.faros.sh), bound ONLY in root:faros:providers (so
-		// a provider cannot create Provider objects from its own sub-workspace),
-		// hence a THIRD multicluster manager bound to the admin export.
-		adminExportProvider, err := apiexport.New(providersConfig, "admin.faros.sh", apiexport.Options{Scheme: scheme})
-		if err != nil {
-			return fmt.Errorf("creating admin.faros.sh multicluster provider: %w", err)
-		}
-		adminMgr, err := mcmanager.New(providersConfig, adminExportProvider, manager.Options{
-			Scheme:  scheme,
-			Metrics: metricsserver.Options{BindAddress: "0"},
-		})
-		if err != nil {
-			return fmt.Errorf("creating admin multicluster manager: %w", err)
-		}
-		if err := providers.SetupProviderWithManager(adminMgr, kcpConfig, providers.CatalogReconcilerOptions{
-			HubExternalURL:      s.opts.HubExternalURL,
-			ProviderInternalURL: s.opts.ProviderInternalURL,
-		}); err != nil {
-			return fmt.Errorf("setting up provider provisioning controller: %w", err)
-		}
-		go func() {
-			logger.Info("Starting admin multicluster manager")
-			if err := adminMgr.Start(ctx); err != nil {
-				logger.Error(err, "Admin multicluster manager failed")
+			// MCPServer reconciler: MCPServer is a built-in, core-hosted provider —
+			// its CRD is distributed to tenants via core.faros.sh, so we re-introduce
+			// a core.faros.sh multicluster manager (removed in the edge extraction)
+			// to run it. It provisions each server's identity across all tenant
+			// workspaces. The aggregate serving lives in pkg/hub/mcpaggregate.
+			coreExportProvider, err := apiexport.New(providersConfig, "core.faros.sh", apiexport.Options{Scheme: scheme})
+			if err != nil {
+				logger.Error(err, "Creating core.faros.sh multicluster provider failed")
+				return
 			}
-		}()
-
-		// Organization bootstrap controller — runs against root:faros:users
-		// where the User and (companion) Organization CRs live. This is a
-		// single-cluster controller-runtime manager, separate from the
-		// multicluster managers above which serve the kcp-tenant fleet.
-		orgMgr, err := organization.NewManager(bootstrapper.UsersConfig(), scheme)
-		if err != nil {
-			return fmt.Errorf("creating organization manager: %w", err)
-		}
-		if err := organization.SetupWithManager(orgMgr, bootstrapper); err != nil {
-			return fmt.Errorf("setting up organization bootstrap controller: %w", err)
-		}
-		go func() {
-			logger.Info("Starting organization bootstrap manager")
-			if err := orgMgr.Start(ctx); err != nil {
-				logger.Error(err, "Organization bootstrap manager failed")
+			coreMgr, err := mcmanager.New(providersConfig, coreExportProvider, manager.Options{
+				Scheme:  scheme,
+				Metrics: metricsserver.Options{BindAddress: "0"},
+			})
+			if err != nil {
+				logger.Error(err, "Creating core multicluster manager failed")
+				return
 			}
-		}()
+			if err := mcpserver.SetupWithManager(coreMgr, kcpConfig, s.opts.HubExternalURL, mcpProviderEnumerator); err != nil {
+				logger.Error(err, "Setting up mcpserver controller failed")
+				return
+			}
 
-		// Soft-delete reconciler — roadmap step 8 (docs/organizations.md
-		// O-8 + O-13). Separate manager from the bootstrap one so a
-		// soft-delete crash doesn't take the bootstrap workqueue down.
-		softdeleteMgr, err := softdelete.NewManager(bootstrapper.UsersConfig(), scheme)
-		if err != nil {
-			return fmt.Errorf("creating soft-delete manager: %w", err)
+			// Provider provisioning reconciler: the declarative replacement for
+			// the former admin "onboard" call. Provisions each provider's
+			// sub-workspace + ServiceAccount + kubeconfig Secret, then binds the
+			// CatalogEntry export into the sub-workspace so the provider
+			// self-registers. Provider lives in its OWN APIExport
+			// (admin.faros.sh), bound ONLY in root:faros:providers (so
+			// a provider cannot create Provider objects from its own sub-workspace),
+			// hence a separate multicluster manager bound to the admin export.
+			adminExportProvider, err := apiexport.New(providersConfig, "admin.faros.sh", apiexport.Options{Scheme: scheme})
+			if err != nil {
+				logger.Error(err, "Creating admin.faros.sh multicluster provider failed")
+				return
+			}
+			adminMgr, err := mcmanager.New(providersConfig, adminExportProvider, manager.Options{
+				Scheme:  scheme,
+				Metrics: metricsserver.Options{BindAddress: "0"},
+			})
+			if err != nil {
+				logger.Error(err, "Creating admin multicluster manager failed")
+				return
+			}
+			if err := providers.SetupProviderWithManager(adminMgr, kcpConfig, providers.CatalogReconcilerOptions{
+				HubExternalURL:      s.opts.HubExternalURL,
+				ProviderInternalURL: s.opts.ProviderInternalURL,
+			}); err != nil {
+				logger.Error(err, "Setting up provider provisioning controller failed")
+				return
+			}
+
+			// Organization bootstrap controller — runs against root:faros:users
+			// where the User and (companion) Organization CRs live. This is a
+			// single-cluster controller-runtime manager, separate from the
+			// multicluster managers above which serve the kcp-tenant fleet.
+			orgMgr, err := organization.NewManager(bootstrapper.UsersConfig(), scheme)
+			if err != nil {
+				logger.Error(err, "Creating organization manager failed")
+				return
+			}
+			if err := organization.SetupWithManager(orgMgr, bootstrapper); err != nil {
+				logger.Error(err, "Setting up organization bootstrap controller failed")
+				return
+			}
+
+			// Soft-delete reconciler — roadmap step 8 (docs/organizations.md
+			// O-8 + O-13). Separate manager from the bootstrap one so a
+			// soft-delete crash doesn't take the bootstrap workqueue down.
+			softdeleteMgr, err := softdelete.NewManager(bootstrapper.UsersConfig(), scheme)
+			if err != nil {
+				logger.Error(err, "Creating soft-delete manager failed")
+				return
+			}
+			if err := softdelete.SetupWithManager(softdeleteMgr, bootstrapper); err != nil {
+				logger.Error(err, "Setting up soft-delete reconciler failed")
+				return
+			}
+
+			// Expired sessions and authorization codes are already refused on
+			// read; this only reclaims their storage, so one sweeper is enough.
+			if len(sharedStores) > 0 {
+				go sharedstore.RunGC(ctx, sharedStoreGCInterval, sharedStores...)
+			}
+
+			var wg sync.WaitGroup
+			for name, mgr := range map[string]interface{ Start(context.Context) error }{
+				"core multicluster (mcpserver)": coreMgr,
+				"admin multicluster":            adminMgr,
+				"organization bootstrap":        orgMgr,
+				"soft-delete":                   softdeleteMgr,
+			} {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					logger.Info("Starting manager", "manager", name)
+					if err := mgr.Start(ctx); err != nil {
+						logger.Error(err, "Manager failed", "manager", name)
+					}
+				}()
+			}
+			// Block until leadership ends so the lease is not released while
+			// these managers are still draining.
+			wg.Wait()
 		}
-		if err := softdelete.SetupWithManager(softdeleteMgr, bootstrapper); err != nil {
-			return fmt.Errorf("setting up soft-delete reconciler: %w", err)
-		}
+
+		leaseConfig := rest.CopyConfig(kcpConfig)
+		leaseConfig.Host = apiurl.KCPClusterURL(leaseConfig.Host, kcppaths.SystemControllers)
 		go func() {
-			logger.Info("Starting soft-delete manager")
-			if err := softdeleteMgr.Start(ctx); err != nil {
-				logger.Error(err, "Soft-delete manager failed")
+			if err := leaderelection.Run(ctx, leaderelection.Options{
+				Config:    leaseConfig,
+				Namespace: kcp.HubSystemNamespace,
+				Name:      controllerLeaseName,
+			}, startLeaderOnlyControllers); err != nil {
+				logger.Error(err, "Controller leader election failed; singleton controllers are not running")
 			}
 		}()
 	}

@@ -25,8 +25,10 @@ import (
 	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/yaml"
 )
@@ -61,20 +63,33 @@ func InstallCRDs(ctx context.Context, config *rest.Config) error {
 			return fmt.Errorf("unmarshaling CRD %s: %w", entry.Name(), err)
 		}
 
-		existing, err := client.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, crd.Name, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			logger.Info("Creating CRD", "name", crd.Name)
-			if _, err := client.ApiextensionsV1().CustomResourceDefinitions().Create(ctx, &crd, metav1.CreateOptions{}); err != nil {
-				return fmt.Errorf("creating CRD %s: %w", crd.Name, err)
+		// Every hub replica installs the CRDs at startup, so create and update
+		// both race their peers. AlreadyExists and Conflict simply mean another
+		// replica got there first with byte-identical content; retrying on the
+		// freshly observed resource version converges instead of crash-looping
+		// the replica that lost the race.
+		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			desired := *crd.DeepCopy()
+			existing, err := client.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, desired.Name, metav1.GetOptions{})
+			if apierrors.IsNotFound(err) {
+				logger.Info("Creating CRD", "name", desired.Name)
+				_, err := client.ApiextensionsV1().CustomResourceDefinitions().Create(ctx, &desired, metav1.CreateOptions{})
+				if apierrors.IsAlreadyExists(err) {
+					// Lost the create race; fall through to the update path.
+					return apierrors.NewConflict(
+						schema.GroupResource{Group: "apiextensions.k8s.io", Resource: "customresourcedefinitions"},
+						desired.Name, err)
+				}
+				return err
+			} else if err != nil {
+				return err
 			}
-		} else if err != nil {
-			return fmt.Errorf("getting CRD %s: %w", crd.Name, err)
-		} else {
-			logger.Info("Updating CRD", "name", crd.Name)
-			crd.ResourceVersion = existing.ResourceVersion
-			if _, err := client.ApiextensionsV1().CustomResourceDefinitions().Update(ctx, &crd, metav1.UpdateOptions{}); err != nil {
-				return fmt.Errorf("updating CRD %s: %w", crd.Name, err)
-			}
+			logger.Info("Updating CRD", "name", desired.Name)
+			desired.ResourceVersion = existing.ResourceVersion
+			_, err = client.ApiextensionsV1().CustomResourceDefinitions().Update(ctx, &desired, metav1.UpdateOptions{})
+			return err
+		}); err != nil {
+			return fmt.Errorf("installing CRD %s: %w", crd.Name, err)
 		}
 	}
 

@@ -9,6 +9,12 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# -- Number of faros-hub replicas.
+# Only honoured with kcp.external.enabled=true. Embedded kcp runs a per-replica
+# etcd on its own PVC, so that mode is always a single-replica StatefulSet and
+# the chart refuses replicaCount > 1.
+replicaCount: 1
+
 # -- kcp settings
 kcp:
   # -- Embedded kcp (default, runs in-process with faros-hub)

@@ -37,13 +37,32 @@ type heartbeatRequest struct {
 	Status  string `json:"status,omitempty"`
 }
 
+// HeartbeatRecorder persists a heartbeat to the provider's CatalogEntry status.
+//
+// A heartbeat reaches exactly one hub replica — whichever the load balancer
+// picked — but every replica routes provider traffic and therefore needs the
+// liveness signal. Writing it to CatalogEntry.status is what fans it back out:
+// each replica's catalog watch delivers the update and refreshes its own
+// registry. Without this, non-receiving replicas would mark a perfectly healthy
+// provider stale after HeartbeatTTL and start refusing to proxy to it.
+type HeartbeatRecorder func(ctx context.Context, name, version string, at time.Time) error
+
+// heartbeatPersistThreshold suppresses a status write when the recorded
+// timestamp is already this fresh. It bounds API churn from a provider that
+// heartbeats far more often than intended, while staying well under
+// HeartbeatTTL so a normally-paced provider persists every beat.
+const heartbeatPersistThreshold = HeartbeatTTL / 6
+
 // NewHeartbeatHandler returns an http.Handler serving
 // POST /api/providers/{name}/heartbeat. Auth is enforced by the faros auth
 // middleware mounted upstream of this handler — any bearer token faros
 // accepts will be accepted as a valid heartbeat sender in Phase 1C. Phase
 // 1D will tighten this to "must be the provider's own SA token" once SA
 // minting is in place.
-func NewHeartbeatHandler(reg *Registry, log logr.Logger) http.Handler {
+//
+// record may be nil (no kcp configured), in which case liveness stays local to
+// this process and the hub must not be scaled beyond one replica.
+func NewHeartbeatHandler(reg *Registry, record HeartbeatRecorder, log logr.Logger) http.Handler {
 	logger := log.WithName("heartbeat")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -62,9 +81,22 @@ func NewHeartbeatHandler(reg *Registry, log logr.Logger) http.Handler {
 				return
 			}
 		}
-		if !reg.Heartbeat(name, body.Version, time.Now()) {
+		now := time.Now()
+		// Apply locally first so this replica routes to the provider without
+		// waiting for the watch to loop the status write back around.
+		previous, known := reg.Get(name)
+		if !reg.Heartbeat(name, body.Version, now) {
 			http.Error(w, "provider not found: "+name, http.StatusNotFound)
 			return
+		}
+		if record != nil && (!known || now.Sub(previous.LastHeartbeat) >= heartbeatPersistThreshold) {
+			if err := record(r.Context(), name, body.Version, now); err != nil {
+				// Fail the beat rather than silently leaving other replicas to
+				// time the provider out; the provider retries on its next tick.
+				logger.Error(err, "persisting heartbeat failed", "provider", name)
+				http.Error(w, "recording heartbeat failed", http.StatusInternalServerError)
+				return
+			}
 		}
 		logger.V(2).Info("heartbeat received", "provider", name, "version", body.Version)
 		w.Header().Set("Content-Type", "application/json")
@@ -92,8 +124,10 @@ func parseHeartbeatPath(p string) (string, bool) {
 }
 
 // RunSweeper periodically marks providers stale when their last heartbeat
-// is older than HeartbeatTTL. Designed to run as a single goroutine for the
-// lifetime of the hub process. Returns when ctx is done.
+// is older than HeartbeatTTL. It derives staleness purely from the timestamps
+// already in the registry, so every hub replica runs its own copy and they all
+// reach the same verdict — this is deliberately NOT leader-gated. Returns when
+// ctx is done.
 func RunSweeper(ctx context.Context, reg *Registry, log logr.Logger) {
 	logger := log.WithName("heartbeat-sweeper")
 	logger.Info("starting", "interval", SweepInterval, "ttl", HeartbeatTTL)
