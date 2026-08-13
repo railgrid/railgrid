@@ -43,7 +43,7 @@ cmd/                  Binaries
   faros/                CLI (also the agent: `faros agent run`)
   faros-hub/            Hub control-plane server
   graphql/              GraphQL gateway (listener + gateway subcommands)
-  faros-release/        Release-tagging helper
+  release/              Release-tagging helper
 pkg/                  Hub + agent + shared libraries
   hub/                  Hub server, controllers, provider integration, tenancy
   agent/                Edge agent (tunnel, ssh, reporters)

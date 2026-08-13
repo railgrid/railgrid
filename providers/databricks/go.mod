@@ -3,7 +3,8 @@ module github.com/faroshq/provider-databricks
 go 1.26.3
 
 require (
-	github.com/faroshq/provider-sdk v0.0.8
+	github.com/faroshq/provider-sdk v0.1.0
+	github.com/go-logr/logr v1.4.3
 	github.com/kcp-dev/multicluster-provider v0.8.0
 	github.com/kcp-dev/sdk v0.32.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
@@ -23,7 +24,6 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
-	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-openapi/jsonpointer v0.23.1 // indirect
 	github.com/go-openapi/jsonreference v0.21.5 // indirect
 	github.com/go-openapi/swag v0.26.0 // indirect

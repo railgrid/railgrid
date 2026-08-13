@@ -9,7 +9,7 @@ require (
 	github.com/cloudwego/eino-ext/components/model/gemini v0.1.32
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.13
 	github.com/eino-contrib/jsonschema v1.0.3
-	github.com/faroshq/provider-sdk v0.0.1
+	github.com/faroshq/provider-sdk v0.1.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
 	github.com/kcp-dev/multicluster-provider v0.8.0
@@ -18,7 +18,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	google.golang.org/genai v1.36.0
 	gopkg.in/yaml.v3 v3.0.1
-	k8s.io/api v0.36.0
+	k8s.io/api v0.36.1
 	k8s.io/apimachinery v0.36.1
 	k8s.io/client-go v0.36.1
 	k8s.io/klog/v2 v2.140.0

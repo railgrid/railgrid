@@ -6,7 +6,7 @@
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
 
-// Command faros-release cuts release tags for faros components.
+// Command release cuts release tags for faros components.
 //
 // Each component has its own tag namespace and independent version line:
 //
@@ -27,17 +27,19 @@
 //
 // Usage:
 //
-//	faros-release <component|all> [flags]
+//	release <component|all> [flags]
 //
-//	faros-release current               # print every component's latest tag
-//	faros-release quickstart            # bump providers/quickstart/v* patch and push
-//	faros-release hub --minor           # bump v* minor
-//	faros-release quickstart --tag v0.0.1   # explicit version
-//	faros-release all --dry-run         # preview every component's next tag
+//	release current               # print every component's latest tag
+//	release quickstart            # bump providers/quickstart/v* patch and push
+//	release hub --minor           # bump v* minor
+//	release quickstart --tag v0.0.1   # explicit version
+//	release all --dry-run         # preview every component's next tag
+//	release all --tag v0.1.0      # put every component on the same version
 //
 // Flags:
 //
-//	--tag <vX.Y.Z>   set the exact version (single component only)
+//	--tag <vX.Y.Z>   set the exact version; with 'all', every component gets it
+//	                 (must be ahead of each targeted component's latest tag)
 //	--minor          bump the minor (default: patch)
 //	--major          bump the major
 //	--ref <commit>   commit/ref to tag (default: HEAD)
@@ -138,9 +140,9 @@ func run(args []string) error {
 	// Resolve the target component set.
 	var names []string
 	if target == "all" {
-		if opts.tag != "" {
-			return fmt.Errorf("--tag cannot be combined with 'all' (each component has its own version)")
-		}
+		// `all --tag vX.Y.Z` deliberately puts every component on the SAME
+		// version — the way to re-align independently drifted release lines at
+		// a common milestone. Without --tag each line bumps from its own latest.
 		names = componentOrder
 	} else {
 		if _, ok := components[target]; !ok {
@@ -155,9 +157,31 @@ func run(args []string) error {
 	}
 	branch, _ := gitOut("rev-parse", "--abbrev-ref", "HEAD")
 
-	// Build the plan.
+	var explicit version
+	if opts.tag != "" {
+		v, ok := parseVersion(opts.tag)
+		if !ok {
+			return fmt.Errorf("invalid --tag %q (want vMAJOR.MINOR.PATCH[-pre])", opts.tag)
+		}
+		explicit = v
+	}
+
+	// Tags that already exist. Tagging is all-or-nothing: every component is
+	// vetted against both sets before anything is created, so a collision on
+	// the last component of `all` can't surface after the first nine are
+	// pushed. The remote lookup is best effort — offline, localTags still
+	// catches the common case.
+	localTags, err := existingTags()
+	if err != nil {
+		return err
+	}
+	remoteTags := existingRemoteTags()
+
+	// Build the plan, collecting every component's problems rather than
+	// failing on the first — with `all` you want the full list in one go.
 	type plan struct{ name, from, fullTag, triggers string }
 	var plans []plan
+	var problems []string
 	for _, name := range names {
 		comp := components[name]
 		latest, hasLatest, err := latestTag(comp.prefix)
@@ -165,25 +189,40 @@ func run(args []string) error {
 			return err
 		}
 
-		var next version
-		if opts.tag != "" {
-			v, ok := parseVersion(opts.tag)
-			if !ok {
-				return fmt.Errorf("invalid --tag %q (want vMAJOR.MINOR.PATCH[-pre])", opts.tag)
-			}
-			next = v
-		} else if hasLatest {
-			next = bump(latest, opts.bump)
-		} else {
-			next = version{0, 0, 1, ""} // first release
-		}
-
-		full := comp.prefix + strings.TrimPrefix(next.String(), "v")
 		from := "(none)"
 		if hasLatest {
 			from = comp.prefix + strings.TrimPrefix(latest.String(), "v")
 		}
+
+		var next version
+		switch {
+		case opts.tag != "":
+			// An explicit version must move every targeted line forward.
+			if hasLatest && !less(latest, explicit) {
+				problems = append(problems, fmt.Sprintf("%-15s already at %s — %s is not ahead of it", name, from, opts.tag))
+				continue
+			}
+			next = explicit
+		case hasLatest:
+			next = bump(latest, opts.bump)
+		default:
+			next = version{0, 0, 1, ""} // first release
+		}
+
+		full := comp.prefix + strings.TrimPrefix(next.String(), "v")
+		switch {
+		case localTags[full]:
+			problems = append(problems, fmt.Sprintf("%-15s %s already exists locally", name, full))
+			continue
+		case remoteTags[full]:
+			problems = append(problems, fmt.Sprintf("%-15s %s already exists on origin", name, full))
+			continue
+		}
 		plans = append(plans, plan{name, from, full, comp.triggers})
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("%d of %d component(s) cannot be tagged — nothing was created:\n  %s",
+			len(problems), len(names), strings.Join(problems, "\n  "))
 	}
 
 	// Show the plan: the version step and what each tag sets in motion.
@@ -249,6 +288,48 @@ func printCurrent() error {
 		fmt.Printf("  %-15s %s\n", name, current)
 	}
 	return nil
+}
+
+// existingTags returns every tag in the local repository, as a set.
+func existingTags() (map[string]bool, error) {
+	out, err := gitOut("tag", "-l")
+	if err != nil {
+		return nil, fmt.Errorf("listing tags: %w", err)
+	}
+	return tagSet(out, ""), nil
+}
+
+// existingRemoteTags returns the tags on origin, as a set. A tag that exists
+// only on the remote would fail at push time — after earlier tags in the same
+// run were already pushed — so it's worth one network round-trip to catch.
+// Returns nil when origin is unreachable: an offline dry-run is more useful
+// than a hard failure, and `git push` still refuses the tag either way.
+func existingRemoteTags() map[string]bool {
+	out, err := gitOut("ls-remote", "--tags", "origin")
+	if err != nil {
+		return nil
+	}
+	return tagSet(out, "refs/tags/")
+}
+
+// tagSet parses tag names out of git output, one per line. Lines may carry a
+// leading "<sha>\t" (ls-remote) and refs may be suffixed "^{}" (the annotated
+// tag's dereferenced commit); both are stripped. Only names carrying trim as a
+// prefix are kept, with that prefix removed.
+func tagSet(out, trim string) map[string]bool {
+	set := map[string]bool{}
+	for line := range strings.SplitSeq(out, "\n") {
+		name := strings.TrimSpace(line)
+		if _, after, found := strings.Cut(name, "\t"); found {
+			name = after
+		}
+		name = strings.TrimSuffix(name, "^{}")
+		if name == "" || !strings.HasPrefix(name, trim) {
+			continue
+		}
+		set[strings.TrimPrefix(name, trim)] = true
+	}
+	return set
 }
 
 // latestTag returns the highest semver tag carrying prefix, with the prefix
@@ -368,10 +449,10 @@ func gitRun(args ...string) error {
 }
 
 func usage() {
-	fmt.Print(`faros-release — cut release tags for faros components
+	fmt.Print(`release — cut release tags for faros components
 
 Usage:
-  faros-release <component|all> [flags]
+  release <component|all> [flags]
 
 Components:
   provider-sdk    provider-sdk/v<X.Y.Z>             (split → faroshq/provider-sdk)
@@ -384,11 +465,12 @@ Components:
   edges           providers/edges/v<X.Y.Z>
   databricks      providers/databricks/v<X.Y.Z>
   agents          providers/agents/v<X.Y.Z>
-  all             every component (independent versions)
+  all             every component (independent versions, or one shared --tag)
   current         print every component's latest existing tag (no changes)
 
 Flags:
-  --tag <vX.Y.Z>   set the exact version (single component only)
+  --tag <vX.Y.Z>   set the exact version; with 'all', every component gets it
+                   (must be ahead of each targeted component's latest tag)
   --minor          bump the minor (default: patch)
   --major          bump the major
   --ref <commit>   commit/ref to tag (default: HEAD)
@@ -396,10 +478,11 @@ Flags:
   -y, --yes        skip the confirmation prompt
 
 Examples:
-  faros-release current               print every component's latest tag
-  faros-release quickstart            bump providers/quickstart/v* patch and push
-  faros-release hub --minor           bump v* minor
-  faros-release quickstart --tag v0.0.1
-  faros-release all --dry-run
+  release current               print every component's latest tag
+  release quickstart            bump providers/quickstart/v* patch and push
+  release hub --minor           bump v* minor
+  release quickstart --tag v0.0.1
+  release all --dry-run
+  release all --tag v0.1.0     put every component on the same version
 `)
 }

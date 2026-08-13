@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/containers/kubernetes-mcp-server v0.0.58
-	github.com/faroshq/provider-sdk v0.0.13
+	github.com/faroshq/provider-sdk v0.1.0
 	github.com/function61/holepunch-server v0.0.0-20210312073819-8f5e8775e813
 	github.com/go-logr/logr v1.4.3
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674

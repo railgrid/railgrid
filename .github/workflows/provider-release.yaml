@@ -4,7 +4,7 @@ name: Provider release (image + chart)
 # the monorepo, stamped with that provider's OWN version — not the hub version.
 #
 # Triggered by a per-provider release tag `providers/<name>/v<X.Y.Z>` (cut by
-# `cmd/faros-release`). The provider name and version are parsed from the tag;
+# `cmd/release`). The provider name and version are parsed from the tag;
 # the image is tagged `vX.Y.Z` and `X.Y.Z`, and the chart's version/appVersion
 # are set to that version. Because every provider chart leaves `image.tag` empty
 # (→ defaults to `.Chart.AppVersion`), the deployed chart resolves to the

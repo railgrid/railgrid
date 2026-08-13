@@ -13,7 +13,7 @@
 # is published this replace is dropped in favour of a real version.
 #
 # Prerequisites:
-#   1. provider-sdk/vX.Y.Z tagged in the monorepo (faros-release provider-sdk)
+#   1. provider-sdk/vX.Y.Z tagged in the monorepo (release provider-sdk)
 #      and split to faroshq/provider-sdk (the split-provider-sdk workflow).
 #   2. That version is resolvable from the module proxy:
 #        GOWORK=off GOFLAGS=-mod=mod go list -m github.com/faroshq/provider-sdk@vX.Y.Z

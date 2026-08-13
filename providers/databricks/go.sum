@@ -20,8 +20,8 @@ github.com/evanphx/json-patch v5.6.0+incompatible h1:jBYDEEiFBPxA0v50tFdvOzQQTCv
 github.com/evanphx/json-patch v5.6.0+incompatible/go.mod h1:50XU6AFN0ol/bzJsmQLiYLvXMP4fmwYFNcr97nuDLSk=
 github.com/evanphx/json-patch/v5 v5.9.11 h1:/8HVnzMq13/3x9TPvjG08wUGqBTmZBsCWzjTM0wiaDU=
 github.com/evanphx/json-patch/v5 v5.9.11/go.mod h1:3j+LviiESTElxA4p3EMKAB9HXj3/XEtnUf6OZxqIQTM=
-github.com/faroshq/provider-sdk v0.0.8 h1:v1ulzhhmWx1E2yKU3qmZPzmQxLNVPDXb4/25S1tdEs0=
-github.com/faroshq/provider-sdk v0.0.8/go.mod h1:6nBPp/1JAdTYYKDVPDDgFtHlNhJVjDzYHlCJvfdKET4=
+github.com/faroshq/provider-sdk v0.1.0 h1:SUBgdGrH8h/NB9KtyqKvaJx3f0cSk02c+ZXR+cnGz7Q=
+github.com/faroshq/provider-sdk v0.1.0/go.mod h1:9auM/cMbf6K6XvrldbOu6FEqkUV056fewS5Ct6ae9EY=
 github.com/fsnotify/fsnotify v1.9.0 h1:2Ml+OJNzbYCTzsxtv8vKSFD9PbJjmhYF14k/jKC7S9k=
 github.com/fsnotify/fsnotify v1.9.0/go.mod h1:8jBTzvmWwFyi3Pb8djgCCO5IBqzKJ/Jwo8TRcHyHii0=
 github.com/fxamacker/cbor/v2 v2.9.1 h1:2rWm8B193Ll4VdjsJY28jxs70IdDsHRWgQYAI80+rMQ=

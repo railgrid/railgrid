@@ -3,7 +3,7 @@ module github.com/faroshq/provider-code
 go 1.26.3
 
 require (
-	github.com/faroshq/provider-sdk v0.0.1
+	github.com/faroshq/provider-sdk v0.1.0
 	github.com/google/go-github/v66 v66.0.0
 	github.com/kcp-dev/multicluster-provider v0.8.0
 	github.com/kcp-dev/sdk v0.32.0

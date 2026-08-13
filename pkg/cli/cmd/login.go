@@ -165,13 +165,14 @@ func runStaticTokenLogin(hubURL, token string, insecure bool) error {
 		return fmt.Errorf("parsing login response: %w", err)
 	}
 
-	if err := mergeKubeconfig(loginResp.Kubeconfig); err != nil {
+	contextName, err := mergeKubeconfig(loginResp.Kubeconfig)
+	if err != nil {
 		return fmt.Errorf("merging kubeconfig: %w", err)
 	}
 
 	fmt.Printf("Login successful! Logged in as %s (user: %s)\n", loginResp.Email, loginResp.UserID)
-	fmt.Printf("Kubeconfig context \"faros\" has been set.\n")
-	fmt.Printf("Run: kubectl --context=faros get namespaces\n")
+	fmt.Printf("Kubeconfig context %q has been set.\n", contextName)
+	fmt.Printf("Run: kubectl --context=%q get edges\n", contextName)
 	return nil
 }
 
@@ -227,22 +228,25 @@ func runLogin(ctx context.Context, hubURL string, insecure bool) error {
 	}
 
 	// 8. Merge the received kubeconfig into ~/.kube/config.
-	if err := mergeKubeconfig(resp.Kubeconfig); err != nil {
+	contextName, err := mergeKubeconfig(resp.Kubeconfig)
+	if err != nil {
 		return fmt.Errorf("merging kubeconfig: %w", err)
 	}
 
 	fmt.Printf("Login successful! Logged in as %s (user: %s)\n", resp.Email, resp.UserID)
-	fmt.Printf("Kubeconfig context \"faros\" has been set.\n")
-	fmt.Printf("Run: kubectl --context=faros get users\n")
+	fmt.Printf("Kubeconfig context %q has been set.\n", contextName)
+	fmt.Printf("Run: kubectl --context=%q get edges\n", contextName)
 	return nil
 }
 
-// mergeKubeconfig merges the received kubeconfig bytes into the default kubeconfig file.
-func mergeKubeconfig(kubeconfigBytes []byte) error {
+// mergeKubeconfig merges the received kubeconfig bytes into the default
+// kubeconfig file and returns the name of the context it made current. The hub
+// picks that name, so callers must not assume it.
+func mergeKubeconfig(kubeconfigBytes []byte) (string, error) {
 	// Parse the new kubeconfig.
 	newConfig, err := clientcmd.Load(kubeconfigBytes)
 	if err != nil {
-		return fmt.Errorf("parsing received kubeconfig: %w", err)
+		return "", fmt.Errorf("parsing received kubeconfig: %w", err)
 	}
 
 	// The hub emits the exec credential plugin with Command="faros", which
@@ -287,10 +291,10 @@ func mergeKubeconfig(kubeconfigBytes []byte) error {
 	// Write back.
 	configPath := loadingRules.GetDefaultFilename()
 	if err := clientcmd.WriteToFile(*existingConfig, configPath); err != nil {
-		return fmt.Errorf("writing kubeconfig to %s: %w", configPath, err)
+		return "", fmt.Errorf("writing kubeconfig to %s: %w", configPath, err)
 	}
 
-	return nil
+	return existingConfig.CurrentContext, nil
 }
 
 // rewriteFarosExecCommand replaces the sentinel `faros` command in any exec
@@ -309,7 +313,11 @@ func rewriteFarosExecCommand(cfg *clientcmdapi.Config) {
 		if ai == nil || ai.Exec == nil {
 			continue
 		}
-		if ai.Exec.Command == "faros" {
+		// `kedge` is the pre-rename sentinel — hubs deployed before the
+		// rename still emit it. Rewriting it too keeps the new CLI working
+		// against an old hub instead of shelling out to a stale `kedge`
+		// binary (which reads a different token cache and fails to refresh).
+		if ai.Exec.Command == "faros" || ai.Exec.Command == "kedge" {
 			ai.Exec.Command = exe
 		}
 	}

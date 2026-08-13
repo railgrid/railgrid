@@ -59,8 +59,8 @@ build: build-faros build-hub build-graphql
 build-faros:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros ./cmd/faros/
 
-build-faros-release: ## Build the release-tagging helper (faros-release <component|all>)
-	go build $(GOFLAGS) -o $(BINDIR)/faros-release ./cmd/faros-release/
+build-release: ## Build the release-tagging helper (release <component|all>)
+	go build $(GOFLAGS) -o $(BINDIR)/release ./cmd/release/
 
 build-hub:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/faros-hub ./cmd/faros-hub/

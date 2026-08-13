@@ -111,7 +111,7 @@ func TestMergeKubeconfigPreservesWorkspaceSelection(t *testing.T) {
 			if tc.existing != "" {
 				writeKubeconfigFile(t, path, tc.existing)
 			}
-			if err := mergeKubeconfig(loginKubeconfig(t, tc.incoming)); err != nil {
+			if _, err := mergeKubeconfig(loginKubeconfig(t, tc.incoming)); err != nil {
 				t.Fatalf("mergeKubeconfig: %v", err)
 			}
 			if got := mergedServer(t, path); got != tc.wantServer {

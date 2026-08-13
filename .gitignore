@@ -111,3 +111,4 @@ portal/tsconfig.tsbuildinfo
 .superpowers/
 docs/superpowers/
 agent_docs/
+hack/provider-sdk-cutover.sh
