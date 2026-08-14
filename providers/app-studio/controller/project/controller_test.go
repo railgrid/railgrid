@@ -92,6 +92,63 @@ func TestProviderBindingsSpansAllEnvironmentModes(t *testing.T) {
 	}
 }
 
+func TestReconcileDevelopmentPreviewPolicy(t *testing.T) {
+	projectWith := func(mode aiv1alpha1.ProjectSharingMode, values string, observedURL string) *aiv1alpha1.Project {
+		p := &aiv1alpha1.Project{
+			Spec: aiv1alpha1.ProjectSpec{
+				Sharing: aiv1alpha1.ProjectSharingSpec{Preview: aiv1alpha1.ProjectPreviewSharingPolicy{Mode: mode}},
+				Environments: []aiv1alpha1.ProjectEnvironmentSpec{{
+					Name:     projectDevelopmentEnvironmentName,
+					Bindings: []aiv1alpha1.ProjectProviderBindingSpec{actionsDevelopmentBinding(values)},
+				}},
+			},
+		}
+		if observedURL != "" {
+			p.Status.Environments = []aiv1alpha1.ProjectEnvironmentStatus{{
+				Name:     projectDevelopmentEnvironmentName,
+				Bindings: []aiv1alpha1.ProjectProviderBindingStatus{{Name: projectDevelopmentBindingName, URL: observedURL}},
+			}}
+		}
+		return p
+	}
+	for _, tc := range []struct {
+		name       string
+		project    *aiv1alpha1.Project
+		wantMode   aiv1alpha1.ProjectSharingMode
+		wantAccess string
+		wantFound  bool
+		wantChange bool
+	}{
+		{name: "new private binding", project: projectWith(aiv1alpha1.ProjectSharingModePrivate, `{"access":"public"}`, ""), wantMode: aiv1alpha1.ProjectSharingModePrivate, wantAccess: "private", wantFound: true, wantChange: true},
+		{name: "explicit public", project: projectWith(aiv1alpha1.ProjectSharingModePublic, `{"access":"private"}`, ""), wantMode: aiv1alpha1.ProjectSharingModePublic, wantAccess: "public", wantFound: true, wantChange: true},
+		{name: "legacy missing with URL", project: projectWith("", `{}`, "https://preview.example"), wantMode: aiv1alpha1.ProjectSharingModePrivate, wantAccess: "private", wantFound: true, wantChange: true},
+		{name: "legacy shared", project: projectWith(aiv1alpha1.ProjectSharingModeShared, `{"access":"private"}`, ""), wantMode: aiv1alpha1.ProjectSharingModePrivate, wantAccess: "private", wantFound: true, wantChange: true},
+		{name: "internal template", project: projectWith("", `{}`, ""), wantMode: aiv1alpha1.ProjectSharingModePrivate, wantFound: false, wantChange: true},
+		{name: "already converged", project: projectWith(aiv1alpha1.ProjectSharingModePrivate, `{"access":"private"}`, ""), wantMode: aiv1alpha1.ProjectSharingModePrivate, wantAccess: "private", wantFound: true, wantChange: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed, err := reconcileDevelopmentPreviewPolicy(tc.project)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if changed != tc.wantChange {
+				t.Fatalf("changed = %t, want %t", changed, tc.wantChange)
+			}
+			if got := tc.project.Spec.Sharing.Preview.Mode; got != tc.wantMode {
+				t.Fatalf("mode = %q, want %q", got, tc.wantMode)
+			}
+			values, err := bindings.Values(tc.project.Spec.Environments[0].Bindings[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, found := values[bindings.PreviewAccessField]
+			if found != tc.wantFound || (found && got != tc.wantAccess) {
+				t.Fatalf("access = %v, found=%t; want %q, found=%t", got, found, tc.wantAccess, tc.wantFound)
+			}
+		})
+	}
+}
+
 func TestEqualSpecAndMetaDetectsDrift(t *testing.T) {
 	base := func() *unstructured.Unstructured {
 		return &unstructured.Unstructured{Object: map[string]any{

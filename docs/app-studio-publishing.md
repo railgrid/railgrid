@@ -13,7 +13,7 @@ template renders as a component of its own graph. Two native mechanisms
 control who can open that URL:
 
 - **Visibility** is the instance's `spec.access` value (`public` | `private`,
-  default `public`). It is an ordinary template input: flipping it is an
+  template default `public`). It is an ordinary template input: flipping it is an
   in-place `update_instance` merge patch that only changes the gate's
   configuration — no route rewiring, no redeploy, no data loss.
 - **Invitations** are plain kcp RBAC in the tenant workspace. A signed-in
@@ -43,6 +43,13 @@ control who can open that URL:
 
 No `PublishedApp` or `AppAccessGrant` records exist, no publication
 controller runs, and the hub carries no knowledge of any provider CRD schema.
+
+App Studio applies a safer policy to development instances. A URL-backed
+development binding is created with `access: private`, and the Project
+controller reconciles that input from `Project.spec.sharing.preview.mode`.
+`private` means workspace members only; `public` means anyone with the URL.
+Development previews deliberately have no per-person invitation flow, and
+production grants remain scoped to the separate `*-prod` instance name.
 
 ## The access gate
 

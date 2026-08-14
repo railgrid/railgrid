@@ -58,6 +58,10 @@ type projectDevelopmentSyncTargetInfo struct {
 	// Empty means the legacy single-runner target: whole-workspace sync to
 	// the instance-level verbs.
 	Components map[string]projectTemplateComponent `json:"Components,omitempty"`
+
+	// PreviewAccessModes is non-empty when this Template uses the standard
+	// access-proxy input and App Studio may offer a visibility control.
+	PreviewAccessModes []string `json:"previewAccessModes,omitempty"`
 }
 
 // instanceResource is the tenant.Resource descriptor for the target instance.
@@ -125,18 +129,22 @@ type projectDevelopmentSyncResponse struct {
 }
 
 type projectDevelopmentPreviewAuthorizeResponse struct {
-	Target     projectDevelopmentSyncTargetInfo `json:"target"`
-	Ready      bool                             `json:"ready"`
-	PreviewURL string                           `json:"previewURL,omitempty"`
-	Message    string                           `json:"message,omitempty"`
-	Reason     string                           `json:"reason,omitempty"`
+	Target          projectDevelopmentSyncTargetInfo `json:"target"`
+	Ready           bool                             `json:"ready"`
+	PreviewURL      string                           `json:"previewURL,omitempty"`
+	Message         string                           `json:"message,omitempty"`
+	Reason          string                           `json:"reason,omitempty"`
+	DesiredAccess   string                           `json:"desiredAccess,omitempty"`
+	ObservedAccess  string                           `json:"observedAccess,omitempty"`
+	AccessConverged bool                             `json:"accessConverged"`
 }
 
 type projectSandboxPreviewURLResponse struct {
-	Ready      bool   `json:"ready"`
-	PreviewURL string `json:"previewURL,omitempty"`
-	Message    string `json:"message,omitempty"`
-	Reason     string `json:"reason,omitempty"`
+	Ready          bool   `json:"ready"`
+	PreviewURL     string `json:"previewURL,omitempty"`
+	Message        string `json:"message,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	ObservedAccess string `json:"observedAccess,omitempty"`
 }
 
 // projectDevelopmentTarget resolves the Project's development data-plane
@@ -166,14 +174,15 @@ func (s *Server) projectDevelopmentTarget(ctx context.Context, c *asclient.Clien
 		return projectDevelopmentSyncTargetInfo{}, fmt.Errorf("project has no name")
 	}
 	return projectDevelopmentSyncTargetInfo{
-		EnvironmentName: projectDevelopmentEnvironmentName,
-		BindingName:     projectDevelopmentBindingName,
-		Provider:        projectDevelopmentProviderAppStudio,
-		Resource:        info.Resource,
-		Kind:            info.Kind,
-		APIVersion:      info.APIVersion,
-		ResourceName:    name,
-		Components:      info.Components,
+		EnvironmentName:    projectDevelopmentEnvironmentName,
+		BindingName:        projectDevelopmentBindingName,
+		Provider:           projectDevelopmentProviderAppStudio,
+		Resource:           info.Resource,
+		Kind:               info.Kind,
+		APIVersion:         info.APIVersion,
+		ResourceName:       name,
+		Components:         info.Components,
+		PreviewAccessModes: append([]string(nil), info.PreviewAccessModes...),
 	}, nil
 }
 
@@ -218,13 +227,30 @@ func (s *Server) authorizeProjectDevelopmentPreview(w http.ResponseWriter, r *ht
 		writeStatus(w, http.StatusBadGateway, "BadGateway", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, projectDevelopmentPreviewAuthorizeResponse{
-		Target:     target,
-		Ready:      preview.Ready,
-		PreviewURL: preview.PreviewURL,
-		Message:    preview.Message,
-		Reason:     preview.Reason,
-	})
+	writeJSON(w, http.StatusOK, projectDevelopmentPreviewAuthorizationState(p, target, preview))
+}
+
+func projectDevelopmentPreviewAuthorizationState(p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo, preview projectSandboxPreviewURLResponse) projectDevelopmentPreviewAuthorizeResponse {
+	response := projectDevelopmentPreviewAuthorizeResponse{
+		Target:          target,
+		Ready:           preview.Ready,
+		PreviewURL:      preview.PreviewURL,
+		Message:         preview.Message,
+		Reason:          preview.Reason,
+		ObservedAccess:  preview.ObservedAccess,
+		AccessConverged: true,
+	}
+	if len(target.PreviewAccessModes) == 0 {
+		return response
+	}
+	response.DesiredAccess = effectiveProjectPreviewAccess(p.Spec.Sharing.Preview.Mode)
+	response.AccessConverged = preview.ObservedAccess == response.DesiredAccess
+	if preview.ObservedAccess != "" && !response.AccessConverged {
+		response.Ready = false
+		response.Reason = "preview_access_updating"
+		response.Message = "Updating preview access…"
+	}
+	return response
 }
 
 func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (json.RawMessage, error) {

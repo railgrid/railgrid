@@ -104,16 +104,23 @@ const (
 )
 
 type ProjectSharingSpec struct {
-	// Preview controls who may access the mutable development preview. The
-	// current implementation enforces private access; shared/public are future
-	// policy intent.
+	// Preview controls who may access the mutable development preview. Private
+	// requires platform sign-in and workspace access; public allows anyone with
+	// the URL. The legacy shared value is normalized to private by App Studio.
 	// +optional
-	Preview ProjectSharingPolicy `json:"preview,omitempty"`
+	Preview ProjectPreviewSharingPolicy `json:"preview,omitempty"`
 
 	// Publishing controls who may access published app instances once the
 	// publishing runtime exists.
 	// +optional
 	Publishing ProjectSharingPolicy `json:"publishing,omitempty"`
+}
+
+type ProjectPreviewSharingPolicy struct {
+	// Mode is the requested preview visibility. Empty means private.
+	// +optional
+	// +kubebuilder:validation:Enum=private;public
+	Mode ProjectSharingMode `json:"mode,omitempty"`
 }
 
 type ProjectSharingPolicy struct {

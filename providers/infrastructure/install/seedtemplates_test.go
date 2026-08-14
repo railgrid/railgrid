@@ -189,6 +189,9 @@ func TestApplicationSeedsRouteEverythingThroughTheAccessGate(t *testing.T) {
 			if !strings.Contains(gateEnv["FAROS_ACCESS_PROXY_ROUTES"], ".svc.cluster.local:") {
 				t.Errorf("gate routes are not cluster-local Service targets: %q", gateEnv["FAROS_ACCESS_PROXY_ROUTES"])
 			}
+			if file == "application.yaml" && !strings.Contains(gateEnv["FAROS_ACCESS_PROXY_ROUTES"], `string(schema.spec.apiPort) + "/api,/=`) {
+				t.Errorf("application gate does not preserve the /api prefix upstream: %q", gateEnv["FAROS_ACCESS_PROXY_ROUTES"])
+			}
 		})
 	}
 }

@@ -27,7 +27,7 @@ func defaultProjectSpec(projectName, displayName, description string, repository
 
 func privateProjectSharingSpec() aiv1alpha1.ProjectSharingSpec {
 	return aiv1alpha1.ProjectSharingSpec{
-		Preview: aiv1alpha1.ProjectSharingPolicy{
+		Preview: aiv1alpha1.ProjectPreviewSharingPolicy{
 			Mode: aiv1alpha1.ProjectSharingModePrivate,
 		},
 		Publishing: aiv1alpha1.ProjectSharingPolicy{

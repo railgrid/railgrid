@@ -11,6 +11,7 @@ You may obtain a copy of the License at
 package bindings
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -252,6 +253,27 @@ func TestMergeProviderSpecPreservesComputedFieldsAndClearsStaleActions(t *testin
 	updated := MergeProviderSpec(got, map[string]any{"expose": map[string]any{"hostnamePrefix": "final"}})
 	if updated["expose"].(map[string]any)["fqdn"] != "demo-tenant.apps.example" {
 		t.Fatalf("explicit update dropped computed fqdn: %#v", updated["expose"])
+	}
+}
+
+func TestTemplatePreviewAccessModesRequiresPlatformAccessEnum(t *testing.T) {
+	compatible := map[string]any{"properties": map[string]any{
+		"access": map[string]any{"type": "string", "enum": []any{"public", "private"}},
+	}}
+	if got, want := TemplatePreviewAccessModes(compatible), []string{"private", "public"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("compatible modes = %v, want %v", got, want)
+	}
+	for name, schema := range map[string]map[string]any{
+		"missing":    {},
+		"not enum":   {"properties": map[string]any{"access": map[string]any{"type": "string"}}},
+		"partial":    {"properties": map[string]any{"access": map[string]any{"type": "string", "enum": []any{"public"}}}},
+		"wrong type": {"properties": map[string]any{"access": map[string]any{"type": "boolean", "enum": []any{"public", "private"}}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := TemplatePreviewAccessModes(schema); got != nil {
+				t.Fatalf("modes = %v, want nil", got)
+			}
+		})
 	}
 }
 

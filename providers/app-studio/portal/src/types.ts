@@ -324,6 +324,10 @@ export interface Project {
     commits?: ProjectRepositoryCommit[]
   }
   memory?: ProjectMemory
+  sharing?: {
+    preview?: { mode?: 'private' | 'public' }
+    publishing?: { mode?: 'private' | 'shared' | 'public' }
+  }
   environments?: ProjectEnvironment[]
   createdAt: string
   updatedAt?: string
@@ -472,6 +476,7 @@ export interface DevelopmentTemplate {
   category?: string
   components: Record<string, string>
   hasScaffold?: boolean
+  previewAccessModes?: Array<'private' | 'public'>
 }
 
 export interface ProjectFileInfo {

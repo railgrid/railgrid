@@ -771,7 +771,11 @@ export const api = {
   async patchProject(
     ctx: FarosContext | null,
     name: string,
-    body: { displayName?: string; description?: string },
+    body: {
+      displayName?: string
+      description?: string
+      sharing?: Project['sharing']
+    },
   ): Promise<Project> {
     return request<Project>(ctx, 'PATCH', `${baseURL(ctx)}/${encodeURIComponent(name)}`, body)
   },

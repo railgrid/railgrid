@@ -1007,7 +1007,7 @@ spec:
                         # (${faros.appPublicPort} is ":<port>" or "").
                         value: ${schema.spec.expose.fqdn + "${faros.appPublicPort}"}
                       - name: FAROS_ACCESS_PROXY_ROUTES
-                        value: '${schema.spec.farosMode == "development" && schema.spec.oidc.mode != "none" ? "/=http://" + schema.spec.name + "-oauth." + webService.metadata.namespace + ".svc.cluster.local:4180" : "/api=http://" + schema.spec.name + "-api." + webService.metadata.namespace + ".svc.cluster.local:" + string(schema.spec.apiPort) + ",/=http://" + schema.spec.name + "-web." + webService.metadata.namespace + ".svc.cluster.local:" + string(schema.spec.webPort)}'
+                        value: '${schema.spec.farosMode == "development" && schema.spec.oidc.mode != "none" ? "/=http://" + schema.spec.name + "-oauth." + webService.metadata.namespace + ".svc.cluster.local:4180" : "/api=http://" + schema.spec.name + "-api." + webService.metadata.namespace + ".svc.cluster.local:" + string(schema.spec.apiPort) + "/api,/=http://" + schema.spec.name + "-web." + webService.metadata.namespace + ".svc.cluster.local:" + string(schema.spec.webPort)}'
                       - name: FAROS_ACCESS_PROXY_INSTANCE_CLUSTER
                         value: ${schema.spec.farosCluster}
                       - name: FAROS_ACCESS_PROXY_INSTANCE_GROUP

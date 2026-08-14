@@ -105,7 +105,7 @@ func TestApplyProjectPatchRequestPersistsSharing(t *testing.T) {
 	}
 	changed, err := applyProjectPatchRequest(project, PatchProjectRequest{
 		Sharing: &aiv1alpha1.ProjectSharingSpec{
-			Preview: aiv1alpha1.ProjectSharingPolicy{
+			Preview: aiv1alpha1.ProjectPreviewSharingPolicy{
 				Mode: aiv1alpha1.ProjectSharingModeShared,
 			},
 			Publishing: aiv1alpha1.ProjectSharingPolicy{
@@ -119,7 +119,7 @@ func TestApplyProjectPatchRequestPersistsSharing(t *testing.T) {
 	if !changed {
 		t.Fatal("changed = false, want true")
 	}
-	if got, want := project.Spec.Sharing.Preview.Mode, aiv1alpha1.ProjectSharingModeShared; got != want {
+	if got, want := project.Spec.Sharing.Preview.Mode, aiv1alpha1.ProjectSharingModePrivate; got != want {
 		t.Fatalf("preview sharing mode = %q, want %q", got, want)
 	}
 	if got, want := project.Spec.Sharing.Publishing.Mode, aiv1alpha1.ProjectSharingModePublic; got != want {

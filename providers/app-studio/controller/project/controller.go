@@ -29,6 +29,7 @@ package project
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -122,6 +123,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	if !p.DeletionTimestamp.IsZero() {
 		return r.finalize(ctx, c, &p)
+	}
+	previewPolicyChanged, err := reconcileDevelopmentPreviewPolicy(&p)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if previewPolicyChanged {
+		if err := c.Update(ctx, &p); err != nil {
+			return ctrl.Result{}, fmt.Errorf("converging development preview access policy: %w", err)
+		}
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	bound := providerBindings(&p)
@@ -237,6 +248,72 @@ func isProjectDevelopmentBinding(environment string, binding aiv1alpha1.ProjectP
 	return strings.TrimSpace(environment) == projectDevelopmentEnvironmentName &&
 		strings.TrimSpace(binding.Name) == projectDevelopmentBindingName &&
 		strings.TrimSpace(binding.Provider) == projectDevelopmentProvider
+}
+
+// reconcileDevelopmentPreviewPolicy makes Project sharing intent and the
+// access-proxy Template input one desired-state contract. New bindings carry
+// access from creation; for legacy bindings, an observed URL proves that the
+// selected Template is access-capable without teaching this controller how to
+// read the Infrastructure provider's Template API identity.
+func reconcileDevelopmentPreviewPolicy(p *aiv1alpha1.Project) (bool, error) {
+	if p == nil {
+		return false, nil
+	}
+	changed := false
+	normalized := bindings.NormalizePreviewSharingMode(p.Spec.Sharing.Preview.Mode)
+	if normalized != p.Spec.Sharing.Preview.Mode {
+		p.Spec.Sharing.Preview.Mode = normalized
+		changed = true
+	}
+	desiredAccess := bindings.PreviewAccessForMode(normalized)
+	for envIndex := range p.Spec.Environments {
+		env := &p.Spec.Environments[envIndex]
+		for bindingIndex := range env.Bindings {
+			binding := &env.Bindings[bindingIndex]
+			if !isProjectDevelopmentBinding(env.Name, *binding) {
+				continue
+			}
+			values, err := bindings.Values(*binding)
+			if err != nil {
+				return false, err
+			}
+			_, declaresAccess := values[bindings.PreviewAccessField]
+			if !declaresAccess && !developmentBindingHasObservedURL(p, env.Name, binding.Name) {
+				continue
+			}
+			if current, _ := values[bindings.PreviewAccessField].(string); current == desiredAccess {
+				continue
+			}
+			values[bindings.PreviewAccessField] = desiredAccess
+			raw, err := json.Marshal(values)
+			if err != nil {
+				return false, fmt.Errorf("marshal development binding %q: %w", binding.Name, err)
+			}
+			binding.Values.Raw = raw
+			changed = true
+		}
+	}
+	return changed, nil
+}
+
+func developmentBindingHasObservedURL(p *aiv1alpha1.Project, environment, binding string) bool {
+	for _, env := range p.Status.Environments {
+		if strings.TrimSpace(env.Name) != strings.TrimSpace(environment) {
+			continue
+		}
+		for _, status := range env.Bindings {
+			if strings.TrimSpace(status.Name) != strings.TrimSpace(binding) {
+				continue
+			}
+			if strings.TrimSpace(status.URL) != "" || strings.TrimSpace(status.PreviewURL) != "" {
+				return true
+			}
+			if strings.TrimSpace(status.Outputs["url"]) != "" || strings.TrimSpace(status.Outputs["previewURL"]) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hasProjectDevelopmentBinding(bound []boundEnv) bool {

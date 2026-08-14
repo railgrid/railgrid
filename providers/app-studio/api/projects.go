@@ -36,6 +36,7 @@ import (
 	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
+	"github.com/faroshq/provider-app-studio/bindings"
 	asclient "github.com/faroshq/provider-app-studio/client"
 	appskills "github.com/faroshq/provider-app-studio/skills"
 	"github.com/faroshq/provider-app-studio/store"
@@ -632,19 +633,29 @@ func applyProjectPatchRequest(p *aiv1alpha1.Project, req PatchProjectRequest) (b
 }
 
 func normalizeProjectSharingSpec(sharing aiv1alpha1.ProjectSharingSpec) (aiv1alpha1.ProjectSharingSpec, error) {
-	if sharing.Preview.Mode == "" {
-		sharing.Preview.Mode = aiv1alpha1.ProjectSharingModePrivate
-	}
+	sharing.Preview.Mode = normalizedProjectPreviewSharingMode(sharing.Preview.Mode)
 	if sharing.Publishing.Mode == "" {
 		sharing.Publishing.Mode = aiv1alpha1.ProjectSharingModePrivate
 	}
-	if !validProjectSharingMode(sharing.Preview.Mode) {
-		return aiv1alpha1.ProjectSharingSpec{}, newValidationError("sharing.preview.mode must be private, shared, or public")
+	if !validProjectPreviewSharingMode(sharing.Preview.Mode) {
+		return aiv1alpha1.ProjectSharingSpec{}, newValidationError("sharing.preview.mode must be private or public")
 	}
 	if !validProjectSharingMode(sharing.Publishing.Mode) {
 		return aiv1alpha1.ProjectSharingSpec{}, newValidationError("sharing.publishing.mode must be private, shared, or public")
 	}
 	return sharing, nil
+}
+
+func normalizedProjectPreviewSharingMode(mode aiv1alpha1.ProjectSharingMode) aiv1alpha1.ProjectSharingMode {
+	return bindings.NormalizePreviewSharingMode(mode)
+}
+
+func validProjectPreviewSharingMode(mode aiv1alpha1.ProjectSharingMode) bool {
+	return mode == aiv1alpha1.ProjectSharingModePrivate || mode == aiv1alpha1.ProjectSharingModePublic
+}
+
+func effectiveProjectPreviewAccess(mode aiv1alpha1.ProjectSharingMode) string {
+	return bindings.PreviewAccessForMode(mode)
 }
 
 func effectiveProjectSharingSpec(sharing aiv1alpha1.ProjectSharingSpec) aiv1alpha1.ProjectSharingSpec {

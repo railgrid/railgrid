@@ -70,6 +70,11 @@ type projectTemplateInfo struct {
 	// JSON blob.
 	ProductionSchema map[string]any
 
+	// PreviewAccessModes is non-empty when the Template exposes the standard
+	// access input consumed by faros-access-proxy. App Studio uses this
+	// capability instead of guessing from a URL or a particular Template name.
+	PreviewAccessModes []string
+
 	// ImmutableProductionInputs are tenant-facing schema paths that cannot be
 	// changed after the first production instance is created.
 	ImmutableProductionInputs []string
@@ -161,6 +166,7 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 	}
 	if found {
 		info.ProductionSchema = productionSchema
+		info.PreviewAccessModes = bindings.TemplatePreviewAccessModes(productionSchema)
 	}
 	for _, path := range strings.Split(obj.GetAnnotations()[projectTemplateImmutableInputsAnnotation], ",") {
 		if path = strings.TrimSpace(path); path != "" {
@@ -349,6 +355,9 @@ func projectTemplateDevBindingWithContext(p *aiv1alpha1.Project, info projectTem
 	valuesMap := map[string]any{
 		"name":      name,
 		"farosMode": "development",
+	}
+	if len(info.PreviewAccessModes) > 0 {
+		valuesMap[bindings.PreviewAccessField] = effectiveProjectPreviewAccess(p.Spec.Sharing.Preview.Mode)
 	}
 	valuesMap = bindings.ApplyActionsOverlay(valuesMap, bindings.ActionsOverlay{
 		ExchangeURL: context.ActionsExchangeURL,
@@ -612,12 +621,22 @@ func (s *Server) templateDevelopmentPreview(ctx context.Context, c *asclient.Cli
 	if err != nil {
 		return projectSandboxPreviewURLResponse{}, err
 	}
+	observedAccess := ""
+	if len(target.PreviewAccessModes) > 0 {
+		observedAccess, _, _ = unstructured.NestedString(obj.Object, "spec", bindings.PreviewAccessField)
+		if strings.TrimSpace(observedAccess) == "" {
+			// Both URL-backed seed Templates default an omitted access input to
+			// public. Report that effective behavior during legacy convergence.
+			observedAccess = bindings.PreviewAccessPublic
+		}
+	}
 	url, _, _ := unstructured.NestedString(obj.Object, "status", "url")
 	if strings.TrimSpace(url) == "" {
 		return projectSandboxPreviewURLResponse{
-			Ready:   false,
-			Reason:  "development_url_not_ready",
-			Message: "Preview is getting ready. The development environment does not have a URL yet.",
+			Ready:          false,
+			Reason:         "development_url_not_ready",
+			Message:        "Preview is getting ready. The development environment does not have a URL yet.",
+			ObservedAccess: observedAccess,
 		}, nil
 	}
 	// status.url exists as soon as the HTTPRoute does, but the Gateway edge
@@ -627,12 +646,14 @@ func (s *Server) templateDevelopmentPreview(ctx context.Context, c *asclient.Cli
 	url = strings.TrimSpace(url)
 	if !s.previewEdgeReady(ctx, url) {
 		return projectSandboxPreviewURLResponse{
-			Ready:   false,
-			Reason:  previewReasonEdgeProvisioning,
-			Message: previewEdgeProvisioningMessage,
+			Ready:          false,
+			PreviewURL:     url,
+			Reason:         previewReasonEdgeProvisioning,
+			Message:        previewEdgeProvisioningMessage,
+			ObservedAccess: observedAccess,
 		}, nil
 	}
-	return projectSandboxPreviewURLResponse{Ready: true, PreviewURL: url}, nil
+	return projectSandboxPreviewURLResponse{Ready: true, PreviewURL: url, ObservedAccess: observedAccess}, nil
 }
 
 // --- HTTP surface -----------------------------------------------------------
@@ -640,11 +661,12 @@ func (s *Server) templateDevelopmentPreview(ctx context.Context, c *asclient.Cli
 // projectDevelopmentTemplateView is one catalog entry the portal offers when
 // selecting (or switching) a project's development template.
 type projectDevelopmentTemplateView struct {
-	Name        string            `json:"name"`
-	DisplayName string            `json:"displayName,omitempty"`
-	Description string            `json:"description,omitempty"`
-	Category    string            `json:"category,omitempty"`
-	Components  map[string]string `json:"components"`
+	Name               string            `json:"name"`
+	DisplayName        string            `json:"displayName,omitempty"`
+	Description        string            `json:"description,omitempty"`
+	Category           string            `json:"category,omitempty"`
+	Components         map[string]string `json:"components"`
+	PreviewAccessModes []string          `json:"previewAccessModes,omitempty"`
 	// HasScaffold reports whether picking this template seeds the workspace
 	// with starter code (spec.development.scaffold) — the wizard shows it so
 	// the user knows the project opens on a runnable placeholder.
@@ -699,9 +721,10 @@ func developmentTemplateViews(items []unstructured.Unstructured) []projectDevelo
 			continue
 		}
 		view := projectDevelopmentTemplateView{
-			Name:        info.Name,
-			Components:  info.WorkspacePaths(),
-			HasScaffold: info.ScaffoldRepo != "",
+			Name:               info.Name,
+			Components:         info.WorkspacePaths(),
+			HasScaffold:        info.ScaffoldRepo != "",
+			PreviewAccessModes: append([]string(nil), info.PreviewAccessModes...),
 		}
 		view.DisplayName, _, _ = unstructured.NestedString(obj.Object, "spec", "displayName")
 		view.Description, _, _ = unstructured.NestedString(obj.Object, "spec", "description")

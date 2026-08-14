@@ -19,6 +19,7 @@ import {
   GripVertical,
   Link2,
   Loader2,
+  Lock,
   MessageSquare,
   PanelRight,
   Plus,
@@ -321,6 +322,10 @@ interface ProjectDevelopmentPreviewAuthorization {
   previewURL: string
   message: string
   reason: string
+  desiredAccess: 'private' | 'public'
+  observedAccess: 'private' | 'public' | ''
+  accessConverged: boolean
+  previewAccessModes: Array<'private' | 'public'>
 }
 
 const SPLIT_WIDTH_KEY = 'faros:projects:split-width'
@@ -532,6 +537,10 @@ const developmentSyncError = ref<string | null>(null)
 const developmentPreviewAuthorizing = ref(false)
 const developmentPreviewAuthorizationError = ref<string | null>(null)
 const developmentPreviewReadinessMessage = ref<string | null>(null)
+const developmentPreviewAccessModesFromAuthorization = ref<Array<'private' | 'public'>>([])
+const developmentPreviewAccessConverged = ref(true)
+const developmentPreviewAccessBusy = ref(false)
+const developmentPreviewAccessError = ref<string | null>(null)
 const developmentPreviewOverrideURL = ref<string | null>(null)
 const developmentPreviewAuthorizationKey = ref('')
 const developmentPreviewFrameKey = ref(0)
@@ -1461,6 +1470,20 @@ const developmentPreviewCanOpenInBrowser = computed(() => {
 const developmentPreviewOpenButtonLabel = computed(() => {
   return 'Open in browser'
 })
+const developmentPreviewDesiredAccess = computed<'private' | 'public'>(() => (
+  selected.value?.sharing?.preview?.mode === 'public' ? 'public' : 'private'
+))
+const selectedDevelopmentTemplate = computed(() => (
+  developmentTemplates.value.find((template) => template.name === selected.value?.template) ?? null
+))
+const developmentPreviewAccessModes = computed(() => (
+  selectedDevelopmentTemplate.value?.previewAccessModes?.length
+    ? selectedDevelopmentTemplate.value.previewAccessModes
+    : developmentPreviewAccessModesFromAuthorization.value
+))
+const developmentPreviewAccessConfigurable = computed(() => (
+  developmentPreviewAccessModes.value.includes('private') && developmentPreviewAccessModes.value.includes('public')
+))
 const developmentPreviewUnavailableTitle = computed(() => (
   developmentPreviewAuthorizing.value || developmentPreviewReadinessMessage.value
     ? 'Preview is getting ready'
@@ -1583,6 +1606,10 @@ watch(
     void previewConsoleController.disconnect()
     developmentSyncStatus.value = null
     developmentSyncError.value = null
+    developmentPreviewAccessModesFromAuthorization.value = []
+    developmentPreviewAccessConverged.value = true
+    developmentPreviewAccessBusy.value = false
+    developmentPreviewAccessError.value = null
     developmentPreviewAuthorizationError.value = null
     developmentPreviewReadinessMessage.value = null
     developmentPreviewOverrideURL.value = null
@@ -3712,6 +3739,41 @@ async function openDevelopmentPreviewInBrowser() {
   window.open(developmentPreviewOverrideURL.value, '_blank', 'noopener')
 }
 
+async function changeDevelopmentPreviewAccess(mode: string) {
+  const requested = mode === 'public' ? 'public' : 'private'
+  const project = selected.value
+  if (!project || !developmentPreviewAccessConfigurable.value || requested === developmentPreviewDesiredAccess.value || developmentPreviewAccessBusy.value) return
+  if (requested === 'public' && !(await confirmDialog({
+    title: 'Make development preview public?',
+    message: 'Anyone with the URL will be able to access this mutable app and any data it exposes. This does not grant access to the project or workspace.',
+    confirmLabel: 'Make public',
+  }))) return
+
+  developmentPreviewAccessBusy.value = true
+  developmentPreviewAccessError.value = null
+  developmentPreviewAccessConverged.value = false
+  developmentPreviewReadinessMessage.value = 'Updating preview access…'
+  try {
+    const updated = await api.patchProject(props.ctx, project.name, {
+      sharing: {
+        preview: { mode: requested },
+        publishing: project.sharing?.publishing ?? { mode: 'private' },
+      },
+    })
+    if (selected.value?.name !== project.name) return
+    selected.value = updated
+    await authorizeDevelopmentPreview({ force: true })
+  } catch (e) {
+    if (selected.value?.name === project.name) {
+      developmentPreviewAccessConverged.value = true
+      developmentPreviewReadinessMessage.value = null
+      developmentPreviewAccessError.value = e instanceof Error ? e.message : String(e)
+    }
+  } finally {
+    if (selected.value?.name === project.name) developmentPreviewAccessBusy.value = false
+  }
+}
+
 async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
   if (!developmentPreviewComponentMounted) return
   const projectName = selected.value?.name
@@ -3724,6 +3786,8 @@ async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
     developmentPreviewReadinessMessage.value = null
     developmentPreviewOverrideURL.value = null
     developmentPreviewAuthorizationKey.value = ''
+    developmentPreviewAccessModesFromAuthorization.value = []
+    developmentPreviewAccessConverged.value = true
     clearDevelopmentPreviewAuthorizationRetry()
 	resetDevelopmentPreviewDocumentState()
     return
@@ -3747,6 +3811,8 @@ async function authorizeDevelopmentPreviewRequest(projectName: string, key: stri
     const result = await api.authorizeDevelopmentPreview(props.ctx, projectName)
     if (serial !== developmentPreviewAuthorizationSerial || selected.value?.name !== projectName) return
     const authorization = projectDevelopmentPreviewAuthorization(result)
+    developmentPreviewAccessModesFromAuthorization.value = authorization.previewAccessModes
+    developmentPreviewAccessConverged.value = authorization.accessConverged
     if (!authorization.ready) {
       developmentPreviewOverrideURL.value = null
       developmentPreviewAuthorizationKey.value = key
@@ -3808,7 +3874,7 @@ function projectDevelopmentPreviewURL(result: unknown): string {
 }
 
 function projectDevelopmentPreviewAuthorization(result: unknown): ProjectDevelopmentPreviewAuthorization {
-  if (!result || typeof result !== 'object') return { ready: false, previewURL: '', message: '', reason: '' }
+  if (!result || typeof result !== 'object') return { ready: false, previewURL: '', message: '', reason: '', desiredAccess: 'private', observedAccess: '', accessConverged: true, previewAccessModes: [] }
   const previewURL = projectDevelopmentPreviewURL(result)
   const ready = typeof (result as { ready?: unknown }).ready === 'boolean'
     ? Boolean((result as { ready?: unknown }).ready)
@@ -3818,7 +3884,28 @@ function projectDevelopmentPreviewAuthorization(result: unknown): ProjectDevelop
     previewURL,
     message: projectDevelopmentPreviewString(result, 'message'),
     reason: projectDevelopmentPreviewString(result, 'reason'),
+    desiredAccess: projectDevelopmentPreviewAccess(result, 'desiredAccess') || 'private',
+    observedAccess: projectDevelopmentPreviewAccess(result, 'observedAccess'),
+    accessConverged: typeof (result as { accessConverged?: unknown }).accessConverged === 'boolean'
+      ? Boolean((result as { accessConverged?: unknown }).accessConverged)
+      : true,
+    previewAccessModes: projectDevelopmentPreviewAccessModes(result),
   }
+}
+
+function projectDevelopmentPreviewAccess(result: unknown, key: 'desiredAccess' | 'observedAccess'): 'private' | 'public' | '' {
+  if (!result || typeof result !== 'object') return ''
+  const value = (result as Record<string, unknown>)[key]
+  return value === 'private' || value === 'public' ? value : ''
+}
+
+function projectDevelopmentPreviewAccessModes(result: unknown): Array<'private' | 'public'> {
+  if (!result || typeof result !== 'object') return []
+  const target = (result as { target?: unknown }).target
+  if (!target || typeof target !== 'object') return []
+  const modes = (target as { previewAccessModes?: unknown }).previewAccessModes
+  if (!Array.isArray(modes)) return []
+  return modes.filter((mode): mode is 'private' | 'public' => mode === 'private' || mode === 'public')
 }
 
 function projectBindingPreviewURL(binding: ProjectProviderBinding | null | undefined): string {
@@ -6887,14 +6974,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <p v-if="projectSettingsPaneAnnouncement" class="sr-only" aria-live="polite">
             {{ projectSettingsPaneAnnouncement }}
           </p>
-          <form
+          <div
             v-if="settingsProject && projectSettingsPane === 'project'"
             id="project-settings-pane-project"
             role="tabpanel"
             aria-labelledby="project-settings-tab-project"
-            class="grid gap-3 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3"
-            @submit.prevent="saveProjectSettings"
+            class="grid gap-3"
           >
+          <form class="grid gap-3 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3" @submit.prevent="saveProjectSettings">
             <div>
               <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Project</div>
               <p class="mt-1 text-[12px] text-text-muted">Update the project name and description shown in App Studio.</p>
@@ -6938,6 +7025,44 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </button>
             </div>
           </form>
+          <section
+            v-if="developmentPreviewAccessConfigurable"
+            class="grid gap-3 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3"
+            aria-label="Development preview access settings"
+          >
+            <div class="flex items-start gap-2.5">
+              <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface">
+                <Globe v-if="developmentPreviewDesiredAccess === 'public'" class="h-4 w-4 text-accent" :stroke-width="1.75" />
+                <Lock v-else class="h-4 w-4 text-text-muted" :stroke-width="1.75" />
+              </div>
+              <div class="min-w-0">
+                <h3 class="text-[12px] font-semibold text-text-primary">Development preview access</h3>
+                <p class="mt-0.5 text-[11px] leading-4 text-text-muted">Workspace members can open a private preview. A public preview exposes the running app to anyone with its URL without granting project access.</p>
+              </div>
+            </div>
+            <label class="grid max-w-sm gap-1.5">
+              <span class="text-[12px] font-medium text-text-secondary">Visibility</span>
+              <span class="relative block">
+                <Loader2 v-if="developmentPreviewAccessBusy || !developmentPreviewAccessConverged" class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-text-muted" :stroke-width="1.75" />
+                <Globe v-else-if="developmentPreviewDesiredAccess === 'public'" class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" :stroke-width="1.75" />
+                <Lock v-else class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" :stroke-width="1.75" />
+                <select
+                  :value="developmentPreviewDesiredAccess"
+                  class="h-10 w-full appearance-none rounded-md border border-border-subtle bg-surface py-0 pl-9 pr-9 text-[13px] text-text-primary outline-none transition focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label="Development preview access"
+                  :disabled="developmentPreviewAccessBusy || !developmentPreviewAccessConverged || messageStreaming"
+                  @change="changeDevelopmentPreviewAccess(($event.target as HTMLSelectElement).value)"
+                >
+                  <option value="private">Workspace only</option>
+                  <option value="public">Anyone with link</option>
+                </select>
+                <ChevronRight class="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 rotate-90 text-text-muted" :stroke-width="1.75" />
+              </span>
+            </label>
+            <p v-if="developmentPreviewAccessBusy || !developmentPreviewAccessConverged" class="text-[11px] text-text-muted" role="status" aria-live="polite">Updating access…</p>
+            <p v-if="developmentPreviewAccessError" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">{{ developmentPreviewAccessError }}</p>
+          </section>
+          </div>
 
           <section
             v-else-if="settingsProject && projectSettingsPane === 'production'"

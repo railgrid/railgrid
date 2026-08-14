@@ -41,7 +41,9 @@ test('leaves only primary preview actions visible in the toolbar', async () => {
   assert.match(toolbar, /<PreviewActionsMenu/)
   assert.match(toolbar, /title="Sync"/)
   assert.match(toolbar, /developmentPreviewOpenButtonLabel/)
-  assert.doesNotMatch(toolbar, /<select/)
+  assert.doesNotMatch(toolbar, /aria-label="Development preview access"/)
+  assert.equal((toolbar.match(/<select/g) ?? []).length, 0)
+  assert.doesNotMatch(toolbar, />Switch template</)
 })
 
 test('disables external workspace and target changes while an assistant run is active', async () => {

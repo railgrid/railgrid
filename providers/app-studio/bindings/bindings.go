@@ -40,6 +40,16 @@ const ProjectLabel = "app-studio.faros.sh/project"
 const ActionsFieldPrefix = "farosActions"
 
 const (
+	// PreviewAccessField is the conventional Template input consumed by the
+	// platform access proxy in both development and production instances.
+	PreviewAccessField = "access"
+	// PreviewAccessPrivate requires platform sign-in and workspace/app RBAC.
+	PreviewAccessPrivate = "private"
+	// PreviewAccessPublic serves the application without platform sign-in.
+	PreviewAccessPublic = "public"
+)
+
+const (
 	ActionsExchangeURLField = "farosActionsExchangeURL"
 	ActionsBaseURLField     = "farosActionsBaseURL"
 	ActionsCABundleField    = "farosActionsCABundle"
@@ -155,6 +165,51 @@ func HasActiveProviderActionGrant(p *aiv1alpha1.Project) bool {
 		}
 	}
 	return false
+}
+
+// TemplatePreviewAccessModes returns the platform preview-access modes exposed
+// by a Template's tenant-facing JSON schema. App Studio only owns this input
+// when it is a string enum containing both public and private; internal
+// templates (for example workers) therefore remain untouched.
+func TemplatePreviewAccessModes(templateSchema map[string]any) []string {
+	properties, _ := templateSchema["properties"].(map[string]any)
+	access, _ := properties[PreviewAccessField].(map[string]any)
+	if access["type"] != "string" {
+		return nil
+	}
+	enum, _ := access["enum"].([]any)
+	found := map[string]bool{}
+	for _, candidate := range enum {
+		if value, ok := candidate.(string); ok {
+			found[strings.TrimSpace(value)] = true
+		}
+	}
+	if !found[PreviewAccessPrivate] || !found[PreviewAccessPublic] {
+		return nil
+	}
+	return []string{PreviewAccessPrivate, PreviewAccessPublic}
+}
+
+// NormalizePreviewSharingMode turns legacy/empty preview intent into the safe
+// supported default. Unknown values are returned unchanged so API validation
+// can reject them instead of silently broadening access.
+func NormalizePreviewSharingMode(mode aiv1alpha1.ProjectSharingMode) aiv1alpha1.ProjectSharingMode {
+	switch mode {
+	case aiv1alpha1.ProjectSharingModePublic:
+		return aiv1alpha1.ProjectSharingModePublic
+	case "", aiv1alpha1.ProjectSharingModePrivate, aiv1alpha1.ProjectSharingModeShared:
+		return aiv1alpha1.ProjectSharingModePrivate
+	default:
+		return mode
+	}
+}
+
+// PreviewAccessForMode maps Project policy to the Template input vocabulary.
+func PreviewAccessForMode(mode aiv1alpha1.ProjectSharingMode) string {
+	if NormalizePreviewSharingMode(mode) == aiv1alpha1.ProjectSharingModePublic {
+		return PreviewAccessPublic
+	}
+	return PreviewAccessPrivate
 }
 
 // NewActionsOverlay builds a complete overlay from server-derived identity and

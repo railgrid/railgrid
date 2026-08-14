@@ -293,6 +293,9 @@ func TestPrivateModeLoginFlowAndLocalSession(t *testing.T) {
 	if session.MaxAge != 0 {
 		t.Fatalf("session cookie MaxAge = %d, want browser-session cookie", session.MaxAge)
 	}
+	if session.SameSite != http.SameSiteLaxMode || session.Partitioned {
+		t.Fatalf("top-level session cookie SameSite=%v Partitioned=%t, want Lax and unpartitioned", session.SameSite, session.Partitioned)
+	}
 
 	// Subsequent requests use the local session only: exactly one exchange,
 	// no further hub traffic.
@@ -532,7 +535,7 @@ func TestLongestPrefixRouting(t *testing.T) {
 	api, apiRecord := newUpstream(t, nil)
 	p := newProxy(t, Config{
 		Host: testHost, Mode: ModePublic,
-		Routes: []Route{{Prefix: "/", Target: web.URL}, {Prefix: "/api", Target: api.URL}},
+		Routes: []Route{{Prefix: "/", Target: web.URL}, {Prefix: "/api", Target: api.URL + "/api"}},
 	})
 	if rec := doRequest(p, appRequest("/api/users")); rec.Code != http.StatusOK {
 		t.Fatalf("api route status = %d", rec.Code)
@@ -544,7 +547,7 @@ func TestLongestPrefixRouting(t *testing.T) {
 	webRecord.mu.Lock()
 	defer apiRecord.mu.Unlock()
 	defer webRecord.mu.Unlock()
-	if len(apiRecord.requests) != 1 || apiRecord.requests[0].URL.Path != "/users" {
+	if len(apiRecord.requests) != 1 || apiRecord.requests[0].URL.Path != "/api/users" {
 		t.Fatalf("api upstream saw %+v", apiRecord.requests)
 	}
 	if len(webRecord.requests) != 1 || webRecord.requests[0].URL.Path != "/home" {
@@ -672,6 +675,45 @@ func TestCallbackCompletesOnAFreshProcess(t *testing.T) {
 	}
 	if cookieFromResponse(t, callback, SessionCookieName) == nil {
 		t.Fatal("callback minted no session cookie")
+	}
+}
+
+func TestEmbeddedCallbackUsesPartitionedCookiesOnAFreshProcess(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	hub := newFakeHub("code-1")
+	config := privateConfig(upstream.URL, hub)
+
+	before := newProxy(t, config)
+	startRequest := appRequest("/deep/link?q=1")
+	startRequest.Header.Set("Sec-Fetch-Dest", "iframe")
+	first := doRequest(before, startRequest)
+	if first.Code != http.StatusFound {
+		t.Fatalf("initial embedded request status = %d, want 302", first.Code)
+	}
+	returnCookie := cookieFromResponse(t, first, ReturnCookieName)
+	if returnCookie.SameSite != http.SameSiteNoneMode || !returnCookie.Partitioned {
+		t.Fatalf("embedded return cookie SameSite=%v Partitioned=%t, want None and partitioned", returnCookie.SameSite, returnCookie.Partitioned)
+	}
+	state := mustQuery(t, first.Header().Get("Location"), "state")
+
+	// The callback remains an iframe navigation across the hub redirect. Its
+	// partitioned return cookie must survive even when the gate pod rolls.
+	after := newProxy(t, config)
+	callbackRequest := appRequest(CallbackPath+"?code="+hub.code+"&state="+state, returnCookie)
+	callbackRequest.Header.Set("Sec-Fetch-Dest", "iframe")
+	callback := doRequest(after, callbackRequest)
+	if callback.Code != http.StatusFound {
+		t.Fatalf("embedded callback on fresh process = %d body=%q, want 302", callback.Code, callback.Body.String())
+	}
+	if got := callback.Header().Get("Location"); got != "/deep/link?q=1" {
+		t.Fatalf("post-login redirect = %q, want the original deep link", got)
+	}
+	session := cookieFromResponse(t, callback, SessionCookieName)
+	if session.SameSite != http.SameSiteNoneMode || !session.Partitioned {
+		t.Fatalf("embedded session cookie SameSite=%v Partitioned=%t, want None and partitioned", session.SameSite, session.Partitioned)
+	}
+	if rec := doRequest(after, appRequest("/deep/link?q=1", session)); rec.Code != http.StatusOK {
+		t.Fatalf("embedded session request status = %d, want 200", rec.Code)
 	}
 }
 

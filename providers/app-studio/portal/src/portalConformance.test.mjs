@@ -6,6 +6,7 @@ const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 const productionForm = await readFile(new URL('./ProductionForm.vue', import.meta.url), 'utf8')
 const loadingShell = await readFile(new URL('./ProductionSettingsLoadingShell.vue', import.meta.url), 'utf8')
 const statusBadge = await readFile(new URL('./portalkit/StatusBadge.vue', import.meta.url), 'utf8')
+const styles = await readFile(new URL('./style.css', import.meta.url), 'utf8')
 
 test('uses shared confirmation and status primitives without local duplicates', () => {
   assert.match(app, /import StatusBadge from '\.\/portalkit\/StatusBadge\.vue'/)
@@ -14,6 +15,15 @@ test('uses shared confirmation and status primitives without local duplicates', 
   for (const status of ['loaded', 'loading', 'starting', 'loaded unverified']) {
     assert.match(statusBadge, new RegExp(`case '${status}'`))
   }
+})
+
+test('styles the shared status badge inside the App Studio light DOM', () => {
+  assert.match(statusBadge, /class="status-badge"/)
+  assert.match(styles, /faros-provider-app-studio \.status-badge \{/)
+  assert.match(styles, /faros-provider-app-studio \.status-badge\.tone-success \{/)
+  assert.match(styles, /faros-provider-app-studio \.status-badge-dot-wrap \{/)
+  assert.match(styles, /font-size: 10px;/)
+  assert.match(styles, /border-radius: 3px;/)
 })
 
 test('announces preview recovery failures assertively', () => {

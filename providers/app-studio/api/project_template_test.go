@@ -36,6 +36,12 @@ func applicationTemplateObject() *unstructured.Unstructured {
 		"kind":       "Template",
 		"metadata":   map[string]any{"name": "application"},
 		"spec": map[string]any{
+			"schema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"access": map[string]any{"type": "string", "enum": []any{"public", "private"}},
+				},
+			},
 			"instanceCRD": map[string]any{
 				"group":    "infrastructure.faros.sh",
 				"version":  "v1alpha1",
@@ -164,8 +170,28 @@ func TestProjectTemplateDevBinding(t *testing.T) {
 	if err := json.Unmarshal(binding.Values.Raw, &values); err != nil {
 		t.Fatalf("values: %v", err)
 	}
-	if values["name"] != "shop-dev" || values["farosMode"] != "development" {
-		t.Errorf("values = %v, want name=shop-dev farosMode=development", values)
+	if values["name"] != "shop-dev" || values["farosMode"] != "development" || values["access"] != "private" {
+		t.Errorf("values = %v, want name=shop-dev farosMode=development access=private", values)
+	}
+}
+
+func TestProjectTemplateDevBindingOmitsAccessForInternalTemplate(t *testing.T) {
+	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "jobs"}}
+	info, err := projectTemplateInfoFromUnstructured(applicationTemplateObject())
+	if err != nil {
+		t.Fatal(err)
+	}
+	info.PreviewAccessModes = nil
+	binding, err := projectTemplateDevBindingWithContext(p, info, projectTemplateBindingContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values map[string]any
+	if err := json.Unmarshal(binding.Values.Raw, &values); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := values["access"]; found {
+		t.Fatalf("internal template binding received access: %v", values)
 	}
 }
 
@@ -463,6 +489,9 @@ func TestDevelopmentTemplateViews(t *testing.T) {
 	wantComponents := map[string]string{"frontend": "web", "backend": "api"}
 	if !reflect.DeepEqual(app.Components, wantComponents) {
 		t.Errorf("components = %v, want %v", app.Components, wantComponents)
+	}
+	if got, want := app.PreviewAccessModes, []string{"private", "public"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("preview access modes = %v, want %v", got, want)
 	}
 
 	if got := developmentTemplateViews(nil); got == nil || len(got) != 0 {

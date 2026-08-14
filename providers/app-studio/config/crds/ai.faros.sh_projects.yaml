@@ -257,16 +257,15 @@ spec:
                 properties:
                   preview:
                     description: |-
-                      Preview controls who may access the mutable development preview. The
-                      current implementation enforces private access; shared/public are future
-                      policy intent.
+                      Preview controls who may access the mutable development preview. Private
+                      requires platform sign-in and workspace access; public allows anyone with
+                      the URL. The legacy shared value is normalized to private by App Studio.
                     properties:
                       mode:
-                        description: Mode is the requested visibility for this channel.
-                          Empty means private.
+                        description: Mode is the requested preview visibility. Empty
+                          means private.
                         enum:
                         - private
-                        - shared
                         - public
                         type: string
                     type: object
