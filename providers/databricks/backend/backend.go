@@ -28,6 +28,12 @@ const (
 	statementOnWaitTimeoutCancel    = "CANCEL"
 	statementStatusSucceeded        = "SUCCEEDED"
 	statementHTTPFailureSafeMessage = "databricks statement failed"
+	// Databricks can return a large inline result even when the caller asks for
+	// only a bounded number of rows. Read at most this many bytes before JSON
+	// materialization; the smaller query result contract is enforced after
+	// decoding.
+	maxStatementResponseBytes = 1 << 20
+	maxMetadataResponseBytes  = 64 << 10
 )
 
 type StatementClient struct {
@@ -190,13 +196,30 @@ func (c StatementClient) executeStatement(ctx context.Context, target queryapi.T
 		}
 	}
 	var out statementResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := decodeBoundedJSON(resp.Body, maxStatementResponseBytes, &out); err != nil {
 		return statementResponse{}, fmt.Errorf("decode statement response: %w", err)
 	}
 	if state := strings.ToUpper(strings.TrimSpace(out.Status.State)); state != "" && state != statementStatusSucceeded {
 		return statementResponse{}, statementStateError{state: state, message: out.Status.Error.Message}
 	}
 	return out, nil
+}
+
+// decodeBoundedJSON reads a bounded prefix plus one byte before invoking the
+// JSON decoder. This prevents a large upstream response from being
+// materialized into maps/slices before the provider can reject it.
+func decodeBoundedJSON(body io.Reader, maxBytes int, out any) error {
+	if maxBytes < 1 {
+		return fmt.Errorf("invalid response byte limit")
+	}
+	payload, err := io.ReadAll(io.LimitReader(body, int64(maxBytes)+1))
+	if err != nil {
+		return err
+	}
+	if len(payload) > maxBytes {
+		return fmt.Errorf("response exceeds the %d-byte limit", maxBytes)
+	}
+	return json.Unmarshal(payload, out)
 }
 
 func (c StatementClient) waitTimeout() string {
@@ -279,7 +302,11 @@ func queryResultFromStatement(resp statementResponse, tableRef string) queryapi.
 		columns = append(columns, queryapi.QueryColumn{Name: column.Name, Type: typ})
 	}
 	rows := make([]map[string]any, 0, len(resp.Result.DataArray))
+	truncated := resp.Manifest.Truncated || resp.Result.Truncated
 	for _, values := range resp.Result.DataArray {
+		if len(values) != len(columns) {
+			truncated = true
+		}
 		row := make(map[string]any, len(columns))
 		for i, column := range columns {
 			if i < len(values) {
@@ -293,7 +320,7 @@ func queryResultFromStatement(resp statementResponse, tableRef string) queryapi.
 		TableRef:      tableRef,
 		Columns:       columns,
 		Rows:          rows,
-		Truncated:     resp.Manifest.Truncated || resp.Result.Truncated,
+		Truncated:     truncated,
 	}
 }
 
@@ -306,6 +333,8 @@ type statementHTTPError struct {
 	status     string
 	body       string
 }
+
+func (e statementHTTPError) HTTPStatusCode() int { return e.statusCode }
 
 func (e statementHTTPError) Error() string {
 	return statementHTTPFailureSafeMessage + ": " + e.status

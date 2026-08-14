@@ -73,12 +73,13 @@ import (
 )
 
 const (
-	defaultControlAddr  = ":7070"
-	defaultExecAddr     = ":7071"
-	defaultRuntimeAddr  = "127.0.0.1:7072"
-	defaultExecutorAddr = "127.0.0.1:7073"
-	controlTokenHeader  = "X-Sandbox-Control-Token"
-	agentBinaryName     = "faros-dev-agent"
+	defaultControlAddr      = ":7070"
+	defaultExecAddr         = ":7071"
+	defaultRuntimeAddr      = "127.0.0.1:7072"
+	defaultExecutorAddr     = "127.0.0.1:7073"
+	runtimeOperationTimeout = 5 * time.Minute
+	controlTokenHeader      = "X-Sandbox-Control-Token"
+	agentBinaryName         = "faros-dev-agent"
 
 	previewConsolePluginName = "preview-console-plugin.mjs"
 	previewConsoleJWKSName   = "preview-console-jwks.json"
@@ -216,7 +217,7 @@ func runCoordinator(ctx context.Context, cfg *agentConfig) error {
 		cfg.actionsTokenState = newActionsTokenState(strings.TrimSpace(cfg.ActionsExchangeURL) != "")
 	}
 	mutationMu := &sync.Mutex{}
-	runtime := &httpRuntimeClient{baseURL: cfg.RuntimeURL, client: &http.Client{Timeout: 3 * time.Minute}}
+	runtime := &httpRuntimeClient{baseURL: cfg.RuntimeURL, client: &http.Client{Timeout: runtimeOperationTimeout}}
 	control := newCoordinatorServer(cfg, runtime, mutationMu)
 	execCoordinator, err := newExecCoordinator(cfg.WorkDir, cfg.StateDir, cfg.ControlToken,
 		&httpExecDispatcher{url: strings.TrimRight(cfg.ExecutorURL, "/") + "/internal/exec", client: &http.Client{}}, mutationMu)
@@ -535,6 +536,25 @@ func matchReloadRules(rules []reloadRule, changed []string) []string {
 	return commands
 }
 
+// mergeReloadCommands preserves declaration order while carrying unfinished
+// commands across an authoritative retry. A failed dependency install must not
+// become an idempotent no-op merely because the source bytes already landed.
+func mergeReloadCommands(groups ...[]string) []string {
+	var commands []string
+	seen := map[string]bool{}
+	for _, group := range groups {
+		for _, raw := range group {
+			command := strings.TrimSpace(raw)
+			if command == "" || seen[command] {
+				continue
+			}
+			seen[command] = true
+			commands = append(commands, command)
+		}
+	}
+	return commands
+}
+
 func matchAny(pattern string, changed []string) bool {
 	for _, p := range changed {
 		if ok, _ := path.Match(pattern, p); ok {
@@ -579,9 +599,10 @@ type syncResponse struct {
 // files (node_modules, build output, logs) are intentionally absent and are
 // never deleted by authoritative sync.
 type workspaceManifest struct {
-	SourceRevision uint64   `json:"sourceRevision"`
-	SourceDigest   string   `json:"sourceDigest"`
-	Files          []string `json:"files"`
+	SourceRevision        uint64   `json:"sourceRevision"`
+	SourceDigest          string   `json:"sourceDigest"`
+	Files                 []string `json:"files"`
+	PendingReloadCommands []string `json:"pendingReloadCommands,omitempty"`
 }
 
 type envRequest struct {
@@ -737,7 +758,7 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			case req.SourceRevision == previous.SourceRevision && normalizeSourceDigest(previous.SourceDigest) != gotDigest:
 				http.Error(w, "workspace sync revision was already applied with a different digest", http.StatusConflict)
 				return
-			case req.SourceRevision == previous.SourceRevision && verifyWorkspaceManifest(root, previous) == nil:
+			case req.SourceRevision == previous.SourceRevision && len(previous.PendingReloadCommands) == 0 && verifyWorkspaceManifest(root, previous) == nil:
 				writeJSON(w, http.StatusOK, syncResponse{Phase: "Synced", SourceRevision: previous.SourceRevision, SourceDigest: previous.SourceDigest})
 				return
 			}
@@ -801,16 +822,22 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			appliedManifest.Files = append(appliedManifest.Files, clean)
 		}
 		slices.Sort(appliedManifest.Files)
-		if err := writeWorkspaceManifest(root, appliedManifest); err != nil {
-			http.Error(w, "write workspace manifest: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
 	}
 
 	// The Template-declared reload procedure: run matching rule commands
 	// first (dependency installs), then restart per policy/strategy.
 	touched := append(append([]string{}, changed...), deleted...)
 	ruleCommands := matchReloadRules(s.config.ReloadRules, touched)
+	if authoritative && found {
+		ruleCommands = mergeReloadCommands(previous.PendingReloadCommands, ruleCommands)
+	}
+	if authoritative {
+		appliedManifest.PendingReloadCommands = append([]string(nil), ruleCommands...)
+		if err := writeWorkspaceManifest(root, appliedManifest); err != nil {
+			http.Error(w, "write workspace manifest: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	restartNeeded, err := s.shouldRestartAfterSync(r.Context(), req.Restart, len(ruleCommands) > 0, len(s.config.ReloadRules) > 0, touched)
 	if err != nil {
 		http.Error(w, "runtime status: "+err.Error(), http.StatusBadGateway)
@@ -849,6 +876,13 @@ func (s *agentServer) handleSync(w http.ResponseWriter, r *http.Request) {
 			resp.ReloadError = reloadErr.Error()
 			writeJSON(w, http.StatusOK, resp)
 			return
+		}
+		if authoritative {
+			appliedManifest.PendingReloadCommands = nil
+			if err := writeWorkspaceManifest(root, appliedManifest); err != nil {
+				http.Error(w, "clear completed workspace reload: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 	}
 	if restartNeeded {
@@ -949,6 +983,16 @@ func readWorkspaceManifest(root *os.Root) (workspaceManifest, bool, error) {
 		}
 		seen[clean] = struct{}{}
 		manifest.Files[i] = clean
+	}
+	if len(manifest.PendingReloadCommands) > 32 {
+		return workspaceManifest{}, false, errors.New("manifest has too many pending reload commands")
+	}
+	for i, rawCommand := range manifest.PendingReloadCommands {
+		command := strings.TrimSpace(rawCommand)
+		if command == "" || len(command) > 4096 {
+			return workspaceManifest{}, false, fmt.Errorf("manifest pendingReloadCommands[%d] is empty or too large", i)
+		}
+		manifest.PendingReloadCommands[i] = command
 	}
 	slices.Sort(manifest.Files)
 	return manifest, true, nil

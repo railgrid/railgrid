@@ -1,6 +1,6 @@
 # Publishing providers to standalone mirrors
 
-**Last updated:** 2026-06-11
+**Last updated:** 2026-08-14
 
 faros is a monorepo, but each provider under `providers/` is also published to
 its own standalone, **read-only** GitHub repository. This lets external
@@ -33,11 +33,18 @@ fast-forward.
 | `providers/infrastructure`  | `faroshq/provider-infrastructure`  | `INFRA_DEPLOY_KEY`      | [`split-infrastructure.yaml`](../.github/workflows/split-infrastructure.yaml) |
 | `providers/app-studio`      | `faroshq/provider-app-studio`      | `APP_STUDIO_DEPLOY_KEY` | [`split-app-studio.yaml`](../.github/workflows/split-app-studio.yaml) |
 | `providers/kuery`           | `faroshq/provider-kuery`           | `KUERY_DEPLOY_KEY`      | [`split-kuery.yaml`](../.github/workflows/split-kuery.yaml) |
+| `providers/databricks`      | `faroshq/provider-databricks`      | `DATABRICKS_DEPLOY_KEY` | [`split-databricks.yaml`](../.github/workflows/split-databricks.yaml) |
 
-Each provider has its own workflow (identical except for the four `env:` values
-and the `secrets.*` reference) and its own deploy key — a GitHub deploy key is
+Each provider has its own workflow (identical except for the provider prefix,
+mirror target, trigger paths, and `secrets.*` reference) and its own deploy key — a GitHub deploy key is
 scoped to a single repo, so the keys **cannot** be shared across mirrors. See
 [Adding another provider](#adding-another-provider) for the generic pattern.
+
+Databricks follows the same source-only split. Its provider release tag,
+`providers/databricks/vX.Y.Z`, is consumed by `provider-release.yaml`, which
+passes that version into the image build and Helm `appVersion`. The deployed
+chart injects the same value into `FAROS_PROVIDER_VERSION`, so the Databricks
+heartbeat, image, and CatalogEntry all identify one release version.
 
 ## When it runs
 
@@ -45,17 +52,12 @@ The split workflow triggers on:
 
 - **push to `main`** — mirrors the branch (force-pushed, so the mirror always
   reflects the monorepo even if history is rewritten).
-- **per-provider release tags** — `providers/<name>/vX.Y.Z`. The path prefix is
-  stripped on the way out, so the mirror receives a plain `vX.Y.Z` tag (which
-  records the released source on the mirror). Pushed non-force, so re-tagging
-  fails loudly since tags are immutable. Note the mirror tag no longer builds
-  anything — provider images and charts are published from the monorepo (a
-  repo-wide `vX.Y.Z` tag drives those builds via `images.yaml` /
-  `helm-images.yaml`).
 - **pull requests** touching the provider's subtree (or its workflow file) —
   these only *validate* (install splitsh-lite + compute the split); the
   deploy-key and push steps are gated to non-PR events, so a PR never writes to
-  a mirror.
+  a mirror. Provider release tags are handled by the monorepo's
+  `provider-release.yaml`; the source mirror remains branch-only so it cannot
+  trigger a second image or chart build.
 - **`workflow_dispatch`** — manual run, used for the initial seed or a manual
   re-sync.
 
@@ -171,26 +173,28 @@ Each split workflow (e.g. [`split-code.yaml`](../.github/workflows/split-code.ya
    on **every** event (PRs included) so it validates the install + split
    end-to-end without publishing. `--origin` takes a git ref, and `HEAD`
    resolves cleanly for both branch pushes and PR merge commits.
-5. On non-PR events, pushes that sha to the mirror — to `refs/heads/main` for
-   branch pushes (force), or `refs/tags/vX.Y.Z` for tag pushes (non-force,
-   prefix stripped from `providers/<name>/vX.Y.Z`).
+5. On non-PR events, pushes that sha to the mirror's `refs/heads/main` (force).
+   Release tags are intentionally not mirrored; `provider-release.yaml` owns
+   the versioned image and chart publication from the monorepo tag.
 
 ## Adding another provider
 
-All three current providers (`quickstart`, `code`, `infrastructure`) are wired
-up. To publish a new one, copy any existing split workflow (they are identical
-apart from four `env:` values, the trigger paths/tags, the concurrency group,
-and the `secrets.*` reference) and change:
+All current source-published providers in the table above are wired up. To
+publish a new one, copy any existing split workflow (they are identical apart
+from the provider prefix, mirror target, trigger paths, concurrency group, and
+the `secrets.*` reference) and change:
 
 ```yaml
 name: Split <name> provider
 on:
   push:
-    tags: ['providers/<name>/v*']
+    branches: [main]
   pull_request:
+    branches: [main]
     paths:
       - 'providers/<name>/**'
       - '.github/workflows/split-<name>.yaml'
+  workflow_dispatch:
 concurrency:
   group: split-<name>-${{ github.ref }}
 env:
@@ -218,6 +222,9 @@ path rather than a monorepo-nested path:
 | `providers/quickstart`     | `github.com/faroshq/provider-quickstart`      |
 | `providers/code`           | `github.com/faroshq/provider-code`            |
 | `providers/infrastructure` | `github.com/faroshq/provider-infrastructure`  |
+| `providers/app-studio`     | `github.com/faroshq/provider-app-studio`      |
+| `providers/kuery`          | `github.com/faroshq/provider-kuery`           |
+| `providers/databricks`     | `github.com/faroshq/provider-databricks`     |
 
 This is transparent to the monorepo because `go.work` references providers by
 directory, not by module path, and no other monorepo module imports these

@@ -19,6 +19,18 @@ type TableResolver interface {
 	GetTable(ctx context.Context, name string) (TableRef, bool, error)
 }
 
+// MaxTableListItems bounds the number of tenant Table items materialized by
+// list_tables before its final wire-byte budget is applied. The extra item is
+// fetched by bounded resolvers only to preserve an explicit truncation signal.
+const MaxTableListItems = 256
+
+// BoundedTableResolver is implemented by resolvers backed by a server-side
+// list API. It lets MCP request at most MaxTableListItems+1 KCP items, rather
+// than materializing an unbounded tenant list before serializing it.
+type BoundedTableResolver interface {
+	ListTablesBounded(ctx context.Context, limit int) (map[string]TableRef, bool, error)
+}
+
 type StaticTableResolver map[string]TableRef
 
 func (r StaticTableResolver) ListTables(context.Context) (map[string]TableRef, error) {

@@ -45,6 +45,46 @@ of enabled, and each project may disable or re-enable it.
   control-plane status. The optional MCP tool is only a presentation adapter
   over that same executor.
 
+## Runtime lifecycle and deployment
+
+The provider exposes separate process and dependency probes:
+
+- `/healthz` is liveness. It answers while the HTTP process can serve, even
+  while the controller is starting or recovering.
+- `/readyz` is readiness. In the chart's default
+  `DATABRICKS_CONTROLLER_MODE=required` mode it stays `503` until the
+  multicluster controller manager has started and its dependency prerequisites
+  are available. A manager exit clears readiness; startup retries use
+  `DATABRICKS_CONTROLLER_RETRY_INTERVAL` (default `15s`).
+- Heartbeats are eligible only while the required controller is ready. This
+  prevents a provider that can answer HTTP but cannot reconcile tenant objects
+  from being advertised as healthy. `DATABRICKS_CONTROLLER_MODE=rest-only`
+  explicitly disables controller startup for local REST/UI work; readiness and
+  heartbeat then describe that intentional mode.
+
+The Helm chart makes bootstrap ownership explicit. The default
+`bootstrap.mode=init` mounts the provider-workspace kubeconfig and runs the
+image's `init` command before serving; it also installs the rendered
+`CatalogEntry`. Set `bootstrap.mode=external` (or the compatibility switch
+`bootstrap.enabled=false`) and `catalogEntry.enabled=false` only when an
+external operator/GitOps process has already installed the APIExport, endpoint
+slice, schemas, and CatalogEntry. The kubeconfig Secret is required in both
+modes. The chart probe and CatalogEntry health path are both `/readyz`.
+
+Chart configuration exposes the MCP and host policy explicitly:
+
+- `mcp.enabled` controls the optional `/mcp` and `/mcp/sse` adapters.
+- `mcp.disableLocalhostProtection` is a local-development-only escape hatch
+  and defaults to `false`.
+- `allowedHostSuffixes` renders `DATABRICKS_ALLOWED_HOST_SUFFIXES`; leave it
+  empty for the standard Databricks suffix allowlist and add private suffixes
+  only deliberately.
+
+The release tag is the single provider version: the Makefile and Dockerfile
+inject it into `main.buildVersion`, the chart uses it as `appVersion`, and the
+chart passes it as `FAROS_PROVIDER_VERSION` so the heartbeat reports the same
+release value.
+
 ## Creating a connection
 
 A `Connection` needs two values, both taken from the Databricks workspace you
@@ -82,11 +122,33 @@ connection; imported tables use it to run `query_table/v1`.
 The provider validates the handle against the Databricks warehouses API and
 stamps the warehouse's `Ready` condition with its state.
 
-## Current import path
+## Importing warehouses and tables
 
-Users can import a table from the provider portal by creating a Connection, a
-Warehouse, and a Table handle. A user or admin can also create those tenant
-resources directly:
+`New warehouse` and `New table` are split actions. The import wizard proceeds
+through **Source**, **Browse**, **Review**, and **Results**. On Source, the user
+selects a Connection; table imports also select a registered query Warehouse on
+that same Connection. The selected Connection is not a node in the Browse
+tree. The adjacent menu keeps **Enter manually** available for exact-ID,
+advanced, and recovery workflows.
+
+Browse is a lazy, paginated tree. Warehouse imports show warehouses as leaf
+nodes. Table imports use the hierarchy **Catalog → Schema → Table**; each root
+or branch is expanded and paged independently. Unsupported and already
+registered resources are disabled. Selecting a branch resolves all eligible
+descendant leaves in a private snapshot before changing the visible selection;
+it succeeds only when the complete branch fits within the remaining slots of
+the 50-resource batch limit and fails closed on overflow or incomplete
+discovery, without partial selection.
+The user then reviews generated Faros resource names before the single bounded
+registration request is sent after final confirmation.
+
+Discovery returns metadata only; credentials remain in the tenant Secret and
+row data is never fetched. Registration acts as the caller, reports a result
+for every selected item, treats an exact existing spec as idempotent, and never
+overwrites a conflicting resource. Table registration additionally proves the
+selected Warehouse is visible to the caller and belongs to the same Connection
+before creating any Table. A user or admin can also create the tenant resources
+directly:
 
 ```yaml
 apiVersion: v1
@@ -187,8 +249,6 @@ allowlisting by default.
 
 ## Gaps
 
-- Catalog/schema discovery is not implemented yet; the first UX imports a known
-  table by reference.
 - Generated apps must call `query_table/v1` through the hub Provider Actions
   route and the server-only SDK; do not hardcode provider backend URLs or
   Databricks credentials into App Studio-generated source. MCP is optional and

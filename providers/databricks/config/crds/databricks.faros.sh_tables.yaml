@@ -61,18 +61,26 @@ spec:
           spec:
             properties:
               catalog:
+                maxLength: 255
                 minLength: 1
+                pattern: ^[^\p{Cc}]+$
                 type: string
               connectionRef:
+                maxLength: 253
                 minLength: 1
                 type: string
               schema:
+                maxLength: 255
                 minLength: 1
+                pattern: ^[^\p{Cc}]+$
                 type: string
               table:
+                maxLength: 255
                 minLength: 1
+                pattern: ^[^\p{Cc}]+$
                 type: string
               warehouseRef:
+                maxLength: 253
                 minLength: 1
                 type: string
             required:
@@ -90,19 +98,25 @@ spec:
                 items:
                   properties:
                     comment:
+                      maxLength: 4096
                       type: string
                     name:
+                      maxLength: 255
                       minLength: 1
+                      pattern: ^[^\p{Cc}]+$
                       type: string
                     nullable:
                       type: boolean
                     type:
+                      maxLength: 1024
                       minLength: 1
+                      pattern: ^[^\p{Cc}]+$
                       type: string
                   required:
                   - name
                   - type
                   type: object
+                maxItems: 64
                 type: array
                 x-kubernetes-list-map-keys:
                 - name

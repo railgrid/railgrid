@@ -25,16 +25,20 @@ import (
 const testActionPath = "/actions/clusters/cluster-a/tables/taxi-trips/query_table/v1"
 
 type fakeExecutor struct {
-	ref   ResourceRef
-	input QueryInput
-	ctx   context.Context
-	err   error
+	ref    ResourceRef
+	input  QueryInput
+	ctx    context.Context
+	err    error
+	result queryapi.QueryTableResult
 }
 
 func (f *fakeExecutor) QueryTable(ctx context.Context, ref ResourceRef, input QueryInput) (queryapi.QueryTableResult, error) {
 	f.ctx, f.ref, f.input = ctx, ref, input
 	if f.err != nil {
 		return queryapi.QueryTableResult{}, f.err
+	}
+	if f.result.Columns != nil || f.result.Rows != nil {
+		return f.result, nil
 	}
 	return queryapi.QueryTableResult{
 		ActionVersion: queryapi.ActionVersionV1,
@@ -308,6 +312,65 @@ func TestQueryTableActionEnforcesDeclaredInputLimit(t *testing.T) {
 	h.ServeHTTP(rw, r)
 	if rw.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for over-limit input", rw.Code)
+	}
+}
+
+func TestQueryTableActionUsesSharedInputColumnCap(t *testing.T) {
+	h := NewHandler(Deps{QueryExecutorForRoute: func(*http.Request, Route) QueryExecutor {
+		t.Fatal("executor should not run for over-limit columns")
+		return nil
+	}})
+	columns := make([]string, queryapi.MaxQueryColumns+1)
+	for i := range columns {
+		columns[i] = "column_" + string(rune('a'+i%26)) + string(rune('0'+i/26))
+	}
+	payload, err := json.Marshal(map[string]any{"input": map[string]any{"columns": columns}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, testActionPath, strings.NewReader(string(payload)))
+	r.Header.Set("Authorization", "Bearer caller")
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, r)
+	if rw.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rw.Code, rw.Body.String())
+	}
+}
+
+func TestQueryTableActionBoundsFinalEnvelope(t *testing.T) {
+	rows := make([]map[string]any, queryapi.MaxQueryRows)
+	for i := range rows {
+		rows[i] = map[string]any{"value": strings.Repeat("x", 2_000), "extra": "removed"}
+	}
+	executor := &fakeExecutor{result: queryapi.QueryTableResult{
+		ActionVersion: queryapi.ActionVersionV1,
+		TableRef:      "wrong",
+		Columns:       []queryapi.QueryColumn{{Name: "value"}},
+		Rows:          rows,
+	}}
+	h := NewHandler(routeDeps(t, executor))
+	r := httptest.NewRequest(http.MethodPost, testActionPath, strings.NewReader(`{"input":{"limit":100}}`))
+	r.Header.Set("Authorization", "Bearer caller")
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, r)
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rw.Code, rw.Body.String())
+	}
+	if rw.Body.Len() > queryapi.MaxQueryBytes {
+		t.Fatalf("final envelope bytes = %d, want <= %d", rw.Body.Len(), queryapi.MaxQueryBytes)
+	}
+	env := decodeEnvelope(t, rw.Body.Bytes())
+	var result queryapi.QueryTableResult
+	if err := json.Unmarshal(env.Result, &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if !result.Truncated || len(result.Rows) >= len(rows) {
+		t.Fatalf("result rows=%d truncated=%v, want trimmed result", len(result.Rows), result.Truncated)
+	}
+	for _, row := range result.Rows {
+		if len(row) != len(result.Columns) {
+			t.Fatalf("row=%#v columns=%#v are inconsistent", row, result.Columns)
+		}
 	}
 }
 

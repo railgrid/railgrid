@@ -57,10 +57,13 @@ spec:
           spec:
             properties:
               connectionRef:
+                maxLength: 253
                 minLength: 1
                 type: string
               warehouseID:
+                maxLength: 255
                 minLength: 1
+                pattern: ^[^\p{Cc}]+$
                 type: string
             required:
             - connectionRef

@@ -1,3 +1,13 @@
+{{- $bootstrapMode := include "databricks.bootstrapMode" . | trim -}}
+{{- if and (ne $bootstrapMode "init") (ne $bootstrapMode "external") }}
+{{- fail "bootstrap.mode must be init or external" }}
+{{- end }}
+{{- if not .Values.providerKubeconfig.secretName }}
+{{- fail "providerKubeconfig.secretName is required: init and serve need the provider-workspace kubeconfig Secret" }}
+{{- end }}
+{{- if and (eq $bootstrapMode "external") .Values.catalogEntry.enabled }}
+{{- fail "catalogEntry.enabled must be false when bootstrap.mode=external; install the CatalogEntry through the external bootstrap owner" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,6 +36,7 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if eq $bootstrapMode "init" }}
       initContainers:
         - name: init
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
@@ -53,6 +64,7 @@ spec:
               mountPath: /etc/faros/catalogentry
               readOnly: true
             {{- end }}
+      {{- end }}
       containers:
         - name: provider
           image: "{{ .Values.image.repository }}:{{ default .Chart.AppVersion .Values.image.tag }}"
@@ -74,6 +86,20 @@ spec:
               value: {{ .Values.hub.url | quote }}
             - name: FAROS_PROVIDER_NAME
               value: databricks
+            - name: FAROS_PROVIDER_VERSION
+              value: {{ .Chart.AppVersion | quote }}
+            - name: DATABRICKS_CONTROLLER_MODE
+              value: {{ .Values.controller.mode | quote }}
+            - name: DATABRICKS_CONTROLLER_RETRY_INTERVAL
+              value: {{ .Values.controller.retryInterval | quote }}
+            - name: DATABRICKS_MCP_ENABLED
+              value: {{ .Values.mcp.enabled | quote }}
+            - name: DATABRICKS_MCP_DISABLE_LOCALHOST_PROTECTION
+              value: {{ .Values.mcp.disableLocalhostProtection | quote }}
+            {{- if .Values.allowedHostSuffixes }}
+            - name: DATABRICKS_ALLOWED_HOST_SUFFIXES
+              value: {{ join "," .Values.allowedHostSuffixes | quote }}
+            {{- end }}
             - name: FAROS_HUB_INSECURE
               value: {{ .Values.hub.insecure | quote }}
             {{- if .Values.hub.tokenSecretRef.name }}
@@ -89,7 +115,7 @@ spec:
               port: http
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
@@ -104,7 +130,7 @@ spec:
             items:
               - key: kubeconfig
                 path: faros-provider-kubeconfig
-        {{- if .Values.catalogEntry.enabled }}
+        {{- if and (eq $bootstrapMode "init") .Values.catalogEntry.enabled }}
         - name: catalogentry
           configMap:
             name: {{ include "databricks.fullname" . }}-catalogentry

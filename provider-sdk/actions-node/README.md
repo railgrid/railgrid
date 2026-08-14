@@ -99,3 +99,21 @@ and `result`). A provider failure throws `ProviderActionError` with stable
 `code`, `message`, `retryable`, request and binding metadata. Transport and
 configuration failures throw `ActionsClientError` with a machine-readable
 `code` such as `timeout`, `aborted`, `network_error`, or `invalid_response`.
+
+## Release
+
+The GitHub Actions workflow `actions-node-release.yaml` publishes this package
+from tags named `actions-node/v<version>`. The tag version must exactly match
+`package.json`. The npm package must configure that workflow as a trusted
+publisher; no long-lived npm token is stored in the repository.
+
+The first public version is the bootstrap exception: npm cannot attach a
+trusted publisher until the package exists. A maintainer must authenticate with
+npm and publish that first version from the reviewed package directory. Then
+configure `faroshq/faros` and `actions-node-release.yaml` as the package's npm
+trusted publisher before creating subsequent release tags.
+
+Before publishing, the workflow runs the unit suite and installs the packed
+artifact into a clean consumer under the public `@faros/actions-node` alias.
+After publishing, it repeats that alias install from the npm registry so a
+successful release proves the exact generated-app dependency contract.

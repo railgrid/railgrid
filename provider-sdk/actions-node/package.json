@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "description": "Server-side App Studio integration gateway client for generated apps",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/faroshq/faros.git",
+    "directory": "provider-sdk/actions-node"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -23,7 +28,8 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "test": "node test.mjs"
+    "test": "node test.mjs",
+    "test:install": "node install-test.mjs"
   },
   "engines": {
     "node": ">=20"

@@ -32,6 +32,7 @@ import (
 
 	"github.com/faroshq/provider-databricks/actions"
 	"github.com/faroshq/provider-databricks/backend"
+	"github.com/faroshq/provider-databricks/importapi"
 	"github.com/faroshq/provider-databricks/mcpserver"
 	"github.com/faroshq/provider-databricks/queryapi"
 	"github.com/faroshq/provider-databricks/tenant"
@@ -82,20 +83,25 @@ func runServe() {
 	}
 	kcpConfig, kcpErr := loadControllerConfig()
 	if kcpErr != nil {
-		log.Printf("kcp config unavailable (%v); tenant Table lookup and controllers disabled", kcpErr)
+		log.Printf("kcp config unavailable (%v); tenant Table lookup is unavailable until controller startup succeeds", kcpErr)
 	}
 	tenantFactory := tenant.NewClientFactory(kcpConfig)
-	controllerManager, controllerErr := startControllerManager(ctx, kcpConfig, validator)
-	if controllerErr != nil {
-		if errors.Is(controllerErr, errControllerDisabled) {
-			log.Printf("controller manager: disabled (no kubeconfig); tenant Table lookup and controllers disabled")
-		} else {
-			log.Printf("controller manager: NOT started: %v", controllerErr)
-		}
-	} else {
-		tenantFactory.SetAuthority(controllerManager)
+	if tenantFactory == nil {
+		// Keep one route-bound factory alive while the controller lifecycle
+		// retries. A later kubeconfig recovery can then install caller-token
+		// client configuration without leaving discovery/actions permanently
+		// bound to the initial failure.
+		tenantFactory = tenant.NewDeferredClientFactory()
 	}
-	mux, err := newServeMux(tables, devStaticTables, tenantFactory, statementClient)
+	controllerHealth := newControllerHealth(controllerModeFromEnv() == controllerModeRequired)
+	controllerAuthority := &managerAuthority{}
+	if tenantFactory != nil {
+		// Keep the authority wrapper installed for the provider lifetime. The
+		// controller retry loop swaps live managers into it and clears them after
+		// an exit, so tenant actions fail closed during recovery.
+		tenantFactory.SetAuthority(controllerAuthority)
+	}
+	mux, err := newServeMuxWithHealth(tables, devStaticTables, tenantFactory, controllerHealth, statementClient)
 	if err != nil {
 		log.Fatalf("server mux: %v", err)
 	}
@@ -112,7 +118,23 @@ func runServe() {
 			log.Fatalf("server: %v", err)
 		}
 	}()
-	go runHeartbeat(ctx)
+	go runHeartbeat(ctx, controllerHealth)
+	if controllerHealth.snapshot().Required {
+		go runControllerManager(
+			ctx,
+			controllerHealth,
+			loadControllerConfig,
+			func(startCtx context.Context, config *rest.Config) error {
+				if err := tenantFactory.SetBaseConfig(config); err != nil {
+					return fmt.Errorf("tenant client configuration: %w", err)
+				}
+				return startControllerManagerAttempt(startCtx, config, validator, controllerHealth, controllerAuthority)
+			},
+			controllerRetryIntervalFromEnv(),
+		)
+	} else {
+		log.Printf("controller manager: disabled (explicit REST-only mode)")
+	}
 
 	<-ctx.Done()
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -138,7 +160,25 @@ func mcpEnabled() bool {
 	return err == nil && enabled
 }
 
+func mcpDisableLocalhostProtection() bool {
+	return parseBoolEnv("DATABRICKS_MCP_DISABLE_LOCALHOST_PROTECTION", false)
+}
+
 func newServeMux(tables map[string]queryapi.TableRef, devStaticTables bool, tenantFactory *tenant.ClientFactory, actionExecutors ...backend.QueryExecutor) (*http.ServeMux, error) {
+	return newServeMuxWithHealth(tables, devStaticTables, tenantFactory, nil, actionExecutors...)
+}
+
+func newServeMuxWithHealth(tables map[string]queryapi.TableRef, devStaticTables bool, tenantFactory *tenant.ClientFactory, health *controllerHealth, actionExecutors ...backend.QueryExecutor) (*http.ServeMux, error) {
+	if health != nil && !devStaticTables {
+		health.setDependencyReady(func() bool {
+			// Explicit REST-only mode intentionally has no provider authority
+			// manager and retains the historical liveness/readiness contract.
+			if !health.snapshot().Required {
+				return true
+			}
+			return tenantFactory != nil && tenantFactory.Configured() && tenantFactory.Ready()
+		})
+	}
 	var actionExecutor backend.QueryExecutor
 	if len(actionExecutors) > 0 {
 		actionExecutor = actionExecutors[0]
@@ -172,6 +212,35 @@ func newServeMux(tables map[string]queryapi.TableRef, devStaticTables bool, tena
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
+		snapshot := controllerHealthSnapshot{State: controllerStateRESTOnly}
+		ready := true
+		if health != nil {
+			snapshot = health.snapshot()
+			ready = health.ready()
+		} else if !devStaticTables {
+			ready = tenantFactory != nil && tenantFactory.Configured()
+		}
+		if !ready {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			errorMessage := snapshot.Error
+			if errorMessage == "" && !devStaticTables && (tenantFactory == nil || !tenantFactory.Configured()) {
+				errorMessage = "tenant client unavailable (provider kubeconfig not set)"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"status":     "not_ready",
+				"controller": string(snapshot.State),
+				"error":      errorMessage,
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"status":     "ready",
+			"controller": string(snapshot.State),
+		})
+	})
 	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		resp := statusResponse{
 			Message:    "databricks provider ready",
@@ -188,11 +257,15 @@ func newServeMux(tables map[string]queryapi.TableRef, devStaticTables bool, tena
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	})
+	importHandler := tenant.NewImportHandler(tenantFactory, importapi.NewClient(nil))
+	mux.Handle("/api/v1/discovery/", importHandler)
+	mux.Handle("/api/v1/registrations", importHandler)
 	if mcpEnabled() {
 		mcpHandler := mcpserver.NewHandler(mcpserver.Deps{
-			Tables:                    tables,
-			ResolverFromRequest:       resolverFromRequest,
-			ActionExecutorFromRequest: actionExecutorFromRequest,
+			Tables:                        tables,
+			ResolverFromRequest:           resolverFromRequest,
+			ActionExecutorFromRequest:     actionExecutorFromRequest,
+			DisableLocalhostMCPProtection: mcpDisableLocalhostProtection(),
 		})
 		mux.Handle("/mcp", mcpHandler)
 		mux.Handle("/mcp/sse", mcpHandler)
@@ -282,12 +355,25 @@ func logMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-const (
-	heartbeatVersion  = "0.1.0"
-	heartbeatInterval = 30 * time.Second
-)
+const heartbeatInterval = 30 * time.Second
 
-func runHeartbeat(ctx context.Context) {
+// buildVersion is injected by the Makefile and provider-release workflow. A
+// chart may also set FAROS_PROVIDER_VERSION so a separately packaged binary
+// reports the same release version as its CatalogEntry/image.
+var buildVersion = "dev"
+
+func providerVersion() string {
+	if configured := strings.TrimSpace(os.Getenv("FAROS_PROVIDER_VERSION")); configured != "" {
+		return configured
+	}
+	return buildVersion
+}
+
+func heartbeatCanSend(health *controllerHealth) bool {
+	return health == nil || health.ready()
+}
+
+func runHeartbeat(ctx context.Context, healthStates ...*controllerHealth) {
 	hub := os.Getenv("FAROS_HUB_URL")
 	token := os.Getenv("FAROS_HUB_TOKEN")
 	name := envOr("FAROS_PROVIDER_NAME", "databricks")
@@ -296,7 +382,10 @@ func runHeartbeat(ctx context.Context) {
 		return
 	}
 	url := strings.TrimRight(hub, "/") + "/api/providers/" + name + "/heartbeat"
-	body, _ := json.Marshal(map[string]string{"version": heartbeatVersion, "status": "healthy"})
+	var health *controllerHealth
+	if len(healthStates) > 0 {
+		health = healthStates[0]
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	if os.Getenv("FAROS_HUB_INSECURE") == "true" {
 		client.Transport = &http.Transport{
@@ -304,6 +393,14 @@ func runHeartbeat(ctx context.Context) {
 		}
 	}
 	send := func() {
+		if !heartbeatCanSend(health) {
+			return
+		}
+		body, err := json.Marshal(map[string]string{"version": providerVersion(), "status": "healthy"})
+		if err != nil {
+			log.Printf("heartbeat encode: %v", err)
+			return
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
 			log.Printf("heartbeat build req: %v", err)
@@ -318,7 +415,11 @@ func runHeartbeat(ctx context.Context) {
 			log.Printf("heartbeat send: %v", err)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				log.Printf("heartbeat response close: %v", err)
+			}
+		}()
 		if resp.StatusCode >= 300 {
 			log.Printf("heartbeat %s: %d %s", url, resp.StatusCode, resp.Status)
 		}

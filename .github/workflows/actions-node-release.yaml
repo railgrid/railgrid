@@ -1,0 +1,63 @@
+name: Actions Node SDK release
+
+on:
+  push:
+    tags:
+      - actions-node/v*
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Test and publish npm package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: provider-sdk/actions-node
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Update npm for trusted publishing
+        run: npm install --global npm@latest
+
+      - name: Verify tag and package version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_TAG#actions-node/v}"
+          package_version="$(node --print "require('./package.json').version")"
+          test "$version" = "$package_version"
+
+      - name: Test package and clean alias install
+        run: npm test && npm run test:install
+
+      - name: Inspect publish artifact
+        run: npm pack --dry-run
+
+      - name: Publish with npm trusted publishing
+        run: npm publish --access public --provenance
+
+      - name: Verify registry alias install
+        run: |
+          version="$(node --print "require('./package.json').version")"
+          scratch="$(mktemp -d)"
+          cd "$scratch"
+          npm init --yes >/dev/null
+          for attempt in $(seq 1 12); do
+            if npm install --ignore-scripts --no-audit --no-fund "@faros/actions-node@npm:@crwilhit/faros-actions-node@$version"; then
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              exit 1
+            fi
+            sleep 10
+          done
+          node --input-type=module --eval "import { createActionsClient } from '@faros/actions-node'; if (typeof createActionsClient !== 'function') process.exit(1)"

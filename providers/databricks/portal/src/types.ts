@@ -12,6 +12,7 @@ export interface FarosContext {
 export interface ErrorResponse {
   reason: string
   message: string
+  retryable?: boolean
 }
 
 export interface ConditionInfo {
@@ -43,6 +44,7 @@ export interface Connection {
 
 export interface Warehouse {
   name: string
+  uid?: string
   connectionRef: string
   warehouseID: string
   state?: string
@@ -63,6 +65,7 @@ export interface TableColumn {
 
 export interface Table {
   name: string
+  uid?: string
   connectionRef: string
   warehouseRef: string
   catalog: string
@@ -72,9 +75,9 @@ export interface Table {
   refreshedAt?: string
   generation?: number
   observedGeneration?: number
-  creationTimestamp?: string
-  columns: TableColumn[]
-  status: string
+	creationTimestamp?: string
+	columns: TableColumn[]
+	status: string
   message?: string
   conditions: ConditionInfo[]
 }

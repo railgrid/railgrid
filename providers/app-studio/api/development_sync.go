@@ -38,7 +38,9 @@ const (
 	projectDevelopmentEnvironmentName   = "development"
 	projectDevelopmentBindingName       = "dev"
 	projectDevelopmentProviderAppStudio = "app-studio"
-	projectSandboxSyncTimeout           = 20 * time.Second
+	projectSandboxComponentSyncTimeout  = 5 * time.Minute
+	projectSandboxSyncTimeout           = 10 * time.Minute
+	projectDevelopmentSyncErrorMaxBytes = 4096
 )
 
 type projectDevelopmentSyncTargetInfo struct {
@@ -126,6 +128,10 @@ type projectWorkspaceSyncSnapshot struct {
 type projectDevelopmentSyncResponse struct {
 	Target projectDevelopmentSyncTargetInfo `json:"target"`
 	Result json.RawMessage                  `json:"result,omitempty"`
+}
+
+type projectSandboxSyncResult struct {
+	ReloadError string `json:"reloadError,omitempty"`
 }
 
 type projectDevelopmentPreviewAuthorizeResponse struct {
@@ -300,12 +306,12 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 		if err != nil {
 			return nil, fmt.Errorf("encode %s sync payload: %w", component, err)
 		}
-		body, status, err := s.dataPlanePost(ctx, id, target.dataPlaneRefFor(component), dataPlaneVerbSync, payload)
+		body, status, err := s.dataPlanePostWithTimeout(ctx, id, target.dataPlaneRefFor(component), dataPlaneVerbSync, payload, projectSandboxComponentSyncTimeout)
 		if err != nil {
 			return nil, fmt.Errorf("component %s: %w", component, err)
 		}
-		if status < 200 || status >= 300 {
-			return nil, fmt.Errorf("component %s sync returned %d: %s", component, status, strings.TrimSpace(string(body)))
+		if err := validateProjectComponentSyncResponse(component, status, body); err != nil {
+			return nil, err
 		}
 		results[component] = json.RawMessage(body)
 	}
@@ -314,6 +320,27 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 		return nil, err
 	}
 	return aggregated, nil
+}
+
+func validateProjectComponentSyncResponse(component string, status int, body []byte) error {
+	boundedBody := strings.TrimSpace(string(body))
+	if len(boundedBody) > projectDevelopmentSyncErrorMaxBytes {
+		boundedBody = boundedBody[:projectDevelopmentSyncErrorMaxBytes] + "..."
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("component %s sync returned %d: %s", component, status, boundedBody)
+	}
+	var result projectSandboxSyncResult
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("component %s sync returned an invalid response: %w", component, err)
+	}
+	if failure := strings.TrimSpace(result.ReloadError); failure != "" {
+		if len(failure) > projectDevelopmentSyncErrorMaxBytes {
+			failure = failure[:projectDevelopmentSyncErrorMaxBytes] + "..."
+		}
+		return fmt.Errorf("component %s dependency reload failed: %s", component, failure)
+	}
+	return nil
 }
 
 // validateDevelopmentInstance confirms the target instance exists in the

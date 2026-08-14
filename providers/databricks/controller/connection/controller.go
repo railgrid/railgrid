@@ -21,6 +21,7 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -33,7 +34,10 @@ import (
 const (
 	ReasonReady                 = "Ready"
 	ReasonCredentialUnavailable = "CredentialUnavailable"
-	ReasonValidationFailed      = "ValidationFailed"
+	ReasonValidationFailed      = backend.ValidationReasonValidationFailed
+	ReasonDatabricksUnavailable = backend.ValidationReasonDatabricksUnavailable
+	ReasonAccessDenied          = backend.ValidationReasonAccessDenied
+	ReasonResourceNotFound      = backend.ValidationReasonResourceNotFound
 	ReasonValidatorUnavailable  = "ValidatorUnavailable"
 	ReasonAuthTypeUnsupported   = "AuthTypeUnsupported"
 )
@@ -45,8 +49,12 @@ type Reconciler struct {
 
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
+	// Secret rotation is intentionally picked up by periodic validation. The
+	// provider claims only Secret get, so registering a Secret informer would
+	// require broader tenant permissions; healthy connections recheck on the
+	// validation interval and transient Databricks failures use the short retry.
 	return mcbuilder.ControllerManagedBy(mgr).
-		For(&databricksv1alpha1.Connection{}).
+		For(&databricksv1alpha1.Connection{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }
 
@@ -90,7 +98,8 @@ func (r *Reconciler) reconcileConnection(ctx context.Context, c client.Client, k
 		BearerToken: token,
 	})
 	if err != nil {
-		return r.failAfter(ctx, c, &conn, ReasonValidationFailed, backend.SafeStatusMessage(err), shared.ValidationRefreshAfter)
+		reason := backend.ClassifyValidationError(err)
+		return r.failAfter(ctx, c, &conn, reason, backend.SafeStatusMessage(err), validationRequeueAfter(reason))
 	}
 
 	conn.Status.ObservedGeneration = conn.Generation
@@ -102,6 +111,13 @@ func (r *Reconciler) reconcileConnection(ctx context.Context, c client.Client, k
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: shared.ValidationRefreshAfter}, nil
+}
+
+func validationRequeueAfter(reason string) time.Duration {
+	if reason == ReasonDatabricksUnavailable {
+		return shared.DependencyRetryAfter
+	}
+	return shared.ValidationRefreshAfter
 }
 
 func (r *Reconciler) fail(ctx context.Context, c client.Client, conn *databricksv1alpha1.Connection, reason, msg string) (ctrl.Result, error) {

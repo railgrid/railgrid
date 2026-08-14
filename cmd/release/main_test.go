@@ -12,6 +12,27 @@ package main
 
 import "testing"
 
+func TestDatabricksComponentReleaseContract(t *testing.T) {
+	component, ok := components["databricks"]
+	if !ok {
+		t.Fatal("databricks component is not registered")
+	}
+	if component.prefix != "providers/databricks/v" {
+		t.Fatalf("databricks tag prefix = %q, want providers/databricks/v", component.prefix)
+	}
+	if component.triggers == "" {
+		t.Fatal("databricks release contract has no downstream trigger description")
+	}
+	for i, name := range componentOrder {
+		if name == "databricks" {
+			return
+		}
+		if i == len(componentOrder)-1 {
+			t.Fatal("databricks component is not in componentOrder")
+		}
+	}
+}
+
 // TestTagSet covers the shapes git actually emits: `git tag -l` prints bare
 // names, `git ls-remote --tags` prints "<sha>\trefs/tags/<name>" and repeats
 // annotated tags with a "^{}" suffix for the dereferenced commit.

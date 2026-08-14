@@ -123,9 +123,12 @@ type WarehouseList struct {
 type WarehouseSpec struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	ConnectionRef string `json:"connectionRef"`
 	// +required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[^\p{Cc}]+$`
 	WarehouseID string `json:"warehouseID"`
 }
 
@@ -173,18 +176,26 @@ type TableList struct {
 type TableSpec struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	ConnectionRef string `json:"connectionRef"`
 	// +required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	WarehouseRef string `json:"warehouseRef"`
 	// +required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[^\p{Cc}]+$`
 	Catalog string `json:"catalog"`
 	// +required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[^\p{Cc}]+$`
 	Schema string `json:"schema"`
 	// +required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[^\p{Cc}]+$`
 	Table string `json:"table"`
 }
 
@@ -195,6 +206,7 @@ type TableStatus struct {
 	RefreshedAt *metav1.Time `json:"refreshedAt,omitempty"`
 	// Columns caches schema for App Studio authoring. It never stores row data.
 	// +optional
+	// +kubebuilder:validation:MaxItems=64
 	// +listType=map
 	// +listMapKey=name
 	Columns []Column `json:"columns,omitempty"`
@@ -207,13 +219,18 @@ type TableStatus struct {
 type Column struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[^\p{Cc}]+$`
 	Name string `json:"name"`
 	// +required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=1024
+	// +kubebuilder:validation:Pattern=`^[^\p{Cc}]+$`
 	Type string `json:"type"`
 	// +optional
 	Nullable bool `json:"nullable,omitempty"`
 	// +optional
+	// +kubebuilder:validation:MaxLength=4096
 	Comment string `json:"comment,omitempty"`
 }
 

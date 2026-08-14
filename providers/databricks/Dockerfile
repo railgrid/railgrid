@@ -9,11 +9,12 @@ RUN npm run build
 
 FROM golang:1.26-alpine AS build
 WORKDIR /src
+ARG VERSION=dev
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . ./
 COPY --from=portal /portal/dist ./portal/dist
-RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/databricks-provider .
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.buildVersion=${VERSION}" -o /out/databricks-provider .
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/databricks-provider /databricks-provider

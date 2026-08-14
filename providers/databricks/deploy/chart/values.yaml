@@ -16,11 +16,40 @@ hub:
     key: token
   insecure: false
 
+# The multicluster controller is required for production: it validates the
+# Connection -> Warehouse -> Table dependency chain and serves provider
+# authority for actions. Set mode=rest-only only for an intentional local UI/API
+# process; /readyz and heartbeat then describe that explicit mode.
+controller:
+  mode: required
+  retryInterval: 15s
+
+# Bootstrap is explicit because the provider cannot become ready without a
+# provider-workspace kubeconfig. `init` runs the image's `init` subcommand in an
+# init container and may apply the rendered CatalogEntry. `external` skips that
+# init container and requires an operator/GitOps process to have already
+# installed the APIExport, endpoint slice, schemas, and CatalogEntry.
+bootstrap:
+  enabled: true
+  mode: init
+
 providerKubeconfig:
   secretName: faros-provider-kubeconfig
 
 catalogEntry:
   enabled: true
+
+# MCP remains a compatibility/presentation surface; Provider Actions do not
+# depend on it. The localhost protection bypass is a narrowly scoped local-dev
+# setting and must remain false in production.
+mcp:
+  enabled: true
+  disableLocalhostProtection: false
+
+# Empty uses the backend's standard Databricks cloud suffix allowlist. Add
+# private workspace suffixes deliberately; values are passed as a comma-
+# separated DATABRICKS_ALLOWED_HOST_SUFFIXES environment variable.
+allowedHostSuffixes: []
 
 serviceAccount:
   create: true

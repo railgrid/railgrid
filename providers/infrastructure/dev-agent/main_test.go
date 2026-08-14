@@ -417,10 +417,67 @@ func TestAuthoritativeSyncReloadHookCannotMutateSourceManifest(t *testing.T) {
 			result, err := runPersistentExec(context.Background(), workdir, persistentExecRequest{
 				Argv: []string{"/bin/true"}, WorkDir: ".", SourceRevision: 1, SourceDigest: digest,
 			})
+			if tc.wantReload {
+				if err == nil || !strings.Contains(err.Error(), "dependency reload is still pending") {
+					t.Fatalf("exec while reload pending = %+v err=%v", result, err)
+				}
+				return
+			}
 			if err != nil || result.ExitCode != 0 {
 				t.Fatalf("exec after reload = %+v err=%v", result, err)
 			}
 		})
+	}
+}
+
+func TestAuthoritativeSyncRetriesPendingReloadForSameRevision(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workdir, "fail-once"), []byte("fail"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := "if [ -f fail-once ]; then rm fail-once; exit 7; fi; mkdir -p node_modules/example"
+	srv := newTestAgent(t, &agentConfig{
+		WorkDir:        workdir,
+		ReloadStrategy: "process",
+		ReloadRules:    []reloadRule{{Paths: []string{"package.json"}, Command: command}},
+	})
+	files := []syncFile{{Path: "package.json", Content: "{\"scripts\":{\"start\":\"node server.mjs\"}}"}}
+	digest, err := digestSyncFiles(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := syncRequest{Files: files, Restart: "always", SourceRevision: 1, SourceDigest: digest}
+
+	firstRecorder, first := doSync(t, srv, request)
+	if firstRecorder.Code != http.StatusOK || first.ReloadError == "" || !slices.Equal(first.ReloadRuns, []string{command}) {
+		t.Fatalf("first sync status = %d response=%+v body=%s", firstRecorder.Code, first, firstRecorder.Body.String())
+	}
+	root := mustOpenWorkspaceRoot(t, workdir)
+	manifest, found, err := readWorkspaceManifest(root)
+	if err != nil || !found || !slices.Equal(manifest.PendingReloadCommands, []string{command}) {
+		t.Fatalf("failed-reload manifest = %+v found=%t err=%v", manifest, found, err)
+	}
+	if result, err := runPersistentExec(context.Background(), workdir, persistentExecRequest{
+		Argv: []string{"/bin/true"}, WorkDir: ".", SourceRevision: 1, SourceDigest: digest,
+	}); err == nil || !strings.Contains(err.Error(), "dependency reload is still pending") {
+		t.Fatalf("exec while reload pending = %+v err=%v", result, err)
+	}
+
+	secondRecorder, second := doSync(t, srv, request)
+	if secondRecorder.Code != http.StatusOK || second.ReloadError != "" || !slices.Equal(second.ReloadRuns, []string{command}) {
+		t.Fatalf("retry sync status = %d response=%+v body=%s", secondRecorder.Code, second, secondRecorder.Body.String())
+	}
+	manifest, found, err = readWorkspaceManifest(root)
+	if err != nil || !found || len(manifest.PendingReloadCommands) != 0 {
+		t.Fatalf("successful-retry manifest = %+v found=%t err=%v", manifest, found, err)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "node_modules", "example")); err != nil {
+		t.Fatalf("retry did not preserve installed runtime output: %v", err)
+	}
+	if result, err := runPersistentExec(context.Background(), workdir, persistentExecRequest{
+		Argv: []string{"/bin/true"}, WorkDir: ".", SourceRevision: 1, SourceDigest: digest,
+	}); err != nil || result.ExitCode != 0 {
+		t.Fatalf("exec after successful reload retry = %+v err=%v", result, err)
 	}
 }
 

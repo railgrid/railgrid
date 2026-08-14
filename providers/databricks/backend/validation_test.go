@@ -11,8 +11,11 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -202,3 +205,51 @@ func TestValidateWarehouseReportsHTTPFailure(t *testing.T) {
 		t.Fatalf("error = %q, want status", err.Error())
 	}
 }
+
+func TestClassifyValidationErrorStableReasons(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "network", err: fmt.Errorf("request failed: %w", testNetworkError{}), want: ValidationReasonDatabricksUnavailable},
+		{name: "deadline", err: context.DeadlineExceeded, want: ValidationReasonDatabricksUnavailable},
+		{name: "canceled", err: &url.Error{Op: http.MethodGet, URL: "https://dbc-example.cloud.databricks.com", Err: context.Canceled}, want: ValidationReasonValidationFailed},
+		{name: "request timeout", err: testHTTPStatusError{status: http.StatusRequestTimeout}, want: ValidationReasonDatabricksUnavailable},
+		{name: "rate limit", err: testHTTPStatusError{status: http.StatusTooManyRequests}, want: ValidationReasonDatabricksUnavailable},
+		{name: "server error", err: testHTTPStatusError{status: http.StatusBadGateway}, want: ValidationReasonDatabricksUnavailable},
+		{name: "unauthorized", err: testHTTPStatusError{status: http.StatusUnauthorized}, want: ValidationReasonAccessDenied},
+		{name: "forbidden", err: testHTTPStatusError{status: http.StatusForbidden}, want: ValidationReasonAccessDenied},
+		{name: "not found", err: testHTTPStatusError{status: http.StatusNotFound}, want: ValidationReasonResourceNotFound},
+		{name: "unsupported table type", err: UnsupportedTableTypeError{TableType: "METRIC_VIEW"}, want: ValidationReasonUnsupportedTableType},
+		{name: "spec failure", err: errors.New("table identifier is invalid"), want: ValidationReasonValidationFailed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ClassifyValidationError(tt.err); got != tt.want {
+				t.Fatalf("ClassifyValidationError(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSafeStatusMessageDoesNotExposeHTTPResponseBody(t *testing.T) {
+	message := SafeStatusMessage(testHTTPStatusError{status: http.StatusUnauthorized})
+	if strings.Contains(message, "response body") {
+		t.Fatalf("SafeStatusMessage = %q, want response body omitted", message)
+	}
+	if !strings.Contains(message, "HTTP 401") {
+		t.Fatalf("SafeStatusMessage = %q, want status", message)
+	}
+}
+
+type testHTTPStatusError struct{ status int }
+
+func (e testHTTPStatusError) Error() string       { return fmt.Sprintf("HTTP %d: response body", e.status) }
+func (e testHTTPStatusError) HTTPStatusCode() int { return e.status }
+
+type testNetworkError struct{}
+
+func (testNetworkError) Error() string   { return "connection reset" }
+func (testNetworkError) Timeout() bool   { return false }
+func (testNetworkError) Temporary() bool { return true }

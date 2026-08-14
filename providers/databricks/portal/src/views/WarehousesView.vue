@@ -1,24 +1,36 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import SplitCreateButton from '../components/SplitCreateButton.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { api } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
 import type { Connection, ErrorResponse, Warehouse } from '../types'
+import { createLatestRefreshController, createOperationLocks, operationKey, type LatestRefreshController } from '../refresh'
+import { resourceNameError } from '../resourceName'
 
-const emit = defineEmits<{ (e: 'open', name: string): void }>()
+const emit = defineEmits<{ (e: 'open', name: string): void; (e: 'browse', trigger?: HTMLElement): void }>()
 
 const connections = ref<Connection[]>([])
 const warehouses = ref<Warehouse[]>([])
 const loading = ref(false)
+const loaded = ref(false)
 const error = ref<string | null>(null)
+const mutationError = ref<string | null>(null)
+const operations = createOperationLocks()
 
 const showForm = ref(false)
 const submitting = ref(false)
 const formError = ref<string | null>(null)
+const nameInput = ref<HTMLInputElement | null>(null)
+const formErrorRef = ref<HTMLElement | null>(null)
 let timer: number | undefined
+let refresh!: LatestRefreshController
 
-const rows = computed<Array<Record<string, unknown>>>(() => warehouses.value.map(wh => ({ ...wh })))
+const rows = computed<Array<Record<string, unknown>>>(() => warehouses.value
+  .filter(wh => !operations.isTombstoned(operationKey('warehouse', wh.name), wh.uid))
+  .map(wh => ({ ...wh })))
 
 const form = reactive({
   name: '',
@@ -38,44 +50,89 @@ function resetForm() {
   formError.value = null
 }
 
-async function load() {
-  loading.value = true
-  error.value = null
-  try {
-    const [connList, warehouseList] = await Promise.all([api.listConnections(), api.listWarehouses()])
-    connections.value = connList
-    warehouses.value = warehouseList
-    if (connList.length && !connList.some(c => c.name === form.connectionRef)) {
-      form.connectionRef = connList[0].name
-    }
-  } catch (e) {
-    const err = e as ErrorResponse
-    error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
-  } finally {
-    loading.value = false
-  }
+function load() {
+  refresh.request()
+}
+
+function operationLocked(name: string): boolean {
+  return operations.isLocked(operationKey('warehouse', name))
+}
+
+function operationPhase(name: string) {
+  return operations.phase(operationKey('warehouse', name))
+}
+
+function openResource(name: string): void {
+  if (!operationLocked(name)) emit('open', name)
+}
+
+function startCreate() {
+  resetForm()
+  showForm.value = true
+  void nextTick(() => nameInput.value?.focus())
+}
+
+function closeForm() {
+  resetForm()
+  showForm.value = false
+}
+
+function browseCatalog(trigger?: HTMLElement) {
+  if (showForm.value) closeForm()
+  emit('browse', trigger)
+}
+
+async function focusFormError(message: string) {
+  formError.value = message
+  await nextTick()
+  formErrorRef.value?.focus()
 }
 
 async function submit() {
   formError.value = null
+  mutationError.value = null
+  if (!loaded.value) {
+    await focusFormError('Warehouse list is still loading. Retry the read before creating a warehouse.')
+    return
+  }
   if (!form.name || !form.connectionRef || !form.warehouseID) {
-    formError.value = 'name, connection, and warehouse ID are required'
+    await focusFormError('Name, connection, and warehouse ID are required.')
+    return
+  }
+  const nameError = resourceNameError(form.name, 'Name')
+  if (nameError) {
+    await focusFormError(nameError)
+    return
+  }
+  const desiredName = form.name.trim()
+  if (warehouses.value.some(warehouse => warehouse.name === desiredName)) {
+    await focusFormError(`Warehouse "${desiredName}" already exists.`)
+    return
+  }
+  const lock = operationKey('warehouse', desiredName)
+  if (operations.isTombstoned(lock)) {
+    await focusFormError(`Warehouse "${desiredName}" is still being removed. Retry after the list refresh confirms it is gone.`)
+    return
+  }
+  if (!operations.acquire(lock, 'creating')) {
+    await focusFormError(`Warehouse "${desiredName}" already has an update in progress.`)
     return
   }
   submitting.value = true
   try {
-	    await api.saveWarehouse({
-	      name: form.name,
-	      connectionRef: form.connectionRef,
-	      warehouseID: form.warehouseID,
-	    })
+    await api.saveWarehouse({
+      name: desiredName,
+      connectionRef: form.connectionRef,
+      warehouseID: form.warehouseID,
+    })
     resetForm()
     showForm.value = false
-    await load()
+    load()
   } catch (e) {
-    formError.value = errMessage(e)
+    await focusFormError(errMessage(e))
   } finally {
     submitting.value = false
+    operations.release(lock)
   }
 }
 
@@ -85,21 +142,59 @@ async function remove(row: Record<string, unknown>) {
     title: `Delete warehouse "${wh.name}"?`,
     message: 'Tables that reference this warehouse will stop refreshing schema metadata.',
     confirmLabel: 'Delete',
+    danger: true,
   })
   if (!ok) return
+  const lock = operationKey('warehouse', wh.name)
+  if (!operations.acquire(lock, 'deleting')) {
+    mutationError.value = `Warehouse "${wh.name}" already has an operation in progress.`
+    return
+  }
+  mutationError.value = null
   try {
     await api.deleteWarehouse(wh.name)
-    await load()
+    operations.tombstone(lock, wh.uid)
+    warehouses.value = warehouses.value.filter(item => item.name !== wh.name)
+    load()
   } catch (e) {
-    error.value = errMessage(e)
+    mutationError.value = errMessage(e)
+  } finally {
+    operations.release(lock)
   }
 }
+
+refresh = createLatestRefreshController(async requestID => {
+  loading.value = true
+  try {
+    const [connList, warehouseList] = await Promise.all([api.listConnections(), api.listWarehouses()])
+    if (!refresh.isCurrent(requestID)) return
+    connections.value = connList
+    warehouses.value = warehouseList
+    operations.reconcile('connection', connList.map(({ name, uid }) => ({ name, uid })))
+    operations.reconcile('warehouse', warehouseList.map(({ name, uid }) => ({ name, uid })))
+    loaded.value = true
+    error.value = null
+    if (connList.length && !connList.some(c => c.name === form.connectionRef)) {
+      form.connectionRef = connList[0].name
+    }
+  } catch (e) {
+    if (!refresh.isCurrent(requestID)) return
+    const err = e as ErrorResponse
+    error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
+  } finally {
+    if (refresh.isCurrent(requestID)) loading.value = false
+  }
+})
 
 onMounted(() => {
   load()
   timer = window.setInterval(load, 5000)
 })
-onUnmounted(() => window.clearInterval(timer))
+onUnmounted(() => {
+  window.clearInterval(timer)
+  refresh.stop()
+})
+
 </script>
 
 <template>
@@ -109,42 +204,45 @@ onUnmounted(() => window.clearInterval(timer))
         <h2 class="page-title">Warehouses</h2>
         <p class="page-meta">SQL warehouses available to imported Databricks tables. Click one to inspect status and defaults.</p>
       </div>
-      <button class="primary" :disabled="!connections.length" @click="showForm = !showForm">
-        {{ showForm ? 'Cancel' : 'New warehouse' }}
-      </button>
+      <SplitCreateButton kind="warehouse" :disabled="submitting" @manual="startCreate" @browse="browseCatalog" />
     </header>
 
-    <p v-if="!loading && !connections.length" class="empty">Add a connection first, then import warehouses under it.</p>
+    <p v-if="loaded && !connections.length" class="empty">Add a connection first, then import warehouses under it.</p>
 
     <div v-if="showForm" class="panel">
       <h3 class="panel-title">New warehouse</h3>
       <form class="form" @submit.prevent="submit">
         <div class="field">
-          <span class="field-label">Connection</span>
-          <select v-model="form.connectionRef">
+          <label class="field-label" for="warehouse-connection">Connection</label>
+          <select id="warehouse-connection" v-model="form.connectionRef" :disabled="submitting" required aria-required="true" aria-describedby="warehouse-connection-hint warehouse-form-error" :aria-invalid="!!formError">
             <option v-for="conn in connections" :key="conn.name" :value="conn.name">{{ conn.name }}</option>
           </select>
-          <span class="field-hint">The Databricks workspace connection this warehouse belongs to.</span>
+          <span id="warehouse-connection-hint" class="field-hint">The Databricks workspace connection this warehouse belongs to.</span>
         </div>
         <div class="field">
-          <span class="field-label">Object name</span>
-          <input v-model="form.name" placeholder="orders-sql" autocomplete="off" />
-          <span class="field-hint">How this warehouse is referred to from faros — lowercase, stable, yours to choose.</span>
+          <label class="field-label" for="warehouse-name">Object name</label>
+          <input id="warehouse-name" ref="nameInput" v-model="form.name" :disabled="submitting" placeholder="orders-sql" autocomplete="off" required aria-required="true" aria-describedby="warehouse-name-hint warehouse-form-error" :aria-invalid="!!formError" />
+          <span id="warehouse-name-hint" class="field-hint">How this warehouse is referred to from faros. Use lowercase letters, numbers, and hyphens; the name is preserved exactly.</span>
         </div>
         <div class="field">
-          <span class="field-label">Warehouse ID</span>
-          <input v-model="form.warehouseID" placeholder="abc123def4567890" autocomplete="off" />
-          <span class="field-hint">In that Databricks workspace: SQL → SQL Warehouses → open the warehouse. The ID is the 16-character hex value on its overview page — also the last segment of the HTTP path under Connection details (/sql/1.0/warehouses/&lt;id&gt;). Not the long number after ?o= in the browser URL; that is the workspace org ID. The connection's token identity needs "Can use" permission on the warehouse.</span>
+          <label class="field-label" for="warehouse-id">Warehouse ID</label>
+          <input id="warehouse-id" v-model="form.warehouseID" :disabled="submitting" placeholder="abc123def4567890" autocomplete="off" required aria-required="true" aria-describedby="warehouse-id-hint warehouse-form-error" :aria-invalid="!!formError" />
+          <span id="warehouse-id-hint" class="field-hint">In Databricks: SQL → SQL Warehouses → open the warehouse. Use the 16-character ID from Connection details (/sql/1.0/warehouses/&lt;id&gt;), not the numeric ?o= workspace ID. The token identity needs “Can use” permission.</span>
         </div>
-	        <div class="actions">
+        <div class="actions">
           <button class="primary" type="submit" :disabled="submitting">{{ submitting ? 'Creating…' : 'Create' }}</button>
-          <span v-if="formError" class="error">{{ formError }}</span>
+          <button class="secondary" type="button" :disabled="submitting" @click="closeForm">Cancel</button>
+          <span v-if="formError" id="warehouse-form-error" ref="formErrorRef" class="error" role="alert" aria-live="assertive" tabindex="-1">{{ formError }}</span>
         </div>
       </form>
     </div>
 
+    <div v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">
+      <span>{{ mutationError }}</span>
+      <button class="secondary" type="button" @click="mutationError = null">Dismiss</button>
+    </div>
+
     <ResourceTable
-      v-if="connections.length || loading || error"
       :columns="[
         { key: 'name', label: 'Name' },
         { key: 'connectionRef', label: 'Connection' },
@@ -154,13 +252,18 @@ onUnmounted(() => window.clearInterval(timer))
         { key: 'actions', label: '' },
       ]"
       :rows="rows"
-      :loading="loading && !warehouses.length"
+      row-key="name"
+      :loaded="loaded"
+      :loading="loading"
       :error="error"
+      :stale="loaded && !!error"
+      retryable
       empty-text="No warehouses yet."
-      @row-click="(row) => emit('open', String(row.name))"
+      @retry="load"
+      @row-click="(row) => openResource(String(row.name))"
     >
       <template #name="{ value }">
-        <button class="link" type="button" @click.stop="emit('open', String(value))">{{ value }}</button>
+        <button class="link" type="button" :disabled="operationLocked(String(value))" @click.stop="openResource(String(value))">{{ value }}</button>
       </template>
       <template #connectionRef="{ value }">{{ value }}</template>
       <template #warehouseID="{ value }"><code>{{ value }}</code></template>
@@ -171,9 +274,16 @@ onUnmounted(() => window.clearInterval(timer))
       </template>
       <template #actions="{ row }">
         <div class="row-actions">
-          <button class="danger" type="button" @click.stop="remove(row)">Delete</button>
+          <ResourceTableDeleteButton
+            :label="`Delete warehouse ${String(row.name)}`"
+            :busy-label="`Deleting warehouse ${String(row.name)}…`"
+            :busy="operationPhase(String(row.name)) === 'deleting'"
+            :disabled="operationLocked(String(row.name))"
+            @click="remove(row)"
+          />
         </div>
       </template>
     </ResourceTable>
+
   </section>
 </template>

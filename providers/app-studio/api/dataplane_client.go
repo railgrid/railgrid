@@ -113,6 +113,13 @@ func (s *Server) dataPlanePost(ctx context.Context, id identity, ref dataPlaneRe
 	return s.dataPlanePostBounded(ctx, id, ref, verb, payload, 16<<20)
 }
 
+// dataPlanePostWithTimeout gives long-running, explicitly bounded operations
+// such as dependency-installing workspace syncs their own deadline without
+// weakening the ordinary data-plane timeout used by logs, restarts, and env.
+func (s *Server) dataPlanePostWithTimeout(ctx context.Context, id identity, ref dataPlaneRef, verb string, payload []byte, timeout time.Duration) ([]byte, int, error) {
+	return s.dataPlanePostBoundedWithHeadersAndTimeout(ctx, id, ref, verb, payload, 16<<20, nil, timeout)
+}
+
 // dataPlanePostBounded sends a POST verb while applying a caller-selected
 // response bound. Exec output is intentionally much smaller than the generic
 // control-plane bound so a noisy process cannot consume the assistant context.
@@ -121,7 +128,14 @@ func (s *Server) dataPlanePostBounded(ctx context.Context, id identity, ref data
 }
 
 func (s *Server) dataPlanePostBoundedWithHeaders(ctx context.Context, id identity, ref dataPlaneRef, verb string, payload []byte, maxBytes int64, headers http.Header) ([]byte, int, error) {
-	callCtx, cancel := context.WithTimeout(ctx, dataPlaneCallTimeout)
+	return s.dataPlanePostBoundedWithHeadersAndTimeout(ctx, id, ref, verb, payload, maxBytes, headers, dataPlaneCallTimeout)
+}
+
+func (s *Server) dataPlanePostBoundedWithHeadersAndTimeout(ctx context.Context, id identity, ref dataPlaneRef, verb string, payload []byte, maxBytes int64, headers http.Header, timeout time.Duration) ([]byte, int, error) {
+	if timeout <= 0 {
+		timeout = dataPlaneCallTimeout
+	}
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := s.newDataPlaneRequest(callCtx, http.MethodPost, id, ref, verb, "", strings.NewReader(string(payload)))
 	if err != nil {
@@ -133,7 +147,7 @@ func (s *Server) dataPlanePostBoundedWithHeaders(ctx context.Context, id identit
 			req.Header.Add(key, value)
 		}
 	}
-	resp, err := s.sandboxDataPlaneClient(dataPlaneCallTimeout).Do(req)
+	resp, err := s.sandboxDataPlaneClient(timeout).Do(req)
 	if err != nil {
 		return nil, 0, fmt.Errorf("development data plane %s: %w", verb, err)
 	}

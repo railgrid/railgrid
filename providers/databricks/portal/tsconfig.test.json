@@ -7,7 +7,23 @@
     "rootDir": "src"
   },
   "include": [
+    "src/api.ts",
+    "src/api.behavior.test.ts",
+    "src/refresh.ts",
+    "src/registrationFlow.ts",
+    "src/registrationFlow.test.ts",
+    "src/registrationTree.ts",
+    "src/registrationTree.test.ts",
+    "src/registrationApi.test.ts",
+    "src/registrationTypes.ts",
+    "src/refresh.test.ts",
+    "src/state.test.ts",
+    "src/resourceName.ts",
+    "src/resourceName.test.ts",
     "src/tableRefs.ts",
-    "src/tableRefs.test.ts"
+    "src/tableRefs.test.ts",
+    "src/components/splitCreate.ts",
+    "src/components/splitCreate.test.ts",
+    "src/types.ts"
   ]
 }

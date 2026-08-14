@@ -11,12 +11,12 @@ spec:
       crd: {}
   - group: databricks.faros.sh
     name: tables
-    schema: v260630-0d050b9c.tables.databricks.faros.sh
+    schema: v260814-45403ace.tables.databricks.faros.sh
     storage:
       crd: {}
   - group: databricks.faros.sh
     name: warehouses
-    schema: v260701-fa21f11c.warehouses.databricks.faros.sh
+    schema: v260814-45403ace.warehouses.databricks.faros.sh
     storage:
       crd: {}
 status: {}

@@ -42,6 +42,7 @@ const config = computed(() => {
     case 'pending':
     case 'provisioning':
     case 'running':
+    case 'retrying':
     case 'status unavailable':
     case 'loading':
     case 'starting':
@@ -52,6 +53,7 @@ const config = computed(() => {
     case 'error':
     case 'repository missing':
     case 'connection missing':
+    case 'needs attention':
       return { ...toneConfig.danger, icon: AlertTriangle }
     default:
       return { ...toneConfig.muted, icon: Circle }

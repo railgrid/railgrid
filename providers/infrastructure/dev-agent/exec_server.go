@@ -199,6 +199,9 @@ func runPersistentExec(parent context.Context, workspace string, req persistentE
 	if normalizeSourceDigest(manifest.SourceDigest) != normalizeSourceDigest(req.SourceDigest) {
 		return execResponse{}, errors.New("source digest does not match the applied workspace manifest")
 	}
+	if len(manifest.PendingReloadCommands) > 0 {
+		return execResponse{}, errors.New("source revision dependency reload is still pending")
+	}
 	if err := verifyWorkspaceManifest(root, manifest); err != nil {
 		return execResponse{}, fmt.Errorf("workspace manifest verification failed: %w", err)
 	}

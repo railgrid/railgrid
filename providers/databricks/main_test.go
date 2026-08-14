@@ -10,8 +10,10 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -73,5 +75,114 @@ func TestMCPEnabledDefaultsOnAndInvalidValuesFailClosed(t *testing.T) {
 	t.Setenv("DATABRICKS_MCP_ENABLED", "not-a-bool")
 	if mcpEnabled() {
 		t.Fatal("invalid MCP enablement value must fail closed")
+	}
+}
+
+func TestReadinessSeparatesControllerFromLiveness(t *testing.T) {
+	health := newControllerHealth(true)
+	mux, err := newServeMuxWithHealth(seedTablesFromEnv(), true, nil, health)
+	if err != nil {
+		t.Fatalf("newServeMuxWithHealth: %v", err)
+	}
+
+	liveness := httptest.NewRecorder()
+	mux.ServeHTTP(liveness, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if liveness.Code != http.StatusOK {
+		t.Fatalf("GET /healthz status = %d, want %d", liveness.Code, http.StatusOK)
+	}
+	readiness := httptest.NewRecorder()
+	mux.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if readiness.Code != http.StatusServiceUnavailable || !strings.Contains(readiness.Body.String(), `"controller":"starting"`) {
+		t.Fatalf("GET /readyz while starting = %d %q, want 503/starting", readiness.Code, readiness.Body.String())
+	}
+
+	health.markReady()
+	readiness = httptest.NewRecorder()
+	mux.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if readiness.Code != http.StatusOK || !strings.Contains(readiness.Body.String(), `"status":"ready"`) {
+		t.Fatalf("GET /readyz while running = %d %q, want 200/ready", readiness.Code, readiness.Body.String())
+	}
+
+	health.markFailed(errors.New("manager exited"))
+	readiness = httptest.NewRecorder()
+	mux.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if readiness.Code != http.StatusServiceUnavailable || !strings.Contains(readiness.Body.String(), "manager exited") {
+		t.Fatalf("GET /readyz after exit = %d %q, want 503/error", readiness.Code, readiness.Body.String())
+	}
+}
+
+func TestReadinessRequiresUsableTenantFactoryForNonStaticMode(t *testing.T) {
+	health := newControllerHealth(true)
+	health.markReady()
+	mux, err := newServeMuxWithHealth(seedTablesFromEnv(), false, nil, health)
+	if err != nil {
+		t.Fatalf("newServeMuxWithHealth: %v", err)
+	}
+	readiness := httptest.NewRecorder()
+	mux.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if readiness.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /readyz without tenant factory = %d %q, want 503", readiness.Code, readiness.Body.String())
+	}
+	if !strings.Contains(readiness.Body.String(), "tenant client unavailable") {
+		t.Fatalf("GET /readyz without tenant factory = %q, want dependency error", readiness.Body.String())
+	}
+}
+
+func TestReadinessWithoutHealthStateDoesNotPanic(t *testing.T) {
+	mux, err := newServeMux(seedTablesFromEnv(), false, nil)
+	if err != nil {
+		t.Fatalf("newServeMux: %v", err)
+	}
+	readiness := httptest.NewRecorder()
+	mux.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if readiness.Code != http.StatusServiceUnavailable || !strings.Contains(readiness.Body.String(), "tenant client unavailable") {
+		t.Fatalf("GET /readyz without health = %d %q, want 503/dependency error", readiness.Code, readiness.Body.String())
+	}
+
+	staticMux, err := newServeMux(seedTablesFromEnv(), true, nil)
+	if err != nil {
+		t.Fatalf("new static serve mux: %v", err)
+	}
+	readiness = httptest.NewRecorder()
+	staticMux.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if readiness.Code != http.StatusOK || !strings.Contains(readiness.Body.String(), `"status":"ready"`) {
+		t.Fatalf("static GET /readyz without health = %d %q, want 200/ready", readiness.Code, readiness.Body.String())
+	}
+}
+
+func TestHeartbeatEligibilityAndBuildVersion(t *testing.T) {
+	if heartbeatCanSend(newControllerHealth(true)) {
+		t.Fatal("starting required controller must not heartbeat")
+	}
+	required := newControllerHealth(true)
+	required.markReady()
+	if !heartbeatCanSend(required) {
+		t.Fatal("running required controller should heartbeat")
+	}
+	if !heartbeatCanSend(newControllerHealth(false)) {
+		t.Fatal("REST-only mode should heartbeat")
+	}
+
+	original := buildVersion
+	buildVersion = "v9.8.7"
+	t.Cleanup(func() { buildVersion = original })
+	t.Setenv("FAROS_PROVIDER_VERSION", "")
+	if got := providerVersion(); got != "v9.8.7" {
+		t.Fatalf("providerVersion = %q, want injected build version", got)
+	}
+	t.Setenv("FAROS_PROVIDER_VERSION", "v1.2.3")
+	if got := providerVersion(); got != "v1.2.3" {
+		t.Fatalf("providerVersion = %q, want chart release override", got)
+	}
+}
+
+func TestMCPProtectionConfigurationIsExplicit(t *testing.T) {
+	t.Setenv("DATABRICKS_MCP_DISABLE_LOCALHOST_PROTECTION", "")
+	if mcpDisableLocalhostProtection() {
+		t.Fatal("MCP localhost protection should remain enabled by default")
+	}
+	t.Setenv("DATABRICKS_MCP_DISABLE_LOCALHOST_PROTECTION", "true")
+	if !mcpDisableLocalhostProtection() {
+		t.Fatal("explicit MCP localhost protection bypass was ignored")
 	}
 }

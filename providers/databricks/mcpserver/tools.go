@@ -10,6 +10,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -40,7 +41,8 @@ type tableSchemaReader interface {
 }
 
 type listTablesOutput struct {
-	Tables []tableSummary `json:"tables"`
+	Tables    []tableSummary `json:"tables"`
+	Truncated bool           `json:"truncated,omitempty"`
 }
 
 type describeTableInput struct {
@@ -62,6 +64,131 @@ type queryTableOutput struct {
 	Truncated     bool                   `json:"truncated,omitempty"`
 }
 
+// The SDK sends structuredContent and, when the handler does not provide
+// content itself, a text block containing the same JSON. The response also
+// echoes the accepted request ID, so reserve the complete request cap plus a
+// conservative amount for the fixed JSON-RPC/SSE framing.
+const (
+	mcpResponseFramingReserveBytes = 4 * 1024
+	mcpEnvelopeReserveBytes        = maxMCPRequestBytes + mcpResponseFramingReserveBytes
+)
+
+type mcpTextContentWire struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type mcpToolResultWire struct {
+	Content           []mcpTextContentWire `json:"content"`
+	StructuredContent json.RawMessage      `json:"structuredContent,omitempty"`
+}
+
+// mcpQueryEnvelopeBytes models the wire shape emitted by ToolHandlerFor. In
+// particular, marshaling Text a second time accounts for quotes, backslashes,
+// and control characters being escaped again by the SDK. It returns the
+// measured tool-result bytes plus a fixed reserve for the surrounding
+// JSON-RPC response and transport framing.
+func mcpToolEnvelopeBytes(output any) (int, bool) {
+	outputJSON, err := json.Marshal(output)
+	if err != nil {
+		return 0, false
+	}
+	envelope, err := json.Marshal(mcpToolResultWire{
+		Content: []mcpTextContentWire{{Type: "text", Text: string(outputJSON)}},
+		// The SDK stores the first marshal as a RawMessage, avoiding another
+		// layer of escaping in structuredContent.
+		StructuredContent: json.RawMessage(outputJSON),
+	})
+	if err != nil {
+		return 0, false
+	}
+	return len(envelope) + mcpEnvelopeReserveBytes, true
+}
+
+func mcpQueryEnvelopeBytes(output queryTableOutput) (int, bool) {
+	return mcpToolEnvelopeBytes(output)
+}
+
+func mcpListEnvelopeBytes(output listTablesOutput) (int, bool) {
+	return mcpToolEnvelopeBytes(output)
+}
+
+func boundMCPQueryOutput(tableRef string, result queryapi.QueryTableResult) queryTableOutput {
+	// Normalize shape and apply the ordinary result cap first. The loop below
+	// only removes complete rows or columns; retained cell values are never
+	// shortened or rewritten.
+	result = queryapi.BoundQueryResult(result)
+	for {
+		output := queryTableOutput{
+			ActionVersion: queryapi.ActionVersionV1,
+			TableRef:      tableRef,
+			Columns:       result.Columns,
+			Rows:          result.Rows,
+			Truncated:     result.Truncated,
+		}
+		if size, ok := mcpQueryEnvelopeBytes(output); ok && size <= queryapi.MaxQueryBytes {
+			return output
+		}
+		if len(result.Rows) > 0 {
+			result.Rows = result.Rows[:len(result.Rows)-1]
+			result.Truncated = true
+			continue
+		}
+		if len(result.Columns) > 0 {
+			result.Columns = result.Columns[:len(result.Columns)-1]
+			result = queryapi.BoundQueryResult(result)
+			result.Truncated = true
+			continue
+		}
+		// The request contract bounds tableRef and the action-version metadata,
+		// so this fallback is only defensive against a future wire-shape change.
+		return queryTableOutput{
+			ActionVersion: queryapi.ActionVersionV1,
+			TableRef:      tableRef,
+			Columns:       []queryapi.QueryColumn{},
+			Rows:          []map[string]any{},
+			Truncated:     true,
+		}
+	}
+}
+
+func boundMCPListOutput(tables []tableSummary, initialTruncated ...bool) listTablesOutput {
+	// Sorting before applying the byte budget makes truncation deterministic
+	// even though the resolver's KCP item map has no iteration order.
+	sort.Slice(tables, func(i, j int) bool { return tables[i].Name < tables[j].Name })
+	truncated := len(initialTruncated) > 0 && initialTruncated[0]
+	result := listTablesOutput{Tables: append([]tableSummary(nil), tables...), Truncated: truncated}
+	for {
+		if size, ok := mcpListEnvelopeBytes(result); ok && size <= queryapi.MaxQueryBytes {
+			return result
+		}
+		if len(result.Tables) == 0 {
+			return listTablesOutput{Tables: []tableSummary{}, Truncated: true}
+		}
+		result.Tables = result.Tables[:len(result.Tables)-1]
+		result.Truncated = true
+	}
+}
+
+func boundedTableMap(tables map[string]queryapi.TableRef, limit int) (map[string]queryapi.TableRef, bool) {
+	if limit < 1 {
+		limit = queryapi.MaxTableListItems
+	}
+	if len(tables) <= limit {
+		return tables, false
+	}
+	names := make([]string, 0, len(tables))
+	for name := range tables {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	bounded := make(map[string]queryapi.TableRef, limit)
+	for _, name := range names[:limit] {
+		bounded[name] = tables[name]
+	}
+	return bounded, true
+}
+
 func registerTools(srv *mcp.Server, resolver queryapi.TableResolver, executor actions.QueryExecutor) {
 	safeRegister("list_tables", func() {
 		mcp.AddTool(srv, &mcp.Tool{
@@ -70,16 +197,26 @@ func registerTools(srv *mcp.Server, resolver queryapi.TableResolver, executor ac
 			Description: "List Databricks tables already imported into this faros workspace. The returned tables[].name is the exact faros Table resource name to copy as tableRef; never substitute an App Studio integration alias or another binding identifier.",
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
 		}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listTablesOutput, error) {
-			tables, err := resolver.ListTables(ctx)
+			var (
+				tables    map[string]queryapi.TableRef
+				truncated bool
+				err       error
+			)
+			if boundedResolver, ok := resolver.(queryapi.BoundedTableResolver); ok {
+				tables, truncated, err = boundedResolver.ListTablesBounded(ctx, queryapi.MaxTableListItems)
+			} else {
+				tables, err = resolver.ListTables(ctx)
+			}
 			if err != nil {
 				return nil, listTablesOutput{}, err
 			}
-			out := make([]tableSummary, 0, len(tables))
-			for name, ref := range tables {
+			bounded, itemTruncated := boundedTableMap(tables, queryapi.MaxTableListItems)
+			truncated = truncated || itemTruncated
+			out := make([]tableSummary, 0, len(bounded))
+			for name, ref := range bounded {
 				out = append(out, tableSummary{Name: name, Catalog: ref.Catalog, Schema: ref.Schema, Table: ref.Table})
 			}
-			sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-			return nil, listTablesOutput{Tables: out}, nil
+			return nil, boundMCPListOutput(out, truncated), nil
 		})
 	})
 
@@ -138,14 +275,7 @@ func registerTools(srv *mcp.Server, resolver queryapi.TableResolver, executor ac
 			if err != nil {
 				return nil, queryTableOutput{}, err
 			}
-			result = queryapi.BoundQueryResult(result)
-			return nil, queryTableOutput{
-				ActionVersion: queryapi.ActionVersionV1,
-				TableRef:      request.TableRef,
-				Columns:       result.Columns,
-				Rows:          result.Rows,
-				Truncated:     result.Truncated,
-			}, nil
+			return nil, boundMCPQueryOutput(request.TableRef, result), nil
 		})
 	})
 }

@@ -1,17 +1,25 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { api } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
 import type { Connection, ErrorResponse } from '../types'
+import { createLatestRefreshController, createOperationLocks, operationKey, type LatestRefreshController } from '../refresh'
+import { resourceNameError } from '../resourceName'
 
 const emit = defineEmits<{ (e: 'open', name: string): void }>()
 
 const connections = ref<Connection[]>([])
 const loading = ref(false)
+const loaded = ref(false)
 const error = ref<string | null>(null)
-const rows = computed<Array<Record<string, unknown>>>(() => connections.value.map(conn => ({ ...conn })))
+const mutationError = ref<string | null>(null)
+const operations = createOperationLocks()
+const rows = computed<Array<Record<string, unknown>>>(() => connections.value
+  .filter(conn => !operations.isTombstoned(operationKey('connection', conn.name), conn.uid))
+  .map(conn => ({ ...conn })))
 
 // connection form
 const showForm = ref(false)
@@ -20,7 +28,10 @@ const host = ref('')
 const token = ref('')
 const submitting = ref(false)
 const formError = ref<string | null>(null)
+const nameInput = ref<HTMLInputElement | null>(null)
+const formErrorRef = ref<HTMLElement | null>(null)
 let timer: number | undefined
+let refresh!: LatestRefreshController
 
 function errMessage(e: unknown): string {
   const err = e as ErrorResponse
@@ -37,41 +48,76 @@ function resetForm() {
 function startCreate() {
   resetForm()
   showForm.value = true
+  void nextTick(() => nameInput.value?.focus())
 }
 
-async function load() {
-  loading.value = true
-  error.value = null
-  try {
-    connections.value = await api.listConnections()
-  } catch (e) {
-    const err = e as ErrorResponse
-    error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
-  } finally {
-    loading.value = false
-  }
+function load() {
+  refresh.request()
+}
+
+function operationLocked(name: string): boolean {
+  return operations.isLocked(operationKey('connection', name))
+}
+
+function operationPhase(name: string) {
+  return operations.phase(operationKey('connection', name))
+}
+
+function openResource(name: string): void {
+  if (!operationLocked(name)) emit('open', name)
+}
+
+async function focusFormError(message: string) {
+  formError.value = message
+  await nextTick()
+  formErrorRef.value?.focus()
 }
 
 async function submit() {
   formError.value = null
+  mutationError.value = null
+  if (!loaded.value) {
+    await focusFormError('Connection list is still loading. Retry the read before creating a connection.')
+    return
+  }
   if (!name.value || !host.value || !token.value) {
-    formError.value = 'name, workspace host, and token are required'
+    await focusFormError('Name, workspace host, and token are required.')
+    return
+  }
+  const nameError = resourceNameError(name.value, 'Name')
+  if (nameError) {
+    await focusFormError(nameError)
+    return
+  }
+  const desiredName = name.value.trim()
+  if (connections.value.some(connection => connection.name === desiredName)) {
+    await focusFormError(`Connection "${desiredName}" already exists.`)
+    return
+  }
+  const lock = operationKey('connection', desiredName)
+  if (operations.isTombstoned(lock)) {
+    await focusFormError(`Connection "${desiredName}" is still being removed. Retry after the list refresh confirms it is gone.`)
+    return
+  }
+  if (!operations.acquire(lock, 'creating')) {
+    await focusFormError(`Connection "${desiredName}" already has an update in progress.`)
     return
   }
   submitting.value = true
   try {
-	    await api.saveConnection({
-	      name: name.value,
-	      host: host.value,
-	      token: token.value,
-	    })
+    await api.saveConnection({
+      name: desiredName,
+      host: host.value,
+      token: token.value,
+    })
     resetForm()
     showForm.value = false
-    await load()
+    load()
   } catch (e) {
-    formError.value = errMessage(e)
+    await focusFormError(errMessage(e))
   } finally {
     submitting.value = false
+    operations.release(lock)
   }
 }
 
@@ -81,21 +127,54 @@ async function remove(row: Record<string, unknown>) {
     title: `Delete connection "${conn.name}"?`,
     message: 'Warehouses and tables that reference this connection will stop working.',
     confirmLabel: 'Delete',
+    danger: true,
   })
   if (!ok) return
+  const lock = operationKey('connection', conn.name)
+  if (!operations.acquire(lock, 'deleting')) {
+    mutationError.value = `Connection "${conn.name}" already has an operation in progress.`
+    return
+  }
+  mutationError.value = null
   try {
     await api.deleteConnection(conn)
-    await load()
+    operations.tombstone(lock, conn.uid)
+    connections.value = connections.value.filter(item => item.name !== conn.name)
+    load()
   } catch (e) {
-    error.value = errMessage(e)
+    mutationError.value = errMessage(e)
+  } finally {
+    operations.release(lock)
   }
 }
+
+refresh = createLatestRefreshController(async requestID => {
+  loading.value = true
+  try {
+    const next = await api.listConnections()
+    if (refresh.isCurrent(requestID)) {
+      connections.value = next
+      operations.reconcile('connection', next.map(({ name, uid }) => ({ name, uid })))
+      loaded.value = true
+      error.value = null
+    }
+  } catch (e) {
+    if (!refresh.isCurrent(requestID)) return
+    const err = e as ErrorResponse
+    error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
+  } finally {
+    if (refresh.isCurrent(requestID)) loading.value = false
+  }
+})
 
 onMounted(() => {
   load()
   timer = window.setInterval(load, 5000)
 })
-onUnmounted(() => window.clearInterval(timer))
+onUnmounted(() => {
+  window.clearInterval(timer)
+  refresh.stop()
+})
 </script>
 
 <template>
@@ -106,7 +185,7 @@ onUnmounted(() => window.clearInterval(timer))
         <p class="page-meta">Databricks workspaces available to tables in this faros workspace.</p>
       </div>
       <div class="actions">
-        <button class="primary" type="button" @click="showForm ? (showForm = false) : startCreate()">
+        <button class="primary" type="button" :disabled="submitting" @click="showForm ? (showForm = false) : startCreate()">
           {{ showForm ? 'Cancel' : 'Add connection' }}
         </button>
       </div>
@@ -116,27 +195,32 @@ onUnmounted(() => window.clearInterval(timer))
       <h3 class="panel-title">Connect with a token</h3>
       <form class="form" @submit.prevent="submit">
         <div class="field">
-          <span class="field-label">Name</span>
-          <input v-model="name" autocomplete="off" placeholder="orders-prod" />
-          <span class="field-hint">How this workspace is referred to from faros — lowercase, stable, yours to choose.</span>
+          <label class="field-label" for="connection-name">Name</label>
+          <input id="connection-name" ref="nameInput" v-model="name" :disabled="submitting" autocomplete="off" placeholder="orders-prod" required aria-required="true" aria-describedby="connection-name-hint connection-form-error" :aria-invalid="!!formError" />
+          <span id="connection-name-hint" class="field-hint">How this workspace is referred to from faros. Use lowercase letters, numbers, and hyphens; the name is preserved exactly.</span>
         </div>
         <div class="field">
-          <span class="field-label">Workspace host</span>
-          <input v-model="host" autocomplete="off" placeholder="https://dbc-example.cloud.databricks.com" />
-          <span class="field-hint">The URL in your browser when you are logged into the Databricks workspace — e.g. https://dbc-….cloud.databricks.com (AWS), https://adb-….azuredatabricks.net (Azure) or https://….gcp.databricks.com (GCP). Scheme and host only, no path.</span>
+          <label class="field-label" for="connection-host">Workspace host</label>
+          <input id="connection-host" v-model="host" :disabled="submitting" autocomplete="url" placeholder="https://dbc-example.cloud.databricks.com" required aria-required="true" aria-describedby="connection-host-hint connection-form-error" :aria-invalid="!!formError" />
+          <span id="connection-host-hint" class="field-hint">Use the HTTPS root URL from the Databricks browser address bar (AWS, Azure, or GCP), with no path.</span>
         </div>
         <div class="field">
-          <span class="field-label">Token</span>
-          <input v-model="token" type="password" autocomplete="off" placeholder="Paste token" />
-          <span class="field-hint">A Databricks personal access token: in that workspace, open your avatar menu → Settings → Developer, then on the "Access tokens" card click Manage → Generate new token. The identity that owns the token needs SELECT on the catalogs and schemas you plan to import tables from.</span>
+          <label class="field-label" for="connection-token">Token</label>
+          <input id="connection-token" v-model="token" :disabled="submitting" type="password" autocomplete="new-password" placeholder="Paste token" required aria-required="true" aria-describedby="connection-token-hint connection-form-error" :aria-invalid="!!formError" />
+          <span id="connection-token-hint" class="field-hint">Create a personal access token in Databricks: avatar → Settings → Developer → Access tokens → Manage → Generate new token. Its identity needs SELECT on the catalogs and schemas you plan to import, plus access to a running SQL warehouse.</span>
         </div>
         <div class="actions">
-          <button class="primary" type="submit" :disabled="submitting">{{ submitting ? 'Connecting...' : 'Create' }}</button>
-          <button class="secondary" type="button" @click="() => { resetForm(); showForm = false }">Cancel</button>
-          <span v-if="formError" class="error">{{ formError }}</span>
+      <button class="primary" type="submit" :disabled="submitting">{{ submitting ? 'Connecting...' : 'Create' }}</button>
+          <button class="secondary" type="button" :disabled="submitting" @click="() => { resetForm(); showForm = false }">Cancel</button>
+          <span v-if="formError" id="connection-form-error" ref="formErrorRef" class="error" role="alert" aria-live="assertive" tabindex="-1">{{ formError }}</span>
         </div>
         <p class="muted">The token is stored as a Secret in your workspace; the provider validates it and shows the status below.</p>
       </form>
+    </div>
+
+    <div v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">
+      <span>{{ mutationError }}</span>
+      <button class="secondary" type="button" @click="mutationError = null">Dismiss</button>
     </div>
 
     <ResourceTable
@@ -148,12 +232,17 @@ onUnmounted(() => window.clearInterval(timer))
         { key: 'actions', label: '' },
       ]"
       :rows="rows"
-      :loading="loading && !connections.length"
+      row-key="name"
+      :loaded="loaded"
+      :loading="loading"
       :error="error"
+      :stale="loaded && !!error"
+      retryable
       empty-text="No connections yet."
-      @row-click="(row) => emit('open', String(row.name))"
+      @retry="load"
+      @row-click="(row) => openResource(String(row.name))"
     >
-      <template #name="{ value }"><button class="link" type="button" @click.stop="emit('open', String(value))">{{ value }}</button></template>
+      <template #name="{ value }"><button class="link" type="button" :disabled="operationLocked(String(value))" @click.stop="openResource(String(value))">{{ value }}</button></template>
       <template #host="{ value }"><code>{{ value }}</code></template>
       <template #authType="{ value }">{{ value }}</template>
       <template #status="{ row }">
@@ -162,7 +251,13 @@ onUnmounted(() => window.clearInterval(timer))
       </template>
       <template #actions="{ row }">
         <div class="row-actions">
-          <button class="danger" type="button" @click.stop="remove(row)">Delete</button>
+          <ResourceTableDeleteButton
+            :label="`Delete connection ${String(row.name)}`"
+            :busy-label="`Deleting connection ${String(row.name)}…`"
+            :busy="operationPhase(String(row.name)) === 'deleting'"
+            :disabled="operationLocked(String(row.name))"
+            @click="remove(row)"
+          />
         </div>
       </template>
     </ResourceTable>

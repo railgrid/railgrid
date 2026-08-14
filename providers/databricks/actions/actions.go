@@ -56,9 +56,8 @@ const (
 
 	// Declared CatalogEntry limits for query_table/v1. The manifest and this
 	// code must agree; skill_catalog_test cross-checks the manifest values.
-	maxInputBytes      = 8 << 10
-	maxRequestBytes    = 1 << 20
-	defaultActionLimit = 100
+	maxInputBytes   = 8 << 10
+	maxRequestBytes = 1 << 20
 	// maxActionDeadline matches the declared limits.timeoutSeconds.
 	maxActionDeadline = 45 * time.Second
 )
@@ -289,12 +288,21 @@ func NewHandler(deps Deps) http.Handler {
 		// backend placeholder. The route-derived resourceRef is authoritative.
 		result.ActionVersion = queryapi.ActionVersionV1
 		result.TableRef = ref.Name
-		w.Header().Set("X-Request-ID", requestID)
-		writeJSON(w, http.StatusOK, envelope{
+		result = queryapi.BoundQueryResult(result)
+		env := envelope{
 			RequestID: requestID, Provider: ProviderName,
 			Action: route.Action, ActionVersion: route.Version,
 			ResourceRef: &ref, Result: result,
-		})
+		}
+		bounded, err := boundResultEnvelope(env)
+		if err != nil {
+			failure := &ActionError{Code: ActionErrorCodeBackendFailure, Message: defaultActionFailureMessage, Status: http.StatusBadGateway}
+			logActionFailure(deps.Logger, requestID, started, failure.Code, "response_limit")
+			writeFailure(w, requestID, &route, failure)
+			return
+		}
+		w.Header().Set("X-Request-ID", requestID)
+		writeJSON(w, http.StatusOK, bounded)
 	})
 }
 
@@ -481,15 +489,12 @@ func decodeRequest(w http.ResponseWriter, r *http.Request) (QueryInput, error) {
 		}
 		return QueryInput{}, fmt.Errorf("decode trailing input data: %w", err)
 	}
-	if input.Limit == 0 {
-		input.Limit = defaultActionLimit
+	columns, limit, err := queryapi.NormalizeQueryControls(input.Columns, input.Limit)
+	if err != nil {
+		return QueryInput{}, fmt.Errorf("input: %w", err)
 	}
-	if input.Limit < 1 || input.Limit > queryapi.MaxQueryLimit {
-		return QueryInput{}, fmt.Errorf("input.limit must be between 1 and %d", queryapi.MaxQueryLimit)
-	}
-	if len(input.Columns) > queryapi.MaxQueryColumns {
-		return QueryInput{}, fmt.Errorf("input.columns must contain at most %d entries", queryapi.MaxQueryColumns)
-	}
+	input.Columns = columns
+	input.Limit = limit
 	return input, nil
 }
 
@@ -557,6 +562,36 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+// boundResultEnvelope keeps the final action response within the same byte
+// budget as the structured result. The result is already shape-normalized;
+// when envelope metadata pushes it over budget, rows are removed first and
+// then columns are removed while preserving consistent row keys.
+func boundResultEnvelope(env envelope) (envelope, error) {
+	result, ok := env.Result.(queryapi.QueryTableResult)
+	if !ok {
+		return env, nil
+	}
+	for {
+		env.Result = result
+		payload, err := json.Marshal(env)
+		if err == nil && len(payload)+1 <= queryapi.MaxQueryBytes {
+			return env, nil
+		}
+		if len(result.Rows) > 0 {
+			result.Rows = result.Rows[:len(result.Rows)-1]
+			result.Truncated = true
+			continue
+		}
+		if len(result.Columns) > 0 {
+			result.Columns = result.Columns[:len(result.Columns)-1]
+			result = queryapi.BoundQueryResult(result)
+			result.Truncated = true
+			continue
+		}
+		return envelope{}, fmt.Errorf("action result exceeds the %d-byte response limit", queryapi.MaxQueryBytes)
+	}
 }
 
 func envelopeIdentity(requestID string, route *Route) envelope {

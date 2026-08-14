@@ -6,6 +6,8 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
+    "test": "npm run test:portal",
+    "test:portal": "tsc -p tsconfig.test.json && node --test --test-concurrency=1 .test-dist/api.behavior.test.js .test-dist/registrationApi.test.js .test-dist/registrationFlow.test.js .test-dist/registrationTree.test.js .test-dist/refresh.test.js .test-dist/resourceName.test.js .test-dist/state.test.js .test-dist/tableRefs.test.js .test-dist/components/splitCreate.test.js src/lazyCheckboxTree.source.test.mjs src/resourceTable.ssr.test.mjs",
     "test:tableRefs": "tsc -p tsconfig.test.json && node .test-dist/tableRefs.test.js",
     "typecheck": "vue-tsc --noEmit"
   },

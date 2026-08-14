@@ -11,6 +11,21 @@ permissions:
   contents: read
 
 jobs:
+  actions-node-sdk:
+    name: Actions Node SDK package contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test package and clean alias install
+        working-directory: provider-sdk/actions-node
+        run: npm test && npm run test:install
+
   # Subprocess provider suites: hub with embedded kcp + provider binaries as
   # host processes, driven over HTTP + kcp dynamic clients. No kind, no Helm,
   # no Docker — the cheapest full-kcp coverage we have. The suites share the

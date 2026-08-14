@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -22,11 +24,15 @@ const (
 	ActionVersionV1 = "v1"
 	// DefaultQueryLimit and MaxQueryLimit intentionally have the same fixed
 	// value: omitted limits are bounded and callers cannot raise the cap.
-	DefaultQueryLimit = 100
-	MaxQueryLimit     = 100
-	MaxQueryRows      = 100
-	MaxQueryColumns   = 64
-	MaxQueryBytes     = 64 * 1024
+	DefaultQueryLimit   = 100
+	MaxQueryLimit       = 100
+	MaxQueryRows        = 100
+	MaxQueryColumns     = 64
+	MaxIdentifierLength = 255
+	// MaxQueryBytes is the serialized result budget. It applies to the result
+	// object itself and is also used by the action envelope to keep the complete
+	// wire response bounded.
+	MaxQueryBytes = 64 * 1024
 	// ErrorCodeSchemaProjectionInvalid identifies a bounded projection that
 	// cannot be satisfied by the imported Table schema. It is safe to expose
 	// through the Provider Actions error envelope.
@@ -101,9 +107,94 @@ type QueryTableResult struct {
 	Truncated     bool             `json:"truncated,omitempty"`
 }
 
+// NormalizeQueryControls applies the one input contract shared by HTTP
+// actions, MCP, and the tenant executor. The returned slice is a copy so a
+// caller cannot mutate a validated request after it crosses a boundary.
+func NormalizeQueryControls(columns []string, limit int) ([]string, int, error) {
+	if limit == 0 {
+		limit = DefaultQueryLimit
+	}
+	if limit < 1 || limit > MaxQueryLimit {
+		return nil, 0, fmt.Errorf("limit must be between 1 and %d", MaxQueryLimit)
+	}
+	if len(columns) > MaxQueryColumns {
+		return nil, 0, fmt.Errorf("columns must contain at most %d entries", MaxQueryColumns)
+	}
+	normalized := make([]string, len(columns))
+	seen := make(map[string]struct{}, len(columns))
+	for i, column := range columns {
+		if _, err := quoteIdent(column); err != nil {
+			return nil, 0, fmt.Errorf("columns[%d]: invalid identifier", i)
+		}
+		if _, ok := seen[column]; ok {
+			return nil, 0, fmt.Errorf("columns[%d]: duplicate identifier", i)
+		}
+		seen[column] = struct{}{}
+		normalized[i] = column
+	}
+	return normalized, limit, nil
+}
+
 // BoundQueryResult enforces the provider's row, column, and serialized-byte
-// limits at every boundary (backend, tenant adapter, and MCP output).
+// limits at every boundary (backend, tenant adapter, and MCP output). Rows are
+// rebuilt from the final column list, so every row has exactly the same keys.
+// It is intentionally infallible for compatibility with existing callers; an
+// unmarshalable row is discarded and marks the result truncated.
 func BoundQueryResult(result QueryTableResult) QueryTableResult {
+	return BoundQueryResultWithin(result, MaxQueryBytes)
+}
+
+// BoundQueryResultWithin applies the same shape and row/column limits as
+// BoundQueryResult with a caller-provided serialized byte budget. Protocol
+// adapters that duplicate or wrap this JSON should measure their final wire
+// envelope as well; this helper only bounds the result object itself.
+func BoundQueryResultWithin(result QueryTableResult, maxBytes int) QueryTableResult {
+	if maxBytes < 1 || maxBytes > MaxQueryBytes {
+		maxBytes = MaxQueryBytes
+	}
+	result = normalizeResultShape(result)
+	for {
+		encoded, err := json.Marshal(result)
+		if err == nil && len(encoded) <= maxBytes {
+			return result
+		}
+		if len(result.Rows) > 0 {
+			result.Rows = result.Rows[:len(result.Rows)-1]
+			result.Truncated = true
+			continue
+		}
+		if len(result.Columns) > 0 {
+			result.Columns = result.Columns[:len(result.Columns)-1]
+			result.Rows = rowsForColumns(result.Rows, result.Columns)
+			result.Truncated = true
+			continue
+		}
+		// The fixed metadata fields are bounded by the request contract. If a
+		// future caller violates that contract, return the smallest valid result
+		// rather than emitting an unbounded or invalid response.
+		return QueryTableResult{
+			ActionVersion: ActionVersionV1,
+			TableRef:      truncateString(result.TableRef, 253),
+			Columns:       []QueryColumn{},
+			Rows:          []map[string]any{},
+			Truncated:     true,
+		}
+	}
+}
+
+func normalizeResultShape(result QueryTableResult) QueryTableResult {
+	columns := make([]QueryColumn, 0, len(result.Columns))
+	seenColumns := make(map[string]struct{}, len(result.Columns))
+	for _, column := range result.Columns {
+		if _, ok := seenColumns[column.Name]; ok {
+			result.Truncated = true
+			continue
+		}
+		seenColumns[column.Name] = struct{}{}
+		columns = append(columns, column)
+	}
+	result.Columns = columns
+	result.Rows = append([]map[string]any(nil), result.Rows...)
 	if len(result.Columns) > MaxQueryColumns {
 		result.Columns = result.Columns[:MaxQueryColumns]
 		result.Truncated = true
@@ -112,19 +203,56 @@ func BoundQueryResult(result QueryTableResult) QueryTableResult {
 		result.Rows = result.Rows[:MaxQueryRows]
 		result.Truncated = true
 	}
-	used := 0
-	rows := result.Rows[:0]
-	for _, row := range result.Rows {
-		encoded, err := json.Marshal(row)
-		if err != nil || used+len(encoded) > MaxQueryBytes {
-			result.Truncated = true
-			break
-		}
-		used += len(encoded)
-		rows = append(rows, row)
+	allowed := make(map[string]struct{}, len(result.Columns))
+	for _, column := range result.Columns {
+		allowed[column.Name] = struct{}{}
 	}
-	result.Rows = rows
+	for _, row := range result.Rows {
+		for key := range row {
+			if _, ok := allowed[key]; !ok {
+				result.Truncated = true
+				break
+			}
+		}
+	}
+	result.Rows = rowsForColumns(result.Rows, result.Columns)
 	return result
+}
+
+func rowsForColumns(rows []map[string]any, columns []QueryColumn) []map[string]any {
+	if len(rows) == 0 {
+		return []map[string]any{}
+	}
+	keys := make([]string, 0, len(columns))
+	seen := make(map[string]struct{}, len(columns))
+	for i := range columns {
+		if _, ok := seen[columns[i].Name]; ok {
+			continue
+		}
+		seen[columns[i].Name] = struct{}{}
+		keys = append(keys, columns[i].Name)
+	}
+	result := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		normalized := make(map[string]any, len(keys))
+		for _, key := range keys {
+			if value, ok := row[key]; ok {
+				normalized[key] = value
+			} else {
+				normalized[key] = nil
+			}
+		}
+		result = append(result, normalized)
+	}
+	return result
+}
+
+func truncateString(value string, max int) string {
+	runes := []rune(value)
+	if len(runes) <= max {
+		return value
+	}
+	return string(runes[:max])
 }
 
 func ValidateActionVersion(version string) error {
@@ -142,6 +270,17 @@ func ValidateTableRef(name string) error {
 	return nil
 }
 
+// ValidateIdentifier reports whether a Databricks catalog, schema, table, or
+// projection column can be represented by the current bounded query contract.
+// Discovery surfaces use this same rule to mark metadata that can be seen but
+// cannot yet be queried through query_table/v1.
+func ValidateIdentifier(value string) error {
+	if _, err := quoteIdent(value); err != nil {
+		return err
+	}
+	return nil
+}
+
 // NormalizeQueryRequest validates the typed action and applies the fixed
 // default limit. No SQL text is accepted by this contract.
 func NormalizeQueryRequest(in QueryTableRequest) (QueryTableRequest, error) {
@@ -152,27 +291,27 @@ func NormalizeQueryRequest(in QueryTableRequest) (QueryTableRequest, error) {
 	if err := ValidateTableRef(in.TableRef); err != nil {
 		return QueryTableRequest{}, err
 	}
-	if in.Limit == 0 {
-		in.Limit = DefaultQueryLimit
+	columns, limit, err := NormalizeQueryControls(in.Columns, in.Limit)
+	if err != nil {
+		return QueryTableRequest{}, err
 	}
-	if in.Limit < 1 || in.Limit > MaxQueryLimit {
-		return QueryTableRequest{}, fmt.Errorf("limit must be between 1 and %d", MaxQueryLimit)
-	}
-	seen := make(map[string]struct{}, len(in.Columns))
-	for i, column := range in.Columns {
-		column = strings.TrimSpace(column)
-		if _, err := quoteIdent(column); err != nil {
-			return QueryTableRequest{}, fmt.Errorf("columns[%d]: invalid identifier", i)
-		}
-		if _, ok := seen[column]; ok {
-			return QueryTableRequest{}, fmt.Errorf("columns[%d]: duplicate identifier", i)
-		}
-		seen[column] = struct{}{}
-		in.Columns[i] = column
-	}
+	in.Columns = columns
+	in.Limit = limit
 	return in, nil
 }
 
+// TableSchemaProbeSQL constructs the zero-row statement used to validate a
+// Table and obtain its schema manifest without reading table data.
+func TableSchemaProbeSQL(ref TableRef) (string, error) {
+	from, err := qualifiedTable(ref)
+	if err != nil {
+		return "", err
+	}
+	return "SELECT * FROM " + from + " LIMIT 0", nil
+}
+
+// DescribeTableSQL retains the original DESCRIBE statement contract for
+// callers that explicitly need Databricks' table-description result rows.
 func DescribeTableSQL(ref TableRef) (string, error) {
 	from, err := qualifiedTable(ref)
 	if err != nil {
@@ -192,6 +331,9 @@ func SelectTableSQL(ref TableRef, projection []string, limit int, allowedColumns
 	if limit < 1 || limit > MaxQueryLimit {
 		return "", fmt.Errorf("limit must be between 1 and %d", MaxQueryLimit)
 	}
+	if len(projection) > MaxQueryColumns {
+		return "", fmt.Errorf("projection must contain at most %d columns", MaxQueryColumns)
+	}
 	from, err := qualifiedTable(ref)
 	if err != nil {
 		return "", err
@@ -207,7 +349,6 @@ func SelectTableSQL(ref TableRef, projection []string, limit int, allowedColumns
 		parts := make([]string, 0, len(projection))
 		seen := make(map[string]struct{}, len(projection))
 		for i, column := range projection {
-			column = strings.TrimSpace(column)
 			if _, err := quoteIdent(column); err != nil {
 				return "", fmt.Errorf("columns[%d]: invalid identifier", i)
 			}
@@ -248,9 +389,16 @@ func qualifiedTable(ref TableRef) (string, error) {
 }
 
 func quoteIdent(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if !identifierRE.MatchString(value) {
+	if value == "" || utf8.RuneCountInString(value) > MaxIdentifierLength || !utf8.ValidString(value) {
 		return "", fmt.Errorf("invalid identifier")
 	}
-	return "`" + value + "`", nil
+	if identifierRE.MatchString(value) {
+		return "`" + value + "`", nil
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return "", fmt.Errorf("invalid identifier")
+		}
+	}
+	return "`" + strings.ReplaceAll(value, "`", "``") + "`", nil
 }

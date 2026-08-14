@@ -10,6 +10,7 @@ package connection
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -21,6 +22,7 @@ import (
 
 	databricksv1alpha1 "github.com/faroshq/provider-databricks/apis/databricks/v1alpha1"
 	"github.com/faroshq/provider-databricks/backend"
+	"github.com/faroshq/provider-databricks/controller/shared"
 	databricksscheme "github.com/faroshq/provider-databricks/scheme"
 )
 
@@ -32,13 +34,16 @@ type fakeValidator struct {
 }
 
 type safeStatusError struct {
-	full string
-	safe string
+	full   string
+	safe   string
+	status int
 }
 
 func (e safeStatusError) Error() string { return e.full }
 
 func (e safeStatusError) SafeStatusMessage() string { return e.safe }
+
+func (e safeStatusError) HTTPStatusCode() int { return e.status }
 
 func (v *fakeValidator) ValidateConnection(_ context.Context, target backend.ConnectionValidationTarget) (backend.ConnectionValidationResult, error) {
 	v.calls++
@@ -192,8 +197,9 @@ func TestReconcileConnectionReportsSanitizedValidationFailure(t *testing.T) {
 		WithStatusSubresource(&databricksv1alpha1.Connection{}).
 		Build()
 	validator := &fakeValidator{err: safeStatusError{
-		full: "databricks current-user request failed: 401 Unauthorized: {\"access_token\":\"pat-secret\",\"details\":\"upstream body\"}",
-		safe: "databricks credential validation failed: 401 Unauthorized",
+		full:   "databricks current-user request failed: 401 Unauthorized: {\"access_token\":\"pat-secret\",\"details\":\"upstream body\"}",
+		safe:   "databricks credential validation failed: 401 Unauthorized",
+		status: http.StatusUnauthorized,
 	}}
 	r := &Reconciler{Validator: validator}
 
@@ -201,8 +207,8 @@ func TestReconcileConnectionReportsSanitizedValidationFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcileConnection returned error: %v", err)
 	}
-	if result.RequeueAfter <= 0 {
-		t.Fatalf("RequeueAfter = %s, want periodic refresh after validation failure", result.RequeueAfter)
+	if result.RequeueAfter != shared.ValidationRefreshAfter {
+		t.Fatalf("RequeueAfter = %s, want validation refresh %s for access denial", result.RequeueAfter, shared.ValidationRefreshAfter)
 	}
 
 	var got databricksv1alpha1.Connection
@@ -210,14 +216,23 @@ func TestReconcileConnectionReportsSanitizedValidationFailure(t *testing.T) {
 		t.Fatalf("get connection: %v", err)
 	}
 	validated := apimeta.FindStatusCondition(got.Status.Conditions, databricksv1alpha1.ConditionValidated)
-	if validated == nil || validated.Status != metav1.ConditionFalse || validated.Reason != ReasonValidationFailed {
-		t.Fatalf("Validated condition = %#v, want False/%s", validated, ReasonValidationFailed)
+	if validated == nil || validated.Status != metav1.ConditionFalse || validated.Reason != ReasonAccessDenied {
+		t.Fatalf("Validated condition = %#v, want False/%s", validated, ReasonAccessDenied)
 	}
 	if !strings.Contains(validated.Message, "databricks credential validation failed: 401 Unauthorized") {
 		t.Fatalf("Validated message = %q, want sanitized status message", validated.Message)
 	}
 	if strings.Contains(validated.Message, "pat-secret") || strings.Contains(validated.Message, "upstream body") {
 		t.Fatalf("Validated message = %q, want upstream body details omitted", validated.Message)
+	}
+}
+
+func TestValidationFailureRequeueCadence(t *testing.T) {
+	if got := validationRequeueAfter(ReasonDatabricksUnavailable); got != shared.DependencyRetryAfter {
+		t.Fatalf("DatabricksUnavailable retry = %s, want %s", got, shared.DependencyRetryAfter)
+	}
+	if got := validationRequeueAfter(ReasonValidationFailed); got != shared.ValidationRefreshAfter {
+		t.Fatalf("ValidationFailed retry = %s, want %s", got, shared.ValidationRefreshAfter)
 	}
 }
 

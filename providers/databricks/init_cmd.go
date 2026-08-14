@@ -25,6 +25,14 @@ const (
 	defaultWorkspacePath = "root:faros:providers:databricks"
 )
 
+// permissionClaims is the single init-side declaration of the provider's
+// authority. Keep it in lockstep with manifest.yaml and the Helm CatalogEntry:
+// existing tenant APIBindings do not gain newly advertised claims until they
+// are explicitly re-enabled or migrated.
+var permissionClaims = []sdkinstall.PermissionClaim{
+	{Resource: "secrets", Verbs: []string{"get"}},
+}
+
 func runInitCmd(ctx context.Context) error {
 	config, err := loadInitConfig()
 	if err != nil {
@@ -35,13 +43,11 @@ func runInitCmd(ctx context.Context) error {
 	catalogEntryFile := os.Getenv("FAROS_CATALOGENTRY_FILE")
 
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
-		Config:        config,
-		ExportName:    apiExportName,
-		WorkspacePath: workspacePath,
-		SchemasDir:    schemasDir,
-		Claims: []sdkinstall.PermissionClaim{
-			{Resource: "secrets", Verbs: []string{"get"}},
-		},
+		Config:           config,
+		ExportName:       apiExportName,
+		WorkspacePath:    workspacePath,
+		SchemasDir:       schemasDir,
+		Claims:           permissionClaims,
 		CatalogEntryFile: catalogEntryFile,
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)

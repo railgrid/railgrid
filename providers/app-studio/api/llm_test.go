@@ -484,6 +484,8 @@ func TestProjectPromptDocumentsPublishedActionsSDKAliasForActiveGrant(t *testing
 		"component automatically installs and reloads dependencies after the manifest synchronizes",
 		"do not manually run npm install, npm exec, npm search, or package discovery",
 		"do not discover the gateway",
+		"Never describe a failed install as still running",
+		"never repeat an identical wait or verification claim without changed evidence",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("active-grant prompt missing %q:\n%s", want, prompt)

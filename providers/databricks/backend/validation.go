@@ -17,26 +17,20 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	databricksv1alpha1 "github.com/faroshq/provider-databricks/apis/databricks/v1alpha1"
+	"github.com/faroshq/provider-databricks/hostpolicy"
 	"github.com/faroshq/provider-databricks/queryapi"
 )
 
 const (
 	currentUserPath                  = "/api/2.0/current-user/me"
 	warehousePathPrefix              = "/api/2.0/sql/warehouses/"
-	allowedHostSuffixesEnv           = "DATABRICKS_ALLOWED_HOST_SUFFIXES"
+	tableSummariesPath               = "/api/2.1/unity-catalog/table-summaries"
 	defaultAllowedWorkspaceHostError = "not an allowed Databricks workspace host"
 )
-
-var defaultAllowedWorkspaceHostSuffixes = []string{
-	"cloud.databricks.com",
-	"gcp.databricks.com",
-	"azuredatabricks.net",
-}
 
 // ConnectionValidator validates tenant-authored Databricks Connection
 // resources without exposing the referenced credential outside the provider.
@@ -91,6 +85,22 @@ type TableValidationResult struct {
 	Columns []databricksv1alpha1.Column
 }
 
+// UnsupportedTableTypeError reports a Databricks table type that cannot be
+// validated through the provider's bounded query_table/v1 contract.
+type UnsupportedTableTypeError struct {
+	TableType string
+}
+
+func (e UnsupportedTableTypeError) Error() string { return e.SafeStatusMessage() }
+
+func (e UnsupportedTableTypeError) SafeStatusMessage() string {
+	tableType := strings.ToUpper(strings.TrimSpace(e.TableType))
+	if tableType == "" {
+		tableType = "UNKNOWN"
+	}
+	return fmt.Sprintf("Databricks table type %q is not supported by query_table/v1; use a standard table or view", tableType)
+}
+
 type statusSafeError interface {
 	SafeStatusMessage() string
 }
@@ -107,6 +117,10 @@ func SafeStatusMessage(err error) string {
 		if msg := strings.TrimSpace(safe.SafeStatusMessage()); msg != "" {
 			return msg
 		}
+	}
+	var statusErr httpStatusCoder
+	if errors.As(err, &statusErr) {
+		return fmt.Sprintf("databricks validation failed: HTTP %d", statusErr.HTTPStatusCode())
 	}
 	return err.Error()
 }
@@ -168,7 +182,7 @@ func (c StatementClient) validateCurrentUser(ctx context.Context, client *http.C
 		}
 	}
 	var payload map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := decodeBoundedJSON(resp.Body, maxMetadataResponseBytes, &payload); err != nil {
 		return ConnectionValidationResult{}, fmt.Errorf("decode current-user response: %w", err)
 	}
 	return ConnectionValidationResult{
@@ -222,7 +236,7 @@ func (c StatementClient) ValidateWarehouse(ctx context.Context, target Warehouse
 		}
 	}
 	var payload map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := decodeBoundedJSON(resp.Body, maxMetadataResponseBytes, &payload); err != nil {
 		return WarehouseValidationResult{}, fmt.Errorf("decode warehouse response: %w", err)
 	}
 	return WarehouseValidationResult{
@@ -231,10 +245,19 @@ func (c StatementClient) ValidateWarehouse(ctx context.Context, target Warehouse
 	}, nil
 }
 
-// ValidateTable checks that the token can describe the configured table through
-// the referenced SQL warehouse and returns schema columns for status caching.
+// ValidateTable classifies the configured Unity Catalog object, then asks the
+// referenced SQL warehouse for a zero-row SELECT manifest. The manifest is the
+// same schema source used by query execution, so validation and query_table
+// cannot silently disagree about the table's columns.
 func (c StatementClient) ValidateTable(ctx context.Context, target TableValidationTarget) (TableValidationResult, error) {
-	sql, err := queryapi.DescribeTableSQL(target.Table)
+	summary, err := c.getTableSummary(ctx, target)
+	if err != nil {
+		return TableValidationResult{}, err
+	}
+	if strings.EqualFold(strings.TrimSpace(summary.TableType), "METRIC_VIEW") {
+		return TableValidationResult{}, UnsupportedTableTypeError{TableType: summary.TableType}
+	}
+	sql, err := queryapi.TableSchemaProbeSQL(target.Table)
 	if err != nil {
 		return TableValidationResult{}, err
 	}
@@ -242,39 +265,100 @@ func (c StatementClient) ValidateTable(ctx context.Context, target TableValidati
 	if err != nil {
 		return TableValidationResult{}, err
 	}
-	columns := columnsFromDescribeRows(rowsFromStatement(result))
+	columns := columnsFromStatementManifest(result)
 	if len(columns) == 0 {
-		return TableValidationResult{}, fmt.Errorf("databricks table describe returned no columns")
+		return TableValidationResult{}, fmt.Errorf("databricks table schema probe returned no columns")
 	}
 	return TableValidationResult{Columns: columns}, nil
 }
 
-func columnsFromDescribeRows(rows []map[string]any) []databricksv1alpha1.Column {
-	columns := make([]databricksv1alpha1.Column, 0, len(rows))
-	for _, row := range rows {
-		name := rowString(row, "col_name")
-		if name == "" || strings.HasPrefix(name, "#") {
-			break
-		}
-		typ := rowString(row, "data_type")
-		if typ == "" {
-			continue
-		}
-		columns = append(columns, databricksv1alpha1.Column{
-			Name:    name,
-			Type:    typ,
-			Comment: rowString(row, "comment"),
-		})
-	}
-	return columns
+type tableSummary struct {
+	FullName  string `json:"full_name"`
+	TableType string `json:"table_type"`
 }
 
-func rowString(row map[string]any, key string) string {
-	value, ok := row[key]
-	if !ok || value == nil {
-		return ""
+type tableSummariesResponse struct {
+	Tables        []tableSummary `json:"tables"`
+	NextPageToken string         `json:"next_page_token"`
+}
+
+func (c StatementClient) getTableSummary(ctx context.Context, target TableValidationTarget) (tableSummary, error) {
+	if strings.TrimSpace(target.Credential.BearerToken) == "" {
+		return tableSummary{}, fmt.Errorf("databricks bearer token is required")
 	}
-	return strings.TrimSpace(fmt.Sprint(value))
+	endpoint, fullName, err := c.tableSummariesEndpoint(target.Connection.Host, target.Table)
+	if err != nil {
+		return tableSummary{}, err
+	}
+	pageURL, err := url.Parse(endpoint)
+	if err != nil {
+		return tableSummary{}, fmt.Errorf("parse table summary endpoint: %w", err)
+	}
+	client := c.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	seenTokens := make(map[string]struct{})
+	pageToken := ""
+	for page := 0; page < 100; page++ {
+		query := pageURL.Query()
+		if pageToken == "" {
+			query.Del("page_token")
+		} else {
+			query.Set("page_token", pageToken)
+		}
+		pageURL.RawQuery = query.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL.String(), nil)
+		if err != nil {
+			return tableSummary{}, fmt.Errorf("build table summary request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+target.Credential.BearerToken)
+		req.Header.Set("Accept", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			return tableSummary{}, fmt.Errorf("get databricks table summary: %w", err)
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			_ = resp.Body.Close()
+			return tableSummary{}, tableSummaryHTTPError{statusCode: resp.StatusCode, status: resp.Status}
+		}
+		var summaries tableSummariesResponse
+		decodeErr := decodeBoundedJSON(resp.Body, maxMetadataResponseBytes, &summaries)
+		_ = resp.Body.Close()
+		if decodeErr != nil {
+			return tableSummary{}, fmt.Errorf("decode table summary response: %w", decodeErr)
+		}
+		for _, summary := range summaries.Tables {
+			if summary.FullName == fullName {
+				return summary, nil
+			}
+		}
+		if summaries.NextPageToken == "" {
+			return tableSummary{}, tableSummaryHTTPError{statusCode: http.StatusNotFound, status: "404 Not Found"}
+		}
+		if _, repeated := seenTokens[summaries.NextPageToken]; repeated {
+			return tableSummary{}, fmt.Errorf("databricks table summary pagination returned a repeated page token")
+		}
+		seenTokens[summaries.NextPageToken] = struct{}{}
+		pageToken = summaries.NextPageToken
+	}
+	return tableSummary{}, fmt.Errorf("databricks table summary pagination exceeded 100 pages")
+}
+
+func columnsFromStatementManifest(resp statementResponse) []databricksv1alpha1.Column {
+	columns := make([]databricksv1alpha1.Column, 0, len(resp.Manifest.Schema.Columns))
+	for _, column := range resp.Manifest.Schema.Columns {
+		name := strings.TrimSpace(column.Name)
+		typ := strings.TrimSpace(column.TypeText)
+		if typ == "" {
+			typ = strings.TrimSpace(column.TypeName)
+		}
+		if name == "" || typ == "" {
+			continue
+		}
+		columns = append(columns, databricksv1alpha1.Column{Name: name, Type: typ})
+	}
+	return columns
 }
 
 func currentUserEndpoints(host string) ([]string, error) {
@@ -304,6 +388,48 @@ func (c StatementClient) warehouseEndpoint(host, warehouseID string) (string, er
 	}
 	u.Path = strings.TrimRight(u.Path, "/") + warehousePathPrefix + url.PathEscape(strings.TrimSpace(warehouseID))
 	return u.String(), nil
+}
+
+func (c StatementClient) tableSummariesEndpoint(host string, ref queryapi.TableRef) (string, string, error) {
+	if err := validateTableRef(ref); err != nil {
+		return "", "", err
+	}
+	u, err := c.workspaceURL(host)
+	if err != nil {
+		return "", "", err
+	}
+	fullName := strings.Join([]string{ref.Catalog, ref.Schema, ref.Table}, ".")
+	u.Path = strings.TrimRight(u.Path, "/") + tableSummariesPath
+	query := u.Query()
+	query.Set("catalog_name", ref.Catalog)
+	query.Set("schema_name_pattern", escapeSQLLikeLiteral(ref.Schema))
+	query.Set("table_name_pattern", escapeSQLLikeLiteral(ref.Table))
+	query.Set("max_results", "1")
+	query.Set("include_manifest_capabilities", "false")
+	u.RawQuery = query.Encode()
+	return u.String(), fullName, nil
+}
+
+func validateTableRef(ref queryapi.TableRef) error {
+	for _, field := range []struct {
+		label string
+		value string
+	}{
+		{label: "catalog", value: ref.Catalog},
+		{label: "schema", value: ref.Schema},
+		{label: "table", value: ref.Table},
+	} {
+		if err := queryapi.ValidateIdentifier(field.value); err != nil {
+			return fmt.Errorf("%s %q: %w", field.label, field.value, err)
+		}
+	}
+	return nil
+}
+
+func escapeSQLLikeLiteral(value string) string {
+	value = strings.ReplaceAll(value, `\`, `\\`)
+	value = strings.ReplaceAll(value, `%`, `\%`)
+	return strings.ReplaceAll(value, `_`, `\_`)
 }
 
 func (c StatementClient) workspaceURL(host string) (*url.URL, error) {
@@ -353,43 +479,7 @@ func (c StatementClient) schemeAllowed(scheme, hostname string) bool {
 }
 
 func allowedWorkspaceHost(hostname string, configured []string) bool {
-	for _, suffix := range workspaceHostSuffixes(configured) {
-		if hostname == suffix || strings.HasSuffix(hostname, "."+suffix) {
-			return true
-		}
-	}
-	return false
-}
-
-func workspaceHostSuffixes(configured []string) []string {
-	if len(configured) == 0 {
-		configured = splitCSV(os.Getenv(allowedHostSuffixesEnv))
-	}
-	if len(configured) == 0 {
-		configured = defaultAllowedWorkspaceHostSuffixes
-	}
-	out := make([]string, 0, len(configured))
-	for _, suffix := range configured {
-		suffix = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(suffix)), ".")
-		if suffix != "" {
-			out = append(out, suffix)
-		}
-	}
-	return out
-}
-
-func splitCSV(value string) []string {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
-	parts := strings.Split(value, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
-			out = append(out, trimmed)
-		}
-	}
-	return out
+	return hostpolicy.AllowedWorkspaceHost(hostname, configured)
 }
 
 func isLoopbackHost(hostname string) bool {
@@ -406,6 +496,8 @@ type currentUserHTTPError struct {
 	body       string
 }
 
+func (e currentUserHTTPError) HTTPStatusCode() int { return e.statusCode }
+
 func (e currentUserHTTPError) Error() string {
 	return "databricks credential validation failed: " + e.status
 }
@@ -420,6 +512,21 @@ type warehouseHTTPError struct {
 	body        string
 	warehouseID string
 }
+
+type tableSummaryHTTPError struct {
+	statusCode int
+	status     string
+}
+
+func (e tableSummaryHTTPError) HTTPStatusCode() int { return e.statusCode }
+
+func (e tableSummaryHTTPError) Error() string { return e.SafeStatusMessage() }
+
+func (e tableSummaryHTTPError) SafeStatusMessage() string {
+	return "databricks table summary validation failed: " + e.status
+}
+
+func (e warehouseHTTPError) HTTPStatusCode() int { return e.statusCode }
 
 func (e warehouseHTTPError) Error() string {
 	return e.SafeStatusMessage()

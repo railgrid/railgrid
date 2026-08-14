@@ -1,26 +1,35 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { Pencil, Plus, RefreshCw, Trash2 } from 'lucide-vue-next'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { RefreshCw } from 'lucide-vue-next'
+import SplitCreateButton from '../components/SplitCreateButton.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
+import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
+import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { api } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
 import { importPrerequisiteMessage, nextValidWarehouseRef, warehousesForConnection } from '../tableRefs'
 import type { Connection, ErrorResponse, Table, Warehouse } from '../types'
+import { createLatestRefreshController, createOperationLocks, operationKey, type LatestRefreshController } from '../refresh'
+import { resourceNameError } from '../resourceName'
 
-const emit = defineEmits<{ (e: 'open', name: string): void }>()
+const emit = defineEmits<{ (e: 'open', name: string): void; (e: 'browse', trigger?: HTMLElement): void }>()
 
 const connections = ref<Connection[]>([])
 const warehouses = ref<Warehouse[]>([])
 const tables = ref<Table[]>([])
 const loading = ref(false)
+const loaded = ref(false)
 const error = ref<string | null>(null)
+const mutationError = ref<string | null>(null)
+const operations = createOperationLocks()
 const showForm = ref(false)
 const editing = ref<string | null>(null)
 const submitting = ref(false)
 const formError = ref<string | null>(null)
-const selectedTable = ref('')
-let timer: number | undefined
+const nameInput = ref<HTMLInputElement | null>(null)
+const formErrorRef = ref<HTMLElement | null>(null)
+let refresh!: LatestRefreshController
 
 const form = reactive({
   name: '',
@@ -31,18 +40,15 @@ const form = reactive({
   table: '',
 })
 
+const visibleTables = computed(() => tables.value.filter(table => !operations.isTombstoned(operationKey('table', table.name), table.uid)))
 const rows = computed<Array<Record<string, unknown>>>(() =>
-  tables.value.map(t => ({
+  visibleTables.value.map(t => ({
     ...t,
     columnCount: t.columns.length ? String(t.columns.length) : '-',
   })),
 )
 
-const selected = computed(() => tables.value.find(t => t.name === selectedTable.value) ?? null)
-const schemaRows = computed<Array<Record<string, unknown>>>(() =>
-  (selected.value?.columns ?? []).map(c => ({ ...c, nullableLabel: c.nullable ? 'yes' : 'no' })),
-)
-const tableImportBlocker = computed(() => loading.value ? '' : importPrerequisiteMessage(connections.value, warehouses.value))
+const tableImportBlocker = computed(() => !loaded.value ? '' : importPrerequisiteMessage(connections.value, warehouses.value))
 const formWarehouses = computed(() => warehousesForConnection(warehouses.value, form.connectionRef))
 
 function errMessage(e: unknown): string {
@@ -62,10 +68,19 @@ function resetForm() {
 }
 
 function startCreate() {
-  if (loading.value) return
-  if (tableImportBlocker.value) return
   resetForm()
   showForm.value = true
+  void nextTick(() => nameInput.value?.focus())
+}
+
+function closeForm() {
+  resetForm()
+  showForm.value = false
+}
+
+function browseCatalog(trigger?: HTMLElement) {
+  if (showForm.value) closeForm()
+  emit('browse', trigger)
 }
 
 // Prefill the Databricks-provided samples catalog (readable in every
@@ -80,6 +95,7 @@ function fillDemo() {
 
 function editTable(row: Record<string, unknown>) {
   const table = row as unknown as Table
+  if (operationLocked(table.name)) return
   editing.value = table.name
   form.name = table.name
   form.connectionRef = table.connectionRef
@@ -87,70 +103,90 @@ function editTable(row: Record<string, unknown>) {
   form.catalog = table.catalog
   form.schema = table.schema
   form.table = table.table
-  selectedTable.value = table.name
   formError.value = null
   showForm.value = true
 }
 
-async function load() {
-  loading.value = true
-  error.value = null
-  try {
-    const [connList, warehouseList, tableList] = await Promise.all([
-      api.listConnections(),
-      api.listWarehouses(),
-      api.listTables(),
-    ])
-    connections.value = connList
-    warehouses.value = warehouseList
-    tables.value = tableList
-    if (!form.connectionRef) form.connectionRef = connList[0]?.name ?? ''
-    if (connList.length && !connList.some(c => c.name === form.connectionRef)) form.connectionRef = connList[0].name
-    form.warehouseRef = nextValidWarehouseRef(warehouseList, form.connectionRef, form.warehouseRef)
-    if (!selectedTable.value && tableList.length) selectedTable.value = tableList[0].name
-    if (selectedTable.value && !tableList.some(table => table.name === selectedTable.value)) {
-      selectedTable.value = tableList[0]?.name ?? ''
-    }
-  } catch (e) {
-    const err = e as ErrorResponse
-    error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
-  } finally {
-    loading.value = false
-  }
+function load() {
+  refresh.request()
+}
+
+function operationLocked(name: string): boolean {
+  return operations.isLocked(operationKey('table', name))
+}
+
+function operationPhase(name: string) {
+  return operations.phase(operationKey('table', name))
+}
+
+function openResource(name: string): void {
+  if (!operationLocked(name)) emit('open', name)
+}
+
+async function focusFormError(message: string) {
+  formError.value = message
+  await nextTick()
+  formErrorRef.value?.focus()
 }
 
 async function submit() {
   formError.value = null
+  mutationError.value = null
+  if (!loaded.value) {
+    await focusFormError('Table list is still loading. Retry the read before saving a table.')
+    return
+  }
   if (tableImportBlocker.value) {
-    formError.value = tableImportBlocker.value
+    await focusFormError(tableImportBlocker.value)
     return
   }
   if (!form.name || !form.connectionRef || !form.warehouseRef || !form.catalog || !form.schema || !form.table) {
-    formError.value = 'all table fields are required'
+    await focusFormError('All table fields are required.')
+    return
+  }
+  const nameError = resourceNameError(form.name, 'Name')
+  if (nameError) {
+    await focusFormError(nameError)
+    return
+  }
+  const desiredName = form.name.trim()
+  const duplicate = tables.value.find(table => table.name === desiredName)
+  if (duplicate && duplicate.name !== editing.value) {
+    await focusFormError(`Table "${desiredName}" already exists.`)
+    return
+  }
+  const lock = operationKey('table', desiredName)
+  if (operations.isTombstoned(lock)) {
+    await focusFormError(`Table "${desiredName}" is still being removed. Retry after the list refresh confirms it is gone.`)
+    return
+  }
+  if (!operations.acquire(lock, editing.value ? 'saving' : 'creating')) {
+    await focusFormError(`Table "${desiredName}" already has an update in progress.`)
     return
   }
   if (!formWarehouses.value.some(warehouse => warehouse.name === form.warehouseRef)) {
-    formError.value = 'selected warehouse must belong to the selected connection'
+    operations.release(lock)
+    await focusFormError('Selected warehouse must belong to the selected connection.')
     return
   }
   submitting.value = true
   try {
-    const saved = await api.saveTable({
-      name: form.name,
+    await api.saveTable({
+      name: desiredName,
       connectionRef: form.connectionRef,
       warehouseRef: form.warehouseRef,
       catalog: form.catalog,
       schema: form.schema,
       table: form.table,
     })
-    selectedTable.value = saved.name
     resetForm()
     showForm.value = false
-    await load()
+    load()
   } catch (e) {
-    formError.value = errMessage(e)
+    await focusFormError(errMessage(e))
   } finally {
     submitting.value = false
+    operations.release(lock)
   }
 }
 
@@ -160,26 +196,65 @@ async function remove(row: Record<string, unknown>) {
     title: `Delete table "${table.name}"?`,
     message: 'App Studio guidance and Databricks MCP tools will no longer be able to inspect this tableRef.',
     confirmLabel: 'Delete',
+    danger: true,
   })
   if (!ok) return
+  const lock = operationKey('table', table.name)
+  if (!operations.acquire(lock, 'deleting')) {
+    mutationError.value = `Table "${table.name}" already has an operation in progress.`
+    return
+  }
+  mutationError.value = null
   try {
     await api.deleteTable(table.name)
-    if (selectedTable.value === table.name) selectedTable.value = ''
-    await load()
+    operations.tombstone(lock, table.uid)
+    tables.value = tables.value.filter(item => item.name !== table.name)
+    load()
   } catch (e) {
-    error.value = errMessage(e)
+    mutationError.value = errMessage(e)
+  } finally {
+    operations.release(lock)
   }
 }
+
+refresh = createLatestRefreshController(async requestID => {
+  loading.value = true
+  try {
+    const [connList, warehouseList, tableList] = await Promise.all([
+      api.listConnections(),
+      api.listWarehouses(),
+      api.listTables(),
+    ])
+    if (!refresh.isCurrent(requestID)) return
+    connections.value = connList
+    warehouses.value = warehouseList
+    tables.value = tableList
+    operations.reconcile('connection', connList.map(({ name, uid }) => ({ name, uid })))
+    operations.reconcile('warehouse', warehouseList.map(({ name, uid }) => ({ name, uid })))
+    operations.reconcile('table', tableList.map(({ name, uid }) => ({ name, uid })))
+    loaded.value = true
+    error.value = null
+    if (!form.connectionRef) form.connectionRef = connList[0]?.name ?? ''
+    if (connList.length && !connList.some(c => c.name === form.connectionRef)) form.connectionRef = connList[0].name
+    form.warehouseRef = nextValidWarehouseRef(warehouseList, form.connectionRef, form.warehouseRef)
+  } catch (e) {
+    if (!refresh.isCurrent(requestID)) return
+    const err = e as ErrorResponse
+    error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
+  } finally {
+    if (refresh.isCurrent(requestID)) loading.value = false
+  }
+})
 
 watch(() => form.connectionRef, connectionRef => {
   form.warehouseRef = nextValidWarehouseRef(warehouses.value, connectionRef, form.warehouseRef)
 })
-
 onMounted(() => {
   load()
-  timer = window.setInterval(load, 5000)
 })
-onUnmounted(() => window.clearInterval(timer))
+onUnmounted(() => {
+  refresh.stop()
+})
 </script>
 
 <template>
@@ -190,14 +265,11 @@ onUnmounted(() => window.clearInterval(timer))
         <p class="page-meta">Imported table handles that App Studio can use by tableRef.</p>
       </div>
       <div class="actions">
-        <button class="secondary icon-text" type="button" :disabled="loading" @click="load">
+        <button class="secondary icon-text" type="button" @click="load">
           <RefreshCw class="button-icon" :stroke-width="1.75" />
           Refresh
         </button>
-        <button class="primary icon-text" type="button" :disabled="loading || !!tableImportBlocker" :title="tableImportBlocker" @click="showForm ? (showForm = false) : startCreate()">
-          <Plus class="button-icon" :stroke-width="1.75" />
-          {{ showForm ? 'Cancel' : 'Import table' }}
-        </button>
+        <SplitCreateButton kind="table" :disabled="submitting" @manual="startCreate" @browse="browseCatalog" />
       </div>
     </header>
 
@@ -206,45 +278,59 @@ onUnmounted(() => window.clearInterval(timer))
     <div v-if="showForm" class="panel">
       <div class="panel-head">
         <h3 class="panel-title">{{ editing ? 'Update table' : 'Import table' }}</h3>
-        <button v-if="!editing" class="link" type="button" @click="fillDemo" title="Prefill samples.nyctaxi.trips — Databricks demo data available in every workspace">Fill with demo data</button>
+        <button v-if="!editing" class="link" type="button" :disabled="submitting" @click="fillDemo" title="Prefill samples.nyctaxi.trips — Databricks demo data available in every workspace">Fill with demo data</button>
+      </div>
+      <div v-if="tableImportBlocker" class="warning" role="status">
+        {{ tableImportBlocker }}
       </div>
       <form class="form-grid" @submit.prevent="submit">
-        <label class="field">
+        <label class="field" for="table-name">
           <span class="field-label">Name</span>
-          <input v-model="form.name" :disabled="!!editing" autocomplete="off" placeholder="order-history" />
+          <input id="table-name" ref="nameInput" v-model="form.name" :disabled="!!editing || submitting" autocomplete="off" placeholder="order-history" required aria-required="true" aria-describedby="table-name-hint table-form-error" :aria-invalid="!!formError" />
+          <span id="table-name-hint" class="field-hint">The stable tableRef exposed to App Studio. Use lowercase letters, numbers, and hyphens; the name is preserved exactly.</span>
         </label>
-        <label class="field">
+        <label class="field" for="table-connection">
           <span class="field-label">Connection</span>
-          <select v-model="form.connectionRef">
+          <select id="table-connection" v-model="form.connectionRef" :disabled="submitting" required aria-required="true" aria-describedby="table-connection-hint table-form-error" :aria-invalid="!!formError">
             <option value="" disabled>Select connection</option>
             <option v-for="conn in connections" :key="conn.name" :value="conn.name">{{ conn.name }}</option>
           </select>
+          <span id="table-connection-hint" class="field-hint">The Databricks workspace connection for this table.</span>
         </label>
-        <label class="field">
+        <label class="field" for="table-warehouse">
           <span class="field-label">Warehouse</span>
-          <select v-model="form.warehouseRef">
+          <select id="table-warehouse" v-model="form.warehouseRef" :disabled="submitting" required aria-required="true" aria-describedby="table-warehouse-hint table-form-error" :aria-invalid="!!formError">
             <option value="" disabled>{{ formWarehouses.length ? 'Select warehouse' : 'No warehouses for this connection' }}</option>
             <option v-for="wh in formWarehouses" :key="wh.name" :value="wh.name">{{ wh.name }}</option>
           </select>
+          <span id="table-warehouse-hint" class="field-hint">A warehouse that belongs to the selected connection.</span>
         </label>
-        <label class="field">
+        <label class="field" for="table-catalog">
           <span class="field-label">Catalog</span>
-          <input v-model="form.catalog" autocomplete="off" placeholder="sales" />
+          <input id="table-catalog" v-model="form.catalog" :disabled="submitting" autocomplete="off" placeholder="sales" required aria-required="true" aria-describedby="table-catalog-hint table-form-error" :aria-invalid="!!formError" />
+          <span id="table-catalog-hint" class="field-hint">The Databricks catalog containing the table.</span>
         </label>
-        <label class="field">
+        <label class="field" for="table-schema">
           <span class="field-label">Schema</span>
-          <input v-model="form.schema" autocomplete="off" placeholder="gold" />
+          <input id="table-schema" v-model="form.schema" :disabled="submitting" autocomplete="off" placeholder="gold" required aria-required="true" aria-describedby="table-schema-hint table-form-error" :aria-invalid="!!formError" />
+          <span id="table-schema-hint" class="field-hint">The Databricks schema containing the table.</span>
         </label>
-        <label class="field">
+        <label class="field" for="table-table">
           <span class="field-label">Table</span>
-          <input v-model="form.table" autocomplete="off" placeholder="order_history" />
+          <input id="table-table" v-model="form.table" :disabled="submitting" autocomplete="off" placeholder="order_history" required aria-required="true" aria-describedby="table-table-hint table-form-error" :aria-invalid="!!formError" />
+          <span id="table-table-hint" class="field-hint">The exact table identifier in the selected catalog and schema.</span>
         </label>
         <div class="form-actions span-2">
           <button class="primary" type="submit" :disabled="submitting">{{ submitting ? 'Saving...' : 'Save' }}</button>
-          <button class="secondary" type="button" @click="() => { resetForm(); showForm = false }">Cancel</button>
-          <span v-if="formError" class="error">{{ formError }}</span>
+          <button class="secondary" type="button" :disabled="submitting" @click="closeForm">Cancel</button>
+          <span v-if="formError" id="table-form-error" ref="formErrorRef" class="error" role="alert" aria-live="assertive" tabindex="-1">{{ formError }}</span>
         </div>
       </form>
+    </div>
+
+    <div v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">
+      <span>{{ mutationError }}</span>
+      <button class="secondary" type="button" @click="mutationError = null">Dismiss</button>
     </div>
 
     <ResourceTable
@@ -257,11 +343,16 @@ onUnmounted(() => window.clearInterval(timer))
         { key: 'actions', label: '' },
       ]"
       :rows="rows"
-      :loading="loading && rows.length === 0"
+      row-key="name"
+      :loaded="loaded"
+      :loading="loading"
       :error="error"
-      @row-click="(row) => emit('open', String(row.name))"
+      :stale="loaded && !!error"
+      retryable
+      @retry="load"
+      @row-click="(row) => openResource(String(row.name))"
     >
-      <template #name="{ value }"><span class="mono strong">{{ value }}</span></template>
+      <template #name="{ value }"><button class="link mono strong" type="button" :disabled="operationLocked(String(value))" @click.stop="openResource(String(value))">{{ value }}</button></template>
       <template #fullName="{ value }"><span class="mono">{{ value }}</span></template>
       <template #warehouseRef="{ value }"><span class="mono">{{ value }}</span></template>
       <template #columnCount="{ value }"><span>{{ value }}</span></template>
@@ -271,44 +362,21 @@ onUnmounted(() => window.clearInterval(timer))
       </template>
       <template #actions="{ row }">
         <div class="row-actions">
-          <button class="icon-button" type="button" title="Edit" @click.stop="editTable(row)">
-            <Pencil class="button-icon" :stroke-width="1.75" />
-          </button>
-          <button class="icon-button danger" type="button" title="Delete" @click.stop="remove(row)">
-            <Trash2 class="button-icon" :stroke-width="1.75" />
-          </button>
+          <ResourceTableEditButton
+            :label="`Edit table ${String(row.name)}`"
+            :disabled="operationLocked(String(row.name))"
+            @click="editTable(row)"
+          />
+          <ResourceTableDeleteButton
+            :label="`Delete table ${String(row.name)}`"
+            :busy-label="`Deleting table ${String(row.name)}…`"
+            :busy="operationPhase(String(row.name)) === 'deleting'"
+            :disabled="operationLocked(String(row.name))"
+            @click="remove(row)"
+          />
         </div>
       </template>
     </ResourceTable>
 
-    <section class="panel">
-      <div class="panel-head">
-        <h3 class="panel-title">Schema</h3>
-      </div>
-      <label class="field">
-        <span class="field-label">TableRef</span>
-        <select v-model="selectedTable">
-          <option value="" disabled>Select table</option>
-          <option v-for="table in tables" :key="table.name" :value="table.name">{{ table.name }}</option>
-        </select>
-      </label>
-      <p v-if="selected" class="muted">
-        <span class="mono">{{ selected.fullName }}</span>
-      </p>
-      <ResourceTable
-        :columns="[
-          { key: 'name', label: 'Column' },
-          { key: 'type', label: 'Type' },
-          { key: 'nullableLabel', label: 'Nullable' },
-          { key: 'comment', label: 'Comment' },
-        ]"
-        :rows="schemaRows"
-        :interactive="false"
-        empty-text="No columns have been reported yet."
-      >
-        <template #name="{ value }"><span class="mono strong">{{ value }}</span></template>
-        <template #type="{ value }"><span class="mono">{{ value }}</span></template>
-      </ResourceTable>
-    </section>
   </section>
 </template>

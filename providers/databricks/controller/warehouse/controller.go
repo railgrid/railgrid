@@ -21,8 +21,13 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mccontext "sigs.k8s.io/multicluster-runtime/pkg/context"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	databricksv1alpha1 "github.com/faroshq/provider-databricks/apis/databricks/v1alpha1"
@@ -33,8 +38,12 @@ import (
 const (
 	ReasonReady                 = "Ready"
 	ReasonConnectionUnavailable = "ConnectionUnavailable"
+	ReasonConnectionNotReady    = "ConnectionNotReady"
 	ReasonCredentialUnavailable = "CredentialUnavailable"
-	ReasonValidationFailed      = "ValidationFailed"
+	ReasonValidationFailed      = backend.ValidationReasonValidationFailed
+	ReasonDatabricksUnavailable = backend.ValidationReasonDatabricksUnavailable
+	ReasonAccessDenied          = backend.ValidationReasonAccessDenied
+	ReasonResourceNotFound      = backend.ValidationReasonResourceNotFound
 	ReasonValidatorUnavailable  = "ValidatorUnavailable"
 	ReasonAuthTypeUnsupported   = "AuthTypeUnsupported"
 )
@@ -48,8 +57,40 @@ func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	r.Manager = mgr
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("databricks-warehouse").
-		For(&databricksv1alpha1.Warehouse{}).
+		For(&databricksv1alpha1.Warehouse{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&databricksv1alpha1.Connection{}, mchandler.EnqueueRequestsFromMapFunc(r.mapConnectionToWarehouses)).
 		Complete(r)
+}
+
+func (r *Reconciler) mapConnectionToWarehouses(ctx context.Context, obj client.Object) []reconcile.Request {
+	clusterName, ok := mccontext.ClusterFrom(ctx)
+	if !ok {
+		clusterName = multicluster.ClusterName(obj.GetAnnotations()["kcp.io/cluster"])
+	}
+	if r.Manager == nil {
+		return nil
+	}
+	cl, err := r.Manager.GetCluster(ctx, clusterName)
+	if err != nil {
+		klog.FromContext(ctx).V(2).Info("mapConnectionToWarehouses: GetCluster failed", "cluster", clusterName, "err", err)
+		return nil
+	}
+	var list databricksv1alpha1.WarehouseList
+	if err := cl.GetClient().List(ctx, &list); err != nil {
+		klog.FromContext(ctx).V(2).Info("mapConnectionToWarehouses: list failed", "cluster", clusterName, "err", err)
+		return nil
+	}
+	return warehouseRequestsForConnection(list.Items, obj.GetName())
+}
+
+func warehouseRequestsForConnection(items []databricksv1alpha1.Warehouse, connectionName string) []reconcile.Request {
+	requests := make([]reconcile.Request, 0)
+	for i := range items {
+		if items[i].Spec.ConnectionRef == connectionName {
+			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: items[i].Name}})
+		}
+	}
+	return requests
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
@@ -84,6 +125,10 @@ func (r *Reconciler) reconcileWarehouse(ctx context.Context, c client.Client, ke
 	if conn.Spec.AuthType != databricksv1alpha1.ConnectionAuthPAT {
 		return r.failAfter(ctx, c, &wh, ReasonAuthTypeUnsupported, fmt.Sprintf("connection authType %q is declared, but this provider currently validates PAT credentials only", conn.Spec.AuthType), shared.ValidationRefreshAfter)
 	}
+	if !shared.CurrentConditionTrue(conn.Status.Conditions, conn.Status.ObservedGeneration, conn.Generation, databricksv1alpha1.ConditionValidated) ||
+		!shared.CurrentConditionTrue(conn.Status.Conditions, conn.Status.ObservedGeneration, conn.Generation, databricksv1alpha1.ConditionReady) {
+		return r.failAfter(ctx, c, &wh, ReasonConnectionNotReady, "connection is not currently ready", shared.DependencyRetryAfter)
+	}
 	token, err := shared.ResolveBearerToken(ctx, c, conn)
 	if err != nil {
 		return r.failAfter(ctx, c, &wh, ReasonCredentialUnavailable, err.Error(), shared.DependencyRetryAfter)
@@ -97,7 +142,8 @@ func (r *Reconciler) reconcileWarehouse(ctx context.Context, c client.Client, ke
 		BearerToken: token,
 	})
 	if err != nil {
-		return r.failAfter(ctx, c, &wh, ReasonValidationFailed, backend.SafeStatusMessage(err), shared.ValidationRefreshAfter)
+		reason := backend.ClassifyValidationError(err)
+		return r.failAfter(ctx, c, &wh, reason, backend.SafeStatusMessage(err), validationRequeueAfter(reason))
 	}
 
 	wh.Status.ObservedGeneration = wh.Generation
@@ -114,6 +160,13 @@ func (r *Reconciler) reconcileWarehouse(ctx context.Context, c client.Client, ke
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: shared.ValidationRefreshAfter}, nil
+}
+
+func validationRequeueAfter(reason string) time.Duration {
+	if reason == ReasonDatabricksUnavailable {
+		return shared.DependencyRetryAfter
+	}
+	return shared.ValidationRefreshAfter
 }
 
 func (r *Reconciler) fail(ctx context.Context, c client.Client, wh *databricksv1alpha1.Warehouse, reason, msg string) (ctrl.Result, error) {

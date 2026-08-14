@@ -27,7 +27,7 @@ spec:
         builtinRoute: tables
   backend:
     url: "http://localhost:8086"
-    healthPath: "/healthz"
+    healthPath: "/readyz"
   actions:
     - id: query_table/v1
       displayName: "Query table"

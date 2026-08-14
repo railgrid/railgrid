@@ -114,6 +114,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           cache-from: type=gha,scope=${{ needs.meta.outputs.provider }}-${{ steps.prep.outputs.arch }}
           cache-to: type=gha,mode=max,scope=${{ needs.meta.outputs.provider }}-${{ steps.prep.outputs.arch }}
+          build-args: |
+            VERSION=${{ needs.meta.outputs.version }}
           outputs: type=image,name=${{ env.REGISTRY }}/${{ needs.meta.outputs.image }},push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest

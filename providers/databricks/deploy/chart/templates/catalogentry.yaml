@@ -1,4 +1,4 @@
-{{- if .Values.catalogEntry.enabled }}
+{{- if and .Values.catalogEntry.enabled (eq (include "databricks.bootstrapMode" . | trim) "init") }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -30,7 +30,7 @@ data:
             builtinRoute: tables
       backend:
         url: "http://{{ include "databricks.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}"
-        healthPath: "/healthz"
+        healthPath: "/readyz"
       actions:
         - id: query_table/v1
           displayName: "Query table"

@@ -169,7 +169,13 @@ texture (login, empty states — sparingly), `.island` floating dock card,
   are eyebrows above the field.
 - **Tables.** `.k-table`. Headers speak mono-uppercase; cells 13px secondary;
   identifier columns `.k-cell-mono`; row hover = 4% accent tint, interactive
-  rows lift text to primary.
+  rows lift text to primary. Vue resource tables use
+  `portalkit/ResourceTableEditButton.vue` and
+  `portalkit/ResourceTableDeleteButton.vue` for compact row actions that reveal
+  on row hover or keyboard focus (and remain visible on touch). Give every action
+  a resource-specific accessible label, and keep destructive actions inside
+  `confirmDialog({ danger: true })`. Labeled actions remain appropriate on detail
+  pages.
 - **Modals / dialogs.** 6px, surface-raised, hairline, heavy elevation shadow
   allowed. The scrim derives from **surface** (`color-mix(surface 60%)`), never
   from text (a text-derived scrim inverts to white in dark). Use the portalkit

@@ -1,6 +1,6 @@
 .PHONY: sync-portalkit verify-portalkit
 .PHONY: build-access-proxy docker-build-access-proxy
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-console-dev-key verify-app-studio-preview-console-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-vibe-studio-provider build-vibe-studio-provider-portal vibe-studio-db-up vibe-studio-db-down run-provider-vibe-studio install-provider-vibe-studio init-provider-vibe-studio uninstall-provider-vibe-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-console-dev-key verify-app-studio-preview-console-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-vibe-studio-provider build-vibe-studio-provider-portal vibe-studio-db-up vibe-studio-db-down run-provider-vibe-studio install-provider-vibe-studio init-provider-vibe-studio uninstall-provider-vibe-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks test-databricks-provider-chart dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -208,7 +208,40 @@ build-databricks-provider-portal: ## Build the Databricks provider's micro-front
 	cd providers/databricks/portal && npm install --no-audit --no-fund && npm run test:tableRefs && npm run typecheck && npm run build
 
 build-databricks-provider: build-databricks-provider-portal ## Build the Databricks provider binary (portal embedded)
-	cd providers/databricks && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/databricks-provider .
+	cd providers/databricks && go build $(GOFLAGS) -ldflags "-X main.buildVersion=$(VERSION)" -o $(CURDIR)/$(BINDIR)/databricks-provider .
+
+test-databricks-provider-chart: ## Lint and render both supported Databricks bootstrap modes
+	@set -eu; \
+		tmp_parent="$${CODEX_BUILD_CACHE_ROOT:-/var/tmp/codex-build}"; \
+		mkdir -p "$$tmp_parent"; \
+		tmp_dir="$$(mktemp -d "$$tmp_parent/faros-databricks-chart.XXXXXX")"; \
+		cleanup() { rm -rf -- "$$tmp_dir"; }; \
+		trap cleanup EXIT HUP INT TERM; \
+		helm lint providers/databricks/deploy/chart; \
+		helm template databricks providers/databricks/deploy/chart >"$$tmp_dir/default.yaml"; \
+		grep -q 'path: /healthz' "$$tmp_dir/default.yaml"; \
+		grep -q 'path: /readyz' "$$tmp_dir/default.yaml"; \
+		grep -q 'healthPath: "/readyz"' "$$tmp_dir/default.yaml"; \
+		helm template databricks providers/databricks/deploy/chart --set mcp.enabled=false --set mcp.disableLocalhostProtection=true --set-string 'allowedHostSuffixes[0]=workspace.private.example' >"$$tmp_dir/config.yaml"; \
+		grep -q 'name: DATABRICKS_MCP_ENABLED' "$$tmp_dir/config.yaml"; \
+		grep -q 'value: "false"' "$$tmp_dir/config.yaml"; \
+		grep -q 'name: DATABRICKS_MCP_DISABLE_LOCALHOST_PROTECTION' "$$tmp_dir/config.yaml"; \
+		grep -q 'name: DATABRICKS_ALLOWED_HOST_SUFFIXES' "$$tmp_dir/config.yaml"; \
+		grep -q 'workspace.private.example' "$$tmp_dir/config.yaml"; \
+		helm template databricks providers/databricks/deploy/chart --set bootstrap.enabled=false --set catalogEntry.enabled=false >"$$tmp_dir/external.yaml"; \
+		if grep -q 'initContainers:' "$$tmp_dir/external.yaml" || grep -q 'kind: CatalogEntry' "$$tmp_dir/external.yaml"; then \
+			echo "external bootstrap rendered an init container or CatalogEntry"; exit 1; \
+		fi; \
+		helm template databricks providers/databricks/deploy/chart --set bootstrap.mode=external --set catalogEntry.enabled=false >"$$tmp_dir/explicit-external.yaml"; \
+		if grep -q 'initContainers:' "$$tmp_dir/explicit-external.yaml" || grep -q 'kind: CatalogEntry' "$$tmp_dir/explicit-external.yaml"; then \
+			echo "explicit external bootstrap rendered an init container or CatalogEntry"; exit 1; \
+		fi; \
+		if helm template databricks providers/databricks/deploy/chart --set bootstrap.mode=invalid >/dev/null 2>&1; then \
+			echo "invalid bootstrap mode unexpectedly rendered"; exit 1; \
+		fi; \
+		if helm template databricks providers/databricks/deploy/chart --set bootstrap.enabled=false --set catalogEntry.enabled=true >/dev/null 2>&1; then \
+			echo "external bootstrap unexpectedly rendered a CatalogEntry"; exit 1; \
+		fi
 
 ## Generate deepcopy methods + CRD YAML for the infrastructure provider's
 ## own API types (providers/infrastructure/apis/v1alpha1/...). The CRDs land

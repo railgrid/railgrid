@@ -30,3 +30,16 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+bootstrapMode resolves the compatibility boolean into an explicit mode. The
+boolean remains supported for existing values files, but a disabled bootstrap
+always means external ownership of schemas/APIExport/endpoint slice/catalog.
+*/}}
+{{- define "databricks.bootstrapMode" -}}
+{{- if not .Values.bootstrap.enabled -}}
+external
+{{- else -}}
+{{- default "init" .Values.bootstrap.mode -}}
+{{- end -}}
+{{- end -}}
