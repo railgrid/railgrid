@@ -324,3 +324,74 @@ func TestMergeEnvironmentStatusesPreservesUnmanaged(t *testing.T) {
 		t.Fatalf("unmanaged entry not preserved in order: %+v", out[1])
 	}
 }
+
+// A development preview is the project's in-progress state, so it must not
+// inherit the template's public default.
+func TestPreviewAccessDefaultsToPrivate(t *testing.T) {
+	for name, project := range map[string]*aiv1alpha1.Project{
+		"nil project":  nil,
+		"unset policy": {},
+		"explicitly private": {Spec: aiv1alpha1.ProjectSpec{
+			Sharing: aiv1alpha1.ProjectSharingSpec{Preview: aiv1alpha1.ProjectPreviewSharingPolicy{Mode: aiv1alpha1.ProjectSharingModePrivate}},
+		}},
+		"shared is not public": {Spec: aiv1alpha1.ProjectSpec{
+			Sharing: aiv1alpha1.ProjectSharingSpec{Preview: aiv1alpha1.ProjectPreviewSharingPolicy{Mode: aiv1alpha1.ProjectSharingModeShared}},
+		}},
+	} {
+		if got := PreviewAccess(project); got != AccessPrivate {
+			t.Errorf("%s: PreviewAccess = %q, want %q", name, got, AccessPrivate)
+		}
+	}
+
+	public := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{
+		Sharing: aiv1alpha1.ProjectSharingSpec{Preview: aiv1alpha1.ProjectPreviewSharingPolicy{Mode: aiv1alpha1.ProjectSharingModePublic}},
+	}}
+	if got := PreviewAccess(public); got != AccessPublic {
+		t.Errorf("PreviewAccess = %q, want %q", got, AccessPublic)
+	}
+}
+
+// The overlay runs every reconcile, so a binding written before the policy
+// existed converges without anyone editing it.
+func TestApplyPreviewAccessToBindingOverwritesStaleValue(t *testing.T) {
+	binding := aiv1alpha1.ProjectProviderBindingSpec{
+		Name:   "dev",
+		Values: runtime.RawExtension{Raw: []byte(`{"name":"todo-dev","farosMode":"development","access":"public"}`)},
+	}
+	out, err := ApplyPreviewAccessToBinding(binding, AccessPrivate)
+	if err != nil {
+		t.Fatalf("ApplyPreviewAccessToBinding: %v", err)
+	}
+	values, err := Values(out)
+	if err != nil {
+		t.Fatalf("Values: %v", err)
+	}
+	if got := values[AccessField]; got != AccessPrivate {
+		t.Fatalf("access = %v, want %q", got, AccessPrivate)
+	}
+	// Everything else in the binding survives.
+	if got := values["name"]; got != "todo-dev" {
+		t.Fatalf("name = %v, want it preserved", got)
+	}
+	if got := values["farosMode"]; got != "development" {
+		t.Fatalf("farosMode = %v, want it preserved", got)
+	}
+}
+
+// Templates that expose no URL declare no access input and the API server
+// prunes it. Keeping it in the desired spec would make the controller see
+// drift it can never resolve and update on every pass.
+func TestDropUnsupportedAccessPreventsAnUnresolvableDiff(t *testing.T) {
+	desired := map[string]any{"name": "x", "access": "private"}
+	DropUnsupportedAccess(map[string]any{"name": "x"}, desired)
+	if _, ok := desired["access"]; ok {
+		t.Fatal("access survived against an instance that has no such field")
+	}
+
+	// An instance that does carry the field keeps the desired value.
+	desired = map[string]any{"name": "x", "access": "private"}
+	DropUnsupportedAccess(map[string]any{"name": "x", "access": "public"}, desired)
+	if got := desired["access"]; got != "private" {
+		t.Fatalf("access = %v, want the desired value kept", got)
+	}
+}

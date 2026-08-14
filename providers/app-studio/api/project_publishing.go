@@ -176,10 +176,17 @@ func newPublishingHTTPClient() *http.Client {
 	return &http.Client{Transport: transport}
 }
 
-// productionRuntime resolves the promoted production instance: its resource
+// appAccessRuntimeResolver names a sharing channel. Passing one of these into
+// the shared grant handlers is what lets production and the development preview
+// share the entire invite/list/revoke implementation.
+type appAccessRuntimeResolver func(*Server, context.Context, *asclient.Client, *aiv1alpha1.Project) (appAccessRuntime, error)
+
+// appAccessRuntime resolves one sharing channel's instance: its resource
 // coordinates, live object, and the desired access value recorded on the
-// binding. Everything the publishing surface shows or mutates hangs off it.
-type productionRuntime struct {
+// binding. Everything a sharing surface shows or mutates hangs off it, for
+// production and for the development preview alike — the grant machinery below
+// is parameterised by this struct and never by which channel it came from.
+type appAccessRuntime struct {
 	target        projectPublishingTargetView
 	instance      *unstructured.Unstructured
 	desiredAccess string
@@ -277,12 +284,20 @@ func (s *Server) listProjectPublishingMembers(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) listProjectPublishingGrants(w http.ResponseWriter, r *http.Request) {
+	s.listAppAccessGrants(w, r, (*Server).productionRuntime)
+}
+
+// listAppAccessGrants serves one channel's grant list. resolve picks the
+// channel; everything downstream is identical, because a grant is a
+// ClusterRoleBinding against an instance name and nothing about it knows
+// whether that instance is production or a preview.
+func (s *Server) listAppAccessGrants(w http.ResponseWriter, r *http.Request, resolve appAccessRuntimeResolver) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
 	_ = id
-	runtime, err := s.productionRuntime(r.Context(), c, p)
+	runtime, err := resolve(s, r.Context(), c, p)
 	if err != nil {
 		// No production yet — an empty grant list, not an error.
 		writeJSON(w, http.StatusOK, ListResponse[projectPublishingGrantView]{Items: nil})
@@ -301,11 +316,16 @@ func (s *Server) listProjectPublishingGrants(w http.ResponseWriter, r *http.Requ
 // caller's own workspace RBAC authorizes the write — App Studio adds only the
 // membership validation and naming convention.
 func (s *Server) createProjectPublishingGrant(w http.ResponseWriter, r *http.Request) {
+	s.createAppAccessGrant(w, r, (*Server).productionRuntime)
+}
+
+// createAppAccessGrant invites one member to whichever channel resolve names.
+func (s *Server) createAppAccessGrant(w http.ResponseWriter, r *http.Request, resolve appAccessRuntimeResolver) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
 	}
-	runtime, err := s.productionRuntime(r.Context(), c, p)
+	runtime, err := resolve(s, r.Context(), c, p)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -389,6 +409,13 @@ func (s *Server) createProjectPublishingGrant(w http.ResponseWriter, r *http.Req
 // is deleting the member's ClusterRoleBinding; it is allowed in every access
 // mode so a stale grant can always be cleaned up.
 func (s *Server) revokeProjectPublishingGrant(w http.ResponseWriter, r *http.Request) {
+	s.revokeAppAccessGrant(w, r, (*Server).productionRuntime)
+}
+
+// revokeAppAccessGrant deletes one grant from whichever channel resolve names.
+// The label check below is what keeps a preview revoke from touching a
+// production grant and vice versa.
+func (s *Server) revokeAppAccessGrant(w http.ResponseWriter, r *http.Request, resolve appAccessRuntimeResolver) {
 	c, id, p, ok := s.requireProjectWithClient(w, r)
 	if !ok {
 		return
@@ -399,7 +426,7 @@ func (s *Server) revokeProjectPublishingGrant(w http.ResponseWriter, r *http.Req
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "grant name is required")
 		return
 	}
-	runtime, err := s.productionRuntime(r.Context(), c, p)
+	runtime, err := resolve(s, r.Context(), c, p)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -441,7 +468,7 @@ func (s *Server) projectPublishingResponse(ctx context.Context, c *asclient.Clie
 	return projectPublishingResponse{Published: true, Publication: &view, Grants: grants}, nil
 }
 
-func publicationViewFromRuntime(rt productionRuntime) projectPublishingPublicationView {
+func publicationViewFromRuntime(rt appAccessRuntime) projectPublishingPublicationView {
 	observedAccess, _, _ := unstructured.NestedString(rt.instance.Object, "spec", accessValueField)
 	if observedAccess == "" {
 		observedAccess = accessPublic
@@ -475,36 +502,36 @@ func portalModeString(access string) string {
 	return "restricted"
 }
 
-func (s *Server) productionRuntime(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) (productionRuntime, error) {
+func (s *Server) productionRuntime(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project) (appAccessRuntime, error) {
 	binding := findProjectProductionBinding(p)
 	if binding == nil || binding.ResourceRef == nil {
-		return productionRuntime{}, newValidationError("publishing requires a promoted production instance")
+		return appAccessRuntime{}, newValidationError("publishing requires a promoted production instance")
 	}
 	ref := binding.ResourceRef
 	gvr, err := projectProviderResourceGVR(ref)
 	if err != nil {
-		return productionRuntime{}, err
+		return appAccessRuntime{}, err
 	}
 	values, err := projectProviderBindingValues(*binding)
 	if err != nil {
-		return productionRuntime{}, err
+		return appAccessRuntime{}, err
 	}
 	name := strings.TrimSpace(ref.Name)
 	if binding.Kind == aiv1alpha1.ProjectBindingKindProviderResource {
 		name = projectProviderBindingResourceName(p, *binding, values, identity{})
 	}
 	if name == "" {
-		return productionRuntime{}, newValidationError("production binding has no runtime resource name")
+		return appAccessRuntime{}, newValidationError("production binding has no runtime resource name")
 	}
 	obj, err := c.Resource(tenant.Resource{GVR: gvr, Kind: ref.Kind, Plural: ref.Resource}, "").Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return productionRuntime{}, err
+		return appAccessRuntime{}, err
 	}
 	desired, _ := values[accessValueField].(string)
 	if desired == "" {
 		desired = accessPublic
 	}
-	return productionRuntime{
+	return appAccessRuntime{
 		target: projectPublishingTargetView{
 			APIVersion: ref.APIVersion,
 			Kind:       ref.Kind,

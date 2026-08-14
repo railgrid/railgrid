@@ -255,6 +255,71 @@ func ApplyActionsOverlay(values map[string]any, overlay ActionsOverlay) map[stri
 
 // ApplyActionsOverlayToBinding applies the pure value overlay while retaining
 // the rest of the binding contract unchanged.
+// AccessField is the template input that decides who can reach an instance's
+// URL. Templates that expose a URL declare it (public | private); templates
+// that expose nothing do not, which is why callers must tolerate its absence
+// rather than assume every instance has one.
+const AccessField = "access"
+
+const (
+	// AccessPublic is reachable by anyone with the link.
+	AccessPublic = "public"
+	// AccessPrivate requires platform sign-in and a kcp RBAC grant on the
+	// instance's access subresource. Workspace members already satisfy that
+	// through their workspace admin binding, so a private preview stays open
+	// to the people working on the project and closed to everyone else.
+	AccessPrivate = "private"
+)
+
+// PreviewAccess maps a Project's preview sharing policy onto the template's
+// access input. An unset policy is private: a development preview is the
+// project's in-progress state, so exposure has to be asked for rather than
+// inherited from a template default.
+func PreviewAccess(p *aiv1alpha1.Project) string {
+	if p != nil && p.Spec.Sharing.Preview.Mode == aiv1alpha1.ProjectSharingModePublic {
+		return AccessPublic
+	}
+	return AccessPrivate
+}
+
+// ApplyPreviewAccessToBinding stamps the preview visibility onto a development
+// binding's values. It is applied on every reconcile rather than written once
+// at bind time, so a project created before the policy existed — or one whose
+// instance was edited directly — converges instead of keeping whatever the
+// template defaulted to.
+func ApplyPreviewAccessToBinding(binding aiv1alpha1.ProjectProviderBindingSpec, access string) (aiv1alpha1.ProjectProviderBindingSpec, error) {
+	if strings.TrimSpace(access) == "" {
+		return binding, nil
+	}
+	values, err := Values(binding)
+	if err != nil {
+		return binding, err
+	}
+	values[AccessField] = access
+	raw, err := json.Marshal(values)
+	if err != nil {
+		return binding, fmt.Errorf("marshal provider binding %q values: %w", binding.Name, err)
+	}
+	binding.Values.Raw = raw
+	return binding, nil
+}
+
+// DropUnsupportedAccess removes the access field from a desired spec when the
+// observed instance has none.
+//
+// Templates without a URL do not declare the input, and a CRD with a structural
+// schema silently prunes unknown fields. Without this the desired spec would
+// carry a field the live object can never hold, every reconcile would see drift
+// and issue an update, and the controller would hot-loop against the API server.
+func DropUnsupportedAccess(observed, desired map[string]any) {
+	if _, ok := desired[AccessField]; !ok {
+		return
+	}
+	if _, ok := observed[AccessField]; !ok {
+		delete(desired, AccessField)
+	}
+}
+
 func ApplyActionsOverlayToBinding(binding aiv1alpha1.ProjectProviderBindingSpec, overlay ActionsOverlay) (aiv1alpha1.ProjectProviderBindingSpec, error) {
 	values, err := Values(binding)
 	if err != nil {

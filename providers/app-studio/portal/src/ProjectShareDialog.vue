@@ -23,6 +23,16 @@ const props = withDefaults(defineProps<{
   productionReady: boolean
   members: ProjectPublishingMember[]
   grants: ProjectPublishingGrant[]
+  // The development preview is the second sharing channel. It is only offered
+  // when the project's template actually exposes a URL (previewSupported);
+  // previewConverged is false while the platform is still applying a
+  // just-changed mode, so the dialog says pending instead of claiming the URL
+  // already changed hands.
+  previewMode?: ProjectPublishingMode
+  previewURL?: string
+  previewSupported?: boolean
+  previewConverged?: boolean
+  previewGrants?: ProjectPublishingGrant[]
   busy?: boolean
   busyAction?: null | 'save' | 'grant' | 'invite' | 'revoke' | 'disable'
   busyTarget?: string
@@ -35,6 +45,11 @@ const props = withDefaults(defineProps<{
   publication: null,
   publicationStateAvailable: false,
   productionURL: '',
+  previewMode: 'restricted',
+  previewURL: '',
+  previewSupported: false,
+  previewConverged: true,
+  previewGrants: () => [],
   busy: false,
   busyAction: null,
   busyTarget: '',
@@ -48,10 +63,15 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (event: 'close'): void
   (event: 'update:mode', mode: ProjectPublishingMode): void
+  (event: 'update:previewMode', mode: ProjectPublishingMode): void
   (event: 'save'): void
+  (event: 'save-preview'): void
   (event: 'grant', user: string): void
   (event: 'invite', email: string): void
   (event: 'revoke', grant: string): void
+  (event: 'preview-grant', user: string): void
+  (event: 'preview-invite', email: string): void
+  (event: 'preview-revoke', grant: string): void
   (event: 'disable'): void
   (event: 'open-production-settings'): void
   (event: 'retry'): void
@@ -74,6 +94,52 @@ const selectedMode = computed({
     emit('update:mode', mode)
   },
 })
+const initialPreviewMode = ref(props.previewMode)
+const previewModeTouched = ref(false)
+const selectedPreviewMode = computed({
+  get: () => props.previewMode,
+  set: (mode: ProjectPublishingMode) => {
+    previewModeTouched.value = true
+    emit('update:previewMode', mode)
+  },
+})
+const previewLink = computed(() => props.previewURL.trim())
+const previewSelectedMember = ref('')
+const previewInviteEmail = ref('')
+const previewActiveGrants = computed(() => props.previewGrants.filter((grant) => !grant.revoked))
+const previewAvailableMembers = computed(() => props.members.filter((member) => (
+  !previewActiveGrants.value.some((grant) => grant.user === member.user)
+)))
+const previewDirty = computed(() => props.previewSupported && selectedPreviewMode.value !== initialPreviewMode.value)
+const previewPending = computed(() => props.previewSupported && !previewDirty.value && !props.previewConverged)
+// Same rule as production: grants only make sense on a restricted channel, and
+// a draft mode must be saved first so a public preview cannot take a grant.
+const previewShowViewers = computed(() => props.previewSupported && selectedPreviewMode.value === 'restricted')
+const previewSavedRestricted = computed(() => (
+  props.previewSupported && !previewDirty.value && selectedPreviewMode.value === 'restricted'
+))
+const canAddPreviewMember = computed(() => (
+  previewSavedRestricted.value && !!previewSelectedMember.value && !props.busy && !props.loading
+))
+const previewInviteEmailValid = computed(() => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(previewInviteEmail.value.trim()))
+const canInvitePreview = computed(() => (
+  previewSavedRestricted.value && previewInviteEmailValid.value && !props.busy && !props.loading
+))
+
+function addPreviewMember() {
+  const user = previewSelectedMember.value.trim()
+  if (!user || !canAddPreviewMember.value) return
+  emit('preview-grant', user)
+  previewSelectedMember.value = ''
+}
+
+function invitePreviewByEmail() {
+  const email = previewInviteEmail.value.trim()
+  if (!canInvitePreview.value || !email) return
+  emit('preview-invite', email)
+  previewInviteEmail.value = ''
+}
+
 const link = computed(() => props.productionURL.trim() || props.publication?.url?.trim() || '')
 const activeGrants = computed(() => props.grants.filter((grant) => !grant.revoked))
 const availableMembers = computed(() => props.members.filter((member) => (
@@ -94,17 +160,20 @@ function revokeBusy(grant: string) {
 }
 const primaryLabel = computed(() => {
   if (saveBusy.value) return props.published ? 'Saving access…' : 'Publishing…'
-  if (!props.published) return 'Publish app'
-  return modeDirty.value ? 'Save access' : 'Done'
+  if (!props.published) return previewDirty.value ? 'Save access' : 'Publish app'
+  return modeDirty.value || previewDirty.value ? 'Save access' : 'Done'
 })
 // An access change on a promoted app is an intent write the platform accepts
 // at any time — the publication state machine reports Pending honestly while
 // the gate converges, so a rolling or briefly-unready deployment must not
 // block flipping public/invite-only. Only the initial publish of a
 // never-promoted project still waits for a ready production deployment.
+// Preview access is independent of production: it can be changed on a project
+// that was never promoted, so a pending preview change must not be gated on a
+// ready production deployment.
 const canSave = computed(() => (
-  props.publicationStateAvailable &&
-  !props.loading && props.loadState !== 'error' && !props.busy && (props.published || props.productionReady)
+  !props.loading && props.loadState !== 'error' && !props.busy &&
+  (previewDirty.value || ((props.published || props.productionReady) && props.publicationStateAvailable))
 ))
 // Grants are mutations against the saved restricted publication. A draft mode
 // must be saved first so a public publication cannot receive a viewer grant.
@@ -134,17 +203,34 @@ async function focusDialog() {
 watch(() => props.open, (open) => {
   if (open) {
     initialMode.value = props.mode
+    initialPreviewMode.value = props.previewMode
     modeTouched.value = false
+    previewModeTouched.value = false
     void focusDialog()
   } else {
     selectedMember.value = ''
+    previewSelectedMember.value = ''
+    previewInviteEmail.value = ''
     copyState.value = 'idle'
     modeTouched.value = false
+    previewModeTouched.value = false
   }
 })
 
 watch(() => props.loading, (loading, wasLoading) => {
-  if (props.open && wasLoading && !loading && !modeTouched.value) initialMode.value = props.mode
+  if (!props.open || !wasLoading || loading) return
+  if (!modeTouched.value) initialMode.value = props.mode
+  if (!previewModeTouched.value) initialPreviewMode.value = props.previewMode
+})
+
+// Once the saved preview mode matches the selection, the edit is no longer a
+// draft — same settle rule the production channel uses.
+watch(() => props.previewMode, (mode) => {
+  if (!props.open || props.loading || !previewModeTouched.value) return
+  if (mode === selectedPreviewMode.value && props.previewConverged) {
+    initialPreviewMode.value = mode
+    previewModeTouched.value = false
+  }
 })
 
 watch(() => [props.published, props.publication?.mode] as const, ([published, publicationMode]) => {
@@ -189,10 +275,19 @@ function addMember() {
   selectedMember.value = ''
 }
 
+// The two channels save independently, so a dialog with both edited applies
+// both rather than making the user choose an order.
 function primaryAction() {
   if (!canSave.value) return
-  if (modeDirty.value || !props.published) emit('save')
-  else close()
+  const savedPreview = previewDirty.value
+  if (savedPreview) emit('save-preview')
+  if (modeDirty.value || !props.published) {
+    // A never-published project with only a preview change must not be pushed
+    // into publishing production as a side effect.
+    if (props.published || props.productionReady || !savedPreview) emit('save')
+    return
+  }
+  if (!savedPreview) close()
 }
 
 async function copyLink() {
@@ -261,7 +356,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
         <header class="flex items-start justify-between gap-4 border-b border-border-subtle px-5 py-4">
           <div class="min-w-0">
             <h2 id="project-share-dialog-title" class="text-[16px] font-semibold text-text-primary">Share {{ projectName }}</h2>
-            <p id="project-share-dialog-description" class="mt-1 text-[12px] leading-5 text-text-muted">Choose who can access the production app.</p>
+            <p id="project-share-dialog-description" class="mt-1 text-[12px] leading-5 text-text-muted">Choose who can reach the production app and the development preview.</p>
           </div>
           <button
             ref="dialogCloseButton"
@@ -341,12 +436,12 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
             </div>
 
             <label class="grid gap-1.5" for="project-share-general-access">
-              <span class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">General access</span>
+              <span class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Production access</span>
               <select
                 id="project-share-general-access"
                 v-model="selectedMode"
                 class="h-9 w-full rounded-md border border-border-subtle bg-surface px-2.5 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
-                aria-label="General access"
+                aria-label="Production access"
                 :disabled="busy || loading || !publicationStateAvailable"
               >
                 <option value="restricted">Restricted</option>
@@ -358,9 +453,9 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
               <div>
                 <div id="project-share-people-title" class="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
                   <Users class="h-3.5 w-3.5" :stroke-width="1.75" />
-                  People with access
+                  People with production access
                 </div>
-                <p class="mt-1 text-[12px] leading-5 text-text-muted">Add viewers from the current organization.</p>
+                <p class="mt-1 text-[12px] leading-5 text-text-muted">Grants apply to the production URL only, separately from the preview.</p>
               </div>
               <p v-if="membersError" class="rounded-md border border-warning/30 bg-warning-subtle px-2.5 py-2 text-[11px] leading-4 text-warning" role="status">
                 Viewer membership could not be refreshed. Existing viewers remain visible. <button type="button" class="font-semibold underline underline-offset-2" @click="emit('retry')">Retry</button>
@@ -420,7 +515,94 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                   </button>
                 </li>
               </ul>
-              <p v-else class="text-[11px] text-text-muted">No viewers added yet.</p>
+              <p v-else class="text-[11px] text-text-muted">No production viewers added yet — workspace members already have access.</p>
+            </section>
+
+            <section v-if="previewSupported" class="grid gap-2 border-t border-border-subtle pt-4" aria-labelledby="project-share-preview-title">
+              <label class="grid gap-1.5" for="project-share-preview-access">
+                <span id="project-share-preview-title" class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Development preview access</span>
+                <div v-if="previewLink" class="flex min-w-0 items-center gap-2">
+                  <Link2 class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
+                  <a :href="previewLink" target="_blank" rel="noopener noreferrer" class="min-w-0 truncate font-mono text-[12px] text-accent hover:underline">{{ previewLink }}</a>
+                </div>
+                <select
+                  id="project-share-preview-access"
+                  v-model="selectedPreviewMode"
+                  class="h-9 w-full rounded-md border border-border-subtle bg-surface px-2.5 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
+                  aria-label="Development preview access"
+                  :disabled="busy"
+                >
+                  <option value="restricted">Restricted</option>
+                  <option value="public">Anyone with the link</option>
+                </select>
+              </label>
+              <p class="text-[11px] leading-4 text-text-muted">
+                Restricted keeps the in-progress preview to this workspace, plus anyone granted below.
+              </p>
+              <p v-if="previewPending" class="text-[11px] leading-4 text-warning" role="status">Applying the new preview access — the link keeps its previous visibility until it lands.</p>
+
+              <div v-if="previewShowViewers" class="grid gap-3 rounded-md border border-border-subtle bg-surface-overlay p-3" aria-labelledby="project-share-preview-people-title">
+                <div>
+                  <div id="project-share-preview-people-title" class="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
+                    <Users class="h-3.5 w-3.5" :stroke-width="1.75" />
+                    People with preview access
+                  </div>
+                  <p class="mt-1 text-[12px] leading-5 text-text-muted">Grants apply to the preview URL only, separately from production.</p>
+                </div>
+                <p v-if="previewDirty" class="text-[11px] leading-4 text-warning" role="status">Save Restricted preview access before adding viewers.</p>
+                <div class="flex flex-wrap items-center gap-2">
+                  <select
+                    v-model="previewSelectedMember"
+                    class="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface px-2.5 py-2 font-mono text-[12px] text-text-primary outline-none focus:border-accent/50"
+                    aria-label="Organization member for preview access"
+                    :disabled="busy || loading || !previewSavedRestricted"
+                  >
+                    <option value="">Choose a member</option>
+                    <option v-for="member in previewAvailableMembers" :key="member.user" :value="member.user">{{ member.user }}</option>
+                  </select>
+                  <button
+                    type="button"
+                    class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent bg-accent/15 px-3 text-[12px] font-semibold text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    :disabled="!canAddPreviewMember"
+                    @click="addPreviewMember"
+                  >
+                    Add viewer
+                  </button>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <input
+                    v-model="previewInviteEmail"
+                    type="email"
+                    class="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface px-2.5 py-2 font-mono text-[12px] text-text-primary outline-none focus:border-accent/50"
+                    placeholder="Invite by email — new users join at first sign-in"
+                    aria-label="Invite by email to the preview"
+                    :disabled="busy || loading || !previewSavedRestricted"
+                    @keyup.enter="invitePreviewByEmail"
+                  />
+                  <button
+                    type="button"
+                    class="inline-flex h-8 items-center gap-1.5 rounded-md border border-accent bg-accent/15 px-3 text-[12px] font-semibold text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    :disabled="!canInvitePreview"
+                    @click="invitePreviewByEmail"
+                  >
+                    Invite
+                  </button>
+                </div>
+                <ul v-if="previewActiveGrants.length" class="grid gap-1.5">
+                  <li v-for="grant in previewActiveGrants" :key="grant.name" class="flex items-center justify-between gap-2 rounded-md border border-border-subtle px-2.5 py-2 text-[12px]">
+                    <span class="min-w-0 truncate font-mono text-text-primary">{{ grant.user }}</span>
+                    <button
+                      type="button"
+                      class="shrink-0 text-[11px] font-medium text-danger hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                      :disabled="busy"
+                      @click="emit('preview-revoke', grant.name)"
+                    >
+                      Revoke
+                    </button>
+                  </li>
+                </ul>
+                <p v-else class="text-[11px] text-text-muted">No preview viewers added yet — workspace members already have access.</p>
+              </div>
             </section>
 
             <p v-if="error" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ error }}</p>

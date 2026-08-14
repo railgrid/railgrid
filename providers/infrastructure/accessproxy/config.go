@@ -56,9 +56,17 @@ const (
 	// ReturnCookieName carries the whole sign-in state — nonce, clean return
 	// path and expiry — while the browser completes the hub flow, so no
 	// server-side handle has to survive between the authorize redirect and the
-	// callback (see consumeReturnState). Also a __Host cookie: host-only, so a
-	// sibling app under the same published-apps zone cannot plant one.
-	ReturnCookieName = "__Host-faros-app-return"
+	// callback (see consumeReturnState).
+	//
+	// Deliberately NOT a __Host- cookie. The prefix would stop a sibling app
+	// under the same published-apps zone from planting one, but browsers
+	// declined to store it on the development gateway (self-signed certs on
+	// *.apps.127.0.0.1.sslip.io), which fails every local sign-in with "no
+	// cookie" at the callback. The prefix is not what makes this state safe:
+	// the nonce is compared against the state query parameter, the entry is
+	// single-use, and the return path is re-sanitised on the way out, so a
+	// planted cookie can only pin a state the planter already controls.
+	ReturnCookieName = "faros-app-return"
 	// CallbackPath is the reserved platform path on the app host. It must stay
 	// in lockstep with the hub's appauth.CallbackPath.
 	CallbackPath = "/__faros/auth/callback"

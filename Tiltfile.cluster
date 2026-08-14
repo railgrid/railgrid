@@ -235,6 +235,22 @@ app_studio_preview_public_port = '10443'
 # prod, where both attach to cfgate's cloudflare-tunnel Gateway.
 app_base_domain = 'apps.127.0.0.1.sslip.io'
 
+# Hostname the portal is opened at in the browser.
+#
+# NOT localhost, deliberately. App Studio renders a project's development
+# preview in an iframe pointing at the app's own host under app_base_domain.
+# Cookies are same-site only within one registrable domain, and `localhost` is
+# its own — so with the portal on localhost every gate cookie in that iframe is
+# third-party, which Chrome does not send (and, since 2025, does not even
+# store). A private preview then fails every sign-in with "invalid app access
+# state", while the identical flow works in production, where the console and
+# the app hosts share faros.sh. Putting the portal under the same sslip.io
+# domain as the apps makes local cookie behaviour match production.
+#
+# Both names resolve to 127.0.0.1 through sslip.io, so nothing needs /etc/hosts.
+hub_browser_host = 'console.127.0.0.1.sslip.io'
+hub_external_url = 'https://%s:9443' % hub_browser_host
+
 # The faros-hub chart deploys namespaced objects (TLS Certificate + Secret,
 # selfsigned Issuer, StatefulSet) into hub_namespace but ships NO Namespace
 # object. The namespace is otherwise only created by the hub-kcp-secrets
@@ -259,10 +275,11 @@ metadata:
 # an existing Secret so unrelated Tiltfile reloads cannot invalidate the CA
 # already injected into App Studio development runtimes.
 hub_tls_yaml = str(local(
-    'bash hack/scripts/render-tilt-hub-tls.sh %s %s %s' % (
+    'bash hack/scripts/render-tilt-hub-tls.sh %s %s %s %s' % (
         hub_namespace,
         hub_tls_secret_name,
         hub_tls_state_dir,
+        hub_browser_host,
     ),
     quiet=True,
     echo_off=True,
@@ -313,6 +330,11 @@ data:
         public: true
         name: Faros
         redirectURIs:
+          # Both hosts are accepted: hub_browser_host is what the portal uses
+          # (same-site with the app hosts), localhost keeps older bookmarks and
+          # any hardcoded tooling working.
+          - https://console.127.0.0.1.sslip.io:9443/auth/callback
+          - https://console.127.0.0.1.sslip.io:9443/auth/apps/callback
           - https://localhost:9443/auth/callback
           - https://localhost:9443/auth/apps/callback
     enablePasswordDB: true
@@ -844,7 +866,7 @@ k8s_yaml(helm(
         'kcp.embedded.enabled=false',
         'kcp.external.enabled=true',
         'kcp.external.existingSecret=kcp-frontproxy-admin',
-        'hub.hubExternalURL=https://localhost:9443',
+        'hub.hubExternalURL=%s' % hub_external_url,
         'hub.tls.existingSecret=%s' % hub_tls_secret_name,
         'hub.tls.selfSigned.enabled=false',
         'hub.devMode=true',
@@ -944,7 +966,7 @@ kubectl create secret generic kcp-static-tokens -n default \
 #   kro-mgmt-down  manual ▶ to tear down (kind delete cluster).
 #
 # The make targets the providers call (install-provider-*, run-provider-*)
-# hit the hub at https://localhost:9443 with the `dev-token` static token,
+# hit the hub at hub_external_url with the `dev-token` static token,
 # which the watchdog above keeps wired up to kcp.
 #
 # CatalogEntry install/uninstall talks DIRECTLY to kcp (not via the hub) — it
@@ -1511,7 +1533,7 @@ local_resource(
                # explicit dev-only switch is required for its hub call.
                'FAROS_ACCESS_PROXY_IMAGE={proxy_image} ' +
                'FAROS_ACCESS_HUB_URL=https://faros-hub.faros-system.svc:9443 ' +
-               'FAROS_ACCESS_HUB_PUBLIC_URL=https://localhost:9443 ' +
+               'FAROS_ACCESS_HUB_PUBLIC_URL=%s ' % hub_external_url +
                'FAROS_ACCESS_HUB_INSECURE=true ' +
                'FAROS_ACCESS_PUBLIC_SCHEME=https ' +
                # The ONE platform Gateway all template HTTPRoutes attach to —
@@ -1823,7 +1845,7 @@ local_resource(
 # edges — kubernetes & server agents. All manual triggers (click ▶ in Tilt UI).
 #
 # Same flow as the embedded-kcp ./Tiltfile (lines ~224-279). Both Tiltfiles
-# surface the hub at https://localhost:9443 with the `dev-token` static token,
+# surface the hub at hub_external_url with the `dev-token` static token,
 # so the agent make targets (dev-login-static, dev-edge-create, dev-run-edge,
 # dev-run-ssh-server) work unchanged here.
 #
@@ -1957,4 +1979,4 @@ local_resource(
     labels=['edges'],
 )
 
-print('  faros-hub:      https://localhost:9443 (in-cluster, static token: dev-token)')
+print('  faros-hub:      %s (in-cluster, static token: dev-token)' % hub_external_url)

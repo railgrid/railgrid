@@ -31,9 +31,8 @@ limitations under the License.
 //
 // The persisted layout is ADVISORY. The set of providers that may appear
 // on the dashboard is decided upstream (DashboardPage gates on
-// ready/hasUI/enabled and pre-probes which providers ship a tile); this
-// store only remembers geometry, the hidden set, the no-tile set, and the
-// column count, then reconciles that against whatever providers are live
+// ready/hasUI/enabled); this store only remembers geometry, the hidden set,
+// and the column count, then reconciles that against whatever providers are live
 // right now. A provider that was removed from the catalog, lost its
 // binding, or exposes no dashboard tile simply drops out; a newly-enabled
 // provider gets appended at the bottom with a default size.
@@ -55,7 +54,6 @@ export interface TileLayout {
 interface PersistedLayout {
   tiles: TileLayout[]
   hidden: string[]
-  noTile: string[]
   cols: number
 }
 
@@ -65,7 +63,11 @@ interface DashboardLayoutDTO {
   gridColumns: number
   tiles: { name: string; x: number; y: number; w: number; h: number }[]
   hidden: string[]
-  noTile: string[]
+  // The hub still has a `noTile` field (pkg/hub/restapi/preferences.go) from
+  // when tileless providers were dropped from the grid. They now keep their
+  // card, so the console neither reads nor writes it; the field stays on the
+  // wire type only so an older payload round-trips without surprises.
+  noTile?: string[]
 }
 
 // Grid geometry constants. GRID_COLS is the fallback column count when the
@@ -101,16 +103,18 @@ function strArray(v: unknown): string[] {
 function loadPersisted(ws: string): PersistedLayout {
   try {
     const raw = localStorage.getItem(storageKey(ws))
-    if (!raw) return { tiles: [], hidden: [], noTile: [], cols: 0 }
+    if (!raw) return { tiles: [], hidden: [], cols: 0 }
+    // A payload written before tileless providers kept their card may carry a
+    // `noTile` list. Ignoring it is deliberate: it used to hide those
+    // providers from the dashboard with nothing in the UI to undo it.
     const parsed = JSON.parse(raw) as Partial<PersistedLayout>
     return {
       tiles: Array.isArray(parsed.tiles) ? parsed.tiles.filter(isTileLayout) : [],
       hidden: strArray(parsed.hidden),
-      noTile: strArray(parsed.noTile),
       cols: typeof parsed.cols === 'number' ? parsed.cols : 0,
     }
   } catch {
-    return { tiles: [], hidden: [], noTile: [], cols: 0 }
+    return { tiles: [], hidden: [], cols: 0 }
   }
 }
 
@@ -209,11 +213,6 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   // still loading — from overwriting the saved arrangement.
   const geometry = ref<TileLayout[]>([])
   const hidden = ref<string[]>([])
-  // Providers that loaded but registered no dashboard-tile element. Now
-  // PERSISTED (localStorage + hub) so empty providers don't flash into the
-  // grid and vanish on every load. Cleared for a provider by the tile
-  // pre-probe when its bundle version changes.
-  const noTile = ref<Set<string>>(new Set())
   // User's chosen column count. 0 = follow the caller's responsive default.
   const cols = ref<number>(0)
   // Column count actually in effect (responsive default handed by the
@@ -224,20 +223,18 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   const lastNames = ref<string[]>([])
 
   // addable drives the "add tile" menu: hidden providers still live.
-  const addable = computed(() =>
-    hidden.value.filter((n) => lastNames.value.includes(n) && !noTile.value.has(n)),
-  )
+  const addable = computed(() => hidden.value.filter((n) => lastNames.value.includes(n)))
 
-  // candidate names = live, minus those that turned out to have no tile.
+  // Every live provider is a candidate. Tileless ones keep their card and
+  // render a launcher body, so nothing is filtered out here.
   function candidates(): string[] {
-    return lastNames.value.filter((n) => !noTile.value.has(n))
+    return lastNames.value
   }
 
   function snapshot(): PersistedLayout {
     return {
       tiles: geometry.value.map(strip),
       hidden: hidden.value,
-      noTile: [...noTile.value],
       cols: cols.value,
     }
   }
@@ -266,7 +263,6 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
       gridColumns: s.cols,
       tiles: s.tiles.map((t) => ({ name: t.i, x: t.x, y: t.y, w: t.w, h: t.h })),
       hidden: s.hidden,
-      noTile: s.noTile,
     }
   }
 
@@ -335,7 +331,6 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
 
     geometry.value = remoteTiles
     hidden.value = strArray(dto.hidden)
-    noTile.value = new Set(strArray(dto.noTile))
     cols.value = typeof dto.gridColumns === 'number' ? dto.gridColumns : 0
     applyLayout()
     saveCache()
@@ -344,7 +339,7 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   // ---- store actions ----
 
   // commit re-derives the layout from the current state and writes it to
-  // the cache + hub. Used by the hidden/noTile mutations. When there are
+  // the cache + hub. Used by the hidden mutations. When there are
   // live candidates it captures the rendered positions as the new baseline
   // so a hide/unhide remembers where the remaining tiles sit.
   function commit() {
@@ -374,7 +369,6 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
       const cached = loadPersisted(key)
       geometry.value = cached.tiles
       hidden.value = cached.hidden
-      noTile.value = new Set(cached.noTile)
       cols.value = cached.cols
     }
     org.value = orgUUID
@@ -408,32 +402,12 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
     commit()
   }
 
-  // markNoTile is reported by a tile that loaded its bundle but found no
-  // <faros-dashboard-tile-*> element. Persisted so it doesn't re-probe on
-  // reload. (No longer used to drop tiles — tileless providers stay on the
-  // grid — but kept so a caller can record the fact if desired.)
-  function markNoTile(name: string) {
-    if (noTile.value.has(name)) return
-    noTile.value = new Set(noTile.value).add(name)
-    commit()
-  }
-
-  // clearNoTile forgets a stale no-tile verdict. No-op when not recorded.
-  function clearNoTile(name: string) {
-    if (!noTile.value.has(name)) return
-    const next = new Set(noTile.value)
-    next.delete(name)
-    noTile.value = next
-    commit()
-  }
-
   // reset clears the whole customisation for the active workspace.
   function reset() {
     geometry.value = []
     hidden.value = []
-    noTile.value = new Set()
     cols.value = 0
-    savePersisted(ws.value, { tiles: [], hidden: [], noTile: [], cols: 0 })
+    savePersisted(ws.value, { tiles: [], hidden: [], cols: 0 })
     // Re-place everything at defaults and push the cleared state up.
     applyLayout()
     saveCache()
@@ -448,8 +422,6 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
     persist,
     hide,
     unhide,
-    markNoTile,
-    clearNoTile,
     reset,
   }
 })

@@ -52,14 +52,10 @@ const gated = computed(() =>
     .sort((a, b) => a.displayName.localeCompare(b.displayName)),
 )
 
-// Candidate tiles are every gated provider. Which ones actually SHOW is
-// decided in the store, which excludes providers already known to ship no
-// dashboard tile (the persisted `noTile` set). A provider seen to be
-// tileless once — DashboardTile emits `no-tile` when its bundle registers
-// no <faros-dashboard-tile-*> element — is remembered in localStorage and
-// on the hub, so it flashes at most once and never again on reload (this
-// is the flicker fix). Placing optimistically means the grid is never
-// wrongly empty just because a bundle was slow to probe.
+// Candidate tiles are every gated provider, and every one of them gets a
+// card. A provider that ships no <faros-dashboard-tile-*> element renders a
+// launcher body instead of being dropped, so the grid never reflows on
+// probe results and is never wrongly empty because a bundle was slow.
 const candidateNames = computed(() => gated.value.map((p) => p.name))
 
 // Responsive column count so the grid fills wide screens instead of

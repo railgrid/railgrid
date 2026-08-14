@@ -166,8 +166,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		bindingStatuses := make([]aiv1alpha1.ProjectProviderBindingStatus, 0, len(env.bindings))
 		for _, binding := range env.bindings {
 			effectiveBinding := binding
-			if actionsTenantPath != "" && isProjectDevelopmentBinding(env.spec.Name, binding) {
-				effectiveBinding, err = r.overlayDevelopmentBinding(&p, binding, actionsTenantPath)
+			if isProjectDevelopmentBinding(env.spec.Name, binding) {
+				if actionsTenantPath != "" {
+					effectiveBinding, err = r.overlayDevelopmentBinding(&p, binding, actionsTenantPath)
+				}
+				// Preview visibility is Project policy, not binding data, so it
+				// is overlaid here on every pass. Applied outside the actions
+				// branch above deliberately: a deployment with no Provider
+				// Actions configured must still get a private preview.
+				if err == nil {
+					effectiveBinding, err = bindings.ApplyPreviewAccessToBinding(effectiveBinding, bindings.PreviewAccess(&p))
+				}
 				if err != nil {
 					allReady = false
 					st := bindings.InvalidStatus(binding)
@@ -463,6 +472,10 @@ func (r *Reconciler) ensureInstance(ctx context.Context, c client.Client, p *aiv
 		next := got.DeepCopy()
 		observedSpec, _, _ := unstructured.NestedMap(got.Object, "spec")
 		desiredSpec, _, _ := unstructured.NestedMap(want.Object, "spec")
+		// A template that exposes no URL declares no access input, and the API
+		// server prunes it. Asking for it anyway would make every reconcile see
+		// drift it can never resolve.
+		bindings.DropUnsupportedAccess(observedSpec, desiredSpec)
 		next.Object["spec"] = bindings.MergeProviderSpec(observedSpec, desiredSpec)
 		labels := next.GetLabels()
 		if labels == nil {

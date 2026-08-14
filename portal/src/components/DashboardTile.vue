@@ -3,6 +3,10 @@ import { computed, onBeforeUnmount, onMounted, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
+import { useTenantStore } from '@/stores/tenant'
+// The fallback body is a card in the same grid as real tiles, so it renders
+// from the same vocabulary rather than approximating it.
+import { tileClass } from '@/portalkit/dashboardtile'
 import type { ProviderDTO } from '@/stores/providers'
 import { Puzzle, ChevronRight, X } from 'lucide-vue-next'
 
@@ -33,6 +37,7 @@ const emit = defineEmits<{
 
 const auth = useAuthStore()
 const theme = useThemeStore()
+const tenant = useTenantStore()
 const router = useRouter()
 
 const mountRef = ref<HTMLDivElement | null>(null)
@@ -41,6 +46,11 @@ const loadState = ref<'idle' | 'loading' | 'ready' | 'no-tile' | 'error'>('idle'
 const loadError = ref<string | null>(null)
 
 const tagFor = (name: string) => `faros-dashboard-tile-${name}`
+
+// Only used when another component owns the script tag and we have to wait for
+// it. Generous, because it is no longer on the happy path: a wrong answer here
+// shows the wrong card until the next mount.
+const TILE_WAIT_MS = 5000
 
 // Route the tile's "Open" link and sub-page shortcuts point at. Mirrors the
 // side nav's rule (providers.ts): built-in providers route to /{builtinRoute},
@@ -67,7 +77,7 @@ watch(
 )
 
 watch(
-  () => [theme.mode, auth.token, auth.clusterName] as const,
+  () => [theme.resolved, auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID] as const,
   () => pushContext(),
 )
 
@@ -82,7 +92,13 @@ async function loadAndMount(name: string, version: string | undefined) {
   const scriptID = `faros-provider-script-${name}`
   const tag = tagFor(name)
 
+  // Whether THIS call injected the bundle. It decides how the check below
+  // concludes: a script we awaited has finished executing, so the registry is
+  // already final; a script someone else injected may still be in flight.
+  let loadedHere = false
+
   if (!customElements.get(tag) && !document.getElementById(scriptID)) {
+    loadedHere = true
     const v = encodeURIComponent(version ?? '0')
     const src = `/ui/providers/${name}/main.js?v=${v}`
     await new Promise<void>((resolve, reject) => {
@@ -100,17 +116,32 @@ async function loadAndMount(name: string, version: string | undefined) {
     })
   }
 
-  // Race whenDefined against a short timeout. A provider that doesn't
-  // ship a tile element is a normal case — fall through to the fallback
-  // card rather than treating it as an error.
-  const defined = await Promise.race([
-    customElements.whenDefined(tag).then(() => true),
-    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1500)),
-  ])
+  // Registration is synchronous inside the bundle's IIFE, so once the script
+  // we injected has fired onload the registry is final: either the tag is
+  // there or the provider ships no tile. Deciding on that fact rather than on
+  // a timer is what makes the answer deterministic — the previous version
+  // raced a 1.5s timeout, so a slow bundle (or a busy main thread on a
+  // dashboard mounting a dozen cards at once) reported "no tile" for a
+  // provider that had one, and did so silently.
+  let defined = !!customElements.get(tag)
+
+  if (!defined && !loadedHere) {
+    // Someone else's script tag: it may still be downloading, so this is the
+    // one case that genuinely needs to wait.
+    defined = await Promise.race([
+      customElements.whenDefined(tag).then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), TILE_WAIT_MS)),
+    ])
+  }
 
   if (!defined) {
-    // No tile element — a normal, opt-in case. Keep the card (chrome +
-    // muted body) rather than dropping it from the grid.
+    // No tile element — a normal, opt-in case for most providers. Keep the
+    // card (chrome + muted body) rather than dropping it from the grid, but
+    // say so once in the console: when a provider DOES ship a tile and this
+    // still fires, the fallback card is indistinguishable from the intended
+    // empty state and there is nothing else to go on.
+    // eslint-disable-next-line no-console
+    console.debug(`[faros] provider "${name}" registered no <${tag}> after loading its bundle`)
     loadState.value = 'no-tile'
     return
   }
@@ -132,7 +163,14 @@ function pushContext() {
     token: auth.token,
     user: auth.user,
     tenant: auth.clusterName,
-    theme: theme.mode,
+    // The sidebar's org/workspace, same as ProviderFrame pushes. Without it a
+    // provider client that scopes on X-Faros-Org / X-Faros-Workspace queries
+    // the wrong workspace (or none) and the tile renders a convincing empty
+    // state instead of the user's actual resources.
+    orgUUID: tenant.orgUUID,
+    workspaceUUID: tenant.workspaceUUID,
+    // Resolved, not the raw mode — see ProviderFrame.pushContext.
+    theme: theme.resolved,
     basePath: `/ui/providers/${props.provider.name}`,
   }
 }
@@ -202,8 +240,8 @@ onBeforeUnmount(() => {
       </router-link>
     </div>
 
-    <div v-if="loadState === 'loading'" class="text-[11px] text-text-muted">Loading&hellip;</div>
-    <div v-else-if="loadState === 'error'" class="text-[11px] text-danger">
+    <div v-if="loadState === 'loading'" :class="tileClass.message">Loading&hellip;</div>
+    <div v-else-if="loadState === 'error'" :class="tileClass.error">
       Failed to load tile: <span class="font-mono">{{ loadError }}</span>
     </div>
     <!-- Provider ships no tile element: instead of a blank card, render a
@@ -215,16 +253,17 @@ onBeforeUnmount(() => {
       class="flex min-h-0 flex-1 flex-col gap-3"
       :class="editMode ? 'pointer-events-none select-none' : ''"
     >
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-muted">
-        <span class="inline-flex items-center gap-1">
+      <div :class="tileClass.stats">
+        <span :class="[tileClass.stat, provider.ready ? tileClass.statOk : tileClass.statWarn]">
           <span class="h-1.5 w-1.5 rounded-full" :class="provider.ready ? 'bg-success' : 'bg-warning'" />
-          {{ provider.ready ? 'Ready' : 'Not ready' }}
+          <span :class="tileClass.statLabel">{{ provider.ready ? 'Ready' : 'Not ready' }}</span>
         </span>
-        <span
-          v-if="provider.category"
-          class="rounded-sm border border-border-subtle px-2 py-0.5 uppercase tracking-wide"
-        >{{ provider.category }}</span>
-        <span v-if="provider.version" class="font-mono">v{{ provider.version }}</span>
+        <span v-if="provider.category" :class="[tileClass.stat, tileClass.statMuted]">
+          <span class="uppercase tracking-wide">{{ provider.category }}</span>
+        </span>
+        <span v-if="provider.version" :class="[tileClass.stat, tileClass.statMuted]">
+          <span class="font-mono">v{{ provider.version }}</span>
+        </span>
       </div>
 
       <!-- Sub-page shortcuts when the provider declares nav children. -->
@@ -236,7 +275,7 @@ onBeforeUnmount(() => {
           class="tile-no-drag rounded-lg border border-border-subtle bg-surface-overlay px-2 py-1 text-[11px] text-text-secondary transition-colors hover:border-accent/40 hover:text-accent"
         >{{ l.label }}</router-link>
       </div>
-      <p v-else class="text-[11px] leading-relaxed text-text-muted">
+      <p v-else :class="tileClass.empty">
         No dashboard summary yet — open {{ provider.displayName }} to manage its resources.
       </p>
 

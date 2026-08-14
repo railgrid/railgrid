@@ -61,7 +61,7 @@ watch(
 // the micro-frontend. Without props.subPath in the dep list the element
 // stayed on its initial route until a hard refresh.
 watch(
-  () => [theme.mode, auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID, props.subPath] as const,
+  () => [theme.resolved, auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID, props.subPath] as const,
   () => pushContext(),
 )
 
@@ -172,7 +172,10 @@ function pushContext() {
     // console's own /api/orgs/* calls send).
     orgUUID: tenant.orgUUID,
     workspaceUUID: tenant.workspaceUUID,
-    theme: theme.mode,
+    // The RESOLVED theme, never the raw mode. Providers render with it
+    // (`ctx.theme === 'dark'`), and 'system' is not something to render — a
+    // provider handed it renders its light branch on a dark desktop.
+    theme: theme.resolved,
     basePath: `/ui/providers/${entry.value.name}`,
   }
 }

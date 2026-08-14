@@ -2,7 +2,7 @@
 // and the one-shot handoff into chat.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { DNS_LABEL_RE, searxngSetupPrompt } from '../assisted-setup'
+import { DNS_LABEL_RE, SMOKE_QUERY, searxngSetupPrompt } from '../assisted-setup'
 import type { AgentChat } from '../views/agent-chat'
 import type { Connections } from '../views/connections'
 import type { Capabilities, Connection } from '../types'
@@ -155,6 +155,16 @@ describe('composed prompt', () => {
   it('forbids asking questions and closes the loop with a real search', () => {
     expect(prompt).toContain('without asking me any questions')
     expect(prompt).toContain('web_search')
+  })
+
+  // Left to pick its own smoke-test query, an agent asks "what is Faros AI and
+  // what does it do" and the open web answers with faros.ai — a different
+  // company that outranks us on the bare name. Pinning the domain keeps the
+  // proof-of-life search pointed at us.
+  it('pins the smoke-test query to our own domain', () => {
+    expect(SMOKE_QUERY).toBe('faros.sh')
+    expect(prompt).toContain('exactly this query: `faros.sh`')
+    expect(prompt).not.toMatch(/Faros AI/i)
   })
 })
 

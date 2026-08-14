@@ -334,7 +334,12 @@ faros-provider-agents .agents-cap-fs legend {
   color: var(--color-text-muted, #5d5f78);
 }
 faros-provider-agents .agents-cap {
-  display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 6px; cursor: pointer;
+  /* flex-direction is not optional here: `label` is globally a COLUMN flex
+     (see the base rule above), and a column flex with align-items:center
+     stacks the checkbox above its text and centres both — which is what this
+     row looked like before. Same trap `.agents-check` works around. */
+  display: flex; flex-direction: row; align-items: center; gap: 9px;
+  padding: 7px 10px; border-radius: 6px; cursor: pointer;
   font-size: 13px; border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
 }
 faros-provider-agents .agents-cap:hover { background: var(--color-surface-hover, #1e2033); }
@@ -678,3 +683,81 @@ faros-provider-agents .agents-err {
   faros-provider-agents .agents-toasts { left: 12px; right: 12px; max-width: none; align-items: stretch; }
   faros-provider-agents .agents-bar-row { grid-template-columns: 70px 1fr auto; }
 }
+
+/* --- dashboard tile (console dashboard card) ------------------------------
+   Scoped to the tile element rather than faros-provider-agents: the tile is
+   mounted by the console on its own dashboard, outside the provider page.
+
+   These values mirror portalkit/dashboardtile.ts `tileClass` one-for-one. This
+   portal is vanilla TS with no Tailwind build, so the shared vocabulary cannot
+   be applied as utility classes here — it has to be restated. Keep the two in
+   step: a dashboard is a row of cards, and one card with its own row padding or
+   type scale is the thing users notice. */
+faros-dashboard-tile-agents { display: block; font-size: 13px; }
+faros-dashboard-tile-agents .agents-tile { display: flex; flex-direction: column; gap: 12px; }
+
+/* tileClass.stats */
+faros-dashboard-tile-agents .agents-tile-stats {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: 11px;
+  color: var(--color-text-muted, #5d5f78);
+}
+faros-dashboard-tile-agents .agents-tile-stats strong {
+  font-weight: 620; font-variant-numeric: tabular-nums; color: var(--color-text-primary, #e8e9f3);
+}
+/* tileClass.stat + statIcon */
+faros-dashboard-tile-agents .agents-tile-stat { display: inline-flex; align-items: center; gap: 4px; }
+faros-dashboard-tile-agents .agents-tile-stat .ic { width: 12px; height: 12px; flex: none; }
+faros-dashboard-tile-agents .agents-tile-bad { color: var(--color-danger, #ff6b6b); }
+faros-dashboard-tile-agents .agents-tile-bad strong { color: inherit; }
+faros-dashboard-tile-agents .agents-tile-dim { color: var(--color-text-muted, #5d5f78); }
+faros-dashboard-tile-agents .agents-tile-next { color: var(--color-text-secondary, #8a8ca6); }
+
+/* tileClass.sectionLabel */
+faros-dashboard-tile-agents .agents-tile-label {
+  margin-bottom: 8px; font-size: 10px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--color-text-muted, #5d5f78);
+}
+
+/* tileClass.list + tileClass.row */
+faros-dashboard-tile-agents .agents-tile-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+faros-dashboard-tile-agents .agents-tile-rows button {
+  display: flex; width: 100%; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 8px; text-align: left; cursor: pointer;
+  font: inherit; color: inherit;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  background: color-mix(in srgb, var(--color-surface-overlay, #171927) 40%, transparent);
+  transition: background-color 0.12s;
+}
+faros-dashboard-tile-agents .agents-tile-rows button:hover {
+  background: color-mix(in srgb, var(--color-accent, #8b6bff) 4%, transparent);
+}
+/* tileClass.rowDot */
+faros-dashboard-tile-agents .agents-tile-dot { width: 6px; height: 6px; flex: none; border-radius: 9999px; }
+faros-dashboard-tile-agents .agents-tile-dot-ok { background: var(--color-success, #3fb950); }
+faros-dashboard-tile-agents .agents-tile-dot-bad { background: var(--color-danger, #ff6b6b); }
+faros-dashboard-tile-agents .agents-tile-dot-idle { background: var(--color-text-muted, #5d5f78); }
+
+/* tileClass.rowPrimary */
+faros-dashboard-tile-agents .agents-tile-agent {
+  min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12px; color: var(--color-text-primary, #e8e9f3);
+}
+/* tileClass.rowSecondary */
+faros-dashboard-tile-agents .agents-tile-rows button > span:last-of-type { flex: none; font-size: 10px; }
+/* tileClass.chevron */
+faros-dashboard-tile-agents .agents-tile-chev {
+  width: 12px; height: 12px; flex: none; color: var(--color-text-muted, #5d5f78); opacity: 0.3;
+  transition: transform 0.12s, opacity 0.12s, color 0.12s;
+}
+faros-dashboard-tile-agents .agents-tile-rows button:hover .agents-tile-chev {
+  transform: translateX(2px); opacity: 0.6; color: var(--color-accent, #8b6bff);
+}
+
+/* tileClass.empty — dashed, so it reads as "nothing here" not as a row. */
+faros-dashboard-tile-agents .agents-tile-empty {
+  padding: 12px; border-radius: 8px; text-align: center; font-size: 11px;
+  border: 1px dashed var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  color: var(--color-text-muted, #5d5f78);
+}
+faros-dashboard-tile-agents .agents-tile-msg { font-size: 11px; color: var(--color-text-muted, #5d5f78); }
+faros-dashboard-tile-agents .agents-tile-err { font-size: 11px; color: var(--color-danger, #ff6b6b); }

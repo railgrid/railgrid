@@ -5,14 +5,18 @@
 
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-  echo "usage: $0 <namespace> <secret-name> <state-dir>" >&2
+if [[ $# -lt 3 || $# -gt 4 ]]; then
+  echo "usage: $0 <namespace> <secret-name> <state-dir> [browser-host]" >&2
   exit 2
 fi
 
 namespace="$1"
 secret_name="$2"
 state_dir="$3"
+# browser_host is the hostname the portal is opened at. It shares a registrable
+# domain with the published-app hosts so the preview iframe is same-site and its
+# cookies survive — see the Tiltfile's hub_browser_host.
+browser_host="${4:-console.127.0.0.1.sslip.io}"
 ca_file="${state_dir}/ca.crt"
 cert_file="${state_dir}/tls.crt"
 key_file="${state_dir}/tls.key"
@@ -23,6 +27,9 @@ valid_material() {
   openssl x509 -in "${cert_file}" -noout -checkend 86400 >/dev/null 2>&1 || return 1
   openssl x509 -in "${cert_file}" -noout -checkhost "faros-hub.${namespace}.svc" >/dev/null 2>&1 || return 1
   openssl x509 -in "${cert_file}" -noout -checkhost localhost >/dev/null 2>&1 || return 1
+  # Regenerate material minted before the browser-facing sslip.io host was
+  # added, otherwise the portal is served a certificate that does not cover it.
+  openssl x509 -in "${cert_file}" -noout -checkhost "${browser_host}" >/dev/null 2>&1 || return 1
   openssl x509 -in "${cert_file}" -noout -checkip 127.0.0.1 >/dev/null 2>&1 || return 1
   openssl verify -CAfile "${ca_file}" "${cert_file}" >/dev/null 2>&1 || return 1
 
@@ -56,7 +63,7 @@ if ! valid_material; then
     'basicConstraints=critical,CA:FALSE' \
     'keyUsage=critical,digitalSignature,keyEncipherment' \
     'extendedKeyUsage=serverAuth' \
-    "subjectAltName=DNS:localhost,DNS:faros-hub,DNS:faros-hub-dex,DNS:faros-hub.${namespace}.svc,DNS:faros-hub-dex.${namespace}.svc,IP:127.0.0.1" \
+    "subjectAltName=DNS:localhost,DNS:${browser_host},DNS:faros-hub,DNS:faros-hub-dex,DNS:faros-hub.${namespace}.svc,DNS:faros-hub-dex.${namespace}.svc,IP:127.0.0.1" \
     >"${work_dir}/tls.ext"
   openssl x509 -req -sha256 -days 365 \
     -in "${work_dir}/tls.csr" \

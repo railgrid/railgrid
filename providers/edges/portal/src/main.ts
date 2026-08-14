@@ -2,10 +2,11 @@
 // emits this as IIFE (see vite.config.ts) so the side effects below run
 // immediately — registering the custom element and its stylesheet.
 
-import { EdgesElement } from './element'
+import { EdgesElement, EdgesDashboardTileElement } from './element'
 import styles from './style.css?raw'
 
 const TAG = 'faros-provider-edges'
+const TILE_TAG = 'faros-dashboard-tile-edges'
 
 // Hot-reload safety: customElements.define throws on a second registration for
 // the same tag, and the portal may re-execute this script after a version bump.
@@ -18,4 +19,9 @@ if (!customElements.get(TAG)) {
     document.head.appendChild(s)
   }
   customElements.define(TAG, EdgesElement)
+}
+
+// Dashboard tile — shares the stylesheet registered above.
+if (!customElements.get(TILE_TAG)) {
+  customElements.define(TILE_TAG, EdgesDashboardTileElement)
 }

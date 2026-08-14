@@ -144,3 +144,20 @@ for p in "${VUE_PORTALS[@]}"; do
   cp "$TS_SRC/toast.ts" "$ROOT/$p/src/portalkit/toast.ts"
   echo "synced tenant.ts, toast.ts -> $p/src/portalkit"
 done
+
+# dashboardtile.ts is the shared scaffolding behind every provider's
+# <faros-dashboard-tile-*> element. Plain TS for the same reason as tenant.ts,
+# and vendored into every portal that ships (or may ship) a tile.
+for p in "${VUE_PORTALS[@]}" "${TS_PORTALS[@]}" "${VIBE_PORTALS[@]}"; do
+  cp "$TS_SRC/dashboardtile.ts" "$ROOT/$p/src/portalkit/dashboardtile.ts"
+  echo "synced dashboardtile.ts -> $p/src/portalkit"
+done
+
+# icons.ts reaches the Vue portals too: their dashboard tiles draw stat glyphs
+# from the same set the vanilla portals use, so a check mark is the same check
+# mark on every card. (Vue portals otherwise have no icon library — they ship
+# self-contained, without lucide.)
+for p in "${VUE_PORTALS[@]}"; do
+  cp "$TS_SRC/icons.ts" "$ROOT/$p/src/portalkit/icons.ts"
+  echo "synced icons.ts -> $p/src/portalkit"
+done

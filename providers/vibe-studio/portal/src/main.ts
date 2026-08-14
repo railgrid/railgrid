@@ -3,9 +3,11 @@
 // registering the custom element and the per-element stylesheet.
 
 import { VibeStudioElement } from './element'
+import { VibeStudioDashboardTile } from './dashboard-tile'
 import styles from './style.css?raw'
 
 const TAG = 'faros-provider-vibe-studio'
+const TILE_TAG = 'faros-dashboard-tile-vibe-studio'
 
 // Hot-reload safety: customElements.define throws on a second registration.
 if (!customElements.get(TAG)) {
@@ -17,4 +19,9 @@ if (!customElements.get(TAG)) {
     document.head.appendChild(s)
   }
   customElements.define(TAG, VibeStudioElement)
+}
+
+// Dashboard tile — shares the stylesheet registered above.
+if (!customElements.get(TILE_TAG)) {
+  customElements.define(TILE_TAG, VibeStudioDashboardTile)
 }

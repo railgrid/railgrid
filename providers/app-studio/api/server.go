@@ -243,6 +243,15 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/promotion", s.getProjectPromotion).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/checkpoints", s.getProjectCheckpoints).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/promote", s.promoteProjectHandler).Methods(http.MethodPost)
+	// Preview visibility is the development-side counterpart of publishing and
+	// lives in the same project settings surface.
+	r.HandleFunc("/api/projects/{project}/preview", s.getProjectPreviewAccess).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/preview", s.setProjectPreviewAccess).Methods(http.MethodPost)
+	// Preview grants mirror the publishing ones exactly — same shapes, same
+	// member/invite semantics — because both delegate to the shared handlers.
+	r.HandleFunc("/api/projects/{project}/preview/grants", s.listProjectPreviewGrants).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/preview/grants", s.createProjectPreviewGrant).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/preview/grants/{grant}", s.revokeProjectPreviewGrant).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/publishing", s.getProjectPublishing).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/publishing", s.publishProject).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/publishing", s.unpublishProject).Methods(http.MethodDelete)

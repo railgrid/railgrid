@@ -28,6 +28,7 @@ import type {
   ProjectProviderResourceReference,
   ProjectCheckpoints,
   ProjectPromotionReadiness,
+  ProjectPreviewAccess,
   ProjectPublishing,
   ProjectPublishingGrant,
   ProjectPublishingMember,
@@ -515,6 +516,66 @@ export const api = {
       `${baseURL(ctx)}/${encodeURIComponent(name)}/promote`,
       values ? { values } : {},
     )
+  },
+
+  // Preview visibility is the development-side counterpart of publishing: the
+  // same two modes on the dev URL, defaulting to restricted.
+  async getPreviewAccess(ctx: FarosContext | null, name: string): Promise<ProjectPreviewAccess> {
+    return request<ProjectPreviewAccess>(
+      ctx,
+      'GET',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview`,
+    )
+  },
+
+  async setPreviewAccess(
+    ctx: FarosContext | null,
+    name: string,
+    mode: ProjectPublishingMode,
+  ): Promise<ProjectPreviewAccess> {
+    return request<ProjectPreviewAccess>(
+      ctx,
+      'POST',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview`,
+      { mode },
+    )
+  },
+
+  async listPreviewGrants(ctx: FarosContext | null, name: string): Promise<ProjectPublishingGrant[]> {
+    const res = await request<{ items?: ProjectPublishingGrant[] }>(
+      ctx,
+      'GET',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview/grants`,
+    )
+    return res.items ?? []
+  },
+
+  async createPreviewGrant(
+    ctx: FarosContext | null,
+    name: string,
+    user: string,
+    invite = false,
+  ): Promise<ProjectPublishingGrant[]> {
+    const res = await request<{ items?: ProjectPublishingGrant[] }>(
+      ctx,
+      'POST',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview/grants`,
+      { user, invite },
+    )
+    return res.items ?? []
+  },
+
+  async revokePreviewGrant(
+    ctx: FarosContext | null,
+    name: string,
+    grant: string,
+  ): Promise<ProjectPublishingGrant[]> {
+    const res = await request<{ items?: ProjectPublishingGrant[] }>(
+      ctx,
+      'POST',
+      `${baseURL(ctx)}/${encodeURIComponent(name)}/preview/grants/${encodeURIComponent(grant)}`,
+    )
+    return res.items ?? []
   },
 
   async getPublishing(ctx: FarosContext | null, name: string): Promise<ProjectPublishing> {

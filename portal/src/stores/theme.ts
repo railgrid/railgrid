@@ -23,8 +23,10 @@ function applyTheme(resolved: 'light' | 'dark') {
 }
 
 export const useThemeStore = defineStore('theme', () => {
-  // Dark is the product default; 'system' is opt-in via the toggle cycle.
-  const mode = ref<ThemeMode>((localStorage.getItem(STORAGE_KEY) as ThemeMode) || 'dark')
+  // No stored preference means follow the OS. Dark remains the fallback when
+  // the OS preference cannot be read (see getSystemTheme), so a failure still
+  // lands on the theme the CSS base is written for.
+  const mode = ref<ThemeMode>((localStorage.getItem(STORAGE_KEY) as ThemeMode) || 'system')
   const resolved = ref<'light' | 'dark'>(
     mode.value === 'system' ? getSystemTheme() : mode.value,
   )
@@ -60,7 +62,7 @@ export const useThemeStore = defineStore('theme', () => {
 /** Call before Vue mounts to prevent flash of wrong theme. */
 export function initTheme() {
   const stored = localStorage.getItem(STORAGE_KEY) as ThemeMode | null
-  const mode = stored || 'dark'
+  const mode = stored || 'system'
   const resolved = mode === 'system' ? getSystemTheme() : mode
   applyTheme(resolved)
 }

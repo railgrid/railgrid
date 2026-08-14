@@ -17,6 +17,8 @@
 
 import { computed, onMounted, onUnmounted, ref, watch, h } from 'vue'
 import { api, setTenant, setToken } from './api'
+import { tileClass } from './portalkit/dashboardtile'
+import { ic } from './portalkit/icons'
 
 // Inline icon components — the provider's portal bundle is
 // intentionally self-contained (no parent node_modules symlink) so we
@@ -43,81 +45,7 @@ function inlineIcon(path: string) {
       [h('path', { d: path })],
     )
 }
-const Layers = (props: { class?: string }) =>
-  h(
-    'svg',
-    {
-      xmlns: 'http://www.w3.org/2000/svg',
-      viewBox: '0 0 24 24',
-      fill: 'none',
-      stroke: 'currentColor',
-      'stroke-width': 2,
-      'stroke-linecap': 'round',
-      'stroke-linejoin': 'round',
-      class: props.class,
-    },
-    [
-      h('path', { d: 'm12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.65 0l8.58-3.9a1 1 0 0 0 0-1.83Z' }),
-      h('path', { d: 'm22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65' }),
-      h('path', { d: 'm22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65' }),
-    ],
-  )
 const ChevronRight = inlineIcon('m9 18 6-6-6-6')
-const CheckCircle2 = (props: { class?: string }) =>
-  h(
-    'svg',
-    {
-      xmlns: 'http://www.w3.org/2000/svg',
-      viewBox: '0 0 24 24',
-      fill: 'none',
-      stroke: 'currentColor',
-      'stroke-width': 2,
-      'stroke-linecap': 'round',
-      'stroke-linejoin': 'round',
-      class: props.class,
-    },
-    [
-      h('circle', { cx: 12, cy: 12, r: 10 }),
-      h('path', { d: 'm9 12 2 2 4-4' }),
-    ],
-  )
-const Clock = (props: { class?: string }) =>
-  h(
-    'svg',
-    {
-      xmlns: 'http://www.w3.org/2000/svg',
-      viewBox: '0 0 24 24',
-      fill: 'none',
-      stroke: 'currentColor',
-      'stroke-width': 2,
-      'stroke-linecap': 'round',
-      'stroke-linejoin': 'round',
-      class: props.class,
-    },
-    [
-      h('circle', { cx: 12, cy: 12, r: 10 }),
-      h('polyline', { points: '12 6 12 12 16 14' }),
-    ],
-  )
-const AlertCircle = (props: { class?: string }) =>
-  h(
-    'svg',
-    {
-      xmlns: 'http://www.w3.org/2000/svg',
-      viewBox: '0 0 24 24',
-      fill: 'none',
-      stroke: 'currentColor',
-      'stroke-width': 2,
-      'stroke-linecap': 'round',
-      'stroke-linejoin': 'round',
-      class: props.class,
-    },
-    [
-      h('circle', { cx: 12, cy: 12, r: 10 }),
-      h('line', { x1: 12, x2: 12, y1: 8, y2: 12 }),
-      h('line', { x1: 12, x2: 12.01, y1: 16, y2: 16 }),
-    ],
-  )
 
 interface FarosContext {
   token?: string | null
@@ -148,8 +76,7 @@ const stats = computed(() => {
   const ready = instances.value.filter((i) => i.phase === 'Ready').length
   const pending = instances.value.filter((i) => i.phase === 'Pending').length
   const failed = instances.value.filter((i) => i.phase === 'Failed').length
-  const healthPct = total === 0 ? 0 : Math.round((ready / total) * 100)
-  return { total, ready, pending, failed, healthPct }
+  return { total, ready, pending, failed }
 })
 
 // Most-recent first, capped at 4 so the tile stays a fixed height.
@@ -218,61 +145,48 @@ onUnmounted(() => {
 })
 watch(() => props.context, refresh)
 
-// Phase → icon + tailwind classes. Unknown phases fall through to the
-// neutral bucket so a future kro phase string doesn't render as
-// "Failed" by mistake.
-const phaseStyle: Record<string, { icon: typeof CheckCircle2; cls: string }> = {
-  Ready: { icon: CheckCircle2, cls: 'text-success' },
-  Pending: { icon: Clock, cls: 'text-text-muted' },
-  Failed: { icon: AlertCircle, cls: 'text-danger' },
+// Phase → dot colour. Unknown phases fall through to the neutral bucket so a
+// future kro phase string doesn't render as "Failed" by mistake.
+const phaseDot: Record<string, string> = {
+  Ready: 'bg-success',
+  Pending: 'bg-text-muted',
+  Failed: 'bg-danger',
 }
-function styleFor(phase: string) {
-  return phaseStyle[phase] ?? { icon: Clock, cls: 'text-text-muted' }
+function dotFor(phase: string) {
+  return phaseDot[phase] ?? 'bg-text-muted'
 }
 </script>
 
 <template>
-  <div ref="rootRef" class="space-y-3">
-    <div v-if="loading" class="text-[11px] text-text-muted">Loading instances&hellip;</div>
-    <div v-else-if="error" class="text-[11px] text-danger">Failed to load: {{ error }}</div>
+  <div ref="rootRef" :class="tileClass.root">
+    <div v-if="loading" :class="tileClass.message">Loading instances&hellip;</div>
+    <div v-else-if="error" :class="tileClass.error">Failed to load: {{ error }}</div>
 
     <template v-else>
       <!-- Slim horizontal status row (matches the clusters/edges tiles): a
            single inline line of icon + count + label chips rather than four
            stacked boxes, so the tile stays compact. -->
-      <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
-        <span class="inline-flex items-center gap-1 text-text-primary">
-          <Layers class="h-3 w-3 text-text-muted" :stroke-width="2" />
-          <span class="font-semibold tabular-nums">{{ stats.total }}</span>
-          <span class="text-text-muted">total</span>
+      <div :class="tileClass.stats">
+        <span :class="[tileClass.stat, tileClass.statTotal]">
+          <span v-html="ic('package', tileClass.statIcon)" />
+          <span :class="tileClass.statNum">{{ stats.total }}</span>
+          <span :class="tileClass.statLabel">total</span>
         </span>
-        <span class="inline-flex items-center gap-1 text-success">
-          <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
+        <span :class="[tileClass.stat, tileClass.statOk]">
+          <span v-html="ic('check', tileClass.statIcon)" />
           <span class="tabular-nums">{{ stats.ready }}</span>
-          <span class="text-text-muted">ready</span>
+          <span :class="tileClass.statLabel">ready</span>
         </span>
-        <span v-if="stats.pending > 0" class="inline-flex items-center gap-1 text-text-muted">
-          <Clock class="h-3 w-3" :stroke-width="2" />
+        <span v-if="stats.pending > 0" :class="[tileClass.stat, tileClass.statMuted]">
+          <span v-html="ic('clock', tileClass.statIcon)" />
           <span class="tabular-nums">{{ stats.pending }}</span>
-          <span class="text-text-muted">pending</span>
+          <span :class="tileClass.statLabel">pending</span>
         </span>
-        <span v-if="stats.failed > 0" class="inline-flex items-center gap-1 text-danger">
-          <AlertCircle class="h-3 w-3" :stroke-width="2" />
+        <span v-if="stats.failed > 0" :class="[tileClass.stat, tileClass.statBad]">
+          <span v-html="ic('alert-triangle', tileClass.statIcon)" />
           <span class="tabular-nums">{{ stats.failed }}</span>
-          <span class="text-text-muted">failed</span>
+          <span :class="tileClass.statLabel">failed</span>
         </span>
-      </div>
-
-      <!-- Health bar — only meaningful when there's anything to be
-           healthy. Hidden on empty state to avoid a 0%-of-0 oddity. -->
-      <div v-if="stats.total > 0" class="space-y-1">
-        <div class="flex items-center justify-between text-[10px] text-text-muted">
-          <span>Health</span>
-          <span class="font-mono tabular-nums">{{ stats.healthPct }}%</span>
-        </div>
-        <div class="h-1.5 overflow-hidden rounded-xs bg-surface-overlay">
-          <div class="h-full bg-success transition-all" :style="{ width: stats.healthPct + '%' }" />
-        </div>
       </div>
 
       <!-- Recent instances. Click anywhere on the row → instance detail
@@ -281,18 +195,18 @@ function styleFor(phase: string) {
            compact line per item (phase icon · name · template · animated
            chevron) so the dashboard reads consistently across providers. -->
       <div v-if="recent.length > 0">
-        <div class="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-muted">Recent</div>
-        <ul class="space-y-1">
+        <div :class="tileClass.sectionLabel">Recent</div>
+        <ul :class="tileClass.list">
           <li v-for="i in recent" :key="i.name">
             <button
               type="button"
-              class="group flex w-full items-center gap-2 rounded-lg border border-border-subtle bg-surface-overlay/40 px-2.5 py-1.5 text-left transition-colors hover:bg-accent/[0.04]"
+              :class="tileClass.row"
               @click="dispatchNavigate('instances/' + encodeURIComponent(i.name))"
             >
-              <component :is="styleFor(i.phase).icon" :class="styleFor(i.phase).cls + ' h-3 w-3 shrink-0'" :stroke-width="1.75" />
-              <span class="min-w-0 flex-1 truncate text-[12px] text-text-primary">{{ i.name }}</span>
-              <span class="shrink-0 truncate text-[10px] text-text-muted/70">{{ i.template }}</span>
-              <ChevronRight class="h-3 w-3 shrink-0 text-text-muted/30 transition-all group-hover:translate-x-0.5 group-hover:text-accent/60" :stroke-width="2" />
+              <span :class="[tileClass.rowDot, dotFor(i.phase)]" aria-hidden="true" />
+              <span :class="tileClass.rowPrimary">{{ i.name }}</span>
+              <span :class="tileClass.rowSecondary">{{ i.template }}</span>
+              <ChevronRight :class="tileClass.chevron" :stroke-width="2" />
             </button>
           </li>
         </ul>
@@ -305,8 +219,8 @@ function styleFor(phase: string) {
            list now reads from a different namespace. The pointer to
            the Instances page lets them at least see their stranded
            CRs via the "no workspace" view there. -->
-      <div v-else class="rounded-lg border border-dashed border-border-subtle p-3 text-[11px] text-text-muted">
-        <div class="text-center">
+      <div v-else :class="tileClass.empty">
+        <div>
           No instances yet in this workspace.
           <button
             type="button"
@@ -316,8 +230,8 @@ function styleFor(phase: string) {
             Browse templates →
           </button>
         </div>
-        <div class="mt-2 text-center text-[10px] text-text-muted/70">
-          Expected to see instances? They may have been provisioned in a different scope.
+        <div class="mt-1 text-text-muted/70">
+          Provisioned before picking a workspace?
           <button
             type="button"
             class="font-medium text-accent transition-colors hover:text-accent-hover"

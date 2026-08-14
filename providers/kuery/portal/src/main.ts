@@ -11,9 +11,11 @@
 // custom element.
 
 import { KueryElement } from './element'
+import { KueryDashboardTile } from './dashboard-tile'
 import styles from './style.css?raw'
 
 const TAG = 'faros-provider-kuery'
+const TILE_TAG = 'faros-dashboard-tile-kuery'
 
 // Hot-reload safety: customElements.define throws on a second registration
 // for the same tag. The portal can re-execute this script after a version
@@ -30,4 +32,9 @@ if (!customElements.get(TAG)) {
     document.head.appendChild(s)
   }
   customElements.define(TAG, KueryElement)
+}
+
+// Dashboard tile — shares the stylesheet registered above.
+if (!customElements.get(TILE_TAG)) {
+  customElements.define(TILE_TAG, KueryDashboardTile)
 }

@@ -5,9 +5,11 @@
 // faros-provider-agents custom element to be defined.
 
 import { AgentsElement } from './element'
+import { AgentsDashboardTile } from './views/dashboard-tile'
 import styles from './style.css?raw'
 
 const TAG = 'faros-provider-agents'
+const TILE_TAG = 'faros-dashboard-tile-agents'
 
 // Hot-reload safety: customElements.define throws on a second registration for
 // the same tag. The portal may re-execute this script after a version bump
@@ -21,4 +23,9 @@ if (!customElements.get(TAG)) {
     document.head.appendChild(s)
   }
   customElements.define(TAG, AgentsElement)
+}
+
+// Dashboard tile — shares the stylesheet registered above.
+if (!customElements.get(TILE_TAG)) {
+  customElements.define(TILE_TAG, AgentsDashboardTile)
 }

@@ -204,7 +204,9 @@ import type {
   ProjectLLMSettings,
   ProjectMessage,
   ProjectPromotionReadiness,
+  ProjectPreviewAccess,
   ProjectPublishing,
+  ProjectPublishingGrant,
   ProjectPublishingMode,
   ProjectPublishingMember,
   ProviderItem,
@@ -550,6 +552,11 @@ const developmentPreviewRecoveryError = ref<string | null>(null)
 const developmentPreviewRecoveryAttempt = ref(0)
 const developmentPreviewPendingLoadedStatus = ref<string | null>(null)
 const shareMode = ref<ProjectPublishingMode>('restricted')
+// Preview sharing is the development-side channel of the same dialog. It is
+// tracked separately from `publishing` because it applies to a different
+// instance and converges on its own schedule.
+const previewMode = ref<ProjectPublishingMode>('restricted')
+const previewAccess = ref<ProjectPreviewAccess | null>(null)
 const publishing = ref<ProjectPublishing | null>(null)
 // A member list can be useful even when the publication read failed. Keep
 // this separate from the cached publication object so partial loads cannot
@@ -1590,6 +1597,8 @@ watch(
     publishingLoadError.value = null
     publishingMembersError.value = null
     shareMode.value = 'restricted'
+    previewMode.value = 'restricted'
+    previewAccess.value = null
     projectSettingsPane.value = 'project'
     projectSettingsPaneAnnouncement.value = ''
     projectSettingsSaving.value = false
@@ -2291,9 +2300,13 @@ async function loadPublishing() {
   publishingLoadError.value = null
   publishingMembersError.value = null
 
-  const [stateResult, membersResult] = await Promise.allSettled([
+  // Preview access rides the same poll — it is the second half of one dialog.
+  // Settled with the rest so a preview failure cannot blank publishing, and
+  // vice versa.
+  const [stateResult, membersResult, previewResult] = await Promise.allSettled([
     api.getPublishing(props.ctx, name),
     api.listPublishingMembers(props.ctx, name),
+    api.getPreviewAccess(props.ctx, name),
   ])
   if (requestSerial !== publishingLoadSerial || selected.value?.name !== name) return
 
@@ -2313,6 +2326,14 @@ async function loadPublishing() {
     publishingMembersLoaded.value = true
   } else if (!isProjectAPIInitializingError(membersResult.reason)) {
     publishingMembersError.value = membersResult.reason instanceof Error ? membersResult.reason.message : String(membersResult.reason)
+  }
+  // Preview visibility is advisory for this surface: it drives one toggle, so a
+  // failure leaves the previous value rather than degrading the whole dialog.
+  if (previewResult.status === 'fulfilled') {
+    previewAccess.value = previewResult.value
+    if (!shareDialogOpen.value) {
+      previewMode.value = previewResult.value.mode === 'public' ? 'public' : 'restricted'
+    }
   }
 
   const stateAvailable = publishingStateAvailable.value
@@ -2402,6 +2423,65 @@ async function publishCurrentProject() {
     }
   } finally {
     finishPublishingAction()
+  }
+}
+
+// savePreviewAccess writes the preview policy. The platform applies it to the
+// running preview asynchronously, so the response's `converged` flag is what
+// the dialog shows as pending — not this call returning.
+async function savePreviewAccess() {
+  const name = selected.value?.name
+  if (!name || publishingActionBusy.value) return
+  publishingActionBusy.value = true
+  publishingActionError.value = null
+  try {
+    const state = await api.setPreviewAccess(props.ctx, name, previewMode.value)
+    if (selected.value?.name !== name) return
+    previewAccess.value = state
+    previewMode.value = state.mode === 'public' ? 'public' : 'restricted'
+  } catch (err) {
+    if (selected.value?.name === name) {
+      publishingActionError.value = err instanceof Error ? err.message : String(err)
+    }
+  } finally {
+    publishingActionBusy.value = false
+  }
+}
+
+// Preview grants reuse the production handlers' shape. They target a different
+// instance, so the two grant lists are independent — revoking preview access
+// leaves production access untouched.
+async function grantCurrentProjectPreviewAccess(user: string) {
+  await mutatePreviewGrants((name) => api.createPreviewGrant(props.ctx, name, user, false))
+}
+
+async function inviteCurrentProjectPreviewAccess(email: string) {
+  await mutatePreviewGrants((name) => api.createPreviewGrant(props.ctx, name, email, true))
+}
+
+async function revokeCurrentProjectPreviewAccess(grant: string) {
+  await mutatePreviewGrants((name) => api.revokePreviewGrant(props.ctx, name, grant))
+}
+
+async function mutatePreviewGrants(run: (name: string) => Promise<ProjectPublishingGrant[]>) {
+  const name = selected.value?.name
+  if (!name || publishingActionBusy.value) return
+  publishingActionBusy.value = true
+  publishingActionError.value = null
+  try {
+    const grants = await run(name)
+    if (selected.value?.name !== name) return
+    // Keep the visibility fields and swap only the grant list, so the toggle's
+    // converged/pending state is not reset by a grant mutation.
+    previewAccess.value = previewAccess.value
+      ? { ...previewAccess.value, grants }
+      : previewAccess.value
+  } catch (err) {
+    if (selected.value?.name === name) {
+      publishingActionError.value = err instanceof Error ? err.message : String(err)
+    }
+  } finally {
+    publishingActionBusy.value = false
   }
 }
 
@@ -7453,6 +7533,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     :production-ready="Boolean(productionBinding && productionDeployment.ready)"
     :members="publishingMembers"
     :grants="publishing?.grants ?? []"
+    v-model:preview-mode="previewMode"
+    :preview-url="previewAccess?.url ?? ''"
+    :preview-supported="Boolean(previewAccess?.supported)"
+    :preview-converged="previewAccess?.converged !== false"
+    :preview-grants="previewAccess?.grants ?? []"
     :busy="publishingActionBusy"
     :busy-action="publishingBusyAction"
     :busy-target="publishingBusyTarget ?? undefined"
@@ -7463,6 +7548,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     :members-error="publishingMembersError"
     @close="closeShareDialog"
     @save="publishCurrentProject"
+    @save-preview="savePreviewAccess"
+    @preview-grant="grantCurrentProjectPreviewAccess"
+    @preview-invite="inviteCurrentProjectPreviewAccess"
+    @preview-revoke="revokeCurrentProjectPreviewAccess"
     @grant="grantCurrentProjectAccess"
     @invite="inviteCurrentProjectAccess"
     @revoke="revokeCurrentProjectAccess"

@@ -623,6 +623,20 @@ export interface ProjectPromoteResult {
 
 export type ProjectPublishingMode = 'public' | 'restricted'
 
+// ProjectPreviewAccess is the visibility of the development preview URL.
+// `converged` is false while the reconciler has not yet applied a just-changed
+// mode — the URL still has its previous visibility, so the UI must show pending
+// rather than claiming the change is live. `supported` is false when the
+// project's development template exposes no URL, in which case there is
+// nothing to control and the toggle should be hidden.
+export interface ProjectPreviewAccess {
+  mode: ProjectPublishingMode
+  url?: string
+  converged: boolean
+  supported: boolean
+  grants?: ProjectPublishingGrant[]
+}
+
 export interface ProjectPublishingMember {
   user: string
   role?: string

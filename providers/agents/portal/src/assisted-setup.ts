@@ -19,6 +19,16 @@ export const INSTANCE_SIZES: InstanceSize[] = ['small', 'medium', 'large']
 // names): lowercase alphanumerics and dashes, not starting or ending with one.
 export const DNS_LABEL_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 
+// SMOKE_QUERY is pinned rather than left to the agent. Left open ("run a search
+// and tell me what you got"), agents reach for the obvious "what is Faros and
+// what does it do" — which the open web answers with faros.ai, an unrelated
+// engineering-analytics company that outranks us on our own name. The proof the
+// pipe works then reads as our own onboarding advertising someone else.
+//
+// The domain, not the word, is the disambiguator: it is unambiguous, it is ours,
+// and it reliably returns the site plus the GitHub org on any general engine.
+export const SMOKE_QUERY = 'faros.sh'
+
 export interface SearxngSetupInput {
   // connection is the websearch Connection this portal has just created; it
   // already names the instance the agent is about to provision.
@@ -47,7 +57,7 @@ export function searxngSetupPrompt({ connection, instance, size }: SearxngSetupI
     `3. This instance is internal-only: it is not published on any hostname and it has no access token. Do not create Secrets for it and do not look for a URL.`,
     `4. Then poll \`get_instance\` for \`${instance}\` until it reports ready. This usually takes a minute or two while the container image is pulled, so wait between checks instead of calling repeatedly back to back.`,
     `5. When it is ready, tell me so — the \`${connection}\` connection already points at it, so \`web_search\` starts working with nothing further from me.`,
-    `6. Confirm it end to end by actually running a \`web_search\` and telling me what you got back.`,
+    `6. Confirm it end to end by running \`web_search\` with exactly this query: \`${SMOKE_QUERY}\`. Report the top results you got back. If it returns nothing at all, wait a moment and try once more before telling me something is wrong — a freshly started instance sometimes answers before its engines are warm.`,
   ].join('\n')
 }
 
