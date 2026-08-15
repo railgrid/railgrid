@@ -108,6 +108,31 @@ jobs:
               helm package "$chart_dir" --version "${CHART_VERSION}"
 
               if [ "${PUSH}" = "true" ]; then
+                # On tag releases, gate the chart push on the matching image
+                # existing in ghcr. The image is built by images.yaml (separate
+                # workflow, slow multi-arch build); this chart push takes ~1min.
+                # Without the gate, Flux (10min OCI poll + semver range) grabs
+                # the new chart, deploys it, and the pod sits in
+                # ImagePullBackOff until the image lands — every release fails
+                # its first helm upgrade. Both platform charts (faros-hub,
+                # faros-agent) are named after their image repo, which the
+                # charts' image.tag default (.Chart.AppVersion) relies on too.
+                if [[ "${{ github.ref_type }}" == "tag" ]]; then
+                  IMAGE="ghcr.io/${{ github.repository_owner }}/${chart_name}"
+                  echo "Waiting for ${IMAGE}:${APP_VERSION} before pushing chart (max 30m)..."
+                  for i in $(seq 1 90); do
+                    if docker manifest inspect "${IMAGE}:${APP_VERSION}" >/dev/null 2>&1; then
+                      echo "Image ${IMAGE}:${APP_VERSION} is available."
+                      break
+                    fi
+                    if [ "$i" = "90" ]; then
+                      echo "ERROR: ${IMAGE}:${APP_VERSION} never appeared; refusing to push a chart whose image does not exist."
+                      exit 1
+                    fi
+                    sleep 20
+                  done
+                fi
+
                 # Push to GitHub Container Registry
                 helm push "${chart_name}-${CHART_VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"
                 echo "Helm chart pushed to oci://ghcr.io/${{ github.repository_owner }}/charts/${chart_name}:${CHART_VERSION}"
