@@ -247,7 +247,20 @@ function loadDockState(): DockState {
     if (!raw) return { mode: 'left', x: -1, y: -1 }
     const s = JSON.parse(raw) as DockState
     if (['left', 'right', 'top', 'bottom'].includes(s.mode)) return s
-    if (s.x >= 0 && s.y >= 0 && s.x < window.innerWidth && s.y < window.innerHeight) return s
+    if (s.mode === 'float') {
+      // The float MODE is the user's choice and must survive every refresh;
+      // only the parked position depends on the viewport. Discarding the
+      // whole state when x/y fell outside the current window (smaller
+      // window, different zoom, devtools open) silently flipped the nav
+      // back to the left rail — the layout changed from refresh to refresh
+      // depending on window size at load. Clamp the position instead.
+      if (s.x < 0 || s.y < 0) return { mode: 'float', x: -1, y: -1 }
+      return {
+        mode: 'float',
+        x: Math.max(0, Math.min(s.x, window.innerWidth - 300)),
+        y: Math.max(0, Math.min(s.y, window.innerHeight - 48)),
+      }
+    }
   } catch { /* ignore */ }
   return { mode: 'left', x: -1, y: -1 }
 }
@@ -333,7 +346,11 @@ function onDragEnd() {
 
 function resetDockPos() {
   dockState.value = { mode: 'float', x: -1, y: -1 }
-  localStorage.removeItem(DOCK_STORAGE_KEY)
+  // Persist the state we just rendered. Removing the key instead meant the
+  // session showed the default float pill while the next refresh loaded the
+  // left rail — the same what-you-see-isn't-what-reloads mismatch as the
+  // float-position validation above.
+  saveDockState()
 }
 
 onMounted(() => {
