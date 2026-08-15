@@ -56,6 +56,10 @@ export interface OrgRow {
   catalogEntryCreation?: string
   createdAt?: string
   deletionRequestedAt?: string | null
+  // The CALLER's org-scope role. The tenant settings page hides
+  // admin-only controls (member management, rename, delete) when this
+  // isn't 'admin', instead of rendering buttons that only 403.
+  role?: 'admin' | 'member'
 }
 
 export interface WorkspaceRow {
@@ -70,11 +74,21 @@ export interface WorkspaceRow {
   // in the sidebar; omitted by the hub until the workspace reports Ready.
   clusterName?: string
   deletionRequestedAt?: string | null
+  // The CALLER's workspace-scope role; absent when they hold no
+  // workspace-scope membership here (possible for org admins, who can
+  // list all workspaces but manage only those they're workspace-admin
+  // in). Gates the workspace-admin controls in tenant settings.
+  role?: 'admin' | 'member'
 }
 
 export interface MemberRow {
   user: string
   role: 'admin' | 'member'
+  // Human labels for the member — `user` is the CR name
+  // ("static-user-47b9dce0…"), which is meaningless in a roster. Either
+  // may be absent (pending invites, token users without profile data).
+  email?: string
+  userDisplayName?: string
   orgUUID: string
   workspaceUUID?: string
   orgDisplayName?: string

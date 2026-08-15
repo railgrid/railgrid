@@ -64,6 +64,7 @@ func TestCatalogReconciler_PreservesChartOwnedUIRoutingForBuiltinName(t *testing
 		ObjectMeta: metav1.ObjectMeta{Name: "app-studio"},
 		Spec: providersv1alpha1.CatalogEntrySpec{
 			DisplayName: "App Studio from Chart",
+			Description: "Persistent AI project workspace.",
 			Dependencies: []providersv1alpha1.ProviderDependency{
 				{Name: "code"},
 			},
@@ -96,6 +97,11 @@ func TestCatalogReconciler_PreservesChartOwnedUIRoutingForBuiltinName(t *testing
 	}
 	if len(got.Dependencies) != 1 || got.Dependencies[0].Name != "code" {
 		t.Fatalf("Dependencies = %#v, want [code]", got.Dependencies)
+	}
+	// The portal's catalog cards and first-run welcome flow render this; if the
+	// reconciler drops it, both fall back to showing a bare provider name.
+	if got.Description != "Persistent AI project workspace." {
+		t.Fatalf("Description = %q, want the spec value", got.Description)
 	}
 	if !got.EndpointsValid {
 		t.Fatal("expected endpoints to be valid when ui.url is present")

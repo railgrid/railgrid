@@ -446,13 +446,19 @@ func (m *Manager) mutateUMI(ctx context.Context, userName string, mutator func(*
 		if err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("getting UMI %q: %w", userName, err)
 		}
-		if apierrors.IsNotFound(err) {
+		// Create-vs-update is decided by the Get's NotFound, not by
+		// ResourceVersion emptiness: a real server always stamps RVs but the
+		// dynamicfake used in tests doesn't, and keying on RV there turns
+		// every update into a Create → AlreadyExists → retry loop that
+		// exhausts maxAttempts.
+		notFound := apierrors.IsNotFound(err)
+		if notFound {
 			idx = &tenancyv1alpha1.UserMembershipIndex{ObjectMeta: metav1.ObjectMeta{Name: userName}}
 		}
 		if !mutator(idx) {
 			return nil
 		}
-		if idx.ResourceVersion == "" {
+		if notFound {
 			if _, err := m.client.UserMembershipIndices().Create(ctx, idx, metav1.CreateOptions{}); err != nil {
 				if apierrors.IsAlreadyExists(err) {
 					continue
@@ -563,20 +569,30 @@ func (m *Manager) resolveUser(ctx context.Context, identifier string) (*tenancyv
 		schema.GroupResource{Group: "tenants.faros.sh", Resource: "users"}, identifier)
 }
 
-// rbacIdentitiesByUserName maps User CR names to their kcp usernames
-// (User.Spec.RBACIdentity) in one list call, so membership projections can
-// carry the subject string RBAC consumers must bind. Best-effort: an empty
-// map on error just omits rbacIdentity from the views.
-func (m *Manager) rbacIdentitiesByUserName(ctx context.Context) map[string]string {
-	out := map[string]string{}
+// userMeta is the human-facing slice of a User CR that membership views
+// carry alongside the CR name: the kcp RBAC subject, plus email and display
+// name so member lists can label `static-user-47b9dce0…` as an actual person.
+type userMeta struct {
+	RBACIdentity string
+	Email        string
+	DisplayName  string
+}
+
+// userMetaByName maps User CR names to their projection metadata in one
+// list call. Best-effort: an empty map on error just omits the optional
+// fields from the views.
+func (m *Manager) userMetaByName(ctx context.Context) map[string]userMeta {
+	out := map[string]userMeta{}
 	list, err := m.client.Users().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return out
 	}
 	for i := range list.Items {
 		user := &list.Items[i]
-		if user.Spec.RBACIdentity != "" {
-			out[user.Name] = user.Spec.RBACIdentity
+		out[user.Name] = userMeta{
+			RBACIdentity: user.Spec.RBACIdentity,
+			Email:        user.Spec.Email,
+			DisplayName:  user.Spec.Name,
 		}
 	}
 	return out
@@ -640,6 +656,11 @@ type OrgView struct {
 	WorkspaceQuota       int32      `json:"workspaceQuota,omitempty"`
 	CreatedAt            time.Time  `json:"createdAt"`
 	DeletionRequestedAt  *time.Time `json:"deletionRequestedAt,omitempty"`
+	// Role is the CALLER's org-scope role ("admin" | "member") — what the
+	// tenant middleware will resolve for org-scope requests. The portal
+	// uses it to hide admin-only controls (member management, rename,
+	// delete) instead of rendering buttons that can only 403.
+	Role string `json:"role,omitempty"`
 }
 
 func projectOrg(o *tenancyv1alpha1.Organization) OrgView {
@@ -675,6 +696,12 @@ type WorkspaceView struct {
 	DisplayName         string     `json:"displayName,omitempty"`
 	ClusterName         string     `json:"clusterName,omitempty"`
 	DeletionRequestedAt *time.Time `json:"deletionRequestedAt,omitempty"`
+	// Role is the CALLER's workspace-scope role ("admin" | "member"), or
+	// empty when they hold no workspace-scope row here (possible for org
+	// admins, who can list every workspace but manage only those they are
+	// workspace-admin in — the middleware matches exact (org, ws) rows).
+	// The portal gates workspace-admin controls on it.
+	Role string `json:"role,omitempty"`
 }
 
 // MembershipView is the REST projection of a single org-or-workspace
@@ -685,7 +712,13 @@ type MembershipView struct {
 	// "faros:<email>") — the subject string every tenant-workspace RBAC
 	// binding uses. Consumers writing RBAC (e.g. App Studio's app-access
 	// grants) must bind this, never the User CR name.
-	RBACIdentity         string `json:"rbacIdentity,omitempty"`
+	RBACIdentity string `json:"rbacIdentity,omitempty"`
+	// Email / UserDisplayName label the member as a person — `user` is the
+	// CR name (e.g. "static-user-47b9dce0e91570a1", "user-x2f9…"), which is
+	// meaningless in a member list. Best-effort: pending invites may have
+	// only an email; some accounts may have neither.
+	Email                string `json:"email,omitempty"`
+	UserDisplayName      string `json:"userDisplayName,omitempty"`
 	Role                 string `json:"role"`
 	OrgUUID              string `json:"orgUUID"`
 	WorkspaceUUID        string `json:"workspaceUUID,omitempty"`

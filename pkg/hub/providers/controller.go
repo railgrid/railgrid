@@ -164,6 +164,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	prov := Provider{
 		Name:         entry.Name,
 		DisplayName:  entry.Spec.DisplayName,
+		Description:  entry.Spec.Description,
 		IconURL:      entry.Spec.IconURL,
 		Category:     entry.Spec.Category,
 		Dependencies: dependencies,

@@ -7,6 +7,10 @@ import { authFetch } from '@/auth/session'
 export interface ProviderDTO {
   name: string
   displayName: string
+  // Short "what is this" blurb from CatalogEntry.spec.description. The
+  // catalog cards and the first-run welcome flow render it; may be absent
+  // on entries that declare none.
+  description?: string
   version?: string
   ready: boolean
   hasUI: boolean
@@ -88,6 +92,16 @@ export const useProvidersStore = defineStore('providers', () => {
   // user's tenant workspace. Empty when the provider is not enabled for
   // this user. Used by the Disable button and the catalog status badge.
   const bindingNamesByProvider = ref<Record<string, string>>({})
+
+  // bindingsWorkspace records which workspace the map above was fetched for,
+  // and is the only safe way to read an *empty* map as "nothing is enabled
+  // here". Two windows make emptiness ambiguous otherwise: load() flips
+  // `loaded` before awaiting refreshBindings, and on a workspace switch the map
+  // holds the previous workspace's answer until the refetch lands. Callers that
+  // branch on emptiness (the first-run welcome flow) must check this matches
+  // the active workspace; callers that only read individual entries (the
+  // sidebar, the Disable button) tolerate the staleness and don't need it.
+  const bindingsWorkspace = ref<string | null>(null)
 
   // ProviderNavItem captures one provider entry plus its declared sub-nav.
   // children[] carries the routes the side-nav renders indented under the
@@ -197,6 +211,42 @@ export const useProvidersStore = defineStore('providers', () => {
     return !!bindingNamesByProvider.value[name]
   }
 
+  // enableable is the set of providers the user can actually turn on in the
+  // current workspace: ready, and declaring an APIExport to bind. Everything
+  // else in the catalog is either still starting up or shows up unconditionally
+  // (built-ins), so neither belongs in a "what can I switch on" list.
+  //
+  // Ordering matches the catalog page: registry categories by declared order,
+  // then ad-hoc categories alphabetically, then uncategorized — which puts the
+  // foundational ones (Edges, AI) in front of the long tail. The welcome flow
+  // leans on that to present a sane reading order without its own ranking.
+  const enableable = computed<ProviderDTO[]>(() => {
+    const known = new Map(categories.value.map((c) => [c.name, c]))
+    const rank = (name: string) => {
+      const c = known.get(name)
+      // Unknown/ad-hoc categories sort after every registered one, and
+      // uncategorized entries after those.
+      if (!name) return Number.MAX_SAFE_INTEGER
+      return c ? (c.order ?? 0) : Number.MAX_SAFE_INTEGER - 1
+    }
+    return items.value
+      .filter((p) => p.ready && !!p.apiExportName)
+      .slice()
+      .sort((a, b) => {
+        const ca = a.category ?? ''
+        const cb = b.category ?? ''
+        return (
+          rank(ca) - rank(cb) ||
+          ca.localeCompare(cb) ||
+          a.displayName.localeCompare(b.displayName)
+        )
+      })
+  })
+
+  // hasAnyEnabled answers "has this workspace been set up at all?". False for a
+  // fresh workspace, which is what triggers the welcome flow on the dashboard.
+  const hasAnyEnabled = computed(() => Object.keys(bindingNamesByProvider.value).length > 0)
+
   function isDependencySatisfied(name: string): boolean {
     const p = byName(name)
     if (!p) return isEnabled(name)
@@ -268,6 +318,7 @@ export const useProvidersStore = defineStore('providers', () => {
     if (!res.ok) throw new Error(`list enabled providers: ${res.status}`)
     const body = (await res.json()) as { bindingNamesByProvider?: Record<string, string> }
     bindingNamesByProvider.value = body.bindingNamesByProvider ?? {}
+    bindingsWorkspace.value = t.workspaceUUID
   }
 
   // enable hits the server-side endpoint
@@ -381,8 +432,11 @@ export const useProvidersStore = defineStore('providers', () => {
     loading,
     error,
     bindingNamesByProvider,
+    bindingsWorkspace,
     enabledNavItems,
     categorizedNavItems,
+    enableable,
+    hasAnyEnabled,
     isEnabled,
     missingDependencies,
     hasMissingDependencies,

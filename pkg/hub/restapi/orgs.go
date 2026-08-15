@@ -77,13 +77,17 @@ func (h *Handler) listOrgs(w http.ResponseWriter, r *http.Request) {
 		}
 		seen[e.OrgUUID] = true
 		// Best-effort fetch the Org CR for canonical fields; if it's
-		// gone (rare race), fall back to UMI-only fields.
+		// gone (rare race), fall back to UMI-only fields. Either way the
+		// caller's own role rides along from the UMI row so the portal
+		// can gate admin-only controls.
 		org, err := h.mgr.client.Organizations().Get(r.Context(), e.OrgUUID, metav1.GetOptions{})
 		if err != nil {
-			out = append(out, OrgView{UUID: e.OrgUUID, DisplayName: e.OrgDisplayName, Personal: e.Personal})
+			out = append(out, OrgView{UUID: e.OrgUUID, DisplayName: e.OrgDisplayName, Personal: e.Personal, Role: e.Role})
 			continue
 		}
-		out = append(out, projectOrg(org))
+		view := projectOrg(org)
+		view.Role = e.Role
+		out = append(out, view)
 	}
 	writeJSON(w, http.StatusOK, ListResponse[OrgView]{Items: out})
 }
@@ -153,13 +157,17 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, projectOrg(created))
+	view := projectOrg(created)
+	// The creator is seeded as the sole admin (Membership + UMI above).
+	view.Role = tenancyv1alpha1.MembershipRoleAdmin
+	writeJSON(w, http.StatusCreated, view)
 }
 
 // getOrg returns a single Org. Caller must be a member (enforced by
 // the tenant middleware).
 func (h *Handler) getOrg(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireTenantContext(w, r, false, false); !ok {
+	tc, ok := h.requireTenantContext(w, r, false, false)
+	if !ok {
 		return
 	}
 	orgUUID := mux.Vars(r)["org"]
@@ -168,7 +176,10 @@ func (h *Handler) getOrg(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, projectOrg(org))
+	view := projectOrg(org)
+	// tc.Role is the middleware's org-scope resolution for this caller.
+	view.Role = tc.Role
+	writeJSON(w, http.StatusOK, view)
 }
 
 // patchOrg updates editable fields. Admin only.

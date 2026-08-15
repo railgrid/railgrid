@@ -280,6 +280,12 @@ function dependencyNotice(p: ProviderDTO): string {
             </div>
           </div>
 
+          <!-- CatalogEntry.spec.description. Clamped so a long blurb can't make
+               one card in the grid taller than its row neighbours. -->
+          <p v-if="p.description" class="mt-3 line-clamp-3 text-[11px] leading-relaxed text-text-muted">
+            {{ p.description }}
+          </p>
+
           <div class="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
             <button
               type="button"

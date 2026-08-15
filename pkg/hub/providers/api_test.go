@@ -145,6 +145,56 @@ func TestListHandlerIncludesActionDiscoveryMetadataWithoutTransportURLs(t *testi
 	}
 }
 
+// The description is the only thing in the catalog response that tells a new
+// user what a provider actually does — the portal's first-run welcome flow and
+// the catalog cards both render it, and both degrade to a bare resource name
+// without it. It reaches the registry from CatalogEntry.spec.description.
+func TestListHandlerProjectsDescription(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{
+		Name:           "edges",
+		DisplayName:    "Edges",
+		Description:    "Connect Kubernetes clusters and Linux servers as edges.",
+		EndpointsValid: true,
+		UIURL:          mustProviderURL(t, "https://provider.example/ui"),
+	})
+	// A provider whose CatalogEntry declares no description must omit the
+	// field rather than emit an empty string, so the portal can tell "not
+	// published" from "published as blank".
+	reg.Upsert(Provider{
+		Name:           "silent",
+		DisplayName:    "Silent",
+		EndpointsValid: true,
+		UIURL:          mustProviderURL(t, "https://provider.example/ui"),
+	})
+
+	r := httptest.NewRequest(http.MethodGet, PathListProviders, nil)
+	w := httptest.NewRecorder()
+	NewListHandler(reg).ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	var raw struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	byName := map[string]map[string]any{}
+	for _, it := range raw.Items {
+		name, _ := it["name"].(string)
+		byName[name] = it
+	}
+
+	if got := byName["edges"]["description"]; got != "Connect Kubernetes clusters and Linux servers as edges." {
+		t.Errorf("edges description = %#v, want the registry value", got)
+	}
+	if _, ok := byName["silent"]["description"]; ok {
+		t.Errorf("silent emitted a description key: %#v", byName["silent"])
+	}
+}
+
 func mustProviderURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
 	u, err := url.Parse(raw)

@@ -20,6 +20,7 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
@@ -56,14 +57,19 @@ func (h *Handler) listOrgMemberships(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	rbacByUser := h.mgr.rbacIdentitiesByUserName(r.Context())
+	metaByUser := h.mgr.userMetaByName(r.Context())
 	out := make([]MembershipView, 0, len(users))
 	for _, user := range users {
 		role, err := h.mgr.bootstrapper.GetOrgMembershipRole(r.Context(), orgUUID, user)
 		if err != nil {
 			continue
 		}
-		out = append(out, MembershipView{User: user, RBACIdentity: rbacByUser[user], Role: role, OrgUUID: orgUUID})
+		meta := metaByUser[user]
+		out = append(out, MembershipView{
+			User: user, RBACIdentity: meta.RBACIdentity,
+			Email: meta.Email, UserDisplayName: meta.DisplayName,
+			Role: role, OrgUUID: orgUUID,
+		})
 	}
 	writeJSON(w, http.StatusOK, ListResponse[MembershipView]{Items: out})
 }
@@ -116,6 +122,7 @@ func (h *Handler) addOrgMembership(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusCreated, MembershipView{
 		User: target.Name, RBACIdentity: target.Spec.RBACIdentity,
+		Email: target.Spec.Email, UserDisplayName: target.Spec.Name,
 		Role: req.Role, OrgUUID: orgUUID, OrgDisplayName: org.Spec.DisplayName,
 	})
 }
@@ -243,7 +250,7 @@ func (h *Handler) listWorkspaceMemberships(w http.ResponseWriter, r *http.Reques
 		writeError(w, err)
 		return
 	}
-	rbacByUser := h.mgr.rbacIdentitiesByUserName(r.Context())
+	metaByUser := h.mgr.userMetaByName(r.Context())
 	out := make([]MembershipView, 0)
 	for i := range list.Items {
 		idx := &list.Items[i]
@@ -251,8 +258,11 @@ func (h *Handler) listWorkspaceMemberships(w http.ResponseWriter, r *http.Reques
 			if e.OrgUUID != tc.OrgUUID || e.WorkspaceUUID != tc.WorkspaceUUID || e.SoftDeletedAt != nil {
 				continue
 			}
+			meta := metaByUser[idx.Name]
 			out = append(out, MembershipView{
-				User: idx.Name, RBACIdentity: rbacByUser[idx.Name], Role: e.Role,
+				User: idx.Name, RBACIdentity: meta.RBACIdentity,
+				Email: meta.Email, UserDisplayName: meta.DisplayName,
+				Role:    e.Role,
 				OrgUUID: e.OrgUUID, WorkspaceUUID: e.WorkspaceUUID,
 				OrgDisplayName: e.OrgDisplayName, WorkspaceDisplayName: e.WorkspaceDisplayName,
 			})
@@ -292,6 +302,39 @@ func (h *Handler) addWorkspaceMembership(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	dn, _ := h.mgr.bootstrapper.GetWorkspaceDisplayName(r.Context(), tc.OrgUUID, tc.WorkspaceUUID)
+
+	// A workspace grant is unreachable without org visibility: the portal's
+	// org switcher is built from org-scope UMI rows only (listOrgs), so a
+	// user holding a workspace-scope row but no org-scope row cannot select
+	// the org at all — the workspace they were just granted is invisible to
+	// them. Cascade org membership on the way in (as plain member, and via
+	// the CR's actual role when one already exists, so an existing admin is
+	// never downgraded), mirroring the ?cascade=true removal on the way out.
+	orgRole, err := h.mgr.bootstrapper.GetOrgMembershipRole(r.Context(), tc.OrgUUID, target.Name)
+	if apierrors.IsNotFound(err) {
+		orgRole = tenancyv1alpha1.MembershipRoleMember
+		if err := h.mgr.bootstrapper.EnsureOrgMembership(r.Context(), tc.OrgUUID, target.Name, orgRole); err != nil {
+			writeError(w, err)
+			return
+		}
+	} else if err != nil {
+		writeError(w, err)
+		return
+	}
+	// Upsert the org-scope UMI row unconditionally: it also heals the
+	// Membership-CR-exists-but-UMI-row-missing drift, which strands the
+	// user exactly the same way.
+	if err := h.mgr.upsertUMIEntry(r.Context(), target.Name, tenancyv1alpha1.MembershipIndexEntry{
+		OrgUUID:        tc.OrgUUID,
+		OrgDisplayName: org.Spec.DisplayName,
+		OrgCreatedAt:   org.CreationTimestamp,
+		Role:           orgRole,
+		Personal:       org.Spec.Personal,
+	}); err != nil {
+		writeError(w, err)
+		return
+	}
+
 	// Grant the new member RBAC in the workspace's kcp cluster. The UMI
 	// row alone is portal metadata — without a matching kcp CRB the
 	// GraphQL gateway 403s the moment the member tries to switch to
@@ -318,6 +361,7 @@ func (h *Handler) addWorkspaceMembership(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusCreated, MembershipView{
 		User: target.Name, RBACIdentity: target.Spec.RBACIdentity, Role: req.Role,
+		Email: target.Spec.Email, UserDisplayName: target.Spec.Name,
 		OrgUUID: tc.OrgUUID, WorkspaceUUID: tc.WorkspaceUUID,
 		OrgDisplayName: org.Spec.DisplayName, WorkspaceDisplayName: dn,
 	})

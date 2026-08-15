@@ -53,8 +53,20 @@ func (h *Handler) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	}
 	orgUUID := mux.Vars(r)["org"]
 
-	// Org admins: list every child workspace.
+	// Org admins: list every child workspace. Their per-workspace role
+	// still comes from their own UMI rows — the middleware matches exact
+	// (org, ws) rows, so an org admin manages only workspaces they hold a
+	// workspace-admin row in, and the projected role must say so rather
+	// than let the portal render controls that 403.
 	if tc.Role == tenancyv1alpha1.MembershipRoleAdmin {
+		roleByWS := map[string]string{}
+		if idx, err := h.mgr.client.UserMembershipIndices().Get(r.Context(), tc.User, metav1.GetOptions{}); err == nil {
+			for _, e := range idx.Spec.Entries {
+				if e.OrgUUID == orgUUID && e.WorkspaceUUID != "" && e.SoftDeletedAt == nil {
+					roleByWS[e.WorkspaceUUID] = e.Role
+				}
+			}
+		}
 		names, err := h.mgr.bootstrapper.ListChildWorkspaces(r.Context(), orgUUID)
 		if err != nil {
 			writeError(w, err)
@@ -66,6 +78,7 @@ func (h *Handler) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				continue
 			}
+			view.Role = roleByWS[wsUUID]
 			out = append(out, view)
 		}
 		writeJSON(w, http.StatusOK, ListResponse[WorkspaceView]{Items: out})
@@ -91,6 +104,7 @@ func (h *Handler) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			continue
 		}
+		view.Role = e.Role
 		out = append(out, view)
 	}
 	writeJSON(w, http.StatusOK, ListResponse[WorkspaceView]{Items: out})
@@ -187,12 +201,15 @@ func (h *Handler) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		view = WorkspaceView{UUID: wsUUID, OrgUUID: orgUUID, DisplayName: req.DisplayName}
 	}
+	// The creator was just seeded as workspace admin (UMI row above).
+	view.Role = tenancyv1alpha1.MembershipRoleAdmin
 	writeJSON(w, http.StatusCreated, view)
 }
 
 // getWorkspace returns one Workspace projection.
 func (h *Handler) getWorkspace(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.requireTenantContext(w, r, true, false); !ok {
+	tc, ok := h.requireTenantContext(w, r, true, false)
+	if !ok {
 		return
 	}
 	orgUUID := mux.Vars(r)["org"]
@@ -202,6 +219,8 @@ func (h *Handler) getWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusNotFound, "NotFound", "workspace not found")
 		return
 	}
+	// tc.Role is the middleware's exact (org, ws) row match for this caller.
+	view.Role = tc.Role
 	writeJSON(w, http.StatusOK, view)
 }
 

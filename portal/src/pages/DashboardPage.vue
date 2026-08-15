@@ -4,10 +4,11 @@ import { storeToRefs } from 'pinia'
 import { GridLayout, GridItem } from 'grid-layout-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import DashboardTile from '@/components/DashboardTile.vue'
+import WelcomeWizard from '@/components/WelcomeWizard.vue'
 import { useProvidersStore } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { useDashboardLayoutStore } from '@/stores/dashboardLayout'
-import { Puzzle, Plus, RotateCcw, Check, LayoutGrid } from 'lucide-vue-next'
+import { Puzzle, Plus, RotateCcw, Check, LayoutGrid, Rocket } from 'lucide-vue-next'
 
 // The dashboard iterates the catalog and mounts one <DashboardTile> per
 // ready provider. Each provider may register a
@@ -90,6 +91,102 @@ watch(
 // renders synchronously, so the grid appears already settled.
 const initializing = computed(() => providers.loading)
 
+// --- First-run welcome ---
+//
+// Nothing is enabled by default: every provider ships as a CatalogEntry with an
+// APIExport that must be bound per workspace. So a fresh account's dashboard and
+// side nav are both genuinely empty, and the plain "no providers enabled" line
+// that used to sit here assumed the reader already knew what a provider was.
+// When the workspace has zero bindings we show the guided intro instead.
+//
+// Dismissal is per workspace and local-only: workspaces are independent
+// clusters, so having set one up says nothing about the next, and a display
+// preference doesn't warrant server-side state. Dismissing does not disable the
+// entry point — the header keeps a "Getting started" button so the flow is
+// reachable again, which also makes the local-only storage harmless if it is
+// cleared or the user switches browsers.
+const WELCOME_KEY = 'faros:portal:welcome-dismissed'
+
+function readDismissed(): string[] {
+  try {
+    const raw = localStorage.getItem(WELCOME_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+const dismissedWorkspaces = ref<string[]>(readDismissed())
+
+// Explicitly re-opened from the header. Outranks both the dismissal list and
+// the has-bindings check, so the intro stays reachable once set up.
+const welcomeForced = ref(false)
+
+const welcomeDismissed = computed(() =>
+  !!tenant.workspaceUUID && dismissedWorkspaces.value.includes(tenant.workspaceUUID),
+)
+
+// An empty binding map only means "nothing enabled here" once we know it was
+// fetched for the workspace we're looking at — otherwise the boot fetch and
+// every workspace switch would briefly flash the welcome flow at users who are
+// already set up. `providers.loaded` is not enough: load() flips it before it
+// awaits the bindings call.
+const bindingsCurrent = computed(
+  () => !!tenant.workspaceUUID && providers.bindingsWorkspace === tenant.workspaceUUID,
+)
+
+// Latched, not derived. Enabling a provider from inside step 2 flips
+// hasAnyEnabled, and a plain computed would unmount the wizard the instant the
+// first Enable succeeded — dropping the user onto the dashboard mid-flow,
+// before they ever saw the step confirming what they just turned on. So the
+// condition only ever opens the flow; closing it is the user's decision.
+const welcomeOpen = ref(false)
+
+watch(
+  [
+    () => providers.loaded,
+    bindingsCurrent,
+    () => providers.hasAnyEnabled,
+    welcomeDismissed,
+  ] as const,
+  ([loaded, current, anyEnabled, dismissed]) => {
+    if (loaded && current && !anyEnabled && !dismissed) welcomeOpen.value = true
+  },
+  { immediate: true },
+)
+
+const showWelcome = computed(() => welcomeOpen.value || welcomeForced.value)
+
+function dismissWelcome() {
+  welcomeForced.value = false
+  welcomeOpen.value = false
+  const ws = tenant.workspaceUUID
+  if (!ws || dismissedWorkspaces.value.includes(ws)) return
+  // Cap the list: it grows one entry per workspace ever visited, and only the
+  // recent tail can still matter.
+  const next = [...dismissedWorkspaces.value, ws].slice(-50)
+  dismissedWorkspaces.value = next
+  try {
+    localStorage.setItem(WELCOME_KEY, JSON.stringify(next))
+  } catch {
+    // Private-mode/quota failures only cost a repeat showing.
+  }
+}
+
+// Switching workspaces re-evaluates from scratch: the new workspace may be
+// freshly created and needs its own intro, and the latch above must not carry
+// the previous workspace's decision over. bindingsCurrent goes false until the
+// refetch for the new workspace lands, so the latch re-arms on real data.
+watch(
+  () => tenant.workspaceUUID,
+  () => {
+    welcomeForced.value = false
+    welcomeOpen.value = false
+  },
+)
+
 const providerFor = (name: string) => providers.byName(name)
 
 // --- Customize mode ---
@@ -128,12 +225,17 @@ function onLayoutUpdated() {
     </div>
 
     <template v-else>
-      <div v-if="gated.length === 0" class="flex items-start gap-3 rounded-xl border border-border-subtle bg-surface-raised/60 p-4 text-[13px] text-text-muted">
+      <!-- Fresh workspace: the guided intro replaces the grid entirely. It is
+           the page at that point, not a banner above an empty one. -->
+      <WelcomeWizard v-if="showWelcome" @dismiss="dismissWelcome" />
+
+      <div v-else-if="gated.length === 0" class="flex items-start gap-3 rounded-xl border border-border-subtle bg-surface-raised/60 p-4 text-[13px] text-text-muted">
         <Puzzle class="mt-0.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
         <div>
           <div class="font-medium text-text-secondary">No providers enabled in this workspace</div>
           <div class="mt-1 text-xs">
-            Enable a provider from the <router-link to="/providers" class="text-accent hover:text-accent-hover">catalog</router-link> to see a dashboard summary.
+            Enable a provider from the <router-link to="/providers" class="text-accent hover:text-accent-hover">catalog</router-link> to see a dashboard summary,
+            or walk through the <button class="text-accent hover:text-accent-hover" @click="welcomeForced = true">getting started guide</button>.
             Each provider is enabled per workspace.
           </div>
         </div>
@@ -186,14 +288,24 @@ function onLayoutUpdated() {
                 <Check class="h-3.5 w-3.5" :stroke-width="2" /> Done
               </button>
             </template>
-            <button
-              v-else
-              type="button"
-              class="flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-raised px-3 py-1.5 text-[12px] font-medium text-text-secondary transition-colors hover:text-text-primary"
-              @click="toggleEdit"
-            >
-              <LayoutGrid class="h-3.5 w-3.5" :stroke-width="2" /> Customize
-            </button>
+            <template v-else>
+              <!-- Re-entry point for the intro. Kept out of edit mode so the
+                   customize controls stay a single coherent group. -->
+              <button
+                type="button"
+                class="flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-raised px-3 py-1.5 text-[12px] font-medium text-text-secondary transition-colors hover:text-text-primary"
+                @click="welcomeForced = true"
+              >
+                <Rocket class="h-3.5 w-3.5" :stroke-width="2" /> Getting started
+              </button>
+              <button
+                type="button"
+                class="flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-raised px-3 py-1.5 text-[12px] font-medium text-text-secondary transition-colors hover:text-text-primary"
+                @click="toggleEdit"
+              >
+                <LayoutGrid class="h-3.5 w-3.5" :stroke-width="2" /> Customize
+              </button>
+            </template>
           </div>
         </div>
 

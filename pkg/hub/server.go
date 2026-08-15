@@ -53,6 +53,7 @@ import (
 	"github.com/faroshq/faros/pkg/hub/appauth"
 	"github.com/faroshq/faros/pkg/hub/bootstrap"
 	"github.com/faroshq/faros/pkg/hub/controllers/mcpserver"
+	"github.com/faroshq/faros/pkg/hub/controllers/membershipindex"
 	"github.com/faroshq/faros/pkg/hub/controllers/organization"
 	"github.com/faroshq/faros/pkg/hub/controllers/softdelete"
 	"github.com/faroshq/faros/pkg/hub/kcp"
@@ -867,6 +868,24 @@ func (s *Server) Run(ctx context.Context) error {
 				return
 			}
 
+			// Membership-index invariant reconciler — heals UMIs where a
+			// workspace-scope row has no org-scope row (the stranded-user
+			// state: granted a workspace they can never navigate to because
+			// the org switcher only lists org-scope rows). The REST layer
+			// writes both rows on the happy path; this converges everything
+			// else — crashes between the dual writes, rows written by older
+			// hubs, drift. Own manager for the same isolation reason as
+			// soft-delete.
+			umiMgr, err := membershipindex.NewManager(bootstrapper.UsersConfig(), scheme)
+			if err != nil {
+				logger.Error(err, "Creating membership-index manager failed")
+				return
+			}
+			if err := membershipindex.SetupWithManager(umiMgr, bootstrapper); err != nil {
+				logger.Error(err, "Setting up membership-index reconciler failed")
+				return
+			}
+
 			// Expired sessions and authorization codes are already refused on
 			// read; this only reclaims their storage, so one sweeper is enough.
 			if len(sharedStores) > 0 {
@@ -879,6 +898,7 @@ func (s *Server) Run(ctx context.Context) error {
 				"admin multicluster":            adminMgr,
 				"organization bootstrap":        orgMgr,
 				"soft-delete":                   softdeleteMgr,
+				"membership-index invariants":   umiMgr,
 			} {
 				wg.Add(1)
 				go func() {

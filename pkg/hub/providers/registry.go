@@ -49,8 +49,12 @@ const SweepInterval = 30 * time.Second
 // Fields are nil-able to reflect that UI/backend/VW are independently optional
 // in the source ProviderCatalogEntry.
 type Provider struct {
-	Name         string
-	DisplayName  string // human-readable label, surfaced to the portal
+	Name        string
+	DisplayName string // human-readable label, surfaced to the portal
+	// Description is the CatalogEntry's short blurb. The portal renders it on
+	// catalog cards and in the first-run welcome flow, where it is the only
+	// thing telling a new user what the provider actually does.
+	Description  string
 	IconURL      string // optional, defaults to /ui/providers/{name}/icon.svg
 	Category     string // optional grouping in the portal nav; empty = top-level
 	Dependencies []Dependency

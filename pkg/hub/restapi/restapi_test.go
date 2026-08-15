@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -112,7 +113,10 @@ func (f *fakeOps) GetOrgMembershipRole(_ context.Context, orgUUID, userName stri
 			return role, nil
 		}
 	}
-	return "", fmt.Errorf("membership %s in org %s not found", userName, orgUUID)
+	// Typed NotFound, matching the real Bootstrapper (whose Get surfaces the
+	// dynamic client's error). addWorkspaceMembership branches on
+	// apierrors.IsNotFound to decide whether to cascade an org membership.
+	return "", apierrors.NewNotFound(schema.GroupResource{Group: "tenants.faros.sh", Resource: "memberships"}, userName)
 }
 
 func (f *fakeOps) PatchOrgMembershipRole(_ context.Context, orgUUID, userName, role string) error {
@@ -759,10 +763,79 @@ func TestWorkspaceMembership_AddGrantsAccess(t *testing.T) {
 	if !ops.workspaceAdmins[wsKey{"org-a", "ws-1"}]["faros:bob@example.com"] {
 		t.Errorf("workspace RBAC not granted: %v", ops.workspaceAdmins)
 	}
-	// UMI ws-scope row keyed by User CR name.
+	// The workspace add cascades an org-scope membership: without it the
+	// portal's org switcher (built from org-scope UMI rows only) never
+	// shows the org, so the workspace bob was just granted is unreachable.
+	if ops.orgMemberships["org-a"]["user-bob"] != "member" {
+		t.Errorf("org membership not cascaded: %v", ops.orgMemberships)
+	}
+	// UMI carries BOTH rows keyed by User CR name: the org-scope row
+	// (WorkspaceUUID=="") that makes the org visible, and the ws-scope row
+	// that makes the workspace visible.
 	idx, err := mgr.client.UserMembershipIndices().Get(context.Background(), "user-bob", metav1.GetOptions{})
-	if err != nil || len(idx.Spec.Entries) != 1 || idx.Spec.Entries[0].WorkspaceUUID != "ws-1" {
-		t.Errorf("UMI ws-row missing: %#v (err %v)", idx, err)
+	if err != nil {
+		t.Fatalf("UMI missing: %v", err)
+	}
+	var hasOrgRow, hasWsRow bool
+	for _, e := range idx.Spec.Entries {
+		if e.OrgUUID != "org-a" {
+			continue
+		}
+		switch e.WorkspaceUUID {
+		case "":
+			hasOrgRow = e.Role == "member"
+		case "ws-1":
+			hasWsRow = true
+		}
+	}
+	if !hasOrgRow || !hasWsRow {
+		t.Errorf("UMI rows: org=%v ws=%v entries=%#v", hasOrgRow, hasWsRow, idx.Spec.Entries)
+	}
+}
+
+// TestWorkspaceMembership_AddKeepsExistingOrgRole covers the non-escalation
+// guard on the cascade: when the target is already an org admin, granting
+// them a workspace must not rewrite their org-scope role to member.
+func TestWorkspaceMembership_AddKeepsExistingOrgRole(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
+	}
+	bob := &tenancyv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: "user-bob"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "bob@example.com", RBACIdentity: "faros:bob@example.com"},
+	}
+	mgr, ops, _ := newTestManager(t, org, bob)
+	if err := ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1"); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if err := ops.EnsureOrgMembership(context.Background(), "org-a", "user-bob", "admin"); err != nil {
+		t.Fatalf("seed org membership: %v", err)
+	}
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	body, _ := json.Marshal(MembershipAddRequest{User: "bob@example.com", Role: "member"})
+	resp, err := http.Post(srv.URL+"/api/orgs/org-a/workspaces/ws-1/memberships", "application/json", jsonBody(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("add status: got %d, want 201", resp.StatusCode)
+	}
+
+	if got := ops.orgMemberships["org-a"]["user-bob"]; got != "admin" {
+		t.Errorf("org role downgraded to %q, want admin preserved", got)
+	}
+	idx, err := mgr.client.UserMembershipIndices().Get(context.Background(), "user-bob", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("UMI missing: %v", err)
+	}
+	for _, e := range idx.Spec.Entries {
+		if e.OrgUUID == "org-a" && e.WorkspaceUUID == "" && e.Role != "admin" {
+			t.Errorf("org-scope UMI row role = %q, want admin", e.Role)
+		}
 	}
 }
 

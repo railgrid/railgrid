@@ -36,6 +36,10 @@ const PathListProviders = "/api/providers"
 type providerDTO struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"displayName"`
+	// Description is CatalogEntry.spec.description — the one-line "what is
+	// this" the portal shows on catalog cards and in the first-run welcome
+	// flow. Empty for entries that declare none.
+	Description string `json:"description,omitempty"`
 	Version     string `json:"version,omitempty"`
 	Ready       bool   `json:"ready"`
 	HasUI       bool   `json:"hasUI"`
@@ -244,6 +248,7 @@ func NewListHandler(reg *Registry) http.Handler {
 			items = append(items, providerDTO{
 				Name:             p.Name,
 				DisplayName:      displayName,
+				Description:      p.Description,
 				Version:          p.Version,
 				Ready:            p.Ready(),
 				HasUI:            p.UIURL != nil || p.BuiltinRoute != "" || p.LocalUIAssets != nil,
