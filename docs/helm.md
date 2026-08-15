@@ -266,6 +266,7 @@ kind delete cluster --name faros
 | Key | Description | Default |
 |:----|:------------|:--------|
 | `hub.hubExternalURL` | **(required)** External URL for kubeconfigs and callbacks | `""` |
+| `hub.internalURL` | Address in-cluster components use to reach the hub (baked into minted provider kubeconfigs). Set to the in-cluster Service so provider pods don't hairpin through the public hostname | `""` (falls back to `hubExternalURL`) |
 | `hub.listenAddr` | Hub listen address | `":9443"` |
 | `hub.devMode` | Skip TLS verification for OIDC issuer | `false` |
 | `hub.staticAuthToken` | Static bearer token (bypasses OIDC) | `""` |

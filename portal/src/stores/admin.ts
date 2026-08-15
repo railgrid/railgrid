@@ -45,6 +45,12 @@ export interface RootIdentity {
   export: string
   path: string
 }
+// KubeconfigServer selects which hub address a downloaded provider kubeconfig
+// points at. 'internal' is the hub's in-cluster Service — correct for a provider
+// installed by Helm alongside the hub, and it keeps that provider's traffic off
+// the public path. 'external' is the public hostname, the only address reachable
+// from outside the cluster.
+export type KubeconfigServer = 'internal' | 'external'
 export const useAdminStore = defineStore('admin', () => {
   const users = ref<AdminUser[]>([])
   const orgs = ref<AdminOrg[]>([])
@@ -58,6 +64,12 @@ export const useAdminStore = defineStore('admin', () => {
   // page (which would 403 on its data fetches).
   const isAdmin = ref<boolean | null>(null)
 
+  // kubeconfigServers lists the server addresses this hub can bake into a
+  // downloaded provider kubeconfig, from /api/admin/access. 'internal' is only
+  // present when the hub runs with --hub-internal-url, so the providers
+  // table can offer the in-cluster download only where it would work.
+  const kubeconfigServers = ref<KubeconfigServer[]>([])
+
   // checkAccess probes /api/admin/access once. 200 → admin; 403/404/any other →
   // not admin. Never throws; failed requests are swallowed so non-admin
   // sessions stay quiet.
@@ -65,6 +77,15 @@ export const useAdminStore = defineStore('admin', () => {
     try {
       const resp = await authFetch('/api/admin/access')
       isAdmin.value = resp.ok
+      if (resp.ok) {
+        // Older hubs answer with just {"admin":true}; treat a missing list as
+        // "external only" so the download keeps working against them.
+        const body = (await resp.json().catch(() => ({}))) as { kubeconfigServers?: string[] }
+        const servers = (body.kubeconfigServers ?? ['external']).filter(
+          (s): s is KubeconfigServer => s === 'internal' || s === 'external',
+        )
+        kubeconfigServers.value = servers
+      }
     } catch {
       isAdmin.value = false
     }
@@ -140,22 +161,33 @@ export const useAdminStore = defineStore('admin', () => {
   // downloadProviderKubeconfig fetches the minted kubeconfig (read from the
   // Secret the Provider controller wrote into root:faros:system:providers) and
   // triggers a browser download.
-  async function downloadProviderKubeconfig(name: string): Promise<void> {
-    const resp = await authFetch(`/api/admin/providers/${encodeURIComponent(name)}/kubeconfig`)
+  //
+  // server re-points the kubeconfig's server URL for this download only:
+  // 'internal' for a provider installed by Helm into the hub's own cluster (the
+  // in-cluster Service, so its traffic never leaves), 'external' for one running
+  // anywhere else. Omitted downloads whatever the controller minted.
+  async function downloadProviderKubeconfig(name: string, server?: KubeconfigServer): Promise<void> {
+    const query = server ? `?server=${server}` : ''
+    const resp = await authFetch(`/api/admin/providers/${encodeURIComponent(name)}/kubeconfig${query}`)
     if (resp.status === 403) {
       forbidden.value = true
       throw new Error('forbidden')
     }
     if (resp.status === 404) throw new Error('kubeconfig not ready — provider not provisioned yet')
-    if (!resp.ok) throw new Error(`download kubeconfig ${name}: ${resp.status} ${resp.statusText}`)
+    if (!resp.ok) {
+      // 400 carries an actionable message (e.g. the hub has no internal URL
+      // configured); surface it instead of a bare status code.
+      const body = (await resp.json().catch(() => ({}))) as { error?: string }
+      throw new Error(body.error ?? `download kubeconfig ${name}: ${resp.status} ${resp.statusText}`)
+    }
     const text = await resp.text()
     const url = URL.createObjectURL(new Blob([text], { type: 'application/yaml' }))
     const a = document.createElement('a')
     a.href = url
-    a.download = `${name}-kubeconfig.yaml`
+    a.download = server ? `${name}-kubeconfig-${server}.yaml` : `${name}-kubeconfig.yaml`
     a.click()
     URL.revokeObjectURL(url)
   }
 
-  return { users, orgs, providers, identities, loading, forbidden, error, isAdmin, checkAccess, refresh, createProvider, deleteProvider, downloadProviderKubeconfig }
+  return { users, orgs, providers, identities, loading, forbidden, error, isAdmin, kubeconfigServers, checkAccess, refresh, createProvider, deleteProvider, downloadProviderKubeconfig }
 })

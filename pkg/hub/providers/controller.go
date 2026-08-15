@@ -59,21 +59,21 @@ type CatalogReconciler struct {
 	reg   *Registry
 	prov  *Provisioner
 	noKCP bool // true when running without kcp — skip workspace-cluster resolve
-	// hubExternalURL / providerInternalURL are retained for parity with the
+	// hubExternalURL / hubInternalURL are retained for parity with the
 	// onboarding service's kubeconfig minting; the reconciler itself no longer
 	// mints kubeconfigs (admin onboarding does).
-	hubExternalURL      string
-	providerInternalURL string
+	hubExternalURL string
+	hubInternalURL string
 }
 
 // CatalogReconcilerOptions threads optional extras into the reconciler
 // without bloating its constructor signature. All fields optional.
 type CatalogReconcilerOptions struct {
-	// HubExternalURL / ProviderInternalURL are kept for symmetry with the
+	// HubExternalURL / HubInternalURL are kept for symmetry with the
 	// admin onboarding service; the catalog controller no longer provisions or
 	// mints kubeconfigs, so they are currently unused by the reconciler.
-	HubExternalURL      string
-	ProviderInternalURL string
+	HubExternalURL string
+	HubInternalURL string
 }
 
 // SetupCatalogWithManager wires the reconciler into a multicluster manager.
@@ -83,11 +83,11 @@ type CatalogReconcilerOptions struct {
 // provisions providers — that moved to admin onboarding + provider Helm init.
 func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *rest.Config, opts CatalogReconcilerOptions) error {
 	r := &CatalogReconciler{
-		mgr:                 mgr,
-		reg:                 reg,
-		noKCP:               kcpConfig == nil,
-		hubExternalURL:      opts.HubExternalURL,
-		providerInternalURL: opts.ProviderInternalURL,
+		mgr:            mgr,
+		reg:            reg,
+		noKCP:          kcpConfig == nil,
+		hubExternalURL: opts.HubExternalURL,
+		hubInternalURL: opts.HubInternalURL,
 	}
 	if kcpConfig != nil {
 		r.prov = NewProvisioner(kcpConfig)

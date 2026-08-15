@@ -712,7 +712,7 @@ func (s *Server) Run(ctx context.Context) error {
 					}
 					return false
 				})
-				adminSvc := admin.NewService(kcpConfig, s.opts.HubExternalURL, s.opts.ProviderInternalURL)
+				adminSvc := admin.NewService(kcpConfig, s.opts.HubExternalURL, s.opts.HubInternalURL)
 				adminSub := router.PathPrefix("/api/admin").Subrouter()
 				adminSub.Use(admin.Middleware(adminResolver, adminChecker))
 				admin.NewHandler(adminSvc, userClient, providerRegistry).Register(adminSub)
@@ -766,8 +766,8 @@ func (s *Server) Run(ctx context.Context) error {
 		// controller only maintains the registry + resolves the workspace
 		// cluster ID for the Enable flow.
 		if err := providers.SetupCatalogWithManager(providersMgr, providerRegistry, kcpConfig, providers.CatalogReconcilerOptions{
-			HubExternalURL:      s.opts.HubExternalURL,
-			ProviderInternalURL: s.opts.ProviderInternalURL,
+			HubExternalURL: s.opts.HubExternalURL,
+			HubInternalURL: s.opts.HubInternalURL,
 		}); err != nil {
 			return fmt.Errorf("setting up provider catalog controller: %w", err)
 		}
@@ -834,8 +834,8 @@ func (s *Server) Run(ctx context.Context) error {
 				return
 			}
 			if err := providers.SetupProviderWithManager(adminMgr, kcpConfig, providers.CatalogReconcilerOptions{
-				HubExternalURL:      s.opts.HubExternalURL,
-				ProviderInternalURL: s.opts.ProviderInternalURL,
+				HubExternalURL: s.opts.HubExternalURL,
+				HubInternalURL: s.opts.HubInternalURL,
 			}); err != nil {
 				logger.Error(err, "Setting up provider provisioning controller failed")
 				return

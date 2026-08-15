@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { Plus, Trash2, Download } from 'lucide-vue-next'
 
-import { useAdminStore } from '@/stores/admin'
+import { useAdminStore, type KubeconfigServer } from '@/stores/admin'
 import { confirmDialog } from '@/portalkit/confirm'
 
 const admin = useAdminStore()
@@ -29,16 +29,31 @@ async function create() {
   }
 }
 
-async function downloadKubeconfig(name: string) {
+async function downloadKubeconfig(name: string, server?: KubeconfigServer) {
   busy.value = true
   actionError.value = null
   try {
-    await admin.downloadProviderKubeconfig(name)
+    await admin.downloadProviderKubeconfig(name, server)
   } catch (e) {
     if ((e as Error).message !== 'forbidden') actionError.value = (e as Error).message
   } finally {
     busy.value = false
   }
+}
+
+// One download button per address the hub can serve. Labelled by where the
+// provider runs rather than by the flag name — that's the question the admin can
+// actually answer. A hub without --hub-internal-url offers only 'external',
+// which collapses to the single plain "kubeconfig" button this table had before.
+const serverLabels: Record<KubeconfigServer, string> = {
+  internal: 'in-cluster',
+  external: 'external',
+}
+const serverTitles: Record<KubeconfigServer, string> = {
+  internal:
+    'Kubeconfig pointing at the hub’s in-cluster Service — for a provider installed by Helm into this cluster. Keeps its traffic off the public path.',
+  external:
+    'Kubeconfig pointing at the hub’s public URL — for a provider running outside this cluster.',
 }
 
 async function remove(name: string) {
@@ -130,15 +145,36 @@ async function remove(name: string) {
             <!-- Builtins are bootstrapped by the hub; they have no Provider object. -->
             <span v-if="p.builtin" class="text-[11px] text-text-muted">managed by hub</span>
             <template v-else>
-              <button
-                class="mr-3 inline-flex items-center gap-1 text-xs text-accent disabled:opacity-50"
-                :disabled="busy"
-                title="Download the minted provider kubeconfig"
-                @click="downloadKubeconfig(p.name)"
-              >
-                <Download class="h-3.5 w-3.5" :stroke-width="2" />
-                kubeconfig
-              </button>
+              <span class="mr-3 inline-flex items-center gap-1 text-xs">
+                <Download class="h-3.5 w-3.5 text-text-muted" :stroke-width="2" />
+                <template v-if="admin.kubeconfigServers.length > 1">
+                  <span class="text-text-muted">kubeconfig</span>
+                  <template v-for="(s, i) in admin.kubeconfigServers" :key="s">
+                    <span v-if="i > 0" class="text-text-muted">·</span>
+                    <button
+                      class="text-accent disabled:opacity-50"
+                      :disabled="busy"
+                      :title="serverTitles[s]"
+                      @click="downloadKubeconfig(p.name, s)"
+                    >
+                      {{ serverLabels[s] }}
+                    </button>
+                  </template>
+                </template>
+                <button
+                  v-else
+                  class="text-accent disabled:opacity-50"
+                  :disabled="busy"
+                  :title="
+                    admin.kubeconfigServers.length
+                      ? serverTitles[admin.kubeconfigServers[0]]
+                      : 'Download the minted provider kubeconfig'
+                  "
+                  @click="downloadKubeconfig(p.name, admin.kubeconfigServers[0])"
+                >
+                  kubeconfig
+                </button>
+              </span>
               <button
                 class="inline-flex items-center gap-1 text-xs text-danger disabled:opacity-50"
                 :disabled="busy"

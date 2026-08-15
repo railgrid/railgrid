@@ -50,15 +50,26 @@ type Options struct {
 	ServingCertFile string
 	ServingKeyFile  string
 	HubExternalURL  string
-	HubInternalURL  string // Internal URL for kcp mount resolution (avoids CDN/proxy loops)
-	// ProviderInternalURL, when set, is the server URL baked into the minted
-	// provider kubeconfig instead of HubExternalURL. Use it when provider pods
-	// reach the hub front-proxy at a different address than browsers do — e.g.
-	// a kind pod dialing https://host.docker.internal:9443 while browsers use
-	// https://localhost:9443.
-	ProviderInternalURL string
-	DevMode             bool
-	StaticAuthTokens    []string
+	// HubInternalURL, when set, is the address in-cluster components use to
+	// reach this hub instead of HubExternalURL. It is baked into minted provider
+	// kubeconfigs and offered as the "internal" option by the admin kubeconfig
+	// download.
+	//
+	// Without it, a provider pod's calls to the hub resolve the public hostname,
+	// leave the cluster, and re-enter through whatever fronts it (CDN, tunnel,
+	// load balancer) — for a provider running beside the hub that is a pointless
+	// round trip that also makes the whole platform look like one noisy client
+	// IP to the edge.
+	//
+	// Typically the hub's in-cluster Service
+	// (https://<release>-faros-hub.<namespace>.svc.cluster.local:9443). Also
+	// useful when provider pods reach the hub at a different address than
+	// browsers do — e.g. a kind pod dialing https://host.docker.internal:9443
+	// while browsers use https://localhost:9443. Leave empty when providers run
+	// outside the cluster.
+	HubInternalURL   string
+	DevMode          bool
+	StaticAuthTokens []string
 
 	// AdminUsers is the allowlist of platform-admin identities permitted to
 	// reach the /api/admin/* surface and the portal's /bonkers area. Each entry

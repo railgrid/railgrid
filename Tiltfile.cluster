@@ -867,6 +867,14 @@ k8s_yaml(helm(
         'kcp.external.enabled=true',
         'kcp.external.existingSecret=kcp-frontproxy-admin',
         'hub.hubExternalURL=%s' % hub_external_url,
+        # In-cluster address for provider→hub calls. Two effects: minted provider
+        # kubeconfigs point here instead of out through the ingress, and the
+        # /bonkers providers table offers both "in-cluster" and "external"
+        # kubeconfig downloads (with only one address configured it collapses to
+        # a single button). Safe for the host-run provider resources below —
+        # those authenticate with FAROS_HUB_URL + a static token, not the minted
+        # kubeconfig.
+        'hub.internalURL=https://faros-hub.%s.svc.cluster.local:9443' % hub_namespace,
         'hub.tls.existingSecret=%s' % hub_tls_secret_name,
         'hub.tls.selfSigned.enabled=false',
         'hub.devMode=true',

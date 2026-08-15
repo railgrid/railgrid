@@ -24,8 +24,11 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,6 +38,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/faroshq/faros/pkg/apiurl"
 	"github.com/faroshq/faros/pkg/hub/kcp"
@@ -84,13 +88,137 @@ func (s *Service) CreateProvider(ctx context.Context, name, displayName string) 
 	return nil
 }
 
+// KubeconfigServerMode selects which hub address is baked into a downloaded
+// provider kubeconfig. The minted Secret carries exactly one server URL (the
+// hub's --hub-internal-url when set, else --hub-external-url), but the
+// same Secret feeds two different consumers: a provider installed by Helm into
+// this cluster, which should stay on the in-cluster Service, and a provider run
+// outside the cluster (another cluster, a laptop during development), which can
+// only reach the public hostname. Whoever downloads the kubeconfig knows which
+// one they are, so the choice is made per download rather than per deployment.
+type KubeconfigServerMode string
+
+const (
+	// ServerModeAsMinted leaves the server URL exactly as the Provider
+	// controller wrote it. The default, so existing callers are unaffected.
+	ServerModeAsMinted KubeconfigServerMode = ""
+	// ServerModeExternal rewrites the server to the hub's external URL — for
+	// providers running outside this cluster.
+	ServerModeExternal KubeconfigServerMode = "external"
+	// ServerModeInternal rewrites the server to the hub-internal URL (the
+	// in-cluster Service) — for providers installed into this cluster. Keeps
+	// provider→hub traffic off the public path.
+	ServerModeInternal KubeconfigServerMode = "internal"
+)
+
+// ErrServerModeUnavailable is returned when a caller asks for a server mode
+// this deployment has no URL for — chiefly ServerModeInternal on a hub started
+// without --hub-internal-url.
+var ErrServerModeUnavailable = errors.New("requested kubeconfig server address is not configured on this hub")
+
+// ParseKubeconfigServerMode maps the `server` query parameter to a mode. An
+// empty value means "as minted". Unknown values are rejected rather than
+// silently falling back, so a typo can't hand out the wrong address.
+func ParseKubeconfigServerMode(v string) (KubeconfigServerMode, error) {
+	switch KubeconfigServerMode(v) {
+	case ServerModeAsMinted:
+		return ServerModeAsMinted, nil
+	case ServerModeExternal:
+		return ServerModeExternal, nil
+	case ServerModeInternal:
+		return ServerModeInternal, nil
+	default:
+		return "", fmt.Errorf("unknown server mode %q (want %q or %q)", v, ServerModeExternal, ServerModeInternal)
+	}
+}
+
+// AvailableKubeconfigServerModes reports which modes this hub can actually
+// serve, so the portal can offer only the ones that will work. External is
+// present whenever --hub-external-url is set (always, in practice); internal
+// only when --hub-internal-url is.
+func (s *Service) AvailableKubeconfigServerModes() []KubeconfigServerMode {
+	modes := make([]KubeconfigServerMode, 0, 2)
+	if s.hubExternalURL != "" {
+		modes = append(modes, ServerModeExternal)
+	}
+	if s.hubInternalURL != "" {
+		modes = append(modes, ServerModeInternal)
+	}
+	return modes
+}
+
+// serverBaseFor resolves a mode to the configured base URL.
+func (s *Service) serverBaseFor(mode KubeconfigServerMode) (string, error) {
+	switch mode {
+	case ServerModeExternal:
+		if s.hubExternalURL == "" {
+			return "", fmt.Errorf("%w: external (hub --hub-external-url unset)", ErrServerModeUnavailable)
+		}
+		return s.hubExternalURL, nil
+	case ServerModeInternal:
+		if s.hubInternalURL == "" {
+			return "", fmt.Errorf("%w: internal (hub --hub-internal-url unset)", ErrServerModeUnavailable)
+		}
+		return s.hubInternalURL, nil
+	default:
+		return "", fmt.Errorf("mode %q has no configured base URL", mode)
+	}
+}
+
+// rewriteKubeconfigServer re-points every cluster entry in kc at base, keeping
+// each entry's existing path (the /clusters/<logicalCluster> suffix the hub
+// routes on) and every other field — notably the SA token and
+// insecure-skip-tls-verify, which is why swapping the host needs no cert work.
+//
+// Parsed and re-serialised through clientcmd rather than string-substituted so
+// a kubeconfig shape that drifts from today's mint template still comes out
+// valid.
+func rewriteKubeconfigServer(kc []byte, base string) ([]byte, error) {
+	target, err := url.Parse(base)
+	if err != nil {
+		return nil, fmt.Errorf("parsing target server URL %q: %w", base, err)
+	}
+	if target.Host == "" {
+		return nil, fmt.Errorf("target server URL %q has no host", base)
+	}
+	// A base that already carries a /clusters/ suffix would otherwise stack
+	// with the entry's own path.
+	basePath := strings.TrimSuffix(target.Path, "/")
+	if idx := strings.Index(basePath, "/clusters/"); idx != -1 {
+		basePath = basePath[:idx]
+	}
+
+	cfg, err := clientcmd.Load(kc)
+	if err != nil {
+		return nil, fmt.Errorf("parsing minted kubeconfig: %w", err)
+	}
+	for name, cluster := range cfg.Clusters {
+		current, err := url.Parse(cluster.Server)
+		if err != nil {
+			return nil, fmt.Errorf("parsing server URL of cluster %q: %w", name, err)
+		}
+		swapped := *target
+		swapped.Path = basePath + current.Path
+		swapped.RawQuery = current.RawQuery
+		cluster.Server = swapped.String()
+	}
+	out, err := clientcmd.Write(*cfg)
+	if err != nil {
+		return nil, fmt.Errorf("serialising rewritten kubeconfig: %w", err)
+	}
+	return out, nil
+}
+
 // GetProviderKubeconfig returns the minted kubeconfig the Provider controller
 // wrote into a Secret in root:faros:system:providers. It reads the Provider's
 // status.secretRef to locate the Secret (falling back to the
 // "<name>-kubeconfig" / "default" / "kubeconfig" conventions). Returns a nil
 // slice + nil error when the Provider exists but hasn't been provisioned yet
 // (no Secret), so callers can surface "not ready".
-func (s *Service) GetProviderKubeconfig(ctx context.Context, name string) ([]byte, error) {
+//
+// mode re-points the server URL on the way out; the stored Secret is never
+// modified. ServerModeAsMinted returns the bytes untouched.
+func (s *Service) GetProviderKubeconfig(ctx context.Context, name string, mode KubeconfigServerMode) ([]byte, error) {
 	cfg := rest.CopyConfig(s.kcpConfig)
 	cfg.Host = apiurl.KCPClusterURL(cfg.Host, kcppaths.SystemProviders)
 	dyn, err := dynamic.NewForConfig(cfg)
@@ -125,7 +253,15 @@ func (s *Service) GetProviderKubeconfig(ctx context.Context, name string) ([]byt
 	if err != nil {
 		return nil, fmt.Errorf("getting kubeconfig Secret %s/%s: %w", secretNS, secretName, err)
 	}
-	return secret.Data[secretKey], nil
+	kc := secret.Data[secretKey]
+	if len(kc) == 0 || mode == ServerModeAsMinted {
+		return kc, nil
+	}
+	base, err := s.serverBaseFor(mode)
+	if err != nil {
+		return nil, err
+	}
+	return rewriteKubeconfigServer(kc, base)
 }
 
 // DeleteProvider removes a Provider object from root:faros:system:providers.
@@ -153,17 +289,26 @@ type Service struct {
 	// credentials so the admin surface can enumerate every org's child
 	// workspaces and their enabled provider bindings.
 	bootstrapper *kcp.Bootstrapper
+	// hubExternalURL / hubInternalURL are the two addresses a downloaded
+	// provider kubeconfig can be pointed at. Provisioning itself no longer runs
+	// here (the Provider CR reconciler mints the Secret), but the download
+	// endpoint re-points the server URL per request — see KubeconfigServerMode.
+	hubExternalURL string
+	hubInternalURL string
 }
 
-// NewService returns an admin Service. hubExternalURL/providerInternalURL are
-// accepted for call-site compatibility but no longer used now that provider
-// provisioning (which baked a server URL into minted kubeconfigs) moved to the
-// Provider CR reconciler.
-func NewService(kcpConfig *rest.Config, _, _ string) *Service {
+// NewService returns an admin Service. hubExternalURL and hubInternalURL
+// are the hub's --hub-external-url and --hub-internal-url; they let the
+// kubeconfig download offer either address regardless of which one the Provider
+// reconciler baked into the Secret. hubInternalURL may be empty, in which
+// case only the external mode is offered.
+func NewService(kcpConfig *rest.Config, hubExternalURL, hubInternalURL string) *Service {
 	return &Service{
-		prov:         providers.NewProvisioner(kcpConfig),
-		kcpConfig:    kcpConfig,
-		bootstrapper: kcp.NewBootstrapper(kcpConfig),
+		prov:           providers.NewProvisioner(kcpConfig),
+		kcpConfig:      kcpConfig,
+		bootstrapper:   kcp.NewBootstrapper(kcpConfig),
+		hubExternalURL: hubExternalURL,
+		hubInternalURL: hubInternalURL,
 	}
 }
 

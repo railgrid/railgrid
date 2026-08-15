@@ -80,7 +80,7 @@ type ProviderSpec struct {
 
 	// ServerURLOverride overrides the API server URL baked into the minted
 	// kubeconfig. Empty means the controller's configured provider server URL
-	// (the hub's --provider-internal-url when set, otherwise --hub-external-url).
+	// (the hub's --hub-internal-url when set, otherwise --hub-external-url).
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
 	ServerURLOverride string `json:"serverURLOverride,omitempty"`

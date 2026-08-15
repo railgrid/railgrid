@@ -97,7 +97,7 @@ spec:
                 description: |-
                   ServerURLOverride overrides the API server URL baked into the minted
                   kubeconfig. Empty means the controller's configured provider server URL
-                  (the hub's --provider-internal-url when set, otherwise --hub-external-url).
+                  (the hub's --hub-internal-url when set, otherwise --hub-external-url).
                 maxLength: 512
                 type: string
             type: object

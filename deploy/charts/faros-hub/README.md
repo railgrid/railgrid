@@ -35,6 +35,7 @@ For a complete production setup (TLS, OIDC, ingress) see the [full docs](https:/
 | Key | Default | Description |
 |-----|---------|-------------|
 | `hub.hubExternalURL` | `""` | **Required.** External URL used for kubeconfig generation and OIDC callbacks (e.g. `https://faros.example.com`) |
+| `hub.internalURL` | `""` | Address in-cluster components use to reach the hub, baked into minted provider kubeconfigs. Defaults to `hub.hubExternalURL`, which routes provider→hub traffic out through the public hostname and back. Set to the in-cluster Service (`https://<release>-faros-hub.<namespace>.svc.cluster.local:9443`) to keep it inside the cluster. Leave empty when providers run outside the cluster. |
 | `hub.listenAddr` | `:9443` | Hub TLS listen address |
 | `hub.devMode` | `false` | Enable development mode (verbose logging, relaxed security) |
 | `hub.staticAuthTokens` | `[]` | Static bearer tokens for access. Each token creates its own user/workspace. Generate with `openssl rand -base64 32` |

@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260615-841bea0.providers.admin.faros.sh
+  name: v260815-88d18a6c.providers.admin.faros.sh
 spec:
   group: admin.faros.sh
   names:
@@ -93,7 +93,7 @@ spec:
               description: |-
                 ServerURLOverride overrides the API server URL baked into the minted
                 kubeconfig. Empty means the controller's configured provider server URL
-                (the hub's --provider-internal-url when set, otherwise --hub-external-url).
+                (the hub's --hub-internal-url when set, otherwise --hub-external-url).
               maxLength: 512
               type: string
           type: object

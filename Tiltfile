@@ -48,7 +48,7 @@ go build -o bin/faros-hub ./cmd/faros-hub
   --portal-dev-url=http://localhost:3000 \
   --portal-frame-source=https://*.preview.localhost:10443 \
   --kubeconfig=.faros-kro.kubeconfig \
-  --provider-internal-url=https://host.docker.internal:9443
+  --hub-internal-url=https://host.docker.internal:9443
 ''',
     deps=[
         'cmd/faros-hub',
@@ -668,7 +668,7 @@ local_resource(
 #     bootstrap) instead of the host binary above. Exercises the full
 #     hub-minted flow end to end: the hub mints + delivers
 #     faros-provider-kubeconfig (HostSecretWriter, enabled by the hub's
-#     --kubeconfig + --provider-internal-url flags above), the init container
+#     --kubeconfig + --hub-internal-url flags above), the init container
 #     bootstraps the workspace with it, then serve runs — all inside the
 #     faros-kro kind cluster.
 #

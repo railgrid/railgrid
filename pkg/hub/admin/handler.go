@@ -18,6 +18,8 @@ package admin
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"time"
@@ -68,8 +70,22 @@ type userDTO struct {
 	RBACIdentity string `json:"rbacIdentity"`
 }
 
+// accessDTO is the body of GET /api/admin/access. Reaching the handler already
+// proves admin, so `admin` is always true; the portal only checks the status
+// code. kubeconfigServers rides along so the providers table can offer just the
+// download addresses this hub can actually produce.
+type accessDTO struct {
+	Admin             bool     `json:"admin"`
+	KubeconfigServers []string `json:"kubeconfigServers"`
+}
+
 func (h *Handler) access(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, map[string]bool{"admin": true})
+	modes := h.svc.AvailableKubeconfigServerModes()
+	names := make([]string, 0, len(modes))
+	for _, m := range modes {
+		names = append(names, string(m))
+	}
+	writeJSON(w, accessDTO{Admin: true, KubeconfigServers: names})
 }
 
 func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
@@ -262,14 +278,30 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request) {
 // providerKubeconfig streams the minted kubeconfig for a provider, read from
 // the Secret the Provider controller wrote into root:faros:system:providers.
 // 404 if the Provider isn't provisioned yet (no Secret).
+//
+// The optional `server` query parameter re-points the server URL for this
+// download only (the Secret is never modified): `internal` for a provider
+// installed into this cluster, `external` for one running outside it. Omitted
+// means "as minted". 400 on an unknown mode or one this hub has no URL for.
 func (h *Handler) providerKubeconfig(w http.ResponseWriter, r *http.Request) {
 	name := mux.Vars(r)["name"]
 	if name == "" {
 		writeError(w, http.StatusBadRequest, "provider name is required")
 		return
 	}
-	kc, err := h.svc.GetProviderKubeconfig(r.Context(), name)
+	mode, err := ParseKubeconfigServerMode(r.URL.Query().Get("server"))
 	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	kc, err := h.svc.GetProviderKubeconfig(r.Context(), name, mode)
+	if err != nil {
+		// An unconfigured address is a bad request, not a server fault: the
+		// caller asked for something this deployment cannot serve.
+		if errors.Is(err, ErrServerModeUnavailable) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -277,8 +309,13 @@ func (h *Handler) providerKubeconfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "kubeconfig not available yet — provider not provisioned")
 		return
 	}
+	// Distinct filenames so a downloads folder holding both stays legible.
+	filename := name + "-kubeconfig.yaml"
+	if mode != ServerModeAsMinted {
+		filename = fmt.Sprintf("%s-kubeconfig-%s.yaml", name, mode)
+	}
 	w.Header().Set("Content-Type", "application/yaml")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`-kubeconfig.yaml"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	_, _ = w.Write(kc)
 }
 

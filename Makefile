@@ -1920,7 +1920,7 @@ init-provider-databricks: build-databricks-provider ## Bootstrap Databricks APIE
 #     (HostSecretWriter) -> init container bootstraps with it -> serve runs.
 #     Reuses the faros-kro kind cluster as the host cluster. Requires the hub
 #     to run with --kubeconfig=$(KRO_KIND_KUBECONFIG) and
-#     --provider-internal-url=$(PROVIDER_INTERNAL_HUB_URL) (the Tiltfile sets
+#     --hub-internal-url=$(HUB_INTERNAL_URL) (the Tiltfile sets
 #     both). Apply the CatalogEntry first: make install-provider-infrastructure
 INFRASTRUCTURE_NAMESPACE ?= infrastructure
 INFRASTRUCTURE_IMAGE ?= faros-infrastructure-provider:dev
@@ -1928,7 +1928,7 @@ INFRASTRUCTURE_CHART ?= providers/infrastructure/deploy/chart
 # Address provider pods in the kind cluster use to reach the hub front-proxy
 # (browsers use https://localhost:9443; host.docker.internal resolves to the
 # host from inside kind on Docker Desktop / Colima / OrbStack).
-PROVIDER_INTERNAL_HUB_URL ?= https://host.docker.internal:9443
+HUB_INTERNAL_URL ?= https://host.docker.internal:9443
 helm-deploy-provider-infrastructure: ## (experimental) Build+load image, helm install the provider as a pod into faros-kro (hub-minted bootstrap)
 	@command -v kind >/dev/null || { echo "kind not found; brew install kind"; exit 1; }
 	@test -f $(KRO_KIND_KUBECONFIG) || { echo "faros-kro cluster missing; run 'make dev-kro-up' first"; exit 1; }
@@ -1950,7 +1950,7 @@ helm-deploy-provider-infrastructure: ## (experimental) Build+load image, helm in
 		--set image.pullPolicy=Never \
 		--set replicaCount=1 \
 		--set bootstrap.enabled=true \
-		--set hub.url=$(PROVIDER_INTERNAL_HUB_URL) \
+		--set hub.url=$(HUB_INTERNAL_URL) \
 		--set hub.insecure=true \
 		--set catalogEntry.enabled=false
 	@echo ">>> deployed. The pod stays in ContainerCreating until the hub delivers"

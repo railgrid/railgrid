@@ -58,7 +58,7 @@ type ProviderReconciler struct {
 	mgr  mcmanager.Manager
 	prov *Provisioner
 	// providerServerURL is baked into minted kubeconfigs when the Provider
-	// does not override it: the provider-internal URL when set, otherwise the
+	// does not override it: the hub-internal URL when set, otherwise the
 	// hub external URL.
 	providerServerURL string
 }
@@ -69,7 +69,7 @@ type ProviderReconciler struct {
 // rest.Config used to create sub-workspaces and write the kubeconfig Secret
 // with admin credentials.
 func SetupProviderWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, opts CatalogReconcilerOptions) error {
-	serverURL := opts.ProviderInternalURL
+	serverURL := opts.HubInternalURL
 	if serverURL == "" {
 		serverURL = opts.HubExternalURL
 	}

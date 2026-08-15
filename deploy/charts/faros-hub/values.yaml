@@ -61,6 +61,18 @@ kcp:
 hub:
   # Required: external URL for kubeconfig generation and OIDC callbacks
   hubExternalURL: ""
+  # Address in-cluster components use to reach the hub instead of
+  # hubExternalURL. Baked into minted provider kubeconfigs and offered as the
+  # "in-cluster" option by the admin kubeconfig download. Defaults to
+  # hubExternalURL, which sends every provider→hub call out to the public
+  # hostname and back in — through the CDN/tunnel when one fronts the hub.
+  # Set this to the hub's in-cluster Service so provider pods stay inside the
+  # cluster:
+  #   internalURL: "https://<release>-faros-hub.<namespace>.svc.cluster.local:9443"
+  # Minted kubeconfigs use insecure-skip-tls-verify, so the serving cert does
+  # not need a SAN for this name. Leave empty when providers run outside the
+  # cluster (e.g. local kind, where they need https://host.docker.internal:9443).
+  internalURL: ""
   listenAddr: ":9443"
   devMode: false
   # Enable embedded GraphQL gateway (required for portal)
