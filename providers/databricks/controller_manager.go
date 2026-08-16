@@ -33,6 +33,7 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
@@ -731,9 +732,15 @@ func newControllerManagerWithReadiness(ctx context.Context, config *rest.Config,
 		initialize:     providerTransportReadiness.Wait,
 		startupTimeout: setupTimeout,
 	}
+	// The lifecycle below reconstructs a manager after readiness loss while
+	// retaining stable controller names for metrics and logs. controller-runtime
+	// keeps its name registry for the process lifetime, so a replacement manager
+	// must skip that process-global check. The three names registered below are
+	// still explicit and distinct within every manager instance.
 	mgr, err := mcmanager.New(config, providerRunnable, manager.Options{
-		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: "0"},
+		Scheme:     scheme,
+		Metrics:    metricsserver.Options{BindAddress: "0"},
+		Controller: controllerOptionsForRetryableManager(),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating multicluster manager: %w", err)
@@ -754,6 +761,11 @@ func newControllerManagerWithReadiness(ctx context.Context, config *rest.Config,
 		endpointName:   apiExportName,
 		startupTimeout: controllerStartupTimeoutFromEnv(),
 	}, nil
+}
+
+func controllerOptionsForRetryableManager() ctrlconfig.Controller {
+	skipNameValidation := true
+	return ctrlconfig.Controller{SkipNameValidation: &skipNameValidation}
 }
 
 // startControllerManager preserves the small setup API used by local callers:

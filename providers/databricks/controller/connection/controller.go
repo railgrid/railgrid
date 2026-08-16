@@ -54,6 +54,7 @@ func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	// require broader tenant permissions; healthy connections recheck on the
 	// validation interval and transient Databricks failures use the short retry.
 	return mcbuilder.ControllerManagedBy(mgr).
+		Named("databricks-connection").
 		For(&databricksv1alpha1.Connection{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }

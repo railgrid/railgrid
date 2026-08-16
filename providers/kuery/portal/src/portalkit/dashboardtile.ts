@@ -71,6 +71,11 @@ export const tileClass = {
 export interface TileContext {
   token?: string | null
   tenant?: string | null
+  // Hub-proxy providers need the persisted tenant selection as well as the
+  // resolved kcp tenant path so their requests carry the same headers as the
+  // full provider surface.
+  orgUUID?: string | null
+  workspaceUUID?: string | null
   basePath?: string
 }
 

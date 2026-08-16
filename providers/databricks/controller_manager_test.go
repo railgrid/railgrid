@@ -62,6 +62,13 @@ func TestControllerHealthLifecycle(t *testing.T) {
 	}
 }
 
+func TestControllerOptionsForRetryableManagerAllowsStableNames(t *testing.T) {
+	options := controllerOptionsForRetryableManager()
+	if options.SkipNameValidation == nil || !*options.SkipNameValidation {
+		t.Fatal("retryable manager must allow stable controller names across process-lifetime rebuilds")
+	}
+}
+
 func TestControllerReadyRunnableGatesAuthorityUntilProviderDiscovery(t *testing.T) {
 	health := newControllerHealth(true)
 	authority := &managerAuthority{}
