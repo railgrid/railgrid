@@ -8,9 +8,9 @@ import { setLayoutInsets } from '@/composables/useLayoutInsets'
 import CliQuickstartModal from '@/components/CliQuickstartModal.vue'
 import UserProfileModal from '@/components/UserProfileModal.vue'
 import TenantContextChip from '@/components/TenantContextChip.vue'
-import ThemeSwitch from '@/components/ThemeSwitch.vue'
+import AccountAccessMenu from '@/components/AccountAccessMenu.vue'
 import FirstWorkspaceWizard from '@/components/FirstWorkspaceWizard.vue'
-import { Hexagon, LayoutDashboard, LogOut, Zap, GripHorizontal, GripVertical, Pin, Terminal, Puzzle, Dot, Settings, ShieldAlert, Plug, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
+import { Hexagon, LayoutDashboard, Zap, GripHorizontal, GripVertical, Puzzle, Dot, ShieldAlert, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
 import { useProvidersStore } from '@/stores/providers'
 import { useAdminStore } from '@/stores/admin'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -105,11 +105,9 @@ interface NavItem {
 // (Edges, MCP, Workloads, etc.) flows through providersStore — those
 // items get categorized + sub-nav treatment below. Dashboard is the
 // only true platform-wide page.
-// Settings used to live here but moved to the sidebar's bottom action
-// area (near Theme / Logout) — top-of-nav placement made it compete
-// with the providers nav and read as a peer of Dashboard, which it is
-// not. The horizontal/floating docks render it as a dedicated icon
-// button in the right-side action area instead.
+// Settings lives in the account-and-access menu rather than competing
+// with providers as a primary destination. The same menu is shared by
+// vertical, horizontal, and floating chrome.
 const staticNavItems: NavItem[] = [
   { label: 'Dashboard', to: '/', icon: LayoutDashboard },
 ]
@@ -637,41 +635,6 @@ watchEffect(() => {
 
       <div class="mx-2 my-2 h-px bg-border-default/50" />
 
-      <!-- CLI quickstart -->
-      <button
-        class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium text-text-muted transition-all hover:bg-surface-overlay/50 hover:text-text-secondary"
-        :class="sidebarExpanded ? '' : 'justify-center'"
-        title="Install the faros CLI"
-        @click="showCliModal = true"
-      >
-        <Terminal class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
-        <span v-if="sidebarExpanded">CLI</span>
-      </button>
-
-      <!-- MCP Access: a workspace-level preference (connect an AI client to
-           this workspace's tools), so it sits with Settings at the bottom. -->
-      <router-link
-        to="/mcp"
-        class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
-        :class="[isActive('/mcp') ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
-        :title="sidebarExpanded ? undefined : 'MCP Access'"
-      >
-        <Plug class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
-        <span v-if="sidebarExpanded">MCP Access</span>
-      </router-link>
-
-      <!-- Settings (formerly at the top of the nav). Sits alongside the
-           other workspace-level preferences here. -->
-      <router-link
-        to="/tenant"
-        class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
-        :class="[isActive('/tenant') ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
-        :title="sidebarExpanded ? undefined : 'Settings'"
-      >
-        <Settings class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
-        <span v-if="sidebarExpanded">Settings</span>
-      </router-link>
-
       <!-- Platform admin (/bonkers): only rendered for allowlisted identities
            (adminStore.isAdmin, set by the access probe on mount). -->
       <router-link
@@ -685,53 +648,17 @@ watchEffect(() => {
         <span v-if="sidebarExpanded">Platform admin</span>
       </router-link>
 
-      <!-- Theme segmented control: shows all three options so users can
-           pick directly instead of cycling through unknown next states.
-           Icon-only — tooltips carry the per-option label. Needs the full
-           column width; hidden on the collapsed rail (expand to switch). -->
-      <div v-if="sidebarExpanded" class="px-1 py-1">
-        <ThemeSwitch variant="sidebar" />
-      </div>
-
-      <!-- Status. Collapsed rail keeps the presence dot as the identity
-           affordance; the email and clock need the label column. -->
-      <button
-        v-if="auth.user"
-        class="flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-left transition-colors hover:bg-surface-overlay/50"
-        :class="sidebarExpanded ? '' : 'justify-center'"
-        title="Show your identity (email / user ID)"
-        @click="showProfileModal = true"
-      >
-        <div class="h-1.5 w-1.5 rounded-full bg-success flex-shrink-0" />
-        <span v-if="sidebarExpanded" class="font-mono text-[9px] text-text-muted truncate hover:text-accent">{{ auth.user.email }}</span>
-      </button>
-      <span v-if="sidebarExpanded" class="px-3 font-mono text-[9px] tabular-nums text-text-muted/50">
-        {{ timeStr }}
-      </span>
-
-      <div class="mx-2 my-2 h-px bg-border-default/50" />
-
-      <!-- Undock -->
-      <button
-        class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium text-text-muted/40 transition-all hover:text-accent"
-        :class="sidebarExpanded ? '' : 'justify-center'"
-        :title="sidebarExpanded ? undefined : 'Undock'"
-        @click="resetDockPos"
-      >
-        <Pin class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="2" />
-        <span v-if="sidebarExpanded">Undock</span>
-      </button>
-
-      <!-- Logout -->
-      <button
-        class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium text-text-muted transition-all hover:bg-danger-subtle hover:text-danger"
-        :class="sidebarExpanded ? '' : 'justify-center'"
-        :title="sidebarExpanded ? undefined : 'Logout'"
-        @click="handleLogout"
-      >
-        <LogOut class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="2" />
-        <span v-if="sidebarExpanded">Logout</span>
-      </button>
+      <!-- Situational tools and session controls live behind one stable
+           account affordance so the provider tree keeps the vertical space. -->
+      <AccountAccessMenu
+        :expanded="sidebarExpanded"
+        :time="timeStr"
+        show-undock
+        @cli="showCliModal = true"
+        @profile="showProfileModal = true"
+        @undock="resetDockPos"
+        @logout="handleLogout"
+      />
     </aside>
 
     <!-- HORIZONTAL BAR (top or bottom) -->
@@ -814,61 +741,14 @@ watchEffect(() => {
       <span v-if="auth.clusterName" class="px-1 font-mono text-[9px] tracking-wider text-text-muted">
         {{ auth.clusterName }}
       </span>
-      <button
-        class="flex items-center gap-1 rounded-md border border-border-subtle px-1.5 py-1 text-text-muted transition-all hover:border-accent/30 hover:text-accent"
-        title="Install the faros CLI"
-        @click="showCliModal = true"
-      >
-        <Terminal class="h-3 w-3" :stroke-width="2" />
-        <span class="text-[8px] font-semibold uppercase tracking-wider">CLI</span>
-      </button>
-      <router-link
-        to="/mcp"
-        class="flex h-7 w-7 items-center justify-center rounded-lg transition-all"
-        :class="isActive('/mcp') ? 'text-accent' : 'text-text-muted hover:text-text-secondary'"
-        title="MCP Access"
-      >
-        <Plug class="h-3.5 w-3.5" :stroke-width="2" />
-      </router-link>
-      <router-link
-        to="/tenant"
-        class="flex h-7 w-7 items-center justify-center rounded-lg transition-all"
-        :class="isActive('/tenant') ? 'text-accent' : 'text-text-muted hover:text-text-secondary'"
-        title="Tenant settings"
-      >
-        <Settings class="h-3.5 w-3.5" :stroke-width="2" />
-      </router-link>
-      <ThemeSwitch variant="compact" />
-      <span class="px-0.5 font-mono text-[9px] tabular-nums tracking-wider text-text-muted/50">
-        {{ timeStr }}
-      </span>
-      <button
-        v-if="auth.user"
-        class="flex items-center gap-1 rounded-sm border border-border-subtle bg-surface-overlay/50 px-2 py-1 backdrop-blur transition-colors hover:border-accent/40"
-        title="Show your identity (email / user ID)"
-        @click="showProfileModal = true"
-      >
-        <div class="h-1.5 w-1.5 rounded-full bg-success" />
-        <span class="font-mono text-[9px] text-text-muted hover:text-accent">{{ auth.user.email }}</span>
-      </button>
-
-      <div class="mx-0.5 h-5 w-px bg-border-default/40" />
-
-      <button
-        class="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted/50 transition-all hover:text-accent"
-        title="Undock to floating bar"
-        @click="resetDockPos"
-      >
-        <Pin class="h-3 w-3" :stroke-width="2" />
-      </button>
-
-      <button
-        class="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted transition-all hover:bg-danger-subtle hover:text-danger"
-        title="Logout"
-        @click="handleLogout"
-      >
-        <LogOut class="h-3 w-3" :stroke-width="2" />
-      </button>
+      <AccountAccessMenu
+        :time="timeStr"
+        show-undock
+        @cli="showCliModal = true"
+        @profile="showProfileModal = true"
+        @undock="resetDockPos"
+        @logout="handleLogout"
+      />
     </nav>
 
     <!-- Main content -->
@@ -979,54 +859,15 @@ watchEffect(() => {
         <span v-if="auth.clusterName" class="px-1 font-mono text-[9px] tracking-wider text-text-muted">
           {{ auth.clusterName }}
         </span>
-        <router-link
-          to="/mcp"
-          class="island-nav flex h-7 w-7 items-center justify-center rounded-lg transition-all duration-200"
-          :class="isActive('/mcp') ? 'text-accent' : 'text-text-muted hover:text-text-secondary'"
-          title="MCP Access"
-        >
-          <Plug class="h-3.5 w-3.5" :stroke-width="2" />
-        </router-link>
-        <router-link
-          to="/tenant"
-          class="island-nav flex h-7 w-7 items-center justify-center rounded-lg transition-all duration-200"
-          :class="isActive('/tenant') ? 'text-accent' : 'text-text-muted hover:text-text-secondary'"
-          title="Tenant settings"
-        >
-          <Settings class="h-3.5 w-3.5" :stroke-width="2" />
-        </router-link>
-        <ThemeSwitch variant="compact" />
-        <span class="px-0.5 font-mono text-[9px] tabular-nums tracking-wider text-text-muted/50">
-          {{ timeStr }}
-        </span>
-        <button
-          v-if="auth.user"
-          class="flex items-center gap-1 rounded-sm border border-border-subtle bg-surface-overlay/50 px-2 py-1 backdrop-blur transition-colors hover:border-accent/40"
-          title="Show your identity (email / user ID)"
-          @click="showProfileModal = true"
-        >
-          <div class="h-1.5 w-1.5 rounded-full bg-success" />
-          <span class="font-mono text-[9px] text-text-muted hover:text-accent">{{ auth.user.email }}</span>
-        </button>
-
-        <div class="mx-0.5 h-5 w-px bg-border-default/40" />
-
-        <button
-          v-if="hasCustomPos && !isDragging"
-          class="island-nav flex h-7 w-7 items-center justify-center rounded-lg text-text-muted/50 transition-all duration-200 hover:text-accent"
-          title="Reset to default position"
-          @click="resetDockPos"
-        >
-          <Pin class="h-3 w-3" :stroke-width="2" />
-        </button>
-
-        <button
-          class="island-nav flex h-7 w-7 items-center justify-center rounded-lg text-text-muted transition-all duration-200 hover:bg-danger-subtle hover:text-danger"
-          title="Logout"
-          @click="handleLogout"
-        >
-          <LogOut class="h-3 w-3" :stroke-width="2" />
-        </button>
+        <AccountAccessMenu
+          :time="timeStr"
+          :show-undock="hasCustomPos && !isDragging"
+          undock-label="Reset position"
+          @cli="showCliModal = true"
+          @profile="showProfileModal = true"
+          @undock="resetDockPos"
+          @logout="handleLogout"
+        />
       </div>
     </div>
 
