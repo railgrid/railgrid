@@ -47,11 +47,13 @@ rm -rf "${REPO_ROOT}/pkg/hub/bootstrap/crds"
 mkdir -p "${REPO_ROOT}/pkg/hub/bootstrap/crds"
 cp "${REPO_ROOT}"/config/crds/*.yaml "${REPO_ROOT}/pkg/hub/bootstrap/crds/"
 
-# Step 2: Generate kcp APIResourceSchemas and APIExport from CRDs using apigen.
+# Step 2: Generate kcp APIResourceSchemas and APIExport from CRDs. Goes through
+# hack/apigen.sh, not apigen directly: a changed schema must get a NEW name
+# because APIResourceSchemas are immutable in kcp (see that script's header).
 echo "Generating kcp APIResourceSchemas with apigen..."
 (
     cd "${REPO_ROOT}"
-    "./${KCP_APIGEN_GEN}" \
+    "${REPO_ROOT}/hack/apigen.sh" \
         --input-dir "${REPO_ROOT}/config/crds" \
         --output-dir "${REPO_ROOT}/config/kcp"
 )

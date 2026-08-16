@@ -121,7 +121,7 @@ codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the e
 		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/edges/config/crds
-	./$(KCP_APIGEN_GEN) --input-dir providers/edges/config/crds --output-dir providers/edges/config/kcp
+	./hack/apigen.sh --input-dir providers/edges/config/crds --output-dir providers/edges/config/kcp
 	@for r in kubernetesclusters linuxservers workloads placements services; do \
 		cp providers/edges/config/kcp/apiresourceschema-$$r.edges.faros.sh.yaml \
 		   providers/edges/deploy/chart/files/schemas/$$r.edges.faros.sh.yaml; \
@@ -275,7 +275,7 @@ codegen-code-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the co
 		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/code/config/crds
-	./$(KCP_APIGEN_GEN) --input-dir providers/code/config/crds --output-dir providers/code/config/kcp
+	./hack/apigen.sh --input-dir providers/code/config/crds --output-dir providers/code/config/kcp
 	@for r in connections repositories repositorycommits repositorycheckouts repositorybuildstatuses deploykeys collaborators packages; do \
 		cp providers/code/config/kcp/apiresourceschema-$$r.code.faros.sh.yaml \
 		   providers/code/deploy/chart/files/schemas/$$r.code.faros.sh.yaml; \
@@ -288,7 +288,7 @@ codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the 
 		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/agents/config/crds
-	./$(KCP_APIGEN_GEN) --input-dir providers/agents/config/crds --output-dir providers/agents/config/kcp
+	./hack/apigen.sh --input-dir providers/agents/config/crds --output-dir providers/agents/config/kcp
 	@for r in agents connections schedules triggers toolsets; do \
 		cp providers/agents/config/kcp/apiresourceschema-$$r.agents.faros.sh.yaml \
 		   providers/agents/deploy/chart/files/schemas/$$r.agents.faros.sh.yaml; \
@@ -301,7 +301,7 @@ codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/app-studio/config/crds
-	./$(KCP_APIGEN_GEN) --input-dir providers/app-studio/config/crds --output-dir providers/app-studio/config/kcp
+	./hack/apigen.sh --input-dir providers/app-studio/config/crds --output-dir providers/app-studio/config/kcp
 	cp providers/app-studio/config/kcp/apiresourceschema-projects.ai.faros.sh.yaml \
 	   providers/app-studio/deploy/chart/files/schemas/projects.ai.faros.sh.yaml
 	cp providers/app-studio/config/kcp/apiresourceschema-sessions.ai.faros.sh.yaml \
@@ -316,7 +316,7 @@ codegen-databricks-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 		$(CURDIR)/$(CONTROLLER_GEN) object paths="./apis/..." && \
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/databricks/config/crds
-	./$(KCP_APIGEN_GEN) --input-dir providers/databricks/config/crds --output-dir providers/databricks/config/kcp
+	./hack/apigen.sh --input-dir providers/databricks/config/crds --output-dir providers/databricks/config/kcp
 	@for r in connections warehouses tables; do \
 		cp providers/databricks/config/kcp/apiresourceschema-$$r.databricks.faros.sh.yaml \
 		   providers/databricks/deploy/chart/files/schemas/$$r.databricks.faros.sh.yaml; \
