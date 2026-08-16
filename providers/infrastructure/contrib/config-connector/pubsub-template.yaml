@@ -1,0 +1,52 @@
+# Copyright 2026 The Faros Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
+# This is an opt-in development fixture. It deliberately lives outside
+# install/templates so a normal provider bootstrap never enables a cloud
+# resource or advertises a GCP-specific catalog entry.
+apiVersion: infrastructure.faros.sh/v1alpha1
+kind: Template
+metadata:
+  name: gcp-pubsub-topic
+  labels:
+    faros.sh/config-connector: pubsub
+spec:
+  displayName: GCP Pub/Sub topic
+  description: Creates a Google Cloud Pub/Sub topic through Config Connector.
+  category: Cloud
+  version: 0.0.1
+  backend: kro
+  instanceCRD:
+    group: infrastructure.faros.sh
+    version: v1alpha1
+    resource: gcppubsubtopics
+    kind: GCPPubSubTopic
+  schema:
+    type: object
+    properties:
+      projectID:
+        type: string
+        description: Disposable Google Cloud project that owns the topic.
+      topicName:
+        type: string
+        description: Globally unique Pub/Sub topic name within the project.
+    required:
+      - projectID
+      - topicName
+  backendConfig:
+    resources:
+      - id: pubSubTopic
+        template:
+          apiVersion: pubsub.cnrm.cloud.google.com/v1beta1
+          kind: PubSubTopic
+          metadata:
+            name: "${schema.spec.topicName}"
+            namespace: default
+            annotations:
+              cnrm.cloud.google.com/project-id: "${schema.spec.projectID}"
+          spec: {}

@@ -1672,6 +1672,63 @@ local_resource(
     labels=['providers-kro'],
 )
 
+# --- optional infrastructure operator + Config Connector Pub/Sub demo ------
+# These three actions are deliberately manual and have no resource_deps. A
+# normal `make tilt-cluster` therefore never downloads a cloud controller,
+# imports a credential, enables a cloud-backed Template, or creates a billable
+# resource. Together they demonstrate how an infrastructure Template uses KRO
+# to compose a Config Connector CR in the operator-managed runtime. Click them
+# in order only when the local .env contains a disposable
+# FAROS_CONFIG_CONNECTOR_GCP_PROJECT and an absolute
+# FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (the legacy FAROS_E2E_GCP_*
+# names remain accepted by the Make targets).
+local_resource(
+    'config-connector-install',
+    cmd=('FAROS_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
+         'make config-connector-install').format(runtime=KIND_HOST_KUBECONFIG),
+    deps=[
+        '.env',
+        'providers/infrastructure/contrib/config-connector/install.sh',
+    ],
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'config-connector-enable',
+    cmd=('FAROS_E2E_TILT_KUBECONFIG={admin} ' +
+         'FAROS_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
+         'FAROS_KCC_KCP_SERVER={server} ' +
+         'make config-connector-enable').format(
+             admin=KCP_ADMIN_KUBECONFIG, runtime=KIND_HOST_KUBECONFIG,
+             server=KCP_ADMIN_SERVER),
+    deps=[
+        '.env',
+        'providers/infrastructure/contrib/config-connector/enable.sh',
+        'providers/infrastructure/contrib/config-connector/pubsub-template.yaml',
+    ],
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['providers-kro'],
+)
+
+local_resource(
+    'config-connector-smoke',
+    cmd=('FAROS_E2E_TILT_KUBECONFIG={admin} ' +
+         'FAROS_E2E_TILT_RUNTIME_KUBECONFIG={runtime} ' +
+         'make config-connector-smoke').format(
+             admin=KCP_ADMIN_KUBECONFIG, runtime=KIND_HOST_KUBECONFIG),
+    deps=[
+        '.env',
+        'providers/infrastructure/contrib/config-connector/pubsub-template.yaml',
+        'test/e2e/suites/tiltcluster/config_connector_gcp_test.go',
+    ],
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    labels=['providers-kro'],
+)
+
 # --- providers-code (git repository management) ---
 # Host binary on :8083, same shape as quickstart/infrastructure. register/init/
 # unregister override KROMC_KCP_KUBECONFIG / KROMC_KCP_SERVER to the in-cluster

@@ -929,6 +929,19 @@ e2e-edges-connectivity: build-hub build-edges-provider build-faros certs ## Run 
 E2E_TILT_TIMEOUT ?= 10m
 E2E_TILT_HUB_URL ?= https://localhost:9443
 E2E_TILT_INFRA_URL ?= http://localhost:8082
+E2E_TILT_KCP_KUBECONFIG ?= $(CURDIR)/tilt-frontproxy.kubeconfig
+E2E_TILT_RUNTIME_KUBECONFIG ?= $(CURDIR)/.faros-cluster.kubeconfig
+E2E_TILT_OPERATOR_NAMESPACE ?= faros-infrastructure-operator
+E2E_TILT_CONFIG_CONNECTOR_TIMEOUT ?= 30m
+KCC_INSTALL_SCRIPT ?= providers/infrastructure/contrib/config-connector/install.sh
+KCC_ENABLE_SCRIPT ?= providers/infrastructure/contrib/config-connector/enable.sh
+KCC_TEMPLATE_FILE ?= providers/infrastructure/contrib/config-connector/pubsub-template.yaml
+KCC_PROVIDER_WORKSPACE ?= root:faros:providers:infrastructure
+# Public dev configuration uses FAROS_CONFIG_CONNECTOR_GCP_*; keep the older
+# FAROS_E2E_GCP_* names as an explicit compatibility fallback for callers that
+# invoke these targets from an exported environment.
+KCC_GCP_PROJECT ?= $(or $(FAROS_CONFIG_CONNECTOR_GCP_PROJECT),$(FAROS_E2E_GCP_PROJECT))
+KCC_GCP_CREDENTIALS_FILE ?= $(or $(FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE),$(FAROS_E2E_GCP_CREDENTIALS_FILE))
 .PHONY: e2e-tilt-cluster
 e2e-tilt-cluster: ## Run Tilt-cluster provider e2e (requires `make tilt-cluster` running)
 	@curl -sk --max-time 5 -o /dev/null "$(E2E_TILT_HUB_URL)/healthz" || { \
@@ -940,6 +953,134 @@ e2e-tilt-cluster: ## Run Tilt-cluster provider e2e (requires `make tilt-cluster`
 		exit 1; \
 	}
 	go test ./test/e2e/suites/tiltcluster/... -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Opt-in demonstration of using Config Connector CRDs with the infrastructure
+## operator's KRO runtime. The test creates only a minimal StorageBucket CRD; it
+## does not install Config Connector or contact GCP. Override the runtime
+## kubeconfig or operator namespace when using a non-default Tilt stack.
+.PHONY: e2e-tilt-cluster-config-connector
+e2e-tilt-cluster-config-connector: ## Run the opt-in Config Connector composition e2e
+	@test -f "$(E2E_TILT_KCP_KUBECONFIG)" || { \
+		echo "kcp front-proxy kubeconfig not found at $(E2E_TILT_KCP_KUBECONFIG); bring the stack up first with: make tilt-cluster"; \
+		exit 1; \
+	}
+	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { \
+		echo "runtime kubeconfig not found at $(E2E_TILT_RUNTIME_KUBECONFIG); bring the stack up first with: make tilt-cluster"; \
+		exit 1; \
+	}
+	@curl -sk --max-time 5 -o /dev/null "$(E2E_TILT_HUB_URL)/healthz" || { \
+		echo "hub not reachable at $(E2E_TILT_HUB_URL); bring the stack up first in another terminal: make tilt-cluster"; \
+		exit 1; \
+	}
+	@curl -s --max-time 5 -o /dev/null "$(E2E_TILT_INFRA_URL)/healthz" || { \
+		echo "infrastructure provider not reachable at $(E2E_TILT_INFRA_URL); is 'make tilt-cluster' fully up?"; \
+		exit 1; \
+	}
+	FAROS_E2E_CONFIG_CONNECTOR_COMPOSITION=1 \
+	FAROS_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
+	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	FAROS_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
+		go test ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorComposition$$' -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Real-cloud extension of the infrastructure-operator Config Connector
+## demonstration. Installation imports the caller-supplied service-account JSON
+## into the runtime cluster, installs a checksum-pinned Config Connector
+## operator, and waits for the PubSubTopic API. The run target then proves
+## Pub/Sub creation and deletion independently via Google's REST API. Both
+## targets are deliberately separate from the fake-CRD composition test above.
+.PHONY: e2e-tilt-cluster-config-connector-gcp-install e2e-tilt-cluster-config-connector-gcp-run e2e-tilt-cluster-config-connector-gcp
+e2e-tilt-cluster-config-connector-gcp-install: ## Install pinned Config Connector for the real Pub/Sub E2E
+	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { \
+		echo "runtime kubeconfig not found at $(E2E_TILT_RUNTIME_KUBECONFIG); bring the stack up first with: make tilt-cluster"; \
+		exit 1; \
+	}
+	@test -n "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (or legacy FAROS_E2E_GCP_CREDENTIALS_FILE) is required"; exit 1; }
+	@test -f "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "Config Connector credentials file does not exist"; exit 1; }
+	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	FAROS_E2E_GCP_CREDENTIALS_FILE="$(KCC_GCP_CREDENTIALS_FILE)" \
+		$(KCC_INSTALL_SCRIPT)
+
+## Enable the checked-in Pub/Sub Template in the infrastructure provider
+## workspace. This does not install Config Connector and is intentionally a
+## separate manual action so ordinary Tilt startup remains cloud-neutral.
+.PHONY: e2e-tilt-cluster-config-connector-enable
+e2e-tilt-cluster-config-connector-enable: ## Apply and wait for the opt-in Pub/Sub Template/APIExport/KRO graph
+	@test -f "$(E2E_TILT_KCP_KUBECONFIG)" || { \
+		echo "kcp front-proxy kubeconfig not found at $(E2E_TILT_KCP_KUBECONFIG); bring the stack up first with: make tilt-cluster"; \
+		exit 1; \
+	}
+	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { \
+		echo "runtime kubeconfig not found at $(E2E_TILT_RUNTIME_KUBECONFIG); bring the stack up first with: make tilt-cluster"; \
+		exit 1; \
+	}
+	FAROS_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
+	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	FAROS_KCC_KCP_SERVER="$(KCC_KCP_SERVER)" \
+	FAROS_KCC_PROVIDER_WORKSPACE="$(KCC_PROVIDER_WORKSPACE)" \
+	FAROS_KCC_TEMPLATE_FILE="$(KCC_TEMPLATE_FILE)" \
+		$(KCC_ENABLE_SCRIPT)
+
+e2e-tilt-cluster-config-connector-gcp-run: ## Create then delete a real Pub/Sub topic through KRO and Config Connector
+	@test -f "$(E2E_TILT_KCP_KUBECONFIG)" || { \
+		echo "kcp front-proxy kubeconfig not found at $(E2E_TILT_KCP_KUBECONFIG); bring the stack up first with: make tilt-cluster"; \
+		exit 1; \
+	}
+	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { \
+		echo "runtime kubeconfig not found at $(E2E_TILT_RUNTIME_KUBECONFIG); bring the stack up first with: make tilt-cluster"; \
+		exit 1; \
+	}
+	@test -n "$(KCC_GCP_PROJECT)" || { echo "FAROS_CONFIG_CONNECTOR_GCP_PROJECT (or legacy FAROS_E2E_GCP_PROJECT) is required"; exit 1; }
+	@test -n "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (or legacy FAROS_E2E_GCP_CREDENTIALS_FILE) is required"; exit 1; }
+	@test -f "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "Config Connector credentials file does not exist"; exit 1; }
+	FAROS_E2E_CONFIG_CONNECTOR_GCP=1 \
+	FAROS_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
+	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	FAROS_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
+	FAROS_E2E_GCP_PROJECT="$(KCC_GCP_PROJECT)" \
+	FAROS_E2E_GCP_CREDENTIALS_FILE="$(KCC_GCP_CREDENTIALS_FILE)" \
+		go test ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorGCPPubSubLifecycle$$' -v -timeout $(E2E_TILT_CONFIG_CONNECTOR_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Smoke only the already-enabled stable Pub/Sub Template. Installation and
+## Template enablement are separate manual actions; this target creates and
+## deletes only the test-owned cloud topic and its tenant/KRO objects.
+.PHONY: e2e-tilt-cluster-config-connector-smoke e2e-tilt-cluster-config-connector-gcp-smoke
+e2e-tilt-cluster-config-connector-smoke: ## Create then delete one real Pub/Sub topic using the enabled Template
+	@test -f "$(E2E_TILT_KCP_KUBECONFIG)" || { \
+		echo "kcp front-proxy kubeconfig not found at $(E2E_TILT_KCP_KUBECONFIG); bring the stack up first with: make tilt-cluster"; \
+		exit 1; \
+	}
+	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { \
+		echo "runtime kubeconfig not found at $(E2E_TILT_RUNTIME_KUBECONFIG); bring the stack up first with: make tilt-cluster"; \
+		exit 1; \
+	}
+	@test -n "$(KCC_GCP_PROJECT)" || { echo "FAROS_CONFIG_CONNECTOR_GCP_PROJECT (or legacy FAROS_E2E_GCP_PROJECT) is required"; exit 1; }
+	@test -n "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (or legacy FAROS_E2E_GCP_CREDENTIALS_FILE) is required"; exit 1; }
+	@test -f "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "Config Connector credentials file does not exist"; exit 1; }
+	FAROS_E2E_CONFIG_CONNECTOR_GCP=1 \
+	FAROS_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
+	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	FAROS_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
+	FAROS_E2E_GCP_PROJECT="$(KCC_GCP_PROJECT)" \
+	FAROS_E2E_GCP_CREDENTIALS_FILE="$(KCC_GCP_CREDENTIALS_FILE)" \
+		go test ./test/e2e/suites/tiltcluster/... -run '^TestConfigConnectorGCPPubSubSmoke$$' -v -timeout $(E2E_TILT_CONFIG_CONNECTOR_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+e2e-tilt-cluster-config-connector-gcp-smoke: e2e-tilt-cluster-config-connector-smoke
+
+.PHONY: config-connector-install config-connector-enable config-connector-smoke
+config-connector-install: e2e-tilt-cluster-config-connector-gcp-install
+config-connector-enable: e2e-tilt-cluster-config-connector-enable
+config-connector-smoke: e2e-tilt-cluster-config-connector-smoke
+
+e2e-tilt-cluster-config-connector-gcp: ## Install Config Connector and run the real Pub/Sub create/delete E2E
+	@test -n "$(KCC_GCP_PROJECT)" || { echo "FAROS_CONFIG_CONNECTOR_GCP_PROJECT (or legacy FAROS_E2E_GCP_PROJECT) is required"; exit 1; }
+	@test -n "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "FAROS_CONFIG_CONNECTOR_GCP_CREDENTIALS_FILE (or legacy FAROS_E2E_GCP_CREDENTIALS_FILE) is required"; exit 1; }
+	@test -f "$(KCC_GCP_CREDENTIALS_FILE)" || { echo "Config Connector credentials file does not exist"; exit 1; }
+	@test -f "$(E2E_TILT_KCP_KUBECONFIG)" || { echo "kcp front-proxy kubeconfig is required before Config Connector is installed"; exit 1; }
+	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { echo "runtime kubeconfig is required before Config Connector is installed"; exit 1; }
+	@curl -sk --max-time 5 -o /dev/null "$(E2E_TILT_HUB_URL)/healthz" || { echo "hub must be healthy before Config Connector is installed"; exit 1; }
+	@curl -s --max-time 5 -o /dev/null "$(E2E_TILT_INFRA_URL)/healthz" || { echo "infrastructure provider must be healthy before Config Connector is installed"; exit 1; }
+	$(MAKE) e2e-tilt-cluster-config-connector-gcp-install
+	$(MAKE) e2e-tilt-cluster-config-connector-gcp-run
 
 ## Create quickstart's APIExport (+ endpoint slice + bind grant) inside its
 ## provider workspace, so tenants can Enable it. The Provider controller already
