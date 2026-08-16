@@ -233,6 +233,17 @@ func initiateConnection(ctx context.Context, wsURL string, token string, tlsConf
 
 	wsConn, resp, err := dialer.DialContext(ctx, u.String(), header)
 	if err != nil {
+		// gorilla returns a non-nil resp when the upgrade was answered with
+		// something other than 101, and collapses every one of them into the
+		// same "bad handshake" error. Surface the status so a rejection by an
+		// intermediary (a proxy 403, a 502 with no origin behind it) is
+		// distinguishable from the hub genuinely refusing the agent's
+		// credentials — otherwise the only signal is an unattributable
+		// "websocket: bad handshake" in the journal.
+		if resp != nil {
+			return nil, nil, fmt.Errorf("WebSocket dial failed (hub returned HTTP %d %s): %w",
+				resp.StatusCode, http.StatusText(resp.StatusCode), err)
+		}
 		return nil, nil, fmt.Errorf("WebSocket dial failed: %w", err)
 	}
 

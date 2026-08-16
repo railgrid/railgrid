@@ -82,6 +82,19 @@ const (
 	HeartbeatInterval = 30 * time.Second
 )
 
+// heartbeatTimeout bounds a single heartbeat PATCH.
+//
+// Run() calls sendHeartbeat synchronously, so a request that never returns
+// wedges the whole reporter: heartbeats stop, tunnel-state transitions on the
+// channel stop being consumed, and the hub marks the Edge Disconnected while
+// the agent logs nothing. This deadline is defence in depth on top of the hub
+// client's own timeout — it keeps the loop alive even if a client is ever built
+// without one. It is deliberately shorter than HeartbeatInterval so a stalled
+// attempt cannot overlap the next tick.
+//
+// A var rather than a const so tests can shorten it.
+var heartbeatTimeout = 15 * time.Second
+
 // EdgeReporter sends heartbeats for an Edge resource.
 // It works for both EdgeTypeKubernetes and EdgeTypeServer.
 type EdgeReporter struct {
@@ -167,7 +180,10 @@ func (r *EdgeReporter) sendHeartbeat(ctx context.Context, logger klog.Logger) {
 		return
 	}
 
-	_, err = r.hubClient.Dynamic().Resource(r.gvr).Patch(ctx, r.edgeName,
+	patchCtx, cancel := context.WithTimeout(ctx, heartbeatTimeout)
+	defer cancel()
+
+	_, err = r.hubClient.Dynamic().Resource(r.gvr).Patch(patchCtx, r.edgeName,
 		types.MergePatchType, patchBytes,
 		metav1.PatchOptions{}, "status")
 	if err != nil {

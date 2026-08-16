@@ -244,6 +244,32 @@ const (
 	AgentTypeServer AgentType = "server"
 )
 
+// hubClientTimeout bounds every request the agent makes to the hub.
+//
+// Without it rest.Config.Timeout is zero, which means http.Client.Timeout is
+// zero, which means no deadline at all. When a proxy in front of the hub drops
+// the TCP connection half-open — Cloudflare does this to long-lived
+// connections, and the agent only ever notices via a later RST — an in-flight
+// request never returns. The heartbeat loop in pkg/agent/status is synchronous,
+// so one wedged request stops heartbeats permanently: the hub then flips the
+// Edge to Disconnected on staleHeartbeatThreshold while the agent logs nothing
+// at all, because the call it is blocked in never produced an error to log.
+const hubClientTimeout = 30 * time.Second
+
+// applyHubClientDefaults stamps the settings every hub client must have,
+// regardless of how its config was built. Call it on every *rest.Config that
+// talks to the hub; the token-exchange path rebuilds the config from scratch,
+// so a timeout set only at construction would be silently dropped on refresh.
+func applyHubClientDefaults(cfg *rest.Config) *rest.Config {
+	if cfg == nil {
+		return nil
+	}
+	if cfg.Timeout == 0 {
+		cfg.Timeout = hubClientTimeout
+	}
+	return cfg
+}
+
 // resolveType normalises a raw --type flag value to a canonical AgentType.
 func resolveType(raw string) (AgentType, error) {
 	switch raw {
@@ -460,6 +486,8 @@ func New(opts *Options) (*Agent, error) {
 	} else {
 		return nil, fmt.Errorf("hub URL or hub kubeconfig is required")
 	}
+
+	applyHubClientDefaults(hubConfig)
 
 	hubTLSConfig, err := rest.TLSConfigFor(hubConfig)
 	if err != nil {
@@ -730,6 +758,8 @@ func (a *Agent) refreshHubClientFromSavedKubeconfig() (*farosclient.Client, erro
 		newCfg.CAData = nil
 		newCfg.CAFile = ""
 	}
+	applyHubClientDefaults(newCfg)
+
 	dynClient, err := dynamic.NewForConfig(newCfg)
 	if err != nil {
 		return nil, fmt.Errorf("creating dynamic client from saved kubeconfig: %w", err)
