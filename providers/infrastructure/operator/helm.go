@@ -128,10 +128,17 @@ func EnsureKroRelease(ctx context.Context, runtimeKubeconfigPath string, kro v1a
 		return err
 	}
 
+	// --reset-values: without it, an upgrade that passes no --set flags
+	// silently REUSES the previous release's values — which is how the
+	// retired fork's image pin (kro-multicluster:v0.0.1-mc.7) survived the
+	// chart switch to upstream and kept the fork binary running. The
+	// desired values are always exactly "chart defaults + the CR's
+	// overrides below", never whatever the last release happened to carry.
 	args := []string{
 		"upgrade", "--install", kro.ReleaseName, kro.Chart,
 		"--version", kro.Version,
 		"--namespace", kro.Namespace, "--create-namespace",
+		"--reset-values",
 	}
 	// Image overrides are opt-in: the upstream chart's own defaults
 	// (registry.k8s.io/kro/kro at the chart's appVersion) are correct.
