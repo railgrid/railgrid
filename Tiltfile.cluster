@@ -1496,18 +1496,18 @@ local_resource(
 )
 
 # --- providers-kro ---
-# Management kro: installed INTO the same kind cluster kcp lives in (no
-# separate faros-kro cluster like the embedded Tiltfile uses). That way
-# kro reaches kcp via in-cluster Service DNS — no cross-kind networking.
-# The infrastructure provider on the host still reaches kro via the kind
+# Management kro: upstream kro installed INTO the same kind cluster kcp
+# lives in (no separate faros-kro cluster like the embedded Tiltfile
+# uses). kro is single-cluster — it never talks to kcp; the
+# infrastructure provider's instance controller bridges kcp → this
+# cluster, and the provider on the host reaches it via the kind
 # cluster's host-published apiserver (KIND_HOST_KUBECONFIG).
-# kro-mgmt-up is now MANUAL: the infrastructure-operator helm-installs +
-# patches kro itself. Kept as a fallback / for poking kro without the operator.
+# kro-mgmt-up is now MANUAL: the infrastructure-operator helm-installs
+# kro itself. Kept as a fallback / for poking kro without the operator.
 local_resource(
     'kro-mgmt-up',
-    cmd=('KRO_TARGET_KUBECONFIG={kc} KRO_TARGET_KIND_NAME={name} ' +
-         'make dev-kro-up-into').format(
-             kc=KIND_HOST_KUBECONFIG, name=cluster_name),
+    cmd=('KRO_TARGET_KUBECONFIG={kc} ' +
+         'make dev-kro-up-into').format(kc=KIND_HOST_KUBECONFIG),
     deps=[
         'providers/infrastructure/examples/rgds',
     ],

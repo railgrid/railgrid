@@ -34,6 +34,11 @@ import (
 // ProjectLabel attributes an instance back to its Project.
 const ProjectLabel = "app-studio.faros.sh/project"
 
+// TemplateLabel attributes an instance to its catalog Template, matching the
+// infrastructure provider's own convention so its portal/MCP listings group
+// instances correctly.
+const TemplateLabel = "faros.sh/template"
+
 // Provider Actions fields are platform-owned instance inputs. The prefix is
 // intentionally broader than the currently-known field list: a binding must
 // never be able to smuggle a future reserved Actions field into an instance.
@@ -490,9 +495,11 @@ func IsInvalidBinding(err error) bool {
 	return errors.As(err, &invalid)
 }
 
-// Desired builds the desired instance object for a binding. Returns the GVR
-// alongside so callers can address the right resource. Errors are
-// InvalidBindingError — the spec, not the world, is wrong.
+// Desired builds the desired instance object for a binding: the flattened
+// Instance shape, with the Project's template name under spec.template and
+// the binding values under spec.values. Returns the GVR alongside so callers
+// can address the right resource. Errors are InvalidBindingError — the spec,
+// not the world, is wrong.
 func Desired(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec) (*unstructured.Unstructured, schema.GroupVersionResource, error) {
 	gvr, err := GVR(binding.ResourceRef)
 	if err != nil {
@@ -506,8 +513,15 @@ func Desired(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpe
 	if name == "" {
 		return nil, schema.GroupVersionResource{}, &InvalidBindingError{Err: fmt.Errorf("provider binding %q has no resource name", binding.Name)}
 	}
-	spec := map[string]any{}
-	maps.Copy(spec, values)
+	templateName := ""
+	if p != nil && p.Spec.Template != nil {
+		templateName = strings.TrimSpace(p.Spec.Template.Name)
+	}
+	if templateName == "" {
+		return nil, schema.GroupVersionResource{}, &InvalidBindingError{Err: fmt.Errorf("provider binding %q: project names no template — spec.template is required on the instance", binding.Name)}
+	}
+	vals := map[string]any{}
+	maps.Copy(vals, values)
 	want := &unstructured.Unstructured{
 		Object: map[string]any{
 			"apiVersion": binding.ResourceRef.APIVersion,
@@ -515,10 +529,14 @@ func Desired(p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpe
 			"metadata": map[string]any{
 				"name": name,
 				"labels": map[string]any{
-					ProjectLabel: p.Name,
+					ProjectLabel:  p.Name,
+					TemplateLabel: templateName,
 				},
 			},
-			"spec": spec,
+			"spec": map[string]any{
+				"template": templateName,
+				"values":   vals,
+			},
 		},
 	}
 	if owner := OwnerRef(p); owner != nil {

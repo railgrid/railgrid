@@ -33,6 +33,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
 	"github.com/faroshq/provider-infrastructure/kro"
 )
 
@@ -240,11 +241,11 @@ func registerDevTools(srv *mcp.Server, deps Deps, ident identity) {
 	})
 }
 
-// resolveDevTarget authorizes the caller (tenant client), locates the instance
-// across template plurals, and returns its template's development contract.
-// Fails with actionable messages for every non-dev case: data plane off, no
-// such instance, template without a development block, instance not
-// provisioned in development mode.
+// resolveDevTarget authorizes the caller (tenant client), fetches the
+// instance, and returns its template's development contract. Fails with
+// actionable messages for every non-dev case: data plane off, no such
+// instance, template without a development block, instance not provisioned
+// in development mode.
 func resolveDevTarget(ctx context.Context, deps Deps, ident identity, instanceName string) (devTarget, error) {
 	if deps.DataPlane == nil {
 		return devTarget{}, fmt.Errorf("the development data plane is not available on this provider deployment")
@@ -260,7 +261,7 @@ func resolveDevTarget(ctx context.Context, deps Deps, ident identity, instanceNa
 	if err != nil {
 		return devTarget{}, fmt.Errorf("list templates: %w", err)
 	}
-	inst, err := getInstance(ctx, dyn, templates, instanceName)
+	inst, err := getInstance(ctx, dyn, instanceName)
 	if err != nil {
 		if err == kro.ErrInstanceNotFound {
 			return devTarget{}, fmt.Errorf("instance %q not found — provision it first (values.farosMode=\"development\")", instanceName)
@@ -285,7 +286,7 @@ func resolveDevTarget(ctx context.Context, deps Deps, ident identity, instanceNa
 	}
 	components := make(map[string]kro.TemplateDevelopmentComponent, len(tmpl.Development.Components))
 	maps.Copy(components, tmpl.Development.Components)
-	return devTarget{resource: tmpl.InstanceGVR.Resource, instance: inst, components: components}, nil
+	return devTarget{resource: infrav1alpha1.InstancesResource, instance: inst, components: components}, nil
 }
 
 // requireDevComponent validates a caller-supplied component name against the

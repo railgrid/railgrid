@@ -34,6 +34,7 @@ import (
 	"strconv"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -271,7 +272,11 @@ func (b *Backend) Run(ctx context.Context, _ *rest.Config) error {
 }
 
 // applyRGD creates or updates the RGD on the runtime cluster, preserving the
-// server-assigned resourceVersion on update so it's a compare-and-set.
+// server-assigned resourceVersion on update so it's a compare-and-set. An
+// update is only written when the desired spec or labels actually differ —
+// an unconditional update bumps the RGD's generation, which makes kro
+// re-reconcile every instance of the template (recreating includeWhen-gated
+// Jobs and the like) on every Template reconcile pass.
 func (b *Backend) applyRGD(ctx context.Context, rgd *unstructured.Unstructured) error {
 	existing, err := b.runtime.Resource(rgdGVR).Get(ctx, rgd.GetName(), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -283,6 +288,20 @@ func (b *Backend) applyRGD(ctx context.Context, rgd *unstructured.Unstructured) 
 	if err != nil {
 		return fmt.Errorf("get: %w", err)
 	}
+
+	existingSpec, _, _ := unstructured.NestedMap(existing.Object, "spec")
+	desiredSpec, _, _ := unstructured.NestedMap(rgd.Object, "spec")
+	labelsCurrent := true
+	for k, v := range rgd.GetLabels() {
+		if existing.GetLabels()[k] != v {
+			labelsCurrent = false
+			break
+		}
+	}
+	if labelsCurrent && equality.Semantic.DeepEqual(existingSpec, desiredSpec) {
+		return nil
+	}
+
 	rgd.SetResourceVersion(existing.GetResourceVersion())
 	if _, err := b.runtime.Resource(rgdGVR).Update(ctx, rgd, metav1.UpdateOptions{}); err != nil {
 		return fmt.Errorf("update: %w", err)

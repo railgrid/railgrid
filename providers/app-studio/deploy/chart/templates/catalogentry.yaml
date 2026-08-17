@@ -34,24 +34,10 @@ spec:
     # missing here is silently denied at reconcile.
     permissionClaims:
       # Infrastructure instances the Project reconciler lifecycles from a
-      # project's live bindings.
-      - resource: applications
-        group: infrastructure.faros.sh
-        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-        tenantScoped: true
-      - resource: simplewebapps
-        group: infrastructure.faros.sh
-        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-        tenantScoped: true
-      - resource: workers
-        group: infrastructure.faros.sh
-        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-        tenantScoped: true
-      - resource: searxngs
-        group: infrastructure.faros.sh
-        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-        tenantScoped: true
-      - resource: browsers
+      # project's live bindings, plus the Studio's shared searxng + browser —
+      # every template's instances are ONE flattened resource (product
+      # selected by spec.template), so one claim covers them all.
+      - resource: instances
         group: infrastructure.faros.sh
         verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
         tenantScoped: true

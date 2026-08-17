@@ -248,7 +248,7 @@ func (s *Server) observedPreviewAccess(ctx context.Context, c *asclient.Client, 
 	if err != nil || obj == nil {
 		return "", false
 	}
-	access, found, err := unstructured.NestedString(obj.Object, "spec", bindings.AccessField)
+	access, found, err := unstructured.NestedString(obj.Object, "spec", "values", bindings.AccessField)
 	if err != nil || !found {
 		return "", false
 	}

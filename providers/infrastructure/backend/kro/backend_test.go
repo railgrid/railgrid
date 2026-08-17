@@ -142,7 +142,7 @@ func TestBuildRGD(t *testing.T) {
 	assertNested("v1alpha1", "spec", "schema", "apiVersion")
 	assertNested("infrastructure.faros.sh", "spec", "schema", "group")
 	assertNested("RedisCache", "spec", "schema", "kind")
-	assertNested("Cluster", "spec", "schema", "scope")
+	assertNested("Namespaced", "spec", "schema", "scope")
 
 	resources, found, err := unstructured.NestedSlice(rgd.Object, "spec", "resources")
 	if err != nil || !found || len(resources) != 1 {

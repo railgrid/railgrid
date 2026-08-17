@@ -349,9 +349,11 @@ func searchRequest(ctx context.Context, conn *agentsv1alpha1.Connection, dp Data
 	}
 }
 
-// searxngResource is the plural the searxng Template publishes its instances
-// under. Overridable per connection for a differently-named template.
-const searxngResource = "searxngs"
+// searxngResource is the flattened infrastructure instance resource — every
+// template's instances (searxng included) are served as
+// instances.infrastructure.faros.sh. Overridable per connection for a
+// provider serving a different resource.
+const searxngResource = "instances"
 
 // dataPlaneSearchRequest addresses a searxng instance through the
 // infrastructure provider's data plane:

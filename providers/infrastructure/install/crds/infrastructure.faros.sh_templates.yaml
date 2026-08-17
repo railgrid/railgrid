@@ -682,8 +682,8 @@ spec:
               conditions:
                 description: |-
                   Conditions follows the standard Kubernetes conditions pattern.
-                  The aggregate Ready condition is True iff Registered and
-                  Backend both succeed.
+                  The aggregate Ready condition is True iff schema validation and
+                  the backend both succeed.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -748,18 +748,6 @@ spec:
                   Drives the standard "is the status fresh?" check.
                 format: int64
                 type: integer
-              registered:
-                description: |-
-                  Registered reflects the platform-side wiring the controller
-                  owns. CRDEstablished flips to true once the per-template CRD
-                  has the Established condition; SchemaInAPIExport flips once
-                  the schema is listed in APIExport.spec.schemas.
-                properties:
-                  crdEstablished:
-                    type: boolean
-                  schemaInAPIExport:
-                    type: boolean
-                type: object
             type: object
         required:
         - spec

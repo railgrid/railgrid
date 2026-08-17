@@ -98,16 +98,15 @@ go build -o bin/faros-hub ./cmd/faros-hub
 #                     triggers full teardown of the sub-workspace)
 #
 # The kro group adds two more for the backing infrastructure:
-#   kro-mgmt-up    builds the kind cluster + helm-installs kro +
-#                  applies seed RGDs (see providers/infrastructure/
-#                  examples/rgds/). Auto-runs at `tilt up`.
+#   kro-mgmt-up    builds the kind cluster + helm-installs UPSTREAM kro
+#                  (single-cluster; the provider's instance controller
+#                  bridges kcp → this cluster). Auto-runs at `tilt up`.
 #   kro-mgmt-down  manual ▶ to tear down (kind delete cluster).
 #
 # Wiring: the `infrastructure` provider resource_deps on `kro-mgmt-up`
-# so the provider starts AFTER the kro management cluster is reachable
-# and the seed RGDs are applied. The provider's `make run-...` target
-# auto-detects the .faros-kro.kubeconfig file and passes it as
-# KRO_KUBECONFIG, so the catalog UI shows the real seeded RGDs.
+# so the provider starts AFTER the kro management cluster is reachable.
+# The provider's `make run-...` target auto-detects the
+# .faros-kro.kubeconfig file and passes it as KRO_KUBECONFIG.
 # ---------------------------------------------------------------------------
 
 # --- providers-quickstart ---
@@ -561,8 +560,8 @@ local_resource(
 
 # --- providers-kro ---
 # Management kro cluster: a kind cluster running upstream kro from
-# oci://ghcr.io/kro-run/kro/kro plus the sample RGDs under
-# providers/infrastructure/examples/rgds/. The first run pulls
+# oci://registry.k8s.io/kro/charts/kro (single-cluster — the provider's
+# instance controller bridges kcp → this cluster). The first run pulls
 # images and bootstraps the cluster (~30–60s on a clean machine);
 # subsequent runs short-circuit when `kind get clusters` matches.
 local_resource(

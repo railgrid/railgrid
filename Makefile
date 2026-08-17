@@ -1,6 +1,6 @@
 .PHONY: sync-portalkit verify-portalkit
 .PHONY: build-access-proxy docker-build-access-proxy
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-console-dev-key verify-app-studio-preview-console-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-vibe-studio-provider build-vibe-studio-provider-portal vibe-studio-db-up vibe-studio-db-down run-provider-vibe-studio install-provider-vibe-studio init-provider-vibe-studio uninstall-provider-vibe-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks test-databricks-provider-chart dev-kro-up dev-kro-down dev-kro-seed dev-kro-register-self e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-console-dev-key verify-app-studio-preview-console-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-vibe-studio-provider build-vibe-studio-provider-portal vibe-studio-db-up vibe-studio-db-down run-provider-vibe-studio install-provider-vibe-studio init-provider-vibe-studio uninstall-provider-vibe-studio build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks test-databricks-provider-chart dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -263,6 +263,7 @@ codegen-infrastructure-provider: $(CONTROLLER_GEN) ## Codegen for the infrastruc
 	# files first so deleted platform APIs cannot remain installed accidentally.
 	find providers/infrastructure/install/crds -maxdepth 1 -type f -name '*.yaml' -delete
 	cp providers/infrastructure/config/crds/infrastructure.faros.sh_templates.yaml \
+	   providers/infrastructure/config/crds/infrastructure.faros.sh_instances.yaml \
 	   providers/infrastructure/install/crds/
 	./hack/ensure-boilerplate.sh
 
@@ -1492,9 +1493,6 @@ INFRA_OPERATOR_NS ?= faros-infrastructure-operator
 INFRA_OPERATOR_PROVIDER_KC ?= $(KROMC_KCP_KUBECONFIG)
 INFRA_OPERATOR_RUNTIME_KC ?= $(KRO_KIND_KUBECONFIG)
 INFRA_OPERATOR_KIND_NAME ?= $(KRO_KIND_NAME)
-INFRA_OPERATOR_SELF_KC ?= $(KCP_DATA_DIR)/kro-self.kubeconfig
-INFRA_OPERATOR_HOSTALIASES_IP ?= 10.96.2.2
-INFRA_OPERATOR_HOSTALIASES_NAMES ?= kcp.localhost,root.kcp.localhost,theseus.kcp.localhost
 INFRA_OPERATOR_CRD ?= providers/infrastructure/config/crds/infrastructure.faros.sh_infrastructureproviders.yaml
 
 run-provider-infrastructure-controller: build-infrastructure-provider app-studio-preview-console-dev-key ## Apply the operator CRD/Secrets/CR into the runtime cluster and run the controller (dev)
@@ -1503,16 +1501,11 @@ run-provider-infrastructure-controller: build-infrastructure-provider app-studio
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl create namespace $(INFRA_OPERATOR_NS) --dry-run=client -o yaml | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl -n $(INFRA_OPERATOR_NS) create secret generic provider-kubeconfig --from-file=kubeconfig=$(INFRA_OPERATOR_PROVIDER_KC) --dry-run=client -o yaml | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl -n $(INFRA_OPERATOR_NS) create secret generic runtime-kubeconfig --from-file=kubeconfig=$(INFRA_OPERATOR_RUNTIME_KC) --dry-run=client -o yaml | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
-	@# kind-internal kubeconfig for the kro local-runtime self-member.
-	kind get kubeconfig --internal --name $(INFRA_OPERATOR_KIND_NAME) > $(INFRA_OPERATOR_SELF_KC)
-	@printf 'apiVersion: infrastructure.faros.sh/v1alpha1\nkind: InfrastructureProvider\nmetadata:\n  name: infrastructure\n  namespace: %s\nspec:\n  providerWorkspace: %s\n  providerKubeconfigSecret:\n    name: provider-kubeconfig\n  runtimeKubeconfigSecret:\n    name: runtime-kubeconfig\n  kro:\n    chart: %s\n    version: %s\n    image:\n      repository: %s\n      tag: %s\n  provider:\n    image:\n      repository: ghcr.io/faroshq/faros-infrastructure-provider\n      tag: dev\n' "$(INFRA_OPERATOR_NS)" "$(INFRASTRUCTURE_WORKSPACE_PATH)" "$(KRO_CHART)" "$(KRO_CHART_VERSION)" "$(KRO_IMAGE_REPO)" "$(KRO_IMAGE_TAG)" | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
+	@printf 'apiVersion: infrastructure.faros.sh/v1alpha1\nkind: InfrastructureProvider\nmetadata:\n  name: infrastructure\n  namespace: %s\nspec:\n  providerWorkspace: %s\n  providerKubeconfigSecret:\n    name: provider-kubeconfig\n  runtimeKubeconfigSecret:\n    name: runtime-kubeconfig\n  kro:\n    chart: %s\n    version: %s\n  provider:\n    image:\n      repository: ghcr.io/faroshq/faros-infrastructure-provider\n      tag: dev\n' "$(INFRA_OPERATOR_NS)" "$(INFRASTRUCTURE_WORKSPACE_PATH)" "$(KRO_CHART)" "$(KRO_CHART_VERSION)" | KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) kubectl apply -f -
 	@echo "Running infrastructure operator controller (KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC), skip-serve)"
 	KUBECONFIG=$(INFRA_OPERATOR_RUNTIME_KC) \
 	INFRASTRUCTURE_WORKSPACE_PATH=$(INFRASTRUCTURE_WORKSPACE_PATH) \
 	INFRASTRUCTURE_OPERATOR_SKIP_SERVE=true \
-	INFRASTRUCTURE_KRO_HOSTALIASES_IP=$(INFRA_OPERATOR_HOSTALIASES_IP) \
-	INFRASTRUCTURE_KRO_HOSTALIASES_NAMES=$(INFRA_OPERATOR_HOSTALIASES_NAMES) \
-	INFRASTRUCTURE_KRO_SELF_CLUSTER_KUBECONFIG=$(INFRA_OPERATOR_SELF_KC) \
 	FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS="$$(cat "$(APP_STUDIO_PREVIEW_CONSOLE_DEV_JWKS)")" \
 		$(BINDIR)/infrastructure-provider controller
 
@@ -2167,29 +2160,21 @@ helm-undeploy-provider-infrastructure: ## (experimental) helm uninstall the infr
 	-KUBECONFIG=$(KRO_KIND_KUBECONFIG) helm uninstall infrastructure -n $(INFRASTRUCTURE_NAMESPACE)
 
 # --- Management kro cluster (backend for the infrastructure provider) ---
-# Brings up a dedicated kind cluster running the faroshq/kro-multicluster
-# fork (image + chart published to ghcr.io/faroshq/kro-multicluster/*),
-# configured for multicluster mode per the fork's docs/multicluster-setup.md:
+# Brings up a dedicated kind cluster running UPSTREAM kro
+# (oci://registry.k8s.io/kro/charts/kro), single-cluster: with the
+# flattened Instance kind, tenants author instances in kcp and the
+# infrastructure provider's instance controller materializes the
+# per-template kro CRs on this cluster — kro never talks to kcp, so
+# the retired faroshq/kro-multicluster fork is no longer used.
 #
-#   - --enable-multicluster flag turns on the discovery loop
-#   - cluster kubeconfigs are stored as Secrets in $(KRO_NAMESPACE),
-#     labeled kro.run/cluster=true; key "kubeconfig" holds the YAML
-#   - the kind cluster is registered AS A MEMBER OF ITSELF so kro
-#     reconciles instances back into the same cluster (single-node
-#     multicluster — turnkey for dev without standing up two clusters)
-#
-# Seeds the cluster with the sample ResourceGraphDefinitions under
-# providers/infrastructure/examples/rgds/. The faros infrastructure
-# provider points at this cluster via KRO_KUBECONFIG so the catalog UI
-# shows real templates and provision materializes real Deployments /
+# The faros infrastructure provider points at this cluster via
+# KRO_KUBECONFIG so provisioning materializes real Deployments /
 # Services.
 #
 KRO_KIND_NAME ?= faros-kro
 KRO_KIND_KUBECONFIG ?= $(CURDIR)/.faros-kro.kubeconfig
-KRO_CHART ?= oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro
-KRO_CHART_VERSION ?= v0.0.1-mc.7
-KRO_IMAGE_REPO ?= ghcr.io/faroshq/kro-multicluster/kro
-KRO_IMAGE_TAG ?= v0.0.1-mc.7
+KRO_CHART ?= oci://registry.k8s.io/kro/charts/kro
+KRO_CHART_VERSION ?= 0.9.3
 KRO_NAMESPACE ?= kro-system
 KRO_SEED_DIR ?= providers/infrastructure/examples/rgds
 
@@ -2201,10 +2186,10 @@ E2E_KRO_KIND_NAME ?= faros-kro-e2e
 E2E_KRO_KUBECONFIG ?= $(CURDIR)/.faros-kro-e2e.kubeconfig
 GATEWAY_API_VERSION ?= v1.2.1
 
-## Bring up the management kro cluster + install kro (fork w/ multicluster) +
-## register the cluster as a self-member + seed RGDs. Idempotent: re-running
-## just helm-upgrades the chart and re-applies the RGDs.
-dev-kro-up: ## Bring up the faros-kro kind cluster + install kro (multicluster) + apply seed RGDs
+## Bring up the management kro cluster + install upstream kro. Idempotent:
+## re-running just helm-upgrades the chart (with an explicit CRD apply —
+## helm never upgrades crds/-dir CRDs).
+dev-kro-up: ## Bring up the faros-kro kind cluster + install upstream kro
 	@command -v kind >/dev/null || { echo "kind not found; install: brew install kind"; exit 1; }
 	@command -v helm >/dev/null || { echo "helm not found; install: brew install helm"; exit 1; }
 	@if ! kind get clusters | grep -qx "$(KRO_KIND_NAME)"; then \
@@ -2214,50 +2199,20 @@ dev-kro-up: ## Bring up the faros-kro kind cluster + install kro (multicluster) 
 		echo ">>> kind cluster $(KRO_KIND_NAME) already exists"; \
 		kind get kubeconfig --name $(KRO_KIND_NAME) > $(KRO_KIND_KUBECONFIG); \
 	fi
-	@# Pre-create the namespace + placeholder kcp-kubeconfig Secret BEFORE
-	@# helm install. The chart's kro Deployment mounts this Secret at
-	@# /etc/kro/kcp/kubeconfig — without it, the pod gets stuck in
-	@# ContainerCreating ("secret kcp-kubeconfig not found") and the
-	@# `helm upgrade --wait` times out. The Secret's content is a stub;
-	@# `make init-provider-infrastructure` later overwrites it with the
-	@# real minted kubeconfig and bounces the kro pod to pick it up.
-	@echo ">>> ensuring $(KRO_NAMESPACE) namespace + placeholder kcp-kubeconfig Secret"
-	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl create namespace $(KRO_NAMESPACE) \
-		--dry-run=client -o yaml | KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f -
-	@# --from-literal needs a value; "pending-init" is human-readable
-	@# enough that anyone inspecting the Secret pre-init knows it's not
-	@# the real thing.
-	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(KRO_NAMESPACE) create secret generic kcp-kubeconfig \
-		--from-literal=kubeconfig=pending-init \
-		--dry-run=client -o yaml | KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f -
-	@echo ">>> installing kro (fork, kcp-apiexport mode) into $(KRO_NAMESPACE)"
-	@# image.repository/tag pin the fork's controller image; the chart's
-	@# default ${VERSION} placeholder doesn't resolve outside the release
-	@# pipeline. We use the kcp-apiexport provider (mc.3+) so kro reads
-	@# the APIExportEndpointSlice in the provider workspace directly
-	@# instead of watching labeled Secrets — that's the cleaner kcp-aware
-	@# topology. Wiring:
-	@#   multicluster.kcp.kubeconfigSecret = kcp-kubeconfig (written by
-	@#     install.SeedKroCluster in init mode; mounted at /etc/kro/kcp/kubeconfig)
-	@#   multicluster.kcp.apiExportEndpointSlice = infrastructure (created by
-	@#     install.PlatformAPIExportEndpointSlice in init mode; matches
-	@#     install.APIExportEndpointSliceName)
-	@# Drop --wait because the kro pod won't become Ready until init has
-	@# replaced the placeholder kubeconfig and bounced it — but helm
-	@# install itself only needs to succeed (resources applied).
+	@# helm only installs crds/-dir CRDs on FIRST install; apply them
+	@# explicitly so chart upgrades (fork → upstream, version bumps) carry
+	@# CRD schema changes too. Pull+untar rather than `helm show crds`: some
+	@# helm versions print OCI pull chatter on stdout, corrupting the stream.
+	@echo ">>> applying kro chart CRDs ($(KRO_CHART_VERSION))"
+	@rm -rf .kro-chart-tmp && mkdir -p .kro-chart-tmp
+	helm pull $(KRO_CHART) --version $(KRO_CHART_VERSION) --untar --untardir .kro-chart-tmp
+	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f .kro-chart-tmp/kro/crds/
+	@rm -rf .kro-chart-tmp
+	@echo ">>> installing upstream kro into $(KRO_NAMESPACE)"
 	KUBECONFIG=$(KRO_KIND_KUBECONFIG) helm upgrade --install kro $(KRO_CHART) \
 		--version $(KRO_CHART_VERSION) \
 		--namespace $(KRO_NAMESPACE) --create-namespace \
-		--set image.repository=$(KRO_IMAGE_REPO) \
-		--set image.tag=$(KRO_IMAGE_TAG) \
-		--set multicluster.enabled=true \
-		--set multicluster.provider=kcp-apiexport \
-		--set multicluster.kcp.kubeconfigSecret=kcp-kubeconfig \
-		--set multicluster.kcp.apiExportEndpointSlice=infrastructure \
-		--set controller.deployToLocalRuntime=true \
-		--timeout 5m
-	@echo ">>> kro Deployment created; pod will become Ready after \`make init-provider-infrastructure\` writes the real kcp-kubeconfig Secret"
-	@$(MAKE) dev-kro-register-self
+		--wait --timeout 5m
 	@# dev-kro-seed intentionally NOT run here. The legacy RGDs under
 	@# providers/infrastructure/examples/rgds/ use group "kro.run" (the
 	@# pre-Template prototype) and get watched by kro on every engaged
@@ -2270,24 +2225,6 @@ dev-kro-up: ## Bring up the faros-kro kind cluster + install kro (multicluster) 
 	@echo ">>> kro management cluster ready"
 	@echo "    kubeconfig: $(KRO_KIND_KUBECONFIG)"
 	@echo "    point the provider at it: export KRO_KUBECONFIG=$(KRO_KIND_KUBECONFIG)"
-
-## Register the kind cluster as a member of itself by writing its INTERNAL
-## kubeconfig (the one with the docker-network address kro pods can reach,
-## not 127.0.0.1) as a labeled Secret kro watches.
-dev-kro-register-self: ## Create the self-member Secret (labeled kro.run/cluster=true)
-	@test -f $(KRO_KIND_KUBECONFIG) || { \
-		echo "no kubeconfig at $(KRO_KIND_KUBECONFIG); run 'make dev-kro-up' first"; \
-		exit 1; \
-	}
-	@echo ">>> writing self-member Secret (in-cluster kubeconfig)"
-	@INTERNAL_KUBECONFIG=$$(kind get kubeconfig --internal --name $(KRO_KIND_NAME)); \
-	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(KRO_NAMESPACE) \
-		create secret generic self-cluster \
-		--from-literal=kubeconfig="$$INTERNAL_KUBECONFIG" \
-		--dry-run=client -o yaml | \
-	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f -
-	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl -n $(KRO_NAMESPACE) \
-		label secret self-cluster kro.run/cluster=true --overwrite
 
 ## Apply / re-apply the sample RGDs under $(KRO_SEED_DIR) to the
 ## management cluster. Useful while iterating on RGD authoring without
@@ -2318,11 +2255,14 @@ e2e-infrastructure-up: ## Bring up a throwaway kind cluster with Gateway API CRD
 	fi
 	@echo ">>> installing Gateway API CRDs ($(GATEWAY_API_VERSION)) — templates declare HTTPRoute/ReferenceGrant"
 	KUBECONFIG=$(E2E_KRO_KUBECONFIG) kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/$(GATEWAY_API_VERSION)/standard-install.yaml
-	@echo ">>> installing standalone kro (no kcp) into $(KRO_NAMESPACE)"
+	@echo ">>> installing upstream kro into $(KRO_NAMESPACE)"
+	@rm -rf .kro-chart-tmp && mkdir -p .kro-chart-tmp
+	helm pull $(KRO_CHART) --version $(KRO_CHART_VERSION) --untar --untardir .kro-chart-tmp
+	KUBECONFIG=$(E2E_KRO_KUBECONFIG) kubectl apply -f .kro-chart-tmp/kro/crds/
+	@rm -rf .kro-chart-tmp
 	KUBECONFIG=$(E2E_KRO_KUBECONFIG) helm upgrade --install kro $(KRO_CHART) \
 		--version $(KRO_CHART_VERSION) -n $(KRO_NAMESPACE) --create-namespace \
-		--set image.repository=$(KRO_IMAGE_REPO) --set image.tag=$(KRO_IMAGE_TAG) \
-		--set multicluster.enabled=false --wait --timeout 5m
+		--wait --timeout 5m
 
 e2e-infrastructure-down: ## Delete the infra-template e2e kind cluster + kubeconfig
 	-kind delete cluster --name $(E2E_KRO_KIND_NAME)
@@ -2346,44 +2286,24 @@ e2e-infrastructure: e2e-infrastructure-up e2e-infrastructure-run ## Bring up kro
 #                           (e.g. `kind get kubeconfig --name kcp-tilt`)
 #   KRO_TARGET_KIND_NAME    kind cluster name; used for the --internal
 #                           kubeconfig that kro writes into self-cluster Secret
-dev-kro-up-into: ## Install kro into an existing cluster ($KRO_TARGET_KUBECONFIG)
+dev-kro-up-into: ## Install upstream kro into an existing cluster ($KRO_TARGET_KUBECONFIG)
 	@command -v helm >/dev/null || { echo "helm not found; install: brew install helm"; exit 1; }
 	@test -n "$(KRO_TARGET_KUBECONFIG)" || { echo "KRO_TARGET_KUBECONFIG not set"; exit 1; }
-	@test -n "$(KRO_TARGET_KIND_NAME)" || { echo "KRO_TARGET_KIND_NAME not set"; exit 1; }
 	@test -f "$(KRO_TARGET_KUBECONFIG)" || { echo "no kubeconfig at $(KRO_TARGET_KUBECONFIG)"; exit 1; }
-	@echo ">>> ensuring $(KRO_NAMESPACE) + placeholder kcp-kubeconfig Secret in $(KRO_TARGET_KIND_NAME)"
-	KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl create namespace $(KRO_NAMESPACE) \
-		--dry-run=client -o yaml | KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl apply -f -
-	KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl -n $(KRO_NAMESPACE) create secret generic kcp-kubeconfig \
-		--from-literal=kubeconfig=pending-init \
-		--dry-run=client -o yaml | KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl apply -f -
-	@echo ">>> installing kro into $(KRO_NAMESPACE) (in-cluster mode, no --wait)"
+	@# kro runs single-cluster: the infrastructure provider's instance
+	@# controller bridges kcp → this cluster, so no kcp kubeconfig, no
+	@# multicluster values, no self-member Secret, no hostAliases.
+	@# helm only installs crds/-dir CRDs on FIRST install; apply them
+	@# explicitly so chart upgrades carry CRD schema changes too.
+	@echo ">>> applying kro chart CRDs ($(KRO_CHART_VERSION))"
+	helm show crds $(KRO_CHART) --version $(KRO_CHART_VERSION) | \
+		KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl apply -f -
+	@echo ">>> installing upstream kro into $(KRO_NAMESPACE)"
 	KUBECONFIG=$(KRO_TARGET_KUBECONFIG) helm upgrade --install kro $(KRO_CHART) \
 		--version $(KRO_CHART_VERSION) \
 		--namespace $(KRO_NAMESPACE) --create-namespace \
-		--set image.repository=$(KRO_IMAGE_REPO) \
-		--set image.tag=$(KRO_IMAGE_TAG) \
-		--set multicluster.enabled=true \
-		--set multicluster.provider=kcp-apiexport \
-		--set multicluster.kcp.kubeconfigSecret=kcp-kubeconfig \
-		--set multicluster.kcp.apiExportEndpointSlice=infrastructure \
-		--set controller.deployToLocalRuntime=true \
-		--timeout 5m
-	@# kro pods need to resolve kcp.localhost/root.kcp.localhost/theseus.kcp.localhost
-	@# (which the operator-issued kubeconfigs bake in) to the envoy gateway
-	@# ClusterIP 10.96.2.2 — same trick the hub uses. The chart doesn't expose
-	@# hostAliases as a value, so we patch the Deployment in place. Idempotent:
-	@# strategic merge replaces the list, so re-runs just re-write the same map.
-	@echo ">>> patching kro Deployment with hostAliases (kcp.localhost → envoy 10.96.2.2)"
-	KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl -n $(KRO_NAMESPACE) patch deploy kro --type=strategic -p '{"spec":{"template":{"spec":{"hostAliases":[{"ip":"10.96.2.2","hostnames":["kcp.localhost","root.kcp.localhost","theseus.kcp.localhost"]}]}}}}'
-	@echo ">>> registering $(KRO_TARGET_KIND_NAME) as self-member (using --internal kubeconfig)"
-	@INTERNAL_KUBECONFIG=$$(kind get kubeconfig --internal --name $(KRO_TARGET_KIND_NAME)); \
-	KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl -n $(KRO_NAMESPACE) create secret generic self-cluster \
-		--from-literal=kubeconfig="$$INTERNAL_KUBECONFIG" \
-		--dry-run=client -o yaml | KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl apply -f -
-	KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl -n $(KRO_NAMESPACE) \
-		label secret self-cluster kro.run/cluster=true --overwrite
-	@echo ">>> kro ready in $(KRO_TARGET_KIND_NAME):$(KRO_NAMESPACE); becomes Ready after init-provider-infrastructure writes the real kcp-kubeconfig"
+		--wait --timeout 5m
+	@echo ">>> kro ready in $(KRO_NAMESPACE)"
 	@echo "    point the provider: export KRO_KUBECONFIG=$(KRO_TARGET_KUBECONFIG)"
 
 dev-kro-down-into: ## Helm-uninstall kro from $KRO_TARGET_KUBECONFIG cluster

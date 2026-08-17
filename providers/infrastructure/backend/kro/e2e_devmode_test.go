@@ -117,11 +117,11 @@ func TestE2EDevelopmentMode(t *testing.T) {
 				inst := e2eInstance(t, tmpl, fmt.Sprintf("%016x", time.Now().UnixNano()))
 				createInstance(t, dyn, instGVR, inst)
 				t.Cleanup(func() {
-					_ = dyn.Resource(instGVR).Delete(context.Background(), inst.GetName(), metav1.DeleteOptions{})
+					_ = dyn.Resource(instGVR).Namespace(e2eInstanceNamespace).Delete(context.Background(), inst.GetName(), metav1.DeleteOptions{})
 				})
 				waitInstanceApplied(t, dyn, instGVR, inst.GetName(), tmpl.Name)
 
-				created, err := dyn.Resource(instGVR).Get(context.Background(), inst.GetName(), metav1.GetOptions{})
+				created, err := dyn.Resource(instGVR).Namespace(e2eInstanceNamespace).Get(context.Background(), inst.GetName(), metav1.GetOptions{})
 				if err != nil {
 					t.Fatalf("re-get instance: %v", err)
 				}
@@ -138,7 +138,7 @@ func TestE2EDevelopmentMode(t *testing.T) {
 				inst := e2eDevInstance(t, tmpl, fmt.Sprintf("%016x", time.Now().UnixNano()))
 				createInstance(t, dyn, instGVR, inst)
 				t.Cleanup(func() {
-					_ = dyn.Resource(instGVR).Delete(context.Background(), inst.GetName(), metav1.DeleteOptions{})
+					_ = dyn.Resource(instGVR).Namespace(e2eInstanceNamespace).Delete(context.Background(), inst.GetName(), metav1.DeleteOptions{})
 				})
 				// On failure, surface the instance conditions before the delete
 				// cleanup runs (cleanups are LIFO) — the only place kro explains
@@ -146,7 +146,7 @@ func TestE2EDevelopmentMode(t *testing.T) {
 				t.Cleanup(func() { dumpInstanceConditions(t, dyn, instGVR, inst.GetName()) })
 				waitInstanceApplied(t, dyn, instGVR, inst.GetName(), tmpl.Name)
 
-				created, err := dyn.Resource(instGVR).Get(context.Background(), inst.GetName(), metav1.GetOptions{})
+				created, err := dyn.Resource(instGVR).Namespace(e2eInstanceNamespace).Get(context.Background(), inst.GetName(), metav1.GetOptions{})
 				if err != nil {
 					t.Fatalf("re-get instance: %v", err)
 				}
@@ -343,7 +343,7 @@ func dumpInstanceConditions(t *testing.T, dyn dynamic.Interface, gvr schema.Grou
 	if !t.Failed() {
 		return
 	}
-	obj, err := dyn.Resource(gvr).Get(context.Background(), name, metav1.GetOptions{})
+	obj, err := dyn.Resource(gvr).Namespace(e2eInstanceNamespace).Get(context.Background(), name, metav1.GetOptions{})
 	if err != nil {
 		t.Logf("dump %s/%s: %v", gvr.Resource, name, err)
 		return
@@ -361,7 +361,7 @@ func waitDevStatus(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVersionR
 	deadline := time.Now().Add(e2eInstanceWait)
 	var lastMissing []string
 	for time.Now().Before(deadline) {
-		obj, err := dyn.Resource(gvr).Get(context.Background(), name, metav1.GetOptions{})
+		obj, err := dyn.Resource(gvr).Namespace(e2eInstanceNamespace).Get(context.Background(), name, metav1.GetOptions{})
 		if err != nil {
 			time.Sleep(e2ePollEvery)
 			continue

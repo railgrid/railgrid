@@ -219,9 +219,11 @@ func TestABootstrapSeedsCatalog(t *testing.T) {
 
 // TestBStubTemplateFullReconcile drives the Template controller's whole
 // chain end-to-end against real kcp, using the stub backend (registered
-// unconditionally) so no kro runtime is needed: Ready=True, per-template CRD
-// established in the workspace, APIExport.spec.resources entry added — and
-// all of it torn back down on delete.
+// unconditionally) so no kro runtime is needed. With the flattened Instance
+// kind a Template reconcile is API-surface-neutral: Ready=True comes from
+// schema validation + backend setup alone, NO per-template CRD is authored,
+// and APIExport.spec.resources never changes — that invariance is exactly
+// what this test pins.
 func TestBStubTemplateFullReconcile(t *testing.T) {
 	cl := providerWSClient(t)
 	const name = "e2e-stub-widget"
@@ -277,32 +279,34 @@ func TestBStubTemplateFullReconcile(t *testing.T) {
 		t.Fatal("stub template never reached Ready=True (is the controller manager running?)")
 	}
 
-	// Per-template CRD established in the provider workspace.
+	// The flattened API: a new Template must NOT author a per-template CRD
+	// and must NOT touch the APIExport's resource list.
 	crdName := "e2estubwidgets.infrastructure.faros.sh"
-	if _, err := cl.Resource(crdGVR).Get(ctxWithTimeout(t, 5*time.Second), crdName, metav1.GetOptions{}); err != nil {
-		t.Fatalf("per-template CRD %s missing: %v", crdName, err)
+	if _, err := cl.Resource(crdGVR).Get(ctxWithTimeout(t, 5*time.Second), crdName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("per-template CRD %s was authored (err=%v); Templates must be API-surface-neutral", crdName, err)
+	}
+	if apiExportHasResource(t, cl, "e2estubwidgets") {
+		t.Fatal("APIExport.spec.resources gained an e2estubwidgets entry; Templates must be API-surface-neutral")
+	}
+	// The permanent surface is templates + instances.
+	for _, resource := range []string{"templates", "instances"} {
+		if !apiExportHasResource(t, cl, resource) {
+			t.Fatalf("APIExport.spec.resources lacks the platform %q entry", resource)
+		}
 	}
 
-	// APIExport.spec.resources carries the instance resource.
-	if !apiExportHasResource(t, cl, "e2estubwidgets") {
-		t.Fatal("APIExport.spec.resources has no e2estubwidgets entry")
-	}
-
-	// Deletion runs the finalize chain: CRD + APIExport entry removed.
+	// Deletion runs the finalize chain (backend teardown + finalizer drop).
 	if err := cl.Resource(templatesGVR).Delete(ctxWithTimeout(t, 10*time.Second), name, metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("delete stub template: %v", err)
 	}
 	ok = waitForCondition(t, 60*time.Second, func() (bool, string) {
-		if _, err := cl.Resource(crdGVR).Get(ctxWithTimeout(t, 5*time.Second), crdName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-			return false, "per-template CRD still present"
-		}
-		if apiExportHasResource(t, cl, "e2estubwidgets") {
-			return false, "APIExport entry still present"
+		if _, err := cl.Resource(templatesGVR).Get(ctxWithTimeout(t, 5*time.Second), name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+			return false, "template still present"
 		}
 		return true, ""
 	})
 	if !ok {
-		t.Fatal("finalize chain never cleaned up the CRD/APIExport entry")
+		t.Fatal("finalize chain never released the template")
 	}
 }
 

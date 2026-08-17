@@ -35,8 +35,8 @@ func devProject() *vibev1alpha1.Project {
 				ResourceRef: &vibev1alpha1.ProjectProviderResourceReference{
 					Name:       "barber-1234",
 					APIVersion: "infrastructure.faros.sh/v1alpha1",
-					Kind:       "Application",
-					Resource:   "applications",
+					Kind:       "Instance",
+					Resource:   "instances",
 				},
 				Values: runtime.RawExtension{Raw: []byte(`{"name":"barber-1234","farosMode":"development"}`)},
 			}},
@@ -52,8 +52,8 @@ func TestInstanceRefs(t *testing.T) {
 		t.Fatalf("refs = %d, want 1", len(refs))
 	}
 	ref := refs[0]
-	if ref.GVR.Group != "infrastructure.faros.sh" || ref.GVR.Resource != "applications" ||
-		ref.Kind != "Application" || ref.Name != "barber-1234" {
+	if ref.GVR.Group != "infrastructure.faros.sh" || ref.GVR.Resource != "instances" ||
+		ref.Kind != "Instance" || ref.Name != "barber-1234" {
 		t.Fatalf("ref = %+v", ref)
 	}
 	if ref.Values["farosMode"] != "development" {
@@ -74,15 +74,19 @@ func TestDesiredInstance(t *testing.T) {
 	p := devProject()
 	ref := InstanceRefs(p)[0]
 	inst := DesiredInstance(p, ref)
-	if inst.GetAPIVersion() != "infrastructure.faros.sh/v1alpha1" || inst.GetKind() != "Application" {
+	if inst.GetAPIVersion() != "infrastructure.faros.sh/v1alpha1" || inst.GetKind() != "Instance" {
 		t.Fatalf("gvk = %s/%s", inst.GetAPIVersion(), inst.GetKind())
 	}
 	if inst.GetLabels()[templateLabel] != "application" || inst.GetLabels()[projectLabel] != "barber-1234" {
 		t.Fatalf("labels = %v", inst.GetLabels())
 	}
-	mode, _, _ := unstructured.NestedString(inst.Object, "spec", "farosMode")
+	tmplName, _, _ := unstructured.NestedString(inst.Object, "spec", "template")
+	if tmplName != "application" {
+		t.Fatalf("spec.template = %q", tmplName)
+	}
+	mode, _, _ := unstructured.NestedString(inst.Object, "spec", "values", "farosMode")
 	if mode != "development" {
-		t.Fatalf("spec.farosMode = %q", mode)
+		t.Fatalf("spec.values.farosMode = %q", mode)
 	}
 }
 

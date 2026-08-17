@@ -30,7 +30,7 @@ spec:
       internet. It is reachable only from inside the platform, through the
       infrastructure provider's data plane:
 
-        GET {hub}/services/providers/infrastructure/dataplane/clusters/{clusterID}/searxngs/{name}/proxy/search?q=<url-encoded query>&format=json
+        GET {hub}/services/providers/infrastructure/dataplane/clusters/{clusterID}/instances/{name}/proxy/search?q=<url-encoded query>&format=json
 
       The hop is hub → infrastructure provider → the runtime cluster's
       kube-apiserver `services/proxy` subresource → the instance's Service. The
@@ -72,7 +72,7 @@ spec:
     prerequisites:
       - "None. The caller needs read access to the provisioned Searxng instance in this workspace — that RBAC is the only access control on the search endpoint."
     outputs:
-      - "Data-plane verb 'proxy' — {hub}/services/providers/infrastructure/dataplane/clusters/{clusterID}/searxngs/{name}/proxy/search?q=…&format=json. GET only, platform-internal, authorized by the caller's RBAC on the instance."
+      - "Data-plane verb 'proxy' — {hub}/services/providers/infrastructure/dataplane/clusters/{clusterID}/instances/{name}/proxy/search?q=…&format=json. GET only, platform-internal, authorized by the caller's RBAC on the instance."
       - "status.ready — ready replica count for the SearXNG Deployment."
       - "status.runtimeNamespace / status.serviceRef — where the instance's Service lives; the data plane resolves the proxy verb through them. Informational; callers address the verb, not the Service."
   # ── Portal presentation ───────────────────────────────────────────────

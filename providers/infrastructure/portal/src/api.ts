@@ -5,12 +5,12 @@
 // rest of the platform uses. The shell pushes farosContext.tenant (kcp cluster
 // name, used as the /graphql path segment) and farosContext.token (bearer).
 //
-// Templates and per-template instance CRDs live in the infrastructure group, so
-// they surface under the GraphQL field `infrastructure_faros_sh`. Instance
-// kinds are declared per Template, so their list field (`<Plural>`) is discovered
-// by introspection; reads of an instance's arbitrary spec use the gateway's raw
-// `<Kind>Yaml` escape hatch (parsed with js-yaml), and writes use `applyYaml` /
-// `delete<Kind>` mutations — no field schema needs to be known ahead of time.
+// The tenant-facing API surface is flat: Templates (the catalog) plus ONE
+// Instance kind. Which product an Instance is rides in spec.template; its
+// template-shaped input lives in spec.values (preserve-unknown, so the gateway
+// serves it as a JSONString — full reads go through the raw `InstanceYaml`
+// escape hatch parsed with js-yaml). Writes use `applyYaml` / `deleteInstance`.
+// No kind discovery or introspection is needed anymore.
 
 import { load as yamlLoad } from 'js-yaml'
 import type { ErrorResponse, Instance, JSONSchema, Template, TemplateExposure, TemplateView } from './types'
@@ -96,7 +96,12 @@ interface RawObject {
     creationTimestamp?: string
     labels?: Record<string, string>
   }
-  spec?: Record<string, unknown>
+  spec?: {
+    template?: string
+    // The gateway serves preserve-unknown fields as JSON strings; the Yaml
+    // escape hatch yields the real object.
+    values?: Record<string, unknown> | string
+  }
   // status carries the well-known phase/message/conditions plus any
   // controller-computed output fields (url, fqdn, …) a template's View may
   // reference — hence the open-ended index signature.
@@ -163,12 +168,23 @@ function templateFromGQL(name: string, spec: Record<string, unknown>): Template 
   }
 }
 
-// instanceFromObj collapses a per-template CR (any object with metadata/spec/
-// status) into the Instance shape the views read. The originating Template is
-// taken from the faros.sh/template label, falling back to the kind.
-function instanceFromObj(c: RawObject, templateByKind: Map<string, string>): Instance {
+// instanceFromObj collapses an Instance CR into the shape the views read. The
+// originating Template comes from spec.template, falling back to the
+// faros.sh/template label. spec.values may arrive as a JSON string (typed
+// GraphQL read) or an object (Yaml escape hatch).
+function instanceFromObj(c: RawObject): Instance {
   const labels = c.metadata?.labels ?? {}
-  const tmpl = labels['faros.sh/template'] || (c.kind ? templateByKind.get(c.kind) ?? c.kind : '')
+  const tmpl = c.spec?.template || labels['faros.sh/template'] || ''
+  let values: Record<string, unknown> | undefined
+  if (typeof c.spec?.values === 'string') {
+    try {
+      values = JSON.parse(c.spec.values) as Record<string, unknown>
+    } catch {
+      // leave undefined — the detail page just shows no values
+    }
+  } else if (c.spec?.values && typeof c.spec.values === 'object') {
+    values = c.spec.values
+  }
   const conditions = (c.status?.conditions ?? []).map(cond => ({
     type: cond.type,
     status: cond.status,
@@ -192,42 +208,21 @@ function instanceFromObj(c: RawObject, templateByKind: Map<string, string>): Ins
     phase: c.status?.phase || (conditions.find(x => x.type === 'Ready')?.status === 'True' ? 'Ready' : 'Pending'),
     message: c.status?.message,
     conditions,
-    values: c.spec,
+    values,
     status,
     createdAt: c.metadata?.creationTimestamp ?? '',
   }
 }
 
-// ── Template + instance-field index ─────────────────────────────────────────
-// Listing instances needs each kind's GraphQL list field (`<Plural>` =
-// Pluralize(Kind), not derivable client-side), so we discover it by introspection
-// once and cache it alongside the Templates (10s TTL — both change rarely).
-interface InfraIndex {
+// ── Template cache ──────────────────────────────────────────────────────────
+// Templates change rarely; cache the list briefly so the instance pages don't
+// re-fetch the catalog on every render.
+interface TemplateCache {
   fetchedAt: number
   templates: Template[]
-  templateByKind: Map<string, string>
-  // kind → GraphQL list field name (only kinds whose CRD is actually established
-  // in the workspace, so a Template with no bound CRD is naturally skipped).
-  listFieldByKind: Map<string, string>
 }
-let cachedIndex: InfraIndex | null = null
-const INDEX_TTL_MS = 10_000
-
-// introspectVersionFields walks Query → infrastructure_faros_sh → v1alpha1
-// in a single introspection query and returns its fields with (unwrapped) type
-// names, so we can map each instance kind to its list field.
-async function introspectVersionFields(): Promise<Array<{ name: string; typeName: string }>> {
-  const q = `{ __type(name: "Query") { fields { name type { fields { name type { name fields { name type { name kind ofType { name kind } } } } } } } } }`
-  const data = await graphqlQuery<{
-    __type?: { fields?: Array<{ name: string; type?: { fields?: Array<{ name: string; type?: { fields?: Array<{ name: string; type?: { name?: string; ofType?: { name?: string } } }> } }> } }> }
-  }>(q)
-  const group = (data.__type?.fields ?? []).find(f => f.name === GROUP_FIELD)
-  const version = (group?.type?.fields ?? []).find(f => f.name === VERSION)
-  return (version?.type?.fields ?? []).map(f => ({
-    name: f.name,
-    typeName: f.type?.ofType?.name ?? f.type?.name ?? '',
-  }))
-}
+let cachedTemplates: TemplateCache | null = null
+const CACHE_TTL_MS = 10_000
 
 // sampleValues is a recent Template field. A gateway whose schema was built from
 // an older CRD that predates it has no such field, and selecting an absent field
@@ -279,65 +274,53 @@ async function templateQuery<T>(make: (spec: string) => string, variables: Recor
   }
 }
 
-async function refreshIndex(): Promise<InfraIndex> {
-  const [tmplData, versionFields] = await Promise.all([
-    templateQuery<Infra<{ Templates?: { items?: Array<{ metadata: { name: string }; spec: Record<string, unknown> }> } }>>(
-      spec => `{ ${GROUP_FIELD} { ${VERSION} { Templates { items { metadata { name } spec { ${spec} } } } } } }`,
-    ),
-    introspectVersionFields(),
-  ])
-
-  const items = tmplData[GROUP_FIELD]?.[VERSION]?.Templates?.items ?? []
+async function fetchTemplates(): Promise<Template[]> {
+  const data = await templateQuery<Infra<{ Templates?: { items?: Array<{ metadata: { name: string }; spec: Record<string, unknown> }> } }>>(
+    spec => `{ ${GROUP_FIELD} { ${VERSION} { Templates { items { metadata { name } spec { ${spec} } } } } } }`,
+  )
+  const items = data[GROUP_FIELD]?.[VERSION]?.Templates?.items ?? []
   const templates = items.map(t => templateFromGQL(t.metadata.name, t.spec ?? {}))
-  const templateByKind = new Map<string, string>()
-  for (const t of templates) if (t.kind) templateByKind.set(t.kind, t.name)
-
-  // Map kind → list field via the resource-type relationship: the list field's
-  // type is `<resourceType>List`, the single field's type is `<resourceType>`.
-  const listByResourceType = new Map<string, string>()
-  const resourceTypeByKind = new Map<string, string>()
-  for (const f of versionFields) {
-    if (!f.typeName) continue
-    if (f.typeName.endsWith('List')) listByResourceType.set(f.typeName.slice(0, -'List'.length), f.name)
-    else if (f.typeName === 'String') continue // <Kind>Yaml fields
-    else resourceTypeByKind.set(f.name, f.typeName) // single field: name === Kind
-  }
-  // Only map kinds that are actual Template instances — the schema also exposes
-  // Template (and other) resources whose status has no phase/message, and which
-  // must not be swept into the instance list.
-  const instanceKinds = new Set(templates.map(t => t.kind).filter(Boolean))
-  const listFieldByKind = new Map<string, string>()
-  for (const [kind, resourceType] of resourceTypeByKind) {
-    if (!instanceKinds.has(kind)) continue
-    const lf = listByResourceType.get(resourceType)
-    if (lf) listFieldByKind.set(kind, lf)
-  }
-
-  cachedIndex = { fetchedAt: Date.now(), templates, templateByKind, listFieldByKind }
-  return cachedIndex
+  cachedTemplates = { fetchedAt: Date.now(), templates }
+  return templates
 }
 
-async function getIndex(force = false): Promise<InfraIndex> {
-  if (!force && cachedIndex && Date.now() - cachedIndex.fetchedAt < INDEX_TTL_MS) return cachedIndex
-  return refreshIndex()
+async function getTemplates(force = false): Promise<Template[]> {
+  if (!force && cachedTemplates && Date.now() - cachedTemplates.fetchedAt < CACHE_TTL_MS) {
+    return cachedTemplates.templates
+  }
+  return fetchTemplates()
 }
 
-// Build the wire manifest for a per-template instance CR. The kind/apiVersion
-// come from the Template's instanceCRD (all instances live in the infra group);
-// the input `values` go under .spec verbatim.
-function buildInstanceManifest(kind: string, name: string, templateName: string, values: Record<string, unknown>) {
+// Build the wire manifest for an Instance CR: the template name under
+// spec.template, the form input under spec.values.
+function buildInstanceManifest(name: string, templateName: string, values: Record<string, unknown>) {
   return {
     apiVersion: GROUP + '/' + VERSION,
-    kind,
+    kind: 'Instance',
     metadata: { name, labels: { 'faros.sh/template': templateName } },
-    spec: values,
+    spec: { template: templateName, values },
+  }
+}
+
+// fetchInstanceYaml reads the full Instance object (incl. the arbitrary
+// values/status) via the gateway's raw InstanceYaml escape hatch.
+async function fetchInstanceYaml(name: string): Promise<RawObject | null> {
+  try {
+    const data = await graphqlQuery<Infra<{ InstanceYaml?: string }>>(
+      `query($n: String!) { ${GROUP_FIELD} { ${VERSION} { InstanceYaml(name: $n) } } }`,
+      { n: name },
+    )
+    const text = data[GROUP_FIELD]?.[VERSION]?.InstanceYaml
+    return text ? (yamlLoad(text) as RawObject) : null
+  } catch (e) {
+    if ((e as ErrorResponse).reason === 'NotFound') return null
+    throw e
   }
 }
 
 export const api = {
   async listTemplates(filter: { category?: string; cloud?: string } = {}): Promise<{ items: Template[] }> {
-    const idx = await refreshIndex()
-    let items = idx.templates
+    let items = await fetchTemplates()
     if (filter.category) items = items.filter(t => t.category === filter.category)
     if (filter.cloud) items = items.filter(t => t.cloud === filter.cloud)
     return { items }
@@ -359,57 +342,44 @@ export const api = {
     name: string
     values: Record<string, unknown>
   }): Promise<Instance> {
-    const idx = await getIndex()
-    const tmpl = idx.templates.find(t => t.name === body.templateName)
-    if (!tmpl || !tmpl.kind) {
+    const templates = await getTemplates()
+    if (!templates.some(t => t.name === body.templateName)) {
       throw <ErrorResponse>{ reason: 'TemplateNotFound', message: 'template ' + body.templateName + ' not found' }
     }
-    const manifest = buildInstanceManifest(tmpl.kind, body.name, body.templateName, body.values)
-    const created = await applyCR(manifest)
-    return instanceFromObj(created, idx.templateByKind)
+    const created = await applyCR(buildInstanceManifest(body.name, body.templateName, body.values))
+    return instanceFromObj(created)
   },
 
   async listInstances(): Promise<{ items: Instance[] }> {
-    const idx = await getIndex()
-    const kinds = [...idx.listFieldByKind.keys()]
-    if (kinds.length === 0) return { items: [] }
-    // One LIST per established kind, in parallel. metadata + status only — the
-    // list view never needs the (arbitrary) spec, so we don't select it.
-    const SEL = 'items { metadata { name namespace creationTimestamp labels } status { phase message conditions { type status reason message lastTransitionTime } } }'
-    const lists = await Promise.all(
-      kinds.map(async kind => {
-        const field = idx.listFieldByKind.get(kind)!
-        try {
-          const data = await graphqlQuery<Infra<Record<string, { items?: RawObject[] }>>>(
-            `{ ${GROUP_FIELD} { ${VERSION} { ${field} { ${SEL} } } } }`,
-          )
-          return data[GROUP_FIELD]?.[VERSION]?.[field]?.items ?? []
-        } catch (e) {
-          if ((e as ErrorResponse).reason === 'NotFound') return []
-          throw e
-        }
-      }),
-    )
-    const items = lists.flat().map(c => instanceFromObj(c, idx.templateByKind))
+    // One LIST for every template's instances. metadata + template + status
+    // baseline only — the (arbitrary) values are enriched per instance below
+    // when a template's view actually references them.
+    const SEL = 'items { metadata { name namespace creationTimestamp labels } spec { template } status { phase message conditions { type status reason message lastTransitionTime } } }'
+    let raw: RawObject[] = []
+    try {
+      const data = await graphqlQuery<Infra<{ Instances?: { items?: RawObject[] } }>>(
+        `{ ${GROUP_FIELD} { ${VERSION} { Instances { ${SEL} } } } }`,
+      )
+      raw = data[GROUP_FIELD]?.[VERSION]?.Instances?.items ?? []
+    } catch (e) {
+      if ((e as ErrorResponse).reason !== 'NotFound') throw e
+    }
+    const items = raw.map(instanceFromObj)
     // Enrich instances whose template defines columns referencing spec.*/status.*
-    // — the LIST above selects only metadata + status phase/conditions, so fetch
-    // the full object (incl. arbitrary spec/status) via the <Kind>Yaml escape
-    // hatch for just those instances. Runs in parallel; failures leave the cell
-    // empty rather than breaking the table.
+    // — the LIST above carries only the status baseline, so fetch the full
+    // object via InstanceYaml for just those instances. Runs in parallel;
+    // failures leave the cell empty rather than breaking the table.
+    const templates = await getTemplates()
     await Promise.all(
       items.map(async i => {
-        const tmpl = idx.templates.find(t => t.name === i.template)
-        if (!tmpl?.kind || !columnsNeedInstanceData(tmpl.view)) return
+        const tmpl = templates.find(t => t.name === i.template)
+        if (!tmpl || !columnsNeedInstanceData(tmpl.view)) return
         try {
-          const data = await graphqlQuery<Infra<Record<string, string>>>(
-            `query($n: String!) { ${GROUP_FIELD} { ${VERSION} { ${tmpl.kind}Yaml(name: $n) } } }`,
-            { n: i.name },
-          )
-          const text = data[GROUP_FIELD]?.[VERSION]?.[tmpl.kind + 'Yaml']
-          if (!text) return
-          const full = instanceFromObj(yamlLoad(text) as RawObject, idx.templateByKind)
-          i.values = full.values
-          i.status = full.status
+          const full = await fetchInstanceYaml(i.name)
+          if (!full) return
+          const parsed = instanceFromObj(full)
+          i.values = parsed.values
+          i.status = parsed.status
         } catch {
           // leave unenriched
         }
@@ -419,39 +389,14 @@ export const api = {
   },
 
   async getInstance(name: string): Promise<Instance> {
-    // The CR's kind isn't on the URL, so probe each established kind's raw
-    // <Kind>Yaml in parallel and take the first hit. Yaml gives the full object
-    // (incl. the arbitrary spec) without needing its schema.
-    const idx = await getIndex()
-    const kinds = [...idx.listFieldByKind.keys()]
-    const probes = kinds.map(async kind => {
-      try {
-        const data = await graphqlQuery<Infra<Record<string, string>>>(
-          `query($n: String!) { ${GROUP_FIELD} { ${VERSION} { ${kind}Yaml(name: $n) } } }`,
-          { n: name },
-        )
-        const text = data[GROUP_FIELD]?.[VERSION]?.[kind + 'Yaml']
-        return text ? (yamlLoad(text) as RawObject) : null
-      } catch (e) {
-        if ((e as ErrorResponse).reason === 'NotFound') return null
-        throw e
-      }
-    })
-    const found = (await Promise.all(probes)).find(Boolean)
+    const found = await fetchInstanceYaml(name)
     if (!found) throw <ErrorResponse>{ reason: 'InstanceNotFound', message: 'instance ' + name + ' not found' }
-    return instanceFromObj(found, idx.templateByKind)
+    return instanceFromObj(found)
   },
 
   async deleteInstance(name: string): Promise<void> {
-    const idx = await getIndex()
-    // Resolve which kind the CR is, then delete<Kind>.
-    const inst = await this.getInstance(name)
-    const kind = idx.templates.find(t => t.name === inst.template)?.kind
-    if (!kind) {
-      throw <ErrorResponse>{ reason: 'InstanceNotFound', message: 'cannot resolve kind for ' + name }
-    }
     await graphqlQuery(
-      `mutation($n: String!) { ${GROUP_FIELD} { ${VERSION} { delete${kind}(name: $n) } } }`,
+      `mutation($n: String!) { ${GROUP_FIELD} { ${VERSION} { deleteInstance(name: $n) } } }`,
       { n: name },
     )
   },

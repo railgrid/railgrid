@@ -112,7 +112,7 @@ func execRequest(t *testing.T, action ExecAction) *http.Request {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := httptest.NewRequest(http.MethodPost, PathPrefix+"clusters/ws/applications/app/components/backend/exec", strings.NewReader(string(raw)))
+	r := httptest.NewRequest(http.MethodPost, PathPrefix+"clusters/ws/instances/app/components/backend/exec", strings.NewReader(string(raw)))
 	r.Header.Set("Authorization", "Bearer caller-token")
 	r.Header.Set("Idempotency-Key", "run-1")
 	return r

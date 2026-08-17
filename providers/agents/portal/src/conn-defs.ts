@@ -203,8 +203,8 @@ export const CONN_DEFS: ConnTypeDef[] = [
           {
             key: 'instanceResource',
             label: 'Instance resource',
-            placeholder: 'browsers',
-            hint: 'Only if the instance comes from a fork of the template under a different CRD.',
+            placeholder: 'instances',
+            hint: 'Only if the instance is served by a provider under a different resource than the standard flattened "instances".',
           },
         ],
       },

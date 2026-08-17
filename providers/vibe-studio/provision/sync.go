@@ -42,23 +42,18 @@ type DevInfo struct {
 	ScaffoldRef        string
 }
 
-// ParseDevInfo extracts the fields from an unstructured Template.
+// ParseDevInfo extracts the fields from an unstructured Template. The
+// instance coordinates are the FLATTENED tenant-facing kind — every
+// template's instances are authored as instances.infrastructure.faros.sh
+// with the template name in spec.template — so they are constants here;
+// Template.spec.instanceCRD describes only the runtime-cluster kind and is
+// no consumer's business anymore.
 func ParseDevInfo(tmpl *unstructured.Unstructured) (DevInfo, error) {
 	info := DevInfo{Components: map[string]string{}, ImageInputs: map[string]string{}}
-	var ok bool
-	info.Group, _, _ = unstructured.NestedString(tmpl.Object, "spec", "instanceCRD", "group")
-	info.Version, _, _ = unstructured.NestedString(tmpl.Object, "spec", "instanceCRD", "version")
-	info.Resource, _, _ = unstructured.NestedString(tmpl.Object, "spec", "instanceCRD", "resource")
-	info.Kind, _, _ = unstructured.NestedString(tmpl.Object, "spec", "instanceCRD", "kind")
-	if info.Group == "" {
-		info.Group = "infrastructure.faros.sh"
-	}
-	if info.Version == "" {
-		info.Version = "v1alpha1"
-	}
-	if info.Resource == "" || info.Kind == "" {
-		return info, fmt.Errorf("template has no instanceCRD (resource=%q kind=%q)", info.Resource, info.Kind)
-	}
+	info.Group = "infrastructure.faros.sh"
+	info.Version = "v1alpha1"
+	info.Resource = "instances"
+	info.Kind = "Instance"
 	comps, ok, _ := unstructured.NestedMap(tmpl.Object, "spec", "development", "components")
 	if ok {
 		for name, v := range comps {

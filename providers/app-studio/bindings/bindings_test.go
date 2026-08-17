@@ -26,6 +26,9 @@ import (
 func testProject() *aiv1alpha1.Project {
 	return &aiv1alpha1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: types.UID("uid-1")},
+		Spec: aiv1alpha1.ProjectSpec{
+			Template: &aiv1alpha1.ProjectTemplateSpec{Name: "application"},
+		},
 	}
 }
 
@@ -37,8 +40,8 @@ func testBinding() aiv1alpha1.ProjectProviderBindingSpec {
 		ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
 			Name:       "demo-dev",
 			APIVersion: "infrastructure.faros.sh/v1alpha1",
-			Kind:       "Application",
-			Resource:   "applications",
+			Kind:       "Instance",
+			Resource:   "instances",
 		},
 		Values: runtime.RawExtension{Raw: []byte(`{"farosMode":"development","webImage":"x"}`)},
 	}
@@ -50,7 +53,7 @@ func TestDesiredIsSelfContained(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Desired: %v", err)
 	}
-	if gvr.Group != "infrastructure.faros.sh" || gvr.Resource != "applications" || gvr.Version != "v1alpha1" {
+	if gvr.Group != "infrastructure.faros.sh" || gvr.Resource != "instances" || gvr.Version != "v1alpha1" {
 		t.Fatalf("gvr = %v", gvr)
 	}
 	if want.GetName() != "demo-dev" {
@@ -59,13 +62,20 @@ func TestDesiredIsSelfContained(t *testing.T) {
 	if want.GetLabels()[ProjectLabel] != "demo" {
 		t.Fatalf("labels = %v, want %s=demo", want.GetLabels(), ProjectLabel)
 	}
+	if want.GetLabels()[TemplateLabel] != "application" {
+		t.Fatalf("labels = %v, want %s=application", want.GetLabels(), TemplateLabel)
+	}
 	owners := want.GetOwnerReferences()
 	if len(owners) != 1 || owners[0].Kind != "Project" || owners[0].Name != "demo" {
 		t.Fatalf("ownerReferences = %+v", owners)
 	}
-	mode, _, _ := unstructured.NestedString(want.Object, "spec", "farosMode")
+	tmplName, _, _ := unstructured.NestedString(want.Object, "spec", "template")
+	if tmplName != "application" {
+		t.Fatalf("spec.template = %q", tmplName)
+	}
+	mode, _, _ := unstructured.NestedString(want.Object, "spec", "values", "farosMode")
 	if mode != "development" {
-		t.Fatalf("spec.farosMode = %q", mode)
+		t.Fatalf("spec.values.farosMode = %q", mode)
 	}
 }
 

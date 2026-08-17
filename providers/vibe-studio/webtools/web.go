@@ -76,7 +76,7 @@ var guardedClient = &http.Client{
 // no credential of its own — the caller's own faros RBAC on the instance is
 // the gate.
 type SearchRef struct {
-	Resource string // "searxngs"
+	Resource string // "instances" (the flattened infrastructure resource)
 	Name     string
 }
 

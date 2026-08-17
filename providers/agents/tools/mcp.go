@@ -73,9 +73,11 @@ func ConnectMCP(ctx context.Context, d Deps, conn *agentsv1alpha1.Connection) (*
 	return ConnectMCPEndpoint(ctx, endpoint, d.connToken(ctx, conn.Name), conn.Name, false)
 }
 
-// browserResource is the instance resource the seed `browser` template projects.
-// config.instanceResource overrides it for a fork under a different CRD.
-const browserResource = "browsers"
+// browserResource is the flattened infrastructure instance resource — every
+// template's instances (the browser included) are served as
+// instances.infrastructure.faros.sh. config.instanceResource overrides it
+// for a provider serving a different resource.
+const browserResource = "instances"
 
 // ConnectMCPEndpoint dials an arbitrary MCP server over streamable HTTP with
 // an optional bearer token and exposes its tools as <prefix>__<tool>. Used by

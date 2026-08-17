@@ -58,28 +58,10 @@ spec:
     # denied at reconcile.
     permissionClaims:
       # Infrastructure instances the Project reconciler lifecycles from a
-      # project's live bindings.
-      - resource: applications
-        group: infrastructure.faros.sh
-        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-        tenantScoped: true
-      - resource: simplewebapps
-        group: infrastructure.faros.sh
-        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-        tenantScoped: true
-      - resource: workers
-        group: infrastructure.faros.sh
-        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-        tenantScoped: true
-      # Web search: the Studio reconciler provisions one shared searxng
-      # instance per workspace so the assistant can look things up.
-      - resource: searxngs
-        group: infrastructure.faros.sh
-        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-        tenantScoped: true
-      # Preview browser: the Studio reconciler provisions one shared headless
-      # browser (Playwright MCP) per workspace for development-preview inspection.
-      - resource: browsers
+      # project's live bindings, plus the Studio's shared searxng + browser —
+      # every template's instances are ONE flattened resource (product
+      # selected by spec.template), so one claim covers them all.
+      - resource: instances
         group: infrastructure.faros.sh
         verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
         tenantScoped: true

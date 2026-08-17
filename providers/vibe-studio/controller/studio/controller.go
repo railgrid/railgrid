@@ -186,7 +186,10 @@ func (r *Reconciler) ensureInstance(ctx context.Context, c client.Client, st *vi
 				studioLabel:   st.Name,
 			},
 		},
-		"spec": map[string]any{"name": ref.Name, "size": size},
+		"spec": map[string]any{
+			"template": searchTemplate,
+			"values":   map[string]any{"name": ref.Name, "size": size},
+		},
 	}}
 	if err := c.Create(ctx, inst); err != nil && !apierrors.IsAlreadyExists(err) {
 		return nil, err

@@ -95,8 +95,8 @@ func TestCreateProjectPreflightTemplateCreatesBindingAndInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("binding is not self-contained: %v", err)
 	}
-	if gvr.Resource != "applications" || gvr.Group != "infrastructure.faros.sh" {
-		t.Fatalf("binding GVR = %v, want applications.infrastructure.faros.sh", gvr)
+	if gvr.Resource != "instances" || gvr.Group != "infrastructure.faros.sh" {
+		t.Fatalf("binding GVR = %v, want instances.infrastructure.faros.sh", gvr)
 	}
 	if want.GetName() != created.Name+"-dev" {
 		t.Fatalf("desired instance name = %q, want %s-dev", want.GetName(), created.Name)
@@ -162,8 +162,8 @@ func TestCreateProjectLivePathListsCatalogCallsPreflightOnceAndCreatesInstance(t
 	if err != nil {
 		t.Fatalf("binding is not self-contained: %v", err)
 	}
-	if gvr.Resource != "applications" || want.GetName() != created.Name+"-dev" {
-		t.Fatalf("desired instance = %s/%s, want applications/%s-dev", gvr.Resource, want.GetName(), created.Name)
+	if gvr.Resource != "instances" || want.GetName() != created.Name+"-dev" {
+		t.Fatalf("desired instance = %s/%s, want instances/%s-dev", gvr.Resource, want.GetName(), created.Name)
 	}
 }
 
@@ -390,8 +390,8 @@ func newProjectCreationTestDynamicClient(objects ...runtime.Object) *fake.FakeDy
 			codeConnectionsGVR:  "ConnectionList",
 			codeRepositoriesGVR: "RepositoryList",
 			{
-				Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "applications",
-			}: "ApplicationList",
+				Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "instances",
+			}: "InstanceList",
 		},
 		objects...,
 	)

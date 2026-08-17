@@ -675,35 +675,18 @@ type TemplateStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Registered reflects the platform-side wiring the controller
-	// owns. CRDEstablished flips to true once the per-template CRD
-	// has the Established condition; SchemaInAPIExport flips once
-	// the schema is listed in APIExport.spec.schemas.
-	// +optional
-	Registered TemplateRegistrationStatus `json:"registered,omitempty"`
-
 	// Backend reflects what the backend reported from its
 	// SetupTemplate call. Empty until first reconcile.
 	// +optional
 	Backend TemplateBackendStatus `json:"backend,omitempty"`
 
 	// Conditions follows the standard Kubernetes conditions pattern.
-	// The aggregate Ready condition is True iff Registered and
-	// Backend both succeed.
+	// The aggregate Ready condition is True iff schema validation and
+	// the backend both succeed.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
-
-// TemplateRegistrationStatus tracks the two platform-side wiring
-// steps separately so a failure mode (CRD admitted but APIExport
-// schema sync pending) is observable.
-type TemplateRegistrationStatus struct {
-	// +optional
-	CRDEstablished bool `json:"crdEstablished,omitempty"`
-	// +optional
-	SchemaInAPIExport bool `json:"schemaInAPIExport,omitempty"`
 }
 
 // TemplateBackendStatus is what the named backend reported. The
@@ -730,29 +713,23 @@ const (
 	// ConditionReady is the aggregate "this Template is fully
 	// reconciled, tenants can use it" condition.
 	ConditionReady = "Ready"
-	// ConditionCRDEstablished mirrors the per-template CRD's
-	// Established condition.
-	ConditionCRDEstablished = "CRDEstablished"
-	// ConditionSchemaInAPIExport flips True once the CRD's schema
-	// appears in APIExport.spec.schemas.
-	ConditionSchemaInAPIExport = "SchemaInAPIExport"
+	// ConditionSchemaValid reports whether spec.schema compiles into the
+	// effective values contract (parses, structural, no reserved-field
+	// claims) that the instance controller holds Instances to.
+	ConditionSchemaValid = "SchemaValid"
 	// ConditionBackendReady mirrors Backend.SetupTemplate's result.
 	ConditionBackendReady = "BackendReady"
 )
 
 // Standard reason strings paired with the condition types above.
 const (
-	ReasonReconciling       = "Reconciling"
-	ReasonReady             = "Ready"
-	ReasonInvalidSpec       = "InvalidSpec"
-	ReasonBackendNotFound   = "BackendNotFound"
-	ReasonBackendError      = "BackendError"
-	ReasonCRDError          = "CRDError"
-	ReasonAPIExportError    = "APIExportError"
-	ReasonAwaitingEstablish = "AwaitingEstablish"
+	ReasonReconciling     = "Reconciling"
+	ReasonReady           = "Ready"
+	ReasonInvalidSpec     = "InvalidSpec"
+	ReasonBackendNotFound = "BackendNotFound"
+	ReasonBackendError    = "BackendError"
 )
 
-// Standard finalizer the Template controller adds. Cleanup order on
-// delete: (1) backend.TeardownTemplate, (2) remove APIExport schema
-// entry, (3) delete the per-template CRD, (4) drop finalizer.
+// Standard finalizer the Template controller adds. Cleanup on delete:
+// (1) backend.TeardownTemplate, (2) drop finalizer.
 const FinalizerTemplateReconcile = "templates.infrastructure.faros.sh/reconcile"

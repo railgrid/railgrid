@@ -13,7 +13,7 @@ Author: 2026-06-12
 Related: `docs/infrastructure-architecture.md` (the platform/backend layer this builds on),
 `providers/infrastructure/install/templates/redis-cache.yaml` (the in-graph secret-generation
 pattern reused here), `providers/infrastructure/docs/credentials.md` (the tenant→data-plane
-secret bridge), kcp `cache/v1alpha1` (CachedResource), `faroshq/kro-multicluster`.
+secret bridge), kcp `cache/v1alpha1` (CachedResource), upstream `kro-run/kro` (single-cluster; the instance controller bridges kcp → runtime).
 
 ## Summary
 

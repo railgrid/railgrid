@@ -470,13 +470,22 @@ func (r *Reconciler) ensureInstance(ctx context.Context, c client.Client, p *aiv
 		}
 
 		next := got.DeepCopy()
-		observedSpec, _, _ := unstructured.NestedMap(got.Object, "spec")
-		desiredSpec, _, _ := unstructured.NestedMap(want.Object, "spec")
-		// A template that exposes no URL declares no access input, and the API
-		// server prunes it. Asking for it anyway would make every reconcile see
-		// drift it can never resolve.
-		bindings.DropUnsupportedAccess(observedSpec, desiredSpec)
-		next.Object["spec"] = bindings.MergeProviderSpec(observedSpec, desiredSpec)
+		// The merge operates on the values level — spec.template is the
+		// instance's immutable identity and spec.values is where the provider
+		// stamps its computed fields (fqdn, credential references).
+		observedValues, _, _ := unstructured.NestedMap(got.Object, "spec", "values")
+		desiredValues, _, _ := unstructured.NestedMap(want.Object, "spec", "values")
+		// A template that exposes no URL declares no access input; asking for
+		// it anyway would make every reconcile see drift it can never resolve.
+		bindings.DropUnsupportedAccess(observedValues, desiredValues)
+		observedTemplate, _, _ := unstructured.NestedString(got.Object, "spec", "template")
+		if observedTemplate == "" {
+			observedTemplate, _, _ = unstructured.NestedString(want.Object, "spec", "template")
+		}
+		next.Object["spec"] = map[string]any{
+			"template": observedTemplate,
+			"values":   bindings.MergeProviderSpec(observedValues, desiredValues),
+		}
 		labels := next.GetLabels()
 		if labels == nil {
 			labels = map[string]string{}

@@ -30,7 +30,7 @@ spec:
       root IS the MCP endpoint — nothing is appended, no `/mcp` suffix to
       remember:
 
-        {hub}/services/providers/infrastructure/dataplane/clusters/{clusterID}/browsers/{name}/proxy
+        {hub}/services/providers/infrastructure/dataplane/clusters/{clusterID}/instances/{name}/proxy
 
       GET, POST and DELETE are allowed, which is the full streamable-HTTP MCP
       set (POST for requests, GET for the SSE stream, DELETE to end a session).
@@ -73,7 +73,7 @@ spec:
     prerequisites:
       - "None. The caller needs read access to the provisioned Browser instance in this workspace — that RBAC is the only access control on the MCP endpoint."
     outputs:
-      - "Data-plane verb 'proxy' — {hub}/services/providers/infrastructure/dataplane/clusters/{clusterID}/browsers/{name}/proxy. This IS the MCP streamable-HTTP endpoint; do not append /mcp. Platform-internal, authorized by the caller's RBAC on the instance."
+      - "Data-plane verb 'proxy' — {hub}/services/providers/infrastructure/dataplane/clusters/{clusterID}/instances/{name}/proxy. This IS the MCP streamable-HTTP endpoint; do not append /mcp. Platform-internal, authorized by the caller's RBAC on the instance."
       - "status.ready — ready replica count for the browser Deployment."
       - "status.runtimeNamespace / status.serviceRef — where the instance's Service lives; the data plane resolves the proxy verb through them. Informational; callers address the verb, not the Service."
   # ── Portal presentation ───────────────────────────────────────────────

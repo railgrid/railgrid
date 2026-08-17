@@ -469,7 +469,7 @@ func (s *Server) projectPublishingResponse(ctx context.Context, c *asclient.Clie
 }
 
 func publicationViewFromRuntime(rt appAccessRuntime) projectPublishingPublicationView {
-	observedAccess, _, _ := unstructured.NestedString(rt.instance.Object, "spec", accessValueField)
+	observedAccess, _, _ := unstructured.NestedString(rt.instance.Object, "spec", "values", accessValueField)
 	if observedAccess == "" {
 		observedAccess = accessPublic
 	}

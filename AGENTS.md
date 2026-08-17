@@ -61,10 +61,13 @@ Tiltfile              Local dev loop (embedded kcp + static auth)
 go.work               Workspace: root + standalone provider modules
 ```
 
-`go.work` members: `.`, `providers/quickstart`, `providers/infrastructure`,
-`providers/code`, `providers/kuery`, `providers/app-studio`, and the external
-`kubernetes-graphql-gateway`. Standalone providers each have their own `go.mod`;
-built-in providers do not (they compile into the hub binary).
+`go.work` members: `.`, `provider-sdk`, every provider module under
+`providers/` (`agents`, `app-studio`, `code`, `databricks`, `edges`,
+`infrastructure`, `kuery`, `quickstart`, `vibe-studio`), and the external
+`kubernetes-graphql-gateway` + `contrib-metering` checkouts. Every provider is
+standalone with its own `go.mod`; none compile into the hub binary any more
+(the `RegisterBuiltin` machinery in `pkg/hub/providers/builtin.go` still exists
+but has no registrations).
 
 ---
 
@@ -77,7 +80,7 @@ demand — never `go install` them globally.
 | Task | Command | Notes |
 |------|---------|-------|
 | Build all binaries | `make build` | faros CLI + hub + graphql |
-| Build hub | `make build-hub` | also builds built-in provider portals |
+| Build hub | `make build-hub` | hub binary only; provider portals build per provider (§5.3) |
 | Build hub w/ embedded portal | `make build-hub-portal` | `portal_embed` build tag |
 | Unit tests | `make test` | all packages except `test/e2e` |
 | Lint | `make lint` | `golangci-lint run ./...` |
@@ -225,7 +228,7 @@ APIExport, schemas) and registers routing/heartbeat state.
 | File | Role |
 |------|------|
 | `provision.go` | Creates kcp sub-workspace, ServiceAccount, APIExport, applies inline schemas; mints the provider kubeconfig |
-| `proxy.go` | UI reverse-proxy (`/ui/providers/{name}/*`) + backend proxy (`/services/providers/{name}/*`); injects tenant/user headers; serves embedded UI for built-ins (`LocalUIAssets`) |
+| `proxy.go` | UI reverse-proxy (`/ui/providers/{name}/*`) + backend proxy (`/services/providers/{name}/*`); injects tenant/user headers |
 | registry / controller / heartbeat | In-memory routing table, catalog reconcile, `POST /api/providers/{name}/heartbeat` liveness (TTL ~90s) |
 | `pkg/hub/provider_tenant_resolver.go` | Resolves caller identity → tenant workspace path; injects `X-Faros-User` / `X-Faros-Tenant`, strips spoofed inbound copies |
 
@@ -243,10 +246,7 @@ receive a `faros-context` (user, tenant, theme, basePath) via the
 
 Build chain (Makefile):
 - `make build-{name}-provider-portal` — `vite build` only.
-- `make build-{name}-provider` — portal + Go binary (standalone providers).
-- `make portal-provider-symlinks` — symlinks each built-in provider portal's
-  `node_modules` to the main `portal/node_modules` so shared deps (vue, urql,
-  pinia, tailwind…) resolve. Symlinks are gitignored/idempotent.
+- `make build-{name}-provider` — portal + Go binary (portal embedded).
 
 The Tilt dev loop proxies all UI to the Vite dev server (`--portal-dev-url`) and
 skips the slow provider-portal builds.
@@ -301,24 +301,31 @@ for the canonical pattern, and `docs/provider-scoping.md`.
 
 ### 5.5 Provider inventory
 
-| Provider | Module | Built-in? | What it does |
-|----------|--------|-----------|--------------|
-| `quickstart` | own `go.mod` | standalone | **Reference provider** — minimal HTTP server + embedded Vite portal + sample `Greeting` API. Start here. |
-| `code` | own `go.mod` | standalone | Source-code/repository management; controllers + tenant isolation + MCP |
-| `infrastructure` | own `go.mod` | standalone | kro-based infrastructure templates; self-bootstrap example; tenant isolation |
-| `kuery` | own `go.mod` | standalone | Query API + engagement; MCP server |
-| `app-studio` | own `go.mod` | standalone | Application templates / project store (recently reorganized from `providers/projects`) |
-| `mcp` | no `go.mod` | built-in | Aggregated multi-cluster MCP endpoints |
-| `kubernetesedges` | no `go.mod` | built-in | Kubernetes-type edges UI/registration |
-| `serveredges` | no `go.mod` | built-in | Server/SSH-type edges (depends on kubernetesedges) |
-| `projects` | portal only | built-in route | Portal SPA route (being folded into app-studio) |
+All providers are **standalone**: own `go.mod` under `providers/{name}/`, own
+image/pod, registered at runtime via their `CatalogEntry`. There are no
+built-in providers any more (the former `mcp`/`kubernetesedges`/`serveredges`
+built-ins were folded into the `edges` provider in #435; the MCP aggregate now
+lives hub-side in `pkg/hub/mcpaggregate/`; `projects` was folded into
+`app-studio`).
 
-Built-ins are registered via their `manifest.go` and compiled into the hub
-binary; standalone providers run as separate images/pods and register at runtime
-via their `CatalogEntry`. Per-provider deep docs:
-`docs/code-provider-architecture.md`, `docs/infrastructure-architecture.md`,
-`docs/kuery-provider-architecture.md`, `docs/application-template-architecture.md`,
-`docs/providers.md`, `docs/provider-publishing.md`, `docs/provider-scoping.md`.
+| Provider | APIExport | What it does |
+|----------|-----------|--------------|
+| `quickstart` | `quickstart.providers.faros.sh` | **Reference provider** — minimal HTTP server + embedded Vite portal + sample `Greeting` API. Start here. |
+| `edges` | `edges.providers.faros.sh` | The connectivity core: `KubernetesCluster`/`LinuxServer` edges, revdial tunnel termination, kubectl/SSH/MCP proxying, `Service` connectors (host/LAN apps → MCP tools), `Workload`/`Placement` scheduling + Helm marketplace. Single-replica (process-global dialer map). |
+| `infrastructure` | `infrastructure.providers.faros.sh` | Application Templates via kro: template catalog, instance provisioning, data plane (exec/logs/etc.), app hosting + access gate |
+| `code` | `code.providers.faros.sh` | Git hosting management (repos, deploy keys, collaborators, packages) behind a `GitBackend` seam; GitHub is the only real backend today |
+| `databricks` | `databricks.providers.faros.sh` | Databricks SQL warehouse tables via governed `query_table` action + MCP tools; narrowest claims posture in the repo (the model citizen) |
+| `agents` | `agents.faros.sh` | Long-running personal AI agents: chat, schedules, triggers, approvals, budgets, memory, multi-channel (Slack/Telegram/Discord/SMTP). Needs hub + Postgres only |
+| `app-studio` | `ai.faros.sh` | Persistent AI project workspace (projects, sessions, dev sandboxes, publishing, skills). Being replaced by `vibe-studio` |
+| `vibe-studio` | `vibe.faros.sh` | Wizard-first app builder (event-sourced sessions); replaces `app-studio`. Early phase |
+| `kuery` | `kuery.providers.faros.sh` | Fleet-wide object query, relationship traversal, impact analysis across connected edges + MCP tools |
+
+Per-provider deep docs: `docs/code-provider-architecture.md`,
+`docs/infrastructure-architecture.md`, `docs/kuery-provider-architecture.md`,
+`docs/agents-provider-architecture.md`, `docs/vibe-studio-design.md`,
+`docs/application-template-architecture.md`, `docs/edges-marketplace.md`,
+`docs/mcp-architecture.md`, `docs/providers.md`, `docs/provider-publishing.md`,
+`docs/provider-scoping.md`.
 
 ### 5.6 Adding / modifying a provider — checklist
 
@@ -515,7 +522,7 @@ column, so the content doesn't resize or shift when navigating between pages.
 
 ### Provider portals that ship their own stylesheet
 
-Some built-in provider portals (e.g. `providers/edges`, `providers/infrastructure`)
+Some provider portals (e.g. `providers/edges`, `providers/infrastructure`)
 are standalone IIFE bundles that render in **light DOM** and inject one namespaced
 `style.css` (imported `?raw` in `main.ts`) instead of compiling Tailwind utilities
 through the host. That is allowed — but the stylesheet is **not** a license to
@@ -567,9 +574,9 @@ new hand-rolled provider stylesheet. When in doubt, open the matching component 
 - Don't hand-edit `zz_generated*` or `config/crds` / `config/kcp` outputs.
 - License boilerplate is required on Go files (generated files exempt);
   `make boilerplate` adds it.
-- The hub binary embeds CRDs (`pkg/hub/bootstrap/crds`) and built-in provider
-  portals — rebuild the hub after changing either so the embedded FS stays in
-  sync.
+- The hub binary embeds CRDs (`pkg/hub/bootstrap/crds`) — rebuild the hub
+  after changing them so the embedded FS stays in sync. Provider portals embed
+  into their own provider binaries, not the hub.
 - Standalone providers are separate modules: changes there need their own
   build/test and `go.work` awareness; they are not in the root `./...`.
 - Before merging: `make verify` is the full gate

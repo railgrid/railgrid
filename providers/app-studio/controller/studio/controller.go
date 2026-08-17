@@ -236,7 +236,10 @@ func (r *Reconciler) ensureInstance(ctx context.Context, c client.Client, st *ai
 				studioLabel:   st.Name,
 			},
 		},
-		"spec": map[string]any{"name": ref.Name, "size": size},
+		"spec": map[string]any{
+			"template": svc.template,
+			"values":   map[string]any{"name": ref.Name, "size": size},
+		},
 	}}
 	if err := c.Create(ctx, inst); err != nil && !apierrors.IsAlreadyExists(err) {
 		return nil, err

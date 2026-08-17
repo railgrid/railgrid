@@ -30,12 +30,12 @@ import (
 	infrav1alpha1 "github.com/faroshq/provider-infrastructure/apis/v1alpha1"
 )
 
-// ContractGetter returns the data-plane contract for an instance resource
-// (the lowercase plural, e.g. "simplewebapps"). Returns a nil contract with no
-// error when the template declares no data plane, and an error when no template
-// owns the resource.
+// ContractGetter returns the data-plane contract for a Template (by
+// catalog name — the value an Instance carries in spec.template). Returns a
+// nil contract with no error when the template declares no data plane, and
+// an error when no such template exists.
 type ContractGetter interface {
-	For(ctx context.Context, resource string) (*infrav1alpha1.TemplateDataPlane, error)
+	For(ctx context.Context, templateName string) (*infrav1alpha1.TemplateDataPlane, error)
 }
 
 // DevelopmentGetter returns the platform-owned development component that
@@ -43,7 +43,7 @@ type ContractGetter interface {
 // image and working-directory policy remains in spec.development rather than
 // being duplicated in the tenant-facing dataPlane block.
 type DevelopmentGetter interface {
-	DevelopmentFor(ctx context.Context, resource, component string) (*infrav1alpha1.TemplateDevelopmentComponent, error)
+	DevelopmentFor(ctx context.Context, templateName, component string) (*infrav1alpha1.TemplateDevelopmentComponent, error)
 }
 
 var templateGVR = schema.GroupVersionResource{
@@ -52,11 +52,13 @@ var templateGVR = schema.GroupVersionResource{
 	Resource: "templates",
 }
 
-// TemplateContractGetter resolves a resource's data-plane contract by reading
+// TemplateContractGetter resolves a template's data-plane contract by reading
 // Templates from the provider workspace with the provider's own (platform)
 // kcp client. Templates are platform-owned and cluster-scoped, so reading them
 // with the provider credential is correct — the caller's RBAC is enforced
-// separately, on the instance (see handler.go).
+// separately, on the instance (see handler.go). The template NAME comes from
+// the instance's spec.template, which the caller was already authorized to
+// read — never from a request field a caller could pick freely.
 type TemplateContractGetter struct {
 	templates dynamic.NamespaceableResourceInterface
 }
@@ -71,15 +73,11 @@ func NewTemplateContractGetter(client dynamic.Interface) *TemplateContractGetter
 	return &TemplateContractGetter{templates: client.Resource(templateGVR)}
 }
 
-// For lists Templates and returns the dataPlane of the one whose
-// spec.instanceCRD.resource matches. Not cached: the Template set is tiny and a
-// stale contract would silently mis-route a proxy, so we always read fresh.
-func (g *TemplateContractGetter) For(ctx context.Context, resource string) (*infrav1alpha1.TemplateDataPlane, error) {
-	resource = strings.TrimSpace(resource)
-	if resource == "" {
-		return nil, fmt.Errorf("empty instance resource")
-	}
-	tmpl, err := g.templateForResource(ctx, resource)
+// For returns the named Template's dataPlane. Not cached: the Template set
+// is tiny and a stale contract would silently mis-route a proxy, so we
+// always read fresh.
+func (g *TemplateContractGetter) For(ctx context.Context, templateName string) (*infrav1alpha1.TemplateDataPlane, error) {
+	tmpl, err := g.templateByName(ctx, templateName)
 	if err != nil {
 		return nil, err
 	}
@@ -89,13 +87,12 @@ func (g *TemplateContractGetter) For(ctx context.Context, resource string) (*inf
 // DevelopmentFor returns the matching platform-owned development component.
 // It intentionally reads the Template rather than trusting request fields so
 // a caller cannot select an image or escape the component's working directory.
-func (g *TemplateContractGetter) DevelopmentFor(ctx context.Context, resource, component string) (*infrav1alpha1.TemplateDevelopmentComponent, error) {
-	resource = strings.TrimSpace(resource)
+func (g *TemplateContractGetter) DevelopmentFor(ctx context.Context, templateName, component string) (*infrav1alpha1.TemplateDevelopmentComponent, error) {
 	component = strings.TrimSpace(component)
-	if resource == "" || component == "" {
-		return nil, fmt.Errorf("resource and component are required")
+	if component == "" {
+		return nil, fmt.Errorf("component is required")
 	}
-	tmpl, err := g.templateForResource(ctx, resource)
+	tmpl, err := g.templateByName(ctx, templateName)
 	if err != nil {
 		return nil, err
 	}
@@ -117,22 +114,19 @@ func (g *TemplateContractGetter) DevelopmentFor(ctx context.Context, resource, c
 	return &development, nil
 }
 
-func (g *TemplateContractGetter) templateForResource(ctx context.Context, resource string) (*unstructured.Unstructured, error) {
+func (g *TemplateContractGetter) templateByName(ctx context.Context, name string) (*unstructured.Unstructured, error) {
 	if g == nil || g.templates == nil {
 		return nil, fmt.Errorf("template contract getter is unavailable")
 	}
-	list, err := g.templates.List(ctx, metav1.ListOptions{})
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("instance names no template")
+	}
+	tmpl, err := g.templates.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("listing templates: %w", err)
+		return nil, fmt.Errorf("reading template %q: %w", name, err)
 	}
-	for i := range list.Items {
-		tmpl := &list.Items[i]
-		got, _, _ := unstructured.NestedString(tmpl.Object, "spec", "instanceCRD", "resource")
-		if strings.TrimSpace(got) == resource {
-			return tmpl, nil
-		}
-	}
-	return nil, fmt.Errorf("no template owns resource %q", resource)
+	return tmpl, nil
 }
 
 // dataPlaneFromTemplate extracts and decodes spec.dataPlane from a Template's

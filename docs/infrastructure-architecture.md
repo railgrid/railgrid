@@ -1,8 +1,15 @@
 # Infrastructure provider: kcp-native architecture
 
+> **Update:** the per-template instance kinds described in §4.2 (and the
+> CRD/APIResourceSchema synthesis in §5.1) have been retired in favor of ONE
+> flattened `Instance` kind — see
+> [infrastructure-flattened-instances.md](infrastructure-flattened-instances.md).
+> The Template catalog, CachedResource projection, backend seam, and kro RGD
+> derivation below still hold.
+
 Status: **Design proposal, not implemented.**
 Author: 2026-06-03
-Related: `providers/infrastructure/` (current REST-broker implementation), kcp `cache/v1alpha1` (CachedResource), `faroshq/kro-multicluster` (the multicluster-runtime fork of kro used by the kro backend, deployed via PR #227).
+Related: `providers/infrastructure/` (current REST-broker implementation), kcp `cache/v1alpha1` (CachedResource), upstream `kro-run/kro` (single-cluster on the runtime cluster; see infrastructure-flattened-instances.md).
 
 > **Revision note (rev 3):** rev 2 collapsed the platform onto kro's data model — RGDs as the user-facing template type, kro-synthesized CRDs as the user-facing instance type. The reviewer flagged this as leaking the backend through the abstraction. **kro is one backend. Terraform, native cloud APIs, anything that materializes a graph of resources from a parametric spec is another.** This rev re-introduces a platform-level type system that backends implement, with explicit guidance that tenants and the portal never see `kro.run/*`, RGDs, or anything backend-flavoured.
 
@@ -104,7 +111,7 @@ provider binary
   │        DeleteInstance(ctx, template, instance) → error
   │
   ├─ Backends (one Go package each)
-  │      kro/        — uses faroshq/kro-multicluster runtime
+  │      kro/        — uses upstream kro-run/kro runtime
   │      terraform/  — sketch; not in v1
   │      cloud/      — sketch; not in v1
   │
@@ -327,7 +334,7 @@ SetupTemplate:        Parse spec.backendConfig as a kro resource graph.
 TeardownTemplate:     Delete the RGD; kro's own controller GCs the
                       synthesized CRD.
 
-Run:                  Start the faroshq/kro-multicluster runtime
+Run:                  Start the upstream kro runtime
                       pointed at the APIExport virtual workspace
                       (one connection, all tenants). kro watches the
                       per-template CRs in tenant workspaces and
@@ -462,7 +469,7 @@ Pre-v1. Clean break. PR A through C ship the new architecture in parallel with t
 - **Templates** = `Template` CRs in the provider workspace, group `infrastructure.faros.sh`. Projected read-only via `CachedResource`. The catalog.
 - **Instances** = per-template CRDs in `infrastructure.faros.sh`, declared by `Template.spec.instanceCRD`, registered by the Template controller, projected via APIExport. Tenants apply these.
 - **Backends** = a Go interface with three methods (`SetupTemplate`, `TeardownTemplate`, `Run`). One implementation today (kro), the seam exists for terraform / cloud / others.
-- **kro backend** uses the `faroshq/kro-multicluster` fork and authors RGDs in non-tenant-visible state. Tenants never see RGDs or anything `kro.run/*`.
+- **kro backend** uses upstream `kro-run/kro` and authors RGDs in non-tenant-visible state. Tenants never see RGDs or anything `kro.run/*`.
 - **Provider binary** = Template controller + CachedResource provisioner + backend dispatcher + registered backends + SPA + MCP host. No business logic outside backends.
 - **Migration** = clean break.
 

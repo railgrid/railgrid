@@ -29,6 +29,7 @@ import (
 	"sort"
 	"strings"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
@@ -42,41 +43,54 @@ import (
 // are platform-stamped.
 var alwaysImmutableInputs = []string{"name", "farosMode", "expose", "credentialsSecretName"}
 
-// updateInstance locates the named instance, merge-patches its spec, rejects
-// immutable-path changes, and writes the CR back. Returns the refreshed
-// instance and the dot-paths that actually changed (empty patch or no-op
-// patch → no write, empty changed list).
+// updateInstance locates the named instance, merge-patches its spec.values,
+// rejects immutable-path changes, and writes the CR back. Returns the
+// refreshed instance and the dot-paths that actually changed (empty patch or
+// no-op patch → no write, empty changed list). templates supplies the
+// per-template immutable-input declarations, matched via spec.template.
 func updateInstance(ctx context.Context, dyn dynamic.Interface, templates []kro.Template, name string, patch map[string]any) (*kro.Instance, []string, error) {
-	for i := range templates {
-		t := &templates[i]
-		if t.InstanceGVR.Resource == "" {
-			continue
-		}
-		u, err := dyn.Resource(t.InstanceGVR).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			continue
-		}
-		spec, _, _ := unstructured.NestedMap(u.Object, "spec")
-		if spec == nil {
-			spec = map[string]any{}
-		}
-		merged := mergePatchValues(spec, patch)
-		changed := changedValuePaths(spec, merged)
-		if len(changed) == 0 {
-			inst := instanceFromUnstructured(u, t.Name)
-			return inst, nil, nil
-		}
-		if err := rejectImmutableChanges(changed, t); err != nil {
-			return nil, nil, err
-		}
-		u.Object["spec"] = merged
-		updated, err := dyn.Resource(t.InstanceGVR).Update(ctx, u, metav1.UpdateOptions{})
-		if err != nil {
-			return nil, nil, fmt.Errorf("update %s/%s: %w", t.InstanceGVR.Resource, name, err)
-		}
-		return instanceFromUnstructured(updated, t.Name), changed, nil
+	u, err := dyn.Resource(instancesGVR).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, nil, kro.ErrInstanceNotFound
 	}
-	return nil, nil, kro.ErrInstanceNotFound
+	if err != nil {
+		return nil, nil, fmt.Errorf("getting instance %q: %w", name, err)
+	}
+
+	templateName, _, _ := unstructured.NestedString(u.Object, "spec", "template")
+	var t *kro.Template
+	for i := range templates {
+		if templates[i].Name == templateName {
+			t = &templates[i]
+			break
+		}
+	}
+	if t == nil {
+		// The template may have been retired while its instances live on;
+		// enforce the always-immutable set with no template-declared extras.
+		t = &kro.Template{Name: templateName}
+	}
+
+	values, _, _ := unstructured.NestedMap(u.Object, "spec", "values")
+	if values == nil {
+		values = map[string]any{}
+	}
+	merged := mergePatchValues(values, patch)
+	changed := changedValuePaths(values, merged)
+	if len(changed) == 0 {
+		return instanceFromUnstructured(u), nil, nil
+	}
+	if err := rejectImmutableChanges(changed, t); err != nil {
+		return nil, nil, err
+	}
+	if err := unstructured.SetNestedMap(u.Object, merged, "spec", "values"); err != nil {
+		return nil, nil, fmt.Errorf("set spec.values: %w", err)
+	}
+	updated, err := dyn.Resource(instancesGVR).Update(ctx, u, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, nil, fmt.Errorf("update instance %q: %w", name, err)
+	}
+	return instanceFromUnstructured(updated), changed, nil
 }
 
 // rejectImmutableChanges fails when any changed path is covered by the

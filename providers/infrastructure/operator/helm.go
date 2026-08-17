@@ -11,22 +11,114 @@ You may obtain a copy of the License at
 package operator
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/rest"
 
 	"github.com/faroshq/provider-infrastructure/apis/v1alpha1"
-	"github.com/faroshq/provider-infrastructure/install"
 )
+
+// crdGVR addresses CustomResourceDefinitions on the runtime cluster.
+var crdGVR = schema.GroupVersionResource{
+	Group:    "apiextensions.k8s.io",
+	Version:  "v1",
+	Resource: "customresourcedefinitions",
+}
+
+// EnsureKroChartCRDs applies the chart's crds/ directory content to the
+// runtime cluster. Helm only installs crds/-dir CRDs on FIRST install and
+// never upgrades them, so without this a chart version bump (or the fork →
+// upstream switch) leaves stale RGD CRDs behind and kro's newer status
+// fields are silently pruned.
+//
+// The chart is pulled and untarred rather than read via `helm show crds`:
+// depending on the helm version, OCI pull chatter ("Pulled: …") lands on
+// stdout and corrupts the YAML stream.
+func EnsureKroChartCRDs(ctx context.Context, runtimeConfig *rest.Config, kubeconfigPath string, kro v1alpha1.KroSpec) error {
+	tmp, err := os.MkdirTemp("", "kro-chart-*")
+	if err != nil {
+		return fmt.Errorf("mktemp: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(tmp) }()
+
+	out, err := runHelm(ctx, kubeconfigPath, "pull", kro.Chart, "--version", kro.Version, "--untar", "--untardir", tmp)
+	if err != nil {
+		return fmt.Errorf("helm pull %s: %w\n%s", kro.Chart, err, string(out))
+	}
+	crdFiles, err := filepath.Glob(filepath.Join(tmp, "*", "crds", "*.yaml"))
+	if err != nil {
+		return fmt.Errorf("glob chart crds: %w", err)
+	}
+
+	dyn, err := dynamic.NewForConfig(runtimeConfig)
+	if err != nil {
+		return fmt.Errorf("runtime dynamic client: %w", err)
+	}
+
+	var raw bytes.Buffer
+	for _, f := range crdFiles {
+		data, rerr := os.ReadFile(f)
+		if rerr != nil {
+			return fmt.Errorf("read %s: %w", f, rerr)
+		}
+		raw.Write(data)
+		raw.WriteString("\n---\n")
+	}
+
+	decoder := utilyaml.NewYAMLOrJSONDecoder(&raw, 4096)
+	for {
+		obj := &unstructured.Unstructured{}
+		if derr := decoder.Decode(obj); derr != nil {
+			if strings.Contains(derr.Error(), "EOF") {
+				break
+			}
+			return fmt.Errorf("decode chart CRDs: %w", derr)
+		}
+		if obj.GetName() == "" || obj.GetKind() != "CustomResourceDefinition" {
+			continue
+		}
+		existing, gerr := dyn.Resource(crdGVR).Get(ctx, obj.GetName(), metav1.GetOptions{})
+		if apierrors.IsNotFound(gerr) {
+			if _, cerr := dyn.Resource(crdGVR).Create(ctx, obj, metav1.CreateOptions{}); cerr != nil && !apierrors.IsAlreadyExists(cerr) {
+				return fmt.Errorf("create CRD %s: %w", obj.GetName(), cerr)
+			}
+			continue
+		}
+		if gerr != nil {
+			return fmt.Errorf("get CRD %s: %w", obj.GetName(), gerr)
+		}
+		obj.SetResourceVersion(existing.GetResourceVersion())
+		if _, uerr := dyn.Resource(crdGVR).Update(ctx, obj, metav1.UpdateOptions{}); uerr != nil {
+			return fmt.Errorf("update CRD %s: %w", obj.GetName(), uerr)
+		}
+	}
+	return nil
+}
 
 // EnsureKroRelease install/upgrades the kro Helm release on the runtime cluster
 // (addressed by runtimeKubeconfigPath) with values derived from the CR. It
 // shells out to the `helm` binary — using the Go SDK would drag k8s.io/kubernetes
-// into this module. The kcp-kubeconfig Secret kro mounts is seeded separately
-// (install.SeedKroClusterFromKubeconfig) before this runs.
+// into this module.
+//
+// kro runs SINGLE-CLUSTER: with the flattened Instance kind, tenants author
+// instances in kcp and the infrastructure provider's instance controller
+// materializes the per-template kro CRs on this runtime cluster — kro never
+// watches kcp anymore, so the multicluster/kcp-apiexport and
+// deploy-to-local-runtime modes are off (their flag defaults).
 func EnsureKroRelease(ctx context.Context, runtimeKubeconfigPath string, kro v1alpha1.KroSpec) error {
 	// Clear any release wedged in a pending-* state by an interrupted prior helm
 	// operation before attempting the upgrade — otherwise helm refuses with
@@ -40,23 +132,15 @@ func EnsureKroRelease(ctx context.Context, runtimeKubeconfigPath string, kro v1a
 		"upgrade", "--install", kro.ReleaseName, kro.Chart,
 		"--version", kro.Version,
 		"--namespace", kro.Namespace, "--create-namespace",
-		"--set", "multicluster.enabled=true",
-		"--set", "multicluster.provider=kcp-apiexport",
-		"--set", "multicluster.kcp.kubeconfigSecret=" + install.KroSecretName,
-		"--set", "multicluster.kcp.apiExportEndpointSlice=" + kro.APIExportEndpointSlice,
-		"--set", "controller.deployToLocalRuntime=true",
 	}
+	// Image overrides are opt-in: the upstream chart's own defaults
+	// (registry.k8s.io/kro/kro at the chart's appVersion) are correct.
 	if kro.Image.Repository != "" {
 		args = append(args, "--set", "image.repository="+kro.Image.Repository)
 	}
-	// Default the image tag to the chart version when not pinned separately — the
-	// fork chart otherwise defaults to the upstream image, which lacks the
-	// multicluster build.
-	tag := kro.Image.Tag
-	if tag == "" {
-		tag = kro.Version
+	if kro.Image.Tag != "" {
+		args = append(args, "--set", "image.tag="+kro.Image.Tag)
 	}
-	args = append(args, "--set", "image.tag="+tag)
 	for k, v := range kro.ExtraValues {
 		args = append(args, "--set", k+"="+v)
 	}

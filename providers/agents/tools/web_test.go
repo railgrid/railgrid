@@ -200,7 +200,7 @@ func TestDataPlaneSearchRequest(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "https://hub.example.com/services/providers/infrastructure/dataplane/clusters/23qp2e0jwjeqwp2i/searxngs/search/proxy/search"
+		want := "https://hub.example.com/services/providers/infrastructure/dataplane/clusters/23qp2e0jwjeqwp2i/instances/search/proxy/search"
 		if got := req.URL.Scheme + "://" + req.URL.Host + req.URL.Path; got != want {
 			t.Fatalf("url = %s\nwant %s", got, want)
 		}

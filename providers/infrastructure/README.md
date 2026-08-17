@@ -12,7 +12,7 @@
 > the mirror is published.
 
 A faros provider that brokers application templates from a central
-[kro](https://github.com/faroshq/kro-multicluster) (Kube Resource
+[kro](https://github.com/kro-run/kro) (Kube Resource
 Orchestrator) cluster into faros tenant workspaces. A tenant picks a
 template in the faros portal — or asks an MCP-driven LLM — supplies
 inputs, and this provider creates the kro instance CR on their behalf
@@ -27,8 +27,8 @@ continuously:
 
 - bootstraps the provider kcp workspace (CRDs, APIExport, CachedResource,
   EndpointSlice, the `infrastructure` APIExportEndpointSlice, schemas, Templates);
-- **lifecycles the kro Helm release** via the helm CLI (our multicluster fork
-  chart + image, `kcp-apiexport` mode), and seeds kro's `kcp-kubeconfig`;
+- **lifecycles the kro Helm release** via the helm CLI (upstream kro,
+  single-cluster; chart CRDs applied explicitly so version bumps carry them);
 - owns the **provider serve Deployment** (image/replicas/port from the CR).
 
 It is the same `infrastructure-provider` binary (`controller` subcommand); the
@@ -82,9 +82,9 @@ Values:
   existing Secret via `operator.providerKubeconfigSecret.name` and omit the
   inline value.
 - `operator.runtimeKubeconfig` — **optional**; omit for the in-cluster runtime.
-- `operator.kro.*` — chart/version/image of the kro release (defaults to the
-  multicluster fork: `oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro` +
-  `ghcr.io/faroshq/kro-multicluster/kro`).
+- `operator.kro.*` — chart/version/image of the kro release (defaults to
+  upstream: `oci://registry.k8s.io/kro/charts/kro`, image from the chart's
+  own defaults).
 - `operator.provider.image.*` — the provider serve image (defaults to the chart
   image/appVersion).
 - `operator.application.*` — the `application` template's exposure layer:
@@ -300,76 +300,33 @@ docker build -t faros-infrastructure-provider:dev .
 ## Manual kro install (without the operator)
 
 The operator installs and lifecycles kro for you. To wire it by hand (e.g. for
-the init-container bootstrap deploy below), install kro in **`kcp-apiexport`**
-mode.
-
-### How it's wired — and the ordering
-
-kro and the provider are mutually dependent, so bring-up is a two-step dance:
-
-1. **kro chart installs first, with a _placeholder_ kubeconfig.** The chart
-   mounts the `kcp-kubeconfig` Secret (key `kubeconfig`) at
-   `/etc/kro/kcp/kubeconfig`; the mount is non-optional, so the Secret must exist
-   or the pod never schedules. You seed a stub value — kro starts but stays
-   not-Ready until the real credentials arrive.
-2. **The provider's `infrastructure init`** (the chart's init container) is what
-   makes kro functional. It:
-   - creates the APIExport + the `infrastructure` APIExportEndpointSlice in the
-     provider workspace ([`install.PlatformAPIExportEndpointSlice`](install/endpointslice.go)) — what kro watches;
-   - **overwrites** the `kcp-kubeconfig` Secret in `kro-system` with a real
-     kubeconfig pointing at the provider workspace, carrying the runtime SA
-     bearer token scoped by the provider's ClusterRole
-     ([`install.SeedKroCluster`](install/kroseed.go) — needs `KRO_KUBECONFIG`
-     set so init can reach the kro cluster);
-   - bounces the kro Deployment so it reloads the new kubeconfig.
-
-> [!IMPORTANT]
-> So it is **neither** "provider then kro" **nor** "kro then provider": the kro
-> chart goes in first with a placeholder Secret, and the provider's **init** then
-> seeds it (creates the endpoint slice, writes the real `kcp-kubeconfig`,
-> restarts kro). Until init runs, kro has no VW URL to watch and tenant instances
-> go unreconciled.
-
-### Install kro (kcp-apiexport mode)
-
-kro ships its CRDs in the chart. The
-[`faroshq/kro-multicluster`](https://github.com/faroshq/kro-multicluster) fork
-publishes its image and chart to GHCR. The chart defaults to the upstream image,
-so you **must** point `image.repository`/`tag` at the fork or the multicluster
-features are missing:
+the init-container bootstrap deploy below), install **upstream kro,
+single-cluster**: tenants author the flattened `Instance` kind in kcp and the
+provider's instance controller materializes the per-template kro CRs on the
+runtime cluster, so kro never talks to kcp — no kcp kubeconfig, no
+multicluster values, no ordering dance.
 
 ```sh
-KRO_VERSION=v0.0.1-mc.7   # latest faroshq/kro-multicluster release tag
+KRO_VERSION=0.9.3   # upstream release (must contain the SSA-finalizer deletion fix, ≥0.9.x)
 
-# Placeholder kcp credentials so the kro pod can schedule; the provider's
-# `infrastructure init` overwrites this Secret with the real kubeconfig and
-# restarts kro (see above).
-kubectl create namespace kro-system
-kubectl -n kro-system create secret generic kcp-kubeconfig \
-  --from-literal=kubeconfig=pending-init
+# helm only installs crds/-dir CRDs on FIRST install; apply them explicitly
+# so version bumps carry CRD schema changes too.
+helm show crds oci://registry.k8s.io/kro/charts/kro --version "$KRO_VERSION" | kubectl apply -f -
 
-helm install kro oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro \
+helm install kro oci://registry.k8s.io/kro/charts/kro \
   --version "$KRO_VERSION" \
-  -n kro-system \
-  --set image.repository=ghcr.io/faroshq/kro-multicluster/kro \
-  --set image.tag="$KRO_VERSION" \
-  --set multicluster.enabled=true \
-  --set multicluster.provider=kcp-apiexport \
-  --set multicluster.kcp.kubeconfigSecret=kcp-kubeconfig \
-  --set multicluster.kcp.apiExportEndpointSlice=infrastructure \
-  --set controller.deployToLocalRuntime=true
+  -n kro-system --create-namespace
 ```
 
-Then deploy the provider with bootstrap enabled (below); its init container seeds
-kro. Verify:
+Verify:
 
 ```sh
 kubectl -n kro-system rollout status deploy/kro
-kubectl -n kro-system logs deploy/kro | grep -i apiexport   # should log the discovered VW URL
 ```
 
-Apply the RGD templates you want to expose, labeled `faros.sh/expose=true`
-(see [docs/credentials.md](docs/credentials.md)).
+The provider's `infrastructure init` (or the operator's bootstrap) then seeds
+Templates in kcp; the Template controller authors one RGD per template on this
+cluster and the instance controller materializes tenant Instances into it.
 
 ## Deploy with Helm (init-container bootstrap, non-operator)
 

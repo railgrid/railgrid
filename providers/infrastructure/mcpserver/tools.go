@@ -223,11 +223,7 @@ func registerTools(srv *mcp.Server, deps Deps, ident identity) {
 		if err != nil {
 			return nil, listInstancesOutput{}, err
 		}
-		ts, err := listTemplates(ctx, dyn)
-		if err != nil {
-			return nil, listInstancesOutput{}, fmt.Errorf("list templates: %w", err)
-		}
-		ins, err := listInstances(ctx, dyn, ts)
+		ins, err := listInstances(ctx, dyn)
 		if err != nil {
 			return nil, listInstancesOutput{}, fmt.Errorf("list instances: %w", err)
 		}
@@ -250,11 +246,7 @@ func registerTools(srv *mcp.Server, deps Deps, ident identity) {
 		if err != nil {
 			return nil, kro.Instance{}, err
 		}
-		ts, err := listTemplates(ctx, dyn)
-		if err != nil {
-			return nil, kro.Instance{}, fmt.Errorf("list templates: %w", err)
-		}
-		inst, err := getInstance(ctx, dyn, ts, in.Name)
+		inst, err := getInstance(ctx, dyn, in.Name)
 		if err != nil {
 			if errors.Is(err, kro.ErrInstanceNotFound) {
 				return nil, kro.Instance{}, fmt.Errorf("instance %q not found", in.Name)
@@ -305,11 +297,7 @@ func registerTools(srv *mcp.Server, deps Deps, ident identity) {
 		if err != nil {
 			return nil, deleteOutput{}, err
 		}
-		ts, err := listTemplates(ctx, dyn)
-		if err != nil {
-			return nil, deleteOutput{}, fmt.Errorf("list templates: %w", err)
-		}
-		err = deleteInstance(ctx, dyn, ts, in.Name)
+		err = deleteInstance(ctx, dyn, in.Name)
 		if err != nil && !errors.Is(err, kro.ErrInstanceNotFound) {
 			return nil, deleteOutput{}, fmt.Errorf("delete instance: %w", err)
 		}

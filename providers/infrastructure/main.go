@@ -190,7 +190,7 @@ func serveWithConfig(ctx context.Context, kcpConfig *rest.Config) {
 
 	// Cross-tenant Application instance controller (fqdn stamp + OIDC
 	// client-secret bridge). Opt-in via FAROS_APP_BASE_DOMAIN + KRO_KUBECONFIG.
-	startApplicationController(ctx, kcpConfig)
+	startInstanceController(ctx, kcpConfig)
 
 	go runHeartbeat(ctx)
 

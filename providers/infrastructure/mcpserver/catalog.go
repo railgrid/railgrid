@@ -10,10 +10,12 @@ package mcpserver
 
 // CRD-backed catalog + instance operations. These mirror what the portal
 // does in portal/src/api.ts: read Templates and create/list/delete the
-// per-template instance CRs DIRECTLY against the tenant's kcp workspace —
+// flattened Instance CRs DIRECTLY against the tenant's kcp workspace —
 // never the RGD-on-the-kro-cluster path. Templates are projected into each
 // tenant workspace by the publish-templates CachedResource + the provider's
-// APIExport, so a tenant-scoped dynamic client sees them.
+// APIExport, so a tenant-scoped dynamic client sees them. Which product an
+// Instance is rides in spec.template; its template-shaped input in
+// spec.values.
 
 import (
 	"context"
@@ -38,6 +40,10 @@ const templateGroup = "infrastructure.faros.sh"
 // templatesGVR is the cluster-scoped Template resource the portal and MCP
 // both read from the tenant workspace.
 var templatesGVR = schema.GroupVersionResource{Group: templateGroup, Version: "v1alpha1", Resource: "templates"}
+
+// instancesGVR is the one flattened instance resource every template's
+// instances are authored as.
+var instancesGVR = schema.GroupVersionResource{Group: templateGroup, Version: "v1alpha1", Resource: infrav1alpha1.InstancesResource}
 
 // templateLabel tags an instance CR with its originating Template's name so
 // listInstances can attribute a CR without a second lookup.
@@ -202,100 +208,79 @@ func templateAgentFromSpec(u *unstructured.Unstructured) *kro.TemplateAgent {
 	}
 }
 
-// createInstance writes the per-template instance CR into the tenant
-// workspace (apiVersion+kind from the Template; values verbatim under spec).
-// The caller maps apierrors.IsAlreadyExists.
+// createInstance writes a flattened Instance CR into the tenant workspace:
+// the template name under spec.template, the values verbatim under
+// spec.values. The caller maps apierrors.IsAlreadyExists.
 func createInstance(ctx context.Context, dyn dynamic.Interface, t *kro.Template, name string, values map[string]any) (*kro.Instance, error) {
-	if t.InstanceGVR.Resource == "" || t.InstanceKind == "" {
-		return nil, fmt.Errorf("template %q has no instanceCRD", t.Name)
-	}
 	cr := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": t.InstanceGVR.GroupVersion().String(),
-		"kind":       t.InstanceKind,
+		"apiVersion": instancesGVR.GroupVersion().String(),
+		"kind":       "Instance",
 		"metadata": map[string]any{
 			"name":   name,
 			"labels": map[string]any{templateLabel: t.Name},
 		},
-		"spec": values,
+		"spec": map[string]any{
+			"template": t.Name,
+			"values":   values,
+		},
 	}}
-	created, err := dyn.Resource(t.InstanceGVR).Create(ctx, cr, metav1.CreateOptions{})
+	created, err := dyn.Resource(instancesGVR).Create(ctx, cr, metav1.CreateOptions{})
 	if err != nil {
 		return nil, err
 	}
-	return instanceFromUnstructured(created, t.Name), nil
+	return instanceFromUnstructured(created), nil
 }
 
-// listInstances lists every Template's instance CRs in the tenant workspace.
-// Per-kind NotFound (CRD not yet established) is tolerated as empty so one
-// lagging projection doesn't fail the whole list.
-func listInstances(ctx context.Context, dyn dynamic.Interface, templates []kro.Template) ([]kro.Instance, error) {
-	var out []kro.Instance
-	for i := range templates {
-		t := &templates[i]
-		if t.InstanceGVR.Resource == "" {
-			continue
-		}
-		list, err := dyn.Resource(t.InstanceGVR).List(ctx, metav1.ListOptions{})
-		if apierrors.IsNotFound(err) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("listing %s: %w", t.InstanceGVR.Resource, err)
-		}
-		for j := range list.Items {
-			out = append(out, *instanceFromUnstructured(&list.Items[j], t.Name))
-		}
+// listInstances lists every Instance in the tenant workspace — one call,
+// every template's instances.
+func listInstances(ctx context.Context, dyn dynamic.Interface) ([]kro.Instance, error) {
+	list, err := dyn.Resource(instancesGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing instances: %w", err)
+	}
+	out := make([]kro.Instance, 0, len(list.Items))
+	for i := range list.Items {
+		out = append(out, *instanceFromUnstructured(&list.Items[i]))
 	}
 	return out, nil
 }
 
-// getInstance probes each Template's plural for a CR with the given name —
-// instance names are unique per workspace but the kind isn't carried on the
-// MCP input, so we try each. Returns kro.ErrInstanceNotFound when none match.
-func getInstance(ctx context.Context, dyn dynamic.Interface, templates []kro.Template, name string) (*kro.Instance, error) {
-	for i := range templates {
-		t := &templates[i]
-		if t.InstanceGVR.Resource == "" {
-			continue
-		}
-		u, err := dyn.Resource(t.InstanceGVR).Get(ctx, name, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("getting %s/%s: %w", t.InstanceGVR.Resource, name, err)
-		}
-		return instanceFromUnstructured(u, t.Name), nil
+// getInstance fetches one Instance by name. Returns kro.ErrInstanceNotFound
+// when absent so callers map it to a friendly message.
+func getInstance(ctx context.Context, dyn dynamic.Interface, name string) (*kro.Instance, error) {
+	u, err := dyn.Resource(instancesGVR).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, kro.ErrInstanceNotFound
 	}
-	return nil, kro.ErrInstanceNotFound
+	if err != nil {
+		return nil, fmt.Errorf("getting instance %q: %w", name, err)
+	}
+	return instanceFromUnstructured(u), nil
 }
 
-// deleteInstance probes each plural and deletes the first match. Returns
+// deleteInstance deletes one Instance by name. Returns
 // kro.ErrInstanceNotFound when nothing matched so the tool stays idempotent.
-func deleteInstance(ctx context.Context, dyn dynamic.Interface, templates []kro.Template, name string) error {
-	for i := range templates {
-		t := &templates[i]
-		if t.InstanceGVR.Resource == "" {
-			continue
-		}
-		err := dyn.Resource(t.InstanceGVR).Delete(ctx, name, metav1.DeleteOptions{})
-		if apierrors.IsNotFound(err) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("deleting %s/%s: %w", t.InstanceGVR.Resource, name, err)
-		}
-		return nil
+func deleteInstance(ctx context.Context, dyn dynamic.Interface, name string) error {
+	err := dyn.Resource(instancesGVR).Delete(ctx, name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return kro.ErrInstanceNotFound
 	}
-	return kro.ErrInstanceNotFound
+	if err != nil {
+		return fmt.Errorf("deleting instance %q: %w", name, err)
+	}
+	return nil
 }
 
-func instanceFromUnstructured(u *unstructured.Unstructured, templateName string) *kro.Instance {
+func instanceFromUnstructured(u *unstructured.Unstructured) *kro.Instance {
 	phase, _, _ := unstructured.NestedString(u.Object, "status", "phase")
 	message, _, _ := unstructured.NestedString(u.Object, "status", "message")
-	values, _, _ := unstructured.NestedMap(u.Object, "spec")
+	values, _, _ := unstructured.NestedMap(u.Object, "spec", "values")
+	templateName, _, _ := unstructured.NestedString(u.Object, "spec", "template")
 	conds, _, _ := unstructured.NestedSlice(u.Object, "status", "conditions")
 
+	if templateName == "" {
+		templateName = u.GetLabels()[templateLabel]
+	}
 	out := &kro.Instance{
 		Name:      u.GetName(),
 		Namespace: u.GetNamespace(),

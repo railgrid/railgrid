@@ -29,7 +29,7 @@ func TestConnectMCPInstanceAddressing(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "https://hub.example.com/services/providers/infrastructure/dataplane/clusters/23qp2e0jwjeqwp2i/browsers/browser/proxy"
+		want := "https://hub.example.com/services/providers/infrastructure/dataplane/clusters/23qp2e0jwjeqwp2i/instances/browser/proxy"
 		if got != want {
 			t.Fatalf("endpoint = %s\nwant %s", got, want)
 		}

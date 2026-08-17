@@ -43,7 +43,6 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/faroshq/provider-infrastructure/install"
 	"github.com/faroshq/provider-infrastructure/operator"
 )
 
@@ -141,11 +140,9 @@ func bootstrapOnce(ctx context.Context, providerCfg, runtimeCfg *rest.Config, pr
 		return err
 	}
 
-	if runtimeCfg != nil {
-		if err := install.SeedKroClusterFromKubeconfig(ctx, runtimeCfg, providerKubeconfig, workspacePath); err != nil {
-			return fmt.Errorf("seed kro: %w", err)
-		}
-	}
+	// kro runs single-cluster against the runtime cluster (the instance
+	// controller bridges kcp → runtime), so no kcp kubeconfig is seeded onto
+	// the runtime cluster.
 	return nil
 }
 

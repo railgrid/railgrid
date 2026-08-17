@@ -25,10 +25,11 @@ const (
 	defaultWorkspacePath = "root:faros:providers:vibe-studio"
 )
 
-// instanceClaimResources are the infrastructure instance resources the
-// Project reconciler lifecycles — the dev-capable templates' instanceCRD
-// plurals. Extend as the wizard's template vocabulary grows.
-var instanceClaimResources = []string{"applications", "simplewebapps", "workers", "searxngs"}
+// instanceClaimResources are the infrastructure resources the Project
+// reconciler lifecycles. The flattened API serves every template's instances
+// as ONE resource (instances.infrastructure.faros.sh, product selected by
+// spec.template), so this list never grows with the template vocabulary.
+var instanceClaimResources = []string{"instances"}
 
 // runInitCmd applies the provider's in-workspace objects (APIResourceSchemas,
 // APIExport, APIExportEndpointSlice, bind grant) using the workspace-admin

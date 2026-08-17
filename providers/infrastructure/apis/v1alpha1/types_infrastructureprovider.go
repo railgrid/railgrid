@@ -246,14 +246,14 @@ type ImageSpec struct {
 
 // KroSpec configures the kro Helm release the operator install/upgrades.
 type KroSpec struct {
-	// Chart is the OCI Helm chart reference for kro-multicluster.
-	// +kubebuilder:default="oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro"
+	// Chart is the OCI Helm chart reference for upstream kro.
+	// +kubebuilder:default="oci://registry.k8s.io/kro/charts/kro"
 	// +optional
 	Chart string `json:"chart,omitempty"`
-	// Version is the chart version (release tag), e.g. v0.0.1-mc.7.
+	// Version is the chart version (release tag), e.g. 0.9.3.
 	Version string `json:"version"`
-	// Image overrides the kro controller image. When unset the operator points
-	// it at the fork image matching the chart version.
+	// Image overrides the kro controller image. When unset the chart's own
+	// default applies (registry.k8s.io/kro/kro at the chart's appVersion).
 	// +optional
 	Image ImageSpec `json:"image,omitempty"`
 	// Namespace is the release namespace on the runtime cluster.
@@ -264,11 +264,6 @@ type KroSpec struct {
 	// +kubebuilder:default=kro
 	// +optional
 	ReleaseName string `json:"releaseName,omitempty"`
-	// APIExportEndpointSlice is the slice name in the provider workspace kro's
-	// kcp-apiexport provider watches. Must match what the bootstrap creates.
-	// +kubebuilder:default=infrastructure
-	// +optional
-	APIExportEndpointSlice string `json:"apiExportEndpointSlice,omitempty"`
 	// ExtraValues are additional `helm --set key=value` overrides applied
 	// verbatim, for chart settings the spec doesn't model first-class.
 	// +optional

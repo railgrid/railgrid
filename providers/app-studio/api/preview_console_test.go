@@ -406,10 +406,10 @@ spec:
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
 				"infrastructure_faros_sh": map[string]any{"v1alpha1": map[string]any{"TemplateYaml": string(templateJSON)}},
 			}})
-		case strings.Contains(request.Query, "ApplicationYaml"):
+		case strings.Contains(request.Query, "InstanceYaml"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
 				"infrastructure_faros_sh": map[string]any{"v1alpha1": map[string]any{
-					"ApplicationYaml": `{"apiVersion":"infrastructure.faros.sh/v1alpha1","kind":"Application","metadata":{"name":"demo-dev"},"status":{"url":"https://demo.preview.example/app?token=server-only"}}`,
+					"InstanceYaml": `{"apiVersion":"infrastructure.faros.sh/v1alpha1","kind":"Instance","metadata":{"name":"demo-dev"},"spec":{"template":"application"},"status":{"url":"https://demo.preview.example/app?token=server-only"}}`,
 				}},
 			}})
 		default:

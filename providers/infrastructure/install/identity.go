@@ -17,12 +17,11 @@ package install
 // kubernetes.io/service-account-token Secret populated by kcp's token
 // controller. The returned RuntimeIdentity carries the SA's namespace + name + token,
 // plus the server URL the serve mode connects to (the in-cluster
-// kcp front-proxy URL for now; the APIExport virtual-workspace URL
-// once SeedKroCluster discovers it).
+// kcp front-proxy URL).
 //
 // The RBAC is intentionally narrow:
 //
-//   - read access to platform Templates + per-template CRs across
+//   - read access to platform Templates + Instances across
 //     bound tenant workspaces (via the APIExport virtual workspace)
 //   - manage rights on Templates' status (the Template controller
 //     patches status on every reconcile)
@@ -221,12 +220,12 @@ func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
 				Resources: []string{"*"},
 				Verbs:     []string{"get", "list", "watch", "patch", "update"},
 			},
-			// kcp resources the Template controller has to touch.
-			// apiexportendpointslices is added for the kro-multicluster
-			// kcp-apiexport provider, which reads the slice to discover
-			// the APIExport's virtual-workspace URL.
+			// kcp resources the platform controllers have to touch.
+			// apiexportendpointslices: the provider's own multicluster
+			// controllers read the slice to discover the APIExport's
+			// virtual-workspace URL.
 			//
-			// apibindings: the kcp-apiexport provider sets up an
+			// apibindings: the apiexport multicluster provider sets up an
 			// APIBinding informer through the VW to enumerate every
 			// kcp logical cluster that has bound the APIExport — that's
 			// how it discovers tenant workspaces dynamically.

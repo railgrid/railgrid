@@ -69,7 +69,6 @@ spec:
     version: {{ .Values.operator.kro.version | quote }}
     namespace: {{ .Values.operator.kro.namespace | quote }}
     releaseName: {{ .Values.operator.kro.releaseName | quote }}
-    apiExportEndpointSlice: {{ .Values.operator.kro.apiExportEndpointSlice | quote }}
     image:
       repository: {{ .Values.operator.kro.image.repository | quote }}
       tag: {{ .Values.operator.kro.image.tag | quote }}

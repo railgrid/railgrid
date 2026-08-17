@@ -129,6 +129,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The flattened API serves exactly one instance resource; anything else
+	// is an address from the retired per-template era.
+	if req.resource != infrav1alpha1.InstancesResource {
+		http.Error(w, "unknown data-plane resource "+req.resource+"; instances is the only served resource", http.StatusNotFound)
+		return
+	}
+
 	// 1. Authorize + fetch the instance as the caller. RBAC is the gate.
 	instance, err := h.instances.Get(r.Context(), req.workspace, id.token, req.resource, req.name)
 	if err != nil {
@@ -136,14 +143,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Resolve the template's data-plane contract for this resource.
-	contract, err := h.contracts.For(r.Context(), req.resource)
+	// 2. Resolve the data-plane contract of the instance's template. The
+	// template name comes from the instance the caller was just authorized
+	// on — never from a request field.
+	templateName, _, _ := unstructured.NestedString(instance.Object, "spec", "template")
+	contract, err := h.contracts.For(r.Context(), templateName)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	if contract == nil {
-		http.Error(w, "resource "+req.resource+" exposes no data plane", http.StatusNotFound)
+		http.Error(w, "template "+templateName+" exposes no data plane", http.StatusNotFound)
 		return
 	}
 	expectedRuntimeNamespace := kro.RuntimeNamespace(req.workspace, instance.GetNamespace())
@@ -156,7 +166,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// generic endpoint proxy, even if a template happens to declare an endpoint
 	// with the same verb or Upgrade=true.
 	if req.verb == "exec" {
-		h.serveExec(w, r, id, req, contract, instance)
+		h.serveExec(w, r, id, req, templateName, contract, instance)
 		return
 	}
 
@@ -194,7 +204,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	serveProxy(w, r, h.runtime, target, req.callerPath)
 }
 
-func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity, req request, contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured) {
+func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity, req request, templateName string, contract *infrav1alpha1.TemplateDataPlane, instance *unstructured.Unstructured) {
 	if req.component == "" {
 		http.Error(w, "exec is only available for a declared component", http.StatusNotFound)
 		return
@@ -225,7 +235,7 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity,
 		http.Error(w, "exec development contract is unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	dev, err := h.development.DevelopmentFor(r.Context(), req.resource, req.component)
+	dev, err := h.development.DevelopmentFor(r.Context(), templateName, req.component)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return

@@ -958,7 +958,7 @@ spec:
       # public (default): pure passthrough — the gate never contacts the hub,
       # so a hub outage cannot affect a public app. private: the gate runs the
       # hub sign-in flow once per visitor and keeps a bounded local session;
-      # access = kcp RBAC (`get` on applications/<name> subresource `access`)
+      # access = kcp RBAC (`get` on instances/<name> subresource `access`)
       # evaluated by the hub at sign-in time.
       #
       # Route table: /api → backend, / → frontend. In development with a BYO
@@ -1013,7 +1013,7 @@ spec:
                       - name: FAROS_ACCESS_PROXY_INSTANCE_GROUP
                         value: infrastructure.faros.sh
                       - name: FAROS_ACCESS_PROXY_INSTANCE_RESOURCE
-                        value: applications
+                        value: instances
                       - name: FAROS_ACCESS_PROXY_INSTANCE_NAME
                         value: ${schema.spec.name}
                       - name: FAROS_HUB_URL

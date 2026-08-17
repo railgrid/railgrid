@@ -32,21 +32,10 @@ data:
       apiExport:
         name: "vibe.faros.sh"
         permissionClaims:
-          - resource: applications
-            group: infrastructure.faros.sh
-            verbs: [get, list, watch, create, update, patch, delete]
-            tenantScoped: true
-          - resource: simplewebapps
-            group: infrastructure.faros.sh
-            verbs: [get, list, watch, create, update, patch, delete]
-            tenantScoped: true
-          - resource: workers
-            group: infrastructure.faros.sh
-            verbs: [get, list, watch, create, update, patch, delete]
-            tenantScoped: true
-          # Web search: every project binds a private searxng instance so the
-          # assistant can look things up instead of asking the user to paste.
-          - resource: searxngs
+          # Every infrastructure template's instances are one flattened
+          # resource (product selected by spec.template), so one claim covers
+          # the runtime app, workers, and the per-project searxng backend.
+          - resource: instances
             group: infrastructure.faros.sh
             verbs: [get, list, watch, create, update, patch, delete]
             tenantScoped: true

@@ -243,15 +243,17 @@ operator:
     key: kubeconfig
 
   # kro Helm release the operator lifecycles on the runtime cluster.
+  # Upstream kro, single-cluster: the provider's instance controller bridges
+  # kcp → runtime, so kro never talks to kcp and the retired
+  # faroshq/kro-multicluster fork is no longer used.
   kro:
-    chart: oci://ghcr.io/faroshq/kro-multicluster/charts/kro/kro
-    version: v0.0.1-mc.7
+    chart: oci://registry.k8s.io/kro/charts/kro
+    version: 0.9.3
     namespace: kro-system
     releaseName: kro
-    apiExportEndpointSlice: infrastructure
     image:
-      repository: ghcr.io/faroshq/kro-multicluster/kro
-      tag: ""       # empty → defaults to kro.version
+      repository: ""   # empty → chart default (registry.k8s.io/kro/kro)
+      tag: ""          # empty → chart appVersion
     extraValues: {}
 
   # Provider serve Deployment the operator owns on the runtime cluster.

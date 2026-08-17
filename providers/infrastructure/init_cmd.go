@@ -115,7 +115,7 @@ func runInitCmd(ctx context.Context) error {
 	// export's logical cluster and publish endpoint URLs — otherwise kro never
 	// discovers the VW and tenant instances go unreconciled.
 	workspacePath := os.Getenv("INFRASTRUCTURE_WORKSPACE_PATH")
-	log.Printf("init: applying APIExportEndpointSlice (path=%q) for kro kcp-apiexport provider", workspacePath)
+	log.Printf("init: applying APIExportEndpointSlice (path=%q) for the provider's virtual-workspace controllers", workspacePath)
 	if err := install.PlatformAPIExportEndpointSlice(ctx, adminConfig, workspacePath); err != nil {
 		return fmt.Errorf("install APIExportEndpointSlice: %w", err)
 	}
@@ -201,18 +201,9 @@ func runInitCmd(ctx context.Context) error {
 		}
 	}
 
-	// kro seeding is best-effort during PR C bring-up: if no
-	// KRO_KUBECONFIG is set, we skip and log loudly. The serve
-	// subcommand still runs; tenants who apply Instance CRs see them
-	// as Pending until kro is wired.
-	if os.Getenv("KRO_KUBECONFIG") != "" {
-		log.Printf("init: seeding kro with VW kubeconfig Secret")
-		if err := install.SeedKroCluster(ctx, mint); err != nil {
-			return fmt.Errorf("seed kro: %w", err)
-		}
-	} else {
-		log.Printf("init: KRO_KUBECONFIG unset — skipping kro Secret seed; tenant Instance CRs will stay Pending until kro is configured")
-	}
+	// kro runs single-cluster against the runtime cluster (the instance
+	// controller bridges kcp → runtime), so no kcp kubeconfig is seeded onto
+	// the runtime cluster anymore.
 
 	log.Printf("init: complete. serve with INFRASTRUCTURE_KUBECONFIG=%s", kubeconfigPath)
 	return nil

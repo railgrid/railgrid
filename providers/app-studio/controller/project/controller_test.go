@@ -38,8 +38,8 @@ func binding(name string) aiv1alpha1.ProjectProviderBindingSpec {
 		Kind:     aiv1alpha1.ProjectBindingKindProviderResource,
 		ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
 			APIVersion: "infrastructure.faros.sh/v1alpha1",
-			Kind:       "Application",
-			Resource:   "applications",
+			Kind:       "Instance",
+			Resource:   "instances",
 		},
 		Values: runtime.RawExtension{Raw: []byte(`{}`)},
 	}
@@ -189,7 +189,12 @@ func TestEqualSpecAndMetaDetectsDrift(t *testing.T) {
 }
 
 func TestEnsureInstanceDeepMergesComputedFieldsAndRetriesConflict(t *testing.T) {
-	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"}}
+	p := &aiv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"},
+		Spec: aiv1alpha1.ProjectSpec{
+			Template: &aiv1alpha1.ProjectTemplateSpec{Name: "application"},
+		},
+	}
 	b := binding(projectDevelopmentBindingName)
 	b.ResourceRef.Name = "demo-dev"
 	b.Values = runtime.RawExtension{Raw: []byte(`{
@@ -205,19 +210,22 @@ func TestEnsureInstanceDeepMergesComputedFieldsAndRetriesConflict(t *testing.T) 
 			"labels": map[string]any{bindings.ProjectLabel: "demo"},
 		},
 		"spec": map[string]any{
-			"name": "demo-dev",
-			"expose": map[string]any{
-				"hostnamePrefix": "old",
-				"fqdn":           "provider-computed.example",
-				"providerField":  "preserve",
+			"template": "application",
+			"values": map[string]any{
+				"name": "demo-dev",
+				"expose": map[string]any{
+					"hostnamePrefix": "old",
+					"fqdn":           "provider-computed.example",
+					"providerField":  "preserve",
+				},
+				"credentialsSecretName": "demo-dev-credentials",
+				"nested": map[string]any{
+					"input":    "old",
+					"computed": "preserve-nested",
+				},
+				bindings.ActionsExchangeURLField: "https://stale.example/exchange",
+				"farosActionsFutureField":        "stale",
 			},
-			"credentialsSecretName": "demo-dev-credentials",
-			"nested": map[string]any{
-				"input":    "old",
-				"computed": "preserve-nested",
-			},
-			bindings.ActionsExchangeURLField: "https://stale.example/exchange",
-			"farosActionsFutureField":        "stale",
 		},
 	}}
 	instance.SetGroupVersionKind(instance.GroupVersionKind())
@@ -231,12 +239,14 @@ func TestEnsureInstanceDeepMergesComputedFieldsAndRetriesConflict(t *testing.T) 
 				if err := underlying.Get(ctx, client.ObjectKey{Name: "demo-dev"}, latest); err != nil {
 					return err
 				}
-				spec, _, err := unstructured.NestedMap(latest.Object, "spec")
+				values, _, err := unstructured.NestedMap(latest.Object, "spec", "values")
 				if err != nil {
 					return err
 				}
-				spec["expose"].(map[string]any)["fqdn"] = "fresh-provider-computed.example"
-				latest.Object["spec"] = spec
+				values["expose"].(map[string]any)["fqdn"] = "fresh-provider-computed.example"
+				if err := unstructured.SetNestedMap(latest.Object, values, "spec", "values"); err != nil {
+					return err
+				}
 				if err := underlying.Update(ctx, latest); err != nil {
 					return err
 				}
@@ -262,9 +272,12 @@ func TestEnsureInstanceDeepMergesComputedFieldsAndRetriesConflict(t *testing.T) 
 	if err := c.Get(context.Background(), client.ObjectKey{Name: "demo-dev"}, stored); err != nil {
 		t.Fatalf("get converged instance: %v", err)
 	}
-	spec, _, err := unstructured.NestedMap(stored.Object, "spec")
+	spec, _, err := unstructured.NestedMap(stored.Object, "spec", "values")
 	if err != nil {
-		t.Fatalf("get spec: %v", err)
+		t.Fatalf("get spec.values: %v", err)
+	}
+	if tmplName, _, _ := unstructured.NestedString(stored.Object, "spec", "template"); tmplName != "application" {
+		t.Fatalf("spec.template = %q, want application", tmplName)
 	}
 	expose := spec["expose"].(map[string]any)
 	if expose["hostnamePrefix"] != "desired" || expose["fqdn"] != "fresh-provider-computed.example" || expose["providerField"] != "preserve" {

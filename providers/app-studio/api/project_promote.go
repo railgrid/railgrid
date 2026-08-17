@@ -786,7 +786,7 @@ func projectObservedRedeployRevision(instance *unstructured.Unstructured) string
 	if instance == nil {
 		return ""
 	}
-	revision, _, _ := unstructured.NestedString(instance.Object, "spec", projectRedeployRevisionField)
+	revision, _, _ := unstructured.NestedString(instance.Object, "spec", "values", projectRedeployRevisionField)
 	return strings.TrimSpace(revision)
 }
 

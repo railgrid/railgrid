@@ -9,7 +9,7 @@
 package main
 
 // Platform controller manager — the one that reconciles Template CRs
-// into per-template CRDs + backend setup. Lives alongside the legacy
+// into backend setup (kro RGDs). Lives alongside the legacy
 // REST surface; the two coexist for PRs A-D and the REST handlers get
 // deleted in PR E once the UI + MCP have migrated to the kcp-native
 // path.
@@ -138,14 +138,8 @@ func startControllerManager(ctx context.Context, config *rest.Config) error {
 		log.Printf("controller manager: no kro runtime config (KRO_KUBECONFIG unset, not in a pod) — kro backend not registered (stub-only)")
 	}
 
-	dyn, err := dynamic.NewForConfig(config)
-	if err != nil {
-		return fmt.Errorf("dynamic client: %w", err)
-	}
-
 	if err := (&template.Reconciler{
 		Client:   mgr.GetClient(),
-		Dynamic:  dyn,
 		Backends: registry,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("template controller: %w", err)

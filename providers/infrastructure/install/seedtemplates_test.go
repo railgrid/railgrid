@@ -102,9 +102,12 @@ func TestSeedTemplatesExcludeOptInTerraformContrib(t *testing.T) {
 //     Service — no tenant workload is ever the direct route backend, in any
 //     mode, so flipping spec.access can never be routed around.
 func TestApplicationSeedsRouteEverythingThroughTheAccessGate(t *testing.T) {
+	// The gate's SAR targets the flattened tenant-facing resource — every
+	// template's instances are authored as instances.infrastructure.faros.sh,
+	// so access grants live on instances/<name> subresource access.
 	instanceResource := map[string]string{
-		"simple-webapp.yaml": "simplewebapps",
-		"application.yaml":   "applications",
+		"simple-webapp.yaml": "instances",
+		"application.yaml":   "instances",
 	}
 	for _, file := range []string{"simple-webapp.yaml", "application.yaml"} {
 		t.Run(file, func(t *testing.T) {

@@ -151,14 +151,13 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 	}
 	info := projectTemplateInfo{Name: obj.GetName()}
 
-	group, _, _ := unstructured.NestedString(obj.Object, "spec", "instanceCRD", "group")
-	version, _, _ := unstructured.NestedString(obj.Object, "spec", "instanceCRD", "version")
-	info.Kind, _, _ = unstructured.NestedString(obj.Object, "spec", "instanceCRD", "kind")
-	info.Resource, _, _ = unstructured.NestedString(obj.Object, "spec", "instanceCRD", "resource")
-	if group == "" || version == "" || info.Kind == "" || info.Resource == "" {
-		return projectTemplateInfo{}, fmt.Errorf("template %q has an incomplete spec.instanceCRD", info.Name)
-	}
-	info.APIVersion = group + "/" + version
+	// Instance coordinates are the FLATTENED tenant-facing kind: every
+	// template's instances are authored as instances.infrastructure.faros.sh
+	// with the template name in spec.template. Template.spec.instanceCRD
+	// describes only the runtime-cluster kind and is no consumer's business.
+	info.APIVersion = "infrastructure.faros.sh/v1alpha1"
+	info.Kind = "Instance"
+	info.Resource = "instances"
 
 	productionSchema, found, err := unstructured.NestedMap(obj.Object, "spec", "schema")
 	if err != nil {
@@ -623,7 +622,7 @@ func (s *Server) templateDevelopmentPreview(ctx context.Context, c *asclient.Cli
 	}
 	observedAccess := ""
 	if len(target.PreviewAccessModes) > 0 {
-		observedAccess, _, _ = unstructured.NestedString(obj.Object, "spec", bindings.PreviewAccessField)
+		observedAccess, _, _ = unstructured.NestedString(obj.Object, "spec", "values", bindings.PreviewAccessField)
 		if strings.TrimSpace(observedAccess) == "" {
 			// Both URL-backed seed Templates default an omitted access input to
 			// public. Report that effective behavior during legacy convergence.

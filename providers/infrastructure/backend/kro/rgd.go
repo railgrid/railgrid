@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"maps"
 	"regexp"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -81,12 +82,15 @@ const (
 	rgdAPIVersion = "kro.run/v1alpha1"
 	rgdKind       = "ResourceGraphDefinition"
 
-	// instanceScope mirrors the per-template CRD scope the Template
-	// controller publishes (ClusterScoped — see
-	// controller/template/controller.go and the portal's api.ts note).
-	// The RGD's generated CRD must agree or kro and the API surface would
-	// disagree on whether instances are namespaced.
-	instanceScope = "Cluster"
+	// instanceScope is Namespaced: the per-template kro CRs live only on
+	// the runtime cluster now (tenants author the flattened Instance kind
+	// in kcp; the instance controller materializes one runtime CR per
+	// Instance in that tenant's runtime namespace). Namespacing them is
+	// what isolates same-named instances from different tenant workspaces,
+	// and it makes vanilla kro place every namespaced child in the
+	// instance's own namespace — the job the fork's deploy-to-local-runtime
+	// namespace localization used to do.
+	instanceScope = "Namespaced"
 )
 
 // rgdGVR is the ResourceGraphDefinition resource on the kro runtime cluster.
@@ -101,7 +105,7 @@ var rgdGVR = schema.GroupVersionResource{
 // truth; the RGD is derived, 1:1:
 //
 //   - metadata.name           = Template.name
-//   - spec.schema.{group,apiVersion,kind,scope} = Template.spec.instanceCRD (+ Cluster)
+//   - spec.schema.{group,apiVersion,kind,scope} = Template.spec.instanceCRD (+ Namespaced)
 //   - spec.schema.spec        = Template.spec.schema (OpenAPI) → kro SimpleSchema
 //   - spec.schema.status      = Template.spec.backendConfig.status (optional)
 //   - spec.resources          = Template.spec.backendConfig.resources (verbatim)
@@ -136,6 +140,18 @@ func buildRGD(tmpl *infrav1alpha1.Template, tokens map[string]string) (*unstruct
 		}
 	}
 
+	// Templates author every namespaced child with the placeholder
+	// namespace "default" (a convention the dev overlay also relies on).
+	// The RGD instance is Namespaced now, so children must inherit the
+	// instance's own runtime namespace — kro does that for children with NO
+	// metadata.namespace, so the placeholder is stripped here, after the dev
+	// overlay synthesized its resources. Anything other than "default" is a
+	// template targeting a foreign namespace, which the platform has never
+	// supported — refuse rather than deploy it somewhere surprising.
+	if err := stripPlaceholderNamespaces(tmpl.Name, resources); err != nil {
+		return nil, err
+	}
+
 	schemaBlock := map[string]any{
 		"apiVersion": tmpl.Spec.InstanceCRD.Version,
 		"group":      tmpl.Spec.InstanceCRD.Group,
@@ -167,6 +183,65 @@ func buildRGD(tmpl *infrav1alpha1.Template, tokens map[string]string) (*unstruct
 		},
 	}}
 	return rgd, nil
+}
+
+// stripPlaceholderNamespaces removes the authored placeholder
+// metadata.namespace ("default") from every graph resource so kro's
+// instance-namespace inheritance places the child in the instance's own
+// runtime namespace. A declared namespace with any other value is an error:
+// per-template graphs deploy into exactly one namespace — the instance's.
+//
+// RoleBinding/ClusterRoleBinding ServiceAccount subjects get the same
+// treatment, but by REWRITE rather than removal — RBAC requires an explicit
+// namespace on SA subjects (no inheritance exists for them), so the
+// placeholder becomes ${schema.metadata.namespace}, kro's reference to the
+// instance's own namespace. Without this the grant points at the literal
+// "default" namespace and every credential-minting Job in the graph is
+// Forbidden — the job the retired fork's localizeBindingSubjects used to do.
+func stripPlaceholderNamespaces(templateName string, resources []any) error {
+	for _, raw := range resources {
+		res, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		template, ok := res["template"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if meta, ok := template["metadata"].(map[string]any); ok {
+			if ns, declared := meta["namespace"].(string); declared {
+				if ns != "default" {
+					id, _ := res["id"].(string)
+					return fmt.Errorf("template %q: resource %q declares metadata.namespace %q — graph resources must use the placeholder \"default\" (rewritten to the instance's runtime namespace) and may not target foreign namespaces", templateName, id, ns)
+				}
+				delete(meta, "namespace")
+			}
+		}
+
+		kind, _ := template["kind"].(string)
+		if kind != "RoleBinding" && kind != "ClusterRoleBinding" {
+			continue
+		}
+		subjects, _ := template["subjects"].([]any)
+		for _, sraw := range subjects {
+			subject, ok := sraw.(map[string]any)
+			if !ok || subject["kind"] != "ServiceAccount" {
+				continue
+			}
+			ns, declared := subject["namespace"].(string)
+			if !declared {
+				continue
+			}
+			if ns != "default" && !strings.Contains(ns, "${") {
+				id, _ := res["id"].(string)
+				return fmt.Errorf("template %q: resource %q binds a ServiceAccount in namespace %q — subjects must use the placeholder \"default\" (rewritten to the instance's runtime namespace) or an explicit ${...} expression", templateName, id, ns)
+			}
+			if ns == "default" {
+				subject["namespace"] = "${schema.metadata.namespace}"
+			}
+		}
+	}
+	return nil
 }
 
 // schemaRefRE finds a reference to the instance's own spec inside a status

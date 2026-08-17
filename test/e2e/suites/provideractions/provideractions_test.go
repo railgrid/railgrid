@@ -459,7 +459,7 @@ func ensureInfrastructureBinding(t *testing.T, tenant dynamic.Interface, instanc
 				"name": "runtime", "provider": "infrastructure", "kind": "providerResource",
 				"resourceRef": map[string]any{
 					"name": instance, "apiVersion": "infrastructure.faros.sh/v1alpha1",
-					"kind": "Application", "resource": "applications",
+					"kind": "Instance", "resource": "instances",
 				},
 			})
 			if err := unstructured.SetNestedField(env, bindings, "bindings"); err != nil {

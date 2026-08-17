@@ -78,21 +78,22 @@ func InstanceRefs(p *vibev1alpha1.Project) []InstanceRef {
 }
 
 // DesiredInstance builds the instance CR for a ref. Pure. Mirrors the
-// infrastructure provider's own provision shape: values verbatim under spec,
-// template attribution label, plus the Project back-reference.
+// infrastructure provider's own provision shape: the template name under
+// spec.template, values verbatim under spec.values, template attribution
+// label, plus the Project back-reference.
 func DesiredInstance(p *vibev1alpha1.Project, ref InstanceRef) *unstructured.Unstructured {
 	labels := map[string]any{projectLabel: p.Name}
 	// Attribution is per binding: a project's search backend is a searxng
-	// instance, not an instance of the app's template, and the
-	// infrastructure provider lists instances by this label.
-	if ref.Template != "" {
-		labels[templateLabel] = ref.Template
-	} else if ref.Binding == vibev1alpha1.BindingRuntime && p.Spec.Template != nil && p.Spec.Template.Name != "" {
+	// instance, not an instance of the app's template.
+	templateName := ref.Template
+	if templateName == "" && ref.Binding == vibev1alpha1.BindingRuntime && p.Spec.Template != nil {
 		// Bindings written before the field existed: only the runtime is
 		// known to come from the Project's template. Guessing for the others
-		// is what produced a searxng instance labelled "application", so an
-		// unlabelled instance is the better answer.
-		labels[templateLabel] = p.Spec.Template.Name
+		// is what produced a searxng instance labelled "application".
+		templateName = p.Spec.Template.Name
+	}
+	if templateName != "" {
+		labels[templateLabel] = templateName
 	}
 	inst := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": ref.GVR.GroupVersion().String(),
@@ -101,7 +102,10 @@ func DesiredInstance(p *vibev1alpha1.Project, ref InstanceRef) *unstructured.Uns
 			"name":   ref.Name,
 			"labels": labels,
 		},
-		"spec": ref.Values,
+		"spec": map[string]any{
+			"template": templateName,
+			"values":   ref.Values,
+		},
 	}}
 	return inst
 }

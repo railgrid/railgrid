@@ -422,7 +422,7 @@ func TestProjectAssistantInspectDevelopmentTemplatesGraphToolFiltersAndBoundsCat
 	unstructured.RemoveNestedField(prodOnly.Object, "spec", "development")
 	broken := applicationTemplateObject()
 	broken.SetName("broken")
-	unstructured.RemoveNestedField(broken.Object, "spec", "instanceCRD", "kind")
+	unstructured.RemoveNestedField(broken.Object, "spec", "development", "components", "frontend", "workspacePath")
 
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	project := &aiv1alpha1.Project{}

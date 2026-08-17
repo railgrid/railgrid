@@ -77,6 +77,13 @@ const (
 	e2eCRDWait      = 60 * time.Second
 	e2eInstanceWait = 120 * time.Second
 	e2ePollEvery    = 2 * time.Second
+
+	// e2eInstanceNamespace is where test instances are created — the RGD
+	// instance kinds are Namespaced (in production the instance controller
+	// creates them in the per-tenant runtime namespace; the standalone e2e
+	// just uses default), and kro places every child in the instance's own
+	// namespace.
+	e2eInstanceNamespace = "default"
 )
 
 // e2eMinimalSpecs supplies a valid instance spec for templates that ship no
@@ -162,7 +169,7 @@ func TestE2ESeedTemplates(t *testing.T) {
 			inst := e2eInstance(t, tmpl, runID)
 			createInstance(t, dyn, instGVR, inst)
 			t.Cleanup(func() {
-				_ = dyn.Resource(instGVR).Delete(context.Background(), inst.GetName(), metav1.DeleteOptions{})
+				_ = dyn.Resource(instGVR).Namespace(e2eInstanceNamespace).Delete(context.Background(), inst.GetName(), metav1.DeleteOptions{})
 			})
 
 			waitInstanceApplied(t, dyn, instGVR, inst.GetName(), tmpl.Name)
@@ -171,7 +178,7 @@ func TestE2ESeedTemplates(t *testing.T) {
 			// 3. The child objects the RGD declares actually exist in the
 			// runtime cluster (the Deployment/Service/StatefulSet/HTTPRoute/…),
 			// not just a clean instance status.
-			created, err := dyn.Resource(instGVR).Get(context.Background(), inst.GetName(), metav1.GetOptions{})
+			created, err := dyn.Resource(instGVR).Namespace(e2eInstanceNamespace).Get(context.Background(), inst.GetName(), metav1.GetOptions{})
 			if err != nil {
 				t.Fatalf("template %q: re-get instance for UID: %v", tmpl.Name, err)
 			}
@@ -314,7 +321,7 @@ func createInstance(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVersion
 	t.Helper()
 	deadline := time.Now().Add(e2eCRDWait)
 	for {
-		_, err := dyn.Resource(gvr).Create(context.Background(), inst, metav1.CreateOptions{})
+		_, err := dyn.Resource(gvr).Namespace(e2eInstanceNamespace).Create(context.Background(), inst, metav1.CreateOptions{})
 		if err == nil || apierrors.IsAlreadyExists(err) {
 			return
 		}
@@ -334,7 +341,7 @@ func waitInstanceApplied(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVe
 	deadline := time.Now().Add(e2eInstanceWait)
 	var sawConditions bool
 	for time.Now().Before(deadline) {
-		obj, err := dyn.Resource(gvr).Get(context.Background(), name, metav1.GetOptions{})
+		obj, err := dyn.Resource(gvr).Namespace(e2eInstanceNamespace).Get(context.Background(), name, metav1.GetOptions{})
 		if err != nil {
 			time.Sleep(e2ePollEvery)
 			continue

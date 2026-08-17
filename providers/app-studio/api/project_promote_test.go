@@ -425,7 +425,7 @@ func TestProjectPromoteResponseIncludesRolloutRevision(t *testing.T) {
 
 func TestProjectObservedRedeployRevisionReadsProviderInstanceSpec(t *testing.T) {
 	instance := &unstructured.Unstructured{Object: map[string]any{
-		"spec": map[string]any{projectRedeployRevisionField: " rollout-observed-42 "},
+		"spec": map[string]any{"values": map[string]any{projectRedeployRevisionField: " rollout-observed-42 "}},
 	}}
 	if got := projectObservedRedeployRevision(instance); got != "rollout-observed-42" {
 		t.Fatalf("observed rollout revision = %q, want rollout-observed-42", got)

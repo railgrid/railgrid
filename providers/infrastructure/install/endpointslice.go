@@ -74,9 +74,10 @@ var apiExportEndpointSliceGVR = schema.GroupVersionResource{
 
 // PlatformAPIExportEndpointSlice ensures an APIExportEndpointSlice
 // exists in the provider workspace pointing at APIExportName. This is
-// what the kro-multicluster fork's kcp-apiexport provider reads to
-// discover the APIExport's virtual-workspace URL — without it, kro
-// has no entry point to the per-template kinds tenants create.
+// what the provider's own multicluster controllers (the instance
+// controller's apiexport provider) read to discover the APIExport's
+// virtual-workspace URL — without it, the provider has no entry point
+// to the Instances tenants create.
 //
 // Separate from PlatformCachedResourceEndpointSlices because the two
 // EndpointSlice types serve different consumers:
