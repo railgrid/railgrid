@@ -60,12 +60,37 @@ func (s *Server) previewEdgeReady(ctx context.Context, url string) bool {
 		}
 		s.edgeReadyURLs.Delete(url)
 	}
-	probe := s.previewEdgeProbeHook()
-	if err := probe(ctx, url); err != nil {
-		return false
+
+	s.mu.Lock()
+	if pending := s.previewEdgeProbeInflight[url]; pending != nil {
+		done := pending.done
+		s.mu.Unlock()
+		select {
+		case <-done:
+			return pending.ready
+		case <-ctx.Done():
+			return false
+		}
 	}
-	s.edgeReadyURLs.Store(url, time.Now())
-	return true
+	if s.previewEdgeProbeInflight == nil {
+		s.previewEdgeProbeInflight = make(map[string]*previewEdgeProbeInflight)
+	}
+	pending := &previewEdgeProbeInflight{done: make(chan struct{})}
+	s.previewEdgeProbeInflight[url] = pending
+	s.mu.Unlock()
+
+	probe := s.previewEdgeProbeHook()
+	ready := probe(ctx, url) == nil
+	if ready {
+		s.edgeReadyURLs.Store(url, time.Now())
+	}
+
+	s.mu.Lock()
+	pending.ready = ready
+	delete(s.previewEdgeProbeInflight, url)
+	close(pending.done)
+	s.mu.Unlock()
+	return ready
 }
 
 func (s *Server) previewEdgeProbeHook() func(context.Context, string) error {
@@ -140,3 +165,8 @@ func probePreviewEdge(ctx context.Context, url string, insecureSkipTLSVerify boo
 // edgeReadyURLsCache is embedded in Server; declared here so the whole edge
 // concern lives in one file.
 type edgeReadyURLsCache = sync.Map
+
+type previewEdgeProbeInflight struct {
+	done  chan struct{}
+	ready bool
+}

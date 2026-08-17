@@ -82,6 +82,10 @@ func bindProjectAssistantStartRequestWithSelectionsAndParts(run *store.Assistant
 	if run == nil {
 		return fmt.Errorf("bind assistant start request: run is required")
 	}
+	canonicalParts, err := projectAssistantCanonicalContentPartsForIdentityChecked(parts, skills, resources)
+	if err != nil {
+		return err
+	}
 	var audit projectAssistantRunAudit
 	if len(run.Audit) > 0 {
 		if err := json.Unmarshal(run.Audit, &audit); err != nil {
@@ -91,7 +95,7 @@ func bindProjectAssistantStartRequestWithSelectionsAndParts(run *store.Assistant
 	if audit.Version == 0 {
 		audit.Version = projectAssistantAuditVersion
 	}
-	audit.StartRequestDigest = projectAssistantStartRequestDigestWithSelectionsAndParts(actor, content, run.Mode, skills, resources, parts)
+	audit.StartRequestDigest = projectAssistantStartRequestDigestWithSelectionsAndParts(actor, content, run.Mode, skills, resources, canonicalParts)
 	audit.ActorDigest = projectAssistantActorDigest(actor)
 	raw, err := json.Marshal(audit)
 	if err != nil {
@@ -161,7 +165,11 @@ func validateProjectAssistantStartReplayWithSelectionsAndParts(run store.Assista
 	if len(run.Audit) == 0 || json.Unmarshal(run.Audit, &audit) != nil {
 		return fmt.Errorf("%w: client request identity is unavailable", store.ErrAssistantRunConflict)
 	}
-	expected := projectAssistantStartRequestDigestWithSelectionsAndParts(actor, content, mode, skills, resources, parts)
+	canonicalParts, err := projectAssistantCanonicalContentPartsForIdentityChecked(parts, skills, resources)
+	if err != nil {
+		return err
+	}
+	expected := projectAssistantStartRequestDigestWithSelectionsAndParts(actor, content, mode, skills, resources, canonicalParts)
 	if audit.StartRequestDigest == "" || audit.StartRequestDigest != expected {
 		return fmt.Errorf("%w: client request ID was already used for different input", store.ErrAssistantRunConflict)
 	}

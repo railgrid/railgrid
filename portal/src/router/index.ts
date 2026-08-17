@@ -76,8 +76,14 @@ export const router = createRouter({
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
-  if (!to.meta.public && !auth.isAuthenticated) {
-    return { name: 'login' }
+  if (!to.meta.public) {
+    // A hard refresh restores the portal bearer synchronously from storage,
+    // but its HttpOnly browser session is re-established asynchronously.
+    // Wait for that bootstrap before mounting provider routes; otherwise a
+    // private preview iframe can enter app authorization first and bounce
+    // through embedded login before the shared session exists.
+    await auth.detectAuthMode()
+    if (!auth.isAuthenticated) return { name: 'login' }
   }
   // Admin-only routes: confirm access before loading. Non-admins are bounced to
   // the dashboard so the page never mounts and never fires admin data fetches.

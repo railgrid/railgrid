@@ -75,11 +75,72 @@ export interface ProjectAssistantContextResource {
   resourceRef: ProjectAssistantContextResourceRef
 }
 
+export interface ProjectAssistantAnnotationRect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface ProjectAssistantAnnotationViewport {
+  width: number
+  height: number
+}
+
+/** Normalized click point within the selected target element. */
+export interface ProjectAssistantAnnotationAnchor {
+  x: number
+  y: number
+}
+
+/** Bounded semantic target captured by the authenticated development preview. */
+export interface ProjectAssistantAnnotationTarget {
+  tag?: string
+  role?: string
+  name?: string
+  text?: string
+  locator?: string
+  locatorStrategy?: 'role' | 'text' | 'aria' | 'testID' | 'css' | 'xpath' | string
+  ancestors?: string[]
+  rect?: ProjectAssistantAnnotationRect
+}
+
+/** One user-authored comment bound to a preview document generation. */
+export interface ProjectAssistantAnnotation {
+  id: string
+  comment: string
+  documentID: string
+  pagePath: string
+  viewport: ProjectAssistantAnnotationViewport
+  target: ProjectAssistantAnnotationTarget
+  anchor?: ProjectAssistantAnnotationAnchor
+}
+
+/**
+ * The only annotation data that may cross back into the preview iframe.
+ *
+ * Comments are user intent for the assistant and must remain in the portal
+ * conversation/model payload; the preview only needs the semantic target to
+ * position a numbered pin. Keep this contract separate from
+ * ProjectAssistantAnnotation so adding fields to the durable annotation can
+ * never accidentally leak them through the MessagePort.
+ */
+export interface ProjectAssistantAnnotationPin {
+  id: string
+  number: number
+  documentID: string
+  pagePath: string
+  boundingRect: ProjectAssistantAnnotationRect
+  target: ProjectAssistantAnnotationTarget
+  anchor?: ProjectAssistantAnnotationAnchor
+}
+
 /** Canonical rich-composer content parts persisted on user thread items. */
 export type ProjectAssistantContentPart =
   | { type: 'text'; text: string }
   | { type: 'skill'; skillID: string }
   | { type: 'resource'; resourceIndex: number }
+  | { type: 'annotation'; annotation: ProjectAssistantAnnotation }
 
 export interface ProjectAssistantSkillResource {
   path: string

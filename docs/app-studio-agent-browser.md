@@ -58,8 +58,9 @@ as private.
   - post-change verification tied to a workspace mutation revision
 - Preserve App Studio's existing tool, approval, WorkItem, audit, and assistant
   phase boundaries.
-- Allow the user to annotate visible regions first and DOM elements later,
-  without sharing the user's browser session with the agent.
+- Let the user annotate DOM elements in the development preview without sharing
+  the user's browser session with the agent; preserve document-generation
+  staleness rather than pretending a later DOM is the same target.
 
 ## Current system
 
@@ -537,75 +538,41 @@ directory or Playwright `storageState` by default.
 
 ## User annotations
 
-The current preview is a cross-origin sandboxed iframe. The parent App Studio
-portal cannot read its DOM because of the browser same-origin policy.
+The development preview now supports DOM annotations through the existing
+signed preview-console `MessagePort`. This is not the removed signed preview
+gateway and does not share the user's browser session with the agent.
 
-### First increment: region annotations
+- When the bridge is connected, Preview actions exposes `Annotate`. The
+  injected Vite bridge highlights hovered elements and capture-clicks a
+  selection without continuing the application's click. It sends a bounded
+  semantic descriptor containing document ID/path, viewport, rectangle, and
+  locator facts; form values, `script`/`style` content, handlers, and arbitrary
+  attributes are excluded.
+- The user adds comments in App Studio. Multiple numbered, document-bound
+  pins/chips can be edited or removed. The bridge receives only pin identity,
+  target facts, and geometry; comment text stays in the parent portal and is
+  disclosed there when a pin reports hover or keyboard focus. A new preview
+  document makes earlier annotations visibly stale; they are not silently
+  reattached.
+- Annotation content parts are included in the next assistant turn. The portal
+  clears them only after the durable start POST accepts that turn. The API
+  carries them through run audit, checkpoint, thread replay, and idempotency,
+  and renders the user-authored comment as an explicit instruction. DOM-derived
+  preview facts are kept separately inside an
+  `untrusted_preview_annotation` envelope and are never promoted to authority.
 
-An overlay above the iframe can capture a comment and geometry relative to the
-visible iframe:
+The bridge remains development-preview-only, same-iframe and exact-origin,
+signed-capability, and one-use-session scoped. This feature is not a
+production in-place merge or branch workflow.
 
-```json
-{
-  "projectUID": "...",
-  "previewBaseURL": "https://...",
-  "workspaceMutationRevision": 12,
-  "frameSize": {"width": 1280, "height": 720},
-  "region": {"x": 0.63, "y": 0.18, "width": 0.22, "height": 0.09},
-  "comment": "This button clips at tablet width."
-}
-```
-
-This initial shape is deliberately approximate. Because the iframe is
-cross-origin, the parent cannot read the iframe's current SPA route, internal
-scroll offset, DOM, or pixels. It also cannot capture an exact screenshot crop
-of the iframe. The agent may open its isolated context at the base URL with the
-same frame dimensions and use the region as a visual hint, but must say when its
-state does not match.
-
-Exact route, scroll, device pixel ratio, screenshot crop, and element identity
-arrive only with the preview-origin bridge below, or by temporarily annotating a
-browser-worker screenshot instead of the live user iframe. The latter preserves
-isolation but represents the agent context, not the user's active session.
-
-### Element annotations
-
-Reliable element annotations require a cooperating script at the preview origin.
-A later development-preview bridge can:
-
-1. enter element-pick mode
-2. use hit testing inside the preview document
-3. draw the highlight inside that document
-4. emit a bounded descriptor through `postMessage`
-5. validate exact parent/preview origins and a per-authorization nonce
-
-Suggested descriptor:
-
-```json
-{
-  "path": "/settings",
-  "role": "button",
-  "accessibleName": "Save changes",
-  "testID": "settings-save",
-  "tagName": "button",
-  "textExcerpt": "Save changes",
-  "boundingRect": {"x": 944, "y": 612, "width": 152, "height": 36},
-  "viewport": {"width": 1280, "height": 720, "deviceScaleFactor": 1},
-  "scroll": {"x": 0, "y": 540},
-  "screenshotCropArtifactID": "...",
-  "comment": "..."
-}
-```
-
-Do not send the user's DOM node ID, cookies, storage, form values, or full DOM.
-The agent re-resolves the semantic descriptor in its own BrowserContext and
-reports a stale/ambiguous annotation if hot reload or differing app state means
-it no longer matches.
-
-Playwright MCP's current `browser_annotate` capability is useful precedent: it
-returns aligned annotations, a screenshot, and an ARIA snapshot. App Studio
-should reuse that data-model lesson, not replace its preview pane with the
-Playwright Dashboard or merge the user and agent browser contexts.
+Verification covers the deterministic plugin DOM harness, portal
+protocol/composer/recovery/projection tests, focused API durability tests, and
+App Studio typecheck and build. A Chromium acceptance run against the local
+Tilt deployment exercised the signed handshake, parent-owned hover comment,
+capture-click suppression, and numbered pins. With a positioned and transformed
+preview body, the pin-to-element offset had zero drift after scrolling. Reload
+created a new authenticated document generation, marked the comment stale, and
+rendered no stale pin.
 
 ## MVP
 
@@ -623,8 +590,8 @@ The first usable product slice should include:
 - same-origin navigation and subresources only
 - explicit action audit, quotas, cancellation, idle TTL, and hard TTL
 - post-mutation browser verification as advisory evidence
-- approximate region annotations in the existing preview pane, clearly labeled
-  as lacking user-frame DOM/route/scroll state
+- authenticated DOM annotations in the existing development preview, bound to
+  the current bridge document and carried as bounded untrusted turn context
 
 Before broader rollout, add multimodal screenshot delivery for supported models
 and make browser verification enforceable for visual acceptance criteria.
@@ -763,26 +730,19 @@ preview and explain console/network failures without arbitrary browser access.
 Exit criteria: a UI-changing run cannot claim user-visible success without
 evidence from the current preview revision.
 
-### Phase 4: region annotations
+### Phase 4: annotations (implemented foundation)
 
-- Add annotation mode and a transparent overlay around the existing iframe.
-- Persist normalized visible-region geometry, frame size, comment, actor,
-  Project UID, preview base URL, and mutation revision.
-- Attach annotations as structured user context to the next WorkItem/run.
+- The existing signed, exact-origin preview-console bridge now provides DOM
+  annotation mode and a transparent in-frame overlay.
+- It returns bounded route, viewport, rectangle, accessible-name, role, and
+  locator facts rather than DOM dumps, form values, or arbitrary attributes.
+- App Studio attaches numbered comments as structured content to the next
+  durable assistant turn and marks annotations stale when the bridge document
+  changes.
 
-Exit criteria: the agent can locate the annotated visual region in its isolated
-context or report that the state differs, without claiming access to the user
-iframe's internal route, scroll, DOM, or pixels.
-
-### Phase 5: element annotation bridge
-
-- Add a dev-preview-only, origin/nonce-validated annotation bridge.
-- Return route, scroll, screenshot crop, and semantic descriptors rather than
-  DOM dumps.
-- Re-resolve annotations in the agent context with ambiguity/staleness handling.
-
-Exit criteria: element comments survive normal hot reload and small DOM changes
-without sharing user browser state.
+The remaining browser-agent work is to re-resolve those semantic descriptors in
+the agent's isolated context with explicit ambiguity/staleness handling. This
+must not imply access to the user's cookies, storage, or exact browser state.
 
 ### Phase 6: advanced diagnostics
 

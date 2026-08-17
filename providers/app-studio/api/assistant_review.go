@@ -79,7 +79,7 @@ func (s *Server) startProjectAssistantThreadReview(w http.ResponseWriter, r *htt
 		return
 	}
 	var request assistantThreadReviewStartRequest
-	if !decodeStrictJSON(w, r, &request) {
+	if !decodeStrictJSONWithBodyLimit(w, r, &request, projectAssistantMaxAnnotationRequestBodyBytes) {
 		return
 	}
 	turnRequest, err := request.turnRequest()

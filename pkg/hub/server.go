@@ -963,6 +963,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Redirect / → /ui/ when portal is available, otherwise it's a 404.
 	if portalAvailable {
+		portalSPA = normalizePortalRoot(portalSPA)
 		router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/ui/", http.StatusFound)
 		})

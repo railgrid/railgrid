@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { createServer } from 'vite'
+import { createSSRApp } from 'vue'
+import { renderToString } from 'vue/server-renderer'
 
 let vite
 test.before(async () => {
@@ -73,6 +75,83 @@ test('projects only canonical context-resource references on user messages', asy
     resourceRef: { apiVersion: 'databricks.faros.sh/v1alpha1', kind: 'Table', resource: 'tables', name: 'trips' },
   }])
   assert.doesNotMatch(JSON.stringify(messages[0].metadata), /must-not-project/)
+})
+
+test('projects bounded preview annotations while dropping incomplete history parts', async () => {
+  const { assistantThreadItemsToMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const annotation = {
+    id: 'annotation-1',
+    comment: 'Fix this control',
+    documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65',
+    pagePath: '/settings',
+    viewport: { width: 1024, height: 768 },
+    target: {
+      tag: 'button',
+      role: 'button',
+      name: 'Save changes',
+      text: 'Save changes',
+      locator: '#save',
+      locatorStrategy: 'css',
+      ancestors: ['main'],
+      rect: { x: 4, y: 8, width: 120, height: 32 },
+    },
+  }
+  const [message] = assistantThreadItemsToMessages([{
+    id: 'user-annotation',
+    turnID: 'run-annotation',
+    type: 'userMessage',
+    status: 'completed',
+    content: 'Review this control',
+    data: {
+      contentParts: [
+        { type: 'annotation', annotation },
+        { type: 'annotation', annotation: { ...annotation, id: 'incomplete', comment: '', documentID: '' } },
+      ],
+    },
+    sequence: 1,
+    createdAt: '2026-08-02T17:42:09Z',
+  }], 'demo')
+  assert.deepEqual(message.metadata.assistantContentParts, [{ type: 'annotation', annotation }])
+})
+
+test('renders persisted annotations as one Codex-style thread attachment outside user prose', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const { default: AssistantMessageAnnotations } = await vite.ssrLoadModule('/src/AssistantMessageAnnotations.vue')
+  const renderStart = app.indexOf('function renderMessageContent')
+  const renderEnd = app.indexOf('function assistantSkillsForMessage', renderStart)
+  const render = app.slice(renderStart, renderEnd)
+  assert.match(render, /Annotations render as a single thread attachment outside the prose/)
+  assert.match(render, /Once durable content parts exist they are the only display authority/)
+  assert.match(render, /return rendered/)
+  assert.doesNotMatch(render, /if \(rendered\) return rendered/)
+  assert.doesNotMatch(render, /§/)
+  assert.match(app, /function assistantAnnotationsForMessage/)
+  assert.match(app, /<AssistantMessageAnnotations[\s\S]*:annotations="assistantAnnotationsForMessage\(message\)"/)
+  assert.match(app, /v-if="userMessageHasVisibleContent\(message\)"/)
+  const visibilityStart = app.indexOf('function userMessageHasVisibleContent')
+  const visibilityEnd = app.indexOf('\n}', visibilityStart)
+  const visibility = app.slice(visibilityStart, visibilityEnd)
+  assert.match(visibility, /if \(parts\.length\) return parts\.some\(\(part\) => part\.type !== 'annotation'\)/)
+  assert.match(visibility, /return Boolean\(message\.content\)/)
+
+  const html = await renderToString(createSSRApp(AssistantMessageAnnotations, {
+    annotations: [{
+      id: 'annotation-message-1',
+      comment: 'Prefer humans and agents.',
+      documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65',
+      pagePath: '/',
+      viewport: { width: 1024, height: 768 },
+      target: { tag: 'section', text: 'Federated MCP <script>alert(1)</script>' },
+    }],
+    currentDocumentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65',
+    disclosureID: 'history-annotations',
+  }))
+  assert.match(html, />1 annotation</)
+  assert.match(html, /aria-describedby="history-annotations-panel"/)
+  assert.match(html, /role="tooltip"/)
+  assert.doesNotMatch(html, /aria-label="Clear annotations"/)
+  assert.match(html, /Federated MCP &lt;script&gt;alert\(1\)&lt;\/script&gt;/)
+  assert.match(html, /Prefer humans and agents\./)
 })
 
 test('reload projection trims, deduplicates, and bounds context-resource chips', async () => {

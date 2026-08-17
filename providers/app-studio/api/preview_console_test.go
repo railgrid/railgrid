@@ -91,7 +91,8 @@ func TestPreviewConsoleStoreScopesSanitizesAndReplaces(t *testing.T) {
 		Actor:         "alice@example.com",
 	}
 	generation := "826e6fa5-c38b-4bdb-8f8f-098198b74f65"
-	first, err := store.create(scope, "https://demo.preview.example", "https://console.example", generation, 1, now.Add(time.Minute))
+	const portalInstanceID = "77915ea4-f533-433a-a7fd-30a1f0fcc47d"
+	first, err := store.create(scope, portalInstanceID, "https://demo.preview.example", "https://console.example", generation, 1, now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +154,29 @@ func TestPreviewConsoleStoreScopesSanitizesAndReplaces(t *testing.T) {
 		t.Fatal("cross-cluster append unexpectedly succeeded")
 	}
 
-	replacement, err := store.create(scope, "https://demo.preview.example", "https://console.example", generation, 1, now.Add(time.Minute))
+	secondGeneration := "5ac4b288-a1fa-4c99-936c-07467cd3cadb"
+	second, err := store.create(scope, "0b106f8d-6760-49db-8fc5-faa377e5db3e", "https://demo.preview.example", "https://console.example", secondGeneration, 1, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.append(second.ID, scope, secondGeneration, 1, []previewConsoleIncomingEvent{{
+		Sequence: 1, DocumentID: secondGeneration, Level: "warn", Message: "second tab", SourceURL: "https://demo.preview.example/second",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.read(scope, nil, 50, 0); got.DocumentID != secondGeneration || len(got.Events) != 1 || got.Events[0].Message != "second tab" {
+		t.Fatalf("newest healthy tab evidence = %#v", got)
+	}
+	if _, _, _, err := store.append(first.ID, scope, generation, 1, []previewConsoleIncomingEvent{{
+		Sequence: 2, DocumentID: generation, Level: "info", Message: "first tab active again", SourceURL: "https://demo.preview.example/first",
+	}}); err != nil {
+		t.Fatalf("sibling tab session was invalidated: %v", err)
+	}
+	if got := store.read(scope, nil, 50, 0); got.DocumentID != generation || got.Events[len(got.Events)-1].Message != "first tab active again" {
+		t.Fatalf("most recently updated evidence = %#v", got)
+	}
+
+	replacement, err := store.create(scope, portalInstanceID, "https://demo.preview.example", "https://console.example", generation, 1, now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,6 +185,9 @@ func TestPreviewConsoleStoreScopesSanitizesAndReplaces(t *testing.T) {
 	}
 	if store.delete(first.ID, scope) {
 		t.Fatal("superseded session remained addressable")
+	}
+	if !store.delete(second.ID, scope) {
+		t.Fatal("same-tab renewal deleted a sibling tab session")
 	}
 }
 
@@ -178,7 +204,7 @@ func TestPreviewConsoleStoreExpiresAndBoundsEvents(t *testing.T) {
 		Actor:         "alice@example.com",
 	}
 	generation := "826e6fa5-c38b-4bdb-8f8f-098198b74f65"
-	session, err := store.create(scope, "https://demo.preview.example", "https://console.example", generation, 1, now.Add(time.Minute))
+	session, err := store.create(scope, "77915ea4-f533-433a-a7fd-30a1f0fcc47d", "https://demo.preview.example", "https://console.example", generation, 1, now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +275,7 @@ func TestPreviewConsoleToolIsFeatureGatedAndImplicitlyScoped(t *testing.T) {
 	now := time.Now().UTC()
 	server.previewConsoleStore.now = func() time.Time { return now }
 	generation := "826e6fa5-c38b-4bdb-8f8f-098198b74f65"
-	session, err := server.previewConsoleStore.create(scope, "https://demo.preview.example", "https://console.example", generation, 1, now.Add(time.Minute))
+	session, err := server.previewConsoleStore.create(scope, "77915ea4-f533-433a-a7fd-30a1f0fcc47d", "https://demo.preview.example", "https://console.example", generation, 1, now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +458,7 @@ spec:
 
 	generation := "826e6fa5-c38b-4bdb-8f8f-098198b74f65"
 	create := httptest.NewRequest(http.MethodPost, "/api/projects/demo/preview-console/sessions", strings.NewReader(
-		`{"generation":"`+generation+`","protocolVersion":1}`,
+		`{"generation":"`+generation+`","protocolVersion":1,"portalInstanceID":"77915ea4-f533-433a-a7fd-30a1f0fcc47d"}`,
 	))
 	setPreviewConsoleTestHeaders(create, "alice@example.com", "cluster-1")
 	create.Header.Set("Origin", "https://console.example")
@@ -467,6 +493,25 @@ spec:
 		if strings.Contains(string(payload), `"`+forbiddenClaim+`"`) {
 			t.Fatalf("capability disclosed server-only scope %q: %s", forbiddenClaim, payload)
 		}
+	}
+
+	secondGeneration := "5ac4b288-a1fa-4c99-936c-07467cd3cadb"
+	secondCreate := httptest.NewRequest(http.MethodPost, "/api/projects/demo/preview-console/sessions", strings.NewReader(
+		`{"generation":"`+secondGeneration+`","protocolVersion":1,"portalInstanceID":"0b106f8d-6760-49db-8fc5-faa377e5db3e"}`,
+	))
+	setPreviewConsoleTestHeaders(secondCreate, "alice@example.com", "cluster-1")
+	secondCreate.Header.Set("Origin", "https://console.example")
+	secondCreateResponse := httptest.NewRecorder()
+	router.ServeHTTP(secondCreateResponse, secondCreate)
+	if secondCreateResponse.Code != http.StatusCreated {
+		t.Fatalf("second tab create = %d %s", secondCreateResponse.Code, secondCreateResponse.Body.String())
+	}
+	var secondSession previewConsoleSessionCreateResponse
+	if err := json.NewDecoder(secondCreateResponse.Body).Decode(&secondSession); err != nil {
+		t.Fatal(err)
+	}
+	if secondSession.SessionID == session.SessionID {
+		t.Fatal("two tabs unexpectedly shared one session")
 	}
 
 	upload := httptest.NewRequest(http.MethodPost,

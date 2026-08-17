@@ -12,7 +12,7 @@ test.before(async () => {
 test.after(async () => vite?.close())
 
 test('recognizes a caret-relative slash token only at start or after whitespace', async () => {
-  const { assistantSlashToken, consumeAssistantSlashToken, filterAssistantSlashCommands, projectAssistantComposerParts, assistantComposerPlainContent } = await vite.ssrLoadModule('/src/assistantCommandPalette.ts')
+  const { assistantSlashToken, consumeAssistantSlashToken, filterAssistantSlashCommands, projectAssistantComposerParts, assistantComposerPlainContent, updateAssistantComposerAnnotation, removeAssistantComposerAnnotation } = await vite.ssrLoadModule('/src/assistantCommandPalette.ts')
   assert.deepEqual(assistantSlashToken('/'), { start: 0, end: 1, query: '' })
   assert.deepEqual(assistantSlashToken('  /res'), { start: 2, end: 6, query: 'res' })
   assert.equal(assistantSlashToken('/resource compare these'), null)
@@ -39,6 +39,125 @@ test('recognizes a caret-relative slash token only at start or after whitespace'
     { type: 'text', text: ' after' },
   ])
   assert.equal(assistantComposerPlainContent(parts), 'before  after')
+  const annotationPart = projectAssistantComposerParts([{
+    type: 'annotation', annotation: {
+      id: 'annotation-1', comment: 'Original', documentID: 'document-1', pagePath: '/',
+      viewport: { width: 320, height: 240 }, target: { role: 'button' },
+    },
+  }])
+  const edited = updateAssistantComposerAnnotation(annotationPart, {
+    id: 'annotation-1', comment: 'Updated', documentID: 'document-1', pagePath: '/',
+    viewport: { width: 320, height: 240 }, target: { role: 'button' },
+  })
+  assert.equal(edited.find((part) => part.type === 'annotation')?.annotation.comment, 'Updated')
+  assert.equal(removeAssistantComposerAnnotation(edited, 'annotation-1').some((part) => part.type === 'annotation'), false)
+})
+
+test('projects bounded preview annotations and drops invalid viewport descriptors', async () => {
+  const { projectAssistantComposerParts } = await vite.ssrLoadModule('/src/assistantCommandPalette.ts')
+  const annotation = {
+    id: 'annotation-1',
+    comment: 'Fix\nbutton',
+    documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65',
+    pagePath: '/settings',
+    viewport: { width: 1024, height: 768 },
+    target: {
+      tag: 'button',
+      role: 'button',
+      name: 'Save changes',
+      text: 'Save changes',
+      locator: '#save',
+      locatorStrategy: 'css',
+      ancestors: ['main'],
+      rect: { x: 4, y: 8, width: 120, height: 32 },
+      value: 'secret-value',
+      style: 'color: red',
+    },
+  }
+  const parts = projectAssistantComposerParts([
+    { type: 'annotation', annotation },
+    { type: 'annotation', annotation: { ...annotation, id: 'zero-viewport', viewport: { width: 0, height: 768 } } },
+    { type: 'annotation', annotation: { ...annotation, id: 'missing-target', target: null } },
+  ])
+  assert.deepEqual(parts, [{
+    type: 'annotation',
+    annotation: {
+      id: 'annotation-1',
+      comment: 'Fix\nbutton',
+      documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65',
+      pagePath: '/settings',
+      viewport: { width: 1024, height: 768 },
+      target: {
+        tag: 'button',
+        role: 'button',
+        name: 'Save changes',
+        text: 'Save changes',
+        locator: '#save',
+        locatorStrategy: 'css',
+        ancestors: ['main'],
+        rect: { x: 4, y: 8, width: 120, height: 32 },
+      },
+    },
+  }])
+})
+
+test('round-trips annotations at the server byte bounds without client truncation', async () => {
+  const { projectAssistantComposerParts } = await vite.ssrLoadModule('/src/assistantCommandPalette.ts')
+  const annotation = {
+    id: 'i'.repeat(128),
+    comment: '<&>' + 'c'.repeat(2045),
+    documentID: 'd'.repeat(128),
+    pagePath: `/${'p'.repeat(511)}`,
+    viewport: { width: 16384, height: 16384 },
+    target: {
+      tag: 'button',
+      role: 'button',
+      name: 'n'.repeat(256),
+      text: 't'.repeat(2048),
+      locator: '#save',
+      locatorStrategy: 'css',
+      ancestors: Array.from({ length: 16 }, () => 'main'),
+      rect: { x: -32768, y: 32768, width: 32768, height: 0 },
+    },
+  }
+  const [part] = projectAssistantComposerParts([{ type: 'annotation', annotation }])
+  assert.deepEqual(part, { type: 'annotation', annotation })
+  assert.equal(part.annotation.comment.length, 2048)
+  assert.equal(part.annotation.target.text.length, 2048)
+  assert.equal(part.annotation.id.length, 128)
+  assert.equal(part.annotation.pagePath.length, 512)
+})
+
+test('drops annotation values outside the API contract instead of truncating them', async () => {
+  const { projectAssistantComposerParts } = await vite.ssrLoadModule('/src/assistantCommandPalette.ts')
+  const base = {
+    id: 'annotation-1', comment: 'Keep this exact', documentID: 'document-1', pagePath: '/',
+    viewport: { width: 1024, height: 768 }, target: { text: 'button', rect: { x: 0, y: 0, width: 1, height: 1 } },
+  }
+  assert.deepEqual(projectAssistantComposerParts([{ type: 'annotation', annotation: { ...base, comment: 'x'.repeat(2049) } }]), [])
+  assert.deepEqual(projectAssistantComposerParts([{ type: 'annotation', annotation: { ...base, viewport: { width: 16385, height: 768 } } }]), [])
+  assert.deepEqual(projectAssistantComposerParts([{ type: 'annotation', annotation: { ...base, target: {} } }]), [])
+  assert.deepEqual(projectAssistantComposerParts([{ type: 'annotation', annotation: { ...base, anchor: { x: 1.01, y: 0.5 } } }]), [])
+  assert.deepEqual(projectAssistantComposerParts([{ type: 'annotation', annotation: { ...base, target: { text: 'button' }, anchor: { x: 0.5, y: 0.5 } } }]), [])
+})
+
+test('accepts bounded semantic or rectangle-only targets without visible text', async () => {
+  const { projectAssistantComposerParts } = await vite.ssrLoadModule('/src/assistantCommandPalette.ts')
+  const base = {
+    id: 'annotation-1', comment: 'Keep this exact', documentID: 'document-1', pagePath: '/',
+    viewport: { width: 1024, height: 768 },
+  }
+  const parts = projectAssistantComposerParts([
+    { type: 'annotation', annotation: { ...base, target: { role: 'button', name: 'Save' } } },
+    { type: 'annotation', annotation: { ...base, id: 'rectangle-only', target: { rect: { x: 0, y: 0, width: 1, height: 1 } } } },
+    { type: 'annotation', annotation: { ...base, id: 'multiline-text', target: { text: 'first\nsecond' } } },
+  ])
+  assert.equal(parts.length, 3)
+  assert.deepEqual(parts.map((part) => part.annotation.target), [
+    { role: 'button', name: 'Save' },
+    { rect: { x: 0, y: 0, width: 1, height: 1 } },
+    { text: 'first\nsecond' },
+  ])
 })
 
 test('builds metadata-only GraphQL from validated Provider Action identifiers', async () => {

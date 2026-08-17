@@ -15,6 +15,7 @@ const { outputText } = ts.transpileModule(source, {
 const moduleURL = `data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`
 const {
   developmentPreviewDisplayPhase,
+	developmentPreviewRecoveryAction,
   developmentPreviewShouldRefreshOnWake,
   developmentPreviewSyncStatus,
 } = await import(moduleURL)
@@ -113,6 +114,24 @@ test('marks preview loaded only after the current document connects', () => {
 	}), 'Loaded')
 })
 
+test('keeps a rendered preview visible when only its evidence bridge is unavailable', () => {
+	assert.equal(developmentPreviewDisplayPhase({
+		previewURL: 'https://preview.example.com/',
+		authorizationError: '',
+		documentState: 'unavailable',
+		frameLoaded: true,
+		recoveryExhausted: true,
+	}), 'Loaded unverified')
+})
+
+test('escalates failed bridge recovery once before using slow background probes', () => {
+	assert.deepEqual(developmentPreviewRecoveryAction(0, false), { kind: 'reconnect', delayMS: 1_000 })
+	assert.deepEqual(developmentPreviewRecoveryAction(1, false), { kind: 'reconnect', delayMS: 2_000 })
+	assert.deepEqual(developmentPreviewRecoveryAction(2, false), { kind: 'reconnect', delayMS: 4_000 })
+	assert.deepEqual(developmentPreviewRecoveryAction(3, false), { kind: 'reload', delayMS: 0 })
+	assert.deepEqual(developmentPreviewRecoveryAction(3, true), { kind: 'background', delayMS: 30_000 })
+})
+
 test('marks preview badge error when authorization failed', () => {
   assert.equal(
     developmentPreviewDisplayPhase({
@@ -176,7 +195,7 @@ test('reauthorizes a URL whose document handshake never completed', () => {
 test('authorization request failures only keep polling when transient', () => {
   assert.match(
     appSource,
-    /if \(developmentPreviewAuthorizationRetryable\(e\)\) \{\s*scheduleDevelopmentPreviewAuthorizationRetry\(projectName, key\)\s*\}/,
+    /if \(developmentPreviewAuthorizationRetryable\(e\)\) \{\s*scheduleDevelopmentPreviewAuthorizationRetry\(projectName, key, preserveExistingPreview\)\s*\}/,
   )
   assert.match(
     appSource,
@@ -186,9 +205,9 @@ test('authorization request failures only keep polling when transient', () => {
 
 test('current document handshake is wired to bounded preview recovery', () => {
 	assert.match(appSource, /onState: handleDevelopmentPreviewConsoleState/)
-	assert.match(appSource, /const delays = \[1_000, 2_000, 4_000\]/)
-	assert.match(appSource, /if \(attempt >= delays\.length\) \{[\s\S]*?developmentPreviewRecoveryError\.value =/)
-	assert.match(appSource, /v-if="developmentPreviewRecoveryError"[\s\S]*?Retry preview/)
+	assert.match(appSource, /developmentPreviewRecoveryAction\(attempt, developmentPreviewRecoveryReloadAttempted\.value\)/)
+	assert.match(appSource, /if \(action\.kind === 'reload'\)[\s\S]*?recoverDevelopmentPreviewDocument\(projectName\)/)
+	assert.match(appSource, /v-if="developmentPreviewRecoveryError && !developmentPreviewFrameLoaded"[\s\S]*?Retry preview/)
 })
 
 test('terminal preview refresh hydrates the selected project before authorizing', () => {
@@ -213,6 +232,6 @@ test('preview project hydration ignores late results and deduplicates authorizat
   )
   assert.match(
     appSource,
-    /developmentPreviewRefreshController\.authorize\([\s\S]*?key[\s\S]*?authorizeDevelopmentPreviewRequest\(projectName, key\)/,
+    /developmentPreviewRefreshController\.authorize\([\s\S]*?key[\s\S]*?authorizeDevelopmentPreviewRequest\(projectName, key, options\.preserveExistingPreview === true\)/,
   )
 })

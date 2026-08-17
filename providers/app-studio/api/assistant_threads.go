@@ -283,7 +283,7 @@ func (s *Server) startProjectAssistantThreadTurn(w http.ResponseWriter, r *http.
 		return
 	}
 	var request assistantThreadTurnCreateRequest
-	if !decodeStrictJSON(w, r, &request) {
+	if !decodeStrictJSONWithBodyLimit(w, r, &request, projectAssistantMaxAnnotationRequestBodyBytes) {
 		return
 	}
 	if _, err := request.publicAssistantThreadTurnMode(); err != nil {
@@ -327,7 +327,7 @@ func (s *Server) continueProjectAssistantThreadTurn(w http.ResponseWriter, r *ht
 		return
 	}
 	var continueRequest assistantThreadTurnContinueRequest
-	if !decodeStrictJSON(w, r, &continueRequest) {
+	if !decodeStrictJSONWithBodyLimit(w, r, &continueRequest, projectAssistantMaxAnnotationRequestBodyBytes) {
 		return
 	}
 	continueRequest.ClientUserMessageID = strings.TrimSpace(continueRequest.ClientUserMessageID)

@@ -17,10 +17,24 @@ export const useAuthStore = defineStore('auth', () => {
   const healthz = ref<HealthzResponse | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
+  const initialized = ref(false)
+  let initializationPromise: Promise<void> | null = null
 
   const isAuthenticated = computed(() => !!token.value && !!clusterName.value)
 
   async function detectAuthMode() {
+    if (initialized.value) return
+    if (initializationPromise) return initializationPromise
+
+    initializationPromise = initializeAuth()
+    try {
+      await initializationPromise
+    } finally {
+      initializationPromise = null
+    }
+  }
+
+  async function initializeAuth() {
     try {
       const h = await fetchHealthz()
       healthz.value = h
@@ -33,7 +47,7 @@ export const useAuthStore = defineStore('auth', () => {
       // session cookie has expired or was cleared. Re-establish it through a
       // same-origin request; failures are non-fatal because the bearer-backed
       // portal can still complete its normal API bootstrap.
-      if (stored?.idToken) {
+      if (token.value) {
         try {
           const valid = await getBearerToken()
           if (valid) await bootstrapBrowserSession(valid)
@@ -43,6 +57,11 @@ export const useAuthStore = defineStore('auth', () => {
       }
     } catch {
       authMode.value = 'token'
+    } finally {
+      // Protected routes use this initialization as a barrier. In particular,
+      // provider UIs must not mount a private preview iframe before a retained
+      // portal bearer has re-established the hub's HttpOnly browser session.
+      initialized.value = true
     }
   }
 
@@ -148,6 +167,7 @@ export const useAuthStore = defineStore('auth', () => {
     healthz,
     loading,
     error,
+    initialized,
     isAuthenticated,
     detectAuthMode,
     loginStatic,

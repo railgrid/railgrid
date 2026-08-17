@@ -85,6 +85,13 @@ import {
   persistAssistantThreadFocus,
   restoreAssistantThreadFocus,
 } from './assistantThreadFocus'
+import {
+  assistantAnnotationDraftStorageKey,
+  clearAssistantAnnotationDraft,
+  readAssistantAnnotationDraft,
+  writeAssistantAnnotationDraft,
+  type AssistantAnnotationDraftScope,
+} from './assistantAnnotationDraft'
 import AssistantPlanPopover from './AssistantPlanPopover.vue'
 import AssistantPlanDisclosure from './AssistantPlanDisclosure.vue'
 import SkillsWorkbench from './SkillsWorkbench.vue'
@@ -94,7 +101,14 @@ import ProjectShareDialog from './ProjectShareDialog.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
 import ResponseModePicker, { type AssistantResponseMode } from './ResponseModePicker.vue'
 import AssistantRichComposer from './AssistantRichComposer.vue'
-import { MAX_ASSISTANT_COMPOSER_PARTS, projectAssistantComposerParts, type AssistantComposerState } from './assistantCommandPalette'
+import AssistantMessageAnnotations from './AssistantMessageAnnotations.vue'
+import {
+  MAX_ASSISTANT_COMPOSER_PARTS,
+  projectAssistantComposerParts,
+  removeAssistantComposerAnnotation,
+  updateAssistantComposerAnnotation,
+  type AssistantComposerState,
+} from './assistantCommandPalette'
 import { assistantResourceSelectionKey } from './assistantResources'
 import PreviewActionsMenu from './PreviewActionsMenu.vue'
 import {
@@ -162,11 +176,19 @@ import {
 } from './workbenchPersistence'
 import {
   developmentPreviewDisplayPhase,
+	developmentPreviewRecoveryAction,
   developmentPreviewShouldRefreshOnWake,
   developmentPreviewSyncStatus,
 } from './previewState'
 import { DevelopmentPreviewRefreshController } from './previewRefresh'
-import { PreviewConsoleController, type PreviewConsoleConnectionState } from './previewConsole'
+import {
+  PreviewConsoleController,
+  type PreviewConsoleAnnotationPinHover,
+  type PreviewConsoleAnnotationPinRenderState,
+  type PreviewConsoleAnnotationPinSelection,
+  type PreviewConsoleAnnotationSelection,
+  type PreviewConsoleConnectionState,
+} from './previewConsole'
 import {
   advancePromotionPoll,
   beginPromotionPoll,
@@ -188,6 +210,8 @@ import type {
   ProjectAssistantSnapshot,
   ProjectAssistantApprovalMode,
   ProjectAssistantActionFeedItem,
+  ProjectAssistantAnnotation,
+  ProjectAssistantAnnotationPin,
   ProjectAssistantContextResource,
   ProjectAssistantContentPart,
   ProjectAssistantSkill,
@@ -262,6 +286,20 @@ function assistantThreadFocusScope(projectName: string) {
     workspaceUUID: props.ctx?.workspaceUUID,
     userSub: props.ctx?.user?.userId || props.ctx?.user?.sub || props.ctx?.user?.email,
     project: projectName,
+  }
+}
+
+function assistantAnnotationDraftScope(
+  projectName = selected.value?.name ?? '',
+  threadID = activeAssistantThreadID.value,
+): AssistantAnnotationDraftScope {
+  return {
+    tenant: props.ctx?.tenant ?? '',
+    orgUUID: props.ctx?.orgUUID ?? '',
+    workspaceUUID: props.ctx?.workspaceUUID ?? '',
+    user: props.ctx?.user?.userId || props.ctx?.user?.sub || props.ctx?.user?.email || '',
+    project: projectName,
+    thread: threadID,
   }
 }
 
@@ -547,10 +585,28 @@ const developmentPreviewOverrideURL = ref<string | null>(null)
 const developmentPreviewAuthorizationKey = ref('')
 const developmentPreviewFrameKey = ref(0)
 const developmentPreviewFrameRef = ref<HTMLIFrameElement | null>(null)
+const developmentPreviewFrameLoaded = ref(false)
 const developmentPreviewDocumentState = ref<PreviewConsoleConnectionState>('disabled')
 const developmentPreviewRecoveryError = ref<string | null>(null)
 const developmentPreviewRecoveryAttempt = ref(0)
+const developmentPreviewRecoveryReloadAttempted = ref(false)
 const developmentPreviewPendingLoadedStatus = ref<string | null>(null)
+const developmentPreviewAnnotationMode = ref(false)
+const developmentPreviewAnnotationDraft = ref<{
+  annotationID?: string
+  documentID: string
+  pagePath: string
+  viewport: ProjectAssistantAnnotation['viewport']
+  target: ProjectAssistantAnnotation['target']
+  anchor?: ProjectAssistantAnnotation['anchor']
+  anchorRect?: ProjectAssistantAnnotation['target']['rect']
+  comment: string
+} | null>(null)
+const developmentPreviewAnnotationDocumentID = ref('')
+const developmentPreviewAnnotationPagePath = ref('')
+const developmentPreviewAnnotationPinResolution = ref<Record<string, boolean>>({})
+const developmentPreviewAnnotationHover = ref<PreviewConsoleAnnotationPinHover | null>(null)
+const developmentPreviewAnnotationInputRef = ref<HTMLInputElement | HTMLTextAreaElement | null>(null)
 const shareMode = ref<ProjectPublishingMode>('restricted')
 // Preview sharing is the development-side channel of the same dialog. It is
 // tracked separately from `publishing` because it applies to a different
@@ -673,13 +729,19 @@ const developmentPreviewRefreshController = new DevelopmentPreviewRefreshControl
 })
 const previewConsoleController = new PreviewConsoleController({
   api: {
-    createSession: (project, generation) => api.createPreviewConsoleSession(props.ctx, project, generation),
+    createSession: (project, generation, portalInstanceID) => api.createPreviewConsoleSession(props.ctx, project, generation, portalInstanceID),
     uploadEvents: (project, sessionID, generation, events, droppedCount) =>
       api.uploadPreviewConsoleEvents(props.ctx, project, sessionID, generation, events, droppedCount),
     deleteSession: (project, sessionID) => api.deletePreviewConsoleSession(props.ctx, project, sessionID),
   },
   getFrame: () => developmentPreviewFrameRef.value,
   onState: handleDevelopmentPreviewConsoleState,
+  onAnnotation: handleDevelopmentPreviewAnnotation,
+  onAnnotationPinHover: handleDevelopmentPreviewAnnotationPinHover,
+  onAnnotationPinSelect: handleDevelopmentPreviewAnnotationPinSelect,
+  onAnnotationPinsRendered: handleDevelopmentPreviewAnnotationPinsRendered,
+  onAnnotationMode: handleDevelopmentPreviewAnnotationMode,
+  onDocument: handleDevelopmentPreviewDocument,
 })
 let activeAssistantSubscription: AbortController | null = null
 let activeAssistantRun: AssistantRun | null = null
@@ -1462,6 +1524,7 @@ const developmentPreviewPhase = computed(() => {
     previewURL: developmentPreviewURL.value,
     authorizationError: developmentPreviewAuthorizationError.value || '',
 	documentState: developmentPreviewDocumentState.value,
+	frameLoaded: developmentPreviewFrameLoaded.value,
 	recoveryExhausted: !!developmentPreviewRecoveryError.value,
 	starting: developmentPreviewAuthorizing.value || !!developmentPreviewReadinessMessage.value,
   })
@@ -1473,6 +1536,86 @@ const developmentPreviewCanOpenInBrowser = computed(() => {
     !!developmentPreviewOverrideURL.value &&
     !developmentPreviewAuthorizationError.value
 })
+const developmentPreviewCanAnnotate = computed(() => developmentPreviewDocumentState.value === 'connected')
+const developmentPreviewAnnotationEditorStyle = computed(() => {
+  const draft = developmentPreviewAnnotationDraft.value
+  const rect = draft?.anchorRect ?? draft?.target.rect
+  if (!draft || !rect) return { left: '12px', top: '12px', width: 'min(480px, calc(100% - 24px))' }
+  const width = Math.min(480, Math.max(1, draft.viewport.width - 24))
+  const left = Math.max(12, Math.min(rect.x + rect.width - 24, draft.viewport.width - width - 12))
+  // Add and edit share the same multiline card, so position both using the
+  // same estimated footprint instead of letting the initial card overlap its
+  // target when it expands from the former one-line treatment.
+  const editorHeight = 164
+  const below = rect.y + rect.height + editorHeight + 10 <= draft.viewport.height
+  const top = below ? rect.y + rect.height + 10 : Math.max(12, rect.y - editorHeight - 10)
+  return { left: `${left}px`, top: `${top}px`, width: `${width}px` }
+})
+const developmentPreviewAnnotationEditing = computed(() => Boolean(developmentPreviewAnnotationDraft.value?.annotationID))
+const developmentPreviewAnnotations = computed(() => assistantComposerParts.value
+  .filter((part): part is Extract<ProjectAssistantContentPart, { type: 'annotation' }> => part.type === 'annotation')
+  .map((part, index) => ({
+    ...part.annotation,
+    number: index + 1,
+    stale: part.annotation.pagePath === developmentPreviewAnnotationPagePath.value &&
+      developmentPreviewAnnotationPinResolution.value[part.annotation.id] === false,
+  })))
+const developmentPreviewUnresolvedAnnotationIDs = computed(() => developmentPreviewAnnotations.value
+  .filter((annotation) => annotation.stale)
+  .map((annotation) => annotation.id))
+const developmentPreviewAnnotationHoverAnnotation = computed(() => {
+  const hover = developmentPreviewAnnotationHover.value
+  const pagePath = developmentPreviewAnnotationPagePath.value
+  if (!hover || developmentPreviewDocumentState.value !== 'connected' || !pagePath || hover.pagePath !== pagePath) return null
+  return developmentPreviewAnnotations.value.find((annotation) => (
+    annotation.id === hover.id && !annotation.stale && annotation.pagePath === pagePath
+  )) ?? null
+})
+const developmentPreviewAnnotationHoverStyle = computed(() => {
+  const hover = developmentPreviewAnnotationHover.value
+  const annotation = developmentPreviewAnnotationHoverAnnotation.value
+  if (!hover || !annotation) return {}
+
+  // Pin rects are viewport coordinates from the authenticated preview bridge.
+  // Clamp both the anchor and the tooltip box to the current document viewport
+  // before positioning the parent-owned overlay, so malformed-but-bounded
+  // coordinates cannot place the comment outside the preview surface.
+  const viewportWidth = Math.max(1, annotation.viewport.width)
+  const viewportHeight = Math.max(1, annotation.viewport.height)
+  const x = Math.max(0, Math.min(viewportWidth, hover.rect.x))
+  const y = Math.max(0, Math.min(viewportHeight, hover.rect.y))
+  const right = Math.max(x, Math.min(viewportWidth, hover.rect.x + hover.rect.width))
+  const bottom = Math.max(y, Math.min(viewportHeight, hover.rect.y + hover.rect.height))
+  const tooltipWidth = Math.max(1, Math.min(320, viewportWidth - 24))
+  const tooltipHeight = 56
+  const maxLeft = Math.max(0, viewportWidth - tooltipWidth)
+  const left = Math.max(0, Math.min(maxLeft, right + 10))
+  const preferredTop = bottom + tooltipHeight + 10 <= viewportHeight ? bottom + 10 : y - tooltipHeight - 10
+  const maxTop = Math.max(0, viewportHeight - tooltipHeight)
+  const top = Math.max(0, Math.min(maxTop, preferredTop))
+  return { left: `${left}px`, top: `${top}px`, width: `${tooltipWidth}px` }
+})
+
+const developmentPreviewAnnotationPinSignature = computed(() => assistantComposerParts.value
+  .filter((part): part is Extract<ProjectAssistantContentPart, { type: 'annotation' }> => part.type === 'annotation')
+  .map((part) => JSON.stringify({
+    id: part.annotation.id,
+    documentID: part.annotation.documentID,
+    pagePath: part.annotation.pagePath,
+    target: part.annotation.target,
+    anchor: part.annotation.anchor,
+  }))
+  .join('|'))
+
+watch(
+  [
+    developmentPreviewAnnotationDocumentID,
+    developmentPreviewAnnotationPagePath,
+    developmentPreviewAnnotationPinSignature,
+  ],
+  syncDevelopmentPreviewAnnotationPins,
+  { flush: 'post' },
+)
 
 const developmentPreviewOpenButtonLabel = computed(() => {
   return 'Open in browser'
@@ -1624,8 +1767,8 @@ watch(
     developmentPreviewOverrideURL.value = null
     developmentPreviewAuthorizationKey.value = ''
     clearDevelopmentPreviewAuthorizationRetry()
-	resetDevelopmentPreviewDocumentState()
-    developmentPreviewFrameKey.value += 1
+		resetDevelopmentPreviewDocumentState()
+		reloadDevelopmentPreviewFrame()
     reviewPanelHold.value = null
   },
 )
@@ -1644,6 +1787,7 @@ watch(
   () => activeWorkbenchTab.value?.kind,
   (kind) => {
     if (kind === 'preview') return
+	clearDevelopmentPreviewAnnotationHover()
     void previewConsoleController.disconnect()
   },
 )
@@ -1921,12 +2065,25 @@ function clearDevelopmentPreviewRecovery() {
 	}
 }
 
+function reloadDevelopmentPreviewFrame() {
+	developmentPreviewFrameLoaded.value = false
+	developmentPreviewFrameKey.value += 1
+}
+
 function resetDevelopmentPreviewDocumentState() {
-	clearDevelopmentPreviewRecovery()
-	developmentPreviewDocumentState.value = 'disabled'
-	developmentPreviewRecoveryError.value = null
-	developmentPreviewRecoveryAttempt.value = 0
-	developmentPreviewPendingLoadedStatus.value = null
+  clearDevelopmentPreviewRecovery()
+  clearDevelopmentPreviewAnnotationHover()
+  developmentPreviewDocumentState.value = 'disabled'
+  developmentPreviewAnnotationMode.value = false
+  developmentPreviewAnnotationDraft.value = null
+  developmentPreviewAnnotationDocumentID.value = ''
+  developmentPreviewAnnotationPagePath.value = ''
+  developmentPreviewAnnotationPinResolution.value = {}
+	developmentPreviewFrameLoaded.value = false
+  developmentPreviewRecoveryError.value = null
+  developmentPreviewRecoveryAttempt.value = 0
+	developmentPreviewRecoveryReloadAttempted.value = false
+  developmentPreviewPendingLoadedStatus.value = null
 }
 
 async function loadProviders() {
@@ -3348,6 +3505,7 @@ function closeAssistantCommandPalette(options: { restoreFocus?: boolean } = {}) 
 
 function updateAssistantComposerParts(parts: ProjectAssistantContentPart[]) {
   assistantComposerParts.value = parts.slice(0, MAX_ASSISTANT_COMPOSER_PARTS)
+  persistCurrentAssistantAnnotationDraft()
 }
 
 function updateAssistantComposerSkills(skills: ProjectAssistantSkill[]) {
@@ -3374,17 +3532,40 @@ function clearSelectedTurnAttachments() {
   assistantComposerParts.value = []
 }
 
+function persistCurrentAssistantAnnotationDraft(parts: readonly ProjectAssistantContentPart[] = assistantComposerParts.value) {
+  writeAssistantAnnotationDraft(assistantAnnotationDraftScope(), parts)
+}
+
+function clearStoredAssistantAnnotationDraft(projectName: string, threadID: string) {
+  clearAssistantAnnotationDraft(assistantAnnotationDraftScope(projectName, threadID))
+}
+
+function hydrateCurrentAssistantAnnotationDraft() {
+  const scope = assistantAnnotationDraftScope()
+  if (!assistantAnnotationDraftStorageKey(scope)) return
+  assistantComposerParts.value = readAssistantAnnotationDraft(scope)
+  void nextTick(syncDevelopmentPreviewAnnotationPins)
+}
+
 function replaceAssistantComposerText(value: string) {
   clearSelectedTurnAttachments()
   prompt.value = value
   assistantComposerParts.value = [{ type: 'text', text: value }]
+  persistCurrentAssistantAnnotationDraft()
 }
 
 watch(() => selected.value?.name ?? '', (current, previous) => {
   if (current === previous) return
-  clearSelectedTurnAttachments()
   closeAssistantCommandPalette({ restoreFocus: false })
 })
+
+const activeAssistantAnnotationDraftScopeKey = computed(() => assistantAnnotationDraftStorageKey(assistantAnnotationDraftScope()))
+
+watch(activeAssistantAnnotationDraftScopeKey, (current, previous) => {
+  if (current === previous) return
+  clearSelectedTurnAttachments()
+  if (current) hydrateCurrentAssistantAnnotationDraft()
+}, { flush: 'post' })
 
 watch(messageStreaming, (streaming) => {
   if (streaming) closeAssistantCommandPalette({ restoreFocus: false })
@@ -3520,6 +3701,7 @@ async function deleteAssistantThread(threadID: string) {
   try {
     await api.deleteAssistantThread(props.ctx, projectName, threadID)
     if (requestSerial !== assistantThreadRequestSerial || selected.value?.name !== projectName) return
+    clearStoredAssistantAnnotationDraft(projectName, threadID)
     assistantThreads.value = remaining
     if (!wasActive) return
 
@@ -3796,8 +3978,8 @@ async function refreshDevelopmentPreviewFrame(status: string, options: { refresh
   if (developmentPreviewNeedsAuthorization.value) {
     await authorizeDevelopmentPreview({ force: true })
     if (!developmentPreviewComponentMounted || selected.value?.name !== projectName || developmentPreviewAuthorizationError.value || !developmentPreviewURL.value) return
-  } else if (developmentPreviewURL.value) {
-    developmentPreviewFrameKey.value += 1
+	} else if (developmentPreviewURL.value) {
+		reloadDevelopmentPreviewFrame()
   } else {
     return
   }
@@ -3854,7 +4036,7 @@ async function changeDevelopmentPreviewAccess(mode: string) {
   }
 }
 
-async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
+async function authorizeDevelopmentPreview(options: { force?: boolean; preserveExistingPreview?: boolean } = {}) {
   if (!developmentPreviewComponentMounted) return
   const projectName = selected.value?.name
   const rawURL = developmentPreviewRawURL.value
@@ -3873,16 +4055,16 @@ async function authorizeDevelopmentPreview(options: { force?: boolean } = {}) {
     return
   }
   const key = developmentPreviewKey(projectName, rawURL)
-  if (!options.force && developmentPreviewOverrideURL.value && developmentPreviewAuthorizationKey.value === key) return
+	if (!options.force && !options.preserveExistingPreview && developmentPreviewOverrideURL.value && developmentPreviewAuthorizationKey.value === key) return
 
   await developmentPreviewRefreshController.authorize(
     projectName,
     key,
-    () => authorizeDevelopmentPreviewRequest(projectName, key),
+	() => authorizeDevelopmentPreviewRequest(projectName, key, options.preserveExistingPreview === true),
   )
 }
 
-async function authorizeDevelopmentPreviewRequest(projectName: string, key: string) {
+async function authorizeDevelopmentPreviewRequest(projectName: string, key: string, preserveExistingPreview = false) {
   clearDevelopmentPreviewAuthorizationRetry()
   const serial = ++developmentPreviewAuthorizationSerial
   developmentPreviewAuthorizing.value = true
@@ -3894,11 +4076,11 @@ async function authorizeDevelopmentPreviewRequest(projectName: string, key: stri
     developmentPreviewAccessModesFromAuthorization.value = authorization.previewAccessModes
     developmentPreviewAccessConverged.value = authorization.accessConverged
     if (!authorization.ready) {
-      developmentPreviewOverrideURL.value = null
+	  if (!preserveExistingPreview) developmentPreviewOverrideURL.value = null
       developmentPreviewAuthorizationKey.value = key
       developmentPreviewReadinessMessage.value = authorization.message || 'Preview is getting ready. The development instance is not serving traffic yet.'
 	  developmentPreviewDocumentState.value = 'connecting'
-      scheduleDevelopmentPreviewAuthorizationRetry(projectName, key)
+	  scheduleDevelopmentPreviewAuthorizationRetry(projectName, key, preserveExistingPreview)
       return
     }
     const previewURL = authorization.previewURL
@@ -3906,13 +4088,13 @@ async function authorizeDevelopmentPreviewRequest(projectName: string, key: stri
     applyDevelopmentPreviewAuthorization(projectName, authorization)
   } catch (e) {
     if (serial !== developmentPreviewAuthorizationSerial || selected.value?.name !== projectName) return
-    developmentPreviewOverrideURL.value = null
+	if (!preserveExistingPreview) developmentPreviewOverrideURL.value = null
     developmentPreviewAuthorizationKey.value = key
     developmentPreviewReadinessMessage.value = null
     clearDevelopmentPreviewAuthorizationRetry()
     developmentPreviewAuthorizationError.value = e instanceof Error ? e.message : String(e)
     if (developmentPreviewAuthorizationRetryable(e)) {
-      scheduleDevelopmentPreviewAuthorizationRetry(projectName, key)
+	  scheduleDevelopmentPreviewAuthorizationRetry(projectName, key, preserveExistingPreview)
     }
   } finally {
     if (serial === developmentPreviewAuthorizationSerial) developmentPreviewAuthorizing.value = false
@@ -3927,15 +4109,15 @@ function applyDevelopmentPreviewAuthorization(projectName: string, authorization
   clearDevelopmentPreviewAuthorizationRetry()
 	developmentPreviewDocumentState.value = 'connecting'
 	developmentPreviewRecoveryError.value = null
-  developmentPreviewFrameKey.value += 1
+	reloadDevelopmentPreviewFrame()
 }
 
-function scheduleDevelopmentPreviewAuthorizationRetry(projectName: string, key: string) {
+function scheduleDevelopmentPreviewAuthorizationRetry(projectName: string, key: string, preserveExistingPreview = false) {
   clearDevelopmentPreviewAuthorizationRetry()
   developmentPreviewAuthorizationRetryTimer = window.setTimeout(() => {
     developmentPreviewAuthorizationRetryTimer = undefined
     if (!developmentPreviewComponentMounted || selected.value?.name !== projectName || developmentPreviewAuthorizationKey.value !== key) return
-    void authorizeDevelopmentPreview()
+	void authorizeDevelopmentPreview({ force: preserveExistingPreview, preserveExistingPreview })
   }, DEVELOPMENT_PREVIEW_AUTH_RETRY_MS)
 }
 
@@ -4006,16 +4188,208 @@ function projectDevelopmentPreviewString(result: unknown, key: 'message' | 'reas
 function handleDevelopmentPreviewFrameLoad() {
   const projectName = selected.value?.name
 	if (projectName) {
+		developmentPreviewFrameLoaded.value = true
+		clearDevelopmentPreviewAnnotationHover()
 		developmentPreviewDocumentState.value = 'connecting'
 		void previewConsoleController.connect(projectName)
 	}
 }
 
+function handleDevelopmentPreviewAnnotationMode(active: boolean) {
+  developmentPreviewAnnotationMode.value = active && developmentPreviewCanAnnotate.value
+  if (!active) developmentPreviewAnnotationDraft.value = null
+}
+
+function clearDevelopmentPreviewAnnotationHover(id?: string) {
+  if (!id || developmentPreviewAnnotationHover.value?.id === id) {
+    developmentPreviewAnnotationHover.value = null
+  }
+}
+
+function handleDevelopmentPreviewAnnotationPinHover(hover: PreviewConsoleAnnotationPinHover) {
+  if (!hover.active) {
+    clearDevelopmentPreviewAnnotationHover(hover.id)
+    return
+  }
+  const pagePath = developmentPreviewAnnotationPagePath.value
+  if (developmentPreviewDocumentState.value !== 'connected' || !pagePath || hover.pagePath !== pagePath) {
+    clearDevelopmentPreviewAnnotationHover()
+    return
+  }
+  const annotation = developmentPreviewAnnotations.value.find((candidate) => (
+    candidate.id === hover.id && !candidate.stale && candidate.pagePath === pagePath
+  ))
+  if (!annotation) {
+    clearDevelopmentPreviewAnnotationHover()
+    return
+  }
+  developmentPreviewAnnotationHover.value = hover
+}
+
+function toggleDevelopmentPreviewAnnotation() {
+  if (!developmentPreviewCanAnnotate.value) return
+  if (developmentPreviewAnnotationMode.value) {
+    previewConsoleController.stopAnnotationMode()
+    return
+  }
+  previewConsoleController.startAnnotationMode()
+}
+
+function handleDevelopmentPreviewDocument(documentID: string, pagePath: string) {
+  const next = documentID.trim()
+  const nextPagePath = pagePath.trim()
+  if (!next || !nextPagePath) {
+    clearDevelopmentPreviewAnnotationHover()
+    return
+  }
+  if (next === developmentPreviewAnnotationDocumentID.value && nextPagePath === developmentPreviewAnnotationPagePath.value) return
+  clearDevelopmentPreviewAnnotationHover()
+  developmentPreviewAnnotationDocumentID.value = next
+  developmentPreviewAnnotationPagePath.value = nextPagePath
+  developmentPreviewAnnotationPinResolution.value = {}
+  developmentPreviewAnnotationMode.value = false
+  developmentPreviewAnnotationDraft.value = null
+  // The bridge generation remains immutable for authorization and provenance.
+  // Route-bound pins are re-resolved in each authenticated document so normal
+  // multi-page preview navigation can hide them off-route and restore them
+  // when the user returns.
+}
+
+function handleDevelopmentPreviewAnnotationPinsRendered(documentID: string, pagePath: string, states: PreviewConsoleAnnotationPinRenderState[]) {
+  if (documentID !== developmentPreviewAnnotationDocumentID.value) return
+  if (pagePath !== developmentPreviewAnnotationPagePath.value) {
+    developmentPreviewAnnotationPagePath.value = pagePath
+  }
+  developmentPreviewAnnotationPinResolution.value = Object.fromEntries(states.map((state) => [state.id, state.resolved]))
+}
+
+function handleDevelopmentPreviewAnnotation(selection: PreviewConsoleAnnotationSelection) {
+  if (!developmentPreviewCanAnnotate.value || !selected.value) return
+  if (!selection.documentID || selection.documentID !== developmentPreviewAnnotationDocumentID.value) return
+  developmentPreviewAnnotationDraft.value = {
+    documentID: selection.documentID,
+    pagePath: selection.pagePath,
+    viewport: selection.viewport,
+    target: selection.target,
+    anchor: selection.anchor,
+    anchorRect: selection.anchor && selection.target.rect ? {
+      x: selection.target.rect.x + selection.target.rect.width * selection.anchor.x,
+      y: selection.target.rect.y + selection.target.rect.height * selection.anchor.y,
+      width: 0,
+      height: 0,
+    } : undefined,
+    comment: '',
+  }
+  void nextTick(() => developmentPreviewAnnotationInputRef.value?.focus())
+}
+
+function handleDevelopmentPreviewAnnotationPinSelect(selection: PreviewConsoleAnnotationPinSelection) {
+  if (!developmentPreviewAnnotationMode.value || !developmentPreviewCanAnnotate.value) return
+  if (selection.pagePath !== developmentPreviewAnnotationPagePath.value) return
+  const annotation = developmentPreviewAnnotations.value.find((candidate) => (
+    candidate.id === selection.id && !candidate.stale && candidate.pagePath === selection.pagePath
+  ))
+  if (!annotation) return
+  clearDevelopmentPreviewAnnotationHover(annotation.id)
+  developmentPreviewAnnotationDraft.value = {
+    annotationID: annotation.id,
+    documentID: annotation.documentID,
+    pagePath: annotation.pagePath,
+    viewport: selection.viewport,
+    target: annotation.target,
+    anchor: annotation.anchor,
+    anchorRect: selection.rect,
+    comment: annotation.comment,
+  }
+  void nextTick(() => {
+    developmentPreviewAnnotationInputRef.value?.focus()
+    developmentPreviewAnnotationInputRef.value?.select()
+  })
+}
+
+function annotationPartID(): string {
+  try {
+    if (typeof crypto?.randomUUID === 'function') return crypto.randomUUID()
+  } catch {}
+  return `annotation-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function syncDevelopmentPreviewAnnotationPins() {
+  const documentID = developmentPreviewAnnotationDocumentID.value
+  const pins: ProjectAssistantAnnotationPin[] = developmentPreviewAnnotations.value
+    .filter((annotation) => annotation.target.rect && documentID)
+    .map((annotation) => ({
+      id: annotation.id,
+      number: annotation.number,
+      documentID,
+      pagePath: annotation.pagePath,
+      boundingRect: annotation.target.rect!,
+      target: annotation.target,
+      anchor: annotation.anchor,
+    }))
+  if (developmentPreviewAnnotationHover.value && !pins.some((pin) => pin.id === developmentPreviewAnnotationHover.value?.id)) {
+    clearDevelopmentPreviewAnnotationHover()
+  }
+  previewConsoleController.setAnnotationPins(pins)
+}
+
+function commitDevelopmentPreviewAnnotation() {
+  const draft = developmentPreviewAnnotationDraft.value
+  const comment = draft?.comment.trim() || ''
+  if (!draft || !comment || !developmentPreviewCanAnnotate.value) return
+  const annotation: ProjectAssistantAnnotation = {
+    id: draft.annotationID || annotationPartID(),
+    comment,
+    documentID: draft.documentID,
+    pagePath: draft.pagePath,
+    viewport: draft.viewport,
+    target: draft.target,
+    ...(draft.anchor ? { anchor: draft.anchor } : {}),
+  }
+  if (!draft.annotationID && assistantComposerParts.value.length >= MAX_ASSISTANT_COMPOSER_PARTS) return
+  const [validatedPart] = projectAssistantComposerParts([{ type: 'annotation', annotation }])
+  if (!validatedPart || validatedPart.type !== 'annotation') return
+  assistantComposerParts.value = draft.annotationID
+    ? updateAssistantComposerAnnotation(assistantComposerParts.value, validatedPart.annotation) as ProjectAssistantContentPart[]
+    : [...assistantComposerParts.value, validatedPart]
+  persistCurrentAssistantAnnotationDraft()
+  developmentPreviewAnnotationDraft.value = null
+  // The controller retains this desired state and replays it if the bridge is
+  // reconnecting. Sync directly as well as through the watcher so confirming
+  // an annotation cannot leave only the transient selection overlay visible.
+  syncDevelopmentPreviewAnnotationPins()
+  void nextTick(() => {
+    assistantComposerRef.value?.focus()
+  })
+}
+
+function deleteDevelopmentPreviewAnnotation() {
+  const annotationID = developmentPreviewAnnotationDraft.value?.annotationID
+  if (!annotationID) return
+  assistantComposerParts.value = removeAssistantComposerAnnotation(assistantComposerParts.value, annotationID) as ProjectAssistantContentPart[]
+  persistCurrentAssistantAnnotationDraft()
+  clearDevelopmentPreviewAnnotationHover(annotationID)
+  developmentPreviewAnnotationDraft.value = null
+  syncDevelopmentPreviewAnnotationPins()
+  void nextTick(() => assistantComposerRef.value?.focus())
+}
+
+function cancelDevelopmentPreviewAnnotation() {
+  developmentPreviewAnnotationDraft.value = null
+  developmentPreviewAnnotationInputRef.value?.blur()
+}
+
 function handleDevelopmentPreviewConsoleState(state: PreviewConsoleConnectionState) {
 	developmentPreviewDocumentState.value = state
+	if (state !== 'connected') {
+		clearDevelopmentPreviewAnnotationHover()
+		developmentPreviewAnnotationMode.value = false
+		developmentPreviewAnnotationDraft.value = null
+	}
 	if (state === 'connected') {
 		clearDevelopmentPreviewRecovery()
 		developmentPreviewRecoveryAttempt.value = 0
+		developmentPreviewRecoveryReloadAttempted.value = false
 		developmentPreviewRecoveryError.value = null
 		if (developmentPreviewPendingLoadedStatus.value) {
 			developmentSyncStatus.value = developmentPreviewPendingLoadedStatus.value
@@ -4033,26 +4407,44 @@ function handleDevelopmentPreviewConsoleState(state: PreviewConsoleConnectionSta
 
 function scheduleDevelopmentPreviewRecovery() {
 	if (!developmentPreviewComponentMounted || !developmentPreviewNeedsAuthorization.value || !developmentPreviewURL.value || developmentPreviewRecoveryTimer !== undefined) return
-	const delays = [1_000, 2_000, 4_000]
 	const attempt = developmentPreviewRecoveryAttempt.value
-	if (attempt >= delays.length) {
-		developmentPreviewRecoveryError.value = 'The preview document did not finish loading. The development runtime may still be starting.'
-		return
-	}
 	const projectName = selected.value?.name
 	if (!projectName) return
-	developmentPreviewRecoveryAttempt.value = attempt + 1
+	const action = developmentPreviewRecoveryAction(attempt, developmentPreviewRecoveryReloadAttempted.value)
+	if (action.kind === 'reload') {
+		developmentPreviewRecoveryReloadAttempted.value = true
+		developmentPreviewRecoveryAttempt.value = 0
+		void recoverDevelopmentPreviewDocument(projectName)
+		return
+	}
+	if (action.kind === 'background') {
+		developmentPreviewRecoveryError.value = developmentPreviewFrameLoaded.value
+			? 'Preview loaded, but annotations and console evidence are reconnecting.'
+			: 'The preview document did not finish loading. The development runtime may still be starting.'
+	} else {
+		developmentPreviewRecoveryAttempt.value = attempt + 1
+	}
 	developmentPreviewRecoveryTimer = window.setTimeout(() => {
 		developmentPreviewRecoveryTimer = undefined
 		if (!developmentPreviewComponentMounted || selected.value?.name !== projectName) return
-		void authorizeDevelopmentPreview({ force: true })
-	}, delays[attempt])
+		void previewConsoleController.reconnect()
+	}, action.delayMS)
+}
+
+async function recoverDevelopmentPreviewDocument(projectName: string) {
+	if (!developmentPreviewComponentMounted || selected.value?.name !== projectName) return
+	developmentPreviewRecoveryError.value = null
+	await authorizeDevelopmentPreview({ force: true, preserveExistingPreview: true })
 }
 
 function retryDevelopmentPreview() {
-	resetDevelopmentPreviewDocumentState()
+	clearDevelopmentPreviewRecovery()
+	developmentPreviewRecoveryAttempt.value = 0
+	developmentPreviewRecoveryReloadAttempted.value = true
+	developmentPreviewRecoveryError.value = null
 	developmentPreviewDocumentState.value = 'connecting'
-	void authorizeDevelopmentPreview({ force: true })
+	const projectName = selected.value?.name
+	if (projectName) void recoverDevelopmentPreviewDocument(projectName)
 }
 
 function handleDevelopmentPreviewVisibilityChange() {
@@ -4072,8 +4464,12 @@ function refreshDevelopmentPreviewAuthorizationIfNeeded() {
     authorizationError: developmentPreviewAuthorizationError.value || '',
 	documentState: developmentPreviewDocumentState.value,
 	recoveryExhausted: !!developmentPreviewRecoveryError.value,
-  })) return
+	})) return
 	clearDevelopmentPreviewRecovery()
+  if (developmentPreviewURL.value && !developmentPreviewAuthorizationError.value) {
+    void previewConsoleController.reconnect()
+    return
+  }
   void authorizeDevelopmentPreview({ force: true })
 }
 
@@ -4414,6 +4810,10 @@ async function sendMessage() {
         assistantThreads.value = [thread, ...assistantThreads.value]
         activeAssistantThreadID.value = thread.id
         persistAssistantThreadFocus(assistantThreadFocusScope(projectName), thread.id)
+        // A first-send thread is created after the draft was captured. Bind
+        // that draft to the new durable thread before the POST so a failed
+        // submission still survives refresh.
+        writeAssistantAnnotationDraft(assistantAnnotationDraftScope(projectName, thread.id), turnContentParts)
       }
       const canonical = startOperation.collaborationMode === 'review'
         ? await api.startAssistantReview(props.ctx, projectName, thread.id, {
@@ -4435,6 +4835,7 @@ async function sendMessage() {
       // The POST response is the acceptance boundary. Later projection or
       // stream setup failures must not make already-consumed attachments look
       // available for a second turn.
+      clearStoredAssistantAnnotationDraft(projectName, thread.id)
       clearSelectedTurnAttachments()
       replaceAssistantThread(canonical.thread)
       const items = await api.listAssistantThreadItems(props.ctx, projectName, thread.id)
@@ -4493,16 +4894,21 @@ async function sendMessage() {
         const expectedServerContent = assistantRunExpectedServerContent(payload)
         if (persistedPrompt?.content === expectedServerContent && assistantRunMatchesStartRequest(recovered?.current, payload)) {
           pendingMessageSubmission = null
+          clearStoredAssistantAnnotationDraft(projectName, activeAssistantThreadID.value)
           clearSelectedTurnAttachments()
           if (firstProjectPending && firstProjectSubmissionAccepted(firstProjectPending, persistedPrompt)) pendingFirstProjectSubmission = null
         } else {
           pendingMessageSubmission = null
           prompt.value = content
+          assistantComposerParts.value = turnContentParts
+          persistCurrentAssistantAnnotationDraft(turnContentParts)
         }
         if (!recovered?.current) messageStreaming.value = false
       } catch (recoveryError) {
         messageStreaming.value = false
         prompt.value = content
+        assistantComposerParts.value = turnContentParts
+        persistCurrentAssistantAnnotationDraft(turnContentParts)
         const detail = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
         error.value = detail ? `Could not recover the active assistant run: ${detail}` : 'Could not recover the active assistant run. Your prompt is preserved.'
       }
@@ -4510,6 +4916,8 @@ async function sendMessage() {
     }
     error.value = e instanceof Error ? e.message : String(e)
     prompt.value = content
+    assistantComposerParts.value = turnContentParts
+    persistCurrentAssistantAnnotationDraft(turnContentParts)
     messageStreaming.value = false
   } finally {
     busy.value = false
@@ -5302,12 +5710,21 @@ function renderMessageContent(content: string, role: ProjectMessage['role'], mes
           const label = skill?.name || part.skillID
           return `<span class="assistant-message-chip inline-flex max-w-full items-center gap-1 rounded-sm border border-accent/30 bg-accent/10 px-1.5 py-0.5 align-baseline font-mono text-[11px] leading-4 text-accent" title="${escapeHtml(skill?.scope ? `${label} · ${skill.scope}` : label)}">@ ${escapeHtml(label)}</span>`
         }
-        const resource = resources[part.resourceIndex]
-        if (!resource) return ''
-        const label = resource.resourceRef.name
-        return `<span class="assistant-message-chip inline-flex max-w-full items-center gap-1 rounded-sm border border-accent/30 bg-accent/10 px-1.5 py-0.5 align-baseline font-mono text-[11px] leading-4 text-accent" title="${escapeHtml(`${resource.provider} · ${resource.resourceRef.kind} · ${label}`)}"># ${escapeHtml(label)}</span>`
+        if (part.type === 'resource') {
+          const resource = resources[part.resourceIndex]
+          if (!resource) return ''
+          const label = resource.resourceRef.name
+          return `<span class="assistant-message-chip inline-flex max-w-full items-center gap-1 rounded-sm border border-accent/30 bg-accent/10 px-1.5 py-0.5 align-baseline font-mono text-[11px] leading-4 text-accent" title="${escapeHtml(`${resource.provider} · ${resource.resourceRef.kind} · ${label}`)}"># ${escapeHtml(label)}</span>`
+        }
+        // Annotations render as a single thread attachment outside the prose
+        // bubble. Keeping them out of v-html also lets Vue escape the target
+        // snapshot and user comment independently in the detail popover.
+        return ''
       }).join('')
-      if (rendered) return rendered
+      // Once durable content parts exist they are the only display authority.
+      // `message.content` may be the server-normalized model context (including
+      // untrusted annotation envelopes), so it must never become a UI fallback.
+      return rendered
     }
   }
   return escapeHtml(content).replace(/\n/g, '<br />')
@@ -5329,8 +5746,21 @@ function assistantContentPartsForMessage(message: ProjectMessageView): ProjectAs
   return parts.filter((part) =>
     part.type === 'text' ||
     (part.type === 'skill' && (!skillIDs.size || skillIDs.has(part.skillID))) ||
-    (part.type === 'resource' && part.resourceIndex >= 0 && part.resourceIndex < resources.length),
+    (part.type === 'resource' && part.resourceIndex >= 0 && part.resourceIndex < resources.length) ||
+    (part.type === 'annotation' && Boolean(part.annotation.comment && part.annotation.documentID)),
   )
+}
+
+function assistantAnnotationsForMessage(message: ProjectMessageView): ProjectAssistantAnnotation[] {
+  return assistantContentPartsForMessage(message)
+    .filter((part): part is Extract<ProjectAssistantContentPart, { type: 'annotation' }> => part.type === 'annotation')
+    .map((part) => part.annotation)
+}
+
+function userMessageHasVisibleContent(message: ProjectMessageView): boolean {
+  const parts = assistantContentPartsForMessage(message)
+  if (parts.length) return parts.some((part) => part.type !== 'annotation')
+  return Boolean(message.content)
 }
 
 function assistantSurfaceCards(message: ProjectMessageView): ProjectAssistantSurfaceCard[] {
@@ -5967,7 +6397,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 v-if="message.role === 'user'"
                 class="flex max-w-[86%] flex-col items-end gap-1 sm:max-w-[72%]"
               >
+                <AssistantMessageAnnotations
+                  :annotations="assistantAnnotationsForMessage(message)"
+                  :current-document-id="developmentPreviewAnnotationDocumentID"
+                  :disclosure-id="`assistant-message-annotations-${message.id}`"
+                />
                 <div
+                  v-if="userMessageHasVisibleContent(message)"
                   class="rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 text-[13px] leading-5 text-text-primary shadow-sm"
                   v-html="renderMessageContent(message.content, message.role, message)"
                 />
@@ -6306,6 +6742,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               :selected-resources="selectedTurnResources"
               :ctx="props.ctx"
               :providers="providers"
+              :annotation-document-id="developmentPreviewAnnotationDocumentID"
+              :annotation-page-path="developmentPreviewAnnotationPagePath"
+              :unresolved-annotation-ids="developmentPreviewUnresolvedAnnotationIDs"
               :disabled="busy || assistantResumeBusy || conversationInteractionBusy || llmSettingsLoading"
               :active-run="messageStreaming"
               @update:content-parts="updateAssistantComposerParts"
@@ -6611,6 +7050,23 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               />
               <button
                 type="button"
+                class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-3 text-[12px] font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+                :class="developmentPreviewAnnotationMode
+                  ? 'border-accent/40 bg-accent-subtle text-accent shadow-[0_0_16px_var(--color-accent-glow)]'
+                  : 'border-border-subtle bg-surface text-text-secondary hover:bg-surface-hover hover:text-text-primary'"
+                :disabled="messageStreaming || !developmentPreviewCanAnnotate"
+                :aria-pressed="developmentPreviewAnnotationMode"
+                :title="developmentPreviewCanAnnotate ? (developmentPreviewAnnotationMode ? 'Stop annotating' : 'Annotate preview') : 'Annotation becomes available when the preview connects'"
+                @click="toggleDevelopmentPreviewAnnotation"
+              >
+                <span class="relative h-3.5 w-3.5 shrink-0">
+                  <MessageSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  <Plus class="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-accent p-px text-white" :stroke-width="2.5" />
+                </span>
+                {{ developmentPreviewAnnotationMode ? 'Annotating' : 'Annotate' }}
+              </button>
+              <button
+                type="button"
                 class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
                 :disabled="!selected || !developmentBinding || messageStreaming || developmentSyncBusy"
                 title="Sync"
@@ -6653,12 +7109,59 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               :src="developmentPreviewURL"
               title="Development preview"
               sandbox="allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-scripts allow-same-origin"
-              referrerpolicy="no-referrer"
-              class="h-full min-h-[360px] w-full border-0 bg-white"
-              @load="handleDevelopmentPreviewFrameLoad"
-            />
+			  referrerpolicy="no-referrer"
+			  class="h-full min-h-[360px] w-full border-0 bg-white"
+			  @load="handleDevelopmentPreviewFrameLoad"
+			/>
 			<div
-				v-if="developmentPreviewRecoveryError"
+				v-if="developmentPreviewAnnotationHoverAnnotation"
+				class="pointer-events-none absolute inset-0 z-30"
+				aria-live="polite"
+				aria-atomic="true"
+			>
+				<div
+					:style="developmentPreviewAnnotationHoverStyle"
+					class="pointer-events-none absolute rounded-md border border-accent/40 bg-surface-overlay/95 px-2.5 py-2 text-[12px] leading-4 text-text-primary shadow-lg backdrop-blur"
+					role="tooltip"
+				>
+					<div class="flex items-start gap-1.5">
+						<MessageSquare class="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
+						<span class="min-w-0 whitespace-pre-wrap break-words">{{ developmentPreviewAnnotationHoverAnnotation.comment }}</span>
+					</div>
+				</div>
+			</div>
+			<div
+				v-if="developmentPreviewAnnotationDraft"
+				class="absolute z-20 flex flex-col items-stretch gap-3 rounded-lg border border-border-default bg-surface-overlay/95 p-3 shadow-2xl backdrop-blur"
+				:style="developmentPreviewAnnotationEditorStyle"
+				role="dialog"
+				:aria-label="developmentPreviewAnnotationEditing ? 'Edit annotation' : 'Add annotation'"
+			>
+				<label for="development-preview-annotation-comment" class="sr-only">{{ developmentPreviewAnnotationEditing ? 'Edit annotation on' : 'Comment on' }} {{ developmentPreviewAnnotationDraft.target.name || developmentPreviewAnnotationDraft.target.tag || 'preview element' }}</label>
+				<textarea
+					id="development-preview-annotation-comment"
+					ref="developmentPreviewAnnotationInputRef"
+					v-model="developmentPreviewAnnotationDraft.comment"
+					maxlength="2048"
+					rows="3"
+					class="min-h-20 w-full resize-none border-0 bg-transparent px-1 py-1 text-[14px] leading-5 text-text-primary outline-none placeholder:text-text-muted"
+					placeholder="What should change?"
+					@keydown.meta.enter.prevent="commitDevelopmentPreviewAnnotation"
+					@keydown.ctrl.enter.prevent="commitDevelopmentPreviewAnnotation"
+					@keydown.esc.prevent="cancelDevelopmentPreviewAnnotation"
+				/>
+				<div class="flex items-center border-t border-border-subtle pt-2">
+					<button v-if="developmentPreviewAnnotationEditing" type="button" class="flex h-8 w-8 items-center justify-center rounded-md text-text-muted transition hover:bg-danger-subtle hover:text-danger" title="Delete annotation" aria-label="Delete annotation" @click="deleteDevelopmentPreviewAnnotation">
+						<Trash2 class="h-4 w-4" :stroke-width="1.75" />
+					</button>
+					<div class="ml-auto flex items-center gap-2">
+						<button type="button" class="rounded-md border border-border-subtle bg-surface px-3 py-1.5 text-[13px] font-medium text-text-primary transition hover:bg-surface-hover" title="Cancel annotation" @click="cancelDevelopmentPreviewAnnotation">Cancel</button>
+						<button type="button" class="rounded-md bg-text-primary px-3 py-1.5 text-[13px] font-medium text-surface transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!developmentPreviewAnnotationDraft.comment.trim()" @click="commitDevelopmentPreviewAnnotation">Save</button>
+					</div>
+				</div>
+			</div>
+				<div
+					v-if="developmentPreviewRecoveryError && !developmentPreviewFrameLoaded"
 				class="absolute inset-0 flex items-center justify-center bg-surface/95 p-6 text-center"
 				role="alert"
 				aria-live="assertive"
@@ -6672,8 +7175,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 					</button>
 				</div>
 			</div>
-			<div
-				v-else-if="developmentPreviewDocumentState === 'connecting' || developmentPreviewPhase === 'Starting' || developmentPreviewPhase === 'Loading'"
+				<div
+					v-else-if="!developmentPreviewFrameLoaded && (developmentPreviewDocumentState === 'connecting' || developmentPreviewPhase === 'Starting' || developmentPreviewPhase === 'Loading')"
 				class="absolute inset-0 flex items-center justify-center bg-surface/80 p-6 text-center"
 				role="status"
 				aria-live="polite"

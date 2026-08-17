@@ -19,6 +19,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 
@@ -103,7 +104,27 @@ func decodeStrictJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return false
 	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: must contain exactly one JSON value")
+		} else {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: trailing JSON: "+err.Error())
+		}
+		return false
+	}
 	return true
+}
+
+// decodeStrictJSONWithBodyLimit applies a route-local cap before using the
+// shared strict decoder. The cap is deliberately opt-in so existing callers
+// retain their established request-size behavior while annotation-bearing
+// assistant starts can bound their structured payloads proportionally.
+func decodeStrictJSONWithBodyLimit(w http.ResponseWriter, r *http.Request, out any, maxBytes int64) bool {
+	if maxBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	}
+	return decodeStrictJSON(w, r, out)
 }
 
 // writeError turns a kube/client error into a sensible HTTP code.

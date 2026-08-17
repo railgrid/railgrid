@@ -63,12 +63,6 @@ func registerPortalRoutes(router *mux.Router, frameSources ...string) (http.Hand
 		})
 	}
 
-	// Redirect /ui → /ui/ (trailing slash) so relative asset URLs in
-	// index.html resolve correctly.
-	router.HandleFunc(PortalPathPrefix, func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, PortalPathPrefix+"/", http.StatusMovedPermanently)
-	})
-
 	// SPA catch-all for /ui/*: tries to serve the requested file; falls
 	// back to index.html so Vue Router handles client-side routing.
 	// NOT registered on the mux — the caller invokes this only for paths that

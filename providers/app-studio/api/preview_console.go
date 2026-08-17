@@ -89,10 +89,6 @@ func projectPreviewConsoleScope(id identity, project *aiv1alpha1.Project) (previ
 	}, nil
 }
 
-func (s previewConsoleScope) key() string {
-	return strings.Join([]string{s.ClusterID, s.OrgUUID, s.WorkspaceUUID, string(s.ProjectUID), s.Actor}, "\x00")
-}
-
 type previewConsoleEvent struct {
 	Sequence   uint64 `json:"sequence"`
 	Ordinal    uint64 `json:"ordinal"`
@@ -116,31 +112,33 @@ type previewConsoleIncomingEvent struct {
 }
 
 type previewConsoleSession struct {
-	ID            string
-	Nonce         string
-	Scope         previewConsoleScope
-	PreviewOrigin string
-	PortalOrigin  string
-	Generation    string
-	Protocol      int
-	ExpiresAt     time.Time
-	UpdatedAt     time.Time
-	DocumentID    string
-	Events        []previewConsoleEvent
-	EventBytes    int
-	LastSequence  uint64
-	NextOrdinal   uint64
-	DroppedCount  int
-	ReceivedCount int
-	RedactedCount int
-	LastBatchHash [32]byte
+	ID               string
+	Nonce            string
+	PortalInstanceID string
+	Scope            previewConsoleScope
+	PreviewOrigin    string
+	PortalOrigin     string
+	Generation       string
+	Protocol         int
+	ExpiresAt        time.Time
+	UpdatedAt        time.Time
+	DocumentID       string
+	Events           []previewConsoleEvent
+	EventBytes       int
+	LastSequence     uint64
+	NextOrdinal      uint64
+	DroppedCount     int
+	ReceivedCount    int
+	RedactedCount    int
+	LastBatchHash    [32]byte
+	ActivityOrder    uint64
 }
 
 type previewConsoleStore struct {
 	mu            sync.Mutex
 	now           func() time.Time
 	sessions      map[string]*previewConsoleSession
-	active        map[string]string
+	nextActivity  uint64
 	totalReceived uint64
 	totalDropped  uint64
 	totalRedacted uint64
@@ -150,11 +148,10 @@ func newPreviewConsoleStore() *previewConsoleStore {
 	return &previewConsoleStore{
 		now:      time.Now,
 		sessions: map[string]*previewConsoleSession{},
-		active:   map[string]string{},
 	}
 }
 
-func (s *previewConsoleStore) create(scope previewConsoleScope, previewOrigin, portalOrigin, generation string, protocol int, expiresAt time.Time) (*previewConsoleSession, error) {
+func (s *previewConsoleStore) create(scope previewConsoleScope, portalInstanceID, previewOrigin, portalOrigin, generation string, protocol int, expiresAt time.Time) (*previewConsoleSession, error) {
 	if s == nil {
 		return nil, errors.New("preview console store is not configured")
 	}
@@ -170,25 +167,31 @@ func (s *previewConsoleStore) create(scope previewConsoleScope, previewOrigin, p
 	defer s.mu.Unlock()
 	now := s.now().UTC()
 	s.cleanupLocked(now)
-	if previous := s.active[scope.key()]; previous != "" {
-		delete(s.sessions, previous)
+	// A portal tab owns one current session. Renewal replaces only that tab's
+	// previous capability; sibling tabs for the same actor/project remain live.
+	for _, previous := range s.sessions {
+		if previous.Scope == scope && previous.PortalInstanceID == portalInstanceID {
+			s.deleteLocked(previous)
+		}
 	}
 	for len(s.sessions) >= previewConsoleMaxSessions {
 		s.evictOldestLocked()
 	}
 	session := &previewConsoleSession{
-		ID:            sessionID,
-		Nonce:         nonce,
-		Scope:         scope,
-		PreviewOrigin: previewOrigin,
-		PortalOrigin:  portalOrigin,
-		Generation:    generation,
-		Protocol:      protocol,
-		ExpiresAt:     expiresAt.UTC(),
-		UpdatedAt:     now,
+		ID:               sessionID,
+		Nonce:            nonce,
+		PortalInstanceID: portalInstanceID,
+		Scope:            scope,
+		PreviewOrigin:    previewOrigin,
+		PortalOrigin:     portalOrigin,
+		Generation:       generation,
+		Protocol:         protocol,
+		ExpiresAt:        expiresAt.UTC(),
+		UpdatedAt:        now,
 	}
+	s.nextActivity++
+	session.ActivityOrder = s.nextActivity
 	s.sessions[sessionID] = session
-	s.active[scope.key()] = sessionID
 	return clonePreviewConsoleSession(session), nil
 }
 
@@ -252,6 +255,8 @@ func (s *previewConsoleStore) append(sessionID string, scope previewConsoleScope
 		}
 	}
 	session.UpdatedAt = now
+	s.nextActivity++
+	session.ActivityOrder = s.nextActivity
 	return accepted, session.NextOrdinal, session.DroppedCount, nil
 }
 
@@ -307,14 +312,28 @@ func (s *previewConsoleStore) read(scope previewConsoleScope, levels map[string]
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	session := s.sessions[s.active[scope.key()]]
-	if session == nil {
-		return previewConsoleToolResult{Status: "not_connected", Trust: previewConsoleToolTrust}
-	}
 	now := s.now().UTC()
-	if !session.ExpiresAt.After(now) {
-		s.deleteLocked(session)
-		return previewConsoleToolResult{Status: "expired", Trust: previewConsoleToolTrust}
+	var session *previewConsoleSession
+	hadExpired := false
+	for _, candidate := range s.sessions {
+		if candidate.Scope != scope {
+			continue
+		}
+		if !candidate.ExpiresAt.After(now) {
+			hadExpired = true
+			s.deleteLocked(candidate)
+			continue
+		}
+		if session == nil || candidate.ActivityOrder > session.ActivityOrder {
+			session = candidate
+		}
+	}
+	if session == nil {
+		status := "not_connected"
+		if hadExpired {
+			status = "expired"
+		}
+		return previewConsoleToolResult{Status: status, Trust: previewConsoleToolTrust}
 	}
 	events := make([]previewConsoleEvent, 0, limit)
 	for i := len(session.Events) - 1; i >= 0 && len(events) < limit; i-- {
@@ -385,9 +404,6 @@ func (s *previewConsoleStore) evictOldestLocked() {
 
 func (s *previewConsoleStore) deleteLocked(session *previewConsoleSession) {
 	delete(s.sessions, session.ID)
-	if s.active[session.Scope.key()] == session.ID {
-		delete(s.active, session.Scope.key())
-	}
 }
 
 func clonePreviewConsoleSession(session *previewConsoleSession) *previewConsoleSession {
@@ -666,8 +682,9 @@ func (s *Server) requirePreviewConsoleEnabled(w http.ResponseWriter) (*previewCo
 }
 
 type previewConsoleSessionCreateRequest struct {
-	Generation      string `json:"generation"`
-	ProtocolVersion int    `json:"protocolVersion"`
+	Generation       string `json:"generation"`
+	ProtocolVersion  int    `json:"protocolVersion"`
+	PortalInstanceID string `json:"portalInstanceID"`
 }
 
 type previewConsoleSessionCreateResponse struct {
@@ -713,6 +730,10 @@ func (s *Server) createProjectPreviewConsoleSession(w http.ResponseWriter, r *ht
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "generation must be a UUID and protocolVersion must be 1")
 		return
 	}
+	if _, err := uuid.Parse(request.PortalInstanceID); err != nil {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "portalInstanceID must be a UUID")
+		return
+	}
 	portalOrigin, err := normalizePreviewConsoleOrigin(r.Header.Get("Origin"))
 	if err != nil {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "request Origin is required")
@@ -739,7 +760,7 @@ func (s *Server) createProjectPreviewConsoleSession(w http.ResponseWriter, r *ht
 	}
 	now := time.Now().UTC()
 	expiresAt := now.Add(previewConsoleSessionTTL)
-	session, err := buffer.create(scope, currentOrigin, portalOrigin, request.Generation, request.ProtocolVersion, expiresAt)
+	session, err := buffer.create(scope, request.PortalInstanceID, currentOrigin, portalOrigin, request.Generation, request.ProtocolVersion, expiresAt)
 	if err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return

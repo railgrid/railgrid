@@ -26,6 +26,7 @@
     "test:response-mode": "node --test src/responseModePicker.test.mjs",
     "test:assistant-commands": "node --test src/assistantCommandPalette.test.mjs",
     "test:assistant-rich-composer": "node --test src/assistantRichComposer.test.mjs",
+    "test:assistant-annotation-draft": "node --test src/assistantAnnotationDraft.test.mjs",
     "test:conversation-resilience": "node --test src/conversationResilience.test.mjs",
     "typecheck": "vue-tsc --noEmit"
   },

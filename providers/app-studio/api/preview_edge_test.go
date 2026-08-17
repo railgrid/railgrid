@@ -15,9 +15,22 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type previewEdgeObservedContext struct {
+	context.Context
+	observed chan struct{}
+	once     sync.Once
+}
+
+func (c *previewEdgeObservedContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.observed) })
+	return c.Context.Done()
+}
 
 // TestPreviewEdgeReadyGatesAndCaches pins the edge-readiness contract: a
 // failing probe keeps the preview not-ready, a succeeding probe flips it, and
@@ -68,6 +81,218 @@ func TestPreviewEdgeReadyGatesAndCaches(t *testing.T) {
 	}
 }
 
+func TestPreviewEdgeReadyCoalescesConcurrentProbes(t *testing.T) {
+	s := &Server{}
+	const url = "https://demo-abc.apps.example.com"
+	var calls atomic.Int32
+	probeStarted := make(chan struct{})
+	release := make(chan struct{})
+	s.SetPreviewEdgeProbe(func(ctx context.Context, _ string) error {
+		if calls.Add(1) == 1 {
+			close(probeStarted)
+		}
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+
+	leaderResult := make(chan bool, 1)
+	go func() { leaderResult <- s.previewEdgeReady(context.Background(), url) }()
+	waitForPreviewEdgeSignal(t, probeStarted, "probe start")
+
+	const waiterCount = 8
+	waiterResults := make(chan bool, waiterCount)
+	observed := make([]chan struct{}, waiterCount)
+	for i := range observed {
+		observed[i] = make(chan struct{})
+		waiterContext := &previewEdgeObservedContext{
+			Context:  context.Background(),
+			observed: observed[i],
+		}
+		go func(ctx context.Context) { waiterResults <- s.previewEdgeReady(ctx, url) }(waiterContext)
+	}
+	for i := range observed {
+		waitForPreviewEdgeSignal(t, observed[i], "waiter registration")
+	}
+
+	close(release)
+	if !<-leaderResult {
+		t.Fatal("leader did not observe the successful shared probe")
+	}
+	for range waiterCount {
+		if !<-waiterResults {
+			t.Fatal("waiter did not observe the successful shared probe")
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("same-URL concurrent probes = %d, want exactly one", got)
+	}
+}
+
+func TestPreviewEdgeReadyCoalescesFailureWithoutCachingIt(t *testing.T) {
+	s := &Server{}
+	const url = "https://demo-abc.apps.example.com"
+	probeErr := errors.New("edge is still provisioning")
+	var calls atomic.Int32
+	probeStarted := make(chan struct{})
+	release := make(chan struct{})
+	s.SetPreviewEdgeProbe(func(ctx context.Context, _ string) error {
+		if calls.Add(1) == 1 {
+			close(probeStarted)
+			select {
+			case <-release:
+				return probeErr
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	})
+
+	leaderResult := make(chan bool, 1)
+	go func() { leaderResult <- s.previewEdgeReady(context.Background(), url) }()
+	waitForPreviewEdgeSignal(t, probeStarted, "probe start")
+
+	const waiterCount = 4
+	waiterResults := make(chan bool, waiterCount)
+	observed := make([]chan struct{}, waiterCount)
+	for i := range observed {
+		observed[i] = make(chan struct{})
+		waiterContext := &previewEdgeObservedContext{
+			Context:  context.Background(),
+			observed: observed[i],
+		}
+		go func(ctx context.Context) { waiterResults <- s.previewEdgeReady(ctx, url) }(waiterContext)
+	}
+	for i := range observed {
+		waitForPreviewEdgeSignal(t, observed[i], "waiter registration")
+	}
+
+	close(release)
+	if <-leaderResult {
+		t.Fatal("leader reported ready after a failed shared probe")
+	}
+	for range waiterCount {
+		if <-waiterResults {
+			t.Fatal("waiter reported ready after a failed shared probe")
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("same-URL failed concurrent probes = %d, want exactly one", got)
+	}
+	if !s.previewEdgeReady(context.Background(), url) {
+		t.Fatal("failed probe was cached or the retry did not run")
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("retry after failed flight probes = %d, want two total probes", got)
+	}
+}
+
+func TestPreviewEdgeReadyCanceledWaiterDoesNotCancelSharedProbe(t *testing.T) {
+	s := &Server{}
+	const url = "https://demo-abc.apps.example.com"
+	var calls atomic.Int32
+	probeStarted := make(chan struct{})
+	release := make(chan struct{})
+	probeCanceled := make(chan struct{})
+	s.SetPreviewEdgeProbe(func(ctx context.Context, _ string) error {
+		calls.Add(1)
+		close(probeStarted)
+		select {
+		case <-release:
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return nil
+		case <-ctx.Done():
+			close(probeCanceled)
+			return ctx.Err()
+		}
+	})
+
+	leaderResult := make(chan bool, 1)
+	go func() { leaderResult <- s.previewEdgeReady(context.Background(), url) }()
+	waitForPreviewEdgeSignal(t, probeStarted, "probe start")
+
+	waiterObserved := make(chan struct{})
+	waiterContext, cancelWaiter := context.WithCancel(context.Background())
+	waiter := &previewEdgeObservedContext{Context: waiterContext, observed: waiterObserved}
+	waiterResult := make(chan bool, 1)
+	go func() { waiterResult <- s.previewEdgeReady(waiter, url) }()
+	waitForPreviewEdgeSignal(t, waiterObserved, "waiter registration")
+	cancelWaiter()
+	if <-waiterResult {
+		t.Fatal("canceled waiter reported the shared probe as ready")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("canceled waiter changed probe count to %d, want one", got)
+	}
+	select {
+	case <-probeCanceled:
+		t.Fatal("canceled waiter canceled the shared probe")
+	default:
+	}
+
+	close(release)
+	if !<-leaderResult {
+		t.Fatal("shared probe did not complete successfully after waiter cancellation")
+	}
+}
+
+func TestPreviewEdgeReadyDifferentURLsProbeIndependently(t *testing.T) {
+	s := &Server{}
+	const firstURL = "https://first.apps.example.com"
+	const secondURL = "https://second.apps.example.com"
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondProbed := make(chan struct{})
+	s.SetPreviewEdgeProbe(func(ctx context.Context, url string) error {
+		switch url {
+		case firstURL:
+			close(firstStarted)
+			select {
+			case <-releaseFirst:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		case secondURL:
+			close(secondProbed)
+			return nil
+		default:
+			return errors.New("unexpected preview URL")
+		}
+	})
+
+	firstResult := make(chan bool, 1)
+	go func() { firstResult <- s.previewEdgeReady(context.Background(), firstURL) }()
+	waitForPreviewEdgeSignal(t, firstStarted, "first probe start")
+
+	secondResult := make(chan bool, 1)
+	go func() { secondResult <- s.previewEdgeReady(context.Background(), secondURL) }()
+	waitForPreviewEdgeSignal(t, secondProbed, "second probe start")
+	if !<-secondResult {
+		t.Fatal("second URL did not become ready while first URL was probing")
+	}
+
+	close(releaseFirst)
+	if !<-firstResult {
+		t.Fatal("first URL did not become ready after its probe completed")
+	}
+}
+
+func waitForPreviewEdgeSignal(t *testing.T, signal <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
 // TestDefaultPreviewEdgeProbe pins the classification: only a successful or
 // redirect response serves the preview document. Error documents and
 // transport failures remain not-ready.
@@ -78,6 +303,15 @@ func TestDefaultPreviewEdgeProbe(t *testing.T) {
 	defer served.Close()
 	if err := defaultPreviewEdgeProbe(context.Background(), served.URL); err != nil {
 		t.Fatalf("2xx must count as served: %v", err)
+	}
+
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "/app")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirect.Close()
+	if err := defaultPreviewEdgeProbe(context.Background(), redirect.URL); err != nil {
+		t.Fatalf("3xx must count as served: %v", err)
 	}
 
 	for _, status := range []int{http.StatusNotFound, http.StatusServiceUnavailable} {

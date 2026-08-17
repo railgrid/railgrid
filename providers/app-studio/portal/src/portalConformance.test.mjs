@@ -27,7 +27,7 @@ test('styles the shared status badge inside the App Studio light DOM', () => {
 })
 
 test('announces preview recovery failures assertively', () => {
-  const recoveryStart = app.indexOf('v-if="developmentPreviewRecoveryError"')
+  const recoveryStart = app.indexOf('v-if="developmentPreviewRecoveryError && !developmentPreviewFrameLoaded"')
   const recoveryEnd = app.indexOf('>', recoveryStart)
   assert.ok(recoveryStart >= 0 && recoveryEnd > recoveryStart)
   const recoveryOverlay = app.slice(recoveryStart, recoveryEnd)

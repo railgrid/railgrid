@@ -144,10 +144,12 @@ test('routes sharing through the modular dialog and current access contracts onl
   assert.match(app, /<ProjectShareDialog[\s\S]*v-model:mode="shareMode"[\s\S]*@save="publishCurrentProject"[\s\S]*@grant="grantCurrentProjectAccess"[\s\S]*@invite="inviteCurrentProjectAccess"[\s\S]*@revoke="revokeCurrentProjectAccess"[\s\S]*@disable="unpublishCurrentProject"/)
   assert.match(app, /@open-production-settings="openProductionSettingsFromShare"/)
   assert.match(app, /const mode = shareMode\.value[\s\S]*api\.publishProject\(props\.ctx, name, mode\)/)
-  assert.match(dialog, /General access/)
+  assert.match(dialog, /Production access/)
+  assert.match(dialog, /Development preview access/)
   assert.match(dialog, /value="restricted">Restricted/)
   assert.match(dialog, /value="public">Anyone with the link/)
-  assert.match(dialog, /People with access/)
+  assert.match(dialog, /People with production access/)
+  assert.match(dialog, /People with preview access/)
   assert.match(dialog, /availableMembers/)
   assert.match(dialog, /activeGrants/)
   assert.match(dialog, /savedRestricted/)
@@ -245,7 +247,7 @@ test('published apps can change access anytime; only first publish waits for pro
   // An access flip on a promoted app is an intent write — a rolling or
   // briefly-unready deployment must not block it (the publication state
   // machine reports Pending honestly while the gate converges).
-  assert.match(dialog, /!props\.loading && props\.loadState !== 'error' && !props\.busy && \(props\.published \|\| props\.productionReady\)/)
+  assert.match(dialog, /!props\.loading && props\.loadState !== 'error' && !props\.busy &&\s*\(previewDirty\.value \|\| \(\(props\.published \|\| props\.productionReady\) && props\.publicationStateAvailable\)\)/)
   // The deploy-first warning is reserved for never-promoted projects.
   assert.match(dialog, /v-if="!published && !productionReady"/)
   assert.match(dialog, /const modeDirty = computed\(\(\) => props\.published && selectedMode\.value !== initialMode\.value\)/)

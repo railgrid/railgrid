@@ -93,16 +93,35 @@ function baseURL(ctx: FarosContext | null): string {
   return `${providerBase(ctx)}/api/projects`
 }
 
-async function request<T>(ctx: FarosContext | null, method: string, path: string, body?: unknown): Promise<T> {
-  const headers = tenantHeaders({ token: ctx?.token, json: body !== undefined })
+interface ProjectAPIRequestOptions {
+  timeoutMS?: number
+}
 
-  const res = await fetch(path, {
-    method,
-    credentials: 'same-origin',
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
-  const text = await res.text()
+async function request<T>(ctx: FarosContext | null, method: string, path: string, body?: unknown, options: ProjectAPIRequestOptions = {}): Promise<T> {
+  const headers = tenantHeaders({ token: ctx?.token, json: body !== undefined })
+  const controller = options.timeoutMS ? new AbortController() : null
+  let timedOut = false
+  const timeout = controller ? window.setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, options.timeoutMS) : undefined
+  let res: Response
+  let text: string
+  try {
+    res = await fetch(path, {
+      method,
+      credentials: 'same-origin',
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller?.signal,
+    })
+    text = await res.text()
+  } catch (error) {
+    if (timedOut) throw new ProjectAPIRequestError('preview console request timed out', 408)
+    throw error
+  } finally {
+    if (timeout !== undefined) window.clearTimeout(timeout)
+  }
   if (!res.ok) {
     const fallback = text || res.statusText
     let detail = fallback
@@ -954,12 +973,14 @@ export const api = {
     ctx: FarosContext | null,
     name: string,
     generation: string,
+    portalInstanceID: string,
   ): Promise<PreviewConsoleSession> {
     return request<PreviewConsoleSession>(
       ctx,
       'POST',
       `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-console/sessions`,
-      { generation, protocolVersion: 1 },
+      { generation, protocolVersion: 1, portalInstanceID },
+      { timeoutMS: 8_000 },
     )
   },
 
@@ -976,6 +997,7 @@ export const api = {
       'POST',
       `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-console/sessions/${encodeURIComponent(sessionID)}/events`,
       { generation, protocolVersion: 1, droppedCount, events },
+      { timeoutMS: 5_000 },
     )
   },
 
@@ -988,6 +1010,8 @@ export const api = {
       ctx,
       'DELETE',
       `${baseURL(ctx)}/${encodeURIComponent(name)}/preview-console/sessions/${encodeURIComponent(sessionID)}`,
+      undefined,
+      { timeoutMS: 3_000 },
     )
   },
 }

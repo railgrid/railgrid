@@ -99,6 +99,7 @@ type Server struct {
 	// gate (see preview_edge.go). Nil probe → the real HTTPS probe.
 	previewEdgeProbe            func(context.Context, string) error
 	edgeReadyURLs               edgeReadyURLsCache
+	previewEdgeProbeInflight    map[string]*previewEdgeProbeInflight
 	previewConsoleEnabled       bool
 	previewConsoleStore         *previewConsoleStore
 	previewConsoleSigner        *previewConsoleCapabilitySigner

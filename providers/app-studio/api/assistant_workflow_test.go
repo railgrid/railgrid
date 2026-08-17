@@ -608,7 +608,7 @@ func TestCollectProjectAssistantRuntimeVerificationBrowserConsoleSummarizesWitho
 	now := time.Now().UTC()
 	server.previewConsoleStore.now = func() time.Time { return now }
 	const generation = "826e6fa5-c38b-4bdb-8f8f-098198b74f65"
-	session, err := server.previewConsoleStore.create(scope, "https://demo.preview.example", "https://console.example", generation, previewConsoleProtocolVersion, now.Add(time.Minute))
+	session, err := server.previewConsoleStore.create(scope, "77915ea4-f533-433a-a7fd-30a1f0fcc47d", "https://demo.preview.example", "https://console.example", generation, previewConsoleProtocolVersion, now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}

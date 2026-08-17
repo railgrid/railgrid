@@ -206,7 +206,7 @@ func completeLogin(t *testing.T, p *Proxy, hub *fakeHub, path string) *http.Cook
 			t.Fatalf("authorize redirect missing %s", param)
 		}
 	}
-	returnCookie := cookieFromResponse(t, first, ReturnCookieName)
+	returnCookie := returnCookieFromResponse(t, first)
 
 	callback := doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state, returnCookie))
 	if callback.Code != http.StatusFound {
@@ -227,6 +227,16 @@ func cookieFromResponse(t *testing.T, rec *httptest.ResponseRecorder, name strin
 	}
 	t.Fatalf("response has no %s cookie; got %v", name, rec.Result().Cookies())
 	return nil
+}
+
+func returnCookieFromResponse(t *testing.T, rec *httptest.ResponseRecorder) *http.Cookie {
+	t.Helper()
+	state := mustQuery(t, rec.Header().Get("Location"), "state")
+	cookie := cookieFromResponse(t, rec, returnCookieName(state))
+	if cookie.Path != CallbackPath {
+		t.Fatalf("return cookie Path = %q, want callback-only %q", cookie.Path, CallbackPath)
+	}
+	return cookie
 }
 
 // --- public mode ---
@@ -340,6 +350,40 @@ func TestPrivateModeSessionExpiryRestartsFlow(t *testing.T) {
 	}
 }
 
+func TestConcurrentAuthorizationCallbacksCanCompleteOutOfOrder(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	hub := newFakeHub("code-1")
+	p := newProxy(t, privateConfig(upstream.URL, hub))
+
+	first := doRequest(p, appRequest("/first"))
+	second := doRequest(p, appRequest("/second"))
+	firstState := mustQuery(t, first.Header().Get("Location"), "state")
+	firstCookie := returnCookieFromResponse(t, first)
+	secondCookie := returnCookieFromResponse(t, second)
+
+	// Model a browser cookie jar: cookies with the same name overwrite, while
+	// nonce-specific names allow both in-flight authorize attempts to survive.
+	jar := map[string]*http.Cookie{
+		firstCookie.Name:  firstCookie,
+		secondCookie.Name: secondCookie,
+	}
+	if len(jar) != 2 {
+		t.Fatalf("concurrent authorize attempts shared one return cookie: %q", firstCookie.Name)
+	}
+	cookies := make([]*http.Cookie, 0, len(jar))
+	for _, cookie := range jar {
+		cookies = append(cookies, cookie)
+	}
+
+	callback := doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+firstState, cookies...))
+	if callback.Code != http.StatusFound {
+		t.Fatalf("earlier callback status = %d body=%q, want 302", callback.Code, callback.Body.String())
+	}
+	if got := callback.Header().Get("Location"); got != "/first" {
+		t.Fatalf("earlier callback returned to %q, want /first", got)
+	}
+}
+
 func TestCallbackWithoutInitiatingCookieIsRejected(t *testing.T) {
 	upstream, _ := newUpstream(t, nil)
 	hub := newFakeHub("code-1")
@@ -359,7 +403,7 @@ func TestCallbackWithoutInitiatingCookieIsRejected(t *testing.T) {
 	}
 
 	// The victim's browser can still complete: its state was NOT consumed.
-	victimCookie := cookieFromResponse(t, first, ReturnCookieName)
+	victimCookie := returnCookieFromResponse(t, first)
 	victim := doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state, victimCookie))
 	if victim.Code != http.StatusFound {
 		t.Fatalf("victim callback status = %d, want 302", victim.Code)
@@ -372,7 +416,7 @@ func TestCallbackWithMismatchedStateDoesNotConsumeVictimState(t *testing.T) {
 	p := newProxy(t, privateConfig(upstream.URL, hub))
 
 	victimStart := doRequest(p, appRequest("/private"))
-	victimCookie := cookieFromResponse(t, victimStart, ReturnCookieName)
+	victimCookie := returnCookieFromResponse(t, victimStart)
 	victimState := mustQuery(t, victimStart.Header().Get("Location"), "state")
 
 	attackerStart := doRequest(p, appRequest("/attacker"))
@@ -399,7 +443,7 @@ func TestCallbackReplayIsRejected(t *testing.T) {
 	p := newProxy(t, privateConfig(upstream.URL, hub))
 
 	first := doRequest(p, appRequest("/"))
-	returnCookie := cookieFromResponse(t, first, ReturnCookieName)
+	returnCookie := returnCookieFromResponse(t, first)
 	state := mustQuery(t, first.Header().Get("Location"), "state")
 
 	ok := doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state, returnCookie))
@@ -421,7 +465,7 @@ func TestExpiredCodeRestartsAuthorize(t *testing.T) {
 	p := newProxy(t, privateConfig(upstream.URL, hub))
 
 	first := doRequest(p, appRequest("/deep/link"))
-	returnCookie := cookieFromResponse(t, first, ReturnCookieName)
+	returnCookie := returnCookieFromResponse(t, first)
 	state := mustQuery(t, first.Header().Get("Location"), "state")
 
 	// Hub answers 410 for a wrong/expired code → proxy restarts the flow and
@@ -442,7 +486,7 @@ func TestHubOutageFailsClosedForPrivateMode(t *testing.T) {
 	p := newProxy(t, privateConfig(upstream.URL, hub))
 
 	first := doRequest(p, appRequest("/"))
-	returnCookie := cookieFromResponse(t, first, ReturnCookieName)
+	returnCookie := returnCookieFromResponse(t, first)
 	state := mustQuery(t, first.Header().Get("Location"), "state")
 
 	hub.fail = errors.New("connection refused")
@@ -481,6 +525,8 @@ func TestReservedAndIdentityHeadersNeverReachUpstream(t *testing.T) {
 	r.Header.Set("X-Faros-Anything", "spoof")
 	r.Header.Set("Via", "evil")
 	r.Header.Set("X-Custom-App", "keep-me")
+	r.AddCookie(&http.Cookie{Name: returnCookieName("in-flight"), Value: "platform-state"})
+	r.AddCookie(&http.Cookie{Name: "app-cookie", Value: "keep-me"})
 	rec := doRequest(p, r)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
@@ -496,12 +542,16 @@ func TestReservedAndIdentityHeadersNeverReachUpstream(t *testing.T) {
 	if h.Get("X-Custom-App") != "keep-me" {
 		t.Errorf("ordinary header was dropped")
 	}
+	if got := h.Get("Cookie"); got != "app-cookie=keep-me" {
+		t.Errorf("upstream Cookie = %q, want only the app-owned cookie", got)
+	}
 }
 
 func TestUpstreamSetCookieDomainIsStripped(t *testing.T) {
 	upstream, _ := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Set-Cookie", "appsession=1; Domain=apps.test.faros; Path=/; Secure")
 		w.Header().Add("Set-Cookie", SessionCookieName+"=forged; Path=/")
+		w.Header().Add("Set-Cookie", returnCookieName("forged")+"=forged; Path=/")
 		_, _ = w.Write([]byte("ok"))
 	})
 	p := newProxy(t, publicConfig(upstream.URL))
@@ -661,7 +711,7 @@ func TestCallbackCompletesOnAFreshProcess(t *testing.T) {
 	if first.Code != http.StatusFound {
 		t.Fatalf("initial request status = %d, want 302", first.Code)
 	}
-	returnCookie := cookieFromResponse(t, first, ReturnCookieName)
+	returnCookie := returnCookieFromResponse(t, first)
 	state := mustQuery(t, first.Header().Get("Location"), "state")
 
 	// The pod is replaced; the replacement shares no memory with it.
@@ -690,7 +740,7 @@ func TestEmbeddedCallbackUsesPartitionedCookiesOnAFreshProcess(t *testing.T) {
 	if first.Code != http.StatusFound {
 		t.Fatalf("initial embedded request status = %d, want 302", first.Code)
 	}
-	returnCookie := cookieFromResponse(t, first, ReturnCookieName)
+	returnCookie := returnCookieFromResponse(t, first)
 	if returnCookie.SameSite != http.SameSiteNoneMode || !returnCookie.Partitioned {
 		t.Fatalf("embedded return cookie SameSite=%v Partitioned=%t, want None and partitioned", returnCookie.SameSite, returnCookie.Partitioned)
 	}
@@ -756,7 +806,7 @@ func TestExpiredReturnStateRestartsSignIn(t *testing.T) {
 	p := newProxy(t, privateConfig(upstream.URL, hub))
 
 	first := doRequest(p, appRequest("/deep/link?q=1"))
-	returnCookie := cookieFromResponse(t, first, ReturnCookieName)
+	returnCookie := returnCookieFromResponse(t, first)
 	state := mustQuery(t, first.Header().Get("Location"), "state")
 
 	// The browser dawdles at the IdP for longer than the state TTL.
@@ -775,7 +825,7 @@ func TestExpiredReturnStateRestartsSignIn(t *testing.T) {
 		t.Fatalf("expired state reached the hub exchange")
 	}
 	// The restart must carry a usable cookie, and keep the original deep link.
-	fresh := cookieFromResponse(t, rec, ReturnCookieName)
+	fresh := returnCookieFromResponse(t, rec)
 	if fresh == nil || fresh.Value == "" {
 		t.Fatal("restart set no fresh return cookie")
 	}
@@ -844,15 +894,17 @@ func TestCallbackRejectionsAreLoggedWithReasons(t *testing.T) {
 	p := newProxy(t, config)
 
 	first := doRequest(p, appRequest("/"))
-	returnCookie := cookieFromResponse(t, first, ReturnCookieName)
+	returnCookie := returnCookieFromResponse(t, first)
 	state := mustQuery(t, first.Header().Get("Location"), "state")
 
 	// No cookie, bad cookie, mismatched state, then a successful use followed
 	// by a replay — four distinct reasons, all surfaced as the same 400.
 	doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state))
 	doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state,
-		&http.Cookie{Name: ReturnCookieName, Value: "not-base64-at-all!!"}))
-	doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state=someone-elses", returnCookie))
+		&http.Cookie{Name: returnCookieName(state), Value: "not-base64-at-all!!"}))
+	mismatchedCookie := *returnCookie
+	mismatchedCookie.Name = returnCookieName("someone-elses")
+	doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state=someone-elses", &mismatchedCookie))
 	doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state, returnCookie))
 	doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state, returnCookie))
 

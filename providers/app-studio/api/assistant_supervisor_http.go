@@ -160,7 +160,10 @@ func (s *Server) startProjectAssistantRunDurablyWithMode(ctx context.Context, sc
 func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Context, scope store.Scope, actor, content, clientRequestID string, mode store.AssistantRunMode, selection projectAssistantDurableSkillSelection, start func(store.AssistantRun, store.Message, bool) error) (projectAssistantDurableStartResult, error) {
 	skills := selection.IDs
 	resources := projectAssistantContextResourceIdentities(selection.ContextResources)
-	parts := projectAssistantCanonicalContentPartsForIdentity(selection.ContentParts, skills, selection.ContextResources)
+	parts, partsErr := projectAssistantCanonicalContentPartsForIdentityChecked(selection.ContentParts, skills, selection.ContextResources)
+	if partsErr != nil {
+		return projectAssistantDurableStartResult{}, partsErr
+	}
 	content = strings.TrimSpace(content)
 	clientRequestID = strings.TrimSpace(clientRequestID)
 	actor = strings.TrimSpace(actor)

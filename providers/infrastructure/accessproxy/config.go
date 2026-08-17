@@ -53,10 +53,12 @@ const (
 	// SessionCookieName is intentionally a __Host cookie: Secure, Path=/, and
 	// no Domain attribute are mandatory.  The app proxy never forwards it.
 	SessionCookieName = "__Host-faros-app-session"
-	// ReturnCookieName carries the whole sign-in state — nonce, clean return
-	// path and expiry — while the browser completes the hub flow, so no
-	// server-side handle has to survive between the authorize redirect and the
-	// callback (see consumeReturnState).
+	// ReturnCookieName is the prefix for the short-lived cookies that carry the
+	// whole sign-in state — nonce, clean return path and expiry — while the
+	// browser completes the hub flow. Each authorization attempt gets a suffix
+	// derived from its nonce so concurrent attempts cannot overwrite each other,
+	// and no server-side handle has to survive between the authorize redirect and
+	// the callback (see consumeReturnState).
 	//
 	// Deliberately NOT a __Host- cookie. The prefix would stop a sibling app
 	// under the same published-apps zone from planting one, but browsers

@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Plus } from 'lucide-vue-next'
 import AssistantCommandPalette from './AssistantCommandPalette.vue'
+import AssistantMessageAnnotations from './AssistantMessageAnnotations.vue'
 import {
   assistantComposerPlainContent,
   assistantSlashToken,
@@ -33,6 +34,9 @@ const props = withDefaults(defineProps<{
   disabled?: boolean
   activeRun?: boolean
   placeholder?: string
+  annotationDocumentId?: string
+  annotationPagePath?: string
+  unresolvedAnnotationIds?: string[]
 }>(), {
   contentParts: () => [],
   selectedSkills: () => [],
@@ -40,6 +44,9 @@ const props = withDefaults(defineProps<{
   disabled: false,
   activeRun: false,
   placeholder: 'Message this project',
+  annotationDocumentId: '',
+  annotationPagePath: '',
+  unresolvedAnnotationIds: () => [],
 })
 
 const emit = defineEmits<{
@@ -65,6 +72,10 @@ const localParts = ref<ProjectAssistantContentPart[]>([])
 const localSkills = ref<ProjectAssistantSkill[]>([])
 const localResources = ref<ProjectAssistantContextResource[]>([])
 
+const localAnnotations = computed(() => localParts.value
+  .filter((part): part is Extract<ProjectAssistantContentPart, { type: 'annotation' }> => part.type === 'annotation')
+  .map((part) => part.annotation))
+
 const selectedSkillIDs = computed(() => localSkills.value.map((skill) => skill.id))
 
 function partSignature(parts: readonly ProjectAssistantContentPart[]): string {
@@ -82,7 +93,8 @@ function chipLabel(part: ProjectAssistantContentPart): string {
 }
 
 function chipKind(part: ProjectAssistantContentPart): 'skill' | 'resource' {
-  return part.type === 'resource' ? 'resource' : 'skill'
+  if (part.type === 'resource') return 'resource'
+  return 'skill'
 }
 
 function normalizedParts(): ProjectAssistantContentPart[] {
@@ -91,7 +103,7 @@ function normalizedParts(): ProjectAssistantContentPart[] {
   return props.modelValue ? [{ type: 'text', text: props.modelValue }] : []
 }
 
-function createChip(part: ProjectAssistantContentPart): HTMLSpanElement {
+function createChip(part: Exclude<ProjectAssistantContentPart, { type: 'text' | 'annotation' }>): HTMLSpanElement {
   const chip = document.createElement('span')
   chip.dataset.assistantChip = chipKind(part)
   if (part.type === 'skill') chip.dataset.skillID = part.skillID
@@ -125,7 +137,7 @@ function renderParts(
   editor.replaceChildren()
   for (const part of parts) {
     if (part.type === 'text') editor.append(document.createTextNode(part.text))
-    else editor.append(createChip(part))
+    else if (part.type !== 'annotation') editor.append(createChip(part))
   }
   if (!editor.childNodes.length) editor.append(document.createTextNode(''))
   lastRenderedSignature.value = stateSignature(content, parts, skills, resources)
@@ -207,7 +219,20 @@ function partsFromDOM(): ProjectAssistantContentPart[] {
       }
     }
   }
+  // Preview annotations are attachments, not editable prose. Keep them out of
+  // the contenteditable DOM so caret movement and chip deletion remain
+  // predictable, then append their stable descriptors to the submitted turn.
+  for (const part of localParts.value) {
+    if (part.type === 'annotation') append(part)
+  }
   return parts
+}
+
+function removeAllAnnotations() {
+  if (!localAnnotations.value.length) return
+  localParts.value = localParts.value.filter((part) => part.type !== 'annotation')
+  emitState()
+  focusEditor(false)
 }
 
 function emitState(): AssistantComposerState {
@@ -413,7 +438,7 @@ function detectSlash() {
   saveSelection()
 }
 
-function replaceSlashWithPart(part: ProjectAssistantContentPart) {
+function replaceSlashWithPart(part: Exclude<ProjectAssistantContentPart, { type: 'text' | 'annotation' }>) {
   const token = slashTokenRef.value
   let start = token?.start
   let end = token?.end
@@ -626,6 +651,18 @@ defineExpose({ focus: () => focusEditor(false), openPalette, closePalette })
       @select-resource="chooseResource"
       @select-mode="selectMode"
     />
+    <div v-if="localAnnotations.length" class="relative z-10 px-3 pt-2.5">
+      <AssistantMessageAnnotations
+        :annotations="localAnnotations"
+        :current-document-id="annotationDocumentId"
+        :current-page-path="annotationPagePath"
+        :unresolved-annotation-ids="unresolvedAnnotationIds"
+        :rebind-across-documents="true"
+        :clearable="true"
+        disclosure-id="assistant-composer-annotations"
+        @remove-all="removeAllAnnotations"
+      />
+    </div>
     <div
       ref="editorRef"
       role="textbox"
