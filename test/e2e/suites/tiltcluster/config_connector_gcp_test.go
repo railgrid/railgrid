@@ -212,25 +212,25 @@ func runConfigConnectorGCPPubSubLifecycle(t *testing.T, useEnabledTemplate bool)
 			waitTiltResourceGone(t, runtimeClient.Resource(configConnectorPubSubTopicGVR).Namespace(childNamespace), childName, configConnectorGCPCleanupWait)
 		}
 		if bindingCreated && workspacePath != "" {
-			if err := tenantClient.Resource(configConnectorAPIBindingGVR).Delete(context.Background(), "infrastructure", metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			if err := tenantClient.Resource(apiBindingGVR).Delete(context.Background(), "infrastructure", metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 				t.Errorf("cleanup infrastructure APIBinding in %s: %v", workspacePath, err)
 			}
 		}
 		if workspaceCreated {
-			if err := parentClient.Resource(configConnectorWorkspaceGVR).Delete(context.Background(), workspaceName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			if err := parentClient.Resource(workspaceGVR).Delete(context.Background(), workspaceName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 				t.Errorf("cleanup workspace %q: %v", workspaceName, err)
 			}
-			waitTiltResourceGone(t, parentClient.Resource(configConnectorWorkspaceGVR), workspaceName, configConnectorGCPCleanupWait)
+			waitTiltResourceGone(t, parentClient.Resource(workspaceGVR), workspaceName, configConnectorGCPCleanupWait)
 		}
 		if templateCreated {
-			if err := providerClient.Resource(configConnectorTemplateGVR).Delete(context.Background(), templateName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			if err := providerClient.Resource(infrastructureTemplateGVR).Delete(context.Background(), templateName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 				t.Errorf("cleanup Template %q: %v", templateName, err)
 			}
-			waitTiltResourceGone(t, providerClient.Resource(configConnectorTemplateGVR), templateName, configConnectorGCPCleanupWait)
-			if err := runtimeClient.Resource(configConnectorRGDGVR).Delete(context.Background(), templateName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			waitTiltResourceGone(t, providerClient.Resource(infrastructureTemplateGVR), templateName, configConnectorGCPCleanupWait)
+			if err := runtimeClient.Resource(resourceGraphDefinitionGVR).Delete(context.Background(), templateName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 				t.Errorf("cleanup ResourceGraphDefinition %q: %v", templateName, err)
 			}
-			waitTiltResourceGone(t, runtimeClient.Resource(configConnectorRGDGVR), templateName, configConnectorGCPCleanupWait)
+			waitTiltResourceGone(t, runtimeClient.Resource(resourceGraphDefinitionGVR), templateName, configConnectorGCPCleanupWait)
 			if !waitTilt(t, configConnectorGCPCleanupWait, func() (bool, string) {
 				export, err := providerClient.Resource(apiExportGVR).Get(context.Background(), infraAPIExportName, metav1.GetOptions{})
 				if err != nil {
@@ -244,13 +244,13 @@ func runConfigConnectorGCPPubSubLifecycle(t *testing.T, useEnabledTemplate bool)
 	})
 
 	if !useEnabledTemplate {
-		if _, err := providerClient.Resource(configConnectorTemplateGVR).Create(context.Background(), configConnectorPubSubTemplate(t, templateName), metav1.CreateOptions{}); err != nil {
+		if _, err := providerClient.Resource(infrastructureTemplateGVR).Create(context.Background(), configConnectorPubSubTemplate(t, templateName), metav1.CreateOptions{}); err != nil {
 			t.Fatalf("create test Template %q: %v", templateName, err)
 		}
 		templateCreated = true
 	}
 	if !waitTilt(t, configConnectorGCPWait, func() (bool, string) {
-		got, err := providerClient.Resource(configConnectorTemplateGVR).Get(context.Background(), templateName, metav1.GetOptions{})
+		got, err := providerClient.Resource(infrastructureTemplateGVR).Get(context.Background(), templateName, metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
 		}
@@ -275,12 +275,12 @@ func runConfigConnectorGCPPubSubLifecycle(t *testing.T, useEnabledTemplate bool)
 	workspacePath = createConfigConnectorWorkspace(t, parentClient, workspaceName)
 	workspaceCreated = true
 	tenantClient = kcpAdminDynamic(t, workspacePath)
-	if _, err := tenantClient.Resource(configConnectorAPIBindingGVR).Create(context.Background(), configConnectorAPIBinding(), metav1.CreateOptions{}); err != nil {
+	if _, err := tenantClient.Resource(apiBindingGVR).Create(context.Background(), infrastructureAPIBinding(), metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create infrastructure APIBinding in %s: %v", workspacePath, err)
 	}
 	bindingCreated = true
 	if !waitTilt(t, configConnectorGCPWait, func() (bool, string) {
-		got, err := tenantClient.Resource(configConnectorAPIBindingGVR).Get(context.Background(), "infrastructure", metav1.GetOptions{})
+		got, err := tenantClient.Resource(apiBindingGVR).Get(context.Background(), "infrastructure", metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
 		}
@@ -389,7 +389,7 @@ func runConfigConnectorGCPPubSubLifecycle(t *testing.T, useEnabledTemplate bool)
 
 func requireHealthyConfigConnector(t *testing.T, runtimeClient dynamic.Interface) {
 	t.Helper()
-	crd, err := runtimeClient.Resource(configConnectorCRDGVR).Get(context.Background(), configConnectorPubSubCRDName, metav1.GetOptions{})
+	crd, err := runtimeClient.Resource(customResourceDefinitionGVR).Get(context.Background(), configConnectorPubSubCRDName, metav1.GetOptions{})
 	if err != nil || !crdEstablished(crd) {
 		t.Fatalf("real Config Connector PubSubTopic CRD is not Established; run make e2e-tilt-cluster-config-connector-gcp-install first: %v", err)
 	}

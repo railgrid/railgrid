@@ -146,6 +146,51 @@ To rerun the isolated lifecycle without reinstalling the operator, use
 without both required environment variables is a failure, not a skip. The
 manual smoke also requires the install and enable actions to have completed.
 
+## Using Terraform with the infrastructure operator (opt-in)
+
+The Terraform example follows the same default-off lifecycle as Config
+Connector, but uses Infrakube as the runtime controller. It is deliberately
+stored under `providers/infrastructure/contrib/terraform/`, not
+`install/templates`, so ordinary provider initialization does not advertise a
+Terraform offering or install cluster-wide runtime dependencies.
+
+The credential-free composition check installs only a minimal test-owned
+Infrakube `Terraform` CRD and exercises the full infrastructure operator path:
+
+```sh
+make e2e-tilt-cluster-terraform
+```
+
+It waits for `InfrastructureProvider` readiness, creates a test-owned Template
+in the provider workspace, checks APIExport publication and KRO graph
+acceptance, binds an isolated tenant, creates a `TerraformStack`, and verifies
+the exact KRO-labeled runtime child. The test uses a unique instance API so it
+cannot collide with an already-enabled stable `TerraformStack` offering. It
+does not install Infrakube or execute Terraform.
+
+The real smoke is split into three independent, manual Tilt actions:
+
+```sh
+make terraform-install
+make terraform-enable
+make terraform-smoke
+```
+
+`terraform-install` builds controller and task images from a pinned Infrakube
+commit and installs them into the operator-managed runtime.
+`terraform-enable` applies the checked-in Template and waits for Template
+readiness, APIExport publication, tenant-facing cache replication, and the
+runtime KRO graph. `terraform-smoke` then creates an isolated tenant and
+APIBinding, runs a cloud-free `terraform_data` resource, validates the
+allowlisted outputs and Kubernetes backend state, deletes the Faros parent,
+and observes Infrakube destroy before the child disappears.
+
+The Kubernetes backend retains an empty state Secret and Lease after destroy.
+The smoke proves the state serial advances and resources reach zero, then
+deletes only its exact test-owned artifacts. Production operators must define
+their own retention policy; this example does not claim that deleting an
+instance automatically garbage-collects backend state.
+
 ## Possible follow-ups
 
 These need tenant-provisioning plumbing and are intentionally not in this first

@@ -79,6 +79,18 @@ func TestSeedTemplatesDecodeAndValidate(t *testing.T) {
 	}
 }
 
+func TestSeedTemplatesExcludeOptInTerraformContrib(t *testing.T) {
+	entries, err := fs.ReadDir(seedTemplatesFS, "templates")
+	if err != nil {
+		t.Fatalf("read embedded templates/: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == "terraform-stack.yaml" || entry.Name() == "terraform-stack-template.yaml" {
+			t.Fatalf("opt-in Terraform contrib fixture must not be embedded as seed %q", entry.Name())
+		}
+	}
+}
+
 // TestApplicationSeedsRouteEverythingThroughTheAccessGate encodes the
 // exposure invariants of the template-native access design:
 //

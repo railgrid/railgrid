@@ -28,40 +28,43 @@ import (
 )
 
 var (
-	configConnectorInfrastructureProviderGVR = schema.GroupVersionResource{
+	// Shared infrastructure-operator API surfaces. Config Connector and
+	// Terraform use the same provider publication, tenant binding, and runtime
+	// composition path; backend-specific resources remain declared separately.
+	infrastructureProviderGVR = schema.GroupVersionResource{
 		Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "infrastructureproviders",
 	}
-	configConnectorWorkspaceGVR = schema.GroupVersionResource{
+	workspaceGVR = schema.GroupVersionResource{
 		Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces",
 	}
-	configConnectorAPIBindingGVR = schema.GroupVersionResource{
+	apiBindingGVR = schema.GroupVersionResource{
 		Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings",
 	}
-	configConnectorCRDGVR = schema.GroupVersionResource{
+	customResourceDefinitionGVR = schema.GroupVersionResource{
 		Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions",
 	}
-	configConnectorRGDGVR = schema.GroupVersionResource{
+	resourceGraphDefinitionGVR = schema.GroupVersionResource{
 		Group: "kro.run", Version: "v1alpha1", Resource: "resourcegraphdefinitions",
 	}
 	configConnectorStorageBucketGVR = schema.GroupVersionResource{
 		Group: "storage.cnrm.cloud.google.com", Version: "v1beta1", Resource: "storagebuckets",
 	}
-	configConnectorTemplateGVR = schema.GroupVersionResource{
+	infrastructureTemplateGVR = schema.GroupVersionResource{
 		Group: infraGroup, Version: "v1alpha1", Resource: "templates",
 	}
 )
 
 const (
-	configConnectorOperatorNamespace = "faros-infrastructure-operator"
-	configConnectorOperatorName      = "infrastructure"
+	infrastructureOperatorNamespace  = "faros-infrastructure-operator"
+	infrastructureOperatorName       = "infrastructure"
 	configConnectorTemplatePrefix    = "gcs-bucket-kcc-demo-"
 	configConnectorWorkspacePrefix   = "e2e-gcs-"
 	configConnectorStorageBucketNode = "storageBucket"
 	configConnectorTestLabel         = "faros.sh/e2e-config-connector"
 	configConnectorTestLabelValue    = "infra-operator-kcc-demo"
 
-	configConnectorWait = 3 * time.Minute
-	configConnectorPoll = 2 * time.Second
+	infrastructureOperatorWait = 3 * time.Minute
+	infrastructureOperatorPoll = 2 * time.Second
 )
 
 const (
@@ -85,44 +88,44 @@ func TestConfigConnectorComposition(t *testing.T) {
 		t.Skip("run only through make e2e-tilt-cluster-config-connector")
 	}
 	requireStack(t)
-	runtimeClient := configConnectorRuntimeClient(t)
+	runtimeClient := infrastructureRuntimeClient(t)
 	waitInfrastructureProviderReady(t, runtimeClient)
 
 	crdOwned := ensureStorageBucketCRD(t, runtimeClient)
 	if crdOwned {
 		t.Cleanup(func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			if err := runtimeClient.Resource(configConnectorCRDGVR).Delete(ctx, "storagebuckets.storage.cnrm.cloud.google.com", metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			if err := runtimeClient.Resource(customResourceDefinitionGVR).Delete(ctx, "storagebuckets.storage.cnrm.cloud.google.com", metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 				t.Errorf("cleanup StorageBucket CRD: %v", err)
 			}
 			cancel()
-			waitTiltResourceGone(t, runtimeClient.Resource(configConnectorCRDGVR), "storagebuckets.storage.cnrm.cloud.google.com", 30*time.Second)
+			waitTiltResourceGone(t, runtimeClient.Resource(customResourceDefinitionGVR), "storagebuckets.storage.cnrm.cloud.google.com", 30*time.Second)
 		})
 	}
 
 	templateName := configConnectorTemplatePrefix + shortNonce()
 	providerClient := kcpAdminDynamic(t, providerWorkspace)
 	tmpl := configConnectorTemplate(templateName)
-	if _, err := providerClient.Resource(configConnectorTemplateGVR).Create(context.Background(), tmpl, metav1.CreateOptions{}); err != nil {
+	if _, err := providerClient.Resource(infrastructureTemplateGVR).Create(context.Background(), tmpl, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create test Template %q: %v", templateName, err)
 	}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := providerClient.Resource(configConnectorTemplateGVR).Delete(ctx, templateName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		if err := providerClient.Resource(infrastructureTemplateGVR).Delete(ctx, templateName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			t.Errorf("cleanup Template %q: %v", templateName, err)
 		}
 		cancel()
-		waitTiltResourceGone(t, providerClient.Resource(configConnectorTemplateGVR), templateName, 60*time.Second)
+		waitTiltResourceGone(t, providerClient.Resource(infrastructureTemplateGVR), templateName, 60*time.Second)
 		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
-		if err := runtimeClient.Resource(configConnectorRGDGVR).Delete(ctx, templateName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		if err := runtimeClient.Resource(resourceGraphDefinitionGVR).Delete(ctx, templateName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			t.Errorf("cleanup ResourceGraphDefinition %q: %v", templateName, err)
 		}
 		cancel()
-		waitTiltResourceGone(t, runtimeClient.Resource(configConnectorRGDGVR), templateName, 60*time.Second)
+		waitTiltResourceGone(t, runtimeClient.Resource(resourceGraphDefinitionGVR), templateName, 60*time.Second)
 	})
 
-	if !waitTilt(t, configConnectorWait, func() (bool, string) {
-		got, err := providerClient.Resource(configConnectorTemplateGVR).Get(context.Background(), templateName, metav1.GetOptions{})
+	if !waitTilt(t, infrastructureOperatorWait, func() (bool, string) {
+		got, err := providerClient.Resource(infrastructureTemplateGVR).Get(context.Background(), templateName, metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
 		}
@@ -132,7 +135,7 @@ func TestConfigConnectorComposition(t *testing.T) {
 		t.Fatalf("test Template %q never became Ready", templateName)
 	}
 
-	if !waitTilt(t, configConnectorWait, func() (bool, string) {
+	if !waitTilt(t, infrastructureOperatorWait, func() (bool, string) {
 		export, err := providerClient.Resource(apiExportGVR).Get(context.Background(), infraAPIExportName, metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
@@ -155,27 +158,27 @@ func TestConfigConnectorComposition(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := parentClient.Resource(configConnectorWorkspaceGVR).Delete(ctx, workspaceName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		if err := parentClient.Resource(workspaceGVR).Delete(ctx, workspaceName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			t.Errorf("cleanup workspace %q: %v", workspaceName, err)
 		}
-		waitTiltResourceGone(t, parentClient.Resource(configConnectorWorkspaceGVR), workspaceName, 60*time.Second)
+		waitTiltResourceGone(t, parentClient.Resource(workspaceGVR), workspaceName, 60*time.Second)
 	})
 
 	tenantClient := kcpAdminDynamic(t, workspacePath)
-	binding := configConnectorAPIBinding()
-	if _, err := tenantClient.Resource(configConnectorAPIBindingGVR).Create(context.Background(), binding, metav1.CreateOptions{}); err != nil {
+	binding := infrastructureAPIBinding()
+	if _, err := tenantClient.Resource(apiBindingGVR).Create(context.Background(), binding, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create infrastructure APIBinding in %s: %v", workspacePath, err)
 	}
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := tenantClient.Resource(configConnectorAPIBindingGVR).Delete(ctx, "infrastructure", metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		if err := tenantClient.Resource(apiBindingGVR).Delete(ctx, "infrastructure", metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 			t.Errorf("cleanup infrastructure APIBinding in %s: %v", workspacePath, err)
 		}
-		waitTiltResourceGone(t, tenantClient.Resource(configConnectorAPIBindingGVR), "infrastructure", 30*time.Second)
+		waitTiltResourceGone(t, tenantClient.Resource(apiBindingGVR), "infrastructure", 30*time.Second)
 	})
-	if !waitTilt(t, configConnectorWait, func() (bool, string) {
-		got, err := tenantClient.Resource(configConnectorAPIBindingGVR).Get(context.Background(), "infrastructure", metav1.GetOptions{})
+	if !waitTilt(t, infrastructureOperatorWait, func() (bool, string) {
+		got, err := tenantClient.Resource(apiBindingGVR).Get(context.Background(), "infrastructure", metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
 		}
@@ -198,7 +201,7 @@ func TestConfigConnectorComposition(t *testing.T) {
 		},
 	}}
 	var createdInstance *unstructured.Unstructured
-	if !waitTilt(t, configConnectorWait, func() (bool, string) {
+	if !waitTilt(t, infrastructureOperatorWait, func() (bool, string) {
 		created, err := tenantClient.Resource(instanceGVR).Create(context.Background(), instance.DeepCopy(), metav1.CreateOptions{})
 		if err == nil {
 			createdInstance = created
@@ -228,7 +231,7 @@ func TestConfigConnectorComposition(t *testing.T) {
 			deleteRuntimeStorageBucketChildren(t, runtimeClient, instanceUID)
 		}
 	})
-	if !waitTilt(t, configConnectorWait, func() (bool, string) {
+	if !waitTilt(t, infrastructureOperatorWait, func() (bool, string) {
 		got, err := tenantClient.Resource(instanceGVR).Get(context.Background(), instanceName, metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
@@ -244,7 +247,7 @@ func TestConfigConnectorComposition(t *testing.T) {
 
 	var child *unstructured.Unstructured
 	selector := fmt.Sprintf("%s=%s,%s=%s", kroInstanceIDLabel, instanceUID, kroNodeIDLabel, configConnectorStorageBucketNode)
-	if !waitTilt(t, configConnectorWait, func() (bool, string) {
+	if !waitTilt(t, infrastructureOperatorWait, func() (bool, string) {
 		items, err := runtimeClient.Resource(configConnectorStorageBucketGVR).List(context.Background(), metav1.ListOptions{LabelSelector: selector})
 		if err != nil {
 			return false, err.Error()
@@ -276,7 +279,7 @@ func TestConfigConnectorComposition(t *testing.T) {
 	t.Logf("KRO composed StorageBucket %s/%s from tenant GCSBucket %q; no Config Connector/GCP reconciliation was exercised", child.GetNamespace(), child.GetName(), instanceName)
 }
 
-func configConnectorRuntimeClient(t *testing.T) dynamic.Interface {
+func infrastructureRuntimeClient(t *testing.T) dynamic.Interface {
 	t.Helper()
 	path := envOr("FAROS_E2E_TILT_RUNTIME_KUBECONFIG", filepath.Join(repoRoot, ".faros-cluster.kubeconfig"))
 	if info, err := os.Stat(path); err != nil || info.IsDir() {
@@ -295,9 +298,9 @@ func configConnectorRuntimeClient(t *testing.T) dynamic.Interface {
 
 func waitInfrastructureProviderReady(t *testing.T, runtimeClient dynamic.Interface) {
 	t.Helper()
-	namespace := envOr("FAROS_E2E_TILT_OPERATOR_NAMESPACE", configConnectorOperatorNamespace)
-	if !waitTilt(t, configConnectorWait, func() (bool, string) {
-		provider, err := runtimeClient.Resource(configConnectorInfrastructureProviderGVR).Namespace(namespace).Get(context.Background(), configConnectorOperatorName, metav1.GetOptions{})
+	namespace := envOr("FAROS_E2E_TILT_OPERATOR_NAMESPACE", infrastructureOperatorNamespace)
+	if !waitTilt(t, infrastructureOperatorWait, func() (bool, string) {
+		provider, err := runtimeClient.Resource(infrastructureProviderGVR).Namespace(namespace).Get(context.Background(), infrastructureOperatorName, metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
 		}
@@ -310,9 +313,9 @@ func waitInfrastructureProviderReady(t *testing.T, runtimeClient dynamic.Interfa
 		}
 		return phase == "Ready", "phase=" + phase
 	}) {
-		t.Fatalf("InfrastructureProvider %s/%s never reached Ready with lifecycle conditions true", namespace, configConnectorOperatorName)
+		t.Fatalf("InfrastructureProvider %s/%s never reached Ready with lifecycle conditions true", namespace, infrastructureOperatorName)
 	}
-	t.Logf("InfrastructureProvider %s/%s lifecycle ready", namespace, configConnectorOperatorName)
+	t.Logf("InfrastructureProvider %s/%s lifecycle ready", namespace, infrastructureOperatorName)
 }
 
 // ensureStorageBucketCRD creates only the minimal API surface KRO needs to
@@ -321,13 +324,13 @@ func waitInfrastructureProviderReady(t *testing.T, runtimeClient dynamic.Interfa
 func ensureStorageBucketCRD(t *testing.T, runtimeClient dynamic.Interface) bool {
 	t.Helper()
 	const name = "storagebuckets.storage.cnrm.cloud.google.com"
-	existing, err := runtimeClient.Resource(configConnectorCRDGVR).Get(context.Background(), name, metav1.GetOptions{})
+	existing, err := runtimeClient.Resource(customResourceDefinitionGVR).Get(context.Background(), name, metav1.GetOptions{})
 	if err == nil {
 		if existing.GetLabels()[configConnectorTestLabel] != configConnectorTestLabelValue {
 			t.Skipf("StorageBucket CRD %q already exists; refusing to replace a non-test-owned Config Connector surface", name)
 		}
-		if !waitTilt(t, configConnectorWait, func() (bool, string) {
-			got, getErr := runtimeClient.Resource(configConnectorCRDGVR).Get(context.Background(), name, metav1.GetOptions{})
+		if !waitTilt(t, infrastructureOperatorWait, func() (bool, string) {
+			got, getErr := runtimeClient.Resource(customResourceDefinitionGVR).Get(context.Background(), name, metav1.GetOptions{})
 			return crdEstablished(got), fmt.Sprintf("get=%v", getErr)
 		}) {
 			t.Fatalf("test-owned StorageBucket CRD %q is not Established", name)
@@ -383,11 +386,11 @@ func ensureStorageBucketCRD(t *testing.T, runtimeClient dynamic.Interface) bool 
 			}},
 		},
 	}}
-	if _, err := runtimeClient.Resource(configConnectorCRDGVR).Create(context.Background(), crd, metav1.CreateOptions{}); err != nil {
+	if _, err := runtimeClient.Resource(customResourceDefinitionGVR).Create(context.Background(), crd, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create test-owned StorageBucket CRD: %v", err)
 	}
-	if !waitTilt(t, configConnectorWait, func() (bool, string) {
-		got, getErr := runtimeClient.Resource(configConnectorCRDGVR).Get(context.Background(), name, metav1.GetOptions{})
+	if !waitTilt(t, infrastructureOperatorWait, func() (bool, string) {
+		got, getErr := runtimeClient.Resource(customResourceDefinitionGVR).Get(context.Background(), name, metav1.GetOptions{})
 		if getErr != nil {
 			return false, getErr.Error()
 		}
@@ -461,7 +464,7 @@ func configConnectorTemplate(name string) *unstructured.Unstructured {
 	}}
 }
 
-func configConnectorAPIBinding() *unstructured.Unstructured {
+func infrastructureAPIBinding() *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apis.kcp.io/v1alpha2",
 		"kind":       "APIBinding",
@@ -489,12 +492,12 @@ func createConfigConnectorWorkspace(t *testing.T, parent dynamic.Interface, name
 			},
 		},
 	}}
-	if _, err := parent.Resource(configConnectorWorkspaceGVR).Create(context.Background(), workspace, metav1.CreateOptions{}); err != nil {
+	if _, err := parent.Resource(workspaceGVR).Create(context.Background(), workspace, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create isolated workspace %q: %v", name, err)
 	}
 	var path string
-	if !waitTilt(t, configConnectorWait, func() (bool, string) {
-		got, err := parent.Resource(configConnectorWorkspaceGVR).Get(context.Background(), name, metav1.GetOptions{})
+	if !waitTilt(t, infrastructureOperatorWait, func() (bool, string) {
+		got, err := parent.Resource(workspaceGVR).Get(context.Background(), name, metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
 		}
@@ -510,8 +513,8 @@ func createConfigConnectorWorkspace(t *testing.T, parent dynamic.Interface, name
 func waitRGDGraphAccepted(t *testing.T, runtimeClient dynamic.Interface, name string) (string, string) {
 	t.Helper()
 	var status, message string
-	waitTilt(t, configConnectorWait, func() (bool, string) {
-		got, err := runtimeClient.Resource(configConnectorRGDGVR).Get(context.Background(), name, metav1.GetOptions{})
+	waitTilt(t, infrastructureOperatorWait, func() (bool, string) {
+		got, err := runtimeClient.Resource(resourceGraphDefinitionGVR).Get(context.Background(), name, metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
 		}
@@ -553,7 +556,7 @@ func waitTilt(t *testing.T, timeout time.Duration, condition func() (bool, strin
 			t.Logf("wait timeout after %s: %s", timeout, last)
 			return false
 		}
-		time.Sleep(configConnectorPoll)
+		time.Sleep(infrastructureOperatorPoll)
 	}
 }
 

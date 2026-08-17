@@ -933,10 +933,20 @@ E2E_TILT_KCP_KUBECONFIG ?= $(CURDIR)/tilt-frontproxy.kubeconfig
 E2E_TILT_RUNTIME_KUBECONFIG ?= $(CURDIR)/.faros-cluster.kubeconfig
 E2E_TILT_OPERATOR_NAMESPACE ?= faros-infrastructure-operator
 E2E_TILT_CONFIG_CONNECTOR_TIMEOUT ?= 30m
+E2E_TILT_TERRAFORM_TIMEOUT ?= 30m
 KCC_INSTALL_SCRIPT ?= providers/infrastructure/contrib/config-connector/install.sh
 KCC_ENABLE_SCRIPT ?= providers/infrastructure/contrib/config-connector/enable.sh
 KCC_TEMPLATE_FILE ?= providers/infrastructure/contrib/config-connector/pubsub-template.yaml
 KCC_PROVIDER_WORKSPACE ?= root:faros:providers:infrastructure
+TERRAFORM_INSTALL_SCRIPT ?= providers/infrastructure/contrib/terraform/install.sh
+TERRAFORM_ENABLE_SCRIPT ?= providers/infrastructure/contrib/terraform/enable.sh
+TERRAFORM_TEMPLATE_FILE ?= providers/infrastructure/contrib/terraform/terraform-stack-template.yaml
+TERRAFORM_PROVIDER_WORKSPACE ?= root:faros:providers:infrastructure
+TERRAFORM_KIND_CLUSTER_NAME ?= kcp-tilt
+INFRAKUBE_POC_COMMIT := 2fed999fb3c30e8415da5489eb8cf1eec8b765f0
+INFRAKUBE_POC_IMAGE_TAG := $(shell printf '%s' $(INFRAKUBE_POC_COMMIT) | cut -c1-12)
+INFRAKUBE_POC_CONTROLLER_IMAGE ?= faros/infrakube:$(INFRAKUBE_POC_IMAGE_TAG)
+INFRAKUBE_POC_TASK_IMAGE ?= faros/infrakube-task:$(INFRAKUBE_POC_IMAGE_TAG)
 # Public dev configuration uses FAROS_CONFIG_CONNECTOR_GCP_*; keep the older
 # FAROS_E2E_GCP_* names as an explicit compatibility fallback for callers that
 # invoke these targets from an exported environment.
@@ -1081,6 +1091,60 @@ e2e-tilt-cluster-config-connector-gcp: ## Install Config Connector and run the r
 	@curl -s --max-time 5 -o /dev/null "$(E2E_TILT_INFRA_URL)/healthz" || { echo "infrastructure provider must be healthy before Config Connector is installed"; exit 1; }
 	$(MAKE) e2e-tilt-cluster-config-connector-gcp-install
 	$(MAKE) e2e-tilt-cluster-config-connector-gcp-run
+
+## Opt-in Terraform composition check. It installs only a minimal test-owned
+## Infrakube Terraform CRD and proves the infrastructure operator publishes a
+## tenant instance that KRO composes into the expected runtime child.
+.PHONY: e2e-tilt-cluster-terraform
+e2e-tilt-cluster-terraform: ## Run the credential-free Terraform composition e2e
+	@test -f "$(E2E_TILT_KCP_KUBECONFIG)" || { echo "kcp front-proxy kubeconfig is required; run make tilt-cluster first"; exit 1; }
+	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { echo "runtime kubeconfig is required; run make tilt-cluster first"; exit 1; }
+	@curl -sk --max-time 5 -o /dev/null "$(E2E_TILT_HUB_URL)/healthz" || { echo "hub must be healthy before the Terraform composition test"; exit 1; }
+	@curl -s --max-time 5 -o /dev/null "$(E2E_TILT_INFRA_URL)/healthz" || { echo "infrastructure provider must be healthy before the Terraform composition test"; exit 1; }
+	FAROS_E2E_TERRAFORM_COMPOSITION=1 \
+	FAROS_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
+	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	FAROS_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
+		go test -count=1 ./test/e2e/suites/tiltcluster/... -run '^TestTerraformComposition$$' -v -timeout $(E2E_TILT_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+.PHONY: e2e-tilt-cluster-terraform-install e2e-tilt-cluster-terraform-enable e2e-tilt-cluster-terraform-smoke e2e-tilt-cluster-terraform-infrakube
+e2e-tilt-cluster-terraform-install: ## Install pinned Infrakube into the operator-managed runtime
+	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { echo "runtime kubeconfig is required; run make tilt-cluster first"; exit 1; }
+	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	FAROS_TERRAFORM_KIND_CLUSTER_NAME="$(TERRAFORM_KIND_CLUSTER_NAME)" \
+	INFRAKUBE_COMMIT="$(INFRAKUBE_POC_COMMIT)" \
+	CONTROLLER_IMAGE="$(INFRAKUBE_POC_CONTROLLER_IMAGE)" \
+	TASK_IMAGE="$(INFRAKUBE_POC_TASK_IMAGE)" \
+		$(TERRAFORM_INSTALL_SCRIPT)
+
+e2e-tilt-cluster-terraform-enable: ## Enable and wait for the opt-in Terraform Template
+	@test -f "$(E2E_TILT_KCP_KUBECONFIG)" || { echo "kcp front-proxy kubeconfig is required; run make tilt-cluster first"; exit 1; }
+	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { echo "runtime kubeconfig is required; run make tilt-cluster first"; exit 1; }
+	FAROS_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
+	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	FAROS_TERRAFORM_KCP_SERVER="$(TERRAFORM_KCP_SERVER)" \
+	FAROS_TERRAFORM_PROVIDER_WORKSPACE="$(TERRAFORM_PROVIDER_WORKSPACE)" \
+	FAROS_TERRAFORM_TEMPLATE_FILE="$(TERRAFORM_TEMPLATE_FILE)" \
+		$(TERRAFORM_ENABLE_SCRIPT)
+
+e2e-tilt-cluster-terraform-smoke: ## Apply and destroy Terraform through the enabled Template
+	@test -f "$(E2E_TILT_KCP_KUBECONFIG)" || { echo "kcp front-proxy kubeconfig is required; run make tilt-cluster first"; exit 1; }
+	@test -f "$(E2E_TILT_RUNTIME_KUBECONFIG)" || { echo "runtime kubeconfig is required; run make tilt-cluster first"; exit 1; }
+	FAROS_E2E_TERRAFORM=1 \
+	FAROS_E2E_TILT_KUBECONFIG="$(E2E_TILT_KCP_KUBECONFIG)" \
+	FAROS_E2E_TILT_RUNTIME_KUBECONFIG="$(E2E_TILT_RUNTIME_KUBECONFIG)" \
+	FAROS_E2E_TILT_OPERATOR_NAMESPACE="$(E2E_TILT_OPERATOR_NAMESPACE)" \
+		go test -count=1 ./test/e2e/suites/tiltcluster/... -run '^TestTerraformInfrakubeSmoke$$' -v -timeout $(E2E_TILT_TERRAFORM_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+.PHONY: terraform-install terraform-enable terraform-smoke
+terraform-install: e2e-tilt-cluster-terraform-install
+terraform-enable: e2e-tilt-cluster-terraform-enable
+terraform-smoke: e2e-tilt-cluster-terraform-smoke
+
+e2e-tilt-cluster-terraform-infrakube: ## Install, enable, and smoke Terraform through Infrakube
+	$(MAKE) terraform-install
+	$(MAKE) terraform-enable
+	$(MAKE) terraform-smoke
 
 ## Create quickstart's APIExport (+ endpoint slice + bind grant) inside its
 ## provider workspace, so tenants can Enable it. The Provider controller already

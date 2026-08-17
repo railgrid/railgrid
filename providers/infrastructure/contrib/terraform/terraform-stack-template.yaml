@@ -1,0 +1,153 @@
+# This opt-in development fixture lives outside install/templates so ordinary
+# provider bootstrap never advertises Terraform or requires Infrakube.
+apiVersion: infrastructure.faros.sh/v1alpha1
+kind: Template
+metadata:
+  name: terraform-stack
+  labels:
+    faros.sh/terraform-runtime: infrakube
+spec:
+  displayName: "Terraform stack (Infrakube POC)"
+  description: "Proof-of-concept Terraform execution through an externally installed Infrakube controller. The module is embedded and pinned to Terraform 1.5.7; it creates a terraform_data resource without requiring cloud credentials."
+  category: Infrastructure
+  version: 0.1.0
+  exposure: internal
+  backend: kro
+  sampleValues:
+    name: terraform-poc
+    message: "hello from Faros"
+  agent:
+    usage: |
+      Provisions a small, cloud-free Terraform stack through Infrakube. This is
+      an integration proof of concept, not a general module runner: the
+      Terraform module and Terraform version are fixed by the template.
+
+      INPUTS: name identifies the Infrakube Terraform child and its isolated
+      state; message is stored in a terraform_data resource.
+
+      DELETION: deleting the Faros instance deletes the Terraform child and
+      Infrakube runs Terraform destroy because ignoreDelete is explicitly
+      false. The empty Kubernetes-backend state Secret and Lease are retained
+      for recovery; an operator must remove them under its retention policy.
+    prerequisites:
+      - "The KRO runtime cluster has the infrakube.galleybytes.com/v1 Terraform CRD and a healthy Infrakube controller."
+      - "The Infrakube controller is configured with a pinned task image, task pods can download Terraform 1.5.7, and the runtime cluster has a default StorageClass for Infrakube's PVC."
+      - "The Infrakube task ServiceAccount can manage Secrets and Leases in the materialized tenant runtime namespace for the Terraform Kubernetes backend."
+    outputs:
+      - "status.phase is Infrakube's current Terraform workflow phase."
+      - "status.message and status.resourceID are the only Terraform outputs projected into the Faros instance status."
+      - "status.runtimeNamespace identifies the KRO-materialized namespace that also owns this instance's retained Terraform state."
+  view:
+    columns:
+      - header: Phase
+        path: status.phase
+        type: badge
+      - header: Message
+        path: status.message
+    detail:
+      - title: Terraform
+        fields:
+          - label: Phase
+            path: status.phase
+            type: badge
+          - label: Resource ID
+            path: status.resourceID
+            type: code
+          - label: Runtime namespace
+            path: status.runtimeNamespace
+            type: code
+  instanceCRD:
+    group: infrastructure.faros.sh
+    version: v1alpha1
+    resource: terraformstacks
+    kind: TerraformStack
+  schema:
+    type: object
+    properties:
+      name:
+        type: string
+        pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        maxLength: 40
+        description: "Logical stack name; also scopes the Infrakube child and Terraform state within the tenant runtime namespace."
+      message:
+        type: string
+        default: "hello from Faros"
+        description: "Non-sensitive value stored by the POC terraform_data resource and returned in status."
+    required:
+      - name
+  backendConfig:
+    resources:
+      # KRO rewrites namespace: default to the tenant's materialized runtime
+      # namespace. The Terraform Kubernetes backend is an opaque HCL string, so
+      # KRO cannot rewrite a literal namespace inside it. This anchor exposes
+      # the post-rewrite namespace for the backend expression below and also
+      # makes the Terraform child depend on namespace resolution.
+      - id: stateNamespace
+        template:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ${schema.spec.name}-terraform-state-anchor
+            namespace: default
+          data:
+            purpose: infrakube-kubernetes-backend-namespace-anchor
+      - id: terraform
+        template:
+          apiVersion: infrakube.galleybytes.com/v1
+          kind: Terraform
+          metadata:
+            name: ${schema.spec.name}-terraform
+            namespace: default
+          spec:
+            terraformVersion: "1.5.7"
+            # Keep this POC reproducible and independent of mutable remote
+            # module refs. A future catalog feature can introduce controlled,
+            # immutable external module selection as a separate contract.
+            terraformModule:
+              inline: |
+                terraform {
+                  required_version = "= 1.5.7"
+                }
+
+                variable "message" {
+                  type = string
+                }
+
+                resource "terraform_data" "poc" {
+                  input = var.message
+                }
+
+                output "message" {
+                  value = terraform_data.poc.output
+                }
+
+                output "resource_id" {
+                  value = terraform_data.poc.id
+                }
+
+                # This deliberately exercises the output allowlist. Even a
+                # sensitive module output must never be copied wholesale into
+                # the tenant-visible Faros instance status.
+                output "internal_marker" {
+                  value     = "not-projected"
+                  sensitive = true
+                }
+            backend: ${"terraform {\n  backend \"kubernetes\" {\n    secret_suffix = \"" + schema.spec.name + "-faros\"\n    in_cluster_config = true\n    namespace = \"" + stateNamespace.metadata.namespace + "\"\n  }\n}"}
+            writeOutputsToStatus: true
+            outputsToInclude:
+              - message
+              - resource_id
+            # False is Infrakube's destroy-on-delete path. Keep it explicit so
+            # a future refactor cannot silently turn instance deletion into an
+            # orphaning operation.
+            ignoreDelete: false
+            taskOptions:
+              - for: ["*"]
+                env:
+                  - name: TF_VAR_message
+                    value: ${schema.spec.message}
+    status:
+      phase: ${terraform.status.phase}
+      message: ${terraform.status.outputs.message}
+      resourceID: ${terraform.status.outputs.resource_id}
+      runtimeNamespace: ${terraform.metadata.namespace}
