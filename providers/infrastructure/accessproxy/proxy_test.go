@@ -746,12 +746,16 @@ func TestReturnCookieWithTamperedPathRedirectsSameOrigin(t *testing.T) {
 	}
 }
 
-func TestExpiredReturnStateIsRejected(t *testing.T) {
+// An expired state is the tab-left-open case, not an attack. The gate restarts
+// the sign-in itself — the user never sees an error, and the deep link they
+// originally asked for survives the extra round trip. It previously dead-ended
+// on an opaque "invalid app access state" 400.
+func TestExpiredReturnStateRestartsSignIn(t *testing.T) {
 	upstream, _ := newUpstream(t, nil)
 	hub := newFakeHub("code-1")
 	p := newProxy(t, privateConfig(upstream.URL, hub))
 
-	first := doRequest(p, appRequest("/"))
+	first := doRequest(p, appRequest("/deep/link?q=1"))
 	returnCookie := cookieFromResponse(t, first, ReturnCookieName)
 	state := mustQuery(t, first.Header().Get("Location"), "state")
 
@@ -760,11 +764,71 @@ func TestExpiredReturnStateIsRejected(t *testing.T) {
 	p.now = func() time.Time { return base.Add(stateTTL + time.Second) }
 
 	rec := doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state, returnCookie))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d body=%q, want 302 (restarted sign-in)", rec.Code, rec.Body.String())
 	}
+	if got := rec.Header().Get("Location"); !strings.HasPrefix(got, p.config.hubPublicURL+hubAuthorizePath) {
+		t.Fatalf("restart Location = %q, want the hub authorize endpoint", got)
+	}
+	// An expired state must never buy a hub exchange, restarted or not.
 	if hub.exchangeCount() != 0 {
 		t.Fatalf("expired state reached the hub exchange")
+	}
+	// The restart must carry a usable cookie, and keep the original deep link.
+	fresh := cookieFromResponse(t, rec, ReturnCookieName)
+	if fresh == nil || fresh.Value == "" {
+		t.Fatal("restart set no fresh return cookie")
+	}
+	payload, ok := decodeReturnState(fresh.Value)
+	if !ok {
+		t.Fatal("restart cookie is not decodable")
+	}
+	if payload.Path != "/deep/link?q=1" {
+		t.Fatalf("restart return path = %q, want the original deep link", payload.Path)
+	}
+	if payload.Nonce == state {
+		t.Fatal("restart reused the expired nonce")
+	}
+}
+
+// The loop guard. With no cookie at all there is no evidence the browser will
+// keep one, so restarting would bounce the app between the gate and the hub
+// indefinitely. This must terminate with an error instead.
+func TestMissingReturnCookieDoesNotRestartSignIn(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	hub := newFakeHub("code-1")
+	p := newProxy(t, privateConfig(upstream.URL, hub))
+
+	first := doRequest(p, appRequest("/"))
+	state := mustQuery(t, first.Header().Get("Location"), "state")
+
+	// Same callback, but the browser never sends the cookie back.
+	rec := doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 — a restart here would loop", rec.Code)
+	}
+	if hub.exchangeCount() != 0 {
+		t.Fatalf("cookieless callback reached the hub exchange")
+	}
+}
+
+// A malformed cookie still proves the browser round-trips ours, so it is
+// recoverable: start over rather than stranding the user.
+func TestMalformedReturnCookieRestartsSignIn(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	hub := newFakeHub("code-1")
+	p := newProxy(t, privateConfig(upstream.URL, hub))
+
+	first := doRequest(p, appRequest("/"))
+	state := mustQuery(t, first.Header().Get("Location"), "state")
+
+	rec := doRequest(p, appRequest(CallbackPath+"?code="+hub.code+"&state="+state,
+		&http.Cookie{Name: ReturnCookieName, Value: "not-a-valid-payload"}))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d body=%q, want 302 (restarted sign-in)", rec.Code, rec.Body.String())
+	}
+	if hub.exchangeCount() != 0 {
+		t.Fatalf("malformed cookie reached the hub exchange")
 	}
 }
 

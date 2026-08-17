@@ -271,11 +271,20 @@ func (p *Proxy) redirectToAuthorize(w http.ResponseWriter, r *http.Request, path
 func (p *Proxy) handleCallback(w http.ResponseWriter, r *http.Request) {
 	partitioned := requestUsesPartitionedCookies(r)
 	state := r.URL.Query().Get("state")
-	returnPath, ok := p.consumeReturnState(w, r, state, partitioned)
-	if !ok {
+	outcome := p.consumeReturnState(w, r, state, partitioned)
+	if !outcome.OK {
+		// A stale sign-in is recoverable without involving the user: send the
+		// browser back through authorize with a fresh nonce and cookie. The
+		// restart is safe from looping because it is only offered when the
+		// browser demonstrably returned our cookie — see returnStateOutcome.
+		if outcome.Restart {
+			p.redirectToAuthorize(w, r, outcome.RestartPath)
+			return
+		}
 		http.Error(w, "invalid app access state", http.StatusBadRequest)
 		return
 	}
+	returnPath := outcome.Path
 	code := strings.TrimSpace(r.URL.Query().Get("code"))
 	if code == "" {
 		p.clearReturnCookie(w, partitioned)
@@ -380,39 +389,71 @@ func (p *Proxy) handleCallback(w http.ResponseWriter, r *http.Request) {
 // still be able to complete its own sign-in. Single use is enforced by the
 // usedStates cache below, which is a best-effort optimisation rather than the
 // authority — see markStateUsed.
-func (p *Proxy) consumeReturnState(w http.ResponseWriter, r *http.Request, state string, partitioned bool) (string, bool) {
+func (p *Proxy) consumeReturnState(w http.ResponseWriter, r *http.Request, state string, partitioned bool) returnStateOutcome {
 	cookie, err := r.Cookie(ReturnCookieName)
 	if err != nil {
+		// Deliberately NOT restartable. A restart would mint another cookie
+		// this browser also fails to send back, and the app would bounce
+		// between the gate and the hub for as long as the user waits.
 		p.logf("app access callback rejected: request carried no %s cookie (host=%s) — a copied callback URL, or the cookie was blocked", ReturnCookieName, p.config.host)
 		p.clearReturnCookie(w, partitioned)
-		return "", false
+		return returnStateOutcome{}
 	}
 	payload, ok := decodeReturnState(cookie.Value)
 	if !ok {
-		p.logf("app access callback rejected: %s cookie is malformed (host=%s)", ReturnCookieName, p.config.host)
-		p.clearReturnCookie(w, partitioned)
-		return "", false
+		// A cookie came back, so the browser does round-trip ours; it is just
+		// unreadable (truncated, or written by an older gate). Start over.
+		p.logf("app access callback recovering: %s cookie is malformed (host=%s) — restarting sign-in", ReturnCookieName, p.config.host)
+		return returnStateOutcome{Restart: true, RestartPath: "/"}
 	}
 	if state == "" || subtle.ConstantTimeCompare([]byte(payload.Nonce), []byte(state)) != 1 {
+		// Not restarted on purpose: the cookie may belong to a different
+		// sign-in this browser still has in flight, and overwriting it here
+		// would break that one to fix a callback that is probably forged or
+		// hand-copied.
 		p.logf("app access callback rejected: state parameter does not match the %s cookie (host=%s)", ReturnCookieName, p.config.host)
-		return "", false
+		return returnStateOutcome{}
 	}
 	if !p.now().Before(time.Unix(payload.ExpiresAt, 0)) {
-		p.logf("app access callback rejected: sign-in state expired (host=%s) — the round trip through the hub took longer than %s", p.config.host, stateTTL)
-		p.clearReturnCookie(w, partitioned)
-		return "", false
+		// The overwhelmingly common cause is a tab left open past stateTTL.
+		// The cookie proves the browser stores ours, so a fresh round trip
+		// will succeed — and the deep link survives it.
+		p.logf("app access callback recovering: sign-in state expired (host=%s) after %s — restarting sign-in", p.config.host, stateTTL)
+		return returnStateOutcome{Restart: true, RestartPath: cleanReturnPath(payload.Path)}
 	}
 	if !p.markStateUsed(payload.Nonce, time.Unix(payload.ExpiresAt, 0)) {
+		// Not restarted: a replay is an attack signal, and a successful
+		// sign-in already cleared the cookie, so the benign refresh case
+		// lands in the no-cookie branch above rather than here.
 		p.logf("app access callback rejected: sign-in state already used (host=%s) — replayed callback", p.config.host)
 		p.clearReturnCookie(w, partitioned)
-		return "", false
+		return returnStateOutcome{}
 	}
 	// Re-sanitise rather than trust: the path round-tripped through a cookie.
 	path := cleanReturnPath(payload.Path)
 	if path == "" {
 		path = "/"
 	}
-	return path, true
+	return returnStateOutcome{Path: path, OK: true}
+}
+
+// returnStateOutcome is the verdict on a callback's state/cookie pair.
+//
+// The distinction that matters is Restart: a stale sign-in is worth retrying
+// automatically, a blocked cookie is not. Both used to collapse into the same
+// opaque "invalid app access state" 400, which stranded users whose only fault
+// was leaving the tab open past stateTTL.
+type returnStateOutcome struct {
+	// Path is the sanitised return path. Meaningful only when OK.
+	Path string
+	OK   bool
+	// Restart reports that beginning a fresh sign-in can plausibly succeed.
+	// It is set ONLY when a cookie actually came back, because that is the
+	// evidence the browser round-trips ours — without it a restart loops.
+	Restart bool
+	// RestartPath is the deep link to preserve across a restart. Empty is
+	// fine; redirectToAuthorize substitutes "/".
+	RestartPath string
 }
 
 // newReturnState mints the nonce echoed to the hub and the cookie value that
