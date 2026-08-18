@@ -24,14 +24,18 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/faroshq/provider-sdk/revdial"
+	"github.com/faroshq/provider-edges/internal/tunnel"
 )
 
 // ConnManager is the subset of the tunnel ConnManager the reconcilers need.
-// *tunnel.ConnManager satisfies it structurally.
+// *tunnel.ConnManager satisfies it structurally. Load/HasConnection are
+// cluster-aware (a peer-held tunnel resolves to a relayed dialer);
+// HasLocalConnection is replica-local and gates the event subscribers so one
+// replica — the tunnel owner — subscribes per service, not the whole fleet.
 type ConnManager interface {
-	Load(key string) (*revdial.Dialer, bool)
+	Load(key string) (tunnel.Dialer, bool)
 	HasConnection(key string) bool
+	HasLocalConnection(key string) bool
 }
 
 // connKey mirrors edgeConnKey in the tunnel package: "{resource}/{cluster}/{name}".
@@ -51,7 +55,7 @@ type discoveredService struct {
 
 // fetchServices pulls the agent's discovered services by GETting /api/v1/services
 // over the reverse tunnel.
-func fetchServices(ctx context.Context, dialer *revdial.Dialer) ([]discoveredService, error) {
+func fetchServices(ctx context.Context, dialer tunnel.Dialer) ([]discoveredService, error) {
 	conn, err := dialer.Dial(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("dialing edge agent: %w", err)

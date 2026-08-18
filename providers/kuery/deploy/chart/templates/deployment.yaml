@@ -1,3 +1,6 @@
+{{- if and (gt (int .Values.replicaCount) 1) (ne .Values.store.driver "postgres") }}
+{{- fail "kuery replicaCount > 1 requires store.driver=postgres: with per-pod SQLite each replica syncs into (and answers from) a different database" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

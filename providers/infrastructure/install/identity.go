@@ -270,6 +270,15 @@ func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
 				Resources: []string{"tokenreviews"},
 				Verbs:     []string{"create"},
 			},
+			// Leader election: the serve replicas gate their singleton
+			// controllers (Template, Instance, bootstrap loop) on Leases in
+			// the provider workspace so scaling past one replica keeps each
+			// write loop single-active.
+			{
+				APIGroups: []string{"coordination.k8s.io"},
+				Resources: []string{"leases"},
+				Verbs:     []string{"get", "list", "watch", "create", "update", "patch"},
+			},
 		},
 	}
 	// API discovery non-resource URLs. Required for the kcp-apiexport

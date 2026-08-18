@@ -669,7 +669,9 @@ local_resource(
 #     faros-provider-kubeconfig (HostSecretWriter, enabled by the hub's
 #     --kubeconfig + --hub-internal-url flags above), the init container
 #     bootstraps the workspace with it, then serve runs — all inside the
-#     faros-kro kind cluster.
+#     faros-kro kind cluster. Deploys TWO replicas (the only Tilt resource
+#     with real kube replicas + Service round-robin): exercises the
+#     leader-elected Template/Instance controllers and bootstrap loop.
 #
 #     Manual (click ▶). Order: kro-mgmt-up → infrastructure-register →
 #     infrastructure-pod. Stop the host-binary `infrastructure` resource
@@ -695,9 +697,11 @@ local_resource(
 # edges — the standalone edges provider (KubernetesCluster + LinuxServer under
 # one group edges.faros.sh) PLUS the dev agents that connect to it.
 #
-# The provider is SINGLE-REPLICA (revdial dialer map is process-global). It
-# terminates the agent reverse tunnels and serves kubectl/ssh/mcp; the agents
-# below dial it through the hub backend proxy at /services/providers/edges/*.
+# The provider terminates the agent reverse tunnels and serves
+# kubectl/ssh/mcp; the agents below dial it through the hub backend proxy at
+# /services/providers/edges/*. Multi-replica capable: tunnels are claimed in
+# a Lease registry and peer replicas relay to the owner (see the `edges-2`
+# standby under the `replicas` label).
 #
 # Workflow:
 #   1. `edges` serves automatically; click ▶ on `edges-register` then
@@ -850,4 +854,61 @@ local_resource(
     resource_deps=['ha-kube-deploy'],
     links=[link('http://localhost:8123', 'Home Assistant')],
     labels=['edges'],
+)
+
+# ---------------------------------------------------------------------------
+# replicas — second instances of the scalable providers (manual, click ▶)
+#
+# The hub proxies each provider through ONE fixed URL (localhost:{port}), so
+# these standbys receive no request traffic; what they exercise is the durable
+# coordination the scaling work added: leader election (code), per-edge claim
+# sharding (kuery), and the tunnel-ownership registry + relay (edges — both
+# instances run with replica routing enabled, POD_IP=127.0.0.1, so the standby
+# sees instance 1's tunnels through the Lease registry instead of flapping
+# their status). Real replicas WITH load-balanced traffic: `infrastructure-pod`
+# (helm, replicaCount=2 in the faros-kro kind cluster).
+#
+# Not here on purpose:
+#   - hub: Tilt runs it with --embedded-kcp; HA requires external kcp.
+#   - app-studio: dev uses the in-memory message store, which is per-process —
+#     replica claims need the shared Postgres store to mean anything.
+# ---------------------------------------------------------------------------
+
+local_resource(
+    'code-2',
+    serve_cmd='make run-provider-code CODE_PORT=18083',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['code'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=18083, path='/healthz'),
+    ),
+    labels=['replicas'],
+)
+
+local_resource(
+    'kuery-2',
+    serve_cmd='make run-provider-kuery KUERY_PORT=18084',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['kuery'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=18084, path='/healthz'),
+    ),
+    labels=['replicas'],
+)
+
+local_resource(
+    'edges-2',
+    serve_cmd='POD_NAME=edges-local-2 make run-provider-edges EDGES_PORT=18088 EDGES_INTERNAL_PORT=18090',
+    trigger_mode=TRIGGER_MODE_MANUAL,
+    auto_init=False,
+    resource_deps=['edges'],
+    readiness_probe=probe(
+        period_secs=5,
+        http_get=http_get_action(port=18088, path='/healthz'),
+    ),
+    labels=['replicas'],
 )

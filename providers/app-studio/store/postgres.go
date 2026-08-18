@@ -118,6 +118,9 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	if err := ensureSchemaVersion(ctx, tx, assistantApprovalPolicySchemaVersion, assistantApprovalPolicySchemaStatements()...); err != nil {
 		return err
 	}
+	if err := ensureSchemaVersion(ctx, tx, replicaClaimSchemaVersion, replicaClaimSchemaStatements()...); err != nil {
+		return err
+	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit schema migration: %w", err)
 	}

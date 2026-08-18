@@ -71,6 +71,14 @@ spec:
           readinessProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 5
+          {{- if .Values.envFromSecret }}
+          # Bulk env injection (GitHub OAuth app credentials and other dev
+          # secrets) — the containerized equivalent of the host binary
+          # sourcing providers/code/.env.
+          envFrom:
+            - secretRef:
+                name: {{ .Values.envFromSecret }}
+          {{- end }}
           env:
             - name: PORT
               value: "8083"

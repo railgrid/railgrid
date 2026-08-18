@@ -863,6 +863,12 @@ k8s_yaml(helm(
     namespace=hub_namespace,
     set=[
         'image.hub.tag=dev',
+        # TWO hub replicas — external kcp is exactly the configuration the
+        # hub's HA work targets: singleton controllers gate on the
+        # faros-hub-controllers Lease, browser sessions and published-app auth
+        # codes live in kcp-backed Secrets, so sign-in survives either pod and
+        # the Service round-robins requests across both.
+        'replicaCount=2',
         'kcp.embedded.enabled=false',
         'kcp.external.enabled=true',
         'kcp.external.existingSecret=kcp-frontproxy-admin',
@@ -896,6 +902,12 @@ k8s_yaml(helm(
 
 k8s_resource(
     'faros-hub',
+    # NB with replicaCount=2: a Tilt port-forward attaches to ONE pod, so
+    # browser traffic through :9443 pins to a single replica (and drops while
+    # Tilt re-attaches if that pod dies). In-cluster traffic — providers and
+    # minted kubeconfigs via hub.internalURL — goes through the Service and
+    # round-robins across both replicas. To exercise failover from the
+    # browser, kill the pod Tilt is forwarding to and let it re-attach.
     port_forwards=['9443:9443'],
     resource_deps=['hub-compile', 'hub-kcp-secrets', 'hub-rbac', 'hub-tls', 'dex'],
     labels=['hub'],
@@ -947,35 +959,28 @@ kubectl create secret generic kcp-static-tokens -n default \
 )
 
 # ---------------------------------------------------------------------------
-# providers — external (Helm-style) provider binaries that register with
-# the hub via a CatalogEntry and serve their UI + HTTP API on a host port.
-# Same shape as the embedded-kcp ./Tiltfile (lines ~66-222). Resource_deps
-# point at `faros-hub` here (vs `hub` in that file) since this Tiltfile's
-# hub workload is named faros-hub.
+# providers — run as PODS in this kind cluster: Tilt-built images + each
+# provider's production chart, in the `faros-providers` namespace. Dev
+# exercises the real in-cluster behavior: 2 replicas, leader election,
+# claims, tunnel routing, Service round-robin, chart probes.
 #
-#   providers-quickstart   — reference example (port :8081)
-#   providers-app-studio   — AI workspace provider (port :8085) +
-#                            host URL rewritten for the in-cluster hub
-#   providers-kro          — infrastructure broker (port :8082) +
-#                            management kind cluster that kro runs in
-#   providers-code         — git repository manager (port :8083)
-#   providers-kuery        — fleet query engine (port :8084)
-#   providers-agents       — long-running personal AI agents (port :8087)
+#   quickstart :8081 · infrastructure :8082 (operator mode) · code :8083
+#   kuery :8084 · app-studio :8085 · databricks :8086 · agents :8087
+#   edges :8088 — each port-forwarded to its historical host port.
 #
-# Each provider has three resources:
-#   <name>            build + serve; auto-restarts on src change
-#   <name>-register   manual ▶ to kubectl apply the CatalogEntry
-#   <name>-unregister manual ▶ to kubectl delete it
+# Each provider keeps its aux resources:
+#   <name>-register   manual ▶ apply Provider + CatalogEntry into kcp
+#                     (URLs rewritten to the in-cluster Service)
+#   <name>-init       manual ▶ seed the workspace + write the runtime
+#                     kubeconfig under .kcp/
+#   <name>-secrets    auto: syncs that kubeconfig into the pod's Secret —
+#                     until init runs, the pod waits on the missing mount
+#   <name>-unregister manual ▶ delete the kcp objects
 #
-# The kro group adds two more for the backing infrastructure:
-#   kro-mgmt-up    builds the kind cluster + helm-installs kro + applies
-#                  seed RGDs (see providers/infrastructure/examples/rgds/).
-#                  Auto-runs at `tilt up`.
-#   kro-mgmt-down  manual ▶ to tear down (kind delete cluster).
-#
-# The make targets the providers call (install-provider-*, run-provider-*)
-# hit the hub at hub_external_url with the `dev-token` static token,
-# which the watchdog above keeps wired up to kcp.
+# Pods reach kcp with the SAME kubeconfigs the host flow mints: the kcp-dns
+# resource points (kcp|*.kcp).localhost at the Envoy gateway via CoreDNS,
+# cluster-wide — the pod equivalent of the hub's hostAliases. The stateful
+# providers share the in-cluster providers-db Postgres.
 #
 # CatalogEntry install/uninstall talks DIRECTLY to kcp (not via the hub) — it
 # needs cluster-admin to write into root:faros:providers. The embedded-kcp
@@ -988,46 +993,224 @@ kubectl create secret generic kcp-static-tokens -n default \
 KCP_ADMIN_KUBECONFIG = os.path.abspath('tilt-frontproxy.kubeconfig')
 KCP_ADMIN_SERVER = 'https://kcp.localhost:8443'
 
-# Provider binaries run on the HOST (via `make run-provider-*`); the hub runs
-# IN-CLUSTER, so the CatalogEntry's ui.url / backend.url can't be localhost —
-# that resolves to the hub pod's own loopback. host.docker.internal resolves
-# to the host's network from inside kind/Docker Desktop/OrbStack pods.
+# Providers run as PODS in the kind cluster (their production charts +
+# Tilt-built images), so in-cluster behavior — replicas, leader election,
+# claims, tunnel routing, Service round-robin — is what dev exercises. The
+# CatalogEntry's ui.url / backend.url therefore point at each provider's
+# in-cluster Service.
 #
 # Manifest files commit to localhost so the embedded-kcp Tiltfile (everything
 # on the host) works out-of-the-box. We rewrite at install time here instead
 # of templating the manifest, so neither flow needs the other's URLs.
-def rewrite_manifest_cmd(src):
-    out = '/tmp/faros-{}.yaml'.format(src.replace('/', '_'))
-    return ("sed 's|http://localhost:|http://host.docker.internal:|g' " +
-            "{src} > {out}").format(src=src, out=out), out
+providers_namespace = 'faros-providers'
 
-QUICKSTART_REWRITE_CMD, QUICKSTART_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/quickstart/manifest.yaml')
-INFRA_REWRITE_CMD, INFRA_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/infrastructure/manifest.yaml')
-APP_STUDIO_REWRITE_CMD, APP_STUDIO_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/app-studio/manifest.yaml')
-CODE_REWRITE_CMD, CODE_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/code/manifest.yaml')
-KUERY_REWRITE_CMD, KUERY_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/kuery/manifest.yaml')
-DATABRICKS_REWRITE_CMD, DATABRICKS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/databricks/manifest.yaml')
-AGENTS_REWRITE_CMD, AGENTS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/agents/manifest.yaml')
-EDGES_REWRITE_CMD, EDGES_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/edges/manifest.yaml')
+def provider_svc_url(name, port):
+    return 'http://%s.%s.svc.cluster.local:%d' % (name, providers_namespace, port)
+
+def rewrite_manifest_cmd(src, name, port):
+    out = '/tmp/faros-{}.yaml'.format(src.replace('/', '_'))
+    return ("sed 's|http://localhost:{port}|{svc}|g' " +
+            "{src} > {out}").format(src=src, out=out, port=port,
+                                    svc=provider_svc_url(name, port)), out
+
+QUICKSTART_REWRITE_CMD, QUICKSTART_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/quickstart/manifest.yaml', 'quickstart', 8081)
+# infrastructure's serve Service is stamped by its operator into the
+# faros-infrastructure-provider namespace (and the operator self-registers
+# the CatalogEntry with that URL anyway) — rewrite to match, not to
+# faros-providers.
+INFRA_REWRITE_CMD, INFRA_MANIFEST_REWRITTEN = ("sed 's|http://localhost:8082|http://infrastructure.faros-infrastructure-provider.svc.cluster.local:8082|g' providers/infrastructure/manifest.yaml > /tmp/faros-providers_infrastructure_manifest.yaml", '/tmp/faros-providers_infrastructure_manifest.yaml')
+APP_STUDIO_REWRITE_CMD, APP_STUDIO_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/app-studio/manifest.yaml', 'app-studio', 8085)
+CODE_REWRITE_CMD, CODE_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/code/manifest.yaml', 'code', 8083)
+KUERY_REWRITE_CMD, KUERY_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/kuery/manifest.yaml', 'kuery', 8084)
+DATABRICKS_REWRITE_CMD, DATABRICKS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/databricks/manifest.yaml', 'databricks', 8086)
+AGENTS_REWRITE_CMD, AGENTS_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/agents/manifest.yaml', 'agents', 8087)
+EDGES_REWRITE_CMD, EDGES_MANIFEST_REWRITTEN = rewrite_manifest_cmd('providers/edges/manifest.yaml', 'edges', 8088)
+
+# ---------------------------------------------------------------------------
+# shared pod plumbing: namespace, kcp DNS, hub token, provider Postgres
+# ---------------------------------------------------------------------------
+k8s_yaml(blob('''
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: %s
+''' % providers_namespace))
+
+# Provider pods reach kcp with the operator-issued kubeconfigs UNCHANGED:
+# CoreDNS answers (kcp|*.kcp).localhost with the Envoy gateway ClusterIP —
+# the cluster-wide equivalent of the hostAliases the hub pod gets.
+local_resource(
+    'kcp-dns',
+    cmd='true',
+    serve_cmd='''
+set -eu
+cleanup() { hack/scripts/configure-tilt-kcp-dns.sh --cleanup %s %s || true; }
+trap cleanup 0
+trap 'exit 0' 2 15
+hack/scripts/configure-tilt-kcp-dns.sh %s %s
+while :; do sleep 86400; done
+'''.strip() % (k8s_context(), gateway_ip, k8s_context(), gateway_ip),
+    deps=['hack/scripts/configure-tilt-kcp-dns.sh'],
+    labels=['providers-shared'],
+)
+
+# Every provider heartbeats with the dev static token; the charts read it from
+# a Secret via hub.tokenSecretRef.
+k8s_yaml(blob('''
+apiVersion: v1
+kind: Secret
+metadata:
+  name: faros-provider-hub-token
+  namespace: %s
+stringData:
+  token: dev-token
+''' % providers_namespace))
+
+# One Postgres for the stateful providers (kuery / app-studio / agents), each
+# with its own database — the in-cluster replacement for the host `make
+# *-db-up` docker containers. Dev-only credentials.
+k8s_yaml(blob('''
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: providers-db-init
+  namespace: %s
+data:
+  init.sql: |
+    CREATE DATABASE kuery;
+    CREATE DATABASE appstudio;
+    CREATE DATABASE agents;
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: providers-db
+  namespace: %s
+spec:
+  selector:
+    app: providers-db
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: providers-db
+  namespace: %s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: providers-db
+  template:
+    metadata:
+      labels:
+        app: providers-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_USER
+              value: faros
+            - name: POSTGRES_PASSWORD
+              value: faros-dev
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "faros"]
+            # First boot runs initdb + a temporary "rejecting connections"
+            # server before the real one starts; don't paint that window red.
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 12
+      volumes:
+        - name: init
+          configMap:
+            name: providers-db-init
+''' % (providers_namespace, providers_namespace, providers_namespace)))
+k8s_resource(
+    'providers-db',
+    objects=['providers-db-init:configmap'],
+    labels=['providers-shared'],
+)
+
+def providers_db_url(db):
+    return 'postgres://faros:faros-dev@providers-db.%s.svc.cluster.local:5432/%s?sslmode=disable' % (providers_namespace, db)
+
+# Syncs a host kubeconfig file (written by the manual <name>-init resource)
+# into the provider's kubeconfig Secret. Runs automatically once the file
+# exists; until then the pod waits on the missing Secret mount — the visible
+# "run register + init first" state.
+def provider_kubeconfig_sync(name, kubeconfig_file, labels):
+    local_resource(
+        name + '-secrets',
+        cmd='''
+set -eu
+if [ ! -f {file} ]; then
+  echo "{file} not found - trigger {name}-register then {name}-init first"
+  exit 0
+fi
+kubectl --context {ctx} -n {ns} create secret generic faros-{name}-kubeconfig \
+  --from-file=kubeconfig={file} --dry-run=client -o yaml | \
+  kubectl --context {ctx} -n {ns} apply -f -
+'''.format(file=kubeconfig_file, name=name, ns=providers_namespace, ctx=k8s_context()).strip(),
+        deps=[kubeconfig_file],
+        allow_parallel=True,
+        labels=labels,
+    )
+
+# One helper per podified provider: Tilt-built image (auto kind-load +
+# rebuild-on-change), the provider's production chart, and a port-forward on
+# the historical host port so portals/curl keep working.
+def provider_pod(name, port, chart_extra=[], resource_deps=[], labels=None, image_only_deps=None, port_forwards=None, container_port=None):
+    labels = labels or ['providers-' + name]
+    image_ref = 'faros-%s-provider' % name
+    # Repo-root context: the Dockerfiles copy the in-tree provider-sdk (go.mod
+    # replace) — same invocation as CI: docker build -f providers/<n>/Dockerfile .
+    docker_build(image_ref, '.',
+                 dockerfile='providers/%s/Dockerfile' % name,
+                 only=image_only_deps or ['providers/' + name, 'provider-sdk'])
+    k8s_yaml(helm(
+        'providers/%s/deploy/chart' % name,
+        name=name,
+        namespace=providers_namespace,
+        set=[
+            'fullnameOverride=%s' % name,
+            'image.repository=%s' % image_ref,
+            'image.pullPolicy=IfNotPresent',
+            'service.port=%d' % port,
+            'hub.url=https://faros-hub.%s.svc.cluster.local:9443' % hub_namespace,
+            'hub.insecure=true',
+            'hub.tokenSecretRef.name=faros-provider-hub-token',
+            'hub.tokenSecretRef.key=token',
+            'providerKubeconfig.secretName=faros-%s-kubeconfig' % name,
+            # CatalogEntry registration stays with the host-side
+            # <name>-register resource (admin kubeconfig into kcp).
+            'catalogEntry.enabled=false',
+        ] + chart_extra,
+    ))
+    k8s_resource(
+        name,
+        # No host port-forwards: the portal and every API path go hub →
+        # in-cluster Service (CatalogEntry URLs). Debug directly with
+        # kubectl -n faros-providers port-forward svc/<name> <port>.
+        port_forwards=port_forwards or [],
+        resource_deps=['faros-hub', 'kcp-dns'] + resource_deps,
+        labels=labels,
+    )
 
 # --- providers-quickstart ---
-local_resource(
-    'quickstart',
-    cmd='make build-quickstart-provider',
-    serve_cmd='make run-provider-quickstart',
-    deps=[
-        'providers/quickstart/main.go',
-        'providers/quickstart/assets.go',
-        'providers/quickstart/portal/src',
-        'providers/quickstart/portal/package.json',
-        'providers/quickstart/go.mod',
-    ],
-    resource_deps=['faros-hub'],
-    readiness_probe=probe(
-        period_secs=5,
-        http_get=http_get_action(port=8081, path='/healthz'),
-    ),
-    labels=['providers-quickstart'],
+provider_kubeconfig_sync('quickstart', '.kcp/quickstart-runtime.kubeconfig', ['providers-quickstart'])
+provider_pod(
+    'quickstart', 8081,
+    chart_extra=['replicaCount=2'],
+    resource_deps=['quickstart-secrets'],
 )
 
 local_resource(
@@ -1068,30 +1251,21 @@ local_resource(
 )
 
 # --- edges (KubernetesCluster + LinuxServer, one group edges.faros.sh) ---
-# Single, self-contained, SINGLE-REPLICA provider: terminates agent reverse
-# tunnels (revdial) and serves kubectl/ssh/mcp. Runs on the host like the other
-# providers here; agents dial it through the hub backend proxy.
-local_resource(
-    'edges',
-    cmd='make build-edges-provider',
-    serve_cmd='make run-provider-edges',
-    deps=[
-        'providers/edges/main.go',
-        'providers/edges/controller_manager.go',
-        'providers/edges/init_cmd.go',
-        'providers/edges/heartbeat.go',
-        'providers/edges/apis',
-        'providers/edges/internal',
-        'providers/edges/scheme',
-        'providers/edges/portal/src',
-        'providers/edges/portal/package.json',
-        'providers/edges/go.mod',
+# Two replicas: agents dial ONE replica through the hub; the tunnel-ownership
+# Lease registry + pod-to-pod relay route pickups and data-plane requests to
+# whichever replica holds each tunnel (POD_IP/POD_NAME come from the chart's
+# downward API wiring).
+provider_kubeconfig_sync('edges', '.kcp/edges-runtime.kubeconfig', ['edges'])
+provider_pod(
+    'edges', 8088,
+    chart_extra=[
+        'replicaCount=2',
+        'staticTokens=dev-token',
+        'devMode=true',
+        'hub.externalURL=%s' % hub_external_url,
+        'hub.internalURL=https://faros-hub.%s.svc.cluster.local:9443' % hub_namespace,
     ],
-    resource_deps=['faros-hub'],
-    readiness_probe=probe(
-        period_secs=5,
-        http_get=http_get_action(port=8088, path='/healthz'),
-    ),
+    resource_deps=['edges-secrets'],
     labels=['edges'],
 )
 
@@ -1134,48 +1308,35 @@ local_resource(
 
 # --- providers-agents ---
 # Long-running personal AI agents (chat, scheduled runs, tools, durable memory).
-# Standalone: only hard deps are the hub and the durable store (local Postgres
-# container via agents-db). No app-studio/infrastructure dependency.
+# Standalone: only hard deps are the hub and the shared providers-db Postgres.
+# LLM/channel credentials come from providers/agents/.env, synced into an
+# envFrom-able Secret so the pod sees the same keys the host binary did.
 local_resource(
-    'agents-db',
-    cmd='make agents-db-up',
-    deps=[
-        'providers/agents/.env',
-    ],
+    'agents-env',
+    cmd='''
+set -eu
+if [ -f providers/agents/.env ]; then
+  kubectl --context %s -n %s create secret generic agents-env \
+    --from-env-file=providers/agents/.env --dry-run=client -o yaml | \
+    kubectl --context %s -n %s apply -f -
+else
+  kubectl --context %s -n %s create secret generic agents-env \
+    --dry-run=client -o yaml | kubectl --context %s -n %s apply -f -
+fi
+'''.strip() % (k8s_context(), providers_namespace, k8s_context(), providers_namespace,
+               k8s_context(), providers_namespace, k8s_context(), providers_namespace),
+    deps=['providers/agents/.env'],
     labels=['providers-agents'],
 )
 
-local_resource(
-    'agents',
-    cmd='make build-agents-provider',
-    serve_cmd='make run-provider-agents',
-    deps=[
-        'providers/agents/main.go',
-        'providers/agents/heartbeat.go',
-        'providers/agents/assets.go',
-        'providers/agents/init_cmd.go',
-        'providers/agents/api',
-        'providers/agents/channels',
-        'providers/agents/apis',
-        'providers/agents/client',
-        'providers/agents/engine',
-        'providers/agents/executor',
-        'providers/agents/tools',
-        'providers/agents/llm',
-        'providers/agents/store',
-        'providers/agents/tenant',
-        'providers/agents/go.mod',
-        'providers/agents/portal/src',
-        'providers/agents/portal/package.json',
-        'providers/agents/portal/vite.config.ts',
-        'providers/agents/.env',
+provider_kubeconfig_sync('agents', '.kcp/agents-provider.kubeconfig', ['providers-agents'])
+provider_pod(
+    'agents', 8087,
+    chart_extra=[
+        'store.databaseURL=%s' % providers_db_url('agents'),
+        'envFromSecret=agents-env',
     ],
-    resource_deps=['faros-hub', 'agents-db'],
-    readiness_probe=probe(
-        period_secs=5,
-        http_get=http_get_action(port=8087, path='/healthz'),
-    ),
-    labels=['providers-agents'],
+    resource_deps=['agents-secrets', 'agents-env', 'providers-db'],
 )
 
 local_resource(
@@ -1215,13 +1376,6 @@ local_resource(
     labels=['providers-agents'],
 )
 
-local_resource(
-    'agents-db-down',
-    cmd='make agents-db-down',
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    labels=['providers-agents'],
-)
 
 # --- providers-app-studio ---
 local_resource(
@@ -1234,17 +1388,9 @@ local_resource(
     labels=['providers-app-studio'],
 )
 
-local_resource(
-    'app-studio-db',
-    cmd='make app-studio-db-up',
-    deps=[
-        'Makefile',
-        'providers/app-studio/.env',
-        'providers/app-studio/.env.example',
-    ],
-    resource_deps=['faros-hub'],
-    labels=['providers-app-studio'],
-)
+# App Studio's durable store is the shared in-cluster providers-db Postgres
+# (database "appstudio") — the same store replica claims and project pins live
+# in, so multi-replica behavior is real in dev.
 
 # Generated apps and their coordinator call the hub through its in-cluster
 # Service, not the host-only 9443 port-forward. Preserve TLS verification by
@@ -1314,64 +1460,93 @@ local_resource(
 )
 
 
+# The exported hub CA file becomes a ConfigMap the app-studio chart mounts
+# (hub.actionsCABundleConfigMap) so action-enabled development runtimes keep
+# verified TLS to the in-cluster hub Service.
 local_resource(
-    'app-studio',
-    cmd='make build-app-studio-provider',
-    # The controller manager watches the APIExportEndpointSlice in the
-    # PROVIDER workspace, so the serve kubeconfig must be the
-    # workspace-scoped one init writes (.kcp/app-studio-provider.kubeconfig —
-    # the Makefile pins it, same as vibe-studio). Pointing this at the admin
-    # /clusters/root kubeconfig makes the reconcilers watch an empty
-    # workspace and silently never engage. Development previews are the
-    # template instance's own public URL — no preview-gateway env.
-    serve_cmd=(app_studio_actions_ca_cmd +
-               'FAROS_ACTIONS_EXTERNAL_URL=https://faros-hub.%s.svc:9443 ' +
-               'FAROS_ACTIONS_CA_BUNDLE_FILE=%s ' +
-               'make run-provider-app-studio') % (
-                   hub_namespace,
-                   app_studio_actions_ca_file),
-    deps=[
-        'providers/app-studio/main.go',
-        'providers/app-studio/heartbeat.go',
-        'providers/app-studio/assets.go',
-        'providers/app-studio/api',
-        'providers/app-studio/apis',
-        'providers/app-studio/scaffold',
-        'providers/app-studio/client',
-        'providers/app-studio/store',
-        'providers/app-studio/tenant',
-        'providers/app-studio/go.mod',
-        'providers/app-studio/go.sum',
-        'providers/app-studio/portal/src',
-        'providers/app-studio/portal/package.json',
-        'providers/app-studio/portal/vite.config.ts',
-        'providers/app-studio/manifest.yaml',
-        'providers/app-studio/.env',
-        # The provider loads this public CA once at process start. Restart it
-        # when the hub identity rotates so existing project bindings reconcile
-        # from the new authoritative bundle instead of retaining stale trust.
-        app_studio_actions_ca_file,
-    ],
-    resource_deps=[
-        'faros-hub',
-        'app-studio-db',
-        'app-studio-actions-ca',
-        'dev-agent-image',
-        'app-studio-preview-console-key',
-    ],
-    readiness_probe=probe(
-        period_secs=5,
-        http_get=http_get_action(port=8085, path='/healthz'),
-    ),
+    'app-studio-actions-ca-cm',
+    cmd='''
+set -eu
+kubectl --context %s -n %s create configmap app-studio-actions-ca \
+  --from-file=ca-bundle.pem=%s --dry-run=client -o yaml | \
+  kubectl --context %s -n %s apply -f -
+'''.strip() % (k8s_context(), providers_namespace, app_studio_actions_ca_file,
+               k8s_context(), providers_namespace),
+    deps=[app_studio_actions_ca_file],
+    resource_deps=['app-studio-actions-ca'],
     labels=['providers-app-studio'],
 )
 
+# The app-studio init container applies its APIExport with first-party
+# permission claims on the infrastructure/code APIExports — kcp REQUIRES
+# their identityHashes (empty hash = hard apply failure). The host init
+# target auto-discovered them; here a resource does the same lookups and
+# writes them to a file that read_file() below watches: the moment discovery
+# succeeds (after infrastructure/code exist), Tilt re-renders the chart with
+# the hashes and the pods restart with valid claims.
+app_studio_hash_file = '.kcp/app-studio-identity-hashes.env'
 local_resource(
-    'app-studio-db-down',
-    cmd='make app-studio-db-down',
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
+    'app-studio-identity-hashes',
+    cmd='''
+set -eu
+lookup() {
+  kubectl --kubeconfig=%s --server=%s/clusters/root:faros:providers:$1 \
+    --insecure-skip-tls-verify get apiexport $2 \
+    -o jsonpath='{.status.identityHash}' 2>/dev/null || true
+}
+infra="$(lookup infrastructure infrastructure.providers.faros.sh)"
+code="$(lookup code code.providers.faros.sh)"
+if [ -z "$infra" ] || [ -z "$code" ]; then
+  echo "identityHashes not discoverable yet (infra='$infra' code='$code')"
+  echo "re-trigger after the infrastructure operator has bootstrapped and code-init has run"
+  exit 0
+fi
+printf 'infra=%%s\\ncode=%%s\\n' "$infra" "$code" > %s
+echo "wrote %s"
+'''.strip() % (KCP_ADMIN_KUBECONFIG, KCP_ADMIN_SERVER, app_studio_hash_file, app_studio_hash_file),
+    deps=['.kcp/code-runtime.kubeconfig', 'tilt-frontproxy.kubeconfig'],
+    allow_parallel=True,
     labels=['providers-app-studio'],
+)
+
+app_studio_infra_hash = cfg.get('app-studio-infra-identity-hash', '')
+app_studio_code_hash = cfg.get('app-studio-code-identity-hash', '')
+for _line in str(read_file(app_studio_hash_file, '')).splitlines():
+    if _line.startswith('infra=') and not app_studio_infra_hash:
+        app_studio_infra_hash = _line[len('infra='):].strip()
+    if _line.startswith('code=') and not app_studio_code_hash:
+        app_studio_code_hash = _line[len('code='):].strip()
+
+# Two replicas: durable run claims + project affinity live in the shared
+# providers-db Postgres, workspaces are emptyDir caches rebuilt from git on
+# adoption (docs/app-studio-replica-awareness.md).
+#
+# The controller manager watches the APIExportEndpointSlice in the PROVIDER
+# workspace, so the synced kubeconfig must be the workspace-scoped one init
+# writes (.kcp/app-studio-provider.kubeconfig). previewConsole is disabled in
+# pod mode for now: the dev signing-key flow generates the key id at runtime,
+# which chart values can't consume at render time — App Studio serves without
+# console instrumentation (its documented degraded mode).
+provider_kubeconfig_sync('app-studio', '.kcp/app-studio-provider.kubeconfig', ['providers-app-studio'])
+provider_pod(
+    'app-studio', 8085,
+    container_port=8081,
+    chart_extra=[
+        'replicaCount=2',
+        'store.databaseURL=%s' % providers_db_url('appstudio'),
+        'hub.actionsExternalURL=https://faros-hub.%s.svc:9443' % hub_namespace,
+        'hub.actionsCABundleConfigMap.name=app-studio-actions-ca',
+        'hub.actionsCABundleConfigMap.key=ca-bundle.pem',
+        'previewConsole.enabled=false',
+        'apiExport.infraIdentityHash=%s' % app_studio_infra_hash,
+        'apiExport.codeIdentityHash=%s' % app_studio_code_hash,
+    ],
+    resource_deps=[
+        'app-studio-secrets',
+        'providers-db',
+        'app-studio-actions-ca-cm',
+        'dev-agent-image',
+    ],
 )
 
 local_resource(
@@ -1412,50 +1587,50 @@ local_resource(
 )
 
 # --- providers-kuery (fleet query engine, port :8084) ---
-# Local Postgres for the kuery store. Dev always runs the same SQL backend
-# as production — SQLite hid real Postgres-only query bugs, so it is not an
-# option here. make run-provider-kuery depends on this too.
+# Two replicas over the shared providers-db Postgres (the chart refuses >1
+# with SQLite): per-edge Lease claims shard engagement, and every replica
+# answers queries/edge listings from the shared store. Engagement needs
+# ▶ kuery-register then ▶ kuery-init (mints the runtime kubeconfig the
+# secrets sync delivers).
+#
+# The kubernetesclusters permission claim needs the EDGES APIExport's
+# identityHash (kcp hard-rejects hash-less claims on non-built-in types) —
+# same discovery-file pattern as app-studio's hashes below.
+kuery_hash_file = '.kcp/kuery-edges-identity-hash.env'
 local_resource(
-    'kuery-db',
-    cmd='make kuery-db-up',
-    deps=['Makefile'],
-    resource_deps=['faros-hub'],
+    'kuery-edges-identity-hash',
+    cmd='''
+set -eu
+hash="$(kubectl --kubeconfig=%s --server=%s/clusters/root:faros:providers:edges \
+  --insecure-skip-tls-verify get apiexport edges.providers.faros.sh \
+  -o jsonpath='{.status.identityHash}' 2>/dev/null || true)"
+if [ -z "$hash" ]; then
+  echo "edges identityHash not discoverable yet - re-trigger after edges-init"
+  exit 0
+fi
+printf 'edges=%%s\\n' "$hash" > %s
+echo "wrote %s"
+'''.strip() % (KCP_ADMIN_KUBECONFIG, KCP_ADMIN_SERVER, kuery_hash_file, kuery_hash_file),
+    deps=['.kcp/edges-runtime.kubeconfig', 'tilt-frontproxy.kubeconfig'],
+    allow_parallel=True,
     labels=['providers-kuery'],
 )
+kuery_edges_hash = ''
+for _line in str(read_file(kuery_hash_file, '')).splitlines():
+    if _line.startswith('edges='):
+        kuery_edges_hash = _line[len('edges='):].strip()
 
-# Same shape as the embedded Tiltfile: serve immediately; engagement
-# needs ▶ kuery-register then ▶ kuery-init (mints the runtime kubeconfig
-# from the provider SA token + ensures the APIExportEndpointSlice).
-local_resource(
-    'kuery',
-    cmd='make build-kuery-provider',
-    serve_cmd='make run-provider-kuery',
-    deps=[
-        'providers/kuery/main.go',
-        'providers/kuery/assets.go',
-        'providers/kuery/core',
-        'providers/kuery/engagement',
-        'providers/kuery/queryapi',
-        'providers/kuery/mcpserver',
-        'providers/kuery/portal/src',
-        'providers/kuery/portal/package.json',
-        'providers/kuery/go.mod',
-        '.kcp/kuery-runtime.kubeconfig',
+provider_kubeconfig_sync('kuery', '.kcp/kuery-runtime.kubeconfig', ['providers-kuery'])
+provider_pod(
+    'kuery', 8084,
+    container_port=8081,
+    chart_extra=[
+        'replicaCount=2',
+        'store.driver=postgres',
+        'store.dsn=%s' % providers_db_url('kuery'),
+        'apiExport.edgesIdentityHash=%s' % kuery_edges_hash,
     ],
-    resource_deps=['faros-hub', 'kuery-db'],
-    readiness_probe=probe(
-        period_secs=5,
-        http_get=http_get_action(port=8084, path='/healthz'),
-    ),
-    labels=['providers-kuery'],
-)
-
-local_resource(
-    'kuery-db-down',
-    cmd='make kuery-db-down',
-    trigger_mode=TRIGGER_MODE_MANUAL,
-    auto_init=False,
-    labels=['providers-kuery'],
+    resource_deps=['kuery-secrets', 'providers-db'],
 )
 
 local_resource(
@@ -1525,65 +1700,70 @@ local_resource(
     labels=['providers-kro'],
 )
 
-local_resource(
-    'infrastructure',
-    cmd='make build-infrastructure-provider',
-    # Serve (host binary). The operator does bootstrap + kro; serve just runs
-    # with the admin kubeconfig retargeted to the provider workspace
-    # (INFRASTRUCTURE_WORKSPACE_PATH), so no init-minted kubeconfig is needed.
-    # KRO_KUBECONFIG points at the kind cluster's host kubeconfig (where kro is).
-    serve_cmd=('KRO_KUBECONFIG={kro} INFRASTRUCTURE_KUBECONFIG={kc} ' +
-               'INFRASTRUCTURE_WORKSPACE_PATH=root:faros:providers:infrastructure ' +
-               'FAROS_APP_BASE_DOMAIN={apps_domain} ' +
-               # PublishedApp proxies run in the runtime kind cluster and
-               # therefore call the in-cluster hub Service rather than the
-               # host port-forward. The proxy has no mounted dev CA, so this
-               # explicit dev-only switch is required for its hub call.
-               'FAROS_ACCESS_PROXY_IMAGE={proxy_image} ' +
-               'FAROS_ACCESS_HUB_URL=https://faros-hub.faros-system.svc:9443 ' +
-               'FAROS_ACCESS_HUB_PUBLIC_URL=%s ' % hub_external_url +
-               'FAROS_ACCESS_HUB_INSECURE=true ' +
-               'FAROS_ACCESS_PUBLIC_SCHEME=https ' +
-               # The ONE platform Gateway all template HTTPRoutes attach to —
-               # locally the envoy Gateway above, in prod cfgate's
-               # cloudflare-tunnel (the in-binary default).
-               'FAROS_GATEWAY_NAME={gateway} ' +
-               'FAROS_GATEWAY_NAMESPACE=envoy-gateway-system ' +
-               # Locally the Gateway is only reachable via the envoy
-               # port-forward — templates append this to status.url
-               # (${faros.appPublicPort}); prod leaves it unset (443).
-               'FAROS_APP_PUBLIC_PORT={port} ' +
-               'make run-provider-infrastructure').format(
-                   kro=KIND_HOST_KUBECONFIG, kc=KCP_ADMIN_KUBECONFIG,
-                   apps_domain=app_base_domain,
-                   proxy_image=access_proxy_image,
-                   gateway=app_studio_preview_parent_gateway_name,
-                   port=app_studio_preview_public_port),
-    deps=[
-        'providers/infrastructure/main.go',
-        'providers/infrastructure/heartbeat.go',
-        'providers/infrastructure/assets.go',
-        'providers/infrastructure/server',
-        'providers/infrastructure/kro',
-        'providers/infrastructure/tenant',
-        'providers/infrastructure/mcpserver',
-        # The Template controller + kro backend author the RGDs the catalog
-        # reads; without watching these, a change to RGD authoring (e.g. the
-        # catalog labels) silently won't hot-reload.
-        'providers/infrastructure/backend',
-        'providers/infrastructure/controller',
-        'providers/infrastructure/portal/src',
-        'providers/infrastructure/portal/package.json',
-        'providers/infrastructure/go.mod',
-        'providers/infrastructure/go.sum',
+# Infrastructure runs FULLY in-cluster via the chart's CRD-driven operator
+# mode: the chart installs the operator (2 replicas of it are unnecessary —
+# it is leader-elected in-cluster via controller-runtime), the operator
+# bootstraps the provider kcp workspace with the synced admin kubeconfig,
+# helm-installs kro into THIS cluster (in-cluster runtime, pod SA), deploys
+# the serve Deployment (2 replicas — leader-elected Template/Instance
+# controllers + bootstrap-loop leases), and self-registers the CatalogEntry
+# with its serve Service URL.
+provider_kubeconfig_sync('infrastructure', 'tilt-frontproxy.kubeconfig', ['providers-kro'])
+# custom_build instead of docker_build: the OPERATOR deployment gets Tilt's
+# content-hashed tag as usual, but the SERVE deployment is stamped by the
+# operator from the CR's spec.provider.image — a split repo/tag field Tilt
+# cannot inject into. Build once, tag it :dev additionally, and kind-load
+# that tag so the CR-spawned pods resolve it locally.
+# NB a rebuild does not restart the operator-owned serve pods (same :dev
+# tag): kubectl -n faros-infrastructure-provider rollout restart deploy/infrastructure
+custom_build(
+    'faros-infrastructure-provider',
+    ('docker build -f providers/infrastructure/Dockerfile -t $EXPECTED_REF . && ' +
+     'docker tag $EXPECTED_REF faros-infrastructure-provider:dev && ' +
+     'kind load docker-image faros-infrastructure-provider:dev --name %s') % cluster_name,
+    deps=['providers/infrastructure', 'provider-sdk'],
+)
+k8s_yaml(helm(
+    'providers/infrastructure/deploy/chart',
+    name='infrastructure',
+    namespace=providers_namespace,
+    set=[
+        'fullnameOverride=infrastructure',
+        'image.repository=faros-infrastructure-provider',
+        'image.pullPolicy=IfNotPresent',
+        'hub.url=https://faros-hub.%s.svc.cluster.local:9443' % hub_namespace,
+        'hub.insecure=true',
+        'hub.tokenSecretRef.name=faros-provider-hub-token',
+        'hub.tokenSecretRef.key=token',
+        'operator.enabled=true',
+        'operator.clusterAdmin=true',
+        'operator.providerWorkspace=root:faros:providers:infrastructure',
+        'operator.providerKubeconfigSecret.name=faros-infrastructure-kubeconfig',
+        'operator.providerKubeconfigSecret.key=kubeconfig',
+        'operator.provider.image.repository=faros-infrastructure-provider',
+        'operator.provider.image.tag=dev',
+        'operator.provider.replicas=2',
+        'operator.provider.port=8082',
+        # Application-template exposure + platform access gate, mapped from
+        # the old host-serve env: the local envoy Gateway, the sslip.io apps
+        # zone, and the in-cluster hub for the access-proxy protocol.
+        'operator.application.baseDomain=%s' % app_base_domain,
+        'operator.application.gateway.name=%s' % app_studio_preview_parent_gateway_name,
+        'operator.application.gateway.namespace=envoy-gateway-system',
+        'operator.publishing.baseDomain=%s' % app_base_domain,
+        'operator.publishing.accessProxyImage=%s' % access_proxy_image,
+        'operator.publishing.hubURL=https://faros-hub.%s.svc:9443' % hub_namespace,
+        'operator.publishing.hubPublicURL=%s' % hub_external_url,
+        'operator.publishing.insecure=true',
+        'operator.publishing.publicScheme=https',
+        'operator.publishing.publicPort=%s' % app_studio_preview_public_port,
+        'operator.publishing.gateway.name=%s' % app_studio_preview_parent_gateway_name,
+        'operator.publishing.gateway.namespace=envoy-gateway-system',
     ],
-    # faros-hub for the CatalogEntry registration target; infrastructure-operator
-    # for the workspace bootstrap + kro install the serve process depends on.
-    resource_deps=['faros-hub', 'infrastructure-operator', 'app-studio-preview-console-key', 'access-proxy-image-load'],
-    readiness_probe=probe(
-        period_secs=5,
-        http_get=http_get_action(port=8082, path='/healthz'),
-    ),
+))
+k8s_resource(
+    'infrastructure-operator',
+    resource_deps=['faros-hub', 'kcp-dns', 'infrastructure-secrets', 'access-proxy-image-load'],
     labels=['providers-kro'],
 )
 
@@ -1634,43 +1814,11 @@ local_resource(
     labels=['providers-kro'],
 )
 
-# --- infrastructure-operator (CRD-driven) ---
-# One controller that REPLACES kro-mgmt-up + infrastructure-init: it applies the
-# InfrastructureProvider CRD/Secrets/CR into the kind cluster, then reconciles —
-# bootstrapping the provider workspace, helm-installing kro (with the kind
-# hostAliases + self-cluster patches), and seeding kro's kcp-kubeconfig. Serve
-# still runs as the host-binary `infrastructure` resource (skip-serve) for fast
-# iteration. Order: infrastructure-operator → infrastructure (serve).
-#
-# NOT resource_deps on infrastructure-register: that resource is manual
-# (auto_init=False), and Tilt treats a never-built dep as unsatisfied, so
-# depending on it deadlocks this chain on every `tilt up` until someone
-# triggers register by hand — with the hub then answering 503
-# "provider not ready: infrastructure" for preview/data-plane routes. The
-# operator bootstraps the workspace itself, and register is an idempotent
-# CatalogEntry apply that survives cluster restarts, so the gate bought
-# nothing. Trigger infrastructure-register manually when the CatalogEntry
-# or Provider manifest actually changes.
-local_resource(
-    'infrastructure-operator',
-    cmd='make build-infrastructure-provider',
-    serve_cmd=('INFRA_OPERATOR_PROVIDER_KC={kc} INFRA_OPERATOR_RUNTIME_KC={kro} ' +
-               'INFRA_OPERATOR_KIND_NAME={name} ' +
-               'make run-provider-infrastructure-controller').format(
-                   kc=KCP_ADMIN_KUBECONFIG, kro=KIND_HOST_KUBECONFIG, name=cluster_name),
-    deps=[
-        'providers/infrastructure/main.go',
-        'providers/infrastructure/operator.go',
-        'providers/infrastructure/operator',
-        'providers/infrastructure/apis',
-        'providers/infrastructure/init_cmd.go',
-        'providers/infrastructure/install',
-        'providers/infrastructure/go.mod',
-        'providers/infrastructure/go.sum',
-    ],
-    resource_deps=['faros-hub', 'app-studio-preview-console-key'],
-    labels=['providers-kro'],
-)
+# The CRD-driven operator now runs IN-CLUSTER via the chart (see the helm
+# install above): it applies the InfrastructureProvider CRD/Secrets/CR and
+# reconciles — bootstrapping the provider workspace, helm-installing kro into
+# this cluster, and owning the serve Deployment. The old host-binary
+# controller + skip-serve split is gone with the rest of the host providers.
 
 # --- optional infrastructure operator + Config Connector Pub/Sub demo ------
 # These three actions are deliberately manual and have no resource_deps. A
@@ -1786,37 +1934,38 @@ local_resource(
 # kcp front-proxy (the embedded-kcp defaults are localhost). init-provider-code
 # derives the runtime kubeconfig from that admin kubeconfig, so it reuses the
 # front-proxy credential in cluster mode without a separate token.
+# Two replicas: the controller lease keeps one active reconciler set while
+# both serve REST/MCP. GitHub OAuth app credentials ride providers/code/.env
+# → the code-env Secret, exactly like agents.
 local_resource(
-    'code',
-    cmd='make build-code-provider',
-    serve_cmd='make run-provider-code',
-    deps=[
-        'providers/code/main.go',
-        'providers/code/heartbeat.go',
-        'providers/code/assets.go',
-        'providers/code/controller_manager.go',
-        'providers/code/init_cmd.go',
-        'providers/code/server',
-        'providers/code/tenant',
-        'providers/code/mcpserver',
-        'providers/code/controller',
-        'providers/code/backend',
-        'providers/code/commitbundle',
-        'providers/code/apis',
-        'providers/code/install',
-        'providers/code/scheme',
-        'providers/code/portal/src',
-        'providers/code/portal/package.json',
-        'providers/code/go.mod',
-        'providers/code/go.sum',
-        '.kcp/code-runtime.kubeconfig',
-    ],
-    resource_deps=['faros-hub'],
-    readiness_probe=probe(
-        period_secs=5,
-        http_get=http_get_action(port=8083, path='/healthz'),
-    ),
+    'code-env',
+    cmd='''
+set -eu
+if [ -f providers/code/.env ]; then
+  kubectl --context %s -n %s create secret generic code-env \
+    --from-env-file=providers/code/.env --dry-run=client -o yaml | \
+    kubectl --context %s -n %s apply -f -
+else
+  kubectl --context %s -n %s create secret generic code-env \
+    --dry-run=client -o yaml | kubectl --context %s -n %s apply -f -
+fi
+'''.strip() % (k8s_context(), providers_namespace, k8s_context(), providers_namespace,
+               k8s_context(), providers_namespace, k8s_context(), providers_namespace),
+    deps=['providers/code/.env'],
     labels=['providers-code'],
+)
+provider_kubeconfig_sync('code', '.kcp/code-runtime.kubeconfig', ['providers-code'])
+provider_pod(
+    'code', 8083,
+    chart_extra=['replicaCount=2', 'envFromSecret=code-env'],
+    resource_deps=['code-secrets', 'code-env'],
+    # THE one legitimate host forward: the GitHub OAuth flow is
+    # browser → provider DIRECT (deliberately not through the hub's
+    # authenticated proxy), and the OAuth App's registered callback is
+    # http://localhost:8083/oauth/github/callback (GITHUB_OAUTH_REDIRECT_URL
+    # in providers/code/.env). The container listens on 8083, so the pod
+    # forward matches.
+    port_forwards=['8083:8083'],
 )
 
 local_resource(
@@ -1860,33 +2009,13 @@ local_resource(
 )
 
 # --- providers-databricks (Databricks table access) ---
-local_resource(
-    'databricks',
-    cmd='make build-databricks-provider',
-    serve_cmd='make run-provider-databricks',
-    deps=[
-        'providers/databricks/main.go',
-        'providers/databricks/assets.go',
-        'providers/databricks/backend',
-        'providers/databricks/init_cmd.go',
-        'providers/databricks/mcpserver',
-        'providers/databricks/queryapi',
-        'providers/databricks/tenant',
-        'providers/databricks/apis',
-        'providers/databricks/portal/src',
-        'providers/databricks/portal/public',
-        'providers/databricks/portal/package.json',
-        'providers/databricks/portal/vite.config.ts',
-        'providers/databricks/go.mod',
-        'providers/databricks/go.sum',
-        '.kcp/databricks-runtime.kubeconfig',
-    ],
-    resource_deps=['faros-hub'],
-    readiness_probe=probe(
-        period_secs=5,
-        http_get=http_get_action(port=8086, path='/healthz'),
-    ),
-    labels=['providers-databricks'],
+# Two replicas: serving resolves tenant clusters through the slice-backed
+# authority on every replica; the controllers are leader-elected.
+provider_kubeconfig_sync('databricks', '.kcp/databricks-runtime.kubeconfig', ['providers-databricks'])
+provider_pod(
+    'databricks', 8086,
+    chart_extra=['replicaCount=2'],
+    resource_deps=['databricks-secrets'],
 )
 
 local_resource(

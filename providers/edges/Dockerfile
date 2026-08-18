@@ -10,18 +10,22 @@
 #    binary via //go:embed in assets.go.
 FROM node:22-alpine AS portal
 WORKDIR /portal
-COPY portal/package.json portal/package-lock.json* ./
+COPY providers/edges/portal/package.json providers/edges/portal/package-lock.json* ./
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
-COPY portal/ ./
+COPY providers/edges/portal/ ./
 RUN npm run build
 
 # 2. Build the Go binary standalone (no go.work — each module resolves via its
 #    own go.mod; the SDK is fetched from the module proxy).
 FROM golang:1.26-alpine AS build
 WORKDIR /src
-COPY go.mod go.sum ./
+COPY providers/edges/go.mod providers/edges/go.sum ./
+# In-tree provider-sdk (go.mod replace => ../../provider-sdk; from
+# WORKDIR /src that resolves to /provider-sdk). Build context is the
+# REPO ROOT: docker build -f providers/edges/Dockerfile .
+COPY provider-sdk/ /provider-sdk/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
-COPY . ./
+COPY providers/edges/ ./
 COPY --from=portal /portal/dist ./portal/dist
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 GOWORK=off go build -trimpath -ldflags="-s -w" -o /out/edges-provider .
 
@@ -30,7 +34,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 #    (FAROS_SCHEMAS_DIR), synced there by `make codegen-edges-provider`.
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /out/edges-provider /edges-provider
-COPY deploy/chart/files/schemas /etc/faros/schemas
+COPY providers/edges/deploy/chart/files/schemas /etc/faros/schemas
 EXPOSE 8088
 ENV PORT=8088
 USER nonroot:nonroot

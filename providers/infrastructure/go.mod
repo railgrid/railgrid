@@ -105,3 +105,8 @@ require (
 )
 
 replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/multicluster-provider/client v0.8.0
+
+// In-tree SDK: the monorepo is the source of truth until the SDK is
+// published with every package providers use (leaderelection landed after
+// v0.1.0). Image builds copy provider-sdk into the build context.
+replace github.com/faroshq/provider-sdk => ../../provider-sdk

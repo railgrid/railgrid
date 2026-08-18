@@ -40,6 +40,10 @@ type MemoryStore struct {
 	// intentionally outlives retention deletions so a client resuming from an
 	// old sequence can never observe a later item with a reused sequence.
 	conversationSequences map[Scope]int64
+	// replicaClaims is the in-memory form of the fleet-wide ownership map
+	// (claims.go). Single-process by construction, which is exactly what the
+	// explicit in-memory mode promises.
+	replicaClaims map[string]ReplicaClaim
 	approvalModes         map[Scope]map[string]AssistantApprovalPreference
 	bootstrapPermits      map[Scope]projectBootstrapPermit
 }

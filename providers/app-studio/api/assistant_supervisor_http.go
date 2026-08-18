@@ -1197,8 +1197,25 @@ func (s *Server) reconcileOrphanedProjectAssistantRun(ctx context.Context, scope
 	}
 	supervisor.mu.Lock()
 	active := supervisor.runs[key]
+	selfReplica := supervisor.replicaID
 	supervisor.mu.Unlock()
 	if active != nil && active.run.ID == run.ID {
+		return nil
+	}
+	// The run is not on THIS replica — but that no longer means orphaned:
+	// with multiple replicas the worker is usually elsewhere. Only a run
+	// whose durable activity claim is missing, expired (its replica died
+	// without a clean shutdown), or owned by THIS replica (Attach registers
+	// locally before claiming, so a self-owned claim without a local run is
+	// a detach leftover whose async release hasn't landed) is truly
+	// orphaned; a fresh FOREIGN claim naming this run means a worker is
+	// heartbeating it on a peer.
+	claim, ok, err := s.store.GetReplicaClaim(ctx, store.ActivityClaimKey(scope))
+	if err != nil {
+		return err
+	}
+	if ok && claim.Detail == run.ID && claim.OwnerReplica != selfReplica &&
+		claim.Live(time.Now().UTC(), assistantActivityClaimTTL) {
 		return nil
 	}
 	run.Status = store.AssistantRunStatusInterrupted

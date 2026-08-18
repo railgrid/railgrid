@@ -33,9 +33,11 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"github.com/faroshq/provider-sdk/leaderelection"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
@@ -62,17 +64,23 @@ const endpointSliceName = install.APIExportEndpointSliceName
 // lives in (root:faros:providers:<name>). Overridable via CODE_WORKSPACE_PATH.
 const defaultWorkspacePath = "root:faros:providers:code"
 
-// startControllerManager builds the multicluster manager and starts the
-// reconcilers, dispatching through the shared backend registry (built in
-// runServe so the HTTP packages handler shares it). A nil config means "skip
-// the manager, run REST/MCP-only".
+// controllerLeaseName gates the reconcilers on a Lease in the provider
+// workspace ("default" namespace — kcp serves Leases in every logical
+// cluster), so scaling the deployment past one replica keeps every CR
+// single-writer. Non-leaders keep serving REST/MCP/portal.
+const controllerLeaseName = "code-controllers"
+
+// startControllerManager ensures the APIExportEndpointSlice, then campaigns
+// for the controller lease and — while leader — runs the multicluster manager
+// with the reconcilers, dispatching through the shared backend registry
+// (built in runServe so the HTTP packages handler shares it). A nil config
+// means "skip the manager, run REST/MCP-only".
 func startControllerManager(ctx context.Context, config *rest.Config, registry *backend.Registry, bundles commitbundle.Store) error {
 	if config == nil {
 		return errControllerDisabled
 	}
 
 	ctrl.SetLogger(klog.NewKlogr())
-	scheme := codescheme.NewScheme()
 
 	// The hub provisioner does NOT create an APIExportEndpointSlice for the
 	// provider's APIExport, so the multicluster provider would have nothing to
@@ -87,14 +95,40 @@ func startControllerManager(ctx context.Context, config *rest.Config, registry *
 		log.Printf("controller manager: WARNING could not ensure APIExportEndpointSlice: %v", err)
 	}
 
+	go func() {
+		if err := leaderelection.Run(ctx, leaderelection.Options{
+			Config:    config,
+			Namespace: leaderelection.DefaultNamespace,
+			Name:      controllerLeaseName,
+		}, func(termCtx context.Context) {
+			if err := runControllerManager(termCtx, config, registry, bundles); err != nil {
+				log.Printf("controller manager exited: %v", err)
+			}
+		}); err != nil {
+			log.Printf("controller leader election failed; controllers are not running: %v", err)
+		}
+	}()
+	return nil
+}
+
+// runControllerManager builds the multicluster manager and blocks in Start
+// until the leadership term ends. Called once per term — a stopped
+// controller-runtime manager cannot be restarted.
+func runControllerManager(ctx context.Context, config *rest.Config, registry *backend.Registry, bundles commitbundle.Store) error {
+	scheme := codescheme.NewScheme()
+
 	provider, err := apiexport.New(config, endpointSliceName, apiexport.Options{Scheme: scheme})
 	if err != nil {
 		return fmt.Errorf("creating apiexport multicluster provider: %w", err)
 	}
 
+	skipNameValidation := true
 	mgr, err := mcmanager.New(config, provider, manager.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"}, // provider serves its own HTTP; disable controller-runtime metrics
+		// Controller names register process-globally; the manager built for a
+		// later leadership term must skip that check.
+		Controller: ctrlconfig.Controller{SkipNameValidation: &skipNameValidation},
 	})
 	if err != nil {
 		return fmt.Errorf("creating multicluster manager: %w", err)
@@ -125,13 +159,8 @@ func startControllerManager(ctx context.Context, config *rest.Config, registry *
 		return fmt.Errorf("repositorybuildstatus controller: %w", err)
 	}
 
-	go func() {
-		log.Printf("code controller manager starting (backends=%v, endpointSlice=%s)", registry.Names(), endpointSliceName)
-		if err := mgr.Start(ctx); err != nil {
-			log.Printf("controller manager exited: %v", err)
-		}
-	}()
-	return nil
+	log.Printf("code controller manager starting (backends=%v, endpointSlice=%s)", registry.Names(), endpointSliceName)
+	return mgr.Start(ctx)
 }
 
 // loadControllerConfig resolves the rest.Config for the provider's kcp

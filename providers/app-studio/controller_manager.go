@@ -203,6 +203,7 @@ type controllerDeps struct {
 	Actions     bindings.ActionsRuntimeConfig
 	Workspace   *workspace.FileStore
 	Busy        func(workspace.Scope) bool
+	Owns        func(workspace.Scope) bool
 	Store       store.Store
 	HubBase     string
 	HubInsecure bool
@@ -212,7 +213,15 @@ type controllerDeps struct {
 // reconciler, and blocks until the manager exits. A nil config means "skip the
 // manager, run REST-only". Keeping Start synchronous is important: callers can
 // observe both setup errors and post-start exits and re-enter the bounded retry
-// loop instead of hiding the manager in a detached goroutine. When a health
+// loop instead of hiding the manager in a detached goroutine.
+//
+// Deliberately NOT leader-elected (unlike code/vibe-studio/infrastructure):
+// the Project reconciler converges commits from the pod-local workspace
+// FileStore the HTTP assistant writes to, and pod readiness requires the
+// manager to be running (controllerReadyRunnable below) — a lease would both
+// strand sessions whose files live on a non-leader and wedge rollouts on a
+// never-ready standby. The provider is single-replica by design (chart pins
+// replicaCount: 1); scaling it needs shared workspace storage first. When a health
 // dependency is supplied, a controller-runtime RunnableFunc is registered
 // before Start. That runnable marks health ready only when the manager starts
 // launching runnables and then blocks for manager cancellation; any error
@@ -243,6 +252,7 @@ func startControllerManager(ctx context.Context, config *rest.Config, deps contr
 		Actions:     deps.Actions,
 		Workspace:   deps.Workspace,
 		Busy:        deps.Busy,
+		Owns:        deps.Owns,
 		HubBase:     deps.HubBase,
 		HubInsecure: deps.HubInsecure,
 	}).SetupWithManager(mgr); err != nil {

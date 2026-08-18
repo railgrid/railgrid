@@ -242,6 +242,14 @@ func Run(ctx context.Context, cfg *rest.Config, catalogEntryManifest []byte) err
 	mgr, err := manager.New(cfg, manager.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"},
+		// The operator reconciles CRs on a plain Kubernetes cluster, so
+		// controller-runtime's built-in Lease election is the right tool (unlike
+		// the serve binary, whose leases live in the kcp provider workspace).
+		// A replica that loses the lease exits Start with an error; the process
+		// exits and the pod restarts into a fresh campaign.
+		LeaderElection:          true,
+		LeaderElectionID:        "infrastructure-operator",
+		LeaderElectionNamespace: leaseNamespace(),
 	})
 	if err != nil {
 		return fmt.Errorf("manager.New: %w", err)
@@ -251,6 +259,21 @@ func Run(ctx context.Context, cfg *rest.Config, catalogEntryManifest []byte) err
 	}
 	klog.FromContext(ctx).Info("infrastructure operator manager starting")
 	return mgr.Start(ctx)
+}
+
+// leaseNamespace resolves where the operator's leader-election Lease lives:
+// POD_NAMESPACE when set, controller-runtime's in-cluster detection (empty
+// string) when running as a pod, and "default" for out-of-cluster dev runs —
+// where controller-runtime would otherwise fail with "unable to find leader
+// election namespace".
+func leaseNamespace() string {
+	if ns := os.Getenv("POD_NAMESPACE"); ns != "" {
+		return ns
+	}
+	if _, err := os.Stat("/var/run/secrets/kubernetes.io/serviceaccount/namespace"); err == nil {
+		return ""
+	}
+	return "default"
 }
 
 // restConfigForWorkspace builds a rest.Config from kubeconfig bytes and

@@ -48,6 +48,21 @@ import (
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
+// replicaIdentityFromEnv is the durable-claim identity: the pod name (chart
+// downward API) plus the pid, so a container restart inside the same pod gets
+// a fresh identity and its predecessor's claims age out.
+func replicaIdentityFromEnv() string {
+	host := os.Getenv("POD_NAME")
+	if host == "" {
+		if h, err := os.Hostname(); err == nil {
+			host = h
+		} else {
+			host = "replica"
+		}
+	}
+	return fmt.Sprintf("%s_%d", host, os.Getpid())
+}
+
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -193,9 +208,34 @@ func runServe() {
 		log.Fatalf("portal embed: %v", err)
 	}
 
+	// Replica awareness (docs/app-studio-replica-awareness.md): durable run
+	// claims + project affinity. The routing identity is always set (claims
+	// work single-replica and fix restart semantics); the forwarding address
+	// and the internal listener need POD_IP + a provider bearer and degrade
+	// to local-only serving without them.
+	replicaID := replicaIdentityFromEnv()
+	internalPort := envOr("APP_STUDIO_INTERNAL_PORT", "8091")
+	replicaAddr := ""
+	if podIP := os.Getenv("POD_IP"); podIP != "" {
+		replicaAddr = podIP + ":" + internalPort
+	}
+	internalToken := ""
+	if cfg, cfgErr := loadProviderConfig(); cfgErr == nil && cfg != nil {
+		internalToken = cfg.BearerToken
+	}
+	if replicaAddr != "" && internalToken == "" {
+		log.Printf("replica forwarding disabled (provider credential has no bearer token); serving project requests locally")
+		replicaAddr = ""
+	}
+	apiServer.SetReplicaRouting(replicaID, replicaAddr, internalToken)
+
+	// Project affinity wraps the full handler; the public listener strips the
+	// spoofable routing headers, the internal listener authenticates peers
+	// and marks their requests forwarded (the loop guard).
+	core := apiServer.ReplicaAffinity(handler)
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           logMiddleware(handler),
+		Handler:           logMiddleware(apiServer.StripReplicaHeaders(core)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -205,6 +245,26 @@ func runServe() {
 			log.Fatalf("server: %v", err)
 		}
 	}()
+
+	if replicaAddr != "" {
+		internalSrv := &http.Server{
+			Addr:              ":" + internalPort,
+			Handler:           logMiddleware(apiServer.InternalReplicaHandler(core)),
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+		go func() {
+			log.Printf("app-studio internal listener (peer-forwarded project requests) on :%s replica=%s", internalPort, replicaID)
+			if err := internalSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("internal listener failed; peers cannot forward to this replica: %v", err)
+			}
+		}()
+		go func() {
+			<-ctx.Done()
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = internalSrv.Shutdown(shutdownCtx)
+		}()
+	}
 
 	go runHeartbeat(ctx, controllerHealth)
 
@@ -221,6 +281,7 @@ func runServe() {
 			Actions:     apiServer.ActionsRuntimeConfig(),
 			Workspace:   workspaces,
 			Busy:        apiServer.AssistantBusy,
+			Owns:        apiServer.OwnsProject,
 			Store:       msgStore,
 			HubBase:     strings.TrimRight(os.Getenv("FAROS_HUB_URL"), "/"),
 			HubInsecure: os.Getenv("FAROS_HUB_INSECURE") == "true",

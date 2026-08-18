@@ -22,8 +22,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/rest"
-	"sigs.k8s.io/controller-runtime/pkg/cluster"
-	multicluster "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/faroshq/provider-databricks/queryapi"
 )
@@ -250,7 +249,7 @@ func samePointer(a, b any) bool {
 
 type readyAuthority struct{}
 
-func (*readyAuthority) GetCluster(context.Context, multicluster.ClusterName) (cluster.Cluster, error) {
+func (*readyAuthority) ClusterClient(context.Context, string) (client.Client, error) {
 	return nil, errors.New("test authority does not resolve clusters")
 }
 

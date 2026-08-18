@@ -52,6 +52,10 @@ hub:
     name: ""
     key: token
 
+# Optional Secret whose keys are injected wholesale as environment variables
+# (LLM/channel credentials) — the containerized equivalent of sourcing .env.
+envFromSecret: ""
+
 podLabels: {}
 podAnnotations: {}
 podSecurityContext:

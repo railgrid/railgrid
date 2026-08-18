@@ -1,7 +1,7 @@
 {{- $catalogEntryConfigMap := and .Values.catalogEntry.enabled .Values.catalogEntry.renderAsConfigMap -}}
 {{- $actionsCABundleConfigMap := .Values.hub.actionsCABundleConfigMap.name -}}
-{{- if ne (int .Values.replicaCount) 1 -}}
-{{- fail "app-studio replicaCount must be 1 because assistant project mutations require a single active writer" -}}
+{{- if and (ne (int .Values.replicaCount) 1) (not .Values.workspace.emptyDir) (not .Values.workspace.existingClaim) -}}
+{{- fail "app-studio replicaCount > 1 requires workspace.emptyDir=true: a single ReadWriteOnce PVC cannot back multiple replicas (workspaces are rebuilt from git on adoption)" -}}
 {{- end -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -11,8 +11,20 @@ metadata:
     {{- include "appstudio.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  # Replica awareness (durable run claims + project affinity with git
+  # re-hydration on adoption) lets replicas coexist; rolling updates keep
+  # capacity and only move the replaced pod's projects.
   strategy:
+    {{- if .Values.workspace.emptyDir }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    {{- else }}
+    # A single RWO workspace volume can only be mounted by one pod: replace,
+    # never overlap.
     type: Recreate
+    {{- end }}
   selector:
     matchLabels:
       {{- include "appstudio.selectorLabels" . | nindent 6 }}
@@ -84,6 +96,11 @@ spec:
             - name: http
               containerPort: 8081
               protocol: TCP
+            # Peer-forwarded project requests (replica affinity). Reached by
+            # pod IP from peer replicas; deliberately NOT on the Service.
+            - name: internal
+              containerPort: {{ .Values.internalPort }}
+              protocol: TCP
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 5
@@ -94,6 +111,18 @@ spec:
           env:
             - name: PORT
               value: "8081"
+            # Replica identity + forwarding address for durable run claims and
+            # project affinity (docs/app-studio-replica-awareness.md).
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: APP_STUDIO_INTERNAL_PORT
+              value: {{ .Values.internalPort | quote }}
             - name: FAROS_HUB_URL
               value: {{ .Values.hub.url | quote }}
             {{- if .Values.hub.actionsExternalURL }}

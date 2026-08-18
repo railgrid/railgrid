@@ -6,8 +6,8 @@
 //
 //	http://www.apache.org/licenses/LICENSE-2.0
 //
-// edges is the single, privileged, single-replica provider that owns the whole
-// edge connectivity plane for BOTH connectable kinds — KubernetesCluster and
+// edges is the single, privileged provider that owns the whole edge
+// connectivity plane for BOTH connectable kinds — KubernetesCluster and
 // LinuxServer, under one group edges.faros.sh. It terminates agent reverse
 // tunnels (revdial) with one in-process ConnManager, runs the token/RBAC/
 // lifecycle controllers per kind, and serves the k8s/ssh/mcp data-plane
@@ -18,12 +18,16 @@
 //
 //   - /healthz                                          liveness/readiness gate
 //   - /agent/{cluster}/apis/edges.faros.sh/v1alpha1/{kubernetesclusters|linuxservers}/{name}/proxy  agent control-tunnel ingress
-//   - /agent/proxy?revdial.dialer=<id>                  agent revdial pickup ingress
+//   - /agent/proxy?revdial.dialer=<id>                  agent revdial pickup ingress (single-replica / legacy)
+//   - /agent/proxy/{replica}?revdial.dialer=<id>        replica-addressed pickup ingress
 //   - /edgeproxy/clusters/{cluster}/.../{name}/{k8s|ssh|mcp}  consumer egress
 //
-// IMPORTANT: this provider MUST run as a single replica — revdial registers
-// dialers in a process-global map, so an agent's control connection and every
-// later pickup connection must reach the same process.
+// Multi-replica: revdial dialers stay process-local (the dialer closes over
+// the accepted socket), but each agent dials only ONE replica. The replica
+// terminating a tunnel claims it in a Lease registry in the provider
+// workspace, and the other replicas relay pickups and data-plane requests to
+// the owner over the internal listener (EDGES_INTERNAL_PORT, pod-to-pod
+// only). See internal/tunnel/{registry,remote}.go.
 package main
 
 import (
@@ -112,8 +116,9 @@ func runServe() error {
 	hubExternalURL := os.Getenv("FAROS_HUB_EXTERNAL_URL")
 
 	// Tunnel plane. The provider owns the ConnManager and terminates agent
-	// reverse tunnels in-process (single-replica). Both prefixes sit behind the
-	// hub backend proxy at /services/providers/edges/*.
+	// reverse tunnels in-process; with replica routing enabled below, peer
+	// replicas relay to whichever replica holds a tunnel. Both prefixes sit
+	// behind the hub backend proxy at /services/providers/edges/*.
 	tsrv, err := sdktunnel.New(sdktunnel.Config{
 		Kinds: []sdktunnel.KindConfig{
 			{GVR: edgesv1alpha1.KubernetesClusterGVR, Kind: "KubernetesCluster"},
@@ -129,6 +134,52 @@ func runServe() error {
 	})
 	if err != nil {
 		return fmt.Errorf("build tunnel server: %w", err)
+	}
+
+	// Multi-replica tunnel routing. Each agent dials ONE replica; the replica
+	// terminating the tunnel claims it in a workspace Lease registry, and
+	// every other replica relays pickups and data-plane requests to the owner
+	// over the internal listener (pod-to-pod only — its port is not on the
+	// Service). Requires POD_IP (downward API) and a bearer-token provider
+	// credential; without them the provider runs in the historical
+	// single-replica mode.
+	if kcpConfig != nil {
+		podIP := os.Getenv("POD_IP")
+		internalPort := os.Getenv("EDGES_INTERNAL_PORT")
+		if internalPort == "" {
+			internalPort = "8090"
+		}
+		switch {
+		case podIP == "":
+			log.Info("replica tunnel routing disabled (POD_IP unset); single-replica mode")
+		case kcpConfig.BearerToken == "":
+			log.Info("replica tunnel routing disabled (provider credential has no bearer token to authenticate the relay); single-replica mode")
+		default:
+			replicaID := sdktunnel.SanitizeReplicaID(envOrHostname("POD_NAME"))
+			reg, rerr := sdktunnel.NewRegistry(kcpConfig, replicaID, podIP+":"+internalPort)
+			if rerr != nil {
+				log.Error(rerr, "replica tunnel routing disabled (registry unavailable); single-replica mode")
+				break
+			}
+			tsrv.EnableReplicaRouting(reg, kcpConfig.BearerToken)
+			internalSrv := &http.Server{
+				Addr:              ":" + internalPort,
+				Handler:           tsrv.InternalHandler(),
+				ReadHeaderTimeout: 10 * time.Second,
+			}
+			go func() {
+				log.Info("edges internal listener (relay + forwarded pickups)", "port", internalPort, "replica", replicaID)
+				if lerr := internalSrv.ListenAndServe(); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
+					log.Error(lerr, "internal listener failed; peer replicas cannot relay to this one")
+				}
+			}()
+			go func() {
+				<-ctx.Done()
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = internalSrv.Shutdown(shutdownCtx)
+			}()
+		}
 	}
 	tsrv.Start(ctx.Done())
 
@@ -282,4 +333,18 @@ func splitEnv(v string) []string {
 		}
 	}
 	return out
+}
+
+// envOrHostname returns the named env var (the chart sets POD_NAME via the
+// downward API) falling back to the hostname — which in a pod is the pod
+// name anyway.
+func envOrHostname(key string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		return "replica"
+	}
+	return host
 }

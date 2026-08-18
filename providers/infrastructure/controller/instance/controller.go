@@ -54,6 +54,7 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -177,9 +178,13 @@ func New(cfg Config) (*Controller, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating apiexport multicluster provider: %w", err)
 	}
+	skipNameValidation := true
 	mgr, err := mcmanager.New(cfg.ProviderConfig, provider, manager.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"},
+		// The serve binary rebuilds this controller for every leadership term,
+		// and controller names register process-globally.
+		Controller: ctrlconfig.Controller{SkipNameValidation: &skipNameValidation},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating multicluster manager: %w", err)

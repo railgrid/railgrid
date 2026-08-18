@@ -6,11 +6,14 @@ metadata:
     {{- include "edges.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
-  # revdial's dialer map is process-global: Recreate guarantees the old pod is
-  # gone before the new one starts, so a rollout never briefly runs two replicas
-  # (which would split agent control/pickup connections across processes).
+  # Tunnel routing (Lease registry + pod-to-pod relay) lets replicas coexist:
+  # rolling updates only disconnect the agents on the replaced pod, and they
+  # reconnect to a survivor. maxUnavailable 0 keeps capacity during rollouts.
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       {{- include "edges.selectorLabels" . | nindent 6 }}
@@ -63,6 +66,11 @@ spec:
             - name: http
               containerPort: {{ .Values.service.port }}
               protocol: TCP
+            # Replica-to-replica tunnel relay + forwarded pickups. Reached by
+            # pod IP from peer replicas; deliberately NOT on the Service.
+            - name: internal
+              containerPort: {{ .Values.internalPort }}
+              protocol: TCP
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 5
@@ -73,6 +81,18 @@ spec:
           env:
             - name: PORT
               value: {{ .Values.service.port | quote }}
+            # Replica identity + relay address for multi-replica tunnel
+            # routing (see internalPort in values.yaml).
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: EDGES_INTERNAL_PORT
+              value: {{ .Values.internalPort | quote }}
             - name: FAROS_PROVIDER_NAME
               value: "edges"
             - name: FAROS_HUB_URL

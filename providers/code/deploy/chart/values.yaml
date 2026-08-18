@@ -113,6 +113,11 @@ resources:
     memory: 64Mi
 
 # Optional name overrides + pod-level scheduling controls.
+# Optional Secret whose keys are injected wholesale as environment variables
+# (GitHub OAuth app credentials and other dev secrets) — the containerized
+# equivalent of sourcing providers/code/.env.
+envFromSecret: ""
+
 nameOverride: ""
 fullnameOverride: ""
 podLabels: {}

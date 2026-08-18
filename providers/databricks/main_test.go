@@ -78,7 +78,11 @@ func TestMCPEnabledDefaultsOnAndInvalidValuesFailClosed(t *testing.T) {
 	}
 }
 
-func TestReadinessSeparatesControllerFromLiveness(t *testing.T) {
+func TestReadinessIsServingOnlyAndReportsControllerState(t *testing.T) {
+	// Under leader election a standby replica never runs the manager, so
+	// controller state is reported on /readyz but does not gate it — serving
+	// readiness comes from the dependency gate (tenant factory + slice
+	// authority), covered by the dependency tests below.
 	health := newControllerHealth(true)
 	mux, err := newServeMuxWithHealth(seedTablesFromEnv(), true, nil, health)
 	if err != nil {
@@ -92,22 +96,22 @@ func TestReadinessSeparatesControllerFromLiveness(t *testing.T) {
 	}
 	readiness := httptest.NewRecorder()
 	mux.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if readiness.Code != http.StatusServiceUnavailable || !strings.Contains(readiness.Body.String(), `"controller":"starting"`) {
-		t.Fatalf("GET /readyz while starting = %d %q, want 503/starting", readiness.Code, readiness.Body.String())
-	}
-
-	health.markReady()
-	readiness = httptest.NewRecorder()
-	mux.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if readiness.Code != http.StatusOK || !strings.Contains(readiness.Body.String(), `"status":"ready"`) {
-		t.Fatalf("GET /readyz while running = %d %q, want 200/ready", readiness.Code, readiness.Body.String())
+	if readiness.Code != http.StatusOK || !strings.Contains(readiness.Body.String(), `"controller":"starting"`) {
+		t.Fatalf("GET /readyz while controller starting = %d %q, want 200 with controller state reported", readiness.Code, readiness.Body.String())
 	}
 
 	health.markFailed(errors.New("manager exited"))
 	readiness = httptest.NewRecorder()
 	mux.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
-	if readiness.Code != http.StatusServiceUnavailable || !strings.Contains(readiness.Body.String(), "manager exited") {
-		t.Fatalf("GET /readyz after exit = %d %q, want 503/error", readiness.Code, readiness.Body.String())
+	if readiness.Code != http.StatusOK || !strings.Contains(readiness.Body.String(), `"controller":"failed"`) {
+		t.Fatalf("GET /readyz after controller exit = %d %q, want 200 with controller state reported", readiness.Code, readiness.Body.String())
+	}
+
+	health.markStandby()
+	readiness = httptest.NewRecorder()
+	mux.ServeHTTP(readiness, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if readiness.Code != http.StatusOK || !strings.Contains(readiness.Body.String(), `"controller":"standby"`) {
+		t.Fatalf("GET /readyz on standby = %d %q, want 200/standby", readiness.Code, readiness.Body.String())
 	}
 }
 
@@ -151,13 +155,17 @@ func TestReadinessWithoutHealthStateDoesNotPanic(t *testing.T) {
 }
 
 func TestHeartbeatEligibilityAndBuildVersion(t *testing.T) {
-	if heartbeatCanSend(newControllerHealth(true)) {
-		t.Fatal("starting required controller must not heartbeat")
+	// Heartbeat eligibility follows serving readiness, not controller state:
+	// a standby replica serves traffic and must heartbeat.
+	serving := false
+	gated := newControllerHealth(true)
+	gated.setDependencyReady(func() bool { return serving })
+	if heartbeatCanSend(gated) {
+		t.Fatal("serving-unready replica must not heartbeat")
 	}
-	required := newControllerHealth(true)
-	required.markReady()
-	if !heartbeatCanSend(required) {
-		t.Fatal("running required controller should heartbeat")
+	serving = true
+	if !heartbeatCanSend(gated) {
+		t.Fatal("serving-ready replica should heartbeat regardless of controller state")
 	}
 	if !heartbeatCanSend(newControllerHealth(false)) {
 		t.Fatal("REST-only mode should heartbeat")

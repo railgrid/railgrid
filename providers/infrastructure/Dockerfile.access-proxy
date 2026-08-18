@@ -7,10 +7,14 @@ ARG TARGETARCH
 ARG TARGETOS=linux
 
 WORKDIR /src
-COPY go.mod go.sum ./
+# In-tree provider-sdk (go.mod replace => ../../provider-sdk; from WORKDIR
+# /src that resolves to /provider-sdk). Build context is the REPO ROOT:
+# docker build -f providers/infrastructure/Dockerfile.access-proxy .
+COPY provider-sdk/ /provider-sdk/
+COPY providers/infrastructure/go.mod providers/infrastructure/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
-COPY . .
+COPY providers/infrastructure/ ./
 
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \

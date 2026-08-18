@@ -93,6 +93,12 @@ type Reconciler struct {
 	// Busy reports whether an assistant turn currently owns the project's
 	// workspace — commits wait for idle.
 	Busy func(workspace.Scope) bool
+	// Owns reports whether THIS replica owns the project's workspace (the
+	// durable project claim). Every replica runs this reconciler; only the
+	// owner's local tree is authoritative, and a stale tree left behind on a
+	// previous owner must never be committed over the live one. Nil means
+	// single-replica: always owner.
+	Owns func(workspace.Scope) bool
 	// HubBase / HubInsecure address the hub for MCP commit calls.
 	HubBase     string
 	HubInsecure bool

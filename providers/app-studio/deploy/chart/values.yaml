@@ -4,7 +4,18 @@ fullnameOverride: ""
 # App Studio assistant project mutations use a single active writer. The chart
 # rejects other values and uses a Recreate deployment strategy to prevent
 # cross-pod overlap during upgrades.
+# Safe to scale with the default emptyDir workspace: runs and external
+# operations are guarded by durable claims, projects pin to one replica with
+# peer forwarding, and an adopting replica rebuilds the workspace from git
+# (docs/app-studio-replica-awareness.md). A replica crash loses only that
+# replica's uncommitted workspace edits — the durable truth is git.
+# With a PVC-backed workspace (workspace.emptyDir=false) the template refuses
+# replicaCount > 1: one ReadWriteOnce volume cannot back multiple replicas.
 replicaCount: 1
+
+# internalPort carries peer-forwarded project requests between replicas.
+# Deliberately not part of the Service.
+internalPort: 8091
 
 image:
   repository: ghcr.io/faroshq/faros/app-studio-provider
@@ -103,10 +114,17 @@ store:
 
 # App Studio project workspaces. The provider stores checked-out/generated
 # project files here so the agent can list, read, search, and later mutate them.
+#
+# The workspace is a CACHE of git plus in-flight edits: a replica that adopts
+# a project rebuilds the tree from the last commit, so the default is an
+# ephemeral emptyDir — pods are cattle and replicas can scale. Committed work
+# is always safe in git; a pod crash loses only edits since the last commit.
+# Set emptyDir=false (PVC) to keep the old durable-volume behavior, at the
+# cost of being pinned to one replica and Recreate rollouts.
 workspace:
   path: /var/lib/faros-app-studio/workspaces
   existingClaim: ""
-  emptyDir: false
+  emptyDir: true
   persistence:
     enabled: true
     size: 1Gi

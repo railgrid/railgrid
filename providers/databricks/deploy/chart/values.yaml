@@ -3,6 +3,9 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
+# Safe to scale: serving resolves tenant clusters through the APIExport
+# endpoint slice on every replica, and the controllers are leader-elected
+# (one active set per Lease in the provider workspace).
 replicaCount: 1
 
 service:
@@ -65,6 +68,11 @@ resources:
 
 podSecurityContext:
   runAsNonRoot: true
+  # Numeric UID/GID for the distroless "nonroot" user: kubelet cannot verify
+  # runAsNonRoot against a non-numeric image USER and refuses to start the
+  # container without these.
+  runAsUser: 65532
+  runAsGroup: 65532
   seccompProfile:
     type: RuntimeDefault
 

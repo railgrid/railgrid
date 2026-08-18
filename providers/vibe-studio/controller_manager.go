@@ -31,9 +31,11 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"github.com/faroshq/provider-sdk/leaderelection"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
@@ -48,15 +50,43 @@ import (
 // (sdkinstall.Bootstrap creates the slice under the same name at init).
 const endpointSliceName = apiExportName
 
-// startControllerManager builds the multicluster manager and starts the
-// Project + Session reconcilers. A nil config means "skip the manager, run
-// REST-only". st backs the Session reconciler's status mirror + purge.
+// controllerLeaseName gates the reconcilers on a Lease in the provider
+// workspace ("default" namespace — kcp serves Leases in every logical
+// cluster), so the chart's multi-replica default runs one set of controllers,
+// not one per replica. Non-leaders keep serving REST/portal.
+const controllerLeaseName = "vibe-studio-controllers"
+
+// startControllerManager campaigns for the controller lease and — while
+// leader — runs the multicluster manager with the Project + Session
+// reconcilers. A nil config means "skip the manager, run REST-only". st backs
+// the Session reconciler's status mirror + purge.
 func startControllerManager(ctx context.Context, config *rest.Config, st store.Store, hubBase string, hubInsecure bool) error {
 	if config == nil {
 		return errControllerDisabled
 	}
 
 	ctrl.SetLogger(klog.NewKlogr())
+
+	go func() {
+		if err := leaderelection.Run(ctx, leaderelection.Options{
+			Config:    config,
+			Namespace: leaderelection.DefaultNamespace,
+			Name:      controllerLeaseName,
+		}, func(termCtx context.Context) {
+			if err := runControllerManager(termCtx, config, st, hubBase, hubInsecure); err != nil {
+				log.Printf("controller manager exited: %v", err)
+			}
+		}); err != nil {
+			log.Printf("controller leader election failed; controllers are not running: %v", err)
+		}
+	}()
+	return nil
+}
+
+// runControllerManager builds the multicluster manager and blocks in Start
+// until the leadership term ends. Called once per term — a stopped
+// controller-runtime manager cannot be restarted.
+func runControllerManager(ctx context.Context, config *rest.Config, st store.Store, hubBase string, hubInsecure bool) error {
 	scheme := vibescheme.NewScheme()
 
 	provider, err := apiexport.New(config, endpointSliceName, apiexport.Options{Scheme: scheme})
@@ -64,9 +94,13 @@ func startControllerManager(ctx context.Context, config *rest.Config, st store.S
 		return fmt.Errorf("creating apiexport multicluster provider: %w", err)
 	}
 
+	skipNameValidation := true
 	mgr, err := mcmanager.New(config, provider, manager.Options{
 		Scheme:  scheme,
 		Metrics: metricsserver.Options{BindAddress: "0"}, // provider serves its own HTTP; disable controller-runtime metrics
+		// Controller names register process-globally; the manager built for a
+		// later leadership term must skip that check.
+		Controller: ctrlconfig.Controller{SkipNameValidation: &skipNameValidation},
 	})
 	if err != nil {
 		return fmt.Errorf("creating multicluster manager: %w", err)
@@ -82,13 +116,8 @@ func startControllerManager(ctx context.Context, config *rest.Config, st store.S
 		return fmt.Errorf("session controller: %w", err)
 	}
 
-	go func() {
-		log.Printf("vibe-studio controller manager starting (endpointSlice=%s)", endpointSliceName)
-		if err := mgr.Start(ctx); err != nil {
-			log.Printf("controller manager exited: %v", err)
-		}
-	}()
-	return nil
+	log.Printf("vibe-studio controller manager starting (endpointSlice=%s)", endpointSliceName)
+	return mgr.Start(ctx)
 }
 
 // loadControllerConfig resolves the rest.Config for the provider's kcp

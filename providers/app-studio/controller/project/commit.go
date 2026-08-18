@@ -99,6 +99,12 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 	if !repositoryReady(repo) {
 		return true, nil // repository still provisioning; poll
 	}
+	if r.Owns != nil && !r.Owns(scope) {
+		// Another replica owns this project's workspace; whatever this
+		// replica's tree holds is a leftover from a previous ownership term
+		// and must not be committed over the live owner's work.
+		return false, nil
+	}
 	if r.Busy != nil && r.Busy(scope) {
 		return true, nil // an assistant turn owns the workspace; poll
 	}

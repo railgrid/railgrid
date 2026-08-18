@@ -109,7 +109,10 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: ./providers/${{ needs.meta.outputs.provider }}
+          # Repo-root context: provider modules resolve the in-tree
+          # provider-sdk via a go.mod replace, and the Dockerfiles copy it
+          # into the build (docker build -f providers/<name>/Dockerfile .).
+          context: .
           file: ./providers/${{ needs.meta.outputs.provider }}/Dockerfile
           platforms: ${{ matrix.platform }}
           cache-from: type=gha,scope=${{ needs.meta.outputs.provider }}-${{ steps.prep.outputs.arch }}
@@ -212,7 +215,7 @@ jobs:
         if: needs.meta.outputs.provider == 'infrastructure'
         uses: docker/build-push-action@v6
         with:
-          context: ./providers/infrastructure
+          context: .
           file: ./providers/infrastructure/Dockerfile.access-proxy
           platforms: linux/amd64,linux/arm64
           push: true

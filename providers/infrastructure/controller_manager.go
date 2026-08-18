@@ -31,8 +31,11 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+
+	"github.com/faroshq/provider-sdk/leaderelection"
 
 	"github.com/faroshq/provider-infrastructure/backend"
 	krobackend "github.com/faroshq/provider-infrastructure/backend/kro"
@@ -41,11 +44,23 @@ import (
 	"github.com/faroshq/provider-infrastructure/install"
 )
 
-// startControllerManager builds a controller-runtime manager pointed
-// at the provider's own kcp workspace, installs the platform CRDs,
-// registers the stub backend, and starts the Template controller.
-// The caller loads the kcp config (shared with the tenant client) and
-// passes it in; a nil config means "skip the manager, run REST-only".
+// Leases gating this binary's singleton write loops, all held in the provider
+// workspace ("default" namespace — kcp serves Leases in every logical
+// cluster). One lease per loop so each is independently singleton; which
+// replica holds which does not matter. REST/MCP/portal serving is untouched —
+// non-leaders keep serving.
+const (
+	controllerLeaseName = "infrastructure-controllers"
+	instanceLeaseName   = "infrastructure-instance"
+	bootstrapLeaseName  = "infrastructure-bootstrap"
+)
+
+// startControllerManager installs the platform CRDs (legacy single-binary
+// mode), then campaigns for the controller lease and — while leader — runs a
+// controller-runtime manager pointed at the provider's own kcp workspace with
+// the Template controller on it. The caller loads the kcp config (shared with
+// the tenant client) and passes it in; a nil config means "skip the manager,
+// run REST-only".
 func startControllerManager(ctx context.Context, config *rest.Config) error {
 	if config == nil {
 		return errControllerDisabled
@@ -90,11 +105,38 @@ func startControllerManager(ctx context.Context, config *rest.Config) error {
 	// called" stack trace and swallows all controller-runtime logs.
 	ctrl.SetLogger(klog.NewKlogr())
 
+	// Leader-elected: only the replica holding the lease runs the Template
+	// controller, so scaling the serve deployment past one replica stops the
+	// two-active-managers conflict churn. The manager is rebuilt fresh each
+	// term — a stopped controller-runtime manager cannot be restarted.
+	go func() {
+		if err := leaderelection.Run(ctx, leaderelection.Options{
+			Config:    config,
+			Namespace: leaderelection.DefaultNamespace,
+			Name:      controllerLeaseName,
+		}, func(termCtx context.Context) {
+			if err := runTemplateControllerManager(termCtx, config); err != nil {
+				log.Printf("controller manager exited: %v", err)
+			}
+		}); err != nil {
+			log.Printf("controller leader election failed; Template controller is not running: %v", err)
+		}
+	}()
+	return nil
+}
+
+// runTemplateControllerManager builds the Template controller manager and
+// blocks in Start until the leadership term ends. Called once per term.
+func runTemplateControllerManager(ctx context.Context, config *rest.Config) error {
+	skipNameValidation := true
 	mgr, err := manager.New(config, manager.Options{
 		// Disable the metrics server in PR A; the bind on :8080 would
 		// collide with the provider's own HTTP server in dev. PR E
 		// adds it back on a configurable port.
 		Metrics: metricsserver.Options{BindAddress: "0"},
+		// Controller names register process-globally; the manager built for a
+		// later leadership term must skip that check.
+		Controller: ctrlconfig.Controller{SkipNameValidation: &skipNameValidation},
 	})
 	if err != nil {
 		return fmt.Errorf("manager.New: %w", err)
@@ -145,13 +187,8 @@ func startControllerManager(ctx context.Context, config *rest.Config) error {
 		return fmt.Errorf("template controller: %w", err)
 	}
 
-	go func() {
-		log.Printf("infrastructure controller manager starting (backends=%v)", registry.Names())
-		if err := mgr.Start(ctx); err != nil {
-			log.Printf("controller manager exited: %v", err)
-		}
-	}()
-	return nil
+	log.Printf("infrastructure controller manager starting (backends=%v)", registry.Names())
+	return mgr.Start(ctx)
 }
 
 // loadControllerConfig returns a rest.Config for the workspace the

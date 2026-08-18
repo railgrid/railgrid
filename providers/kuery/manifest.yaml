@@ -47,10 +47,12 @@ spec:
 
   apiExport:
     name: "kuery.providers.faros.sh"
-    # The engagement controller watches the tenant's Edge objects (via the
-    # APIExport virtual workspace) to know which edges to engage/disengage.
+    # The engagement controller watches the tenant's KubernetesCluster edges
+    # (via the APIExport virtual workspace) to know which edges to
+    # engage/disengage. LinuxServer edges carry no Kubernetes API and are
+    # not claimed.
     permissionClaims:
-      - resource: edges
-        group: faros.sh
+      - resource: kubernetesclusters
+        group: edges.faros.sh
         verbs: [get, list, watch]
         tenantScoped: true

@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,15 @@ import (
 
 const projectAssistantTextSnapshotInterval = 250 * time.Millisecond
 const projectAssistantSteeringQueueCapacity = 64
+
+// Activity-claim timings: the durable, fleet-wide twin of the local
+// runs/reservations maps (store.ReplicaClaimKindActivity). A claim not
+// renewed within the TTL is dead — its replica crashed — and only then may
+// the orphan reconciler interrupt the run or a peer take the project over.
+const (
+	assistantActivityClaimTTL           = 60 * time.Second
+	assistantActivityClaimRenewInterval = 15 * time.Second
+)
 
 const projectAssistantSteeringRequestMetadata = "assistantSteeringRequestID"
 const projectAssistantSteeringRunMetadata = "assistantSteeringRunID"
@@ -51,9 +61,16 @@ type projectAssistantSupervisor struct {
 	cancel       context.CancelFunc
 	lifecycleLog func(string, store.Scope, store.AssistantRun)
 
+	// replicaID identifies this process in durable activity claims;
+	// replicaAddr (podIP:internalPort, may be empty) lets peers forward to
+	// it. Set via SetReplicaIdentity before serving; the default identity is
+	// process-unique so claims from a crashed predecessor age out.
+	replicaID   string
+	replicaAddr string
+
 	mu           sync.Mutex
 	runs         map[projectAssistantRunKey]*projectAssistantSupervisedRun
-	reservations map[projectAssistantRunKey]struct{}
+	reservations map[projectAssistantRunKey]store.Scope
 }
 
 type projectAssistantSupervisedRun struct {
@@ -150,7 +167,8 @@ func newProjectAssistantSupervisor(parent context.Context, msgStore store.Store)
 	// the server-owned work "interrupted".
 	ctx, cancel := context.WithCancel(context.Background())
 	supervisor := &projectAssistantSupervisor{
-		store: msgStore, ctx: ctx, cancel: cancel, lifecycleLog: logProjectAssistantLifecycle, runs: map[projectAssistantRunKey]*projectAssistantSupervisedRun{}, reservations: map[projectAssistantRunKey]struct{}{},
+		store: msgStore, ctx: ctx, cancel: cancel, lifecycleLog: logProjectAssistantLifecycle, runs: map[projectAssistantRunKey]*projectAssistantSupervisedRun{}, reservations: map[projectAssistantRunKey]store.Scope{},
+		replicaID: defaultReplicaIdentity(),
 	}
 	go func() {
 		select {
@@ -159,7 +177,122 @@ func newProjectAssistantSupervisor(parent context.Context, msgStore store.Store)
 		case <-ctx.Done():
 		}
 	}()
+	go supervisor.renewActivityClaims()
 	return supervisor
+}
+
+// defaultReplicaIdentity is process-unique (hostname + pid) so a crashed
+// predecessor's claims age out instead of being mistaken for our own.
+func defaultReplicaIdentity() string {
+	host, err := os.Hostname()
+	if err != nil {
+		host = "replica"
+	}
+	return fmt.Sprintf("%s_%d", host, os.Getpid())
+}
+
+// SetReplicaIdentity overrides the claim identity and records the address
+// peers can forward to. Call before serving.
+func (s *projectAssistantSupervisor) SetReplicaIdentity(replicaID, replicaAddr string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if replicaID != "" {
+		s.replicaID = replicaID
+	}
+	s.replicaAddr = replicaAddr
+}
+
+// claimActivity records this replica as the owner of the project's assistant
+// activity. A fresh foreign claim means another replica is mid-run or
+// mid-operation → ErrAssistantRunConflict, same signal the local maps give.
+// Store failures also conflict: exclusivity cannot be verified, so fail
+// closed rather than risk two writers.
+func (s *projectAssistantSupervisor) claimActivity(scope store.Scope, detail string) error {
+	if s == nil || s.store == nil {
+		return errors.New("assistant supervisor store not configured")
+	}
+	s.mu.Lock()
+	replicaID, replicaAddr := s.replicaID, s.replicaAddr
+	s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, held, err := s.store.TryClaimReplica(ctx, store.ReplicaClaim{
+		Key:          store.ActivityClaimKey(scope),
+		Kind:         store.ReplicaClaimKindActivity,
+		ScopeKey:     store.ReplicaClaimScopeKey(scope),
+		OwnerReplica: replicaID,
+		OwnerAddr:    replicaAddr,
+		Detail:       detail,
+	}, assistantActivityClaimTTL)
+	if err != nil {
+		return fmt.Errorf("assistant activity claim: %w", err)
+	}
+	if !held {
+		return store.ErrAssistantRunConflict
+	}
+	return nil
+}
+
+// releaseActivity drops the durable claim (owner-checked in the store).
+func (s *projectAssistantSupervisor) releaseActivity(scope store.Scope) {
+	if s == nil || s.store == nil {
+		return
+	}
+	s.mu.Lock()
+	replicaID := s.replicaID
+	s.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.store.ReleaseReplicaClaim(ctx, store.ActivityClaimKey(scope), replicaID); err != nil {
+		klog.Background().Error(err, "releasing assistant activity claim",
+			"org", scope.OrgUUID, "workspace", scope.WorkspaceUUID, "project", scope.ProjectName)
+	}
+}
+
+// renewActivityClaims heartbeats the durable claim for every live local run
+// and reservation until the supervisor shuts down. A lost renewal (a peer
+// took the claim over after this replica stalled past the TTL) is logged —
+// the peer's orphan reconciliation owns the durable outcome.
+func (s *projectAssistantSupervisor) renewActivityClaims() {
+	ticker := time.NewTicker(assistantActivityClaimRenewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		s.mu.Lock()
+		replicaID := s.replicaID
+		scopes := make([]store.Scope, 0, len(s.runs)+len(s.reservations))
+		for _, active := range s.runs {
+			scopes = append(scopes, active.scope)
+		}
+		for _, scope := range s.reservations {
+			scopes = append(scopes, scope)
+		}
+		s.mu.Unlock()
+		for _, scope := range scopes {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			held, err := s.store.RenewReplicaClaim(ctx, store.ActivityClaimKey(scope), replicaID)
+			if err != nil {
+				klog.Background().Error(err, "renewing assistant activity claim",
+					"org", scope.OrgUUID, "workspace", scope.WorkspaceUUID, "project", scope.ProjectName)
+			} else if !held {
+				klog.Background().Info("assistant activity claim lost to another replica",
+					"org", scope.OrgUUID, "workspace", scope.WorkspaceUUID, "project", scope.ProjectName)
+			}
+			// A long turn can outlive the request-path renewals of the project
+			// PIN (the run writes the workspace without further HTTP traffic);
+			// renew it alongside so the project cannot be adopted mid-turn.
+			// Owner-checked: a pin legitimately held elsewhere is untouched.
+			_, _ = s.store.RenewReplicaClaim(ctx, projectClaimKey(scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName), replicaID)
+			cancel()
+		}
+	}
 }
 
 func (s *projectAssistantSupervisor) log(event string, scope store.Scope, run store.AssistantRun) {
@@ -186,20 +319,37 @@ func (s *projectAssistantSupervisor) Reserve(scope store.Scope) (func(), error) 
 		return nil, store.ErrAssistantRunConflict
 	}
 	if s.reservations == nil {
-		s.reservations = map[projectAssistantRunKey]struct{}{}
+		s.reservations = map[projectAssistantRunKey]store.Scope{}
 	}
 	if _, exists := s.reservations[key]; exists {
 		s.mu.Unlock()
 		return nil, store.ErrAssistantRunConflict
 	}
-	s.reservations[key] = struct{}{}
+	s.reservations[key] = scope
 	s.mu.Unlock()
+	// The durable twin: peers observe the reservation through the activity
+	// claim, so an external operation here and a turn on another replica
+	// cannot interleave. A fresh foreign claim (or an unverifiable store)
+	// conflicts, mirroring the local semantics.
+	if err := s.claimActivity(scope, "operation"); err != nil {
+		s.mu.Lock()
+		delete(s.reservations, key)
+		s.mu.Unlock()
+		return nil, err
+	}
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			s.mu.Lock()
 			delete(s.reservations, key)
+			// A run attached during the reservation now owns the claim
+			// (Attach re-claimed it with the run ID); releasing here would
+			// drop the live run's claim.
+			runOwnsClaim := s.runs[key] != nil
 			s.mu.Unlock()
+			if !runOwnsClaim {
+				s.releaseActivity(scope)
+			}
 		})
 	}, nil
 }
@@ -244,6 +394,17 @@ func (s *projectAssistantSupervisor) Shutdown(ctx context.Context) {
 			_ = appendProjectAssistantInterruptedBoundary(ctx, s.store, interrupted.scope, interrupted.run)
 		}
 	}
+	// Hand back any reservation claims so a peer can take the projects over
+	// immediately rather than after the claim TTL.
+	s.mu.Lock()
+	reservationScopes := make([]store.Scope, 0, len(s.reservations))
+	for _, scope := range s.reservations {
+		reservationScopes = append(reservationScopes, scope)
+	}
+	s.mu.Unlock()
+	for _, scope := range reservationScopes {
+		s.releaseActivity(scope)
+	}
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -260,8 +421,8 @@ func (s *projectAssistantSupervisor) Attach(scope store.Scope, run store.Assista
 	run.ProjectName = scope.ProjectName
 	message.ProjectName = scope.ProjectName
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if existing := s.runs[key]; existing != nil {
+		s.mu.Unlock()
 		if existing.run.ID == run.ID {
 			return &projectAssistantSnapshotAccumulator{supervisor: s, key: key, runID: run.ID}, nil
 		}
@@ -269,7 +430,7 @@ func (s *projectAssistantSupervisor) Attach(scope store.Scope, run store.Assista
 	}
 	delete(s.reservations, key)
 	_, cancel := context.WithCancelCause(s.ctx)
-	s.runs[key] = &projectAssistantSupervisedRun{
+	inserted := &projectAssistantSupervisedRun{
 		scope:            scope,
 		run:              run,
 		message:          message,
@@ -279,6 +440,18 @@ func (s *projectAssistantSupervisor) Attach(scope store.Scope, run store.Assista
 		subscribers:      map[uint64]chan projectAssistantRunSnapshot{},
 		steering:         make(chan projectAssistantSteeringInput, projectAssistantSteeringQueueCapacity),
 		steeringReceipts: map[string]store.Message{},
+	}
+	s.runs[key] = inserted
+	s.mu.Unlock()
+	// Durable ownership: record this replica as the run's owner (upgrading a
+	// reservation's claim in place — same owner). A fresh foreign claim means
+	// another replica is mid-run on this project; back the local attach out
+	// and surface the same conflict the local map would have.
+	if err := s.claimActivity(scope, run.ID); err != nil {
+		s.mu.Lock()
+		s.removeRunLocked(key, inserted)
+		s.mu.Unlock()
+		return nil, err
 	}
 	return &projectAssistantSnapshotAccumulator{supervisor: s, key: key, runID: run.ID}, nil
 }
@@ -736,6 +909,9 @@ func (s *projectAssistantSupervisor) removeRunLocked(key projectAssistantRunKey,
 		close(subscriber)
 	}
 	active.subscribers = nil
+	// Release the durable activity claim off the lock; owner-checked, so a
+	// replacement owner's claim survives a late release.
+	go s.releaseActivity(active.scope)
 }
 
 func assistantRunTerminal(status store.AssistantRunStatus) bool {

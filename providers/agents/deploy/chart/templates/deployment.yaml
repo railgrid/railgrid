@@ -68,6 +68,14 @@ spec:
           readinessProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 5
+          {{- if .Values.envFromSecret }}
+          # Bulk environment injection (LLM/channel credentials). The Secret's
+          # keys become env vars verbatim — the containerized equivalent of the
+          # host binary sourcing a .env file.
+          envFrom:
+            - secretRef:
+                name: {{ .Values.envFromSecret }}
+          {{- end }}
           env:
             - name: PORT
               value: "8087"

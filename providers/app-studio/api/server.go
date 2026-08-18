@@ -76,6 +76,10 @@ type Server struct {
 	projectClientFor             func(identity) (*asclient.Client, error)
 	assistantRunManager          *projectAssistantRunManager
 	assistantSupervisor          *projectAssistantSupervisor
+	// replicaRouting carries this replica's identity/address/token for
+	// project affinity and durable run claims (replica_affinity.go). Nil
+	// until SetReplicaRouting; affinity is a no-op without it.
+	replicaRouting *replicaRouting
 	assistantProjectionLocks     map[string]*assistantThreadProjectionLockEntry
 	assistantThreadMirrors       map[string]struct{}
 	developmentSyncLocks         map[string]*sync.Mutex

@@ -148,7 +148,11 @@ func (r *ValidationReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 			return
 		}
 		key := eventsKey(req)
-		if subReady && subDialer != nil {
+		// Only the replica terminating the edge's tunnel subscribes: every
+		// replica runs this reconciler, and without the local gate a fleet of
+		// N replicas would open N relayed WebSocket sessions per service.
+		local := r.connManager.HasLocalConnection(connKey(connResource(es), string(req.ClusterName), es.Spec.EdgeRef.Name))
+		if subReady && subDialer != nil && local {
 			r.events.Ensure(events.SubscriberConfig{
 				Key:           key,
 				ResolveDialer: r.dialerResolver(connResource(es), string(req.ClusterName), es.Spec.EdgeRef.Name),

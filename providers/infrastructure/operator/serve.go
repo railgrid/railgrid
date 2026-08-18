@@ -80,6 +80,15 @@ func EnsureProviderServe(
 		{Name: "FAROS_PROVIDER_NAME", Value: "infrastructure"},
 		{Name: "INFRASTRUCTURE_KUBECONFIG", Value: providerKubeconfigMount},
 	}
+	if cr.Spec.ProviderWorkspace != "" {
+		// The mounted kubeconfig may be root-scoped (the supplied-admin flow,
+		// where spec.providerWorkspace is set; hub-minted kubeconfigs are
+		// already workspace-scoped and leave it empty). Without this, serve's
+		// controllers watch the root cluster, where the platform kinds don't
+		// exist — the Template cache never syncs and instances never
+		// reconcile or finalize.
+		env = append(env, corev1.EnvVar{Name: "INFRASTRUCTURE_WORKSPACE_PATH", Value: cr.Spec.ProviderWorkspace})
+	}
 	if cr.Spec.Hub.URL != "" {
 		env = append(env, corev1.EnvVar{Name: "FAROS_HUB_URL", Value: cr.Spec.Hub.URL})
 	}

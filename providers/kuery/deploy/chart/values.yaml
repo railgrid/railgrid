@@ -13,6 +13,10 @@ image:
 
 # Number of Deployment replicas. Phase 1 is stateless; Phase 2 introduces
 # the local store, which pins this to 1.
+# Safe to scale WITH store.driver=postgres: engagement is sharded across
+# replicas by per-edge Leases in the provider workspace, and queries/edge
+# listings are answered from the shared store on every replica. The template
+# refuses replicaCount > 1 with the default SQLite store.
 replicaCount: 1
 
 service:

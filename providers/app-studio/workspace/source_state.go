@@ -170,6 +170,44 @@ func (s *FileStore) bumpSourceRevision(ctx context.Context, scope Scope) error {
 	return nil
 }
 
+// EnsureSourceRevisionFloor raises the durable source revision to at least
+// floor. Replica adoption seeds it from the project claim's revision so the
+// monotonic fence the infrastructure agent enforces survives the project
+// moving between replicas — a fence restarting at 1 on a new owner would make
+// every subsequent sync look stale. Never lowers the local revision.
+func (s *FileStore) EnsureSourceRevisionFloor(ctx context.Context, scope Scope, floor uint64) error {
+	if s == nil {
+		return errors.New("project workspace store is not configured")
+	}
+	if floor <= 1 {
+		return nil
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	current, err := s.sourceRevision(ctx, scope)
+	if err != nil {
+		return err
+	}
+	if current >= floor {
+		return nil
+	}
+	dir, revisionPath, err := s.sourceRevisionPath(scope)
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(workspaceSourceRevision{Revision: floor})
+	if err != nil {
+		return fmt.Errorf("encode workspace source revision: %w", err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create workspace source revision directory: %w", err)
+	}
+	if err := writeFileAtomically(dir, revisionPath, raw, 0o600, false); err != nil {
+		return fmt.Errorf("persist workspace source revision: %w", err)
+	}
+	return nil
+}
+
 // ClearUncommittedPaths removes the pending source set after the complete set
 // has been committed successfully through the repository bridge.
 func (s *FileStore) ClearUncommittedPaths(ctx context.Context, scope Scope) error {

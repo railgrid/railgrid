@@ -43,6 +43,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/faroshq/provider-sdk/leaderelection"
+
 	"github.com/faroshq/provider-infrastructure/operator"
 )
 
@@ -92,7 +94,20 @@ func runOperator() error {
 	}
 
 	// Reconcile loop runs in the background; serve blocks in the foreground.
-	go runBootstrapLoop(ctx, providerCfg, runtimeCfg, providerKubeconfig)
+	// Leader-elected so multi-replica deployments run one bootstrap loop at a
+	// time: every step is idempotent, but two replicas applying the same
+	// objects on independent tickers is pure conflict churn.
+	go func() {
+		if err := leaderelection.Run(ctx, leaderelection.Options{
+			Config:    providerCfg,
+			Namespace: leaderelection.DefaultNamespace,
+			Name:      bootstrapLeaseName,
+		}, func(termCtx context.Context) {
+			runBootstrapLoop(termCtx, providerCfg, runtimeCfg, providerKubeconfig)
+		}); err != nil {
+			log.Printf("operator: bootstrap leader election failed; bootstrap loop is not running: %v", err)
+		}
+	}()
 
 	log.Printf("operator: starting serve loop on provider kubeconfig")
 	serveWithConfig(ctx, providerCfg)

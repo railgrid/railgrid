@@ -9,15 +9,19 @@
 package queryapi
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 )
 
 // EdgeLister is the slice of the engagement controller the edges endpoint
-// needs. Nil-able: with engagement disabled the endpoint serves an empty
-// list rather than 404, so the portal renders consistently in dev.
+// needs. Answered from the shared store, so any replica lists the full
+// fleet regardless of which replica syncs each edge. Nil-able: with
+// engagement disabled the endpoint serves an empty list rather than 404, so
+// the portal renders consistently in dev.
 type EdgeLister interface {
-	TenantEdges(tenant string) []string
+	TenantEdges(ctx context.Context, tenant string) ([]string, error)
 }
 
 // EdgesHandler serves GET /api/edges: the caller's currently-engaged edge
@@ -42,7 +46,13 @@ func (h *EdgesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := edgesResponse{Edges: []string{}}
 	if h.Lister != nil {
-		if edges := h.Lister.TenantEdges(id.Tenant); edges != nil {
+		edges, err := h.Lister.TenantEdges(r.Context(), id.Tenant)
+		if err != nil {
+			log.Printf("listing tenant edges: %v", err)
+			http.Error(w, "listing edges failed", http.StatusInternalServerError)
+			return
+		}
+		if edges != nil {
 			resp.Edges = edges
 		}
 	}

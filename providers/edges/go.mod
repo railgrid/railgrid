@@ -227,3 +227,8 @@ replace (
 	k8s.io/sample-controller => github.com/kcp-dev/kubernetes/staging/src/k8s.io/sample-controller v0.0.0-20260602065202-e006560fc76a
 	k8s.io/streaming => github.com/kcp-dev/kubernetes/staging/src/k8s.io/streaming v0.0.0-20260602065202-e006560fc76a
 )
+
+// In-tree SDK: the monorepo is the source of truth until the SDK is
+// published with every package providers use (leaderelection landed after
+// v0.1.0). Image builds copy provider-sdk into the build context.
+replace github.com/faroshq/provider-sdk => ../../provider-sdk

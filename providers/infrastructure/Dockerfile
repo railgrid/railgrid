@@ -3,19 +3,24 @@
 # 1. Build the portal micro-frontend (Vite + TS → portal/dist).
 FROM node:22-alpine AS portal
 WORKDIR /portal
-COPY portal/package.json portal/package-lock.json* ./
+COPY providers/infrastructure/portal/package.json providers/infrastructure/portal/package-lock.json* ./
 RUN --mount=type=cache,target=/root/.npm npm ci --no-audit --no-fund
-COPY portal/ ./
+COPY providers/infrastructure/portal/ ./
 RUN npm run build
 
 # 2. Build the Go binary. The binary serves `init` + `serve`, so the whole
-#    module source has to be present. The faros-provider-sdk is now a published
-#    dependency (no replace), so `go mod download` fetches it from the proxy.
+#    module source has to be present. The provider-sdk resolves IN-TREE via a
+#    go.mod replace, so the build context is the repo root and the sdk is
+#    copied alongside the module below.
 FROM golang:1.26-alpine AS build
 WORKDIR /src
-COPY go.mod go.sum ./
+COPY providers/infrastructure/go.mod providers/infrastructure/go.sum ./
+# In-tree provider-sdk (go.mod replace => ../../provider-sdk; from
+# WORKDIR /src that resolves to /provider-sdk). Build context is the
+# REPO ROOT: docker build -f providers/infrastructure/Dockerfile .
+COPY provider-sdk/ /provider-sdk/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
-COPY . ./
+COPY providers/infrastructure/ ./
 COPY --from=portal /portal/dist ./portal/dist
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/infrastructure-provider .
 

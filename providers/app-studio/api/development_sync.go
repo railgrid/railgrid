@@ -267,6 +267,11 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	if err != nil {
 		return nil, err
 	}
+	// Mirror the monotonic source-revision fence onto the durable project
+	// claim so it survives the project moving between replicas — the sandbox
+	// rejects stale revisions, and a fence restarting at 1 on a new owner
+	// would break that check (Phase C seeds it back on hydration).
+	s.recordProjectClaimRevision(id, p.Name, snapshot.SourceRevision)
 	files := snapshot.Files
 	// Validate the instance exists in the workspace first (clear 404 vs proxy err).
 	if err := s.validateDevelopmentInstance(ctx, c, target); err != nil {

@@ -73,7 +73,20 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 	// message to the agent telling it to open a new WebSocket to this path.
 	// The path passed to revdial.NewDialer below must match the absolute URL
 	// path where this handler is mounted.
+	//
+	// Kept for single-replica mode and for dialers created before replica
+	// routing was enabled; replica-addressed pickups go through /proxy/{id}.
 	mux.Handle("/proxy", revdial.ConnHandler(upgrader))
+
+	// /proxy/{replicaID} — replica-addressed pick-up. With replica routing
+	// enabled, each dialer's advertised pickup path names the replica whose
+	// process holds it (the revdial dialer map is process-global and the
+	// dialer closes over the accepted socket), so a pickup the Service hands
+	// to any OTHER replica is forwarded — as a WebSocket upgrade — to the
+	// owner's internal listener. The agent treats the pickup path as opaque,
+	// so this needs no agent changes and each agent keeps ONE control
+	// connection no matter how many replicas run.
+	mux.Handle("/proxy/", p.pickupRouter(revdial.ConnHandler(upgrader)))
 
 	// / — initial agent connection handler.
 	// Path (after mount-prefix stripping):
@@ -175,7 +188,14 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 		p.logger.Info("Edge agent connecting", "key", key)
 
 		conn := wsconnadapter.New(wsConn)
-		dialer := revdial.NewDialer(conn, p.agentPickupPath)
+		// With replica routing enabled the pickup path is replica-addressed so
+		// pickups reach THIS process (the dialer closes over the socket) no
+		// matter which replica the Service hands them to.
+		pickupPath := p.agentPickupPath
+		if p.replicaID != "" {
+			pickupPath += "/" + p.replicaID
+		}
+		dialer := revdial.NewDialer(conn, pickupPath)
 		p.edgeConnManager.Store(key, dialer)
 		p.logger.Info("Edge agent tunnel established", "key", key)
 

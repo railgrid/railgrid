@@ -14,3 +14,11 @@ providers/*/portal/node_modules
 # bundles in case `COPY .` runs before the dist overwrite.
 portal/dist
 providers/*/portal/dist
+
+# Never ship VCS history, local kcp state, dev kubeconfigs, or host build
+# output into image build contexts (provider images build from the repo root:
+# docker build -f providers/<name>/Dockerfile .).
+.git
+.kcp
+bin
+*.kubeconfig

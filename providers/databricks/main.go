@@ -35,6 +35,7 @@ import (
 	"github.com/faroshq/provider-databricks/importapi"
 	"github.com/faroshq/provider-databricks/mcpserver"
 	"github.com/faroshq/provider-databricks/queryapi"
+	databricksscheme "github.com/faroshq/provider-databricks/scheme"
 	"github.com/faroshq/provider-databricks/tenant"
 )
 
@@ -94,12 +95,17 @@ func runServe() {
 		tenantFactory = tenant.NewDeferredClientFactory()
 	}
 	controllerHealth := newControllerHealth(controllerModeFromEnv() == controllerModeRequired)
-	controllerAuthority := &managerAuthority{}
-	if tenantFactory != nil {
-		// Keep the authority wrapper installed for the provider lifetime. The
-		// controller retry loop swaps live managers into it and clears them after
-		// an exit, so tenant actions fail closed during recovery.
-		tenantFactory.SetAuthority(controllerAuthority)
+	if kcpConfig != nil {
+		// Provider-authority reads resolve tenant clusters through the
+		// APIExport virtual-workspace URLs on the endpoint slice — never
+		// through the controller manager — so every replica serves actions
+		// while the controllers are leader-elected.
+		authority, err := tenant.NewSliceAuthority(kcpConfig, apiExportName, databricksscheme.NewScheme())
+		if err != nil {
+			log.Printf("slice authority unavailable (%v); tenant actions fail closed", err)
+		} else {
+			tenantFactory.SetAuthority(authority)
+		}
 	}
 	mux, err := newServeMuxWithHealth(tables, devStaticTables, tenantFactory, controllerHealth, statementClient)
 	if err != nil {
@@ -120,17 +126,17 @@ func runServe() {
 	}()
 	go runHeartbeat(ctx, controllerHealth)
 	if controllerHealth.snapshot().Required {
-		go runControllerManager(
+		go runLeaderElectedControllers(
 			ctx,
 			controllerHealth,
 			loadControllerConfig,
-			func(startCtx context.Context, config *rest.Config) error {
+			func(config *rest.Config) error {
 				if err := tenantFactory.SetBaseConfig(config); err != nil {
 					return fmt.Errorf("tenant client configuration: %w", err)
 				}
-				return startControllerManagerAttempt(startCtx, config, validator, controllerHealth, controllerAuthority)
+				return nil
 			},
-			controllerRetryIntervalFromEnv(),
+			validator,
 		)
 	} else {
 		log.Printf("controller manager: disabled (explicit REST-only mode)")

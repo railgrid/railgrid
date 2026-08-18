@@ -25,7 +25,6 @@ require (
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	k8s.io/api v0.36.2 // indirect
 	k8s.io/apimachinery v0.36.2 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260603220949-865597e52e25 // indirect
@@ -48,3 +47,8 @@ replace (
 	k8s.io/component-base => github.com/kcp-dev/kubernetes/staging/src/k8s.io/component-base v0.0.0-20260602065202-e006560fc76a
 	k8s.io/kms => github.com/kcp-dev/kubernetes/staging/src/k8s.io/kms v0.0.0-20260602065202-e006560fc76a
 )
+
+// In-tree SDK: the monorepo is the source of truth until the SDK is
+// published with every package providers use (leaderelection landed after
+// v0.1.0). Image builds copy provider-sdk into the build context.
+replace github.com/faroshq/provider-sdk => ../../provider-sdk

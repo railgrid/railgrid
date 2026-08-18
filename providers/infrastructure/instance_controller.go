@@ -18,6 +18,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/faroshq/provider-sdk/leaderelection"
+
 	"github.com/faroshq/provider-infrastructure/controller/instance"
 	"github.com/faroshq/provider-infrastructure/install"
 )
@@ -51,21 +53,32 @@ func startInstanceController(ctx context.Context, providerConfig *rest.Config) {
 
 	baseDomain := os.Getenv("FAROS_APP_BASE_DOMAIN")
 
-	ctrl, err := instance.New(instance.Config{
-		ProviderConfig: providerConfig,
-		APIExportName:  install.APIExportName,
-		BaseDomain:     baseDomain,
-		Runtime:        runtimeClient,
-	})
-	if err != nil {
-		log.Printf("instance controller: NOT started: %v", err)
-		return
-	}
-
+	// Leader-elected: instances own runtime-cluster state (kro CRs, bridged
+	// secrets), so exactly one replica may reconcile them. The controller —
+	// and its manager — is rebuilt fresh each term; a stopped
+	// controller-runtime manager cannot be restarted.
 	go func() {
-		log.Printf("instance controller: starting (apiExport=%s baseDomain=%q runtime=%s)", install.APIExportName, baseDomain, runtimeSrc)
-		if err := ctrl.Start(ctx); err != nil {
-			log.Printf("instance controller: stopped: %v", err)
+		if err := leaderelection.Run(ctx, leaderelection.Options{
+			Config:    providerConfig,
+			Namespace: leaderelection.DefaultNamespace,
+			Name:      instanceLeaseName,
+		}, func(termCtx context.Context) {
+			ctrl, err := instance.New(instance.Config{
+				ProviderConfig: providerConfig,
+				APIExportName:  install.APIExportName,
+				BaseDomain:     baseDomain,
+				Runtime:        runtimeClient,
+			})
+			if err != nil {
+				log.Printf("instance controller: NOT started: %v", err)
+				return
+			}
+			log.Printf("instance controller: starting (apiExport=%s baseDomain=%q runtime=%s)", install.APIExportName, baseDomain, runtimeSrc)
+			if err := ctrl.Start(termCtx); err != nil {
+				log.Printf("instance controller: stopped: %v", err)
+			}
+		}); err != nil {
+			log.Printf("instance controller: leader election failed; controller is not running: %v", err)
 		}
 	}()
 }

@@ -7,6 +7,7 @@ require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	k8s.io/apimachinery v0.36.2
 	k8s.io/client-go v0.36.2
+	k8s.io/klog/v2 v2.140.0
 	sigs.k8s.io/yaml v1.6.0
 )
 

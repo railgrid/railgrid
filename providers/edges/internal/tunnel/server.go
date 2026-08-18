@@ -20,13 +20,17 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 
+	"github.com/gorilla/websocket"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
 	"github.com/faroshq/provider-edges/internal/events"
 	"github.com/faroshq/provider-edges/internal/kcpurl"
+	utilhttp "github.com/faroshq/provider-edges/internal/wsutil"
+	"github.com/faroshq/provider-sdk/revdial"
 )
 
 // KindConfig declares one connectable kind the tunnel serves. All kinds a
@@ -78,7 +82,7 @@ type Server struct {
 	version string
 
 	// edgeConnManager is the tunnel registry: agent-ingress writes, edgeproxy
-	// reads. Single-replica invariant applies (see connman.go).
+	// reads. Cluster-aware when replica routing is enabled (see connman.go).
 	edgeConnManager *ConnManager
 
 	// kcpConfig is the provider's kcp credential. Used for delegated agent-token
@@ -123,7 +127,43 @@ type Server struct {
 	// events tool. Set via SetEventStore from the controller manager.
 	eventStore events.Store
 
+	// registry/replicaID/relayToken enable multi-replica tunnel routing (see
+	// EnableReplicaRouting). All nil/empty in single-replica mode.
+	registry   *Registry
+	replicaID  string
+	relayToken string
+
 	logger klog.Logger
+}
+
+// EnableReplicaRouting turns on multi-replica tunnel routing: new dialers
+// advertise a replica-addressed pickup path, the ConnManager becomes
+// cluster-aware through the registry, and the internal listener (see
+// InternalHandler) serves the relay + forwarded pickups. relayToken is the
+// shared provider bearer peers authenticate relays with. Call once before
+// serving.
+func (s *Server) EnableReplicaRouting(reg *Registry, relayToken string) {
+	s.registry = reg
+	s.replicaID = reg.ReplicaID()
+	s.relayToken = relayToken
+	s.edgeConnManager.SetRegistry(reg, relayToken)
+}
+
+// InternalHandler serves the pod-to-pod surface on the internal listener
+// (never mounted on the public Service): the tunnel relay and forwarded
+// revdial pickups.
+func (s *Server) InternalHandler() http.Handler {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return utilhttp.CheckSameOrAllowedOrigin(r, []url.URL{})
+		},
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc(relayPath, s.relayHandler())
+	// Forwarded pickups land here; the revdial dialer id in the query is the
+	// capability (same model as the public pickup path).
+	mux.Handle("/agent-pickup", revdial.ConnHandler(upgrader))
+	return mux
 }
 
 // SetEventStore wires the read side of the events tools to the store the event

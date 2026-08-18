@@ -223,6 +223,15 @@ type Store interface {
 	ListAssistantConversationItems(ctx context.Context, scope Scope, afterSequence int64, limit int) ([]AssistantConversationItem, error)
 	DeleteProjectMessages(ctx context.Context, scope Scope) error
 	DeleteMessagesOlderThan(ctx context.Context, before time.Time) (int64, error)
+	// Replica claims — the fleet-wide ownership map for assistant activity
+	// and project workspace pinning (see claims.go and
+	// docs/app-studio-replica-awareness.md).
+	TryClaimReplica(ctx context.Context, claim ReplicaClaim, staleAfter time.Duration) (ReplicaClaim, bool, error)
+	RenewReplicaClaim(ctx context.Context, claimKey, ownerReplica string) (bool, error)
+	ReleaseReplicaClaim(ctx context.Context, claimKey, ownerReplica string) error
+	GetReplicaClaim(ctx context.Context, claimKey string) (ReplicaClaim, bool, error)
+	LiveReplicaClaims(ctx context.Context, scopeKey string, staleAfter time.Duration) ([]ReplicaClaim, error)
+	BumpReplicaClaimRevision(ctx context.Context, claimKey, ownerReplica string, revision int64) error
 }
 
 func prepareAssistantConversationItem(scope Scope, item AssistantConversationItem) (AssistantConversationItem, error) {

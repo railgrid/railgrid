@@ -12,11 +12,17 @@ image:
   tag: ""  # empty → defaults to .Chart.AppVersion
   pullPolicy: IfNotPresent
 
-# HARD CONSTRAINT: revdial registers tunnel dialers in a process-global map, so
-# an agent's control connection and every later pickup connection MUST reach the
-# same process. Run exactly one replica; the Deployment uses strategy Recreate so
-# a rollout never briefly runs two. Provider HA is a v1 non-goal.
+# Safe to scale: each agent dials ONE replica; the replica terminating the
+# tunnel claims it in a Lease registry in the provider workspace, and every
+# other replica relays pickups and data-plane requests to the owner over the
+# internal listener (pod-to-pod on internalPort, never exposed on the
+# Service). Killing a replica disconnects only its agents, which reconnect to
+# a survivor.
 replicaCount: 1
+
+# internalPort carries the replica-to-replica tunnel relay and forwarded
+# revdial pickups. Deliberately not part of the Service.
+internalPort: 8090
 
 service:
   type: ClusterIP
