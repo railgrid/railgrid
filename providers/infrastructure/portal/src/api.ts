@@ -23,6 +23,36 @@ const GROUP_FIELD = 'infrastructure_faros_sh'
 
 let bearerToken: string | null = null
 let clusterName: string | null = null
+let contextGeneration = 0
+
+class ContextChangedError extends Error {
+  readonly reason = 'ContextChanged'
+
+  constructor() {
+    super('workspace context changed while the request was in flight')
+    this.name = 'ContextChangedError'
+  }
+}
+
+export function isContextChangedError(error: unknown): boolean {
+  return error instanceof ContextChangedError || (error as { reason?: string } | null)?.reason === 'ContextChanged'
+}
+
+interface RequestContext {
+  generation: number
+  token: string | null
+  tenant: string | null
+}
+
+function requestContext(): RequestContext {
+  return { generation: contextGeneration, token: bearerToken, tenant: clusterName }
+}
+
+function assertCurrentContext(expected: RequestContext): void {
+  if (expected.generation !== contextGeneration || expected.token !== bearerToken || expected.tenant !== clusterName) {
+    throw new ContextChangedError()
+  }
+}
 
 // setBasePath is a no-op: the gateway path is built from the cluster name, not
 // the provider basePath. Kept so App.vue's watcher type-checks.
@@ -30,13 +60,29 @@ export function setBasePath(_ctxBasePath?: string | null) {
   void _ctxBasePath
 }
 export function setToken(token?: string | null) {
-  bearerToken = token || null
+  const next = token || null
+  if (next !== bearerToken) {
+    contextGeneration += 1
+    // Template metadata is permissioned and may differ between callers even
+    // when they share a tenant path. Never reuse one caller's cache after an
+    // authentication-context change.
+    cachedTemplates = null
+    sampleValuesSupported = null
+    viewSupported = null
+    exposureSupported = null
+  }
+  bearerToken = next
 }
 export function setTenant(name?: string | null) {
   const next = name || null
   if (next !== clusterName) {
     // eslint-disable-next-line no-console
     console.debug('[infrastructure] tenant clusterName →', next)
+    contextGeneration += 1
+    cachedTemplates = null
+    sampleValuesSupported = null
+    viewSupported = null
+    exposureSupported = null
   }
   clusterName = next
 }
@@ -45,6 +91,7 @@ export function setTenant(name?: string | null) {
 // graphqlQuery POSTs a query/mutation to /graphql/<cluster> and returns data,
 // mapping gateway errors onto the {reason,message} contract the views branch on.
 async function graphqlQuery<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
+  const expectedContext = requestContext()
   if (!clusterName) {
     throw <ErrorResponse>{ reason: 'TenantMissing', message: 'no workspace selected' }
   }
@@ -57,6 +104,7 @@ async function graphqlQuery<T>(query: string, variables: Record<string, unknown>
     body: JSON.stringify({ query, variables }),
   })
   const text = await res.text()
+  assertCurrentContext(expectedContext)
   if (!res.ok) {
     throw <ErrorResponse>{ reason: res.status === 404 ? 'NotFound' : 'HTTPError', message: text || res.statusText }
   }
@@ -68,6 +116,7 @@ async function graphqlQuery<T>(query: string, variables: Record<string, unknown>
     else if (/apibinding|no matches for kind|forbidden/i.test(message)) reason = 'APIBindingMissing'
     throw <ErrorResponse>{ reason, message }
   }
+  assertCurrentContext(expectedContext)
   return (body.data ?? {}) as T
 }
 
@@ -91,9 +140,12 @@ interface RawObject {
   apiVersion?: string
   kind?: string
   metadata?: {
+    uid?: string
     name?: string
     namespace?: string
     creationTimestamp?: string
+    deletionTimestamp?: string
+    generation?: number
     labels?: Record<string, string>
   }
   spec?: {
@@ -108,6 +160,7 @@ interface RawObject {
   status?: {
     phase?: string
     message?: string
+    observedGeneration?: number
     conditions?: Array<{ type: string; status: string; reason?: string; message?: string; lastTransitionTime?: string }>
     [k: string]: unknown
   }
@@ -202,15 +255,19 @@ function instanceFromObj(c: RawObject): Instance {
     if (Object.keys(rest).length > 0) status = rest
   }
   return {
+    uid: c.metadata?.uid,
     name: c.metadata?.name ?? '',
     namespace: c.metadata?.namespace ?? '',
     template: tmpl,
-    phase: c.status?.phase || (conditions.find(x => x.type === 'Ready')?.status === 'True' ? 'Ready' : 'Pending'),
-    message: c.status?.message,
+    deletionTimestamp: c.metadata?.deletionTimestamp,
+    phase: c.metadata?.deletionTimestamp ? 'Deleting' : c.status?.phase || (conditions.find(x => x.type === 'Ready')?.status === 'True' ? 'Ready' : 'Pending'),
+    message: c.metadata?.deletionTimestamp ? 'Deletion is in progress while provisioned resources are being cleaned up.' : c.status?.message,
     conditions,
     values,
     status,
     createdAt: c.metadata?.creationTimestamp ?? '',
+    generation: c.metadata?.generation,
+    observedGeneration: c.status?.observedGeneration,
   }
 }
 
@@ -244,7 +301,7 @@ function templateSpec(): string {
   const sv = sampleValuesSupported === false ? '' : ' sampleValues'
   const vw = viewSupported === false ? '' : ' view'
   const ex = exposureSupported === false ? '' : ' exposure'
-  return `displayName description category version iconURL backend instanceCRD { group version resource kind } schema${sv}${vw}${ex}`
+  return `displayName description category version iconURL instanceCRD { group version resource kind } schema${sv}${vw}${ex}`
 }
 
 // templateQuery runs a Template query built from templateSpec(), retrying when
@@ -320,19 +377,23 @@ async function fetchInstanceYaml(name: string): Promise<RawObject | null> {
 
 export const api = {
   async listTemplates(filter: { category?: string; cloud?: string } = {}): Promise<{ items: Template[] }> {
+    const expectedContext = requestContext()
     let items = await fetchTemplates()
+    assertCurrentContext(expectedContext)
     if (filter.category) items = items.filter(t => t.category === filter.category)
     if (filter.cloud) items = items.filter(t => t.cloud === filter.cloud)
     return { items }
   },
 
   async getTemplate(name: string): Promise<{ template: Template }> {
+    const expectedContext = requestContext()
     const data = await templateQuery<Infra<{ Template?: { metadata: { name: string }; spec: Record<string, unknown> } }>>(
       spec => `query($n: String!) { ${GROUP_FIELD} { ${VERSION} { Template(name: $n) { metadata { name } spec { ${spec} } } } } }`,
       { n: name },
     )
     const t = data[GROUP_FIELD]?.[VERSION]?.Template
     if (!t) throw <ErrorResponse>{ reason: 'TemplateNotFound', message: 'template ' + name + ' not found' }
+    assertCurrentContext(expectedContext)
     return { template: templateFromGQL(t.metadata.name, t.spec ?? {}) }
   },
 
@@ -342,19 +403,23 @@ export const api = {
     name: string
     values: Record<string, unknown>
   }): Promise<Instance> {
+    const expectedContext = requestContext()
     const templates = await getTemplates()
+    assertCurrentContext(expectedContext)
     if (!templates.some(t => t.name === body.templateName)) {
       throw <ErrorResponse>{ reason: 'TemplateNotFound', message: 'template ' + body.templateName + ' not found' }
     }
     const created = await applyCR(buildInstanceManifest(body.name, body.templateName, body.values))
+    assertCurrentContext(expectedContext)
     return instanceFromObj(created)
   },
 
-  async listInstances(): Promise<{ items: Instance[] }> {
+  async listInstances(): Promise<{ items: Instance[]; identities: Array<{ name: string; uid?: string }> }> {
+    const expectedContext = requestContext()
     // One LIST for every template's instances. metadata + template + status
     // baseline only — the (arbitrary) values are enriched per instance below
     // when a template's view actually references them.
-    const SEL = 'items { metadata { name namespace creationTimestamp labels } spec { template } status { phase message conditions { type status reason message lastTransitionTime } } }'
+    const SEL = 'items { metadata { uid name namespace creationTimestamp deletionTimestamp generation labels } spec { template } status { observedGeneration phase message conditions { type status reason message lastTransitionTime } } }'
     let raw: RawObject[] = []
     try {
       const data = await graphqlQuery<Infra<{ Instances?: { items?: RawObject[] } }>>(
@@ -378,6 +443,9 @@ export const api = {
           const full = await fetchInstanceYaml(i.name)
           if (!full) return
           const parsed = instanceFromObj(full)
+          // InstanceYaml is a second read and can race a delete/recreate. Do
+          // not merge values from a same-name replacement into the listed UID.
+          if (i.uid && parsed.uid && i.uid !== parsed.uid) return
           i.values = parsed.values
           i.status = parsed.status
         } catch {
@@ -385,19 +453,24 @@ export const api = {
         }
       }),
     )
-    return { items }
+    assertCurrentContext(expectedContext)
+    return { items, identities: raw.map(item => ({ name: item.metadata?.name ?? '', uid: item.metadata?.uid })) }
   },
 
   async getInstance(name: string): Promise<Instance> {
+    const expectedContext = requestContext()
     const found = await fetchInstanceYaml(name)
     if (!found) throw <ErrorResponse>{ reason: 'InstanceNotFound', message: 'instance ' + name + ' not found' }
+    assertCurrentContext(expectedContext)
     return instanceFromObj(found)
   },
 
   async deleteInstance(name: string): Promise<void> {
+    const expectedContext = requestContext()
     await graphqlQuery(
       `mutation($n: String!) { ${GROUP_FIELD} { ${VERSION} { deleteInstance(name: $n) } } }`,
       { n: name },
     )
+    assertCurrentContext(expectedContext)
   },
 }

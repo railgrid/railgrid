@@ -77,9 +77,11 @@ export interface JSONSchema {
 }
 
 export interface Instance {
+  uid?: string
   name: string
   namespace: string
   template: string
+  deletionTimestamp?: string
   phase: string
   message?: string
   conditions?: InstanceCondition[]
@@ -91,6 +93,8 @@ export interface Instance {
   // promoted to their own fields and excluded here.
   status?: Record<string, unknown>
   createdAt: string
+  generation?: number
+  observedGeneration?: number
 }
 
 export interface InstanceCondition {

@@ -5,7 +5,10 @@ import ProvisionPage from './views/ProvisionPage.vue'
 import InstanceListPage from './views/InstanceListPage.vue'
 import InstanceDetailPage from './views/InstanceDetailPage.vue'
 import MissingCredentialsPage from './views/MissingCredentialsPage.vue'
+import ConfirmDialog from './portalkit/ConfirmDialog.vue'
+import { resolveConfirm } from './portalkit/confirm'
 import { setBasePath, setTenant, setToken } from './api'
+import { createResourceTombstones } from './refresh'
 import type { FarosContext } from './types'
 
 // Two top-level pages: 'templates' and 'instances'. Sub-routes:
@@ -32,14 +35,22 @@ interface Route {
   id?: string
 }
 
+function decodeSegment(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
 function parseSubPath(sub: string | null | undefined): Route {
   const s = (sub ?? '').replace(/^\/+|\/+$/g, '')
   if (s === '' || s === 'templates') return { page: 'templates' }
   if (s === 'instances') return { page: 'instances' }
   if (s === 'missing-credentials') return { page: 'missing-credentials' }
   const [head, ...rest] = s.split('/')
-  if (head === 'templates' && rest.length) return { page: 'templates', id: rest.join('/') }
-  if (head === 'instances' && rest.length) return { page: 'instances', id: rest.join('/') }
+  if (head === 'templates' && rest.length) return { page: 'templates', id: decodeSegment(rest.join('/')) }
+  if (head === 'instances' && rest.length) return { page: 'instances', id: decodeSegment(rest.join('/')) }
   // Unknown sub-path: fall back to templates rather than 404'ing —
   // the shell's URL might have stale segments from a prior provider.
   return { page: 'templates' }
@@ -47,15 +58,35 @@ function parseSubPath(sub: string | null | undefined): Route {
 
 const route = computed<Route>(() => parseSubPath(props.ctx?.subPath))
 const tenantPath = computed(() => props.ctx?.tenant ?? null)
+const contextInitialized = computed(() => props.ctx !== null)
+const contextVersion = ref(0)
+// Route-local pages remount during detail/list navigation, but acknowledged
+// deletions must remain marked Deleting until a successful list proves the old
+// UID is gone. Keep that state at the active authority boundary instead.
+const instanceTombstones = createResourceTombstones()
+let instanceTombstoneTenant: string | null | undefined
 
 // React to ctx changes — basePath drives URL prefixes on fetches,
 // token feeds Authorization, both reactively update when the shell
 // re-pushes context (e.g. token rotation, workspace switch).
-watch(() => props.ctx?.basePath, (v) => setBasePath(v), { immediate: true })
-watch(() => props.ctx?.token, (v) => setToken(v), { immediate: true })
-// ctx.tenant is the kcp cluster name auth.clusterName, used as the
-// /graphql/<cluster> path segment for every gateway call in api.ts.
-watch(() => props.ctx?.tenant, (v) => setTenant(v), { immediate: true })
+watch(
+  () => [props.ctx?.basePath, props.ctx?.token, props.ctx?.tenant] as const,
+  ([basePath, token, tenant]) => {
+    // Keep the existing API setters as the public context boundary. Each
+    // setter invalidates in-flight reads, while this owner remounts pages so
+    // no route-local state crosses an authority change.
+    setBasePath(basePath)
+    setToken(token)
+    setTenant(tenant)
+    resolveConfirm(false)
+    // A refreshed bearer token is still the same KRM authority. Preserve
+    // deletion markers across token rotation, but never across tenants.
+    if (instanceTombstoneTenant !== tenant) instanceTombstones.clear()
+    instanceTombstoneTenant = tenant
+    contextVersion.value += 1
+  },
+  { immediate: true },
+)
 
 // navigate dispatches a faros-navigate CustomEvent (bubbles) so the
 // shell updates the browser URL. Children call this through the
@@ -100,7 +131,7 @@ function selectInstance(name: string) {
   navigate('instances/' + encodeURIComponent(name))
 }
 function provisioned(name: string) {
-  navigate('instances/' + encodeURIComponent(name))
+  selectInstance(name)
 }
 </script>
 
@@ -116,7 +147,21 @@ function provisioned(name: string) {
       genuinely no workspace selected, the friendly message below
       stays put until they pick one in the shell's sidebar chip.
     -->
-    <template v-if="!tenantPath">
+    <template v-if="!contextInitialized">
+      <section class="page" role="status" aria-live="polite" aria-busy="true">
+        <header class="page-head">
+          <div>
+            <h2 class="page-title">Infrastructure</h2>
+            <p class="page-meta">Loading workspace context…</p>
+          </div>
+        </header>
+        <div class="page-loading-shell" aria-hidden="true">
+          <div class="shimmer page-loading-line page-loading-line-short" />
+          <div class="shimmer page-loading-panel" />
+        </div>
+      </section>
+    </template>
+    <template v-else-if="!tenantPath">
       <section class="page">
         <header class="page-head">
           <div>
@@ -124,30 +169,42 @@ function provisioned(name: string) {
             <p class="page-meta">Pick a template to provision into your tenant scope.</p>
           </div>
         </header>
-        <div class="muted">
+        <div class="muted" role="status">
           Select a workspace from the org/workspace chip in the
           sidebar to view the catalog.
         </div>
       </section>
     </template>
     <template v-else-if="route.page === 'templates' && !route.id">
-      <CatalogPage @select="selectTemplate" @navigate="legacyNavigate" />
+      <CatalogPage :key="`catalog:${contextVersion}`" @select="selectTemplate" @navigate="legacyNavigate" />
     </template>
     <template v-else-if="route.page === 'templates' && route.id">
       <ProvisionPage
+        :key="`provision:${contextVersion}:${route.id}`"
         :template-name="route.id"
         @navigate="legacyNavigate"
         @provisioned="provisioned"
       />
     </template>
     <template v-else-if="route.page === 'instances' && !route.id">
-      <InstanceListPage @navigate="legacyNavigate" @select="selectInstance" />
+      <InstanceListPage
+        :key="`instances:${contextVersion}`"
+        :tombstones="instanceTombstones"
+        @navigate="legacyNavigate"
+        @select="selectInstance"
+      />
     </template>
     <template v-else-if="route.page === 'instances' && route.id">
-      <InstanceDetailPage :instance-name="route.id" @navigate="legacyNavigate" />
+      <InstanceDetailPage
+        :key="`instance:${contextVersion}:${route.id}`"
+        :instance-name="route.id"
+        :tombstones="instanceTombstones"
+        @navigate="legacyNavigate"
+      />
     </template>
     <template v-else-if="route.page === 'missing-credentials'">
-      <MissingCredentialsPage :tenant-path="tenantPath" @navigate="legacyNavigate" />
+      <MissingCredentialsPage :key="`credentials:${contextVersion}`" :tenant-path="tenantPath" @navigate="legacyNavigate" />
     </template>
+    <ConfirmDialog />
   </div>
 </template>

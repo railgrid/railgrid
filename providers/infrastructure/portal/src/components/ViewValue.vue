@@ -9,7 +9,9 @@
 import { ref } from 'vue'
 import type { ResolvedValue } from '../view'
 
-const props = defineProps<{ value: ResolvedValue }>()
+const props = withDefaults(defineProps<{ value: ResolvedValue; interactive?: boolean }>(), {
+  interactive: true,
+})
 
 const copied = ref(false)
 async function copy() {
@@ -26,6 +28,8 @@ async function copy() {
 
 <template>
   <span v-if="value.empty" class="text-[12px] text-text-muted/50">—</span>
+
+  <span v-else-if="!interactive" class="text-[12px] text-text-secondary">{{ value.text }}</span>
 
   <a
     v-else-if="value.type === 'link' && value.href"

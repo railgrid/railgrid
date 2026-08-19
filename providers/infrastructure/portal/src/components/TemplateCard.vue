@@ -22,7 +22,10 @@ const exposure = computed(() => {
 </script>
 
 <template>
-  <button class="template-card" @click="$emit('select', template.name)">
+  <button
+    class="template-card"
+    @click="$emit('select', template.name)"
+  >
     <div class="template-card-head">
       <div class="template-card-title">{{ template.displayName || template.name }}</div>
       <span v-if="template.cloud" class="cloud-pill">{{ template.cloud }}</span>
@@ -46,20 +49,3 @@ const exposure = computed(() => {
     </div>
   </button>
 </template>
-
-<style scoped>
-.exposure-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 18px;
-  height: 18px;
-  color: var(--color-text-muted, #5d5f78);
-  cursor: help;
-}
-.exposure-icon svg {
-  width: 14px;
-  height: 14px;
-}
-</style>

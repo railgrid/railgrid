@@ -141,16 +141,3 @@ function coerce(t: string, raw: string | boolean): unknown {
     </template>
   </div>
 </template>
-
-<style scoped>
-.dynform-group {
-  border: 1px solid var(--color-border-subtle, #8883);
-  border-radius: 6px;
-  padding: 0.5rem 0.8rem 0.2rem;
-  margin: 0.4rem 0;
-}
-.dynform-group > legend {
-  font-weight: 600;
-  padding: 0 0.4rem;
-}
-</style>

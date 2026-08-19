@@ -5,19 +5,23 @@
   "description": "infrastructure provider's portal-side micro-frontend. Built with Vite into a single main.js custom-element bundle plus static assets the faros hub serves under /ui/providers/infrastructure/.",
   "type": "module",
   "scripts": {
+    "prebuild": "vitest run && vue-tsc --noEmit",
     "build": "vite build",
     "dev": "vite",
+    "test": "vitest run",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
     "@types/js-yaml": "^4.0.9",
     "js-yaml": "^4.2.0",
+    "lucide-vue-next": "^0.475.0",
     "vue": "^3.5.13"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "^5.6.3",
     "vite": "^6.4.1",
+    "vitest": "^3.2.7",
     "vue-tsc": "^2.1.10"
   }
 }
