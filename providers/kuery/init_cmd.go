@@ -19,7 +19,6 @@ import (
 
 const (
 	apiExportName        = "kuery.providers.faros.sh"
-	defaultWorkspacePath = "root:faros:providers:kuery"
 )
 
 // runInitCmd applies kuery's in-workspace objects (APIResourceSchemas,
@@ -37,10 +36,12 @@ func runInitCmd(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("init needs a kubeconfig (set FAROS_PROVIDER_KUBECONFIG): %w", err)
 	}
+	// Empty means "the workspace this kubeconfig already points at": kcp
+	// resolves an unset APIExportEndpointSlice export path to the slice's own
+	// logical cluster. Leaving it unset is what lets this one chart bootstrap
+	// both the platform workspace and an org's self-hosted copy. Set the env
+	// var only to reference an export in a different workspace.
 	workspacePath := os.Getenv("KUERY_WORKSPACE_PATH")
-	if workspacePath == "" {
-		workspacePath = defaultWorkspacePath
-	}
 	schemasDir := os.Getenv("FAROS_SCHEMAS_DIR")
 	if schemasDir == "" {
 		schemasDir = "/etc/faros/schemas"

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kcp-dev/sdk/apis/core"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -75,6 +76,9 @@ var (
 	logicalClusterGVR = schema.GroupVersionResource{
 		Group: "core.kcp.io", Version: "v1alpha1", Resource: "logicalclusters",
 	}
+	apiExportGVR = schema.GroupVersionResource{
+		Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports",
+	}
 )
 
 // ProviderSAName is the standard ServiceAccount name created in every
@@ -95,11 +99,21 @@ const ProviderSANamespace = "default"
 // never needs a rotation loop.
 const ProviderTokenSecretSuffix = "-token"
 
-// EnsureProviderSA creates the "provider" ServiceAccount in the sub-workspace
-// and grants it cluster-admin within that workspace. Idempotent. Returns the
-// fully-qualified SA cluster-role-bound name "system:serviceaccount:default:provider".
+// EnsureProviderSA creates the "provider" ServiceAccount in the platform
+// provider's sub-workspace (root:faros:providers/{name}) and grants it
+// cluster-admin within that workspace. Idempotent.
 func (p *Provisioner) EnsureProviderSA(ctx context.Context, providerName string) error {
-	cl, err := p.clientFor(providersParentWorkspace + ":" + providerName)
+	return p.EnsureProviderSAAtPath(ctx, providersParentWorkspace+":"+providerName)
+}
+
+// EnsureProviderSAAtPath is EnsureProviderSA against an arbitrary provider
+// workspace path. Org-owned providers live at
+// root:faros:tenants/{org}/providers/{name} rather than under the platform
+// parent, but are otherwise identical — same `provider` WorkspaceType, so the
+// same missing `default` namespace and the same workspace-scoped cluster-admin
+// grant apply.
+func (p *Provisioner) EnsureProviderSAAtPath(ctx context.Context, workspacePath string) error {
+	cl, err := p.clientFor(workspacePath)
 	if err != nil {
 		return err
 	}
@@ -158,16 +172,31 @@ func (p *Provisioner) EnsureProviderSA(ctx context.Context, providerName string)
 // The ID (not the workspace path) is used so the kubeconfig works once requests
 // reach a kcp shard, which only resolves /clusters/<id>.
 func (p *Provisioner) MintProviderKubeconfig(ctx context.Context, providerName, hubExternalURL string) ([]byte, error) {
+	return p.MintProviderKubeconfigAtPath(ctx, providersParentWorkspace+":"+providerName, hubExternalURL)
+}
+
+// MintProviderKubeconfigAtPath is MintProviderKubeconfig against an arbitrary
+// provider workspace path, for org-owned providers under
+// root:faros:tenants/{org}/providers/{name}.
+//
+// The resulting kubeconfig is what an Org admin installs their provider's Helm
+// chart with. It is scoped to that one workspace: the SA is cluster-admin
+// there and nowhere else, so it can create the provider's APIExport, schemas,
+// endpoint slice, and CatalogEntry, but cannot read the Org workspace above it
+// or any team workspace beside it. Cross-workspace reach only ever comes from
+// the APIExport's permission claims, which each consuming workspace accepts
+// individually at Enable time.
+func (p *Provisioner) MintProviderKubeconfigAtPath(ctx context.Context, workspacePath, hubExternalURL string) ([]byte, error) {
 	cfg := rest.CopyConfig(p.kcpConfig)
-	cfg.Host = apiurl.KCPClusterURL(cfg.Host, providersParentWorkspace+":"+providerName)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, workspacePath)
 	typed, err := kubernetes.NewForConfig(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("typed kube client for %s: %w", providerName, err)
+		return nil, fmt.Errorf("typed kube client for %s: %w", workspacePath, err)
 	}
 
 	token, err := ensureLegacySAToken(ctx, typed, "default", ProviderSAName, ProviderSAName+ProviderTokenSecretSuffix)
 	if err != nil {
-		return nil, fmt.Errorf("ensuring SA token for %s: %w", providerName, err)
+		return nil, fmt.Errorf("ensuring SA token for %s: %w", workspacePath, err)
 	}
 
 	// Resolve the provider workspace's logical cluster ID. The kubeconfig must
@@ -177,7 +206,7 @@ func (p *Provisioner) MintProviderKubeconfig(ctx context.Context, providerName, 
 	// shard (the SA token also carries this ID in its clusterName claim).
 	clusterID, err := resolveLogicalClusterID(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("resolving logical cluster ID for %s: %w", providerName, err)
+		return nil, fmt.Errorf("resolving logical cluster ID for %s: %w", workspacePath, err)
 	}
 
 	server := hubExternalURL
@@ -321,6 +350,61 @@ func (p *Provisioner) EnsureProviderWorkspace(ctx context.Context, name string) 
 		return "", err
 	}
 	return cluster, nil
+}
+
+// ResolveAPIExportIdentityHash returns the kcp identity hash an APIExport
+// publishes in its status, or "" when it cannot be read.
+//
+// Self-hosted providers need this for permission claims against first-party
+// groups: kcp validates a claim's identityHash against the export it targets,
+// and a wrong one yields a binding that succeeds while the provider sees none
+// of the resources it claimed. Resolving it here is what stops that value from
+// being a manual copy out of an admin debug view.
+func (p *Provisioner) ResolveAPIExportIdentityHash(ctx context.Context, workspacePath, exportName string) (string, error) {
+	if workspacePath == "" || exportName == "" {
+		return "", fmt.Errorf("ResolveAPIExportIdentityHash: workspacePath and exportName are required")
+	}
+	cl, err := p.clientFor(workspacePath)
+	if err != nil {
+		return "", err
+	}
+	export, err := cl.Resource(apiExportGVR).Get(ctx, exportName, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("getting APIExport %s in %s: %w", exportName, workspacePath, err)
+	}
+	hash, _, _ := unstructured.NestedString(export.Object, "status", "identityHash")
+	return hash, nil
+}
+
+// ResolveClusterPath returns the canonical kcp workspace path of a logical
+// cluster (e.g. root:faros:tenants:<org>:providers:<name>), read from the
+// kcp.io/path annotation kcp stamps on the cluster's LogicalCluster object when
+// the workspace is created.
+//
+// It deliberately uses the hub's kcp-admin config addressed at /clusters/<id>
+// rather than any APIExport virtual-workspace client: a VW only serves the
+// resources its APIExport declares, and providers.faros.sh claims none, so
+// core.kcp.io/LogicalCluster is simply not present there.
+//
+// An empty path with a nil error means the read succeeded but the cluster
+// carries no path annotation. Callers may treat that as "not a workspace this
+// hub created through the Workspace API", because every workspace created that
+// way is annotated.
+func (p *Provisioner) ResolveClusterPath(ctx context.Context, clusterID string) (string, error) {
+	if clusterID == "" {
+		return "", fmt.Errorf("ResolveClusterPath: clusterID is required")
+	}
+	cfg := rest.CopyConfig(p.kcpConfig)
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, clusterID)
+	dyn, err := dynamic.NewForConfig(cfg)
+	if err != nil {
+		return "", fmt.Errorf("dynamic client for cluster %s: %w", clusterID, err)
+	}
+	lc, err := dyn.Resource(logicalClusterGVR).Get(ctx, "cluster", metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("getting LogicalCluster in cluster %s: %w", clusterID, err)
+	}
+	return lc.GetAnnotations()[core.LogicalClusterPathAnnotationKey], nil
 }
 
 // ResolveWorkspaceCluster returns the logical cluster ID of the provider's

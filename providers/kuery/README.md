@@ -181,3 +181,19 @@ include a `providers-kuery` group:
    restarts `kuery` with edge engagement enabled.
 4. Connect an edge and open the portal — the Kuery tab shows the fleet
    inventory. (▶ `kuery-unregister` tears the CatalogEntry down.)
+
+## Running it yourself
+
+This provider can run in your own cluster instead of on the platform. faros
+creates a workspace for it in your organization, mints a credential scoped to
+that workspace alone, and generates the exact `helm` commands — under
+**Providers → Self-Hosting** in the portal.
+
+Nothing to fill in: the edges identity hash it claims against is resolved for
+you. kuery reads through edges, so self-hosting it usually means self-hosting
+`edges` as well — do that first and kuery will bind to your own instance.
+
+Once installed, the provider registers itself and your workspaces enable it
+exactly like the platform copy. See
+[docs/byo-providers.md](../../docs/byo-providers.md) for how the flow works, and
+[deploy/chart/README.md](deploy/chart/README.md) for every chart value.

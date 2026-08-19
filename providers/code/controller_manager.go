@@ -60,10 +60,6 @@ import (
 // provider's APIExport name (manifest.yaml spec.apiExport.name).
 const endpointSliceName = install.APIExportEndpointSliceName
 
-// defaultWorkspacePath is the kcp logical-cluster path the provider's APIExport
-// lives in (root:faros:providers:<name>). Overridable via CODE_WORKSPACE_PATH.
-const defaultWorkspacePath = "root:faros:providers:code"
-
 // controllerLeaseName gates the reconcilers on a Lease in the provider
 // workspace ("default" namespace — kcp serves Leases in every logical
 // cluster), so scaling the deployment past one replica keeps every CR
@@ -87,10 +83,10 @@ func startControllerManager(ctx context.Context, config *rest.Config, registry *
 	// watch. Ensure it here (idempotent) before building the provider. Best
 	// effort: log and continue if it fails — serve still offers MCP/portal, and
 	// the manager simply engages no clusters until the slice lands.
+	// Empty means "the workspace this kubeconfig already points at": kcp resolves
+	// an unset export path to the slice's own logical cluster, so one chart works
+	// for both the platform workspace and an org's self-hosted copy.
 	workspacePath := os.Getenv("CODE_WORKSPACE_PATH")
-	if workspacePath == "" {
-		workspacePath = defaultWorkspacePath
-	}
 	if err := install.EnsureAPIExportEndpointSlice(ctx, config, workspacePath); err != nil {
 		log.Printf("controller manager: WARNING could not ensure APIExportEndpointSlice: %v", err)
 	}

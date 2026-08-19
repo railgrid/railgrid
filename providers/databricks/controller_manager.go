@@ -260,7 +260,10 @@ func runControllerManagerTerm(ctx context.Context, config *rest.Config, validato
 	if err != nil {
 		return fmt.Errorf("dynamic client: %w", err)
 	}
-	workspacePath := envOr("DATABRICKS_WORKSPACE_PATH", defaultWorkspacePath)
+	// Empty means "the workspace this kubeconfig already points at": kcp resolves
+	// an unset export path to the slice's own logical cluster, so one chart works
+	// for both the platform workspace and an org's self-hosted copy.
+	workspacePath := envOr("DATABRICKS_WORKSPACE_PATH", "")
 	if err := sdkinstall.EnsureAPIExportEndpointSlice(ctx, dyn, apiExportName, apiExportName, workspacePath); err != nil {
 		return fmt.Errorf("ensuring APIExportEndpointSlice: %w", err)
 	}

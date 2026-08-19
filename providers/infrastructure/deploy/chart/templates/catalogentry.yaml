@@ -106,4 +106,40 @@ data:
           - resource: secrets
             verbs: [get, list, watch]
             tenantScoped: true
+      # Lets an organization run Application Templates in its own cluster
+      # (docs/byo-providers.md). Mirrors manifest.yaml — keep both in sync.
+      # The placeholder tokens below are substituted by the hub when it renders
+      # per-organization install instructions.
+      selfHosting:
+        supported: true
+        chart:
+          repository: "oci://ghcr.io/faroshq/charts"
+          name: "faros-infrastructure-provider"
+          version: {{ .Chart.Version | quote }}
+        namespace: "faros-provider-infrastructure"
+        releaseName: "infrastructure"
+        docsURL: "https://github.com/faroshq/faros/blob/main/providers/infrastructure/deploy/chart/README.md"
+        # The chart carries its own values reference, so the portal can show it
+        # offline and for the version actually installed.
+        valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
+        requiredValues:
+          - name: bootstrap.enabled
+            value: "true"
+            description: >-
+              Runs the provider's own init container, which installs its CRDs and
+              APIExport into your workspace.
+          - name: bootstrap.kubeconfigSource
+            value: supplied
+            description: >-
+              Use the credential you created rather than waiting for the platform
+              to deliver one — the hub cannot write Secrets into your cluster.
+          - name: bootstrap.kcpKubeconfigSecretRef.name
+            value: "{{`{{kubeconfigSecret}}`}}"
+            description: Secret holding the workspace credential.
+          - name: bootstrap.kcpKubeconfigSecretRef.key
+            value: "{{`{{kubeconfigSecretKey}}`}}"
+            description: Data key inside that Secret.
+          - name: bootstrap.workspacePath
+            value: "{{`{{workspacePath}}`}}"
+            description: Your organization's workspace for this provider.
 {{- end }}

@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Developer Guide
-nav_order: 6
+nav_order: 8
 description: "Local development environment with faros dev command"
 ---
 

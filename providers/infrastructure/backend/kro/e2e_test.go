@@ -78,6 +78,11 @@ const (
 	e2eInstanceWait = 120 * time.Second
 	e2ePollEvery    = 2 * time.Second
 
+	// e2eReadyGrace bounds how long an IN_PROGRESS instance is given to reach
+	// ACTIVE before the test accepts "applied but not ready". Readiness is a
+	// bonus here, not the contract.
+	e2eReadyGrace = 20 * time.Second
+
 	// e2eInstanceNamespace is where test instances are created — the RGD
 	// instance kinds are Namespaced (in production the instance controller
 	// creates them in the per-tenant runtime namespace; the standalone e2e
@@ -111,16 +116,30 @@ var e2ePlatformStamped = map[string]map[string]any{
 	},
 }
 
-// e2eApplyErrorMarkers are substrings kro puts in an instance condition when it
-// FAILS to apply a child resource (the bug class we guard against). Readiness
-// waits (pods not up because an image can't pull in CI) do not contain these.
-var e2eApplyErrorMarkers = []string{
-	"apply results contain errors",
-	"is invalid",
-	"Required value",
-	"failed to apply",
-	"admission webhook",
-}
+// kro reports instance progress structurally in status.state, which is what
+// this suite reads — not the prose in condition messages.
+//
+//	ERROR / FAILED  a node failed: the bug class this suite guards against (an
+//	                invalid object, a Required value, a webhook rejection, or a
+//	                readyWhen that cannot be evaluated).
+//	IN_PROGRESS     every object applied; at least one node has not reached a
+//	                terminal state (still converging, or waiting on readyWhen).
+//	ACTIVE          every node synced and ready.
+//
+// See kro's StateManager.Update: any node in Error makes the instance ERROR,
+// all-synced makes it ACTIVE, and everything else — including
+// WaitingForReadiness — leaves it IN_PROGRESS.
+//
+// Message substrings cannot make that distinction. kro nests a readiness wait
+// inside its "apply results contain errors" text, so a wait and a genuine
+// failure read alike; matching on "readyWhen" to tell them apart would also
+// swallow a readyWhen that fails to COMPILE, which is a real template bug.
+const (
+	e2eStateActive     = "ACTIVE"
+	e2eStateInProgress = "IN_PROGRESS"
+	e2eStateError      = "ERROR"
+	e2eStateFailed     = "FAILED"
+)
 
 func TestE2ESeedTemplates(t *testing.T) {
 	dyn, mapper := e2eClients(t)
@@ -172,16 +191,22 @@ func TestE2ESeedTemplates(t *testing.T) {
 				_ = dyn.Resource(instGVR).Namespace(e2eInstanceNamespace).Delete(context.Background(), inst.GetName(), metav1.DeleteOptions{})
 			})
 
-			waitInstanceApplied(t, dyn, instGVR, inst.GetName(), tmpl.Name)
-			t.Logf("template %q: instance reconciled (no apply error)", tmpl.Name)
-
-			// 3. The child objects the RGD declares actually exist in the
-			// runtime cluster (the Deployment/Service/StatefulSet/HTTPRoute/…),
-			// not just a clean instance status.
+			// The instance UID is how kro labels the children, and how the
+			// gateway stand-in finds this instance's routes. Read it before
+			// waiting, so the stand-in is already accepting routes while kro
+			// evaluates their readyWhen.
 			created, err := dyn.Resource(instGVR).Namespace(e2eInstanceNamespace).Get(context.Background(), inst.GetName(), metav1.GetOptions{})
 			if err != nil {
 				t.Fatalf("template %q: re-get instance for UID: %v", tmpl.Name, err)
 			}
+			simulateGatewayController(t, dyn, string(created.GetUID()))
+
+			state := waitInstanceApplied(t, dyn, instGVR, inst.GetName(), tmpl.Name)
+			t.Logf("template %q: instance reconciled, state=%s", tmpl.Name, state)
+
+			// 3. The child objects the RGD declares actually exist in the
+			// runtime cluster (the Deployment/Service/StatefulSet/HTTPRoute/…),
+			// not just a clean instance status.
 			verifyChildrenCreated(t, dyn, mapper, rgd, string(created.GetUID()), tmpl.Name)
 		})
 	}
@@ -333,45 +358,191 @@ func createInstance(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVersion
 	}
 }
 
-// waitInstanceApplied waits until kro has reconciled the instance and asserts it
-// applied its objects without an apply error. A readiness wait (images not
-// pulled in CI) is success — apply succeeded. An apply-error marker is failure.
-func waitInstanceApplied(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVersionResource, name, tmplName string) {
+// waitInstanceApplied waits until kro reports a state for the instance and
+// fails if that state is a failure. Returns the last state it saw.
+//
+// "Applied", not "ready", is the contract: a throwaway kind cluster cannot make
+// every node ready (images may not pull), so IN_PROGRESS passes. What must
+// never pass is ERROR/FAILED — that is kro reporting a node it could not apply,
+// or a readyWhen it could not evaluate.
+func waitInstanceApplied(t *testing.T, dyn dynamic.Interface, gvr schema.GroupVersionResource, name, tmplName string) string {
 	t.Helper()
 	deadline := time.Now().Add(e2eInstanceWait)
-	var sawConditions bool
+	var last string
+	var inProgressSince time.Time
 	for time.Now().Before(deadline) {
 		obj, err := dyn.Resource(gvr).Namespace(e2eInstanceNamespace).Get(context.Background(), name, metav1.GetOptions{})
 		if err != nil {
 			time.Sleep(e2ePollEvery)
 			continue
 		}
-		conds, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
-		for _, c := range conds {
-			cond, ok := c.(map[string]any)
-			if !ok {
-				continue
-			}
-			sawConditions = true
-			msg, _, _ := unstructured.NestedString(cond, "message")
-			for _, marker := range e2eApplyErrorMarkers {
-				if strings.Contains(msg, marker) {
-					ctype, _, _ := unstructured.NestedString(cond, "type")
-					t.Fatalf("template %q: kro failed to apply instance objects (%s): %s", tmplName, ctype, msg)
-				}
-			}
+		state, _, _ := unstructured.NestedString(obj.Object, "status", "state")
+		if state != "" {
+			last = state
 		}
-		// kro reconciled it and recorded conditions, none of which are apply
-		// errors → the objects were applied. (Readiness is out of scope: the
-		// images may be unpullable in CI.)
-		if sawConditions {
-			return
+		switch state {
+		case e2eStateError, e2eStateFailed:
+			t.Fatalf("template %q: kro reported instance state %s:\n%s",
+				tmplName, state, instanceConditionSummary(obj))
+		case e2eStateActive:
+			return state
+		}
+		// IN_PROGRESS or not yet written: keep polling. Everything is applied
+		// by then; staying briefly gives readiness a chance to land (the
+		// gateway stand-in needs a moment to accept the routes). Bounded, so a
+		// node that can never become ready here — an image that will not pull —
+		// costs a few seconds rather than the whole timeout.
+		if state == e2eStateInProgress {
+			if inProgressSince.IsZero() {
+				inProgressSince = time.Now()
+			} else if time.Since(inProgressSince) > e2eReadyGrace {
+				return state
+			}
 		}
 		time.Sleep(e2ePollEvery)
 	}
-	if !sawConditions {
-		t.Fatalf("template %q: kro never reconciled instance %q within %s", tmplName, name, e2eInstanceWait)
+	if last == "" {
+		t.Fatalf("template %q: kro never wrote status.state for instance %q within %s",
+			tmplName, name, e2eInstanceWait)
 	}
+	return last
+}
+
+// instanceConditionSummary renders an instance's conditions for a failure
+// message, so a broken template reports why rather than just "ERROR".
+func instanceConditionSummary(obj *unstructured.Unstructured) string {
+	conds, _, _ := unstructured.NestedSlice(obj.Object, "status", "conditions")
+	var b strings.Builder
+	for _, c := range conds {
+		cond, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		ctype, _, _ := unstructured.NestedString(cond, "type")
+		status, _, _ := unstructured.NestedString(cond, "status")
+		reason, _, _ := unstructured.NestedString(cond, "reason")
+		msg, _, _ := unstructured.NestedString(cond, "message")
+		fmt.Fprintf(&b, "  %s=%s reason=%s: %s\n", ctype, status, reason, msg)
+	}
+	return b.String()
+}
+
+// httpRouteGVR is the exposure layer the seed templates attach to the platform
+// Gateway.
+var httpRouteGVR = schema.GroupVersionResource{
+	Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes",
+}
+
+// simulateGatewayController stands in for the Gateway implementation that would
+// accept an HTTPRoute in a real cluster, so the exposure layer's readyWhen is
+// actually EXERCISED here rather than merely tolerated.
+//
+// `make e2e-infrastructure-up` installs the Gateway API CRDs but no controller,
+// so nothing writes HTTPRoute.status.parents. Without this the readyWhen CEL is
+// never evaluated against a populated status and could be wrong in a way this
+// suite would not notice.
+//
+// It writes exactly what the templates assert: Accepted and ResolvedRefs, both
+// True, both stamped with the route's current generation, under a parentRef
+// matching the configured Gateway. It runs until the test ends and re-stamps
+// each pass, so a route kro rewrites (bumping generation) is re-accepted rather
+// than going stale.
+func simulateGatewayController(t *testing.T, dyn dynamic.Interface, instanceUID string) {
+	t.Helper()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	t.Cleanup(func() { close(stop); <-done })
+
+	go func() {
+		defer close(done)
+		for {
+			routes, err := dyn.Resource(httpRouteGVR).Namespace(e2eInstanceNamespace).List(
+				context.Background(),
+				metav1.ListOptions{LabelSelector: kroInstanceIDLabel + "=" + instanceUID},
+			)
+			if err == nil {
+				for i := range routes.Items {
+					acceptHTTPRoute(dyn, &routes.Items[i])
+				}
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(time.Second):
+			}
+		}
+	}()
+}
+
+// acceptHTTPRoute stamps Accepted + ResolvedRefs onto one route's status, the
+// way a Gateway controller does. Best effort: on conflict the next pass retries.
+func acceptHTTPRoute(dyn dynamic.Interface, route *unstructured.Unstructured) {
+	gen := route.GetGeneration()
+	if parents, found, _ := unstructured.NestedSlice(route.Object, "status", "parents"); found && parentsAccepted(parents, gen) {
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	cond := func(ctype string) map[string]any {
+		return map[string]any{
+			"type":               ctype,
+			"status":             "True",
+			"reason":             ctype,
+			"message":            "accepted by the e2e gateway stand-in",
+			"lastTransitionTime": now,
+			"observedGeneration": gen,
+		}
+	}
+	updated := route.DeepCopy()
+	parent := map[string]any{
+		"parentRef": map[string]any{
+			"group":     "gateway.networking.k8s.io",
+			"kind":      "Gateway",
+			"name":      DefaultGatewayName,
+			"namespace": DefaultGatewayNamespace,
+		},
+		"controllerName": "faros.sh/e2e-gateway-stand-in",
+		"conditions":     []any{cond("Accepted"), cond("ResolvedRefs")},
+	}
+	if err := unstructured.SetNestedSlice(updated.Object, []any{parent}, "status", "parents"); err != nil {
+		return
+	}
+	_, _ = dyn.Resource(httpRouteGVR).Namespace(route.GetNamespace()).UpdateStatus(
+		context.Background(), updated, metav1.UpdateOptions{})
+}
+
+// parentsAccepted reports whether a route already carries what the templates'
+// readyWhen requires, at its current generation.
+func parentsAccepted(parents []any, gen int64) bool {
+	for _, p := range parents {
+		pm, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		conds, _, _ := unstructured.NestedSlice(pm, "conditions")
+		var accepted, resolved bool
+		for _, c := range conds {
+			cm, ok := c.(map[string]any)
+			if !ok {
+				continue
+			}
+			ctype, _, _ := unstructured.NestedString(cm, "type")
+			status, _, _ := unstructured.NestedString(cm, "status")
+			og, _, _ := unstructured.NestedInt64(cm, "observedGeneration")
+			if status != "True" || og != gen {
+				continue
+			}
+			switch ctype {
+			case "Accepted":
+				accepted = true
+			case "ResolvedRefs":
+				resolved = true
+			}
+		}
+		if accepted && resolved {
+			return true
+		}
+	}
+	return false
 }
 
 // verifyChildrenCreated asserts kro actually created, in the runtime cluster,

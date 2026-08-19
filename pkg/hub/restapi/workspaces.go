@@ -67,7 +67,7 @@ func (h *Handler) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		names, err := h.mgr.bootstrapper.ListChildWorkspaces(r.Context(), orgUUID)
+		names, err := h.mgr.bootstrapper.ListChildTeamWorkspaces(r.Context(), orgUUID)
 		if err != nil {
 			writeError(w, err)
 			return

@@ -41,6 +41,7 @@ import (
 	"github.com/faroshq/faros/pkg/hub/kcp"
 	hubproviders "github.com/faroshq/faros/pkg/hub/providers"
 	"github.com/faroshq/faros/pkg/hub/tenant"
+	"github.com/faroshq/faros/pkg/kcppaths"
 )
 
 // ===== fakes =====
@@ -180,13 +181,18 @@ func (f *fakeOps) EnsureProviderAPIBinding(_ context.Context, orgUUID, wsUUID, b
 
 // ListProviderAPIBindings is the test stub for the read-side provider-enable
 // handler. It returns a copy so handlers cannot mutate fake state by accident.
-func (f *fakeOps) ListProviderAPIBindings(_ context.Context, orgUUID, wsUUID string) (map[string]string, error) {
+func (f *fakeOps) ListProviderAPIBindings(_ context.Context, orgUUID, wsUUID string) (map[string]kcp.ProviderBinding, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := wsKey{orgUUID, wsUUID}
-	out := make(map[string]string, len(f.providerBindings[key]))
+	out := make(map[string]kcp.ProviderBinding, len(f.providerBindings[key]))
 	for providerName, bindingName := range f.providerBindings[key] {
-		out[providerName] = bindingName
+		// The fake records platform bindings; tests that need the self-hosted
+		// shape assert on the real bootstrapper instead.
+		out[providerName] = kcp.ProviderBinding{
+			Name:       bindingName,
+			ExportPath: kcppaths.ProviderPath(providerName),
+		}
 	}
 	return out, nil
 }
@@ -214,11 +220,16 @@ func (f *fakeOps) RemoveAppAccessGrant(_ context.Context, _, _, _ string) error 
 	return nil
 }
 
-func (f *fakeOps) ListChildWorkspaces(_ context.Context, orgUUID string) ([]string, error) {
+func (f *fakeOps) ListChildTeamWorkspaces(_ context.Context, orgUUID string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]string, 0, len(f.childWorkspaces[orgUUID]))
 	for ws := range f.childWorkspaces[orgUUID] {
+		// Mirror the real implementation: the org-providers container is not a
+		// team workspace and must never surface in a tenant-facing list.
+		if ws == kcppaths.OrgProvidersWorkspaceName {
+			continue
+		}
 		out = append(out, ws)
 	}
 	return out, nil

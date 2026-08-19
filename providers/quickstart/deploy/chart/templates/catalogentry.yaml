@@ -44,4 +44,20 @@ data:
           - resource: configmaps
             verbs: [get, list, watch]
             tenantScoped: true
+      # Lets an organization run its own copy of this provider (see
+      # docs/byo-providers.md). The chart version is stamped from the release so
+      # the instructions the hub generates pin the same version that published
+      # this entry. Mirrors manifest.yaml — keep both in sync.
+      selfHosting:
+        supported: true
+        chart:
+          repository: "oci://ghcr.io/faroshq/charts"
+          name: "faros-quickstart-provider"
+          version: {{ .Chart.Version | quote }}
+        namespace: "faros-provider-quickstart"
+        releaseName: "quickstart"
+        docsURL: "https://github.com/faroshq/faros/blob/main/providers/quickstart/deploy/chart/README.md"
+        # The chart carries its own values reference, so the portal can show it
+        # offline and for the version actually installed.
+        valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
 {{- end }}

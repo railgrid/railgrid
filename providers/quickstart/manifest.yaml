@@ -83,3 +83,18 @@ spec:
       - resource: configmaps
         verbs: [get, list, watch]
         tenantScoped: true
+  # Self-hosting: lets an organization run its own copy of this provider in its
+  # own cluster instead of using the platform's. The hub renders per-org install
+  # instructions from these coordinates (see docs/byo-providers.md), so the
+  # provider describes its deployment once here rather than every org
+  # reverse-engineering it. Keep in lockstep with
+  # deploy/chart/templates/catalogentry.yaml — that copy is the one that reaches
+  # production.
+  selfHosting:
+    supported: true
+    chart:
+      repository: "oci://ghcr.io/faroshq/charts"
+      name: "faros-quickstart-provider"
+    namespace: "faros-provider-quickstart"
+    releaseName: "quickstart"
+    docsURL: "https://github.com/faroshq/faros/blob/main/providers/quickstart/deploy/chart/README.md"

@@ -22,8 +22,13 @@ For the fastest local dev loop, use [Tilt](https://tilt.dev/) instead of running
 ### Start everything
 
 ```bash
-tilt up
+make tilt
 ```
+
+This wraps `tilt up -f Tiltfile` and first checks that no local kcp is running
+and that nothing already holds `:9443` or Tilt's own port — the two stacks
+(`make tilt` and `make tilt-cluster`) cannot run side by side. Plain `tilt up`
+still works if you want to skip the checks.
 
 This starts two local resources:
 

@@ -1,7 +1,7 @@
 ---
 layout: default
 title: MCP Architecture
-nav_order: 7
+nav_order: 9
 description: "How faros aggregates Model Context Protocol (MCP) tools from in-binary edges and out-of-process providers into one endpoint"
 ---
 

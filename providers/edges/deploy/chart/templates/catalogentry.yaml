@@ -79,4 +79,26 @@ data:
             resource: subjectaccessreviews
             verbs: [create]
             tenantScoped: true
+      # Lets an organization run edges in its own cluster (docs/byo-providers.md).
+      # Mirrors manifest.yaml — keep both in sync.
+      selfHosting:
+        supported: true
+        chart:
+          repository: "oci://ghcr.io/faroshq/charts"
+          name: "faros-edges-provider"
+          version: {{ .Chart.Version | quote }}
+        namespace: "faros-provider-edges"
+        releaseName: "edges"
+        docsURL: "https://github.com/faroshq/faros/blob/main/providers/edges/deploy/chart/README.md"
+        # The chart carries its own values reference, so the portal can show it
+        # offline and for the version actually installed.
+        valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
+        requiredValues:
+          - name: hub.externalURL
+            value: "{{`{{hubURL}}`}}"
+            description: >-
+              Address baked into every agent kubeconfig this provider mints, so
+              agents reach kcp through the hub. Derived from the hub's own
+              external URL; override only if your agents reach faros at a
+              different address.
 {{- end }}

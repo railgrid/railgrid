@@ -86,4 +86,29 @@ data:
   catalogentry.yaml: |
 {{ include "appstudio.catalogEntry" . | indent 4 }}
 {{- end }}
+      # Lets an organization run this provider in its own cluster
+      # (docs/byo-providers.md). Keep manifest.yaml and
+      # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the
+      # one that reaches production.
+      selfHosting:
+        supported: true
+        chart:
+          repository: "oci://ghcr.io/faroshq/charts"
+          name: "faros-app-studio-provider"
+          version: {{ .Chart.Version | quote }}
+        namespace: "faros-provider-app-studio"
+        releaseName: "app-studio"
+        docsURL: "https://github.com/faroshq/faros/blob/main/providers/app-studio/deploy/chart/README.md"
+        # The chart carries its own values reference, so the portal can show it
+        # offline and for the version actually installed.
+        valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
+        requiredValues:
+          - name: apiExport.infraIdentityHash
+            identityFor: "infrastructure.providers.faros.sh"
+            description: >-
+              Identity hash of the Application Templates APIExport, needed to lifecycle instances.
+          - name: apiExport.codeIdentityHash
+            identityFor: "code.providers.faros.sh"
+            description: >-
+              Identity hash of the code APIExport, needed for repository access.
 {{- end }}

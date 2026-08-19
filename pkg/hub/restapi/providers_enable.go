@@ -89,7 +89,9 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prov, found := h.mgr.providers.Get(providerName)
+	// Org-scoped resolution: the caller's own Org providers win over
+	// platform-global ones of the same name, and another Org's are invisible.
+	prov, found := h.mgr.providers.GetForOrg(tc.OrgUUID, providerName)
 	if !found {
 		writeStatus(w, http.StatusNotFound, "NotFound", "provider "+providerName+" not found")
 		return
@@ -198,7 +200,7 @@ func (h *Handler) missingProviderDependencies(ctx context.Context, orgUUID, wsUU
 		if _, ok := bindings[depName]; ok {
 			continue
 		}
-		depProvider, found := h.mgr.providers.Get(depName)
+		depProvider, found := h.mgr.providers.GetForOrg(orgUUID, depName)
 		if found && depProvider.Ready() && depProvider.APIExportName == "" {
 			continue
 		}
@@ -247,11 +249,29 @@ func (h *Handler) disableProvider(w http.ResponseWriter, r *http.Request) {
 
 // ListEnabledProvidersResponse is the body of GET .../providers/enabled.
 // Items are keyed by provider name (the binding's metadata.name matches
-// the provider name by existing convention), value is the binding name —
-// kept as a map so the portal can do "is provider X enabled" lookups in
-// O(1) without indexing client-side.
+// the provider name by existing convention) so the portal can do "is provider
+// X enabled" lookups in O(1) without indexing client-side.
+//
+// BindingNamesByProvider is retained as-is for existing consumers;
+// BindingsByProvider adds the export the binding actually points at.
 type ListEnabledProvidersResponse struct {
-	BindingNamesByProvider map[string]string `json:"bindingNamesByProvider"`
+	BindingNamesByProvider map[string]string                `json:"bindingNamesByProvider"`
+	BindingsByProvider     map[string]EnabledProviderDetail `json:"bindingsByProvider"`
+}
+
+// EnabledProviderDetail says not just THAT a provider is enabled here but WHICH
+// instance of it is. An Org that self-hosts a provider the platform also ships
+// has two exports competing for one name, and a workspace bound before the
+// switch still points at the platform one. Reporting only the binding name
+// would render that as plain "Enabled" and tell the user they are running their
+// own instance when they are not.
+type EnabledProviderDetail struct {
+	BindingName string `json:"bindingName"`
+	// ExportPath is the workspace path of the bound APIExport.
+	ExportPath string `json:"exportPath"`
+	// SelfHosted is true when the binding targets the Org's own provider
+	// instance rather than the platform's.
+	SelfHosted bool `json:"selfHosted"`
 }
 
 // listEnabledProviders handles GET /api/orgs/{org}/workspaces/{ws}/providers/enabled.
@@ -276,7 +296,20 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "list APIBindings: "+err.Error())
 		return
 	}
+	names := make(map[string]string, len(bindings))
+	details := make(map[string]EnabledProviderDetail, len(bindings))
+	for provider, binding := range bindings {
+		names[provider] = binding.Name
+		details[provider] = EnabledProviderDetail{
+			BindingName: binding.Name,
+			ExportPath:  binding.ExportPath,
+			SelfHosted:  binding.SelfHosted,
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(ListEnabledProvidersResponse{BindingNamesByProvider: bindings})
+	_ = json.NewEncoder(w).Encode(ListEnabledProvidersResponse{
+		BindingNamesByProvider: names,
+		BindingsByProvider:     details,
+	})
 }

@@ -1,9 +1,24 @@
 # Provider scoping — Global, Org, Personal
 
-**Status:** Design draft
+**Status:** Design draft — **partly superseded for the Org scope**, see below
 **Owner:** TBD
 **Last updated:** 2026-05-30
 **Reads as a delta on:** [providers.md](./providers.md), [organizations.md](./organizations.md)
+
+> **Superseded for the Org scope by [byo-providers.md](./byo-providers.md).**
+> This doc models an Org-scoped provider as bring-your-own-*URL*: a
+> `CatalogEntry` in the Org workspace, explicitly with "no managed
+> ServiceAccount, no kcp provider workspace bootstrap". What shipped instead
+> gives an org-owned provider a real provider workspace at
+> `root:faros:tenants:{org}:providers:{name}` and a real APIExport, so it can
+> contribute CRDs and not just a UI. The `CatalogEntry` therefore lives in the
+> provider's own workspace, not the Org workspace, and P-1's UUID/slug identity
+> scheme is not implemented — providers are still named, with cross-scope
+> collisions refused at registration.
+>
+> P-3 (per-Org `bind` ClusterRole), P-7 (Disable confirm gate), P-9 through P-12,
+> and the Personal scope remain unimplemented. Read this doc for those; read
+> byo-providers.md for what the Org scope actually does today.
 
 ---
 

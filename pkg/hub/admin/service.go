@@ -331,7 +331,7 @@ type OrgWorkspace struct {
 // workspace that hasn't reached Ready (no cluster) or whose provider
 // listing fails still appears with whatever fields resolved.
 func (s *Service) ListOrgWorkspaces(ctx context.Context, orgUUID string) ([]OrgWorkspace, error) {
-	names, err := s.bootstrapper.ListChildWorkspaces(ctx, orgUUID)
+	names, err := s.bootstrapper.ListChildTeamWorkspaces(ctx, orgUUID)
 	if err != nil {
 		return nil, fmt.Errorf("listing child workspaces for org %s: %w", orgUUID, err)
 	}

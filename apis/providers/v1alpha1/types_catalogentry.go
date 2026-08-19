@@ -119,6 +119,15 @@ type CatalogEntrySpec struct {
 	// +optional
 	APIExport *ProviderAPIExport `json:"apiExport,omitempty"`
 
+	// SelfHosting declares that an organization may run its own copy of this
+	// provider in its own cluster, and carries the Helm coordinates needed to
+	// do it. The hub renders install instructions from this, so a provider
+	// describes its own deployment once here instead of every org
+	// reverse-engineering it from the repo. Absent or Supported=false means
+	// the provider is platform-operated only.
+	// +optional
+	SelfHosting *ProviderSelfHosting `json:"selfHosting,omitempty"`
+
 	// EdgeProxyAccess requests that, when a tenant enables this provider,
 	// the hub grants the provider's ServiceAccount the "proxy" verb on
 	// edges.faros.sh in the tenant's workspace. This lets the
@@ -497,6 +506,118 @@ type ProviderPermissionClaim struct {
 	// CatalogEntry.
 	// +optional
 	TenantScoped bool `json:"tenantScoped,omitempty"`
+}
+
+// ProviderSelfHosting describes how an organization runs its own copy of this
+// provider, instead of consuming the platform's.
+//
+// The provider is the only party that actually knows how it is deployed, so it
+// declares that here once and the hub renders per-organization install
+// instructions from it. Everything in this struct is deployment metadata; none
+// of it grants any privilege, and none of it is trusted for authorization.
+type ProviderSelfHosting struct {
+	// Supported gates whether this provider is offered for self-hosting at all.
+	// A provider that cannot run outside the platform (or has not been verified
+	// to) simply omits this block.
+	Supported bool `json:"supported"`
+
+	// Chart is the Helm chart that deploys this provider.
+	// +optional
+	Chart *ProviderSelfHostingChart `json:"chart,omitempty"`
+
+	// Namespace is the namespace the instructions install into.
+	// Defaults to faros-provider-<catalog entry name> when empty.
+	// +optional
+	// +kubebuilder:validation:MaxLength=63
+	Namespace string `json:"namespace,omitempty"`
+
+	// ReleaseName is the suggested Helm release name. Defaults to the
+	// CatalogEntry name when empty.
+	// +optional
+	// +kubebuilder:validation:MaxLength=53
+	ReleaseName string `json:"releaseName,omitempty"`
+
+	// DocsURL points at provider-specific setup notes the generated
+	// instructions cannot cover (external credentials, sizing, and so on).
+	// Used as the fallback when ValuesDoc is empty.
+	// +optional
+	// +kubebuilder:validation:MaxLength=2048
+	DocsURL string `json:"docsURL,omitempty"`
+
+	// ValuesDoc is the chart's own values reference, in Markdown, embedded so
+	// it travels with the chart rather than being fetched from the internet.
+	//
+	// Charts render this from their README (`.Files.Get "README.md"`). Carrying
+	// it inline buys three things a link cannot: it works in an air-gapped or
+	// private-repo install, it documents the chart version actually deployed
+	// rather than whatever is on the default branch, and the portal can show it
+	// without a round trip.
+	//
+	// Bounded because CatalogEntries are watched objects — every edit fans out
+	// through the catalog watch to every hub replica — so this must stay a
+	// values reference, not a manual.
+	// +optional
+	// +kubebuilder:validation:MaxLength=65536
+	ValuesDoc string `json:"valuesDoc,omitempty"`
+
+	// RequiredValues are Helm values the installer must supply beyond the ones
+	// the hub fills in itself (chart coordinates, hub URL, kubeconfig secret).
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=32
+	RequiredValues []ProviderSelfHostingValue `json:"requiredValues,omitempty"`
+}
+
+// ProviderSelfHostingChart locates the provider's published Helm chart.
+type ProviderSelfHostingChart struct {
+	// Repository is the chart repository, e.g. "oci://ghcr.io/faroshq/charts".
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=2048
+	Repository string `json:"repository"`
+
+	// Name is the chart name within the repository, e.g.
+	// "faros-quickstart-provider".
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Version is the chart version to install, e.g. "0.1.4". Note this is the
+	// bare semver, whereas spec.version carries the "v"-prefixed app version.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	Version string `json:"version,omitempty"`
+}
+
+// ProviderSelfHostingValue is one Helm value the installer must set.
+type ProviderSelfHostingValue struct {
+	// Name is the Helm value path, e.g. "apiExport.edgesIdentityHash".
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Description explains what to put here, shown next to the value in the
+	// portal.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	Description string `json:"description,omitempty"`
+
+	// IdentityFor names an APIExport whose kcp identity hash is the value for
+	// this setting, e.g. "edges.providers.faros.sh". When set, the hub resolves
+	// the hash and fills the value in for the installer.
+	//
+	// This exists because identity hashes are the one required value a person
+	// cannot reasonably produce by hand: today they are copied out of an admin
+	// debug view, and getting one wrong yields a provider that binds
+	// successfully and then silently sees none of the resources it claimed.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	IdentityFor string `json:"identityFor,omitempty"`
+
+	// Value is a literal default the hub puts in the generated command.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	Value string `json:"value,omitempty"`
 }
 
 // CatalogEntryStatus defines the observed state of a CatalogEntry.

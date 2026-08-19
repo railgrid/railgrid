@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -36,6 +37,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
+	"github.com/faroshq/faros/pkg/kcppaths"
 )
 
 // CatalogReconciler keeps the in-process Registry in sync with the cluster's
@@ -64,6 +66,18 @@ type CatalogReconciler struct {
 	// mints kubeconfigs (admin onboarding does).
 	hubExternalURL string
 	hubInternalURL string
+
+	// clusterPaths caches logical-cluster-ID → canonical workspace path. The
+	// path is what tells a platform provider apart from an org-owned one and
+	// attributes the latter to its Org; the reconcile request carries only the
+	// cluster ID. It is read from the cluster's own LogicalCluster object, which
+	// kcp stamps with the kcp.io/path annotation at workspace creation.
+	//
+	// Cached because it never changes for a given cluster: a workspace cannot be
+	// re-parented or renamed. Entries are only ever added, so the map is bounded
+	// by the number of provider workspaces the hub has observed.
+	clusterPathsMu sync.RWMutex
+	clusterPaths   map[string]string
 }
 
 // CatalogReconcilerOptions threads optional extras into the reconciler
@@ -88,6 +102,7 @@ func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *re
 		noKCP:          kcpConfig == nil,
 		hubExternalURL: opts.HubExternalURL,
 		hubInternalURL: opts.HubInternalURL,
+		clusterPaths:   map[string]string{},
 	}
 	if kcpConfig != nil {
 		r.prov = NewProvisioner(kcpConfig)
@@ -96,6 +111,81 @@ func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *re
 		Named("provider-catalog").
 		For(&providersv1alpha1.CatalogEntry{}).
 		Complete(r)
+}
+
+// workspacePath returns the canonical kcp workspace path for a logical cluster,
+// caching the result.
+//
+// The read goes through the hub's kcp-admin config (r.prov), NOT the
+// multicluster client for this request. That client is scoped to the
+// providers.faros.sh APIExport virtual workspace, and a VW serves only the
+// resources its APIExport declares — providers.faros.sh declares none beyond
+// catalogentries, so core.kcp.io/LogicalCluster is not reachable there at all.
+//
+// An error return means "unknown", and callers MUST NOT fall back to a default
+// scope: "" is the platform-global scope, which is the most privileged one in
+// the registry, so guessing it on failure would publish an Org's provider to
+// every tenant. A successful read with no path annotation is different and is
+// reported as (""), nil: every workspace this hub creates goes through the
+// Workspace API, which always stamps the annotation, so an unannotated cluster
+// cannot be an org provider workspace.
+func (r *CatalogReconciler) workspacePath(ctx context.Context, clusterName string) (string, error) {
+	r.clusterPathsMu.RLock()
+	path, ok := r.clusterPaths[clusterName]
+	r.clusterPathsMu.RUnlock()
+	if ok {
+		return path, nil
+	}
+
+	path, err := r.prov.ResolveClusterPath(ctx, clusterName)
+	if err != nil {
+		// Not cached: a transient read failure must not pin a scope for the
+		// lifetime of the process.
+		return "", err
+	}
+
+	// Safe to cache either way now: a workspace cannot be renamed or
+	// re-parented, so its path is fixed for the life of the cluster.
+	r.clusterPathsMu.Lock()
+	r.clusterPaths[clusterName] = path
+	r.clusterPathsMu.Unlock()
+	return path, nil
+}
+
+// scopeFor resolves which Org owns the providers in a logical cluster: the
+// owning Org's UUID, or "" for a platform provider workspace.
+//
+// Without kcp (r.prov == nil) everything is platform-scoped. That is correct
+// rather than a fallback: org-owned providers cannot exist without kcp, since
+// the hub has to create their workspaces.
+//
+// Note the shape of the "" answer: any resolvable path that is not an
+// org-provider path maps to platform scope, which is the widest one. That is
+// safe only because of who can reach this reconciler at all — the catalog
+// manager's cluster set is exactly the logical clusters holding a Ready
+// providers.faros.sh APIBinding, and the only three sources are
+// root:faros:system:providers plus the two provider-workspace trees, all
+// hub-created. A tenant cannot put their own workspace into that set: the
+// `workspace` WorkspaceType binds only core.faros.sh, and nothing grants
+// tenants `bind` on providers.faros.sh.
+//
+// If that ever changes — if providers.faros.sh becomes bindable from a team
+// workspace — a tenant could register a CatalogEntry that lands here with a
+// non-provider path and be published platform-wide. Re-derive this default
+// before widening that bind.
+func (r *CatalogReconciler) scopeFor(ctx context.Context, clusterName string) (string, error) {
+	if r.prov == nil {
+		return "", nil
+	}
+	path, err := r.workspacePath(ctx, clusterName)
+	if err != nil {
+		return "", err
+	}
+	orgUUID, _, ok := kcppaths.SplitOrgProviderPath(path)
+	if !ok {
+		return "", nil
+	}
+	return orgUUID, nil
 }
 
 // Reconcile parses one CatalogEntry and updates the registry + status.
@@ -111,16 +201,32 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	var entry providersv1alpha1.CatalogEntry
 	if err := c.Get(ctx, req.NamespacedName, &entry); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Deletion: drop from registry. We key by name only across all
-			// clusters for Phase 1A; this is fine because catalog entries
-			// are intended to live in root:faros:providers and the chart
-			// names them uniquely cluster-wide.
-			if r.reg.Delete(req.Name) {
+			// Deletion. The object is gone, so its workspace path — and with it
+			// its scope — is no longer resolvable; drop by the cluster the event
+			// came from instead, which identifies the record unambiguously
+			// across scopes.
+			if r.reg.DeleteByCluster(string(req.ClusterName), req.Name) {
 				logger.Info("Removed provider from registry")
 			}
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Ownership comes from the workspace the entry lives in, never from a field
+	// on the entry: the provider's own init writes the CatalogEntry, so anything
+	// self-declared could claim another Org's scope.
+	//
+	// Failing the reconcile (rather than defaulting the scope) is deliberate:
+	// the default would be platform-global, the widest scope there is, so a
+	// resolution failure would publish an Org's provider to every tenant and
+	// make it routable by bare name. Requeueing just delays the entry appearing.
+	orgUUID, err := r.scopeFor(ctx, string(req.ClusterName))
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("resolving provider scope for cluster %s: %w", req.ClusterName, err)
+	}
+	if orgUUID != "" {
+		logger = logger.WithValues("orgUUID", orgUUID)
 	}
 
 	// Snapshot the status as observed. Every hub replica runs this reconciler
@@ -136,7 +242,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// registry record would allow an action whose contract no longer matches
 	// the CatalogEntry observed by the controller.
 	if err := providersv1alpha1.ValidateProviderActions(entry.Spec.Actions); err != nil {
-		r.reg.Delete(entry.Name)
+		r.reg.DeleteScoped(orgUUID, entry.Name)
 		now := metav1.NewTime(time.Now())
 		entry.Status.Endpoints = &providersv1alpha1.ProviderEndpoints{}
 		setCondition(&entry.Status.Conditions, metav1.Condition{
@@ -163,6 +269,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 
 	prov := Provider{
 		Name:         entry.Name,
+		OrgUUID:      orgUUID,
 		DisplayName:  entry.Spec.DisplayName,
 		Description:  entry.Spec.Description,
 		IconURL:      entry.Spec.IconURL,
@@ -175,6 +282,29 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		CatalogEntryCluster: string(req.ClusterName),
 	}
 	prov.EdgeProxyAccess = entry.Spec.EdgeProxyAccess
+	if sh := entry.Spec.SelfHosting; sh != nil {
+		mapped := &SelfHosting{
+			Supported:   sh.Supported,
+			Namespace:   sh.Namespace,
+			ReleaseName: sh.ReleaseName,
+			DocsURL:     sh.DocsURL,
+			ValuesDoc:   sh.ValuesDoc,
+		}
+		if sh.Chart != nil {
+			mapped.ChartRepo = sh.Chart.Repository
+			mapped.ChartName = sh.Chart.Name
+			mapped.ChartVersion = sh.Chart.Version
+		}
+		for _, v := range sh.RequiredValues {
+			mapped.RequiredValues = append(mapped.RequiredValues, SelfHostingValue{
+				Name:        v.Name,
+				Description: v.Description,
+				IdentityFor: v.IdentityFor,
+				Value:       v.Value,
+			})
+		}
+		prov.SelfHosting = mapped
+	}
 	// Liveness travels through status so it reaches every hub replica, not just
 	// the one whose heartbeat endpoint the provider happened to hit.
 	if entry.Status.LastHeartbeat != nil {
@@ -184,7 +314,15 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	}
 	if entry.Spec.APIExport != nil {
 		prov.APIExportName = entry.Spec.APIExport.Name
-		prov.APIExportPath = providersParentWorkspace + ":" + entry.Name
+		// The export lives in the workspace the entry was observed in. For an
+		// org-owned provider that is the Org's own provider workspace, not the
+		// platform parent — binding the platform path would resolve to a
+		// different (or absent) export.
+		if orgUUID != "" {
+			prov.APIExportPath = kcppaths.OrgProviderPath(orgUUID, entry.Name)
+		} else {
+			prov.APIExportPath = providersParentWorkspace + ":" + entry.Name
+		}
 		for _, c := range entry.Spec.APIExport.PermissionClaims {
 			prov.PermissionClaims = append(prov.PermissionClaims, PermissionClaim{
 				Group:        c.Group,
@@ -209,7 +347,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	}
 	parsedActions, actionSchemaErr := ParseProviderActions(entry.Spec.Actions)
 	if actionSchemaErr != nil {
-		r.reg.Delete(entry.Name)
+		r.reg.DeleteScoped(orgUUID, entry.Name)
 		now := metav1.NewTime(time.Now())
 		entry.Status.Endpoints = &providersv1alpha1.ProviderEndpoints{}
 		setCondition(&entry.Status.Conditions, metav1.Condition{
@@ -307,12 +445,20 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		prov.LocalUIAssets = spec.LocalUIAssets
 	}
 
-	// EndpointsValid covers spec parse health and "the provider has
-	// somewhere to render": a URL endpoint OR a builtin Vue route OR a
-	// backend proxy target OR embedded UI assets. Heartbeat-driven
-	// readiness is layered on by the sweeper (see Provider.Ready()).
+	// EndpointsValid covers spec parse health and "the provider offers
+	// something": a URL endpoint OR a builtin Vue route OR a backend proxy
+	// target OR embedded UI assets OR an APIExport. Heartbeat-driven readiness
+	// is layered on by the sweeper (see Provider.Ready()).
+	//
+	// An APIExport alone counts: such a provider contributes CRDs to the
+	// workspaces that Enable it and is fully usable via kubectl and the GraphQL
+	// gateway with no hub-proxied surface at all. That shape is the common case
+	// for org-owned providers, which frequently ship an API and no portal UI.
+	// It opens no route — the proxies independently 404 when UIURL/BackendURL
+	// are nil — it only stops the portal from rendering the provider as broken.
 	prov.EndpointsValid = len(parseErrs) == 0 &&
-		(prov.UIURL != nil || prov.BackendURL != nil || prov.VirtualWorkspaceURL != nil || prov.BuiltinRoute != "" || prov.LocalUIAssets != nil)
+		(prov.UIURL != nil || prov.BackendURL != nil || prov.VirtualWorkspaceURL != nil ||
+			prov.BuiltinRoute != "" || prov.LocalUIAssets != nil || prov.APIExportName != "")
 
 	r.reg.Upsert(prov)
 	// Render URLs as strings: a nil *url.URL panics klog's stringer (shows as
@@ -323,14 +469,27 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// APIExport, SA, or kubeconfig — that moved to admin onboarding
 	// (pkg/hub/admin) plus the provider's own Helm `init` (faros-provider-sdk).
 	// We only RESOLVE the provider workspace's logical cluster ID (read-only)
-	// so the Enable endpoint can build the edges-proxy RBAC subject. Returns
-	// empty until the provider has been onboarded, which is the correct gate.
-	if r.prov != nil && entry.Spec.APIExport != nil {
+	// so the Enable endpoint can build the edges-proxy RBAC subject.
+	switch {
+	case entry.Spec.APIExport == nil:
+		// No export to bind, so nothing needs the RBAC subject.
+	case orgUUID != "":
+		// An org-owned provider always registers its CatalogEntry from inside
+		// its own workspace, so the cluster the entry was observed in IS the
+		// provider workspace — no lookup needed. (Platform providers can't take
+		// this shortcut: the builtin entries are seeded into
+		// root:faros:system:providers, a different workspace from the one they
+		// describe.)
+		entry.Status.Workspace = kcppaths.OrgProviderPath(orgUUID, entry.Name)
+		r.reg.SetWorkspaceCluster(orgUUID, entry.Name, string(req.ClusterName))
+	case r.prov != nil:
+		// Returns empty until the provider has been onboarded, which is the
+		// correct gate.
 		if cluster, err := r.prov.ResolveWorkspaceCluster(ctx, entry.Name); err != nil {
 			logger.Info("WARNING could not resolve provider workspace cluster", "err", err.Error())
 		} else if cluster != "" {
 			entry.Status.Workspace = providersParentWorkspace + ":" + entry.Name
-			r.reg.SetWorkspaceCluster(entry.Name, cluster)
+			r.reg.SetWorkspaceCluster("", entry.Name, cluster)
 		}
 	}
 

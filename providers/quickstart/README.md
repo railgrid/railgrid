@@ -145,3 +145,18 @@ For now this binary just demonstrates that an arbitrary external HTTP
 service can be proxied through the hub at a stable, same-origin URL by
 declaring a `ProviderCatalogEntry`. That's the foundation everything else
 sits on.
+
+## Running it yourself
+
+This provider can run in your own cluster instead of on the platform. faros
+creates a workspace for it in your organization, mints a credential scoped to
+that workspace alone, and generates the exact `helm` commands — under
+**Providers → Self-Hosting** in the portal.
+
+Nothing to fill in. This is the smallest possible example of the flow, which is
+why it is a good one to try first.
+
+Once installed, the provider registers itself and your workspaces enable it
+exactly like the platform copy. See
+[docs/byo-providers.md](../../docs/byo-providers.md) for how the flow works, and
+[deploy/chart/README.md](deploy/chart/README.md) for every chart value.

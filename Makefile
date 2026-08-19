@@ -748,7 +748,39 @@ run-hub-embedded-graphql: build-hub certs
 TILT_KCP_DIR ?= $(or $(KCP_DIR),$(HOME)/go/src/github.com/kcp-dev/kcp)
 # Tilt's KIND image loader stages a full `docker save` tarball in TMPDIR. Keep
 # that payload off capacity-limited /tmp tmpfs mounts used by development hosts.
+# Both stacks load images into kind (the agent image, and in cluster mode the
+# provider images), so both need it.
 TILT_TMPDIR ?= $(CURDIR)/.kcp/tmp/tilt
+# Tilt's own API/UI port. Only used to detect an already-running instance.
+TILT_PORT ?= 10350
+
+.PHONY: tilt tilt-cluster
+
+## faros-hub as a host binary with embedded kcp + host-run portal and providers.
+## The default loop: no kind cluster for the hub itself, so it starts in seconds
+## and every Go change is a plain rebuild. Use tilt-cluster when you need real
+## multi-shard kcp, in-cluster deployment, or to iterate on a kcp checkout.
+tilt: ## Run Tiltfile (embedded binary mode); see tilt-cluster for the in-cluster stack
+	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
+	@# Tilt refuses a second instance on its API port, but its own message
+	@# suggests TILT_PORT to run both — which is wrong here: the two stacks
+	@# fight over :9443 and the shared .kcp state dir. Say so instead.
+	@if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:$(TILT_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "ERROR: a Tilt instance is already running (port $(TILT_PORT))."; \
+		echo "       Only one stack at a time — both bind :9443 and share .kcp/."; \
+		echo "       Stop the other one first: tilt down -f Tiltfile.cluster"; \
+		exit 1; \
+	fi
+	@# A stray faros-hub or leftover port-forward on :9443 gets no such check
+	@# from Tilt; it surfaces as an opaque bind failure inside the `hub`
+	@# resource long after `tilt up` looks healthy.
+	@if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP:9443 -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "ERROR: something is already listening on :9443 — stop it before starting the hub."; \
+		lsof -nP -iTCP:9443 -sTCP:LISTEN; \
+		exit 1; \
+	fi
+	@mkdir -p "$(TILT_TMPDIR)"
+	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile
 
 ## Full multi-shard kcp in a kind cluster + faros-hub in-cluster, against a local kcp checkout
 tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TILT_KCP_DIR=... or KCP_DIR=...)
@@ -2412,6 +2444,11 @@ help-dev: ## Show development environment options
 	@echo ""
 	@echo "=== Faros Hub Development Modes ==="
 	@echo ""
+	@echo "TILT (recommended — one command, portal + hub + providers):"
+	@echo "  make tilt                       - Hub binary, embedded kcp, host-run providers"
+	@echo "  make tilt-cluster               - Multi-shard kcp in kind, hub deployed in-cluster"
+	@echo "                                    Run one or the other, not both."
+	@echo ""
 	@echo "STANDALONE (no external dependencies):"
 	@echo "  make run-hub-standalone         - Embedded kcp + static token + embedded GraphQL"
 	@echo "                                    Just run this and use: make dev-login-static"
@@ -2552,6 +2589,30 @@ e2e-external-kcp: build ## Run external KCP e2e suite (kcp via Helm in kind, pus
 	FAROS_HUB_IMAGE_TAG=test \
 	FAROS_HUB_IMAGE_PULL_POLICY=Never \
 	go test ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+## Docs-install e2e. These suites execute the hack/install/ scripts that
+## docs/install-external-kcp.md and docs/install-embedded-kcp.md quote,
+## keeping the installation guides honest. They create their own kind
+## cluster (faros-e2e-install) and port-forward 8443/9443 — don't run them
+## concurrently with each other or with suites using those ports.
+E2E_INSTALL_TIMEOUT ?= 45m
+
+.PHONY: e2e-install-external e2e-install-embedded
+e2e-install-external: build ## Run docs install e2e (two-shard kcp via kcp-operator + gateway)
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .
+	FAROS_E2E_INSTALL=true \
+	FAROS_HUB_IMAGE=ghcr.io/faroshq/faros-hub \
+	FAROS_HUB_IMAGE_TAG=test \
+	FAROS_HUB_IMAGE_PULL_POLICY=Never \
+	go test ./test/e2e/suites/installexternal/... -v -timeout $(E2E_INSTALL_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+e2e-install-embedded: build ## Run docs install e2e (embedded kcp + gateway)
+	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .
+	FAROS_E2E_INSTALL=true \
+	FAROS_HUB_IMAGE=ghcr.io/faroshq/faros-hub \
+	FAROS_HUB_IMAGE_TAG=test \
+	FAROS_HUB_IMAGE_PULL_POLICY=Never \
+	go test ./test/e2e/suites/installembedded/... -v -timeout $(E2E_INSTALL_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 e2e-all: build ## Run all e2e suites
 	docker build -f deploy/Dockerfile.hub -t ghcr.io/faroshq/faros-hub:test .

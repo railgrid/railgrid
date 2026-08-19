@@ -20,8 +20,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"sync"
 
 	providersv1alpha1 "github.com/faroshq/faros/apis/providers/v1alpha1"
+	"github.com/faroshq/faros/pkg/hub/tenant"
 )
 
 // PathListProviders is the portal-facing list endpoint. It returns the names,
@@ -33,8 +35,25 @@ const PathListProviders = "/api/providers"
 
 // providerDTO is the shape returned by GET /api/providers. Stable, portal-
 // owned wire format — not the CatalogEntry CRD shape.
+// Provider scope values on the wire. Kept lowercase and stable — the portal
+// branches on them to render the "Self-managed" section of the catalog.
+const (
+	// ScopeGlobal is a platform provider under root:faros:providers, available
+	// to every Org.
+	ScopeGlobal = "global"
+	// ScopeOrg is a provider the caller's own Org registered and runs itself,
+	// under root:faros:tenants:<org>:providers.
+	ScopeOrg = "org"
+)
+
 type providerDTO struct {
-	Name        string `json:"name"`
+	Name string `json:"name"`
+	// Scope is "global" or "org" — see ScopeGlobal / ScopeOrg. The portal
+	// surfaces org-scoped providers separately, above the platform catalog, so
+	// users can tell what their own organization operates from what faros does.
+	Scope string `json:"scope"`
+	// OwnerOrg is the owning Org's UUID for Scope=="org", empty for global.
+	OwnerOrg    string `json:"ownerOrg,omitempty"`
 	DisplayName string `json:"displayName"`
 	// Description is CatalogEntry.spec.description — the one-line "what is
 	// this" the portal shows on catalog cards and in the first-run welcome
@@ -85,10 +104,24 @@ type providerDTO struct {
 	// only discovery and consent policy metadata; provider transport URLs and
 	// credentials are intentionally not exposed here.
 	Actions []providerActionDTO `json:"actions,omitempty"`
-	// AssistantSkills contains validated inline App Studio packages. The
-	// authenticated /api/providers response is the only distribution surface;
-	// no provider runtime URL or credential is projected into this shape.
+	// AssistantSkills contains validated inline App Studio packages. This
+	// response is their only distribution surface; no provider runtime URL or
+	// credential is projected into this shape.
+	//
+	// The endpoint requires an authenticated caller (tenant.OptionalOrgMiddleware),
+	// so these bodies are not readable by anyone who can merely reach the hub.
+	// Org-owned entries additionally require a membership verified against the
+	// caller's UserMembershipIndex.
 	AssistantSkills []providerAssistantSkillDTO `json:"assistantSkills,omitempty"`
+	// SelfHostable is true when this provider publishes enough deployment
+	// metadata for an organization to run its own copy. It drives the portal's
+	// Self-Hosting tab. The chart coordinates themselves are not projected
+	// here — they reach the user through the install instructions the register
+	// endpoint returns, which are rendered per organization.
+	SelfHostable bool `json:"selfHostable,omitempty"`
+	// SelfHostingDocsURL is provider-specific setup guidance, surfaced next to
+	// the self-host action.
+	SelfHostingDocsURL string `json:"selfHostingDocsURL,omitempty"`
 }
 
 // providerActionDTO is the stable portal-facing projection of a provider
@@ -165,14 +198,65 @@ type navChildDTO struct {
 // request, which is appropriate for what is effectively a UI catalog poll.
 // All display metadata is published into the Registry by the catalog
 // controller, so this handler has no other dependencies.
-func NewListHandler(reg *Registry) http.Handler {
+//
+// Scope follows the caller's tenant context, which tenant.OptionalMiddleware
+// populates only after verifying membership. With an Org, the response is that
+// Org's own providers plus the platform-global ones; without, it is the
+// platform-global ones alone. An Org's providers are therefore never visible to
+// another Org, and an unauthenticated-for-that-org caller degrades to the
+// global catalog rather than an error.
+func NewListHandler(reg *Registry) *ListHandler {
+	h := &ListHandler{}
+	h.inner = listHandlerFunc(reg)
+	return h
+}
+
+// ListHandler serves GET /api/providers. It is registered on the router early —
+// before the auth stack that resolves tenant context exists — so the middleware
+// that scopes the response to an Org is installed afterwards via SetMiddleware.
+// This mirrors how the UI and backend proxies take their tenant resolvers late.
+//
+// Until a middleware is installed the handler still serves correctly; it just
+// sees no tenant context and returns the platform-global catalog.
+type ListHandler struct {
+	inner http.Handler
+
+	mu         sync.RWMutex
+	middleware func(http.Handler) http.Handler
+}
+
+// SetMiddleware installs the middleware wrapped around every list request,
+// typically tenant.OptionalMiddleware. Safe to call while the server is
+// serving.
+func (h *ListHandler) SetMiddleware(mw func(http.Handler) http.Handler) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.middleware = mw
+}
+
+// ServeHTTP implements http.Handler.
+func (h *ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.mu.RLock()
+	mw := h.middleware
+	h.mu.RUnlock()
+	if mw == nil {
+		h.inner.ServeHTTP(w, r)
+		return
+	}
+	mw(h.inner).ServeHTTP(w, r)
+}
+
+func listHandlerFunc(reg *Registry) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		entries := reg.List()
+		// An empty OrgUUID (no context, or one the middleware could not verify)
+		// means global scope only — ListForOrg("") returns exactly that.
+		tc, _ := tenant.FromContext(r.Context())
+		entries := reg.ListForOrg(tc.OrgUUID)
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 
 		items := make([]providerDTO, 0, len(entries))
@@ -182,7 +266,11 @@ func NewListHandler(reg *Registry) http.Handler {
 				displayName = p.Name
 			}
 			iconURL := p.IconURL
-			if iconURL == "" && p.UIURL != nil {
+			// The default points at the hub's UI proxy, which resolves provider
+			// names globally — so it is only meaningful for platform providers.
+			// An org-owned provider that declares no explicit iconURL gets none,
+			// and the portal falls back to its generic provider glyph.
+			if iconURL == "" && p.UIURL != nil && p.OrgUUID == "" {
 				iconURL = "/ui/providers/" + p.Name + "/icon.svg"
 			}
 			var claims []permissionClaimDTO
@@ -244,9 +332,20 @@ func NewListHandler(reg *Registry) http.Handler {
 					Resources:   resources,
 				})
 			}
+			// Only a platform provider can be a builtin — builtins ship inside
+			// the hub binary, so an Org cannot register one, and matching an
+			// org-owned provider by name here would wrongly grant it the
+			// builtin affordances (no permission-claim dialog).
 			_, isBuiltin := BuiltinByName(p.Name)
+			isBuiltin = isBuiltin && p.OrgUUID == ""
+			scope := ScopeGlobal
+			if p.OrgUUID != "" {
+				scope = ScopeOrg
+			}
 			items = append(items, providerDTO{
 				Name:             p.Name,
+				Scope:            scope,
+				OwnerOrg:         p.OrgUUID,
 				DisplayName:      displayName,
 				Description:      p.Description,
 				Version:          p.Version,
@@ -265,6 +364,11 @@ func NewListHandler(reg *Registry) http.Handler {
 				Builtin:          isBuiltin,
 				Actions:          actions,
 				AssistantSkills:  assistantSkills,
+				// Only platform providers are offered for self-hosting: an
+				// org-owned entry IS someone's self-hosted copy already, and
+				// offering to self-host it again would be a loop.
+				SelfHostable:       p.OrgUUID == "" && p.SelfHosting.Installable(),
+				SelfHostingDocsURL: selfHostingDocsURL(p),
 			})
 		}
 

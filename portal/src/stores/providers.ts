@@ -4,8 +4,18 @@ import { authFetch } from '@/auth/session'
 
 // ProviderDTO is the wire shape returned by the hub's GET /api/providers.
 // Keep it aligned with pkg/hub/providers/api.go:providerDTO.
+// ProviderScope mirrors pkg/hub/providers.ScopeGlobal / ScopeOrg.
+// 'global' = a platform provider faros operates; 'org' = one this
+// organization registered and runs itself ("bring your own").
+export type ProviderScope = 'global' | 'org'
+
 export interface ProviderDTO {
   name: string
+  // Absent on responses from an older hub; treat a missing value as
+  // 'global' so the catalog still renders during a rolling upgrade.
+  scope?: ProviderScope
+  // UUID of the owning organization when scope === 'org'.
+  ownerOrg?: string
   displayName: string
   // Short "what is this" blurb from CatalogEntry.spec.description. The
   // catalog cards and the first-run welcome flow render it; may be absent
@@ -47,10 +57,25 @@ export interface ProviderDTO {
   // new custom-element via embedded assets). Side-nav skips the
   // APIBinding-required gate for these.
   builtin?: boolean
+  // True when the provider publishes enough deployment metadata for an
+  // organization to run its own copy. Drives the Self-Hosting tab.
+  selfHostable?: boolean
+  // Provider-specific setup guidance for self-hosting.
+  selfHostingDocsURL?: string
 }
 
 export interface ProviderDependencyDTO {
   name: string
+}
+
+// EnabledProviderDetail mirrors pkg/hub/restapi.EnabledProviderDetail — which
+// APIExport a workspace's binding actually points at.
+export interface EnabledProviderDetail {
+  bindingName: string
+  exportPath: string
+  // true when the binding targets this org's own instance rather than the
+  // platform's.
+  selfHosted: boolean
 }
 
 // CategoryDTO mirrors pkg/hub/providers.Category — the hub publishes its
@@ -92,6 +117,14 @@ export const useProvidersStore = defineStore('providers', () => {
   // user's tenant workspace. Empty when the provider is not enabled for
   // this user. Used by the Disable button and the catalog status badge.
   const bindingNamesByProvider = ref<Record<string, string>>({})
+
+  // bindingsByProvider says WHICH instance of a provider a workspace is bound
+  // to, not just that it is bound. Once an org self-hosts a provider the
+  // platform also ships, both compete for one name, and a workspace bound
+  // before the switch still points at the platform export — rendering that as
+  // plain "Enabled" would tell the user they are running their own instance
+  // when they are not.
+  const bindingsByProvider = ref<Record<string, EnabledProviderDetail>>({})
 
   // bindingsWorkspace records which workspace the map above was fetched for,
   // and is the only safe way to read an *empty* map as "nothing is enabled
@@ -211,6 +244,34 @@ export const useProvidersStore = defineStore('providers', () => {
     return !!bindingNamesByProvider.value[name]
   }
 
+  // isSelfManaged distinguishes providers this organization registered and runs
+  // itself from the platform catalog. A hub that predates provider scoping omits
+  // `scope` entirely, so anything unset counts as platform-managed.
+  function isSelfManaged(p: ProviderDTO): boolean {
+    return p.scope === 'org'
+  }
+
+  // selfManaged is the organization's own providers, alphabetical. The catalog
+  // page renders these in their own section above the platform catalog: they are
+  // operated by the org's own team, so "who do I ask when this breaks" is a
+  // different answer than for a platform provider, and that distinction is worth
+  // more to a user than any category grouping.
+  const selfManaged = computed<ProviderDTO[]>(() =>
+    items.value
+      .filter(isSelfManaged)
+      .slice()
+      .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+  )
+
+  // selfHostable is the platform catalog filtered to providers that publish a
+  // deployment recipe — what the Self-Hosting tab offers to run yourself.
+  const selfHostable = computed<ProviderDTO[]>(() =>
+    items.value
+      .filter((p) => p.selfHostable && !isSelfManaged(p))
+      .slice()
+      .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+  )
+
   // enableable is the set of providers the user can actually turn on in the
   // current workspace: ready, and declaring an APIExport to bind. Everything
   // else in the catalog is either still starting up or shows up unconditionally
@@ -316,8 +377,12 @@ export const useProvidersStore = defineStore('providers', () => {
     const url = `/api/orgs/${encodeURIComponent(t.orgUUID)}/workspaces/${encodeURIComponent(t.workspaceUUID)}/providers/enabled`
     const res = await authFetch(url, { tenant: true })
     if (!res.ok) throw new Error(`list enabled providers: ${res.status}`)
-    const body = (await res.json()) as { bindingNamesByProvider?: Record<string, string> }
+    const body = (await res.json()) as {
+      bindingNamesByProvider?: Record<string, string>
+      bindingsByProvider?: Record<string, EnabledProviderDetail>
+    }
     bindingNamesByProvider.value = body.bindingNamesByProvider ?? {}
+    bindingsByProvider.value = body.bindingsByProvider ?? {}
     bindingsWorkspace.value = t.workspaceUUID
   }
 
@@ -436,8 +501,12 @@ export const useProvidersStore = defineStore('providers', () => {
     enabledNavItems,
     categorizedNavItems,
     enableable,
+    selfManaged,
+    selfHostable,
+    bindingsByProvider,
     hasAnyEnabled,
     isEnabled,
+    isSelfManaged,
     missingDependencies,
     hasMissingDependencies,
     dependencyLabel,

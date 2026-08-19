@@ -392,3 +392,18 @@ toggle for whether the chart renders the `CatalogEntry`.
 | `INFRASTRUCTURE_RUNTIME_KUBECONFIG_NAMESPACE` | (`POD_NAMESPACE`, then `default`) | Namespace for the runtime Secret |
 | `POD_NAMESPACE` | (unset) | Downward-API pod namespace; used when the namespace var above is unset |
 | `HOST_KUBECONFIG` | (unset → in-cluster) | Out-of-cluster override for the host client that writes the runtime Secret |
+
+## Running it yourself
+
+This provider can run in your own cluster instead of on the platform. faros
+creates a workspace for it in your organization, mints a credential scoped to
+that workspace alone, and generates the exact `helm` commands — under
+**Providers → Self-Hosting** in the portal.
+
+Nothing to fill in: this provider self-bootstraps, and the workspace path plus
+kubeconfig Secret reference are substituted into the generated command.
+
+Once installed, the provider registers itself and your workspaces enable it
+exactly like the platform copy. See
+[docs/byo-providers.md](../../docs/byo-providers.md) for how the flow works, and
+[deploy/chart/README.md](deploy/chart/README.md) for every chart value.

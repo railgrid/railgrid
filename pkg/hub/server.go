@@ -407,7 +407,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// X-Faros-Tenant, which is the Phase 1A behaviour.
 	backendProxy := providers.NewBackendProxy(providerRegistry, logger)
 	router.PathPrefix(apiurl.PathPrefixProvidersProxy + "/").Handler(backendProxy)
-	router.Handle(providers.PathListProviders, providers.NewListHandler(providerRegistry)).Methods("GET")
+	// Held so the optional tenant middleware can be installed below, once the
+	// auth stack exists. Without it the catalog is global-only; with it, an Org's
+	// own providers are folded in for callers who present a verified Org.
+	providerListHandler := providers.NewListHandler(providerRegistry)
+	router.Handle(providers.PathListProviders, providerListHandler).Methods("GET")
 	// Heartbeat endpoint matches /api/providers/{name}/heartbeat. The
 	// parsing happens inside the handler; gorilla/mux just needs the prefix.
 	// A heartbeat lands on exactly one replica but every replica routes provider
@@ -441,6 +445,16 @@ func (s *Server) Run(ctx context.Context) error {
 		out := make([]mcpaggregate.ProviderTarget, 0, len(all))
 		for _, p := range all {
 			if !p.Ready() || p.BackendURL == nil {
+				continue
+			}
+			// Platform providers only. Federation forwards the CALLER's bearer
+			// token to each target's /mcp endpoint, and this enumerator has no
+			// verified tenant context to filter on — so including org-owned
+			// providers would let one Org's backend receive another Org's user
+			// tokens, and would collide on the `<provider>__<tool>` prefix when
+			// two Orgs pick the same provider name. Federating an Org's own
+			// providers needs tenant context plumbed through first.
+			if p.OrgUUID != "" {
 				continue
 			}
 			// A provider's MCP transport is mounted at /mcp under its
@@ -607,6 +621,13 @@ func (s *Server) Run(ctx context.Context) error {
 					if errors.Is(err, proxy.ErrIdentifyNoBearer) {
 						return "", tenant.ErrUserNotResolved
 					}
+					// The credential was accepted but the User record could not
+					// be read. Middleware that only needs to know the caller is
+					// legitimate can still serve them; anything acting AS the
+					// user must not.
+					if errors.Is(err, proxy.ErrUserRecordUnavailable) {
+						return "", fmt.Errorf("%w: %w", tenant.ErrUserRecordUnavailable, err)
+					}
 					return "", err
 				}
 				return name, nil
@@ -614,6 +635,13 @@ func (s *Server) Run(ctx context.Context) error {
 			membershipLookup := tenant.MembershipLookupFunc(func(ctx context.Context, userName string) (*tenancyv1alpha1.UserMembershipIndex, error) {
 				return userClient.UserMembershipIndices().Get(ctx, userName, metav1.GetOptions{})
 			})
+
+			// GET /api/providers: authenticated, Org optional. The catalog
+			// describes what this deployment runs, so it is not enumerable
+			// anonymously; the Org is optional because the portal fetches it
+			// before one is selected, and an Org only takes effect once the
+			// caller's membership in it is verified.
+			providerListHandler.SetMiddleware(tenant.OptionalOrgMiddleware(userResolver, membershipLookup))
 
 			// Wire the backend-proxy tenant resolver. With this in place
 			// every authenticated request to /services/providers/{name}/*
@@ -635,6 +663,11 @@ func (s *Server) Run(ctx context.Context) error {
 			// Provider registry powers POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
 			// (server-side APIBinding create — see pkg/hub/restapi/providers_enable.go).
 			apiMgr.WithProviderRegistry(providerRegistry)
+			// Org-owned ("bring your own") providers: the Bootstrapper builds
+			// the Org's provider workspaces, the Provisioner mints the
+			// workspace-scoped install credential. Both need kcp, so this is
+			// inside the same kcp-gated branch as the rest of the REST surface.
+			apiMgr.WithOrgProviders(bootstrapper, providers.NewProvisioner(kcpConfig))
 			// Per-workspace kubeconfig download — OIDC mode emits an exec
 			// credential plugin entry (faros get-token), static-token mode
 			// embeds the caller's bearer token. Either way the cluster URL

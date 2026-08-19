@@ -114,6 +114,96 @@ func UserOnlyMiddleware(userResolver UserResolver) func(next http.Handler) http.
 	}
 }
 
+// ErrUserRecordUnavailable signals that the caller's credential was ACCEPTED
+// but the backing User record could not be read. The caller is authenticated;
+// the hub just cannot say who they are right now.
+//
+// Resolvers should return this (or wrap it) instead of a bare error so
+// middleware can distinguish "not authenticated" from "authenticated, backend
+// struggling". Without the distinction the only options are refusing valid
+// callers during a hiccup or admitting invalid ones, and neither is acceptable.
+var ErrUserRecordUnavailable = errors.New("tenant: caller authenticated but user record unavailable")
+
+// OptionalOrgMiddleware requires an authenticated caller but treats the
+// Organization as optional.
+//
+// It backs GET /api/providers, where the catalog is per-caller — platform
+// providers for everyone, plus the caller's own Org's providers when they
+// present one they actually belong to. The Org has to be optional because the
+// portal fetches the catalog before an Org is selected; the identity does not,
+// because the catalog describes what this deployment runs and should not be
+// enumerable by anyone who can reach the hub.
+//
+// Rejections:
+//
+//   - No credential, or one that fails verification: 401. This is the case that
+//     keeps the catalog from being scraped anonymously.
+//
+// Degradations (request proceeds with less context, never more):
+//
+//   - Credential accepted but the User record is unavailable
+//     (ErrUserRecordUnavailable): proceed with no context. The caller is
+//     legitimate, so serving them the platform catalog is right; failing here
+//     would take the catalog down whenever the user store hiccups, which is a
+//     question this endpoint does not need answered.
+//   - An Org the caller is not a member of, or a membership lookup that fails:
+//     drop the Org. A stale Org UUID in a browser's localStorage must not break
+//     the app shell, and dropping it can only ever show less.
+//
+// Handlers behind this must treat an empty OrgUUID as "global scope only" and
+// never as "trusted". Anything needing a known user identity belongs behind
+// Middleware or UserOnlyMiddleware instead.
+func OptionalOrgMiddleware(userResolver UserResolver, lookup MembershipLookup) func(next http.Handler) http.Handler {
+	if userResolver == nil {
+		panic("tenant.OptionalOrgMiddleware: userResolver is required")
+	}
+	if lookup == nil {
+		panic("tenant.OptionalOrgMiddleware: lookup is required")
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			tc, ok := optionalOrgContext(r, userResolver, lookup)
+			if !ok {
+				writeStatus(w, http.StatusUnauthorized, "Unauthorized", "Unauthorized")
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(WithContext(r.Context(), tc)))
+		})
+	}
+}
+
+// optionalOrgContext resolves as much tenant context as it can. ok=false means
+// the caller is not authenticated and the request must be refused.
+func optionalOrgContext(r *http.Request, userResolver UserResolver, lookup MembershipLookup) (TenantContext, bool) {
+	user, err := userResolver.ResolveUser(r)
+	switch {
+	case errors.Is(err, ErrUserRecordUnavailable):
+		// Authenticated, but we cannot name them: no context, still served.
+		return TenantContext{}, true
+	case err != nil || user == "":
+		return TenantContext{}, false
+	}
+	tc := TenantContext{User: user}
+
+	orgUUID := r.Header.Get(HeaderFarosOrg)
+	if orgUUID == "" {
+		return tc, true
+	}
+	index, err := lookup.GetUserMembershipIndex(r.Context(), user)
+	if err != nil {
+		return tc, true
+	}
+	workspaceUUID := r.Header.Get(HeaderFarosWorkspace)
+	role, ok := matchEntry(index, orgUUID, workspaceUUID)
+	if !ok {
+		return tc, true
+	}
+	tc.OrgUUID = orgUUID
+	tc.WorkspaceUUID = workspaceUUID
+	tc.Role = role
+	return tc, true
+}
+
 // Middleware returns the tenant-context HTTP middleware. The returned
 // function wraps an http.Handler chain so handlers downstream of it can
 // trust TenantContext from r.Context().

@@ -2,11 +2,78 @@
 import { computed, onMounted, ref } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
+import SelfHostInstructions from '@/components/SelfHostInstructions.vue'
 import { useProvidersStore, type ProviderDTO, type PermissionClaim } from '@/stores/providers'
+import { useOrgProvidersStore, type OrgProviderRegistration } from '@/stores/orgProviders'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
-import { Puzzle, ExternalLink, AlertCircle, Plus, X, Loader2, Search } from 'lucide-vue-next'
+import { Puzzle, ExternalLink, AlertCircle, Plus, X, Loader2, Search, Server, Trash2, RefreshCw } from 'lucide-vue-next'
 
 const providers = useProvidersStore()
+const orgProviders = useOrgProvidersStore()
+
+// Two views of the same catalog: what you can turn on ("Catalog"), and what you
+// can run yourself ("Self-Hosting"). They are separate tabs rather than one list
+// because the actions differ in kind — enabling binds an API in a workspace,
+// self-hosting hands you a credential and a deployment to run.
+type Tab = 'catalog' | 'self-hosting'
+const tab = ref<Tab>('catalog')
+const tabs: { key: Tab; label: string }[] = [
+  { key: 'catalog', label: 'Catalog' },
+  { key: 'self-hosting', label: 'Self-Hosting' },
+]
+
+// The provider whose install details are open, and what the hub returned for it.
+const activeRegistration = ref<OrgProviderRegistration | null>(null)
+const selfHostBusy = ref<Record<string, boolean>>({})
+const selfHostError = ref<string | null>(null)
+
+async function selfHost(p: ProviderDTO) {
+  selfHostError.value = null
+  selfHostBusy.value = { ...selfHostBusy.value, [p.name]: true }
+  try {
+    // Same name as the platform provider: the chart registers its CatalogEntry
+    // under its own name, and the org's copy shadows the platform one for this
+    // org only.
+    activeRegistration.value = await orgProviders.register(p.name, p.name)
+  } catch (e) {
+    selfHostError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    selfHostBusy.value = { ...selfHostBusy.value, [p.name]: false }
+  }
+}
+
+async function showInstructions(name: string) {
+  selfHostError.value = null
+  selfHostBusy.value = { ...selfHostBusy.value, [name]: true }
+  try {
+    activeRegistration.value = await orgProviders.instructions(name)
+  } catch (e) {
+    selfHostError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    selfHostBusy.value = { ...selfHostBusy.value, [name]: false }
+  }
+}
+
+async function removeSelfHosted(name: string) {
+  if (!window.confirm(
+    `Remove the self-hosted "${name}"?\n\nThis deletes its workspace and everything in it, including its API. Workspaces that enabled it will stop working until you disable it there.`,
+  )) return
+  selfHostError.value = null
+  selfHostBusy.value = { ...selfHostBusy.value, [name]: true }
+  try {
+    await orgProviders.remove(name)
+    if (activeRegistration.value?.provider.name === name) activeRegistration.value = null
+  } catch (e) {
+    selfHostError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    selfHostBusy.value = { ...selfHostBusy.value, [name]: false }
+  }
+}
+
+// Platform providers offering self-hosting that this org has not taken up yet.
+const availableToSelfHost = computed(() =>
+  providers.selfHostable.filter((p) => !orgProviders.isSelfHosted(p.name)),
+)
 
 // A card is a provider plus the resolved category metadata it belongs to.
 // We carry the category on each card (rather than in a section header) so
@@ -87,6 +154,39 @@ const filteredCards = computed<ProviderCard[]>(() => {
   })
 })
 
+// The catalog renders as one flat grid, but self-managed providers — the ones
+// this organization registered and runs itself — get their own labelled block
+// at the top. They are a different kind of thing from the platform catalog: the
+// org's own team operates them, so "who fixes this when it breaks" has a
+// different answer, which matters more to a reader than any category grouping.
+//
+// Rather than a second <ul> (which would mean duplicating the whole card
+// template), the sections are expressed as rows in the existing grid, with
+// headers spanning the full width.
+// orderedCards is filteredCards with the self-managed ones hoisted to the
+// front, each group keeping the category ordering allCards established.
+const orderedCards = computed<ProviderCard[]>(() => [
+  ...filteredCards.value.filter((c) => providers.isSelfManaged(c)),
+  ...filteredCards.value.filter((c) => !providers.isSelfManaged(c)),
+])
+
+// sectionHeaderFor returns the header to render immediately above a card, or
+// null. Emitting the header from inside the card loop (rather than building a
+// separate row list) keeps the card's own template untouched and its `p` in
+// scope. Headers appear only when there is actually something to separate — an
+// org with no self-managed providers sees the page exactly as before.
+function sectionHeaderFor(card: ProviderCard, index: number): { title: string; subtitle: string } | null {
+  const own = providers.isSelfManaged(card)
+  const previous = index > 0 ? orderedCards.value[index - 1] : null
+  const boundary = previous === null || providers.isSelfManaged(previous) !== own
+  if (!boundary) return null
+  // Nothing self-managed in view → no headers at all, not a lone one.
+  if (!orderedCards.value.some((c) => providers.isSelfManaged(c))) return null
+  return own
+    ? { title: 'Self-managed', subtitle: 'Providers your organization registered and runs itself.' }
+    : { title: 'Platform catalog', subtitle: 'Providers operated by faros.' }
+}
+
 function categoryIcon(name: string | null): unknown {
   if (!name) return fallbackCategoryIcon
   return categoryIcons[name] ?? fallbackCategoryIcon
@@ -109,6 +209,7 @@ const dialogProvider = ref<ProviderDTO | null>(null)
 // concurrent calls so a no-op fast-path is safe.
 onMounted(() => {
   providers.load()
+  orgProviders.load()
 })
 
 function openEnableDialog(p: ProviderDTO) {
@@ -184,6 +285,28 @@ function dependencyNotice(p: ProviderDTO): string {
         <span>{{ actionError }}</span>
       </div>
 
+      <!-- Catalog vs Self-Hosting. Hidden entirely when the hub has no
+           org-provider support, so the tab never leads to a dead surface. -->
+      <div v-if="orgProviders.supported" class="mb-5 flex items-center gap-1 border-b border-border-subtle">
+        <button
+          v-for="t in tabs"
+          :key="t.key"
+          class="-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors"
+          :class="
+            tab === t.key
+              ? 'border-accent text-accent'
+              : 'border-transparent text-text-muted hover:text-text-secondary'
+          "
+          @click="tab = t.key"
+        >
+          {{ t.label }}
+          <span
+            v-if="t.key === 'self-hosting' && orgProviders.items.length"
+            class="ml-1 rounded-sm bg-accent/10 px-1 py-px text-[10px] text-accent"
+          >{{ orgProviders.items.length }}</span>
+        </button>
+      </div>
+
       <div v-if="providers.loading && !providers.loaded" class="text-sm text-text-muted">
         Loading providers&hellip;
       </div>
@@ -195,6 +318,175 @@ function dependencyNotice(p: ProviderDTO): string {
         </div>
       </div>
 
+      <!-- ===== Self-Hosting tab ===== -->
+      <div v-else-if="tab === 'self-hosting'" class="space-y-6">
+        <p class="text-sm text-text-muted">
+          Run a provider inside your own cluster instead of using the platform's copy. faros
+          creates a workspace for it in your organization and gives you a credential scoped
+          to that workspace only; you deploy the provider with Helm. Your workspaces then
+          enable your copy exactly like any other provider.
+        </p>
+
+        <div
+          v-if="selfHostError"
+          class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-sm text-danger flex items-start gap-2"
+        >
+          <AlertCircle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="1.75" />
+          <span>{{ selfHostError }}</span>
+        </div>
+
+        <!-- Install details for whichever provider the user just acted on. -->
+        <section
+          v-if="activeRegistration"
+          class="rounded-xl border border-accent/30 bg-surface-raised/60 p-5"
+        >
+          <div class="mb-4 flex items-start justify-between gap-3">
+            <div>
+              <h2 class="text-base font-semibold text-text-primary">
+                Install {{ activeRegistration.provider.name }}
+              </h2>
+              <p class="mt-0.5 text-[11px] text-text-muted">
+                Run these in the cluster where you want
+                {{ activeRegistration.provider.name }} to run.
+              </p>
+            </div>
+            <button
+              class="rounded-lg border border-border-subtle p-1 text-text-muted transition-colors hover:border-accent/30 hover:text-accent"
+              title="Close"
+              @click="activeRegistration = null"
+            >
+              <X class="h-4 w-4" :stroke-width="2" />
+            </button>
+          </div>
+          <SelfHostInstructions :registration="activeRegistration" />
+        </section>
+
+        <!-- What this org already runs itself. -->
+        <section v-if="orgProviders.items.length">
+          <h2 class="mb-2 text-xs font-semibold uppercase tracking-wider text-text-secondary">
+            Running in your cluster
+          </h2>
+          <ul class="space-y-2">
+            <li
+              v-for="p in orgProviders.items"
+              :key="p.name"
+              class="flex flex-wrap items-center gap-3 rounded-xl border border-border-subtle bg-surface-raised/60 p-4"
+            >
+              <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-surface-overlay">
+                <Server class="h-4 w-4 text-accent" :stroke-width="1.75" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <h3 class="truncate text-sm font-semibold text-text-primary">
+                    {{ p.displayName || p.name }}
+                  </h3>
+                  <span
+                    class="rounded-sm px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider"
+                    :class="
+                      p.registered
+                        ? 'border border-success/30 bg-success-subtle text-success'
+                        : 'border border-warning/30 bg-warning-subtle text-warning'
+                    "
+                  >
+                    {{ p.registered ? 'Installed' : 'Awaiting install' }}
+                  </span>
+                </div>
+                <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">
+                  {{ p.name }}<span v-if="p.version"> · {{ p.version }}</span>
+                </p>
+                <!-- The gap between "workspace exists" and "chart installed" is
+                     where a half-finished install sits; say so explicitly. -->
+                <p v-if="!p.registered" class="mt-1 text-[11px] text-text-muted">
+                  The workspace is ready but the provider has not registered itself yet.
+                  Run the install steps, then this flips to Installed.
+                </p>
+              </div>
+              <div class="flex items-center gap-2">
+                <button
+                  class="inline-flex items-center gap-1 rounded-lg border border-border-subtle px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:border-accent/30 hover:text-accent disabled:opacity-60"
+                  :disabled="!!selfHostBusy[p.name]"
+                  @click="showInstructions(p.name)"
+                >
+                  <Loader2 v-if="selfHostBusy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />
+                  <RefreshCw v-else class="h-3 w-3" :stroke-width="2" />
+                  Install details
+                </button>
+                <button
+                  class="inline-flex items-center gap-1 rounded-lg border border-danger/30 bg-danger-subtle px-2.5 py-1 text-[11px] font-medium text-danger transition-colors hover:bg-danger/15 disabled:opacity-60"
+                  :disabled="!!selfHostBusy[p.name]"
+                  @click="removeSelfHosted(p.name)"
+                >
+                  <Trash2 class="h-3 w-3" :stroke-width="2" />
+                  Remove
+                </button>
+              </div>
+            </li>
+          </ul>
+        </section>
+
+        <!-- What could be self-hosted but isn't yet. -->
+        <section>
+          <h2 class="mb-2 text-xs font-semibold uppercase tracking-wider text-text-secondary">
+            Available to self-host
+          </h2>
+          <div
+            v-if="availableToSelfHost.length === 0"
+            class="rounded-lg border border-border-subtle bg-surface-raised/60 p-6 text-center text-sm text-text-muted"
+          >
+            {{
+              orgProviders.items.length
+                ? 'You are already self-hosting every provider that offers it.'
+                : 'No provider in this catalog publishes a self-hosting recipe yet.'
+            }}
+          </div>
+          <ul v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <li
+              v-for="p in availableToSelfHost"
+              :key="p.name"
+              class="rounded-xl border border-border-subtle bg-surface-raised/60 p-4 transition-colors hover:border-accent/30"
+            >
+              <div class="flex items-start gap-3">
+                <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-surface-overlay">
+                  <img v-if="p.iconURL" :src="p.iconURL" alt="" class="h-6 w-6" @error="(e) => ((e.target as HTMLImageElement).style.display = 'none')" />
+                  <Puzzle v-else class="h-5 w-5 text-text-muted" :stroke-width="1.75" />
+                </div>
+                <div class="min-w-0 flex-1">
+                  <h3 class="truncate text-sm font-semibold text-text-primary">{{ p.displayName }}</h3>
+                  <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">
+                    {{ p.name }}<span v-if="p.version"> · {{ p.version }}</span>
+                  </p>
+                </div>
+              </div>
+              <p v-if="p.description" class="mt-3 line-clamp-3 text-[11px] leading-relaxed text-text-muted">
+                {{ p.description }}
+              </p>
+              <div class="mt-4 flex items-center gap-2">
+                <button
+                  class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20 disabled:opacity-60"
+                  :disabled="!!selfHostBusy[p.name]"
+                  @click="selfHost(p)"
+                >
+                  <Loader2 v-if="selfHostBusy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />
+                  <Server v-else class="h-3 w-3" :stroke-width="2" />
+                  Self-host
+                </button>
+                <a
+                  v-if="p.selfHostingDocsURL"
+                  :href="p.selfHostingDocsURL"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  class="inline-flex items-center gap-1 text-[11px] text-text-muted hover:text-accent"
+                >
+                  Docs
+                  <ExternalLink class="h-3 w-3" :stroke-width="2" />
+                </a>
+              </div>
+            </li>
+          </ul>
+        </section>
+      </div>
+
+      <!-- ===== Catalog tab ===== -->
       <div v-else>
         <!-- Search + category filter. The grid stays flat (one card per
              provider); categories are a filter here and a chip on each card
@@ -246,9 +538,16 @@ function dependencyNotice(p: ProviderDTO): string {
         </div>
 
         <ul v-else class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <template v-for="(p, i) in orderedCards" :key="p.name">
+          <!-- Full-width section divider inside the same grid, so the cards
+               below it keep their column alignment. -->
+          <li v-if="sectionHeaderFor(p, i)" class="col-span-full mt-2 first:mt-0">
+            <h2 class="text-xs font-semibold uppercase tracking-wider text-text-secondary">
+              {{ sectionHeaderFor(p, i)!.title }}
+            </h2>
+            <p class="mt-0.5 text-[11px] text-text-muted">{{ sectionHeaderFor(p, i)!.subtitle }}</p>
+          </li>
           <li
-            v-for="p in filteredCards"
-            :key="p.name"
             class="rounded-xl border border-border-subtle bg-surface-raised/60 p-4 transition-colors hover:border-accent/30"
           >
           <div class="flex items-start gap-3">
@@ -295,6 +594,16 @@ function dependencyNotice(p: ProviderDTO): string {
               <component :is="categoryIcon(p.categoryIcon)" class="h-3 w-3" :stroke-width="2" />
               {{ p.categoryName }}
             </button>
+            <!-- Repeated on the card, not just the section header: a search or
+                 category filter can leave a self-managed card sitting far from
+                 its heading. -->
+            <span
+              v-if="providers.isSelfManaged(p)"
+              class="rounded-md border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-accent"
+              title="Registered and operated by your organization"
+            >
+              Self-managed
+            </span>
             <span v-if="p.hasUI" class="rounded-md border border-border-subtle px-1.5 py-0.5">UI</span>
             <span v-if="p.hasBackend" class="rounded-md border border-border-subtle px-1.5 py-0.5">Backend</span>
             <span v-if="p.apiExportName" class="rounded-md border border-border-subtle px-1.5 py-0.5">API</span>
@@ -352,6 +661,7 @@ function dependencyNotice(p: ProviderDTO): string {
             </span>
           </div>
           </li>
+          </template>
         </ul>
       </div>
     </div>

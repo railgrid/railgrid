@@ -764,6 +764,36 @@ func (b *Bootstrapper) ListChildWorkspaces(ctx context.Context, orgUUID string) 
 	return names, nil
 }
 
+// ListChildTeamWorkspaces is ListChildWorkspaces without the infrastructure
+// children an Org workspace can also hold — today just the well-known
+// `providers` container for org-owned providers.
+//
+// Every tenant-facing consumer wants this one: the workspace switcher, the
+// admin workspace list, and the kcp proxy's authorizer all treat a child of an
+// Org as "a team workspace a member can belong to". The providers container is
+// neither — it holds no Memberships and no UMI rows, so surfacing it yields a
+// workspace row that cannot be entered (selecting it sets an X-Faros-Workspace
+// no membership matches, and every subsequent call 403s), and authorizing it
+// would hand every org member access to the workspace that parents provider
+// credentials.
+//
+// ListChildWorkspaces stays unfiltered for lifecycle callers: the Org deletion
+// cascade must delete the container too.
+func (b *Bootstrapper) ListChildTeamWorkspaces(ctx context.Context, orgUUID string) ([]string, error) {
+	names, err := b.ListChildWorkspaces(ctx, orgUUID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if name == kcppaths.OrgProvidersWorkspaceName {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out, nil
+}
+
 // ListOrgWorkspaces returns the names (UUIDs) of every Organization
 // workspace at root:faros:tenants. Used by the soft-delete reconciler's
 // Workspace branch to fan out across Orgs at resync time without
@@ -1710,11 +1740,17 @@ func (b *Bootstrapper) exportClaimIdentities(ctx context.Context, exportPath, ex
 // RBAC would have allowed the read.
 //
 // Filtering rule: a binding counts as a "provider binding" iff its
-// spec.reference.export.path starts with "root:faros:providers:" and its
-// status.phase is Bound. The trailing segment is the provider name; the binding's own
-// metadata.name is the value (existing convention is binding.name ==
-// provider.name).
-func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsUUID string) (map[string]string, error) {
+// spec.reference.export.path names a provider workspace and its status.phase is
+// Bound. Two shapes qualify:
+//
+//	root:faros:providers:<name>                    a platform provider
+//	root:faros:tenants:<orgUUID>:providers:<name>   an org-owned provider
+//
+// Org-owned exports count only for their OWN org, so a binding that somehow
+// referenced another Org's provider is not reported as enabled here. The
+// trailing segment is the provider name; the binding's own metadata.name is the
+// value (existing convention is binding.name == provider.name).
+func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsUUID string) (map[string]ProviderBinding, error) {
 	if orgUUID == "" || wsUUID == "" {
 		return nil, fmt.Errorf("ListProviderAPIBindings: orgUUID and wsUUID are required")
 	}
@@ -1727,21 +1763,61 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 	if err != nil {
 		return nil, fmt.Errorf("listing APIBindings in %s/%s: %w", orgUUID, wsUUID, err)
 	}
-	out := make(map[string]string, len(list.Items))
+	out := make(map[string]ProviderBinding, len(list.Items))
 	for _, item := range list.Items {
 		path, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "path")
-		const prefix = "root:faros:providers:"
-		if !strings.HasPrefix(path, prefix) {
+		providerName, ok := providerNameFromExportPath(path, orgUUID)
+		if !ok {
 			continue
 		}
 		phase, _, _ := unstructured.NestedString(item.Object, "status", "phase")
 		if phase != "Bound" {
 			continue
 		}
-		providerName := path[len(prefix):]
-		out[providerName] = item.GetName()
+		out[providerName] = ProviderBinding{
+			Name:       item.GetName(),
+			ExportPath: path,
+			SelfHosted: strings.HasPrefix(path, kcppaths.TenantsParent+":"),
+		}
 	}
 	return out, nil
+}
+
+// ProviderBinding describes one bound provider APIBinding in a workspace.
+//
+// SelfHosted is the field that earns this type: once an Org can self-host a
+// provider under the same name as the platform one, "is `edges` enabled here?"
+// stops being a yes/no question. A workspace that enabled the platform edges
+// before the Org started self-hosting still points at the platform export, and
+// showing that as plain "Enabled" would tell the user they are running their own
+// instance when they are not. Switching is a Disable + Enable, not an in-place
+// retarget, so the distinction has to survive all the way to the UI.
+type ProviderBinding struct {
+	// Name is the APIBinding's metadata.name (by convention, the provider name).
+	Name string
+	// ExportPath is the workspace path of the APIExport it binds.
+	ExportPath string
+	// SelfHosted is true when ExportPath is under the tenant fleet, i.e. the
+	// binding targets an Org's own provider rather than a platform one.
+	SelfHosted bool
+}
+
+// providerNameFromExportPath maps an APIBinding's export path to the provider
+// name it enables, for either a platform provider or one owned by orgUUID.
+// Returns ok=false for any other path — including a provider owned by a
+// different Org.
+func providerNameFromExportPath(path, orgUUID string) (string, bool) {
+	if name, found := strings.CutPrefix(path, kcppaths.ProvidersParent+":"); found {
+		if name == "" || strings.Contains(name, ":") {
+			return "", false
+		}
+		return name, true
+	}
+	owner, name, ok := kcppaths.SplitOrgProviderPath(path)
+	if !ok || owner != orgUUID {
+		return "", false
+	}
+	return name, true
 }
 
 // DeleteProviderAPIBinding removes the named provider APIBinding from the

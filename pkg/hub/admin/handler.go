@@ -188,6 +188,15 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	// the chart exists). Keyed by name so a provider shows up after EITHER step.
 	byName := map[string]*adminProviderDTO{}
 	for _, p := range h.registry.List() {
+		// Platform providers only. This surface is about platform onboarding —
+		// it pairs registry records with workspaces under root:faros:providers,
+		// which org-owned providers have none of. Including them would also let
+		// two Orgs that both named a provider "vault" collapse onto one row
+		// whose contents depend on map iteration order. Org-owned providers are
+		// managed by their Org at /api/orgs/{org}/providers.
+		if p.OrgUUID != "" {
+			continue
+		}
 		_, builtin := providers.BuiltinByName(p.Name)
 		byName[p.Name] = &adminProviderDTO{
 			Name:             p.Name,

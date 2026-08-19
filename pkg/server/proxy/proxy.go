@@ -238,7 +238,11 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, farosCl
 			return farosClient.UserMembershipIndices().Get(ctx, userName, metav1.GetOptions{})
 		},
 		bootstrapper.GetChildWorkspaceClusterName,
-		bootstrapper.ListChildWorkspaces,
+		// Team workspaces only. An Org workspace can also hold the `providers`
+		// container for org-owned providers, and authorizing that here would
+		// give every org member access to the workspace that parents provider
+		// credentials.
+		bootstrapper.ListChildTeamWorkspaces,
 	)
 
 	return &KCPProxy{
@@ -806,6 +810,18 @@ func (p *KCPProxy) authorizeKCPPath(ctx context.Context, userName, urlPath strin
 // middleware) translate this into a 401.
 var ErrIdentifyNoBearer = errors.New("no Authorization: Bearer token")
 
+// ErrUserRecordUnavailable wraps failures that happen AFTER the caller's
+// credential has been accepted — the static token matched, or the OIDC token
+// verified — but the backing User record could not be read or created.
+//
+// It exists so callers can tell "this caller is not authenticated" from "this
+// caller is authenticated and the hub is having trouble". Both surface as an
+// error from IdentifyUser, and conflating them forces a choice between serving
+// unauthenticated callers and 500-ing authenticated ones during a hiccup.
+// Endpoints that only need to know the caller is legitimate (not who they are)
+// can proceed on this; anything that acts as the user must still fail.
+var ErrUserRecordUnavailable = errors.New("caller authenticated but user record unavailable")
+
 // IdentifyUser extracts the caller's User CR name from r's bearer
 // token, using the same auth schemes as ServeHTTP (static token,
 // OIDC). Used by hub REST endpoints behind the tenant middleware so
@@ -845,7 +861,7 @@ func (p *KCPProxy) BrowserIdentity(r *http.Request) (browsersession.Identity, er
 			subHash := hex.EncodeToString(tokenHash[:])[:63]
 			user, err := p.ensureStaticTokenUser(r.Context(), token, subHash)
 			if err != nil {
-				return browsersession.Identity{}, fmt.Errorf("resolving static-token user: %w", err)
+				return browsersession.Identity{}, fmt.Errorf("%w: resolving static-token user: %w", ErrUserRecordUnavailable, err)
 			}
 			return browsersession.Identity{UserID: user.Name, Email: user.Spec.Email, Name: user.Spec.Name, RBACIdentity: user.Spec.RBACIdentity, AuthType: "static-token"}, nil
 		}
@@ -867,7 +883,7 @@ func (p *KCPProxy) BrowserIdentity(r *http.Request) (browsersession.Identity, er
 		}
 		user, err := p.resolveUser(r.Context(), idToken.Issuer, claims.Sub)
 		if err != nil {
-			return browsersession.Identity{}, fmt.Errorf("resolving OIDC user: %w", err)
+			return browsersession.Identity{}, fmt.Errorf("%w: resolving OIDC user: %w", ErrUserRecordUnavailable, err)
 		}
 		return browsersession.Identity{UserID: user.Name, Email: user.Spec.Email, Name: user.Spec.Name, RBACIdentity: user.Spec.RBACIdentity, Issuer: idToken.Issuer, Subject: claims.Sub, AuthType: "oidc"}, nil
 	}

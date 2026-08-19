@@ -100,7 +100,22 @@ type Options struct {
 	// convention), e.g. "code.providers.faros.sh".
 	ExportName string
 	// WorkspacePath is the logical-cluster path the APIExport lives in, e.g.
-	// "root:faros:providers:code". REQUIRED so the slice can publish endpoints.
+	// "root:faros:providers:code".
+	//
+	// OPTIONAL, and normally best left empty. The endpoint slice is always
+	// created in the same workspace as the export it references, and kcp
+	// resolves an unset spec.export.path to the slice's own logical cluster —
+	// so the path is information Config already carries.
+	//
+	// Leaving it empty is what makes a provider chart workspace-agnostic: the
+	// same chart bootstraps correctly whether its kubeconfig points at
+	// root:faros:providers/<name> or at an org's own
+	// root:faros:tenants/<org>/providers/<name>. Hardcoding a platform path
+	// here instead would publish endpoints for an export that does not exist at
+	// that path when the provider is self-hosted by an organization.
+	//
+	// Set it only to reference an export in a DIFFERENT workspace than the one
+	// Config targets.
 	WorkspacePath string
 	// SchemasDir holds APIResourceSchema YAML files (one document per file).
 	// Empty or non-existent → no schemas applied (valid for schema-less
@@ -126,9 +141,6 @@ func Bootstrap(ctx context.Context, opts Options) error {
 	}
 	if opts.ExportName == "" {
 		return fmt.Errorf("install: ExportName is required")
-	}
-	if opts.WorkspacePath == "" {
-		return fmt.Errorf("install: WorkspacePath is required to publish APIExportEndpointSlice endpoints")
 	}
 	cl, err := dynamic.NewForConfig(opts.Config)
 	if err != nil {
@@ -348,16 +360,20 @@ func waitForResourceExists(ctx context.Context, cl dynamic.Interface, gvr schema
 // provider's APIExport exists in the provider workspace. spec.export is
 // immutable, so a pre-existing slice with a stale path is deleted + recreated.
 func EnsureAPIExportEndpointSlice(ctx context.Context, cl dynamic.Interface, sliceName, exportName, workspacePath string) error {
+	// An empty workspacePath is deliberately written as an ABSENT spec.export.path
+	// rather than an empty string: kcp resolves an unset path to the slice's own
+	// logical cluster, which is always where the export is. That is what lets one
+	// chart bootstrap correctly in a platform workspace and in an org's own
+	// self-hosted workspace without being told which it is in.
+	export := map[string]any{"name": exportName}
+	if workspacePath != "" {
+		export["path"] = workspacePath
+	}
 	want := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apis.kcp.io/v1alpha1",
 		"kind":       "APIExportEndpointSlice",
 		"metadata":   map[string]any{"name": sliceName},
-		"spec": map[string]any{
-			"export": map[string]any{
-				"name": exportName,
-				"path": workspacePath,
-			},
-		},
+		"spec":       map[string]any{"export": export},
 	}}
 
 	existing, err := cl.Resource(apiExportEndpointSliceGVR).Get(ctx, sliceName, metav1.GetOptions{})
@@ -372,6 +388,16 @@ func EnsureAPIExportEndpointSlice(ctx context.Context, cl dynamic.Interface, sli
 	}
 	existingPath, _, _ := unstructured.NestedString(existing.Object, "spec", "export", "path")
 	if existingPath == workspacePath {
+		return nil
+	}
+	// An empty workspacePath means "resolve locally", and a slice carrying an
+	// explicit path to its OWN workspace already does exactly that. Treating
+	// that as a mismatch would delete and recreate every already-deployed
+	// platform slice the first time a provider runs a newer SDK — and since
+	// spec.export is immutable, recreate is the only way to change it, so the
+	// virtual-workspace endpoints would briefly disappear from under the hub's
+	// multicluster managers. Leave those slices alone; they are equivalent.
+	if workspacePath == "" {
 		return nil
 	}
 	if err := cl.Resource(apiExportEndpointSliceGVR).Delete(ctx, sliceName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {

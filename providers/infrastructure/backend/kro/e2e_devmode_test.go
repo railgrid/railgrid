@@ -119,13 +119,15 @@ func TestE2EDevelopmentMode(t *testing.T) {
 				t.Cleanup(func() {
 					_ = dyn.Resource(instGVR).Namespace(e2eInstanceNamespace).Delete(context.Background(), inst.GetName(), metav1.DeleteOptions{})
 				})
-				waitInstanceApplied(t, dyn, instGVR, inst.GetName(), tmpl.Name)
-
 				created, err := dyn.Resource(instGVR).Namespace(e2eInstanceNamespace).Get(context.Background(), inst.GetName(), metav1.GetOptions{})
 				if err != nil {
 					t.Fatalf("re-get instance: %v", err)
 				}
 				uid := string(created.GetUID())
+				// Accept the exposure layer's routes so readyWhen resolves here
+				// too, instead of leaving the instance stuck IN_PROGRESS.
+				simulateGatewayController(t, dyn, uid)
+				waitInstanceApplied(t, dyn, instGVR, inst.GetName(), tmpl.Name)
 
 				// Risk 2: production materializes the (now includeWhen-gated)
 				// workloads and none of the dev resources.
@@ -144,13 +146,15 @@ func TestE2EDevelopmentMode(t *testing.T) {
 				// cleanup runs (cleanups are LIFO) — the only place kro explains
 				// WHY a child object never materialized.
 				t.Cleanup(func() { dumpInstanceConditions(t, dyn, instGVR, inst.GetName()) })
-				waitInstanceApplied(t, dyn, instGVR, inst.GetName(), tmpl.Name)
-
 				created, err := dyn.Resource(instGVR).Namespace(e2eInstanceNamespace).Get(context.Background(), inst.GetName(), metav1.GetOptions{})
 				if err != nil {
 					t.Fatalf("re-get instance: %v", err)
 				}
 				uid := string(created.GetUID())
+				// Accept the exposure layer's routes so readyWhen resolves here
+				// too, instead of leaving the instance stuck IN_PROGRESS.
+				simulateGatewayController(t, dyn, uid)
+				waitInstanceApplied(t, dyn, instGVR, inst.GetName(), tmpl.Name)
 
 				// Risk 3: the dev variant + per-component control plane exist,
 				// the production workloads stay out, and the overlay's status

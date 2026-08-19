@@ -50,4 +50,20 @@ data:
           - resource: secrets
             verbs: [get, list, watch, create, update, patch, delete]
             tenantScoped: true
+      # Lets an organization run this provider in its own cluster
+      # (docs/byo-providers.md). Keep manifest.yaml and
+      # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the
+      # one that reaches production.
+      selfHosting:
+        supported: true
+        chart:
+          repository: "oci://ghcr.io/faroshq/charts"
+          name: "faros-code-provider"
+          version: {{ .Chart.Version | quote }}
+        namespace: "faros-provider-code"
+        releaseName: "code"
+        docsURL: "https://github.com/faroshq/faros/blob/main/providers/code/deploy/chart/README.md"
+        # The chart carries its own values reference, so the portal can show it
+        # offline and for the version actually installed.
+        valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
 {{- end }}

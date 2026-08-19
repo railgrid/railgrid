@@ -56,3 +56,20 @@ spec:
         group: edges.faros.sh
         verbs: [get, list, watch]
         tenantScoped: true
+  # Lets an organization run this provider in its own cluster
+  # (docs/byo-providers.md). Keep manifest.yaml and
+  # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the
+  # one that reaches production.
+  selfHosting:
+    supported: true
+    chart:
+      repository: "oci://ghcr.io/faroshq/charts"
+      name: "faros-kuery-provider"
+    namespace: "faros-provider-kuery"
+    releaseName: "kuery"
+    docsURL: "https://github.com/faroshq/faros/blob/main/providers/kuery/deploy/chart/README.md"
+    requiredValues:
+      - name: apiExport.edgesIdentityHash
+        identityFor: "edges.providers.faros.sh"
+        description: >-
+          kcp identity hash of the edges APIExport kuery claims against. Resolved for you; a wrong value leaves kuery running but seeing no edges.

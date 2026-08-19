@@ -88,3 +88,25 @@ spec:
         resource: subjectaccessreviews
         verbs: [create]
         tenantScoped: true
+  # Self-hosting: run the edges provider inside your own cluster, so agent
+  # tunnels terminate there instead of on the platform. See docs/byo-providers.md.
+  #
+  # hub.externalURL is derived from the hub's own external URL: it is the address
+  # this provider bakes into the agent kubeconfigs it mints, i.e. where agents
+  # reach kcp through the hub, not where they reach this provider. Keep in
+  # lockstep with deploy/chart/templates/catalogentry.yaml.
+  selfHosting:
+    supported: true
+    chart:
+      repository: "oci://ghcr.io/faroshq/charts"
+      name: "faros-edges-provider"
+    namespace: "faros-provider-edges"
+    releaseName: "edges"
+    docsURL: "https://github.com/faroshq/faros/blob/main/providers/edges/deploy/chart/README.md"
+    requiredValues:
+      - name: hub.externalURL
+        value: "{{hubURL}}"
+        description: >-
+          Address baked into every agent kubeconfig this provider mints, so
+          agents reach kcp through the hub. Derived from the hub's own external
+          URL; override only if your agents reach faros at a different address.

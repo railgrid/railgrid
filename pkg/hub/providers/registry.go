@@ -49,7 +49,18 @@ const SweepInterval = 30 * time.Second
 // Fields are nil-able to reflect that UI/backend/VW are independently optional
 // in the source ProviderCatalogEntry.
 type Provider struct {
-	Name        string
+	Name string
+	// OrgUUID is empty for platform-global providers (those under
+	// root:faros:providers) and set to the owning Org's UUID for org-owned
+	// "bring your own" providers, which live at
+	// root:faros:tenants:<org>:providers:<name>. The catalog reconciler derives
+	// it from the workspace path the CatalogEntry was observed in — never from
+	// a field on the entry itself, which the provider's own init writes and so
+	// cannot be trusted to attribute ownership.
+	//
+	// It scopes visibility: an org-owned provider is listed and enableable only
+	// within its own Org, and can never shadow a platform provider's routes.
+	OrgUUID     string
 	DisplayName string // human-readable label, surfaced to the portal
 	// Description is the CatalogEntry's short blurb. The portal renders it on
 	// catalog cards and in the first-run welcome flow, where it is the only
@@ -76,6 +87,10 @@ type Provider struct {
 	APIExportPath    string     // kcp workspace path hosting the APIExport (e.g. root:faros:providers:cost)
 	APIExportName    string     // APIExport name (e.g. cost.providers.faros.sh)
 	PermissionClaims []PermissionClaim
+	// SelfHosting carries the provider's own deployment recipe, from which the
+	// hub renders per-organization install instructions. Nil when the provider
+	// is platform-operated only.
+	SelfHosting *SelfHosting
 
 	// EdgeProxyAccess mirrors CatalogEntry.spec.edgeProxyAccess: on tenant
 	// Enable, the hub grants the provider SA the "proxy" verb on edges in
@@ -133,6 +148,39 @@ type Provider struct {
 // gate provider enablement without coupling callers to CRD types.
 type Dependency struct {
 	Name string
+}
+
+// SelfHosting mirrors CatalogEntry.spec.selfHosting: how an organization runs
+// its own copy of this provider. Nil when the provider does not offer it.
+type SelfHosting struct {
+	Supported    bool
+	ChartRepo    string
+	ChartName    string
+	ChartVersion string
+	Namespace    string
+	ReleaseName  string
+	DocsURL      string
+	// ValuesDoc is the chart's values reference in Markdown, carried inline so
+	// it works without internet access and matches the deployed chart version.
+	ValuesDoc      string
+	RequiredValues []SelfHostingValue
+}
+
+// SelfHostingValue is one Helm value the installer must set.
+type SelfHostingValue struct {
+	Name        string
+	Description string
+	// IdentityFor names an APIExport whose identity hash is this value; the hub
+	// resolves it so the installer never has to copy one by hand.
+	IdentityFor string
+	Value       string
+}
+
+// Installable reports whether there is enough here to generate instructions.
+// Supported alone is not enough — without chart coordinates the hub would emit
+// a helm command with a blank chart reference.
+func (s *SelfHosting) Installable() bool {
+	return s != nil && s.Supported && s.ChartRepo != "" && s.ChartName != ""
 }
 
 // Ready returns true when the proxy should forward to the provider. The
@@ -382,33 +430,94 @@ func schemaBytes(extension *runtime.RawExtension) json.RawMessage {
 // by the catalog controller on Watch events and read by the proxies on each
 // request. Reads vastly outnumber writes; an RWMutex is sufficient.
 type Registry struct {
-	mu     sync.RWMutex
-	byName map[string]*Provider
+	mu    sync.RWMutex
+	byKey map[providerKey]*Provider
+}
+
+// providerKey scopes a registry record. Org is empty for platform-global
+// providers. Keying by (org, name) rather than name alone is what lets two
+// Orgs each register a provider called "vault" without collision, and keeps
+// either of them from displacing a platform provider of the same name.
+type providerKey struct {
+	Org  string
+	Name string
 }
 
 // NewRegistry returns an empty Registry.
 func NewRegistry() *Registry {
-	return &Registry{byName: map[string]*Provider{}}
+	return &Registry{byKey: map[providerKey]*Provider{}}
 }
 
-// Get returns a copy of the Provider record (or false if unknown). A copy is
-// returned so callers can safely inspect fields without holding the lock.
+// Get returns a copy of the platform-global Provider record (or false if
+// unknown). A copy is returned so callers can safely inspect fields without
+// holding the lock.
+//
+// Get deliberately never returns an org-owned provider. It backs the request
+// path that has no tenant context — the UI/backend proxies and the heartbeat
+// endpoint, which address providers by bare name. If org-owned records were
+// reachable here, an Org could register a provider named after a platform one
+// and capture its route. Callers that do hold tenant context use GetForOrg.
 func (r *Registry) Get(name string) (Provider, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	p, ok := r.byName[name]
+	p, ok := r.byKey[providerKey{Name: name}]
 	if !ok {
 		return Provider{}, false
 	}
 	return cloneProvider(*p), true
 }
 
-// List returns a snapshot of all registered providers.
+// GetForOrg resolves a provider name in the scope of one Org: the Org's own
+// provider wins, falling back to the platform-global one. Used by the
+// tenant-scoped Enable/Disable path, where the caller's Org is known.
+func (r *Registry) GetForOrg(orgUUID, name string) (Provider, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if orgUUID != "" {
+		if p, ok := r.byKey[providerKey{Org: orgUUID, Name: name}]; ok {
+			return cloneProvider(*p), true
+		}
+	}
+	p, ok := r.byKey[providerKey{Name: name}]
+	if !ok {
+		return Provider{}, false
+	}
+	return cloneProvider(*p), true
+}
+
+// List returns a snapshot of every registered provider across all scopes.
+// Callers serving a tenant must use ListForOrg instead; this is for the
+// sweeper and admin surfaces that legitimately span orgs.
 func (r *Registry) List() []Provider {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]Provider, 0, len(r.byName))
-	for _, p := range r.byName {
+	out := make([]Provider, 0, len(r.byKey))
+	for _, p := range r.byKey {
+		out = append(out, cloneProvider(*p))
+	}
+	return out
+}
+
+// ListForOrg returns the providers visible to one Org: every platform-global
+// provider plus that Org's own. An org-owned provider shadows a platform one of
+// the same name, matching GetForOrg's resolution order, so the portal never
+// shows two cards with the same name.
+func (r *Registry) ListForOrg(orgUUID string) []Provider {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]Provider, 0, len(r.byKey))
+	shadowed := map[string]bool{}
+	for key, p := range r.byKey {
+		if key.Org != orgUUID || orgUUID == "" {
+			continue
+		}
+		shadowed[key.Name] = true
+		out = append(out, cloneProvider(*p))
+	}
+	for key, p := range r.byKey {
+		if key.Org != "" || shadowed[key.Name] {
+			continue
+		}
 		out = append(out, cloneProvider(*p))
 	}
 	return out
@@ -426,7 +535,8 @@ func (r *Registry) List() []Provider {
 func (r *Registry) Upsert(p Provider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if existing, ok := r.byName[p.Name]; ok {
+	key := providerKey{Org: p.OrgUUID, Name: p.Name}
+	if existing, ok := r.byKey[key]; ok {
 		if existing.LastHeartbeat.After(p.LastHeartbeat) {
 			// The reported version belongs to the beat it arrived with, so it
 			// travels with the timestamp that wins.
@@ -449,7 +559,7 @@ func (r *Registry) Upsert(p Provider) {
 	}
 	cp := p
 	cp.AssistantSkills = cloneProviderAssistantSkills(p.AssistantSkills)
-	r.byName[p.Name] = &cp
+	r.byKey[key] = &cp
 }
 
 func cloneProviderAssistantSkills(in []ProviderAssistantSkill) []ProviderAssistantSkill {
@@ -479,16 +589,25 @@ func cloneProvider(p Provider) Provider {
 		p.Actions[i].OutputSchema = append(json.RawMessage(nil), p.Actions[i].OutputSchema...)
 	}
 	p.AssistantSkills = cloneProviderAssistantSkills(p.AssistantSkills)
+	// Deep-copy: the registry hands out copies precisely so a caller cannot
+	// reach back into shared state, and a shallow pointer copy would defeat
+	// that for every field behind it.
+	if p.SelfHosting != nil {
+		sh := *p.SelfHosting
+		sh.RequiredValues = append([]SelfHostingValue(nil), p.SelfHosting.RequiredValues...)
+		p.SelfHosting = &sh
+	}
 	return p
 }
 
-// CatalogEntryCluster returns the logical cluster the provider's CatalogEntry
-// lives in, and whether it is known yet. It satisfies the heartbeat recorder's
-// ClusterResolver.
+// CatalogEntryCluster returns the logical cluster the platform provider's
+// CatalogEntry lives in, and whether it is known yet. It satisfies the
+// heartbeat recorder's ClusterResolver, and is global-scoped for the same
+// reason Get is: it is reached from the bare-name heartbeat endpoint.
 func (r *Registry) CatalogEntryCluster(name string) (string, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	p, ok := r.byName[name]
+	p, ok := r.byKey[providerKey{Name: name}]
 	if !ok || p.CatalogEntryCluster == "" {
 		return "", false
 	}
@@ -498,11 +617,11 @@ func (r *Registry) CatalogEntryCluster(name string) (string, bool) {
 // SetWorkspaceCluster records the logical cluster ID of the provider's
 // sub-workspace. Called by the catalog controller once provisioning has
 // resolved it (the workspace must be Ready before spec.cluster is set).
-// Returns false if the name is not in the registry.
-func (r *Registry) SetWorkspaceCluster(name, cluster string) bool {
+// Returns false if the provider is not in the registry.
+func (r *Registry) SetWorkspaceCluster(orgUUID, name, cluster string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	p, ok := r.byName[name]
+	p, ok := r.byKey[providerKey{Org: orgUUID, Name: name}]
 	if !ok {
 		return false
 	}
@@ -510,13 +629,19 @@ func (r *Registry) SetWorkspaceCluster(name, cluster string) bool {
 	return true
 }
 
-// Heartbeat records a heartbeat for a known provider. Returns false if the
-// name is not in the registry (caller should reject with 404). reportedVersion
-// is optional; pass empty to leave the field untouched.
+// Heartbeat records a heartbeat for a known platform provider. Returns false if
+// the name is not in the registry (caller should reject with 404).
+// reportedVersion is optional; pass empty to leave the field untouched.
+//
+// Global-scoped: the heartbeat endpoint addresses providers by bare name with
+// no tenant context, so an org-owned provider cannot beat here — and cannot
+// keep a platform provider of the same name looking alive. Org-owned providers
+// consequently never set HeartbeatRequired, which leaves their readiness
+// resting on endpoint validity alone.
 func (r *Registry) Heartbeat(name, reportedVersion string, now time.Time) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	p, ok := r.byName[name]
+	p, ok := r.byKey[providerKey{Name: name}]
 	if !ok {
 		return false
 	}
@@ -537,7 +662,7 @@ func (r *Registry) SweepStale(now time.Time, ttl time.Duration) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	flipped := 0
-	for _, p := range r.byName {
+	for _, p := range r.byKey {
 		if !p.HeartbeatRequired {
 			continue
 		}
@@ -550,13 +675,42 @@ func (r *Registry) SweepStale(now time.Time, ttl time.Duration) int {
 	return flipped
 }
 
-// Delete removes the record for name. Returns true if anything was removed.
+// Delete removes the platform-global record for name. Returns true if anything
+// was removed.
 func (r *Registry) Delete(name string) bool {
+	return r.DeleteScoped("", name)
+}
+
+// DeleteScoped removes the record for one provider in one scope. orgUUID is
+// empty for platform-global providers. Returns true if anything was removed.
+func (r *Registry) DeleteScoped(orgUUID, name string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, ok := r.byName[name]
-	delete(r.byName, name)
+	key := providerKey{Org: orgUUID, Name: name}
+	_, ok := r.byKey[key]
+	delete(r.byKey, key)
 	return ok
+}
+
+// DeleteByCluster removes the record whose CatalogEntry was observed in the
+// given logical cluster. This is what the catalog reconciler needs on a delete
+// event: the object is already gone, so its workspace path — and therefore its
+// scope — can no longer be resolved, but the cluster the event arrived from is
+// still known and uniquely identifies the record. Returns true if anything was
+// removed.
+func (r *Registry) DeleteByCluster(cluster, name string) bool {
+	if cluster == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, p := range r.byKey {
+		if key.Name == name && p.CatalogEntryCluster == cluster {
+			delete(r.byKey, key)
+			return true
+		}
+	}
+	return false
 }
 
 // ParseURL is a small helper for the controller that converts a spec string

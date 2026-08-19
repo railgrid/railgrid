@@ -255,3 +255,18 @@ allowlisting by default.
   is not required by this app path.
 - OAuth federation and service-principal token exchange should be reconciled
   into token-bearing Secrets before validation or future provider actions.
+
+## Running it yourself
+
+This provider can run in your own cluster instead of on the platform. faros
+creates a workspace for it in your organization, mints a credential scoped to
+that workspace alone, and generates the exact `helm` commands — under
+**Providers → Self-Hosting** in the portal.
+
+Nothing to fill in by faros. Databricks workspace credentials are supplied per
+`Connection` at runtime, not as chart values.
+
+Once installed, the provider registers itself and your workspaces enable it
+exactly like the platform copy. See
+[docs/byo-providers.md](../../docs/byo-providers.md) for how the flow works, and
+[deploy/chart/README.md](deploy/chart/README.md) for every chart value.

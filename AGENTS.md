@@ -325,7 +325,18 @@ Per-provider deep docs: `docs/code-provider-architecture.md`,
 `docs/agents-provider-architecture.md`, `docs/vibe-studio-design.md`,
 `docs/application-template-architecture.md`, `docs/edges-marketplace.md`,
 `docs/mcp-architecture.md`, `docs/providers.md`, `docs/provider-publishing.md`,
-`docs/provider-scoping.md`.
+`docs/provider-scoping.md`, `docs/byo-providers.md`.
+
+The table above is the **platform** catalog, at `root:faros:providers:<name>`.
+An organization can also register its own provider — one it runs itself, usually
+in its own cluster — at `root:faros:tenants:<orgUUID>:providers:<name>`. Those
+reuse the same `provider` WorkspaceType and the same `provider-sdk/install`
+path, so nothing about writing a provider changes; what differs is who
+provisions the workspace (`POST /api/orgs/{org}/providers` instead of admin
+onboarding) and that the catalog scopes them to the owning Org. The registry is
+keyed by `(orgUUID, name)`, and `Registry.Get` stays platform-only so an Org
+cannot capture a platform provider's proxy or heartbeat route by name. See
+`docs/byo-providers.md`.
 
 ### 5.6 Adding / modifying a provider — checklist
 
@@ -340,6 +351,18 @@ Per-provider deep docs: `docs/code-provider-architecture.md`,
    targets if standalone; add the module to `go.work`.
 7. Add an e2e suite under `test/e2e/suites/` if it has tenant-isolation or
    provisioning behavior worth guarding.
+8. Write **two** READMEs: `providers/{name}/README.md` (what the provider is and
+   its APIs) and `providers/{name}/deploy/chart/README.md` (values reference).
+   The chart README is user-facing: charts embed it into their CatalogEntry
+   (`valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}`) and the portal
+   renders it inline in the Self-Hosting flow. It is the answer to "what can I
+   configure?" and must not go stale.
+9. To offer the provider for self-hosting, declare `spec.selfHosting` in **both**
+   `manifest.yaml` and `deploy/chart/templates/catalogentry.yaml` (chart
+   coordinates, namespace, release name, `docsURL` → the chart README, and any
+   `requiredValues`). Prefer placeholders — `{{hubURL}}`, `{{workspacePath}}`,
+   `{{kubeconfigSecret}}` — over values the installer must look up. See
+   `docs/byo-providers.md`.
 
 ---
 
@@ -392,6 +415,8 @@ Each suite has a dedicated Make target. Most spin up their own hub on fixed port
 | `make e2e-provider` | `provider` | Provider provisioning (quickstart) |
 | `make e2e-provider-flags` | `providerflags` | `--providers` flag mechanics (dep validation, filtering) |
 | `make e2e-tilt-cluster` | `tiltcluster` | Against a live `make tilt-cluster` multi-shard stack |
+| `make e2e-install-external` | `installexternal` | Runs `hack/install/` scripts from docs/install-external-kcp.md (two-shard kcp via kcp-operator + Envoy gateway) |
+| `make e2e-install-embedded` | `installembedded` | Runs `hack/install/` scripts from docs/install-embedded-kcp.md (embedded kcp + gateway) |
 | `make e2e-all` | all | Builds hub+agent images, runs everything (~30m) |
 
 E2E knobs: `E2E_FLAGS` (e.g. `--keep-clusters` via `make e2e-keep`),
@@ -401,12 +426,14 @@ local ports. Framework helpers live in `test/e2e/framework/`.
 
 ### Local dev loop (Tilt)
 ```bash
-tilt up      # portal (Vite :3000) + hub (HTTPS :9443, embedded kcp, static auth)
+make tilt    # portal (Vite :3000) + hub (HTTPS :9443, embedded kcp, static auth)
 tilt down
 curl -k https://localhost:9443/healthz
 ```
-`Tiltfile.cluster` / `make tilt-cluster` brings up the operator-deployed
-multi-shard stack used by the `tiltcluster` e2e suite.
+`make tilt` wraps `tilt up -f Tiltfile` with the port/kcp conflict checks; plain
+`tilt up` still works. `Tiltfile.cluster` / `make tilt-cluster` brings up the
+operator-deployed multi-shard stack used by the `tiltcluster` e2e suite. Run one
+or the other — both bind `:9443` and share `.kcp/`.
 
 ---
 

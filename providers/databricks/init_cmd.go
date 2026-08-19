@@ -22,7 +22,6 @@ import (
 
 const (
 	apiExportName        = "databricks.providers.faros.sh"
-	defaultWorkspacePath = "root:faros:providers:databricks"
 )
 
 // permissionClaims is the single init-side declaration of the provider's
@@ -38,7 +37,10 @@ func runInitCmd(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("init needs a kubeconfig (set FAROS_PROVIDER_KUBECONFIG): %w", err)
 	}
-	workspacePath := envOr("DATABRICKS_WORKSPACE_PATH", defaultWorkspacePath)
+	// Empty means "the workspace this kubeconfig already points at": kcp resolves
+	// an unset export path to the slice's own logical cluster, so one chart works
+	// for both the platform workspace and an org's self-hosted copy.
+	workspacePath := envOr("DATABRICKS_WORKSPACE_PATH", "")
 	schemasDir := envOr("FAROS_SCHEMAS_DIR", "/etc/faros/schemas")
 	catalogEntryFile := os.Getenv("FAROS_CATALOGENTRY_FILE")
 

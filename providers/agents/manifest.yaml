@@ -89,3 +89,19 @@ spec:
         resource: subjectaccessreviews
         verbs: [create]
         tenantScoped: true
+  # Lets an organization run this provider in its own cluster
+  # (docs/byo-providers.md). Keep manifest.yaml and
+  # deploy/chart/templates/catalogentry.yaml in sync — the chart copy is the
+  # one that reaches production.
+  selfHosting:
+    supported: true
+    chart:
+      repository: "oci://ghcr.io/faroshq/charts"
+      name: "faros-agents-provider"
+    namespace: "faros-provider-agents"
+    releaseName: "agents"
+    docsURL: "https://github.com/faroshq/faros/blob/main/providers/agents/deploy/chart/README.md"
+    requiredValues:
+      - name: store.databaseURLSecretRef.name
+        description: >-
+          Secret holding the Postgres connection URL. Postgres is this provider's only hard dependency beyond the hub — create the Secret before installing.

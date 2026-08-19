@@ -85,7 +85,12 @@ type WorkspaceOps interface {
 	// user's default workspace — every other workspace would 403 from
 	// the GraphQL gateway without this call.
 	EnsureChildWorkspaceAdmin(ctx context.Context, orgUUID, wsUUID, rbacIdentity string) error
-	ListChildWorkspaces(ctx context.Context, orgUUID string) ([]string, error)
+	// ListChildTeamWorkspaces lists the Org's team workspaces, excluding
+	// infrastructure children such as the `providers` container for org-owned
+	// providers. Tenant-facing views must use this rather than the unfiltered
+	// list: the container has no Memberships, so it would render as a workspace
+	// row that 403s the moment a user selects it.
+	ListChildTeamWorkspaces(ctx context.Context, orgUUID string) ([]string, error)
 	GetWorkspaceDisplayName(ctx context.Context, orgUUID, wsUUID string) (string, error)
 	SetWorkspaceDisplayName(ctx context.Context, orgUUID, wsUUID, displayName string) error
 	GetWorkspaceDeletionRequestedAt(ctx context.Context, orgUUID, wsUUID string) (*time.Time, bool, error)
@@ -120,7 +125,7 @@ type WorkspaceOps interface {
 	// GET .../providers/enabled handler so the portal can refresh the
 	// "enabled providers" sidebar set on every workspace switch
 	// without 403'ing through the kcp user-proxy.
-	ListProviderAPIBindings(ctx context.Context, orgUUID, wsUUID string) (map[string]string, error)
+	ListProviderAPIBindings(ctx context.Context, orgUUID, wsUUID string) (map[string]kcp.ProviderBinding, error)
 
 	// DeleteProviderAPIBinding removes a provider APIBinding from the
 	// target workspace. Used by the POST .../providers/{name}/disable
@@ -160,11 +165,16 @@ type KubeconfigConfig struct {
 }
 
 // ProviderLookup is the slice of pkg/hub/providers.Registry the
-// enableProvider handler needs — just a name-keyed Get. Pulled out as
-// an interface so tests can swap in a fake without depending on the
-// in-memory registry package.
+// enableProvider handler needs. Pulled out as an interface so tests can swap in
+// a fake without depending on the in-memory registry package.
+//
+// Tenant-scoped handlers must use GetForOrg, never Get: Get resolves only
+// platform-global providers, so an Org's own provider would be invisible to
+// Enable. Get remains for the surfaces with no tenant context.
 type ProviderLookup interface {
 	Get(name string) (providers.Provider, bool)
+	GetForOrg(orgUUID, name string) (providers.Provider, bool)
+	ListForOrg(orgUUID string) []providers.Provider
 }
 
 // Manager holds the dependencies every handler needs: the faros
@@ -175,6 +185,11 @@ type Manager struct {
 	bootstrapper WorkspaceOps
 	kubeconfig   KubeconfigConfig
 	providers    ProviderLookup // optional; nil = enableProvider returns 501
+	// orgProviders / providerCreds back the org-owned ("bring your own")
+	// provider surface. Both optional and wired together — the endpoints return
+	// 501 unless both are set. See org_providers.go.
+	orgProviders  OrgProviderOps
+	providerCreds ProviderCredentialMinter
 }
 
 // NewManager builds a Manager from the userClient (typed faros client
@@ -199,6 +214,17 @@ func (m *Manager) WithKubeconfig(cfg KubeconfigConfig) *Manager {
 // provider wiring for tests / minimal hubs.
 func (m *Manager) WithProviderRegistry(p ProviderLookup) *Manager {
 	m.providers = p
+	return m
+}
+
+// WithOrgProviders installs the org-owned provider dependencies: the workspace
+// lifecycle (the kcp Bootstrapper) and the credential minter (the providers
+// Provisioner). Both are required together — without them the
+// /api/orgs/{org}/providers endpoints return 501, keeping route registration
+// independent of provider wiring for tests and minimal hubs.
+func (m *Manager) WithOrgProviders(ops OrgProviderOps, creds ProviderCredentialMinter) *Manager {
+	m.orgProviders = ops
+	m.providerCreds = creds
 	return m
 }
 
@@ -265,6 +291,18 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	r.HandleFunc("/{org}", h.patchOrg).Methods(http.MethodPatch)
 	r.HandleFunc("/{org}", h.deleteOrg).Methods(http.MethodDelete)
 	r.HandleFunc("/{org}/undelete", h.undeleteOrg).Methods(http.MethodPost)
+
+	// Org-owned ("bring your own") providers: the Org registers a provider it
+	// runs itself and gets back a workspace-scoped install credential. Gated on
+	// Organization.spec.catalogEntryCreation (O-7). See org_providers.go.
+	//
+	// Registered before /{org}/memberships etc. is irrelevant to matching (the
+	// paths are distinct), but note these are org-scoped, NOT workspace-scoped:
+	// a provider belongs to the Org, while Enable belongs to one Workspace.
+	r.HandleFunc("/{org}/providers", h.listOrgProviders).Methods(http.MethodGet)
+	r.HandleFunc("/{org}/providers", h.registerOrgProvider).Methods(http.MethodPost)
+	r.HandleFunc("/{org}/providers/{name}", h.deleteOrgProvider).Methods(http.MethodDelete)
+	r.HandleFunc("/{org}/providers/{name}/kubeconfig", h.getOrgProviderKubeconfig).Methods(http.MethodGet)
 
 	r.HandleFunc("/{org}/memberships", h.listOrgMemberships).Methods(http.MethodGet)
 	r.HandleFunc("/{org}/memberships", h.addOrgMembership).Methods(http.MethodPost)
