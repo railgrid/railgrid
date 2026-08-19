@@ -399,8 +399,14 @@ creates a workspace for it in your organization, mints a credential scoped to
 that workspace alone, and generates the exact `helm` commands — under
 **Providers → Self-Hosting** in the portal.
 
-Nothing to fill in: this provider self-bootstraps, and the workspace path plus
-kubeconfig Secret reference are substituted into the generated command.
+Nothing to fill in: the generated command turns on **operator mode** — the same
+mode the production install runs in — and substitutes the kubeconfig Secret
+reference. The operator bootstraps the workspace, installs kro, and owns the
+serve Deployment plus the runtime-cluster RBAC it needs, so a self-hosted copy
+stands up unattended in a cluster that has nothing but the credential.
+
+The `bootstrap.*` init-container flow documented above is superseded and is
+*not* what self-hosting uses: it installs neither kro nor the serve pod's RBAC.
 
 Once installed, the provider registers itself and your workspaces enable it
 exactly like the platform copy. See

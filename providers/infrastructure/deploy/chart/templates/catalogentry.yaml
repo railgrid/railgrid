@@ -122,24 +122,26 @@ data:
         # The chart carries its own values reference, so the portal can show it
         # offline and for the version actually installed.
         valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
+        # Operator mode — the same mode the production install runs in, and the
+        # only one that stands a provider up unattended. It bootstraps your
+        # workspace, installs kro, and owns the serve Deployment together with
+        # the runtime-cluster RBAC that Deployment needs. The superseded
+        # bootstrap.* init-container flow does none of the last two, so a
+        # self-hoster following it lands a serve pod with no permissions on its
+        # own runtime cluster.
         requiredValues:
-          - name: bootstrap.enabled
+          - name: operator.enabled
             value: "true"
             description: >-
-              Runs the provider's own init container, which installs its CRDs and
-              APIExport into your workspace.
-          - name: bootstrap.kubeconfigSource
-            value: supplied
-            description: >-
-              Use the credential you created rather than waiting for the platform
-              to deliver one — the hub cannot write Secrets into your cluster.
-          - name: bootstrap.kcpKubeconfigSecretRef.name
+              Installs the provider's operator, which bootstraps your workspace,
+              installs kro, and runs the provider itself.
+          - name: operator.providerKubeconfigSecret.name
             value: "{{`{{kubeconfigSecret}}`}}"
             description: Secret holding the workspace credential.
-          - name: bootstrap.kcpKubeconfigSecretRef.key
+          - name: operator.providerKubeconfigSecret.key
             value: "{{`{{kubeconfigSecretKey}}`}}"
             description: Data key inside that Secret.
-          - name: bootstrap.workspacePath
-            value: "{{`{{workspacePath}}`}}"
-            description: Your organization's workspace for this provider.
+          - name: hub.url
+            value: "{{`{{hubURL}}`}}"
+            description: Where the provider reports its health.
 {{- end }}
