@@ -38,12 +38,22 @@ const (
 	PathPrefixMCPServer      = "/services/mcpserver"
 	PathPrefixProvidersUI    = "/ui/providers"
 	PathPrefixProvidersProxy = "/services/providers"
-	PathAuthAuthorize        = "/auth/authorize"
-	PathAuthCallback         = "/auth/callback"
-	PathAuthRefresh          = "/auth/refresh"
-	PathAuthTokenLogin       = "/auth/token-login"
-	PathHealthz              = "/healthz"
-	PathVersion              = "/version"
+	// PathPrefixAPIExportVW is kcp's APIExport virtual-workspace prefix, which
+	// the hub forwards verbatim to kcp so a provider running OUTSIDE the
+	// platform can watch its own APIExport. Shape:
+	//
+	//	/services/apiexport/{cluster}/{export}/clusters/{wildcard}/...
+	//
+	// Unlike the prefixes above, the hub does not own this path — it is kcp's,
+	// and the segments are kcp's to interpret. The hub only authorizes and
+	// relays. See docs/byo-providers.md.
+	PathPrefixAPIExportVW = "/services/apiexport"
+	PathAuthAuthorize     = "/auth/authorize"
+	PathAuthCallback      = "/auth/callback"
+	PathAuthRefresh       = "/auth/refresh"
+	PathAuthTokenLogin    = "/auth/token-login"
+	PathHealthz           = "/healthz"
+	PathVersion           = "/version"
 )
 
 // SplitBaseAndCluster splits a URL that contains a /clusters/<name> path into

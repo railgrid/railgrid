@@ -259,6 +259,116 @@ func TestRenderInstallInstructionsStillAsksForUnknownValues(t *testing.T) {
 	}
 }
 
+// The exposure values are the ones the platform genuinely cannot answer:
+// published apps enter through the tenant's OWN ingress, and the hub has no
+// route into their cluster. Emitting a command that merely omits them would
+// look complete and silently leave app publishing disabled, so each must reach
+// the user as a visible placeholder AND a warning.
+func TestRenderInstallInstructionsSurfacesTenantOwnedExposureValues(t *testing.T) {
+	sh := baseSelfHosting()
+	sh.RequiredValues = []SelfHostingValue{
+		{Name: "operator.application.baseDomain", Description: "DNS zone"},
+		{Name: "operator.application.gateway.name"},
+		{Name: "operator.application.gateway.namespace"},
+		{Name: "operator.publishing.hubPublicURL", Value: "{{hubURL}}"},
+		{Name: "operator.publishing.accessProxyImage", Value: "ghcr.io/faroshq/faros-access-proxy:v0.1.1"},
+	}
+
+	got := RenderInstallInstructions(sh, baseOptions())
+	cmd := got.Steps[2].Command
+
+	// Tenant-owned: the user has to supply these.
+	for _, name := range []string{
+		"operator.application.baseDomain",
+		"operator.application.gateway.name",
+		"operator.application.gateway.namespace",
+	} {
+		if !strings.Contains(cmd, name+"=<value>") {
+			t.Errorf("%s is not a visible placeholder in the command:\n%s", name, cmd)
+		}
+		if !containsSubstring(got.Warnings, name) {
+			t.Errorf("%s left the command incomplete without warning: %v", name, got.Warnings)
+		}
+		if !unresolved(got.Values, name) {
+			t.Errorf("%s not marked unresolved, so the portal will not list it", name)
+		}
+	}
+
+	// Platform-owned: asking the user for these would be pushing off work the
+	// hub and the chart already know the answer to.
+	if !strings.Contains(cmd, "operator.publishing.hubPublicURL=https://hub.example.com") {
+		t.Errorf("hubPublicURL was not filled from the hub's own address:\n%s", cmd)
+	}
+	if !strings.Contains(cmd, "operator.publishing.accessProxyImage=ghcr.io/faroshq/faros-access-proxy:v0.1.1") {
+		t.Errorf("accessProxyImage did not carry the platform's pinned build:\n%s", cmd)
+	}
+	for _, name := range []string{"operator.publishing.hubPublicURL", "operator.publishing.accessProxyImage"} {
+		if unresolved(got.Values, name) {
+			t.Errorf("%s was marked unresolved despite being answerable", name)
+		}
+	}
+}
+
+// The hub's built-in values predate recipes being able to name them and encode
+// one particular install mode. A recipe that names the same value knows better,
+// so it must win — otherwise the command carries the same --set twice (helm
+// takes the last, which is a coin toss on ordering) or carries a flag for a
+// mode the recipe is not using.
+func TestRenderInstallInstructionsRecipeOverridesHubDefaults(t *testing.T) {
+	sh := baseSelfHosting()
+	sh.RequiredValues = []SelfHostingValue{
+		{Name: "catalogEntry.enabled", Value: "false"},
+		{Name: "hub.url", Value: "{{hubURL}}"},
+	}
+
+	got := RenderInstallInstructions(sh, baseOptions())
+	cmd := got.Steps[2].Command
+
+	for _, name := range []string{"catalogEntry.enabled", "hub.url"} {
+		if n := strings.Count(cmd, "--set "+name+"="); n != 1 {
+			t.Errorf("--set %s appears %d times, want exactly 1:\n%s", name, n, cmd)
+		}
+		if n := countNamed(got.Values, name); n != 1 {
+			t.Errorf("%s appears %d times in Values, want exactly 1", name, n)
+		}
+	}
+	if !strings.Contains(cmd, "--set catalogEntry.enabled=false") {
+		t.Errorf("the recipe's value lost to the hub default:\n%s", cmd)
+	}
+	// Defaults the recipe does NOT name still come through.
+	if !strings.Contains(cmd, "--set providerKubeconfig.secretName=") {
+		t.Errorf("an unclaimed hub default went missing:\n%s", cmd)
+	}
+}
+
+func countNamed(values []ResolvedValue, name string) int {
+	n := 0
+	for _, v := range values {
+		if v.Name == name {
+			n++
+		}
+	}
+	return n
+}
+
+func containsSubstring(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func unresolved(values []ResolvedValue, name string) bool {
+	for _, v := range values {
+		if v.Name == name {
+			return v.Unresolved
+		}
+	}
+	return false
+}
+
 func TestSelfHostingInstallable(t *testing.T) {
 	for _, tc := range []struct {
 		name string

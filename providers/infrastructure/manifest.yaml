@@ -136,6 +136,43 @@ spec:
       - name: operator.providerKubeconfigSecret.key
         value: "{{kubeconfigSecretKey}}"
         description: Data key inside that Secret.
+      - name: catalogEntry.enabled
+        value: "false"
+        description: >-
+          The operator registers the provider from its own embedded manifest, so
+          the chart must not also render a CatalogEntry ConfigMap — that copy is
+          applied by the init container this mode does not run.
       - name: hub.url
         value: "{{hubURL}}"
         description: Where the provider reports its health.
+      # Exposure. Published apps are reached through YOUR ingress — the platform
+      # has no route into your cluster and cannot supply any of this. Declared
+      # with no value so the hub renders them as <value> and says so, rather
+      # than emitting a command that looks complete and silently disables
+      # publishing. Omit all three and templates that publish an app fail their
+      # reconcile with a clear message; everything else still provisions.
+      - name: operator.application.baseDomain
+        description: >-
+          DNS zone your published apps are served under, e.g. apps.example.com.
+          Each app gets <name>-<hash>.<zone>, so this zone must resolve to your
+          Gateway. Required for app publishing; without it that feature stays
+          off.
+      - name: operator.application.gateway.name
+        description: >-
+          Name of the Gateway API Gateway the generated HTTPRoutes attach to.
+          It must already exist in your cluster — the provider attaches routes,
+          it does not create the Gateway or its listeners.
+      - name: operator.application.gateway.namespace
+        description: Namespace holding that Gateway.
+      - name: operator.publishing.hubPublicURL
+        value: "{{hubURL}}"
+        description: >-
+          Browser-reachable hub address a visitor is redirected to when signing
+          in to a private app. Must be the public URL, not an in-cluster one —
+          it ends up in a redirect the user's browser follows.
+      - name: operator.publishing.accessProxyImage
+        value: ghcr.io/faroshq/faros-access-proxy:latest
+        description: >-
+          Access gate every published app's traffic enters through. It speaks
+          the hub's app-access protocol, so pin it to the build your platform
+          runs rather than letting it float.

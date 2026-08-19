@@ -291,6 +291,21 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// APIExport virtual workspaces are provider-only and authorized structurally
+	// (the export must live in the caller's own workspace), so they get their
+	// own branch ahead of the general SA path — which would otherwise rewrite
+	// the URL by prepending /clusters/{name} and destroy it.
+	if vw, ok := parseVirtualWorkspacePath(r.URL.Path); ok {
+		saClaims, isSA := parseServiceAccountToken(token)
+		if !isSA {
+			p.logger.Info("VW: non-ServiceAccount credential rejected", "path", r.URL.Path)
+			writeForbidden(w, vwRequiresProviderIdentityBody)
+			return
+		}
+		p.serveVirtualWorkspace(w, r, token, saClaims.ClusterName(), vw)
+		return
+	}
+
 	// Check for kcp ServiceAccount tokens BEFORE OIDC verification.
 	// SA tokens have iss="kubernetes/serviceaccount"; the OIDC verifier would
 	// correctly reject them, but running the check first saves a JWKS fetch and

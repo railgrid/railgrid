@@ -132,6 +132,19 @@ func (s *Server) Run(ctx context.Context) error {
 			batteries = strings.Split(s.opts.KCPBatteriesInclude, ",")
 		}
 
+		// NOTE: do not default ShardVirtualWorkspaceURL to HubExternalURL, however
+		// tempting the "one public address" story is. Shard.spec.virtualWorkspaceURL
+		// is a SINGLE global value feeding every APIExportEndpointSlice, and the
+		// hub's own multicluster managers are consumers of it — they dial those
+		// endpoints in-process with kcp's CA and kcp's admin token. Pointing them
+		// at the hub makes them fail the TLS handshake against the hub's own
+		// serving cert ("remote error: tls: unknown certificate"), which silently
+		// freezes the provider registry: the catalog informer never syncs, so the
+		// portal keeps serving whatever recipe it last saw.
+		//
+		// Making the relay reachable therefore needs a way to keep the hub's own
+		// controllers on a kcp-direct URL, which this field cannot express.
+		// See docs/byo-providers.md.
 		embeddedKCP = kcp.NewEmbeddedKCP(kcp.EmbeddedKCPOptions{
 			RootDir:                  kcpRootDir,
 			SecurePort:               s.opts.KCPSecurePort,
@@ -1025,10 +1038,15 @@ func (s *Server) Run(ctx context.Context) error {
 		//  - /clusters/<cluster>/...          user kubeconfig / kubectl-ws
 		//  - /apis/<group>/... or /api/v1/... agent's bare kcp calls
 		//    (serveServiceAccount prepends /clusters/<name> from SA token claim)
+		//  - /services/apiexport/...          APIExport virtual workspace, so a
+		//    provider running outside the platform can watch its own export.
+		//    Reached only after the explicit routes above declined it, so the
+		//    hub's own /services/ handlers keep precedence.
 		if kcpProxy != nil {
 			if strings.HasPrefix(r.URL.Path, "/clusters/") ||
 				strings.HasPrefix(r.URL.Path, "/apis/") ||
-				strings.HasPrefix(r.URL.Path, "/api/") {
+				strings.HasPrefix(r.URL.Path, "/api/") ||
+				strings.HasPrefix(r.URL.Path, apiurl.PathPrefixAPIExportVW+"/") {
 				kcpProxy.ServeHTTP(w, r)
 				return
 			}
