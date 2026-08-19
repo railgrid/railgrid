@@ -194,10 +194,19 @@ func runTemplateControllerManager(ctx context.Context, config *rest.Config) erro
 // loadControllerConfig returns a rest.Config for the workspace the
 // platform controllers target. Looked up in this order:
 //
+//	FAROS_PROVIDER_KUBECONFIG             — standardized across all providers
 //	INFRASTRUCTURE_KUBECONFIG             — minted SA kubeconfig from `init`
 //	INFRASTRUCTURE_CONTROLLER_KUBECONFIG  — legacy provider-specific override
 //	KUBECONFIG                            — standard env var
 //	in-cluster service account            — when run as a pod
+//
+// FAROS_PROVIDER_KUBECONFIG is the name every chart sets on the serve
+// container, and the name the other eight providers read. Until it was
+// honored here, a chart-deployed serve container found none of the
+// provider-specific names — only `init` is given INFRASTRUCTURE_KUBECONFIG —
+// and fell through to the in-cluster ServiceAccount. That silently pointed
+// every kcp controller at the HOST cluster, surfacing as an unrelated-looking
+// RBAC error the first time something touched the API (leases in "default").
 //
 // The minted path wins because serve mode is supposed to run with
 // the lowest-privilege identity available. If init has already run,
@@ -206,12 +215,21 @@ func runTemplateControllerManager(ctx context.Context, config *rest.Config) erro
 // stay as escape hatches for dev clusters that haven't migrated to
 // the init/serve split.
 //
-// Returns errControllerDisabled when none of the four resolve; the
+// Returns errControllerDisabled when none of them resolve; the
 // caller logs + continues without the controller.
 func loadControllerConfig() (*rest.Config, error) {
-	c, err := loadControllerConfigRaw()
+	c, source, err := loadControllerConfigRaw()
 	if err != nil {
 		return nil, err
+	}
+	// Say which source won. Every controller and both leader elections run
+	// against this config, so picking the wrong one misdirects the whole
+	// provider — and the symptom surfaces far from the cause.
+	log.Printf("kcp config resolved from %s (host=%s)", source, c.Host)
+	if source == sourceInCluster {
+		log.Printf("WARNING: no provider kubeconfig in scope, so controllers will run "+
+			"against the HOST cluster, not kcp. Set %s to the mounted provider kubeconfig.",
+			"FAROS_PROVIDER_KUBECONFIG")
 	}
 	// When INFRASTRUCTURE_WORKSPACE_PATH is set, retarget the config host at
 	// /clusters/<path>. This lets serve run with a root-scoped (admin)
@@ -228,36 +246,41 @@ func loadControllerConfig() (*rest.Config, error) {
 	return c, nil
 }
 
-func loadControllerConfigRaw() (*rest.Config, error) {
-	if p := os.Getenv("INFRASTRUCTURE_KUBECONFIG"); p != "" {
+// sourceInCluster names the last-resort branch of loadControllerConfigRaw.
+const sourceInCluster = "the in-cluster ServiceAccount"
+
+// controllerKubeconfigEnvs is the resolution order, most-specific first. The
+// standardized FAROS_PROVIDER_KUBECONFIG leads: it is what every chart sets on
+// the serve container and what the other providers read.
+var controllerKubeconfigEnvs = []string{
+	"FAROS_PROVIDER_KUBECONFIG",
+	"INFRASTRUCTURE_KUBECONFIG",
+	"INFRASTRUCTURE_CONTROLLER_KUBECONFIG",
+	"KUBECONFIG",
+}
+
+// loadControllerConfigRaw returns the config and the name of the source it
+// came from, so the caller can report which one won.
+func loadControllerConfigRaw() (*rest.Config, string, error) {
+	for _, env := range controllerKubeconfigEnvs {
+		p := os.Getenv(env)
+		if p == "" {
+			continue
+		}
 		c, err := clientcmd.BuildConfigFromFlags("", p)
 		if err != nil {
-			return nil, fmt.Errorf("INFRASTRUCTURE_KUBECONFIG: %w", err)
+			return nil, "", fmt.Errorf("%s: %w", env, err)
 		}
-		return c, nil
-	}
-	if p := os.Getenv("INFRASTRUCTURE_CONTROLLER_KUBECONFIG"); p != "" {
-		c, err := clientcmd.BuildConfigFromFlags("", p)
-		if err != nil {
-			return nil, fmt.Errorf("INFRASTRUCTURE_CONTROLLER_KUBECONFIG: %w", err)
-		}
-		return c, nil
-	}
-	if p := os.Getenv("KUBECONFIG"); p != "" {
-		c, err := clientcmd.BuildConfigFromFlags("", p)
-		if err != nil {
-			return nil, fmt.Errorf("KUBECONFIG: %w", err)
-		}
-		return c, nil
+		return c, env, nil
 	}
 	// In-cluster fallback. The error returned by InClusterConfig is
 	// the right "not running in a pod" signal so we let it surface
 	// up the chain as errControllerDisabled.
 	c, err := rest.InClusterConfig()
 	if err != nil {
-		return nil, errControllerDisabled
+		return nil, "", errControllerDisabled
 	}
-	return c, nil
+	return c, sourceInCluster, nil
 }
 
 // errControllerDisabled is the sentinel main() checks for so it can
