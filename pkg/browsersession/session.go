@@ -183,6 +183,21 @@ func (s *Store) TTL() time.Duration {
 // server-side view.  It rejects empty stable identities so callers cannot
 // accidentally mint an anonymous session.
 func (s *Store) Issue(ctx context.Context, identity Identity) (string, Session, error) {
+	return s.issueWithTTL(ctx, identity, s.ttl)
+}
+
+// IssueTransient creates an opaque session handle with a caller-selected,
+// shorter lifetime. It is used for one-time browser handoffs: the handle is
+// redeemed immediately for a normal session cookie and must expire quickly if
+// delivery never completes.
+func (s *Store) IssueTransient(ctx context.Context, identity Identity, ttl time.Duration) (string, Session, error) {
+	if s == nil || ttl <= 0 || ttl > s.ttl {
+		return "", Session{}, fmt.Errorf("%w: transient ttl must be positive and no longer than the store ttl", ErrInvalid)
+	}
+	return s.issueWithTTL(ctx, identity, ttl)
+}
+
+func (s *Store) issueWithTTL(ctx context.Context, identity Identity, ttl time.Duration) (string, Session, error) {
 	if s == nil || strings.TrimSpace(identity.UserID) == "" {
 		return "", Session{}, fmt.Errorf("%w: user id is required", ErrInvalid)
 	}
@@ -202,7 +217,7 @@ func (s *Store) Issue(ctx context.Context, identity Identity) (string, Session, 
 		} else if !errors.Is(err, ErrNotFound) {
 			return "", Session{}, fmt.Errorf("checking browser session handle: %w", err)
 		}
-		record := Record{Identity: identity, IssuedAt: now, ExpiresAt: now.Add(s.ttl)}
+		record := Record{Identity: identity, IssuedAt: now, ExpiresAt: now.Add(ttl)}
 		if err := s.backend.Put(ctx, key, record); err != nil {
 			return "", Session{}, fmt.Errorf("storing browser session: %w", err)
 		}

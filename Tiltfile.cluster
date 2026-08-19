@@ -448,21 +448,13 @@ gateway_ip = '10.96.2.2'
 # untouched.
 app_studio_preview_dns_apply = 'hack/scripts/configure-tilt-preview-dns.sh %s %s %s' % (
     k8s_context(), app_base_domain, gateway_ip)
-app_studio_preview_dns_cleanup = 'hack/scripts/configure-tilt-preview-dns.sh --cleanup %s %s %s' % (
-    k8s_context(), app_base_domain, gateway_ip)
 local_resource(
     'app-studio-preview-dns',
-    # Keep a tiny serving process so Tilt can run the idempotent cleanup trap
-    # when the resource (or the whole Tilt session) is stopped.
-    cmd='true',
-    serve_cmd='''
-set -eu
-cleanup() { %s || true; }
-trap cleanup 0
-trap 'exit 0' 2 15
-%s
-while :; do sleep 86400; done
-'''.strip() % (app_studio_preview_dns_cleanup, app_studio_preview_dns_apply),
+    # Apply in the update command so dependants do not become Ready until the
+    # CoreDNS block exists. This is intentionally one-shot: Tilt starts a new
+    # update before stopping the old serve process, so an exit cleanup races
+    # and can erase the freshly applied block.
+    cmd=app_studio_preview_dns_apply,
     deps=['Tiltfile.cluster', 'hack/scripts/configure-tilt-preview-dns.sh'],
     labels=['providers-app-studio'],
 )
@@ -1041,16 +1033,12 @@ metadata:
 # the cluster-wide equivalent of the hostAliases the hub pod gets.
 local_resource(
     'kcp-dns',
-    cmd='true',
-    serve_cmd='''
-set -eu
-cleanup() { hack/scripts/configure-tilt-kcp-dns.sh --cleanup %s %s || true; }
-trap cleanup 0
-trap 'exit 0' 2 15
-hack/scripts/configure-tilt-kcp-dns.sh %s %s
-while :; do sleep 86400; done
-'''.strip() % (k8s_context(), gateway_ip, k8s_context(), gateway_ip),
+    cmd='hack/scripts/configure-tilt-kcp-dns.sh %s %s' % (k8s_context(), gateway_ip),
     deps=['hack/scripts/configure-tilt-kcp-dns.sh'],
+    # Both DNS helpers patch the same CoreDNS ConfigMap. Serialize their initial
+    # apply so kcp-dns reads and preserves the app preview block instead of
+    # racing it and intermittently sending in-cluster browsers to 127.0.0.1.
+    resource_deps=['app-studio-preview-dns'],
     labels=['providers-shared'],
 )
 

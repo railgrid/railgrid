@@ -207,7 +207,15 @@ test('current document handshake is wired to bounded preview recovery', () => {
 	assert.match(appSource, /onState: handleDevelopmentPreviewConsoleState/)
 	assert.match(appSource, /developmentPreviewRecoveryAction\(attempt, developmentPreviewRecoveryReloadAttempted\.value\)/)
 	assert.match(appSource, /if \(action\.kind === 'reload'\)[\s\S]*?recoverDevelopmentPreviewDocument\(projectName\)/)
+	assert.match(appSource, /if \(action\.kind === 'background'\)[\s\S]*?recoverDevelopmentPreviewDocument\(projectName\)/)
 	assert.match(appSource, /v-if="developmentPreviewRecoveryError && !developmentPreviewFrameLoaded"[\s\S]*?Retry preview/)
+})
+
+test('an unavailable iframe is replaced when the browser tab wakes', () => {
+	assert.match(
+		appSource,
+		/developmentPreviewDocumentState\.value === 'unavailable'[\s\S]*?recoverDevelopmentPreviewDocument\(projectName\)/,
+	)
 })
 
 test('terminal preview refresh hydrates the selected project before authorizing', () => {

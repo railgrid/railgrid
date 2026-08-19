@@ -103,9 +103,12 @@ func projectEinoAssistantToolsForDiscovery(
 	}
 	out = append(out, graphTools...)
 	for _, tool := range localTools {
-		if projectToolBaseName(tool.Spec().Name) == projectToolInspectDevelopmentPreview &&
-			projectAssistantCapabilitiesForModel(req.LLM).VisionToolResults {
+		switch projectToolBaseName(tool.Spec().Name) {
+		case projectToolInspectDevelopmentPreview:
 			out = append(out, newProjectEinoAssistantEnhancedPreviewTool(server, tool, req, runState))
+			continue
+		case projectToolInteractDevelopmentPreview:
+			out = append(out, newProjectEinoAssistantPreviewInteractionTool(server, tool, req, runState))
 			continue
 		}
 		out = append(out, newProjectEinoAssistantServerTool(server, tool, req, runState))
@@ -814,6 +817,9 @@ func (t projectEinoAssistantTool) replayDurableToolCall(
 	outcome projectAssistantRunToolCallOutcome,
 ) (string, error) {
 	result, err := outcome.InvokeResult()
+	if projectToolBaseName(spec.Name) == projectToolInteractDevelopmentPreview {
+		result = projectAssistantPreviewReplayTextResult(result)
+	}
 	successful := outcome.Succeeded()
 	inputRecovery := projectAssistantValidatedMutationRecoveryOf(t.runState, args, spec.Name)
 	result = projectAssistantAttachMutationRecoveryOf(spec.Name, result, inputRecovery)

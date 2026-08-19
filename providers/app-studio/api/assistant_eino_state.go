@@ -318,7 +318,11 @@ type projectEinoAssistantTransientPreviewImage struct {
 const projectEinoAssistantPreviewImageIntro = "Screenshot captured by the preceding development preview inspection."
 
 func (s *projectEinoAssistantRunState) RegisterTransientPreviewImage(result, base64Data, mimeType string) string {
-	persistent := projectEinoAssistantPersistentToolResult(projectToolInspectDevelopmentPreview, result)
+	return s.RegisterTransientPreviewImageForTool(projectToolInspectDevelopmentPreview, result, base64Data, mimeType)
+}
+
+func (s *projectEinoAssistantRunState) RegisterTransientPreviewImageForTool(toolName, result, base64Data, mimeType string) string {
+	persistent := projectEinoAssistantPersistentToolResult(toolName, result)
 	if s == nil || strings.TrimSpace(base64Data) == "" || mimeType != "image/png" {
 		return persistent
 	}
@@ -558,7 +562,7 @@ func (s *projectEinoAssistantRunState) ExpandTransientToolMessages(input []*sche
 			cloned.Content = result
 			expanded = append(expanded, &cloned)
 			changed = true
-		case projectToolInspectDevelopmentPreview:
+		case projectToolInspectDevelopmentPreview, projectToolInteractDevelopmentPreview:
 			preview, ok := s.transientPreviewImages[strings.TrimSpace(placeholder.TransientImageReference)]
 			if !ok {
 				expanded = append(expanded, message)

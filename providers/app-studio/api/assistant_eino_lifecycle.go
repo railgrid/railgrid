@@ -395,6 +395,13 @@ func (m *projectEinoAssistantLifecycle) liveRequestContextSections(ctx context.C
 		),
 	}}
 	sections[0].message = chatMessage{Role: "system", Content: projectEinoAssistantLiveContextPrefix + sections[0].content}
+	if prompt, ok := projectAssistantWorkspaceInstructions(ctx, m.workspace, m.workspaceScope); ok {
+		sections = append(sections, projectEinoAssistantLiveContextSection{
+			name:    "workspace_instructions",
+			content: prompt,
+			message: chatMessage{Role: "system", Content: projectEinoAssistantLiveContextPrefix + prompt},
+		})
+	}
 	if snapshot, ok := projectEinoAssistantSessionContextMessage(ctx, m.req, m.runState); ok {
 		content := strings.TrimPrefix(snapshot.Content, projectEinoAssistantLiveContextPrefix)
 		sections = append(sections, projectEinoAssistantLiveContextSection{

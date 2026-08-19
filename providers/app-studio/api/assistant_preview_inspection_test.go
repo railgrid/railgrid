@@ -130,8 +130,8 @@ func TestInspectProjectDevelopmentPreviewReturnsTypedFailure(t *testing.T) {
 	if result.EvidenceScope != "rendered_state_only" || result.InteractionEvidence || len(result.Limitations) != 1 || !strings.Contains(result.Limitations[0], "did not click, type, press keys") {
 		t.Fatalf("inspection evidence contract = %#v", result)
 	}
-	if result.Screenshot == nil || result.Screenshot.Base64 != "" || result.Screenshot.Bytes == 0 {
-		t.Fatalf("persistable screenshot metadata = %#v", result.Screenshot)
+	if result.Screenshot != nil || result.ScreenshotStatus != projectAssistantPreviewScreenshotNotRequested {
+		t.Fatalf("unrequested screenshot = %#v, status = %q", result.Screenshot, result.ScreenshotStatus)
 	}
 	if inspector.request.URL != "https://demo.preview.example/tasks" || inspector.request.IncludeScreenshot {
 		t.Fatalf("worker request = %#v", inspector.request)
@@ -218,7 +218,7 @@ func TestProjectAssistantEnhancedPreviewInspectionReturnsImageWithoutPersistingB
 	if !ok {
 		t.Fatalf("tool type = %T, want EnhancedInvokableTool", base)
 	}
-	result, err := enhanced.InvokableRun(context.Background(), &schema.ToolArgument{Text: `{}`})
+	result, err := enhanced.InvokableRun(context.Background(), &schema.ToolArgument{Text: `{"includeScreenshot":true}`})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,6 +227,9 @@ func TestProjectAssistantEnhancedPreviewInspectionReturnsImageWithoutPersistingB
 	}
 	if strings.Contains(result.Parts[0].Text, "aGVsbG8=") {
 		t.Fatal("screenshot bytes leaked into the durable text result")
+	}
+	if !strings.Contains(result.Parts[0].Text, `"screenshotStatus":"captured"`) || !inspector.request.IncludeScreenshot {
+		t.Fatalf("screenshot contract = %s; worker request = %#v", result.Parts[0].Text, inspector.request)
 	}
 	messageParts, err := result.ToMessageInputParts()
 	if err != nil {
@@ -273,6 +276,82 @@ func TestProjectAssistantEnhancedPreviewInspectionReturnsImageWithoutPersistingB
 	}
 }
 
+func TestProjectAssistantEnhancedPreviewReportsUnsupportedVisionModel(t *testing.T) {
+	inspector := &fakeProjectAssistantPreviewInspector{result: projectAssistantPreviewInspectionResult{
+		Status: "succeeded",
+		Screenshot: &projectAssistantPreviewInspectionScreenshot{
+			MIMEType: "image/png",
+			Base64:   "aGVsbG8=",
+		},
+	}}
+	server := &Server{
+		previewInspector: inspector,
+		previewInspectionResolveURL: func(context.Context, identity, *aiv1alpha1.Project) (string, error) {
+			return "https://demo.preview.example/", nil
+		},
+	}
+	registered, ok := server.projectAssistantToolRegistry().Get(projectToolInspectDevelopmentPreview)
+	if !ok {
+		t.Fatal("preview inspection tool is not registered")
+	}
+	base := newProjectEinoAssistantEnhancedPreviewTool(server, registered, projectAssistantRunRequest{
+		Project: &aiv1alpha1.Project{},
+		LLM:     projectLLMSettings{Provider: defaultProjectLLMProvider, Model: "unknown-model"},
+	}, newProjectEinoAssistantRunState())
+	result, err := base.(einotool.EnhancedInvokableTool).InvokableRun(context.Background(), &schema.ToolArgument{Text: `{"includeScreenshot":true}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspector.request.IncludeScreenshot {
+		t.Fatal("unsupported model caused browser screenshot capture")
+	}
+	if len(result.Parts) != 1 || !strings.Contains(result.Parts[0].Text, `"screenshotStatus":"model_unsupported"`) {
+		t.Fatalf("tool result = %#v", result)
+	}
+	toolMessage := schema.ToolMessage(result.Parts[0].Text, "preview-call")
+	toolMessage.ToolName = projectToolInspectDevelopmentPreview
+	if expanded := base.(*projectEinoAssistantEnhancedPreviewTool).runState.ExpandTransientToolMessages([]*schema.Message{toolMessage}); len(expanded) != 1 {
+		t.Fatalf("unsupported model received transient image: %#v", expanded)
+	}
+}
+
+func TestProjectAssistantPreviewToolsAdvertiseScreenshotCapture(t *testing.T) {
+	registry := (&Server{}).projectAssistantToolRegistry()
+	for _, name := range []string{projectToolInspectDevelopmentPreview, projectToolInteractDevelopmentPreview} {
+		tool, ok := registry.Get(name)
+		if !ok {
+			t.Fatalf("tool %q is not registered", name)
+		}
+		spec := tool.Spec()
+		if !strings.Contains(spec.Description, "includeScreenshot=true") || !strings.Contains(string(spec.Parameters), `"includeScreenshot"`) {
+			t.Fatalf("tool %q does not advertise screenshot capture: %s %s", name, spec.Description, spec.Parameters)
+		}
+	}
+}
+
+func TestProjectAssistantPreviewInteractionKeepsStandardPermissionTool(t *testing.T) {
+	server := &Server{}
+	registered, ok := server.projectAssistantToolRegistry().Get(projectToolInteractDevelopmentPreview)
+	if !ok {
+		t.Fatal("preview interaction tool is not registered")
+	}
+	base := newProjectEinoAssistantPreviewInteractionTool(server, registered, projectAssistantRunRequest{}, newProjectEinoAssistantRunState())
+	tool, ok := base.(projectEinoAssistantTool)
+	if !ok {
+		t.Fatalf("interaction tool type = %T, want standard permission-aware tool", base)
+	}
+	if tool.tool.Spec().Risk != projectAssistantToolRiskRuntime {
+		t.Fatalf("interaction risk = %q, want runtime", tool.tool.Spec().Risk)
+	}
+}
+
+func TestProjectAssistantPreviewReplayDoesNotClaimTransientImage(t *testing.T) {
+	replayed := projectAssistantPreviewReplayTextResult(`{"status":"succeeded","screenshotStatus":"captured","transientImageReference":"ephemeral"}`)
+	if strings.Contains(replayed, "transientImageReference") || !strings.Contains(replayed, `"screenshotStatus":"artifact_unavailable"`) {
+		t.Fatalf("replayed screenshot result = %s", replayed)
+	}
+}
+
 func TestProjectAssistantTextPreviewInspectionProjectsFailureForLiveAndReplay(t *testing.T) {
 	h := newProjectAssistantV2ToolHarness(t, "text-preview-presentation")
 	result := `{"status":"failed","failureKind":"assertion","assertions":[{"kind":"text_present","text":"Pen Sales","passed":true},{"kind":"text_present","text":"Loading pens","passed":false}]}`
@@ -313,6 +392,16 @@ func TestProjectAssistantModelCapabilitiesFailClosed(t *testing.T) {
 	}
 	if !projectAssistantCapabilitiesForModel(projectLLMSettings{Provider: defaultProjectLLMProvider, Model: defaultProjectLLMModel}).VisionToolResults {
 		t.Fatal("default model lacks its cataloged image tool capability")
+	}
+	for _, model := range []string{"gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"} {
+		if !projectAssistantCapabilitiesForModel(projectLLMSettings{Provider: defaultProjectLLMProvider, Model: model}).VisionToolResults {
+			t.Fatalf("current OpenAI-compatible model %q lacks its image capability", model)
+		}
+	}
+	for _, model := range []string{"gemini-3.5-flash", "google/gemini-3.5-flash"} {
+		if !projectAssistantCapabilitiesForModel(projectLLMSettings{Provider: "google-ai-studio", Model: model}).VisionToolResults {
+			t.Fatalf("App Studio default Gemini model %q lacks its image capability", model)
+		}
 	}
 }
 

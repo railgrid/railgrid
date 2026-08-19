@@ -28,14 +28,52 @@ import (
 )
 
 type projectEinoAssistantEnhancedPreviewTool struct {
-	server   *Server
-	tool     projectAssistantTool
-	req      projectAssistantRunRequest
-	runState *projectEinoAssistantRunState
+	server        *Server
+	tool          projectAssistantTool
+	req           projectAssistantRunRequest
+	runState      *projectEinoAssistantRunState
+	visionEnabled bool
 }
 
 func newProjectEinoAssistantEnhancedPreviewTool(server *Server, tool projectAssistantTool, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) einotool.BaseTool {
-	return &projectEinoAssistantEnhancedPreviewTool{server: server, tool: tool, req: req, runState: runState}
+	return &projectEinoAssistantEnhancedPreviewTool{
+		server:        server,
+		tool:          tool,
+		req:           req,
+		runState:      runState,
+		visionEnabled: projectAssistantCapabilitiesForModel(req.LLM).VisionToolResults,
+	}
+}
+
+// Interaction remains a normal projectEinoAssistantTool so runtime permission,
+// approval interruption, and replay semantics stay centralized. The wrapped
+// backend only adds the transient screenshot bridge after authorization.
+func newProjectEinoAssistantPreviewInteractionTool(server *Server, tool projectAssistantTool, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) einotool.BaseTool {
+	visionEnabled := projectAssistantCapabilitiesForModel(req.LLM).VisionToolResults
+	wrapped := projectAssistantToolFunc{
+		spec: tool.Spec(),
+		call: func(ctx context.Context, callReq projectAssistantToolCallRequest) (string, error) {
+			requestScreenshot := projectToolBool(callReq.Arguments["includeScreenshot"])
+			result, err := server.interactProjectDevelopmentPreviewResult(ctx, callReq, requestScreenshot && visionEnabled)
+			if err != nil {
+				return "", err
+			}
+			if requestScreenshot && !visionEnabled {
+				result.ScreenshotStatus = projectAssistantPreviewScreenshotModelUnsupported
+			}
+			textResult, err := projectAssistantPreviewInteractionTextResult(result)
+			if err != nil {
+				return "", err
+			}
+			imageBase64, imageMIME := "", ""
+			if result.Screenshot != nil {
+				imageBase64 = result.Screenshot.Base64
+				imageMIME = result.Screenshot.MIMEType
+			}
+			return runState.RegisterTransientPreviewImageForTool(tool.Spec().Name, textResult, imageBase64, imageMIME), nil
+		},
+	}
+	return newProjectEinoAssistantServerTool(server, wrapped, req, runState)
 }
 
 func (t *projectEinoAssistantEnhancedPreviewTool) Info(ctx context.Context) (*schema.ToolInfo, error) {
@@ -75,7 +113,7 @@ func (t *projectEinoAssistantEnhancedPreviewTool) InvokableRun(ctx context.Conte
 			return nil, err
 		}
 		if decision.Replay != nil {
-			text := decision.Replay.Result
+			text := projectAssistantPreviewReplayTextResult(decision.Replay.Result)
 			if strings.TrimSpace(text) == "" {
 				text = `{"status":"unavailable","failureKind":"artifact_unavailable","summary":"Preview inspection evidence is unavailable on replay."}`
 			}
@@ -97,7 +135,9 @@ func (t *projectEinoAssistantEnhancedPreviewTool) InvokableRun(ctx context.Conte
 		Status:    "running",
 		Arguments: summarizeProjectToolArgumentsMap(spec.Name, args),
 	})
-	result, inspectErr := t.server.inspectProjectDevelopmentPreviewResult(ctx, projectAssistantToolCallRequest{
+	requestScreenshot := projectToolBool(args["includeScreenshot"])
+	captureScreenshot := requestScreenshot && t.visionEnabled
+	toolReq := projectAssistantToolCallRequest{
 		Identity:       t.req.Identity,
 		Project:        t.req.Project,
 		WorkspaceScope: t.req.WorkspaceScope,
@@ -105,11 +145,21 @@ func (t *projectEinoAssistantEnhancedPreviewTool) InvokableRun(ctx context.Conte
 		InitialBuild:   projectAssistantInitialBuildActive(t.req, t.runState),
 		RunState:       t.runState,
 		Arguments:      args,
-	}, true)
-	if inspectErr != nil {
-		return t.failureResult(ctx, callID, &decision, rawArgs, inspectErr)
 	}
-	textResult, err := projectAssistantPreviewInspectionTextResult(result)
+	var result projectAssistantPreviewInspectionResult
+	var textResult string
+	switch projectToolBaseName(spec.Name) {
+	case projectToolInspectDevelopmentPreview:
+		result, err = t.server.inspectProjectDevelopmentPreviewResult(ctx, toolReq, captureScreenshot)
+		if err == nil {
+			if requestScreenshot && !t.visionEnabled {
+				result.ScreenshotStatus = projectAssistantPreviewScreenshotModelUnsupported
+			}
+			textResult, err = projectAssistantPreviewInspectionTextResult(result)
+		}
+	default:
+		err = errors.New("unsupported enhanced preview tool")
+	}
 	if err != nil {
 		return t.failureResult(ctx, callID, &decision, rawArgs, err)
 	}
@@ -135,13 +185,24 @@ func (t *projectEinoAssistantEnhancedPreviewTool) InvokableRun(ctx context.Conte
 		imageBase64 = result.Screenshot.Base64
 		imageMIME = result.Screenshot.MIMEType
 	}
-	modelResult := t.runState.RegisterTransientPreviewImage(textResult, imageBase64, imageMIME)
+	modelResult := t.runState.RegisterTransientPreviewImageForTool(spec.Name, textResult, imageBase64, imageMIME)
 	return projectAssistantPreviewInspectionToolResult(modelResult, "", ""), nil
 }
 
 func (t *projectEinoAssistantEnhancedPreviewTool) failureResult(ctx context.Context, callID string, decision *projectAssistantRunToolCallDecision, rawArgs string, invokeErr error) (*schema.ToolResult, error) {
 	spec := t.tool.Spec()
 	modelResult := projectEinoAssistantSafeToolFailureResult(spec.Name, invokeErr)
+	var failureArgs map[string]any
+	_ = json.Unmarshal([]byte(rawArgs), &failureArgs)
+	if projectToolBool(failureArgs["includeScreenshot"]) {
+		status := projectAssistantPreviewScreenshotCaptureFailed
+		if !t.visionEnabled {
+			status = projectAssistantPreviewScreenshotModelUnsupported
+		} else if projectAssistantPreviewBrowserUnreachableError(invokeErr) {
+			status = projectAssistantPreviewScreenshotBrowserUnreachable
+		}
+		modelResult = projectAssistantPreviewTextResultWithScreenshotStatus(modelResult, status)
+	}
 	if t.req.eventLedger != nil && decision != nil && decision.Replay == nil {
 		outcome, err := t.req.eventLedger.FinishToolCall(ctx, decision.Token, modelResult, invokeErr)
 		if err != nil {
@@ -161,6 +222,51 @@ func (t *projectEinoAssistantEnhancedPreviewTool) failureResult(ctx context.Cont
 		PreviewInspection: projectAssistantPreviewInspectionActionFromToolResult(spec.Name, modelResult),
 	})
 	return projectAssistantPreviewInspectionToolResult(modelResult, "", ""), nil
+}
+
+func projectAssistantPreviewBrowserUnreachableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"connection refused", "browser", "data plane", "dial tcp", "no route to host"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func projectAssistantPreviewTextResultWithScreenshotStatus(text, status string) string {
+	var payload map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(text)), &payload) != nil {
+		payload = map[string]any{"status": "failed", "summary": strings.TrimSpace(text)}
+	}
+	payload["screenshotStatus"] = status
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return text
+	}
+	return string(encoded)
+}
+
+func projectAssistantPreviewReplayTextResult(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	var payload map[string]any
+	if json.Unmarshal([]byte(text), &payload) != nil {
+		return text
+	}
+	delete(payload, "transientImageReference")
+	if strings.TrimSpace(projectToolString(payload["screenshotStatus"])) == projectAssistantPreviewScreenshotCaptured {
+		payload["screenshotStatus"] = projectAssistantPreviewScreenshotArtifactUnavailable
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return text
+	}
+	return string(encoded)
 }
 
 func projectPreviewInspectionEventStatus(disposition projectAssistantToolDisposition) string {

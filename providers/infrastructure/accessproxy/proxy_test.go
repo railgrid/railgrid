@@ -350,6 +350,19 @@ func TestPrivateModeSessionExpiryRestartsFlow(t *testing.T) {
 	}
 }
 
+func TestPrivateModeAcceptsValidSessionAfterStaleSameNameCookie(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	hub := newFakeHub("code-1")
+	p := newProxy(t, privateConfig(upstream.URL, hub))
+	valid := completeLogin(t, p, hub, "/")
+	stale := &http.Cookie{Name: SessionCookieName, Value: "stale-direct-tab-session"}
+
+	rec := doRequest(p, appRequest("/", stale, valid))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 with a valid second same-name cookie", rec.Code)
+	}
+}
+
 func TestConcurrentAuthorizationCallbacksCanCompleteOutOfOrder(t *testing.T) {
 	upstream, _ := newUpstream(t, nil)
 	hub := newFakeHub("code-1")
@@ -736,6 +749,7 @@ func TestEmbeddedCallbackUsesPartitionedCookiesOnAFreshProcess(t *testing.T) {
 	before := newProxy(t, config)
 	startRequest := appRequest("/deep/link?q=1")
 	startRequest.Header.Set("Sec-Fetch-Dest", "iframe")
+	startRequest.Header.Set("Sec-Fetch-Site", "cross-site")
 	first := doRequest(before, startRequest)
 	if first.Code != http.StatusFound {
 		t.Fatalf("initial embedded request status = %d, want 302", first.Code)
@@ -751,6 +765,9 @@ func TestEmbeddedCallbackUsesPartitionedCookiesOnAFreshProcess(t *testing.T) {
 	after := newProxy(t, config)
 	callbackRequest := appRequest(CallbackPath+"?code="+hub.code+"&state="+state, returnCookie)
 	callbackRequest.Header.Set("Sec-Fetch-Dest", "iframe")
+	// The callback's immediate initiator is the same-site hub even though the
+	// top-level portal is cross-site. The mode carried in return state must win.
+	callbackRequest.Header.Set("Sec-Fetch-Site", "same-site")
 	callback := doRequest(after, callbackRequest)
 	if callback.Code != http.StatusFound {
 		t.Fatalf("embedded callback on fresh process = %d body=%q, want 302", callback.Code, callback.Body.String())
@@ -764,6 +781,34 @@ func TestEmbeddedCallbackUsesPartitionedCookiesOnAFreshProcess(t *testing.T) {
 	}
 	if rec := doRequest(after, appRequest("/deep/link?q=1", session)); rec.Code != http.StatusOK {
 		t.Fatalf("embedded session request status = %d, want 200", rec.Code)
+	}
+}
+
+func TestSameSiteEmbeddedCallbackUsesOrdinaryLaxCookies(t *testing.T) {
+	upstream, _ := newUpstream(t, nil)
+	hub := newFakeHub("code-1")
+	p := newProxy(t, privateConfig(upstream.URL, hub))
+
+	startRequest := appRequest("/")
+	startRequest.Header.Set("Sec-Fetch-Dest", "iframe")
+	startRequest.Header.Set("Sec-Fetch-Site", "same-site")
+	first := doRequest(p, startRequest)
+	returnCookie := returnCookieFromResponse(t, first)
+	if returnCookie.SameSite != http.SameSiteLaxMode || returnCookie.Partitioned {
+		t.Fatalf("same-site return cookie SameSite=%v Partitioned=%t, want Lax and unpartitioned", returnCookie.SameSite, returnCookie.Partitioned)
+	}
+	state := mustQuery(t, first.Header().Get("Location"), "state")
+
+	callbackRequest := appRequest(CallbackPath+"?code="+hub.code+"&state="+state, returnCookie)
+	callbackRequest.Header.Set("Sec-Fetch-Dest", "iframe")
+	callbackRequest.Header.Set("Sec-Fetch-Site", "same-site")
+	callback := doRequest(p, callbackRequest)
+	session := cookieFromResponse(t, callback, SessionCookieName)
+	if session.SameSite != http.SameSiteLaxMode || session.Partitioned {
+		t.Fatalf("same-site session cookie SameSite=%v Partitioned=%t, want Lax and unpartitioned", session.SameSite, session.Partitioned)
+	}
+	if rec := doRequest(p, appRequest("/", session)); rec.Code != http.StatusOK {
+		t.Fatalf("same-site embedded session request status = %d, want 200", rec.Code)
 	}
 }
 

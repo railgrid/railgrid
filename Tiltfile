@@ -115,6 +115,7 @@ preview_gateway_namespace = 'envoy-gateway-system'
 preview_app_base_domain = 'apps.127.0.0.1.sslip.io'
 preview_app_public_port = '10443'
 preview_hub_public_url = 'https://console.127.0.0.1.sslip.io:9443'
+preview_hub_public_host = 'console.127.0.0.1.sslip.io'
 preview_kro_kubeconfig = '.faros-kro.kubeconfig'
 preview_kro_context = 'kind-faros-kro'
 preview_kro_node = 'faros-kro-control-plane'
@@ -601,6 +602,57 @@ local_resource(
     labels=['providers-kro'],
 )
 
+# The public preview hostname deliberately resolves to 127.0.0.1 so a host
+# browser reaches the port-forward below. The App Studio browser worker runs
+# inside faros-kro, where that same answer would point Chromium back at its own
+# pod and fail with ERR_CONNECTION_REFUSED. Override only the preview wildcard
+# inside this kind cluster so browser inspection and screenshots take the same
+# route as other in-cluster clients: directly to the Envoy Gateway Service.
+local_resource(
+    'app-studio-preview-dns',
+    cmd='''
+set -eu
+KRO_KUBECONFIG=%s
+CTX=%s
+GW=%s
+gateway_ip=''
+host_gateway="$(docker inspect -f '%s' %s)"
+test -n "$host_gateway"
+for _ in $(seq 1 60); do
+  gateway_ip="$(kubectl --kubeconfig "$KRO_KUBECONFIG" --context "$CTX" \
+    get svc -n %s \
+    -l gateway.envoyproxy.io/owning-gateway-name=$GW \
+    -o jsonpath='{.items[0].spec.clusterIP}' 2>/dev/null || true)"
+  if [ -n "$gateway_ip" ] && [ "$gateway_ip" != 'None' ]; then
+    break
+  fi
+  sleep 1
+done
+if [ -z "$gateway_ip" ] || [ "$gateway_ip" = 'None' ]; then
+  echo 'preview gateway Service did not expose a ClusterIP' >&2
+  exit 1
+fi
+KUBECONFIG="$KRO_KUBECONFIG" \
+  hack/scripts/configure-tilt-preview-dns.sh "$CTX" %s "$gateway_ip" %s "$host_gateway"
+'''.strip() % (
+        preview_kro_kubeconfig,
+        preview_kro_context,
+        preview_gateway_name,
+        docker_gateway_format,
+        preview_kro_node,
+        preview_gateway_namespace,
+        preview_app_base_domain,
+        preview_hub_public_host,
+    ),
+    deps=[
+        'Tiltfile',
+        'hack/scripts/configure-tilt-preview-dns.sh',
+        preview_kro_kubeconfig,
+    ],
+    resource_deps=['preview-gateway-up'],
+    labels=['providers-app-studio'],
+)
+
 local_resource(
     'kro-mgmt-down',
     cmd='make dev-kro-down',
@@ -674,6 +726,7 @@ make run-provider-infrastructure
         'hub',
         'kro-mgmt-up',
         'preview-gateway-up',
+        'app-studio-preview-dns',
         'app-studio-preview-port-forward',
         'app-studio-preview-console-key',
     ],

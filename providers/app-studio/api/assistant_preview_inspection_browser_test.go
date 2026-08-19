@@ -17,6 +17,10 @@ limitations under the License.
 package api
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -135,5 +139,49 @@ func TestBrowserMCPNavigationSummarySkipsHeadingsAndKeepsError(t *testing.T) {
 func TestBrowserMCPNavigationSummaryFallsBackWhenResponseHasNoDetail(t *testing.T) {
 	if got := browserMCPNavigationSummary("### Result\n### Error\n", "the preview did not load"); got != "the preview did not load" {
 		t.Fatalf("heading-only navigation summary = %q", got)
+	}
+}
+
+func TestPrivatePreviewHubOriginAcceptsOnlyMatchingPlatformRedirect(t *testing.T) {
+	var preview *httptest.Server
+	preview = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := url.Values{
+			"cluster":      {"workspace-1"},
+			"redirect_uri": {preview.URL + privateAppCallbackPath},
+		}
+		http.Redirect(w, r, "https://console.example.test"+privateAppAuthorizePath+"?"+query.Encode(), http.StatusFound)
+	}))
+	defer preview.Close()
+
+	server := &Server{previewInsecureSkipTLSVerify: true}
+	origin, err := server.privatePreviewHubOrigin(context.Background(), identity{clusterID: "workspace-1"}, preview.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := origin.String(), "https://console.example.test"; got != want {
+		t.Fatalf("hub origin = %q, want %q", got, want)
+	}
+}
+
+func TestBrowserSessionHandoffURLMintsWithCallerBearer(t *testing.T) {
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != browserSessionHandoffPath || r.Header.Get("Authorization") != "Bearer caller-token" {
+			http.Error(w, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"path":"/auth/session/handoff?code=one-use"}`))
+	}))
+	defer hub.Close()
+	origin, _ := url.Parse("https://console.example.test")
+	server := &Server{hubBase: hub.URL}
+	handoff, err := server.browserSessionHandoffURL(context.Background(), identity{token: "caller-token"}, origin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := handoff, "https://console.example.test/auth/session/handoff?code=one-use"; got != want {
+		t.Fatalf("handoff URL = %q, want %q", got, want)
+	}
+	if strings.Contains(handoff, "caller-token") {
+		t.Fatal("caller bearer leaked into browser handoff URL")
 	}
 }

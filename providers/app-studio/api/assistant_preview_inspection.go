@@ -32,6 +32,13 @@ import (
 const (
 	projectAssistantPreviewInspectionHealthTimeout = 750 * time.Millisecond
 	projectAssistantPreviewInspectionMaxResponse   = 4 << 20
+
+	projectAssistantPreviewScreenshotNotRequested        = "not_requested"
+	projectAssistantPreviewScreenshotCaptured            = "captured"
+	projectAssistantPreviewScreenshotModelUnsupported    = "model_unsupported"
+	projectAssistantPreviewScreenshotBrowserUnreachable  = "browser_unreachable"
+	projectAssistantPreviewScreenshotCaptureFailed       = "capture_failed"
+	projectAssistantPreviewScreenshotArtifactUnavailable = "artifact_unavailable"
 )
 
 type projectAssistantPreviewInspector interface {
@@ -40,9 +47,10 @@ type projectAssistantPreviewInspector interface {
 }
 
 type projectAssistantPreviewInspectionRequest struct {
-	URL               string                                       `json:"url"`
-	Assertions        []projectAssistantPreviewInspectionAssertion `json:"assertions,omitempty"`
-	IncludeScreenshot bool                                         `json:"includeScreenshot,omitempty"`
+	URL                string                                       `json:"url"`
+	Assertions         []projectAssistantPreviewInspectionAssertion `json:"assertions,omitempty"`
+	IncludeScreenshot  bool                                         `json:"includeScreenshot,omitempty"`
+	RequiresHubSession bool                                         `json:"-"`
 }
 
 type projectAssistantPreviewInspectionAssertion struct {
@@ -95,6 +103,7 @@ type projectAssistantPreviewInspectionResult struct {
 	Assertions          []projectAssistantPreviewInspectionAssertionResult `json:"assertions,omitempty"`
 	Console             []projectAssistantPreviewInspectionConsoleEvent    `json:"console,omitempty"`
 	Network             []projectAssistantPreviewInspectionNetworkEvent    `json:"network,omitempty"`
+	ScreenshotStatus    string                                             `json:"screenshotStatus,omitempty"`
 	Screenshot          *projectAssistantPreviewInspectionScreenshot       `json:"screenshot,omitempty"`
 }
 
@@ -137,7 +146,9 @@ func projectAssistantPreviewInspectionActionFromText(raw string) *projectAssista
 }
 
 func projectAssistantPreviewInspectionActionFromToolResult(name, raw string) *projectAssistantPreviewInspectionAction {
-	if projectToolBaseName(name) != projectToolInspectDevelopmentPreview {
+	switch projectToolBaseName(name) {
+	case projectToolInspectDevelopmentPreview, projectToolInteractDevelopmentPreview:
+	default:
 		return nil
 	}
 	return projectAssistantPreviewInspectionActionFromText(raw)
@@ -182,9 +193,10 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 		ref, ok := s.resolveBrowserDataPlaneRef(ctx, req.Identity)
 		if !ok {
 			return projectAssistantPreviewInspectionResult{
-				Status:      "unavailable",
-				FailureKind: "worker_unavailable",
-				Summary:     "Development preview inspection is unavailable: no shared browser is ready in this workspace.",
+				Status:           "unavailable",
+				FailureKind:      "worker_unavailable",
+				Summary:          "Development preview inspection is unavailable: no shared browser is ready in this workspace.",
+				ScreenshotStatus: projectAssistantPreviewScreenshotStatusForUnavailable(includeScreenshot),
 			}, nil
 		}
 		browserRef = ref
@@ -198,18 +210,19 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 					failure = "the current workspace mutation has not completed development synchronization"
 				}
 				return projectAssistantPreviewInspectionResult{
-					Status:      "failed",
-					FailureKind: "not_current",
-					Summary:     failure,
+					Status:           "failed",
+					FailureKind:      "not_current",
+					Summary:          failure,
+					ScreenshotStatus: projectAssistantPreviewScreenshotStatusForUnavailable(includeScreenshot),
 				}, nil
 			}
 		}
 	}
-	previewURL, err := s.resolveProjectPreviewInspectionURL(ctx, req.Identity, req.Project)
+	preview, err := s.resolveProjectPreviewInspectionTarget(ctx, req.Identity, req.Project)
 	if err != nil {
 		return projectAssistantPreviewInspectionResult{}, err
 	}
-	targetURL, err := projectAssistantPreviewInspectionTargetURL(previewURL, projectToolString(req.Arguments["path"]))
+	targetURL, err := projectAssistantPreviewInspectionTargetURL(preview.PreviewURL, projectToolString(req.Arguments["path"]))
 	if err != nil {
 		return projectAssistantPreviewInspectionResult{}, err
 	}
@@ -218,9 +231,10 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 		return projectAssistantPreviewInspectionResult{}, err
 	}
 	inspectionReq := projectAssistantPreviewInspectionRequest{
-		URL:               targetURL,
-		Assertions:        assertions,
-		IncludeScreenshot: includeScreenshot,
+		URL:                targetURL,
+		Assertions:         assertions,
+		IncludeScreenshot:  includeScreenshot,
+		RequiresHubSession: strings.EqualFold(strings.TrimSpace(preview.ObservedAccess), "private"),
 	}
 	var result projectAssistantPreviewInspectionResult
 	if s.previewInspector != nil {
@@ -231,12 +245,38 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 	if err != nil {
 		return projectAssistantPreviewInspectionResult{}, err
 	}
+	projectAssistantFinalizePreviewScreenshotStatus(&result, includeScreenshot)
 	result.EvidenceScope = "rendered_state_only"
 	result.InteractionEvidence = false
 	result.Limitations = []string{
 		"This inspection did not click, type, press keys, submit forms, or execute application interactions. Static text and role assertions do not verify interaction behavior.",
 	}
 	return result, nil
+}
+
+func projectAssistantPreviewScreenshotStatusForUnavailable(requested bool) string {
+	if requested {
+		return projectAssistantPreviewScreenshotBrowserUnreachable
+	}
+	return projectAssistantPreviewScreenshotNotRequested
+}
+
+func projectAssistantFinalizePreviewScreenshotStatus(result *projectAssistantPreviewInspectionResult, requested bool) {
+	if result == nil {
+		return
+	}
+	if !requested {
+		result.ScreenshotStatus = projectAssistantPreviewScreenshotNotRequested
+		result.Screenshot = nil
+		return
+	}
+	if result.Screenshot != nil && strings.TrimSpace(result.Screenshot.Base64) != "" {
+		result.ScreenshotStatus = projectAssistantPreviewScreenshotCaptured
+		return
+	}
+	if strings.TrimSpace(result.ScreenshotStatus) == "" {
+		result.ScreenshotStatus = projectAssistantPreviewScreenshotCaptureFailed
+	}
 }
 
 func projectAssistantPreviewInspectionTextResult(result projectAssistantPreviewInspectionResult) (string, error) {
@@ -250,25 +290,31 @@ func projectAssistantPreviewInspectionTextResult(result projectAssistantPreviewI
 }
 
 func (s *Server) resolveProjectPreviewInspectionURL(ctx context.Context, id identity, project *aiv1alpha1.Project) (string, error) {
+	preview, err := s.resolveProjectPreviewInspectionTarget(ctx, id, project)
+	return preview.PreviewURL, err
+}
+
+func (s *Server) resolveProjectPreviewInspectionTarget(ctx context.Context, id identity, project *aiv1alpha1.Project) (projectSandboxPreviewURLResponse, error) {
 	if s.previewInspectionResolveURL != nil {
-		return s.previewInspectionResolveURL(ctx, id, project)
+		previewURL, err := s.previewInspectionResolveURL(ctx, id, project)
+		return projectSandboxPreviewURLResponse{Ready: err == nil, PreviewURL: previewURL}, err
 	}
 	client, err := s.clientFor(id)
 	if err != nil {
-		return "", err
+		return projectSandboxPreviewURLResponse{}, err
 	}
 	preview, bound := s.resolveProjectSandboxRuntime(ctx, client, id, project)
 	if !bound {
-		return "", errors.New("development preview is not configured")
+		return projectSandboxPreviewURLResponse{}, errors.New("development preview is not configured")
 	}
 	if !preview.Ready || strings.TrimSpace(preview.PreviewURL) == "" {
 		message := strings.TrimSpace(preview.Message)
 		if message == "" {
 			message = "development preview is not ready"
 		}
-		return "", errors.New(message)
+		return projectSandboxPreviewURLResponse{}, errors.New(message)
 	}
-	return preview.PreviewURL, nil
+	return preview, nil
 }
 
 func projectAssistantPreviewInspectionTargetURL(baseURL, path string) (string, error) {

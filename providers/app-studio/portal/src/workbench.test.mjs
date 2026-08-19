@@ -15,6 +15,7 @@ const moduleURL = `data:text/javascript;base64,${Buffer.from(outputText).toStrin
 const {
   closeWorkbenchTab,
   createDefaultWorkbenchState,
+  isWorkbenchProviderShortcut,
   openWorkbenchBuiltInTab,
   openWorkbenchProviderTool,
   reorderWorkbenchTab,
@@ -30,6 +31,15 @@ const connectionsTool = {
   subtitle: 'Code',
   path: 'connections',
 }
+
+test('keeps Code resource kinds and Infrastructure templates out of direct shortcuts', () => {
+  for (const path of ['connections', 'repositories', 'repositorycommits', 'packages']) {
+    assert.equal(isWorkbenchProviderShortcut({ providerName: 'code', path }), false, path)
+  }
+  assert.equal(isWorkbenchProviderShortcut({ providerName: 'infrastructure', path: 'templates' }), false)
+  assert.equal(isWorkbenchProviderShortcut({ providerName: 'infrastructure', path: 'instances' }), true)
+  assert.equal(isWorkbenchProviderShortcut({ providerName: 'other', path: 'repositories' }), true)
+})
 
 test('starts with preview plus an active launcher tab while review stays closed', () => {
   const state = createDefaultWorkbenchState()
@@ -123,7 +133,7 @@ test('opens project settings as a closeable built-in tab', () => {
     id: 'settings',
     kind: 'settings',
     title: 'Project Settings',
-    subtitle: 'Manage project details and model configuration',
+    subtitle: 'Manage project details and preview access',
     closeable: true,
   })
 })

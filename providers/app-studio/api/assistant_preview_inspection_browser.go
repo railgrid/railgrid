@@ -22,9 +22,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -48,6 +50,9 @@ const (
 	browserMCPToolSnapshot    = "browser_snapshot"
 	browserMCPToolConsole     = "browser_console_messages"
 	browserMCPToolScreenshot  = "browser_take_screenshot"
+	browserSessionHandoffPath = "/auth/session/handoff"
+	privateAppAuthorizePath   = "/auth/apps/authorize"
+	privateAppCallbackPath    = "/__faros/auth/callback"
 )
 
 // resolveBrowserDataPlaneRef resolves the workspace's shared browser instance
@@ -71,11 +76,19 @@ func (s *Server) resolveBrowserDataPlaneRef(ctx context.Context, id identity) (d
 // against the snapshot, and (optionally) capture a screenshot. It builds the
 // same projectAssistantPreviewInspectionResult the retired worker produced.
 func (s *Server) inspectPreviewViaBrowserMCP(ctx context.Context, id identity, ref dataPlaneRef, req projectAssistantPreviewInspectionRequest) (projectAssistantPreviewInspectionResult, error) {
+	unlock := lockBrowserInstance(id.clusterID, ref)
+	defer unlock()
+
 	session, err := s.newBrowserMCPSession(ctx, id, ref)
 	if err != nil {
 		return projectAssistantPreviewInspectionResult{}, err
 	}
 	defer session.close()
+	if req.RequiresHubSession {
+		if err := s.preparePrivatePreviewBrowserSession(ctx, session, id, req.URL); err != nil {
+			return projectAssistantPreviewInspectionResult{}, err
+		}
+	}
 
 	// Navigate. A navigation error is a hard failure — nothing downstream can
 	// observe a page that never loaded.
@@ -85,10 +98,11 @@ func (s *Server) inspectPreviewViaBrowserMCP(ctx context.Context, id identity, r
 	}
 	if nav.isError {
 		return projectAssistantPreviewInspectionResult{
-			Status:      "failed",
-			FailureKind: "navigation",
-			Summary:     browserMCPNavigationSummary(nav.text, "the preview did not load"),
-			FinalURL:    req.URL,
+			Status:           "failed",
+			FailureKind:      "navigation",
+			Summary:          browserMCPNavigationSummary(nav.text, "the preview did not load"),
+			FinalURL:         req.URL,
+			ScreenshotStatus: projectAssistantPreviewScreenshotStatusForUnavailable(req.IncludeScreenshot),
 		}, nil
 	}
 
@@ -133,11 +147,112 @@ func (s *Server) inspectPreviewViaBrowserMCP(ctx context.Context, id identity, r
 	}
 
 	if req.IncludeScreenshot {
-		if shot, err := session.callTool(ctx, browserMCPToolScreenshot, map[string]any{"type": "png"}); err == nil {
+		shot, captureErr := session.callTool(ctx, browserMCPToolScreenshot, map[string]any{"type": "png"})
+		if captureErr != nil || shot.isError {
+			result.ScreenshotStatus = projectAssistantPreviewScreenshotCaptureFailed
+		} else {
 			result.Screenshot = browserMCPScreenshot(shot)
 		}
 	}
 	return result, nil
+}
+
+// preparePrivatePreviewBrowserSession transfers the authenticated App Studio
+// caller into the fresh headless browser without exposing its bearer token to
+// Chromium. The private app gate supplies the authoritative public hub origin;
+// App Studio asks the hub for a one-minute, one-use handoff and navigates the
+// browser to redeem it before loading the app normally.
+func (s *Server) preparePrivatePreviewBrowserSession(ctx context.Context, session *browserMCPSession, id identity, targetURL string) error {
+	hubOrigin, err := s.privatePreviewHubOrigin(ctx, id, targetURL)
+	if err != nil {
+		return err
+	}
+	handoffURL, err := s.browserSessionHandoffURL(ctx, id, hubOrigin)
+	if err != nil {
+		return err
+	}
+	result, err := session.callTool(ctx, browserMCPToolNavigate, map[string]any{"url": handoffURL})
+	if err != nil {
+		return err
+	}
+	if result.isError {
+		return fmt.Errorf("preview browser session handoff: %s", browserMCPNavigationSummary(result.text, "the hub handoff did not load"))
+	}
+	return nil
+}
+
+func (s *Server) privatePreviewHubOrigin(ctx context.Context, id identity, targetURL string) (*url.URL, error) {
+	target, err := url.Parse(strings.TrimSpace(targetURL))
+	if err != nil || target.Scheme != "https" || target.Host == "" {
+		return nil, errors.New("private preview URL is invalid")
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, previewEdgeProbeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{
+		Timeout:   previewEdgeProbeTimeout,
+		Transport: projectMCPTransport(s.previewInsecureSkipTLSVerify),
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("resolve private preview authorization: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	location, err := resp.Location()
+	if err != nil || resp.StatusCode < 300 || resp.StatusCode >= 400 || location.Scheme != "https" || location.Host == "" || location.Path != privateAppAuthorizePath {
+		return nil, errors.New("private preview did not return the platform authorization redirect")
+	}
+	query := location.Query()
+	callback, err := url.Parse(query.Get("redirect_uri"))
+	if err != nil || callback.Scheme != target.Scheme || !strings.EqualFold(callback.Host, target.Host) || callback.Path != privateAppCallbackPath {
+		return nil, errors.New("private preview authorization callback did not match the preview origin")
+	}
+	if strings.TrimSpace(query.Get("cluster")) != strings.TrimSpace(id.clusterID) {
+		return nil, errors.New("private preview authorization targeted a different workspace")
+	}
+	return &url.URL{Scheme: location.Scheme, Host: location.Host}, nil
+}
+
+func (s *Server) browserSessionHandoffURL(ctx context.Context, id identity, hubOrigin *url.URL) (string, error) {
+	if hubOrigin == nil || hubOrigin.Scheme != "https" || hubOrigin.Host == "" {
+		return "", errors.New("public hub origin is invalid")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.hubBase, "/")+browserSessionHandoffPath, nil)
+	if err != nil {
+		return "", err
+	}
+	if token := strings.TrimSpace(id.token); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := s.sandboxDataPlaneClient(dataPlaneCallTimeout).Do(req)
+	if err != nil {
+		return "", fmt.Errorf("mint browser session handoff: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("mint browser session handoff: status %d", resp.StatusCode)
+	}
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "", errors.New("mint browser session handoff: invalid response")
+	}
+	reference, err := url.Parse(strings.TrimSpace(payload.Path))
+	if err != nil || reference.IsAbs() || reference.Host != "" || reference.Path != browserSessionHandoffPath || strings.TrimSpace(reference.Query().Get("code")) == "" || reference.Fragment != "" {
+		return "", errors.New("mint browser session handoff: invalid path")
+	}
+	return hubOrigin.ResolveReference(reference).String(), nil
 }
 
 // browserMCPSession is one initialized Playwright MCP session over the

@@ -32,21 +32,30 @@ const projectAssistantPreviewInteractionMaxSteps = 20
 // preview target, parses the action script + post-interaction assertions, drives
 // the shared browser, and returns the observed result as JSON text.
 func (s *Server) interactProjectDevelopmentPreview(ctx context.Context, req projectAssistantToolCallRequest) (string, error) {
+	result, err := s.interactProjectDevelopmentPreviewResult(ctx, req, false)
+	if err != nil {
+		return "", err
+	}
+	return projectAssistantPreviewInteractionTextResult(result)
+}
+
+func (s *Server) interactProjectDevelopmentPreviewResult(ctx context.Context, req projectAssistantToolCallRequest, includeScreenshot bool) (projectAssistantPreviewInteractionResult, error) {
 	if s == nil {
-		return "", errors.New("server is not configured")
+		return projectAssistantPreviewInteractionResult{}, errors.New("server is not configured")
 	}
 	if req.Project == nil {
-		return "", errors.New("project is required")
+		return projectAssistantPreviewInteractionResult{}, errors.New("project is required")
 	}
 	ref, ok := s.resolveBrowserDataPlaneRef(ctx, req.Identity)
 	if !ok {
-		return projectAssistantToolJSONResult(projectAssistantPreviewInteractionResult{
+		return projectAssistantPreviewInteractionResult{
 			projectAssistantPreviewInspectionResult: projectAssistantPreviewInspectionResult{
-				Status:      "unavailable",
-				FailureKind: "worker_unavailable",
-				Summary:     "Preview interaction is unavailable: no shared browser is ready in this workspace.",
+				Status:           "unavailable",
+				FailureKind:      "worker_unavailable",
+				Summary:          "Preview interaction is unavailable: no shared browser is ready in this workspace.",
+				ScreenshotStatus: projectAssistantPreviewScreenshotStatusForUnavailable(includeScreenshot),
 			},
-		}, nil)
+		}, nil
 	}
 	// Interacting with a page whose latest edit has not synced is misleading —
 	// same freshness guard inspection uses.
@@ -56,44 +65,48 @@ func (s *Server) interactProjectDevelopmentPreview(ctx context.Context, req proj
 				if failure == "" {
 					failure = "the current workspace mutation has not completed development synchronization"
 				}
-				return projectAssistantToolJSONResult(projectAssistantPreviewInteractionResult{
+				return projectAssistantPreviewInteractionResult{
 					projectAssistantPreviewInspectionResult: projectAssistantPreviewInspectionResult{
 						Status: "failed", FailureKind: "not_current", Summary: failure,
+						ScreenshotStatus: projectAssistantPreviewScreenshotStatusForUnavailable(includeScreenshot),
 					},
-				}, nil)
+				}, nil
 			}
 		}
 	}
-	previewURL, err := s.resolveProjectPreviewInspectionURL(ctx, req.Identity, req.Project)
+	preview, err := s.resolveProjectPreviewInspectionTarget(ctx, req.Identity, req.Project)
 	if err != nil {
-		return "", err
+		return projectAssistantPreviewInteractionResult{}, err
 	}
-	targetURL, err := projectAssistantPreviewInspectionTargetURL(previewURL, projectToolString(req.Arguments["path"]))
+	targetURL, err := projectAssistantPreviewInspectionTargetURL(preview.PreviewURL, projectToolString(req.Arguments["path"]))
 	if err != nil {
-		return "", err
+		return projectAssistantPreviewInteractionResult{}, err
 	}
 	steps, err := projectAssistantPreviewInteractionSteps(req.Arguments["steps"])
 	if err != nil {
-		return "", err
+		return projectAssistantPreviewInteractionResult{}, err
 	}
 	assertions, err := projectAssistantPreviewInspectionAssertions(req.Arguments["assertions"])
 	if err != nil {
-		return "", err
+		return projectAssistantPreviewInteractionResult{}, err
 	}
 	result, err := s.interactPreviewViaBrowserMCP(ctx, req.Identity, ref, projectAssistantPreviewInteractionRequest{
-		URL:        targetURL,
-		Steps:      steps,
-		Assertions: assertions,
+		URL:                targetURL,
+		Steps:              steps,
+		Assertions:         assertions,
+		IncludeScreenshot:  includeScreenshot,
+		RequiresHubSession: strings.EqualFold(strings.TrimSpace(preview.ObservedAccess), "private"),
 	})
 	if err != nil {
-		return "", err
+		return projectAssistantPreviewInteractionResult{}, err
 	}
+	projectAssistantFinalizePreviewScreenshotStatus(&result.projectAssistantPreviewInspectionResult, includeScreenshot)
 	result.EvidenceScope = "post_interaction_state"
 	result.InteractionEvidence = result.Status == "succeeded"
 	result.Limitations = []string{
 		"Evidence reflects the page state after the listed actions were applied in order. Only these actions were performed; no other interaction was exercised.",
 	}
-	return projectAssistantPreviewInteractionTextResult(result)
+	return result, nil
 }
 
 // projectAssistantPreviewInteractionSteps parses and validates the action list.
@@ -208,10 +221,11 @@ type projectAssistantPreviewInteractionStep struct {
 }
 
 type projectAssistantPreviewInteractionRequest struct {
-	URL               string
-	Steps             []projectAssistantPreviewInteractionStep
-	Assertions        []projectAssistantPreviewInspectionAssertion
-	IncludeScreenshot bool
+	URL                string
+	Steps              []projectAssistantPreviewInteractionStep
+	Assertions         []projectAssistantPreviewInspectionAssertion
+	IncludeScreenshot  bool
+	RequiresHubSession bool
 }
 
 type projectAssistantPreviewInteractionStepResult struct {
@@ -240,6 +254,11 @@ func (s *Server) interactPreviewViaBrowserMCP(ctx context.Context, id identity, 
 		return projectAssistantPreviewInteractionResult{}, err
 	}
 	defer session.close()
+	if req.RequiresHubSession {
+		if err := s.preparePrivatePreviewBrowserSession(ctx, session, id, req.URL); err != nil {
+			return projectAssistantPreviewInteractionResult{}, err
+		}
+	}
 
 	nav, err := session.callTool(ctx, browserMCPToolNavigate, map[string]any{"url": req.URL})
 	if err != nil {
@@ -251,6 +270,7 @@ func (s *Server) interactPreviewViaBrowserMCP(ctx context.Context, id identity, 
 		out.FailureKind = "navigation"
 		out.Summary = browserMCPFirstLine(nav.text, "the preview did not load")
 		out.FinalURL = req.URL
+		out.ScreenshotStatus = projectAssistantPreviewScreenshotStatusForUnavailable(req.IncludeScreenshot)
 		return out, nil
 	}
 
@@ -305,7 +325,10 @@ func (s *Server) interactPreviewViaBrowserMCP(ctx context.Context, id identity, 
 	}
 
 	if req.IncludeScreenshot {
-		if shot, err := session.callTool(ctx, browserMCPToolScreenshot, map[string]any{"type": "png"}); err == nil {
+		shot, captureErr := session.callTool(ctx, browserMCPToolScreenshot, map[string]any{"type": "png"})
+		if captureErr != nil || shot.isError {
+			out.ScreenshotStatus = projectAssistantPreviewScreenshotCaptureFailed
+		} else {
 			out.Screenshot = browserMCPScreenshot(shot)
 		}
 	}

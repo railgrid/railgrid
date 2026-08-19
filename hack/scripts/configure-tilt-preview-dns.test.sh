@@ -45,12 +45,27 @@ export FAROS_DNS_TEST_STATE="$state_dir"
 export PATH="$fake_bin:$PATH"
 
 printf '%s\n' '.:53 {' 'errors' 'forward . /etc/resolv.conf' '}' >"$state_dir/corefile"
-"$script_dir/configure-tilt-preview-dns.sh" fake-context apps.127.0.0.1.sslip.io 10.96.2.2
+"$script_dir/configure-tilt-preview-dns.sh" fake-context apps.127.0.0.1.sslip.io 10.96.2.2 console.127.0.0.1.sslip.io 172.18.0.1
 grep -F '# faros-preview-dns' "$state_dir/corefile" >/dev/null
 grep -F '10.96.2.2' "$state_dir/corefile" >/dev/null
+grep -F 'console\.127\.0\.0\.1\.sslip\.io' "$state_dir/corefile" >/dev/null
+grep -F '172.18.0.1' "$state_dir/corefile" >/dev/null
+
+# Tilt orders kcp-dns after preview-dns because both replace the same CoreDNS
+# field. The second helper must retain the first helper's independently managed
+# block, and its cleanup must leave the preview route intact.
+"$script_dir/configure-tilt-kcp-dns.sh" fake-context 10.96.2.2
+grep -F '# faros-preview-dns' "$state_dir/corefile" >/dev/null
+grep -F '# faros-kcp-dns' "$state_dir/corefile" >/dev/null
+"$script_dir/configure-tilt-kcp-dns.sh" --cleanup fake-context 10.96.2.2
+grep -F '# faros-preview-dns' "$state_dir/corefile" >/dev/null
+if grep -F '# faros-kcp-dns' "$state_dir/corefile" >/dev/null; then
+  echo 'managed kcp CoreDNS block survived cleanup' >&2
+  exit 1
+fi
 
 first_event_count="$(wc -l <"$state_dir/events")"
-"$script_dir/configure-tilt-preview-dns.sh" fake-context apps.127.0.0.1.sslip.io 10.96.2.2
+"$script_dir/configure-tilt-preview-dns.sh" fake-context apps.127.0.0.1.sslip.io 10.96.2.2 console.127.0.0.1.sslip.io 172.18.0.1
 second_event_count="$(wc -l <"$state_dir/events")"
 [[ "$first_event_count" == "$second_event_count" ]]
 

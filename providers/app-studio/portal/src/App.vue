@@ -154,6 +154,7 @@ import {
   activateWorkbenchTab,
   closeWorkbenchTab,
   createDefaultWorkbenchState,
+  isWorkbenchProviderShortcut,
   openWorkbenchBuiltInTab,
   openWorkbenchProviderTool,
   reorderWorkbenchTab,
@@ -552,15 +553,8 @@ const initializingMessage = ref('App Studio is preparing this workspace...')
 const error = ref<string | null>(null)
 const toolError = ref<string | null>(null)
 const showSettings = ref(false)
-type ProjectSettingsPane = 'project' | 'model'
-const projectSettingsPane = ref<ProjectSettingsPane>('project')
-const projectSettingsPaneAnnouncement = ref('')
 const publishingPaneRef = ref<HTMLElement | null>(null)
 const historyPaneRef = ref<HTMLElement | null>(null)
-const projectSettingsPanes: ReadonlyArray<readonly [ProjectSettingsPane, string]> = [
-  ['project', 'Project'],
-  ['model', 'Model'],
-]
 const projectSettingsName = ref('')
 const projectSettingsDescription = ref('')
 const projectSettingsSaving = ref(false)
@@ -1151,7 +1145,7 @@ const settingsProject = computed(() => (isAppStudioLandingRoute.value ? null : s
 const settingsTitle = computed(() => (settingsProject.value ? 'Project settings' : 'LLM settings'))
 const settingsDescription = computed(() =>
   settingsProject.value
-    ? 'Update this project and configure the model credentials App Studio uses for project conversations.'
+    ? 'Update this project and manage its development preview access.'
     : 'Configure the model credentials App Studio uses when creating and chatting in projects.',
 )
 const activePlanMessage = computed(() =>
@@ -1366,6 +1360,11 @@ const providerTools = computed<ProviderTool[]>(() => {
 const activeWorkbenchTab = computed<WorkbenchTabDescriptor | null>(() => {
   return workbench.value.tabs.find((tab) => tab.id === workbench.value.activeTabID) ?? workbench.value.tabs[0] ?? null
 })
+
+// Keep the complete catalog for the Providers tab and for tabs opened from it.
+// Only the direct launcher/landing promotion layer omits provider resource
+// views that App Studio previously elevated itself.
+const providerShortcutTools = computed(() => providerTools.value.filter(isWorkbenchProviderShortcut))
 const settingsInWorkbench = computed(() => !!settingsProject.value && activeWorkbenchTab.value?.kind === 'settings')
 const publishingInWorkbench = computed(() => activeWorkbenchTab.value?.kind === 'publishing')
 const historyInWorkbench = computed(() => activeWorkbenchTab.value?.kind === 'history')
@@ -1441,7 +1440,7 @@ const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
   {
     id: 'builtin:settings',
     title: 'Project Settings',
-    subtitle: 'Manage project details and model configuration',
+    subtitle: 'Manage project details and preview access',
     icon: Settings2,
     builtInTab: 'settings',
   },
@@ -1475,7 +1474,7 @@ const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
   },
 ])
 
-const launcherProviderItems = computed<WorkbenchLauncherItem[]>(() => providerTools.value.map((tool) => ({
+const launcherProviderItems = computed<WorkbenchLauncherItem[]>(() => providerShortcutTools.value.map((tool) => ({
   id: `provider:${tool.id}`,
   title: tool.title,
   subtitle: tool.subtitle,
@@ -1492,41 +1491,13 @@ const launcherSuggestedItems = computed(() => {
 })
 
 const landingCategoryTiles = computed<LandingCategoryTile[]>(() => {
-  const tiles: LandingCategoryTile[] = []
-  const seen = new Set<string>()
-
-  for (const tool of providerTools.value) {
-    const key = tool.title.trim().toLowerCase()
-    if (!key || seen.has(key)) continue
-    seen.add(key)
-    tiles.push({
-      id: tool.id,
-      title: tool.title,
-      subtitle: tool.subtitle,
-      promptSeed: `Make a ${tool.title.toLowerCase()} that...`,
-      icon: Wrench,
-      iconURL: tool.iconURL,
-    })
-    if (tiles.length >= 3) break
-  }
-
-  const fallbackTiles: LandingCategoryTile[] = projectStarterTemplates.map((template) => ({
+  return projectStarterTemplates.map((template) => ({
     id: template.title,
     title: template.title,
     subtitle: template.description,
     promptSeed: `Make a ${template.title.toLowerCase()} that...`,
     icon: template.icon,
   }))
-
-  for (const tile of fallbackTiles) {
-    if (tiles.length >= 5) break
-    const key = tile.title.trim().toLowerCase()
-    if (seen.has(key)) continue
-    seen.add(key)
-    tiles.push(tile)
-  }
-
-  return tiles
 })
 
 function isProjectToolProviderView(provider: ProviderItem, child: { displayName?: string; builtinRoute?: string }): boolean {
@@ -1809,8 +1780,6 @@ watch(
     shareMode.value = 'restricted'
     previewMode.value = 'restricted'
     previewAccess.value = null
-    projectSettingsPane.value = 'project'
-    projectSettingsPaneAnnouncement.value = ''
     projectSettingsSaving.value = false
     publishingActionError.value = null
     publishingBusyAction.value = null
@@ -3142,8 +3111,10 @@ async function applyStarterPrompt(value: string) {
 }
 
 async function applyLandingCategory(tile: LandingCategoryTile) {
+  const previousCategory = selectedLandingCategory.value
+  const currentPrompt = prompt.value.trim()
   selectedLandingCategory.value = tile
-  if (!prompt.value.trim()) {
+  if (!currentPrompt || (previousCategory && currentPrompt === previousCategory.promptSeed.trim())) {
     prompt.value = tile.promptSeed
   }
   clearLandingPlaceholderTyping()
@@ -3554,17 +3525,10 @@ async function createProjectAndStartConversation(
 async function openSettings() {
   syncProjectSettingsForm()
   if (settingsProject.value) {
-    projectSettingsPane.value = 'project'
-    projectSettingsPaneAnnouncement.value = ''
     openBuiltInWorkbenchTab('settings')
     await nextTick()
   }
   showSettings.value = true
-}
-
-function selectProjectSettingsPane(pane: ProjectSettingsPane) {
-  projectSettingsPane.value = pane
-  projectSettingsPaneAnnouncement.value = `${pane === 'model' ? 'Model' : 'Project'} settings selected.`
 }
 
 function closeSettings() {
@@ -4710,6 +4674,13 @@ function scheduleDevelopmentPreviewRecovery() {
 	developmentPreviewRecoveryTimer = window.setTimeout(() => {
 		developmentPreviewRecoveryTimer = undefined
 		if (!developmentPreviewComponentMounted || selected.value?.name !== projectName) return
+		if (action.kind === 'background') {
+			// A browser error document never repairs itself. Re-resolve readiness
+			// and replace the iframe after the public edge recovers; merely probing
+			// the bridge would leave ERR_CONNECTION_REFUSED mounted forever.
+			void recoverDevelopmentPreviewDocument(projectName)
+			return
+		}
 		void previewConsoleController.reconnect()
 	}, action.delayMS)
 }
@@ -4745,11 +4716,15 @@ function refreshDevelopmentPreviewAuthorizationIfNeeded() {
     authorizing: developmentPreviewAuthorizing.value,
     previewURL: developmentPreviewURL.value,
     authorizationError: developmentPreviewAuthorizationError.value || '',
-	documentState: developmentPreviewDocumentState.value,
-	recoveryExhausted: !!developmentPreviewRecoveryError.value,
-	})) return
-	clearDevelopmentPreviewRecovery()
+    documentState: developmentPreviewDocumentState.value,
+    recoveryExhausted: !!developmentPreviewRecoveryError.value,
+  })) return
+  clearDevelopmentPreviewRecovery()
   if (developmentPreviewURL.value && !developmentPreviewAuthorizationError.value) {
+    if (developmentPreviewDocumentState.value === 'unavailable' || developmentPreviewRecoveryError.value) {
+      void recoverDevelopmentPreviewDocument(projectName)
+      return
+    }
     void previewConsoleController.reconnect()
     return
   }
@@ -6358,21 +6333,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 />
                 <div class="flex flex-wrap items-center justify-between gap-3 px-5 pb-3 pt-2">
                   <div class="flex flex-wrap items-center gap-2">
-                    <span
-                      v-if="selectedLandingCategory"
-                      class="inline-flex items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-2.5 py-1.5 text-[12px] font-medium text-text-secondary"
-                    >
-                      Category:
-                      <span class="text-text-primary">{{ selectedLandingCategory.title }}</span>
-                      <button
-                        type="button"
-                        class="-mr-1 flex h-5 w-5 items-center justify-center rounded text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
-                        :title="`Remove ${selectedLandingCategory.title} category`"
-                        @click.stop="clearLandingCategory"
-                      >
-                        <X class="h-3.5 w-3.5" :stroke-width="2" />
-                      </button>
-                    </span>
                     <span v-if="!createSetupVisible" class="text-[12px] text-text-muted">
                       Next you'll confirm the template and starter code, then create.
                     </span>
@@ -7840,35 +7800,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
         <div class="min-h-0 overflow-auto p-4">
           <div class="grid gap-4">
-          <nav
-            v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench"
-            class="flex flex-wrap items-center gap-1 border-b border-border-subtle pb-3"
-            role="tablist"
-            aria-label="Project Settings sections"
-          >
-            <button
-              v-for="pane in projectSettingsPanes"
-              :key="pane[0]"
-              type="button"
-              role="tab"
-              :id="`project-settings-tab-${pane[0]}`"
-              class="rounded-md px-3 py-1.5 text-[12px] font-medium transition"
-              :class="projectSettingsPane === pane[0] ? 'bg-accent-subtle text-accent' : 'text-text-muted hover:bg-surface-hover hover:text-text-primary'"
-              :aria-selected="projectSettingsPane === pane[0]"
-              :aria-controls="`project-settings-pane-${pane[0]}`"
-              @click="selectProjectSettingsPane(pane[0])"
-            >
-              {{ pane[1] }}
-            </button>
-          </nav>
-          <p v-if="!publishingInWorkbench && !historyInWorkbench && projectSettingsPaneAnnouncement" class="sr-only" aria-live="polite">
-            {{ projectSettingsPaneAnnouncement }}
-          </p>
           <div
-            v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench && projectSettingsPane === 'project'"
+            v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench"
             id="project-settings-pane-project"
-            role="tabpanel"
-            aria-labelledby="project-settings-tab-project"
+            aria-label="Project settings"
             class="grid gap-3"
           >
           <form class="grid gap-3 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3" @submit.prevent="saveProjectSettings">
@@ -8184,10 +8119,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </section>
 
           <form
-            v-if="!publishingInWorkbench && !historyInWorkbench && (!settingsProject || projectSettingsPane === 'model')"
-            id="project-settings-pane-model"
-            role="tabpanel"
-            :aria-labelledby="settingsProject ? 'project-settings-tab-model' : undefined"
+            v-if="!publishingInWorkbench && !historyInWorkbench && !settingsProject"
             class="grid gap-4 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3"
             @submit.prevent="saveLLMSettings"
           >
@@ -8360,7 +8292,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </div>
           </form>
 
-          <footer v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench && projectSettingsPane === 'project'" class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-4">
+          <footer v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench" class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-4">
             <div class="min-w-0">
               <div class="text-[12px] font-medium text-text-primary">Delete project</div>
               <p class="mt-1 text-[12px] text-text-muted">

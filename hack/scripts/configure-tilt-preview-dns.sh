@@ -11,14 +11,16 @@ if [[ "${1:-}" == "--cleanup" ]]; then
   cleanup=true
   shift
 fi
-if [[ $# -ne 3 ]]; then
-  echo "usage: $0 [--cleanup] <kubectl-context> <base-domain> <gateway-ip>" >&2
+if [[ $# -ne 3 && $# -ne 5 ]]; then
+  echo "usage: $0 [--cleanup] <kubectl-context> <base-domain> <gateway-ip> [<hub-host> <hub-ip>]" >&2
   exit 2
 fi
 
 context="$1"
 base_domain="$2"
 gateway_ip="$3"
+hub_host="${4:-}"
+hub_ip="${5:-}"
 marker_start="# faros-preview-dns"
 marker_end="# faros-preview-dns-end"
 
@@ -28,6 +30,14 @@ if [[ ! "$base_domain" =~ ^[a-z0-9.-]+$ ]]; then
 fi
 if [[ ! "$gateway_ip" =~ ^[0-9.]+$ ]]; then
   echo "invalid preview gateway IP: $gateway_ip" >&2
+  exit 2
+fi
+if [[ -n "$hub_host" && ! "$hub_host" =~ ^[a-z0-9.-]+$ ]]; then
+  echo "invalid preview hub host: $hub_host" >&2
+  exit 2
+fi
+if [[ -n "$hub_host" && ! "$hub_ip" =~ ^[0-9.]+$ ]]; then
+  echo "invalid preview hub IP: $hub_ip" >&2
   exit 2
 fi
 
@@ -82,8 +92,18 @@ ${marker_start}
         answer "{{ .Name }} 60 IN A ${gateway_ip}"
         fallthrough
     }
-${marker_end}
 EOF
+if [[ -n "$hub_host" ]]; then
+  escaped_hub_host="${hub_host//./\\.}"
+  cat >>"$block_file" <<EOF
+    template IN A {
+        match ^${escaped_hub_host}\\.$
+        answer "{{ .Name }} 60 IN A ${hub_ip}"
+        fallthrough
+    }
+EOF
+fi
+printf '%s\n' "$marker_end" >>"$block_file"
 
 patched="$(awk -v block_file="$block_file" '
   BEGIN {

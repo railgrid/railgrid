@@ -74,9 +74,10 @@ type Proxy struct {
 // absolute expiry. Keeping it in the cookie rather than a server-side map is
 // what lets a sign-in survive a gate restart or land on a different replica.
 type returnStatePayload struct {
-	Nonce     string `json:"n"`
-	Path      string `json:"p"`
-	ExpiresAt int64  `json:"e"`
+	Nonce       string `json:"n"`
+	Path        string `json:"p"`
+	ExpiresAt   int64  `json:"e"`
+	Partitioned bool   `json:"c,omitempty"`
 }
 
 type appSession struct {
@@ -187,21 +188,29 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // currentSession resolves the request's session cookie against the local
 // bounded session store. No network calls are involved.
 func (p *Proxy) currentSession(r *http.Request) (appSession, bool) {
-	cookie, err := r.Cookie(SessionCookieName)
-	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+	if r == nil {
 		return appSession{}, false
 	}
-	key := sessionKey(cookie.Value)
 	now := p.now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.sweepSessionsLocked(now)
-	session, ok := p.sessions[key]
-	if !ok || !now.Before(session.expiresAt) {
+	// Browsers can send both the partitioned and unpartitioned variants of a
+	// host-only cookie with the same name. Resolve every candidate: an expired
+	// direct-tab cookie must not mask the valid embedded-session cookie that
+	// follows it in the header.
+	for _, cookie := range r.Cookies() {
+		if cookie.Name != SessionCookieName || strings.TrimSpace(cookie.Value) == "" {
+			continue
+		}
+		key := sessionKey(cookie.Value)
+		session, ok := p.sessions[key]
+		if ok && now.Before(session.expiresAt) {
+			return session, true
+		}
 		delete(p.sessions, key)
-		return appSession{}, false
 	}
-	return session, true
+	return appSession{}, false
 }
 
 func (p *Proxy) routeFor(path string) (normalizedRoute, bool) {
@@ -243,15 +252,19 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, route normalized
 // path and a fresh nonce into a short-lived cookie, echoes the nonce to the hub
 // as `state`, and sends the browser to the hub authorize endpoint.
 func (p *Proxy) redirectToAuthorize(w http.ResponseWriter, r *http.Request, path string) {
+	p.redirectToAuthorizeWithMode(w, r, path, requestUsesPartitionedCookies(r))
+}
+
+func (p *Proxy) redirectToAuthorizeWithMode(w http.ResponseWriter, r *http.Request, path string, partitioned bool) {
 	if path == "" {
 		path = "/"
 	}
-	handle, cookieValue, err := p.newReturnState(path)
+	handle, cookieValue, err := p.newReturnState(path, partitioned)
 	if err != nil {
 		http.Error(w, "app access state unavailable", http.StatusInternalServerError)
 		return
 	}
-	p.setReturnCookie(w, handle, cookieValue, requestUsesPartitionedCookies(r))
+	p.setReturnCookie(w, handle, cookieValue, partitioned)
 	callbackURL := p.config.publicScheme + "://" + p.config.host + CallbackPath
 	query := url.Values{}
 	query.Set("cluster", p.config.Instance.Cluster)
@@ -272,13 +285,16 @@ func (p *Proxy) handleCallback(w http.ResponseWriter, r *http.Request) {
 	partitioned := requestUsesPartitionedCookies(r)
 	state := r.URL.Query().Get("state")
 	outcome := p.consumeReturnState(w, r, state, partitioned)
+	if outcome.OK || outcome.Restart {
+		partitioned = outcome.Partitioned
+	}
 	if !outcome.OK {
 		// A stale sign-in is recoverable without involving the user: send the
 		// browser back through authorize with a fresh nonce and cookie. The
 		// restart is safe from looping because it is only offered when the
 		// browser demonstrably returned our cookie — see returnStateOutcome.
 		if outcome.Restart {
-			p.redirectToAuthorize(w, r, outcome.RestartPath)
+			p.redirectToAuthorizeWithMode(w, r, outcome.RestartPath, partitioned)
 			return
 		}
 		http.Error(w, "invalid app access state", http.StatusBadRequest)
@@ -331,7 +347,7 @@ func (p *Proxy) handleCallback(w http.ResponseWriter, r *http.Request) {
 		// Expired or replayed code: restart the flow. With a live hub shared
 		// session this is a silent redirect loop of exactly one extra hop.
 		p.clearReturnCookie(w, returnCookie, partitioned)
-		p.redirectToAuthorize(w, r, returnPath)
+		p.redirectToAuthorizeWithMode(w, r, returnPath, partitioned)
 		return
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
@@ -412,7 +428,7 @@ func (p *Proxy) consumeReturnState(w http.ResponseWriter, r *http.Request, state
 		// unreadable (truncated, or written by an older gate). Start over.
 		p.logf("app access callback recovering: %s cookie is malformed (host=%s) — restarting sign-in", ReturnCookieName, p.config.host)
 		p.clearReturnCookie(w, cookieName, partitioned)
-		return returnStateOutcome{Restart: true, RestartPath: "/"}
+		return returnStateOutcome{Restart: true, RestartPath: "/", Partitioned: partitioned}
 	}
 	if state == "" || subtle.ConstantTimeCompare([]byte(payload.Nonce), []byte(state)) != 1 {
 		// Not restarted on purpose: the cookie may belong to a different
@@ -428,7 +444,7 @@ func (p *Proxy) consumeReturnState(w http.ResponseWriter, r *http.Request, state
 		// will succeed — and the deep link survives it.
 		p.logf("app access callback recovering: sign-in state expired (host=%s) after %s — restarting sign-in", p.config.host, stateTTL)
 		p.clearReturnCookie(w, cookieName, partitioned)
-		return returnStateOutcome{Restart: true, RestartPath: cleanReturnPath(payload.Path)}
+		return returnStateOutcome{Restart: true, RestartPath: cleanReturnPath(payload.Path), Partitioned: payload.Partitioned}
 	}
 	if !p.markStateUsed(payload.Nonce, time.Unix(payload.ExpiresAt, 0)) {
 		// Not restarted: a replay is an attack signal, and a successful
@@ -443,7 +459,7 @@ func (p *Proxy) consumeReturnState(w http.ResponseWriter, r *http.Request, state
 	if path == "" {
 		path = "/"
 	}
-	return returnStateOutcome{Path: path, CookieName: cookieName, OK: true}
+	return returnStateOutcome{Path: path, CookieName: cookieName, OK: true, Partitioned: payload.Partitioned}
 }
 
 // returnStateOutcome is the verdict on a callback's state/cookie pair.
@@ -464,11 +480,16 @@ type returnStateOutcome struct {
 	// RestartPath is the deep link to preserve across a restart. Empty is
 	// fine; redirectToAuthorize substitutes "/".
 	RestartPath string
+	// Partitioned is the cookie mode selected on the initial app request and
+	// carried through the hub redirect. The callback's Sec-Fetch-Site describes
+	// the immediately previous hop, not necessarily the top-level embedding
+	// site, so it cannot safely recompute this choice.
+	Partitioned bool
 }
 
 // newReturnState mints the nonce echoed to the hub and the cookie value that
 // carries the whole state back to the callback.
-func (p *Proxy) newReturnState(path string) (nonce, cookieValue string, err error) {
+func (p *Proxy) newReturnState(path string, partitioned bool) (nonce, cookieValue string, err error) {
 	if path == "" {
 		return "", "", errors.New("empty return path")
 	}
@@ -480,9 +501,10 @@ func (p *Proxy) newReturnState(path string) (nonce, cookieValue string, err erro
 		return "", "", err
 	}
 	raw, err := json.Marshal(returnStatePayload{
-		Nonce:     nonce,
-		Path:      path,
-		ExpiresAt: p.now().Add(stateTTL).Unix(),
+		Nonce:       nonce,
+		Path:        path,
+		ExpiresAt:   p.now().Add(stateTTL).Unix(),
+		Partitioned: partitioned,
 	})
 	if err != nil {
 		return "", "", err
@@ -628,13 +650,15 @@ func (p *Proxy) randomString(size int) (string, error) {
 }
 
 // requestUsesPartitionedCookies reports whether the browser is navigating the
-// app inside an iframe. Local development deliberately serves the portal and
-// app from different sites (localhost vs sslip.io), so SameSite=Lax cookies
-// are withheld on the private-preview login callback. CHIPS lets that embedded
-// flow retain a cookie scoped to the portal's top-level site without weakening
-// ordinary top-level app sessions.
+// app inside a genuinely cross-site iframe. A same-site console/app pair can
+// and should use the ordinary Lax cookie: forcing CHIPS there creates a second
+// cookie with the same name, and a stale direct-tab variant can mask the valid
+// embedded one. Cross-site local development (localhost vs sslip.io) still
+// needs CHIPS so the iframe can retain state through the login callback.
 func requestUsesPartitionedCookies(r *http.Request) bool {
-	return r != nil && strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Dest")), "iframe")
+	return r != nil &&
+		strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Dest")), "iframe") &&
+		strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "cross-site")
 }
 
 func appCookieSameSite(partitioned bool) http.SameSite {

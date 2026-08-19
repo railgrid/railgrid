@@ -64,7 +64,9 @@ export function developmentPreviewShouldRefreshOnWake(
 /**
  * Escalates recovery without turning normal console-capability renewal into an
  * iframe reload. A failed document gets three cheap bridge probes, one fresh
- * authorization + iframe reload, then slow non-destructive background probes.
+ * authorization + iframe reload, then slow background document recovery. The
+ * final phase must replace an error document because a failed iframe navigation
+ * does not retry itself when the preview edge becomes reachable later.
  */
 export function developmentPreviewRecoveryAction(
 	attempt: number,

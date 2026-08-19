@@ -8,13 +8,13 @@ const releasePipeline = await readFile(new URL('./ReleasePipeline.vue', import.m
 const promotionState = await readFile(new URL('./promotionState.ts', import.meta.url), 'utf8')
 const productionSettings = await readFile(new URL('./useProductionSettings.ts', import.meta.url), 'utf8')
 
-test('exposes Publishing as its own workbench tab and keeps it out of Project Settings', () => {
-  assert.match(app, /type ProjectSettingsPane = 'project' \| 'model'/)
-  assert.match(app, /projectSettingsPanes/)
-  assert.match(app, /aria-label="Project Settings sections"/)
-  assert.match(app, /:id="`project-settings-tab-\$\{pane\[0\]\}`"/)
-  assert.match(app, /aria-labelledby="project-settings-tab-project"/)
-  assert.match(app, /settingsProject \? 'project-settings-tab-model' : undefined/)
+test('exposes Publishing separately and keeps workspace model config out of Project Settings', () => {
+  assert.doesNotMatch(app, /type ProjectSettingsPane/)
+  assert.doesNotMatch(app, /projectSettingsPanes/)
+  assert.doesNotMatch(app, /aria-label="Project Settings sections"/)
+  assert.doesNotMatch(app, /project-settings-tab-model/)
+  assert.match(app, /v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench"/)
+  assert.match(app, /v-if="!publishingInWorkbench && !historyInWorkbench && !settingsProject"/)
   assert.doesNotMatch(app, /projectSettingsPane === 'production'/)
   assert.doesNotMatch(app, /project-settings-tab-production/)
   assert.doesNotMatch(app, /id: 'builtin:production'/)
@@ -41,7 +41,7 @@ test('closes project settings before the landing route can render them as an LLM
   assert.match(watcher, /showSettings\.value = false/)
 
   const openStart = app.indexOf('async function openSettings()')
-  const openEnd = app.indexOf('function selectProjectSettingsPane', openStart)
+  const openEnd = app.indexOf('function closeSettings()', openStart)
   assert.ok(openStart >= 0 && openEnd > openStart)
   assert.match(app.slice(openStart, openEnd), /showSettings\.value = true/)
 })

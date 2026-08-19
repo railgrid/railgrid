@@ -445,6 +445,57 @@ func (h *Handler) HandleSessionBootstrap(w http.ResponseWriter, r *http.Request)
 	writeBrowserSessionJSON(w, session)
 }
 
+const browserSessionHandoffTTL = time.Minute
+
+// HandleSessionHandoff moves an already-authenticated API caller into a fresh
+// browser without putting its bearer credential in Chromium. POST mints a
+// short-lived opaque handle; GET atomically consumes it and issues the normal
+// host-only browser-session cookie. The handle is deliberately one-use and
+// expires quickly if the browser never arrives.
+func (h *Handler) HandleSessionHandoff(w http.ResponseWriter, r *http.Request) {
+	if h == nil || h.browserSessions == nil {
+		http.Error(w, "browser session unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	if r.Method == http.MethodPost {
+		if h.browserIdentity == nil {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		identity, err := h.browserIdentity(r)
+		if err != nil || strings.TrimSpace(identity.UserID) == "" {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		code, _, err := h.browserSessions.IssueTransient(r.Context(), identity, browserSessionHandoffTTL)
+		if err != nil {
+			http.Error(w, "browser session handoff unavailable", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"path": "/auth/session/handoff?code=" + url.QueryEscape(code)})
+		return
+	}
+
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	session, err := h.browserSessions.Resolve(r.Context(), code)
+	if err != nil {
+		http.Error(w, "browser session handoff expired", http.StatusGone)
+		return
+	}
+	// Consume before issuing the durable cookie. Even if the second write
+	// fails, replaying a handoff URL must never mint another browser session.
+	_ = h.browserSessions.Revoke(r.Context(), code)
+	if _, err := h.browserSessions.IssueHTTP(r.Context(), w, session.Identity); err != nil {
+		http.Error(w, "browser session handoff unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = fmt.Fprint(w, "browser session ready")
+}
+
 // HandleLogout revokes the shared browser session and expires its cookie.
 // It accepts GET for a browser navigation fallback and POST for the portal's
 // normal same-origin action.
@@ -517,6 +568,7 @@ func (h *Handler) RegisterBrowserSessionRoutes(router *mux.Router) {
 	}
 	router.HandleFunc("/auth/session/bootstrap", h.rateLimiter.middleware(h.HandleSessionBootstrap)).Methods("GET", "POST")
 	router.HandleFunc("/auth/session", h.rateLimiter.middleware(h.HandleSessionBootstrap)).Methods("GET", "POST")
+	router.HandleFunc("/auth/session/handoff", h.rateLimiter.middleware(h.HandleSessionHandoff)).Methods("GET", "POST")
 	router.HandleFunc("/auth/logout", h.rateLimiter.middleware(h.HandleLogout)).Methods("GET", "POST")
 }
 

@@ -26,6 +26,22 @@ export interface WorkbenchState {
 
 export type WorkbenchTabDropPlacement = 'before' | 'after'
 
+// These provider-owned resource views remain available from the Providers tab,
+// but are intentionally not promoted as top-level Workbench launcher or
+// project-landing shortcuts. The Code provider does not currently publish a
+// standalone RepositoryCommit view; retaining that route key keeps the policy
+// aligned with the four resource kinds if it adds one later.
+const hiddenProviderResourceShortcuts: Readonly<Record<string, ReadonlySet<string>>> = {
+  code: new Set(['connections', 'repositories', 'repositorycommits', 'packages']),
+  infrastructure: new Set(['templates']),
+}
+
+export function isWorkbenchProviderShortcut(tool: Pick<WorkbenchProviderToolRef, 'providerName' | 'path'>): boolean {
+  const provider = tool.providerName.trim().toLowerCase()
+  const rootPath = tool.path.trim().toLowerCase().split('/')[0] ?? ''
+  return !hiddenProviderResourceShortcuts[provider]?.has(rootPath)
+}
+
 const builtInTabs: Record<WorkbenchBuiltInTab, WorkbenchTabDescriptor> = {
   preview: {
     id: 'preview',
@@ -76,7 +92,7 @@ const builtInTabs: Record<WorkbenchBuiltInTab, WorkbenchTabDescriptor> = {
     id: 'settings',
     kind: 'settings',
     title: 'Project Settings',
-    subtitle: 'Manage project details and model configuration',
+    subtitle: 'Manage project details and preview access',
     closeable: true,
   },
   skills: {

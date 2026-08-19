@@ -38,9 +38,15 @@ type projectAssistantModelCapabilities struct {
 // projectAssistantModelCapabilityCatalog is the typed App Studio equivalent
 // of Codex's model-catalog capability flags. Unknown models fail closed.
 var projectAssistantModelCapabilityCatalog = map[string]projectAssistantModelCapabilities{
-	"openai-compatible/gpt-5.4":             {VisionToolResults: true},
-	"google-ai-studio/gemini-2.5-pro":       {VisionToolResults: true},
-	"google-ai-studio/gemini-3-pro-preview": {VisionToolResults: true},
+	"openai-compatible/gpt-5.4":                {VisionToolResults: true},
+	"openai-compatible/gpt-5.6":                {VisionToolResults: true},
+	"openai-compatible/gpt-5.6-luna":           {VisionToolResults: true},
+	"openai-compatible/gpt-5.6-sol":            {VisionToolResults: true},
+	"openai-compatible/gpt-5.6-terra":          {VisionToolResults: true},
+	"google-ai-studio/gemini-2.5-pro":          {VisionToolResults: true},
+	"google-ai-studio/gemini-3-pro-preview":    {VisionToolResults: true},
+	"google-ai-studio/gemini-3.5-flash":        {VisionToolResults: true},
+	"google-ai-studio/google/gemini-3.5-flash": {VisionToolResults: true},
 }
 
 func projectAssistantCapabilitiesForModel(settings projectLLMSettings) projectAssistantModelCapabilities {
@@ -49,6 +55,9 @@ func projectAssistantCapabilitiesForModel(settings projectLLMSettings) projectAs
 		provider = defaultProjectLLMProvider
 	}
 	model := strings.ToLower(strings.TrimSpace(settings.Model))
+	if model == "" && provider == defaultProjectLLMProvider {
+		model = defaultProjectLLMModel
+	}
 	return projectAssistantModelCapabilityCatalog[provider+"/"+model]
 }
 

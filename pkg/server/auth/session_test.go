@@ -74,6 +74,56 @@ func TestBrowserSessionBootstrapAndLogout(t *testing.T) {
 	}
 }
 
+func TestBrowserSessionHandoffIsAuthenticatedAndOneUse(t *testing.T) {
+	store := browsersession.New(browsersession.Config{TTL: time.Hour})
+	handler := NewBrowserSessionHandler(store, func(r *http.Request) (browsersession.Identity, error) {
+		if r.Header.Get("Authorization") != "Bearer caller-token" {
+			return browsersession.Identity{}, browsersession.ErrInvalid
+		}
+		return browsersession.Identity{UserID: "user-1", Email: "one@example.test"}, nil
+	})
+	router := mux.NewRouter()
+	handler.RegisterBrowserSessionRoutes(router)
+
+	mint := httptest.NewRecorder()
+	mintRequest := httptest.NewRequest(http.MethodPost, "/auth/session/handoff", nil)
+	mintRequest.Header.Set("Authorization", "Bearer caller-token")
+	router.ServeHTTP(mint, mintRequest)
+	if mint.Code != http.StatusOK {
+		t.Fatalf("mint status = %d; body=%s", mint.Code, mint.Body.String())
+	}
+	var minted struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(mint.Body.Bytes(), &minted); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(minted.Path, "/auth/session/handoff?code=") || strings.Contains(mint.Body.String(), "caller-token") {
+		t.Fatalf("mint body = %q", mint.Body.String())
+	}
+
+	redeem := httptest.NewRecorder()
+	router.ServeHTTP(redeem, httptest.NewRequest(http.MethodGet, minted.Path, nil))
+	if redeem.Code != http.StatusOK {
+		t.Fatalf("redeem status = %d; body=%s", redeem.Code, redeem.Body.String())
+	}
+	cookies := redeem.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != browsersession.CookieName || !cookies[0].HttpOnly || !cookies[0].Secure {
+		t.Fatalf("redeem cookies = %#v", cookies)
+	}
+	requestWithSession := httptest.NewRequest(http.MethodGet, "/", nil)
+	requestWithSession.AddCookie(cookies[0])
+	if session, err := store.ResolveRequest(requestWithSession); err != nil || session.Identity.UserID != "user-1" {
+		t.Fatalf("redeemed session = %#v, err=%v", session, err)
+	}
+
+	replay := httptest.NewRecorder()
+	router.ServeHTTP(replay, httptest.NewRequest(http.MethodGet, minted.Path, nil))
+	if replay.Code != http.StatusGone {
+		t.Fatalf("replay status = %d, want %d", replay.Code, http.StatusGone)
+	}
+}
+
 func TestBrowserSessionBootstrapFallsBackToLiveCookieWhenBearerIsUnavailable(t *testing.T) {
 	store := browsersession.New(browsersession.Config{TTL: time.Hour})
 	value, _, err := store.Issue(context.Background(), browsersession.Identity{UserID: "user-1", Email: "one@example.test"})

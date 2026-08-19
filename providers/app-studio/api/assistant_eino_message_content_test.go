@@ -167,6 +167,26 @@ func TestExpandTransientToolMessagesFlushesImagesAfterToolGroup(t *testing.T) {
 	}
 }
 
+func TestExpandTransientToolMessagesSupportsPostInteractionScreenshot(t *testing.T) {
+	state := newProjectEinoAssistantRunState()
+	placeholder := state.RegisterTransientPreviewImageForTool(
+		projectToolInteractDevelopmentPreview,
+		`{"status":"succeeded","screenshotStatus":"captured"}`,
+		"aGVsbG8=",
+		"image/png",
+	)
+	message := schema.ToolMessage(placeholder, "call-interact")
+	message.ToolName = projectToolInteractDevelopmentPreview
+
+	expanded := state.ExpandTransientToolMessages([]*schema.Message{message})
+	if len(expanded) != 2 || expanded[0].Role != schema.Tool || expanded[1].Role != schema.User {
+		t.Fatalf("expanded interaction result = %#v", expanded)
+	}
+	if len(expanded[1].UserInputMultiContent) != 2 || expanded[1].UserInputMultiContent[1].Image == nil {
+		t.Fatalf("post-interaction screenshot message = %#v", expanded[1])
+	}
+}
+
 // A parallel tool turn is persisted one item per call, with results appended as
 // each call settles, so the durable order is call A, call B, result A, result B.
 // Replayed verbatim, result A follows call B and providers reject the request.
