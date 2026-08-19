@@ -103,7 +103,7 @@ func TestReplicaAffinityServesStoreBackedReadsAnywhere(t *testing.T) {
 		Kind:         store.ReplicaClaimKindProject,
 		ScopeKey:     projectClaimKey("org-1", "ws-1", "shop"),
 		OwnerReplica: "replica-a",
-		OwnerAddr:    "10.255.255.1:1", // unreachable — a forward would fail loudly
+		OwnerAddr:    "127.0.0.1:1", // closed loopback port — a forward fails immediately
 	}, projectClaimTTL); err != nil || !held {
 		t.Fatalf("seeding owner claim: %v/%v", held, err)
 	}
@@ -113,7 +113,6 @@ func TestReplicaAffinityServesStoreBackedReadsAnywhere(t *testing.T) {
 	for _, path := range []string{
 		"/api/projects/shop/assistant/threads/th-1/events", // SSE stream
 		"/api/projects/shop/assistant/threads",
-		"/api/projects/shop",
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, projectRequest(path, http.MethodGet))
@@ -121,18 +120,21 @@ func TestReplicaAffinityServesStoreBackedReadsAnywhere(t *testing.T) {
 			t.Fatalf("store-backed read %s was forwarded", path)
 		}
 	}
-	if served != 3 {
-		t.Fatalf("store-backed reads served locally = %d, want 3", served)
+	if served != 2 {
+		t.Fatalf("store-backed reads served locally = %d, want 2", served)
 	}
 
-	// Workspace-reading GETs are NOT local-safe.
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, projectRequest("/api/projects/shop/files", http.MethodGet))
-	if served != 3 {
-		t.Fatal("workspace-reading GET bypassed affinity")
-	}
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("workspace GET for a foreign project = %d, want forwarded (and here, 502 to the unreachable owner)", rec.Code)
+	// Workspace-reading GETs and the root project document are NOT local-safe:
+	// GET /projects/{name} now carries the pod-local source-revision fence.
+	for _, path := range []string{"/api/projects/shop", "/api/projects/shop/files"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, projectRequest(path, http.MethodGet))
+		if served != 2 {
+			t.Fatalf("owner-affine GET %s bypassed affinity", path)
+		}
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("owner-affine GET %s for a foreign project = %d, want forwarded (and here, 502 to the unreachable owner)", path, rec.Code)
+		}
 	}
 }
 

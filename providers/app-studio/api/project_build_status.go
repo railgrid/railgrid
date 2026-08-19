@@ -224,16 +224,31 @@ func (s *Server) resolveProjectComponentImagesForCommit(ctx context.Context, c *
 	if err != nil {
 		return nil, fmt.Errorf("list published packages: %w", err)
 	}
+	return projectComponentImagesFromPackages(list.Items, repoRef, components, commitSHA), nil
+}
+
+// projectComponentImagesFromPackages resolves every launchable component from
+// one already-fetched Package mirror. Keeping the package list outside the
+// per-commit loop is important for the releases endpoint: the Code provider
+// bounds each package's version mirror at 100, while a release page can show
+// many historical commits without multiplying tenant API calls.
+func projectComponentImagesFromPackages(items []unstructured.Unstructured, repoRef string, components []projectBuildComponent, commitSHA string) map[string]componentImageRef {
+	repoRef = strings.TrimSpace(repoRef)
+	commitSHA = strings.TrimSpace(commitSHA)
+	if repoRef == "" || commitSHA == "" {
+		return map[string]componentImageRef{}
+	}
 
 	out := make(map[string]componentImageRef, len(components))
 	for _, comp := range components {
-		pkg := findPackageForComponentInRepository(list.Items, comp.Name, repoRef)
+		pkg := findPackageForComponentInRepository(items, comp.Name, repoRef)
 		if pkg == nil {
 			continue
 		}
 		imageRepo, _, _ := unstructured.NestedString(pkg.Object, "status", "imageRepository")
+		imageRepo = strings.TrimSpace(imageRepo)
 		digest, tag := packageVersionForCommit(pkg, commitSHA)
-		if strings.TrimSpace(imageRepo) == "" || strings.TrimSpace(digest) == "" {
+		if !validImmutableImageRepository(imageRepo) || !validImmutablePackageDigest(digest) {
 			continue
 		}
 		out[comp.Name] = componentImageRef{
@@ -242,7 +257,26 @@ func (s *Server) resolveProjectComponentImagesForCommit(ctx context.Context, c *
 			Tag:    tag,
 		}
 	}
-	return out, nil
+	return out
+}
+
+// Package versions are registry observations, not user-supplied image refs.
+// A release may only carry an image repository plus a digest-like algorithm
+// reference; bare tags and values containing whitespace are never deployable.
+// The Code API permits registry digest algorithms beyond sha256, so validate
+// the immutable shape without unnecessarily narrowing the algorithm vocabulary.
+func validImmutableImageRepository(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && !strings.ContainsAny(value, "@ \t\r\n")
+}
+
+func validImmutablePackageDigest(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsAny(value, "@/ \t\r\n") {
+		return false
+	}
+	algorithm, encoded, ok := strings.Cut(value, ":")
+	return ok && strings.TrimSpace(algorithm) != "" && strings.TrimSpace(encoded) != ""
 }
 
 // currentProjectRepositoryCommitSHA returns the newest successful
@@ -599,6 +633,15 @@ func (s *Server) checkProjectBuild(ctx context.Context, c *asclient.Client, id i
 	if err != nil {
 		return projectBuildCheckResult{}, err
 	}
+	return s.checkProjectBuildForCommit(ctx, c, p, components, commitSHA)
+}
+
+// checkProjectBuildForCommit evaluates one already-selected repository
+// commit. It deliberately never consults RepositoryCommit history itself, so
+// explicit historical promotion cannot silently drift back to the newest
+// successful commit.
+func (s *Server) checkProjectBuildForCommit(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, components []projectBuildComponent, commitSHA string) (projectBuildCheckResult, error) {
+	commitSHA = strings.TrimSpace(commitSHA)
 	images, err := s.resolveProjectComponentImagesForCommit(ctx, c, p, components, commitSHA)
 	if err != nil {
 		return projectBuildCheckResult{}, err
@@ -637,4 +680,29 @@ func (s *Server) checkProjectBuild(ctx context.Context, c *asclient.Client, id i
 		}
 	}
 	return result, nil
+}
+
+// checkProjectBuildAtCommit resolves the template's launchable component set
+// and then evaluates only the supplied commit. Promotion uses this helper
+// after revalidating RepositoryCommit ownership, ensuring GET release evidence
+// or client image values can never become promotion authority.
+func (s *Server) checkProjectBuildAtCommit(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, commitSHA string) (projectBuildCheckResult, error) {
+	if p == nil || p.Spec.Template == nil || strings.TrimSpace(p.Spec.Template.Name) == "" {
+		return projectBuildCheckResult{
+			Status: "unsupported",
+			Note:   "this project is not backed by a template with launchable build components; select a template (e.g. application or simple-webapp) before building for launch",
+		}, nil
+	}
+	info, err := fetchProjectTemplate(ctx, c, p.Spec.Template.Name)
+	if err != nil {
+		return projectBuildCheckResult{}, err
+	}
+	components := projectBuildComponents(info)
+	if len(components) == 0 {
+		return projectBuildCheckResult{
+			Status: "unsupported",
+			Note:   "the project's template declares no launchable build components",
+		}, nil
+	}
+	return s.checkProjectBuildForCommit(ctx, c, p, components, commitSHA)
 }

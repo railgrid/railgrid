@@ -3,9 +3,15 @@ import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'path'
 
+import { inlineCssAssets } from './inline-css-assets.mjs'
+
 export default defineConfig({
   base: '/ui/providers/app-studio/',
-  plugins: [vue(), tailwindcss()],
+  plugins: [
+    vue(),
+    tailwindcss(),
+    inlineCssAssets({ styleId: 'faros-provider-app-studio-component-css' }),
+  ],
   define: {
     'process.env.NODE_ENV': JSON.stringify('production'),
     __VUE_OPTIONS_API__: 'true',

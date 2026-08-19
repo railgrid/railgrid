@@ -29,9 +29,9 @@
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
 
-@source "../../../../portal/src/components/ConfirmDialog.vue";
 @source "./ProjectIntegrations.vue";
 @source "./portalkit/StatusBadge.vue";
+@source "./ProjectHistory.vue";
 
 @theme inline {
   /* Sharp radius scale — plain values (not host pointers), mirroring the host

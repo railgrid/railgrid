@@ -125,10 +125,11 @@ func newProjectEinoChatModel(ctx context.Context, settings projectLLMSettings) (
 
 func newProjectEinoOpenAIChatModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {
 	config := &openaimodel.ChatModelConfig{
-		APIKey:     strings.TrimSpace(settings.APIKey),
-		BaseURL:    strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/"),
-		Model:      strings.TrimSpace(settings.Model),
-		HTTPClient: &http.Client{},
+		APIKey:          strings.TrimSpace(settings.APIKey),
+		BaseURL:         strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/"),
+		Model:           strings.TrimSpace(settings.Model),
+		HTTPClient:      &http.Client{},
+		ReasoningEffort: projectReasoningEffort(settings.Model),
 	}
 	// GPT-5 and the o-series reasoning models reject any temperature other than
 	// the fixed default of 1, so only request a custom temperature when the
@@ -142,6 +143,17 @@ func newProjectEinoOpenAIChatModel(ctx context.Context, settings projectLLMSetti
 		return nil, fmt.Errorf("create native Eino OpenAI chat model: %w", err)
 	}
 	return &projectEinoAssistantOpenAIPayloadModel{BaseChatModel: model}, nil
+}
+
+func projectReasoningEffort(model string) openaimodel.ReasoningEffortLevel {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if idx := strings.LastIndex(m, "/"); idx >= 0 {
+		m = m[idx+1:]
+	}
+	if m == "gpt-5.6-luna" {
+		return openaimodel.ReasoningEffortLevel("none")
+	}
+	return ""
 }
 
 // projectEinoAssistantOpenAIPayloadModel repairs the serialized chat completion

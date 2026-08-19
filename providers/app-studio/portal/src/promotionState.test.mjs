@@ -16,6 +16,8 @@ const {
   promotionPollExhaustedFeedback,
   promotionPollDelay,
   promotionReadyFeedback,
+  releaseArtifactPollDelay,
+  releaseArtifactWaitPhase,
   releasePipelineView,
 } = await vite.ssrLoadModule('/src/promotionState.ts')
 test.after(async () => vite.close())
@@ -71,6 +73,16 @@ test('uses bounded backoff delays for slow production convergence', () => {
   assert.equal(promotionPollDelay(0), 4000)
   assert.equal(promotionPollDelay(1), 8000)
   assert.equal(promotionPollDelay(8), 15000)
+})
+
+test('bounds exact-commit image verification before settling into background polling', () => {
+  assert.equal(releaseArtifactWaitPhase(89_999), 'waiting')
+  assert.equal(releaseArtifactWaitPhase(90_000), 'delayed')
+  assert.equal(releaseArtifactWaitPhase(299_999), 'delayed')
+  assert.equal(releaseArtifactWaitPhase(300_000), 'attention')
+  assert.equal(releaseArtifactPollDelay('waiting'), 4000)
+  assert.equal(releaseArtifactPollDelay('delayed'), 15000)
+  assert.equal(releaseArtifactPollDelay('attention'), 30000)
 })
 
 test('keeps promotion disabled before a reviewed commit exists', () => {
@@ -144,11 +156,55 @@ test('distinguishes queued, partial running, finalizing, and failed exact-commit
   assert.deepEqual(running.missing, ['api'])
   assert.equal(running.partial, true)
   assert.equal(running.artifactLag, false)
-  assert.equal(releasePipelineView(readiness({ status: 'completed', conclusion: 'success' })).state, 'finalizing')
-  assert.equal(releasePipelineView(readiness({ status: 'completed', conclusion: 'success' })).artifactLag, true)
+  const finalizing = releasePipelineView(readiness({ status: 'completed', conclusion: 'success' }))
+  assert.equal(finalizing.state, 'finalizing')
+  assert.equal(finalizing.artifactLag, true)
+  assert.equal(finalizing.steps.find((step) => step.key === 'build').state, 'done')
+  assert.equal(finalizing.steps.find((step) => step.key === 'verify').state, 'current')
   const failed = releasePipelineView(readiness({ status: 'completed', conclusion: 'failure' }))
   assert.equal(failed.state, 'failed')
   assert.equal(failed.transitional, false)
+})
+
+test('settles a successful build with missing exact-commit images into an actionable state', () => {
+  const pipeline = releasePipelineView({
+    promotable: false,
+    build: {
+      status: 'none', commitSHA: '70aed526ffff', note: '', missing: ['web'],
+      components: [{ name: 'web', imageInput: 'webImage', built: false }],
+      run: { found: true, headSHA: '70aed526ffff', status: 'completed', conclusion: 'success' },
+    },
+  }, {}, { artifactNeedsAttention: true })
+
+  assert.equal(pipeline.state, 'artifact_attention')
+  assert.equal(pipeline.transitional, false)
+  assert.match(pipeline.message, /needs attention/)
+  assert.equal(pipeline.steps.find((step) => step.key === 'build').state, 'done')
+  assert.equal(pipeline.steps.find((step) => step.key === 'verify').state, 'attention')
+  assert.deepEqual(pipeline.artifacts[0], {
+    component: 'web',
+    packageMatcher: 'web or */web',
+    expectedTag: 'sha-70aed526ffff',
+    observedTag: '',
+    digest: '',
+    verified: false,
+  })
+})
+
+test('replaces stale transitional evidence with status unavailable after a refresh error', () => {
+  const pipeline = releasePipelineView({
+    promotable: false,
+    build: {
+      status: 'none', commitSHA: '70aed526ffff', note: '', missing: ['web'],
+      components: [{ name: 'web', imageInput: 'webImage', built: false }],
+      run: { found: true, headSHA: '70aed526ffff', status: 'completed', conclusion: 'success' },
+    },
+  }, {}, { statusError: 'Registry status request failed.' })
+
+  assert.equal(pipeline.state, 'unavailable')
+  assert.equal(pipeline.transitional, false)
+  assert.match(pipeline.message, /temporarily unavailable/)
+  assert.match(pipeline.detail, /may be stale/)
 })
 
 test('labels a partial artifact view when the run observation is unavailable', () => {

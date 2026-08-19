@@ -73,13 +73,13 @@ type Server struct {
 	// projectClientFor is an optional test seam for handlers that need a
 	// workspace-scoped Project client without opening a GraphQL listener.
 	// Production leaves it nil and uses clientFor's caller-scoped GraphQL path.
-	projectClientFor             func(identity) (*asclient.Client, error)
-	assistantRunManager          *projectAssistantRunManager
-	assistantSupervisor          *projectAssistantSupervisor
+	projectClientFor    func(identity) (*asclient.Client, error)
+	assistantRunManager *projectAssistantRunManager
+	assistantSupervisor *projectAssistantSupervisor
 	// replicaRouting carries this replica's identity/address/token for
 	// project affinity and durable run claims (replica_affinity.go). Nil
 	// until SetReplicaRouting; affinity is a no-op without it.
-	replicaRouting *replicaRouting
+	replicaRouting               *replicaRouting
 	assistantProjectionLocks     map[string]*assistantThreadProjectionLockEntry
 	assistantThreadMirrors       map[string]struct{}
 	developmentSyncLocks         map[string]*sync.Mutex
@@ -246,6 +246,7 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/integrations/{integration}/actions", s.invokeProjectIntegration).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/integrations/{integration}/actions/{action}", s.invokeProjectIntegration).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/promotion", s.getProjectPromotion).Methods(http.MethodGet)
+	r.HandleFunc("/api/projects/{project}/releases", s.getProjectReleases).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/checkpoints", s.getProjectCheckpoints).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/promote", s.promoteProjectHandler).Methods(http.MethodPost)
 	// Preview visibility is the development-side counterpart of publishing and
@@ -265,6 +266,7 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/{project}/publishing/grants", s.createProjectPublishingGrant).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/publishing/grants/{grant}", s.revokeProjectPublishingGrant).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/hydrate-workspace", s.hydrateProjectWorkspace).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/{project}/restore-workspace", s.restoreProjectWorkspace).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/scaffold", s.reseedProjectScaffold).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/sync-development", s.syncProjectDevelopment).Methods(http.MethodPost)
 	r.HandleFunc("/api/projects/{project}/restart-development", s.restartProjectDevelopment).Methods(http.MethodPost)

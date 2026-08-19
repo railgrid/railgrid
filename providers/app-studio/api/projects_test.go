@@ -57,6 +57,26 @@ func TestWriteProjectErrorMapsPreflightOutageToRetryableBadGateway(t *testing.T)
 	}
 }
 
+func TestProjectViewWithSourceRevisionPreservesWorkspaceFence(t *testing.T) {
+	ctx := context.Background()
+	id := identity{orgUUID: "org-a", workspaceUUID: "ws-a"}
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "uid-a"}}
+	workspaces := workspace.NewFileStore(t.TempDir())
+	scope := projectWorkspaceScope(id, project)
+	if _, err := workspaces.WriteFile(ctx, scope, workspace.WriteOptions{Path: "app.txt", Content: "updated\n"}); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := workspaces.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	view := (&Server{workspaces: workspaces}).projectViewWithSourceRevision(ctx, nil, project, id)
+	if view.SourceRevision != revision || revision <= 1 {
+		t.Fatalf("source revision = %d, want workspace revision %d greater than initial fence", view.SourceRevision, revision)
+	}
+}
+
 func TestCreateProjectPreflightTemplateCreatesBindingAndInstance(t *testing.T) {
 	client := newProjectCreationTestClient(
 		codeConnectionObjectWithValidated("github", metav1.ConditionTrue),

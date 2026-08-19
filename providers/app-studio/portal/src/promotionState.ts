@@ -4,6 +4,11 @@ export const PROMOTION_ACTION_MIN_POLLS = 2
 export const PROMOTION_ACTION_MAX_POLLS = 5
 export const PROMOTION_POLL_BASE_DELAY_MS = 4000
 export const PROMOTION_POLL_MAX_DELAY_MS = 15000
+export const RELEASE_ARTIFACT_DELAYED_MS = 90_000
+export const RELEASE_ARTIFACT_ATTENTION_MS = 5 * 60_000
+export const RELEASE_ARTIFACT_BACKGROUND_POLL_MS = 30_000
+
+export type ReleaseArtifactWaitPhase = 'waiting' | 'delayed' | 'attention'
 
 export type PromotionFeedbackTone = 'success' | 'warning'
 
@@ -43,6 +48,7 @@ export type ReleasePipelineState =
   | 'queued'
   | 'running'
   | 'finalizing'
+  | 'artifact_attention'
   | 'unavailable'
   | 'failed'
   | 'ready'
@@ -50,13 +56,29 @@ export type ReleasePipelineState =
   | 'production_ready'
 
 export type ReleasePipelineTone = 'muted' | 'warning' | 'danger' | 'success'
-export type ReleasePipelineStepState = 'done' | 'current' | 'pending' | 'error'
+export type ReleasePipelineStepState = 'done' | 'current' | 'pending' | 'attention' | 'error'
 
 export interface ReleasePipelineStep {
-  key: 'commit' | 'build' | 'deploy' | 'access'
+  key: 'commit' | 'build' | 'verify' | 'deploy' | 'access'
   label: string
   state: ReleasePipelineStepState
   detail?: string
+}
+
+export interface ReleaseArtifactEvidence {
+  component: string
+  packageMatcher: string
+  expectedTag: string
+  observedTag: string
+  digest: string
+  verified: boolean
+}
+
+export interface ReleasePipelineOptions {
+  /** A successful build has lacked complete artifact evidence past its grace period. */
+  artifactNeedsAttention?: boolean
+  /** A refresh failed after prior evidence had already rendered. */
+  statusError?: string | null
 }
 
 export interface ReleasePipelineView {
@@ -76,6 +98,7 @@ export interface ReleasePipelineView {
   /** CI completed successfully while registry Package observations lag. */
   artifactLag: boolean
   missing: string[]
+  artifacts: ReleaseArtifactEvidence[]
   steps: ReleasePipelineStep[]
 }
 
@@ -113,9 +136,22 @@ export function promotionPollDelay(attempts: number): number {
   return Math.min(PROMOTION_POLL_MAX_DELAY_MS, PROMOTION_POLL_BASE_DELAY_MS * (2 ** exponent))
 }
 
+export function releaseArtifactWaitPhase(elapsedMs: number): ReleaseArtifactWaitPhase {
+  if (elapsedMs >= RELEASE_ARTIFACT_ATTENTION_MS) return 'attention'
+  if (elapsedMs >= RELEASE_ARTIFACT_DELAYED_MS) return 'delayed'
+  return 'waiting'
+}
+
+export function releaseArtifactPollDelay(phase: ReleaseArtifactWaitPhase): number {
+  if (phase === 'attention') return RELEASE_ARTIFACT_BACKGROUND_POLL_MS
+  if (phase === 'delayed') return PROMOTION_POLL_MAX_DELAY_MS
+  return PROMOTION_POLL_BASE_DELAY_MS
+}
+
 export function releasePipelineView(
   readiness: ProjectPromotionReadiness | null | undefined,
   access: ReleaseAccessObservation = {},
+  options: ReleasePipelineOptions = {},
 ): ReleasePipelineView {
   const build = readiness?.build
   const commitSHA = clean(build?.commitSHA)
@@ -143,6 +179,15 @@ export function releasePipelineView(
   const runMatchesCommit = !!commitSHA && !!runHeadSHA && runHeadSHA === commitSHA
   const partial = builtCount > 0 && builtCount < totalCount
   const artifactLag = !!run?.found && runMatchesCommit && runStatus === 'completed' && conclusion === 'success' && build?.status !== 'built'
+  const expectedTag = commitSHA ? `sha-${commitSHA}` : ''
+  const artifacts: ReleaseArtifactEvidence[] = components.map((component) => ({
+    component: component.name,
+    packageMatcher: `${component.name} or */${component.name}`,
+    expectedTag,
+    observedTag: clean(component.tag),
+    digest: clean(component.digest),
+    verified: Boolean(component.built && clean(component.image)),
+  }))
   const accessLive = !!access.published && !!access.ready && !!clean(access.url)
   // runError is an observability failure, not evidence that CI failed. When
   // there is no usable exact-commit run and artifacts are still incomplete,
@@ -154,7 +199,12 @@ export function releasePipelineView(
   let message: string
   let detail: string
 
-  if (productionFailed) {
+  if (clean(options.statusError)) {
+    state = 'unavailable'
+    tone = 'warning'
+    message = 'Production status is temporarily unavailable.'
+    detail = `${clean(options.statusError)} Previously loaded release evidence may be stale.`
+  } else if (productionFailed) {
     state = 'failed'
     tone = 'danger'
     message = 'The production rollout failed.'
@@ -216,11 +266,16 @@ export function releasePipelineView(
     tone = 'warning'
     message = `Building release images — ${builtCount} of ${totalCount} ready.`
     detail = missing.length ? `Still building: ${missing.join(', ')}.` : 'The workflow is still reporting in progress.'
+  } else if (artifactLag && options.artifactNeedsAttention) {
+    state = 'artifact_attention'
+    tone = 'warning'
+    message = 'Image verification needs attention.'
+    detail = 'The build completed successfully, but App Studio still cannot verify every exact-commit image.'
   } else if (run?.found && runStatus === 'completed' && conclusion === 'success') {
     state = 'finalizing'
     tone = 'warning'
-    message = 'Build succeeded. Finalizing release images…'
-    detail = missing.length ? `The registry is still indexing ${missing.join(', ')}.` : 'Waiting for registry package observations.'
+    message = 'Build succeeded. Verifying release images…'
+    detail = missing.length ? `Waiting for package evidence for ${missing.join(', ')}.` : 'Waiting for registry package observations.'
   } else if (build?.status === 'incomplete') {
     state = 'waiting'
     tone = 'warning'
@@ -243,11 +298,21 @@ export function releasePipelineView(
   // that failure on Deploy so an already-valid build is not relabeled as a
   // build error while the production provider reports its own terminal state.
   const buildFailed = state === 'failed' && !productionFailed && build?.status !== 'built'
-  const buildDone = build?.status === 'built'
+  const runSucceeded = !!run?.found && runMatchesCommit && runStatus === 'completed' && conclusion === 'success'
+  const buildDone = build?.status === 'built' || runSucceeded
   const buildCurrent = !buildDone && !['needs_commit', 'unavailable'].includes(state)
+  const verifyDone = build?.status === 'built'
+  const verifyState: ReleasePipelineStepState = verifyDone
+    ? 'done'
+    : state === 'artifact_attention'
+      ? 'attention'
+      : runSucceeded
+        ? 'current'
+        : 'pending'
   const steps: ReleasePipelineStep[] = [
     { key: 'commit', label: 'Commit', state: commitSHA ? 'done' : 'current', detail: commitSHA ? shortSHA(commitSHA) : undefined },
-    { key: 'build', label: 'Build images', state: buildFailed ? 'error' : buildDone ? 'done' : buildCurrent ? 'current' : 'pending', detail: totalCount ? `${builtCount} of ${totalCount}` : undefined },
+    { key: 'build', label: 'Build', state: buildFailed ? 'error' : buildDone ? 'done' : buildCurrent ? 'current' : 'pending' },
+    { key: 'verify', label: 'Verify images', state: verifyState, detail: totalCount ? `${builtCount} of ${totalCount}` : undefined },
     { key: 'deploy', label: 'Deploy', state: selectedReleaseDeployed ? 'done' : productionFailed ? 'error' : deploying || state === 'ready' ? 'current' : 'pending', detail: requestedRevision ? `requested ${shortSHA(requestedRevision)} / observed ${shortSHA(observedRevision) || '—'}` : undefined },
     { key: 'access', label: 'Enable access', state: accessLive ? 'done' : selectedReleaseDeployed ? 'current' : 'pending' },
   ]
@@ -255,7 +320,7 @@ export function releasePipelineView(
   return {
     state, tone, message, detail,
     transitional: ['waiting', 'queued', 'running', 'finalizing', 'deploying'].includes(state),
-    commitSHA, requestedRevision, observedRevision, buildURL: clean(run?.url), builtCount, totalCount, missing, steps,
+    commitSHA, requestedRevision, observedRevision, buildURL: clean(run?.url), builtCount, totalCount, missing, artifacts, steps,
     partial, artifactLag,
   }
 }

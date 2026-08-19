@@ -425,6 +425,8 @@ spec:
                 backendRefs:
                   - name: ${gateService.metadata.name}
                     port: 8080
+        readyWhen:
+          - '${httpRoute.status.parents.exists(p, p.parentRef.group == "gateway.networking.k8s.io" && p.parentRef.kind == "Gateway" && p.parentRef.name == "${faros.gatewayName}" && p.parentRef.namespace == "${faros.gatewayNamespace}" && p.conditions.exists(c, c.type == "Accepted" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation) && p.conditions.exists(c, c.type == "ResolvedRefs" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation))}'
     # url/host are read from the HTTPRoute (this kro fork forbids ${schema.*}
     # in status), same as the application template. ${faros.appPublicPort} is
     # substituted by the kro backend before kro sees this CEL.

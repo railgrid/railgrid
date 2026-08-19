@@ -73,7 +73,7 @@ const emit = defineEmits<{
   (event: 'preview-invite', email: string): void
   (event: 'preview-revoke', grant: string): void
   (event: 'disable'): void
-  (event: 'open-production-settings'): void
+  (event: 'open-publishing'): void
   (event: 'retry'): void
 }>()
 
@@ -259,13 +259,13 @@ function close() {
   emit('close')
 }
 
-function openProductionSettings() {
+function openPublishing() {
   if (props.busy) return
   if (modeTouched.value && selectedMode.value !== initialMode.value) {
     emit('update:mode', initialMode.value)
   }
   modeTouched.value = false
-  emit('open-production-settings')
+  emit('open-publishing')
 }
 
 function addMember() {
@@ -616,9 +616,9 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
                 type="button"
                 class="text-left text-[12px] font-medium text-accent underline decoration-accent/50 underline-offset-2 transition hover:text-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
                 :disabled="busy"
-                @click="openProductionSettings"
+                @click="openPublishing"
               >
-                Production settings
+                Publishing
               </button>
             </div>
           </template>

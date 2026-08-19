@@ -383,6 +383,7 @@ export interface Project {
     message?: string
     ready?: boolean
     commits?: ProjectRepositoryCommit[]
+    commitsError?: string
   }
   memory?: ProjectMemory
   sharing?: {
@@ -392,6 +393,7 @@ export interface Project {
   environments?: ProjectEnvironment[]
   createdAt: string
   updatedAt?: string
+  sourceRevision?: number
 }
 
 export interface ProjectEnvironment {
@@ -592,6 +594,15 @@ export interface ProjectHydrateResult {
   skipped?: string[]
 }
 
+// Result of POST /api/projects/{name}/restore-workspace. Unlike hydration,
+// restoration replaces the public workspace tree with one exact Git commit.
+export interface ProjectRestoreResult {
+  commitSHA: string
+  written?: string[]
+  deleted?: string[]
+  sourceRevision?: number
+}
+
 // One launchable component's build state, from GET /api/projects/{name}/promotion.
 export interface ProjectBuildComponent {
   name: string
@@ -601,6 +612,26 @@ export interface ProjectBuildComponent {
   digest?: string
   /** Human-facing immutable tag that identifies the reviewed commit. */
   tag?: string
+}
+
+/** One immutable release returned by GET /api/projects/{name}/releases. */
+export interface ProjectRelease {
+  commitSHA: string
+  /** Server-derived identity for the exact component digest set. */
+  releaseID?: string
+  commitURL?: string
+  message?: string
+  createdAt?: string
+  completedAt?: string
+  deployable: boolean
+  live: boolean
+  /** Evidence that keeps an incomplete release disabled in the picker. */
+  missing?: string[]
+  components?: ProjectBuildComponent[]
+}
+
+export interface ProjectReleasesResponse {
+  items?: ProjectRelease[]
 }
 
 export interface ProjectBuildRunJob {
@@ -678,7 +709,8 @@ export interface ProjectPromoteResult {
   environment: string
   instance: string
   rolloutRevision?: string
-  commit?: string
+  commitSHA?: string
+  releaseID?: string
   components?: ProjectBuildComponent[]
 }
 

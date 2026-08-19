@@ -146,6 +146,7 @@ test('App keeps central loading surfaces honest while project state hydrates', a
   assert.match(appSource, /selectingThreadID\.value === threadID/)
   assert.match(appSource, /const conversationRefreshing = ref\(false\)/)
   assert.match(appSource, /Updating conversation…/)
+  assert.match(appSource, /watch\(\[messages, conversationLoading\], async \(\) => \{[\s\S]*await nextTick\(\)[\s\S]*if \(!conversationLoading\.value && messagesRef\.value\)[\s\S]*messagesRef\.value\.scrollTop = messagesRef\.value\.scrollHeight/)
   assert.match(appSource, /v-if="initializing && !loading && !selectedNameFromPath"/)
   assert.doesNotMatch(appSource, /v-else-if="projectRouteLoading"/)
   assert.match(appSource, /function enterProject\(project: Project\)[\s\S]*selected\.value = project[\s\S]*projectOpenLoading\.value = true[\s\S]*props\.navigate\(encodeURIComponent\(project\.name\)\)/)

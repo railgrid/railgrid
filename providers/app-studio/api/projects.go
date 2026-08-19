@@ -93,17 +93,18 @@ func (s *Server) consumeProjectInitialBootstrap(ctx context.Context, scope store
 }
 
 type ProjectView struct {
-	Name         string                        `json:"name"`
-	DisplayName  string                        `json:"displayName"`
-	Description  string                        `json:"description,omitempty"`
-	Phase        string                        `json:"phase,omitempty"`
-	Template     string                        `json:"template,omitempty"`
-	Repository   *ProjectRepositoryView        `json:"repository,omitempty"`
-	Memory       aiv1alpha1.ProjectMemory      `json:"memory,omitempty"`
-	Sharing      aiv1alpha1.ProjectSharingSpec `json:"sharing,omitempty"`
-	Environments []ProjectEnvironmentView      `json:"environments,omitempty"`
-	CreatedAt    time.Time                     `json:"createdAt"`
-	UpdatedAt    *time.Time                    `json:"updatedAt,omitempty"`
+	Name           string                        `json:"name"`
+	DisplayName    string                        `json:"displayName"`
+	Description    string                        `json:"description,omitempty"`
+	Phase          string                        `json:"phase,omitempty"`
+	Template       string                        `json:"template,omitempty"`
+	Repository     *ProjectRepositoryView        `json:"repository,omitempty"`
+	Memory         aiv1alpha1.ProjectMemory      `json:"memory,omitempty"`
+	Sharing        aiv1alpha1.ProjectSharingSpec `json:"sharing,omitempty"`
+	Environments   []ProjectEnvironmentView      `json:"environments,omitempty"`
+	CreatedAt      time.Time                     `json:"createdAt"`
+	UpdatedAt      *time.Time                    `json:"updatedAt,omitempty"`
+	SourceRevision uint64                        `json:"sourceRevision,omitempty"`
 }
 
 type ProjectEnvironmentView struct {
@@ -134,6 +135,7 @@ type ProjectRepositoryView struct {
 	Message       string                        `json:"message,omitempty"`
 	Ready         bool                          `json:"ready,omitempty"`
 	Commits       []ProjectRepositoryCommitView `json:"commits,omitempty"`
+	CommitsError  string                        `json:"commitsError,omitempty"`
 	commitsErr    error
 }
 
@@ -573,7 +575,7 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, projectView(r.Context(), c, p, id))
+	writeJSON(w, http.StatusOK, s.projectViewWithSourceRevision(r.Context(), c, p, id))
 }
 
 func (s *Server) patchProject(w http.ResponseWriter, r *http.Request) {
@@ -604,7 +606,7 @@ func (s *Server) patchProject(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, projectView(r.Context(), c, updated, id))
+	writeJSON(w, http.StatusOK, s.projectViewWithSourceRevision(r.Context(), c, updated, id))
 }
 
 func applyProjectPatchRequest(p *aiv1alpha1.Project, req PatchProjectRequest) (bool, error) {
@@ -1596,6 +1598,21 @@ func projectView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project,
 	if p.Status.UpdatedAt != nil {
 		t := p.Status.UpdatedAt.Time
 		view.UpdatedAt = &t
+	}
+	return view
+}
+
+// projectViewWithSourceRevision adds the owner workspace's optimistic-lock
+// fence to a project response. Project PATCH does not mutate source, so its
+// response must preserve the same authority that GET exposes; otherwise the
+// portal loses the revision when it replaces its selected project model.
+func (s *Server) projectViewWithSourceRevision(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) ProjectView {
+	view := projectView(ctx, c, p, id)
+	if s == nil || s.workspaces == nil || p == nil {
+		return view
+	}
+	if revision, err := s.workspaces.SourceRevision(ctx, projectWorkspaceScope(id, p)); err == nil {
+		view.SourceRevision = revision
 	}
 	return view
 }

@@ -35,6 +35,8 @@ import (
 	asclient "github.com/faroshq/provider-app-studio/client"
 )
 
+const projectRepositoryCommitViewMaxItems = 100
+
 const (
 	codeAPIGroup   = "code.faros.sh"
 	codeAPIVersion = "v1alpha1"
@@ -365,6 +367,9 @@ func projectRepositoryViewFromResources(ctx context.Context, p *aiv1alpha1.Proje
 		}
 	}
 	view.Commits, view.commitsErr = projectRepositoryCommits(ctx, list, ref)
+	if view.commitsErr != nil {
+		view.CommitsError = "Git commit history is temporarily unavailable."
+	}
 	return view
 }
 
@@ -393,8 +398,11 @@ func projectRepositoryCommits(ctx context.Context, list codeResourceLister, repo
 	sort.Slice(commits, func(i, j int) bool {
 		return commits[i].CreatedAt.After(commits[j].CreatedAt)
 	})
-	if len(commits) > 20 {
-		commits = commits[:20]
+	// History is intentionally broader than the dashboard preview. One hundred
+	// bounded metadata-only rows keeps older restore points useful without
+	// turning the Project response into an unbounded repository log.
+	if len(commits) > projectRepositoryCommitViewMaxItems {
+		commits = commits[:projectRepositoryCommitViewMaxItems]
 	}
 	return commits, nil
 }

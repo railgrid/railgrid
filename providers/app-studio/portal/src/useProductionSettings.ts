@@ -16,6 +16,7 @@ export interface ProductionSettingsInputs {
   promotionLoading: Readonly<Ref<boolean>>
   promotionBusy: Readonly<Ref<boolean>>
   promotionError: Readonly<Ref<string | null>>
+  releaseArtifactNeedsAttention?: Readonly<Ref<boolean>>
   productionFormValid: Readonly<Ref<boolean>>
   selectedProjectName: Readonly<Ref<string>>
 }
@@ -65,10 +66,14 @@ export function useProductionSettings(input: ProductionSettingsInputs): Producti
     published: input.publishing.value?.published,
     ready: input.publishing.value?.publication?.ready,
     url: productionURL.value,
+  }, {
+    artifactNeedsAttention: input.releaseArtifactNeedsAttention?.value ?? false,
+    statusError: input.promotionError.value,
   }))
-  const canPromote = computed(() => !!input.promotion.value?.promotable && input.productionFormValid.value && !input.promotionBusy.value)
+  const canPromote = computed(() => !!input.promotion.value?.promotable && input.productionFormValid.value && !input.promotionBusy.value && !input.promotionError.value)
   const promotionDisabledReason = computed(() => {
     if (input.promotionBusy.value) return 'Promotion is in progress.'
+    if (input.promotionError.value) return 'Production status is unavailable. Check again before deploying.'
     if (!input.selectedProjectName.value) return 'Select a project before checking its build status.'
     if (input.promotionLoading.value && !input.promotion.value) return 'Loading production status before enabling promotion.'
     if (input.promotionError.value && !input.promotion.value) return 'Production status is unavailable. Refresh to retry.'
@@ -103,7 +108,7 @@ export function useProductionSettings(input: ProductionSettingsInputs): Producti
   })
   const productionOverview = computed<ProductionStatusPresentation>(() => {
     if (input.promotionLoading.value && !input.promotion.value) return { label: 'Loading', tone: 'muted' }
-    if (input.promotionError.value && !input.promotion.value) return { label: 'Unavailable', tone: 'danger' }
+    if (input.promotionError.value) return { label: 'Status unavailable', tone: 'warning' }
     if (!input.promotion.value) return { label: 'Awaiting status', tone: 'muted' }
     if (!productionBinding.value) return { label: 'Not deployed', tone: 'muted' }
     if (!productionDeployment.value.ready) return { label: productionDeployment.value.label, tone: productionDeployment.value.tone }
@@ -115,7 +120,9 @@ export function useProductionSettings(input: ProductionSettingsInputs): Producti
   })
   const productionOverviewDescription = computed(() => {
     if (input.promotionLoading.value && !input.promotion.value) return 'Checking the build, deployment, and release status for this project…'
-    if (input.promotionError.value && !input.promotion.value) return 'Production status could not be loaded. Refresh to try again.'
+    if (input.promotionError.value) return input.promotion.value
+      ? 'Production status could not be refreshed. Previously loaded details may be stale.'
+      : 'Production status could not be loaded. Refresh to try again.'
     if (!input.promotion.value) return 'Production status will appear here once the project responds.'
     if (!productionBinding.value) return 'No production deployment yet. Build every component before deploying this app.'
     if (!productionDeployment.value.ready) return productionDescription.value

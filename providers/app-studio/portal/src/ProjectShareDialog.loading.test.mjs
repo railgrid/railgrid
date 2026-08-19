@@ -36,5 +36,5 @@ test('does not authorize Share mutations when only the member read succeeded', (
   assert.match(dialog, /:disabled="busy \|\| !publicationStateAvailable"\s+@click="emit\('disable'\)"/)
   assert.match(dialog, /function primaryAction\(\) \{\s*if \(!canSave\.value\) return/)
   assert.match(dialog, /@click="emit\('retry'\)"/)
-  assert.match(dialog, /:disabled="busy"[\s\S]*@click="openProductionSettings"/)
+  assert.match(dialog, /:disabled="busy"[\s\S]*@click="openPublishing"/)
 })

@@ -618,6 +618,8 @@ spec:
                 backendRefs:
                   - name: ${oauthService.metadata.name}
                     port: 4180
+        readyWhen:
+          - '${httpRoute.status.parents.exists(p, p.parentRef.group == "gateway.networking.k8s.io" && p.parentRef.kind == "Gateway" && p.parentRef.name == "${faros.gatewayName}" && p.parentRef.namespace == "${faros.gatewayNamespace}" && p.conditions.exists(c, c.type == "Accepted" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation) && p.conditions.exists(c, c.type == "ResolvedRefs" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation))}'
     # The data plane resolves its target through these paths, so they are part
     # of the contract, not decoration.
     #

@@ -258,14 +258,15 @@ func splitProjectPath(path string) (project, rest string, ok bool) {
 
 // localSafeProjectRead reports whether a project-scoped request is safe on
 // any replica: read-only AND backed by the store/CRs/data-plane rather than
-// the pod-local workspace. Workspace-reading GETs (files, skills) must go to
-// the owner; everything mutating always does. Defaulting unknown routes to
-// "forward" keeps a forgotten route correct at the cost of one hop.
+// the pod-local workspace. The root project document includes SourceRevision,
+// so it joins workspace-reading GETs (files, skills) on the owner. Everything
+// mutating always goes there too. Defaulting unknown routes to "forward" keeps
+// a forgotten route correct at the cost of one hop.
 func localSafeProjectRead(method, rest string) bool {
 	if method != http.MethodGet && method != http.MethodHead {
 		return false
 	}
-	if strings.HasPrefix(rest, "/files") || strings.HasPrefix(rest, "/assistant/skills") {
+	if rest == "" || strings.HasPrefix(rest, "/files") || strings.HasPrefix(rest, "/assistant/skills") {
 		return false
 	}
 	return true

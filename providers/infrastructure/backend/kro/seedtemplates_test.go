@@ -69,6 +69,100 @@ func TestSeedTemplatesBuildRGD(t *testing.T) {
 	}
 }
 
+const seedHTTPRouteReadyWhen = `${httpRoute.status.parents.exists(p, p.parentRef.group == "gateway.networking.k8s.io" && p.parentRef.kind == "Gateway" && p.parentRef.name == "${faros.gatewayName}" && p.parentRef.namespace == "${faros.gatewayNamespace}" && p.conditions.exists(c, c.type == "Accepted" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation) && p.conditions.exists(c, c.type == "ResolvedRefs" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation))}`
+
+// TestSeedTemplatesHTTPRoutesRequireCurrentGatewayStatus ensures every route
+// that can publish an instance is blocked until the configured Gateway has
+// accepted it, resolved all backend references, and observed the current route
+// generation. This is deliberately checked both before and after buildRGD:
+// the source template must retain platform tokens, while the authored RGD must
+// contain concrete Gateway values. Keeping readyWhen on the graph resource
+// (rather than inside HTTPRoute.spec) is part of the contract — KRO owns it.
+func TestSeedTemplatesHTTPRoutesRequireCurrentGatewayStatus(t *testing.T) {
+	dir := filepath.Join("..", "..", "install", "templates")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read templates dir: %v", err)
+	}
+
+	wantBuilt := string(substituteTokens([]byte(seedHTTPRouteReadyWhen), testTokens()))
+	var routeCount int
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+			continue
+		}
+		t.Run(entry.Name(), func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				t.Fatalf("read %s: %v", entry.Name(), err)
+			}
+			tmpl := decodeTemplate(t, raw)
+
+			var backend map[string]any
+			if tmpl.Spec.BackendConfig == nil {
+				t.Fatal("seed backendConfig is missing")
+			}
+			if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &backend); err != nil {
+				t.Fatalf("decode backendConfig: %v", err)
+			}
+			resources, ok := backend["resources"].([]any)
+			if !ok {
+				t.Fatal("seed backendConfig has no resources")
+			}
+
+			rgd, err := buildRGD(tmpl, testTokens())
+			if err != nil {
+				t.Fatalf("buildRGD: %v", err)
+			}
+			for _, rawResource := range resources {
+				resource, _ := rawResource.(map[string]any)
+				template, _ := resource["template"].(map[string]any)
+				if template["kind"] != "HTTPRoute" {
+					continue
+				}
+				routeCount++
+				id, _ := resource["id"].(string)
+
+				readyWhen, ok := resource["readyWhen"].([]any)
+				if !ok || len(readyWhen) != 1 {
+					t.Fatalf("HTTPRoute %q readyWhen = %#v, want exactly one graph-resource expression", id, resource["readyWhen"])
+				}
+				if got, ok := readyWhen[0].(string); !ok || got != seedHTTPRouteReadyWhen {
+					t.Fatalf("HTTPRoute %q readyWhen = %#v, want %q", id, readyWhen[0], seedHTTPRouteReadyWhen)
+				}
+				if tmpl.Spec.ExposureClass() == infrav1alpha1.ExposureOptional {
+					includeWhen, ok := resource["includeWhen"].([]any)
+					if !ok || len(includeWhen) == 0 {
+						t.Fatalf("optional HTTPRoute %q has no includeWhen; exclusion must remain non-blocking", id)
+					}
+				}
+				if _, found := template["readyWhen"]; found {
+					t.Fatalf("HTTPRoute %q incorrectly places readyWhen inside HTTPRoute template", id)
+				}
+				routeSpec, _ := template["spec"].(map[string]any)
+				if _, found := routeSpec["readyWhen"]; found {
+					t.Fatalf("HTTPRoute %q incorrectly places readyWhen inside HTTPRoute.spec/template", id)
+				}
+
+				built := findResource(t, rgd, id)
+				if built == nil {
+					t.Fatalf("built RGD is missing HTTPRoute %q", id)
+				}
+				builtReadyWhen, found, err := unstructured.NestedStringSlice(built, "readyWhen")
+				if err != nil || !found || len(builtReadyWhen) != 1 {
+					t.Fatalf("built HTTPRoute %q readyWhen = %v (found=%t err=%v), want one expression", id, builtReadyWhen, found, err)
+				}
+				if got := builtReadyWhen[0]; got != wantBuilt {
+					t.Fatalf("built HTTPRoute %q readyWhen = %q, want %q", id, got, wantBuilt)
+				}
+			}
+		})
+	}
+	if routeCount == 0 {
+		t.Fatal("seed templates contain no HTTPRoute resources")
+	}
+}
+
 func TestSeedTemplatesIncludeStandaloneDatabase(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "..", "install", "templates", "database.yaml"))
 	if err != nil {

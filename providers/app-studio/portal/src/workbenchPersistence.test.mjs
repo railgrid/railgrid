@@ -54,6 +54,8 @@ function memoryStorage(initial = {}) {
 
 test('round-trips stable tab order, active tab, and provider nested path', () => {
   let state = workbench.createDefaultWorkbenchState()
+  state = workbench.openWorkbenchBuiltInTab(state, 'publishing')
+  state = workbench.openWorkbenchBuiltInTab(state, 'history')
   state = workbench.openWorkbenchBuiltInTab(state, 'settings')
   state = workbench.openWorkbenchProviderTool(state, { ...connectionsTool, provider: { token: 'must-not-persist' } })
   state = workbench.updateWorkbenchProviderToolPath(state, 'provider:code/connections', 'connections/detail')
@@ -67,22 +69,42 @@ test('round-trips stable tab order, active tab, and provider nested path', () =>
     tabs: [
       { kind: 'preview' },
       { kind: 'launcher' },
+      { kind: 'publishing' },
+      { kind: 'history' },
       { kind: 'settings' },
       { kind: 'provider', id: 'code/connections', path: 'connections/detail' },
     ],
     activeTabID: 'provider:code/connections',
   })
-  assert.equal(saved.tabs[3].title, undefined)
-  assert.equal(state.tabs[3].providerTool.provider, undefined)
+  assert.equal(saved.tabs[5].title, undefined)
+  assert.equal(state.tabs[5].providerTool.provider, undefined)
 
   const restored = persistence.restoreWorkbenchState(
     persistence.readWorkbenchPersistence(scope, storage),
     [{ ...connectionsTool, title: 'Canonical connections title' }],
   )
-  assert.deepEqual(restored.tabs.map((tab) => tab.id), ['preview', 'launcher', 'settings', 'provider:code/connections'])
+  assert.deepEqual(restored.tabs.map((tab) => tab.id), ['preview', 'launcher', 'publishing', 'history', 'settings', 'provider:code/connections'])
   assert.equal(restored.activeTabID, 'provider:code/connections')
-  assert.equal(restored.tabs[3].title, 'Canonical connections title')
-  assert.equal(restored.tabs[3].providerTool.path, 'connections/detail')
+  assert.equal(restored.tabs[5].title, 'Canonical connections title')
+  assert.equal(restored.tabs[5].providerTool.path, 'connections/detail')
+})
+
+test('migrates the legacy deployments tab and active id to source History', () => {
+  const parsed = persistence.parseWorkbenchPersistence(JSON.stringify({
+    version: 1,
+    tabs: [{ kind: 'preview' }, { kind: 'deployments' }],
+    activeTabID: 'deployments',
+  }))
+  assert.deepEqual(parsed, {
+    version: 1,
+    tabs: [{ kind: 'preview' }, { kind: 'history' }],
+    activeTabID: 'history',
+  })
+
+  const restored = persistence.restoreWorkbenchState(parsed, [])
+  assert.deepEqual(restored.tabs.map((tab) => tab.id), ['preview', 'history'])
+  assert.equal(restored.activeTabID, 'history')
+  assert.equal(restored.tabs[1].title, 'History')
 })
 
 test('scope keys isolate tenant, organization, workspace, user, and project', () => {

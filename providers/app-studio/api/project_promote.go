@@ -169,19 +169,25 @@ var projectPlatformOwnedProductionPaths = map[string]struct{}{
 	"expose.fqdn": {},
 }
 
-// projectPromoteRequest is the "Promote to Prod" form submission: the
-// template's production inputs (ports, replicas, oidc, …). The instance name,
-// farosMode, per-component image fields, and farosRedeployRevision are
+// projectPromoteRequest is the "Promote to Prod" form submission: optional
+// release commit selection plus its server-derived release evidence ID, and
+// the template's production inputs (ports, replicas, oidc, …). The instance
+// name, farosMode, per-component image fields, and farosRedeployRevision are
 // platform-owned and ignored if supplied — name/farosMode are deterministic,
-// images come from the build, and the revision is minted for this promotion.
+// images come from the selected repository commit's Package evidence, and the
+// revision is minted here.
 type projectPromoteRequest struct {
-	Values map[string]any `json:"values,omitempty"`
+	Values    map[string]any `json:"values,omitempty"`
+	CommitSHA *string        `json:"commitSHA,omitempty"`
+	ReleaseID *string        `json:"releaseID,omitempty"`
 }
 
 type projectPromoteResponse struct {
 	Environment     string                       `json:"environment"`
 	Instance        string                       `json:"instance"`
 	RolloutRevision string                       `json:"rolloutRevision"`
+	CommitSHA       string                       `json:"commitSHA,omitempty"`
+	ReleaseID       string                       `json:"releaseID,omitempty"`
 	Components      []projectBuildCheckComponent `json:"components,omitempty"`
 	Project         json.RawMessage              `json:"project,omitempty"`
 }
@@ -569,6 +575,25 @@ func projectRequestedRedeployRevision(binding *aiv1alpha1.ProjectProviderBinding
 // launchable component has a built image (check_project_build == "built"), so
 // production never references an image that was not built.
 func (s *Server) promoteProject(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, httpReq *http.Request, values map[string]any) (*aiv1alpha1.Project, projectPromoteResponse, error) {
+	return s.promoteProjectWithSelection(ctx, c, id, p, httpReq, values, "", false)
+}
+
+// promoteProjectWithSelection is the common promotion path for latest and
+// historical releases. An explicit commit is validated before artifact lookup
+// and bypasses the development dirty-workspace guard: its package digests are
+// immutable evidence independent of the current sandbox contents.
+func (s *Server) promoteProjectWithSelection(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, httpReq *http.Request, values map[string]any, selectedCommitSHA string, commitSelected bool, selectedReleaseIDs ...string) (*aiv1alpha1.Project, projectPromoteResponse, error) {
+	releaseIDEvidenceProvided := len(selectedReleaseIDs) > 0
+	selectedReleaseID := ""
+	if releaseIDEvidenceProvided {
+		selectedReleaseID = strings.TrimSpace(selectedReleaseIDs[0])
+	}
+	if commitSelected && !releaseIDEvidenceProvided {
+		return nil, projectPromoteResponse{}, newValidationError("releaseID is required when selecting a commit; refresh release history and retry")
+	}
+	if releaseIDEvidenceProvided && !commitSelected {
+		return nil, projectPromoteResponse{}, newValidationError("releaseID requires commitSHA")
+	}
 	if p.Spec.Template == nil || strings.TrimSpace(p.Spec.Template.Name) == "" {
 		return nil, projectPromoteResponse{}, newValidationError("project has no template to promote; select a template and build first")
 	}
@@ -578,14 +603,26 @@ func (s *Server) promoteProject(ctx context.Context, c *asclient.Client, id iden
 	// git, and promoting over a dirty workspace would run production on code
 	// the user is no longer looking at. The Project reconciler's commit
 	// convergence clears this on its own once the project is idle.
-	if s.workspaces != nil {
+	if !commitSelected && s.workspaces != nil {
 		if dirty, err := s.workspaces.UncommittedPaths(ctx, projectWorkspaceScope(id, p)); err == nil && len(dirty) > 0 {
 			return nil, projectPromoteResponse{}, newValidationError(fmt.Sprintf(
 				"the workspace has %d uncommitted file(s); commit them (or wait for the automatic sync) and rebuild before promoting", len(dirty)))
 		}
 	}
 
-	check, err := s.checkProjectBuild(ctx, c, id, p)
+	var (
+		check projectBuildCheckResult
+		err   error
+	)
+	if commitSelected {
+		selectedCommitSHA = strings.TrimSpace(selectedCommitSHA)
+		if _, err = projectRepositoryCommitForSHA(ctx, c, projectLinkedRepositoryRef(p), selectedCommitSHA); err != nil {
+			return nil, projectPromoteResponse{}, err
+		}
+		check, err = s.checkProjectBuildAtCommit(ctx, c, p, selectedCommitSHA)
+	} else {
+		check, err = s.checkProjectBuild(ctx, c, id, p)
+	}
 	if err != nil {
 		return nil, projectPromoteResponse{}, err
 	}
@@ -607,9 +644,14 @@ func (s *Server) promoteProject(ctx context.Context, c *asclient.Client, id iden
 	if len(images) == 0 {
 		return nil, projectPromoteResponse{}, newValidationError("no built component images recorded for this project")
 	}
+	releaseID := projectReleaseID(projectLinkedRepositoryRef(p), check.CommitSHA, check.Components)
+	if releaseIDEvidenceProvided && (releaseID == "" || selectedReleaseID != releaseID) {
+		return nil, projectPromoteResponse{}, newValidationError("release evidence is stale or does not match the current immutable package digests; refresh release history and retry")
+	}
 
 	rolloutRevision := newProjectRedeployRevision()
-	binding, err := projectTemplateProdBinding(p, info, images, values, rolloutRevision)
+	promotionValues := projectPromotionValues(p, values)
+	binding, err := projectTemplateProdBinding(p, info, images, promotionValues, rolloutRevision)
 	if err != nil {
 		return nil, projectPromoteResponse{}, err
 	}
@@ -638,9 +680,67 @@ func (s *Server) promoteProject(ctx context.Context, c *asclient.Client, id iden
 		Environment:     projectProductionEnvironmentName,
 		Instance:        projectTemplateProdInstanceName(p),
 		RolloutRevision: rolloutRevision,
+		CommitSHA:       check.CommitSHA,
+		ReleaseID:       releaseID,
 		Components:      check.Components,
 		Project:         raw,
 	}, nil
+}
+
+// projectPromotionValues starts from the current production binding and
+// overlays the caller's optional form values. This keeps re-promotions (and
+// historical release selection) from silently resetting production settings
+// when the request only changes the release commit.
+func projectPromotionValues(p *aiv1alpha1.Project, values map[string]any) map[string]any {
+	base := map[string]any{}
+	if binding := findProjectProductionBinding(p); binding != nil {
+		if existing := projectBindingValues(binding); existing != nil {
+			base = cloneProjectPromotionObject(existing)
+		}
+	}
+	return mergeProjectPromotionObject(base, values)
+}
+
+func cloneProjectPromotionObject(value map[string]any) map[string]any {
+	if value == nil {
+		return map[string]any{}
+	}
+	cloned := make(map[string]any, len(value))
+	for key, item := range value {
+		if object, ok := item.(map[string]any); ok {
+			cloned[key] = cloneProjectPromotionObject(object)
+			continue
+		}
+		if list, ok := item.([]any); ok {
+			clonedList := make([]any, len(list))
+			for i, listItem := range list {
+				if object, ok := listItem.(map[string]any); ok {
+					clonedList[i] = cloneProjectPromotionObject(object)
+				} else {
+					clonedList[i] = listItem
+				}
+			}
+			cloned[key] = clonedList
+			continue
+		}
+		cloned[key] = item
+	}
+	return cloned
+}
+
+func mergeProjectPromotionObject(base, overlay map[string]any) map[string]any {
+	if base == nil {
+		base = map[string]any{}
+	}
+	for key, value := range overlay {
+		if object, ok := value.(map[string]any); ok {
+			prior, _ := base[key].(map[string]any)
+			base[key] = mergeProjectPromotionObject(cloneProjectPromotionObject(prior), object)
+			continue
+		}
+		base[key] = value
+	}
+	return base
 }
 
 // upsertProjectProductionBinding sets the production environment's binding,
@@ -684,7 +784,16 @@ func (s *Server) promoteProjectHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	_, resp, err := s.promoteProject(r.Context(), c, id, p, r, req.Values)
+	commitSelected := req.CommitSHA != nil
+	commitSHA := ""
+	if req.CommitSHA != nil {
+		commitSHA = *req.CommitSHA
+	}
+	var releaseIDs []string
+	if req.ReleaseID != nil {
+		releaseIDs = []string{*req.ReleaseID}
+	}
+	_, resp, err := s.promoteProjectWithSelection(r.Context(), c, id, p, r, req.Values, commitSHA, commitSelected, releaseIDs...)
 	if err != nil {
 		writeProjectPromoteError(w, err)
 		return

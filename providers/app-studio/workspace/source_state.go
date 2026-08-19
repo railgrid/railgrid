@@ -72,6 +72,14 @@ func (s *FileStore) AddUncommittedPaths(ctx context.Context, scope Scope, paths 
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
 
+	return s.addUncommittedPaths(ctx, scope, paths)
+}
+
+// addUncommittedPaths is the lock-free implementation used by callers that
+// already hold mutationMu. Keeping the source-state update in the same
+// critical section as a whole-tree replacement prevents a concurrent commit
+// from observing only part of the restored path set.
+func (s *FileStore) addUncommittedPaths(ctx context.Context, scope Scope, paths []string) ([]string, error) {
 	current, err := s.uncommittedPaths(ctx, scope)
 	if err != nil {
 		return nil, err

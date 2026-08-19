@@ -388,14 +388,19 @@ $(GOLANGCI_LINT):
 
 # --- Dev environment ---
 
-certs: certs/apiserver.crt
-
-certs/apiserver.crt:
+.PHONY: certs
+certs:
 	@mkdir -p certs
+	@if [ -s certs/apiserver.crt ] && [ -s certs/apiserver.key ] && \
+		openssl x509 -in certs/apiserver.crt -noout -checkend 86400 >/dev/null 2>&1 && \
+		openssl x509 -in certs/apiserver.crt -noout \
+			-checkhost console.127.0.0.1.sslip.io >/dev/null 2>&1; then \
+		exit 0; \
+	fi; \
 	openssl req -x509 -newkey rsa:2048 -nodes \
 		-keyout certs/apiserver.key -out certs/apiserver.crt \
 		-days 365 -subj "/CN=localhost" \
-		-addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+		-addext "subjectAltName=DNS:localhost,DNS:*.127.0.0.1.sslip.io,IP:127.0.0.1"
 
 dev-setup: certs
 
@@ -2186,13 +2191,87 @@ KRO_CHART_VERSION ?= 0.9.3
 KRO_NAMESPACE ?= kro-system
 KRO_SEED_DIR ?= providers/infrastructure/examples/rgds
 
+# --- Local application-preview Gateway --------------------------------------
+# The base Tiltfile uses the faros-kro kind cluster for application-template
+# runtimes. Keep the Envoy Gateway install separate from the kro release so it
+# can be reconciled independently and so `dev-kro-down` remains the one command
+# that owns cluster teardown.
+ENVOY_GATEWAY_CHART ?= oci://docker.io/envoyproxy/gateway-helm
+# Gateway API CRDs are pinned to v1.5.1 below. Envoy Gateway v1.8.3 is the
+# matching upstream release line for the Kubernetes 1.33 kind cluster.
+ENVOY_GATEWAY_VERSION ?= v1.8.3
+ENVOY_GATEWAY_RELEASE ?= envoy-gateway
+ENVOY_GATEWAY_CRDS_CHART ?= oci://docker.io/envoyproxy/gateway-crds-helm
+PREVIEW_GATEWAY_KUBECONFIG ?= $(KRO_KIND_KUBECONFIG)
+PREVIEW_GATEWAY_CONTEXT ?= kind-$(KRO_KIND_NAME)
+PREVIEW_GATEWAY_NAMESPACE ?= envoy-gateway-system
+PREVIEW_GATEWAY_NAME ?= app-studio-preview
+PREVIEW_GATEWAY_CLASS ?= eg
+PREVIEW_GATEWAY_CONTROLLER ?= gateway.envoyproxy.io/gatewayclass-controller
+PREVIEW_GATEWAY_PROXY_CONFIG ?= app-studio-preview-proxy
+PREVIEW_GATEWAY_HOSTNAME ?= *.apps.127.0.0.1.sslip.io
+PREVIEW_GATEWAY_LISTENER_NAME ?= https
+PREVIEW_GATEWAY_TLS_SECRET ?= app-studio-preview-tls
+PREVIEW_GATEWAY_PORT ?= 10443
+PREVIEW_GATEWAY_STATE_DIR ?= $(KCP_DATA_DIR)/tilt-preview-gateway-tls
+PREVIEW_GATEWAY_TIMEOUT ?= 5m
+PREVIEW_GATEWAY_UNINSTALL ?= false
+PREVIEW_GATEWAY_SCRIPT ?= hack/scripts/configure-tilt-preview-gateway.sh
+
+.PHONY: dev-preview-gateway-up dev-preview-gateway-down
+
+dev-preview-gateway-up: ## Install Envoy Gateway + local HTTPS parent for app previews
+	@test -f "$(PREVIEW_GATEWAY_KUBECONFIG)" || { \
+		echo "no kubeconfig at $(PREVIEW_GATEWAY_KUBECONFIG); run 'make dev-kro-up' first"; \
+		exit 1; \
+	}
+	@test -x "$(PREVIEW_GATEWAY_SCRIPT)" || { \
+		echo "preview Gateway helper is not executable: $(PREVIEW_GATEWAY_SCRIPT)"; \
+		exit 1; \
+	}
+	KUBECONFIG="$(PREVIEW_GATEWAY_KUBECONFIG)" \
+	PREVIEW_GATEWAY_CONTEXT="$(PREVIEW_GATEWAY_CONTEXT)" \
+	ENVOY_GATEWAY_CHART="$(ENVOY_GATEWAY_CHART)" \
+	ENVOY_GATEWAY_CRDS_CHART="$(ENVOY_GATEWAY_CRDS_CHART)" \
+	ENVOY_GATEWAY_VERSION="$(ENVOY_GATEWAY_VERSION)" \
+	ENVOY_GATEWAY_RELEASE="$(ENVOY_GATEWAY_RELEASE)" \
+	PREVIEW_GATEWAY_NAMESPACE="$(PREVIEW_GATEWAY_NAMESPACE)" \
+	PREVIEW_GATEWAY_NAME="$(PREVIEW_GATEWAY_NAME)" \
+	PREVIEW_GATEWAY_CLASS="$(PREVIEW_GATEWAY_CLASS)" \
+	PREVIEW_GATEWAY_CONTROLLER="$(PREVIEW_GATEWAY_CONTROLLER)" \
+	PREVIEW_GATEWAY_PROXY_CONFIG="$(PREVIEW_GATEWAY_PROXY_CONFIG)" \
+	PREVIEW_GATEWAY_HOSTNAME="$(PREVIEW_GATEWAY_HOSTNAME)" \
+	PREVIEW_GATEWAY_LISTENER_NAME="$(PREVIEW_GATEWAY_LISTENER_NAME)" \
+	PREVIEW_GATEWAY_TLS_SECRET="$(PREVIEW_GATEWAY_TLS_SECRET)" \
+	PREVIEW_GATEWAY_PORT="$(PREVIEW_GATEWAY_PORT)" \
+	PREVIEW_GATEWAY_STATE_DIR="$(PREVIEW_GATEWAY_STATE_DIR)" \
+	PREVIEW_GATEWAY_TIMEOUT="$(PREVIEW_GATEWAY_TIMEOUT)" \
+		"$(PREVIEW_GATEWAY_SCRIPT)" apply
+
+dev-preview-gateway-down: ## Remove the local preview Gateway and Secret (keep controller by default)
+	@test -x "$(PREVIEW_GATEWAY_SCRIPT)" || { \
+		echo "preview Gateway helper is not executable: $(PREVIEW_GATEWAY_SCRIPT)"; \
+		exit 1; \
+	}
+	KUBECONFIG="$(PREVIEW_GATEWAY_KUBECONFIG)" \
+	PREVIEW_GATEWAY_CONTEXT="$(PREVIEW_GATEWAY_CONTEXT)" \
+	PREVIEW_GATEWAY_RELEASE="$(ENVOY_GATEWAY_RELEASE)" \
+	PREVIEW_GATEWAY_NAMESPACE="$(PREVIEW_GATEWAY_NAMESPACE)" \
+	PREVIEW_GATEWAY_NAME="$(PREVIEW_GATEWAY_NAME)" \
+	PREVIEW_GATEWAY_PROXY_CONFIG="$(PREVIEW_GATEWAY_PROXY_CONFIG)" \
+	PREVIEW_GATEWAY_TLS_SECRET="$(PREVIEW_GATEWAY_TLS_SECRET)" \
+	PREVIEW_GATEWAY_STATE_DIR="$(PREVIEW_GATEWAY_STATE_DIR)" \
+	PREVIEW_GATEWAY_UNINSTALL="$(PREVIEW_GATEWAY_UNINSTALL)" \
+		"$(PREVIEW_GATEWAY_SCRIPT)" cleanup
+
 # --- Infrastructure template e2e (RGD acceptance against a real kro) ---
 # A throwaway kind cluster running STANDALONE kro (no kcp) — enough to validate
 # that every seeded Template authors a kro graph kro accepts. See
 # providers/infrastructure/backend/kro/e2e_test.go.
 E2E_KRO_KIND_NAME ?= faros-kro-e2e
 E2E_KRO_KUBECONFIG ?= $(CURDIR)/.faros-kro-e2e.kubeconfig
-GATEWAY_API_VERSION ?= v1.2.1
+# Envoy Gateway v1.8.x supports Gateway API v1.5.1 on Kubernetes 1.32–1.35.
+GATEWAY_API_VERSION ?= v1.5.1
 
 ## Bring up the management kro cluster + install upstream kro. Idempotent:
 ## re-running just helm-upgrades the chart (with an explicit CRD apply —

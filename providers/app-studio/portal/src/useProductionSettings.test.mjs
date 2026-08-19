@@ -71,3 +71,18 @@ test('centralizes promotion validity and busy-state presentation', () => {
   assert.equal(state.promoteButtonLabel.value, 'Deploying…')
   assert.equal(state.promotionDisabledReason.value, 'Promotion is in progress.')
 })
+
+test('marks cached production evidence stale and disables deployment after a status error', () => {
+  const { input, state } = setup()
+  input.promotion.value = readiness({
+    build: { status: 'built', commitSHA: 'release123', note: '', components: [] },
+    production: { phase: 'Ready' },
+  })
+  input.promotionError.value = 'Registry status request failed.'
+
+  assert.deepEqual(state.productionOverview.value, { label: 'Status unavailable', tone: 'warning' })
+  assert.match(state.productionOverviewDescription.value, /Previously loaded details may be stale/)
+  assert.equal(state.releasePipeline.value.state, 'unavailable')
+  assert.equal(state.canPromote.value, false)
+  assert.match(state.promotionDisabledReason.value, /Check again before deploying/)
+})

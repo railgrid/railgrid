@@ -1,4 +1,4 @@
-export type WorkbenchBuiltInTab = 'preview' | 'code' | 'review' | 'providers' | 'integrations' | 'settings' | 'skills' | 'threads' | 'launcher'
+export type WorkbenchBuiltInTab = 'preview' | 'code' | 'review' | 'providers' | 'integrations' | 'publishing' | 'history' | 'settings' | 'skills' | 'threads' | 'launcher'
 export type WorkbenchTabKind = WorkbenchBuiltInTab | 'provider'
 
 export interface WorkbenchProviderToolRef {
@@ -58,11 +58,25 @@ const builtInTabs: Record<WorkbenchBuiltInTab, WorkbenchTabDescriptor> = {
     title: 'Integrations',
     closeable: true,
   },
+  publishing: {
+    id: 'publishing',
+    kind: 'publishing',
+    title: 'Publishing',
+    subtitle: 'Deploy and share this app',
+    closeable: true,
+  },
+  history: {
+    id: 'history',
+    kind: 'history',
+    title: 'History',
+    subtitle: 'Restore project files from an earlier Git commit',
+    closeable: true,
+  },
   settings: {
     id: 'settings',
     kind: 'settings',
     title: 'Project Settings',
-    subtitle: 'Manage project details, production, and model configuration',
+    subtitle: 'Manage project details and model configuration',
     closeable: true,
   },
   skills: {
@@ -139,6 +153,20 @@ export function openWorkbenchProviderTool(state: WorkbenchState, tool: Workbench
   return upsertWorkbenchTab(state, canonicalWorkbenchProviderTab(tool), true)
 }
 
+export function selectWorkbenchLauncherBuiltInTab(state: WorkbenchState, kind: WorkbenchBuiltInTab): WorkbenchState {
+  return replaceActiveWorkbenchLauncher(state, canonicalWorkbenchBuiltInTab(kind))
+}
+
+export function selectWorkbenchLauncherProviderTool(state: WorkbenchState, tool: WorkbenchProviderToolRef): WorkbenchState {
+  return replaceActiveWorkbenchLauncher(state, canonicalWorkbenchProviderTab(tool))
+}
+
+export function selectExistingWorkbenchTabFromLauncher(state: WorkbenchState, tabID: string): WorkbenchState {
+  const tab = state.tabs.find((item) => item.id === tabID)
+  if (!tab) return normalizeWorkbenchState(state)
+  return replaceActiveWorkbenchLauncher(state, tab)
+}
+
 export function activateWorkbenchTab(state: WorkbenchState, tabID: string): WorkbenchState {
   if (!state.tabs.some((tab) => tab.id === tabID)) return normalizeWorkbenchState(state)
   return { ...state, activeTabID: tabID }
@@ -203,6 +231,23 @@ function upsertWorkbenchTab(state: WorkbenchState, tab: WorkbenchTabDescriptor, 
     tabs,
     activeTabID: activate ? tab.id : state.activeTabID,
   })
+}
+
+function replaceActiveWorkbenchLauncher(state: WorkbenchState, tab: WorkbenchTabDescriptor): WorkbenchState {
+  const launcherIndex = state.tabs.findIndex((item) => item.id === state.activeTabID && item.kind === 'launcher')
+  if (launcherIndex < 0) return upsertWorkbenchTab(state, tab, true)
+
+  const existingTargetIndex = state.tabs.findIndex((item) => item.id === tab.id)
+  if (existingTargetIndex >= 0 && existingTargetIndex !== launcherIndex) {
+    return normalizeWorkbenchState({
+      tabs: state.tabs.filter((_, index) => index !== launcherIndex),
+      activeTabID: tab.id,
+    })
+  }
+
+  const tabs = [...state.tabs]
+  tabs.splice(launcherIndex, 1, tab)
+  return normalizeWorkbenchState({ tabs, activeTabID: tab.id })
 }
 
 function normalizeWorkbenchState(state: WorkbenchState): WorkbenchState {

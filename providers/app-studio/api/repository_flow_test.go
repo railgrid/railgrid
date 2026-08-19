@@ -2379,6 +2379,9 @@ func TestProjectRepositoryViewPreservesCommitListFailure(t *testing.T) {
 	if !errors.Is(view.commitsErr, wantErr) {
 		t.Fatalf("commitsErr = %v, want %v", view.commitsErr, wantErr)
 	}
+	if view.CommitsError == "" {
+		t.Fatal("commit-list failure is not exposed to the History UI")
+	}
 	cp := (&Server{}).checkpointCI(view, projectCheckpointStateDone)
 	if cp.State != projectCheckpointStateError || cp.Reason != "Could not read repository commit history." {
 		t.Fatalf("checkpoint = %#v, want commit-history error", cp)

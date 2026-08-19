@@ -18,6 +18,9 @@ const {
   openWorkbenchBuiltInTab,
   openWorkbenchProviderTool,
   reorderWorkbenchTab,
+  selectExistingWorkbenchTabFromLauncher,
+  selectWorkbenchLauncherBuiltInTab,
+  selectWorkbenchLauncherProviderTool,
 } = await import(moduleURL)
 
 const connectionsTool = {
@@ -49,6 +52,29 @@ test('opens the launcher from the plus nub without duplicating it', () => {
   assert.deepEqual(closedLauncher.tabs.map((tab) => tab.id), ['preview'])
   assert.equal(activatedAgain.activeTabID, 'launcher')
   assert.equal(activatedAgain.tabs.filter((tab) => tab.id === 'launcher').length, 1)
+})
+
+test('replaces the active launcher with a selected built-in tab', () => {
+  const selected = selectWorkbenchLauncherBuiltInTab(createDefaultWorkbenchState(), 'providers')
+
+  assert.deepEqual(selected.tabs.map((tab) => tab.id), ['preview', 'providers'])
+  assert.equal(selected.activeTabID, 'providers')
+  assert.equal(selected.tabs.some((tab) => tab.kind === 'launcher'), false)
+})
+
+test('replaces the active launcher with a selected provider tool', () => {
+  const selected = selectWorkbenchLauncherProviderTool(createDefaultWorkbenchState(), connectionsTool)
+
+  assert.deepEqual(selected.tabs.map((tab) => tab.id), ['preview', 'provider:code/connections'])
+  assert.equal(selected.activeTabID, 'provider:code/connections')
+  assert.equal(selected.tabs.some((tab) => tab.kind === 'launcher'), false)
+})
+
+test('consumes the active launcher when selecting an already-open tab', () => {
+  const selected = selectExistingWorkbenchTabFromLauncher(createDefaultWorkbenchState(), 'preview')
+
+  assert.deepEqual(selected.tabs.map((tab) => tab.id), ['preview'])
+  assert.equal(selected.activeTabID, 'preview')
 })
 
 test('opens a provider tool as a closeable active tab without duplicating it', () => {
@@ -97,7 +123,31 @@ test('opens project settings as a closeable built-in tab', () => {
     id: 'settings',
     kind: 'settings',
     title: 'Project Settings',
-    subtitle: 'Manage project details, production, and model configuration',
+    subtitle: 'Manage project details and model configuration',
+    closeable: true,
+  })
+})
+
+test('opens publishing as a closeable built-in tab', () => {
+  const publishing = openWorkbenchBuiltInTab(createDefaultWorkbenchState(), 'publishing')
+  assert.equal(publishing.activeTabID, 'publishing')
+  assert.deepEqual(publishing.tabs.find((tab) => tab.id === 'publishing'), {
+    id: 'publishing',
+    kind: 'publishing',
+    title: 'Publishing',
+    subtitle: 'Deploy and share this app',
+    closeable: true,
+  })
+})
+
+test('opens history as a closeable built-in tab', () => {
+  const history = openWorkbenchBuiltInTab(createDefaultWorkbenchState(), 'history')
+  assert.equal(history.activeTabID, 'history')
+  assert.deepEqual(history.tabs.find((tab) => tab.id === 'history'), {
+    id: 'history',
+    kind: 'history',
+    title: 'History',
+    subtitle: 'Restore project files from an earlier Git commit',
     closeable: true,
   })
 })

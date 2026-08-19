@@ -57,6 +57,8 @@ const builtInKinds: ReadonlySet<WorkbenchBuiltInTab> = new Set([
   'review',
   'providers',
   'integrations',
+  'publishing',
+  'history',
   'settings',
   'skills',
   'threads',
@@ -173,7 +175,11 @@ export function parseWorkbenchPersistence(raw: string | null): WorkbenchPersiste
     for (const item of value.tabs) {
       if (!isRecord(item) || typeof item.kind !== 'string') return null
       let tab: WorkbenchPersistedTab
-      if (builtInKinds.has(item.kind as WorkbenchBuiltInTab)) {
+      if (item.kind === 'deployments') {
+        // Deployments was the pre-History production rollback surface. Keep
+        // project layouts stable while moving the tab to source restoration.
+        tab = { kind: 'history' }
+      } else if (builtInKinds.has(item.kind as WorkbenchBuiltInTab)) {
         tab = { kind: item.kind as WorkbenchBuiltInTab }
       } else if (
         item.kind === 'provider' &&
@@ -192,7 +198,7 @@ export function parseWorkbenchPersistence(raw: string | null): WorkbenchPersiste
     }
 
     const activeTabID = typeof value.activeTabID === 'string' && value.activeTabID.length <= MAX_WORKBENCH_ID_LENGTH
-      ? value.activeTabID
+      ? value.activeTabID === 'deployments' ? 'history' : value.activeTabID
       : ''
     return { version: WORKBENCH_PERSISTENCE_VERSION, tabs, activeTabID }
   } catch {
