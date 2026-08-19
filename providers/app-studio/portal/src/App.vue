@@ -3,13 +3,13 @@ import MarkdownIt from 'markdown-it'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import {
   AppWindow,
-  ArrowLeft,
   ArrowRight,
   ArrowUp,
   BarChart3,
   Braces,
   Check,
   ClipboardList,
+  Cpu,
   FileCode,
   ChevronRight,
   ExternalLink,
@@ -17,6 +17,7 @@ import {
   GitBranch,
   Globe,
   GripVertical,
+  LayoutTemplate,
   Link2,
   Loader2,
   Lock,
@@ -100,8 +101,20 @@ import ThreadsWorkbench from './ThreadsWorkbench.vue'
 import ProjectShareDialog from './ProjectShareDialog.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
 import ResponseModePicker, { type AssistantResponseMode } from './ResponseModePicker.vue'
+import ModelPicker from './ModelPicker.vue'
 import AssistantRichComposer from './AssistantRichComposer.vue'
+import AssistantMessageQueue from './AssistantMessageQueue.vue'
 import AssistantMessageAnnotations from './AssistantMessageAnnotations.vue'
+import {
+  ASSISTANT_MESSAGE_QUEUE_MAX_ITEMS,
+  assistantMessageQueueStorageKey,
+  readAssistantQueueingEnabled,
+  readAssistantMessageQueue,
+  writeAssistantQueueingEnabled,
+  writeAssistantMessageQueue,
+  type AssistantMessageQueueScope,
+  type QueuedAssistantMessage,
+} from './assistantMessageQueue'
 import {
   MAX_ASSISTANT_COMPOSER_PARTS,
   projectAssistantComposerParts,
@@ -110,7 +123,6 @@ import {
   type AssistantComposerState,
 } from './assistantCommandPalette'
 import { assistantResourceSelectionKey } from './assistantResources'
-import PreviewActionsMenu from './PreviewActionsMenu.vue'
 import {
   publishingAccessSelection,
   shouldPollPublishing,
@@ -125,6 +137,7 @@ import {
   assistantRunExpectedServerContent,
   assistantRunMatchesStartRequest,
   assistantRunCanImplementPlan,
+  assistantComposerStopControlState,
   assistantRunRequiresLiveControls,
   assistantRunTerminal,
   firstProjectStartPlan,
@@ -146,6 +159,7 @@ import {
 import StatusBadge from './portalkit/StatusBadge.vue'
 import ReleasePipeline from './ReleasePipeline.vue'
 import ProjectHistory from './ProjectHistory.vue'
+import ModelsSettings from './ModelsSettings.vue'
 import ProductionForm from './ProductionForm.vue'
 import ProductionSettingsLoadingShell from './ProductionSettingsLoadingShell.vue'
 import { productionFormValuesFromSchema, type ProductionFormValues } from './productionForm'
@@ -257,6 +271,12 @@ interface ProjectRequestGuard {
   contextFingerprint: string
 }
 
+interface ProjectThumbnailRequestGuard {
+  serial: number
+  contextFingerprint: string
+  ctx: FarosContext | null
+}
+
 function appContextFingerprint(ctx: FarosContext | null): string {
   return JSON.stringify([
     ctx?.token ?? '',
@@ -304,6 +324,20 @@ function assistantAnnotationDraftScope(
   projectName = selected.value?.name ?? '',
   threadID = activeAssistantThreadID.value,
 ): AssistantAnnotationDraftScope {
+  return {
+    tenant: props.ctx?.tenant ?? '',
+    orgUUID: props.ctx?.orgUUID ?? '',
+    workspaceUUID: props.ctx?.workspaceUUID ?? '',
+    user: props.ctx?.user?.userId || props.ctx?.user?.sub || props.ctx?.user?.email || '',
+    project: projectName,
+    thread: threadID,
+  }
+}
+
+function assistantMessageQueueScope(
+  projectName = selected.value?.name ?? '',
+  threadID = activeAssistantThreadID.value,
+): AssistantMessageQueueScope {
   return {
     tenant: props.ctx?.tenant ?? '',
     orgUUID: props.ctx?.orgUUID ?? '',
@@ -388,6 +422,7 @@ const GOOGLE_CLOUD_DEFAULT_MODEL = 'google/gemini-3.5-flash'
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com'
 const GOOGLE_CLOUD_BASE_URL = 'https://aiplatform.googleapis.com'
 const CREATE_PROJECT_ROUTE = '~new'
+const MODELS_ROUTE = '~models'
 const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
 const CODE_CONNECTIONS_URL = '/ui/providers/code/connections'
 const PUBLISHING_DOMAIN_SUFFIX = '.faros.app'
@@ -487,6 +522,10 @@ const assistantMarkdownClass = [
 ].join(' ')
 
 const projects = ref<Project[]>([])
+const projectThumbnailURLs = ref<Record<string, string>>({})
+const projectThumbnailRevisions = new Map<string, string>()
+let projectThumbnailRefreshTimer: number | undefined
+let projectThumbnailLoadSerial = 0
 const providers = ref<ProviderItem[]>([])
 const selected = ref<Project | null>(null)
 const messages = ref<ProjectMessageView[]>([])
@@ -548,6 +587,13 @@ const conversationRefreshing = ref(false)
 const providersLoading = ref(false)
 const busy = ref(false)
 const messageStreaming = ref(false)
+const queuedAssistantMessages = ref<QueuedAssistantMessage[]>([])
+const queuedAssistantSteeringID = ref('')
+const queuedAssistantDeliveryBusy = ref(false)
+const assistantQueueingEnabled = ref(true)
+const assistantStopRequestedRunID = ref('')
+const assistantPendingStartStopRequested = ref(false)
+const assistantStopError = ref<string | null>(null)
 const initializing = ref(false)
 const initializingMessage = ref('App Studio is preparing this workspace...')
 const error = ref<string | null>(null)
@@ -690,7 +736,8 @@ const developmentTemplatesLoading = ref(false)
 const developmentTemplatesError = ref<string | null>(null)
 let developmentTemplatesLoadSerial = 0
 const developmentTemplateBusy = ref(false)
-const developmentHydrateBusy = ref(false)
+const developmentTemplateStatus = ref<string | null>(null)
+const developmentTemplateError = ref<string | null>(null)
 const workbench = ref(createDefaultWorkbenchState())
 let workbenchHydrationScopeKey: string | null = null
 let workbenchHydrationProject = ''
@@ -703,6 +750,9 @@ const draggedWorkbenchTabID = ref<string | null>(null)
 const dragOverWorkbenchTabID = ref<string | null>(null)
 const dragOverWorkbenchTabPlacement = ref<WorkbenchTabDropPlacement>('before')
 const llmSettings = ref<ProjectLLMSettings | null>(null)
+const llmName = ref('')
+const llmEditingModelID = ref<string | null>(null)
+const selectedLLMModelID = ref('')
 const llmProvider = ref(OPENAI_COMPATIBLE_PROVIDER)
 const llmBaseURL = ref('https://api.openai.com/v1')
 const llmModel = ref(OPENAI_DEFAULT_MODEL)
@@ -710,6 +760,8 @@ const llmApiKey = ref('')
 const llmCredentialMode = ref<LLMCredentialMode>('api-key')
 const llmSaving = ref(false)
 const llmStatus = ref<string | null>(null)
+const llmActionError = ref<string | null>(null)
+const llmEditorOpen = ref(false)
 const llmSettingsLoading = ref(false)
 const llmSettingsError = ref<string | null>(null)
 let llmSettingsLoadSerial = 0
@@ -762,6 +814,11 @@ const previewConsoleController = new PreviewConsoleController({
 })
 let activeAssistantSubscription: AbortController | null = null
 let activeAssistantRun: AssistantRun | null = null
+const activeAssistantRunRevision = ref(0)
+function setActiveAssistantRun(run: AssistantRun | null) {
+  activeAssistantRun = run
+  activeAssistantRunRevision.value += 1
+}
 let activeAssistantProject = ''
 let activeAssistantThreadSequence = 0
 let pendingMessageSubmission: { fingerprint: string; clientRequestID: string } | null = null
@@ -800,6 +857,7 @@ function invalidateProjectContextState() {
   historyLoadSerial += 1
 
   clearInitializationRetry()
+  clearProjectThumbnailURLs()
   clearPromotionPoll()
   clearPublishingPoll()
   clearDevelopmentPreviewAuthorizationRetry()
@@ -813,11 +871,18 @@ function invalidateProjectContextState() {
   for (const runID of Object.keys(pendingAssistantStopRequestIDs)) delete pendingAssistantStopRequestIDs[runID]
 
   activeProjectContextFingerprint = ''
-  activeAssistantRun = null
+  setActiveAssistantRun(null)
   activeAssistantProject = ''
   activeAssistantThreadID.value = ''
   activeAssistantThreadSequence = 0
   messageStreaming.value = false
+  queuedAssistantMessages.value = []
+  queuedAssistantSteeringID.value = ''
+  queuedAssistantDeliveryBusy.value = false
+  assistantQueueingEnabled.value = true
+  assistantStopRequestedRunID.value = ''
+  assistantPendingStartStopRequested.value = false
+  assistantStopError.value = null
   conversationConnectionState.value = 'idle'
   conversationRefreshing.value = false
   conversationStatus.value = ''
@@ -865,8 +930,12 @@ function invalidateProjectContextState() {
   developmentPreviewAuthorizationKey.value = ''
   resetDevelopmentPreviewDocumentState()
   developmentTemplateBusy.value = false
-  developmentHydrateBusy.value = false
+  developmentTemplateStatus.value = null
+  developmentTemplateError.value = null
   llmSaving.value = false
+  llmEditorOpen.value = false
+  llmEditingModelID.value = null
+  selectedLLMModelID.value = ''
   providersLoading.value = false
   createReadinessLoading.value = false
   importRepositoriesLoading.value = false
@@ -917,6 +986,7 @@ function invalidateProjectContextState() {
   llmSettings.value = null
   llmSettingsError.value = null
   llmStatus.value = null
+  llmActionError.value = null
   resetWorkbench()
 }
 
@@ -1026,7 +1096,7 @@ function rebindAssistantRunFromThreadItems(items: ProjectAssistantThreadItem[], 
   }
   const applied = applyAssistantSnapshot({ run: nextRun, message }, projectName, 'stream')
   if (!applied.accepted || !applied.current) return false
-  if (assistantRunRequiresLiveControls(applied.current)) assistantRunController.start(applied.current.id, applied.current.revision)
+  if (assistantRunRequiresLiveControls(applied.current)) startAssistantRunController(applied.current)
   return true
 }
 
@@ -1059,7 +1129,7 @@ const assistantRunController = new ConversationRunController({
     if (!activeAssistantThreadID.value) throw new Error('active assistant thread is missing')
     const response = await api.interruptAssistantTurn(props.ctx, projectName, activeAssistantThreadID.value, runID, clientRequestID)
     if (response.status === 'stopping' && activeAssistantRun?.id === runID) {
-      activeAssistantRun = { ...activeAssistantRun, status: 'stopping' }
+      setActiveAssistantRun({ ...activeAssistantRun, status: 'stopping' })
       messageStreaming.value = true
       return
     }
@@ -1067,20 +1137,30 @@ const assistantRunController = new ConversationRunController({
       const message = messages.value.find((item) => item.id === activeAssistantRun?.activeMessageID)
       if (message) applyAssistantSnapshot(abortedConversationSnapshot({ run: activeAssistantRun, message }), projectName)
       else {
-        activeAssistantRun = { ...activeAssistantRun, status: 'interrupted', revision: activeAssistantRun.revision + 1 }
+        setActiveAssistantRun({ ...activeAssistantRun, status: 'interrupted', revision: activeAssistantRun.revision + 1 })
         messageStreaming.value = false
         conversationStatus.value = ''
       }
     }
   },
-  recover: async () => {
+  recover: async (runID) => {
     const projectName = selected.value?.name
-    if (!projectName) return
+    if (!projectName) return true
     await recoverAssistantConversation(projectName)
+    return activeAssistantRun?.id !== runID || assistantRunTerminal(activeAssistantRun.status) || !messageStreaming.value
   },
   setTimeout: (fn, delay) => window.setTimeout(fn, delay),
   clearTimeout: (timer) => window.clearTimeout(timer),
 })
+
+function startAssistantRunController(run: AssistantRun) {
+  assistantRunController.start(run.id, run.revision)
+  if (!assistantPendingStartStopRequested.value) return
+  // Preserve one continuous disabled Stop control while promoting a click
+  // made before start completed into the canonical run-scoped interrupt.
+  assistantPendingStartStopRequested.value = false
+  cancelMessageStream()
+}
 
 function handleAssistantConnectionState(state: ConversationConnectionState) {
   conversationConnectionState.value = state
@@ -1103,8 +1183,10 @@ const routeSegment = computed(() => {
 })
 const isProjectIndexRoute = computed(() => routeSegment.value === '')
 const isCreateRoute = computed(() => routeSegment.value === CREATE_PROJECT_ROUTE)
-const selectedNameFromPath = computed(() => (isCreateRoute.value ? '' : routeSegment.value))
-const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCreateRoute.value)
+const isModelsRoute = computed(() => routeSegment.value === MODELS_ROUTE)
+const selectedNameFromPath = computed(() => (isCreateRoute.value || isModelsRoute.value ? '' : routeSegment.value))
+const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCreateRoute.value || isModelsRoute.value)
+const modelsReturnRoute = ref('')
 const projectRouteLoading = computed(() => Boolean(
   projectOpenLoading.value ||
   (
@@ -1123,15 +1205,38 @@ const projectRouteFailure = computed(() => Boolean(
 const projectRouteShellVisible = computed(() => projectRouteLoading.value || projectRouteFailure.value)
 const conversationLoading = computed(() => projectRouteLoading.value || threadHistoryLoading.value || !!selectingThreadID.value)
 const conversationInteractionBusy = computed(() => conversationLoading.value || conversationRefreshing.value || projectRouteFailure.value)
-const isBuilderVisible = computed(() => !isAppStudioLandingRoute.value || selected.value !== null)
+const isBuilderVisible = computed(() =>
+  !isAppStudioLandingRoute.value || (!isModelsRoute.value && selected.value !== null),
+)
 const showNewProjectComposer = computed(() => isCreateRoute.value)
 const chatPaneStyle = computed(() => ({ flexBasis: `${splitWidth.value}%` }))
 const assistantResumeBusy = computed(() => Object.keys(permissionBusy.value).length > 0 || Object.keys(followUpBusy.value).length > 0)
-const llmConfigured = computed(() => llmSettings.value?.configured ?? false)
-const canStartProjectFromPrompt = computed(() => !createSetupLoading.value && canSubmitCreatePrompt(prompt.value, createReadiness.value) && llmConfigured.value)
+// This latch deliberately does not depend on activeAssistantRun. Durable
+// reconciliation may replace or clear that object while an interrupt request
+// is still in flight; tying the latch to it makes the primary action briefly
+// fall back to Send and then return to Stop.
+const assistantStopRequested = computed(() => Boolean(assistantStopRequestedRunID.value) || assistantPendingStartStopRequested.value)
+const assistantComposerStopControl = computed(() => assistantComposerStopControlState({
+  // activeAssistantRun is intentionally kept outside Vue proxying because it
+  // is also the controller's mutable durable snapshot. Its revision makes
+  // every replacement observable to this UI state boundary.
+  activeRunRevision: activeAssistantRunRevision.value,
+  stopRequested: assistantStopRequested.value,
+  messageStreaming: messageStreaming.value,
+  activeRunID: activeAssistantRun?.id,
+  activeRunStatus: activeAssistantRun?.status,
+  prompt: prompt.value,
+}))
+const assistantComposerShowsStop = computed(() => assistantComposerStopControl.value.visible)
+const assistantComposerStopDisabled = computed(() => assistantComposerStopControl.value.disabled)
+const configuredLLMModels = computed(() => (llmSettings.value?.models ?? []).filter((model) => model.configured))
+const selectedLLMModel = computed(() => configuredLLMModels.value.find((model) => model.id === selectedLLMModelID.value) ?? configuredLLMModels.value[0])
+const llmConfigured = computed(() => configuredLLMModels.value.length > 0)
+const canStartProjectFromPrompt = computed(() => !createSetupLoading.value && canSubmitCreatePrompt(prompt.value, createReadiness.value) && (llmSettings.value?.configured ?? false))
 const assistantComposerHasChipContent = computed(() => assistantComposerParts.value.some((part) => part.type !== 'text'))
 const canSendPrompt = computed(() =>
-  (llmSettings.value?.configured ?? false) &&
+  llmConfigured.value &&
+  !assistantStopRequested.value &&
   (prompt.value.trim().length > 0 || (!messageStreaming.value && assistantComposerHasChipContent.value)) &&
   (!messageStreaming.value || activeAssistantRun?.status === 'running') &&
   !assistantResumeBusy.value &&
@@ -1142,7 +1247,7 @@ const canSendPrompt = computed(() =>
 )
 const threadActionsDisabled = computed(() => conversationInteractionBusy.value || messageStreaming.value || busy.value || threadMutationBusy.value)
 const settingsProject = computed(() => (isAppStudioLandingRoute.value ? null : selected.value))
-const settingsTitle = computed(() => (settingsProject.value ? 'Project settings' : 'LLM settings'))
+const settingsTitle = computed(() => (settingsProject.value ? 'Project settings' : 'Models'))
 const settingsDescription = computed(() =>
   settingsProject.value
     ? 'Update this project and manage its development preview access.'
@@ -1173,8 +1278,8 @@ watch(activePlanMessage, (current, previous) => {
   lastPlanAnnouncementKey = ''
 })
 const conversationWorkingLabel = computed(() => {
+  if (assistantStopRequested.value || activeAssistantRun?.status === 'stopping') return 'Stopping…'
   if (conversationConnectionState.value === 'reconnecting') return 'Reconnecting'
-  if (activeAssistantRun?.status === 'stopping') return 'Stopping'
   if (activeAssistantRun?.status === 'pending_permission') return 'Waiting for approval'
   if (activeAssistantRun?.status === 'pending_input') return 'Waiting for your answer'
   if (activePlanMessage.value) return 'Running'
@@ -1333,6 +1438,93 @@ const filteredProjects = computed(() => {
   )
 })
 
+function clearProjectThumbnailRefreshTimer() {
+  if (projectThumbnailRefreshTimer === undefined) return
+  window.clearTimeout(projectThumbnailRefreshTimer)
+  projectThumbnailRefreshTimer = undefined
+}
+
+function clearProjectThumbnailURLs() {
+  projectThumbnailLoadSerial += 1
+  clearProjectThumbnailRefreshTimer()
+  for (const url of Object.values(projectThumbnailURLs.value)) URL.revokeObjectURL(url)
+  projectThumbnailURLs.value = {}
+  projectThumbnailRevisions.clear()
+}
+
+function beginProjectThumbnailRequest(): ProjectThumbnailRequestGuard {
+  return {
+    serial: ++projectThumbnailLoadSerial,
+    contextFingerprint: appContextFingerprint(props.ctx),
+    ctx: props.ctx,
+  }
+}
+
+function projectThumbnailRequestIsCurrent(guard: ProjectThumbnailRequestGuard): boolean {
+  return guard.serial === projectThumbnailLoadSerial &&
+    guard.contextFingerprint === appContextFingerprint(props.ctx) &&
+    isProjectIndexRoute.value
+}
+
+async function hydrateProjectThumbnails(
+  projectList: Project[],
+  guard = beginProjectThumbnailRequest(),
+) {
+  const liveNames = new Set(projectList.map((project) => project.name))
+  const nextURLs = { ...projectThumbnailURLs.value }
+  const nextRevisions = new Map(projectThumbnailRevisions)
+  const createdURLs: string[] = []
+  for (const name of Object.keys(nextURLs)) {
+    if (liveNames.has(name)) continue
+    delete nextURLs[name]
+    nextRevisions.delete(name)
+  }
+  await Promise.all(projectList.map(async (project) => {
+    const thumbnail = project.thumbnail
+    const revision = thumbnail?.revision ?? ''
+    if (!thumbnail?.available || !revision || nextRevisions.get(project.name) === revision) return
+    try {
+      const blob = await api.getProjectThumbnail(guard.ctx, project.name, revision)
+      const url = URL.createObjectURL(blob)
+      createdURLs.push(url)
+      nextURLs[project.name] = url
+      nextRevisions.set(project.name, revision)
+    } catch {
+      // Keep the stable fallback (or the previous commit's image). A future
+      // project refresh retries without turning the card into an error state.
+    }
+  }))
+  if (!projectThumbnailRequestIsCurrent(guard)) {
+    for (const url of createdURLs) URL.revokeObjectURL(url)
+    return
+  }
+  for (const [name, url] of Object.entries(projectThumbnailURLs.value)) {
+    if (nextURLs[name] !== url) URL.revokeObjectURL(url)
+  }
+  projectThumbnailURLs.value = nextURLs
+  projectThumbnailRevisions.clear()
+  for (const [name, revision] of nextRevisions) projectThumbnailRevisions.set(name, revision)
+  clearProjectThumbnailRefreshTimer()
+  if (projectList.some((project) => project.thumbnail?.refreshing)) {
+    projectThumbnailRefreshTimer = window.setTimeout(() => void refreshProjectGalleryThumbnails(), 3_000)
+  }
+}
+
+async function refreshProjectGalleryThumbnails() {
+  projectThumbnailRefreshTimer = undefined
+  if (!props.ctx?.token || !isProjectIndexRoute.value) return
+  const guard = beginProjectThumbnailRequest()
+  try {
+    const projectList = await api.listProjects(guard.ctx)
+    if (!projectThumbnailRequestIsCurrent(guard)) return
+    projects.value = projectList
+    await hydrateProjectThumbnails(projectList, guard)
+  } catch {
+    // Normal page refresh/error handling remains authoritative. Thumbnail
+    // reconciliation is deliberately silent and retries on the next load.
+  }
+}
+
 const providerTools = computed<ProviderTool[]>(() => {
   // The provider array can outlive an org/workspace/user transition while a
   // replacement catalog request is in flight. Never expose that old catalog
@@ -1369,10 +1561,12 @@ const settingsInWorkbench = computed(() => !!settingsProject.value && activeWork
 const publishingInWorkbench = computed(() => activeWorkbenchTab.value?.kind === 'publishing')
 const historyInWorkbench = computed(() => activeWorkbenchTab.value?.kind === 'history')
 const projectControlSurfaceInWorkbench = computed(() => settingsInWorkbench.value || publishingInWorkbench.value || historyInWorkbench.value)
+const settingsSurfaceInline = computed(() => projectControlSurfaceInWorkbench.value || isModelsRoute.value)
 const projectControlSurfaceTarget = computed(() => {
   if (publishingInWorkbench.value) return '#app-studio-publishing-host'
   if (historyInWorkbench.value) return '#app-studio-history-host'
   if (settingsInWorkbench.value) return '#app-studio-project-settings-host'
+  if (isModelsRoute.value) return '#app-studio-models-host'
   return 'body'
 })
 const productionSurfaceActive = computed(() => publishingInWorkbench.value || shareDialogOpen.value)
@@ -1702,7 +1896,7 @@ watch(
       assistantRunController.disconnect()
       activeAssistantSubscription?.abort()
       activeAssistantSubscription = null
-      activeAssistantRun = null
+      setActiveAssistantRun(null)
       activeAssistantProject = ''
       activeAssistantThreadID.value = ''
       activeProjectContextFingerprint = ''
@@ -1794,6 +1988,8 @@ watch(
     void previewConsoleController.disconnect()
     developmentSyncStatus.value = null
     developmentSyncError.value = null
+    developmentTemplateStatus.value = null
+    developmentTemplateError.value = null
     developmentPreviewAccessModesFromAuthorization.value = []
     developmentPreviewAccessConverged.value = true
     developmentPreviewAccessBusy.value = false
@@ -1937,6 +2133,7 @@ onBeforeUnmount(() => {
   clearDevelopmentPreviewAuthorizationRetry()
 	clearDevelopmentPreviewRecovery()
   clearLandingPlaceholderRotation()
+  clearProjectThumbnailURLs()
   if (assistantDurationTimer !== undefined) window.clearInterval(assistantDurationTimer)
   assistantWorkedDurationClock.clear()
   assistantRunController.disconnect()
@@ -1967,7 +2164,7 @@ async function load() {
     assistantRunController.disconnect()
     activeAssistantSubscription?.abort()
     activeAssistantSubscription = null
-    activeAssistantRun = null
+    setActiveAssistantRun(null)
     activeAssistantProject = ''
     activeAssistantThreadID.value = ''
     messageStreaming.value = false
@@ -2002,16 +2199,17 @@ async function load() {
     const projectList = await api.listProjects(props.ctx)
     if (!projectRequestIsCurrent(requestGuard)) return
     projects.value = projectList
+    void hydrateProjectThumbnails(projectList)
     projectsLoaded.value = true
     initializing.value = false
-    if (isCreateRoute.value) {
+    if (isCreateRoute.value || isModelsRoute.value) {
 	  clearPendingFirstProjectSubmission()
       activeProjectContextFingerprint = ''
       projectOpenLoading.value = false
       threadHistoryLoading.value = false
       assistantRunController.disconnect()
       activeAssistantSubscription?.abort()
-      activeAssistantRun = null
+      setActiveAssistantRun(null)
       messageStreaming.value = false
       selected.value = null
       messages.value = []
@@ -2024,7 +2222,7 @@ async function load() {
       threadHistoryLoading.value = false
       assistantRunController.disconnect()
       activeAssistantSubscription?.abort()
-      activeAssistantRun = null
+      setActiveAssistantRun(null)
       messageStreaming.value = false
       selected.value = null
       messages.value = []
@@ -2043,7 +2241,7 @@ async function load() {
       threadHistoryLoading.value = false
       assistantRunController.disconnect()
       activeAssistantSubscription?.abort()
-      activeAssistantRun = null
+      setActiveAssistantRun(null)
       messageStreaming.value = false
       selected.value = null
       messages.value = []
@@ -2200,6 +2398,7 @@ async function loadLLMSettings() {
   llmSettingsLoading.value = true
   llmSettingsError.value = null
   llmStatus.value = null
+  llmActionError.value = null
   try {
     const settings = await api.getLLMSettings(props.ctx)
     if (serial !== llmSettingsLoadSerial) return
@@ -2208,7 +2407,6 @@ async function loadLLMSettings() {
     if (serial !== llmSettingsLoadSerial) return
     if (handleProjectAPIInitializing(e)) return
     llmSettingsError.value = e instanceof Error ? e.message : String(e)
-    llmStatus.value = llmSettingsError.value
   } finally {
     if (serial === llmSettingsLoadSerial) llmSettingsLoading.value = false
   }
@@ -2293,7 +2491,10 @@ async function applyDevelopmentTemplate(template: string) {
   // Switching templates re-provisions the development environment; the
   // workspace and git repository survive, but the running instance does not.
   if (!(await confirmDialog({ title: `Switch to the "${template}" template?`, message: 'The current development instance will be replaced (your code stays in the workspace and git).', confirmLabel: 'Switch' }))) return
+  if (selected.value?.name !== projectName) return
   developmentTemplateBusy.value = true
+  developmentTemplateError.value = null
+  developmentTemplateStatus.value = null
   developmentSyncError.value = null
   developmentSyncStatus.value = null
   try {
@@ -2309,12 +2510,26 @@ async function applyDevelopmentTemplate(template: string) {
         selected.value = { ...selected.value, template: result.template }
       }
     }
-    developmentSyncStatus.value = `Development environment is switching to the ${result.template} template.`
+    const status = `Development environment is switching to the ${result.template} template.`
+    developmentTemplateStatus.value = status
+    developmentSyncStatus.value = status
   } catch (e) {
-    developmentSyncError.value = e instanceof Error ? e.message : String(e)
+    const message = e instanceof Error ? e.message : String(e)
+    developmentTemplateError.value = message
+    developmentSyncError.value = message
   } finally {
     developmentTemplateBusy.value = false
   }
+}
+
+async function changeDevelopmentTemplate(event: Event) {
+  const select = event.target as HTMLSelectElement
+  const template = select.value
+  // The persisted project remains authoritative while confirmation and the
+  // replacement request are pending. This also restores the visible value if
+  // the user cancels the confirmation.
+  select.value = selected.value?.template ?? ''
+  await applyDevelopmentTemplate(template)
 }
 
 const releaseTakingLonger = ref(false)
@@ -2391,6 +2606,7 @@ const historyCommits = computed(() => selected.value?.repository?.commits ?? [])
 const selectedHistoryEntry = computed(() => selectedHistoryCommit(historyCommits.value, selectedHistoryCommitSHA.value))
 const historyRestoreDisabledReason = computed(() => {
   if (historyRestoreBusy.value) return 'Project files are being restored.'
+  if (historyRefreshing.value) return 'Wait for Git history to finish refreshing before restoring project files.'
   if (messageStreaming.value) return 'Wait for or stop the active assistant run before restoring project files.'
   if (!selected.value?.repository?.ref) return 'Connect a Git repository before restoring project files.'
   if (!selected.value?.sourceRevision) return 'Refresh History before restoring project files.'
@@ -3049,38 +3265,12 @@ async function restoreProjectHistory() {
   }
 }
 
-// hydrateDevelopmentWorkspace overlay-loads files from the project's Git
-// repository and re-syncs the runtime. Exact replacement belongs to History.
-async function hydrateDevelopmentWorkspace() {
-  const projectName = selected.value?.name
-  if (!projectName || messageStreaming.value || developmentHydrateBusy.value) return
-  // Hydration overwrites workspace files with the repository's tree.
-  if (!(await confirmDialog({ title: 'Load the workspace from git?', message: 'Files in the workspace will be overwritten with the repository versions (workspace-only files are kept).', confirmLabel: 'Load' }))) return
-  developmentHydrateBusy.value = true
-  developmentSyncError.value = null
-  developmentSyncStatus.value = null
-  try {
-    const result = await api.hydrateWorkspace(props.ctx, projectName)
-    const written = result.written?.length ?? 0
-    const skipped = result.skipped?.length ?? 0
-    developmentSyncStatus.value = skipped > 0
-      ? `Loaded ${written} file(s) from the repository (${skipped} skipped).`
-      : `Loaded ${written} file(s) from the repository.`
-  } catch (e) {
-    developmentSyncError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    developmentHydrateBusy.value = false
-  }
-}
-
 function applyLLMSettings(settings: ProjectLLMSettings) {
   llmSettings.value = settings
-  const provider = inferLLMProvider(settings.provider, settings.baseURL)
-  llmProvider.value = provider
-  llmCredentialMode.value = isGoogleCloudBaseURL(settings.baseURL) ? 'service-account-json' : 'api-key'
-  llmBaseURL.value = normalizeLLMBaseURLInput(provider, settings.baseURL, llmCredentialMode.value)
-  llmModel.value = normalizeLLMModelInput(provider, settings.model, llmCredentialMode.value)
-  llmApiKey.value = ''
+  const available = settings.models.filter((model) => model.configured)
+  if (!available.some((model) => model.id === selectedLLMModelID.value)) {
+    selectedLLMModelID.value = available.find((model) => model.id === settings.defaultModelID)?.id ?? available[0]?.id ?? ''
+  }
 }
 
 function inferLLMProvider(provider: string, baseURL: string): string {
@@ -3101,7 +3291,39 @@ function isGoogleCloudBaseURL(baseURL: string): boolean {
 }
 
 function selectLLMProvider(provider: string) {
+  if (provider === llmProvider.value) return
   llmProvider.value = provider
+  llmCredentialMode.value = 'api-key'
+  if (provider === GOOGLE_AI_STUDIO_PROVIDER) {
+    llmBaseURL.value = GEMINI_BASE_URL
+    llmModel.value = GEMINI_DEFAULT_MODEL
+    return
+  }
+  llmBaseURL.value = 'https://api.openai.com/v1'
+  llmModel.value = OPENAI_DEFAULT_MODEL
+}
+
+function openLLMEditor(modelID?: string) {
+  llmStatus.value = null
+  llmActionError.value = null
+  const saved = llmSettings.value?.models.find((model) => model.id === modelID)
+  llmEditingModelID.value = saved?.id ?? null
+  llmName.value = saved?.name ?? ''
+  const provider = inferLLMProvider(saved?.provider ?? OPENAI_COMPATIBLE_PROVIDER, saved?.baseURL ?? 'https://api.openai.com/v1')
+  llmProvider.value = provider
+  llmCredentialMode.value = isGoogleCloudBaseURL(saved?.baseURL ?? '') ? 'service-account-json' : 'api-key'
+  llmBaseURL.value = normalizeLLMBaseURLInput(provider, saved?.baseURL ?? '', llmCredentialMode.value)
+  llmModel.value = normalizeLLMModelInput(provider, saved?.model ?? '', llmCredentialMode.value)
+  llmApiKey.value = ''
+  llmEditorOpen.value = true
+}
+
+function cancelLLMEditor() {
+  if (llmSaving.value) return
+  llmStatus.value = null
+  llmActionError.value = null
+  llmEditorOpen.value = false
+  llmEditingModelID.value = null
 }
 
 async function applyStarterPrompt(value: string) {
@@ -3170,14 +3392,6 @@ async function openNewProjectComposer() {
   props.navigate(CREATE_PROJECT_ROUTE)
   await nextTick()
   promptRef.value?.focus()
-}
-
-function closeNewProjectComposer() {
-  selectedLandingCategory.value = null
-  prompt.value = ''
-  error.value = null
-  wizardOpen.value = false
-  props.navigate('')
 }
 
 function startLandingPlaceholderRotation() {
@@ -3290,47 +3504,66 @@ function normalizeLLMModelInput(provider: string, model: string, credentialMode:
 
 async function saveLLMSettings() {
   llmStatus.value = null
+  llmActionError.value = null
   if (llmBaseURLError.value) return
   llmSaving.value = true
   try {
-    const body: { provider?: string; baseURL?: string; model?: string; apiKey?: string } = {
+    const body: { name: string; provider?: string; baseURL?: string; model: string; apiKey?: string } = {
+      name: llmName.value.trim(),
       provider: llmProvider.value.trim() || OPENAI_COMPATIBLE_PROVIDER,
       baseURL: normalizeLLMBaseURLInput(llmProvider.value, llmBaseURL.value, llmCredentialMode.value),
       model: normalizeLLMModelInput(llmProvider.value, llmModel.value, llmCredentialMode.value),
     }
     if (llmApiKey.value.trim()) body.apiKey = llmApiKey.value.trim()
-    const settings = await api.patchLLMSettings(props.ctx, body)
+    const editingID = llmEditingModelID.value
+    const settings = editingID
+      ? await api.patchLLMModel(props.ctx, editingID, body)
+      : await api.createLLMModel(props.ctx, body)
     applyLLMSettings(settings)
-    llmStatus.value = settings.configured
-      ? 'LLM settings saved.'
-      : isGoogleServiceAccountMode.value
-        ? 'LLM settings saved. Add a service-account JSON key before chatting.'
-        : isGoogleGeminiProvider.value
-          ? 'LLM settings saved. Add a Gemini API key before chatting.'
-        : 'LLM settings saved. Add an API key before chatting.'
-    if (settings.configured && !settingsInWorkbench.value) showSettings.value = false
+    llmStatus.value = editingID ? 'Model updated.' : 'Model added.'
+    llmEditorOpen.value = false
+    llmEditingModelID.value = null
   } catch (e) {
-    llmStatus.value = e instanceof Error ? e.message : String(e)
+    llmActionError.value = e instanceof Error ? e.message : String(e)
   } finally {
     llmSaving.value = false
   }
 }
 
-async function clearLLMKey() {
-  if (!(await confirmDialog({ title: 'Clear the configured LLM API key?', danger: true, confirmLabel: 'Clear' }))) return
+async function deleteLLMModel(modelID: string) {
+  const saved = llmSettings.value?.models.find((model) => model.id === modelID)
+  if (!saved) return
+  if (!(await confirmDialog({
+    title: `Delete ${saved.name}?`,
+    message: 'Existing runs keep their audit history, but this model will no longer be available for new turns.',
+    danger: true,
+    confirmLabel: 'Delete model',
+  }))) return
   llmSaving.value = true
   llmStatus.value = null
+  llmActionError.value = null
   try {
-    const settings = await api.patchLLMSettings(props.ctx, {
-      provider: llmProvider.value.trim() || OPENAI_COMPATIBLE_PROVIDER,
-      baseURL: normalizeLLMBaseURLInput(llmProvider.value, llmBaseURL.value, llmCredentialMode.value),
-      model: normalizeLLMModelInput(llmProvider.value, llmModel.value, llmCredentialMode.value),
-      apiKey: '',
-    })
+    const settings = await api.deleteLLMModel(props.ctx, modelID)
     applyLLMSettings(settings)
-    llmStatus.value = isGoogleGeminiProvider.value ? 'Google credential cleared.' : 'LLM API key cleared.'
+    llmStatus.value = 'Model deleted.'
+    if (llmEditingModelID.value === modelID) cancelLLMEditor()
   } catch (e) {
-    llmStatus.value = e instanceof Error ? e.message : String(e)
+    llmActionError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    llmSaving.value = false
+  }
+}
+
+async function setDefaultLLMModel(modelID: string) {
+  llmSaving.value = true
+  llmStatus.value = null
+  llmActionError.value = null
+  try {
+    const settings = await api.setDefaultLLMModel(props.ctx, modelID)
+    applyLLMSettings(settings)
+    llmStatus.value = 'Default model updated.'
+  } catch (e) {
+    llmActionError.value = e instanceof Error ? e.message : String(e)
   } finally {
     llmSaving.value = false
   }
@@ -3339,14 +3572,14 @@ async function clearLLMKey() {
 async function createProjectFromPrompt() {
   const content = prompt.value.trim()
   if (!content) return
-  // Blueprint-first: submitting the landing idea hands off to a full creation
+  // Submitting the landing idea hands off to one stable project-details
   // surface. The actual create still runs from onWizardCreate, which re-checks
   // setup before using the durable project/thread path below.
   wizardOpen.value = true
 }
 
-// The creation surface is continuous from the landing composer: its planning
-// and review states replace the composer without losing the submitted idea.
+// The creation surface is continuous from the landing composer: preparation
+// resolves in place without losing or re-rendering the submitted idea.
 const wizardOpen = ref(false)
 
 async function onWizardCancel() {
@@ -3382,10 +3615,14 @@ async function createProjectAndStartConversation(
   content: string,
   createOverrides?: { templateName?: string; displayName?: string },
 ) {
-  const retry = pendingFirstProjectSubmission?.projectName && pendingFirstProjectSubmission.content === content
+  const pendingProjectName = pendingFirstProjectSubmission?.content === content ? pendingFirstProjectSubmission.projectName : ''
+  const retry = Boolean(pendingProjectName && pendingFirstProjectSubmission?.modelID === selectedLLMModelID.value)
   let submission = retry
     ? pendingFirstProjectSubmission!
-    : newFirstProjectSubmission(content, crypto.randomUUID())
+    : firstProjectSubmissionWithProject(
+        newFirstProjectSubmission(content, crypto.randomUUID(), selectedLLMModelID.value),
+        pendingProjectName,
+      )
   pendingFirstProjectSubmission = submission
   const generation = ++projectCreateGeneration
   const now = new Date().toISOString()
@@ -3397,7 +3634,7 @@ async function createProjectAndStartConversation(
   messageStreaming.value = true
   conversationStatus.value = 'Starting'
   error.value = null
-  if (!retry) {
+  if (!submission.projectName) {
     prompt.value = ''
     selectedLandingCategory.value = null
     resetWorkbench()
@@ -3452,6 +3689,7 @@ async function createProjectAndStartConversation(
     const canonical = await api.startAssistantTurn(props.ctx, projectName, thread.id, {
       content: startPlan.content,
       clientUserMessageID: startPlan.clientRequestID,
+      modelID: startPlan.modelID,
       collaborationMode: 'default',
     })
     replaceAssistantThread(canonical.thread)
@@ -3481,7 +3719,7 @@ async function createProjectAndStartConversation(
     const applied = applyAssistantSnapshot({ run: started.run, message: started.assistant }, projectName, 'start')
     if (applied.accepted && applied.current) {
       messages.value = replaceOptimisticUserMessage(messages.value, messages.value[0]?.id ?? '', started.user ?? messages.value[0]).map(toProjectMessageView)
-      if (!assistantRunTerminal(applied.current.status)) assistantRunController.start(applied.current.id, applied.current.revision)
+      if (!assistantRunTerminal(applied.current.status)) startAssistantRunController(applied.current)
       acceptedRun = true
       if (firstProjectSubmissionAccepted(submission, started.user)) pendingFirstProjectSubmission = null
     }
@@ -3527,8 +3765,23 @@ async function openSettings() {
   if (settingsProject.value) {
     openBuiltInWorkbenchTab('settings')
     await nextTick()
+  } else {
+    if (!llmSettings.value?.configured) openLLMEditor()
+    openModelsSection()
+    return
   }
   showSettings.value = true
+}
+
+function openProjectsSection() {
+  const returnRoute = modelsReturnRoute.value
+  modelsReturnRoute.value = ''
+  props.navigate(returnRoute)
+}
+
+function openModelsSection() {
+  modelsReturnRoute.value = isCreateRoute.value ? CREATE_PROJECT_ROUTE : ''
+  props.navigate(MODELS_ROUTE)
 }
 
 function closeSettings() {
@@ -3618,7 +3871,7 @@ async function openProject(name: string, updateURL = true, requestGuardOverride?
   if (selected.value?.name !== name) {
     assistantRunController.disconnect()
     activeAssistantSubscription?.abort()
-    activeAssistantRun = null
+    setActiveAssistantRun(null)
     activeAssistantProject = ''
     messageStreaming.value = false
     selected.value = null
@@ -3763,14 +4016,18 @@ function updateAssistantComposerResources(resources: ProjectAssistantContextReso
   selectedTurnResources.value = resources.slice(0, 8)
 }
 
-function submitAssistantComposer(state?: AssistantComposerState) {
+function submitAssistantComposer(state?: AssistantComposerState, intent: 'queue' | 'steer' = 'queue') {
   if (state) {
     prompt.value = state.content
     assistantComposerParts.value = state.contentParts as ProjectAssistantContentPart[]
     selectedTurnSkills.value = state.skills.slice(0, 8)
     selectedTurnResources.value = state.contextResources.slice(0, 8)
   }
-  void sendMessage()
+  void sendMessage(intent)
+}
+
+function assistantActiveRunSubmitIntent(): 'queue' | 'steer' {
+  return messageStreaming.value && !assistantQueueingEnabled.value ? 'steer' : 'queue'
 }
 
 function clearSelectedTurnAttachments() {
@@ -3813,6 +4070,122 @@ watch(activeAssistantAnnotationDraftScopeKey, (current, previous) => {
   clearSelectedTurnAttachments()
   if (current) hydrateCurrentAssistantAnnotationDraft()
 }, { flush: 'post' })
+
+const activeAssistantMessageQueueScopeKey = computed(() => assistantMessageQueueStorageKey(assistantMessageQueueScope()))
+
+function persistAssistantMessageQueue() {
+  writeAssistantMessageQueue(assistantMessageQueueScope(), queuedAssistantMessages.value)
+}
+
+function persistAssistantQueueingPreference() {
+  writeAssistantQueueingEnabled(assistantMessageQueueScope(), assistantQueueingEnabled.value)
+}
+
+function enqueueAssistantMessage(content: string): QueuedAssistantMessage | undefined {
+  const normalized = content.trim()
+  if (!normalized || !activeAssistantMessageQueueScopeKey.value || queuedAssistantMessages.value.length >= ASSISTANT_MESSAGE_QUEUE_MAX_ITEMS) return undefined
+  const message: QueuedAssistantMessage = {
+    id: crypto.randomUUID(),
+    content: normalized,
+    createdAt: new Date().toISOString(),
+  }
+  queuedAssistantMessages.value = [...queuedAssistantMessages.value, message]
+  persistAssistantMessageQueue()
+  return message
+}
+
+function removeQueuedAssistantMessage(message: QueuedAssistantMessage) {
+  queuedAssistantMessages.value = queuedAssistantMessages.value.filter((candidate) => candidate.id !== message.id)
+  persistAssistantMessageQueue()
+}
+
+function editQueuedAssistantMessage(message: QueuedAssistantMessage, content: string) {
+  const normalized = content.trim()
+  if (!normalized) return
+  queuedAssistantMessages.value = queuedAssistantMessages.value.map((candidate) =>
+    candidate.id === message.id ? { ...candidate, content: normalized } : candidate,
+  )
+  persistAssistantMessageQueue()
+}
+
+function toggleAssistantQueueing() {
+  assistantQueueingEnabled.value = !assistantQueueingEnabled.value
+  persistAssistantQueueingPreference()
+}
+
+async function steerQueuedAssistantMessage(message: QueuedAssistantMessage) {
+  if (queuedAssistantSteeringID.value || activeAssistantRun?.status !== 'running' || !messageStreaming.value) return
+  const queueScopeKey = activeAssistantMessageQueueScopeKey.value
+  const draft = {
+    prompt: prompt.value,
+    parts: [...assistantComposerParts.value],
+    skills: [...selectedTurnSkills.value],
+    resources: [...selectedTurnResources.value],
+  }
+  queuedAssistantSteeringID.value = message.id
+  prompt.value = message.content
+  clearSelectedTurnAttachments()
+  try {
+    const accepted = await sendMessage('steer')
+    if (accepted && activeAssistantMessageQueueScopeKey.value === queueScopeKey) removeQueuedAssistantMessage(message)
+  } finally {
+    if (activeAssistantMessageQueueScopeKey.value === queueScopeKey) {
+      prompt.value = draft.prompt
+      assistantComposerParts.value = draft.parts
+      selectedTurnSkills.value = draft.skills
+      selectedTurnResources.value = draft.resources
+    }
+    queuedAssistantSteeringID.value = ''
+  }
+}
+
+async function deliverNextQueuedAssistantMessage() {
+  if (
+    queuedAssistantDeliveryBusy.value ||
+    messageStreaming.value ||
+    (activeAssistantRun && !assistantRunTerminal(activeAssistantRun.status)) ||
+    busy.value ||
+    conversationInteractionBusy.value ||
+    assistantResumeBusy.value ||
+    !selected.value ||
+    !activeAssistantThreadID.value ||
+    prompt.value.trim() ||
+    assistantComposerParts.value.some((part) => part.type !== 'text')
+  ) return
+  const message = queuedAssistantMessages.value[0]
+  if (!message) return
+  const queueScopeKey = activeAssistantMessageQueueScopeKey.value
+  queuedAssistantDeliveryBusy.value = true
+  prompt.value = message.content
+  try {
+    const accepted = await sendMessage('queue')
+    if (accepted && activeAssistantMessageQueueScopeKey.value === queueScopeKey) removeQueuedAssistantMessage(message)
+    else if (activeAssistantMessageQueueScopeKey.value === queueScopeKey) {
+      // A failed automatic delivery is promoted back into the composer. It
+      // must no longer remain in the queue or a later retry would send it
+      // twice after the user submits the preserved draft.
+      if (!prompt.value.trim()) prompt.value = message.content
+      removeQueuedAssistantMessage(message)
+    }
+  } finally {
+    queuedAssistantDeliveryBusy.value = false
+  }
+}
+
+watch(activeAssistantMessageQueueScopeKey, (current, previous) => {
+  if (current === previous) return
+  queuedAssistantSteeringID.value = ''
+  queuedAssistantMessages.value = current ? readAssistantMessageQueue(assistantMessageQueueScope()) : []
+  assistantQueueingEnabled.value = current ? readAssistantQueueingEnabled(assistantMessageQueueScope()) : true
+}, { immediate: true, flush: 'post' })
+
+watch(
+  [messageStreaming, busy, activeAssistantMessageQueueScopeKey, () => queuedAssistantMessages.value.length],
+  ([streaming, sending, scopeKey]) => {
+    if (!streaming && !sending && scopeKey) void nextTick(deliverNextQueuedAssistantMessage)
+  },
+  { flush: 'post' },
+)
 
 watch(messageStreaming, (streaming) => {
   if (streaming) closeAssistantCommandPalette({ restoreFocus: false })
@@ -3858,7 +4231,7 @@ async function selectAssistantThread(threadID: string) {
     // the prior thread, conversation, stream, and focus valid.
     assistantRunController.disconnect()
     activeAssistantSubscription?.abort()
-    activeAssistantRun = null
+    setActiveAssistantRun(null)
     activeAssistantProject = ''
     activeAssistantThreadID.value = threadID
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), threadID)
@@ -3905,7 +4278,7 @@ async function createAssistantThread() {
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), thread.id)
     activeAssistantThreadSequence = 1
     messages.value = []
-    activeAssistantRun = null
+    setActiveAssistantRun(null)
     activeAssistantProject = ''
     assistantRunController.disconnect()
   } catch (e) {
@@ -3954,7 +4327,7 @@ async function deleteAssistantThread(threadID: string) {
 
     assistantRunController.disconnect()
     activeAssistantSubscription?.abort()
-    activeAssistantRun = null
+    setActiveAssistantRun(null)
     activeAssistantProject = ''
     messageStreaming.value = false
     reviewPanelHold.value = null
@@ -3973,7 +4346,7 @@ async function deleteAssistantThread(threadID: string) {
     activeAssistantThreadID.value = replacement.id
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), replacement.id)
     activeAssistantThreadSequence = 1
-    activeAssistantRun = null
+    setActiveAssistantRun(null)
     messages.value = []
   } catch (e) {
     if (requestSerial === assistantThreadRequestSerial && selected.value?.name === projectName) {
@@ -4032,7 +4405,7 @@ function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName 
   Object.assign(assistantRunRevisions, current.runs)
   const acceptedTerminal = assistantRunTerminal(normalized.run.status) && (!previousRun || !assistantRunTerminal(previousRun.status) || normalized.run.revision > previousRun.revision)
   const requiresLiveControls = assistantRunRequiresLiveControls(normalized.run)
-  activeAssistantRun = normalized.run
+  setActiveAssistantRun(normalized.run)
   if (!assistantRunTerminal(normalized.run.status) && normalized.run.approvalMode) {
     approvalMode.value = normalized.run.approvalMode
   }
@@ -4041,6 +4414,8 @@ function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName 
   else assistantRunController.disconnect()
   messageStreaming.value = requiresLiveControls
   if (assistantRunTerminal(normalized.run.status) && acceptedTerminal) {
+    if (assistantStopRequestedRunID.value === normalized.run.id) assistantStopRequestedRunID.value = ''
+    assistantStopError.value = null
     if (reviewPanelHold.value?.runID === normalized.run.id) reviewPanelHold.value = null
     conversationStatus.value = ''
     assistantRunController.disconnect()
@@ -4090,7 +4465,9 @@ async function recoverAssistantConversation(
     activeAssistantSubscription?.abort()
     activeAssistantSubscription = null
     if (priorRunID) delete pendingAssistantStopRequestIDs[priorRunID]
-    activeAssistantRun = null
+    if (!priorRunID || assistantStopRequestedRunID.value === priorRunID) assistantStopRequestedRunID.value = ''
+    assistantStopError.value = null
+    setActiveAssistantRun(null)
     activeAssistantProject = ''
     messageStreaming.value = false
     conversationStatus.value = ''
@@ -4126,7 +4503,7 @@ async function recoverAssistantConversation(
   }
   const applied = applyAssistantSnapshot(snapshot, projectName, 'latest', expectedRunID)
   if (applied.accepted && assistantRunRequiresLiveControls(applied.current)) {
-    assistantRunController.start(applied.current.id, applied.current.revision)
+    startAssistantRunController(applied.current)
   }
   return applied
 }
@@ -4996,11 +5373,27 @@ async function requestDeleteProject(project: Project) {
   }
 }
 
-async function sendMessage() {
+async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promise<boolean> {
   const content = prompt.value.trim()
-  const steeringActiveRun = messageStreaming.value && activeAssistantRun?.status === 'running'
+  const activeLiveRun = Boolean(messageStreaming.value && activeAssistantRun?.id && !assistantRunTerminal(activeAssistantRun.status))
+  if (activeLiveRun && activeRunIntent === 'queue') {
+    if (!content || conversationInteractionBusy.value || llmSettingsLoading.value || assistantResumeBusy.value) return false
+    if (assistantComposerParts.value.some((part) => part.type !== 'text') || selectedTurnSkills.value.length || selectedTurnResources.value.length) {
+      error.value = 'Attached context can be sent after the current response finishes. Follow-up queue messages are text only.'
+      return false
+    }
+    if (!enqueueAssistantMessage(content)) {
+      error.value = `The follow-up queue is limited to ${ASSISTANT_MESSAGE_QUEUE_MAX_ITEMS} messages.`
+      return false
+    }
+    error.value = null
+    prompt.value = ''
+    assistantComposerParts.value = []
+    return true
+  }
+  const steeringActiveRun = activeLiveRun && activeAssistantRun?.status === 'running' && activeRunIntent === 'steer'
   const hasStructuredContent = !steeringActiveRun && assistantComposerParts.value.some((part) => part.type !== 'text')
-  if ((!content && !hasStructuredContent) || !selected.value || !llmSettings.value?.configured || conversationInteractionBusy.value || llmSettingsLoading.value || (messageStreaming.value && !steeringActiveRun) || assistantResumeBusy.value || approvalModeLoading.value || approvalModeSaving.value) return
+  if ((!content && !hasStructuredContent) || !selected.value || !llmConfigured.value || conversationInteractionBusy.value || llmSettingsLoading.value || (messageStreaming.value && !steeringActiveRun) || assistantResumeBusy.value || approvalModeLoading.value || approvalModeSaving.value) return false
   const projectName = selected.value.name
   const turnSkills = steeringActiveRun ? [] : [...selectedTurnSkills.value]
   const turnResources = steeringActiveRun ? [] : [...selectedTurnResources.value]
@@ -5009,12 +5402,13 @@ async function sendMessage() {
   busy.value = true
   messageStreaming.value = true
   error.value = null
-  const firstProjectPending = firstProjectSubmissionMatches(pendingFirstProjectSubmission, projectName, content)
+  const firstProjectPending = firstProjectSubmissionMatches(pendingFirstProjectSubmission, projectName, content, selectedLLMModelID.value)
     ? pendingFirstProjectSubmission
     : null
   const startOperation = {
     content,
     collaborationMode: firstProjectPending ? 'default' as const : assistantIntent.value,
+    ...(!steeringActiveRun ? { modelID: selectedLLMModelID.value } : {}),
     ...(turnSkills.length ? { skills: turnSkills.map((skill) => skill.id) } : {}),
     ...(turnResources.length ? { contextResources: turnResources } : {}),
     ...(turnContentParts.length ? { contentParts: turnContentParts } : {}),
@@ -5053,8 +5447,13 @@ async function sendMessage() {
         content,
         clientUserMessageID: clientRequestID,
       })
+      startPostAccepted = true
       const items = await api.listAssistantThreadItems(props.ctx, projectName, activeAssistantThreadID.value)
       activeAssistantThreadSequence = maxAssistantThreadSequence(items)
+      // The durable steering receipt now owns the user-message identity.
+      // Drop the temporary optimistic row before merging the list so the same
+      // follow-up cannot render twice under two unrelated IDs.
+      messages.value = messages.value.filter((message) => message.id !== optimisticID)
       messages.value = projectAssistantThreadItems(items, projectName, true)
       // Steering rotates the durable assistant segment while retaining the
       // turn ID. Rebind the run to that replacement before reconnecting from
@@ -5064,7 +5463,7 @@ async function sendMessage() {
         await recoverAssistantConversation(projectName)
       }
       pendingMessageSubmission = null
-      return
+      return true
     } else {
       let thread = assistantThreads.value.find((candidate) => candidate.id === activeAssistantThreadID.value)
       if (!thread) {
@@ -5080,6 +5479,7 @@ async function sendMessage() {
       const canonical = startOperation.collaborationMode === 'review'
         ? await api.startAssistantReview(props.ctx, projectName, thread.id, {
             clientUserMessageID: clientRequestID,
+            modelID: payload.modelID,
             target: { type: 'current_workspace', instructions: content },
             ...(turnSkills.length ? { skills: turnSkills.map((skill) => skill.id) } : {}),
             ...(turnResources.length ? { contextResources: turnResources } : {}),
@@ -5088,6 +5488,7 @@ async function sendMessage() {
         : await api.startAssistantTurn(props.ctx, projectName, thread.id, {
             content,
             clientUserMessageID: clientRequestID,
+            modelID: payload.modelID,
             collaborationMode: startOperation.collaborationMode,
             ...(turnSkills.length ? { skills: turnSkills.map((skill) => skill.id) } : {}),
             ...(turnResources.length ? { contextResources: turnResources } : {}),
@@ -5129,10 +5530,12 @@ async function sendMessage() {
     const applied = applyAssistantSnapshot({ run: started.run, message: started.assistant }, projectName, 'start')
     if (applied.accepted && applied.current) {
       messages.value = replaceOptimisticUserMessage(messages.value, optimisticID, started.user ?? optimisticUserMessage).map(toProjectMessageView)
-      if (!assistantRunTerminal(applied.current.status)) assistantRunController.start(applied.current.id, applied.current.revision)
+      if (!assistantRunTerminal(applied.current.status)) startAssistantRunController(applied.current)
       pendingMessageSubmission = null
       if (firstProjectPending && firstProjectSubmissionAccepted(firstProjectPending, started.user)) pendingFirstProjectSubmission = null
+      return true
     }
+    return false
   } catch (e) {
     messages.value = messages.value.filter((message) => message.id !== optimisticID)
     if (startPostAccepted) {
@@ -5144,9 +5547,10 @@ async function sendMessage() {
       error.value = detail
         ? `Turn accepted, but the conversation could not be refreshed: ${detail}`
         : 'Turn accepted, but the conversation could not be refreshed. Reopen this project to recover it.'
-      return
+      return true
     }
     if (e instanceof ProjectAPIRequestError && e.status === 409) {
+      let recoveredSameRequest = false
       try {
         const recovered = await recoverAssistantConversation(projectName)
         const persistedUserID = recovered?.current?.userMessageID
@@ -5155,6 +5559,7 @@ async function sendMessage() {
           : undefined
         const expectedServerContent = assistantRunExpectedServerContent(payload)
         if (persistedPrompt?.content === expectedServerContent && assistantRunMatchesStartRequest(recovered?.current, payload)) {
+          recoveredSameRequest = true
           pendingMessageSubmission = null
           clearStoredAssistantAnnotationDraft(projectName, activeAssistantThreadID.value)
           clearSelectedTurnAttachments()
@@ -5174,21 +5579,60 @@ async function sendMessage() {
         const detail = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
         error.value = detail ? `Could not recover the active assistant run: ${detail}` : 'Could not recover the active assistant run. Your prompt is preserved.'
       }
-      return
+      return recoveredSameRequest
     }
     error.value = e instanceof Error ? e.message : String(e)
     prompt.value = content
     assistantComposerParts.value = turnContentParts
     persistCurrentAssistantAnnotationDraft(turnContentParts)
     messageStreaming.value = false
+    return false
   } finally {
     busy.value = false
+    if (!messageStreaming.value) assistantPendingStartStopRequested.value = false
   }
 }
 
 function cancelMessageStream() {
-  if (!activeAssistantRun?.id || assistantRunTerminal(activeAssistantRun.status)) return
-  void assistantRunController.stop().catch((e) => { error.value = e instanceof Error ? e.message : String(e) })
+  const runID = activeAssistantRun?.id
+  const projectName = selected.value?.name
+  if (!projectName || assistantRunTerminal(activeAssistantRun?.status)) return
+  if (!runID) {
+    if (!messageStreaming.value || assistantPendingStartStopRequested.value) return
+    assistantPendingStartStopRequested.value = true
+    assistantStopError.value = null
+    conversationStatus.value = 'Stopping'
+    return
+  }
+  if (assistantStopRequestedRunID.value === runID) return
+  assistantStopRequestedRunID.value = runID
+  assistantStopError.value = null
+  conversationStatus.value = 'Stopping'
+  void assistantRunController.stop().catch(async (e) => {
+    if (assistantStopRequestedRunID.value === runID) assistantStopRequestedRunID.value = ''
+    assistantStopError.value = e instanceof Error && e.message.trim()
+      ? `Could not stop the response: ${e.message}`
+      : 'Could not stop the response. Try again.'
+    if (selected.value?.name !== projectName || activeAssistantRun?.id !== runID) return
+    try {
+      await recoverAssistantConversation(projectName)
+    } catch {
+      // The inline error and restored stop control remain actionable. A
+      // subsequent retry reuses the same durable stop request identity.
+    }
+  })
+}
+
+function handleAssistantComposerPrimaryAction(event: MouseEvent) {
+  if (assistantComposerShowsStop.value) {
+    event.preventDefault()
+    cancelMessageStream()
+    return
+  }
+  if (messageStreaming.value && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault()
+    void sendMessage('steer')
+  }
 }
 
 async function resolveToolPermission(message: ProjectMessageView, interrupt: ProjectAssistantUIInterruptRequest, decision: 'allow' | 'deny') {
@@ -5366,7 +5810,7 @@ function assistantMessageIndexForThreadItem(item: ProjectAssistantThreadItem, tu
   )
 }
 
-function updateActiveRunFromAssistantItem(item: ProjectAssistantThreadItem, runID: string) {
+function updateActiveRunFromAssistantItem(item: ProjectAssistantThreadItem, runID: string, projectName: string) {
   const itemRun = assistantThreadItemToRun(item)
   const current = activeAssistantRun
   if (!itemRun || !current || current.id !== runID) return
@@ -5380,7 +5824,21 @@ function updateActiveRunFromAssistantItem(item: ProjectAssistantThreadItem, runI
     clientRequestID: current.clientRequestID,
     userMessageID: current.userMessageID,
   }
-  activeAssistantRun = next
+  const message = messages.value.find((candidate) =>
+    candidate.role === 'assistant' &&
+    candidate.metadata?.assistantPhase !== 'commentary' &&
+    (candidate.id === next.activeMessageID || candidate.metadata?.assistantMessageID === next.activeMessageID),
+  )
+  if (message) {
+    // Agent-message updates can carry the terminal revision before the
+    // separate turn.interrupted event. Route them through the canonical
+    // snapshot transition so the local stop latch, streaming state, and
+    // controller all settle even when a recovery list advances the SSE cursor
+    // past that later lifecycle event.
+    applyAssistantSnapshot({ run: next, message }, projectName, 'stream')
+    return
+  }
+  setActiveAssistantRun(next)
   assistantRunRevisions[runID] = next
   activeAssistantProject = selected.value?.name ?? activeAssistantProject
   assistantRunController.setRevision(next.revision)
@@ -5529,7 +5987,7 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
       messages.value = existing
         ? messages.value.map((message) => message.id === existing.id ? projected : message)
         : [...messages.value, projected]
-      if (role === 'assistant') updateActiveRunFromAssistantItem(rawItem, runID)
+      if (role === 'assistant') updateActiveRunFromAssistantItem(rawItem, runID, projectName)
     }
   } else if (rawItem?.id && event.turnID) {
     const assistantIndex = assistantMessageIndexForThreadItem(rawItem, event.turnID)
@@ -5578,7 +6036,7 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
         event.type,
         interrupt.action?.requestId || event.requestID || '',
       )
-      activeAssistantRun = nextRun
+      setActiveAssistantRun(nextRun)
       assistantRunRevisions[runID] = nextRun
       assistantRunController.setRevision(nextRun.revision)
     }
@@ -5599,7 +6057,7 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
     if (activeAssistantRun?.id === runID && !assistantRunTerminal(activeAssistantRun.status)) {
       const currentRun = activeAssistantRun
       const nextRun = reconcileAssistantRunInterrupt(currentRun, event.type, requestID)
-      activeAssistantRun = nextRun
+      setActiveAssistantRun(nextRun)
       assistantRunRevisions[runID] = nextRun
       assistantRunController.setRevision(nextRun.revision)
       messageStreaming.value = true
@@ -5665,6 +6123,7 @@ function assistantMessageOwnsActiveRun(message: ProjectMessageView): boolean {
 
 function assistantRunStatusForMessage(message: ProjectMessageView): ReturnType<typeof normalizeAssistantRunStatus> {
   const activeRun = activeAssistantRun
+  if (assistantMessageOwnsActiveRun(message) && assistantStopRequested.value) return 'stopping'
   return assistantMessageOwnsActiveRun(message) && activeRun
     ? normalizeAssistantRunStatus(activeRun.status)
     : projectMessageAssistantStatus(message)
@@ -5672,6 +6131,10 @@ function assistantRunStatusForMessage(message: ProjectMessageView): ReturnType<t
 
 function assistantProgressClosed(message: ProjectMessageView): boolean {
   return assistantRunTerminal(assistantRunStatusForMessage(message))
+}
+
+function assistantProgressStopping(message: ProjectMessageView): boolean {
+  return assistantRunStatusForMessage(message) === 'stopping'
 }
 
 function assistantProgressHeaderVisible(message: ProjectMessageView): boolean {
@@ -5708,7 +6171,7 @@ function observeAssistantWorkedDuration(message: ProjectMessage, run: { status?:
     scope: assistantDurationScope(projectName),
     snapshotDurationMs: parseAssistantProgress(message.metadata?.assistantProgress)?.workedDurationMs ?? 0,
     nowMs: assistantDurationNowMs.value,
-    ticking: status === 'running' || status === 'stopping',
+    ticking: status === 'running',
     terminal: assistantRunTerminal(status),
   })
 }
@@ -6153,37 +6616,52 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     </div>
   </div>
 
-  <div v-else-if="!isBuilderVisible" class="h-full min-h-0 overflow-auto bg-surface text-text-primary">
-    <div class="mx-auto flex min-h-full w-full max-w-[1600px] flex-col px-6 py-8 md:px-10 lg:px-14">
-      <header class="mb-8 flex items-center justify-between gap-3">
-        <div class="flex min-w-0 items-center gap-2">
-          <Folder class="h-5 w-5 shrink-0 text-text-muted" :stroke-width="1.75" />
-          <h1 class="truncate text-[24px] font-semibold text-text-primary">App Studio</h1>
-        </div>
+  <div v-else-if="!isBuilderVisible" class="min-h-0 bg-surface text-text-primary">
+    <div class="flex min-h-full w-full flex-col">
+      <nav class="mb-6 flex items-center gap-1 border-b border-border-subtle pb-3" aria-label="App Studio sections">
+        <button
+          type="button"
+          class="flex h-9 items-center gap-2 rounded-md px-3 text-[13px] transition"
+          :class="!isModelsRoute
+            ? 'bg-accent-subtle font-semibold text-accent shadow-[0_0_14px_var(--color-accent-glow)]'
+            : 'font-medium text-text-muted hover:bg-surface-hover hover:text-text-primary'"
+          :aria-current="!isModelsRoute ? 'page' : undefined"
+          @click="openProjectsSection"
+        >
+          <Folder class="h-4 w-4" :stroke-width="1.75" />
+          Projects
+        </button>
+        <button
+          type="button"
+          class="flex h-9 items-center gap-2 rounded-md px-3 text-[13px] transition"
+          :class="isModelsRoute
+            ? 'bg-accent-subtle font-semibold text-accent shadow-[0_0_14px_var(--color-accent-glow)]'
+            : 'font-medium text-text-muted hover:bg-surface-hover hover:text-text-primary'"
+          :aria-current="isModelsRoute ? 'page' : undefined"
+          @click="openModelsSection"
+        >
+          <Cpu class="h-4 w-4" :stroke-width="1.75" />
+          Models
+        </button>
+      </nav>
+
+      <header v-if="isProjectIndexRoute" class="mb-4 flex items-center justify-between gap-3">
+        <h2 class="truncate text-[14px] font-medium text-text-primary">Projects</h2>
         <div class="flex shrink-0 items-center gap-2">
           <button
-            v-if="projectsLoaded && projects.length > 0 && showNewProjectComposer"
+            v-if="projectsLoaded && projects.length > 0"
             type="button"
-            class="flex h-9 items-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
-            @click="closeNewProjectComposer"
+            class="flex h-9 items-center gap-2 rounded-md border border-accent bg-accent px-3 text-[13px] font-semibold text-white shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
+            :disabled="busy"
+            @click="openNewProjectComposer"
           >
-            <ArrowLeft class="h-4 w-4" :stroke-width="1.75" />
-            Back to projects
-          </button>
-          <button
-            v-if="!showNewProjectComposer"
-            type="button"
-            class="flex h-9 items-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
-            title="LLM settings"
-            @click="openSettings"
-          >
-            <Settings2 class="h-4 w-4" :stroke-width="1.75" />
-            Settings
+            <Plus class="h-4 w-4" :stroke-width="1.75" />
+            New project
           </button>
         </div>
       </header>
 
-      <section v-if="!showNewProjectComposer" class="pb-6">
+      <section v-if="isProjectIndexRoute" class="pb-6">
         <div v-if="projectsLoaded && projects.length > 0" class="mb-4 flex flex-wrap items-center gap-3">
           <div class="relative w-full max-w-[260px]">
             <Search class="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
@@ -6204,14 +6682,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <div class="rounded-md border border-border-subtle bg-surface-raised px-3 py-2 text-[12px] font-medium text-text-muted">
             {{ projects.length }} {{ projects.length === 1 ? 'project' : 'projects' }}
           </div>
-          <button
-            class="flex h-9 items-center gap-2 rounded-md border border-border-subtle bg-surface-raised px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
-            :disabled="busy"
-            @click="openNewProjectComposer"
-          >
-            <Plus class="h-4 w-4" :stroke-width="1.75" />
-            New project
-          </button>
         </div>
 
         <div v-if="error" class="mb-4 flex max-w-[720px] flex-wrap items-center gap-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
@@ -6246,32 +6716,40 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           >
             <button class="block w-full text-left" @click="enterProject(project)">
               <div class="relative aspect-[16/9] overflow-hidden border-b border-border-subtle bg-surface">
-                <div class="absolute inset-0 grid grid-cols-4 gap-px bg-border-subtle/70 p-px">
-                  <div class="col-span-1 bg-surface-raised" />
-                  <div class="col-span-3 bg-surface" />
-                  <div class="col-span-4 bg-surface" />
-                </div>
-                <div class="absolute inset-x-3 top-3 flex items-center gap-1.5">
-                  <span class="h-1.5 w-1.5 rounded-full bg-danger/70" />
-                  <span class="h-1.5 w-1.5 rounded-full bg-warning/70" />
-                  <span class="h-1.5 w-1.5 rounded-full bg-success/70" />
-                </div>
-                <div class="absolute left-4 right-4 top-9 grid gap-2">
-                  <div class="h-3 w-2/3 rounded bg-text-muted/15" />
-                  <div class="grid grid-cols-3 gap-2">
-                    <div class="h-10 rounded border border-border-subtle bg-surface-overlay/70" />
-                    <div class="h-10 rounded border border-border-subtle bg-surface-overlay/70" />
-                    <div class="h-10 rounded border border-border-subtle bg-surface-overlay/70" />
+                <img
+                  v-if="projectThumbnailURLs[project.name]"
+                  :src="projectThumbnailURLs[project.name]"
+                  :alt="`${project.displayName} app preview`"
+                  class="absolute inset-0 z-10 h-full w-full object-cover object-top"
+                />
+                <template v-else>
+                  <div class="absolute inset-0 grid grid-cols-4 gap-px bg-border-subtle/70 p-px">
+                    <div class="col-span-1 bg-surface-raised" />
+                    <div class="col-span-3 bg-surface" />
+                    <div class="col-span-4 bg-surface" />
                   </div>
-                  <div class="grid gap-1.5">
-                    <div class="h-2 rounded bg-text-muted/15" />
-                    <div class="h-2 w-4/5 rounded bg-text-muted/10" />
-                    <div class="h-2 w-3/5 rounded bg-text-muted/10" />
+                  <div class="absolute inset-x-3 top-3 flex items-center gap-1.5">
+                    <span class="h-1.5 w-1.5 rounded-full bg-danger/70" />
+                    <span class="h-1.5 w-1.5 rounded-full bg-warning/70" />
+                    <span class="h-1.5 w-1.5 rounded-full bg-success/70" />
                   </div>
-                </div>
-                <div class="absolute bottom-3 left-3 flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface-raised shadow-sm">
-                  <MessageSquare class="h-4 w-4 text-accent" :stroke-width="1.75" />
-                </div>
+                  <div class="absolute left-4 right-4 top-9 grid gap-2">
+                    <div class="h-3 w-2/3 rounded bg-text-muted/15" />
+                    <div class="grid grid-cols-3 gap-2">
+                      <div class="h-10 rounded border border-border-subtle bg-surface-overlay/70" />
+                      <div class="h-10 rounded border border-border-subtle bg-surface-overlay/70" />
+                      <div class="h-10 rounded border border-border-subtle bg-surface-overlay/70" />
+                    </div>
+                    <div class="grid gap-1.5">
+                      <div class="h-2 rounded bg-text-muted/15" />
+                      <div class="h-2 w-4/5 rounded bg-text-muted/10" />
+                      <div class="h-2 w-3/5 rounded bg-text-muted/10" />
+                    </div>
+                  </div>
+                  <div class="absolute bottom-3 left-3 flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface-raised shadow-sm">
+                    <MessageSquare class="h-4 w-4 text-accent" :stroke-width="1.75" />
+                  </div>
+                </template>
               </div>
               <div class="p-3">
                 <div class="truncate text-[14px] font-semibold text-text-primary">{{ project.displayName }}</div>
@@ -6282,7 +6760,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </div>
             </button>
             <button
-              class="absolute right-2 top-2 flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface-raised/90 text-text-muted opacity-0 transition hover:bg-danger-subtle hover:text-danger group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
+              class="absolute right-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface-raised/90 text-text-muted opacity-0 transition hover:bg-danger-subtle hover:text-danger focus:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 disabled:cursor-not-allowed disabled:opacity-50"
               title="Delete project"
               :disabled="busy"
               @click.stop="requestDeleteProject(project)"
@@ -6297,8 +6775,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </div>
       </section>
 
-      <div v-else>
-        <main class="flex min-h-0 flex-1 items-center justify-center py-4">
+      <div v-else-if="showNewProjectComposer">
+        <main
+          class="flex min-h-0 flex-1 justify-center py-4"
+          :class="wizardOpen ? 'items-start' : 'items-center'"
+        >
           <section class="w-full max-w-[1060px]">
             <template v-if="wizardOpen">
               <NewProjectWizard
@@ -6317,7 +6798,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 What do you want to build?
               </h2>
               <p class="mt-4 max-w-[62ch] text-[14px] leading-6 text-text-muted">
-                Describe the app, dashboard, or workflow you want. App Studio will create the project and send your first message in one step.
+                Describe the app, dashboard, or workflow you want. App Studio will prepare a project name and starting point for you to confirm.
               </p>
             </div>
 
@@ -6495,6 +6976,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </section>
         </main>
       </div>
+
+      <section v-else-if="isModelsRoute" class="min-h-0 pb-6">
+        <div id="app-studio-models-host" class="min-h-[420px]" />
+      </section>
 
       <div v-if="error" class="mx-auto mt-4 w-full max-w-[860px] rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
         <template v-if="isMissingCodeConnectionError(error)">
@@ -6736,7 +7221,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       v-if="!assistantProgressClosed(message)"
                       class="py-0.5 text-[12px] font-medium text-text-muted"
                     >
-                      Working for {{ assistantWorkedLabel(message) }}
+                      {{ assistantProgressStopping(message) ? 'Stopping after' : 'Working for' }} {{ assistantWorkedLabel(message) }}
                     </span>
                   </div>
                   <div
@@ -6744,8 +7229,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     v-show="assistantProgressExpanded(message)"
                     :id="assistantProgressRegionID(message.id)"
                     class="mb-3 space-y-3"
-                    :role="assistantProgressClosed(message) ? undefined : 'log'"
-                    :aria-live="assistantProgressClosed(message) ? undefined : 'polite'"
+                    :role="assistantProgressClosed(message) || assistantProgressStopping(message) ? undefined : 'log'"
+                    :aria-live="assistantProgressClosed(message) || assistantProgressStopping(message) ? undefined : 'polite'"
                     :aria-relevant="assistantProgressClosed(message) ? undefined : 'additions'"
                     aria-atomic="false"
                   >
@@ -6757,6 +7242,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         v-if="traceBlock.kind === 'actions'"
                         :message-id="`${message.id}-trace-${traceIndex}`"
                         :items="traceBlock.items"
+                        :stopping="assistantProgressStopping(message)"
                       />
                       <div
                         v-else
@@ -6775,6 +7261,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   v-if="message.actionFeed?.length && !message.progress"
                   :message-id="message.id"
                   :items="message.actionFeed"
+                  :stopping="assistantProgressStopping(message)"
                 />
                 <div
                   v-if="hasAssistantResponseContent(message)"
@@ -6825,7 +7312,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   class="font-medium text-text-secondary"
                   :class="conversationWorkingLabel === 'Running' ? 'conversation-running-ripple' : undefined"
                 >{{ conversationWorkingLabel }}</span>
-                <span class="flex items-center gap-0.5 text-text-muted" aria-hidden="true">
+                <span v-if="conversationWorkingLabel === 'Running'" class="flex items-center gap-0.5 text-text-muted" aria-hidden="true">
                   <span class="h-1 w-1 animate-pulse rounded-full bg-current"></span>
                   <span class="h-1 w-1 animate-pulse rounded-full bg-current [animation-delay:120ms]"></span>
                   <span class="h-1 w-1 animate-pulse rounded-full bg-current [animation-delay:240ms]"></span>
@@ -6843,7 +7330,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           />
         </div>
 
-        <form class="shrink-0 border-t border-border-subtle p-3" @submit.prevent="sendMessage">
+        <form class="shrink-0 border-t border-border-subtle p-3" @submit.prevent="sendMessage(assistantActiveRunSubmitIntent())">
           <div
             v-if="pendingFollowUp"
             class="mb-2 rounded-lg border border-accent/30 bg-accent-subtle p-3 shadow-sm"
@@ -6978,8 +7465,23 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           <div v-if="approvalModeError" class="mb-2 text-[11px] leading-4 text-danger" role="alert">
             {{ approvalModeError }}
           </div>
+          <div v-if="assistantStopError" class="mb-2 text-[11px] leading-4 text-danger" role="alert">
+            {{ assistantStopError }}
+          </div>
+          <AssistantMessageQueue
+            :messages="queuedAssistantMessages"
+            :steering-id="queuedAssistantSteeringID"
+            :queueing-enabled="assistantQueueingEnabled"
+            @steer="steerQueuedAssistantMessage"
+            @remove="removeQueuedAssistantMessage"
+            @edit="editQueuedAssistantMessage"
+            @toggle-queueing="toggleAssistantQueueing"
+          />
           <div id="assistant-plan-mobile-anchor" class="mb-2 flex justify-end empty:hidden md:hidden" />
-          <div class="relative min-h-[72px] rounded-md border border-border-subtle bg-surface shadow-sm transition focus-within:border-accent/50">
+          <div
+            class="relative min-h-[72px] border border-border-subtle bg-surface shadow-sm transition focus-within:border-accent/50"
+            :class="queuedAssistantMessages.length ? 'rounded-b-md' : 'rounded-md'"
+          >
             <AssistantRichComposer
               ref="assistantComposerRef"
               v-model="prompt"
@@ -6992,8 +7494,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               :annotation-document-id="developmentPreviewAnnotationDocumentID"
               :annotation-page-path="developmentPreviewAnnotationPagePath"
               :unresolved-annotation-ids="developmentPreviewUnresolvedAnnotationIDs"
+              :placeholder="messageStreaming ? 'Add a follow-up…' : 'Message this project'"
               :disabled="busy || assistantResumeBusy || conversationInteractionBusy || llmSettingsLoading"
               :active-run="messageStreaming"
+              :queueing-enabled="assistantQueueingEnabled"
               @update:content-parts="updateAssistantComposerParts"
               @update:selected-skills="updateAssistantComposerSkills"
               @update:selected-resources="updateAssistantComposerResources"
@@ -7013,35 +7517,37 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   @select="selectApprovalMode"
                 />
               </template>
+              <template #actions>
+                <ModelPicker
+                  :models="configuredLLMModels"
+                  :selected-i-d="selectedLLMModel?.id || ''"
+                  :disabled="messageStreaming || loading || conversationInteractionBusy || llmSettingsLoading"
+                  @select="selectedLLMModelID = $event"
+                />
+              </template>
             </AssistantRichComposer>
             <button
-              v-if="messageStreaming && !!activeAssistantRun?.id && !assistantRunTerminal(activeAssistantRun?.status) && !prompt.trim() && activeAssistantRun?.status !== 'stopping'"
-              type="button"
-              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-md border border-danger/30 bg-danger-subtle text-danger transition hover:bg-danger-subtle/80"
-              title="Stop generating"
-              aria-label="Stop generating"
-              @click="cancelMessageStream"
+              :type="assistantComposerShowsStop ? 'button' : 'submit'"
+              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              :class="assistantComposerShowsStop
+                ? 'rounded-full bg-accent text-white enabled:hover:bg-accent-hover disabled:cursor-default'
+                : 'rounded-md bg-accent text-white shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none'"
+              :disabled="assistantComposerShowsStop ? assistantComposerStopDisabled : busy || conversationInteractionBusy || !canSendPrompt"
+              :title="assistantComposerShowsStop
+                ? assistantComposerStopDisabled ? 'Stop requested' : 'Stop generating'
+                : !llmConfigured ? 'Configure a model before sending'
+                : messageStreaming
+                  ? assistantQueueingEnabled ? 'Queue message · Command+Enter to steer now' : 'Steer now · Queueing is off'
+                : 'Send'"
+              :aria-label="assistantComposerShowsStop
+                ? assistantComposerStopDisabled ? 'Stop requested' : 'Stop generating'
+                : !llmConfigured ? 'Configure a model before sending'
+                : messageStreaming ? assistantQueueingEnabled ? 'Queue message' : 'Steer now'
+                : 'Send'"
+              @click="handleAssistantComposerPrimaryAction"
             >
-              <Square class="h-4 w-4 fill-current" :stroke-width="1.75" />
-            </button>
-            <button
-              v-else-if="activeAssistantRun?.status === 'stopping'"
-              type="button"
-              disabled
-              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle bg-surface-hover text-text-muted"
-              title="Stopping"
-              aria-label="Stopping"
-            >
-              <Loader2 class="h-4 w-4 animate-spin" :stroke-width="1.75" />
-            </button>
-            <button
-              v-else
-              class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center rounded-md bg-accent text-white shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none"
-              :disabled="busy || conversationInteractionBusy || !canSendPrompt"
-              :title="llmSettings?.configured ? 'Send' : 'Configure LLM settings before sending'"
-              :aria-label="llmSettings?.configured ? 'Send' : 'Configure LLM settings before sending'"
-            >
-              <ArrowUp class="h-4 w-4" :stroke-width="1.75" />
+              <Square v-if="assistantComposerShowsStop" class="h-3 w-3 fill-current" :stroke-width="1.75" />
+              <ArrowUp v-else class="h-4 w-4" :stroke-width="1.75" />
             </button>
           </div>
         </form>
@@ -7305,16 +7811,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <StatusBadge :status="developmentPreviewPhase" />
             </div>
             <div class="ml-auto flex shrink-0 items-center gap-2">
-              <PreviewActionsMenu
-                :templates="developmentTemplates"
-                :current-template="selected?.template"
-                :template-busy="developmentTemplateBusy"
-                :hydrate-busy="developmentHydrateBusy"
-                :hydrate-disabled="!selected"
-                :disabled="messageStreaming"
-                @select-template="applyDevelopmentTemplate"
-                @load-from-git="hydrateDevelopmentWorkspace"
-              />
               <button
                 type="button"
                 class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-3 text-[12px] font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
@@ -7360,14 +7856,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </div>
           <div v-else-if="developmentSyncStatus" class="rounded-md border border-success/30 bg-success-subtle p-3 text-[12px] text-success">
             {{ developmentSyncStatus }}
-          </div>
-          <div v-if="developmentTemplatesLoading" class="flex items-center gap-2 rounded-md border border-border-subtle bg-surface-overlay px-3 py-2 text-[12px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
-            <Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" />
-            Loading development templates…
-          </div>
-          <div v-else-if="developmentTemplatesError" class="flex flex-wrap items-center gap-2 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">
-            <span>{{ developmentTemplatesError }}</span>
-            <button type="button" class="font-medium underline underline-offset-2" @click="loadDevelopmentTemplates">Retry</button>
           </div>
           <div v-if="developmentPreviewURL" class="relative min-h-0 flex-1 overflow-hidden rounded-md border border-border-subtle bg-surface">
             <iframe
@@ -7765,22 +8253,25 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
   <Teleport defer :to="projectControlSurfaceTarget">
     <div
-      v-if="showSettings || publishingInWorkbench || historyInWorkbench"
-      :class="projectControlSurfaceInWorkbench
+      v-if="showSettings || publishingInWorkbench || historyInWorkbench || (isModelsRoute && !(initializing && !loading))"
+      :class="settingsSurfaceInline
         ? 'h-full min-h-0'
         : 'fixed inset-0 z-[100] flex items-center justify-center bg-surface/60 px-4 py-6 backdrop-blur-sm'"
-      @click.self="!projectControlSurfaceInWorkbench && closeSettings()"
+      @click.self="!settingsSurfaceInline && closeSettings()"
     >
       <div
         class="flex w-full flex-col overflow-hidden bg-surface-raised"
         :class="projectControlSurfaceInWorkbench
           ? 'h-full min-h-0'
+          : isModelsRoute
+            ? 'rounded-lg border border-border-subtle'
           : 'max-h-[90vh] max-w-2xl rounded-xl border border-border-subtle shadow-2xl'"
       >
         <header v-if="!publishingInWorkbench && !historyInWorkbench" class="flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3">
           <div class="min-w-0">
             <div class="flex items-center gap-2">
-              <Settings2 class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
+              <Cpu v-if="isModelsRoute" class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
+              <Settings2 v-else class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
               <h2 class="truncate text-[15px] font-semibold text-text-primary">{{ settingsTitle }}</h2>
             </div>
             <p class="mt-1 text-[12px] text-text-muted">
@@ -7788,7 +8279,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </p>
           </div>
           <button
-            v-if="!settingsInWorkbench"
+            v-if="!settingsInWorkbench && !isModelsRoute"
             type="button"
             class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
             title="Close"
@@ -7851,41 +8342,97 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </div>
           </form>
           <section
-            v-if="developmentPreviewAccessConfigurable"
-            class="grid gap-3 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3"
-            aria-label="Development preview access settings"
+            class="grid gap-4 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3"
+            aria-label="Development settings"
           >
             <div class="flex items-start gap-2.5">
               <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface">
-                <Globe v-if="developmentPreviewDesiredAccess === 'public'" class="h-4 w-4 text-accent" :stroke-width="1.75" />
-                <Lock v-else class="h-4 w-4 text-text-muted" :stroke-width="1.75" />
+                <LayoutTemplate class="h-4 w-4 text-text-muted" :stroke-width="1.75" />
               </div>
               <div class="min-w-0">
-                <h3 class="text-[12px] font-semibold text-text-primary">Development preview access</h3>
-                <p class="mt-0.5 text-[11px] leading-4 text-text-muted">Workspace members can open a private preview. A public preview exposes the running app to anyone with its URL without granting project access.</p>
+                <h3 class="text-[12px] font-semibold text-text-primary">Development</h3>
+                <p class="mt-0.5 text-[11px] leading-4 text-text-muted">Configure the development runtime and who can access its preview.</p>
               </div>
             </div>
-            <label class="grid max-w-sm gap-1.5">
-              <span class="text-[12px] font-medium text-text-secondary">Visibility</span>
-              <span class="relative block">
-                <Loader2 v-if="developmentPreviewAccessBusy || !developmentPreviewAccessConverged" class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-text-muted" :stroke-width="1.75" />
-                <Globe v-else-if="developmentPreviewDesiredAccess === 'public'" class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" :stroke-width="1.75" />
-                <Lock v-else class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" :stroke-width="1.75" />
-                <select
-                  :value="developmentPreviewDesiredAccess"
-                  class="h-10 w-full appearance-none rounded-md border border-border-subtle bg-surface py-0 pl-9 pr-9 text-[13px] text-text-primary outline-none transition focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
-                  aria-label="Development preview access"
-                  :disabled="developmentPreviewAccessBusy || !developmentPreviewAccessConverged || messageStreaming"
-                  @change="changeDevelopmentPreviewAccess(($event.target as HTMLSelectElement).value)"
-                >
-                  <option value="private">Workspace only</option>
-                  <option value="public">Anyone with link</option>
-                </select>
-                <ChevronRight class="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 rotate-90 text-text-muted" :stroke-width="1.75" />
-              </span>
-            </label>
-            <p v-if="developmentPreviewAccessBusy || !developmentPreviewAccessConverged" class="text-[11px] text-text-muted" role="status" aria-live="polite">Updating access…</p>
-            <p v-if="developmentPreviewAccessError" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">{{ developmentPreviewAccessError }}</p>
+            <section class="grid gap-3" aria-labelledby="development-template-heading">
+              <div>
+                <h4 id="development-template-heading" class="text-[12px] font-semibold text-text-primary">Template</h4>
+                <p class="mt-0.5 text-[11px] leading-4 text-text-muted">Choose the runtime used for development. Changing it replaces the running development instance while preserving workspace and Git files.</p>
+              </div>
+              <label class="grid max-w-sm gap-1.5">
+                <span class="text-[12px] font-medium text-text-secondary">Runtime template</span>
+                <span class="relative block">
+                  <Loader2 v-if="developmentTemplatesLoading || developmentTemplateBusy" class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-text-muted" :stroke-width="1.75" />
+                  <LayoutTemplate v-else class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" :stroke-width="1.75" />
+                  <select
+                    :value="selected?.template || ''"
+                    class="h-10 w-full appearance-none rounded-md border border-border-subtle bg-surface py-0 pl-9 pr-9 text-[13px] text-text-primary outline-none transition focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
+                    aria-label="Development template"
+                    :disabled="developmentTemplatesLoading || developmentTemplateBusy || messageStreaming || developmentTemplates.length === 0"
+                    @change="changeDevelopmentTemplate"
+                  >
+                    <option v-if="!selected?.template" value="" disabled>Select a template</option>
+                    <option
+                      v-if="selected?.template && !developmentTemplates.some((template) => template.name === selected?.template)"
+                      :value="selected.template"
+                    >
+                      {{ selected.template }}
+                    </option>
+                    <option v-for="template in developmentTemplates" :key="template.name" :value="template.name">
+                      {{ template.displayName || template.name }}
+                    </option>
+                  </select>
+                  <ChevronRight class="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 rotate-90 text-text-muted" :stroke-width="1.75" />
+                </span>
+              </label>
+              <p v-if="messageStreaming" class="text-[11px] leading-4 text-text-muted">Wait for or stop the active assistant run before changing templates.</p>
+              <div v-if="developmentTemplatesError" class="flex flex-wrap items-center gap-2 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">
+                <span>{{ developmentTemplatesError }}</span>
+                <button type="button" class="font-medium underline underline-offset-2" @click="loadDevelopmentTemplates">Retry</button>
+              </div>
+              <div
+                v-if="developmentTemplateError || developmentTemplateStatus"
+                class="rounded-md border px-3 py-2 text-[12px]"
+                :class="developmentTemplateError
+                  ? 'border-danger/30 bg-danger-subtle text-danger'
+                  : 'border-success/30 bg-success-subtle text-success'"
+                :role="developmentTemplateError ? 'alert' : 'status'"
+                aria-live="polite"
+              >
+                {{ developmentTemplateError || developmentTemplateStatus }}
+              </div>
+            </section>
+            <section
+              v-if="developmentPreviewAccessConfigurable"
+              class="grid gap-3 border-t border-border-subtle pt-4"
+              aria-labelledby="development-preview-access-heading"
+            >
+              <div>
+                <h4 id="development-preview-access-heading" class="text-[12px] font-semibold text-text-primary">Preview access</h4>
+                <p class="mt-0.5 text-[11px] leading-4 text-text-muted">Workspace members can open a private preview. A public preview exposes the running app to anyone with its URL without granting project access.</p>
+              </div>
+              <label class="grid max-w-sm gap-1.5">
+                <span class="text-[12px] font-medium text-text-secondary">Visibility</span>
+                <span class="relative block">
+                  <Loader2 v-if="developmentPreviewAccessBusy || !developmentPreviewAccessConverged" class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-text-muted" :stroke-width="1.75" />
+                  <Globe v-else-if="developmentPreviewDesiredAccess === 'public'" class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" :stroke-width="1.75" />
+                  <Lock v-else class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-muted" :stroke-width="1.75" />
+                  <select
+                    :value="developmentPreviewDesiredAccess"
+                    class="h-10 w-full appearance-none rounded-md border border-border-subtle bg-surface py-0 pl-9 pr-9 text-[13px] text-text-primary outline-none transition focus:border-accent/50 disabled:cursor-not-allowed disabled:opacity-60"
+                    aria-label="Development preview access"
+                    :disabled="developmentPreviewAccessBusy || !developmentPreviewAccessConverged || messageStreaming"
+                    @change="changeDevelopmentPreviewAccess(($event.target as HTMLSelectElement).value)"
+                  >
+                    <option value="private">Workspace only</option>
+                    <option value="public">Anyone with link</option>
+                  </select>
+                  <ChevronRight class="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 rotate-90 text-text-muted" :stroke-width="1.75" />
+                </span>
+              </label>
+              <p v-if="developmentPreviewAccessBusy || !developmentPreviewAccessConverged" class="text-[11px] text-text-muted" role="status" aria-live="polite">Updating access…</p>
+              <p v-if="developmentPreviewAccessError" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">{{ developmentPreviewAccessError }}</p>
+            </section>
           </section>
           </div>
 
@@ -8118,179 +8665,41 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             />
           </section>
 
-          <form
+          <ModelsSettings
             v-if="!publishingInWorkbench && !historyInWorkbench && !settingsProject"
-            class="grid gap-4 rounded-lg border border-border-subtle bg-surface-overlay/40 p-3"
-            @submit.prevent="saveLLMSettings"
-          >
-            <section class="grid gap-1">
-              <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">LLM</div>
-              <p class="text-[12px] text-text-muted">Configure the model credentials App Studio uses for this workspace.</p>
-            </section>
-
-            <div v-if="llmSettingsLoading && !llmSettings" class="grid min-h-64 content-start gap-3 rounded-md border border-dashed border-border-subtle bg-surface p-4" role="status" aria-live="polite" aria-busy="true">
-              <div class="shimmer h-4 w-36 rounded bg-surface-overlay" />
-              <div class="shimmer h-10 w-full rounded bg-surface-overlay" />
-              <div class="shimmer h-10 w-full rounded bg-surface-overlay" />
-              <div class="text-[12px] text-text-muted">Loading model settings…</div>
-            </div>
-            <div v-else-if="llmSettingsError && !llmSettings" class="flex min-h-64 flex-col items-start justify-center gap-2 rounded-md border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
-              <div>{{ llmSettingsError }}</div>
-              <button type="button" class="font-medium underline underline-offset-2" @click="loadLLMSettings">Retry</button>
-            </div>
-            <div v-else class="grid gap-4">
-              <div v-if="llmSettingsLoading" class="flex items-center gap-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
-                <Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" /> Refreshing model settings…
-              </div>
-              <div v-if="llmSettingsError" class="flex flex-wrap items-center gap-2 rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">
-                <span>{{ llmSettingsError }}</span>
-                <button type="button" class="font-medium underline underline-offset-2" @click="loadLLMSettings">Retry</button>
-              </div>
-
-            <section class="grid gap-2">
-              <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Provider</div>
-              <div class="grid gap-2 sm:grid-cols-[minmax(0,300px)_minmax(0,1fr)]">
-                <div class="flex h-10 min-w-0 rounded-md border border-border-subtle bg-surface p-0.5">
-                  <button
-                    type="button"
-                    class="flex min-w-0 flex-1 items-center justify-center rounded-md px-2 text-[12px] font-medium transition"
-                    :class="!isGoogleGeminiProvider ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
-                    :disabled="llmSaving"
-                    @click="selectLLMProvider(OPENAI_COMPATIBLE_PROVIDER)"
-                  >
-                    OpenAI-compatible
-                  </button>
-                  <button
-                    type="button"
-                    class="flex min-w-0 flex-1 items-center justify-center rounded-md px-2 text-[12px] font-medium transition"
-                    :class="isGoogleGeminiProvider ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
-                    :disabled="llmSaving"
-                    @click="selectLLMProvider(GOOGLE_AI_STUDIO_PROVIDER)"
-                  >
-                    Google
-                  </button>
-                </div>
-                <div
-                  v-if="isGoogleGeminiProvider"
-                  class="flex h-10 min-w-0 rounded-md border border-border-subtle bg-surface p-0.5"
-                >
-                  <button
-                    type="button"
-                    class="flex min-w-0 flex-1 items-center justify-center rounded-md px-2 text-[12px] font-medium transition"
-                    :class="llmCredentialMode === 'api-key' ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
-                    :disabled="llmSaving"
-                    @click="llmCredentialMode = 'api-key'"
-                  >
-                    API key
-                  </button>
-                  <button
-                    type="button"
-                    class="flex min-w-0 flex-1 items-center justify-center rounded-md px-2 text-[12px] font-medium transition"
-                    :class="llmCredentialMode === 'service-account-json' ? 'bg-surface-raised text-text-primary shadow-sm' : 'text-text-muted hover:text-text-primary'"
-                    :disabled="llmSaving"
-                    @click="llmCredentialMode = 'service-account-json'"
-                  >
-                    Service account JSON
-                  </button>
-                </div>
-              </div>
-            </section>
-
-            <section class="grid gap-2">
-              <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Model endpoint</div>
-              <div class="grid gap-2 sm:grid-cols-2">
-                <label class="grid min-w-0 gap-1.5 text-[11px] font-medium text-text-secondary">
-                  Base URL
-                  <input
-                    v-model="llmBaseURL"
-                    class="h-10 min-w-0 rounded-md border bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted"
-                    :class="llmBaseURLError ? 'border-danger/50 focus:border-danger' : 'border-border-subtle focus:border-accent/50'"
-                    :placeholder="llmBaseURLPlaceholder"
-                    :disabled="llmSaving"
-                    :aria-invalid="Boolean(llmBaseURLError)"
-                    aria-describedby="llm-base-url-help"
-                    type="url"
-                  />
-                  <span
-                    id="llm-base-url-help"
-                    class="text-[11px] font-normal leading-4"
-                    :class="llmBaseURLError ? 'text-danger' : 'text-text-muted'"
-                  >
-                    {{ llmBaseURLError || (isGoogleGeminiProvider ? 'Provider API base URL.' : 'Base URL only. App Studio adds /chat/completions.') }}
-                  </span>
-                </label>
-                <label class="grid min-w-0 content-start gap-1.5 text-[11px] font-medium text-text-secondary">
-                  Model ID
-                  <input
-                    v-model="llmModel"
-                    class="h-10 min-w-0 rounded-md border border-border-subtle bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-                    placeholder="Model"
-                    :disabled="llmSaving"
-                  />
-                </label>
-              </div>
-            </section>
-
-            <section class="grid gap-2">
-              <div class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Credential</div>
-              <textarea
-                v-if="isGoogleServiceAccountMode"
-                v-model="llmApiKey"
-                class="min-h-[140px] min-w-0 resize-y rounded-md border border-border-subtle bg-surface px-3 py-2.5 font-mono text-[12px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-                :placeholder="llmApiKeyPlaceholder"
-                autocomplete="off"
-                :disabled="llmSaving"
-              />
-              <input
-                v-else
-                v-model="llmApiKey"
-                class="h-10 min-w-0 rounded-md border border-border-subtle bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-                :placeholder="llmApiKeyPlaceholder"
-                type="password"
-                autocomplete="off"
-                :disabled="llmSaving"
-              />
-              <div v-if="llmApiKeyHint" class="text-[12px] leading-5 text-text-muted">
-                {{ llmApiKeyHint }}
-              </div>
-              <div v-if="llmStatus" class="rounded-md border border-border-subtle bg-surface px-3 py-2 text-[12px] text-text-muted">
-                {{ llmStatus }}
-              </div>
-            </section>
-
-            <footer class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-3">
-              <button
-                type="button"
-                class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-border-subtle px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
-                :title="isGoogleGeminiProvider ? 'Clear Google credential' : 'Clear LLM key'"
-                :disabled="llmSaving || !llmSettings?.configured"
-                @click="clearLLMKey"
-              >
-                <Trash2 class="h-4 w-4" :stroke-width="1.75" />
-                Clear key
-              </button>
-              <div class="flex items-center gap-2">
-                <button
-                  v-if="!settingsInWorkbench"
-                  type="button"
-                  class="inline-flex h-9 items-center justify-center rounded-md border border-border-subtle px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary"
-                  @click="closeSettings"
-                >
-                  Cancel
-                </button>
-                <button
-                  class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-accent/30 bg-accent/10 px-3 text-[13px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
-                  title="Save LLM settings"
-                  :disabled="llmSaving || !llmModel.trim() || Boolean(llmBaseURLError)"
-                >
-                  <Loader2 v-if="llmSaving" class="h-4 w-4 animate-spin" :stroke-width="1.75" />
-                  <Check v-else class="h-4 w-4" :stroke-width="1.75" />
-                  Save settings
-                </button>
-              </div>
-            </footer>
-            </div>
-          </form>
+            :settings="llmSettings"
+            :loading="llmSettingsLoading"
+            :load-error="llmSettingsError"
+            :saving="llmSaving"
+            :status="llmStatus"
+            :action-error="llmActionError"
+            :editor-open="llmEditorOpen"
+            :editing-model-i-d="llmEditingModelID"
+            :name="llmName"
+            :provider="llmProvider"
+            :credential-mode="llmCredentialMode"
+            :base-u-r-l="llmBaseURL"
+            :model="llmModel"
+            :api-key="llmApiKey"
+            :base-u-r-l-error="llmBaseURLError"
+            :base-u-r-l-placeholder="llmBaseURLPlaceholder"
+            :api-key-placeholder="llmApiKeyPlaceholder"
+            :api-key-hint="llmApiKeyHint"
+            :google-provider="isGoogleGeminiProvider"
+            :google-service-account-mode="isGoogleServiceAccountMode"
+            @retry="loadLLMSettings"
+            @open-editor="openLLMEditor"
+            @cancel-editor="cancelLLMEditor"
+            @save="saveLLMSettings"
+            @delete="deleteLLMModel"
+            @set-default="setDefaultLLMModel"
+            @select-provider="selectLLMProvider"
+            @update:name="llmName = $event"
+            @update:credential-mode="llmCredentialMode = $event"
+            @update:base-u-r-l="llmBaseURL = $event"
+            @update:model="llmModel = $event"
+            @update:api-key="llmApiKey = $event"
+          />
 
           <footer v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench" class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-4">
             <div class="min-w-0">

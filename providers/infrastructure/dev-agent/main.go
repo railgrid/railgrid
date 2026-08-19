@@ -1304,6 +1304,8 @@ type processStatusResponse struct {
 	ActionsEnabled          bool   `json:"actionsEnabled"`
 	ActionsReady            bool   `json:"actionsReady"`
 	ActionsTokenExpiresAt   int64  `json:"actionsTokenExpiresAtUnixMilli,omitempty"`
+	SourceRevision          uint64 `json:"sourceRevision,omitempty"`
+	SourceDigest            string `json:"sourceDigest,omitempty"`
 }
 
 type runtimeOperations interface {
@@ -1546,6 +1548,16 @@ func (s *agentServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
+	}
+	root, manifestErr := openWorkspaceRoot(s.config.WorkDir)
+	if manifestErr == nil {
+		manifest, found, readErr := readWorkspaceManifest(root)
+		current := readErr == nil && found && len(manifest.PendingReloadCommands) == 0 && verifyWorkspaceManifest(root, manifest) == nil
+		_ = root.Close()
+		if current {
+			status.SourceRevision = manifest.SourceRevision
+			status.SourceDigest = manifest.SourceDigest
+		}
 	}
 	actions := s.actionsState.snapshot(time.Now())
 	status.ActionsEnabled = actions.Enabled

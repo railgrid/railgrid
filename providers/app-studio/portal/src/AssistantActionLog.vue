@@ -25,7 +25,7 @@ import {
 import type { ProjectAssistantActionFeedItem, ProjectAssistantActionKind, ProjectAssistantActionStatus } from './types'
 import AssistantExecDetails from './AssistantExecDetails.vue'
 
-const props = defineProps<{ messageId: string; items: ProjectAssistantActionFeedItem[] }>()
+const props = withDefaults(defineProps<{ messageId: string; items: ProjectAssistantActionFeedItem[]; stopping?: boolean }>(), { stopping: false })
 const openDiagnosticID = ref<string | null>(null)
 const copiedDiagnosticID = ref<string | null>(null)
 const manuallyCollapsed = ref(false)
@@ -37,7 +37,7 @@ const summary = computed(() => summarizeAssistantActions(rows.value))
 const panelID = `app-studio-assistant-actions-${props.messageId.replace(/[^a-zA-Z0-9_-]/g, '-')}`
 
 function isBusy(status: ProjectAssistantActionStatus): boolean {
-  return status === 'running' || status === 'retrying'
+  return !props.stopping && (status === 'running' || status === 'retrying')
 }
 
 function isWaiting(status: ProjectAssistantActionStatus): boolean {

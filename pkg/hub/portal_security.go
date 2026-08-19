@@ -32,7 +32,7 @@ import (
 func WithPortalSecurityHeaders(next http.Handler, frameSources ...string) http.Handler {
 	csp := "default-src 'self'; " +
 		"frame-src " + strings.Join(portalFrameSources(frameSources), " ") + "; " +
-		"img-src 'self' data:; " +
+		"img-src 'self' data: blob:; " +
 		"script-src 'self' 'unsafe-inline'; " +
 		"style-src 'self' 'unsafe-inline'; " +
 		"connect-src 'self'; " +

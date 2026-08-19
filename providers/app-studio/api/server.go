@@ -28,6 +28,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -109,6 +110,13 @@ type Server struct {
 	previewConsoleSigner        *previewConsoleCapabilitySigner
 	previewInspector            projectAssistantPreviewInspector
 	previewInspectionResolveURL func(context.Context, identity, *aiv1alpha1.Project) (string, error)
+	projectThumbnailContext     context.Context
+	projectThumbnailCancel      context.CancelFunc
+	projectThumbnailCaptures    map[string]*projectThumbnailCaptureRequest
+	projectThumbnailCurrentness func(context.Context, identity, *aiv1alpha1.Project, uint64) error
+	projectThumbnailFailures    map[string]time.Time
+	projectThumbnailQueue       chan string
+	projectThumbnailWorkersUp   bool
 	// publishingMembershipFetcher is a test seam for the hub-mediated
 	// membership lookup used by the publishing API. Production resolves the
 	// current org/workspace membership through hubBase with the caller's bearer
@@ -134,7 +142,11 @@ func NewWithWorkspace(gql *tenant.GraphQLClient, msgStore store.Store, workspace
 
 // NewWithWorkspaceContext binds assistant workers to the provider lifecycle.
 func NewWithWorkspaceContext(parent context.Context, gql *tenant.GraphQLClient, msgStore store.Store, workspaces *workspace.FileStore, hubBase string, mcpInsecureSkipTLSVerify bool) *Server {
+	if parent == nil {
+		parent = context.Background()
+	}
 	actionsCABundle, actionsCABundleErr := loadActionsCABundleFromEnv()
+	thumbnailContext, thumbnailCancel := context.WithCancel(parent)
 	s := &Server{
 		gql:                      gql,
 		store:                    msgStore,
@@ -144,6 +156,8 @@ func NewWithWorkspaceContext(parent context.Context, gql *tenant.GraphQLClient, 
 		actionsCABundle:          actionsCABundle,
 		actionsCABundleErr:       actionsCABundleErr,
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
+		projectThumbnailContext:  thumbnailContext,
+		projectThumbnailCancel:   thumbnailCancel,
 	}
 	s.publishingHTTPClient = newPublishingHTTPClient()
 	s.assistantEngine = NewEinoAssistantEngine(s)
@@ -152,7 +166,12 @@ func NewWithWorkspaceContext(parent context.Context, gql *tenant.GraphQLClient, 
 	return s
 }
 
-func (s *Server) Shutdown(ctx context.Context) { s.projectAssistantSupervisor().Shutdown(ctx) }
+func (s *Server) Shutdown(ctx context.Context) {
+	if s.projectThumbnailCancel != nil {
+		s.projectThumbnailCancel()
+	}
+	s.projectAssistantSupervisor().Shutdown(ctx)
+}
 
 func (s *Server) projectAssistantSupervisor() *projectAssistantSupervisor {
 	s.mu.Lock()
@@ -209,9 +228,14 @@ func (s *Server) Register(r *mux.Router) {
 	r.HandleFunc("/api/projects/import-repositories", s.listImportRepositories).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/llm-settings", s.getProjectLLMSettings).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/llm-settings", s.patchProjectLLMSettings).Methods(http.MethodPatch)
+	r.HandleFunc("/api/projects/llm-settings/models", s.createProjectLLMModel).Methods(http.MethodPost)
+	r.HandleFunc("/api/projects/llm-settings/models/{model}", s.patchProjectLLMModel).Methods(http.MethodPatch)
+	r.HandleFunc("/api/projects/llm-settings/models/{model}", s.deleteProjectLLMModel).Methods(http.MethodDelete)
+	r.HandleFunc("/api/projects/llm-settings/default", s.setDefaultProjectLLMModel).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}", s.getProject).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}", s.patchProject).Methods(http.MethodPatch)
 	r.HandleFunc("/api/projects/{project}", s.deleteProject).Methods(http.MethodDelete)
+	r.HandleFunc("/api/projects/{project}/thumbnail", s.getProjectThumbnail).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/threads", s.listProjectAssistantThreads).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/skills", s.getProjectAssistantSkills).Methods(http.MethodGet)
 	r.HandleFunc("/api/projects/{project}/assistant/skills/detail", s.getProjectAssistantSkillDetailByID).Methods(http.MethodGet)

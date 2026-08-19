@@ -105,6 +105,7 @@ type ProjectView struct {
 	CreatedAt      time.Time                     `json:"createdAt"`
 	UpdatedAt      *time.Time                    `json:"updatedAt,omitempty"`
 	SourceRevision uint64                        `json:"sourceRevision,omitempty"`
+	Thumbnail      *ProjectThumbnailView         `json:"thumbnail,omitempty"`
 }
 
 type ProjectEnvironmentView struct {
@@ -285,7 +286,8 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	})
 	out := make([]ProjectView, 0, len(list.Items))
 	for i := range list.Items {
-		out = append(out, projectView(r.Context(), c, &list.Items[i], id))
+		project := &list.Items[i]
+		out = append(out, s.projectViewWithThumbnail(r.Context(), projectView(r.Context(), c, project, id), id, project))
 	}
 	writeJSON(w, http.StatusOK, ListResponse[ProjectView]{Items: out})
 }
@@ -575,7 +577,8 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, s.projectViewWithSourceRevision(r.Context(), c, p, id))
+	view := s.projectViewWithSourceRevision(r.Context(), c, p, id)
+	writeJSON(w, http.StatusOK, s.projectViewWithThumbnail(r.Context(), view, id, p))
 }
 
 func (s *Server) patchProject(w http.ResponseWriter, r *http.Request) {
@@ -606,7 +609,8 @@ func (s *Server) patchProject(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.projectViewWithSourceRevision(r.Context(), c, updated, id))
+	view := s.projectViewWithSourceRevision(r.Context(), c, updated, id)
+	writeJSON(w, http.StatusOK, s.projectViewWithThumbnail(r.Context(), view, id, updated))
 }
 
 func applyProjectPatchRequest(p *aiv1alpha1.Project, req PatchProjectRequest) (bool, error) {
@@ -733,6 +737,7 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
+	s.forgetProjectThumbnailCapture(id, p)
 	releaseAssistantReservation, ok := s.reserveProjectExternalOperation(w, r.Context(), id, p, "deleting this project")
 	if !ok {
 		return
@@ -764,6 +769,13 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		cleanupCtx, cancelCleanup := detachedProjectPersistenceContext(r.Context())
 		if err := s.store.DeleteProjectMessages(cleanupCtx, messageScope); err != nil {
 			klog.FromContext(r.Context()).Error(err, "delete project messages", "project", name)
+		}
+		cancelCleanup()
+	}
+	if thumbnailStore, ok := s.projectThumbnailStore(); ok {
+		cleanupCtx, cancelCleanup := detachedProjectPersistenceContext(r.Context())
+		if err := thumbnailStore.DeleteProjectThumbnail(cleanupCtx, messageScope); err != nil {
+			klog.FromContext(r.Context()).Error(err, "delete project thumbnail", "project", name)
 		}
 		cancelCleanup()
 	}

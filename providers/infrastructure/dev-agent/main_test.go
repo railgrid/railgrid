@@ -659,7 +659,9 @@ func TestStatusReportsCurrentAttemptAndDeclaredPortReadiness(t *testing.T) {
 	defer func() { _ = listener.Close() }()
 	port := listener.Addr().(*net.TCPAddr).Port
 
+	workdir := t.TempDir()
 	srv := newTestAgent(t, &agentConfig{
+		WorkDir:      workdir,
 		StartCommand: "sleep 60",
 		Port:         fmt.Sprint(port),
 	})
@@ -667,6 +669,14 @@ func TestStatusReportsCurrentAttemptAndDeclaredPortReadiness(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	defer func() { _ = srv.supervisor.stop() }()
+	files := []syncFile{{Path: "app.txt", Content: "current"}}
+	digest, err := digestSyncFiles(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if syncRecorder, _ := doSync(t, srv, syncRequest{Files: files, SourceRevision: 9, SourceDigest: digest}); syncRecorder.Code != http.StatusOK {
+		t.Fatalf("sync status = %d body=%s", syncRecorder.Code, syncRecorder.Body.String())
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	req.Header.Set(controlTokenHeader, "test-token")
@@ -679,8 +689,20 @@ func TestStatusReportsCurrentAttemptAndDeclaredPortReadiness(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode status: %v", err)
 	}
-	if got.AttemptID != 1 || got.AttemptStartedUnixMilli == 0 || !got.Configured || !got.Running || !got.PortReachable || got.Port != fmt.Sprint(port) {
+	if got.AttemptID != 1 || got.AttemptStartedUnixMilli == 0 || !got.Configured || !got.Running || !got.PortReachable || got.Port != fmt.Sprint(port) || got.SourceRevision != 9 || got.SourceDigest != digest {
 		t.Fatalf("status = %+v", got)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, "app.txt"), []byte("tampered"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req.Clone(context.Background()))
+	got = processStatusResponse{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode stale status: %v", err)
+	}
+	if got.SourceRevision != 0 || got.SourceDigest != "" {
+		t.Fatalf("tampered workspace reported current source evidence: %+v", got)
 	}
 }
 

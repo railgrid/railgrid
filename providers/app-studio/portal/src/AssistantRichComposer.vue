@@ -33,6 +33,7 @@ const props = withDefaults(defineProps<{
   providers: ProviderItem[]
   disabled?: boolean
   activeRun?: boolean
+  queueingEnabled?: boolean
   placeholder?: string
   annotationDocumentId?: string
   annotationPagePath?: string
@@ -43,6 +44,7 @@ const props = withDefaults(defineProps<{
   selectedResources: () => [],
   disabled: false,
   activeRun: false,
+  queueingEnabled: true,
   placeholder: 'Message this project',
   annotationDocumentId: '',
   annotationPagePath: '',
@@ -55,7 +57,7 @@ const emit = defineEmits<{
   'update:selectedSkills': [value: ProjectAssistantSkill[]]
   'update:selectedResources': [value: ProjectAssistantContextResource[]]
   state: [value: AssistantComposerState]
-  submit: [value: AssistantComposerState]
+  submit: [value: AssistantComposerState, intent: 'queue' | 'steer']
   selectMode: [mode: ProjectAssistantRunMode]
 }>()
 
@@ -518,7 +520,10 @@ function handleKeydown(event: KeyboardEvent) {
   }
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
-    if (!commandPaletteOpen.value) emit('submit', emitState())
+    if (!commandPaletteOpen.value) {
+      const steer = props.activeRun && ((event.metaKey || event.ctrlKey) || !props.queueingEnabled)
+      emit('submit', emitState(), steer ? 'steer' : 'queue')
+    }
     return
   }
   if (!event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -679,20 +684,25 @@ defineExpose({ focus: () => focusEditor(false), openPalette, closePalette })
       @click="handleClick"
       @focus="saveSelection"
     />
-    <div class="absolute bottom-2 left-1.5 right-12 flex min-w-0 items-center gap-0.5">
-      <button
-        type="button"
-        class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
-        :disabled="disabled"
-        title="Add skill, resource, or command"
-        aria-label="Open slash commands"
-        aria-haspopup="dialog"
-        :aria-expanded="commandPaletteOpen"
-        @click="openPalette"
-      >
-        <Plus class="h-4 w-4" :stroke-width="1.75" />
-      </button>
-      <slot name="controls" />
+    <div class="absolute bottom-2 left-1.5 right-12 flex min-w-0 items-center gap-2">
+      <div class="flex min-w-0 items-center gap-0.5">
+        <button
+          type="button"
+          class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
+          :disabled="disabled"
+          title="Add skill, resource, or command"
+          aria-label="Open slash commands"
+          aria-haspopup="dialog"
+          :aria-expanded="commandPaletteOpen"
+          @click="openPalette"
+        >
+          <Plus class="h-4 w-4" :stroke-width="1.75" />
+        </button>
+        <slot name="controls" />
+      </div>
+      <div class="ml-auto min-w-0 shrink">
+        <slot name="actions" />
+      </div>
     </div>
   </div>
 </template>

@@ -43,9 +43,10 @@ type MemoryStore struct {
 	// replicaClaims is the in-memory form of the fleet-wide ownership map
 	// (claims.go). Single-process by construction, which is exactly what the
 	// explicit in-memory mode promises.
-	replicaClaims map[string]ReplicaClaim
-	approvalModes         map[Scope]map[string]AssistantApprovalPreference
-	bootstrapPermits      map[Scope]projectBootstrapPermit
+	replicaClaims     map[string]ReplicaClaim
+	approvalModes     map[Scope]map[string]AssistantApprovalPreference
+	bootstrapPermits  map[Scope]projectBootstrapPermit
+	projectThumbnails map[Scope]ProjectThumbnail
 }
 
 type projectBootstrapPermit struct {
@@ -64,6 +65,7 @@ func NewMemoryStore() *MemoryStore {
 		conversationSequences: map[Scope]int64{},
 		approvalModes:         map[Scope]map[string]AssistantApprovalPreference{},
 		bootstrapPermits:      map[Scope]projectBootstrapPermit{},
+		projectThumbnails:     map[Scope]ProjectThumbnail{},
 	}
 }
 
@@ -581,6 +583,7 @@ func (s *MemoryStore) DeleteProjectMessages(_ context.Context, scope Scope) erro
 	delete(s.threadEvents, scope)
 	delete(s.bootstrapPermits, scope)
 	delete(s.approvalModes, scope)
+	delete(s.projectThumbnails, scope)
 	return nil
 }
 

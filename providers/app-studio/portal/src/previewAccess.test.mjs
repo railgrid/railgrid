@@ -12,21 +12,23 @@ function functionSource(name, nextName) {
 }
 
 test('shows development access in Project Settings only for compatible templates', () => {
-  const settingsStart = app.indexOf('aria-label="Development preview access settings"')
+  const developmentStart = app.indexOf('aria-label="Development settings"')
+  const settingsStart = app.indexOf('aria-labelledby="development-preview-access-heading"', developmentStart)
   const settingsEnd = app.indexOf('</section>', settingsStart)
-  assert.ok(settingsStart >= 0 && settingsEnd > settingsStart)
+  assert.ok(developmentStart >= 0 && settingsStart > developmentStart && settingsEnd > settingsStart)
   const selector = app.slice(settingsStart, settingsEnd)
 
+  assert.match(app.slice(developmentStart, settingsStart), /id="development-template-heading"[\s\S]*>Template</)
   assert.match(app, /selectedDevelopmentTemplate\.value\?\.previewAccessModes/)
   assert.match(app, /developmentPreviewAccessModesFromAuthorization/)
   assert.match(app, /includes\('private'\).*includes\('public'\)/s)
-  assert.match(selector, /Development preview access/)
+  assert.match(selector, /id="development-preview-access-heading"[\s\S]*>Preview access</)
   assert.match(selector, /aria-label="Development preview access"/)
   assert.match(selector, /option value="private">Workspace only/)
   assert.match(selector, /option value="public">Anyone with link/)
   assert.match(selector, /developmentPreviewAccessBusy \|\| !developmentPreviewAccessConverged/)
 
-  const toolbarStart = app.indexOf('<PreviewActionsMenu')
+  const toolbarStart = app.indexOf('v-else-if="activeWorkbenchTab?.kind === \'preview\'"')
   const toolbarEnd = app.indexOf('{{ developmentPreviewOpenButtonLabel }}', toolbarStart)
   const toolbar = app.slice(toolbarStart, toolbarEnd)
   assert.doesNotMatch(toolbar, /Development preview access/)

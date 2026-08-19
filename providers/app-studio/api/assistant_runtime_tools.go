@@ -81,6 +81,8 @@ type projectAssistantProcessStatus struct {
 	Port                    string `json:"port,omitempty"`
 	PortReachable           bool   `json:"portReachable,omitempty"`
 	PortWarmupPending       bool   `json:"-"`
+	SourceRevision          uint64 `json:"sourceRevision,omitempty"`
+	SourceDigest            string `json:"sourceDigest,omitempty"`
 }
 
 type projectAssistantRuntimeEnvToolInput struct {

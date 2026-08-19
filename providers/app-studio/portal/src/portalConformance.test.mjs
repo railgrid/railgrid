@@ -7,6 +7,36 @@ const productionForm = await readFile(new URL('./ProductionForm.vue', import.met
 const loadingShell = await readFile(new URL('./ProductionSettingsLoadingShell.vue', import.meta.url), 'utf8')
 const statusBadge = await readFile(new URL('./portalkit/StatusBadge.vue', import.meta.url), 'utf8')
 const styles = await readFile(new URL('./style.css', import.meta.url), 'utf8')
+const providerFrame = await readFile(new URL('../../../../portal/src/pages/ProviderFrame.vue', import.meta.url), 'utf8')
+const api = await readFile(new URL('./api.ts', import.meta.url), 'utf8')
+
+test('uses host catalog chrome on landing routes and keeps project workbenches full bleed', () => {
+  assert.match(providerFrame, /const APP_STUDIO_CREATE_ROUTE = '~new'/)
+  assert.match(providerFrame, /const APP_STUDIO_MODELS_ROUTE = '~models'/)
+  assert.match(providerFrame, /props\.providerName === 'app-studio' &&[\s\S]*\['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_MODELS_ROUTE\]\.includes\(providerRouteSegment\.value\)/)
+  assert.match(providerFrame, /props\.providerName === 'app-studio' && !isAppStudioLandingRoute\.value/)
+  assert.match(providerFrame, /<header v-if="entry && !isFullBleedProvider"/)
+  assert.match(app, /<h2[^>]*>Projects<\/h2>/)
+  assert.doesNotMatch(app, />App Studio<\/h1>/)
+  assert.doesNotMatch(app, /max-w-\[1600px\]/)
+})
+
+test('presents Projects and Models as provider sections without a generic settings action', () => {
+  const landingStart = app.indexOf('<div v-else-if="!isBuilderVisible"')
+  const workspaceStart = app.indexOf('<div v-else ref="workspaceRef"', landingStart)
+  assert.ok(landingStart >= 0 && workspaceStart > landingStart)
+  const landing = app.slice(landingStart, workspaceStart)
+
+  assert.match(landing, /<nav[^>]*aria-label="App Studio sections"/)
+  assert.match(landing, /@click="openProjectsSection"[\s\S]*Projects/)
+  assert.match(landing, /@click="openModelsSection"[\s\S]*Models/)
+  assert.match(landing, /<header v-if="isProjectIndexRoute"[\s\S]*>Projects<\/h2>/)
+  assert.doesNotMatch(landing, /Back to projects|closeNewProjectComposer/)
+  assert.doesNotMatch(landing, />\s*Settings\s*</)
+  assert.match(landing, /id="app-studio-models-host"/)
+  assert.match(app, /if \(isModelsRoute\.value\) return '#app-studio-models-host'/)
+  assert.match(app, /isCreateRoute\.value \|\| isModelsRoute\.value \? '' : routeSegment\.value/)
+})
 
 test('uses shared confirmation and status primitives without local duplicates', () => {
   assert.match(app, /import StatusBadge from '\.\/portalkit\/StatusBadge\.vue'/)
@@ -15,6 +45,22 @@ test('uses shared confirmation and status primitives without local duplicates', 
   for (const status of ['loaded', 'loading', 'starting', 'loaded unverified']) {
     assert.match(statusBadge, new RegExp(`case '${status}'`))
   }
+})
+
+test('replaces the stable project-card fallback with authenticated commit screenshots', () => {
+  assert.match(app, /v-if="projectThumbnailURLs\[project\.name\]"/)
+  assert.match(app, /:alt="`\$\{project\.displayName\} app preview`"/)
+  assert.match(app, /class="absolute inset-0 z-10 h-full w-full object-cover object-top"/)
+  assert.match(app, /class="absolute right-2 top-2 z-20[^\"]*focus:opacity-100[^\"]*group-hover:opacity-100/)
+  assert.match(app, /project\.thumbnail\?\.refreshing/)
+  assert.match(app, /URL\.revokeObjectURL/)
+  assert.match(app, /interface ProjectThumbnailRequestGuard/)
+  assert.match(app, /guard\.contextFingerprint === appContextFingerprint\(props\.ctx\)/)
+  assert.match(app, /if \(!projectThumbnailRequestIsCurrent\(guard\)\) \{[\s\S]*createdURLs[\s\S]*URL\.revokeObjectURL/)
+  assert.match(app, /api\.listProjects\(guard\.ctx\)/)
+  assert.match(app, /api\.getProjectThumbnail\(guard\.ctx, project\.name, revision\)/)
+  assert.match(api, /headers: tenantHeaders\(\{ token: ctx\?\.token \}\)/)
+  assert.match(api, /getProjectThumbnail[\s\S]*\/thumbnail/)
 })
 
 test('styles the shared status badge inside the App Studio light DOM', () => {

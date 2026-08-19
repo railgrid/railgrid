@@ -4,7 +4,6 @@ import type {
   FarosContext,
   ListResponse,
   Project,
-  ProjectHydrateResult,
   ProjectRestoreResult,
   ProjectAssistantRunMode,
   ProjectAssistantReviewTarget,
@@ -142,6 +141,19 @@ async function request<T>(ctx: FarosContext | null, method: string, path: string
     throw new ProjectAPIRequestError(detail, res.status)
   }
   return (text ? JSON.parse(text) : null) as T
+}
+
+async function requestBlob(ctx: FarosContext | null, path: string): Promise<Blob> {
+  const res = await fetch(path, {
+    method: 'GET',
+    credentials: 'same-origin',
+    headers: tenantHeaders({ token: ctx?.token }),
+    cache: 'no-cache',
+  })
+  if (!res.ok) {
+    throw new ProjectAPIRequestError(res.statusText || 'project thumbnail is unavailable', res.status)
+  }
+  return res.blob()
 }
 
 function isProjectAPIInitializingResponse(status: number, reason: string, message: string): boolean {
@@ -502,15 +514,6 @@ export const api = {
     )
   },
 
-  async hydrateWorkspace(ctx: FarosContext | null, name: string, ref?: string): Promise<ProjectHydrateResult> {
-    return request<ProjectHydrateResult>(
-      ctx,
-      'POST',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/hydrate-workspace`,
-      ref ? { ref } : {},
-    )
-  },
-
   async restoreWorkspace(ctx: FarosContext | null, name: string, commitSHA: string, expectedSourceRevision: number): Promise<ProjectRestoreResult> {
     return request<ProjectRestoreResult>(
       ctx,
@@ -820,8 +823,36 @@ export const api = {
     return request<ProjectLLMSettings>(ctx, 'PATCH', `${baseURL(ctx)}/llm-settings`, body)
   },
 
+  async createLLMModel(
+    ctx: FarosContext | null,
+    body: { name: string; provider?: string; baseURL?: string; model: string; apiKey?: string },
+  ): Promise<ProjectLLMSettings> {
+    return request<ProjectLLMSettings>(ctx, 'POST', `${baseURL(ctx)}/llm-settings/models`, body)
+  },
+
+  async patchLLMModel(
+    ctx: FarosContext | null,
+    modelID: string,
+    body: { name?: string; provider?: string; baseURL?: string; model?: string; apiKey?: string },
+  ): Promise<ProjectLLMSettings> {
+    return request<ProjectLLMSettings>(ctx, 'PATCH', `${baseURL(ctx)}/llm-settings/models/${encodeURIComponent(modelID)}`, body)
+  },
+
+  async deleteLLMModel(ctx: FarosContext | null, modelID: string): Promise<ProjectLLMSettings> {
+    return request<ProjectLLMSettings>(ctx, 'DELETE', `${baseURL(ctx)}/llm-settings/models/${encodeURIComponent(modelID)}`)
+  },
+
+  async setDefaultLLMModel(ctx: FarosContext | null, modelID: string): Promise<ProjectLLMSettings> {
+    return request<ProjectLLMSettings>(ctx, 'PATCH', `${baseURL(ctx)}/llm-settings/default`, { modelID })
+  },
+
   async getProject(ctx: FarosContext | null, name: string): Promise<Project> {
     return request<Project>(ctx, 'GET', `${baseURL(ctx)}/${encodeURIComponent(name)}`)
+  },
+
+  async getProjectThumbnail(ctx: FarosContext | null, name: string, revision = ''): Promise<Blob> {
+    const suffix = revision ? `?revision=${encodeURIComponent(revision)}` : ''
+    return requestBlob(ctx, `${baseURL(ctx)}/${encodeURIComponent(name)}/thumbnail${suffix}`)
   },
 
   async listProjectIntegrations(ctx: FarosContext | null, name: string): Promise<ProjectIntegration[]> {
@@ -939,11 +970,11 @@ export const api = {
     return body.items ?? []
   },
 
-  async startAssistantTurn(ctx: FarosContext | null, name: string, threadID: string, body: { content: string; clientUserMessageID: string; collaborationMode: ProjectAssistantRunMode; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+  async startAssistantTurn(ctx: FarosContext | null, name: string, threadID: string, body: { content: string; clientUserMessageID: string; modelID?: string; collaborationMode: ProjectAssistantRunMode; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
     return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/turns`, body)
   },
 
-  async startAssistantReview(ctx: FarosContext | null, name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
+  async startAssistantReview(ctx: FarosContext | null, name: string, threadID: string, body: { target: ProjectAssistantReviewTarget; clientUserMessageID: string; modelID?: string; skills?: string[]; contextResources?: ProjectAssistantContextResource[]; contentParts?: ProjectAssistantContentPart[] }): Promise<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }> {
     return request<{ thread: ProjectAssistantThread; turn: ProjectAssistantTurn }>(ctx, 'POST', `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads/${encodeURIComponent(threadID)}/reviews`, body)
   },
 

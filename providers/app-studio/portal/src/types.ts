@@ -394,6 +394,12 @@ export interface Project {
   createdAt: string
   updatedAt?: string
   sourceRevision?: number
+  thumbnail?: {
+    available: boolean
+    refreshing?: boolean
+    commitSHA?: string
+    revision?: string
+  }
 }
 
 export interface ProjectEnvironment {
@@ -455,11 +461,23 @@ export interface ProjectRepositoryCommit {
   completedAt?: string
 }
 
+export interface ProjectLLMModelSettings {
+  id: string
+  name: string
+  provider: string
+  baseURL: string
+  model: string
+  configured: boolean
+  default?: boolean
+}
+
 export interface ProjectLLMSettings {
   provider: string
   baseURL: string
   model: string
   configured: boolean
+  defaultModelID?: string
+  models: ProjectLLMModelSettings[]
 }
 
 export interface ProviderChild {
@@ -583,15 +601,6 @@ export interface ImportRepository {
   name?: string
   connectionRef?: string
   htmlURL?: string
-}
-
-// Result of POST /api/projects/{name}/hydrate-workspace.
-export interface ProjectHydrateResult {
-  repositoryRef: string
-  ref?: string
-  commitSHA?: string
-  written?: string[]
-  skipped?: string[]
 }
 
 // Result of POST /api/projects/{name}/restore-workspace. Unlike hydration,

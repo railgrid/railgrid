@@ -28,6 +28,7 @@ export interface AssistantRunStartRequest {
   content: string
   clientRequestID: string
   collaborationMode: ProjectAssistantRunMode
+  modelID?: string
   expectedRunID?: string
   skills?: string[]
   contextResources?: ProjectAssistantContextResource[]
@@ -146,10 +147,11 @@ export interface PendingFirstProjectSubmission {
   content: string
   clientRequestID: string
   projectName: string
+  modelID: string
 }
 
-export function newFirstProjectSubmission(content: string, clientRequestID: string): PendingFirstProjectSubmission {
-  return { content, clientRequestID, projectName: '' }
+export function newFirstProjectSubmission(content: string, clientRequestID: string, modelID = ''): PendingFirstProjectSubmission {
+  return { content, clientRequestID, projectName: '', modelID }
 }
 
 export function firstProjectSubmissionWithProject(submission: PendingFirstProjectSubmission, projectName: string): PendingFirstProjectSubmission {
@@ -162,6 +164,7 @@ export function firstProjectStartPlan(submission: PendingFirstProjectSubmission)
     projectName: submission.projectName,
     content: submission.content,
     clientRequestID: submission.clientRequestID,
+    modelID: submission.modelID,
   }
 }
 
@@ -174,6 +177,7 @@ export function assistantRunStartFingerprint(projectName: string, request: Omit<
     projectName,
     request.content,
     request.collaborationMode,
+    request.modelID ?? '',
     request.expectedRunID ?? '',
     request.skills ?? [],
     request.contextResources ?? [],
@@ -190,8 +194,8 @@ export function firstProjectSubmissionAccepted(submission: PendingFirstProjectSu
 	return Boolean(user?.id && user.content === submission.content)
 }
 
-export function firstProjectSubmissionMatches(submission: PendingFirstProjectSubmission | null | undefined, projectName: string, content: string): submission is PendingFirstProjectSubmission {
-	return Boolean(submission && submission.projectName === projectName && submission.content === content)
+export function firstProjectSubmissionMatches(submission: PendingFirstProjectSubmission | null | undefined, projectName: string, content: string, modelID?: string): submission is PendingFirstProjectSubmission {
+	return Boolean(submission && submission.projectName === projectName && submission.content === content && (modelID === undefined || submission.modelID === modelID))
 }
 
 export function firstProjectSubmissionIsCurrent(submission: PendingFirstProjectSubmission, generation: number, currentGeneration: number, selectedProject: string, routeProject: string, draftProject: string): boolean {
@@ -231,6 +235,40 @@ export function assistantRunTerminal(status: unknown): boolean {
 
 export function assistantRunRequiresLiveControls(run: AssistantRun | null | undefined): run is AssistantRun {
   return Boolean(run && !assistantRunTerminal(run.status))
+}
+
+export interface AssistantComposerStopControlInput {
+  /** Reactive-only revision; value changes whenever the active run is replaced. */
+  activeRunRevision?: number
+  stopRequested: boolean
+  messageStreaming: boolean
+  activeRunID?: string
+  activeRunStatus?: unknown
+  prompt: string
+}
+
+export interface AssistantComposerStopControlState {
+  visible: boolean
+  disabled: boolean
+}
+
+/**
+ * Keeps the composer stop action stable across asynchronous run
+ * reconciliation. Once the local latch is set, transient loss of the active
+ * run or streaming flag cannot reveal the Send action before the interrupt
+ * reaches a terminal outcome.
+ */
+export function assistantComposerStopControlState(input: AssistantComposerStopControlInput): AssistantComposerStopControlState {
+  const serverStopping = Boolean(input.activeRunID) && normalizeAssistantRunStatus(input.activeRunStatus) === 'stopping'
+  const stopping = input.stopRequested || serverStopping
+  return {
+    visible: stopping || Boolean(
+      input.messageStreaming &&
+      (!input.activeRunID || !assistantRunTerminal(input.activeRunStatus)) &&
+      !input.prompt.trim(),
+    ),
+    disabled: stopping,
+  }
 }
 
 export function assistantRunCanImplementPlan(run: AssistantRun | null | undefined): run is AssistantRun {
@@ -371,7 +409,7 @@ export function orderConversationMessages<TMessage extends ProjectMessage>(messa
 interface ConversationRunTransport {
   connect(runID: string, afterRevision: number, setDisconnect: (disconnect: () => void) => void): Promise<void>
   abort(runID: string): Promise<void>
-  recover?(): Promise<void>
+  recover?(runID: string): Promise<boolean | void>
   onState?(state: ConversationConnectionState): void
   setTimeout(fn: () => void, delay: number): ReturnType<typeof setTimeout>
   clearTimeout(timer: ReturnType<typeof setTimeout>): void
@@ -426,21 +464,40 @@ export class ConversationRunController {
   }
 
   async stop() {
-    if (!this.runID) return
-    let aborted = false
+    const runID = this.runID
+    if (!runID) return
+    // Freeze the visible stream as soon as the user asks to stop. The durable
+    // interrupt request remains authoritative, but late chunks should not keep
+    // appearing while that request is in flight.
+    this.disconnect()
+    const generation = this.generation
     try {
-      await this.transport.abort(this.runID)
-      aborted = true
-    } finally {
-      this.disconnect()
+      await this.transport.abort(runID)
+    } catch (error) {
+      this.reconnectAfterStop(runID)
+      throw error
     }
-    if (aborted) {
-      try {
-        await this.transport.recover?.()
-      } catch {
-        // The abort response is authoritative. Recovery only updates local UI.
-      }
+    let settled = false
+    try {
+      settled = (await this.transport.recover?.(runID)) === true
+    } catch {
+      // The accepted abort remains authoritative. Reconnect below so the
+      // durable terminal transition can still converge when refresh failed.
     }
+    if (settled || this.runID !== runID || this.generation !== generation) return
+    // The interrupt endpoint intentionally returns the observable `stopping`
+    // state before Eino reaches a safe cancellation boundary. Resume the SSE
+    // subscription after the one-shot refresh so the eventual terminal event
+    // cannot be missed and leave the composer latched on Stopping forever.
+    this.reconnectAfterStop(runID)
+  }
+
+  private reconnectAfterStop(runID: string) {
+    if (this.runID !== runID) return
+    this.retry = 0
+    this.disconnected = false
+    this.setConnectionState('reconnecting')
+    void this.connect(this.generation)
   }
 
   private async connect(generation: number) {

@@ -35,13 +35,22 @@ const loadError = ref<string | null>(null)
 // already kebab-case in the catalog.
 const tagFor = (name: string) => `faros-provider-${name}`
 
+const APP_STUDIO_CREATE_ROUTE = '~new'
+const APP_STUDIO_MODELS_ROUTE = '~models'
+
 onMounted(() => {
   if (!providers.loaded) providers.load()
 })
 
 const entry = computed(() => providers.byName(props.providerName))
+const providerRouteSegment = computed(() => props.subPath.split('/').filter(Boolean)[0] ?? '')
+const isAppStudioLandingRoute = computed(() =>
+  props.providerName === 'app-studio' &&
+  ['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_MODELS_ROUTE].includes(providerRouteSegment.value),
+)
 const isFullBleedProvider = computed(() =>
-  ['app-studio', 'vibe-studio'].includes(props.providerName),
+  props.providerName === 'vibe-studio' ||
+  (props.providerName === 'app-studio' && !isAppStudioLandingRoute.value),
 )
 
 // On entry resolve OR provider switch, (re)load the script and mount.

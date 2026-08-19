@@ -10,6 +10,7 @@ test('renders a source-only Git history restore experience', () => {
   assert.match(history, /role="radiogroup"[\s\S]*aria-label="Project commits"/)
   assert.match(history, /repositoryCommitSelectable\(commit\)/)
   assert.match(history, /Restore project files/)
+  assert.doesNotMatch(history, /Load from Git|loadFromGit|hydrate/i)
   assert.match(history, /does not move the Git branch, create a commit, or change production/)
   assert.doesNotMatch(history, /Current production|releaseID|deployable release|production images|promote/i)
 })

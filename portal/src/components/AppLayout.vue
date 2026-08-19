@@ -75,7 +75,7 @@ const slotClass = computed(() => [
   // Single source of truth for page content width: every non-full-bleed page
   // renders in the SAME centered max-w-5xl column so the layout doesn't shift
   // when navigating. Pages must NOT add their own mx-auto/max-w-* wrapper —
-  // that reintroduces per-page width drift. Full-bleed pages (app-studio) opt
+  // that reintroduces per-page width drift. Full-bleed provider workbenches opt
   // out and manage their own width.
   layoutProps.fullBleed ? 'h-full min-h-0' : 'mx-auto w-full max-w-5xl',
 ])

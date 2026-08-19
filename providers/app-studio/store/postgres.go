@@ -34,6 +34,10 @@ const assistantConversationSchemaVersion = "assistant-conversation-items-v1"
 const assistantConversationSequenceSchemaVersion = "assistant-conversation-sequence-v1"
 const assistantThreadSchemaVersion = "assistant-thread-turn-item-v1"
 const assistantApprovalPolicySchemaVersion = "assistant-approval-policy-v2"
+const projectThumbnailSchemaVersion = "project-thumbnail-v1"
+const projectThumbnailEncryptionSchemaVersion = "project-thumbnail-encryption-v2"
+const projectThumbnailOrderSchemaVersion = "project-thumbnail-order-v3"
+const projectThumbnailVariantSchemaVersion = "project-thumbnail-variant-v4"
 
 const lockMessageSchemaMigrations = `SELECT pg_advisory_xact_lock(870408091945886937)`
 
@@ -118,6 +122,18 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	if err := ensureSchemaVersion(ctx, tx, assistantApprovalPolicySchemaVersion, assistantApprovalPolicySchemaStatements()...); err != nil {
 		return err
 	}
+	if err := ensureSchemaVersion(ctx, tx, projectThumbnailSchemaVersion, projectThumbnailSchemaStatements()...); err != nil {
+		return err
+	}
+	if err := ensureSchemaVersion(ctx, tx, projectThumbnailEncryptionSchemaVersion, projectThumbnailEncryptionSchemaStatements()...); err != nil {
+		return err
+	}
+	if err := ensureSchemaVersion(ctx, tx, projectThumbnailOrderSchemaVersion, projectThumbnailOrderSchemaStatements()...); err != nil {
+		return err
+	}
+	if err := ensureSchemaVersion(ctx, tx, projectThumbnailVariantSchemaVersion, projectThumbnailVariantSchemaStatements()...); err != nil {
+		return err
+	}
 	if err := ensureSchemaVersion(ctx, tx, replicaClaimSchemaVersion, replicaClaimSchemaStatements()...); err != nil {
 		return err
 	}
@@ -125,6 +141,45 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 		return fmt.Errorf("commit schema migration: %w", err)
 	}
 	return nil
+}
+
+func projectThumbnailSchemaStatements() []string {
+	return []string{`CREATE TABLE IF NOT EXISTS app_studio_project_thumbnails (
+		org_uuid text NOT NULL, workspace_uuid text NOT NULL, project_name text NOT NULL, project_uid text NOT NULL,
+		commit_sha text NOT NULL, commit_created_at timestamptz NOT NULL, commit_order text NOT NULL DEFAULT '',
+		variant text NOT NULL DEFAULT '',
+		content_type text NOT NULL CHECK (content_type IN ('image/png','image/jpeg')),
+		sha256 text NOT NULL, image_bytes bytea NOT NULL, image_encrypted boolean NOT NULL DEFAULT false,
+		image_key_id text NOT NULL DEFAULT '', captured_at timestamptz NOT NULL,
+		PRIMARY KEY (org_uuid, workspace_uuid, project_name, project_uid)
+	)`}
+}
+
+func projectThumbnailOrderSchemaStatements() []string {
+	return []string{
+		`ALTER TABLE app_studio_project_thumbnails ADD COLUMN IF NOT EXISTS commit_order text NOT NULL DEFAULT ''`,
+	}
+}
+
+func projectThumbnailVariantSchemaStatements() []string {
+	return []string{
+		`ALTER TABLE app_studio_project_thumbnails ADD COLUMN IF NOT EXISTS variant text NOT NULL DEFAULT ''`,
+	}
+}
+
+// projectThumbnailEncryptionSchemaStatements repairs databases that applied
+// project-thumbnail-v1 while that migration still had the original, smaller
+// table shape. Migrations are immutable once released: keep v1 suitable for
+// fresh installs, but always advance existing databases through this additive
+// and idempotent forward migration.
+func projectThumbnailEncryptionSchemaStatements() []string {
+	return []string{
+		`ALTER TABLE app_studio_project_thumbnails ADD COLUMN IF NOT EXISTS commit_created_at timestamptz`,
+		`UPDATE app_studio_project_thumbnails SET commit_created_at = captured_at WHERE commit_created_at IS NULL`,
+		`ALTER TABLE app_studio_project_thumbnails ALTER COLUMN commit_created_at SET NOT NULL`,
+		`ALTER TABLE app_studio_project_thumbnails ADD COLUMN IF NOT EXISTS image_encrypted boolean NOT NULL DEFAULT false`,
+		`ALTER TABLE app_studio_project_thumbnails ADD COLUMN IF NOT EXISTS image_key_id text NOT NULL DEFAULT ''`,
+	}
 }
 
 func assistantApprovalPolicySchemaStatements() []string {

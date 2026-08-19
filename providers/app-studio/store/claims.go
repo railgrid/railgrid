@@ -44,6 +44,9 @@ const (
 	// Revision carries the durable floor of the workspace source-revision
 	// fence so it survives the project moving between replicas.
 	ReplicaClaimKindProject = "project"
+	// ReplicaClaimKindThumbnail serializes derived preview capture across
+	// provider replicas. Detail carries the target repository commit SHA.
+	ReplicaClaimKindThumbnail = "thumbnail"
 )
 
 // ReplicaClaim is one fleet-wide ownership record.
@@ -71,6 +74,11 @@ func ReplicaClaimScopeKey(scope Scope) string {
 // ActivityClaimKey is the claim key for a project's assistant activity.
 func ActivityClaimKey(scope Scope) string {
 	return ReplicaClaimKindActivity + "/" + ReplicaClaimScopeKey(scope)
+}
+
+// ThumbnailClaimKey is the capture lease key for one project incarnation.
+func ThumbnailClaimKey(scope Scope) string {
+	return ReplicaClaimKindThumbnail + "/" + ReplicaClaimScopeKey(scope)
 }
 
 // ---- Postgres ----

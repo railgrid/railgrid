@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import ts from 'typescript'
+import { computed, ref } from 'vue'
 
 const source = await readFile(new URL('./conversationResilience.ts', import.meta.url), 'utf8')
 const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022 } })
@@ -168,7 +169,7 @@ test('App keeps central loading surfaces honest while project state hydrates', a
   assert.match(appSource, /Production settings are unavailable\. Refresh to retry\./)
   assert.match(appSource, /if \(isProjectAPIInitializingError\(err\)\)[\s\S]*promotionError\.value/)
   assert.match(appSource, /Connecting to preview…/)
-  assert.match(appSource, /!!activeAssistantRun\?\.id && !assistantRunTerminal/)
+  assert.match(appSource, /const assistantComposerStopControl = computed\(\(\) => assistantComposerStopControlState\(/)
   assert.match(appSource, /Loading provider catalog…/)
   assert.match(appSource, /class="shimmer aspect-\[16\/9\]/)
   assert.match(appSource, /:busy-action="publishingBusyAction"[\s\S]*:busy-target="publishingBusyTarget \?\? undefined"/)
@@ -181,6 +182,65 @@ test('assistantRunTerminal recognizes run and display forms of every closed outc
   for (const status of ['running', 'stopping', 'pending_permission', 'pending_input', 'Working', undefined]) {
     assert.equal(state.assistantRunTerminal(status), false, String(status))
   }
+})
+
+test('composer stop control remains latched through transient reconciliation state', () => {
+  assert.deepEqual(state.assistantComposerStopControlState({
+    stopRequested: false,
+    messageStreaming: true,
+    activeRunID: 'run-1',
+    activeRunStatus: 'running',
+    prompt: '',
+  }), { visible: true, disabled: false })
+
+  // Clicking stop owns the control even if recovery momentarily clears both
+  // active run and streaming state.
+  assert.deepEqual(state.assistantComposerStopControlState({
+    stopRequested: true,
+    messageStreaming: false,
+    activeRunID: undefined,
+    activeRunStatus: undefined,
+    prompt: '',
+  }), { visible: true, disabled: true })
+
+  assert.deepEqual(state.assistantComposerStopControlState({
+    stopRequested: false,
+    messageStreaming: true,
+    activeRunID: 'run-1',
+    activeRunStatus: 'stopping',
+    prompt: '',
+  }), { visible: true, disabled: true })
+
+  assert.deepEqual(state.assistantComposerStopControlState({
+    stopRequested: false,
+    messageStreaming: false,
+    activeRunID: 'run-1',
+    activeRunStatus: 'interrupted',
+    prompt: '',
+  }), { visible: false, disabled: false })
+})
+
+test('composer stop control reacts when the canonical run arrives after streaming begins', () => {
+  const messageStreaming = ref(false)
+  const runRevision = ref(0)
+  let run
+  const control = computed(() => state.assistantComposerStopControlState({
+    activeRunRevision: runRevision.value,
+    stopRequested: false,
+    messageStreaming: messageStreaming.value,
+    activeRunID: run?.id,
+    activeRunStatus: run?.status,
+    prompt: '',
+  }))
+
+  assert.deepEqual(control.value, { visible: false, disabled: false })
+  messageStreaming.value = true
+  // The user can stop while the start request is still waiting for its
+  // canonical run ID.
+  assert.deepEqual(control.value, { visible: true, disabled: false })
+  run = { id: 'run-1', status: 'running' }
+  runRevision.value += 1
+  assert.deepEqual(control.value, { visible: true, disabled: false })
 })
 
 test('normalizeAssistantRunStatus validates and normalizes persisted display statuses', () => {
@@ -319,8 +379,8 @@ test('reload ordering keeps a tied user message before its assistant response', 
 })
 
 test('first-project retry reuses the created project and durable request identity', () => {
-  const pending = state.newFirstProjectSubmission('ship it', 'request-1')
-  assert.deepEqual(state.firstProjectStartPlan(pending), { createProject: true, projectName: '', content: 'ship it', clientRequestID: 'request-1' })
+  const pending = state.newFirstProjectSubmission('ship it', 'request-1', 'gpt-high')
+  assert.deepEqual(state.firstProjectStartPlan(pending), { createProject: true, projectName: '', content: 'ship it', clientRequestID: 'request-1', modelID: 'gpt-high' })
   const created = state.firstProjectSubmissionWithProject(pending, 'demo')
   const firstRun = state.firstProjectStartPlan(created)
   assert.deepEqual(
@@ -340,20 +400,23 @@ test('first-project retry reuses the created project and durable request identit
 })
 
 test('first-project pending submission matches the project/message handoff into normal send', () => {
-  const pending = state.firstProjectSubmissionWithProject(state.newFirstProjectSubmission('ship it', 'request-1'), 'demo')
+  const pending = state.firstProjectSubmissionWithProject(state.newFirstProjectSubmission('ship it', 'request-1', 'gpt-high'), 'demo')
   assert.equal(state.firstProjectSubmissionMatches(pending, 'demo', 'ship it'), true)
+  assert.equal(state.firstProjectSubmissionMatches(pending, 'demo', 'ship it', 'gpt-high'), true)
+  assert.equal(state.firstProjectSubmissionMatches(pending, 'demo', 'ship it', 'gemini-fast'), false)
   assert.equal(state.firstProjectSubmissionMatches(pending, 'other', 'ship it'), false)
   assert.equal(state.firstProjectSubmissionMatches(pending, 'demo', 'different'), false)
 })
 
 test('message retry identity is bound to the requested operation', () => {
-  const normal = { content: 'ship it', collaborationMode: 'default' }
+  const normal = { content: 'ship it', collaborationMode: 'default', modelID: 'gpt-high' }
   const plan = { content: 'ship it', collaborationMode: 'plan' }
   const review = { content: 'check it', collaborationMode: 'review' }
   assert.notEqual(state.assistantRunStartFingerprint('demo', normal), state.assistantRunStartFingerprint('demo', plan))
   assert.notEqual(state.assistantRunStartFingerprint('demo', plan), state.assistantRunStartFingerprint('demo', review))
   assert.notEqual(state.assistantRunStartFingerprint('demo', normal), state.assistantRunStartFingerprint('other', normal))
   assert.notEqual(state.assistantRunStartFingerprint('demo', normal), state.assistantRunStartFingerprint('demo', { ...normal, content: 'different' }))
+  assert.notEqual(state.assistantRunStartFingerprint('demo', normal), state.assistantRunStartFingerprint('demo', { ...normal, modelID: 'gemini-fast' }))
 })
 
 test('conflict recovery only accepts the run created for the exact retry identity and operation', () => {
@@ -518,7 +581,7 @@ test('a healthy snapshot resets reconnect backoff and stale callbacks are ignore
   assert.equal(latestDisconnect, 'run-2')
 })
 
-test('stop aborts then disconnects before best-effort recovery failure', async () => {
+test('stop disconnects immediately, requests the durable abort, and reconnects until terminal convergence', async () => {
   const events = []
   const controller = new state.ConversationRunController({
     connect: async () => { events.push('connect') },
@@ -531,5 +594,85 @@ test('stop aborts then disconnects before best-effort recovery failure', async (
   await Promise.resolve()
   controller.setDisconnect(() => events.push('disconnect'))
   await controller.stop()
-  assert.deepEqual(events, ['connect', 'abort', 'disconnect', 'recover'])
+  await Promise.resolve()
+  assert.deepEqual(events, ['connect', 'disconnect', 'abort', 'recover', 'connect'])
+})
+
+test('stop does not reconnect after recovery confirms the run is terminal', async () => {
+  const events = []
+  const controller = new state.ConversationRunController({
+    connect: async () => { events.push('connect') },
+    abort: async () => { events.push('abort') },
+    recover: async () => { events.push('recover'); return true },
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+  })
+  controller.start('run-1', 0)
+  await Promise.resolve()
+  controller.setDisconnect(() => events.push('disconnect'))
+  await controller.stop()
+  assert.deepEqual(events, ['connect', 'disconnect', 'abort', 'recover'])
+})
+
+test('stop does not open a duplicate stream when recovery already restarted the controller', async () => {
+  const events = []
+  let controller
+  controller = new state.ConversationRunController({
+    connect: async () => { events.push('connect') },
+    abort: async () => { events.push('abort') },
+    recover: async () => {
+      events.push('recover')
+      controller.start('run-1', 2)
+      return false
+    },
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+  })
+  controller.start('run-1', 1)
+  await Promise.resolve()
+  controller.setDisconnect(() => events.push('disconnect'))
+  await controller.stop()
+  await Promise.resolve()
+  assert.deepEqual(events, ['connect', 'disconnect', 'abort', 'recover', 'connect'])
+})
+
+test('stop restores the live subscription when the interrupt request fails', async () => {
+  const events = []
+  const controller = new state.ConversationRunController({
+    connect: async () => { events.push('connect') },
+    abort: async () => { events.push('abort'); throw new Error('offline') },
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+  })
+  controller.start('run-1', 0)
+  await Promise.resolve()
+  controller.setDisconnect(() => events.push('disconnect'))
+  await assert.rejects(controller.stop(), /offline/)
+  await Promise.resolve()
+  assert.deepEqual(events, ['connect', 'disconnect', 'abort', 'connect'])
+})
+
+test('App latches one stable theme-colored stop control until interruption settles', async () => {
+  const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const cancel = appSource.slice(appSource.indexOf('function cancelMessageStream'), appSource.indexOf('async function resolveToolPermission'))
+  const composerAction = appSource.slice(appSource.indexOf(':type="assistantComposerShowsStop'), appSource.indexOf('</button>', appSource.indexOf(':type="assistantComposerShowsStop')))
+  assert.ok(cancel.indexOf('assistantStopRequestedRunID.value = runID') < cancel.indexOf('assistantRunController.stop()'))
+  assert.match(cancel, /recoverAssistantConversation\(projectName\)/)
+  assert.match(appSource, /recover: async \(runID\)[\s\S]*activeAssistantRun\?\.id !== runID[\s\S]*assistantRunTerminal\(activeAssistantRun\.status\)/)
+  assert.match(appSource, /function updateActiveRunFromAssistantItem[\s\S]*applyAssistantSnapshot\(\{ run: next, message \}, projectName, 'stream'\)/)
+  assert.match(appSource, /const assistantStopRequested = computed\(\(\) => Boolean\(assistantStopRequestedRunID\.value\) \|\| assistantPendingStartStopRequested\.value\)/)
+  assert.equal((appSource.match(/activeAssistantRun\s*=/g) ?? []).length, 1, 'active run assignments must flow through the reactive setter')
+  assert.match(appSource, /setActiveAssistantRun\(normalized\.run\)/)
+  assert.match(appSource, /function startAssistantRunController\(run: AssistantRun\)[\s\S]*assistantPendingStartStopRequested\.value = false[\s\S]*cancelMessageStream\(\)/)
+  assert.match(cancel, /if \(!runID\)[\s\S]*assistantPendingStartStopRequested\.value = true[\s\S]*return/)
+  assert.match(appSource, /const assistantComposerShowsStop = computed\(\(\) => assistantComposerStopControl\.value\.visible\)/)
+  assert.match(appSource, /assistantStopRequested\.value \|\| activeAssistantRun\?\.status === 'stopping'\) return 'Stopping…'/)
+  assert.match(appSource, /assistantMessageOwnsActiveRun\(message\) && assistantStopRequested\.value\) return 'stopping'/)
+  assert.match(composerAction, /:disabled="assistantComposerShowsStop \? assistantComposerStopDisabled/)
+  assert.match(composerAction, /<Square v-if="assistantComposerShowsStop"/)
+  assert.doesNotMatch(composerAction, /Loader2|animate-spin/)
+  assert.equal((appSource.match(/:type="assistantComposerShowsStop \? 'button' : 'submit'"/g) ?? []).length, 1)
+  assert.match(appSource, /v-if="conversationWorkingLabel === 'Running'"/)
+  assert.match(appSource, /rounded-full bg-accent text-white enabled:hover:bg-accent-hover/)
+  assert.doesNotMatch(appSource, /bg-danger-subtle text-danger transition hover:bg-danger-subtle\/80/)
 })

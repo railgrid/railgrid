@@ -38,8 +38,6 @@ import (
 	"unicode/utf8"
 
 	einoschema "github.com/cloudwego/eino/schema"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -159,10 +157,12 @@ var (
 )
 
 type ProjectLLMSettingsView struct {
-	Provider   string `json:"provider"`
-	BaseURL    string `json:"baseURL"`
-	Model      string `json:"model"`
-	Configured bool   `json:"configured"`
+	Provider       string                `json:"provider"`
+	BaseURL        string                `json:"baseURL"`
+	Model          string                `json:"model"`
+	Configured     bool                  `json:"configured"`
+	DefaultModelID string                `json:"defaultModelID,omitempty"`
+	Models         []ProjectLLMModelView `json:"models"`
 }
 
 type PatchProjectLLMSettingsRequest struct {
@@ -288,12 +288,12 @@ func (s *Server) getProjectLLMSettings(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	settings, err := readProjectLLMSettings(r.Context(), c)
+	registry, err := readProjectLLMRegistry(r.Context(), c)
 	if err != nil {
 		writeProjectError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, settings.view())
+	writeJSON(w, http.StatusOK, registry.view())
 }
 
 func (s *Server) patchProjectLLMSettings(w http.ResponseWriter, r *http.Request) {
@@ -308,11 +308,22 @@ func (s *Server) patchProjectLLMSettings(w http.ResponseWriter, r *http.Request)
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	settings, err := readProjectLLMSettings(r.Context(), c)
+	registry, err := readProjectLLMRegistry(r.Context(), c)
 	if err != nil {
 		writeProjectError(w, err)
 		return
 	}
+	model, found := registry.model("")
+	if !found {
+		model = projectLLMModelSettings{
+			ID:       projectLLMLegacyDefaultModelID,
+			Name:     defaultProjectLLMModel,
+			Settings: registry.Runtime,
+		}
+		registry.Models = append(registry.Models, model)
+		registry.DefaultModelID = model.ID
+	}
+	settings := model.Settings
 	if req.Provider != nil {
 		settings.Provider = strings.TrimSpace(*req.Provider)
 		if settings.Provider == "" {
@@ -341,11 +352,20 @@ func (s *Server) patchProjectLLMSettings(w http.ResponseWriter, r *http.Request)
 		writeProjectError(w, err)
 		return
 	}
-	if err := writeProjectLLMSettings(r.Context(), c, settings); err != nil {
+	for i := range registry.Models {
+		if registry.Models[i].ID == model.ID {
+			registry.Models[i].Settings = settings
+			if strings.TrimSpace(registry.Models[i].Name) == "" || registry.Models[i].Name == defaultProjectLLMModel {
+				registry.Models[i].Name = settings.Model
+			}
+			break
+		}
+	}
+	if err := writeProjectLLMRegistry(r.Context(), c, registry); err != nil {
 		writeProjectError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, settings.view())
+	writeJSON(w, http.StatusOK, registry.view())
 }
 
 func (s *Server) generateProjectAssistantStream(
@@ -382,7 +402,19 @@ func (s *Server) generateProjectAssistantResultWithStart(
 	if s.store == nil {
 		return projectAssistantRunResult{}, fmt.Errorf("project message store not configured")
 	}
-	settings, err := readProjectLLMSettings(ctx, c)
+	if id.orgUUID == "" || id.workspaceUUID == "" {
+		return projectAssistantRunResult{}, errors.New("tenant context missing")
+	}
+	durable, hasDurableRun := ctx.Value(projectAssistantSupervisorRunContextKey{}).(store.AssistantRun)
+	if !hasDurableRun {
+		return projectAssistantRunResult{}, store.ErrAssistantRunConflict
+	}
+	registry, err := readProjectLLMRegistry(ctx, c)
+	if err != nil {
+		return projectAssistantRunResult{}, err
+	}
+	modelID, modelRevisionID := projectAssistantModelReferenceFromRunAudit(durable)
+	settings, err := registry.selectedSettings(modelID, modelRevisionID)
 	if err != nil {
 		return projectAssistantRunResult{}, err
 	}
@@ -391,9 +423,6 @@ func (s *Server) generateProjectAssistantResultWithStart(
 	}
 	if strings.TrimSpace(settings.APIKey) == "" {
 		return projectAssistantRunResult{}, errProjectLLMNotConfigured
-	}
-	if id.orgUUID == "" || id.workspaceUUID == "" {
-		return projectAssistantRunResult{}, errors.New("tenant context missing")
 	}
 	turn := newProjectAssistantTurnItem(projectAssistantTurnMessage, id, p.Name)
 	turn.ProjectUID = string(p.UID)
@@ -404,10 +433,6 @@ func (s *Server) generateProjectAssistantResultWithStart(
 	}
 	r = r.WithContext(ctx)
 	messageScope := projectMessageScope(id.orgUUID, id.workspaceUUID, p)
-	durable, hasDurableRun := r.Context().Value(projectAssistantSupervisorRunContextKey{}).(store.AssistantRun)
-	if !hasDurableRun {
-		return projectAssistantRunResult{}, store.ErrAssistantRunConflict
-	}
 	recent, err := s.store.LoadRecentMessages(ctx, messageScope, 24)
 	if err != nil {
 		return projectAssistantRunResult{}, err
@@ -1814,56 +1839,24 @@ func firstSSELine(body []byte) (json.RawMessage, bool) {
 }
 
 func readProjectLLMSettings(ctx context.Context, c *asclient.Client) (projectLLMSettings, error) {
-	settings := defaultProjectLLMSettings()
-	secret, err := c.Resource(secretResource, projectLLMSecretNamespace).Get(ctx, projectLLMSecretName, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return settings, nil
-	}
+	registry, err := readProjectLLMRegistry(ctx, c)
 	if err != nil {
-		return settings, err
+		return projectLLMSettings{}, err
 	}
-	if v := secretDataValue(secret, "provider"); v != "" {
-		settings.Provider = v
-	}
-	if v := secretDataValue(secret, "baseURL"); v != "" {
-		settings.BaseURL = v
-	}
-	if v := secretDataValue(secret, "model"); v != "" {
-		settings.Model = v
-	}
-	settings.APIKey = secretDataValue(secret, "apiKey")
-	if v := secretDataValue(secret, "maxRetries"); v != "" {
-		if parsed, parseErr := strconv.Atoi(v); parseErr == nil && parsed >= 0 && parsed <= 10 {
-			settings.MaxRetries = parsed
-			settings.MaxRetriesConfigured = true
-		}
-	}
-	if v := secretDataValue(secret, "retryBackoffMS"); v != "" {
-		if parsed, parseErr := strconv.Atoi(v); parseErr == nil && parsed > 0 {
-			settings.RetryBackoff = time.Duration(parsed) * time.Millisecond
-		}
-	}
-	if v := secretDataValue(secret, "streamIdleTimeoutMS"); v != "" {
-		if parsed, parseErr := strconv.Atoi(v); parseErr == nil && parsed > 0 {
-			settings.StreamIdleTimeout = time.Duration(parsed) * time.Millisecond
-		}
-	}
-	return settings, nil
+	return registry.selectedSettings("", "")
 }
 
 func writeProjectLLMSettings(ctx context.Context, c *asclient.Client, settings projectLLMSettings) error {
-	secret := projectLLMSettingsSecret(settings)
-	existing, err := c.Resource(secretResource, projectLLMSecretNamespace).Get(ctx, projectLLMSecretName, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		_, err = c.Resource(secretResource, projectLLMSecretNamespace).Create(ctx, secret, metav1.CreateOptions{})
-		return err
+	registry := projectLLMRegistry{
+		DefaultModelID: projectLLMLegacyDefaultModelID,
+		Models: []projectLLMModelSettings{{
+			ID:       projectLLMLegacyDefaultModelID,
+			Name:     settings.Model,
+			Settings: settings,
+		}},
+		Runtime: settings,
 	}
-	if err != nil {
-		return err
-	}
-	secret.SetResourceVersion(existing.GetResourceVersion())
-	_, err = c.Resource(secretResource, projectLLMSecretNamespace).Update(ctx, secret, metav1.UpdateOptions{})
-	return err
+	return writeProjectLLMRegistry(ctx, c, registry)
 }
 
 func defaultProjectLLMSettings() projectLLMSettings {

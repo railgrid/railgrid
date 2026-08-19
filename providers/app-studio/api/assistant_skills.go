@@ -68,6 +68,8 @@ type projectAssistantSkillsResponse struct {
 }
 
 type projectAssistantDurableSkillSelection struct {
+	ModelID                 string
+	ModelRevisionID         string
 	IDs                     []string
 	CatalogDigest           string
 	Receipts                []projectAssistantSkillReceipt

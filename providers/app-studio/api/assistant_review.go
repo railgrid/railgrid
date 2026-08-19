@@ -36,6 +36,7 @@ const (
 type assistantThreadReviewStartRequest struct {
 	Target              assistantReviewTarget                  `json:"target"`
 	ClientUserMessageID string                                 `json:"clientUserMessageID"`
+	ModelID             string                                 `json:"modelID,omitempty"`
 	Skills              []string                               `json:"skills,omitempty"`
 	ContextResources    []projectAssistantContextResourceInput `json:"contextResources,omitempty"`
 	ContentParts        []projectAssistantContentPart          `json:"contentParts,omitempty"`
@@ -66,6 +67,7 @@ func (r assistantThreadReviewStartRequest) turnRequest() (assistantThreadTurnCre
 	return assistantThreadTurnCreateRequest{
 		Content:             content,
 		ClientUserMessageID: r.ClientUserMessageID,
+		ModelID:             strings.TrimSpace(r.ModelID),
 		CollaborationMode:   store.AssistantRunModeReview,
 		Skills:              r.Skills,
 		ContextResources:    r.ContextResources,

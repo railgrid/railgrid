@@ -149,6 +149,8 @@ type projectAssistantRunAudit struct {
 	Version                  int                                      `json:"version,omitempty"`
 	StartRequestDigest       string                                   `json:"startRequestDigest,omitempty"`
 	ActorDigest              string                                   `json:"actorDigest,omitempty"`
+	ModelID                  string                                   `json:"modelID,omitempty"`
+	ModelRevisionID          string                                   `json:"modelRevisionID,omitempty"`
 	CatalogDigest            string                                   `json:"catalogDigest,omitempty"`
 	SelectedSkills           []projectAssistantSkillReceipt           `json:"selectedSkills,omitempty"`
 	SelectedContextResources []projectAssistantContextResourceReceipt `json:"selectedContextResources,omitempty"`
@@ -792,7 +794,12 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	if c == nil {
 		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, resumeReq, decision, id.user, out, nil, fmt.Errorf("project client is required for assistant resume"))
 	}
-	settings, err := readProjectLLMSettings(ctx, c)
+	registry, err := readProjectLLMRegistry(ctx, c)
+	if err != nil {
+		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, resumeReq, decision, id.user, out, nil, err)
+	}
+	modelID, modelRevisionID := projectAssistantModelReferenceFromRunAudit(run)
+	settings, err := registry.selectedSettings(modelID, modelRevisionID)
 	if err != nil {
 		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, resumeReq, decision, id.user, out, nil, err)
 	}

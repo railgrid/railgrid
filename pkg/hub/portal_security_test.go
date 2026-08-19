@@ -38,6 +38,9 @@ func TestWithPortalSecurityHeadersAllowsConfiguredFrameSources(t *testing.T) {
 	if !strings.Contains(csp, "frame-src 'self' https://*.preview.localhost:10443;") {
 		t.Fatalf("Content-Security-Policy = %q, want configured preview frame source", csp)
 	}
+	if !strings.Contains(csp, "img-src 'self' data: blob:;") {
+		t.Fatalf("Content-Security-Policy = %q, want in-memory blob images allowed", csp)
+	}
 }
 
 func TestPortalFrameSourcesNormalizesConfiguredSources(t *testing.T) {

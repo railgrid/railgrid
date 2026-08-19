@@ -184,6 +184,9 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 		if err := validateProjectAssistantStartReplayWithSelectionsAndParts(prior, actor, content, mode, skills, resources, parts); err != nil {
 			return projectAssistantDurableStartResult{}, err
 		}
+		if err := validateProjectAssistantStartModelSelection(prior, selection.ModelID); err != nil {
+			return projectAssistantDurableStartResult{}, err
+		}
 		return projectAssistantDurableStartResult{Run: prior}, nil
 	} else if !errors.Is(err, store.ErrAssistantRunNotFound) {
 		return projectAssistantDurableStartResult{}, err
@@ -210,6 +213,9 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 	if err := bindProjectAssistantStartRequestWithSelectionsAndParts(&run, actor, content, skills, resources, parts); err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}
+	if err := bindProjectAssistantStartModelAudit(&run, selection.ModelID, selection.ModelRevisionID); err != nil {
+		return projectAssistantDurableStartResult{}, err
+	}
 	if err := bindProjectAssistantStartSkillAudit(&run, selection); err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}
@@ -223,12 +229,18 @@ func (s *Server) startProjectAssistantRunDurablyWithModeAndSkills(ctx context.Co
 	created, err := s.store.CreateAssistantRun(ctx, scope, user, assistant, run)
 	if err != nil {
 		if prior, ok := s.recoverProjectAssistantStartReplayWithSelectionsAndParts(ctx, scope, err, clientRequestID, actor, content, mode, skills, resources, parts); ok {
+			if modelErr := validateProjectAssistantStartModelSelection(prior, selection.ModelID); modelErr != nil {
+				return projectAssistantDurableStartResult{}, modelErr
+			}
 			return projectAssistantDurableStartResult{Run: prior}, nil
 		}
 		return projectAssistantDurableStartResult{}, err
 	}
 	if created.ID != run.ID {
 		if err := validateProjectAssistantStartReplayWithSelectionsAndParts(created, actor, content, mode, skills, resources, parts); err != nil {
+			return projectAssistantDurableStartResult{}, err
+		}
+		if err := validateProjectAssistantStartModelSelection(created, selection.ModelID); err != nil {
 			return projectAssistantDurableStartResult{}, err
 		}
 		return projectAssistantDurableStartResult{Run: created}, nil

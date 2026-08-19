@@ -396,6 +396,9 @@ func projectRepositoryCommits(ctx context.Context, list codeResourceLister, repo
 		}
 	}
 	sort.Slice(commits, func(i, j int) bool {
+		if commits[i].CreatedAt.Equal(commits[j].CreatedAt) {
+			return commits[i].Name > commits[j].Name
+		}
 		return commits[i].CreatedAt.After(commits[j].CreatedAt)
 	})
 	// History is intentionally broader than the dashboard preview. One hundred

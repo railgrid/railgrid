@@ -54,7 +54,10 @@ var errProjectAssistantNoOutput = errors.New("assistant model produced no accept
 
 var errProjectAssistantNoProgress = errors.New("assistant stopped after making no implementation progress")
 
-const projectAssistantGracefulStopTimeout = 5 * time.Second
+// Keep a short safe-point window so tools can flush terminal evidence without
+// making an explicit user interrupt feel unresponsive. Eino force-stops the
+// turn after this deadline and the supervisor owns the durable transition.
+const projectAssistantGracefulStopTimeout = time.Second
 
 type projectEinoAssistantEngine struct {
 	server   *Server
