@@ -124,14 +124,33 @@ fine and simply never acts on anything a tenant creates.
 The fix is to make that URL reachable, and the right way to do it depends on how
 many shards the platform runs.
 
-### One shard, or embedded kcp — the hub fronts it
+### One shard, or embedded kcp — the hub can relay, but cannot yet advertise it
 
-**Nothing to configure.** The hub relays `/services/apiexport/…` to kcp
-([pkg/server/proxy/virtualworkspace.go](../pkg/server/proxy/virtualworkspace.go)),
-and an embedded kcp defaults its advertised virtual-workspace URL to
-`HubExternalURL`. The platform keeps exactly one public address, so an operator
-needs one HTTPRoute and one certificate rather than a second entrypoint that
-exists solely for virtual workspaces.
+The hub relays `/services/apiexport/…` to kcp
+([pkg/server/proxy/virtualworkspace.go](../pkg/server/proxy/virtualworkspace.go))
+so that a single-shard platform could keep exactly one public address — one
+HTTPRoute, one certificate, rather than a second entrypoint existing solely for
+virtual workspaces.
+
+**What is missing is a way to advertise it.** `Shard.spec.virtualWorkspaceURL`
+is a single global value feeding every `APIExportEndpointSlice`, and the hub's
+own multicluster managers are among its consumers: they dial those endpoints
+in-process using kcp's CA and kcp's admin token. Point the field at the hub and
+they fail the TLS handshake against the hub's own serving certificate —
+
+```
+http: TLS handshake error from 127.0.0.1:58754: remote error: tls: unknown certificate
+```
+
+— which silently freezes the provider registry. The catalog informer never
+syncs, so the portal keeps serving whatever recipe it last saw while everything
+else looks healthy. Setting the field by hand has exactly the same effect;
+this is a property of the field, not of any default.
+
+Closing this needs the hub's own controllers kept on a kcp-direct URL while
+external consumers get the public one — an endpoint override on the multicluster
+provider, or a per-consumer view of the slice. Until then the relay is unused,
+and single-shard platforms are in the same position as multi-shard ones below.
 
 Relayed requests are authorized structurally, without a lookup: the workspace
 the caller's ServiceAccount token was minted in must be the workspace holding
@@ -144,9 +163,10 @@ consumer membership implies the right to read *every* consumer at once. kcp then
 applies its own RBAC to the relayed request, so the hub narrows rather than
 replaces it.
 
-Set `--kcp-shard-virtual-workspace-url` explicitly only to front kcp some other
-way; it then wants `--kcp-shard-external-url` alongside it, which covers a
-different slot in `Shard.spec`.
+`--kcp-shard-virtual-workspace-url` sets the field directly for an embedded kcp
+and wants `--kcp-shard-external-url` alongside it, which covers a different slot
+in `Shard.spec`. It is subject to the same caveat: any value the hub itself
+cannot dial with kcp's CA will freeze the registry.
 
 ### More than one shard — per-shard URLs
 

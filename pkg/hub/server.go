@@ -132,20 +132,19 @@ func (s *Server) Run(ctx context.Context) error {
 			batteries = strings.Split(s.opts.KCPBatteriesInclude, ",")
 		}
 
-		// Embedded kcp is a single shard, so the hub can front its virtual
-		// workspaces (it relays /services/apiexport/... to kcp) and the whole
-		// platform needs exactly one public address. Default the advertised
-		// virtual-workspace URL to that address: unset, kcp advertises its own
-		// auto-detected bind address, which for a hub bound to 127.0.0.1 is
-		// unreachable by anything off-host — silently breaking self-hosted
-		// providers, whose Templates keep reconciling while Instances never do.
-		// Explicit configuration still wins, for a deployment that fronts kcp
-		// some other way.
-		shardVWURL := s.opts.KCPShardVirtualWorkspaceURL
-		if shardVWURL == "" {
-			shardVWURL = s.opts.HubExternalURL
-		}
-
+		// NOTE: do not default ShardVirtualWorkspaceURL to HubExternalURL, however
+		// tempting the "one public address" story is. Shard.spec.virtualWorkspaceURL
+		// is a SINGLE global value feeding every APIExportEndpointSlice, and the
+		// hub's own multicluster managers are consumers of it — they dial those
+		// endpoints in-process with kcp's CA and kcp's admin token. Pointing them
+		// at the hub makes them fail the TLS handshake against the hub's own
+		// serving cert ("remote error: tls: unknown certificate"), which silently
+		// freezes the provider registry: the catalog informer never syncs, so the
+		// portal keeps serving whatever recipe it last saw.
+		//
+		// Making the relay reachable therefore needs a way to keep the hub's own
+		// controllers on a kcp-direct URL, which this field cannot express.
+		// See docs/byo-providers.md.
 		embeddedKCP = kcp.NewEmbeddedKCP(kcp.EmbeddedKCPOptions{
 			RootDir:                  kcpRootDir,
 			SecurePort:               s.opts.KCPSecurePort,
@@ -154,7 +153,7 @@ func (s *Server) Run(ctx context.Context) error {
 			TLSCertFile:              s.opts.KCPTLSCertFile,
 			TLSKeyFile:               s.opts.KCPTLSKeyFile,
 			ShardExternalURL:         s.opts.KCPShardExternalURL,
-			ShardVirtualWorkspaceURL: shardVWURL,
+			ShardVirtualWorkspaceURL: s.opts.KCPShardVirtualWorkspaceURL,
 			StaticAuthTokens:         s.opts.StaticAuthTokens,
 			// Wire OIDC into kcp so it can authenticate user tokens forwarded
 			// by the proxy natively. The default username mapping (sub →
