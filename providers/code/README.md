@@ -146,7 +146,6 @@ the Secret appears.
 helm install code providers/code/deploy/chart \
   -n code --create-namespace \
   --set hub.url=https://faros-hub.faros.svc.cluster.local:9443 \
-  --set hub.tokenSecretRef.name=faros-code-hub-token \
   --set image.tag=0.1.0
 ```
 
@@ -164,7 +163,6 @@ kubectl -n code create secret generic faros-code-github-oauth \
 helm install code providers/code/deploy/chart \
   -n code --create-namespace \
   --set hub.url=https://faros-hub.faros.svc.cluster.local:9443 \
-  --set hub.tokenSecretRef.name=faros-code-hub-token \
   --set githubOAuth.enabled=true \
   --set githubOAuth.clientId=<oauth-app-client-id> \
   --set githubOAuth.clientSecretRef.name=faros-code-github-oauth \

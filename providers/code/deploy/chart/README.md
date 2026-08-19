@@ -43,7 +43,7 @@ helm upgrade --install code oci://ghcr.io/faroshq/charts/faros-code-provider \
 | `hub` |  | Hub the provider POSTs heartbeats to. Must be reachable from the provider pod (in-cluster Service DNS works). |
 | `hub.url` | `https://faros-hub.faros.svc.cluster.local:9443` |  |
 | `hub.tokenSecretRef` |  | Bearer token used in the heartbeat POST. Provided as a Secret because it MUST NOT land in values.yaml in plaintext for prod. |
-| `hub.tokenSecretRef.name` | `faros-code-hub-token` |  |
+| `hub.tokenSecretRef.name` | `""` | Empty omits the Authorization header — the heartbeat endpoint does not require it. Set this ONLY when the Secret already exists in the release namespace; the reference is not optional, so a missing Secret wedges the pod in `CreateContainerConfigError`. |
 | `hub.tokenSecretRef.key` | `token` |  |
 | `hub.insecure` | `false` | Skip TLS verification on heartbeat — dev only, defaults off. |
 | `providerKubeconfig` |  | Secret the provider mounts read-only at /var/run/secrets/faros/faros-provider-kubeconfig to reach kcp (CODE_KUBECONFIG). The hub catalog controller mints it when it reconciles the CatalogEntry; the volume is `optional`, so the pod stays schedulable and serves portal/MCP reads until the Secret app… |

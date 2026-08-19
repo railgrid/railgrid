@@ -42,7 +42,7 @@ helm upgrade --install databricks oci://ghcr.io/faroshq/charts/faros-databricks-
 | `service.port` | `8081` |  |
 | `hub` |  |  |
 | `hub.url` | `https://faros-hub.faros.svc.cluster.local:9443` |  |
-| `hub.tokenSecretRef.name` | `faros-databricks-hub-token` |  |
+| `hub.tokenSecretRef.name` | `""` | Empty omits the Authorization header — the heartbeat endpoint does not require it. Set this ONLY when the Secret already exists in the release namespace; the reference is not optional, so a missing Secret wedges the pod in `CreateContainerConfigError`. |
 | `hub.tokenSecretRef.key` | `token` |  |
 | `hub.insecure` | `false` |  |
 | `controller` |  | The multicluster controller is required for production: it validates the Connection -> Warehouse -> Table dependency chain and serves provider authority for actions. Set mode=rest-only only for an intentional local UI/API process; /readyz and heartbeat then describe that explicit mode. |

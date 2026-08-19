@@ -352,7 +352,6 @@ kubectl -n infrastructure create secret generic faros-provider-kubeconfig \
 helm install infrastructure deploy/chart \
   -n infrastructure --create-namespace \
   --set hub.url=https://faros-hub.faros.svc.cluster.local:9443 \
-  --set hub.tokenSecretRef.name=faros-infrastructure-hub-token \
   --set bootstrap.enabled=true
 ```
 

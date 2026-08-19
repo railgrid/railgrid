@@ -23,8 +23,12 @@ hub:
   url: https://faros-hub.faros.svc.cluster.local:9443
   # Bearer token used in the heartbeat POST. Provided as a Secret because it
   # MUST NOT land in values.yaml in plaintext for prod.
+  # Empty (the default) omits the Authorization header entirely — the
+  # heartbeat endpoint does not require it. Set the name ONLY when the Secret
+  # already exists in the release namespace: the reference is not optional, so
+  # a missing Secret leaves the pod in CreateContainerConfigError forever.
   tokenSecretRef:
-    name: faros-code-hub-token
+    name: ""
     key: token
   # Skip TLS verification on heartbeat — dev only, defaults off.
   insecure: false

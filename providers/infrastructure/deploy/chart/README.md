@@ -43,7 +43,7 @@ helm upgrade --install infrastructure oci://ghcr.io/faroshq/charts/faros-infrast
 | `hub` |  | Hub the provider POSTs heartbeats to. Must be reachable from the provider pod (in-cluster Service DNS works). |
 | `hub.url` | `https://faros-hub.faros.svc.cluster.local:9443` |  |
 | `hub.tokenSecretRef` |  | Bearer token used in the heartbeat POST. Provided as a Secret because it MUST NOT land in values.yaml in plaintext for prod. |
-| `hub.tokenSecretRef.name` | `faros-infrastructure-hub-token` |  |
+| `hub.tokenSecretRef.name` | `""` | Empty omits the Authorization header — the heartbeat endpoint does not require it. Set this ONLY when the Secret already exists in the release namespace; the reference is not optional, so a missing Secret wedges the pod in `CreateContainerConfigError`. |
 | `hub.tokenSecretRef.key` | `token` |  |
 | `hub.insecure` | `false` | Skip TLS verification on heartbeat — dev only, defaults off. |
 | `centralKro` |  | Central kro cluster kubeconfig. Two ways to provide it: 1. Inline `centralKro.kubeconfig` (rendered into a Secret by the chart; convenient for dev, NOT recommended for prod). 2. `centralKro.kubeconfigSecretRef` pointing at an existing Secret this chart did NOT create. Use this in prod. |

@@ -14,8 +14,13 @@ service:
 
 hub:
   url: https://faros-hub.faros.svc.cluster.local:9443
+  # Bearer token for the heartbeat POST. Empty (the default) omits the
+  # Authorization header entirely — the heartbeat endpoint does not require
+  # it. Set the name ONLY when the Secret already exists in the release
+  # namespace: the reference is not optional, so a missing Secret leaves the
+  # pod in CreateContainerConfigError forever.
   tokenSecretRef:
-    name: faros-databricks-hub-token
+    name: ""
     key: token
   insecure: false
 

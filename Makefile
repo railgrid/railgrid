@@ -2194,6 +2194,7 @@ helm-deploy-provider-infrastructure: ## (experimental) Build+load image, helm in
 		--set replicaCount=2 \
 		--set bootstrap.enabled=true \
 		--set hub.url=$(HUB_INTERNAL_URL) \
+		--set hub.tokenSecretRef.name=faros-infrastructure-hub-token \
 		--set hub.insecure=true \
 		--set catalogEntry.enabled=false
 	@echo ">>> deployed. The pod stays in ContainerCreating until the hub delivers"
