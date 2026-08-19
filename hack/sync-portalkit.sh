@@ -32,7 +32,7 @@ VUE_PORTALS=(
   "providers/edges/portal"
   "providers/infrastructure/portal"
 )
-VUE_FILES=(confirm.ts ConfirmDialog.vue ResourceTable.vue ResourceTableDeleteButton.vue ResourceTableDeleteButton.css ResourceTableEditButton.vue ResourceTableEditButton.css ConditionsPanel.vue StatusBadge.vue)
+VUE_FILES=(confirm.ts ConfirmDialog.vue ConfirmDialog.css ResourceTable.vue ResourceTableDeleteButton.vue ResourceTableDeleteButton.css ResourceTableEditButton.vue ResourceTableEditButton.css ConditionsPanel.vue StatusBadge.vue)
 
 # vibe-studio's vanilla-TS portal consumes tenant.ts + icons.ts (no modal).
 VIBE_PORTALS=("providers/vibe-studio/portal")

@@ -1,0 +1,99 @@
+/* CANONICAL SOURCE — provider-sdk/portalkit-vue. This stylesheet is imported
+ * as text and injected by ConfirmDialog.vue because standalone provider
+ * portals load only their IIFE main.js; Vite's extracted SFC CSS asset is not
+ * loaded by the host portal. */
+.pk-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  /* Scrim derives from the SURFACE, not text — a text-derived scrim inverts
+     to near-white under the dark-default theme. */
+  background: color-mix(in srgb, var(--color-surface, #0a0b12) 60%, transparent);
+  backdrop-filter: blur(2px);
+  animation: pk-fade 0.14s ease;
+}
+.pk-confirm-modal {
+  width: min(440px, 100%);
+  padding: 22px 22px 18px;
+  border-radius: 6px;
+  /* Fallbacks are the DARK-BASE token values — dark is the system default. */
+  background: var(--color-surface-raised, #111320);
+  color: var(--color-text-primary, #e9e9f2);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 24px 70px rgba(0, 0, 0, 0.55);
+  font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+  font-size: 14px;
+  line-height: 1.5;
+  animation: pk-rise 0.18s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.pk-confirm-title {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 650;
+}
+.pk-confirm-message {
+  margin: 0 0 6px;
+  color: var(--color-text-secondary, #8a8ca6);
+  overflow-wrap: anywhere;
+}
+.pk-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+.pk-confirm-btn {
+  padding: 8px 16px;
+  border-radius: 4px;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.pk-confirm-btn.cancel {
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-secondary, #8a8ca6);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+}
+.pk-confirm-btn.cancel:hover {
+  background: var(--color-surface-hover, #1e2033);
+  color: var(--color-text-primary, #e9e9f2);
+}
+.pk-confirm-btn.confirm {
+  background: var(--color-accent, #8b6bff);
+  color: #fff;
+  box-shadow: 0 0 16px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
+}
+.pk-confirm-btn.confirm:hover {
+  background: var(--color-accent-hover, #a18aff);
+}
+.pk-confirm-btn.confirm.danger {
+  background: var(--color-danger, #ff5d5d);
+  box-shadow: none;
+}
+.pk-confirm-btn.confirm.danger:hover {
+  background: var(--color-danger-hover, #ff7676);
+}
+@keyframes pk-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes pk-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pk-confirm-overlay,
+  .pk-confirm-modal {
+    animation: none;
+  }
+}

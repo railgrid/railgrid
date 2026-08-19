@@ -19,6 +19,10 @@ export interface ErrorResponse {
 
 export interface Connection {
   name: string
+  uid?: string
+  deletionTimestamp?: string
+  generation?: number
+  observedGeneration?: number
   provider: string
   type: string
   owner: string
@@ -48,14 +52,16 @@ export interface ConnectionDetail extends Connection {
   baseURL?: string
   secretNamespace?: string
   secretKey?: string
-  generation?: number
-  observedGeneration?: number
   creationTimestamp?: string
   conditions: ConditionInfo[]
 }
 
 export interface Repository {
   name: string
+  uid?: string
+  deletionTimestamp?: string
+  generation?: number
+  observedGeneration?: number
   connectionRef: string
   repo: string
   owner?: string
@@ -73,14 +79,16 @@ export interface Repository {
 // generation (a lag means the controller has not reconciled the latest spec).
 export interface RepositoryDetail extends Repository {
   repoID?: string
-  generation?: number
-  observedGeneration?: number
   creationTimestamp?: string
   conditions: ConditionInfo[]
 }
 
 export interface DeployKey {
   name: string
+  uid?: string
+  deletionTimestamp?: string
+  generation?: number
+  observedGeneration?: number
   repositoryRef: string
   title?: string
   readOnly: boolean
@@ -93,6 +101,10 @@ export interface DeployKey {
 
 export interface Collaborator {
   name: string
+  uid?: string
+  deletionTimestamp?: string
+  generation?: number
+  observedGeneration?: number
   repositoryRef: string
   username: string
   permission: string
@@ -108,6 +120,10 @@ export interface Collaborator {
 // Ready condition so a failed mirror is debuggable from the UI.
 export interface Package {
   name: string
+  uid?: string
+  deletionTimestamp?: string
+  generation?: number
+  observedGeneration?: number
   type: string
   visibility?: string
   htmlURL?: string

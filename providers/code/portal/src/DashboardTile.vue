@@ -14,20 +14,20 @@
 // portalkit/dashboardtile.
 
 import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
-import { api, setTenant, setToken } from './api'
+import { api } from './api'
 import type { Connection, Repository } from './types'
 import {
-  createTilePoller,
   hasWorkspaceContext,
   isBenignTileError,
   mostRecent,
   navigateFromTile,
+  TILE_POLL_MS,
   tileClass,
   tileErrorText,
   type TileContext,
-  type TilePoller,
 } from './portalkit/dashboardtile'
 import { ic } from './portalkit/icons'
+import { createLatestRefreshController, type LatestRefreshController } from './refresh'
 
 // Inline chevron — provider bundles are self-contained (no shared icon lib),
 // the same reason the infrastructure tile inlines its own.
@@ -53,8 +53,10 @@ const rootRef = ref<HTMLElement | null>(null)
 const repositories = ref<Repository[]>([])
 const connections = ref<Connection[]>([])
 const loading = ref(true)
+const loaded = ref(false)
 const error = ref<string | null>(null)
-let poller: TilePoller | null = null
+let timer: number | undefined
+let refresh!: LatestRefreshController
 
 const stats = computed(() => {
   const repos = repositories.value.length
@@ -67,47 +69,70 @@ const stats = computed(() => {
 // a stable list rather than faking recency.
 const rows = computed(() => mostRecent(repositories.value, (r) => r.name))
 
-async function load() {
+function load() {
+  refresh.request()
+}
+
+refresh = createLatestRefreshController(async requestID => {
   const ctx = props.context
   if (!hasWorkspaceContext(ctx)) {
+    if (!refresh.isCurrent(requestID)) return
     repositories.value = []
     connections.value = []
     error.value = null
+    loaded.value = true
     loading.value = false
     return
   }
-  setToken(ctx?.token ?? null)
-  setTenant(ctx?.tenant ?? null)
+  loading.value = true
   try {
     // Both lists in parallel: the tile is worthless without the connection
     // health, and serialising doubles the time the card sits on "Loading".
-    const [repos, conns] = await Promise.all([api.listRepositories(), api.listConnections()])
+    const readContext = { token: ctx?.token ?? null, tenant: ctx?.tenant ?? null }
+    const [repos, conns] = await Promise.all([api.listRepositories(readContext), api.listConnections(readContext)])
+    if (!refresh.isCurrent(requestID)) return
     repositories.value = repos
     connections.value = conns
     error.value = null
+    loaded.value = true
   } catch (e) {
-    repositories.value = []
-    connections.value = []
+    if (!refresh.isCurrent(requestID)) return
     error.value = isBenignTileError(e) ? null : tileErrorText(e)
   } finally {
-    loading.value = false
+    if (refresh.isCurrent(requestID)) loading.value = false
   }
-}
+})
 
 onMounted(() => {
-  poller = createTilePoller(load)
-  poller.start()
+  load()
+  timer = window.setInterval(load, TILE_POLL_MS)
 })
-onUnmounted(() => poller?.stop())
-watch(() => props.context, () => poller?.refresh())
+onUnmounted(() => {
+  window.clearInterval(timer)
+  refresh.stop()
+})
+watch(
+  [() => props.context?.tenant, () => props.context?.token, () => props.context?.orgUUID, () => props.context?.workspaceUUID],
+  () => {
+    repositories.value = []
+    connections.value = []
+    error.value = null
+    loaded.value = false
+    loading.value = true
+    refresh.invalidate()
+    load()
+  },
+)
 </script>
 
 <template>
-  <div ref="rootRef" :class="tileClass.root">
-    <div v-if="loading" :class="tileClass.message">Loading repositories&hellip;</div>
-    <div v-else-if="error" :class="tileClass.error">Failed to load: {{ error }}</div>
+  <div ref="rootRef" :class="tileClass.root" :aria-busy="loading">
+    <div v-if="loading && !loaded" :class="tileClass.message" role="status" aria-live="polite">Loading repositories&hellip;</div>
+    <div v-else-if="error && !loaded" :class="tileClass.error" role="alert" aria-live="assertive">Failed to load: {{ error }} <button type="button" class="link" @click="load">Retry</button></div>
 
     <template v-else>
+      <div v-if="error" :class="tileClass.error" role="alert" aria-live="assertive">Showing cached data. {{ error }} <button type="button" class="link" @click="load">Retry</button></div>
+      <span v-else-if="loading" class="sr-only" role="status" aria-live="polite">Updating repositories…</span>
       <div :class="tileClass.stats">
         <span :class="[tileClass.stat, tileClass.statTotal]">
           <span v-html="ic('package', tileClass.statIcon)" />

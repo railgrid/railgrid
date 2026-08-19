@@ -13,6 +13,18 @@ faros-provider-code {
   color: var(--color-text-primary, inherit);
 }
 
+faros-provider-code .sr-only {
+  block-size: 1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  inline-size: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+}
+
 faros-provider-code .app {
   padding: 8px 0;
   display: flex;
@@ -253,6 +265,13 @@ faros-provider-code .actions {
   align-items: center;
 }
 
+faros-provider-code .row-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 /* Forms */
 faros-provider-code .form {
   display: flex;
@@ -417,6 +436,46 @@ faros-provider-code .error {
   color: var(--color-danger, #ff5d5d);
   font-size: 12px;
 }
+faros-provider-code .read-error {
+  align-items: center;
+  background: var(--color-danger-subtle);
+  border-radius: 6px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+}
+faros-provider-code .read-error > span {
+  flex: 1;
+  line-height: 1.45;
+}
+faros-provider-code .mutation-error {
+  background: var(--color-danger-subtle);
+  border-radius: 6px;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+}
+faros-provider-code .detail-loading {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  display: grid;
+  gap: 14px;
+  min-height: 210px;
+  padding: 24px;
+}
+faros-provider-code .detail-loading-line {
+  border-radius: 4px;
+  height: 14px;
+  max-width: 34rem;
+}
+faros-provider-code .detail-loading-line:nth-child(even) {
+  max-width: 22rem;
+}
+faros-provider-code .section-panel .resource-table {
+  margin-top: 14px;
+}
 faros-provider-code .empty {
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 12px;
@@ -442,7 +501,7 @@ faros-provider-code .resource-table {
   background: color-mix(in srgb, var(--color-surface-raised, #111320) 80%, transparent);
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
-  overflow: hidden;
+  overflow-x: auto;
 }
 
 faros-provider-code .resource-table-error {
@@ -452,6 +511,41 @@ faros-provider-code .resource-table-error {
   font-size: 13px;
   gap: 8px;
   padding: 16px;
+}
+
+faros-provider-code .resource-table-stale {
+  align-items: center;
+  background: var(--color-danger-subtle);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-danger) 35%, transparent);
+  color: var(--color-danger);
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  padding: 9px 12px;
+}
+
+faros-provider-code .resource-table-error-message {
+  flex: 1;
+  line-height: 1.45;
+}
+
+faros-provider-code .resource-table-retry {
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 9px;
+}
+
+faros-provider-code .resource-table-retry:hover,
+faros-provider-code .resource-table-retry:focus-visible {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  outline: none;
 }
 
 faros-provider-code .resource-table-error-icon {
@@ -550,6 +644,14 @@ faros-provider-code .resource-table-cell {
   padding: 12px 20px;
   transition: color 0.1s ease;
   white-space: nowrap;
+}
+
+faros-provider-code .resource-table-heading:last-child,
+faros-provider-code .resource-table-cell:last-child {
+  padding-left: 16px;
+  padding-right: 16px;
+  text-align: right;
+  width: 28px;
 }
 
 faros-provider-code .resource-table-row.is-interactive:hover .resource-table-cell {

@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { FarosContext } from './types'
-import { setBasePath, setTenant, setToken } from './api'
+import { setAPIContext, setBasePath } from './api'
 import ConnectionsView from './views/ConnectionsView.vue'
 import ConnectionDetailView from './views/ConnectionDetailView.vue'
 import RepositoriesView from './views/RepositoriesView.vue'
 import RepoDetailView from './views/RepoDetailView.vue'
 import PackagesView from './views/PackagesView.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
+import { resolveConfirm } from './portalkit/confirm'
+import { createResourceDeletions } from './refresh'
 
 // Sub-path routing (the shell pushes the trailing /providers/code/<sub> segment):
 //   ''  | 'connections'        → Connections
@@ -38,11 +40,29 @@ function parse(sub: string | null | undefined): Route {
 }
 
 const route = computed(() => parse(props.ctx?.subPath))
+const contextGeneration = ref(0)
+const contextInitialized = computed(() => props.ctx !== null)
+const deletions = createResourceDeletions()
+let deletionAuthority = ''
 
-// Feed identity into the api client whenever the shell re-pushes context.
-watch(() => props.ctx?.basePath, v => setBasePath(v), { immediate: true })
-watch(() => props.ctx?.token, v => setToken(v), { immediate: true })
-watch(() => props.ctx?.tenant, v => setTenant(v), { immediate: true })
+// Feed identity into the API client and remount the active route whenever its
+// authority changes. This clears actionable old-workspace state immediately and
+// lets each unmounted refresh controller reject late responses.
+watch(
+  () => [props.ctx?.basePath, props.ctx?.token, props.ctx?.tenant, props.ctx?.user?.sub] as const,
+  ([basePath, token, tenant, userSub]) => {
+    // The dialog is module-global, so remounting the routed page is not enough
+    // to revoke a confirmation opened under the previous authority.
+    resolveConfirm(false)
+    const nextDeletionAuthority = JSON.stringify([basePath ?? '', tenant ?? '', userSub ?? ''])
+    if (nextDeletionAuthority !== deletionAuthority) deletions.clear()
+    deletionAuthority = nextDeletionAuthority
+    setBasePath(basePath)
+    setAPIContext({ token, tenant })
+    contextGeneration.value += 1
+  },
+  { immediate: true },
+)
 
 const hasTenant = computed(() => !!props.ctx?.tenant)
 
@@ -60,20 +80,36 @@ function navigate(path: string) {
 
 <template>
   <div ref="rootRef" class="app">
-    <nav class="tabs">
-      <button :class="{ active: route.page === 'connections' }" @click="navigate('connections')">Connections</button>
-      <button :class="{ active: route.page === 'repositories' }" @click="navigate('repositories')">Repositories</button>
-      <button :class="{ active: route.page === 'packages' }" @click="navigate('packages')">Packages</button>
-    </nav>
-
-    <p v-if="!hasTenant" class="empty">Select a workspace to manage code.</p>
+    <template v-if="!contextInitialized">
+      <section class="page" role="status" aria-live="polite" aria-busy="true" aria-label="Loading workspace context">
+        <header class="page-head">
+          <div>
+            <h2 class="page-title">Code</h2>
+            <p class="page-meta">Loading workspace context…</p>
+          </div>
+        </header>
+        <div class="detail-loading" aria-hidden="true">
+          <div v-for="i in 4" :key="i" class="shimmer detail-loading-line" />
+        </div>
+      </section>
+    </template>
 
     <template v-else>
-      <ConnectionDetailView v-if="route.page === 'connections' && route.connection" :name="route.connection" @back="navigate('connections')" />
-      <ConnectionsView v-else-if="route.page === 'connections'" @open="(n: string) => navigate('connections/' + encodeURIComponent(n))" />
-      <PackagesView v-else-if="route.page === 'packages'" @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
-      <RepoDetailView v-else-if="route.repo" :name="route.repo" @back="navigate('repositories')" />
-      <RepositoriesView v-else @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
+      <nav class="tabs">
+        <button :class="{ active: route.page === 'connections' }" @click="navigate('connections')">Connections</button>
+        <button :class="{ active: route.page === 'repositories' }" @click="navigate('repositories')">Repositories</button>
+        <button :class="{ active: route.page === 'packages' }" @click="navigate('packages')">Packages</button>
+      </nav>
+
+      <p v-if="!hasTenant" class="empty">Select a workspace to manage code.</p>
+
+      <template v-else>
+        <ConnectionDetailView v-if="route.page === 'connections' && route.connection" :key="`${contextGeneration}:connection:${route.connection}`" :name="route.connection" :deletions="deletions" @back="navigate('connections')" />
+        <ConnectionsView v-else-if="route.page === 'connections'" :key="`${contextGeneration}:connections`" :deletions="deletions" @open="(n: string) => navigate('connections/' + encodeURIComponent(n))" />
+        <PackagesView v-else-if="route.page === 'packages'" :key="`${contextGeneration}:packages`" @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
+        <RepoDetailView v-else-if="route.repo" :key="`${contextGeneration}:repository:${route.repo}`" :name="route.repo" :deletions="deletions" @back="navigate('repositories')" />
+        <RepositoriesView v-else :key="`${contextGeneration}:repositories`" :deletions="deletions" @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
+      </template>
     </template>
 
     <ConfirmDialog />
