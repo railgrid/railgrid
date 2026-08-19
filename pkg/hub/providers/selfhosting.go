@@ -169,29 +169,47 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 	}
 	out.ChartRef = chartRef
 
-	// Values the hub always supplies. hub.url must be the external address: the
-	// provider runs in the org's own cluster, where an in-cluster service DNS
-	// name does not resolve.
-	values := []ResolvedValue{
-		{
-			Name:        "providerKubeconfig.secretName",
-			Value:       KubeconfigSecretName,
-			Description: "Secret holding the workspace-scoped kcp credential created in step 2.",
-		},
-		{
-			Name:        "catalogEntry.enabled",
-			Value:       "true",
-			Description: "Registers the provider with faros so your workspaces can enable it.",
-		},
+	// Values the hub supplies when the recipe does not. These predate recipes
+	// being able to name them, and they describe one particular way of
+	// installing — so a recipe that names the same value knows better and wins.
+	// Without that precedence the command carries the same --set twice, or
+	// carries a flag for a mode the recipe is not using.
+	declaredNames := map[string]bool{}
+	if sh != nil {
+		for _, v := range sh.RequiredValues {
+			declaredNames[v.Name] = true
+		}
 	}
-	if opts.HubURL != "" {
-		values = append(values, ResolvedValue{
+	var values []ResolvedValue
+	addDefault := func(v ResolvedValue) {
+		if !declaredNames[v.Name] {
+			values = append(values, v)
+		}
+	}
+
+	addDefault(ResolvedValue{
+		Name:        "providerKubeconfig.secretName",
+		Value:       KubeconfigSecretName,
+		Description: "Secret holding the workspace-scoped kcp credential created in step 2.",
+	})
+	addDefault(ResolvedValue{
+		Name:        "catalogEntry.enabled",
+		Value:       "true",
+		Description: "Registers the provider with faros so your workspaces can enable it.",
+	})
+	// hub.url must be the external address: the provider runs in the org's own
+	// cluster, where an in-cluster service DNS name does not resolve.
+	switch {
+	case declaredNames["hub.url"]:
+		// The recipe names it; resolved below with the rest of its values.
+	case opts.HubURL != "":
+		addDefault(ResolvedValue{
 			Name:        "hub.url",
 			Value:       opts.HubURL,
 			Description: "The faros hub address your cluster reaches. Must be reachable from inside that cluster.",
 		})
-	} else {
-		values = append(values, ResolvedValue{
+	default:
+		addDefault(ResolvedValue{
 			Name:        "hub.url",
 			Value:       "<hub-url>",
 			Description: "The faros hub address your cluster reaches.",
