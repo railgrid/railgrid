@@ -132,6 +132,20 @@ func (s *Server) Run(ctx context.Context) error {
 			batteries = strings.Split(s.opts.KCPBatteriesInclude, ",")
 		}
 
+		// Embedded kcp is a single shard, so the hub can front its virtual
+		// workspaces (it relays /services/apiexport/... to kcp) and the whole
+		// platform needs exactly one public address. Default the advertised
+		// virtual-workspace URL to that address: unset, kcp advertises its own
+		// auto-detected bind address, which for a hub bound to 127.0.0.1 is
+		// unreachable by anything off-host — silently breaking self-hosted
+		// providers, whose Templates keep reconciling while Instances never do.
+		// Explicit configuration still wins, for a deployment that fronts kcp
+		// some other way.
+		shardVWURL := s.opts.KCPShardVirtualWorkspaceURL
+		if shardVWURL == "" {
+			shardVWURL = s.opts.HubExternalURL
+		}
+
 		embeddedKCP = kcp.NewEmbeddedKCP(kcp.EmbeddedKCPOptions{
 			RootDir:                  kcpRootDir,
 			SecurePort:               s.opts.KCPSecurePort,
@@ -140,7 +154,7 @@ func (s *Server) Run(ctx context.Context) error {
 			TLSCertFile:              s.opts.KCPTLSCertFile,
 			TLSKeyFile:               s.opts.KCPTLSKeyFile,
 			ShardExternalURL:         s.opts.KCPShardExternalURL,
-			ShardVirtualWorkspaceURL: s.opts.KCPShardVirtualWorkspaceURL,
+			ShardVirtualWorkspaceURL: shardVWURL,
 			StaticAuthTokens:         s.opts.StaticAuthTokens,
 			// Wire OIDC into kcp so it can authenticate user tokens forwarded
 			// by the proxy natively. The default username mapping (sub →
@@ -1025,10 +1039,15 @@ func (s *Server) Run(ctx context.Context) error {
 		//  - /clusters/<cluster>/...          user kubeconfig / kubectl-ws
 		//  - /apis/<group>/... or /api/v1/... agent's bare kcp calls
 		//    (serveServiceAccount prepends /clusters/<name> from SA token claim)
+		//  - /services/apiexport/...          APIExport virtual workspace, so a
+		//    provider running outside the platform can watch its own export.
+		//    Reached only after the explicit routes above declined it, so the
+		//    hub's own /services/ handlers keep precedence.
 		if kcpProxy != nil {
 			if strings.HasPrefix(r.URL.Path, "/clusters/") ||
 				strings.HasPrefix(r.URL.Path, "/apis/") ||
-				strings.HasPrefix(r.URL.Path, "/api/") {
+				strings.HasPrefix(r.URL.Path, "/api/") ||
+				strings.HasPrefix(r.URL.Path, apiurl.PathPrefixAPIExportVW+"/") {
 				kcpProxy.ServeHTTP(w, r)
 				return
 			}

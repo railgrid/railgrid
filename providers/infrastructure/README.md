@@ -408,6 +408,13 @@ stands up unattended in a cluster that has nothing but the credential.
 The `bootstrap.*` init-container flow documented above is superseded and is
 *not* what self-hosting uses: it installs neither kro nor the serve pod's RBAC.
 
+One platform-side prerequisite applies and is worth checking first: the shard's
+`virtualWorkspaceURL` must be reachable from your cluster. If it is not, this
+provider still installs, reports healthy, and reconciles Templates — but never
+acts on an Instance, because Instances are watched through the APIExport virtual
+workspace. See
+[Platform prerequisite](../../docs/byo-providers.md#platform-prerequisite-a-publicly-dialable-virtual-workspace-url).
+
 Once installed, the provider registers itself and your workspaces enable it
 exactly like the platform copy. See
 [docs/byo-providers.md](../../docs/byo-providers.md) for how the flow works, and

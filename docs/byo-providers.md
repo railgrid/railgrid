@@ -94,6 +94,88 @@ the REST surface is where the membership and role checks live.
 Registration is idempotent: re-posting the same name returns the same workspace
 and the same token, so the portal can retry safely.
 
+## Platform prerequisite: a publicly dialable virtual-workspace URL
+
+**A platform whose shard advertises a cluster-internal virtual-workspace URL
+cannot host BYO providers at all.** This is a deployment prerequisite, not
+something the hub can paper over, and it is invisible until an org actually
+self-hosts something.
+
+kcp copies `Shard.spec.virtualWorkspaceURL` verbatim into
+`APIExportEndpointSlice.status.endpoints[].url`. That is the address every
+consumer dials, and there is exactly one of them per shard. Point it at a
+service DNS name and only consumers inside the shard's own cluster can reach it
+— which is every in-platform provider, and no self-hosted one:
+
+```
+https://alpha-shard-kcp.kcp-system.svc.cluster.local:6443/services/apiexport/…
+                        ^ resolves only inside the hub's cluster
+```
+
+A provider in an org's own cluster gets `no such host` from its own cluster DNS
+and its multicluster manager never starts. The failure is quiet and badly
+localized: the provider comes up healthy, serves its API, wins its leader
+election, and reconciles **Templates** — those live in the provider's own
+workspace and are reached over the provider kubeconfig, which is a different
+URL and works fine. Only **Instances** break, because those live in tenant
+workspaces and are watched through the virtual workspace. So the provider looks
+fine and simply never acts on anything a tenant creates.
+
+The fix is to make that URL reachable, and the right way to do it depends on how
+many shards the platform runs.
+
+### One shard, or embedded kcp — the hub fronts it
+
+**Nothing to configure.** The hub relays `/services/apiexport/…` to kcp
+([pkg/server/proxy/virtualworkspace.go](../pkg/server/proxy/virtualworkspace.go)),
+and an embedded kcp defaults its advertised virtual-workspace URL to
+`HubExternalURL`. The platform keeps exactly one public address, so an operator
+needs one HTTPRoute and one certificate rather than a second entrypoint that
+exists solely for virtual workspaces.
+
+Relayed requests are authorized structurally, without a lookup: the workspace
+the caller's ServiceAccount token was minted in must be the workspace holding
+the APIExport. A virtual workspace exists for its export's *owner* to observe
+every consumer, and a provider's ServiceAccount lives in the same workspace as
+the APIExport its `init` created — so owner-only is both the correct rule and a
+single string comparison. Note this deliberately does not reuse the membership
+authorizer: that answers "may this user read this workspace", and no amount of
+consumer membership implies the right to read *every* consumer at once. kcp then
+applies its own RBAC to the relayed request, so the hub narrows rather than
+replaces it.
+
+Set `--kcp-shard-virtual-workspace-url` explicitly only to front kcp some other
+way; it then wants `--kcp-shard-external-url` alongside it, which covers a
+different slot in `Shard.spec`.
+
+### More than one shard — per-shard URLs
+
+**The hub cannot front this, and the relay above must not be used for it.** A
+multi-shard `APIExportEndpointSlice` publishes one endpoint *per shard*, each
+derived from that shard's own `virtualWorkspaceURL`, and consumers watch all of
+them. Nothing in the request distinguishes which shard is meant — the cluster
+segment names the APIExport's workspace, not the shard serving it — so a single
+hub hostname has no way to route them apart.
+
+A SaaS deployment therefore gives each shard its own externally reachable
+address and points that shard's `virtualWorkspaceURL` at it. kcp's front proxy
+already serves `/services/…` and enforces APIExport ownership through its own
+RBAC, so this needs no faros-side routing at all.
+
+In either topology `virtualWorkspaceURL` is one global value per shard, so
+in-platform providers dial the public address too and hairpin back in. A small
+inefficiency, not a correctness problem.
+
+To check a platform before promising an org it can self-host:
+
+```sh
+kubectl get apiexportendpointslices -A \
+  -o jsonpath='{range .items[*]}{.status.endpoints[*].url}{"\n"}{end}'
+```
+
+If the host is a `.svc`/`.svc.cluster.local` name, a loopback, or a private
+address, self-hosted providers will install and then sit idle.
+
 ## Self-hosting a platform provider
 
 The flow above covers a provider an org wrote itself. The more common case is an
@@ -357,6 +439,17 @@ in URL paths.
 
 ## Known gaps
 
+- **Nothing checks the virtual-workspace URL before handing out a credential.**
+  On a multi-shard platform whose shards advertise unreachable virtual-workspace
+  URLs (see [Platform prerequisite](#platform-prerequisite-a-publicly-dialable-virtual-workspace-url)),
+  the hub will still register an org provider and render install instructions.
+  The org installs successfully, sees a healthy provider with Templates
+  reconciling, and discovers only later that Instances never move. The hub could
+  read any existing `APIExportEndpointSlice` and warn at render time — it
+  already has a `Warnings` channel the portal renders under *Needs your
+  attention* — which would turn a multi-hour debug into a line of text.
+  Single-shard and embedded platforms are not exposed to this: the hub fronts
+  their virtual workspaces itself.
 - **No heartbeat.** The heartbeat endpoint addresses providers by bare name with
   no tenant context, so it is platform-only — an org provider cannot beat, and
   cannot keep a platform provider of the same name looking alive. Org providers
