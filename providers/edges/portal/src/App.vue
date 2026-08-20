@@ -47,6 +47,16 @@ function closeDetail() {
   refresh()
 }
 
+// The shell sidebar (Workloads/Services nav items) changes the route while
+// the detail or wizard overlay is open. The route must win: the template
+// gates every view on !selected/!wizardOpen, so without closing them here
+// the overlay keeps rendering and the sidebar appears dead.
+watch(view, (v) => {
+  selected.value = null
+  wizardOpen.value = false
+  if (v === 'edges') refresh()
+})
+
 const edges = ref<Edge[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
