@@ -29,6 +29,8 @@ import (
 	"sort"
 	"strings"
 
+	"k8s.io/klog/v2"
+
 	"github.com/gorilla/mux"
 
 	"github.com/faroshq/faros/pkg/hub/kcp"
@@ -282,6 +284,69 @@ type EnabledProviderDetail struct {
 	// SelfHosted is true when the binding targets the Org's own provider
 	// instance rather than the platform's.
 	SelfHosted bool `json:"selfHosted"`
+	// StaleClaims lists claims this provider still pins to a different copy of
+	// a dependency than this workspace binds — the state a provider lands in
+	// when that dependency is swapped underneath it. kcp reports such a binding
+	// as healthy while serving none of the claimed resources, so this is the
+	// only place the condition is visible before a downstream 404.
+	StaleClaims []StaleClaim `json:"staleClaims,omitempty"`
+}
+
+// StaleClaim describes one mispointed claim in terms the portal can render
+// without knowing what an identityHash is.
+type StaleClaim struct {
+	// Group and Resource name the claimed resource, e.g.
+	// "infrastructure.faros.sh" / "instances".
+	Group    string `json:"group"`
+	Resource string `json:"resource"`
+	// BoundExportPath is the copy this workspace actually uses, and so the one
+	// the provider would have to be repointed at.
+	BoundExportPath string `json:"boundExportPath"`
+	// ClaimedIdentity and BoundIdentity are the two hashes, truncated: enough
+	// to tell them apart in a UI, and the full values are of no use to a reader
+	// who cannot act on them anyway.
+	ClaimedIdentity string `json:"claimedIdentity"`
+	BoundIdentity   string `json:"boundIdentity"`
+	// Repointable is true when the provider is self-hosted by this Org, in
+	// which case re-enabling it repairs the pin. For a platform provider the
+	// export is shared by every Org and re-enabling changes nothing, so the
+	// portal must not offer that as the fix.
+	Repointable bool `json:"repointable"`
+}
+
+// staleClaimsFor converts the kcp-level mismatches into the portal's view.
+//
+// selfHosted decides Repointable, and the two are the same question asked from
+// different ends: a provider the Org self-hosts owns its APIExport, so
+// re-enabling it repoints the pin; a platform provider's export is shared by
+// every Org, so re-enabling changes nothing and offering it as the fix would
+// send the user round a loop.
+func staleClaimsFor(mismatches []kcp.ClaimIdentityMismatch, selfHosted bool) []StaleClaim {
+	if len(mismatches) == 0 {
+		return nil
+	}
+	out := make([]StaleClaim, 0, len(mismatches))
+	for _, m := range mismatches {
+		out = append(out, StaleClaim{
+			Group:           m.Group,
+			Resource:        m.Resource,
+			BoundExportPath: m.ServingExportPath,
+			ClaimedIdentity: shortIdentity(m.Declared),
+			BoundIdentity:   shortIdentity(m.Actual),
+			Repointable:     selfHosted,
+		})
+	}
+	return out
+}
+
+// shortIdentity trims a 64-character hash to a prefix. Full hashes are all
+// visually identical, and a reader comparing two of them only needs enough to
+// see that they differ.
+func shortIdentity(hash string) string {
+	if len(hash) <= 12 {
+		return hash
+	}
+	return hash[:12]
 }
 
 // listEnabledProviders handles GET /api/orgs/{org}/workspaces/{ws}/providers/enabled.
@@ -306,6 +371,16 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "list APIBindings: "+err.Error())
 		return
 	}
+	// Best-effort: a provider mid-provision, or a transient read failure, must
+	// not blank the sidebar. Losing the warning for one render is recoverable;
+	// losing the enabled-set is not.
+	stale, err := h.mgr.bootstrapper.StaleClaimIdentities(r.Context(), tc.OrgUUID, tc.WorkspaceUUID)
+	if err != nil {
+		klog.FromContext(r.Context()).Error(err, "Listing stale claim identities",
+			"org", tc.OrgUUID, "workspace", tc.WorkspaceUUID)
+		stale = nil
+	}
+
 	names := make(map[string]string, len(bindings))
 	details := make(map[string]EnabledProviderDetail, len(bindings))
 	for provider, binding := range bindings {
@@ -314,6 +389,7 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 			BindingName: binding.Name,
 			ExportPath:  binding.ExportPath,
 			SelfHosted:  binding.SelfHosted,
+			StaleClaims: staleClaimsFor(stale[provider], binding.SelfHosted),
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")

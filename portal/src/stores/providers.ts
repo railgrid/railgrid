@@ -76,6 +76,28 @@ export interface EnabledProviderDetail {
   // true when the binding targets this org's own instance rather than the
   // platform's.
   selfHosted: boolean
+  // Claims still pointing at a different copy of a dependency than this
+  // workspace uses — what every dependent looks like after that dependency is
+  // swapped for a self-hosted one. Absent in the healthy case.
+  staleClaims?: StaleClaim[]
+}
+
+// StaleClaim mirrors pkg/hub/restapi.StaleClaim. kcp reports a binding with a
+// mispointed claim as perfectly healthy while serving none of the claimed
+// resources, so this is the only place a user can see it before the dependent
+// provider starts failing for reasons that look unrelated.
+export interface StaleClaim {
+  group: string
+  resource: string
+  // The copy this workspace actually uses, and so the one the provider would
+  // have to be repointed at.
+  boundExportPath: string
+  claimedIdentity: string
+  boundIdentity: string
+  // true when re-enabling this provider repairs the pin — only possible when
+  // the org owns the provider's APIExport. A platform provider's export is
+  // shared by every org, so re-enabling changes nothing.
+  repointable: boolean
 }
 
 // CategoryDTO mirrors pkg/hub/providers.Category — the hub publishes its
@@ -326,6 +348,21 @@ export const useProvidersStore = defineStore('providers', () => {
     return missingDependencies(p).length > 0
   }
 
+  // staleClaims lists this provider's claims that still point at a copy of a
+  // dependency the workspace no longer uses — the state a provider is left in
+  // when a dependency underneath it is swapped for a self-hosted one.
+  //
+  // Worth showing prominently despite looking like a detail: kcp keeps
+  // reporting such a provider as Enabled and healthy, so nothing else in the UI
+  // distinguishes it from one that works.
+  function staleClaims(name: string): StaleClaim[] {
+    return bindingsByProvider.value[name]?.staleClaims ?? []
+  }
+
+  function hasStaleClaims(name: string): boolean {
+    return staleClaims(name).length > 0
+  }
+
   function dependencyLabel(name: string): string {
     return byName(name)?.displayName ?? name
   }
@@ -509,6 +546,8 @@ export const useProvidersStore = defineStore('providers', () => {
     isSelfManaged,
     missingDependencies,
     hasMissingDependencies,
+    staleClaims,
+    hasStaleClaims,
     dependencyLabel,
     dependencyLabels,
     load,

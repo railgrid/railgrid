@@ -302,6 +302,127 @@ func (b *Bootstrapper) workspaceGroupExports(ctx context.Context, orgUUID, wsUUI
 	return out, nil
 }
 
+// StaleClaimIdentities reports, per provider bound in a workspace, any claim
+// still pinned to a different copy of its dependency than the workspace uses.
+//
+// This is the read-only twin of the Enable-time check, for surfacing the state
+// rather than gating on it. It exists because the condition is silent
+// everywhere else: swap a dependency and every provider claiming its resources
+// keeps reporting Ready while quietly seeing none of them, so without something
+// like this the first sign is a downstream 404 nobody connects to the swap.
+//
+// Cost is one APIExport read per bound provider, on a call the portal already
+// makes once per workspace switch.
+func (b *Bootstrapper) StaleClaimIdentities(ctx context.Context, orgUUID, wsUUID string) (map[string][]ClaimIdentityMismatch, error) {
+	if orgUUID == "" || wsUUID == "" {
+		return nil, fmt.Errorf("StaleClaimIdentities: orgUUID and wsUUID are required")
+	}
+	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
+	wsClient, err := dynamic.NewForConfig(wsConfig)
+	if err != nil {
+		return nil, fmt.Errorf("creating child workspace client: %w", err)
+	}
+	list, err := wsClient.Resource(apiBindingGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("listing APIBindings in %s/%s: %w", orgUUID, wsUUID, err)
+	}
+
+	type boundExport struct {
+		provider string
+		path     string
+		name     string
+		groups   []string
+		// claims maps "group/resource" to the identity this export pins.
+		claims map[string]string
+		// identity is this export's own identityHash, i.e. what a claim on
+		// ITS resources has to carry.
+		identity string
+	}
+
+	bound := make([]boundExport, 0, len(list.Items))
+	for _, item := range list.Items {
+		if phase, _, _ := unstructured.NestedString(item.Object, "status", "phase"); phase != "Bound" {
+			continue
+		}
+		path, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "path")
+		name, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "name")
+		if path == "" || name == "" {
+			continue
+		}
+		provider, ok := providerNameFromExportPath(path, orgUUID)
+		if !ok {
+			continue
+		}
+		be := boundExport{provider: provider, path: path, name: name, claims: map[string]string{}}
+		groups, _, _ := unstructured.NestedSlice(item.Object, "status", "boundResources")
+		seen := map[string]bool{}
+		for _, br := range groups {
+			m, ok := br.(map[string]any)
+			if !ok {
+				continue
+			}
+			if g, _ := m["group"].(string); g != "" && !seen[g] {
+				seen[g] = true
+				be.groups = append(be.groups, g)
+			}
+		}
+
+		exportClient, cerr := dynamic.NewForConfig(configForPath(b.config, path))
+		if cerr != nil {
+			return nil, fmt.Errorf("creating export workspace client for %s: %w", path, cerr)
+		}
+		ex, gerr := exportClient.Resource(apiExportGVR).Get(ctx, name, metav1.GetOptions{})
+		if gerr != nil {
+			// A provider mid-teardown or mid-provision is not a finding. Skip it
+			// rather than fail the whole listing — this feeds a page render.
+			continue
+		}
+		be.identity, _, _ = unstructured.NestedString(ex.Object, "status", "identityHash")
+		pcs, _, _ := unstructured.NestedSlice(ex.Object, "spec", "permissionClaims")
+		for _, pc := range pcs {
+			m, ok := pc.(map[string]any)
+			if !ok {
+				continue
+			}
+			g, _ := m["group"].(string)
+			r, _ := m["resource"].(string)
+			h, _ := m["identityHash"].(string)
+			if h != "" {
+				be.claims[g+"/"+r] = h
+			}
+		}
+		bound = append(bound, be)
+	}
+
+	// Which export actually serves each group here. Built from what the
+	// workspace binds, so it reflects a swap the moment it happens.
+	serving := map[string]servingExport{}
+	for _, be := range bound {
+		for _, g := range be.groups {
+			if _, seen := serving[g]; seen {
+				continue
+			}
+			serving[g] = servingExport{path: be.path, name: be.name, identity: be.identity}
+		}
+	}
+
+	out := map[string][]ClaimIdentityMismatch{}
+	for _, be := range bound {
+		claims := make([]ProviderClaim, 0, len(be.claims))
+		for key := range be.claims {
+			group, resource, ok := strings.Cut(key, "/")
+			if !ok {
+				continue
+			}
+			claims = append(claims, ProviderClaim{Group: group, Resource: resource, Accepted: true})
+		}
+		if mismatches := compareClaimIdentities(claims, be.claims, serving); len(mismatches) > 0 {
+			out[be.provider] = mismatches
+		}
+	}
+	return out, nil
+}
+
 // repointExportClaims rewrites exportName's permissionClaims so each listed
 // mismatch carries the identity the workspace actually binds, and reports
 // whether anything changed.

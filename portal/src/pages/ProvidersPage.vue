@@ -6,7 +6,7 @@ import SelfHostInstructions from '@/components/SelfHostInstructions.vue'
 import { useProvidersStore, type ProviderDTO, type PermissionClaim } from '@/stores/providers'
 import { useOrgProvidersStore, type OrgProviderRegistration } from '@/stores/orgProviders'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
-import { Puzzle, ExternalLink, AlertCircle, Plus, X, Loader2, Search, Server, Trash2, RefreshCw } from 'lucide-vue-next'
+import { Puzzle, ExternalLink, AlertCircle, AlertTriangle, Plus, X, Loader2, Search, Server, Trash2, RefreshCw } from 'lucide-vue-next'
 
 const providers = useProvidersStore()
 const orgProviders = useOrgProvidersStore()
@@ -565,14 +565,16 @@ function dependencyNotice(p: ProviderDTO): string {
                       ? 'border border-border-default bg-surface-overlay text-text-muted'
                       : p.builtinRoute
                         ? 'border border-border-default bg-surface-overlay text-text-secondary'
-                        : providers.isEnabled(p.name)
-                          ? 'border border-accent/30 bg-accent/10 text-accent'
-                          : providers.hasMissingDependencies(p)
-                            ? 'border border-warning/30 bg-warning-subtle text-warning'
-                            : 'border border-success/30 bg-success-subtle text-success'
+                        : providers.hasStaleClaims(p.name)
+                          ? 'border border-warning/30 bg-warning-subtle text-warning'
+                          : providers.isEnabled(p.name)
+                            ? 'border border-accent/30 bg-accent/10 text-accent'
+                            : providers.hasMissingDependencies(p)
+                              ? 'border border-warning/30 bg-warning-subtle text-warning'
+                              : 'border border-success/30 bg-success-subtle text-success'
                   "
                 >
-                  {{ !p.ready ? 'Pending' : p.builtinRoute ? 'Built-in' : providers.isEnabled(p.name) ? 'Enabled' : providers.hasMissingDependencies(p) ? 'Blocked' : 'Available' }}
+                  {{ !p.ready ? 'Pending' : p.builtinRoute ? 'Built-in' : providers.hasStaleClaims(p.name) ? 'Degraded' : providers.isEnabled(p.name) ? 'Enabled' : providers.hasMissingDependencies(p) ? 'Blocked' : 'Available' }}
                 </span>
               </div>
               <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">{{ p.name }}<span v-if="p.version"> · {{ p.version }}</span></p>
@@ -584,6 +586,37 @@ function dependencyNotice(p: ProviderDTO): string {
           <p v-if="p.description" class="mt-3 line-clamp-3 text-[11px] leading-relaxed text-text-muted">
             {{ p.description }}
           </p>
+
+          <!-- A provider whose claims point at a replaced dependency keeps
+               reporting Enabled and healthy while seeing none of the resources
+               it claims, so this has to say what happened AND what to do —
+               there is no other symptom until something downstream fails for
+               reasons that look unrelated. -->
+          <div
+            v-if="providers.hasStaleClaims(p.name)"
+            class="mt-3 rounded-md border border-warning/30 bg-warning-subtle p-2.5"
+          >
+            <div class="flex items-center gap-1.5 text-[10px] font-semibold text-warning">
+              <AlertTriangle class="h-3 w-3 flex-shrink-0" :stroke-width="2" />
+              Claims a replaced provider
+            </div>
+            <ul class="mt-1 space-y-0.5 text-[10px] leading-relaxed text-warning">
+              <li v-for="c in providers.staleClaims(p.name)" :key="c.group + '/' + c.resource">
+                <code class="font-mono">{{ c.resource }}.{{ c.group }}</code> still points at the
+                copy this workspace no longer uses.
+              </li>
+            </ul>
+            <p class="mt-1.5 text-[10px] leading-relaxed text-text-muted">
+              <template v-if="providers.staleClaims(p.name).every((c) => c.repointable)">
+                Disable and enable it again to point it at the copy you now run.
+              </template>
+              <template v-else>
+                This provider is run by the platform, so its claims are shared by every
+                organization and re-enabling will not change them. Run your own copy of it
+                alongside the provider it claims, or ask the platform operator to repoint it.
+              </template>
+            </p>
+          </div>
 
           <div class="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
             <button
