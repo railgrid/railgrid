@@ -1613,6 +1613,21 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 		return err
 	}
 
+	// Those identities are whatever this export pins, which is only correct if
+	// the workspace binds the same copy of the dependency the export was built
+	// against. Resolve them against what this workspace actually binds before
+	// creating anything: a stale pin produces a binding kcp reports as perfectly
+	// healthy while serving none of the claimed resources, whose only downstream
+	// symptom is a 404 the dependent provider retries forever.
+	//
+	// For a self-hosted (single-tenant) export this repoints it and returns the
+	// updated identities, which is what lets "swap the dependency, then
+	// Disable/Enable" work unattended. For a platform export it refuses.
+	identities, err = b.verifyClaimIdentities(ctx, orgUUID, wsUUID, bindingName, exportPath, exportName, claims, identities)
+	if err != nil {
+		return err
+	}
+
 	specClaims := make([]apisv1alpha2.AcceptablePermissionClaim, 0, len(claims))
 	for _, c := range claims {
 		state := apisv1alpha2.ClaimRejected

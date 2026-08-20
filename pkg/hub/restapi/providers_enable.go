@@ -24,6 +24,7 @@ package restapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -161,6 +162,15 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		prov.APIExportName,
 		claims,
 	); err != nil {
+		// A stale cross-provider identity is a configuration conflict, not a
+		// server fault, and it is the caller who can act on it — so return the
+		// detail rather than burying it in a 500. Enabling anyway would create
+		// a binding kcp calls healthy and that serves none of the claimed
+		// resources.
+		if errors.Is(err, kcp.ErrClaimIdentityMismatch) {
+			writeStatus(w, http.StatusConflict, "Conflict", err.Error())
+			return
+		}
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "ensure APIBinding: "+err.Error())
 		return
 	}
