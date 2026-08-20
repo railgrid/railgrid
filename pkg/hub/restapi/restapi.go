@@ -308,6 +308,10 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	// paths are distinct), but note these are org-scoped, NOT workspace-scoped:
 	// a provider belongs to the Org, while Enable belongs to one Workspace.
 	r.HandleFunc("/{org}/providers", h.listOrgProviders).Methods(http.MethodGet)
+	// Registered ahead of the {name} routes: "install-targets" is a literal
+	// sibling of a provider name, and this keeps it that way if a GET
+	// /{org}/providers/{name} is ever added.
+	r.HandleFunc("/{org}/providers/install-targets", h.listOrgProviderInstallTargets).Methods(http.MethodGet)
 	r.HandleFunc("/{org}/providers", h.registerOrgProvider).Methods(http.MethodPost)
 	r.HandleFunc("/{org}/providers/{name}", h.deleteOrgProvider).Methods(http.MethodDelete)
 	r.HandleFunc("/{org}/providers/{name}/kubeconfig", h.getOrgProviderKubeconfig).Methods(http.MethodGet)

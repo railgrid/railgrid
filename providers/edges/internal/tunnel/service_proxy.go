@@ -66,8 +66,31 @@ type serviceView struct {
 		Scheme        string                  `json:"scheme,omitempty"`
 		Port          int32                   `json:"port"`
 		AuthSecretRef *corev1.SecretReference `json:"authSecretRef,omitempty"`
+		Auth          string                  `json:"auth,omitempty"`
 		Instructions  string                  `json:"instructions,omitempty"`
 	} `json:"spec"`
+}
+
+// Authorization modes, mirroring edges.faros.sh/v1alpha1 ServiceAuthMode. The
+// SDK keeps its own copy for the same reason serviceView exists at all: this
+// package decodes tenant objects without importing any provider's types.
+const (
+	serviceAuthSecret      = "secret"
+	serviceAuthPassthrough = "passthrough"
+	serviceAuthNone        = "none"
+)
+
+// authMode is spec.auth with the default applied. Empty means "secret" — the
+// behaviour every Service had before the field existed.
+func (v *serviceView) authMode() string {
+	switch v.Spec.Auth {
+	case serviceAuthPassthrough:
+		return serviceAuthPassthrough
+	case serviceAuthNone:
+		return serviceAuthNone
+	default:
+		return serviceAuthSecret
+	}
 }
 
 // scheme returns the URL scheme, defaulting to http.
@@ -193,17 +216,23 @@ const (
 )
 
 // serviceHTTPProxy reverse-proxies an HTTP request to the host-local service
-// through the agent's /svc handler, injecting the auth token provider-side.
+// through the agent's /svc handler, resolving Authorization per spec.auth
+// (see applyServiceAuth).
 func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r *http.Request, cluster, kcpToken string, svc *serviceView, dialer interface {
 	Dial(context.Context) (net.Conn, error)
 }, rest string) {
 	logger := klog.FromContext(ctx)
 
-	token, err := p.readServiceToken(ctx, cluster, svc, kcpToken)
-	if err != nil {
-		logger.Error(err, "reading service auth token")
-		http.Error(w, "service credentials unavailable", http.StatusBadGateway)
-		return
+	mode := svc.authMode()
+	var token string
+	if mode == serviceAuthSecret {
+		var err error
+		token, err = p.readServiceToken(ctx, cluster, svc, kcpToken)
+		if err != nil {
+			logger.Error(err, "reading service auth token")
+			http.Error(w, "service credentials unavailable", http.StatusBadGateway)
+			return
+		}
 	}
 
 	target := svc.target()
@@ -217,9 +246,17 @@ func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r 
 	}
 
 	if isUpgradeRequest(r) {
-		p.serviceHandleUpgrade(ctx, w, r, deviceConn, target, svcPath, token)
+		p.serviceHandleUpgrade(ctx, w, r, deviceConn, target, svcPath, mode, token)
 		return
 	}
+
+	// edgeDeviceConnTransport does one write and one ReadResponse over this
+	// conn; closing the response body does not close it, and there is no
+	// pooling to hand it back to. ServeHTTP has finished copying the body by
+	// the time it returns, so closing here is safe — and skipping it leaks one
+	// tunnel stream per request, which only stays invisible while the callers
+	// are low-rate (SSH, Home Assistant).
+	defer deviceConn.Close() //nolint:errcheck
 
 	transport := &edgeDeviceConnTransport{conn: deviceConn}
 	proxy := &httputil.ReverseProxy{
@@ -228,21 +265,39 @@ func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r 
 			req.URL.Host = "edge-agent"
 			req.URL.Path = svcPath
 			req.Header.Set(svcTargetHeader, target)
-			// Replace the caller's hub token with the service token.
-			if token != "" {
-				req.Header.Set("Authorization", "Bearer "+token)
-			} else {
-				req.Header.Del("Authorization")
-			}
+			applyServiceAuth(req.Header, mode, token)
 		},
 		Transport: transport,
+		// Unbuffered, as on the hub's own backend proxy: this path carries
+		// log tails and other streams (a provider backend reached over an
+		// edge serves the same verbs it would in-cluster), and the default
+		// buffering turns those into an apparent hang.
+		FlushInterval: -1,
 	}
 	proxy.ServeHTTP(w, r)
 }
 
+// applyServiceAuth sets the Authorization the agent-side upstream will see,
+// per spec.auth. In passthrough mode the caller's header is left exactly as it
+// arrived — that is the point of the mode.
+func applyServiceAuth(h http.Header, mode, token string) {
+	switch mode {
+	case serviceAuthPassthrough:
+		return
+	case serviceAuthNone:
+		h.Del("Authorization")
+	default: // serviceAuthSecret
+		if token != "" {
+			h.Set("Authorization", "Bearer "+token)
+		} else {
+			h.Del("Authorization")
+		}
+	}
+}
+
 // serviceHandleUpgrade handles WebSocket/upgrade requests to a service by
 // hijacking and piping raw bytes through the tunnel (HA uses /api/websocket).
-func (p *Server) serviceHandleUpgrade(ctx context.Context, w http.ResponseWriter, r *http.Request, deviceConn net.Conn, target, svcPath, token string) {
+func (p *Server) serviceHandleUpgrade(ctx context.Context, w http.ResponseWriter, r *http.Request, deviceConn net.Conn, target, svcPath, mode, token string) {
 	logger := klog.FromContext(ctx)
 
 	hijacker, ok := w.(http.Hijacker)
@@ -261,11 +316,7 @@ func (p *Server) serviceHandleUpgrade(ctx context.Context, w http.ResponseWriter
 	r.URL.Path = svcPath
 	r.RequestURI = r.URL.RequestURI()
 	r.Header.Set(svcTargetHeader, target)
-	if token != "" {
-		r.Header.Set("Authorization", "Bearer "+token)
-	} else {
-		r.Header.Del("Authorization")
-	}
+	applyServiceAuth(r.Header, mode, token)
 
 	if err := r.Write(deviceConn); err != nil {
 		logger.Error(err, "failed to forward upgrade request to edge agent")

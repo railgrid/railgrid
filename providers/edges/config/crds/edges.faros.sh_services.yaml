@@ -69,11 +69,23 @@ spec:
           spec:
             description: ServiceSpec defines the desired state of a Service.
             properties:
+              auth:
+                default: secret
+                description: |-
+                  Auth decides what Authorization the proxy forwards: "secret" (default)
+                  swaps in spec.authSecretRef's token, "passthrough" forwards the caller's
+                  own, "none" strips it. See ServiceAuthMode.
+                enum:
+                - secret
+                - passthrough
+                - none
+                type: string
               authSecretRef:
                 description: |-
                   AuthSecretRef names a Secret whose "token" key the provider injects as
                   "Authorization: Bearer ..." when proxying. The token never reaches the
                   agent host. Follows the spec.sshCredentialsRef convention (namespaced).
+                  Only read when spec.auth is "secret" (the default).
                 properties:
                   name:
                     description: name is unique within a namespace to reference a

@@ -67,6 +67,29 @@ export interface OrgProviderRegistration {
   instructions?: InstallInstructions
 }
 
+// A cluster a self-hosted provider can be installed into. The hub reaches an
+// org-owned provider's backend over that cluster's edge tunnel and has no other
+// route in, so an edge is a precondition, not a nicety — see
+// docs/byo-provider-edge-transport.md.
+export interface EdgeInstallTarget {
+  workspace: string
+  workspaceDisplayName?: string
+  name: string
+  // The only field to gate on. Connected today; the hub owns the rule so the
+  // UI does not have to re-derive it if it tightens.
+  eligible: boolean
+  connected: boolean
+  phase?: string
+  agentVersion?: string
+}
+
+export interface EdgeInstallTargets {
+  items: EdgeInstallTarget[]
+  eligible: boolean
+  // Why not, in words the user can act on. Empty when eligible.
+  reason?: string
+}
+
 function readTenantSelection(): { orgUUID: string | null } {
   // Read the selection from localStorage rather than importing the tenant
   // store, matching the import-cycle avoidance already used in stores/providers.
@@ -88,6 +111,17 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
   // True when the hub has org-provider support wired (it returns 501 otherwise),
   // so the UI can hide the whole surface instead of showing a broken tab.
   const supported = ref(true)
+
+  // Where a self-hosted provider could go. Empty until loadInstallTargets runs;
+  // eligibility starts false so a page that renders before the check completes
+  // offers nothing it cannot deliver.
+  const installTargets = ref<EdgeInstallTarget[]>([])
+  const installTargetsEligible = ref(false)
+  const installTargetsReason = ref<string | null>(null)
+  const installTargetsLoading = ref(false)
+  const installTargetsLoaded = ref(false)
+
+  const eligibleInstallTargets = computed(() => installTargets.value.filter((t) => t.eligible))
 
   const byName = computed(() => {
     const out: Record<string, OrgProvider> = {}
@@ -131,17 +165,57 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
     }
   }
 
+  // loadInstallTargets asks the hub which clusters could host a provider. The
+  // hub runs the identical check when registration is posted, so this drives
+  // button state without becoming a second, drift-prone source of truth.
+  async function loadInstallTargets(): Promise<void> {
+    const url = orgURL('/install-targets')
+    if (!url || installTargetsLoading.value) return
+    installTargetsLoading.value = true
+    try {
+      const res = await authFetch(url, { tenant: true })
+      if (res.status === 501) {
+        supported.value = false
+        return
+      }
+      if (!res.ok) throw new Error(`list install targets: ${res.status}`)
+      const body = (await res.json()) as EdgeInstallTargets
+      installTargets.value = body.items ?? []
+      installTargetsEligible.value = !!body.eligible
+      installTargetsReason.value = body.reason ?? null
+      installTargetsLoaded.value = true
+    } catch (e) {
+      // Surfaced through the same error slot as the rest of the surface; the
+      // caller renders self-hosting as unavailable rather than guessing it is
+      // fine, because guessing "fine" produces a 409 on click.
+      error.value = e instanceof Error ? e.message : String(e)
+      installTargetsEligible.value = false
+      installTargetsReason.value = 'could not check for a connected cluster'
+    } finally {
+      installTargetsLoading.value = false
+    }
+  }
+
   // register creates the workspace + credential for a self-hosted copy of
-  // `sourceProvider`, returning the credential and install steps. Idempotent on
-  // the hub side, so a retry returns the same workspace and the same token.
-  async function register(name: string, sourceProvider?: string): Promise<OrgProviderRegistration> {
+  // `sourceProvider` on `edge`, returning the credential and install steps.
+  // Idempotent on the hub side, so a retry returns the same workspace and the
+  // same token.
+  async function register(
+    name: string,
+    sourceProvider: string | undefined,
+    edge: Pick<EdgeInstallTarget, 'workspace' | 'name'>,
+  ): Promise<OrgProviderRegistration> {
     const url = orgURL()
     if (!url) throw new Error('select an organization first')
     const res = await authFetch(url, {
       method: 'POST',
       tenant: true,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, sourceProvider: sourceProvider ?? name }),
+      body: JSON.stringify({
+        name,
+        sourceProvider: sourceProvider ?? name,
+        edge: { workspace: edge.workspace, name: edge.name },
+      }),
     })
     if (!res.ok) {
       const detail = await res.text().catch(() => '')
@@ -190,5 +264,12 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
     register,
     instructions,
     remove,
+    installTargets,
+    eligibleInstallTargets,
+    installTargetsEligible,
+    installTargetsReason,
+    installTargetsLoading,
+    installTargetsLoaded,
+    loadInstallTargets,
   }
 })

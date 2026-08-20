@@ -27,16 +27,49 @@ const activeRegistration = ref<OrgProviderRegistration | null>(null)
 const selfHostBusy = ref<Record<string, boolean>>({})
 const selfHostError = ref<string | null>(null)
 
+// Which cluster a new self-hosted provider goes into. Keyed "workspace/name"
+// so it survives a reload of the target list by value rather than identity.
+const selectedEdgeKey = ref<string>('')
+
+const eligibleEdges = computed(() => orgProviders.eligibleInstallTargets)
+
+// Default to the only eligible cluster, or the first one, so the common case
+// (one cluster) needs no interaction. Recomputed rather than watched: the list
+// is small and this keeps the selection valid if a cluster drops out.
+const selectedEdge = computed(() => {
+  const list = eligibleEdges.value
+  if (!list.length) return null
+  return list.find((t) => `${t.workspace}/${t.name}` === selectedEdgeKey.value) ?? list[0]
+})
+
+function edgeLabel(t: { workspace: string; workspaceDisplayName?: string; name: string }): string {
+  return `${t.name} · ${t.workspaceDisplayName || t.workspace}`
+}
+
+// canSelfHost is the single gate. A provider cannot be installed into a cluster
+// the hub cannot reach, and the hub refuses such a registration anyway — so the
+// button is disabled rather than left to 409.
+const canSelfHost = computed(() => orgProviders.installTargetsEligible && !!selectedEdge.value)
+
 async function selfHost(p: ProviderDTO) {
+  const edge = selectedEdge.value
+  if (!edge) {
+    selfHostError.value = orgProviders.installTargetsReason ?? 'no connected cluster to install into'
+    return
+  }
   selfHostError.value = null
   selfHostBusy.value = { ...selfHostBusy.value, [p.name]: true }
   try {
     // Same name as the platform provider: the chart registers its CatalogEntry
     // under its own name, and the org's copy shadows the platform one for this
     // org only.
-    activeRegistration.value = await orgProviders.register(p.name, p.name)
+    activeRegistration.value = await orgProviders.register(p.name, p.name, edge)
   } catch (e) {
     selfHostError.value = e instanceof Error ? e.message : String(e)
+    // The hub is authoritative on eligibility and its answer may have changed
+    // under us (an agent dropping between page load and click). Re-check so the
+    // buttons reflect reality instead of failing the same way again.
+    orgProviders.loadInstallTargets()
   } finally {
     selfHostBusy.value = { ...selfHostBusy.value, [p.name]: false }
   }
@@ -210,6 +243,9 @@ const dialogProvider = ref<ProviderDTO | null>(null)
 onMounted(() => {
   providers.load()
   orgProviders.load()
+  // Loaded up front rather than when the tab opens: the Self-Host actions must
+  // never render enabled and then become disabled a moment later.
+  orgProviders.loadInstallTargets()
 })
 
 function openEnableDialog(p: ProviderDTO) {
@@ -326,6 +362,11 @@ function dependencyNotice(p: ProviderDTO): string {
           to that workspace only; you deploy the provider with Helm. Your workspaces then
           enable your copy exactly like any other provider.
         </p>
+        <p class="-mt-3 text-[11px] text-text-muted">
+          The cluster must be connected to faros as an edge first. faros reaches a
+          self-hosted provider over that cluster's outbound tunnel — there is no route
+          into your network from the platform side.
+        </p>
 
         <div
           v-if="selfHostError"
@@ -334,6 +375,52 @@ function dependencyNotice(p: ProviderDTO): string {
           <AlertCircle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="1.75" />
           <span>{{ selfHostError }}</span>
         </div>
+
+        <!-- No cluster the hub can reach → say so, and say what to do about it.
+             The Self-Host buttons below are disabled off the same condition, so
+             this block is the explanation for them, not a separate warning. -->
+        <div
+          v-if="orgProviders.installTargetsLoaded && !canSelfHost"
+          class="rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2.5 text-sm text-warning flex items-start gap-2"
+        >
+          <AlertTriangle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="1.75" />
+          <div class="min-w-0">
+            <p>{{ orgProviders.installTargetsReason || 'no connected cluster to install into' }}</p>
+            <router-link
+              to="/providers/edges"
+              class="mt-1 inline-flex items-center gap-1 text-[11px] font-medium underline"
+            >
+              Connect a Kubernetes cluster
+              <ExternalLink class="h-3 w-3" :stroke-width="2" />
+            </router-link>
+          </div>
+        </div>
+
+        <!-- Which cluster a new provider lands in. Shown only when there is a
+             choice to make: one eligible cluster needs no picker. -->
+        <div
+          v-else-if="eligibleEdges.length > 1"
+          class="flex flex-wrap items-center gap-2 rounded-lg border border-border-subtle bg-surface-raised/60 px-3 py-2"
+        >
+          <label for="self-host-edge" class="text-[11px] font-medium text-text-secondary">
+            Install into
+          </label>
+          <select
+            id="self-host-edge"
+            v-model="selectedEdgeKey"
+            class="rounded-lg border border-border-subtle bg-surface-overlay px-2 py-1 text-[11px] text-text-primary"
+          >
+            <option v-for="t in eligibleEdges" :key="`${t.workspace}/${t.name}`" :value="`${t.workspace}/${t.name}`">
+              {{ edgeLabel(t) }}
+            </option>
+          </select>
+        </div>
+        <p
+          v-else-if="selectedEdge"
+          class="text-[11px] text-text-muted"
+        >
+          Installing into <span class="font-medium text-text-secondary">{{ edgeLabel(selectedEdge) }}</span>.
+        </p>
 
         <!-- Install details for whichever provider the user just acted on. -->
         <section
@@ -462,8 +549,9 @@ function dependencyNotice(p: ProviderDTO): string {
               </p>
               <div class="mt-4 flex items-center gap-2">
                 <button
-                  class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20 disabled:opacity-60"
-                  :disabled="!!selfHostBusy[p.name]"
+                  class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  :disabled="!!selfHostBusy[p.name] || !canSelfHost"
+                  :title="canSelfHost ? undefined : (orgProviders.installTargetsReason ?? 'no connected cluster to install into')"
                   @click="selfHost(p)"
                 >
                   <Loader2 v-if="selfHostBusy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />

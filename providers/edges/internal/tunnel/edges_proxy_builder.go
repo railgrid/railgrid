@@ -144,6 +144,11 @@ func (p *Server) edgesK8sHandler(ctx context.Context, w http.ResponseWriter, r *
 		return
 	}
 
+	// One request/response per dialed conn, with no pooling to return it to —
+	// closing the response body leaves it open. See the same note in
+	// serviceHTTPProxy.
+	defer deviceConn.Close() //nolint:errcheck
+
 	// Reverse-proxy to the agent's Kubernetes API server.
 	transport := &edgeDeviceConnTransport{conn: deviceConn}
 	path := extractEdgeK8sPath(r.URL.Path)
