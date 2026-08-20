@@ -37,8 +37,18 @@ config.define_string('kcp-image-repo')
 # dev-token at /login. Dex itself always runs so toggling doesn't rebuild
 # the resource graph.
 config.define_bool('sso')
+# Global replica count for the hub + every faros provider Deployment (dex,
+# Postgres, and the image-cache stub stay at 1 regardless — they are dev
+# scaffolding, not HA subjects). Default 1 keeps the dev loop light; set 2 to
+# exercise the real multi-replica behavior each component documents at its
+# deploy site (leader election, tunnel-ownership relay, run claims, …):
+#
+#   make tilt-cluster REPLICA_COUNT=2
+#   tilt up -f Tiltfile.cluster -- --replicas=2
+config.define_string('replicas')
 cfg = config.parse()
 sso_enabled = cfg.get('sso', False)
+replica_count = cfg.get('replicas', os.getenv('REPLICA_COUNT', '1'))
 
 default_kcp_dir = os.path.join(os.getenv('HOME', ''), 'go', 'src', 'github.com', 'kcp-dev', 'kcp')
 kcp_dir = cfg.get('kcp-dir', os.getenv('KCP_DIR', default_kcp_dir))
@@ -855,12 +865,12 @@ k8s_yaml(helm(
     namespace=hub_namespace,
     set=[
         'image.hub.tag=dev',
-        # TWO hub replicas — external kcp is exactly the configuration the
-        # hub's HA work targets: singleton controllers gate on the
+        # REPLICA_COUNT=2 is the configuration the hub's HA work targets —
+        # external kcp + two pods: singleton controllers gate on the
         # faros-hub-controllers Lease, browser sessions and published-app auth
         # codes live in kcp-backed Secrets, so sign-in survives either pod and
         # the Service round-robins requests across both.
-        'replicaCount=2',
+        'replicaCount=%s' % replica_count,
         'kcp.embedded.enabled=false',
         'kcp.external.enabled=true',
         'kcp.external.existingSecret=kcp-frontproxy-admin',
@@ -894,7 +904,7 @@ k8s_yaml(helm(
 
 k8s_resource(
     'faros-hub',
-    # NB with replicaCount=2: a Tilt port-forward attaches to ONE pod, so
+    # NB with REPLICA_COUNT=2: a Tilt port-forward attaches to ONE pod, so
     # browser traffic through :9443 pins to a single replica (and drops while
     # Tilt re-attaches if that pod dies). In-cluster traffic — providers and
     # minted kubeconfigs via hub.internalURL — goes through the Service and
@@ -953,8 +963,9 @@ kubectl create secret generic kcp-static-tokens -n default \
 # ---------------------------------------------------------------------------
 # providers — run as PODS in this kind cluster: Tilt-built images + each
 # provider's production chart, in the `faros-providers` namespace. Dev
-# exercises the real in-cluster behavior: 2 replicas, leader election,
-# claims, tunnel routing, Service round-robin, chart probes.
+# exercises the real in-cluster behavior: REPLICA_COUNT replicas (2 for the
+# HA paths), leader election, claims, tunnel routing, Service round-robin,
+# chart probes.
 #
 #   quickstart :8081 · infrastructure :8082 (operator mode) · code :8083
 #   kuery :8084 · app-studio :8085 · databricks :8086 · agents :8087
@@ -1197,7 +1208,7 @@ def provider_pod(name, port, chart_extra=[], resource_deps=[], labels=None, imag
 provider_kubeconfig_sync('quickstart', '.kcp/quickstart-runtime.kubeconfig', ['providers-quickstart'])
 provider_pod(
     'quickstart', 8081,
-    chart_extra=['replicaCount=2'],
+    chart_extra=['replicaCount=%s' % replica_count],
     resource_deps=['quickstart-secrets'],
 )
 
@@ -1239,7 +1250,7 @@ local_resource(
 )
 
 # --- edges (KubernetesCluster + LinuxServer, one group edges.faros.sh) ---
-# Two replicas: agents dial ONE replica through the hub; the tunnel-ownership
+# At REPLICA_COUNT=2: agents dial ONE replica through the hub; the tunnel-ownership
 # Lease registry + pod-to-pod relay route pickups and data-plane requests to
 # whichever replica holds each tunnel (POD_IP/POD_NAME come from the chart's
 # downward API wiring).
@@ -1247,7 +1258,7 @@ provider_kubeconfig_sync('edges', '.kcp/edges-runtime.kubeconfig', ['edges'])
 provider_pod(
     'edges', 8088,
     chart_extra=[
-        'replicaCount=2',
+        'replicaCount=%s' % replica_count,
         'staticTokens=dev-token',
         'devMode=true',
         'hub.externalURL=%s' % hub_external_url,
@@ -1378,7 +1389,7 @@ local_resource(
 
 # App Studio's durable store is the shared in-cluster providers-db Postgres
 # (database "appstudio") — the same store replica claims and project pins live
-# in, so multi-replica behavior is real in dev.
+# in, so multi-replica behavior is real in dev at REPLICA_COUNT=2.
 
 # Generated apps and their coordinator call the hub through its in-cluster
 # Service, not the host-only 9443 port-forward. Preserve TLS verification by
@@ -1505,7 +1516,7 @@ for _line in str(read_file(app_studio_hash_file, '')).splitlines():
     if _line.startswith('code=') and not app_studio_code_hash:
         app_studio_code_hash = _line[len('code='):].strip()
 
-# Two replicas: durable run claims + project affinity live in the shared
+# At REPLICA_COUNT=2: durable run claims + project affinity live in the shared
 # providers-db Postgres, workspaces are emptyDir caches rebuilt from git on
 # adoption (docs/app-studio-replica-awareness.md).
 #
@@ -1520,7 +1531,7 @@ provider_pod(
     'app-studio', 8085,
     container_port=8081,
     chart_extra=[
-        'replicaCount=2',
+        'replicaCount=%s' % replica_count,
         'store.databaseURL=%s' % providers_db_url('appstudio'),
         'hub.actionsExternalURL=https://faros-hub.%s.svc:9443' % hub_namespace,
         'hub.actionsCABundleConfigMap.name=app-studio-actions-ca',
@@ -1575,8 +1586,8 @@ local_resource(
 )
 
 # --- providers-kuery (fleet query engine, port :8084) ---
-# Two replicas over the shared providers-db Postgres (the chart refuses >1
-# with SQLite): per-edge Lease claims shard engagement, and every replica
+# At REPLICA_COUNT=2, both replicas share the providers-db Postgres (the chart
+# refuses >1 with SQLite): per-edge Lease claims shard engagement, and every replica
 # answers queries/edge listings from the shared store. Engagement needs
 # ▶ kuery-register then ▶ kuery-init (mints the runtime kubeconfig the
 # secrets sync delivers).
@@ -1613,7 +1624,7 @@ provider_pod(
     'kuery', 8084,
     container_port=8081,
     chart_extra=[
-        'replicaCount=2',
+        'replicaCount=%s' % replica_count,
         'store.driver=postgres',
         'store.dsn=%s' % providers_db_url('kuery'),
         'apiExport.edgesIdentityHash=%s' % kuery_edges_hash,
@@ -1693,8 +1704,8 @@ local_resource(
 # it is leader-elected in-cluster via controller-runtime), the operator
 # bootstraps the provider kcp workspace with the synced admin kubeconfig,
 # helm-installs kro into THIS cluster (in-cluster runtime, pod SA), deploys
-# the serve Deployment (2 replicas — leader-elected Template/Instance
-# controllers + bootstrap-loop leases), and self-registers the CatalogEntry
+# the serve Deployment (REPLICA_COUNT replicas — at 2, leader-elected
+# Template/Instance controllers + bootstrap-loop leases), and self-registers the CatalogEntry
 # with its serve Service URL.
 provider_kubeconfig_sync('infrastructure', 'tilt-frontproxy.kubeconfig', ['providers-kro'])
 # custom_build instead of docker_build: the OPERATOR deployment gets Tilt's
@@ -1730,7 +1741,7 @@ k8s_yaml(helm(
         'operator.providerKubeconfigSecret.key=kubeconfig',
         'operator.provider.image.repository=faros-infrastructure-provider',
         'operator.provider.image.tag=dev',
-        'operator.provider.replicas=2',
+        'operator.provider.replicas=%s' % replica_count,
         'operator.provider.port=8082',
         # Application-template exposure + platform access gate, mapped from
         # the old host-serve env: the local envoy Gateway, the sslip.io apps
@@ -1922,7 +1933,7 @@ local_resource(
 # kcp front-proxy (the embedded-kcp defaults are localhost). init-provider-code
 # derives the runtime kubeconfig from that admin kubeconfig, so it reuses the
 # front-proxy credential in cluster mode without a separate token.
-# Two replicas: the controller lease keeps one active reconciler set while
+# At REPLICA_COUNT=2: the controller lease keeps one active reconciler set while
 # both serve REST/MCP. GitHub OAuth app credentials ride providers/code/.env
 # → the code-env Secret, exactly like agents.
 local_resource(
@@ -1945,7 +1956,7 @@ fi
 provider_kubeconfig_sync('code', '.kcp/code-runtime.kubeconfig', ['providers-code'])
 provider_pod(
     'code', 8083,
-    chart_extra=['replicaCount=2', 'envFromSecret=code-env'],
+    chart_extra=['replicaCount=%s' % replica_count, 'envFromSecret=code-env'],
     resource_deps=['code-secrets', 'code-env'],
     # THE one legitimate host forward: the GitHub OAuth flow is
     # browser → provider DIRECT (deliberately not through the hub's
@@ -1997,12 +2008,12 @@ local_resource(
 )
 
 # --- providers-databricks (Databricks table access) ---
-# Two replicas: serving resolves tenant clusters through the slice-backed
+# At REPLICA_COUNT=2: serving resolves tenant clusters through the slice-backed
 # authority on every replica; the controllers are leader-elected.
 provider_kubeconfig_sync('databricks', '.kcp/databricks-runtime.kubeconfig', ['providers-databricks'])
 provider_pod(
     'databricks', 8086,
-    chart_extra=['replicaCount=2'],
+    chart_extra=['replicaCount=%s' % replica_count],
     resource_deps=['databricks-secrets'],
 )
 

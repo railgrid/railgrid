@@ -753,6 +753,11 @@ TILT_KCP_DIR ?= $(or $(KCP_DIR),$(HOME)/go/src/github.com/kcp-dev/kcp)
 TILT_TMPDIR ?= $(CURDIR)/.kcp/tmp/tilt
 # Tilt's own API/UI port. Only used to detect an already-running instance.
 TILT_PORT ?= 10350
+# Replicas for the hub + every faros provider Deployment in cluster mode.
+# Default 1 keeps the dev loop light; REPLICA_COUNT=2 exercises the HA paths
+# (leader election, tunnel-ownership relay, run claims, session failover):
+#   make tilt-cluster REPLICA_COUNT=2
+REPLICA_COUNT ?= 1
 
 .PHONY: tilt tilt-cluster
 
@@ -793,7 +798,7 @@ tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TI
 	@kind get clusters 2>/dev/null | grep -qx kcp-tilt || kind create cluster --name kcp-tilt
 	@kind export kubeconfig --name kcp-tilt
 	@mkdir -p "$(TILT_TMPDIR)"
-	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile.cluster -- --kcp-dir="$(TILT_KCP_DIR)"
+	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile.cluster -- --kcp-dir="$(TILT_KCP_DIR)" --replicas="$(REPLICA_COUNT)"
 
 # --- Provider quickstart (local dev) ---
 # The quickstart provider is a small standalone HTTP server that registers
@@ -2319,6 +2324,13 @@ dev-kro-up: ## Bring up the faros-kro kind cluster + install upstream kro
 		echo ">>> kind cluster $(KRO_KIND_NAME) already exists"; \
 		kind get kubeconfig --name $(KRO_KIND_NAME) > $(KRO_KIND_KUBECONFIG); \
 	fi
+	@# Standard Gateway API CRDs (GatewayClass/Gateway/HTTPRoute/ReferenceGrant).
+	@# This target is the owner the preview-gateway script relies on: it renders
+	@# Envoy's CRD chart with crds.gatewayAPI.enabled=false, so without this
+	@# apply a fresh cluster has no gateway.networking.k8s.io kinds and
+	@# envoy-gateway crashloops on the ReferenceGrant restmapping.
+	@echo ">>> installing Gateway API CRDs ($(GATEWAY_API_VERSION))"
+	KUBECONFIG=$(KRO_KIND_KUBECONFIG) kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/$(GATEWAY_API_VERSION)/standard-install.yaml
 	@# helm only installs crds/-dir CRDs on FIRST install; apply them
 	@# explicitly so chart upgrades (fork → upstream, version bumps) carry
 	@# CRD schema changes too. Pull+untar rather than `helm show crds`: some
