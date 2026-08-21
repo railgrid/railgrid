@@ -9,7 +9,7 @@ spec:
   selector:
     {{- include "faros-telemetry.selectorLabels" . | nindent 4 }}
   ports:
-    - name: http
+    - name: {{ if include "faros-telemetry.tlsEnabled" . }}https{{ else }}http{{ end }}
       port: {{ .Values.service.port }}
-      targetPort: http
+      targetPort: {{ if include "faros-telemetry.tlsEnabled" . }}https{{ else }}http{{ end }}
       protocol: TCP

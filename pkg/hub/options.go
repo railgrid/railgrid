@@ -91,8 +91,13 @@ type Options struct {
 
 	// Product telemetry is explicitly opt-in. Off is the self-hosted default
 	// and creates neither a worker nor an outbound HTTP client.
-	TelemetryMode            string
-	TelemetryEndpoint        string
+	TelemetryMode     string
+	TelemetryEndpoint string
+	// TelemetryCAFile is an optional PEM-encoded CA bundle appended to the
+	// system trust roots for the SaaS telemetry receiver. It is used only for
+	// the dedicated telemetry HTTP client and never changes trust for other hub
+	// traffic.
+	TelemetryCAFile          string
 	TelemetrySinkToken       string
 	TelemetryHMACSecret      string
 	TelemetryInstallationID  string

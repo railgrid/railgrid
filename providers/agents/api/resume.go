@@ -182,11 +182,12 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		Role: "assistant", Content: res.Content, CreatedAt: end,
 	})
 	body, sources := splitSources(res.Content)
-	s.finishRun(ctx, agentScope, run.ID, runOutcome{
+	if s.finishRun(ctx, agentScope, run.ID, runOutcome{
 		Phase: store.RunPhaseSucceeded, Usage: res.Usage, CostMicros: costMicros,
 		Output: body, Sources: sources,
-	}, end)
-	s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseSucceeded})
+	}, end) {
+		s.publishRunEvent(agentScope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseSucceeded})
+	}
 
 	// Deliver the continuation where the run's output was headed: channel runs
 	// reply on their source connection, background runs notify their channel
@@ -207,8 +208,9 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 
 func (s *Server) failResume(ctx context.Context, scope store.Scope, run store.Run, err error) {
 	log.Printf("resume: run %s failed: %v", run.ID, err)
-	s.finishRun(ctx, scope, run.ID, runOutcome{Phase: store.RunPhaseFailed, Message: err.Error()}, time.Now().UTC())
-	s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseFailed})
+	if s.finishRun(ctx, scope, run.ID, runOutcome{Phase: store.RunPhaseFailed, Message: err.Error()}, time.Now().UTC()) {
+		s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseFailed})
+	}
 }
 
 // sendToConnection delivers text through a named messaging connection using

@@ -127,6 +127,9 @@ spec:
             {{- if eq .Values.telemetry.mode "saas" }}
             - --telemetry-endpoint={{ .Values.telemetry.endpoint }}
             - --telemetry-installation-id={{ .Values.telemetry.installationID }}
+            {{- if .Values.telemetry.caSecretName }}
+            - --telemetry-ca-file=/telemetry-ca/{{ .Values.telemetry.caSecretKey }}
+            {{- end }}
             - --telemetry-queue-size={{ .Values.telemetry.queueSize }}
             - --telemetry-batch-size={{ .Values.telemetry.batchSize }}
             - --telemetry-flush-interval={{ .Values.telemetry.flushInterval }}
@@ -196,6 +199,11 @@ spec:
               mountPath: /idp-ca
               readOnly: true
             {{- end }}
+            {{- if and (eq .Values.telemetry.mode "saas") .Values.telemetry.caSecretName }}
+            - name: telemetry-ca
+              mountPath: /telemetry-ca
+              readOnly: true
+            {{- end }}
 
       volumes:
         {{- if .Values.kcp.external.enabled }}
@@ -223,6 +231,14 @@ spec:
         - name: idp-ca
           secret:
             secretName: {{ .Values.idp.caSecretName }}
+        {{- end }}
+        {{- if and (eq .Values.telemetry.mode "saas") .Values.telemetry.caSecretName }}
+        - name: telemetry-ca
+          secret:
+            secretName: {{ .Values.telemetry.caSecretName }}
+            items:
+              - key: {{ .Values.telemetry.caSecretKey }}
+                path: {{ .Values.telemetry.caSecretKey }}
         {{- end }}
 
       {{- with .Values.nodeSelector }}

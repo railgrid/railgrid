@@ -1,3 +1,6 @@
+{{- if and .Values.tls.enabled (not .Values.tls.existingSecret) }}
+{{- fail "tls.existingSecret is required when tls.enabled=true" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -26,7 +29,7 @@ spec:
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           ports:
-            - name: http
+            - name: {{ if include "faros-telemetry.tlsEnabled" . }}https{{ else }}http{{ end }}
               containerPort: {{ .Values.service.port }}
               protocol: TCP
           env:
@@ -55,17 +58,41 @@ spec:
               value: {{ .Values.ingest.maxBatchEvents | quote }}
             - name: TELEMETRY_MAX_EVENT_BYTES
               value: {{ .Values.ingest.maxEventBytes | quote }}
+            {{- if include "faros-telemetry.tlsEnabled" . }}
+            - name: TELEMETRY_TLS_CERT_FILE
+              value: /tls/tls.crt
+            - name: TELEMETRY_TLS_KEY_FILE
+              value: /tls/tls.key
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /readyz
-              port: http
+              port: {{ if include "faros-telemetry.tlsEnabled" . }}https{{ else }}http{{ end }}
+              {{- if include "faros-telemetry.tlsEnabled" . }}
+              scheme: HTTPS
+              {{- end }}
             periodSeconds: 10
             timeoutSeconds: 3
           livenessProbe:
             httpGet:
               path: /healthz
-              port: http
+              port: {{ if include "faros-telemetry.tlsEnabled" . }}https{{ else }}http{{ end }}
+              {{- if include "faros-telemetry.tlsEnabled" . }}
+              scheme: HTTPS
+              {{- end }}
             periodSeconds: 10
             timeoutSeconds: 3
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if include "faros-telemetry.tlsEnabled" . }}
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+          {{- end }}
+      {{- if include "faros-telemetry.tlsEnabled" . }}
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ required "tls.existingSecret is required when tls.enabled=true" .Values.tls.existingSecret }}
+      {{- end }}

@@ -186,14 +186,17 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 	// cluster-qualified identity (the Enable dialog surfaced the request —
 	// clicking Enable is the consent). WorkspaceCluster is guaranteed non-empty
 	// by the precheck above.
+	grantCreated := false
 	if prov.EdgeProxyAccess {
 		subject := identity.QualifiedServiceAccount(prov.WorkspaceCluster, providers.ProviderSANamespace, providers.ProviderSAName)
-		if err := h.mgr.bootstrapper.EnsureProviderEdgeProxyGrant(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providerName, subject); err != nil {
+		var err error
+		grantCreated, err = h.mgr.bootstrapper.EnsureProviderEdgeProxyGrant(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providerName, subject)
+		if err != nil {
 			writeStatus(w, http.StatusInternalServerError, "InternalError", "ensure edge-proxy grant: "+err.Error())
 			return
 		}
 	}
-	if prov.OrgUUID == "" && bindingCreated {
+	if prov.OrgUUID == "" && (bindingCreated || grantCreated) {
 		h.mgr.trackPlatform(r.Context(), hubtelemetry.Event{
 			Action:      generated.ActionProviderEnabled,
 			OccurredAt:  time.Now().UTC(),

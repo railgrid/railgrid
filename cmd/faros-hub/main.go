@@ -79,6 +79,7 @@ func main() {
 			"Defaults to all known builtins. Dependencies are enforced — e.g. mcp requires server-edges.")
 	cmd.Flags().StringVar(&opts.TelemetryMode, "telemetry-mode", opts.TelemetryMode, "Product telemetry mode: off or saas (default off)")
 	cmd.Flags().StringVar(&opts.TelemetryEndpoint, "telemetry-endpoint", "", "SaaS telemetry receiver /v1/events endpoint")
+	cmd.Flags().StringVar(&opts.TelemetryCAFile, "telemetry-ca-file", "", "PEM-encoded CA bundle appended to system roots for the SaaS telemetry receiver")
 	cmd.Flags().StringVar(&opts.TelemetryInstallationID, "telemetry-installation-id", "", "Stable opaque installation identifier for SaaS telemetry")
 	cmd.Flags().IntVar(&opts.TelemetryQueueSize, "telemetry-queue-size", 0, "Bounded telemetry event queue (default 1024)")
 	cmd.Flags().IntVar(&opts.TelemetryBatchSize, "telemetry-batch-size", 0, "Maximum CloudEvents per receiver batch (default 100)")

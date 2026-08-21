@@ -28,6 +28,23 @@ helm install telemetry deploy/charts/faros-telemetry \
   --set secrets.adminToken.name=faros-telemetry-secrets
 ```
 
+Direct HTTPS serving is opt-in. Provide an existing Kubernetes TLS Secret with
+the standard `tls.crt` and `tls.key` keys, then enable it during installation:
+
+```sh
+helm install telemetry deploy/charts/faros-telemetry \
+  --set secrets.database.name=faros-telemetry-secrets \
+  --set secrets.ingestTokens.name=faros-telemetry-secrets \
+  --set secrets.adminToken.name=faros-telemetry-secrets \
+  --set tls.enabled=true \
+  --set tls.existingSecret=faros-telemetry-tls
+```
+
+The chart mounts that Secret read-only at `/tls` and configures the receiver
+with `TELEMETRY_TLS_CERT_FILE=/tls/tls.crt` and
+`TELEMETRY_TLS_KEY_FILE=/tls/tls.key`. When TLS is disabled (the default), the
+receiver continues to serve HTTP on the configured service port.
+
 ## Ingest contract
 
 Send `Content-Type: application/cloudevents-batch+json`,

@@ -60,6 +60,8 @@ kubectl -n faros create secret generic faros-telemetry \
 | `telemetry.existingSecret` | `""` | Existing Secret containing the sink bearer and HMAC key; required in SaaS mode |
 | `telemetry.sinkTokenKey` | `sink-token` | Sink bearer assigned to this installation ID in the receiver's token map; minimum 16 characters |
 | `telemetry.hmacSecretKey` | `hmac-secret` | Identifier HMAC key in the existing Secret; minimum 32 characters |
+| `telemetry.caSecretName` | `""` | Optional existing Secret containing a private receiver CA bundle; mounted read-only only in SaaS mode |
+| `telemetry.caSecretKey` | `ca.crt` | Key in `telemetry.caSecretName` containing PEM-encoded CA certificates |
 | `telemetry.queueSize` | `1024` | Bounded in-memory event queue |
 | `telemetry.batchSize` | `100` | Maximum events per CloudEvents batch |
 | `telemetry.flushInterval` | `2s` | Maximum batch delay |

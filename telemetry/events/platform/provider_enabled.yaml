@@ -27,7 +27,7 @@ additional_properties:
   provider:
     description: The bounded provider identifier.
     type: string
-    enum: [agents, app-studio, code, databricks, edges, infrastructure, kuery, quickstart, vibe-studio]
+    enum: [agents, app-studio, code, databricks, edges, infrastructure, kuery, quickstart]
   outcome:
     description: Whether provider enablement completed.
     type: string

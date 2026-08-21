@@ -29,6 +29,9 @@ type MemoryStore struct {
 	usage     map[string]Usage          // key: scope|agent|windowStart
 	tenants   map[string]TenantRef      // key: clusterID
 	summaries map[string]SessionSummary // key: scope|session
+	// agentCreations is the durable-event analogue for the in-memory backend:
+	// one claim per tenant-scoped Agent name.
+	agentCreations map[string]struct{}
 	// runScopes remembers each run's scope so ListUnfinishedRuns can report it,
 	// mirroring the org/workspace columns the Postgres rows carry.
 	runScopes map[string]Scope // key: scope|runID
@@ -46,6 +49,7 @@ func NewMemoryStore() *MemoryStore {
 		tenants:   map[string]TenantRef{},
 		summaries: map[string]SessionSummary{},
 		runScopes: map[string]Scope{},
+		agentCreations: map[string]struct{}{},
 	}
 }
 
@@ -148,8 +152,23 @@ func (m *MemoryStore) EnsureSchema(context.Context) error { return nil }
 func (m *MemoryStore) Close() error                       { return nil }
 
 func tenantKey(s Scope) string { return s.OrgUUID + "|" + s.WorkspaceUUID }
+func agentKey(s Scope) string   { return tenantKey(s) + "|" + s.AgentName }
 func sessionKey(s Scope, session string) string {
 	return tenantKey(s) + "|" + s.AgentName + "|" + session
+}
+
+func (m *MemoryStore) ClaimAgentCreation(_ context.Context, scope Scope) (bool, error) {
+	if err := scope.withAgent(); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := agentKey(scope)
+	if _, ok := m.agentCreations[key]; ok {
+		return false, nil
+	}
+	m.agentCreations[key] = struct{}{}
+	return true, nil
 }
 
 func (m *MemoryStore) AppendMessage(_ context.Context, scope Scope, msg Message) error {
@@ -299,6 +318,27 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	m.runs[key] = run
 	m.runScopes[key] = scope
 	return nil
+}
+
+func (m *MemoryStore) FinalizeRun(_ context.Context, scope Scope, run Run) (bool, error) {
+	if err := scope.withAgent(); err != nil {
+		return false, err
+	}
+	if run.ID == "" {
+		return false, fmt.Errorf("run ID is required")
+	}
+	if !terminalRunPhase(run.Phase) {
+		return false, fmt.Errorf("run phase %q is not terminal", run.Phase)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := tenantKey(scope) + "|" + run.ID
+	stored, ok := m.runs[key]
+	if !ok || terminalRunPhase(stored.Phase) {
+		return false, nil
+	}
+	m.runs[key] = run
+	return true, nil
 }
 
 func (m *MemoryStore) GetRun(_ context.Context, scope Scope, id string) (Run, error) {
@@ -600,6 +640,7 @@ func (m *MemoryStore) DeleteAgentData(_ context.Context, scope Scope, agentName 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	tk := tenantKey(scope)
+	delete(m.agentCreations, tk+"|"+agentName)
 	msgPrefix := tk + "|" + agentName + "|"
 	for k := range m.messages {
 		if len(k) >= len(msgPrefix) && k[:len(msgPrefix)] == msgPrefix {

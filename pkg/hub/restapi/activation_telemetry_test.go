@@ -129,9 +129,9 @@ func (f *activationOps) EnsureProviderAPIBinding(ctx context.Context, orgUUID, w
 	return f.fakeOps.EnsureProviderAPIBinding(ctx, orgUUID, wsUUID, bindingName, exportPath, exportName, claims)
 }
 
-func (f *activationOps) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName, subject string) error {
+func (f *activationOps) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName, subject string) (bool, error) {
 	if f.ensureProviderEdgeProxyGrantErr != nil {
-		return f.ensureProviderEdgeProxyGrantErr
+		return false, f.ensureProviderEdgeProxyGrantErr
 	}
 	return f.fakeOps.EnsureProviderEdgeProxyGrant(ctx, orgUUID, wsUUID, providerName, subject)
 }
@@ -400,5 +400,52 @@ func TestEnableProviderDoesNotTrackPartialSetupOrBYOProvider(t *testing.T) {
 			}
 			requireNoActivationEvents(t, telemetry)
 		})
+	}
+}
+
+func TestEnableProviderTracksRecoveryAfterPartialEdgeGrant(t *testing.T) {
+	mgr, baseOps, _ := newTestManager(t)
+	ops := &activationOps{
+		fakeOps:                         baseOps,
+		ensureProviderEdgeProxyGrantErr: errors.New("grant failed"),
+	}
+	mgr.bootstrapper = ops
+	registry := hubproviders.NewRegistry()
+	registry.Upsert(hubproviders.Provider{
+		Name:             "app-studio",
+		APIExportPath:    "root:faros:providers:app-studio",
+		APIExportName:    "app-studio.providers.faros.sh",
+		EdgeProxyAccess:  true,
+		WorkspaceCluster: "provider-cluster",
+	})
+	mgr.WithProviderRegistry(registry)
+	telemetry := &activationTelemetryRecorder{}
+	mgr.WithTelemetry(telemetry)
+	request := func() *httptest.ResponseRecorder {
+		return serveActivation(NewHandler(mgr).enableProvider, activationRequest(t, http.MethodPost, "/api/orgs/org-123/workspaces/ws-123/providers/app-studio/enable", adminTC("user-123", "org-123", "ws-123"), EnableProviderRequest{}, map[string]string{"org": "org-123", "ws": "ws-123", "name": "app-studio"}))
+	}
+
+	response := request()
+	if response.Code == http.StatusOK {
+		t.Fatalf("partial enable status = 200, want failure")
+	}
+	requireNoActivationEvents(t, telemetry)
+	if baseOps.providerBindings[wsKey{"org-123", "ws-123"}]["app-studio"] == "" {
+		t.Fatal("partial enable did not persist APIBinding in fake")
+	}
+
+	ops.ensureProviderEdgeProxyGrantErr = nil
+	response = request()
+	if response.Code != http.StatusOK {
+		t.Fatalf("recovery status = %d, want 200; body=%s", response.Code, response.Body)
+	}
+	requireSingleActivationEvent(t, telemetry)
+
+	response = request()
+	if response.Code != http.StatusOK {
+		t.Fatalf("idempotent status = %d, want 200; body=%s", response.Code, response.Body)
+	}
+	if got := len(telemetry.snapshot()); got != 1 {
+		t.Fatalf("idempotent recovery emitted %d events, want one transition event", got)
 	}
 }

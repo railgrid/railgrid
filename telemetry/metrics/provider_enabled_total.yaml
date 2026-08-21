@@ -15,7 +15,7 @@ events:
 labels:
   provider:
     description: Enabled provider identifier.
-    values: [agents, app-studio, code, databricks, edges, infrastructure, kuery, quickstart, vibe-studio]
+    values: [agents, app-studio, code, databricks, edges, infrastructure, kuery, quickstart]
   outcome:
     description: Provider enablement outcome.
     values: [success]

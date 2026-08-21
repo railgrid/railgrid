@@ -115,6 +115,14 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := kcp.ValidateProviders(s.opts.Providers); err != nil {
 		return err
 	}
+	var telemetryHTTPClient *http.Client
+	if s.opts.TelemetryMode == hubtelemetry.ModeSaaS {
+		var telemetryClientErr error
+		telemetryHTTPClient, telemetryClientErr = hubtelemetry.NewHTTPClientWithCAFile(s.opts.TelemetryCAFile)
+		if telemetryClientErr != nil {
+			return fmt.Errorf("configuring product telemetry HTTP client: %w", telemetryClientErr)
+		}
+	}
 	telemetryRegistry := prometheus.NewRegistry()
 	telemetryRuntime, err := hubtelemetry.NewRuntime(hubtelemetry.Config{
 		Mode: s.opts.TelemetryMode, Endpoint: s.opts.TelemetryEndpoint,
@@ -123,7 +131,7 @@ func (s *Server) Run(ctx context.Context) error {
 		BatchSize: s.opts.TelemetryBatchSize, FlushInterval: s.opts.TelemetryFlushInterval,
 		EnqueueTimeout: s.opts.TelemetryEnqueueTimeout, SendTimeout: s.opts.TelemetrySendTimeout,
 		ShutdownTimeout: s.opts.TelemetryShutdownTimeout, MaxRequestBytes: s.opts.TelemetryMaxRequestBytes,
-		MaxRetries: s.opts.TelemetryMaxRetries,
+		MaxRetries: s.opts.TelemetryMaxRetries, HTTPClient: telemetryHTTPClient,
 	}, telemetryRegistry)
 	if err != nil {
 		return fmt.Errorf("configuring product telemetry: %w", err)

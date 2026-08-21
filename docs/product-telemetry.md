@@ -24,6 +24,14 @@ opaque `telemetry.installationID`, and references to an existing Secret holding
 the sink token and HMAC secret. Credentials are read from the Secret, not put
 in Helm values. The hub chart's mode remains `off` unless changed.
 
+The receiver may use a private CA. Set the hub's
+`--telemetry-ca-file=/path/to/ca-bundle.pem` option (or the chart's optional
+`telemetry.caSecretName` and `telemetry.caSecretKey` values) to append that PEM
+bundle to the system trust roots for a dedicated telemetry HTTP client. The
+private CA does not replace public roots or alter trust for other hub clients.
+Unreadable files and files without valid PEM certificates fail hub startup with
+an explicit configuration error.
+
 Provider telemetry is a separate opt-in. The `agents`, `app-studio`, and
 `edges` charts each default `telemetry.enabled=false`; when enabled they set
 `FAROS_PRODUCT_TELEMETRY_ENABLED=true`. A provider still remains on its no-op
@@ -47,7 +55,7 @@ The current event inventory is:
 | --- | --- | --- | --- |
 | `organization_created` | platform | `org`, `actor` | `outcome`: `success` |
 | `workspace_created` | platform | `org`, `workspace`, `actor` | `outcome`: `success` |
-| `provider_enabled` | platform | `org`, `workspace`, `actor`, `resource` | `outcome`: `success`; `provider`: `agents`, `app-studio`, `code`, `databricks`, `edges`, `infrastructure`, `kuery`, `quickstart`, `vibe-studio` |
+| `provider_enabled` | platform | `org`, `workspace`, `actor`, `resource` | `outcome`: `success`; `provider`: `agents`, `app-studio`, `code`, `databricks`, `edges`, `infrastructure`, `kuery`, `quickstart` |
 | `edge_first_ready` | edges | `scope`, `resource` | `edge_type`: `kubernetes_cluster`, `linux_server`; `outcome`: `ready` |
 | `app_studio_project_created` | app-studio | `org`, `workspace`, `project`, `actor` | `outcome`: `success` |
 | `app_studio_preview_ready` | app-studio | `org`, `workspace`, `project` | `outcome`: `ready`; `preview_kind`: `development` |
@@ -183,6 +191,14 @@ three keys before installing:
 - `ingest-tokens.json`: `TELEMETRY_INGEST_TOKENS_JSON`, a JSON object mapping
   each opaque installation ID to a unique event-ingest bearer; and
 - `admin-token`: `TELEMETRY_ADMIN_TOKEN`, a distinct token for erasure.
+
+The receiver serves HTTP by default. For direct HTTPS, set both
+`TELEMETRY_TLS_CERT_FILE` and `TELEMETRY_TLS_KEY_FILE` to readable PEM files;
+startup rejects a configuration that sets only one. The Helm chart's opt-in
+`tls.enabled` mode mounts an existing Kubernetes TLS Secret read-only at `/tls`
+and supplies those paths from its standard `tls.crt` and `tls.key` entries. It
+does not generate or render certificate material, and its health probes use
+HTTPS when enabled.
 
 The receiver binds each request's `X-Faros-Installation-ID` header to that
 installation's configured bearer, then requires every CloudEvent in the batch

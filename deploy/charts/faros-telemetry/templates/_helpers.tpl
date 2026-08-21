@@ -24,3 +24,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "faros-telemetry.image" -}}
 {{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) }}
 {{- end }}
+
+{{/*
+Whether the receiver should serve HTTPS directly.
+*/}}
+{{- define "faros-telemetry.tlsEnabled" -}}
+{{- if .Values.tls.enabled }}true{{- end }}
+{{- end }}

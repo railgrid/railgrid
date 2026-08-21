@@ -1949,15 +1949,17 @@ func edgeProxyGrantName(providerName string) string {
 // CatalogEntry spec.edgeProxyAccess open background connections to the tenant's
 // edges. Idempotent; subjects are reconciled on
 // re-Enable so a provider workspace re-provision (new cluster ID → new
-// qualified subject) heals on the next Enable.
-func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName, subject string) error {
+// qualified subject) heals on the next Enable. The returned bool is true when
+// this call created a missing ClusterRole or ClusterRoleBinding, allowing the
+// Enable handler to detect completion after an earlier partial attempt.
+func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName, subject string) (bool, error) {
 	if orgUUID == "" || wsUUID == "" || providerName == "" || subject == "" {
-		return fmt.Errorf("EnsureProviderEdgeProxyGrant: orgUUID, wsUUID, providerName, subject are required")
+		return false, fmt.Errorf("EnsureProviderEdgeProxyGrant: orgUUID, wsUUID, providerName, subject are required")
 	}
 	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
 	wsClient, err := dynamic.NewForConfig(wsConfig)
 	if err != nil {
-		return fmt.Errorf("creating child workspace client: %w", err)
+		return false, fmt.Errorf("creating child workspace client: %w", err)
 	}
 
 	name := edgeProxyGrantName(providerName)
@@ -2042,27 +2044,30 @@ func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID
 			},
 		},
 	}}
+	grantCreated := false
 	if _, err := wsClient.Resource(clusterRoleGVR).Create(ctx, role, metav1.CreateOptions{}); err != nil {
 		if !errors.IsAlreadyExists(err) {
-			return fmt.Errorf("creating ClusterRole %q: %w", name, err)
+			return false, fmt.Errorf("creating ClusterRole %q: %w", name, err)
 		}
 		// Reconcile the rules on an existing ClusterRole so verb/resource changes
 		// (e.g. adding /status writes + secrets reads) take effect on re-Enable
 		// rather than being silently skipped by the create.
 		existingRole, getErr := wsClient.Resource(clusterRoleGVR).Get(ctx, name, metav1.GetOptions{})
 		if getErr != nil {
-			return fmt.Errorf("getting ClusterRole %q: %w", name, getErr)
+			return false, fmt.Errorf("getting ClusterRole %q: %w", name, getErr)
 		}
 		wantRules, _, _ := unstructured.NestedSlice(role.Object, "rules")
 		gotRules, _, _ := unstructured.NestedSlice(existingRole.Object, "rules")
 		if !reflect.DeepEqual(gotRules, wantRules) {
 			if err := unstructured.SetNestedSlice(existingRole.Object, wantRules, "rules"); err != nil {
-				return fmt.Errorf("rewriting ClusterRole rules: %w", err)
+				return false, fmt.Errorf("rewriting ClusterRole rules: %w", err)
 			}
 			if _, err := wsClient.Resource(clusterRoleGVR).Update(ctx, existingRole, metav1.UpdateOptions{}); err != nil {
-				return fmt.Errorf("updating ClusterRole %q: %w", name, err)
+				return false, fmt.Errorf("updating ClusterRole %q: %w", name, err)
 			}
 		}
+	} else {
+		grantCreated = true
 	}
 
 	// Bind the qualified identity (the correct cross-workspace form) AND its
@@ -2099,26 +2104,26 @@ func (b *Bootstrapper) EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID
 	}}
 	_, err = wsClient.Resource(clusterRoleBindingGVR).Create(ctx, crb, metav1.CreateOptions{})
 	if err == nil {
-		return nil
+		return true, nil
 	}
 	if !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating ClusterRoleBinding %q: %w", name, err)
+		return false, fmt.Errorf("creating ClusterRoleBinding %q: %w", name, err)
 	}
 	existing, getErr := wsClient.Resource(clusterRoleBindingGVR).Get(ctx, name, metav1.GetOptions{})
 	if getErr != nil {
-		return fmt.Errorf("getting ClusterRoleBinding %q: %w", name, getErr)
+		return false, fmt.Errorf("getting ClusterRoleBinding %q: %w", name, getErr)
 	}
 	gotSubjects, _, _ := unstructured.NestedSlice(existing.Object, "subjects")
 	if reflect.DeepEqual(gotSubjects, wantSubjects) {
-		return nil
+		return grantCreated, nil
 	}
 	if err := unstructured.SetNestedSlice(existing.Object, wantSubjects, "subjects"); err != nil {
-		return fmt.Errorf("rewriting ClusterRoleBinding subjects: %w", err)
+		return false, fmt.Errorf("rewriting ClusterRoleBinding subjects: %w", err)
 	}
 	if _, err := wsClient.Resource(clusterRoleBindingGVR).Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("updating ClusterRoleBinding %q: %w", name, err)
+		return false, fmt.Errorf("updating ClusterRoleBinding %q: %w", name, err)
 	}
-	return nil
+	return grantCreated, nil
 }
 
 // RemoveProviderEdgeProxyGrant deletes the ClusterRole/ClusterRoleBinding

@@ -481,6 +481,7 @@ func (s *Server) startDetachedVWRun(r *http.Request, dyn dynamic.Interface, clus
 	})
 	go func() {
 		if _, err := s.executeTask(ctx, tr); err != nil {
+			s.finalizeDetachedRun(ctx, scope, runID, agent.Name, tr.Trigger, err)
 			log.Printf("s2s: run %s on agent %s failed: %v", runID, agent.Name, err)
 		}
 		s.deliverRunCallback(ctx, scope, runID, tr.Callback)

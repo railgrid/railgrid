@@ -157,9 +157,10 @@ func (s *Server) sweepStaleRuns(ctx context.Context, resume recoveryRunner, noti
 func (s *Server) recoverRun(ctx context.Context, sr store.ScopedRun, resume recoveryRunner, notify recoveryNotifier) bool {
 	run, scope := sr.Run, sr.Scope
 	fail := func(reason string) bool {
-		s.finishRun(ctx, scope, run.ID, runOutcome{Phase: store.RunPhaseFailed, Message: reason}, time.Now().UTC())
-		s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseFailed})
-		s.reportStrandedRun(ctx, sr, notify, reason)
+		if won := s.finishRun(ctx, scope, run.ID, runOutcome{Phase: store.RunPhaseFailed, Message: reason}, time.Now().UTC()); won {
+			s.publishRunEvent(scope, runEvent{ID: run.ID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseFailed})
+			s.reportStrandedRun(ctx, sr, notify, reason)
+		}
 		return false
 	}
 

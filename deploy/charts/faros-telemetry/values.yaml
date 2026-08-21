@@ -13,6 +13,12 @@ service:
   type: ClusterIP
   port: 8090
 
+# Direct receiver TLS is opt-in. The referenced existing Secret must contain
+# the standard Kubernetes TLS keys tls.crt and tls.key.
+tls:
+  enabled: false
+  existingSecret: ""
+
 # All three values are references to existing Secrets. The chart deliberately
 # does not generate credentials or persist them in Helm release values.
 secrets:

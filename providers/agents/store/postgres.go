@@ -191,6 +191,13 @@ var agentsSchema = []string{
 	// the one that keeps it from being a full table scan as run history grows.
 	`CREATE INDEX IF NOT EXISTS agents_runs_phase_updated_idx
 		ON agents_runs (phase, updated_at)`,
+	`CREATE TABLE IF NOT EXISTS agents_agent_creation_claims (
+		org_uuid TEXT NOT NULL,
+		workspace_uuid TEXT NOT NULL,
+		agent_name TEXT NOT NULL,
+		claimed_at TIMESTAMPTZ NOT NULL,
+		PRIMARY KEY (org_uuid, workspace_uuid, agent_name)
+	)`,
 }
 
 func (p *PostgresStore) EnsureSchema(ctx context.Context) error {
@@ -447,6 +454,46 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 		run.InputTokens, run.OutputTokens, run.USDMicros,
 		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt))
 	return err
+}
+
+func (p *PostgresStore) FinalizeRun(ctx context.Context, scope Scope, run Run) (bool, error) {
+	if err := scope.withAgent(); err != nil {
+		return false, err
+	}
+	if run.ID == "" {
+		return false, fmt.Errorf("run ID is required")
+	}
+	if !terminalRunPhase(run.Phase) {
+		return false, fmt.Errorf("run phase %q is not terminal", run.Phase)
+	}
+	sources, err := marshalJSONB(run.Sources)
+	if err != nil {
+		return false, err
+	}
+	var delivery any
+	if run.Delivery != nil {
+		if delivery, err = marshalJSONB(run.Delivery); err != nil {
+			return false, err
+		}
+	}
+	result, err := p.db.ExecContext(ctx, `
+		UPDATE agents_runs SET
+			phase=$4, attempt=$5, message=$6, output=$7, sources=$8, delivery=$9,
+			checkpoint=$10, input_tokens=$11, output_tokens=$12, usd_micros=$13,
+			updated_at=$14, started_at=$15, finished_at=$16
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3
+			AND phase NOT IN ('Succeeded', 'Failed', 'Aborted')`,
+		scope.OrgUUID, scope.WorkspaceUUID, run.ID, string(run.Phase), run.Attempt, run.Message,
+		run.Output, sources, delivery, nullBytes(run.Checkpoint), run.InputTokens, run.OutputTokens,
+		run.USDMicros, run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt))
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // runColumns is the run SELECT list, shared by every read path so a schema
@@ -925,6 +972,25 @@ func (p *PostgresStore) FindRunByIdempotencyKey(ctx context.Context, scope Scope
 	return run, true, nil
 }
 
+func (p *PostgresStore) ClaimAgentCreation(ctx context.Context, scope Scope) (bool, error) {
+	if err := scope.withAgent(); err != nil {
+		return false, err
+	}
+	result, err := p.db.ExecContext(ctx, `
+		INSERT INTO agents_agent_creation_claims (org_uuid, workspace_uuid, agent_name, claimed_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (org_uuid, workspace_uuid, agent_name) DO NOTHING`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, time.Now().UTC())
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 // ---- recovery -------------------------------------------------------------------------
 
 func (p *PostgresStore) ListUnfinishedRuns(ctx context.Context, phases []RunPhase, updatedBefore time.Time, limit int) ([]ScopedRun, error) {
@@ -970,7 +1036,7 @@ func (p *PostgresStore) DeleteAgentData(ctx context.Context, scope Scope, agentN
 	if err := scope.validate(); err != nil {
 		return err
 	}
-	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries"} {
+	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_agent_creation_claims"} {
 		if _, err := p.db.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3`, table),
 			scope.OrgUUID, scope.WorkspaceUUID, agentName); err != nil {

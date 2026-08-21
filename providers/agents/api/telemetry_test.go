@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	producttelemetry "github.com/faroshq/provider-sdk/telemetry"
+	"sigs.k8s.io/yaml"
 
 	"github.com/faroshq/provider-agents/store"
 )
@@ -67,8 +69,19 @@ func (s *cancellationAwareStore) SaveRun(ctx context.Context, scope store.Scope,
 	return s.Store.SaveRun(ctx, scope, run)
 }
 
+func (s *cancellationAwareStore) FinalizeRun(ctx context.Context, scope store.Scope, run store.Run) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return s.Store.FinalizeRun(ctx, scope, run)
+}
+
 func (s *failingSaveStore) SaveRun(context.Context, store.Scope, store.Run) error {
 	return s.err
+}
+
+func (s *failingSaveStore) FinalizeRun(context.Context, store.Scope, store.Run) (bool, error) {
+	return false, s.err
 }
 
 func TestAgentResourceIDStableAcrossFunnelBoundariesAndOpaque(t *testing.T) {
@@ -202,11 +215,11 @@ func TestRunTerminalTelemetryRequiresSuccessfulPersistence(t *testing.T) {
 		telemetry: tracker,
 	}
 
-	// finishRun has historically been best effort and remains non-propagating;
-	// the failed save must suppress the telemetry boundary.
+	// finishRun remains best effort and non-propagating; a failed terminal CAS
+	// must suppress the telemetry boundary.
 	s.finishRun(ctx, scope, "run-1", runOutcome{Phase: store.RunPhaseFailed}, now.Add(time.Second))
 	if got := len(tracker.snapshot()); got != 0 {
-		t.Fatalf("events after failed SaveRun = %d, want none", got)
+		t.Fatalf("events after failed FinalizeRun = %d, want none", got)
 	}
 	stored, err := base.GetRun(ctx, scope, "run-1")
 	if err != nil {
@@ -262,7 +275,26 @@ type fakeGraphQLRequest struct {
 }
 
 func newAgentsTelemetryGraphQLServer(t *testing.T) *httptest.Server {
+	return newAgentsTelemetryGraphQLServerWithFailures(t, false, false)
+}
+
+// newAgentsTelemetryGraphQLServerWithFailures lets boundary tests distinguish
+// a tenant read failure from a failed apply. The real client uses the same
+// GraphQL error mapping for both paths; the toggles keep the fixture focused on
+// whether the API emits only after a successful resource apply.
+func newAgentsTelemetryGraphQLServerWithFailures(t *testing.T, failReads, failApplies bool) *httptest.Server {
+	return newAgentsTelemetryGraphQLServerWithInitialAgents(t, failReads, failApplies, nil)
+}
+
+func newAgentsTelemetryGraphQLServerWithInitialAgents(t *testing.T, failReads, failApplies bool, initialAgents map[string]string) *httptest.Server {
 	t.Helper()
+	var (
+		mu     sync.Mutex
+		agents = make(map[string]string, len(initialAgents))
+	)
+	for name, yamlBody := range initialAgents {
+		agents[name] = yamlBody
+	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req fakeGraphQLRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -270,18 +302,62 @@ func newAgentsTelemetryGraphQLServer(t *testing.T) *httptest.Server {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(req.Query, "AgentYaml") {
+			if failReads {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"errors": []map[string]string{{"message": "tenant read temporarily unavailable"}},
+				})
+				return
+			}
+			name, _ := req.Variables["name"].(string)
+			mu.Lock()
+			yamlBody, found := agents[name]
+			mu.Unlock()
+			if !found {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"errors": []map[string]string{{"message": "agent not found"}},
+				})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"agents_faros_sh": map[string]any{
+						"v1alpha1": map[string]any{"AgentYaml": yamlBody},
+					},
+				},
+			})
+			return
+		}
 		if strings.Contains(req.Query, "AgentsYaml") {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"data": map[string]any{
 					"agents_faros_sh": map[string]any{
-						"v1": map[string]any{"AgentsYaml": "[]"},
+						"v1alpha1": map[string]any{"AgentsYaml": "[]"},
 					},
 				},
 			})
 			return
 		}
 		if strings.Contains(req.Query, "applyYaml") {
+			if failApplies {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"errors": []map[string]string{{"message": "tenant apply failed"}},
+				})
+				return
+			}
 			yamlBody, _ := req.Variables["yaml"].(string)
+			var obj struct {
+				Metadata struct {
+					Name string `json:"name"`
+				} `json:"metadata"`
+			}
+			if err := yaml.Unmarshal([]byte(yamlBody), &obj); err != nil || obj.Metadata.Name == "" {
+				http.Error(w, "bad agent yaml", http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			agents[obj.Metadata.Name] = yamlBody
+			mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"applyYaml": yamlBody}})
 			return
 		}
@@ -300,19 +376,27 @@ func agentRequestHeaders(req *http.Request) {
 
 func callMCPForTelemetry(t *testing.T, s *Server, arguments map[string]any) (json.RawMessage, bool) {
 	t.Helper()
+	result, failed, err := callMCPForTelemetryRequest(s, arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result, failed
+}
+
+func callMCPForTelemetryRequest(s *Server, arguments map[string]any) (json.RawMessage, bool, error) {
 	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
 		"params": map[string]any{"name": "create_agent", "arguments": arguments},
 	})
 	if err != nil {
-		t.Fatal(err)
+		return nil, false, err
 	}
 	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
 	agentRequestHeaders(req)
 	rec := httptest.NewRecorder()
 	s.MCPHandler().ServeHTTP(rec, req)
 	if rec.Code >= 400 {
-		t.Fatalf("MCP status = %d: %s", rec.Code, rec.Body.String())
+		return nil, false, fmt.Errorf("MCP status = %d: %s", rec.Code, rec.Body.String())
 	}
 	raw := rec.Body.Bytes()
 	if strings.HasPrefix(rec.Header().Get("Content-Type"), "text/event-stream") {
@@ -330,18 +414,18 @@ func callMCPForTelemetry(t *testing.T, s *Server, arguments map[string]any) (jso
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		t.Fatalf("decode MCP response: %v (%s)", err, raw)
+		return nil, false, fmt.Errorf("decode MCP response: %v (%s)", err, raw)
 	}
 	if envelope.Error != nil {
-		t.Fatalf("MCP JSON-RPC error: %s", envelope.Error.Message)
+		return nil, false, fmt.Errorf("MCP JSON-RPC error: %s", envelope.Error.Message)
 	}
 	var result struct {
 		IsError bool `json:"isError"`
 	}
 	if err := json.Unmarshal(envelope.Result, &result); err != nil {
-		t.Fatal(err)
+		return nil, false, err
 	}
-	return envelope.Result, result.IsError
+	return envelope.Result, result.IsError, nil
 }
 
 func TestAgentCreatedTelemetryRESTAndMCPBoundaries(t *testing.T) {
@@ -362,6 +446,19 @@ func TestAgentCreatedTelemetryRESTAndMCPBoundaries(t *testing.T) {
 	if restRec.Code != http.StatusCreated {
 		t.Fatalf("REST create status = %d: %s", restRec.Code, restRec.Body.String())
 	}
+	// The tenant client exposes create-or-apply semantics. A repeated request
+	// still returns 201 for compatibility, but it must not emit another
+	// creation event after the preflight observes the existing object.
+	restReq = httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewBufferString(`{"name":"rest-agent"}`))
+	agentRequestHeaders(restReq)
+	restRec = httptest.NewRecorder()
+	s.Routes().ServeHTTP(restRec, restReq)
+	if restRec.Code != http.StatusCreated {
+		t.Fatalf("repeated REST create status = %d: %s", restRec.Code, restRec.Body.String())
+	}
+	if got := len(tracker.snapshot()); got != 1 {
+		t.Fatalf("events after repeated REST create = %d, want 1", got)
+	}
 
 	_, mcpFailed := callMCPForTelemetry(t, s, map[string]any{"name": "mcp-agent"})
 	if mcpFailed {
@@ -376,6 +473,13 @@ func TestAgentCreatedTelemetryRESTAndMCPBoundaries(t *testing.T) {
 		if event.Action != agentsAgentCreatedAction || event.Actor != "actor" || event.Properties["outcome"] != "success" {
 			t.Fatalf("created event = %#v", event)
 		}
+	}
+	_, mcpFailed = callMCPForTelemetry(t, s, map[string]any{"name": "mcp-agent"})
+	if mcpFailed {
+		t.Fatal("repeated MCP create unexpectedly returned isError")
+	}
+	if got := len(tracker.snapshot()); got != 2 {
+		t.Fatalf("events after repeated MCP create = %d, want 2", got)
 	}
 
 	// Invalid REST and MCP creates fail before the CR apply boundary and must
@@ -393,5 +497,139 @@ func TestAgentCreatedTelemetryRESTAndMCPBoundaries(t *testing.T) {
 	}
 	if got := len(tracker.snapshot()); got != 2 {
 		t.Fatalf("events after failed REST+MCP creates = %d, want 2", got)
+	}
+}
+
+func TestAgentCreatedTelemetryTransientReadFailureSuppressesPreexistingApply(t *testing.T) {
+	const agentName = "read-failure-agent"
+	initialAgent := "apiVersion: agents.faros.sh/v1alpha1\nkind: Agent\nmetadata:\n  name: " + agentName + "\nspec:\n  displayName: " + agentName + "\n"
+	gql := newAgentsTelemetryGraphQLServerWithInitialAgents(t, true, false, map[string]string{agentName: initialAgent})
+	defer gql.Close()
+	tracker := &recordingTelemetryTracker{}
+	s, err := New(context.Background(), Config{HubURL: gql.URL, InMemoryStore: true, Telemetry: tracker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewBufferString(`{"name":"read-failure-agent"}`))
+	agentRequestHeaders(req)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("REST create status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := len(tracker.snapshot()); got != 0 {
+		t.Fatalf("events after transient read failure and successful preexisting apply = %d, want 0", got)
+	}
+	// Claiming is separate from telemetry delivery. A successful claim here
+	// proves the create path did not reserve the resource after an ambiguous
+	// read; the test-owned claim is then discarded with the in-memory store.
+	won, err := s.store.ClaimAgentCreation(context.Background(), store.Scope{
+		OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: agentName,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !won {
+		t.Fatal("transient read failure incorrectly claimed preexisting agent")
+	}
+}
+
+func TestAgentCreatedTelemetryApplyFailureDoesNotClaimOrEmit(t *testing.T) {
+	gql := newAgentsTelemetryGraphQLServerWithFailures(t, false, true)
+	defer gql.Close()
+	tracker := &recordingTelemetryTracker{}
+	s, err := New(context.Background(), Config{HubURL: gql.URL, InMemoryStore: true, Telemetry: tracker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewBufferString(`{"name":"apply-failure-agent"}`))
+	agentRequestHeaders(req)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code == http.StatusCreated {
+		t.Fatalf("REST create unexpectedly succeeded: %s", rec.Body.String())
+	}
+	if got := len(tracker.snapshot()); got != 0 {
+		t.Fatalf("events after failed apply = %d, want 0", got)
+	}
+}
+
+func TestAgentCreatedTelemetryConcurrentRESTCreatesClaimOnce(t *testing.T) {
+	gql := newAgentsTelemetryGraphQLServer(t)
+	defer gql.Close()
+	tracker := &recordingTelemetryTracker{}
+	s, err := New(context.Background(), Config{HubURL: gql.URL, InMemoryStore: true, Telemetry: tracker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	const requests = 8
+	statuses := make(chan int, requests)
+	var wg sync.WaitGroup
+	for i := 0; i < requests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPost, "/api/agents", bytes.NewBufferString(`{"name":"concurrent-rest-agent"}`))
+			agentRequestHeaders(req)
+			rec := httptest.NewRecorder()
+			s.Routes().ServeHTTP(rec, req)
+			statuses <- rec.Code
+		}()
+	}
+	wg.Wait()
+	close(statuses)
+	for status := range statuses {
+		if status != http.StatusCreated {
+			t.Fatalf("concurrent REST create status = %d, want %d", status, http.StatusCreated)
+		}
+	}
+	if got := len(tracker.snapshot()); got != 1 {
+		t.Fatalf("concurrent REST creates emitted %d events, want 1", got)
+	}
+}
+
+func TestAgentCreatedTelemetryConcurrentMCPCreatesClaimOnce(t *testing.T) {
+	gql := newAgentsTelemetryGraphQLServer(t)
+	defer gql.Close()
+	tracker := &recordingTelemetryTracker{}
+	s, err := New(context.Background(), Config{HubURL: gql.URL, InMemoryStore: true, Telemetry: tracker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	const requests = 8
+	type result struct {
+		failed bool
+		err    error
+	}
+	results := make(chan result, requests)
+	var wg sync.WaitGroup
+	for i := 0; i < requests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, failed, callErr := callMCPForTelemetryRequest(s, map[string]any{"name": "concurrent-mcp-agent"})
+			results <- result{failed: failed, err: callErr}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	for got := range results {
+		if got.err != nil {
+			t.Fatalf("concurrent MCP create failed: %v", got.err)
+		}
+		if got.failed {
+			t.Fatal("concurrent MCP create returned isError")
+		}
+	}
+	if got := len(tracker.snapshot()); got != 1 {
+		t.Fatalf("concurrent MCP creates emitted %d events, want 1", got)
 	}
 }

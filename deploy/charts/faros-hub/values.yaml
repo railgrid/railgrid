@@ -136,6 +136,11 @@ telemetry:
   existingSecret: ""
   sinkTokenKey: "sink-token"
   hmacSecretKey: "hmac-secret"
+  # Optional existing Secret containing a PEM-encoded private CA bundle for
+  # the HTTPS receiver. The selected key is mounted read-only only in SaaS
+  # mode and is appended to the system roots for the telemetry client.
+  caSecretName: ""
+  caSecretKey: "ca.crt"
   queueSize: 1024
   batchSize: 100
   flushInterval: 2s

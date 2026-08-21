@@ -12,6 +12,7 @@ import (
 	"context"
 	"os"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -166,6 +167,71 @@ func TestPostgres_RunSaveClaimAndUsage(t *testing.T) {
 	}
 	if got, err = ps.GetRun(ctx, sc, runID); err != nil || got.Sources != nil {
 		t.Fatalf("sources should clear to nil: %v %v", err, got.Sources)
+	}
+}
+
+func TestPostgres_RunFinalizeIsExclusive(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	sc := pgScope(t, ps)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	runID := uuid.NewString()
+	if err := ps.SaveRun(ctx, sc, Run{
+		ID: runID, AgentName: sc.AgentName, Trigger: "api", Phase: RunPhasePending,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	start := make(chan struct{})
+	wins := make(chan bool, 2)
+	var wg sync.WaitGroup
+	for _, candidate := range []Run{
+		{ID: runID, AgentName: sc.AgentName, Trigger: "api", Phase: RunPhaseFailed, Message: "first"},
+		{ID: runID, AgentName: sc.AgentName, Trigger: "api", Phase: RunPhaseAborted, Message: "second"},
+	} {
+		candidate.CreatedAt, candidate.UpdatedAt = now, now
+		candidate.FinishedAt = &now
+		wg.Add(1)
+		go func(run Run) {
+			defer wg.Done()
+			<-start
+			won, err := ps.FinalizeRun(ctx, sc, run)
+			if err != nil {
+				t.Errorf("finalize: %v", err)
+			}
+			wins <- won
+		}(candidate)
+	}
+	close(start)
+	wg.Wait()
+	close(wins)
+	var count int
+	for won := range wins {
+		if won {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("finalize winners = %d, want one", count)
+	}
+	got, err := ps.GetRun(ctx, sc, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !terminalRunPhase(got.Phase) || got.Message == "" {
+		t.Fatalf("stored run = %#v, want one terminal winner", got)
+	}
+	winnerMessage := got.Message
+	if won, err := ps.FinalizeRun(ctx, sc, Run{
+		ID: runID, AgentName: sc.AgentName, Trigger: "api", Phase: RunPhaseFailed,
+		Message: "late", CreatedAt: now, UpdatedAt: now, FinishedAt: &now,
+	}); err != nil || won {
+		t.Fatalf("late finalize = (%v, %v), want (false, nil)", won, err)
+	}
+	got, err = ps.GetRun(ctx, sc, runID)
+	if err != nil || got.Message != winnerMessage {
+		t.Fatalf("late finalize changed winner: err=%v run=%#v", err, got)
 	}
 }
 

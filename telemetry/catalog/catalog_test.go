@@ -70,8 +70,14 @@ func TestLoadActivationCatalog(t *testing.T) {
 		}
 	}
 	provider := gotActions["provider_enabled"].AdditionalProperties["provider"]
-	if !contains(provider.Enum, "app-studio") || !contains(provider.Enum, "vibe-studio") {
-		t.Fatalf("provider enum = %v, want actual provider names", provider.Enum)
+	wantProviders := []string{"agents", "app-studio", "code", "databricks", "edges", "infrastructure", "kuery", "quickstart"}
+	if len(provider.Enum) != len(wantProviders) {
+		t.Fatalf("provider enum = %v, want current provider names", provider.Enum)
+	}
+	for _, want := range wantProviders {
+		if !contains(provider.Enum, want) {
+			t.Fatalf("provider enum = %v, missing current provider %q", provider.Enum, want)
+		}
 	}
 }
 

@@ -253,11 +253,13 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 			ModelCredential: in.ModelCredential, ModelFallbacks: in.ModelFallbacks,
 			BudgetTokens: in.BudgetTokens, BudgetUSD: in.BudgetUSD, Channels: in.Channels,
 		}
-		a, err := s.applyAgentCreate(ctx, c, &req)
+		a, created, err := s.applyAgentCreate(ctx, c, id, &req)
 		if err != nil {
 			return nil, agentSettings{}, err
 		}
-		s.trackAgentCreated(ctx, id, a.Name)
+		if created {
+			s.trackAgentCreated(ctx, id, a.Name)
+		}
 		return nil, settingsView(a), nil
 	})
 

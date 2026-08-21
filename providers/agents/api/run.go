@@ -296,8 +296,9 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		if ctx.Err() != nil {
 			phase = store.RunPhaseAborted
 		}
-		s.finishRun(ctx, scope, runID, runOutcome{Phase: phase, Message: err.Error()}, end)
-		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
+		if s.finishRun(ctx, scope, runID, runOutcome{Phase: phase, Message: err.Error()}, end) {
+			s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
+		}
 		return runResult{RunID: runID}, err
 	}
 
@@ -347,8 +348,9 @@ func (s *Server) executeTask(ctx context.Context, run taskRun) (runResult, error
 		Phase: store.RunPhaseSucceeded, Usage: res.Usage, CostMicros: costMicros,
 		Output: body, Sources: sources,
 	}
-	s.finishRun(ctx, scope, runID, fin, end)
-	s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseSucceeded})
+	if s.finishRun(ctx, scope, runID, fin, end) {
+		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseSucceeded})
+	}
 
 	out := runResult{RunID: runID, Content: res.Content}
 	out.Usage.InputTokens = res.Usage.InputTokens
@@ -386,6 +388,9 @@ func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id id
 	})
 	go func() {
 		res, err := s.executeTask(ctx, tr)
+		if err != nil {
+			s.finalizeDetachedRun(ctx, scope, runID, agent.Name, tr.Trigger, err)
+		}
 		if err != nil || res.Pending != nil {
 			// The outcome is on the run record (approvals resume separately), but a
 			// caller that asked to be told must hear about a failure or a pause too —
@@ -404,6 +409,26 @@ func (s *Server) startDetachedRun(r *http.Request, c *agentsclient.Client, id id
 		s.deliverToNotifyChannel(ctx, c, agent, tr.NotifyChannel, tr.SourceName, res.Content)
 	}()
 	return runID
+}
+
+// finalizeDetachedRun closes the small preflight window before executeTask has
+// written Running. Most execution errors already call finishRun themselves;
+// this helper only wins when the record is still non-terminal, so a late
+// preflight error cannot replace an Aborted/Failed/Succeeded result persisted by
+// the execution, cancellation, or recovery path.
+func (s *Server) finalizeDetachedRun(ctx context.Context, scope store.Scope, runID, agentName, trigger string, err error) {
+	if err == nil {
+		return
+	}
+	if !s.finishRun(ctx, scope, runID, runOutcome{
+		Phase:   store.RunPhaseFailed,
+		Message: err.Error(),
+	}, time.Now().UTC()) {
+		return
+	}
+	s.publishRunEvent(scope, runEvent{
+		ID: runID, Agent: agentName, Trigger: trigger, Phase: store.RunPhaseFailed,
+	})
 }
 
 // dataPlaneFor describes how instance-backed tools reach tenant workloads for
@@ -456,13 +481,20 @@ type runOutcome struct {
 
 // finishRun stamps a run's terminal phase, result, usage, and timestamps, and
 // clears any checkpoint.
-func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time) {
-	stored, err := s.store.GetRun(ctx, scope, runID)
+// It reports whether this call won the store's atomic terminal transition. A
+// terminal record is immutable here: late errors must not overwrite the result
+// that already won on another replica.
+func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string, out runOutcome, end time.Time) bool {
+	finalizeCtx, cancelFinalize := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancelFinalize()
+	stored, err := s.store.GetRun(finalizeCtx, scope, runID)
 	if err != nil {
-		return
+		return false
 	}
-	priorPhase := stored.Phase
 	outcome, terminal := terminalRunOutcome(out.Phase)
+	if !terminal {
+		return false
+	}
 	stored.Phase = out.Phase
 	stored.Message = out.Message
 	stored.Checkpoint = nil
@@ -482,23 +514,18 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 	stored.UpdatedAt = end
 	stored.FinishedAt = &end
 	// A run timeout/cancel is itself a terminal outcome, so its canceled
-	// execution context cannot also be the persistence context. Bound the
-	// cancellation-independent finalization so storage and telemetry remain
-	// durable without allowing shutdown to hang indefinitely.
-	finalizeCtx, cancelFinalize := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancelFinalize()
-	if err := s.store.SaveRun(finalizeCtx, scope, stored); err != nil {
+	// execution context cannot also be the persistence context. The store owns
+	// the compare-and-set: only its winner may publish state or telemetry.
+	won, err := s.store.FinalizeRun(finalizeCtx, scope, stored)
+	if err != nil || !won {
 		// The run's existing product semantics intentionally do not propagate a
 		// persistence failure from this best-effort finalization path. It does,
 		// however, define the telemetry boundary: an event is valid only after
 		// the terminal transition is durably accepted.
-		return
+		return false
 	}
-	if terminal {
-		if _, wasTerminal := terminalRunOutcome(priorPhase); !wasTerminal {
-			s.trackRunTerminal(finalizeCtx, scope, stored.AgentName, stored.ID, outcome)
-		}
-	}
+	s.trackRunTerminal(finalizeCtx, scope, stored.AgentName, stored.ID, outcome)
+	return true
 }
 
 // runEvent is one run lifecycle change pushed to /api/events subscribers. A

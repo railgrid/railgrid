@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -61,6 +62,10 @@ func run(logger *slog.Logger) error {
 		return errors.New("TELEMETRY_INGEST_TOKENS_JSON must be a JSON object of installation IDs to bearer tokens")
 	}
 	listenAddr := envString("TELEMETRY_LISTEN_ADDR", defaultListenAddr)
+	tlsCertFile, tlsKeyFile, err := tlsFilesFromEnv()
+	if err != nil {
+		return err
+	}
 	maxBatch, err := envInt("TELEMETRY_MAX_BATCH_EVENTS", 1000)
 	if err != nil {
 		return err
@@ -136,7 +141,7 @@ func run(logger *slog.Logger) error {
 
 	httpServer := &http.Server{Addr: listenAddr, Handler: server.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	serverErr := make(chan error, 1)
-	go func() { serverErr <- httpServer.ListenAndServe() }()
+	go func() { serverErr <- serveHTTP(httpServer, tlsCertFile, tlsKeyFile) }()
 	signalCtx, stopSignal := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stopSignal()
 	select {
@@ -150,6 +155,30 @@ func run(logger *slog.Logger) error {
 		defer shutdownCancel()
 		return httpServer.Shutdown(shutdownCtx)
 	}
+}
+
+func tlsFilesFromEnv() (string, string, error) {
+	certFile := os.Getenv("TELEMETRY_TLS_CERT_FILE")
+	keyFile := os.Getenv("TELEMETRY_TLS_KEY_FILE")
+	if (certFile == "") != (keyFile == "") {
+		return "", "", errors.New("TELEMETRY_TLS_CERT_FILE and TELEMETRY_TLS_KEY_FILE must be set together")
+	}
+	return certFile, keyFile, nil
+}
+
+func serveHTTP(server *http.Server, certFile, keyFile string) error {
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return err
+	}
+	return serveHTTPOnListener(server, listener, certFile, keyFile)
+}
+
+func serveHTTPOnListener(server *http.Server, listener net.Listener, certFile, keyFile string) error {
+	if certFile != "" {
+		return server.ServeTLS(listener, certFile, keyFile)
+	}
+	return server.Serve(listener)
 }
 
 func envString(name, fallback string) string {

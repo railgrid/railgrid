@@ -10,6 +10,7 @@ package store
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -78,6 +79,69 @@ func TestMemoryStore_RunClaimIsExclusive(t *testing.T) {
 	}
 	if _, err := s.ClaimRun(ctx, sc, "r1", "req-2", now); err == nil {
 		t.Fatalf("second claim should fail while running")
+	}
+}
+
+func TestMemoryStore_RunFinalizeIsExclusive(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	sc := testScope()
+	now := time.Now().UTC()
+	if err := s.SaveRun(ctx, sc, Run{
+		ID: "r1", AgentName: sc.AgentName, Trigger: "api", Phase: RunPhasePending,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	start := make(chan struct{})
+	wins := make(chan bool, 2)
+	var wg sync.WaitGroup
+	for _, candidate := range []Run{
+		{ID: "r1", AgentName: sc.AgentName, Trigger: "api", Phase: RunPhaseFailed, Message: "first", FinishedAt: &now},
+		{ID: "r1", AgentName: sc.AgentName, Trigger: "api", Phase: RunPhaseAborted, Message: "second", FinishedAt: &now},
+	} {
+		candidate.CreatedAt, candidate.UpdatedAt = now, now
+		wg.Add(1)
+		go func(run Run) {
+			defer wg.Done()
+			<-start
+			won, err := s.FinalizeRun(ctx, sc, run)
+			if err != nil {
+				t.Errorf("finalize: %v", err)
+			}
+			wins <- won
+		}(candidate)
+	}
+	close(start)
+	wg.Wait()
+	close(wins)
+	var count int
+	for won := range wins {
+		if won {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("finalize winners = %d, want one", count)
+	}
+	got, err := s.GetRun(ctx, sc, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !terminalRunPhase(got.Phase) || got.Message == "" {
+		t.Fatalf("stored run = %#v, want one terminal winner", got)
+	}
+	winnerMessage := got.Message
+	if won, err := s.FinalizeRun(ctx, sc, Run{
+		ID: "r1", AgentName: sc.AgentName, Trigger: "api", Phase: RunPhaseFailed,
+		Message: "late", CreatedAt: now, UpdatedAt: now, FinishedAt: &now,
+	}); err != nil || won {
+		t.Fatalf("late finalize = (%v, %v), want (false, nil)", won, err)
+	}
+	got, err = s.GetRun(ctx, sc, "r1")
+	if err != nil || got.Message != winnerMessage {
+		t.Fatalf("late finalize changed winner: err=%v run=%#v", err, got)
 	}
 }
 

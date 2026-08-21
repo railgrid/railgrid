@@ -145,8 +145,10 @@ type WorkspaceOps interface {
 	// the ClusterRole/ClusterRoleBinding pair that lets a provider's SA
 	// (under its cluster-qualified identity) use the "proxy" verb on
 	// edges in the tenant workspace. Applied on Enable when the provider
-	// declares spec.edgeProxyAccess; removed on Disable.
-	EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName, subject string) error
+	// declares spec.edgeProxyAccess; removed on Disable. The returned bool is
+	// true when this call materialized a missing grant resource, which lets the
+	// Enable handler recognize completion after a prior partial attempt.
+	EnsureProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName, subject string) (bool, error)
 	RemoveProviderEdgeProxyGrant(ctx context.Context, orgUUID, wsUUID, providerName string) error
 
 	// ListAppAccessGrants / RemoveAppAccessGrant surface the published-app

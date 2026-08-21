@@ -75,6 +75,15 @@ const (
 	RunPhaseAborted         RunPhase = "Aborted"
 )
 
+func terminalRunPhase(phase RunPhase) bool {
+	switch phase {
+	case RunPhaseSucceeded, RunPhaseFailed, RunPhaseAborted:
+		return true
+	default:
+		return false
+	}
+}
+
 // Run is the durable execution record. Checkpoint is an opaque engine-owned
 // JSON payload (Eino interrupt/resume state) so the store needs no knowledge of
 // chat/tool types. ParentRunID links sub-agent runs for delegation lineage.
@@ -316,6 +325,11 @@ type Store interface {
 	// Runs (durable, resumable).
 	SaveRun(ctx context.Context, scope Scope, run Run) error
 	GetRun(ctx context.Context, scope Scope, id string) (Run, error)
+	// FinalizeRun atomically persists a terminal run transition only when the
+	// stored run is still non-terminal. It returns won=true for the one caller
+	// whose transition was accepted; a false result means another caller already
+	// finalized the run (or the row no longer exists).
+	FinalizeRun(ctx context.Context, scope Scope, run Run) (won bool, err error)
 	// ClaimRun atomically marks a resumable run as owned by requestID so only
 	// one replica resumes it.
 	ClaimRun(ctx context.Context, scope Scope, id, requestID string, now time.Time) (Run, error)
@@ -326,6 +340,12 @@ type Store interface {
 	// key, so a retried request is answered with the original run rather than
 	// starting the same work again. Scope must name the agent.
 	FindRunByIdempotencyKey(ctx context.Context, scope Scope, key string) (Run, bool, error)
+	// ClaimAgentCreation atomically claims the durable creation transition for
+	// one tenant-scoped agent resource. It returns true for exactly one
+	// successful claim; later idempotent applies return false. The API calls this
+	// only after the tenant resource apply succeeds, so telemetry is not inferred
+	// from a read-before-write race.
+	ClaimAgentCreation(ctx context.Context, scope Scope) (won bool, err error)
 
 	// Long-term memory.
 	PutMemory(ctx context.Context, scope Scope, m Memory) error

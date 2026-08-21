@@ -60,6 +60,7 @@ type fakeOps struct {
 	workspaceAdmins   map[wsKey]map[string]bool    // (org,ws) → rbacIdentity set
 	providerBindings  map[wsKey]map[string]string  // (org,ws) → provider → binding name
 	providerBindCalls map[wsKey]int                // (org,ws) → count
+	providerGrants    map[wsKey]map[string]bool    // (org,ws) → provider → grant exists
 }
 
 type wsKey struct{ Org, WS string }
@@ -76,6 +77,7 @@ func newFakeOps() *fakeOps {
 		workspaceAdmins:   map[wsKey]map[string]bool{},
 		providerBindings:  map[wsKey]map[string]string{},
 		providerBindCalls: map[wsKey]int{},
+		providerGrants:    map[wsKey]map[string]bool{},
 	}
 }
 
@@ -213,8 +215,18 @@ func (f *fakeOps) DeleteProviderAPIBinding(_ context.Context, orgUUID, wsUUID, p
 	return nil
 }
 
-func (f *fakeOps) EnsureProviderEdgeProxyGrant(_ context.Context, _, _, _, _ string) error {
-	return nil
+func (f *fakeOps) EnsureProviderEdgeProxyGrant(_ context.Context, orgUUID, wsUUID, providerName, _ string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := wsKey{orgUUID, wsUUID}
+	if f.providerGrants[key] == nil {
+		f.providerGrants[key] = map[string]bool{}
+	}
+	if f.providerGrants[key][providerName] {
+		return false, nil
+	}
+	f.providerGrants[key][providerName] = true
+	return true, nil
 }
 
 func (f *fakeOps) RemoveProviderEdgeProxyGrant(_ context.Context, _, _, _ string) error {

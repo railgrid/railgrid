@@ -233,8 +233,9 @@ func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
 		// Not executing on this replica: stamp the terminal phase directly.
 		now := time.Now().UTC()
 		scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName}
-		s.finishRun(r.Context(), scope, runID, runOutcome{Phase: store.RunPhaseAborted, Message: "cancelled by user"}, now)
-		s.publishRunEvent(scope, runEvent{ID: runID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseAborted})
+		if s.finishRun(r.Context(), scope, runID, runOutcome{Phase: store.RunPhaseAborted, Message: "cancelled by user"}, now) {
+			s.publishRunEvent(scope, runEvent{ID: runID, Agent: run.AgentName, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: store.RunPhaseAborted})
+		}
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": runID, "cancelling": live})
 }

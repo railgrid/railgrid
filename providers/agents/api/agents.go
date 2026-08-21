@@ -207,21 +207,26 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "invalid JSON body: "+err.Error())
 		return
 	}
-	out, err := s.applyAgentCreate(r.Context(), c, &req)
+	out, created, err := s.applyAgentCreate(r.Context(), c, id, &req)
 	if err != nil {
 		writeUpdateError(w, err)
 		return
 	}
-	s.trackAgentCreated(r.Context(), id, out.Name)
+	if created {
+		s.trackAgentCreated(r.Context(), id, out.Name)
+	}
 	writeJSON(w, http.StatusCreated, out)
 }
 
 // applyAgentCreate validates the request and creates the agent. Shared by the
-// REST handler and the MCP create_agent tool.
-func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, req *createAgentRequest) (*agentsv1alpha1.Agent, error) {
+// REST handler and the MCP create_agent tool. The bool reports whether this
+// successful apply won the durable, tenant-scoped creation claim. The
+// create-or-apply API does not expose whether it took its create or update
+// branch, so the claim is the authoritative cross-request/process boundary.
+func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, id identity, req *createAgentRequest) (*agentsv1alpha1.Agent, bool, error) {
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
-		return nil, errBadRequest("name is required")
+		return nil, false, errBadRequest("name is required")
 	}
 	if strings.TrimSpace(req.DisplayName) == "" {
 		req.DisplayName = req.Name
@@ -253,14 +258,36 @@ func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, r
 	if len(req.Channels) > 0 {
 		chans, err := normalizeChannels(req.Channels)
 		if err != nil {
-			return nil, errBadRequest(err.Error())
+			return nil, false, errBadRequest(err.Error())
 		}
 		if err := s.validateChannelUniqueness(ctx, c, req.Name, chans); err != nil {
-			return nil, errConflict(err.Error())
+			return nil, false, errConflict(err.Error())
 		}
 		a.Spec.Channels = chans
 	}
-	return c.Agents().Create(ctx, a, metav1.CreateOptions{})
+	// Only an authoritative NotFound read makes this apply a creation candidate.
+	// A readable existing resource is an update, including an agent created
+	// before telemetry was enabled. For any other read failure, the generic
+	// apply mutation cannot distinguish an existing resource from a missing one,
+	// so conservatively suppress telemetry rather than emit a false positive.
+	// The durable claim below still serializes concurrent NotFound requests.
+	_, getErr := c.Agents().Get(ctx, req.Name, metav1.GetOptions{})
+	candidate := apierrors.IsNotFound(getErr)
+	out, err := c.Agents().Create(ctx, a, metav1.CreateOptions{})
+	if err != nil || !candidate {
+		return out, false, err
+	}
+	if s == nil || s.store == nil {
+		// Telemetry is best effort and must never change a successful product
+		// operation. Without the durable claim store, suppress the event rather
+		// than falling back to a process-local race-prone dedupe.
+		return out, false, nil
+	}
+	created, claimErr := s.store.ClaimAgentCreation(ctx, id.scope(req.Name))
+	if claimErr != nil {
+		return out, false, nil
+	}
+	return out, created, nil
 }
 
 // knownToolFamilies are the grantable built-in families (core is always on).
