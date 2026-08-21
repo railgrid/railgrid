@@ -52,6 +52,14 @@ hub:
     name: ""
     key: ca.crt
 
+# Product activation telemetry is opt-in. When disabled (the default), the
+# provider constructs no network telemetry client and makes no telemetry calls.
+# When enabled, the mounted providerKubeconfig must contain the provider
+# ServiceAccount bearer token. hub.tokenSecretRef remains the optional
+# heartbeat credential and is not used for telemetry.
+telemetry:
+  enabled: false
+
 # Comma-separated static bearer tokens accepted by the tunnel token validator
 # (dev/testing only — real agents authenticate via join token + kcp SAR).
 staticTokens: ""

@@ -24,6 +24,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/faroshq/provider-edges/internal/kcpurl"
 	utilhttp "github.com/faroshq/provider-edges/internal/wsutil"
 	"github.com/faroshq/provider-sdk/revdial"
+	producttelemetry "github.com/faroshq/provider-sdk/telemetry"
 )
 
 // KindConfig declares one connectable kind the tunnel serves. All kinds a
@@ -127,6 +129,14 @@ type Server struct {
 	// events tool. Set via SetEventStore from the controller manager.
 	eventStore events.Store
 
+	// readyTelemetry owns the process-local edge_first_ready claim. It is
+	// initialized to the SDK no-op tracker unless Config.Telemetry is set.
+	readyTelemetry *edgeReadyTelemetry
+
+	// dynamicClientFor is nil in production and exists only as a narrow seam
+	// for focused status tests.
+	dynamicClientFor func(*rest.Config) (dynamic.Interface, error)
+
 	// registry/replicaID/relayToken enable multi-replica tunnel routing (see
 	// EnableReplicaRouting). All nil/empty in single-replica mode.
 	registry   *Registry
@@ -190,6 +200,10 @@ type Config struct {
 	HubExternalURL      string
 	HubInternalURL      string
 	Logger              klog.Logger
+	// Telemetry is the optional product telemetry dependency. A nil value uses
+	// the safe no-op implementation, which is the default for self-hosted and
+	// test deployments.
+	Telemetry producttelemetry.Tracker
 }
 
 // New constructs the tunnel Server for one or more connectable kinds.
@@ -223,9 +237,22 @@ func New(cfg Config) (*Server, error) {
 		hubInternalURL:      cfg.HubInternalURL,
 		agentPickupPath:     cfg.AgentPickupPath,
 		edgeProxyPublicPath: cfg.EdgeProxyPublicPath,
+		readyTelemetry:      newEdgeReadyTelemetry(cfg.Telemetry),
 		authorizeFn:         authorize,
 		logger:              cfg.Logger.WithName("edge-tunnel"),
 	}, nil
+}
+
+// SetTelemetryTracker replaces the optional product telemetry dependency.
+// Passing nil restores the safe no-op implementation. It is intended for
+// provider startup wiring and focused tests; the claim state remains owned by
+// this Server process.
+func (s *Server) SetTelemetryTracker(tracker producttelemetry.Tracker) {
+	if s.readyTelemetry == nil {
+		s.readyTelemetry = newEdgeReadyTelemetry(tracker)
+		return
+	}
+	s.readyTelemetry.setTracker(tracker)
 }
 
 // SetTenantConfigGetter wires the cross-workspace tenant config source (the

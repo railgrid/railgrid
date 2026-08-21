@@ -32,9 +32,11 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdlog "log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -50,6 +52,7 @@ import (
 	edgesv1alpha1 "github.com/faroshq/provider-edges/apis/v1alpha1"
 	"github.com/faroshq/provider-edges/internal/svccatalog"
 	sdktunnel "github.com/faroshq/provider-edges/internal/tunnel"
+	producttelemetry "github.com/faroshq/provider-sdk/telemetry"
 )
 
 // providerPublicBase is the path prefix (behind the hub backend proxy) this
@@ -114,6 +117,16 @@ func runServe() error {
 	// manager (Edge reconcilers across tenant workspaces).
 	kcpConfig := loadKCPConfig(log)
 	hubExternalURL := os.Getenv("FAROS_HUB_EXTERNAL_URL")
+	telemetryHubURL := strings.TrimSpace(os.Getenv("FAROS_HUB_URL"))
+	if internalURL := strings.TrimSpace(os.Getenv("FAROS_HUB_INTERNAL_URL")); internalURL != "" {
+		telemetryHubURL = internalURL
+	}
+	productTracker := newProductTelemetryTracker(telemetryHubURL, providerTelemetryToken(kcpConfig))
+	defer func() {
+		if err := productTracker.Close(); err != nil {
+			stdlog.Printf("product telemetry shutdown failed")
+		}
+	}()
 
 	// Tunnel plane. The provider owns the ConnManager and terminates agent
 	// reverse tunnels in-process; with replica routing enabled below, peer
@@ -130,6 +143,7 @@ func runServe() error {
 		StaticTokens:        splitEnv(os.Getenv("FAROS_STATIC_TOKENS")),
 		HubExternalURL:      hubExternalURL,
 		HubInternalURL:      os.Getenv("FAROS_HUB_INTERNAL_URL"),
+		Telemetry:           productTracker,
 		Logger:              log,
 	})
 	if err != nil {
@@ -275,6 +289,65 @@ func runServe() error {
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdown)
+}
+
+func productTelemetryEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_PRODUCT_TELEMETRY_ENABLED")), "true")
+}
+
+// newProductTelemetryTracker is the only Edges construction site for the
+// asynchronous SDK client. Product telemetry is explicitly opt-in; the
+// provider remains fully functional with the no-op tracker in the default
+// self-hosted configuration.
+func newProductTelemetryTracker(hubURL, providerToken string) producttelemetry.Tracker {
+	if !productTelemetryEnabled() {
+		return producttelemetry.NoopTracker{}
+	}
+	tracker, err := producttelemetry.NewClient(producttelemetry.Config{
+		Enabled:       true,
+		ProviderName:  "edges",
+		HubURL:        hubURL,
+		ProviderToken: providerToken,
+		HTTPClient:    productTelemetryHTTPClient(strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_HUB_INSECURE")), "true")),
+	})
+	if err != nil {
+		// Do not include configuration values, credentials, or event data in the
+		// startup log. Tunnel and controller behavior remains independent of
+		// telemetry configuration and availability.
+		stdlog.Printf("WARNING product telemetry unavailable; continuing without it")
+		return producttelemetry.NoopTracker{}
+	}
+	return tracker
+}
+
+// providerTelemetryToken uses the already-loaded provider ServiceAccount
+// credential. FAROS_HUB_TOKEN is the optional heartbeat credential and is not
+// necessarily accepted by the hub telemetry TokenReview authenticator.
+func providerTelemetryToken(cfg *rest.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	if token := strings.TrimSpace(cfg.BearerToken); token != "" {
+		return token
+	}
+	if path := strings.TrimSpace(cfg.BearerTokenFile); path != "" {
+		if data, err := os.ReadFile(path); err == nil {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return ""
+}
+
+func productTelemetryHTTPClient(insecureSkipVerify bool) *http.Client {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return &http.Client{}
+	}
+	transport := base.Clone()
+	if insecureSkipVerify {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // explicit local/dev opt-in via FAROS_HUB_INSECURE
+	}
+	return &http.Client{Transport: transport}
 }
 
 // loadKCPConfig resolves the provider's kcp credential (its provisioned SA

@@ -5,6 +5,16 @@ Standalone faros provider for edges — both Kubernetes clusters and Linux/SSH s
 Helm chart for the faros **edges** provider. `values.yaml` is the source of
 truth and carries the full inline notes; this table summarises it.
 
+Product activation telemetry is disabled by default. The chart makes no
+telemetry network calls unless `telemetry.enabled=true` is explicitly set. If
+enabled, the provider authenticates telemetry with the ServiceAccount bearer
+token in the mounted `providerKubeconfig`; `hub.tokenSecretRef` remains the
+separate optional heartbeat credential, so no extra telemetry Secret is needed.
+The background tunnel path has the tenant logical-cluster ID but not an org
+UUID, so `edge_first_ready` uses that same stable value for its required org
+and workspace identifiers. It is an opaque tenant scope, not a claimed org
+UUID.
+
 ## Installing
 
 A provider needs a kcp credential for the workspace it registers into.
@@ -52,6 +62,8 @@ helm upgrade --install edges oci://ghcr.io/faroshq/charts/faros-edges-provider \
 | `hub.caData` | `""` | Hub CA bundle (PEM) embedded into per-agent kubeconfigs so agents trust the hub serving cert. Provide EITHER caData (inline PEM) or caSecretRef. |
 | `hub.caSecretRef.name` | `""` |  |
 | `hub.caSecretRef.key` | `ca.crt` |  |
+| `telemetry` |  | Opt-in product activation telemetry; disabled by default and no-network when false. |
+| `telemetry.enabled` | `false` | Set `true` only for an explicit telemetry opt-in; uses the mounted provider kubeconfig token. |
 | `staticTokens` | `""` | Comma-separated static bearer tokens accepted by the tunnel token validator (dev/testing only — real agents authenticate via join token + kcp SAR). |
 | `devMode` | `false` | Enables dev-mode shortcuts in the controllers (e.g. relaxed kubeconfig CA). |
 | `providerKubeconfig` |  | Secret holding the workspace-admin kubeconfig minted via /bonkers (admin onboarding). Used by BOTH the init container (bootstrap APIExport/schemas) and the serve container (token validation + cross-tenant controllers). Key must be "kubeconfig". |
@@ -71,4 +83,3 @@ helm upgrade --install edges oci://ghcr.io/faroshq/charts/faros-edges-provider \
 | `nodeSelector` | `{}` |  |
 | `tolerations` | `[]` |  |
 | `affinity` | `{}` |  |
-

@@ -30,4 +30,4 @@ additional_properties:
   outcome:
     description: Whether the first edge reached the ready state.
     type: string
-    enum: [ready, failed]
+    enum: [ready]

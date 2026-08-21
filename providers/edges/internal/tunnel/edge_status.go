@@ -52,7 +52,7 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 		return
 	}
 
-	dynClient, err := dynamic.NewForConfig(cfg)
+	dynClient, err := p.newDynamicClient(cfg)
 	if err != nil {
 		p.logger.Error(err, "markEdgeConnected: failed to create dynamic client",
 			"cluster", cluster, "edge", name)
@@ -81,11 +81,13 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 	// agent-side edge_reporter that runs as soon as out-of-cluster join-token
 	// agents refresh their hub client. Retry on conflict until UpdateStatus
 	// wins; joinToken clearing above is already durable independent of this.
+	var shouldTrackReady bool
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		edge, err := dynClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
+		wasReady := edgeStatusReady(edge.Object)
 
 		// Build the updated status: set connected/phase, set Registered condition,
 		// and re-clear joinToken in case the targeted MergePatch above raced and
@@ -160,6 +162,9 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 		}
 
 		_, err = dynClient.Resource(gvr).UpdateStatus(ctx, edge, metav1.UpdateOptions{})
+		if err == nil && p.readyTelemetry != nil {
+			shouldTrackReady = p.readyTelemetry.shouldTrack(cluster, wasReady)
+		}
 		return err
 	})
 	if err != nil {
@@ -170,6 +175,28 @@ func (p *Server) markEdgeConnected(ctx context.Context, gvr schema.GroupVersionR
 
 	p.logger.Info("Edge marked Ready and registered on join-token tunnel open",
 		"cluster", cluster, "edge", name)
+	if shouldTrackReady {
+		p.readyTelemetry.track(ctx, gvr, cluster, name)
+	}
+}
+
+func edgeStatusReady(obj map[string]interface{}) bool {
+	connected, foundConnected, err := unstructured.NestedBool(obj, "status", "connected")
+	if err != nil || !foundConnected || !connected {
+		return false
+	}
+	phase, foundPhase, err := unstructured.NestedString(obj, "status", "phase")
+	return err == nil && foundPhase && phase == string(edgeapi.ConnectionPhaseReady)
+}
+
+// newDynamicClient is a narrow seam for status tests. Production uses the
+// standard client-go constructor; tests can provide a fake dynamic client
+// without changing the tunnel's tenant configuration behavior.
+func (p *Server) newDynamicClient(cfg *rest.Config) (dynamic.Interface, error) {
+	if p.dynamicClientFor != nil {
+		return p.dynamicClientFor(cfg)
+	}
+	return dynamic.NewForConfig(cfg)
 }
 
 // storeSSHCredentials creates a Secret with the agent's SSH credentials and
