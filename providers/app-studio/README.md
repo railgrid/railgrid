@@ -138,10 +138,11 @@ Environment variables consumed by the binary:
 Product telemetry is disabled by default, including for self-hosted installs.
 Self-hosted deployments make no telemetry network calls unless
 `FAROS_PRODUCT_TELEMETRY_ENABLED=true` is explicitly configured alongside
-`FAROS_HUB_URL` and `FAROS_HUB_TOKEN`. Enabled instrumentation reports only
-bounded activation events (stable scope/project/actor IDs and fixed outcomes);
-it does not send project names, prompts, URLs, commits, source content, or
-credentials.
+`FAROS_HUB_URL` and the provisioned provider kubeconfig. Telemetry authenticates
+with the ServiceAccount token in that kubeconfig; `FAROS_HUB_TOKEN` remains the
+separate heartbeat credential. Enabled instrumentation reports only bounded
+activation events (stable scope/project/actor IDs and fixed outcomes); it does
+not send project names, prompts, URLs, commits, source content, or credentials.
 
 ## Health and readiness
 

@@ -80,7 +80,7 @@ func productTelemetryEnabled() bool {
 // newProductTelemetryTracker is the only App Studio construction site for
 // the asynchronous SDK client. Self-hosted providers keep the default no-op
 // path and therefore make no telemetry network calls.
-func newProductTelemetryTracker() producttelemetry.Tracker {
+func newProductTelemetryTracker(providerToken string) producttelemetry.Tracker {
 	if !productTelemetryEnabled() {
 		return producttelemetry.NoopTracker{}
 	}
@@ -89,7 +89,7 @@ func newProductTelemetryTracker() producttelemetry.Tracker {
 		Enabled:       true,
 		ProviderName:  "app-studio",
 		HubURL:        os.Getenv("FAROS_HUB_URL"),
-		ProviderToken: os.Getenv("FAROS_HUB_TOKEN"),
+		ProviderToken: providerToken,
 		HTTPClient:    productTelemetryHTTPClient(hubInsecure),
 	})
 	if err != nil {
@@ -203,7 +203,14 @@ func runServe() {
 	// X-Faros-Cluster per request). Without a hub URL the project API returns
 	// 501 (useful for UI-only dev), with a loud warning.
 	hubInsecure := os.Getenv("FAROS_HUB_INSECURE") == "true"
-	productTracker := newProductTelemetryTracker()
+	// Product-event ingestion authenticates the exact provisioned provider
+	// ServiceAccount through a workspace-scoped TokenReview. The heartbeat
+	// token is a separate legacy credential and must not be trusted here.
+	providerToken := ""
+	if cfg, cfgErr := loadProviderConfig(); cfgErr == nil && cfg != nil {
+		providerToken = cfg.BearerToken
+	}
+	productTracker := newProductTelemetryTracker(providerToken)
 	defer func() {
 		if err := productTracker.Close(); err != nil {
 			log.Printf("product telemetry shutdown failed")

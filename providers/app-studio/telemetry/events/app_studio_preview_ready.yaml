@@ -26,8 +26,8 @@ additional_properties:
   preview_kind:
     description: The bounded preview environment kind.
     type: string
-    enum: [development, production]
+    enum: [development]
   outcome:
     description: Whether the preview became ready.
     type: string
-    enum: [ready, failed]
+    enum: [ready]

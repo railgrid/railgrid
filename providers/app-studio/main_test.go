@@ -32,12 +32,22 @@ func TestProductTelemetryDisabledByDefault(t *testing.T) {
 	t.Setenv("FAROS_PRODUCT_TELEMETRY_ENABLED", "")
 	t.Setenv("FAROS_HUB_URL", "https://hub.example.invalid")
 	t.Setenv("FAROS_HUB_TOKEN", "provider-token")
-	tracker := newProductTelemetryTracker()
+	tracker := newProductTelemetryTracker("provider-token")
 	if _, ok := tracker.(producttelemetry.NoopTracker); !ok {
 		t.Fatalf("default product telemetry tracker = %T, want telemetry.NoopTracker", tracker)
 	}
 	if err := tracker.Close(); err != nil {
 		t.Fatalf("disabled tracker close: %v", err)
+	}
+}
+
+func TestProductTelemetryRequiresProviderServiceAccountToken(t *testing.T) {
+	t.Setenv("FAROS_PRODUCT_TELEMETRY_ENABLED", "true")
+	t.Setenv("FAROS_HUB_URL", "https://hub.example.invalid")
+	t.Setenv("FAROS_HUB_TOKEN", "legacy-heartbeat-token")
+	tracker := newProductTelemetryTracker("")
+	if _, ok := tracker.(producttelemetry.NoopTracker); !ok {
+		t.Fatalf("tracker without provider ServiceAccount token = %T, want telemetry.NoopTracker", tracker)
 	}
 }
 

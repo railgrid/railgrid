@@ -140,8 +140,8 @@ spec:
               value: "app-studio"
             {{- if .Values.telemetry.enabled }}
             # Product telemetry is deliberately opt-in. The provider's
-            # asynchronous client still requires FAROS_HUB_TOKEN and
-            # FAROS_HUB_URL before it can send anything.
+            # asynchronous client authenticates with the ServiceAccount token
+            # from FAROS_PROVIDER_KUBECONFIG; the heartbeat token is unrelated.
             - name: FAROS_PRODUCT_TELEMETRY_ENABLED
               value: "true"
             {{- end }}

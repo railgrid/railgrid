@@ -36,8 +36,8 @@ service:
   port: 8081
 
 # Product telemetry is opt-in. Keep this false for self-hosted deployments;
-# the provider makes no telemetry network calls unless explicitly enabled and
-# FAROS_HUB_TOKEN/FAROS_HUB_URL are configured.
+# the provider makes no telemetry network calls unless explicitly enabled. It
+# authenticates with the ServiceAccount token in providerKubeconfig.
 telemetry:
   enabled: false
 

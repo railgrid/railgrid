@@ -27,4 +27,4 @@ additional_properties:
   outcome:
     description: The publication or promotion outcome.
     type: string
-    enum: [published, promoted, failed]
+    enum: [published, promoted]
