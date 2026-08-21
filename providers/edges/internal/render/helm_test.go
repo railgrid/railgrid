@@ -61,7 +61,7 @@ func TestFetchChartResolvesThroughIndex(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	mux.HandleFunc("/index.yaml", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(w, "entries:\n  demo:\n    - version: 1.2.3\n      urls:\n        - %s/release-assets/demo-1.2.3.tgz\n", srv.URL)
+		_, _ = fmt.Fprintf(w, "entries:\n  demo:\n    - version: 1.2.3\n      urls:\n        - %s/release-assets/demo-1.2.3.tgz\n", srv.URL)
 	})
 	mux.HandleFunc("/release-assets/demo-1.2.3.tgz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(archive)
@@ -84,7 +84,7 @@ func TestFetchChartRelativeIndexURL(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	mux.HandleFunc("/index.yaml", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, "entries:\n  demo:\n    - version: 1.2.3\n      urls:\n        - charts/demo-1.2.3.tgz\n")
+		_, _ = fmt.Fprint(w, "entries:\n  demo:\n    - version: 1.2.3\n      urls:\n        - charts/demo-1.2.3.tgz\n")
 	})
 	mux.HandleFunc("/charts/demo-1.2.3.tgz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(archive)
@@ -103,7 +103,7 @@ func TestFetchChartVersionNotInIndex(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	mux.HandleFunc("/index.yaml", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, "entries:\n  demo:\n    - version: 9.9.9\n      urls:\n        - charts/demo-9.9.9.tgz\n")
+		_, _ = fmt.Fprint(w, "entries:\n  demo:\n    - version: 9.9.9\n      urls:\n        - charts/demo-9.9.9.tgz\n")
 	})
 	guessed := false
 	mux.HandleFunc("/demo-1.2.3.tgz", func(w http.ResponseWriter, _ *http.Request) {

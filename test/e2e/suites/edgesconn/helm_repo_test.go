@@ -69,7 +69,7 @@ spec:
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	mux.HandleFunc("/index.yaml", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(w, "entries:\n  conn-helm:\n    - version: 0.1.0\n      urls:\n        - %s/release-assets/conn-helm-0.1.0.tgz\n", srv.URL)
+		_, _ = fmt.Fprintf(w, "entries:\n  conn-helm:\n    - version: 0.1.0\n      urls:\n        - %s/release-assets/conn-helm-0.1.0.tgz\n", srv.URL)
 	})
 	mux.HandleFunc("/release-assets/conn-helm-0.1.0.tgz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(archive)
