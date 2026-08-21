@@ -119,6 +119,11 @@ preview_hub_public_host = 'console.127.0.0.1.sslip.io'
 preview_kro_kubeconfig = '.faros-kro.kubeconfig'
 preview_kro_context = 'kind-faros-kro'
 preview_kro_node = 'faros-kro-control-plane'
+# Host address as seen FROM INSIDE the faros-kro containers. Resolve
+# host.docker.internal inside the node first: on Docker Desktop/OrbStack the
+# bridge gateway below is the VM, not the host, and dialing it gets connection
+# refused. Native Linux Docker has no host.docker.internal — there the kind
+# network gateway IS the host, so the docker-inspect gateway is the fallback.
 docker_gateway_format = '{{range .NetworkSettings.Networks}}{{.Gateway}}{{end}}'
 
 # --- providers-quickstart ---
@@ -616,7 +621,10 @@ KRO_KUBECONFIG=%s
 CTX=%s
 GW=%s
 gateway_ip=''
-host_gateway="$(docker inspect -f '%s' %s)"
+host_gateway="$(docker exec %s getent hosts host.docker.internal 2>/dev/null | cut -d' ' -f1)"
+if [ -z "$host_gateway" ]; then
+  host_gateway="$(docker inspect -f '%s' %s)"
+fi
 test -n "$host_gateway"
 for _ in $(seq 1 60); do
   gateway_ip="$(kubectl --kubeconfig "$KRO_KUBECONFIG" --context "$CTX" \
@@ -638,6 +646,7 @@ KUBECONFIG="$KRO_KUBECONFIG" \
         preview_kro_kubeconfig,
         preview_kro_context,
         preview_gateway_name,
+        preview_kro_node,
         docker_gateway_format,
         preview_kro_node,
         preview_gateway_namespace,
@@ -666,7 +675,10 @@ local_resource(
     cmd='make build-infrastructure-provider',
     serve_cmd=('''
 set -eu
-host_gateway="$(docker inspect -f '{docker_gateway_format}' {kro_node})"
+host_gateway="$(docker exec {kro_node} getent hosts host.docker.internal 2>/dev/null | cut -d' ' -f1)"
+if [ -z "$host_gateway" ]; then
+  host_gateway="$(docker inspect -f '{docker_gateway_format}' {kro_node})"
+fi
 test -n "$host_gateway"
 KRO_KUBECONFIG={kro_kubeconfig} \
 FAROS_GATEWAY_NAME={gateway_name} \
@@ -981,7 +993,14 @@ local_resource(
     # an old workspace + revoked SA token; the agent would load it, skip
     # re-registration, and fail every call with "workspace access not
     # permitted" (User ""). Clearing it forces a fresh join-token exchange.
-    cmd='rm -f ~/.faros/agent-dev-edge-kube-1.kubeconfig ~/.faros/agent-dev-edge-kube-1.json && make dev-login-static && make dev-edge-create TYPE=kubernetes DEV_EDGE_NAME=dev-edge-kube-1',
+    #
+    # Same for the faros kubectl context: `faros login` deliberately keeps a
+    # previously selected workspace (pkg/cli/cmd/login.go), so after a kcp
+    # rebuild the kept logical-cluster ID no longer exists and every request
+    # 403s — kubectl apply then dies with "failed to download openapi:
+    # unknown". Deleting the context first makes login land on the fresh home
+    # workspace. Dev-only trade-off: a `faros use` selection is reset too.
+    cmd='kubectl config delete-context faros >/dev/null 2>&1 || true; kubectl config delete-cluster faros >/dev/null 2>&1 || true; rm -f ~/.faros/agent-dev-edge-kube-1.kubeconfig ~/.faros/agent-dev-edge-kube-1.json && make dev-login-static && make dev-edge-create TYPE=kubernetes DEV_EDGE_NAME=dev-edge-kube-1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],
@@ -1001,8 +1020,9 @@ local_resource(
 
 local_resource(
     'edge-server-create',
-    # Same stale-kubeconfig cleanup as edge-kube-create (see note there).
-    cmd='rm -f ~/.faros/agent-dev-edge-server-1.kubeconfig ~/.faros/agent-dev-edge-server-1.json && make dev-login-static && make dev-edge-create TYPE=server DEV_EDGE_NAME=dev-edge-server-1',
+    # Same stale-kubeconfig + stale-workspace cleanup as edge-kube-create
+    # (see note there).
+    cmd='kubectl config delete-context faros >/dev/null 2>&1 || true; kubectl config delete-cluster faros >/dev/null 2>&1 || true; rm -f ~/.faros/agent-dev-edge-server-1.kubeconfig ~/.faros/agent-dev-edge-server-1.json && make dev-login-static && make dev-edge-create TYPE=server DEV_EDGE_NAME=dev-edge-server-1',
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['hub'],

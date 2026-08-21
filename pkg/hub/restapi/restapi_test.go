@@ -179,6 +179,14 @@ func (f *fakeOps) EnsureProviderAPIBinding(_ context.Context, orgUUID, wsUUID, b
 	return nil
 }
 
+// StaleClaimIdentities reports no stale claims. The mismatch logic is exercised
+// directly against the real comparison in pkg/hub/kcp; here it only has to
+// satisfy the interface without making every unrelated handler test carry a
+// warning field.
+func (f *fakeOps) StaleClaimIdentities(_ context.Context, _, _ string) (map[string][]kcp.ClaimIdentityMismatch, error) {
+	return nil, nil
+}
+
 // ListProviderAPIBindings is the test stub for the read-side provider-enable
 // handler. It returns a copy so handlers cannot mutate fake state by accident.
 func (f *fakeOps) ListProviderAPIBindings(_ context.Context, orgUUID, wsUUID string) (map[string]kcp.ProviderBinding, error) {

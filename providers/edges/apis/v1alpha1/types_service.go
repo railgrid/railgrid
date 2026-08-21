@@ -60,6 +60,29 @@ const (
 	ServiceSchemeHTTPS ServiceScheme = "https"
 )
 
+// ServiceAuthMode decides what the proxy puts in the Authorization header it
+// forwards over the tunnel.
+//
+// The default, "secret", suits an appliance behind one long-lived token: the
+// caller's hub credential is meaningless to it, so the provider swaps in the
+// token from spec.authSecretRef. "passthrough" suits an upstream that
+// authorizes the END USER — a self-hosted faros provider backend, whose whole
+// authorization model is the caller's own bearer (see
+// docs/byo-provider-edge-transport.md E-5). Substituting a shared token there
+// would collapse per-user RBAC into "anyone who can reach the tunnel".
+// +kubebuilder:validation:Enum=secret;passthrough;none
+type ServiceAuthMode string
+
+const (
+	// ServiceAuthSecret injects spec.authSecretRef's "token" key, replacing
+	// whatever the caller sent. The default, and the historical behaviour.
+	ServiceAuthSecret ServiceAuthMode = "secret"
+	// ServiceAuthPassthrough forwards the caller's Authorization untouched.
+	ServiceAuthPassthrough ServiceAuthMode = "passthrough"
+	// ServiceAuthNone strips Authorization entirely.
+	ServiceAuthNone ServiceAuthMode = "none"
+)
+
 // ServiceEdgeRef points at the connectable a Service runs on.
 type ServiceEdgeRef struct {
 	// Kind is the connectable kind this service runs on. LinuxServer services
@@ -167,8 +190,16 @@ type ServiceSpec struct {
 	// AuthSecretRef names a Secret whose "token" key the provider injects as
 	// "Authorization: Bearer ..." when proxying. The token never reaches the
 	// agent host. Follows the spec.sshCredentialsRef convention (namespaced).
+	// Only read when spec.auth is "secret" (the default).
 	// +optional
 	AuthSecretRef *corev1.SecretReference `json:"authSecretRef,omitempty"`
+
+	// Auth decides what Authorization the proxy forwards: "secret" (default)
+	// swaps in spec.authSecretRef's token, "passthrough" forwards the caller's
+	// own, "none" strips it. See ServiceAuthMode.
+	// +kubebuilder:default=secret
+	// +optional
+	Auth ServiceAuthMode `json:"auth,omitempty"`
 
 	// Instructions is free-form guidance surfaced to AI clients on the MCP
 	// endpoint's "initialize" for this service — a place to teach the model

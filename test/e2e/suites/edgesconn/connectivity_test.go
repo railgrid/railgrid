@@ -152,6 +152,61 @@ func TestKubectlThroughTunnel(t *testing.T) {
 		t.Logf("workload deployed a Running pod on the edge:\n%s", last)
 	})
 
+	// 10b. Helm workload plane: the provider fetches the chart hub-side by
+	// resolving the repo's index.yaml (startChartRepo hosts the archive only
+	// at a release-assets path, so URL-guessing regresses loudly), templates
+	// it with the Workload's values overriding the chart default (replicas
+	// 0 → 1), and the agent materializes the rendered Deployment. This is the
+	// same path the marketplace deploy takes.
+	t.Run("helm workload deploys to the edge", func(t *testing.T) {
+		repoURL := startChartRepo(t)
+		wl := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "edges.faros.sh/v1alpha1",
+			"kind":       "Workload",
+			"metadata":   map[string]any{"name": "conn-helm-wl", "namespace": "default"},
+			"spec": map[string]any{
+				"helm": map[string]any{
+					"repoURL": repoURL,
+					"chart":   "conn-helm",
+					"version": "0.1.0",
+					"values":  map[string]any{"replicas": int64(1)},
+				},
+				"placement": map[string]any{
+					"strategy":     "Singleton",
+					"edgeSelector": map[string]any{"matchLabels": map[string]any{"app": edgeName}},
+				},
+			},
+		}}
+		if _, err := tenantAdmin.Resource(workloadGVR).Namespace("default").Create(ctxWithTimeout(t, 10*time.Second), wl, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("create helm Workload: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = tenantAdmin.Resource(workloadGVR).Namespace("default").Delete(context.Background(), "conn-helm-wl", metav1.DeleteOptions{})
+		})
+
+		// fullnameOverride is forced to the Workload name, so the pod is
+		// "conn-helm-wl-<hash>" — filter on that to not match step 10's pod.
+		var last string
+		if !waitFor(t, 3*time.Minute, func() (bool, string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", edgeKubeconfig,
+				"get", "pods", "-n", "default", "--insecure-skip-tls-verify",
+				"--field-selector=status.phase=Running", "-o", "name")
+			b, _ := cmd.CombinedOutput()
+			last = string(b)
+			for _, line := range strings.Split(last, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "pod/conn-helm-wl-") {
+					return true, last
+				}
+			}
+			return false, last
+		}) {
+			t.Fatalf("helm workload never produced a Running pod on the edge; last:\n%s", last)
+		}
+		t.Logf("helm workload deployed a Running pod on the edge:\n%s", last)
+	})
+
 	// 11. MCP plane: the hub's MCP aggregate for this tenant should federate the
 	// edges provider's kube toolset (proves the provider's /mcp is discovered +
 	// proxied for the tenant's connected KubernetesCluster edge).

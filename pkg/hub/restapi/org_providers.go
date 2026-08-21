@@ -57,6 +57,7 @@ import (
 	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 	"github.com/faroshq/faros/pkg/hub/kcp"
 	"github.com/faroshq/faros/pkg/hub/providers"
+	"github.com/faroshq/faros/pkg/hub/tenant"
 	"github.com/faroshq/faros/pkg/kcppaths"
 )
 
@@ -68,6 +69,8 @@ type OrgProviderOps interface {
 	ListOrgProviderWorkspaces(ctx context.Context, orgUUID string) ([]kcp.OrgProviderWorkspace, error)
 	GetOrgProviderWorkspace(ctx context.Context, orgUUID, name string) (*kcp.OrgProviderWorkspace, error)
 	DeleteOrgProviderWorkspace(ctx context.Context, orgUUID, name string) error
+	ListEdgeInstallTargets(ctx context.Context, orgUUID string) ([]kcp.EdgeInstallTarget, error)
+	GetEdgeInstallTarget(ctx context.Context, orgUUID, wsUUID, name string) (*kcp.EdgeInstallTarget, error)
 }
 
 // ProviderCredentialMinter mints the workspace-scoped credential an Org installs
@@ -100,6 +103,48 @@ type RegisterOrgProviderRequest struct {
 	// I wrote". It selects whose published deployment recipe the returned
 	// instructions are rendered from. Defaults to Name.
 	SourceProvider string `json:"sourceProvider,omitempty"`
+
+	// Edge names the cluster the provider will be installed into. Required:
+	// the hub reaches an org-owned provider's backend over that edge's tunnel
+	// and has no other route into a tenant cluster
+	// (docs/byo-provider-edge-transport.md E-2).
+	Edge *EdgeTargetRef `json:"edge,omitempty"`
+}
+
+// EdgeTargetRef addresses one KubernetesCluster edge within the Org.
+type EdgeTargetRef struct {
+	// Workspace is the team workspace UUID the edge lives in.
+	Workspace string `json:"workspace"`
+	// Name is the KubernetesCluster's name.
+	Name string `json:"name"`
+}
+
+// EdgeInstallTargetView is one candidate cluster for a self-hosted provider.
+type EdgeInstallTargetView struct {
+	Workspace            string `json:"workspace"`
+	WorkspaceDisplayName string `json:"workspaceDisplayName,omitempty"`
+	Name                 string `json:"name"`
+	// Eligible is the single field the UI should gate on. It is Connected
+	// today, named separately so tightening the rule later (agent version
+	// floor, say) does not require every caller to learn the new condition.
+	Eligible     bool   `json:"eligible"`
+	Connected    bool   `json:"connected"`
+	Phase        string `json:"phase,omitempty"`
+	AgentVersion string `json:"agentVersion,omitempty"`
+}
+
+// ListEdgeInstallTargetsResponse is the body of
+// GET /api/orgs/{org}/providers/install-targets.
+//
+// Reason exists so the portal can explain a disabled self-host button instead
+// of just greying it out: "no edge at all" and "an edge whose agent never
+// connected" need different next steps from the user.
+type ListEdgeInstallTargetsResponse struct {
+	Items []EdgeInstallTargetView `json:"items"`
+	// Eligible is true when at least one item is.
+	Eligible bool `json:"eligible"`
+	// Reason is human-readable and empty when Eligible.
+	Reason string `json:"reason,omitempty"`
 }
 
 // OrgProviderView is the REST projection of one org-owned provider. It merges
@@ -149,30 +194,30 @@ type RegisterOrgProviderResponse struct {
 //
 // It also fails closed when the org-provider dependencies were not wired, so a
 // hub built without them returns a clean 501 rather than a nil-pointer panic.
-func (h *Handler) requireOrgProviderAccess(w http.ResponseWriter, r *http.Request, mutating bool) (string, bool) {
+func (h *Handler) requireOrgProviderAccess(w http.ResponseWriter, r *http.Request, mutating bool) (tenant.TenantContext, bool) {
 	tc, ok := h.requireTenantContext(w, r, false /* workspace */, false /* admin decided below */)
 	if !ok {
-		return "", false
+		return tenant.TenantContext{}, false
 	}
 	if h.mgr.orgProviders == nil || h.mgr.providerCreds == nil {
 		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "org-owned providers are not enabled on this hub")
-		return "", false
+		return tenant.TenantContext{}, false
 	}
 	if !mutating {
-		return tc.OrgUUID, true
+		return tc, true
 	}
 
 	org, err := h.mgr.client.Organizations().Get(r.Context(), tc.OrgUUID, metav1.GetOptions{})
 	if err != nil {
 		writeError(w, err)
-		return "", false
+		return tenant.TenantContext{}, false
 	}
 	// Unset means the default, "members". Anything else is treated as the
 	// restrictive setting rather than silently allowing: an unrecognized policy
 	// value must not widen access.
 	if org.Spec.CatalogEntryCreation == "" ||
 		org.Spec.CatalogEntryCreation == tenancyv1alpha1.CatalogEntryCreationMembers {
-		return tc.OrgUUID, true
+		return tc, true
 	}
 
 	// Read the ORG-scope role from the Membership rather than trusting tc.Role.
@@ -185,14 +230,14 @@ func (h *Handler) requireOrgProviderAccess(w http.ResponseWriter, r *http.Reques
 	role, err := h.mgr.bootstrapper.GetOrgMembershipRole(r.Context(), tc.OrgUUID, tc.User)
 	if err != nil && !apierrors.IsNotFound(err) {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "resolving org membership: "+err.Error())
-		return "", false
+		return tenant.TenantContext{}, false
 	}
 	if role != tenancyv1alpha1.MembershipRoleAdmin {
 		writeStatus(w, http.StatusForbidden, "Forbidden",
 			"this organization restricts provider registration to admins")
-		return "", false
+		return tenant.TenantContext{}, false
 	}
-	return tc.OrgUUID, true
+	return tc, true
 }
 
 // registerOrgProvider handles POST /api/orgs/{org}/providers.
@@ -202,10 +247,11 @@ func (h *Handler) requireOrgProviderAccess(w http.ResponseWriter, r *http.Reques
 // the same name returns the same workspace and the same token, which is what
 // makes it safe for the portal to retry.
 func (h *Handler) registerOrgProvider(w http.ResponseWriter, r *http.Request) {
-	orgUUID, ok := h.requireOrgProviderAccess(w, r, true /* mutating */)
+	tc, ok := h.requireOrgProviderAccess(w, r, true /* mutating */)
 	if !ok {
 		return
 	}
+	orgUUID := tc.OrgUUID
 	var req RegisterOrgProviderRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -213,6 +259,15 @@ func (h *Handler) registerOrgProvider(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(strings.ToLower(req.Name))
 	if err := h.validateOrgProviderName(name); err != nil {
 		writeError(w, err)
+		return
+	}
+
+	// Preflight BEFORE anything is created. Registration mints a long-lived
+	// cluster-admin credential and builds a workspace tree; doing that for an
+	// install that cannot work leaves the Org holding a live token and a
+	// half-built tree to clean up by hand. See docs/byo-provider-edge-transport.md
+	// E-2 — a failed precondition here is a clean no-op the client can retry.
+	if !h.requireEdgeInstallTarget(w, r, tc, req.Edge) {
 		return
 	}
 
@@ -249,6 +304,178 @@ func sourceProvider(req RegisterOrgProviderRequest) string {
 		return s
 	}
 	return strings.TrimSpace(strings.ToLower(req.Name))
+}
+
+// listOrgProviderInstallTargets handles
+// GET /api/orgs/{org}/providers/install-targets.
+//
+// It answers the same question registerOrgProvider's preflight asks, so the
+// portal's button state and the server's verdict cannot drift. The server
+// check is not removable: this endpoint is ergonomics.
+func (h *Handler) listOrgProviderInstallTargets(w http.ResponseWriter, r *http.Request) {
+	tc, ok := h.requireOrgProviderAccess(w, r, false /* read-only */)
+	if !ok {
+		return
+	}
+	targets, err := h.visibleEdgeInstallTargets(r, tc)
+	if err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "listing edge install targets: "+err.Error())
+		return
+	}
+	resp := ListEdgeInstallTargetsResponse{Items: make([]EdgeInstallTargetView, 0, len(targets))}
+	for _, t := range targets {
+		view := edgeInstallTargetView(t)
+		resp.Eligible = resp.Eligible || view.Eligible
+		resp.Items = append(resp.Items, view)
+	}
+	if !resp.Eligible {
+		resp.Reason = noEligibleEdgeReason(len(resp.Items))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// visibleEdgeInstallTargets lists the Org's edges and drops the ones in
+// workspaces the caller cannot see.
+//
+// The unfiltered listing spans every team workspace in the Org, and team
+// workspaces have a membership boundary — listWorkspaces already honours it,
+// projecting members from their UMI rows and giving org admins the full set.
+// Returning edge names and workspace UUIDs from workspaces a member does not
+// belong to would leak the Org's cluster inventory to anyone in it, so the same
+// projection applies here.
+func (h *Handler) visibleEdgeInstallTargets(r *http.Request, tc tenant.TenantContext) ([]kcp.EdgeInstallTarget, error) {
+	targets, err := h.mgr.orgProviders.ListEdgeInstallTargets(r.Context(), tc.OrgUUID)
+	if err != nil {
+		return nil, err
+	}
+	visible, err := h.visibleWorkspaceUUIDs(r, tc)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]kcp.EdgeInstallTarget, 0, len(targets))
+	for _, t := range targets {
+		if visible[t.Workspace] {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// visibleWorkspaceUUIDs is the set of team workspaces the caller may act in,
+// mirroring listWorkspaces: org admins see every child, members see their own
+// UMI entries. A member with no index sees none, which is correct rather than
+// an error — they simply belong to no workspace yet.
+func (h *Handler) visibleWorkspaceUUIDs(r *http.Request, tc tenant.TenantContext) (map[string]bool, error) {
+	out := map[string]bool{}
+	if tc.Role == tenancyv1alpha1.MembershipRoleAdmin {
+		names, err := h.mgr.bootstrapper.ListChildTeamWorkspaces(r.Context(), tc.OrgUUID)
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range names {
+			out[n] = true
+		}
+		return out, nil
+	}
+	idx, err := h.mgr.client.UserMembershipIndices().Get(r.Context(), tc.User, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return out, nil
+		}
+		return nil, err
+	}
+	for _, e := range idx.Spec.Entries {
+		if e.OrgUUID == tc.OrgUUID && e.WorkspaceUUID != "" && e.SoftDeletedAt == nil {
+			out[e.WorkspaceUUID] = true
+		}
+	}
+	return out, nil
+}
+
+func edgeInstallTargetView(t kcp.EdgeInstallTarget) EdgeInstallTargetView {
+	return EdgeInstallTargetView{
+		Workspace:            t.Workspace,
+		WorkspaceDisplayName: t.WorkspaceDisplayName,
+		Name:                 t.Name,
+		Eligible:             t.Connected,
+		Connected:            t.Connected,
+		Phase:                t.Phase,
+		AgentVersion:         t.AgentVersion,
+	}
+}
+
+// noEligibleEdgeReason distinguishes the two states a user resolves
+// differently: no edge onboarded at all, versus an edge whose agent is not
+// connected. Collapsing them into one message sends half the users to the
+// wrong remedy.
+func noEligibleEdgeReason(total int) string {
+	if total == 0 {
+		return "self-hosting needs a Kubernetes cluster connected as an edge — the hub reaches a self-hosted provider over that tunnel and has no other route into your cluster. Add a cluster in Edges first."
+	}
+	return "no connected edge: your Kubernetes cluster edges exist but none has an agent connected right now. Install or restart the faros agent in the cluster you want to host the provider."
+}
+
+// requireEdgeInstallTarget enforces that the registration names an edge the
+// hub can actually reach, writing the error response itself and reporting
+// whether the caller may continue.
+//
+// Everything it rejects is a 409 rather than a 400: the request is well-formed
+// and would succeed once the Org connects an edge, which is a state conflict,
+// not a malformed body. The portal retries on that basis.
+func (h *Handler) requireEdgeInstallTarget(w http.ResponseWriter, r *http.Request, tc tenant.TenantContext, ref *EdgeTargetRef) bool {
+	if ref == nil || strings.TrimSpace(ref.Workspace) == "" || strings.TrimSpace(ref.Name) == "" {
+		// Report what IS available, so a client that omitted the field learns
+		// whether the fix is "name one" or "go connect a cluster first".
+		targets, err := h.visibleEdgeInstallTargets(r, tc)
+		if err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", "listing edge install targets: "+err.Error())
+			return false
+		}
+		eligible := 0
+		for _, t := range targets {
+			if t.Connected {
+				eligible++
+			}
+		}
+		if eligible == 0 {
+			writeStatus(w, http.StatusConflict, "Conflict", noEligibleEdgeReason(len(targets)))
+			return false
+		}
+		writeError(w, newValidationError("edge is required: name the workspace and Kubernetes cluster edge to install this provider into"))
+		return false
+	}
+
+	// Membership first, and reported as "not found" below rather than as a
+	// distinct 403: a caller who cannot see the workspace must not be able to
+	// probe which edges exist in it by reading the difference between the two.
+	visible, err := h.visibleWorkspaceUUIDs(r, tc)
+	if err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "resolving workspace access: "+err.Error())
+		return false
+	}
+	var target *kcp.EdgeInstallTarget
+	if visible[ref.Workspace] {
+		target, err = h.mgr.orgProviders.GetEdgeInstallTarget(r.Context(), tc.OrgUUID, ref.Workspace, ref.Name)
+		if err != nil {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", "resolving edge install target: "+err.Error())
+			return false
+		}
+	}
+	if target == nil {
+		writeStatus(w, http.StatusConflict, "Conflict",
+			"edge "+ref.Name+" was not found in workspace "+ref.Workspace+" — it may have been removed, or the edges provider is not enabled in that workspace")
+		return false
+	}
+	if !target.Connected {
+		detail := ""
+		if target.Phase != "" {
+			detail = " (phase " + target.Phase + ")"
+		}
+		writeStatus(w, http.StatusConflict, "Conflict",
+			"edge "+ref.Name+" has no connected agent"+detail+" — the hub reaches a self-hosted provider over that tunnel, so the install would produce a backend nothing can call")
+		return false
+	}
+	return true
 }
 
 // installInstructions renders the self-hosting steps for a provider, or nil
@@ -336,10 +563,11 @@ func (h *Handler) validateOrgProviderName(name string) error {
 // listOrgProviders handles GET /api/orgs/{org}/providers, returning the Org's
 // own providers with their registration state.
 func (h *Handler) listOrgProviders(w http.ResponseWriter, r *http.Request) {
-	orgUUID, ok := h.requireOrgProviderAccess(w, r, false /* read-only */)
+	tc, ok := h.requireOrgProviderAccess(w, r, false /* read-only */)
 	if !ok {
 		return
 	}
+	orgUUID := tc.OrgUUID
 	workspaces, err := h.mgr.orgProviders.ListOrgProviderWorkspaces(r.Context(), orgUUID)
 	if err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "listing provider workspaces: "+err.Error())
@@ -389,10 +617,11 @@ func (h *Handler) orgProviderView(orgUUID string, ws kcp.OrgProviderWorkspace) O
 // one. That keeps "I lost the kubeconfig" from silently multiplying live
 // credentials for one provider.
 func (h *Handler) getOrgProviderKubeconfig(w http.ResponseWriter, r *http.Request) {
-	orgUUID, ok := h.requireOrgProviderAccess(w, r, true /* mutating: hands out a credential */)
+	tc, ok := h.requireOrgProviderAccess(w, r, true /* mutating: hands out a credential */)
 	if !ok {
 		return
 	}
+	orgUUID := tc.OrgUUID
 	name := mux.Vars(r)["name"]
 	if name == "" {
 		writeError(w, newValidationError("provider name is required"))
@@ -436,7 +665,7 @@ func (h *Handler) getOrgProviderKubeconfig(w http.ResponseWriter, r *http.Reques
 //
 // Idempotent: deleting an unregistered provider is a no-op success.
 func (h *Handler) deleteOrgProvider(w http.ResponseWriter, r *http.Request) {
-	orgUUID, ok := h.requireOrgProviderAccess(w, r, true /* mutating */)
+	tc, ok := h.requireOrgProviderAccess(w, r, true /* mutating */)
 	if !ok {
 		return
 	}
@@ -445,7 +674,7 @@ func (h *Handler) deleteOrgProvider(w http.ResponseWriter, r *http.Request) {
 		writeError(w, newValidationError("provider name is required"))
 		return
 	}
-	if err := h.mgr.orgProviders.DeleteOrgProviderWorkspace(r.Context(), orgUUID, name); err != nil {
+	if err := h.mgr.orgProviders.DeleteOrgProviderWorkspace(r.Context(), tc.OrgUUID, name); err != nil {
 		if apierrors.IsNotFound(err) {
 			w.WriteHeader(http.StatusNoContent)
 			return

@@ -127,6 +127,14 @@ type WorkspaceOps interface {
 	// without 403'ing through the kcp user-proxy.
 	ListProviderAPIBindings(ctx context.Context, orgUUID, wsUUID string) (map[string]kcp.ProviderBinding, error)
 
+	// StaleClaimIdentities reports, per provider bound in the workspace, any
+	// permission claim still pinned to a different copy of a dependency than
+	// the workspace binds — the state every dependent lands in when a provider
+	// is swapped for a self-hosted one. kcp reports those bindings as healthy
+	// while serving none of the claimed resources, so the portal warning fed
+	// by this is the only sign before a downstream 404.
+	StaleClaimIdentities(ctx context.Context, orgUUID, wsUUID string) (map[string][]kcp.ClaimIdentityMismatch, error)
+
 	// DeleteProviderAPIBinding removes a provider APIBinding from the
 	// target workspace. Used by the POST .../providers/{name}/disable
 	// handler. NotFound is a no-op.
@@ -300,6 +308,10 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	// paths are distinct), but note these are org-scoped, NOT workspace-scoped:
 	// a provider belongs to the Org, while Enable belongs to one Workspace.
 	r.HandleFunc("/{org}/providers", h.listOrgProviders).Methods(http.MethodGet)
+	// Registered ahead of the {name} routes: "install-targets" is a literal
+	// sibling of a provider name, and this keeps it that way if a GET
+	// /{org}/providers/{name} is ever added.
+	r.HandleFunc("/{org}/providers/install-targets", h.listOrgProviderInstallTargets).Methods(http.MethodGet)
 	r.HandleFunc("/{org}/providers", h.registerOrgProvider).Methods(http.MethodPost)
 	r.HandleFunc("/{org}/providers/{name}", h.deleteOrgProvider).Methods(http.MethodDelete)
 	r.HandleFunc("/{org}/providers/{name}/kubeconfig", h.getOrgProviderKubeconfig).Methods(http.MethodGet)

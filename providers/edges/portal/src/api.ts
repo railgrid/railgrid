@@ -618,7 +618,11 @@ export async function deployMarketplaceApp(opts: {
         repoURL: opts.chart.repoURL,
         chart: opts.chart.chart,
         version: opts.chart.version,
-        ...(opts.values ? { values: opts.values } : {}),
+        // The gateway types spec.helm.values as the JSONString scalar: it
+        // validates a STRING and json-decodes it server-side, so a nested
+        // object is rejected before the resolver runs. Encode here; the
+        // stored Workload still carries the real object.
+        ...(opts.values ? { values: JSON.stringify(opts.values) } : {}),
       },
       placement: {
         strategy: 'Singleton',

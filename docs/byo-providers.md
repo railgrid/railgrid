@@ -8,6 +8,12 @@ own Kubernetes cluster, reached over an edge — and have it appear in that
 organization's provider catalog alongside the platform ones. Its Workspaces
 Enable it through the ordinary Enable flow.
 
+> **How the hub reaches an org-owned provider's backend** is a separate design:
+> [byo-provider-edge-transport.md](./byo-provider-edge-transport.md). It makes
+> the edge tunnel the transport (the hub cannot dial into a tenant cluster) and
+> makes a connected edge a **precondition of registration**, so an install that
+> could not work is refused before a credential is minted.
+
 ## Relationship to provider-scoping.md
 
 [provider-scoping.md](./provider-scoping.md) pinned decisions for org-scoped
@@ -481,11 +487,16 @@ in URL paths.
   falls back to its generic glyph). API-only org providers — the common case —
   are unaffected: `EndpointsValid` now accepts an APIExport alone as "this
   provider offers something", which opens no route since the proxies
-  independently 404 when the URLs are nil.
+  independently 404 when the URLs are nil. Closing this is the subject of
+  [byo-provider-edge-transport.md](./byo-provider-edge-transport.md), whose
+  phase 2 routes both proxies over the edge tunnel.
 - **No edge-driven install.** The Org installs the chart itself with the returned
   kubeconfig. One-click install onto a chosen edge needs credential projection
   into the edge cluster (the agent's `Placement` plane ships no kcp credential
-  today) and is the natural next increment.
+  today) and is the natural next increment. Registration does now *require* a
+  named, connected edge — see
+  [byo-provider-edge-transport.md](./byo-provider-edge-transport.md) E-2 — so
+  the target is known; only the credential projection is missing.
 - **The `bind` verb is not org-scoped.** The provider's own `init` runs
   `provider-sdk/install`'s `ApplyBindGrant`, which grants `bind` on the APIExport
   to the group `system:authenticated` — platform-wide. Discovery and the

@@ -16,7 +16,10 @@ limitations under the License.
 
 package tunnel
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+)
 
 // newServiceView builds a serviceView the way fetchService would decode one.
 func newServiceView(kind, edge, ns, svcName string, port int32) *serviceView {
@@ -147,6 +150,54 @@ func TestParseServicePath(t *testing.T) {
 			if cluster != tc.cluster || name != tc.obj || sub != tc.subresource || rest != tc.wantR {
 				t.Fatalf("parseServicePath(%q) = (%q,%q,%q,%q), want (%q,%q,%q,%q)",
 					tc.path, cluster, name, sub, rest, tc.cluster, tc.obj, tc.subresource, tc.wantR)
+			}
+		})
+	}
+}
+
+// The default must stay "secret": every Service written before spec.auth
+// existed has an empty value, and reading that as passthrough would forward
+// tenant hub tokens to appliances that never expected one.
+func TestServiceViewAuthModeDefaults(t *testing.T) {
+	for _, tc := range []struct{ spec, want string }{
+		{"", serviceAuthSecret},
+		{"secret", serviceAuthSecret},
+		{"passthrough", serviceAuthPassthrough},
+		{"none", serviceAuthNone},
+		{"nonsense", serviceAuthSecret},
+	} {
+		v := &serviceView{}
+		v.Spec.Auth = tc.spec
+		if got := v.authMode(); got != tc.want {
+			t.Errorf("authMode(%q) = %q, want %q", tc.spec, got, tc.want)
+		}
+	}
+}
+
+// applyServiceAuth decides what the upstream behind the tunnel sees. The
+// passthrough case is the one that matters for a self-hosted provider backend:
+// its whole authorization model is the caller's own bearer, so substituting a
+// shared token would collapse per-user RBAC.
+func TestApplyServiceAuth(t *testing.T) {
+	const caller = "Bearer caller-token"
+	for _, tc := range []struct {
+		name  string
+		mode  string
+		token string
+		want  string
+	}{
+		{"passthrough keeps the caller's credential", serviceAuthPassthrough, "", caller},
+		{"passthrough ignores any service token", serviceAuthPassthrough, "svc-token", caller},
+		{"secret substitutes the service token", serviceAuthSecret, "svc-token", "Bearer svc-token"},
+		{"secret with no token strips rather than leaking the caller's", serviceAuthSecret, "", ""},
+		{"none strips", serviceAuthNone, "svc-token", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := http.Header{}
+			h.Set("Authorization", caller)
+			applyServiceAuth(h, tc.mode, tc.token)
+			if got := h.Get("Authorization"); got != tc.want {
+				t.Fatalf("Authorization = %q, want %q", got, tc.want)
 			}
 		})
 	}

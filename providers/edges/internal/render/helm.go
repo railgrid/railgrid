@@ -19,6 +19,7 @@ package render
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -88,11 +89,25 @@ func renderHelm(ctx context.Context, vw *edgesv1alpha1.Workload) ([]*unstructure
 	return splitManifests(rel.Manifest)
 }
 
-// fetchChart downloads a chart archive from "<repoURL>/<name>-<version>.tgz".
-// Classic http chart repos (grafana, prometheus-community, portainer, …) serve
-// this predictable path, which lets us skip repo-index machinery.
+// errChartNotInIndex marks a repo whose index parsed fine but does not carry
+// the requested chart@version — retrying a guessed URL cannot fix that, so the
+// caller surfaces it instead of falling back.
+var errChartNotInIndex = errors.New("chart not present in repo index")
+
+// fetchChart resolves the archive URL through the repo's index.yaml — the only
+// location a helm http repo actually guarantees. The big public repos
+// (grafana, prometheus-community, k8s-at-home, gabe565, jellyfin) all host
+// their tarballs on GitHub releases, so the once-assumed
+// "<repoURL>/<name>-<version>.tgz" is a 404 there. That guessed path survives
+// only as a fallback for repos without a readable index.
 func fetchChart(ctx context.Context, repoURL, name, version string) (*chart.Chart, error) {
-	url := strings.TrimRight(repoURL, "/") + "/" + name + "-" + version + ".tgz"
+	url, err := resolveChartURL(ctx, repoURL, name, version)
+	if err != nil {
+		if errors.Is(err, errChartNotInIndex) {
+			return nil, err
+		}
+		url = strings.TrimRight(repoURL, "/") + "/" + name + "-" + version + ".tgz"
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -109,6 +124,49 @@ func fetchChart(ctx context.Context, repoURL, name, version string) (*chart.Char
 	}
 	// Guard against a runaway download (charts are small; cap at 50MiB).
 	return loader.LoadArchive(io.LimitReader(resp.Body, 50<<20))
+}
+
+// resolveChartURL finds the archive URL for chart@version in the repo's
+// index.yaml. Relative entry URLs resolve against the repo root.
+func resolveChartURL(ctx context.Context, repoURL, name, version string) (string, error) {
+	idxURL := strings.TrimRight(repoURL, "/") + "/index.yaml"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, idxURL, nil)
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GET %s: %s", idxURL, resp.Status)
+	}
+	// Indexes of the large community repos run to tens of MiB; cap at 100MiB.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 100<<20))
+	if err != nil {
+		return "", err
+	}
+	var idx struct {
+		Entries map[string][]struct {
+			Version string   `json:"version"`
+			URLs    []string `json:"urls"`
+		} `json:"entries"`
+	}
+	if err := yaml.Unmarshal(body, &idx); err != nil {
+		return "", fmt.Errorf("parsing %s: %w", idxURL, err)
+	}
+	for _, e := range idx.Entries[name] {
+		if e.Version == version && len(e.URLs) > 0 {
+			u := e.URLs[0]
+			if strings.Contains(u, "://") {
+				return u, nil
+			}
+			return strings.TrimRight(repoURL, "/") + "/" + strings.TrimLeft(u, "/"), nil
+		}
+	}
+	return "", fmt.Errorf("%s-%s in %s: %w", name, version, idxURL, errChartNotInIndex)
 }
 
 // splitManifests parses helm's rendered multi-document YAML into objects,

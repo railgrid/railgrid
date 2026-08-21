@@ -95,8 +95,9 @@ type WorkloadSpec struct {
 // resulting manifests, so chart fetching stays hub-side.
 type HelmWorkloadSpec struct {
 	// RepoURL is the chart repository base URL, e.g.
-	// "https://grafana.github.io/helm-charts". The provider fetches the chart
-	// archive as "<repoURL>/<chart>-<version>.tgz".
+	// "https://grafana.github.io/helm-charts". The provider resolves the
+	// archive through the repo's index.yaml (falling back to
+	// "<repoURL>/<chart>-<version>.tgz" for repos without a readable index).
 	// +kubebuilder:validation:MinLength=1
 	RepoURL string `json:"repoURL"`
 	// Chart is the chart name within the repository.
