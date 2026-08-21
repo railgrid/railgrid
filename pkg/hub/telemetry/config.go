@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 var installationIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -91,15 +92,17 @@ func (c Config) validate() error {
 	if c.Mode == ModeOff {
 		return nil
 	}
-	if strings.TrimSpace(c.SinkToken) == "" || strings.TrimSpace(c.HMACSecret) == "" || strings.TrimSpace(c.InstallationID) == "" {
+	sinkToken := strings.TrimSpace(c.SinkToken)
+	hmacSecret := strings.TrimSpace(c.HMACSecret)
+	if sinkToken == "" || hmacSecret == "" || strings.TrimSpace(c.InstallationID) == "" {
 		return fmt.Errorf("saas mode requires sink token, HMAC secret, and installation ID: %w", ErrInvalidConfig)
 	}
-	if !installationIDPattern.MatchString(c.InstallationID) || strings.ContainsAny(c.SinkToken, "\r\n") {
-		return fmt.Errorf("installation ID or sink token is invalid: %w", ErrInvalidConfig)
+	if len(sinkToken) < 16 || len(hmacSecret) < 32 || containsSpaceOrControl(sinkToken) || containsSpaceOrControl(hmacSecret) || !installationIDPattern.MatchString(c.InstallationID) {
+		return fmt.Errorf("installation ID, sink token, or HMAC secret is invalid: %w", ErrInvalidConfig)
 	}
 	u, err := url.Parse(strings.TrimSpace(c.Endpoint))
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil {
-		return fmt.Errorf("saas mode requires an HTTP(S) receiver endpoint: %w", ErrInvalidConfig)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("saas mode requires an HTTPS receiver endpoint without credentials, query, or fragment: %w", ErrInvalidConfig)
 	}
 	if c.QueueSize < 1 || c.QueueSize > 65536 || c.BatchSize < 1 || c.BatchSize > 1000 || c.BatchSize > c.QueueSize || c.MaxRequestBytes < 1024 || c.MaxRequestBytes > 1024*1024 {
 		return fmt.Errorf("queue, batch, or request bounds are invalid: %w", ErrInvalidConfig)
@@ -113,4 +116,8 @@ func (c Config) validate() error {
 		return fmt.Errorf("max retries must be 1..10: %w", ErrInvalidConfig)
 	}
 	return nil
+}
+
+func containsSpaceOrControl(value string) bool {
+	return strings.IndexFunc(value, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0
 }

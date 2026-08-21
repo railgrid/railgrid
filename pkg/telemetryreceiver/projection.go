@@ -86,6 +86,12 @@ func BuildProjectionPlan(metrics []catalog.MetricDefinition) (ProjectionPlan, er
 }
 
 func (p ProjectionPlan) Project(event Event) ([]Projection, error) {
+	// Aggregate by receiver time, not caller-controlled occurrence time. The
+	// latter remains available in the bounded raw row for debugging, but must
+	// not let a compromised sender backdate or future-date retained metrics.
+	if event.ReceivedAt.IsZero() {
+		return nil, fmt.Errorf("projection received_at is required")
+	}
 	rules := p.rulesByEvent[event.Type]
 	result := make([]Projection, 0, len(rules))
 	for _, rule := range rules {
@@ -104,7 +110,7 @@ func (p ProjectionPlan) Project(event Event) ([]Projection, error) {
 		if err != nil {
 			return nil, err
 		}
-		projection := Projection{BucketStart: event.Time.UTC().Format("2006-01-02"), MetricKey: rule.MetricKey, MetricKind: rule.MetricKind, FunnelStep: rule.FunnelStep, StepOrder: rule.StepOrder, WindowDays: rule.WindowDays, Labels: encoded, LabelsKey: string(encoded), UniqueKind: rule.Unique}
+		projection := Projection{BucketStart: event.ReceivedAt.UTC().Format("2006-01-02"), MetricKey: rule.MetricKey, MetricKind: rule.MetricKind, FunnelStep: rule.FunnelStep, StepOrder: rule.StepOrder, WindowDays: rule.WindowDays, Labels: encoded, LabelsKey: string(encoded), UniqueKind: rule.Unique}
 		if rule.Unique != "" {
 			projection.UniqueHash = event.Record.Identifiers[rule.Unique]
 			if !identifierHashPattern.MatchString(projection.UniqueHash) {

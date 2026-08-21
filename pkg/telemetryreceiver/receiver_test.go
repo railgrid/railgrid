@@ -71,7 +71,7 @@ func batchRequest(t *testing.T, path, token string, events ...cloudevents.Event)
 func testServer(t *testing.T) (*Server, *MemoryStore) {
 	t.Helper()
 	store := NewMemoryStore()
-	server, err := NewServer(store, Config{IngestToken: "ingest-secret", AdminToken: "admin-secret"})
+	server, err := NewServer(store, Config{IngestToken: "ingest-secret-000", AdminToken: "admin-secret-0000"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestIngestAuthDuplicateAndMetrics(t *testing.T) {
 
 	for i := 0; i < 2; i++ {
 		response = httptest.NewRecorder()
-		handler.ServeHTTP(response, batchRequest(t, "/v1/events", "ingest-secret", event))
+		handler.ServeHTTP(response, batchRequest(t, "/v1/events", "ingest-secret-000", event))
 		if response.Code != http.StatusAccepted {
 			t.Fatalf("ingest status = %d, want %d", response.Code, http.StatusAccepted)
 		}
@@ -264,8 +264,8 @@ func TestIngestAuthDuplicateAndMetrics(t *testing.T) {
 		t.Fatalf("counts = raw %d aggregate %d, want 1 and 1", raw, aggregate)
 	}
 	metricAggregates, uniques := store.ProjectionCounts()
-	if metricAggregates != 2 || uniques != 2 {
-		t.Fatalf("metric duplicate counts = %d aggregates and %d uniques, want 2 and 2", metricAggregates, uniques)
+	if metricAggregates != 1 || uniques != 1 {
+		t.Fatalf("metric duplicate counts = %d aggregates and %d uniques, want 1 and 1", metricAggregates, uniques)
 	}
 
 	metrics := httptest.NewRecorder()
@@ -276,9 +276,22 @@ func TestIngestAuthDuplicateAndMetrics(t *testing.T) {
 }
 
 func TestNewServerRejectsIdenticalCredentials(t *testing.T) {
-	_, err := NewServer(NewMemoryStore(), Config{IngestToken: "same-secret", AdminToken: "same-secret"})
+	_, err := NewServer(NewMemoryStore(), Config{IngestToken: "same-secret-0000", AdminToken: "same-secret-0000"})
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("NewServer() error = %v, want ErrInvalidConfig", err)
+	}
+}
+
+func TestNewServerRejectsWeakOrWhitespaceCredentials(t *testing.T) {
+	for _, cfg := range []Config{
+		{IngestToken: "short", AdminToken: "admin-secret-0000"},
+		{IngestToken: "ingest-secret-000", AdminToken: "short"},
+		{IngestToken: "ingest secret-000", AdminToken: "admin-secret-0000"},
+		{IngestToken: "ingest-secret-000", AdminToken: "admin-secret-000\n"},
+	} {
+		if _, err := NewServer(NewMemoryStore(), cfg); !errors.Is(err, ErrInvalidConfig) {
+			t.Fatalf("NewServer(%+v) error = %v, want ErrInvalidConfig", cfg, err)
+		}
 	}
 }
 
@@ -286,14 +299,14 @@ func TestErasureIsIdempotentAndRetainsAggregates(t *testing.T) {
 	server, store := testServer(t)
 	handler := server.Handler()
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, batchRequest(t, "/v1/events", "ingest-secret", testEvent("event-1", "tenant-a"), testEvent("event-2", "tenant-b")))
+	handler.ServeHTTP(response, batchRequest(t, "/v1/events", "ingest-secret-000", testEvent("event-1", "tenant-a"), testEvent("event-2", "tenant-b")))
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("ingest status = %d", response.Code)
 	}
 
 	body := `{"request_id":"erase-1","tenant_id":"tenant-a"}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(body))
-	request.Header.Set("Authorization", "Bearer admin-secret")
+	request.Header.Set("Authorization", "Bearer admin-secret-0000")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted {
@@ -305,19 +318,19 @@ func TestErasureIsIdempotentAndRetainsAggregates(t *testing.T) {
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(body))
-	request.Header.Set("Authorization", "Bearer admin-secret")
+	request.Header.Set("Authorization", "Bearer admin-secret-0000")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	var result ErasureResult
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
-	if !result.Existing || result.DeletedRaw != 3 {
+	if !result.Existing || result.DeletedRaw != 2 {
 		t.Fatalf("repeat erasure result = %+v", result)
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(`{"request_id":"erase-1","tenant_id":"tenant-b"}`))
-	request.Header.Set("Authorization", "Bearer admin-secret")
+	request.Header.Set("Authorization", "Bearer admin-secret-0000")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusConflict {
@@ -325,7 +338,7 @@ func TestErasureIsIdempotentAndRetainsAggregates(t *testing.T) {
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(body+`{"unexpected":true}`))
-	request.Header.Set("Authorization", "Bearer admin-secret")
+	request.Header.Set("Authorization", "Bearer admin-secret-0000")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
@@ -333,7 +346,7 @@ func TestErasureIsIdempotentAndRetainsAggregates(t *testing.T) {
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(body+strings.Repeat(" ", 64*1024)))
-	request.Header.Set("Authorization", "Bearer admin-secret")
+	request.Header.Set("Authorization", "Bearer admin-secret-0000")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
@@ -341,7 +354,7 @@ func TestErasureIsIdempotentAndRetainsAggregates(t *testing.T) {
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(`{"request_id":"erase-space","tenant_id":"  tenant-b  "}`))
-	request.Header.Set("Authorization", "Bearer admin-secret")
+	request.Header.Set("Authorization", "Bearer admin-secret-0000")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted {

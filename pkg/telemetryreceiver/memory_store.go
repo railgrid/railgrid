@@ -92,6 +92,9 @@ func (s *MemoryStore) Insert(_ context.Context, events []Event) (IngestStats, er
 			return IngestStats{}, fmt.Errorf("%w: event type %q is not declared", ErrInvalidEvent, normalizedEvents[i].Type)
 		}
 		normalizedEvents[i].Type = typeName
+		if normalizedEvents[i].ReceivedAt.IsZero() {
+			normalizedEvents[i].ReceivedAt = time.Now().UTC()
+		}
 		projections, err := s.plan.Project(normalizedEvents[i])
 		if err != nil {
 			return IngestStats{}, fmt.Errorf("project telemetry event: %w", err)

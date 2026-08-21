@@ -36,6 +36,7 @@ func TestGeneratedProjectionPlanIsDeterministicAndAppliesFiltersLabelsUnique(t *
 		t.Fatal("generated projection plan is not deterministic")
 	}
 	event := receiverTestEvent(generated.ActionEdgeFirstReady, "tenant-a", time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC), map[string]interface{}{"edge_type": "linux_server", "outcome": "ready"})
+	event.ReceivedAt = time.Date(2026, 8, 22, 1, 0, 0, 0, time.UTC)
 	projections, err := first.Project(event)
 	if err != nil {
 		t.Fatal(err)
@@ -43,19 +44,23 @@ func TestGeneratedProjectionPlanIsDeterministicAndAppliesFiltersLabelsUnique(t *
 	if len(projections) != 2 {
 		t.Fatalf("ready projections = %d, want counter and funnel", len(projections))
 	}
-	if projections[0].MetricKey != "activation_funnel" || projections[0].FunnelStep != generated.ActionEdgeFirstReady || projections[0].UniqueKind != "org" {
+	if projections[0].BucketStart != "2026-08-22" {
+		t.Fatalf("bucket = %q, want trusted receiver date", projections[0].BucketStart)
+	}
+	if projections[0].MetricKey != "activation_funnel" || projections[0].FunnelStep != generated.ActionEdgeFirstReady || projections[0].UniqueKind != "workspace" {
 		t.Fatalf("funnel projection = %+v", projections[0])
 	}
 	if projections[1].MetricKey != "edge_first_ready_total" || string(projections[1].Labels) != `{"edge_type":"linux_server","outcome":"ready"}` || projections[1].UniqueKind != "workspace" {
 		t.Fatalf("counter projection = %+v", projections[1])
 	}
-	event.Record.Properties["outcome"] = "failed"
-	projections, err = first.Project(event)
+	promoted := receiverTestEvent(generated.ActionAppStudioProjectPublished, "tenant-a", event.Time, map[string]interface{}{"outcome": "promoted"})
+	promoted.ReceivedAt = event.ReceivedAt
+	projections, err = first.Project(promoted)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(projections) != 1 || projections[0].MetricKey != "edge_first_ready_total" {
-		t.Fatalf("failed projections = %+v, want counter only", projections)
+	if len(projections) != 1 || projections[0].MetricKey != "app_studio_project_published_total" {
+		t.Fatalf("filter-mismatch projections = %+v, want counter only", projections)
 	}
 }
 
@@ -87,14 +92,14 @@ func TestMemoryProjectionDedupErasureAndRetention(t *testing.T) {
 		t.Fatalf("insert = %+v, %v", stats, err)
 	}
 	aggregates, uniques := store.ProjectionCounts()
-	if aggregates != 2 || uniques != 2 { // counter and activation funnel each deduplicate independently
-		t.Fatalf("projection counts = %d aggregates, %d uniques, want 2 and 2", aggregates, uniques)
+	if aggregates != 1 || uniques != 1 {
+		t.Fatalf("projection counts = %d aggregates, %d uniques, want 1 and 1", aggregates, uniques)
 	}
 	if _, err := store.EraseTenant(nil, ErasureRequest{RequestID: "erase", TenantID: "tenant-a"}); err != nil {
 		t.Fatal(err)
 	}
 	aggregates, uniques = store.ProjectionCounts()
-	if aggregates != 2 || uniques != 0 {
+	if aggregates != 1 || uniques != 0 {
 		t.Fatalf("after erasure = %d aggregates, %d uniques", aggregates, uniques)
 	}
 
@@ -106,7 +111,7 @@ func TestMemoryProjectionDedupErasureAndRetention(t *testing.T) {
 		t.Fatal(err)
 	}
 	aggregates, uniques = store.ProjectionCounts()
-	if aggregates != 4 || uniques != 0 {
+	if aggregates != 2 || uniques != 0 {
 		t.Fatalf("after raw purge = %d aggregates, %d uniques", aggregates, uniques)
 	}
 }

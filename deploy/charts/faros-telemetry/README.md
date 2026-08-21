@@ -8,8 +8,10 @@ create a database or a Kubernetes PVC.
 Create three Secret keys before installing:
 
 * `database-url`: PostgreSQL URL for the receiver database.
-* `ingest-token`: bearer token accepted by `POST /v1/events`.
-* `admin-token`: separate bearer token accepted by `POST /v1/erasure`.
+* `ingest-token`: bearer token accepted by `POST /v1/events` (minimum 16
+  non-whitespace characters).
+* `admin-token`: a distinct bearer token accepted by `POST /v1/erasure`
+  (minimum 16 non-whitespace characters).
 
 For example, with a Secret named `faros-telemetry-secrets`:
 

@@ -80,6 +80,7 @@ func (s *PostgresStore) Insert(ctx context.Context, events []Event) (IngestStats
 		if receivedAt.IsZero() {
 			receivedAt = time.Now().UTC()
 		}
+		event.ReceivedAt = receivedAt
 		result, err := tx.Exec(ctx, `
 			INSERT INTO faros_telemetry_events
 				(tenant_id, source, event_id, event_type, subject, event_time, received_at, data_content_type, data)

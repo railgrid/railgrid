@@ -32,7 +32,7 @@ import (
 )
 
 func enabledConfig() Config {
-	return Config{Mode: ModeSaaS, Endpoint: "https://receiver.example/v1/events", SinkToken: "sink", HMACSecret: "a-real-secret", InstallationID: "install-1", QueueSize: 8, BatchSize: 2, FlushInterval: 30 * time.Second, EnqueueTimeout: 5 * time.Millisecond, SendTimeout: time.Second, ShutdownTimeout: time.Second, MaxRequestBytes: 4096, MaxRetries: 2, InitialBackoff: time.Millisecond}
+	return Config{Mode: ModeSaaS, Endpoint: "https://receiver.example/v1/events", SinkToken: "0123456789abcdef", HMACSecret: "0123456789abcdef0123456789abcdef", InstallationID: "install-1", QueueSize: 8, BatchSize: 2, FlushInterval: 30 * time.Second, EnqueueTimeout: 5 * time.Millisecond, SendTimeout: time.Second, ShutdownTimeout: time.Second, MaxRequestBytes: 4096, MaxRetries: 2, InitialBackoff: time.Millisecond}
 }
 
 func agentEvent() Event {
@@ -95,7 +95,7 @@ func TestDefaultOffCreatesNoNetworkActivity(t *testing.T) {
 }
 
 func TestSaaSConfigRequiresAllSecretsAndBounds(t *testing.T) {
-	for _, mutate := range []func(*Config){func(c *Config) { c.Endpoint = "" }, func(c *Config) { c.SinkToken = "" }, func(c *Config) { c.HMACSecret = "" }, func(c *Config) { c.InstallationID = "" }, func(c *Config) { c.InstallationID = "not/a/source" }, func(c *Config) { c.BatchSize = 9; c.QueueSize = 8 }} {
+	for _, mutate := range []func(*Config){func(c *Config) { c.Endpoint = "" }, func(c *Config) { c.Endpoint = "http://receiver.example/v1/events" }, func(c *Config) { c.Endpoint += "?token=bad" }, func(c *Config) { c.SinkToken = "short" }, func(c *Config) { c.SinkToken = "0123456789abcde " }, func(c *Config) { c.HMACSecret = "short" }, func(c *Config) { c.HMACSecret = "0123456789abcdef0123456789abcde\n" }, func(c *Config) { c.InstallationID = "" }, func(c *Config) { c.InstallationID = "not/a/source" }, func(c *Config) { c.BatchSize = 9; c.QueueSize = 8 }} {
 		cfg := enabledConfig()
 		mutate(&cfg)
 		if _, err := NewRuntime(cfg, prometheus.NewRegistry()); !errors.Is(err, ErrInvalidConfig) {

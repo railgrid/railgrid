@@ -48,18 +48,18 @@ Product telemetry defaults to `off`: the hub creates no telemetry worker and mak
 
 ```bash
 kubectl -n faros create secret generic faros-telemetry \
-  --from-literal=sink-token='receiver-bearer-token' \
+  --from-literal=sink-token="$(openssl rand -hex 32)" \
   --from-literal=hmac-secret="$(openssl rand -hex 32)"
 ```
 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `telemetry.mode` | `off` | `off` or explicit `saas` opt-in |
-| `telemetry.endpoint` | `""` | Receiver CloudEvents batch endpoint, normally ending in `/v1/events` |
+| `telemetry.endpoint` | `""` | HTTPS receiver CloudEvents batch endpoint, normally ending in `/v1/events`; credentials, query strings, and fragments are rejected |
 | `telemetry.installationID` | `""` | Stable opaque installation identifier; required in SaaS mode |
 | `telemetry.existingSecret` | `""` | Existing Secret containing the sink bearer and HMAC key; required in SaaS mode |
-| `telemetry.sinkTokenKey` | `sink-token` | Sink bearer key in the existing Secret |
-| `telemetry.hmacSecretKey` | `hmac-secret` | Identifier HMAC key in the existing Secret |
+| `telemetry.sinkTokenKey` | `sink-token` | Sink bearer key in the existing Secret; minimum 16 characters |
+| `telemetry.hmacSecretKey` | `hmac-secret` | Identifier HMAC key in the existing Secret; minimum 32 characters |
 | `telemetry.queueSize` | `1024` | Bounded in-memory event queue |
 | `telemetry.batchSize` | `100` | Maximum events per CloudEvents batch |
 | `telemetry.flushInterval` | `2s` | Maximum batch delay |

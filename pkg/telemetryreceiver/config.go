@@ -16,7 +16,9 @@ package telemetryreceiver
 
 import (
 	"log/slog"
+	"strings"
 	"time"
+	"unicode"
 )
 
 type Config struct {
@@ -41,10 +43,14 @@ func (c Config) withDefaults() Config {
 }
 
 func (c Config) validate() error {
-	if c.IngestToken == "" || c.AdminToken == "" || c.IngestToken == c.AdminToken || c.MaxBatchEvents <= 0 || c.MaxEventBytes <= 0 {
+	if len(c.IngestToken) < 16 || len(c.AdminToken) < 16 || c.IngestToken == c.AdminToken || tokenHasSpaceOrControl(c.IngestToken) || tokenHasSpaceOrControl(c.AdminToken) || c.MaxBatchEvents <= 0 || c.MaxEventBytes <= 0 {
 		return ErrInvalidConfig
 	}
 	return nil
+}
+
+func tokenHasSpaceOrControl(value string) bool {
+	return strings.IndexFunc(value, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0
 }
 
 func validateRetention(raw, aggregate, interval time.Duration) error {
