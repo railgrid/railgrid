@@ -11,10 +11,8 @@ You may obtain a copy of the License at
 // Package scaffold fetches a template's starter code and lays it into a
 // project workspace. A dev-capable Template pins a tag-locked scaffold repo
 // (spec.development.scaffold {repository, ref}); its tree IS the workspace
-// layout (web/, api/ …), so paths land verbatim. This is what makes a new
-// project open on a runnable placeholder instead of an empty directory —
-// the wizard-first flow vibe-studio proved (its provision/scaffold.go was
-// itself ported from app-studio; this brings it back).
+// layout (web/, api/ …), so paths land verbatim. This makes a new project open
+// on a runnable placeholder instead of an empty directory.
 package scaffold
 
 import (

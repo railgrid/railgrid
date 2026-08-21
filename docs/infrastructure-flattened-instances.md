@@ -22,8 +22,8 @@ Which product an `Instance` is rides in `spec.template` (data), not in its
 GroupVersionKind. Adding a Template to the catalog therefore never changes
 the API surface, the APIExport's resource list, the bind grant, or any
 consumer's permission claims — the reason the per-template kinds were
-retired: every new product required a claims/binding upgrade across
-vibe-studio, app-studio, and every chart that enumerated plurals.
+retired: every new product required a claims/binding upgrade across App Studio
+and every chart that enumerated plurals.
 
 ```yaml
 apiVersion: infrastructure.faros.sh/v1alpha1

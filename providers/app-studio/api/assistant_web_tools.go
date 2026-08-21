@@ -8,8 +8,7 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Web tools for assistant turns: search, and reading a page. Ported from
-// vibe-studio's webtools package (itself ported from the agents provider).
+// Web tools for assistant turns: search and reading a page.
 //
 // The SSRF posture: a URL the MODEL chose must never reach an internal
 // address, because a prompt injection would otherwise turn the provider into

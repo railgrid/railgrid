@@ -332,7 +332,6 @@ All nine, each embedding its own chart values reference:
 | `databricks` | none |
 | `kuery` | none — the edges identity hash is resolved |
 | `app-studio` | none — infrastructure + code identity hashes are resolved |
-| `vibe-studio` | none — infrastructure + code identity hashes are resolved |
 | `agents` | `store.databaseURLSecretRef.name` — Postgres is its only hard dependency, and the hub cannot invent your database |
 
 Identity hashes are declared with `identityFor` rather than as literals, so the

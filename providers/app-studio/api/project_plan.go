@@ -19,8 +19,8 @@ import (
 // user's intake prompt and returns what a project would be — a proposed name,
 // the recommended development template, and whether that template attaches a
 // scaffold — WITHOUT creating anything. The portal shows this as a confirm
-// step ("we'll build <name> on <template>, starting from its starter code"),
-// mirroring vibe-studio's wizard-first blueprint→approval flow. Creation then
+// step ("we'll build <name> on <template>, starting from its starter code").
+// Creation then
 // posts to /api/projects with the confirmed template.
 
 // ProjectPlanRequest is the wizard intake.

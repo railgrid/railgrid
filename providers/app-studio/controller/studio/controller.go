@@ -15,8 +15,7 @@ You may obtain a copy of the License at
 //
 // The Studio owns its instances: deleting the Studio (or disabling a
 // service) tears them down through the finalizer, the same shape the Project
-// reconciler uses for a project's own runtime. Ported from
-// providers/vibe-studio/controller/studio.
+// reconciler uses for a project's own runtime.
 package studio
 
 import (

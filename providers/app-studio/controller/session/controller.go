@@ -9,8 +9,7 @@ You may obtain a copy of the License at
 */
 
 // Package session reconciles Session CRs — the control-plane projection of
-// assistant conversation threads. Two jobs, both deterministic (the same
-// shape vibe-studio's session reconciler proved):
+// assistant conversation threads. It has two deterministic jobs:
 //
 //  1. Status mirror: project the store's thread + active turn into
 //     Session.status, so `kubectl get sessions.ai` tells the truth without

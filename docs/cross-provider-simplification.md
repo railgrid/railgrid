@@ -16,7 +16,7 @@
 
 **Where we are:** a full audit of every cross-provider access channel in the
 tree (branch `provider-actions`, PR #499 included) is complete. Roughly **40
-distinct channels** exist, reducible to **eight mechanisms**, **four separate
+distinct channels** exist, reducible to **eight mechanisms**, **three separate
 identity-minting implementations**, and **two competing grant systems**. This
 doc records the inventory, the violations found, and the target architecture
 that collapses all of it into **three primitives + one identity service**.
@@ -83,12 +83,12 @@ Compressed here; the full per-channel tables with anchors are in the Appendix.
 |---|---|---|---|---|
 | M1 | Bound CRs via APIBinding (GraphQL gateway or `/clusters/…`) | everyone | caller bearer | kcp RBAC |
 | M2 | Provider SA + APIExportEndpointSlice VW + permission claims | every provider's controllers | provider SA | claims accepted at Enable |
-| M3 | Blanket `secrets` claims used as a credential side-door | app-studio, vibe-studio, code, edges, agents, infrastructure | provider SA | claims only — no owning-provider consent |
-| M4 | Hub backend-proxy data-plane paths (`dataplane/`, `edgeproxy/`, `agent/`, `s2s/`, kuery REST) | app-studio, agents, vibe-studio, kuery, portal | caller bearer | provider-side caller-scoped GET + SSAR |
-| M5 | MCP (hub aggregate + per-provider `/mcp` + controller discovery) | assistants, agents, vibe-studio | caller bearer (unverified at the hub) | each provider independently |
+| M3 | Blanket `secrets` claims used as a credential side-door | app-studio, code, databricks, edges, agents, infrastructure | provider SA | claims only — no owning-provider consent |
+| M4 | Hub backend-proxy data-plane paths (`dataplane/`, `edgeproxy/`, `agent/`, `s2s/`, kuery REST) | app-studio, agents, kuery, portal | caller bearer | provider-side caller-scoped GET + SSAR |
+| M5 | MCP (hub aggregate + per-provider `/mcp` + controller discovery) | assistants, agents | caller bearer (unverified at the hub) | each provider independently |
 | M6 | Provider Actions (PR #499: hub router → `virtualWorkspace.url`, Project grants, workload identity) | app-studio ↔ databricks | caller bearer or workload SA | hub Go authorizer (workload SAs only) |
-| M7 | Cross-provider RBAC authoring (providers minting SAs/ClusterRoles over other providers' groups) | agents, vibe-studio, edges, Enable-time edges-proxy grant | minted SAs (mostly non-expiring) | whoever holds `clusterroles` claims |
-| M8 | String-literal runtime conventions (`<instance>-registry` pull secret, OIDC bridge, shared Gateway) | app-studio, vibe-studio, infrastructure | provider runtime credential | none — the contract is a name |
+| M7 | Cross-provider RBAC authoring (providers minting SAs/ClusterRoles over other providers' groups) | agents, edges, Enable-time edges-proxy grant | minted SAs (mostly non-expiring) | whoever holds `clusterroles` claims |
+| M8 | String-literal runtime conventions (`<instance>-registry` pull secret, OIDC bridge, shared Gateway) | app-studio, infrastructure | provider runtime credential | none — the contract is a name |
 
 M1 and M2 are the healthy core. M4 is sound in shape but has three
 incompatible dialects. M3, M6, M7, M8 are the mechanisms this doc removes or
@@ -100,10 +100,9 @@ absorbs. M5 is kept but demoted to a projection.
 
 ### 2.1 Contract-3 violations, ranked
 
-1. **Foreign credential via the Secrets side-door.** Both vibe-studio
-   ([controller/project/registry.go:70](../providers/vibe-studio/controller/project/registry.go))
-   and app-studio ([api/project_promote.go:47](../providers/app-studio/api/project_promote.go))
-   read the code provider's git PAT out of its `Connection` Secret and re-mint
+1. **Foreign credential via the Secrets side-door.** App Studio
+   ([api/project_promote.go:47](../providers/app-studio/api/project_promote.go))
+   reads the code provider's git PAT out of its `Connection` Secret and re-mints
    it as a registry `dockerconfigjson`. Contract 3 says the owning provider is
    the single holder of its backend credential; code publishes no such API and
    is never consulted. Works only because of M3.
@@ -114,16 +113,13 @@ absorbs. M5 is kept but demoted to a projection.
    instead of reading the `status.URL` the edges provider stamps
    ([engagement/controller.go:363](../providers/kuery/engagement/controller.go),
    [edges/internal/tunnel/edge_status.go:107](../providers/edges/internal/tunnel/edge_status.go)).
-3. **`<instance>-registry` naming convention** couples app-studio,
-   vibe-studio, and infrastructure by a duplicated string literal
-   ([registry.go:50](../providers/vibe-studio/controller/project/registry.go) vs
-   [application/controller.go:118](../providers/infrastructure/controller/application/controller.go)).
-   vibe-studio's own comment admits "the convention is the infrastructure
-   provider's, not ours". No schema, no validation, no versioning.
-4. **Providers authoring RBAC over each other's API groups.** vibe-studio
-   session SAs get standing write on `code.faros.sh/*`
-   ([vibesession/identity.go:78](../providers/vibe-studio/controller/vibesession/identity.go));
-   agents' per-agent SAs get read on the whole `infrastructure.faros.sh`
+3. **`<instance>-registry` naming convention** couples App Studio and
+   infrastructure through a duplicated string literal
+   ([project_promote.go:57](../providers/app-studio/api/project_promote.go) vs
+   [bridge.go:56](../providers/infrastructure/controller/instance/bridge.go)).
+   No schema, no validation, no versioning.
+4. **Providers authoring RBAC over each other's API groups.** Agents'
+   per-agent SAs get read on the whole `infrastructure.faros.sh`
    group with non-expiring tokens
    ([agentidentity.go:61](../providers/agents/api/agentidentity.go)).
 5. **The Enable-time edges-proxy grant** gives a provider SA direct, non-VW
@@ -133,8 +129,7 @@ absorbs. M5 is kept but demoted to a projection.
 6. **Foreign path grammar hardcoded in consumers.** `"infrastructure"` and the
    whole dataplane URL shape are string-built in app-studio
    ([dataplane_client.go:36](../providers/app-studio/api/dataplane_client.go)),
-   agents ([tools/tools.go:143](../providers/agents/tools/tools.go)), and
-   vibe-studio ([provision/client.go:97](../providers/vibe-studio/provision/client.go)).
+   and agents ([tools/tools.go:143](../providers/agents/tools/tools.go)).
    Sanctioned shape, but routed by string, not by binding or status.
 
 ### 2.2 Fail-open hub surfaces
@@ -278,7 +273,7 @@ action handler). All four current M4 dialects migrate onto it.
 one consumer-side package; providers additionally stamp their data-plane
 endpoint into resource `status` (as edges does with `status.URL`) so consumers
 follow the resource, not a memorized path. The hardcoded grammars in
-app-studio, agents, and vibe-studio are replaced by that package.
+app-studio and agents are replaced by that package.
 
 **What P2 keeps from PR #499 unchanged:** the CatalogEntry action schema and
 its fail-closed validation/compilation; the App Studio grant UX and digest
@@ -305,13 +300,12 @@ routing, and the human/workload authorization asymmetry.
 
 ### One identity service
 
-Four identity minters exist today:
+Three identity minters exist today:
 
 | Minter | Scope | TTL | GC |
 |---|---|---|---|
 | Hub workload exchange ([workload_identity.go](../pkg/hub/serviceaccounts/workload_identity.go)) | GET-only, resourceNames-scoped | 10 min | none |
 | Agents per-agent SAs ([agentidentity.go](../providers/agents/api/agentidentity.go)) | read on the whole infra group | **never expires** | manual |
-| vibe-studio session SAs ([vibesession/identity.go](../providers/vibe-studio/controller/vibesession/identity.go)) | write on code's group | never expires | session teardown |
 | edges per-edge SAs ([rbac_reconciler.go](../providers/edges/internal/edgectrl/rbac_reconciler.go)) | proxy on one edge | never expires | edge deletion |
 
 Consolidate into one hub-owned **scoped-identity service** — the PR #499
@@ -381,21 +375,21 @@ dev-mode chain; human-caller enforcement).
 Factor the enforcement kit out of the databricks actions handler + infra
 dataplane handler; migrate edges `edgeproxy/` and agents `s2s/` onto it.
 Introduce the consumer-side grammar package and `status`-stamped endpoints;
-replace the hardcoded paths in app-studio, agents, vibe-studio (X-8). Fix
+replace the hardcoded paths in app-studio and agents (X-8). Fix
 kuery: claim `edges.faros.sh/{kubernetesclusters,linuxservers}`, follow
 `status.URL`, delete the dead `/services/edges-proxy` dial.
 
 **Phase 3 — the identity service.**
 Generalize the workload-identity minter (owner kinds, attestation plug,
-TokenRequest-only, GC controller). Migrate agents, vibe-studio, and edges
+TokenRequest-only, GC controller). Migrate agents and edges
 identity minting onto it; remove their RBAC-authoring claims (X-5). Add GC
 for existing `faros-wi-*` identities.
 
 **Phase 4 — credential APIs replace the Secrets side-door.**
 code provider publishes `RegistryCredential` (CR or declared action);
-app-studio and vibe-studio consume it; infrastructure takes
+app-studio consumes it; infrastructure takes
 `spec.imagePullSecretRef` as a typed input; delete the `<instance>-registry`
-convention and both PAT-reading paths; narrow every provider's `secrets`
+convention and the PAT-reading path; narrow every provider's `secrets`
 claim to owned material (X-4).
 
 **Phase 5 — docs.**
@@ -412,9 +406,9 @@ grammar. Amend [providers.md](./providers.md) decision #6 per X-3. Rewrite
   its human/workload asymmetry.
 - `spec.virtualWorkspace.url` as a dial target, its stale docs, and the
   `/actions` reserved-path machinery.
-- Three of four identity minters and every `clusterroles`/`clusterrolebindings`
+- Two of three identity minters and every `clusterroles`/`clusterrolebindings`
   provider claim.
-- Both git-PAT-reading code paths and the `<instance>-registry` string
+- The git-PAT-reading code path and the `<instance>-registry` string
   convention.
 - kuery's dead edges channel and its dangling claim.
 - Four hand-built foreign-URL grammars in consumer providers.
@@ -424,10 +418,10 @@ grammar. Amend [providers.md](./providers.md) decision #6 per X-3. Rewrite
 ## Appendix — full channel inventory
 
 Identities: **C** = caller bearer, **P** = provider SA, **W** = minted
-workload/agent/session SA, **H** = hub-privileged, **R** = provider's runtime
+workload/agent SA, **H** = hub-privileged, **R** = provider's runtime
 credential, **X** = external credential owned by the tenant connection.
 
-### A. Consumer-side channels (app-studio, agents, vibe-studio)
+### A. Consumer-side channels (app-studio, agents)
 
 | Ch | Source → target | Mechanism | Id | Anchor |
 |---|---|---|---|---|
@@ -447,10 +441,6 @@ credential, **X** = external credential owned by the tenant connection.
 | A14 | agents → aggregate MCP (edges family; interactive only) | M5 | C | [agents.go:661](../providers/agents/api/agents.go) |
 | A15 | agents mints per-agent SA (read on all of infra group, no expiry) | **M7** | P→W | [agentidentity.go:61](../providers/agents/api/agentidentity.go) |
 | A16 | agents inbound s2s (`/s2s/clusters/{c}/agents/{name}/runs`) | M4 | caller SA | [s2s.go:37](../providers/agents/api/s2s.go) |
-| A17 | vibe-studio → infra + code CRs (claims incl. two foreign groups) | M2 | P | [manifest.yaml:29](../providers/vibe-studio/manifest.yaml) |
-| A18 | vibe-studio reads code PAT Secret → registry secret | **M3** | P+claim | [registry.go:70](../providers/vibe-studio/controller/project/registry.go) |
-| A19 | vibe-studio session SA with write on `code.faros.sh/*` | **M7** | P→W | [vibesession/identity.go:78](../providers/vibe-studio/controller/vibesession/identity.go) |
-| A20 | vibe-studio → code MCP via hub aggregate | M5 | C | [codemcp.go:47](../providers/vibe-studio/provision/codemcp.go) |
 
 ### B. Hub-mediated surfaces
 
@@ -476,19 +466,18 @@ credential, **X** = external credential owned by the tenant connection.
 
 | Ch | Channel | Note | Anchor |
 |---|---|---|---|
-| C1 | vibe-studio claims two foreign API groups (infra CRUD, code write) | only provider claiming foreign groups besides kuery | [manifest.yaml:29](../providers/vibe-studio/manifest.yaml) |
-| C2 | kuery claims `faros.sh/edges` | **dangling** — resource no longer exported | [manifest.yaml:52](../providers/kuery/manifest.yaml) |
-| C3 | Six providers hold `secrets` claims (4 with write) | the M3 side-door | providers/*/manifest.yaml |
-| C4 | Edge agent tunnel join/reconnect (join token → per-edge SA, revdial) | healthy M4+identity pattern | [agent_proxy_builder_v2.go:361](../providers/edges/internal/tunnel/agent_proxy_builder_v2.go) |
-| C5 | Edges consumer egress `edgeproxy/…/{k8s\|ssh\|mcp}` (TokenReview+SAR `proxy`) | healthy; stamps `status.URL` for consumers | [auth.go:116](../providers/edges/internal/tunnel/auth.go) |
-| C6 | Edges `svc/` proxy (Service CR + authSecret read as caller; agent host allowlist) | confused-deputy-safe by design | [service_proxy.go:282](../providers/edges/internal/tunnel/service_proxy.go) |
-| C7 | kuery edge sync via `/services/edges-proxy/…` as provider SA | **dead mount + wrong group + hardcoded path** | [engagement/controller.go:363](../providers/kuery/engagement/controller.go) |
-| C8 | kuery query API scoped only by `X-Faros-Tenant` header, no per-object RBAC re-check | read amplification: provider-SA-synced data served on a header check | [queryapi/handler.go:44](../providers/kuery/queryapi/handler.go) |
-| C9 | code → GitHub (Connection token; exclusive holder) | conforming external egress | [tenant/credentials.go:28](../providers/code/tenant/credentials.go) |
-| C10 | infra imagePullSecret bridge (`<instance>-registry` name convention → runtime SA) | **M8** string contract across 3 providers | [application/controller.go:118](../providers/infrastructure/controller/application/controller.go) |
-| C11 | infra OIDC client-secret bridge into runtime namespace | M8, finalizer-guarded | [application/controller.go:122](../providers/infrastructure/controller/application/controller.go) |
-| C12 | infra Gateway/HTTPRoute emission against the shared platform Gateway | M8, RGD-validated | [kro/rgd.go:209](../providers/infrastructure/backend/kro/rgd.go) |
-| C13 | databricks: narrowest posture in the repo (`secrets: [get]`, no foreign consumers beyond actions/MCP) | the model citizen | [manifest.yaml:391](../providers/databricks/manifest.yaml) |
+| C1 | kuery claims `faros.sh/edges` | **dangling** — resource no longer exported | [manifest.yaml:52](../providers/kuery/manifest.yaml) |
+| C2 | Six providers hold `secrets` claims (4 with write) | the M3 side-door | providers/*/manifest.yaml |
+| C3 | Edge agent tunnel join/reconnect (join token → per-edge SA, revdial) | healthy M4+identity pattern | [agent_proxy_builder_v2.go:361](../providers/edges/internal/tunnel/agent_proxy_builder_v2.go) |
+| C4 | Edges consumer egress `edgeproxy/…/{k8s\|ssh\|mcp}` (TokenReview+SAR `proxy`) | healthy; stamps `status.URL` for consumers | [auth.go:116](../providers/edges/internal/tunnel/auth.go) |
+| C5 | Edges `svc/` proxy (Service CR + authSecret read as caller; agent host allowlist) | confused-deputy-safe by design | [service_proxy.go:282](../providers/edges/internal/tunnel/service_proxy.go) |
+| C6 | kuery edge sync via `/services/edges-proxy/…` as provider SA | **dead mount + wrong group + hardcoded path** | [engagement/controller.go:363](../providers/kuery/engagement/controller.go) |
+| C7 | kuery query API scoped only by `X-Faros-Tenant` header, no per-object RBAC re-check | read amplification: provider-SA-synced data served on a header check | [queryapi/handler.go:44](../providers/kuery/queryapi/handler.go) |
+| C8 | code → GitHub (Connection token; exclusive holder) | conforming external egress | [tenant/credentials.go:28](../providers/code/tenant/credentials.go) |
+| C9 | infra imagePullSecret bridge (`<instance>-registry` name convention → runtime SA) | **M8** string contract across 2 providers | [bridge.go:53](../providers/infrastructure/controller/instance/bridge.go) |
+| C10 | infra OIDC client-secret bridge into runtime namespace | M8, finalizer-guarded | [bridge.go:59](../providers/infrastructure/controller/instance/bridge.go) |
+| C11 | infra Gateway/HTTPRoute emission against the shared platform Gateway | M8, RGD-validated | [kro/rgd.go:209](../providers/infrastructure/backend/kro/rgd.go) |
+| C12 | databricks: narrowest posture in the repo (`secrets: [get]`, no foreign consumers beyond actions/MCP) | the model citizen | [manifest.yaml:391](../providers/databricks/manifest.yaml) |
 
 ---
 

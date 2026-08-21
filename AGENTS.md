@@ -63,7 +63,7 @@ go.work               Workspace: root + standalone provider modules
 
 `go.work` members: `.`, `provider-sdk`, every provider module under
 `providers/` (`agents`, `app-studio`, `code`, `databricks`, `edges`,
-`infrastructure`, `kuery`, `quickstart`, `vibe-studio`), and the external
+`infrastructure`, `kuery`, `quickstart`), and the external
 `kubernetes-graphql-gateway` + `contrib-metering` checkouts. Every provider is
 standalone with its own `go.mod`; none compile into the hub binary any more
 (the `RegisterBuiltin` machinery in `pkg/hub/providers/builtin.go` still exists
@@ -316,13 +316,12 @@ lives hub-side in `pkg/hub/mcpaggregate/`; `projects` was folded into
 | `code` | `code.providers.faros.sh` | Git hosting management (repos, deploy keys, collaborators, packages) behind a `GitBackend` seam; GitHub is the only real backend today |
 | `databricks` | `databricks.providers.faros.sh` | Databricks SQL warehouse tables via governed `query_table` action + MCP tools; narrowest claims posture in the repo (the model citizen) |
 | `agents` | `agents.faros.sh` | Long-running personal AI agents: chat, schedules, triggers, approvals, budgets, memory, multi-channel (Slack/Telegram/Discord/SMTP). Needs hub + Postgres only |
-| `app-studio` | `ai.faros.sh` | Persistent AI project workspace (projects, sessions, dev sandboxes, publishing, skills). Being replaced by `vibe-studio` |
-| `vibe-studio` | `vibe.faros.sh` | Wizard-first app builder (event-sourced sessions); replaces `app-studio`. Early phase |
+| `app-studio` | `ai.faros.sh` | Persistent AI project workspace (projects, sessions, dev sandboxes, publishing, skills) |
 | `kuery` | `kuery.providers.faros.sh` | Fleet-wide object query, relationship traversal, impact analysis across connected edges + MCP tools |
 
 Per-provider deep docs: `docs/code-provider-architecture.md`,
 `docs/infrastructure-architecture.md`, `docs/kuery-provider-architecture.md`,
-`docs/agents-provider-architecture.md`, `docs/vibe-studio-design.md`,
+`docs/agents-provider-architecture.md`,
 `docs/application-template-architecture.md`, `docs/edges-marketplace.md`,
 `docs/mcp-architecture.md`, `docs/providers.md`, `docs/provider-publishing.md`,
 `docs/provider-scoping.md`, `docs/byo-providers.md`.

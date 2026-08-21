@@ -9,8 +9,8 @@ model), `provider-sdk/leaderelection` (the first HA primitive).
 
 ## The problem
 
-Leader election (`provider-sdk/leaderelection`) made **code**, **vibe-studio**,
-and **infrastructure** safe to scale: their multicluster managers host only
+Leader election (`provider-sdk/leaderelection`) made **code** and
+**infrastructure** safe to scale: their multicluster managers host only
 write loops, so gating the manager on a Lease leaves non-leaders serving
 REST/MCP/portal untouched.
 
@@ -155,7 +155,7 @@ provider; the hub keeps dialing the one ClusterIP Service. Charts gain a
    removes the engagement warm-up wait.
 2. **Decouple readiness/heartbeat from the manager** — ready when the slice
    yields ≥1 endpoint URL, not when the manager engages.
-3. **Leader-elect the controller manager** exactly like code/vibe-studio
+3. **Leader-elect the controller manager** exactly like code
    (fresh per term, `SkipNameValidation`), now that serving no longer needs it.
 4. Chart: `replicaCount` becomes freely scalable.
 

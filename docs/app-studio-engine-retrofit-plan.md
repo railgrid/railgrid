@@ -1,23 +1,12 @@
-# App Studio engine retrofit — vibe-studio patterns into app-studio
+# App Studio engine retrofit
 
 Status: **Phases 1–4 code complete** (2026-08-06); remaining: live dev-loop
 verification (2.9) and the tenant claim rollout (operating rule below)
 
-Retrofit the engine patterns proven in vibe-studio (permissions, deterministic
-reconcilers, bootstrap) into app-studio. Bootstrap is already shared
-(provider-sdk `init`); the work is claims parity and introducing a real
-controller substrate where today every lifecycle action is a synchronous HTTP
-handler acting as the caller.
-
-Reference implementations (do not diverge without a reason):
-
-- `providers/vibe-studio/controller_manager.go` — multicluster manager +
-  init-race retry loop
-- `providers/vibe-studio/controller/project/` — instance lifecycling from
-  self-contained bindings, finalizer teardown, status mirror
-- `providers/vibe-studio/init_cmd.go` — claims with identity hashes
-- `providers/vibe-studio/controller/vibesession/identity.go` — per-session SA
-  (Phase 3 only)
+Add permission-claim parity, deterministic reconcilers, and a real controller
+substrate to App Studio. Bootstrap is already shared through provider-sdk
+`init`; lifecycle actions should converge from durable desired state instead
+of remaining synchronous HTTP operations acting as the caller.
 
 Key facts about app-studio that shape the plan:
 
@@ -40,8 +29,8 @@ App-studio claims only `secrets` today. The Project reconciler will create /
 update / delete infrastructure instances in tenant workspaces, which needs
 first-party claims with the infrastructure APIExport identityHash.
 
-Claims live in THREE places that must stay in sync (learned the hard way in
-vibe): `init_cmd.go` (APIExport), `manifest.yaml` (dev register),
+Claims live in THREE places that must stay in sync: `init_cmd.go` (APIExport),
+`manifest.yaml` (dev register),
 `deploy/chart/templates/catalogentry.yaml` (prod Enable).
 
 - [x] 1.1 `init_cmd.go`: instance claims (`applications`, `simplewebapps`,
@@ -55,8 +44,7 @@ vibe): `init_cmd.go` (APIExport), `manifest.yaml` (dev register),
       values.yaml comment explaining where the admin copies it from
       (/bonkers root-identities, or the infra APIExport `status.identityHash`).
 - [x] 1.5 Makefile `init-provider-app-studio`: auto-discover the infra
-      identityHash (mirror the vibe block at the vibe init target), env
-      override wins.
+      identityHash; the environment override wins.
 - [x] 1.6 Build + `helm template` render green.
 
 Rollout caution (NOT a checkbox — an operating rule): the hub rewrites
@@ -75,8 +63,8 @@ claimed identity, mirroring status back.
       `sigs.k8s.io/multicluster-runtime@v0.24.1`,
       `github.com/kcp-dev/multicluster-provider@v0.8.0` in
       `providers/app-studio/go.mod`; new `scheme/` package registering
-      `ai.faros.sh/v1alpha1` (mirror `providers/vibe-studio/scheme`).
-- [x] 2.2 `controller_manager.go`: ported from vibe — apiexport provider on
+      `ai.faros.sh/v1alpha1`.
+- [x] 2.2 `controller_manager.go`: APIExport provider on
       endpointSlice `ai.faros.sh`, metrics disabled, started from
       `runServe` in a 15s retry loop (init ordering is not guaranteed),
       `errControllerDisabled` sentinel when no kubeconfig in scope. Reuses
@@ -89,7 +77,7 @@ claimed identity, mirroring status back.
       **every** environment (live AND artifact), not just live — promotion
       appends the artifact-mode production binding and the old code path
       provisioned it explicitly in the promote handler; the reconciler now
-      owns that too (vibe semantics: promote = a spec write). Finalizer
+      owns that too (promotion is a spec write). Finalizer
       `ai.faros.sh/instances`, converge-on-drift updates (spec /
       labels / ownerRef; status-only changes are not drift), 15s requeue
       while not Ready, 60s drift poll when Ready, IsInvalid/invalid-binding

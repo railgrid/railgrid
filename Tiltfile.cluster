@@ -732,11 +732,10 @@ spec:
     app_studio_preview_tls_secret,
 )))
 
-# Preview/apps ingress tunnel — serves BOTH sandbox previews
+# Preview/apps ingress tunnel — serves sandbox previews
 # (*.preview.localhost) and template app URLs (*.apps.127.0.0.1.sslip.io) off
-# the ONE envoy Gateway named app-studio-preview. app-studio and vibe-studio
-# both attach their previews to this single gateway, so there is exactly one
-# forward for both — named for the gateway it serves.
+# the ONE envoy Gateway named app-studio-preview. There is exactly one forward,
+# named for the gateway it serves.
 #
 # Pin the context: the user's ambient kubectl context drifts (kcp workspace
 # contexts), and against those this loop never finds the envoy service.

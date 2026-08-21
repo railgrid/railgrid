@@ -49,8 +49,7 @@ const isAppStudioLandingRoute = computed(() =>
   ['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_MODELS_ROUTE].includes(providerRouteSegment.value),
 )
 const isFullBleedProvider = computed(() =>
-  props.providerName === 'vibe-studio' ||
-  (props.providerName === 'app-studio' && !isAppStudioLandingRoute.value),
+  props.providerName === 'app-studio' && !isAppStudioLandingRoute.value,
 )
 
 // On entry resolve OR provider switch, (re)load the script and mount.

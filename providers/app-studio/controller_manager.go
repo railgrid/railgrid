@@ -215,7 +215,7 @@ type controllerDeps struct {
 // observe both setup errors and post-start exits and re-enter the bounded retry
 // loop instead of hiding the manager in a detached goroutine.
 //
-// Deliberately NOT leader-elected (unlike code/vibe-studio/infrastructure):
+// Deliberately NOT leader-elected (unlike code/infrastructure):
 // the Project reconciler converges commits from the pod-local workspace
 // FileStore the HTTP assistant writes to, and pod readiness requires the
 // manager to be running (controllerReadyRunnable below) — a lease would both

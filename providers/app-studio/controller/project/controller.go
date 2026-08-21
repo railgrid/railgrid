@@ -13,8 +13,7 @@ You may obtain a copy of the License at
 // instance exists and matches the binding's values (create-if-missing,
 // converge-on-drift, delete-on-project-delete via finalizer), and mirrors the
 // instances' observed state into Project.status.environments. Handlers write
-// spec; this loop owns convergence — the same inversion vibe-studio proved
-// (providers/vibe-studio/controller/project).
+// spec; this loop owns convergence.
 //
 // The binding contract is self-contained: resourceRef records the full
 // group/version/resource/kind (from Template.spec.instanceCRD at bind time),

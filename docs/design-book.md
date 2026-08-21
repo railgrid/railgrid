@@ -97,7 +97,7 @@ must repeat the `--radius-*` overrides in their own `@theme`. Hand-rolled
 stylesheets write the px values directly.
 
 **Sanctioned soft exception:** conversational chat bubbles (app-studio,
-vibe-studio, agents) may use 12–14px — speech is not chrome. Nothing else
+agents) may use 12–14px — speech is not chrome. Nothing else
 qualifies.
 
 ## 4. Typography
@@ -244,7 +244,7 @@ Two integration modes, one look:
    radius remap all come from the host. A new provider of this kind must be
    added to the `@source` list.
 2. **Self-contained** (code, kuery, app-studio, edges, agents, databricks,
-   vibe-studio, quickstart): ship their own namespaced CSS. Rules: colors only
+   quickstart): ship their own namespaced CSS. Rules: colors only
    via `var(--color-*)` (cascades in), fallbacks = dark-base values, every
    selector namespaced under `faros-provider-{name}`, radii written per the
    law (or `--radius-*` overrides repeated if they compile their own

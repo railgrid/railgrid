@@ -21,8 +21,8 @@ import (
 // ("Planning project", "Configuring repository", "Attaching scaffold to
 // <template>", …) are invisible. This SSE variant surfaces them so the
 // wizard-first flow shows a real "scaffolding attached to the template" step
-// — the moment the project opens on its starter code — the way vibe-studio
-// does. It creates only the Project (+ repo + scaffold); the portal starts
+// — the moment the project opens on its starter code. It creates only the
+// Project (+ repo + scaffold); the portal starts
 // the first assistant turn afterward, exactly as the non-streamed path does.
 //
 // Event shapes (text/event-stream):

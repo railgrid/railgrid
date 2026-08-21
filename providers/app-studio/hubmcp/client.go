@@ -10,10 +10,9 @@ You may obtain a copy of the License at
 
 // Package hubmcp is a minimal MCP JSON-RPC client for code provider tools —
 // the canonical (and only) cross-provider path for pushing file contents,
-// since commit bundles live on the code provider's own filesystem. Ported
-// from vibe-studio's provision package; used by the Project reconciler as the
-// project's ServiceAccount (the HTTP layer keeps its own caller-token MCP
-// path in api/).
+// since commit bundles live on the code provider's own filesystem. The Project
+// reconciler uses it as the project's ServiceAccount (the HTTP layer keeps its
+// own caller-token MCP path in api/).
 //
 // Talks to the hub's AGGREGATE MCP endpoint (the per-tenant "default"
 // MCPServer), with provider-namespaced tool names (code__commit_files). The

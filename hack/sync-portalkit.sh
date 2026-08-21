@@ -34,10 +34,6 @@ VUE_PORTALS=(
 )
 VUE_FILES=(confirm.ts ConfirmDialog.vue ConfirmDialog.css ResourceTable.vue ResourceTableDeleteButton.vue ResourceTableDeleteButton.css ResourceTableEditButton.vue ResourceTableEditButton.css ConditionsPanel.vue StatusBadge.vue)
 
-# vibe-studio's vanilla-TS portal consumes tenant.ts + icons.ts (no modal).
-VIBE_PORTALS=("providers/vibe-studio/portal")
-VIBE_FILES=(tenant.ts icons.ts)
-
 sync_group() {
   local src="$1"; shift
   local -n portals=$1; shift
@@ -96,9 +92,6 @@ verify_all() {
     stale=1
   fi
   if ! verify_group "$VUE_SRC" VUE_PORTALS VUE_FILES; then
-    stale=1
-  fi
-  if ! verify_group "$TS_SRC" VIBE_PORTALS VIBE_FILES; then
     stale=1
   fi
   # tenant.ts and toast.ts are plain TS (no framework) and shared by portals of
