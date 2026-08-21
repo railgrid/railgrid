@@ -1,0 +1,6 @@
+apiVersion: v2
+name: faros-telemetry
+description: OSS Faros CloudEvents telemetry receiver with PostgreSQL storage
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

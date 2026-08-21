@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1
+
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY provider-sdk/go.mod provider-sdk/go.sum ./provider-sdk/
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/faros-telemetry ./cmd/faros-telemetry
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/faros-telemetry /faros-telemetry
+EXPOSE 8090
+USER nonroot:nonroot
+ENTRYPOINT ["/faros-telemetry"]
