@@ -47,6 +47,8 @@ store:
 
 hub:
   url: "http://faros-hub.faros.svc.cluster.local:8080"
+  # Skip TLS verification and explicitly allow HTTP telemetry transport. This
+  # is a local/development escape hatch; use an HTTPS hub URL in production.
   insecure: false
   tokenSecretRef:
     name: ""

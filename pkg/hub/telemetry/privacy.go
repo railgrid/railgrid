@@ -42,8 +42,9 @@ func (n normalizer) record(provider string, e Event) (Record, error) {
 		OccurredAt:     e.OccurredAt.UTC(),
 		Identifiers: Identifiers{
 			Org: n.hash("org", e.OrgID), Workspace: n.hash("workspace", e.WorkspaceID),
+			Scope:   n.hash("scope", e.ScopeID),
 			Project: n.hash("project", e.ProjectID), Resource: n.hash("resource", e.ResourceID),
-			Actor: n.hash("actor", e.Actor),
+			Actor: n.hash("actor", e.Actor), Run: n.hash("run", e.CorrelationID),
 		},
 		Properties: e.Properties,
 	}, nil
@@ -62,6 +63,10 @@ func (n normalizer) hash(kind, raw string) string {
 		return ""
 	}
 	h := hmac.New(sha256.New, n.key)
-	_, _ = h.Write([]byte("faros-telemetry-v1\x00" + kind + "\x00" + raw))
+	// Bind pseudonyms to the installation as well as the secret and identifier
+	// kind. Operators should provision a unique key per installation, but this
+	// domain separation keeps installations unlinkable even if a secret is
+	// accidentally reused.
+	_, _ = h.Write([]byte("faros-telemetry-v1\x00" + n.installationID + "\x00" + kind + "\x00" + raw))
 	return hex.EncodeToString(h.Sum(nil))
 }

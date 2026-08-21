@@ -1,6 +1,6 @@
 version: 1
 key_path: agents_run_terminal_total
-description: Total terminal run outcomes in the Agents provider.
+description: Total distinct terminal run outcomes in the Agents provider within each retained daily bucket.
 owner: agents
 product_group: agents
 product_categories: [runs]
@@ -11,7 +11,7 @@ time_frame: all
 data_source: internal_events
 events:
   - name: agents_run_terminal
-    unique: resource
+    unique: run
 labels:
   outcome:
     description: Terminal run outcome.

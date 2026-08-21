@@ -158,6 +158,23 @@ func TestCatalogValidationAndPrivacyNormalization(t *testing.T) {
 	}
 }
 
+func TestPseudonymsAreSeparatedByInstallationAndIdentifierKind(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	first := normalizer{key: key, installationID: "install-1"}
+	second := normalizer{key: key, installationID: "install-2"}
+
+	org := first.hash("org", "shared-identifier")
+	if org == second.hash("org", "shared-identifier") {
+		t.Fatal("pseudonym is linkable across installations that reuse a key")
+	}
+	if org == first.hash("workspace", "shared-identifier") {
+		t.Fatal("pseudonym is linkable across identifier kinds")
+	}
+	if org != first.hash("org", "shared-identifier") {
+		t.Fatal("pseudonym is not stable within one installation and identifier kind")
+	}
+}
+
 func TestPlatformCatalogEventsUseInternalBoundary(t *testing.T) {
 	sink := &recordingSink{}
 	cfg := enabledConfig()
@@ -237,6 +254,35 @@ func TestRetryReusesCloudEventIDAndNeverSerializesRawIdentifiers(t *testing.T) {
 				t.Fatalf("raw identifier %q escaped in CloudEvent: %s", raw, payload)
 			}
 		}
+	}
+}
+
+func TestHTTPSinkDoesNotForwardCredentialsAcrossRedirect(t *testing.T) {
+	var calls atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		if request.Header.Get("Authorization") != "Bearer 0123456789abcdef" {
+			t.Fatal("initial request omitted receiver credential")
+		}
+		return &http.Response{
+			StatusCode: http.StatusTemporaryRedirect,
+			Header:     http.Header{"Location": []string{"https://redirect.example/v1/events"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    request,
+		}, nil
+	})}
+	sink := NewHTTPSink("https://receiver.example/v1/events", "0123456789abcdef", client)
+	err := sink.Send(context.Background(), []Record{{
+		EventID: "event-1", InstallationID: "install-1", Provider: "platform",
+		Action: "organization_created", OccurredAt: time.Now().UTC(),
+		Identifiers: Identifiers{Org: strings.Repeat("a", 64), Actor: strings.Repeat("b", 64)},
+		Properties:  map[string]any{"outcome": "success"},
+	}})
+	if err == nil {
+		t.Fatal("redirect response was accepted")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("HTTP client made %d requests, want only the original request", got)
 	}
 }
 

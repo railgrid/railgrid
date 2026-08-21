@@ -8,7 +8,8 @@ create a database or a Kubernetes PVC.
 Create three Secret keys before installing:
 
 * `database-url`: PostgreSQL URL for the receiver database.
-* `ingest-token`: bearer token accepted by `POST /v1/events` (minimum 16
+* `ingest-tokens.json`: a JSON object mapping each opaque hub installation ID
+  to its unique bearer accepted by `POST /v1/events` (each token is at least 16
   non-whitespace characters).
 * `admin-token`: a distinct bearer token accepted by `POST /v1/erasure`
   (minimum 16 non-whitespace characters).
@@ -16,15 +17,21 @@ Create three Secret keys before installing:
 For example, with a Secret named `faros-telemetry-secrets`:
 
 ```sh
+kubectl create secret generic faros-telemetry-secrets \
+  --from-literal=database-url='postgres://...' \
+  --from-literal='ingest-tokens.json={"saas-us-east-1":"replace-with-a-random-token"}' \
+  --from-literal=admin-token='replace-with-a-different-random-token'
+
 helm install telemetry deploy/charts/faros-telemetry \
   --set secrets.database.name=faros-telemetry-secrets \
-  --set secrets.ingestToken.name=faros-telemetry-secrets \
+  --set secrets.ingestTokens.name=faros-telemetry-secrets \
   --set secrets.adminToken.name=faros-telemetry-secrets
 ```
 
 ## Ingest contract
 
-Send `Content-Type: application/cloudevents-batch+json` and
+Send `Content-Type: application/cloudevents-batch+json`,
+`X-Faros-Installation-ID: <installation-id>`, and that installation's
 `Authorization: Bearer <ingest-token>` to `/v1/events`. Each CloudEvent must be
 the hub's structured `Record`: its action equals the CloudEvent type, provider
 equals both subject and catalog owner, and installation ID equals the `tenant`
@@ -34,6 +41,8 @@ properties. Unknown fields, raw IDs, and content are rejected. Duplicate events
 are identified by `(tenant, source, id)`, are not written twice, and are reported
 in the JSON response without incrementing aggregates. The supported producer
 is the opt-in Faros hub runtime; callers should not construct payloads directly.
+Installation tokens must be unique; startup rejects a credential map that
+reuses one token for multiple installations.
 
 ## Retention and erasure
 
@@ -41,11 +50,13 @@ Raw payloads default to 90 days (`retention.raw: 2160h`). Aggregate buckets
 default to 13 months (`retention.aggregate: 9360h`) and contain only bucket,
 the fixed `faros-hub` component class, a catalog-declared event action, and
 count; they intentionally omit tenant, installation, and caller source
-identity. `POST
-/v1/erasure` with the admin token and `{"request_id":"...","tenant_id":"..."}`
-deletes that tenant's raw rows and records an idempotency receipt. Repeating
-the same request is safe. Because aggregate contributions are not tenant
-keyed, erasure cannot subtract them; this is an explicit privacy boundary.
+identity. `POST /v1/erasure` with the admin token and
+`{"request_id":"...","installation_id":"..."}` durably tombstones that hub
+installation, deletes its raw rows, and records an idempotency receipt.
+Repeating the same request is safe. Because aggregate contributions are not
+tenant keyed, erasure cannot subtract them; this is an explicit privacy
+boundary. Concurrent and later ingest for a tombstoned installation is
+rejected.
 
 Catalog metric aggregates are anonymous daily buckets containing metric key,
 funnel step, bounded labels, and value. Their pseudonymous uniqueness rows
@@ -61,8 +72,13 @@ naturally once per resource identity within a daily bucket.
 curl -X POST https://telemetry.example.com/v1/erasure \
   -H 'Authorization: Bearer <admin-token>' \
   -H 'Content-Type: application/json' \
-  -d '{"request_id":"erase-2026-0001","tenant_id":"org-123"}'
+  -d '{"request_id":"erase-2026-0001","installation_id":"saas-us-east-1"}'
 ```
+
+This endpoint is deliberately installation-scoped, not organization-scoped.
+The receiver has only pseudonymous organization identifiers and does not hold
+the hub's HMAC key. A shared SaaS hub must not present this operation as erasing
+one customer organization.
 
 ## Grafana dashboard
 

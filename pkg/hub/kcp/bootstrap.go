@@ -1586,7 +1586,8 @@ type ProviderClaim struct {
 }
 
 // EnsureProviderAPIBinding creates (or no-ops on AlreadyExists) an
-// APIBinding named `bindingName` in the child workspace
+// APIBinding named `bindingName` in the child workspace and reports whether
+// this call created it
 // root:faros:tenants:{orgUUID}:{wsUUID}, pointing at exportPath/exportName.
 //
 // Used by the server-side POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
@@ -1606,17 +1607,17 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 	ctx context.Context,
 	orgUUID, wsUUID, bindingName, exportPath, exportName string,
 	claims []ProviderClaim,
-) error {
+) (bool, error) {
 	if orgUUID == "" || wsUUID == "" {
-		return fmt.Errorf("EnsureProviderAPIBinding: orgUUID and wsUUID are required")
+		return false, fmt.Errorf("EnsureProviderAPIBinding: orgUUID and wsUUID are required")
 	}
 	if bindingName == "" || exportPath == "" || exportName == "" {
-		return fmt.Errorf("EnsureProviderAPIBinding: bindingName, exportPath, exportName are required")
+		return false, fmt.Errorf("EnsureProviderAPIBinding: bindingName, exportPath, exportName are required")
 	}
 	wsConfig := configForPath(b.config, childWorkspacePath(orgUUID, wsUUID))
 	wsClient, err := dynamic.NewForConfig(wsConfig)
 	if err != nil {
-		return fmt.Errorf("creating child workspace client: %w", err)
+		return false, fmt.Errorf("creating child workspace client: %w", err)
 	}
 
 	// kcp marks the binding's PermissionClaimsValid=False (and refuses to
@@ -1632,7 +1633,7 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 	// flight.
 	identities, err := b.exportClaimIdentities(ctx, exportPath, exportName, claims)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	// Those identities are whatever this export pins, which is only correct if
@@ -1647,7 +1648,7 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 	// Disable/Enable" work unattended. For a platform export it refuses.
 	identities, err = b.verifyClaimIdentities(ctx, orgUUID, wsUUID, bindingName, exportPath, exportName, claims, identities)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	specClaims := make([]apisv1alpha2.AcceptablePermissionClaim, 0, len(claims))
@@ -1690,15 +1691,19 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 	}
 	u, err := toUnstructured(binding)
 	if err != nil {
-		return fmt.Errorf("converting APIBinding to unstructured: %w", err)
+		return false, fmt.Errorf("converting APIBinding to unstructured: %w", err)
 	}
-	if _, err := wsClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating APIBinding %q in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
+	created := true
+	if _, err := wsClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{}); err != nil {
+		if !errors.IsAlreadyExists(err) {
+			return false, fmt.Errorf("creating APIBinding %q in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
+		}
+		created = false
 	}
 	if err := waitForAPIBindingBound(ctx, wsClient, bindingName); err != nil {
-		return fmt.Errorf("waiting for APIBinding %q to bind in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
+		return false, fmt.Errorf("waiting for APIBinding %q to bind in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
 	}
-	return nil
+	return created, nil
 }
 
 // exportClaimIdentities returns, per claim, the identityHash the bound

@@ -43,7 +43,7 @@ hub:
   tokenSecretRef:
     name: ""
     key: token
-  # Skip TLS verify on heartbeat — dev only.
+  # Skip TLS verification and explicitly allow HTTP telemetry transport — dev only.
   insecure: false
   # Hub CA bundle (PEM) embedded into per-agent kubeconfigs so agents trust the
   # hub serving cert. Provide EITHER caData (inline PEM) or caSecretRef.

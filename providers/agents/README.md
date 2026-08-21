@@ -42,7 +42,8 @@ explicitly set. When enabled, the provider authenticates telemetry with the
 ServiceAccount bearer in `providerKubeconfig`; no extra telemetry secret is
 required. Events contain only bounded pseudonymous scope, actor, and agent
 resource identifiers plus fixed outcome values — never agent names, prompts,
-run content, or credentials.
+run content, or credentials. Enabled telemetry requires an HTTPS `FAROS_HUB_URL`;
+`FAROS_HUB_INSECURE=true` permits HTTP only as an explicit development escape hatch.
 
 ## Further reading
 

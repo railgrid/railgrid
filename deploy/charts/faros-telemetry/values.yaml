@@ -19,9 +19,11 @@ secrets:
   database:
     name: ""
     key: database-url
-  ingestToken:
+  # JSON object mapping each opaque installation ID to a unique bearer token.
+  # Example: {"saas-us-east-1":"<random-token>"}
+  ingestTokens:
     name: ""
-    key: ingest-token
+    key: ingest-tokens.json
   adminToken:
     name: ""
     key: admin-token

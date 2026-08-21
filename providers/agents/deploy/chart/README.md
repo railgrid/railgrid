@@ -67,7 +67,7 @@ helm upgrade --install agents oci://ghcr.io/faroshq/charts/faros-agents-provider
 | `store.messageEncryptionKeysSecretRef.key` | `keys` |  |
 | `hub` |  |  |
 | `hub.url` | `"http://faros-hub.faros.svc.cluster.local:8080"` |  |
-| `hub.insecure` | `false` |  |
+| `hub.insecure` | `false` | Skip TLS verification and allow HTTP telemetry transport for explicit local/development use only. |
 | `hub.tokenSecretRef.name` | `""` |  |
 | `hub.tokenSecretRef.key` | `token` |  |
 | `telemetry` |  | Opt-in product activation telemetry; disabled by default and no-network when false. |

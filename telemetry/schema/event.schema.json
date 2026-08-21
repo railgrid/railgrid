@@ -13,7 +13,7 @@
     "owner": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
     "product_group": {"type": "string", "minLength": 1},
     "product_categories": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
-    "identifiers": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["org", "workspace", "project", "actor", "resource"]}},
+    "identifiers": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["org", "workspace", "scope", "project", "actor", "resource", "run"]}},
     "tiers": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["free", "premium", "ultimate"]}},
     "milestone": {"type": "string", "minLength": 1},
     "status": {"enum": ["active", "removed"]},
@@ -26,8 +26,8 @@
       "additionalProperties": false,
       "required": ["class", "no_raw_content"],
       "properties": {
-        "class": {"enum": ["aggregate", "pseudonymous"]},
-        "pseudonymize": {"type": "array", "uniqueItems": true, "items": {"enum": ["org", "workspace", "project", "actor", "resource"]}},
+        "class": {"enum": ["pseudonymous"]},
+        "pseudonymize": {"type": "array", "uniqueItems": true, "items": {"enum": ["org", "workspace", "scope", "project", "actor", "resource", "run"]}},
         "no_raw_content": {"type": "boolean", "const": true}
       }
     },

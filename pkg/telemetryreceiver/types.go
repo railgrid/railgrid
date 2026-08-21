@@ -23,6 +23,7 @@ import (
 const (
 	CloudEventsBatchContentType = "application/cloudevents-batch+json"
 	CloudEventsSpecVersion      = "1.0"
+	InstallationHeader          = "X-Faros-Installation-ID"
 	// aggregateComponent is deliberately fixed. Aggregate rows are anonymous
 	// and must not expose caller-controlled source or installation dimensions.
 	aggregateComponent = "faros-hub"
@@ -30,9 +31,10 @@ const (
 )
 
 var (
-	ErrInvalidEvent    = errors.New("invalid cloud event")
-	ErrErasureConflict = errors.New("erasure request id belongs to another tenant")
-	ErrInvalidConfig   = errors.New("invalid telemetry configuration")
+	ErrInvalidEvent       = errors.New("invalid cloud event")
+	ErrErasureConflict    = errors.New("erasure request id belongs to another installation")
+	ErrInstallationErased = errors.New("telemetry installation has been erased")
+	ErrInvalidConfig      = errors.New("invalid telemetry configuration")
 )
 
 // Event is the normalized form of a structured CloudEvent accepted by the
@@ -67,13 +69,13 @@ type IngestStats struct {
 }
 
 type ErasureRequest struct {
-	RequestID string `json:"request_id"`
-	TenantID  string `json:"tenant_id"`
+	RequestID      string `json:"request_id"`
+	InstallationID string `json:"installation_id"`
 }
 
 type ErasureResult struct {
 	RequestID        string `json:"request_id"`
-	TenantID         string `json:"tenant_id"`
+	InstallationID   string `json:"installation_id"`
 	DeletedRaw       int64  `json:"deleted_raw"`
 	DeletedAggregate int64  `json:"deleted_aggregate"`
 	Existing         bool   `json:"existing"`
@@ -85,10 +87,10 @@ type PurgeResult struct {
 }
 
 // Store is the receiver's persistence boundary. Implementations must make
-// Insert and EraseTenant transactional and idempotent.
+// Insert and EraseInstallation transactional and idempotent.
 type Store interface {
 	Ping(context.Context) error
 	Insert(context.Context, []Event) (IngestStats, error)
-	EraseTenant(context.Context, ErasureRequest) (ErasureResult, error)
+	EraseInstallation(context.Context, ErasureRequest) (ErasureResult, error)
 	PurgeExpired(context.Context, time.Time, time.Duration, time.Duration) (PurgeResult, error)
 }

@@ -35,11 +35,11 @@ spec:
                 secretKeyRef:
                   name: {{ required "secrets.database.name is required" .Values.secrets.database.name }}
                   key: {{ .Values.secrets.database.key }}
-            - name: TELEMETRY_INGEST_TOKEN
+            - name: TELEMETRY_INGEST_TOKENS_JSON
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "secrets.ingestToken.name is required" .Values.secrets.ingestToken.name }}
-                  key: {{ .Values.secrets.ingestToken.key }}
+                  name: {{ required "secrets.ingestTokens.name is required" .Values.secrets.ingestTokens.name }}
+                  key: {{ .Values.secrets.ingestTokens.key }}
             - name: TELEMETRY_ADMIN_TOKEN
               valueFrom:
                 secretKeyRef:

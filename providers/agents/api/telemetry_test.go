@@ -163,6 +163,9 @@ func TestRunTerminalTelemetryMapsTransitionsAndDeduplicates(t *testing.T) {
 	if events[0].ResourceID != agentResourceID(scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName) {
 		t.Fatalf("terminal resource ID = %q", events[0].ResourceID)
 	}
+	if events[0].CorrelationID != "run-1" {
+		t.Fatalf("terminal run ID = %q, want run-1", events[0].CorrelationID)
+	}
 
 	for _, tc := range []struct {
 		phase   store.RunPhase

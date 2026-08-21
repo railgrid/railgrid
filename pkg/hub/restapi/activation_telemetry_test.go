@@ -122,9 +122,9 @@ func (f *activationOps) EnsureChildWorkspaceDefaultMCPServer(ctx context.Context
 	return f.fakeOps.EnsureChildWorkspaceDefaultMCPServer(ctx, orgUUID, wsUUID)
 }
 
-func (f *activationOps) EnsureProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName, exportPath, exportName string, claims []kcp.ProviderClaim) error {
+func (f *activationOps) EnsureProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName, exportPath, exportName string, claims []kcp.ProviderClaim) (bool, error) {
 	if f.ensureProviderAPIBindingErr != nil {
-		return f.ensureProviderAPIBindingErr
+		return false, f.ensureProviderAPIBindingErr
 	}
 	return f.fakeOps.EnsureProviderAPIBinding(ctx, orgUUID, wsUUID, bindingName, exportPath, exportName, claims)
 }
@@ -356,6 +356,13 @@ func TestEnableProviderTracksPlatformSuccessWithStableIDs(t *testing.T) {
 	}
 	if event.Properties["provider"] != "app-studio" || event.Properties["outcome"] != "success" {
 		t.Fatalf("event properties = %#v", event.Properties)
+	}
+	response = serveActivation(NewHandler(mgr).enableProvider, activationRequest(t, http.MethodPost, "/api/orgs/org-123/workspaces/ws-123/providers/app-studio/enable", adminTC("user-123", "org-123", "ws-123"), EnableProviderRequest{}, map[string]string{"org": "org-123", "ws": "ws-123", "name": "app-studio"}))
+	if response.Code != http.StatusOK {
+		t.Fatalf("idempotent status = %d, want 200; body=%s", response.Code, response.Body)
+	}
+	if got := len(telemetry.snapshot()); got != 1 {
+		t.Fatalf("idempotent enable emitted %d events, want one transition event", got)
 	}
 }
 

@@ -132,7 +132,7 @@ func TestMarkEdgeConnectedTracksFirstReadyForBothKinds(t *testing.T) {
 				t.Fatalf("telemetry events = %d, want 1", len(events))
 			}
 			event := events[0]
-			if event.Action != edgesFirstReadyAction || event.OrgID != cluster || event.WorkspaceID != cluster {
+			if event.Action != edgesFirstReadyAction || event.ScopeID != cluster || event.OrgID != "" || event.WorkspaceID != "" {
 				t.Fatalf("event identity = %#v", event)
 			}
 			if event.Actor != "" {

@@ -1,6 +1,6 @@
 version: 1
 key_path: edge_first_ready_total
-description: Total workspaces whose first edge reached readiness.
+description: Total opaque provider tenant scopes whose first edge reached readiness.
 owner: edges
 product_group: edges
 product_categories: [connectivity]
@@ -11,7 +11,7 @@ time_frame: all
 data_source: internal_events
 events:
   - name: edge_first_ready
-    unique: workspace
+    unique: scope
 labels:
   edge_type:
     description: Edge kind that reached readiness.

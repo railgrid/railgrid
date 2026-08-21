@@ -1,7 +1,7 @@
 version: 1
 internal_events: true
 action: agents_run_terminal
-description: An Agents provider agent's run reached a terminal outcome for the same agent resource identity.
+description: An Agents provider agent's run reached a terminal outcome, retaining separate agent and run identities.
 owner: agents
 product_group: agents
 product_categories:
@@ -10,6 +10,7 @@ identifiers:
   - org
   - workspace
   - resource
+  - run
 tiers:
   - free
   - premium
@@ -20,7 +21,7 @@ introduced_by_url: https://github.com/faroshq/faros
 retention_days: 90
 privacy:
   class: pseudonymous
-  pseudonymize: [org, workspace, resource]
+  pseudonymize: [org, workspace, resource, run]
   no_raw_content: true
 additional_properties:
   outcome:

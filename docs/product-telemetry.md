@@ -31,6 +31,14 @@ tracker if its configuration is invalid or its provisioned provider kubeconfig
 does not contain a token. The heartbeat `FAROS_HUB_TOKEN` is not accepted as a
 telemetry credential.
 
+Enabled providers require an HTTPS hub URL because telemetry carries the
+provisioned provider ServiceAccount bearer. `FAROS_HUB_INSECURE=true` is an
+explicit local/development escape hatch that also permits HTTP; the provider
+charts reject `telemetry.enabled=true` with an HTTP hub URL unless that escape
+hatch is set. Both provider-to-hub and hub-to-receiver clients refuse redirects
+so credentials and payloads cannot be forwarded to another authority or a
+downgraded transport.
+
 ## What is cataloged
 
 The current event inventory is:
@@ -40,12 +48,12 @@ The current event inventory is:
 | `organization_created` | platform | `org`, `actor` | `outcome`: `success` |
 | `workspace_created` | platform | `org`, `workspace`, `actor` | `outcome`: `success` |
 | `provider_enabled` | platform | `org`, `workspace`, `actor`, `resource` | `outcome`: `success`; `provider`: `agents`, `app-studio`, `code`, `databricks`, `edges`, `infrastructure`, `kuery`, `quickstart`, `vibe-studio` |
-| `edge_first_ready` | edges | `org`, `workspace`, `resource` | `edge_type`: `kubernetes_cluster`, `linux_server`; `outcome`: `ready` |
+| `edge_first_ready` | edges | `scope`, `resource` | `edge_type`: `kubernetes_cluster`, `linux_server`; `outcome`: `ready` |
 | `app_studio_project_created` | app-studio | `org`, `workspace`, `project`, `actor` | `outcome`: `success` |
 | `app_studio_preview_ready` | app-studio | `org`, `workspace`, `project` | `outcome`: `ready`; `preview_kind`: `development` |
 | `app_studio_project_published` | app-studio | `org`, `workspace`, `project`, `actor` | durable production-binding acceptance; `outcome`: `published`, `promoted` |
 | `agents_agent_created` | agents | `org`, `workspace`, `actor`, `resource` | `outcome`: `success` |
-| `agents_run_terminal` | agents | `org`, `workspace`, `resource` | `outcome`: `succeeded`, `failed`, `aborted` |
+| `agents_run_terminal` | agents | `org`, `workspace`, `resource`, `run` | `outcome`: `succeeded`, `failed`, `aborted` |
 
 Every current event is `internal_events: true`, `pseudonymous`, declares
 `no_raw_content: true`, and has a catalog retention declaration of 90 days.
@@ -55,8 +63,8 @@ The generated, reviewable table is
 The event data inventory is deliberately narrow:
 
 - the declared action and occurrence time;
-- only the identifiers declared for that action (`org`, `workspace`,
-  `project`, `resource`, and/or `actor`);
+- only the identifiers declared for that action (`org`, `workspace`, `scope`,
+  `project`, `resource`, `run`, and/or `actor`);
 - the provider owner and a small, catalog-declared property set; and
 - transport identity needed for delivery and deduplication (a random event ID,
   installation ID, provider, and CloudEvents metadata).
@@ -128,12 +136,14 @@ not accepted by this first-party telemetry route; a BYO provider cannot use a
 platform provider name to bypass this check.
 
 The hub normalizes each accepted event with an installation HMAC secret using
-domain- and identifier-type-separated HMAC-SHA-256 inputs. The receiver sees
-lowercase 64-character hashes, not the source identifiers. The HMAC secret is
-installation-specific, so identical source identifiers in different
-installations do not produce a shared pseudonym. The receiver also binds the
-CloudEvents `tenant` extension and `faros://installation/<id>/hub` source to
-the installation ID, preserving installation isolation.
+installation- and identifier-type-separated HMAC-SHA-256 inputs. The receiver
+sees lowercase 64-character hashes, not the source identifiers. The HMAC secret
+is installation-specific, so identical source identifiers in different
+installations do not produce a shared pseudonym; the installation ID remains
+part of the HMAC domain as a defense against accidental key reuse. The receiver
+also binds the CloudEvents `tenant` extension and
+`faros://installation/<id>/hub` source to the installation ID, preserving
+installation isolation.
 
 ## Delivery format and failure isolation
 
@@ -149,8 +159,8 @@ properties, source, subject, tenant, and size bounds before persistence.
 
 Both seams are bounded and asynchronous:
 
-- provider SDK defaults: queue 64, enqueue wait 10ms, send timeout 2s, and
-  close timeout 2s;
+- provider SDK defaults: queue 64, enqueue wait 10ms, send timeout 2s, close
+  timeout 2s, and up to 3 attempts with 50ms initial exponential backoff;
 - hub defaults: queue 1,024, batches of 100, flush after 2s, enqueue wait
   25ms, send timeout 5s, shutdown drain 5s, and up to 3 attempts with an
   initial 100ms exponential backoff; and
@@ -170,10 +180,15 @@ not create PostgreSQL, a PVC, or Grafana. Create an existing Secret with these
 three keys before installing:
 
 - `database-url`: `TELEMETRY_DATABASE_URL`;
-- `ingest-token`: `TELEMETRY_INGEST_TOKEN`, for event ingest; and
+- `ingest-tokens.json`: `TELEMETRY_INGEST_TOKENS_JSON`, a JSON object mapping
+  each opaque installation ID to a unique event-ingest bearer; and
 - `admin-token`: `TELEMETRY_ADMIN_TOKEN`, a distinct token for erasure.
 
-The receiver runs Goose migrations against PostgreSQL on startup. Its defaults
+The receiver binds each request's `X-Faros-Installation-ID` header to that
+installation's configured bearer, then requires every CloudEvent in the batch
+to carry the same installation ID. Tokens must be unique, so one hub cannot
+forge another hub's stream. The receiver runs Goose migrations under a
+PostgreSQL advisory session lock on startup. Its defaults
 are raw retention 2,160 hours (90 days), anonymous aggregate retention 9,360
 hours (13 months), a one-hour janitor interval, batches up to 1,000 events,
 and 256 KiB per event. The chart's optional Grafana dashboard is provisioned
@@ -199,13 +214,16 @@ in the 90-day raw row. The current catalog entries named `funnel` are
 independently deduplicated stage-volume views; they do not claim ordered cohort
 conversion. Their generated descriptions state this explicitly.
 
-`POST /v1/erasure` with the admin token and a `request_id` plus `tenant_id`
-deletes that tenant's raw events and pseudonymous uniqueness rows and records
+`POST /v1/erasure` with the admin token and a `request_id` plus
+`installation_id` durably tombstones that hub installation, deletes its raw
+events and pseudonymous uniqueness rows, and records
 an idempotent erasure receipt. Repeating the same request is safe; reusing its
-ID for another tenant is rejected while the receipt remains within the raw
-retention bound. Anonymous aggregate rows cannot be
-subtracted by tenant because they intentionally contain no tenant dimension,
-so they remain until aggregate retention expires.
+ID for another installation is rejected while the receipt remains within the
+raw retention bound. Anonymous aggregate rows cannot be subtracted by
+installation because they intentionally contain no installation dimension, so
+they remain until aggregate retention expires.
+Concurrent and later ingest for a tombstoned installation is rejected; an
+erasure cannot be undone by retrying an older event batch.
 
 Operational pipeline health and product analytics are separate surfaces:
 
@@ -227,10 +245,15 @@ privacy, retention, or erasure mechanism.
 
 ## Current limitations
 
+- Receiver erasure is currently installation-wide. The receiver cannot accept
+  a raw organization identifier and does not possess the hub's HMAC key, so an
+  organization-scoped erasure workflow must be added at the trusted hub boundary
+  before the API can truthfully claim customer-level deletion within a shared
+  SaaS installation.
 - The edge background path currently has an opaque tenant logical-cluster ID,
-  not richer organization/workspace context. Until that context exists it
-  uses that same opaque value for the event's `org` and `workspace` inputs;
-  this is not a claim that the logical-cluster ID is an organization UUID.
+  not a verified organization/workspace mapping. It reports that ID once as
+  `scope`, and edge readiness is deliberately excluded from the cross-workspace
+  activation metric until a trustworthy mapping exists.
 - First-ready (Edges) and preview-ready (App Studio) deduplication is
   process-local. A provider restart can produce another observation. The
   catalog's analytics uniqueness rules deduplicate by keyed identity within

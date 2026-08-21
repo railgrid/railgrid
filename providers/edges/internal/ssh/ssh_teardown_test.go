@@ -169,13 +169,14 @@ func TestSSHSessionTeardown(t *testing.T) {
 	// Create a WebSocket server/client pair (in-process).
 	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
-	var serverConn *websocket.Conn
+	type upgradeResult struct {
+		conn *websocket.Conn
+		err  error
+	}
+	upgraded := make(chan upgradeResult, 1)
 	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var err error
-		serverConn, err = upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			t.Errorf("upgrading: %v", err)
-		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		upgraded <- upgradeResult{conn: conn, err: err}
 	}))
 	defer wsServer.Close()
 
@@ -186,10 +187,17 @@ func TestSSHSessionTeardown(t *testing.T) {
 	}
 	defer clientConn.Close() //nolint:errcheck
 
-	// Wait until the handler has upgraded.
-	time.Sleep(50 * time.Millisecond)
-	if serverConn == nil {
-		t.Fatal("server WebSocket conn not set")
+	// Synchronize with the handler so the server-side connection is published
+	// before the test reads it.
+	var serverConn *websocket.Conn
+	select {
+	case result := <-upgraded:
+		if result.err != nil {
+			t.Fatalf("upgrading: %v", result.err)
+		}
+		serverConn = result.conn
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for server WebSocket upgrade")
 	}
 
 	// Create the SocketSSHSession using the server-side WS connection.

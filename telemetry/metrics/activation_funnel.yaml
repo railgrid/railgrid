@@ -1,6 +1,6 @@
 version: 1
 key_path: activation_funnel
-description: Independently workspace-deduplicated 28-day activation milestone volumes from workspace creation through first-edge readiness; not a cohort-conversion funnel.
+description: Independently workspace-deduplicated 28-day workspace creation and provider enablement volumes; not a cohort-conversion funnel.
 owner: platform
 product_group: platform
 product_categories: [activation]
@@ -18,8 +18,4 @@ events:
     unique: workspace
     filter:
       outcome: success
-  - name: edge_first_ready
-    unique: workspace
-    filter:
-      outcome: ready
 labels: {}

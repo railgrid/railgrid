@@ -1,14 +1,13 @@
 version: 1
 internal_events: true
 action: edge_first_ready
-description: The first connected edge reached Ready for a Faros workspace.
+description: The first connected edge reached Ready for an opaque provider tenant scope.
 owner: edges
 product_group: edges
 product_categories:
   - connectivity
 identifiers:
-  - org
-  - workspace
+  - scope
   - resource
 tiers:
   - free
@@ -20,7 +19,7 @@ introduced_by_url: https://github.com/faroshq/faros
 retention_days: 90
 privacy:
   class: pseudonymous
-  pseudonymize: [org, workspace, resource]
+  pseudonymize: [scope, resource]
   no_raw_content: true
 additional_properties:
   edge_type:

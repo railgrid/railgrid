@@ -43,9 +43,11 @@ type Event = sdktelemetry.Event
 type Identifiers struct {
 	Org       string `json:"org,omitempty"`
 	Workspace string `json:"workspace,omitempty"`
+	Scope     string `json:"scope,omitempty"`
 	Project   string `json:"project,omitempty"`
 	Resource  string `json:"resource,omitempty"`
 	Actor     string `json:"actor,omitempty"`
+	Run       string `json:"run,omitempty"`
 }
 
 // Record is the only data shape a sink can observe. Every identifier is a

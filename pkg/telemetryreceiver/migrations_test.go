@@ -53,8 +53,14 @@ func TestEmbeddedMigrationParsesWithGoose(t *testing.T) {
 		}
 	})
 	sources := provider.ListSources()
-	if len(sources) != 3 || sources[0].Version != 1 || sources[0].Path != "001_initial.sql" || sources[1].Version != 2 || sources[1].Path != "002_metric_projections.sql" || sources[2].Version != 3 || sources[2].Path != "003_retention_and_funnel_labels.sql" {
+	wantSources := []string{"001_initial.sql", "002_metric_projections.sql", "003_retention_and_funnel_labels.sql", "004_erasure_installation_scope.sql", "005_durable_installation_erasure.sql", "006_utc_metric_windows.sql"}
+	if len(sources) != len(wantSources) {
 		t.Fatalf("goose sources = %+v", sources)
+	}
+	for index, want := range wantSources {
+		if sources[index].Version != int64(index+1) || sources[index].Path != want {
+			t.Fatalf("goose source %d = %+v, want %s", index, sources[index], want)
+		}
 	}
 	raw, err := fs.ReadFile(migrationFS, "002_metric_projections.sql")
 	if err != nil {
@@ -71,7 +77,29 @@ func TestEmbeddedMigrationParsesWithGoose(t *testing.T) {
 	sql = string(raw)
 	if !strings.Contains(sql, "PRIMARY KEY (bucket_start, metric_key, event_type, funnel_step") ||
 		!strings.Contains(sql, "COALESCE(u.labels, '{}'::jsonb) AS labels") ||
-		!strings.Contains(sql, "u.event_type = c.event_type") {
+		!strings.Contains(sql, "u.event_type = c.event_type") ||
+		!strings.Contains(sql, "ADD COLUMN IF NOT EXISTS event_type") {
 		t.Fatal("migration 003 must bind uniqueness retention to event type and preserve funnel labels")
+	}
+	raw, err = fs.ReadFile(migrationFS, "004_erasure_installation_scope.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "RENAME COLUMN tenant_id TO installation_id") {
+		t.Fatal("migration 004 must make the installation-wide erasure scope explicit")
+	}
+	raw, err = fs.ReadFile(migrationFS, "005_durable_installation_erasure.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "faros_telemetry_erased_installations") {
+		t.Fatal("migration 005 must persist installation erasure tombstones")
+	}
+	raw, err = fs.ReadFile(migrationFS, "006_utc_metric_windows.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "CURRENT_TIMESTAMP AT TIME ZONE 'UTC'") {
+		t.Fatal("migration 006 must make metric windows independent of the database session timezone")
 	}
 }

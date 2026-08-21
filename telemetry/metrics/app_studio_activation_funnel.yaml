@@ -1,6 +1,6 @@
 version: 1
 key_path: app_studio_activation_funnel
-description: Independently deduplicated 28-day project creation, preview-ready, and accepted production-binding stage volumes; not runtime readiness or an ordered cohort funnel.
+description: Independently deduplicated 28-day project creation, preview-ready, and initial-publication stage volumes; re-promotions and runtime readiness are excluded, and this is not an ordered cohort funnel.
 owner: app-studio
 product_group: app_studio
 product_categories: [activation, publishing]

@@ -63,7 +63,7 @@ FROM counters c
 JOIN faros_telemetry_metric_aggregates a
   ON a.metric_key = c.metric_key
  AND a.funnel_step = ''
- AND (c.window_days = 0 OR a.bucket_start >= CURRENT_DATE - (c.window_days - 1))
+ AND (c.window_days = 0 OR a.bucket_start >= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date - (c.window_days - 1))
 GROUP BY c.metric_key, a.labels, c.window_days;
 
 -- Windowed distinct values use the raw uniqueness rows so the same subject is
@@ -76,7 +76,7 @@ FROM faros_telemetry_metric_catalog c
 LEFT JOIN faros_telemetry_metric_uniques u
   ON u.metric_key = c.metric_key
  AND u.funnel_step = c.funnel_step
- AND (c.window_days = 0 OR u.bucket_start >= CURRENT_DATE - (c.window_days - 1))
+ AND (c.window_days = 0 OR u.bucket_start >= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date - (c.window_days - 1))
 WHERE c.metric_kind = 'funnel'
 GROUP BY c.metric_key, c.funnel_step, c.step_order, c.window_days;
 
@@ -89,3 +89,14 @@ CREATE VIEW faros_telemetry_pipeline_health AS
 SELECT bucket_start, event_type, event_count
 FROM faros_telemetry_aggregates
 WHERE source = 'faros-hub';
+
+-- +goose Down
+
+DROP VIEW IF EXISTS faros_telemetry_pipeline_health;
+DROP VIEW IF EXISTS faros_telemetry_activation_current;
+DROP VIEW IF EXISTS faros_telemetry_funnel_current;
+DROP VIEW IF EXISTS faros_telemetry_counter_current;
+DROP VIEW IF EXISTS faros_telemetry_metric_daily;
+DROP TABLE IF EXISTS faros_telemetry_metric_catalog;
+DROP TABLE IF EXISTS faros_telemetry_metric_uniques;
+DROP TABLE IF EXISTS faros_telemetry_metric_aggregates;

@@ -82,7 +82,9 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	if !s.authorized(r, s.config.IngestToken) {
+	installationID, installationOK := normalizeTenantID(r.Header.Get(InstallationHeader))
+	expectedToken, knownInstallation := s.config.IngestTokens[installationID]
+	if !installationOK || !knownInstallation || !s.authorized(r, expectedToken) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -114,6 +116,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	for _, event := range events {
+		if event.Tenant != installationID {
+			s.metrics.events.WithLabelValues("rejected").Add(float64(len(events)))
+			s.metrics.batches.WithLabelValues("rejected").Inc()
+			writeError(w, http.StatusBadRequest, "batch installation does not match authenticated installation")
+			return
+		}
+	}
 	now := time.Now().UTC()
 	for i := range events {
 		events[i].ReceivedAt = now
@@ -122,6 +132,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.metrics.events.WithLabelValues("rejected").Add(float64(len(events)))
 		s.metrics.batches.WithLabelValues("rejected").Inc()
+		if errors.Is(err, ErrInstallationErased) {
+			writeError(w, http.StatusGone, "telemetry installation has been erased")
+			return
+		}
 		writeError(w, http.StatusServiceUnavailable, "telemetry persistence unavailable")
 		return
 	}
@@ -153,18 +167,18 @@ func (s *Server) handleErasure(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	request.RequestID = strings.TrimSpace(request.RequestID)
-	tenantID, tenantOK := normalizeTenantID(request.TenantID)
-	request.TenantID = tenantID
-	if request.RequestID == "" || !tenantOK || len(request.RequestID) > 128 {
+	installationID, installationOK := normalizeTenantID(request.InstallationID)
+	request.InstallationID = installationID
+	if request.RequestID == "" || !installationOK || len(request.RequestID) > 128 {
 		s.metrics.erasure.WithLabelValues("rejected").Inc()
-		writeError(w, http.StatusBadRequest, "request_id and tenant_id are required")
+		writeError(w, http.StatusBadRequest, "request_id and installation_id are required")
 		return
 	}
-	result, err := s.store.EraseTenant(r.Context(), request)
+	result, err := s.store.EraseInstallation(r.Context(), request)
 	if err != nil {
 		if errors.Is(err, ErrErasureConflict) {
 			s.metrics.erasure.WithLabelValues("rejected").Inc()
-			writeError(w, http.StatusConflict, "request_id is already associated with another tenant")
+			writeError(w, http.StatusConflict, "request_id is already associated with another installation")
 			return
 		}
 		s.metrics.erasure.WithLabelValues("rejected").Inc()

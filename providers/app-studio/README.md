@@ -143,6 +143,8 @@ with the ServiceAccount token in that kubeconfig; `FAROS_HUB_TOKEN` remains the
 separate heartbeat credential. Enabled instrumentation reports only bounded
 activation events (stable scope/project/actor IDs and fixed outcomes); it does
 not send project names, prompts, URLs, commits, source content, or credentials.
+Enabled telemetry requires an HTTPS `FAROS_HUB_URL`; `FAROS_HUB_INSECURE=true`
+permits HTTP only as an explicit development escape hatch.
 
 ## Health and readiness
 

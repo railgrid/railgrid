@@ -23,6 +23,7 @@ import (
 
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/database"
+	"github.com/pressly/goose/v3/lock"
 )
 
 //go:embed migrations/*.sql
@@ -40,11 +41,14 @@ func RunMigrations(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("create telemetry migration store: %w", err)
 	}
-	provider, err := goose.NewProvider("", db, migrationFS, goose.WithStore(store))
+	locker, err := lock.NewPostgresSessionLocker(lock.WithLockID(7332441102637434447))
+	if err != nil {
+		return fmt.Errorf("create telemetry migration lock: %w", err)
+	}
+	provider, err := goose.NewProvider("", db, migrationFS, goose.WithStore(store), goose.WithSessionLocker(locker))
 	if err != nil {
 		return fmt.Errorf("create telemetry migration provider: %w", err)
 	}
-	defer func() { _ = provider.Close() }()
 	if _, err := provider.Up(ctx); err != nil {
 		return fmt.Errorf("run telemetry migrations: %w", err)
 	}

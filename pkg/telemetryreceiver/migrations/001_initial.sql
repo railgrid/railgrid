@@ -33,3 +33,9 @@ CREATE TABLE IF NOT EXISTS faros_telemetry_erasure_requests (
     created_at TIMESTAMPTZ NOT NULL,
     deleted_raw BIGINT NOT NULL
 );
+
+-- +goose Down
+
+DROP TABLE IF EXISTS faros_telemetry_erasure_requests;
+DROP TABLE IF EXISTS faros_telemetry_aggregates;
+DROP TABLE IF EXISTS faros_telemetry_events;

@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -47,6 +48,12 @@ func (s *PostgresStore) SyncCatalog(ctx context.Context) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	// Reconcile instead of only upserting. Metrics marked removed must stop
+	// appearing in the stable analytics views after an upgrade, even though
+	// their anonymous aggregate rows remain until normal retention removes them.
+	if _, err := tx.Exec(ctx, `DELETE FROM faros_telemetry_metric_catalog`); err != nil {
+		return fmt.Errorf("clear telemetry metric catalog: %w", err)
+	}
 	for _, rule := range s.plan.CatalogRows() {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO faros_telemetry_metric_catalog
@@ -69,6 +76,27 @@ func (s *PostgresStore) Insert(ctx context.Context, events []Event) (IngestStats
 		return IngestStats{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	installations := make([]string, 0, len(events))
+	seenInstallations := make(map[string]struct{}, len(events))
+	for _, event := range events {
+		if _, seen := seenInstallations[event.Tenant]; !seen {
+			seenInstallations[event.Tenant] = struct{}{}
+			installations = append(installations, event.Tenant)
+		}
+	}
+	sort.Strings(installations)
+	for _, installationID := range installations {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('faros-telemetry-installation:' || $1))`, installationID); err != nil {
+			return IngestStats{}, fmt.Errorf("lock telemetry installation: %w", err)
+		}
+		var erased bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM faros_telemetry_erased_installations WHERE installation_id = $1)`, installationID).Scan(&erased); err != nil {
+			return IngestStats{}, fmt.Errorf("check telemetry installation erasure: %w", err)
+		}
+		if erased {
+			return IngestStats{}, ErrInstallationErased
+		}
+	}
 	var stats IngestStats
 	for _, event := range events {
 		typeName, ok := normalizeEventType(event.Type)
@@ -139,7 +167,7 @@ func (s *PostgresStore) Insert(ctx context.Context, events []Event) (IngestStats
 	return stats, nil
 }
 
-func (s *PostgresStore) EraseTenant(ctx context.Context, request ErasureRequest) (ErasureResult, error) {
+func (s *PostgresStore) EraseInstallation(ctx context.Context, request ErasureRequest) (ErasureResult, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return ErasureResult{}, err
@@ -148,10 +176,13 @@ func (s *PostgresStore) EraseTenant(ctx context.Context, request ErasureRequest)
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, request.RequestID); err != nil {
 		return ErasureResult{}, fmt.Errorf("lock telemetry erasure request: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('faros-telemetry-installation:' || $1))`, request.InstallationID); err != nil {
+		return ErasureResult{}, fmt.Errorf("lock telemetry installation: %w", err)
+	}
 	var result ErasureResult
-	err = tx.QueryRow(ctx, `SELECT request_id, tenant_id, deleted_raw FROM faros_telemetry_erasure_requests WHERE request_id = $1 FOR UPDATE`, request.RequestID).Scan(&result.RequestID, &result.TenantID, &result.DeletedRaw)
+	err = tx.QueryRow(ctx, `SELECT request_id, installation_id, deleted_raw FROM faros_telemetry_erasure_requests WHERE request_id = $1 FOR UPDATE`, request.RequestID).Scan(&result.RequestID, &result.InstallationID, &result.DeletedRaw)
 	if err == nil {
-		if result.TenantID != request.TenantID {
+		if result.InstallationID != request.InstallationID {
 			return ErasureResult{}, ErrErasureConflict
 		}
 		result.Existing = true
@@ -163,15 +194,21 @@ func (s *PostgresStore) EraseTenant(ctx context.Context, request ErasureRequest)
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return ErasureResult{}, fmt.Errorf("check telemetry erasure request: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO faros_telemetry_erased_installations (installation_id, request_id, erased_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (installation_id) DO NOTHING`, request.InstallationID, request.RequestID); err != nil {
+		return ErasureResult{}, fmt.Errorf("tombstone telemetry installation: %w", err)
+	}
 	if err := tx.QueryRow(ctx, `
 		WITH deleted_events AS (DELETE FROM faros_telemetry_events WHERE tenant_id = $1 RETURNING 1),
 		deleted_uniques AS (DELETE FROM faros_telemetry_metric_uniques WHERE tenant_id = $1 RETURNING 1)
-		SELECT (SELECT COUNT(*) FROM deleted_events) + (SELECT COUNT(*) FROM deleted_uniques)`, request.TenantID).Scan(&result.DeletedRaw); err != nil {
+		SELECT (SELECT COUNT(*) FROM deleted_events) + (SELECT COUNT(*) FROM deleted_uniques)`, request.InstallationID).Scan(&result.DeletedRaw); err != nil {
 		return ErasureResult{}, fmt.Errorf("delete telemetry events: %w", err)
 	}
 	result.RequestID = request.RequestID
-	result.TenantID = request.TenantID
-	if _, err := tx.Exec(ctx, `INSERT INTO faros_telemetry_erasure_requests (request_id, tenant_id, created_at, deleted_raw) VALUES ($1, $2, NOW(), $3)`, request.RequestID, request.TenantID, result.DeletedRaw); err != nil {
+	result.InstallationID = request.InstallationID
+	if _, err := tx.Exec(ctx, `INSERT INTO faros_telemetry_erasure_requests (request_id, installation_id, created_at, deleted_raw) VALUES ($1, $2, NOW(), $3)`, request.RequestID, request.InstallationID, result.DeletedRaw); err != nil {
 		return ErasureResult{}, fmt.Errorf("record telemetry erasure: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -197,6 +234,17 @@ func (s *PostgresStore) PurgeExpired(ctx context.Context, now time.Time, rawRete
 		}
 		result.DeletedRaw += deleted
 	}
+	// Catalog entries are intended to remain as removed tombstones, but enforce
+	// the operator's global bound even if an old binary or accidental catalog
+	// deletion leaves an event type unknown to the current registry.
+	var deletedUnknown int64
+	if err := tx.QueryRow(ctx, `
+		WITH deleted_events AS (DELETE FROM faros_telemetry_events WHERE received_at < $1 RETURNING 1),
+		deleted_uniques AS (DELETE FROM faros_telemetry_metric_uniques WHERE created_at < $1 RETURNING 1)
+		SELECT (SELECT COUNT(*) FROM deleted_events) + (SELECT COUNT(*) FROM deleted_uniques)`, now.Add(-boundedRawRetention(rawRetention))).Scan(&deletedUnknown); err != nil {
+		return PurgeResult{}, fmt.Errorf("purge telemetry data at global retention bound: %w", err)
+	}
+	result.DeletedRaw += deletedUnknown
 	var deletedReceipts int64
 	if err := tx.QueryRow(ctx, `WITH deleted AS (DELETE FROM faros_telemetry_erasure_requests WHERE created_at < $1 RETURNING 1) SELECT COUNT(*) FROM deleted`, now.Add(-boundedRawRetention(rawRetention))).Scan(&deletedReceipts); err != nil {
 		return PurgeResult{}, fmt.Errorf("purge telemetry erasure receipts: %w", err)
@@ -206,7 +254,8 @@ func (s *PostgresStore) PurgeExpired(ctx context.Context, now time.Time, rawRete
 		return PurgeResult{}, fmt.Errorf("purge telemetry aggregates: %w", err)
 	}
 	var deletedMetrics int64
-	if err := tx.QueryRow(ctx, `WITH deleted AS (DELETE FROM faros_telemetry_metric_aggregates WHERE bucket_start < $1::date RETURNING 1) SELECT COUNT(*) FROM deleted`, now.Add(-aggregateRetention)).Scan(&deletedMetrics); err != nil {
+	aggregateCutoffDate := now.Add(-aggregateRetention).UTC().Format("2006-01-02")
+	if err := tx.QueryRow(ctx, `WITH deleted AS (DELETE FROM faros_telemetry_metric_aggregates WHERE bucket_start < $1::date RETURNING 1) SELECT COUNT(*) FROM deleted`, aggregateCutoffDate).Scan(&deletedMetrics); err != nil {
 		return PurgeResult{}, fmt.Errorf("purge telemetry metric aggregates: %w", err)
 	}
 	result.DeletedAggregate += deletedMetrics

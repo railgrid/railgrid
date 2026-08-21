@@ -27,8 +27,9 @@ import (
 
 var identifierValue = map[string]func(Event) string{
 	"org": func(e Event) string { return e.OrgID }, "workspace": func(e Event) string { return e.WorkspaceID },
+	"scope":   func(e Event) string { return e.ScopeID },
 	"project": func(e Event) string { return e.ProjectID }, "resource": func(e Event) string { return e.ResourceID },
-	"actor": func(e Event) string { return e.Actor },
+	"actor": func(e Event) string { return e.Actor }, "run": func(e Event) string { return e.CorrelationID },
 }
 
 func validateProviderEvent(provider string, e Event) error {

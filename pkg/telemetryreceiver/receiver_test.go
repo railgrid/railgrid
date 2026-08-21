@@ -31,6 +31,11 @@ import (
 	"github.com/faroshq/faros/telemetry/generated"
 )
 
+const (
+	tenantAIngestToken = "ingest-tenant-a-0000"
+	tenantBIngestToken = "ingest-tenant-b-0000"
+)
+
 func testEvent(id, tenant string) cloudevents.Event {
 	definition, ok := generated.LookupEvent(generated.ActionOrganizationCreated)
 	if !ok {
@@ -67,13 +72,20 @@ func batchRequest(t *testing.T, path, token string, events ...cloudevents.Event)
 	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(payload))
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Content-Type", CloudEventsBatchContentType)
+	if len(events) > 0 {
+		if installationID, err := events[0].Context.GetExtension("tenant"); err == nil {
+			if value, ok := installationID.(string); ok {
+				request.Header.Set(InstallationHeader, strings.TrimSpace(value))
+			}
+		}
+	}
 	return request
 }
 
 func testServer(t *testing.T) (*Server, *MemoryStore) {
 	t.Helper()
 	store := NewMemoryStore()
-	server, err := NewServer(store, Config{IngestToken: "ingest-secret-000", AdminToken: "admin-secret-0000"})
+	server, err := NewServer(store, Config{IngestTokens: map[string]string{"tenant-a": tenantAIngestToken, "tenant-b": tenantBIngestToken}, AdminToken: "admin-secret-0000"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,10 +258,16 @@ func TestIngestAuthDuplicateAndMetrics(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized status = %d, want %d", response.Code, http.StatusUnauthorized)
 	}
+	spoofedInstallation := batchRequest(t, "/v1/events", tenantAIngestToken, testEvent("spoofed", "tenant-b"))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, spoofedInstallation)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("cross-installation token status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
 
 	for i := 0; i < 2; i++ {
 		response = httptest.NewRecorder()
-		handler.ServeHTTP(response, batchRequest(t, "/v1/events", "ingest-secret-000", event))
+		handler.ServeHTTP(response, batchRequest(t, "/v1/events", tenantAIngestToken, event))
 		if response.Code != http.StatusAccepted {
 			t.Fatalf("ingest status = %d, want %d", response.Code, http.StatusAccepted)
 		}
@@ -278,7 +296,7 @@ func TestIngestAuthDuplicateAndMetrics(t *testing.T) {
 }
 
 func TestNewServerRejectsIdenticalCredentials(t *testing.T) {
-	_, err := NewServer(NewMemoryStore(), Config{IngestToken: "same-secret-0000", AdminToken: "same-secret-0000"})
+	_, err := NewServer(NewMemoryStore(), Config{IngestTokens: map[string]string{"tenant-a": "same-secret-0000"}, AdminToken: "same-secret-0000"})
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("NewServer() error = %v, want ErrInvalidConfig", err)
 	}
@@ -286,10 +304,12 @@ func TestNewServerRejectsIdenticalCredentials(t *testing.T) {
 
 func TestNewServerRejectsWeakOrWhitespaceCredentials(t *testing.T) {
 	for _, cfg := range []Config{
-		{IngestToken: "short", AdminToken: "admin-secret-0000"},
-		{IngestToken: "ingest-secret-000", AdminToken: "short"},
-		{IngestToken: "ingest secret-000", AdminToken: "admin-secret-0000"},
-		{IngestToken: "ingest-secret-000", AdminToken: "admin-secret-000\n"},
+		{IngestTokens: map[string]string{"tenant-a": "short"}, AdminToken: "admin-secret-0000"},
+		{IngestTokens: map[string]string{"tenant-a": tenantAIngestToken}, AdminToken: "short"},
+		{IngestTokens: map[string]string{"tenant-a": "ingest secret-000"}, AdminToken: "admin-secret-0000"},
+		{IngestTokens: map[string]string{"tenant-a": tenantAIngestToken}, AdminToken: "admin-secret-000\n"},
+		{IngestTokens: map[string]string{" tenant-a ": tenantAIngestToken}, AdminToken: "admin-secret-0000"},
+		{IngestTokens: map[string]string{"tenant-a": tenantAIngestToken, "tenant-b": tenantAIngestToken}, AdminToken: "admin-secret-0000"},
 	} {
 		if _, err := NewServer(NewMemoryStore(), cfg); !errors.Is(err, ErrInvalidConfig) {
 			t.Fatalf("NewServer(%+v) error = %v, want ErrInvalidConfig", cfg, err)
@@ -301,12 +321,17 @@ func TestErasureIsIdempotentAndRetainsAggregates(t *testing.T) {
 	server, store := testServer(t)
 	handler := server.Handler()
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, batchRequest(t, "/v1/events", "ingest-secret-000", testEvent("event-1", "tenant-a"), testEvent("event-2", "tenant-b")))
+	handler.ServeHTTP(response, batchRequest(t, "/v1/events", tenantAIngestToken, testEvent("event-1", "tenant-a")))
 	if response.Code != http.StatusAccepted {
-		t.Fatalf("ingest status = %d", response.Code)
+		t.Fatalf("tenant-a ingest status = %d", response.Code)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, batchRequest(t, "/v1/events", tenantBIngestToken, testEvent("event-2", "tenant-b")))
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("tenant-b ingest status = %d", response.Code)
 	}
 
-	body := `{"request_id":"erase-1","tenant_id":"tenant-a"}`
+	body := `{"request_id":"erase-1","installation_id":"tenant-a"}`
 	request := httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer admin-secret-0000")
 	response = httptest.NewRecorder()
@@ -317,6 +342,12 @@ func TestErasureIsIdempotentAndRetainsAggregates(t *testing.T) {
 	raw, aggregate := store.Counts()
 	if raw != 1 || aggregate != 1 {
 		t.Fatalf("post-erasure counts = raw %d aggregate %d, want 1 and 1", raw, aggregate)
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, batchRequest(t, "/v1/events", tenantAIngestToken, testEvent("late-retry", "tenant-a")))
+	if response.Code != http.StatusGone {
+		t.Fatalf("post-erasure ingest status = %d, want %d", response.Code, http.StatusGone)
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(body))
@@ -331,7 +362,7 @@ func TestErasureIsIdempotentAndRetainsAggregates(t *testing.T) {
 		t.Fatalf("repeat erasure result = %+v", result)
 	}
 
-	request = httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(`{"request_id":"erase-1","tenant_id":"tenant-b"}`))
+	request = httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(`{"request_id":"erase-1","installation_id":"tenant-b"}`))
 	request.Header.Set("Authorization", "Bearer admin-secret-0000")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -355,7 +386,7 @@ func TestErasureIsIdempotentAndRetainsAggregates(t *testing.T) {
 		t.Fatalf("oversize erasure status = %d, want %d", response.Code, http.StatusBadRequest)
 	}
 
-	request = httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(`{"request_id":"erase-space","tenant_id":"  tenant-b  "}`))
+	request = httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(`{"request_id":"erase-space","installation_id":"  tenant-b  "}`))
 	request.Header.Set("Authorization", "Bearer admin-secret-0000")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -410,6 +441,15 @@ func TestRetentionAndReadiness(t *testing.T) {
 	}
 	if _, err := io.ReadAll(response.Body); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRetentionValidationProtectsCatalogWindows(t *testing.T) {
+	if err := ValidateRetention(28*24*time.Hour, 24*time.Hour, time.Hour); err != nil {
+		t.Fatalf("catalog-compatible retention rejected: %v", err)
+	}
+	if err := ValidateRetention(27*24*time.Hour, 13*30*24*time.Hour, time.Hour); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("short raw retention error = %v, want ErrInvalidConfig", err)
 	}
 }
 

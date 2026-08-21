@@ -58,7 +58,7 @@ helm upgrade --install edges oci://ghcr.io/faroshq/charts/faros-edges-provider \
 | `hub.tokenSecretRef` |  | Bearer token for the heartbeat POST. Secret-backed; empty → unauthenticated heartbeat (dev only). |
 | `hub.tokenSecretRef.name` | `""` |  |
 | `hub.tokenSecretRef.key` | `token` |  |
-| `hub.insecure` | `false` | Skip TLS verify on heartbeat — dev only. |
+| `hub.insecure` | `false` | Skip TLS verification and allow HTTP telemetry transport for explicit local/development use only. |
 | `hub.caData` | `""` | Hub CA bundle (PEM) embedded into per-agent kubeconfigs so agents trust the hub serving cert. Provide EITHER caData (inline PEM) or caSecretRef. |
 | `hub.caSecretRef.name` | `""` |  |
 | `hub.caSecretRef.key` | `ca.crt` |  |

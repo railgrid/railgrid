@@ -110,14 +110,13 @@ func (t *edgeReadyTelemetry) track(ctx context.Context, gvr schema.GroupVersionR
 		t.tracker = producttelemetry.NoopTracker{}
 	}
 
-	// The background tunnel path has the tenant logical-cluster ID but no org
-	// UUID. Keep both required catalog identifiers equal to that stable opaque
-	// tenant scope; this is explicitly not a claimed organization UUID.
+	// The background tunnel path has only the tenant logical-cluster ID. Report
+	// it truthfully as an opaque scope rather than duplicating it into org and
+	// workspace fields whose semantics it cannot prove.
 	event := producttelemetry.Event{
-		Action:      edgesFirstReadyAction,
-		OrgID:       tenant,
-		WorkspaceID: tenant,
-		ResourceID:  edgeResourceID(tenant, gvr, name),
+		Action:     edgesFirstReadyAction,
+		ScopeID:    tenant,
+		ResourceID: edgeResourceID(tenant, gvr, name),
 		Properties: map[string]any{
 			"edge_type": edgeType,
 			"outcome":   "ready",

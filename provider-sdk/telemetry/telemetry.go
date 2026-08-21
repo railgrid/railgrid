@@ -46,6 +46,8 @@ const (
 	DefaultEnqueueTimeout = 10 * time.Millisecond
 	DefaultSendTimeout    = 2 * time.Second
 	DefaultCloseTimeout   = 2 * time.Second
+	DefaultMaxRetries     = 3
+	DefaultInitialBackoff = 50 * time.Millisecond
 
 	// These bounds keep event reporting from becoming an unbounded request
 	// body or an accidental raw-data transport. The receiver has its own
@@ -78,6 +80,11 @@ var (
 	ErrQueueFull = errors.New("telemetry queue is full")
 	// ErrClosed indicates that a client has been closed.
 	ErrClosed = errors.New("telemetry client is closed")
+	// ErrDeliveryFailed reports asynchronous events that exhausted bounded
+	// delivery retries. It is returned only from Close, never from Track.
+	ErrDeliveryFailed = errors.New("telemetry delivery failed")
+	// ErrCloseTimeout reports that the sender did not stop before CloseTimeout.
+	ErrCloseTimeout = errors.New("telemetry close deadline exceeded")
 )
 
 var (
@@ -116,6 +123,7 @@ type Event struct {
 	OccurredAt    time.Time      `json:"occurred_at"`
 	OrgID         string         `json:"org_id,omitempty"`
 	WorkspaceID   string         `json:"workspace_id,omitempty"`
+	ScopeID       string         `json:"scope_id,omitempty"`
 	ProjectID     string         `json:"project_id,omitempty"`
 	ResourceID    string         `json:"resource_id,omitempty"`
 	Actor         string         `json:"actor,omitempty"`
@@ -131,11 +139,16 @@ type Config struct {
 	ProviderName  string
 	HubURL        string
 	ProviderToken string
+	// AllowInsecure permits an http HubURL for explicit local/development use.
+	// Production telemetry should always leave this false.
+	AllowInsecure bool
 
 	QueueSize      int
 	EnqueueTimeout time.Duration
 	SendTimeout    time.Duration
 	CloseTimeout   time.Duration
+	MaxRetries     int
+	InitialBackoff time.Duration
 
 	MaxEventBytes    int
 	MaxProperties    int
@@ -162,6 +175,8 @@ type Client struct {
 	enqueueTimeout   time.Duration
 	sendTimeout      time.Duration
 	closeTimeout     time.Duration
+	maxRetries       int
+	initialBackoff   time.Duration
 	maxEventBytes    int
 	maxProperties    int
 	maxPropertyBytes int
@@ -173,7 +188,9 @@ type Client struct {
 	mu        sync.RWMutex
 	closed    bool
 	closeOnce sync.Once
+	closeErr  error
 	enabled   bool
+	failed    uint64
 }
 
 var _ Tracker = (*Client)(nil)
@@ -197,7 +214,7 @@ func NewClient(cfg Config) (Tracker, error) {
 		return nil, fmt.Errorf("telemetry: provider bearer token contains invalid characters: %w", ErrInvalidConfig)
 	}
 
-	endpoint, err := providerEndpoint(cfg.HubURL, provider)
+	endpoint, err := providerEndpoint(cfg.HubURL, provider, cfg.AllowInsecure)
 	if err != nil {
 		return nil, err
 	}
@@ -230,6 +247,20 @@ func NewClient(cfg Config) (Tracker, error) {
 	if closeTimeout < 0 || closeTimeout > 10*time.Second {
 		return nil, fmt.Errorf("telemetry: close timeout must be between 0 and 10s: %w", ErrInvalidConfig)
 	}
+	maxRetries := cfg.MaxRetries
+	if maxRetries == 0 {
+		maxRetries = DefaultMaxRetries
+	}
+	if maxRetries < 1 || maxRetries > 10 {
+		return nil, fmt.Errorf("telemetry: max retries must be between 1 and 10: %w", ErrInvalidConfig)
+	}
+	initialBackoff := cfg.InitialBackoff
+	if initialBackoff == 0 {
+		initialBackoff = DefaultInitialBackoff
+	}
+	if initialBackoff < 0 || initialBackoff > time.Second {
+		return nil, fmt.Errorf("telemetry: initial backoff must be between 0 and 1s: %w", ErrInvalidConfig)
+	}
 
 	maxEventBytes := cfg.MaxEventBytes
 	if maxEventBytes == 0 {
@@ -257,6 +288,10 @@ func NewClient(cfg Config) (Tracker, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
+	// Redirects are never part of the telemetry contract. Following one can
+	// forward the provider bearer and event body to a different or downgraded
+	// destination, so override even an injected client's redirect policy.
+	httpClient = cloneWithoutRedirects(httpClient)
 	workerCtx, cancel := context.WithCancel(context.Background())
 	c := &Client{
 		provider:         provider,
@@ -267,6 +302,8 @@ func NewClient(cfg Config) (Tracker, error) {
 		enqueueTimeout:   enqueueTimeout,
 		sendTimeout:      sendTimeout,
 		closeTimeout:     closeTimeout,
+		maxRetries:       maxRetries,
+		initialBackoff:   initialBackoff,
 		maxEventBytes:    maxEventBytes,
 		maxProperties:    maxProperties,
 		maxPropertyBytes: maxPropertyBytes,
@@ -279,13 +316,13 @@ func NewClient(cfg Config) (Tracker, error) {
 	return c, nil
 }
 
-func providerEndpoint(rawHubURL, provider string) (string, error) {
+func providerEndpoint(rawHubURL, provider string, allowInsecure bool) (string, error) {
 	hubURL, err := url.Parse(strings.TrimSpace(rawHubURL))
 	if err != nil || hubURL.Scheme == "" || hubURL.Host == "" || hubURL.User != nil {
 		return "", fmt.Errorf("telemetry: invalid hub URL: %w", ErrInvalidConfig)
 	}
-	if hubURL.Scheme != "http" && hubURL.Scheme != "https" {
-		return "", fmt.Errorf("telemetry: hub URL scheme must be http or https: %w", ErrInvalidConfig)
+	if hubURL.Scheme != "https" && !(allowInsecure && hubURL.Scheme == "http") {
+		return "", fmt.Errorf("telemetry: hub URL must use https unless insecure transport is explicitly allowed: %w", ErrInvalidConfig)
 	}
 	if hubURL.RawQuery != "" || hubURL.Fragment != "" {
 		return "", fmt.Errorf("telemetry: hub URL must not contain query or fragment: %w", ErrInvalidConfig)
@@ -293,6 +330,12 @@ func providerEndpoint(rawHubURL, provider string) (string, error) {
 	hubURL.Path = strings.TrimRight(hubURL.Path, "/") + fmt.Sprintf(DefaultEndpointPath, provider)
 	hubURL.RawPath = ""
 	return hubURL.String(), nil
+}
+
+func cloneWithoutRedirects(client *http.Client) *http.Client {
+	cloned := *client
+	cloned.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &cloned
 }
 
 // Track validates, snapshots, and enqueues an event. It never waits for the
@@ -347,6 +390,7 @@ func (c *Client) prepareEvent(event Event) ([]byte, error) {
 	}
 	for name, value := range map[string]string{
 		"org_id": event.OrgID, "workspace_id": event.WorkspaceID,
+		"scope_id":   event.ScopeID,
 		"project_id": event.ProjectID, "resource_id": event.ResourceID,
 	} {
 		if err := validateIdentifier(name, value, DefaultMaxIdentifierBytes); err != nil {
@@ -503,7 +547,11 @@ func (c *Client) run() {
 			if !ok {
 				return
 			}
-			c.send(payload)
+			if err := c.sendWithRetry(payload); err != nil {
+				c.mu.Lock()
+				c.failed++
+				c.mu.Unlock()
+			}
 		}
 		if c.workerCtx.Err() != nil {
 			return
@@ -511,24 +559,55 @@ func (c *Client) run() {
 	}
 }
 
-func (c *Client) send(payload []byte) {
+func (c *Client) sendWithRetry(payload []byte) error {
+	var lastErr error
+	for attempt := 0; attempt < c.maxRetries; attempt++ {
+		retry, err := c.send(payload)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !retry || attempt+1 >= c.maxRetries {
+			break
+		}
+		backoff := c.initialBackoff << attempt
+		if backoff > time.Second {
+			backoff = time.Second
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-c.workerCtx.Done():
+			timer.Stop()
+			return c.workerCtx.Err()
+		case <-timer.C:
+		}
+	}
+	return lastErr
+}
+
+func (c *Client) send(payload []byte) (bool, error) {
 	ctx, cancel := context.WithTimeout(c.workerCtx, c.sendTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return
+		return false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("X-Faros-Provider", c.provider)
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return
+		return true, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	// Drain only a tiny bounded response body to permit connection reuse. Never
 	// include response text in an error or log: receivers may echo payload data.
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		retry := resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooEarly || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
+		return retry, fmt.Errorf("telemetry: hub returned status %d", resp.StatusCode)
+	}
+	return false, nil
 }
 
 // Enabled reports whether this client owns a sender worker.
@@ -567,13 +646,25 @@ func (c *Client) Close() error {
 		defer timer.Stop()
 		select {
 		case <-c.workerDone:
-			return
+			c.cancel()
 		case <-timer.C:
 			// Do not wait for a misbehaving injected RoundTripper after the
 			// deadline. The worker checks workerCtx before starting another
 			// event; compliant transports exit immediately on cancellation.
 			c.cancel()
+			c.closeErr = ErrCloseTimeout
+		}
+		c.mu.Lock()
+		failed := c.failed
+		c.mu.Unlock()
+		if failed > 0 {
+			deliveryErr := fmt.Errorf("%w: %d event(s)", ErrDeliveryFailed, failed)
+			if c.closeErr != nil {
+				c.closeErr = errors.Join(c.closeErr, deliveryErr)
+			} else {
+				c.closeErr = deliveryErr
+			}
 		}
 	})
-	return nil
+	return c.closeErr
 }

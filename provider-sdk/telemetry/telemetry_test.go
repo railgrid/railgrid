@@ -77,6 +77,7 @@ func TestHTTPClientPostsBoundedEventToProviderEndpoint(t *testing.T) {
 		ProviderName:  "app-studio",
 		HubURL:        server.URL + "/hub/",
 		ProviderToken: "provider-secret",
+		AllowInsecure: true,
 		QueueSize:     2,
 		SendTimeout:   time.Second,
 	})
@@ -148,6 +149,7 @@ func TestTrackDoesNotWaitForSlowNetworkBeyondEnqueueTimeout(t *testing.T) {
 		ProviderName:   "code",
 		HubURL:         server.URL,
 		ProviderToken:  "token",
+		AllowInsecure:  true,
 		QueueSize:      1,
 		EnqueueTimeout: 20 * time.Millisecond,
 		SendTimeout:    100 * time.Millisecond,
@@ -187,6 +189,7 @@ func TestCloseCancelsBlockedSendAndRejectsLaterEvents(t *testing.T) {
 		ProviderName:  "code",
 		HubURL:        "http://hub.example",
 		ProviderToken: "token",
+		AllowInsecure: true,
 		CloseTimeout:  30 * time.Millisecond,
 		SendTimeout:   10 * time.Second,
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -210,8 +213,8 @@ func TestCloseCancelsBlockedSendAndRejectsLaterEvents(t *testing.T) {
 	}
 
 	startedClose := time.Now()
-	if err := tracker.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
+	if err := tracker.Close(); !errors.Is(err, ErrCloseTimeout) {
+		t.Fatalf("Close() error = %v, want ErrCloseTimeout", err)
 	}
 	if elapsed := time.Since(startedClose); elapsed > 500*time.Millisecond {
 		t.Fatalf("Close blocked for %v, want bounded shutdown", elapsed)
@@ -236,6 +239,7 @@ func TestTrackRejectsInvalidAndOversizedEventsBeforeNetwork(t *testing.T) {
 		ProviderName:  "code",
 		HubURL:        "http://hub.example",
 		ProviderToken: "token",
+		AllowInsecure: true,
 		MaxEventBytes: 256,
 		MaxProperties: 2,
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -273,6 +277,94 @@ func TestNewClientRequiresEnabledConfigurationAndNoopIsSafe(t *testing.T) {
 	}
 	if err := tracker.Track(nil, Event{}); err != nil {
 		t.Fatalf("noop Track() error = %v", err)
+	}
+}
+
+func TestEnabledClientRequiresSecureTransportByDefault(t *testing.T) {
+	if _, err := NewClient(Config{Enabled: true, ProviderName: "code", HubURL: "http://hub.example", ProviderToken: "token"}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("NewClient() error = %v, want insecure transport rejection", err)
+	}
+	tracker, err := NewClient(Config{Enabled: true, ProviderName: "code", HubURL: "http://hub.example", ProviderToken: "token", AllowInsecure: true})
+	if err != nil {
+		t.Fatalf("explicit development transport rejected: %v", err)
+	}
+	if err := tracker.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestClientDoesNotForwardBearerOrPayloadAcrossRedirect(t *testing.T) {
+	var redirectedCalls atomic.Int32
+	redirected := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		redirectedCalls.Add(1)
+	}))
+	defer redirected.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", redirected.URL)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	tracker, err := NewClient(Config{Enabled: true, ProviderName: "code", HubURL: source.URL, ProviderToken: "token", AllowInsecure: true, MaxRetries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.Track(context.Background(), Event{Action: "code_event"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.Close(); !errors.Is(err, ErrDeliveryFailed) {
+		t.Fatalf("Close() error = %v, want delivery failure", err)
+	}
+	if got := redirectedCalls.Load(); got != 0 {
+		t.Fatalf("redirect target received %d telemetry requests", got)
+	}
+}
+
+func TestClientRetriesTransientStatusesAndReportsPermanentFailure(t *testing.T) {
+	var transientCalls atomic.Int32
+	transient, err := NewClient(Config{
+		Enabled: true, ProviderName: "code", HubURL: "https://hub.example", ProviderToken: "token", InitialBackoff: time.Millisecond,
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			call := transientCalls.Add(1)
+			status := http.StatusServiceUnavailable
+			if call == 3 {
+				status = http.StatusAccepted
+			}
+			return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := transient.Track(context.Background(), Event{Action: "code_event"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := transient.Close(); err != nil {
+		t.Fatalf("transient delivery Close() error = %v", err)
+	}
+	if got := transientCalls.Load(); got != 3 {
+		t.Fatalf("transient attempts = %d, want 3", got)
+	}
+
+	var permanentCalls atomic.Int32
+	permanent, err := NewClient(Config{
+		Enabled: true, ProviderName: "code", HubURL: "https://hub.example", ProviderToken: "token",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			permanentCalls.Add(1)
+			return &http.Response{StatusCode: http.StatusBadRequest, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := permanent.Track(context.Background(), Event{Action: "code_event"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := permanent.Close(); !errors.Is(err, ErrDeliveryFailed) {
+		t.Fatalf("permanent delivery Close() error = %v, want ErrDeliveryFailed", err)
+	}
+	if got := permanentCalls.Load(); got != 1 {
+		t.Fatalf("permanent attempts = %d, want 1", got)
 	}
 }
 

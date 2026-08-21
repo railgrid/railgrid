@@ -99,7 +99,7 @@ project names, prompts, URLs, commits, source content, or credentials.
 | `hub.actionsCABundleConfigMap` |  | Optional public CA bundle for that origin. The referenced ConfigMap is mounted at a dedicated path so it augments (never masks) image/system trust. Leave empty when the origin chains to the system CA. |
 | `hub.actionsCABundleConfigMap.name` | `""` |  |
 | `hub.actionsCABundleConfigMap.key` | `ca-bundle.pem` |  |
-| `hub.insecure` | `false` |  |
+| `hub.insecure` | `false` | Skip TLS verification and allow HTTP telemetry transport for explicit local/development use only. |
 | `hub.tokenSecretRef.name` | `""` |  |
 | `hub.tokenSecretRef.key` | `token` |  |
 | `podLabels` | `{}` |  |

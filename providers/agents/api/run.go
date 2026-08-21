@@ -496,7 +496,7 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 	}
 	if terminal {
 		if _, wasTerminal := terminalRunOutcome(priorPhase); !wasTerminal {
-			s.trackRunTerminal(finalizeCtx, scope, stored.AgentName, outcome)
+			s.trackRunTerminal(finalizeCtx, scope, stored.AgentName, stored.ID, outcome)
 		}
 	}
 }

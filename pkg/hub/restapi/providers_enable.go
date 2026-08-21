@@ -158,7 +158,7 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.mgr.bootstrapper.EnsureProviderAPIBinding(
+	bindingCreated, err := h.mgr.bootstrapper.EnsureProviderAPIBinding(
 		r.Context(),
 		tc.OrgUUID,
 		tc.WorkspaceUUID,
@@ -166,7 +166,8 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		prov.APIExportPath,
 		prov.APIExportName,
 		claims,
-	); err != nil {
+	)
+	if err != nil {
 		// A stale cross-provider identity is a configuration conflict, not a
 		// server fault, and it is the caller who can act on it — so return the
 		// detail rather than burying it in a 500. Enabling anyway would create
@@ -192,7 +193,7 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if prov.OrgUUID == "" {
+	if prov.OrgUUID == "" && bindingCreated {
 		h.mgr.trackPlatform(r.Context(), hubtelemetry.Event{
 			Action:      generated.ActionProviderEnabled,
 			OccurredAt:  time.Now().UTC(),

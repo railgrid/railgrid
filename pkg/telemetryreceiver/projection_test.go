@@ -42,17 +42,14 @@ func TestGeneratedProjectionPlanIsDeterministicAndAppliesFiltersLabelsUnique(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(projections) != 2 {
-		t.Fatalf("ready projections = %d, want counter and funnel", len(projections))
+	if len(projections) != 1 {
+		t.Fatalf("ready projections = %d, want edge counter only", len(projections))
 	}
 	if projections[0].BucketStart != "2026-08-22" {
 		t.Fatalf("bucket = %q, want trusted receiver date", projections[0].BucketStart)
 	}
-	if projections[0].MetricKey != "activation_funnel" || projections[0].FunnelStep != generated.ActionEdgeFirstReady || projections[0].UniqueKind != "workspace" {
-		t.Fatalf("funnel projection = %+v", projections[0])
-	}
-	if projections[1].MetricKey != "edge_first_ready_total" || string(projections[1].Labels) != `{"edge_type":"linux_server","outcome":"ready"}` || projections[1].UniqueKind != "workspace" {
-		t.Fatalf("counter projection = %+v", projections[1])
+	if projections[0].MetricKey != "edge_first_ready_total" || string(projections[0].Labels) != `{"edge_type":"linux_server","outcome":"ready"}` || projections[0].UniqueKind != "scope" {
+		t.Fatalf("counter projection = %+v", projections[0])
 	}
 	promoted := receiverTestEvent(generated.ActionAppStudioProjectPublished, "tenant-a", event.Time, map[string]interface{}{"outcome": "promoted"})
 	promoted.ReceivedAt = event.ReceivedAt
@@ -96,7 +93,7 @@ func TestMemoryProjectionDedupErasureAndRetention(t *testing.T) {
 	if aggregates != 1 || uniques != 1 {
 		t.Fatalf("projection counts = %d aggregates, %d uniques, want 1 and 1", aggregates, uniques)
 	}
-	if _, err := store.EraseTenant(context.Background(), ErasureRequest{RequestID: "erase", TenantID: "tenant-a"}); err != nil {
+	if _, err := store.EraseInstallation(context.Background(), ErasureRequest{RequestID: "erase", InstallationID: "tenant-a"}); err != nil {
 		t.Fatal(err)
 	}
 	aggregates, uniques = store.ProjectionCounts()

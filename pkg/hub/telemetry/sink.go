@@ -28,6 +28,7 @@ import (
 )
 
 const cloudEventsBatchContentType = "application/cloudevents-batch+json"
+const installationHeader = "X-Faros-Installation-ID"
 
 type HTTPSink struct {
 	endpoint, token string
@@ -38,12 +39,21 @@ func NewHTTPSink(endpoint, token string, client *http.Client) *HTTPSink {
 	if client == nil {
 		client = &http.Client{}
 	}
-	return &HTTPSink{endpoint: strings.TrimSpace(endpoint), token: strings.TrimSpace(token), client: client}
+	cloned := *client
+	cloned.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &HTTPSink{endpoint: strings.TrimSpace(endpoint), token: strings.TrimSpace(token), client: &cloned}
 }
 
 func (s *HTTPSink) Send(ctx context.Context, records []Record) error {
+	if len(records) == 0 {
+		return nil
+	}
+	installationID := records[0].InstallationID
 	events := make([]cloudevents.Event, 0, len(records))
 	for _, record := range records {
+		if record.InstallationID == "" || record.InstallationID != installationID {
+			return fmt.Errorf("CloudEvents batch contains mixed installations")
+		}
 		e := cloudevents.NewEvent()
 		e.SetID(record.EventID)
 		e.SetSource("faros://installation/" + record.InstallationID + "/hub")
@@ -66,6 +76,7 @@ func (s *HTTPSink) Send(ctx context.Context, records []Record) error {
 	}
 	req.Header.Set("Authorization", "Bearer "+s.token)
 	req.Header.Set("Content-Type", cloudEventsBatchContentType)
+	req.Header.Set(installationHeader, installationID)
 	resp, err := s.client.Do(req)
 	if err != nil {
 		return err

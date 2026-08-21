@@ -51,7 +51,7 @@ var (
 )
 
 var allowedIdentifiers = map[string]struct{}{
-	"org": {}, "workspace": {}, "project": {}, "actor": {}, "resource": {},
+	"org": {}, "workspace": {}, "scope": {}, "project": {}, "actor": {}, "resource": {}, "run": {},
 }
 
 var allowedTiers = map[string]struct{}{
@@ -62,9 +62,7 @@ var allowedPropertyTypes = map[string]struct{}{
 	"boolean": {}, "number": {}, "string": {},
 }
 
-var allowedPrivacyClasses = map[string]struct{}{
-	"aggregate": {}, "pseudonymous": {},
-}
+var allowedPrivacyClasses = map[string]struct{}{"pseudonymous": {}}
 
 var allowedMetricKinds = map[string]struct{}{
 	"counter": {}, "funnel": {},
@@ -179,6 +177,10 @@ func LoadFromEventDirs(eventDirs []string, metricsDir string) (Registry, error) 
 // LoadWithEventDirs is the explicit-root variant used by code generation and
 // tests that need the full platform/provider catalog.
 func LoadWithEventDirs(eventDirs []string, metricsDir, schemaDir string) (Registry, error) {
+	repositoryRoot := filepath.Dir(filepath.Dir(filepath.Clean(schemaDir)))
+	if absoluteRoot, err := filepath.Abs(repositoryRoot); err == nil {
+		repositoryRoot = absoluteRoot
+	}
 	eventSchema, err := compileSchema(filepath.Join(schemaDir, "event.schema.json"))
 	if err != nil {
 		return Registry{}, err
@@ -187,11 +189,11 @@ func LoadWithEventDirs(eventDirs []string, metricsDir, schemaDir string) (Regist
 	if err != nil {
 		return Registry{}, err
 	}
-	events, err := loadEventsFromDirs(eventDirs, eventSchema)
+	events, err := loadEventsFromDirs(eventDirs, repositoryRoot, eventSchema)
 	if err != nil {
 		return Registry{}, err
 	}
-	metrics, err := loadMetrics(metricsDir, metricSchema)
+	metrics, err := loadMetrics(metricsDir, repositoryRoot, metricSchema)
 	if err != nil {
 		return Registry{}, err
 	}
@@ -205,10 +207,10 @@ func LoadWithEventDirs(eventDirs []string, metricsDir, schemaDir string) (Regist
 // loadEvents is kept small and useful for package tests that exercise a
 // single temporary root. It recursively discovers YAML files.
 func loadEvents(dir string, schemas ...*jsonschema.Schema) ([]EventDefinition, error) {
-	return loadEventsFromDirs([]string{dir}, schemas...)
+	return loadEventsFromDirs([]string{dir}, filepath.Dir(filepath.Clean(dir)), schemas...)
 }
 
-func loadEventsFromDirs(dirs []string, schemas ...*jsonschema.Schema) ([]EventDefinition, error) {
+func loadEventsFromDirs(dirs []string, displayRoot string, schemas ...*jsonschema.Schema) ([]EventDefinition, error) {
 	files, err := yamlFilesInDirs(dirs)
 	if err != nil {
 		return nil, err
@@ -233,13 +235,13 @@ func loadEventsFromDirs(dirs []string, schemas ...*jsonschema.Schema) ([]EventDe
 		if event.Action != want {
 			return nil, fmt.Errorf("event %s action %q does not match filename %q", path, event.Action, want)
 		}
-		event.SourcePath = displayPath(path)
+		event.SourcePath = displayPath(displayRoot, path)
 		events = append(events, event)
 	}
 	return events, nil
 }
 
-func loadMetrics(dir string, schemas ...*jsonschema.Schema) ([]MetricDefinition, error) {
+func loadMetrics(dir, displayRoot string, schemas ...*jsonschema.Schema) ([]MetricDefinition, error) {
 	files, err := yamlFiles(dir)
 	if err != nil {
 		return nil, err
@@ -259,7 +261,7 @@ func loadMetrics(dir string, schemas ...*jsonschema.Schema) ([]MetricDefinition,
 		if err := yaml.UnmarshalStrict(raw, &metric); err != nil {
 			return nil, fmt.Errorf("parse metric %s: %w", path, err)
 		}
-		metric.SourcePath = displayPath(path)
+		metric.SourcePath = displayPath(displayRoot, path)
 		metrics = append(metrics, metric)
 	}
 	return metrics, nil
@@ -354,12 +356,10 @@ func yamlFilesInDirs(dirs []string) ([]string, error) {
 	return files, nil
 }
 
-func displayPath(path string) string {
+func displayPath(root, path string) string {
 	path = filepath.Clean(path)
-	if cwd, err := os.Getwd(); err == nil {
-		if relative, err := filepath.Rel(cwd, path); err == nil {
-			path = relative
-		}
+	if relative, err := filepath.Rel(filepath.Clean(root), path); err == nil {
+		path = relative
 	}
 	return filepath.ToSlash(path)
 }

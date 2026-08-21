@@ -167,16 +167,17 @@ func (f *fakeOps) EnsureChildWorkspaceDefaultMCPServer(_ context.Context, orgUUI
 // provider-enable handler. The handler is exercised via its own
 // dedicated tests; for the existing org/workspace flows it just needs
 // to not error.
-func (f *fakeOps) EnsureProviderAPIBinding(_ context.Context, orgUUID, wsUUID, bindingName, _, _ string, _ []kcp.ProviderClaim) error {
+func (f *fakeOps) EnsureProviderAPIBinding(_ context.Context, orgUUID, wsUUID, bindingName, _, _ string, _ []kcp.ProviderClaim) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := wsKey{orgUUID, wsUUID}
 	if f.providerBindings[key] == nil {
 		f.providerBindings[key] = map[string]string{}
 	}
+	_, existed := f.providerBindings[key][bindingName]
 	f.providerBindings[key][bindingName] = bindingName
 	f.providerBindCalls[key]++
-	return nil
+	return !existed, nil
 }
 
 // StaleClaimIdentities reports no stale claims. The mismatch logic is exercised

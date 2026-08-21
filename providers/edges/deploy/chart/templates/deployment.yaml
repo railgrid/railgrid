@@ -1,3 +1,6 @@
+{{- if and .Values.telemetry.enabled (not .Values.hub.insecure) (not (hasPrefix "https://" .Values.hub.url)) -}}
+{{- fail "telemetry.enabled requires an HTTPS hub.url; set hub.insecure=true only for explicit local/development HTTP" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -95,13 +98,11 @@ spec:
               value: {{ .Values.internalPort | quote }}
             - name: FAROS_PROVIDER_NAME
               value: "edges"
-            {{- if .Values.telemetry.enabled }}
             # Product telemetry is deliberately opt-in. The provider's
             # asynchronous client authenticates with the ServiceAccount token
             # from FAROS_PROVIDER_KUBECONFIG; the heartbeat token is unrelated.
             - name: FAROS_PRODUCT_TELEMETRY_ENABLED
-              value: "true"
-            {{- end }}
+              value: {{ .Values.telemetry.enabled | quote }}
             - name: FAROS_HUB_URL
               value: {{ .Values.hub.url | quote }}
             - name: FAROS_HUB_EXTERNAL_URL

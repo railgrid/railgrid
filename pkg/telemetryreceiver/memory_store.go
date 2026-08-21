@@ -59,6 +59,7 @@ type MemoryStore struct {
 	metricAggregates map[memoryMetricKey]int64
 	uniques          map[memoryUniqueKey]memoryUnique
 	erasures         map[string]memoryErasure
+	erased           map[string]struct{}
 	plan             ProjectionPlan
 }
 
@@ -73,6 +74,7 @@ func NewMemoryStore() *MemoryStore {
 		metricAggregates: make(map[memoryMetricKey]int64),
 		uniques:          make(map[memoryUniqueKey]memoryUnique),
 		erasures:         make(map[string]memoryErasure),
+		erased:           make(map[string]struct{}),
 		plan:             plan,
 	}
 }
@@ -104,6 +106,11 @@ func (s *MemoryStore) Insert(_ context.Context, events []Event) (IngestStats, er
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for _, event := range normalizedEvents {
+		if _, erased := s.erased[event.Tenant]; erased {
+			return IngestStats{}, ErrInstallationErased
+		}
+	}
 	var stats IngestStats
 	for index, event := range normalizedEvents {
 		key := memoryEventKey(event)
@@ -138,33 +145,34 @@ func (s *MemoryStore) Insert(_ context.Context, events []Event) (IngestStats, er
 	return stats, nil
 }
 
-func (s *MemoryStore) EraseTenant(_ context.Context, request ErasureRequest) (ErasureResult, error) {
+func (s *MemoryStore) EraseInstallation(_ context.Context, request ErasureRequest) (ErasureResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if previous, exists := s.erasures[request.RequestID]; exists {
-		if previous.request.TenantID != request.TenantID {
+		if previous.request.InstallationID != request.InstallationID {
 			return ErasureResult{}, ErrErasureConflict
 		}
 		result := previous.result
 		result.Existing = true
 		return result, nil
 	}
+	s.erased[request.InstallationID] = struct{}{}
 	var raw int64
 	for key, stored := range s.events {
-		if stored.event.Tenant == request.TenantID {
+		if stored.event.Tenant == request.InstallationID {
 			delete(s.events, key)
 			raw++
 		}
 	}
 	for key := range s.uniques {
-		if key.tenant == request.TenantID {
+		if key.tenant == request.InstallationID {
 			delete(s.uniques, key)
 			raw++
 		}
 	}
 	// Aggregates intentionally omit tenant identity. Once materialized, their
 	// contribution cannot be separated and is retained through erasure.
-	result := ErasureResult{RequestID: request.RequestID, TenantID: request.TenantID, DeletedRaw: raw}
+	result := ErasureResult{RequestID: request.RequestID, InstallationID: request.InstallationID, DeletedRaw: raw}
 	s.erasures[request.RequestID] = memoryErasure{request: request, result: result, created: time.Now().UTC()}
 	return result, nil
 }

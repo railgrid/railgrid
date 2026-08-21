@@ -153,6 +153,7 @@ func newProductTelemetryTracker() producttelemetry.Tracker {
 		ProviderName:  "agents",
 		HubURL:        os.Getenv("FAROS_HUB_URL"),
 		ProviderToken: providerTelemetryToken(),
+		AllowInsecure: hubInsecure,
 		HTTPClient:    productTelemetryHTTPClient(hubInsecure),
 	})
 	if err != nil {

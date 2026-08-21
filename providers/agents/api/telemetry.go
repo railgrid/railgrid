@@ -97,18 +97,20 @@ func terminalRunOutcome(phase store.RunPhase) (string, bool) {
 	}
 }
 
-func (s *Server) trackRunTerminal(ctx context.Context, scope store.Scope, agentName, outcome string) {
+func (s *Server) trackRunTerminal(ctx context.Context, scope store.Scope, agentName, runID, outcome string) {
 	orgUUID := strings.TrimSpace(scope.OrgUUID)
 	workspaceUUID := strings.TrimSpace(scope.WorkspaceUUID)
 	name := strings.TrimSpace(agentName)
-	if orgUUID == "" || workspaceUUID == "" || name == "" || outcome == "" {
+	runID = strings.TrimSpace(runID)
+	if orgUUID == "" || workspaceUUID == "" || name == "" || runID == "" || outcome == "" {
 		return
 	}
 	s.trackProductEvent(ctx, producttelemetry.Event{
-		Action:      agentsRunTerminalAction,
-		OrgID:       orgUUID,
-		WorkspaceID: workspaceUUID,
-		ResourceID:  agentResourceID(orgUUID, workspaceUUID, name),
-		Properties:  map[string]any{"outcome": outcome},
+		Action:        agentsRunTerminalAction,
+		OrgID:         orgUUID,
+		WorkspaceID:   workspaceUUID,
+		ResourceID:    agentResourceID(orgUUID, workspaceUUID, name),
+		CorrelationID: runID,
+		Properties:    map[string]any{"outcome": outcome},
 	})
 }

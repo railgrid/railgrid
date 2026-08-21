@@ -29,7 +29,7 @@
         "required": ["name"],
         "properties": {
           "name": {"type": "string", "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"},
-          "unique": {"enum": ["org", "workspace", "project", "actor", "resource"]},
+          "unique": {"enum": ["org", "workspace", "scope", "project", "actor", "resource", "run"]},
           "filter": {"type": "object", "additionalProperties": {"type": "string"}}
         }
       }

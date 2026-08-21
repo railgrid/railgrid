@@ -303,12 +303,14 @@ func newProductTelemetryTracker(hubURL, providerToken string) producttelemetry.T
 	if !productTelemetryEnabled() {
 		return producttelemetry.NoopTracker{}
 	}
+	hubInsecure := strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_HUB_INSECURE")), "true")
 	tracker, err := producttelemetry.NewClient(producttelemetry.Config{
 		Enabled:       true,
 		ProviderName:  "edges",
 		HubURL:        hubURL,
 		ProviderToken: providerToken,
-		HTTPClient:    productTelemetryHTTPClient(strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_HUB_INSECURE")), "true")),
+		AllowInsecure: hubInsecure,
+		HTTPClient:    productTelemetryHTTPClient(hubInsecure),
 	})
 	if err != nil {
 		// Do not include configuration values, credentials, or event data in the

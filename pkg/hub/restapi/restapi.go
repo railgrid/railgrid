@@ -116,8 +116,9 @@ type WorkspaceOps interface {
 	// the POST .../providers/{name}/enable handler — see
 	// pkg/hub/kcp/bootstrap.go for the rationale (proxy's
 	// defaultCluster pre-check would 403 any user attempt against a
-	// non-default workspace, even with valid RBAC).
-	EnsureProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName, exportPath, exportName string, claims []kcp.ProviderClaim) error
+	// non-default workspace, even with valid RBAC). The returned bool is true
+	// only when this call created the binding.
+	EnsureProviderAPIBinding(ctx context.Context, orgUUID, wsUUID, bindingName, exportPath, exportName string, claims []kcp.ProviderClaim) (bool, error)
 
 	// ListProviderAPIBindings returns the set of provider APIBindings
 	// (those referencing root:faros:providers:*) in the target

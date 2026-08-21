@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -50,10 +51,14 @@ func main() {
 
 func run(logger *slog.Logger) error {
 	dsn := os.Getenv("TELEMETRY_DATABASE_URL")
-	ingestToken := os.Getenv("TELEMETRY_INGEST_TOKEN")
+	ingestTokensJSON := os.Getenv("TELEMETRY_INGEST_TOKENS_JSON")
 	adminToken := os.Getenv("TELEMETRY_ADMIN_TOKEN")
-	if dsn == "" || ingestToken == "" || adminToken == "" {
-		return errors.New("TELEMETRY_DATABASE_URL, TELEMETRY_INGEST_TOKEN, and TELEMETRY_ADMIN_TOKEN are required")
+	if dsn == "" || ingestTokensJSON == "" || adminToken == "" {
+		return errors.New("TELEMETRY_DATABASE_URL, TELEMETRY_INGEST_TOKENS_JSON, and TELEMETRY_ADMIN_TOKEN are required")
+	}
+	var ingestTokens map[string]string
+	if err := json.Unmarshal([]byte(ingestTokensJSON), &ingestTokens); err != nil {
+		return errors.New("TELEMETRY_INGEST_TOKENS_JSON must be a JSON object of installation IDs to bearer tokens")
 	}
 	listenAddr := envString("TELEMETRY_LISTEN_ADDR", defaultListenAddr)
 	maxBatch, err := envInt("TELEMETRY_MAX_BATCH_EVENTS", 1000)
@@ -75,6 +80,9 @@ func run(logger *slog.Logger) error {
 	janitorInterval, err := envDuration("TELEMETRY_JANITOR_INTERVAL", defaultJanitorInterval)
 	if err != nil {
 		return err
+	}
+	if err := telemetryreceiver.ValidateRetention(rawRetention, aggregateRetention, janitorInterval); err != nil {
+		return fmt.Errorf("validate telemetry retention: %w", err)
 	}
 
 	sqlDB, err := sql.Open("pgx", dsn)
@@ -109,7 +117,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	server, err := telemetryreceiver.NewServer(store, telemetryreceiver.Config{
-		IngestToken:    ingestToken,
+		IngestTokens:   ingestTokens,
 		AdminToken:     adminToken,
 		MaxBatchEvents: maxBatch,
 		MaxEventBytes:  maxEventBytes,

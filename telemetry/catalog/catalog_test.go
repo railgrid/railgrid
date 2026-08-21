@@ -110,6 +110,40 @@ func TestValidateRejectsRawContentProperty(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUnsupportedAggregateEventClass(t *testing.T) {
+	event := validEvent()
+	event.Privacy.Class = "aggregate"
+	if err := validateEvent(event); err == nil {
+		t.Fatal("aggregate event class accepted despite carrying identifiers")
+	}
+}
+
+func TestCatalogSourcePathsDoNotDependOnWorkingDirectory(t *testing.T) {
+	repositoryRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventDirs := []string{
+		filepath.Join(repositoryRoot, "telemetry", "events"),
+		filepath.Join(repositoryRoot, "providers", "edges", "telemetry", "events"),
+		filepath.Join(repositoryRoot, "providers", "app-studio", "telemetry", "events"),
+		filepath.Join(repositoryRoot, "providers", "agents", "telemetry", "events"),
+	}
+	load := func() Registry {
+		registry, err := LoadWithEventDirs(eventDirs, filepath.Join(repositoryRoot, "telemetry", "metrics"), filepath.Join(repositoryRoot, "telemetry", "schema"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return registry
+	}
+	first := load()
+	t.Chdir(t.TempDir())
+	second := load()
+	if first.Events[0].SourcePath != second.Events[0].SourcePath || first.Metrics[0].SourcePath != second.Metrics[0].SourcePath {
+		t.Fatalf("source paths changed with cwd: %q/%q versus %q/%q", first.Events[0].SourcePath, first.Metrics[0].SourcePath, second.Events[0].SourcePath, second.Metrics[0].SourcePath)
+	}
+}
+
 func TestValidateRejectsRetentionOverNinetyDays(t *testing.T) {
 	event := validEvent()
 	event.RetentionDays = MaxRawRetentionDays + 1
@@ -176,7 +210,7 @@ func TestLoadEventsRecursivelyRejectsDuplicateActions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	events, err := loadEventsFromDirs([]string{root})
+	events, err := loadEventsFromDirs([]string{root}, root)
 	if err != nil {
 		t.Fatal(err)
 	}
