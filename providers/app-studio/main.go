@@ -25,6 +25,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,6 +42,8 @@ import (
 	"github.com/gorilla/mux"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+
+	producttelemetry "github.com/faroshq/provider-sdk/telemetry"
 
 	"github.com/faroshq/provider-app-studio/api"
 	"github.com/faroshq/provider-app-studio/store"
@@ -68,6 +71,46 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func productTelemetryEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_PRODUCT_TELEMETRY_ENABLED")), "true")
+}
+
+// newProductTelemetryTracker is the only App Studio construction site for
+// the asynchronous SDK client. Self-hosted providers keep the default no-op
+// path and therefore make no telemetry network calls.
+func newProductTelemetryTracker() producttelemetry.Tracker {
+	if !productTelemetryEnabled() {
+		return producttelemetry.NoopTracker{}
+	}
+	hubInsecure := strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_HUB_INSECURE")), "true")
+	tracker, err := producttelemetry.NewClient(producttelemetry.Config{
+		Enabled:       true,
+		ProviderName:  "app-studio",
+		HubURL:        os.Getenv("FAROS_HUB_URL"),
+		ProviderToken: os.Getenv("FAROS_HUB_TOKEN"),
+		HTTPClient:    productTelemetryHTTPClient(hubInsecure),
+	})
+	if err != nil {
+		// Keep the failure bounded and free of configuration values, credentials,
+		// and event data. Product serving continues with telemetry disabled.
+		log.Printf("WARNING product telemetry unavailable; continuing without it")
+		return producttelemetry.NoopTracker{}
+	}
+	return tracker
+}
+
+func productTelemetryHTTPClient(insecureSkipVerify bool) *http.Client {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return &http.Client{}
+	}
+	transport := base.Clone()
+	if insecureSkipVerify {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // explicit local/dev opt-in via FAROS_HUB_INSECURE
+	}
+	return &http.Client{Transport: transport}
 }
 
 func previewConsoleEnvironmentConfig() (bool, string, string) {
@@ -160,6 +203,12 @@ func runServe() {
 	// X-Faros-Cluster per request). Without a hub URL the project API returns
 	// 501 (useful for UI-only dev), with a loud warning.
 	hubInsecure := os.Getenv("FAROS_HUB_INSECURE") == "true"
+	productTracker := newProductTelemetryTracker()
+	defer func() {
+		if err := productTracker.Close(); err != nil {
+			log.Printf("product telemetry shutdown failed")
+		}
+	}()
 	var gqlClient *tenant.GraphQLClient
 	if hubURL := os.Getenv("FAROS_HUB_URL"); hubURL == "" {
 		log.Printf("WARNING project API disabled (no FAROS_HUB_URL)")
@@ -193,6 +242,7 @@ func runServe() {
 			hubInsecure,
 	)
 	apiServer.ConfigureCodingSandbox(sandboxConfig)
+	apiServer.SetTelemetryTracker(productTracker)
 	apiServer.SetPreviewInsecureSkipTLSVerify(os.Getenv("APP_STUDIO_PREVIEW_INSECURE_SKIP_TLS_VERIFY") == "true")
 	// Preview inspection drives the workspace's shared browser (the Studio's
 	// Playwright MCP instance) over the infrastructure data plane — no

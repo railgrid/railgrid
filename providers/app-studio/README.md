@@ -113,6 +113,7 @@ Environment variables consumed by the binary:
 | `PORT` | Listen port (default `8081`) |
 | `FAROS_HUB_URL` | Hub base URL for tenant GraphQL, caller-scoped catalog lookup, and Provider Actions forwarding |
 | `FAROS_HUB_TOKEN` | Bearer token for the heartbeat |
+| `FAROS_PRODUCT_TELEMETRY_ENABLED` | `true` only when explicitly opted in; otherwise no telemetry client or network calls are created |
 | `FAROS_PROVIDER_NAME` | CatalogEntry name (default `app-studio`) |
 | `FAROS_PROVIDER_KUBECONFIG` | Provider kubeconfig (kcp front-proxy host + TLS only) |
 | `FAROS_ACTIONS_EXTERNAL_URL` | Optional absolute HTTPS hub origin, reachable and certificate-valid from sandbox pods, injected into action-enabled development runtimes for workload-token exchange and the declared server-side Actions SDK gateway calls; no local default |
@@ -133,6 +134,14 @@ Environment variables consumed by the binary:
 | `APP_STUDIO_PREVIEW_CONSOLE_ENABLED` | Automatically shares bounded browser-console evidence while the embedded preview is open; set `false` for a deployment-wide kill switch. |
 | `APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY` | PEM-encoded P-256 private key used to sign short-lived ES256 iframe capabilities |
 | `APP_STUDIO_PREVIEW_CONSOLE_SIGNING_KEY_ID` | Stable key ID matching the public JWK independently deployed to the preview bridge |
+
+Product telemetry is disabled by default, including for self-hosted installs.
+Self-hosted deployments make no telemetry network calls unless
+`FAROS_PRODUCT_TELEMETRY_ENABLED=true` is explicitly configured alongside
+`FAROS_HUB_URL` and `FAROS_HUB_TOKEN`. Enabled instrumentation reports only
+bounded activation events (stable scope/project/actor IDs and fixed outcomes);
+it does not send project names, prompts, URLs, commits, source content, or
+credentials.
 
 ## Health and readiness
 

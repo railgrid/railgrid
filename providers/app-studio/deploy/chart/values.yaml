@@ -35,6 +35,12 @@ service:
   type: ClusterIP
   port: 8081
 
+# Product telemetry is opt-in. Keep this false for self-hosted deployments;
+# the provider makes no telemetry network calls unless explicitly enabled and
+# FAROS_HUB_TOKEN/FAROS_HUB_URL are configured.
+telemetry:
+  enabled: false
+
 # When true, the chart renders the CatalogEntry (which registers the provider
 # with the hub) into a ConfigMap that the init container applies into the
 # provider workspace via the provider kubeconfig. The CatalogEntry is a kcp

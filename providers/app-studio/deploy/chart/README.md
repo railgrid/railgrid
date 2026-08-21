@@ -28,6 +28,14 @@ helm upgrade --install app-studio oci://ghcr.io/faroshq/charts/faros-app-studio-
   --set catalogEntry.enabled=true
 ```
 
+### Product telemetry
+
+Product telemetry is disabled by default. Self-hosted installations make no
+telemetry network calls unless `telemetry.enabled=true` is explicitly set and
+the provider has `hub.url` plus `hub.tokenSecretRef` configured. When enabled,
+App Studio sends only bounded activation events to the hub; it never sends
+project names, prompts, URLs, commits, source content, or credentials.
+
 ## Values
 
 | Key | Default | Notes |
@@ -46,6 +54,8 @@ helm upgrade --install app-studio oci://ghcr.io/faroshq/charts/faros-app-studio-
 | `service` |  |  |
 | `service.type` | `ClusterIP` |  |
 | `service.port` | `8081` |  |
+| `telemetry` |  | Product telemetry is opt-in; self-hosted deployments remain off and make no telemetry network calls by default. |
+| `telemetry.enabled` | `false` | Set `true` only for an explicit product telemetry opt-in. Requires `hub.url` and `hub.tokenSecretRef`. |
 | `catalogEntry` |  | When true, the chart renders the CatalogEntry (which registers the provider with the hub) into a ConfigMap that the init container applies into the provider workspace via the provider kubeconfig. The CatalogEntry is a kcp resource, so it is NOT applied to the hosting cluster this chart installs i… |
 | `catalogEntry.enabled` | `true` |  |
 | `catalogEntry.renderAsConfigMap` | `true` |  |

@@ -583,6 +583,7 @@ func (s *Server) promoteProject(ctx context.Context, c *asclient.Client, id iden
 // and bypasses the development dirty-workspace guard: its package digests are
 // immutable evidence independent of the current sandbox contents.
 func (s *Server) promoteProjectWithSelection(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, httpReq *http.Request, values map[string]any, selectedCommitSHA string, commitSelected bool, selectedReleaseIDs ...string) (*aiv1alpha1.Project, projectPromoteResponse, error) {
+	wasPromoted := findProjectProductionBinding(p) != nil
 	releaseIDEvidenceProvided := len(selectedReleaseIDs) > 0
 	selectedReleaseID := ""
 	if releaseIDEvidenceProvided {
@@ -674,6 +675,14 @@ func (s *Server) promoteProjectWithSelection(ctx context.Context, c *asclient.Cl
 	// environment's bindings — the production artifact binding just appended
 	// included — so no explicit provisioning happens here anymore.
 	reconciled := projectWithLiveBindingStatus(ctx, c, updated, id)
+	outcome := "published"
+	if wasPromoted {
+		outcome = "promoted"
+	}
+	// The project spec write and its reconciliation/status projection succeeded;
+	// only now report publication. Validation, build, and update failures above
+	// intentionally emit nothing.
+	s.trackProjectPublished(ctx, id, reconciled, outcome)
 
 	raw, _ := json.Marshal(reconciled)
 	return reconciled, projectPromoteResponse{

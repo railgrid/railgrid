@@ -138,6 +138,13 @@ spec:
             {{- end }}
             - name: FAROS_PROVIDER_NAME
               value: "app-studio"
+            {{- if .Values.telemetry.enabled }}
+            # Product telemetry is deliberately opt-in. The provider's
+            # asynchronous client still requires FAROS_HUB_TOKEN and
+            # FAROS_HUB_URL before it can send anything.
+            - name: FAROS_PRODUCT_TELEMETRY_ENABLED
+              value: "true"
+            {{- end }}
             # Production deployments require the multicluster controller. The
             # provider remains live while it retries, but /readyz stays 503
             # until the manager is running and returns to 503 if it exits.

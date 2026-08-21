@@ -497,6 +497,10 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 			_ = emitProjectCreationStatus(onStatus, "Repository import incomplete — retry from project settings")
 		}
 	}
+	// This is the single success boundary shared by the plain REST and SSE
+	// creation paths (and any internal caller of this helper). All
+	// rollback-capable setup has completed before the event is enqueued.
+	s.trackProjectCreated(ctx, id, updated)
 	return updated, nil
 }
 

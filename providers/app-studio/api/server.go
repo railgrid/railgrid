@@ -33,6 +33,8 @@ import (
 	"github.com/gorilla/mux"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	producttelemetry "github.com/faroshq/provider-sdk/telemetry"
+
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
 	"github.com/faroshq/provider-app-studio/store"
@@ -130,6 +132,14 @@ type Server struct {
 	projectThumbnailFailures    map[string]time.Time
 	projectThumbnailQueue       chan string
 	projectThumbnailWorkersUp   bool
+	// telemetry is optional product instrumentation. It is a no-op unless the
+	// provider process explicitly enables the SDK client; request paths never
+	// depend on telemetry availability.
+	telemetry producttelemetry.Tracker
+	// previewReadyProjects records the first observed ready development preview
+	// for this process. The metric is unique by project, so duplicate portal
+	// polls must not enqueue duplicate events.
+	previewReadyProjects map[string]struct{}
 	// publishingMembershipFetcher is a test seam for the hub-mediated
 	// membership lookup used by the publishing API. Production resolves the
 	// current org/workspace membership through hubBase with the caller's bearer
@@ -169,6 +179,7 @@ func NewWithWorkspaceContext(parent context.Context, gql *tenant.GraphQLClient, 
 		actionsCABundle:          actionsCABundle,
 		actionsCABundleErr:       actionsCABundleErr,
 		mcpInsecureSkipTLSVerify: mcpInsecureSkipTLSVerify,
+		telemetry:                producttelemetry.NoopTracker{},
 		projectThumbnailContext:  thumbnailContext,
 		projectThumbnailCancel:   thumbnailCancel,
 	}

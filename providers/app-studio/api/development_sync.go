@@ -573,8 +573,14 @@ func countRoutedProjectSyncFiles(routed map[string][]projectSandboxSyncFile) int
 // development environment: the template instance's own public URL — the dev
 // overlay keeps the production route wiring, so the dev instance is served
 // where a production one would be. See docs/app-studio-template-sandboxes.md §1.
-func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c *asclient.Client, _ identity, _ *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (projectSandboxPreviewURLResponse, error) {
-	return s.templateDevelopmentPreview(ctx, c, target)
+func (s *Server) authorizeProjectDevelopmentPreviewTarget(ctx context.Context, c *asclient.Client, id identity, project *aiv1alpha1.Project, target projectDevelopmentSyncTargetInfo) (projectSandboxPreviewURLResponse, error) {
+	preview, err := s.templateDevelopmentPreview(ctx, c, target)
+	if err == nil && preview.Ready && strings.TrimSpace(preview.PreviewURL) != "" {
+		// templateDevelopmentPreview only returns Ready after the actual edge
+		// probe succeeds, not when status.url merely exists.
+		s.observeDevelopmentPreviewReady(ctx, id, project)
+	}
+	return preview, err
 }
 
 func (s *Server) projectWorkspaceSyncFiles(ctx context.Context, scope workspace.Scope) (projectWorkspaceSyncSnapshot, error) {

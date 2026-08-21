@@ -24,7 +24,37 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	producttelemetry "github.com/faroshq/provider-sdk/telemetry"
 )
+
+func TestProductTelemetryDisabledByDefault(t *testing.T) {
+	t.Setenv("FAROS_PRODUCT_TELEMETRY_ENABLED", "")
+	t.Setenv("FAROS_HUB_URL", "https://hub.example.invalid")
+	t.Setenv("FAROS_HUB_TOKEN", "provider-token")
+	tracker := newProductTelemetryTracker()
+	if _, ok := tracker.(producttelemetry.NoopTracker); !ok {
+		t.Fatalf("default product telemetry tracker = %T, want telemetry.NoopTracker", tracker)
+	}
+	if err := tracker.Close(); err != nil {
+		t.Fatalf("disabled tracker close: %v", err)
+	}
+}
+
+func TestProductTelemetryOnlyEnablesForExplicitTrue(t *testing.T) {
+	for _, value := range []string{"", "false", "1", "yes"} {
+		t.Run("disabled_"+value, func(t *testing.T) {
+			t.Setenv("FAROS_PRODUCT_TELEMETRY_ENABLED", value)
+			if productTelemetryEnabled() {
+				t.Fatalf("productTelemetryEnabled(%q) = true, want false", value)
+			}
+		})
+	}
+	t.Setenv("FAROS_PRODUCT_TELEMETRY_ENABLED", "true")
+	if !productTelemetryEnabled() {
+		t.Fatal("productTelemetryEnabled(true) = false")
+	}
+}
 
 func TestRunMainRoutesServeToProviderServer(t *testing.T) {
 	var served bool
