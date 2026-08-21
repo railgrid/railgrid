@@ -1,0 +1,12 @@
+{{- if .Values.grafana.dashboards.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "faros-telemetry.fullname" . }}-grafana-dashboard
+  labels:
+    {{- include "faros-telemetry.labels" . | nindent 4 }}
+    {{- toYaml .Values.grafana.dashboards.labels | nindent 4 }}
+data:
+  faros-product-analytics.json: |-
+{{ .Files.Get "dashboards/faros-product-analytics.json" | indent 4 }}
+{{- end }}

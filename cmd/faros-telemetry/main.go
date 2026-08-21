@@ -98,6 +98,11 @@ func run(logger *slog.Logger) error {
 	}
 	defer pool.Close()
 	store := telemetryreceiver.NewPostgresStore(pool)
+	syncCtx, cancelSync := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelSync()
+	if err := store.SyncCatalog(syncCtx); err != nil {
+		return err
+	}
 	server, err := telemetryreceiver.NewServer(store, telemetryreceiver.Config{
 		IngestToken:    ingestToken,
 		AdminToken:     adminToken,

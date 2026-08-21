@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"k8s.io/klog/v2"
 
@@ -35,7 +36,9 @@ import (
 
 	"github.com/faroshq/faros/pkg/hub/kcp"
 	"github.com/faroshq/faros/pkg/hub/providers"
+	hubtelemetry "github.com/faroshq/faros/pkg/hub/telemetry"
 	"github.com/faroshq/faros/pkg/util/identity"
+	"github.com/faroshq/faros/telemetry/generated"
 )
 
 // EnableProviderRequest is the body of POST .../providers/{name}/enable.
@@ -188,6 +191,17 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 			writeStatus(w, http.StatusInternalServerError, "InternalError", "ensure edge-proxy grant: "+err.Error())
 			return
 		}
+	}
+	if prov.OrgUUID == "" {
+		h.mgr.trackPlatform(r.Context(), hubtelemetry.Event{
+			Action:      generated.ActionProviderEnabled,
+			OccurredAt:  time.Now().UTC(),
+			OrgID:       tc.OrgUUID,
+			WorkspaceID: tc.WorkspaceUUID,
+			Actor:       tc.User,
+			ResourceID:  providerName,
+			Properties:  map[string]any{"provider": providerName, "outcome": "success"},
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")

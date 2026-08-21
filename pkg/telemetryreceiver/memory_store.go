@@ -32,6 +32,18 @@ type memoryAggregateKey struct {
 	type_  string
 }
 
+type memoryMetricKey struct {
+	bucket, metric, step, labels string
+}
+
+type memoryUniqueKey struct {
+	bucket, metric, step, labels, tenant, kind, hash string
+}
+
+type memoryUnique struct {
+	createdAt time.Time
+}
+
 type memoryErasure struct {
 	request ErasureRequest
 	result  ErasureResult
@@ -40,17 +52,27 @@ type memoryErasure struct {
 // MemoryStore is a deterministic store for focused receiver tests and local
 // development. Production deployments use PostgresStore.
 type MemoryStore struct {
-	mu         sync.Mutex
-	events     map[string]memoryEvent
-	aggregates map[memoryAggregateKey]int64
-	erasures   map[string]memoryErasure
+	mu               sync.Mutex
+	events           map[string]memoryEvent
+	aggregates       map[memoryAggregateKey]int64
+	metricAggregates map[memoryMetricKey]int64
+	uniques          map[memoryUniqueKey]memoryUnique
+	erasures         map[string]memoryErasure
+	plan             ProjectionPlan
 }
 
 func NewMemoryStore() *MemoryStore {
+	plan, err := GeneratedProjectionPlan()
+	if err != nil {
+		panic(err)
+	}
 	return &MemoryStore{
-		events:     make(map[string]memoryEvent),
-		aggregates: make(map[memoryAggregateKey]int64),
-		erasures:   make(map[string]memoryErasure),
+		events:           make(map[string]memoryEvent),
+		aggregates:       make(map[memoryAggregateKey]int64),
+		metricAggregates: make(map[memoryMetricKey]int64),
+		uniques:          make(map[memoryUniqueKey]memoryUnique),
+		erasures:         make(map[string]memoryErasure),
+		plan:             plan,
 	}
 }
 
@@ -62,6 +84,7 @@ func memoryEventKey(event Event) string {
 
 func (s *MemoryStore) Insert(_ context.Context, events []Event) (IngestStats, error) {
 	normalizedEvents := make([]Event, len(events))
+	allProjections := make([][]Projection, len(events))
 	copy(normalizedEvents, events)
 	for i := range normalizedEvents {
 		typeName, ok := normalizeEventType(normalizedEvents[i].Type)
@@ -69,11 +92,16 @@ func (s *MemoryStore) Insert(_ context.Context, events []Event) (IngestStats, er
 			return IngestStats{}, fmt.Errorf("%w: event type %q is not declared", ErrInvalidEvent, normalizedEvents[i].Type)
 		}
 		normalizedEvents[i].Type = typeName
+		projections, err := s.plan.Project(normalizedEvents[i])
+		if err != nil {
+			return IngestStats{}, fmt.Errorf("project telemetry event: %w", err)
+		}
+		allProjections[i] = projections
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var stats IngestStats
-	for _, event := range normalizedEvents {
+	for index, event := range normalizedEvents {
 		key := memoryEventKey(event)
 		if _, exists := s.events[key]; exists {
 			stats.Duplicates++
@@ -85,6 +113,20 @@ func (s *MemoryStore) Insert(_ context.Context, events []Event) (IngestStats, er
 		}
 		event.ReceivedAt = receivedAt
 		s.events[key] = memoryEvent{event: event, receivedAt: receivedAt}
+		for _, projection := range allProjections[index] {
+			increment := true
+			if projection.UniqueHash != "" {
+				uniqueKey := memoryUniqueKey{projection.BucketStart, projection.MetricKey, projection.FunnelStep, projection.LabelsKey, event.Tenant, projection.UniqueKind, projection.UniqueHash}
+				if _, exists := s.uniques[uniqueKey]; exists {
+					increment = false
+				} else {
+					s.uniques[uniqueKey] = memoryUnique{createdAt: receivedAt}
+				}
+			}
+			if increment {
+				s.metricAggregates[memoryMetricKey{projection.BucketStart, projection.MetricKey, projection.FunnelStep, projection.LabelsKey}]++
+			}
+		}
 		aggregateKey := memoryAggregateKey{bucket: receivedAt.UTC().Truncate(defaultBucket), source: aggregateComponent, type_: event.Type}
 		s.aggregates[aggregateKey]++
 		stats.Accepted++
@@ -110,6 +152,12 @@ func (s *MemoryStore) EraseTenant(_ context.Context, request ErasureRequest) (Er
 			raw++
 		}
 	}
+	for key := range s.uniques {
+		if key.tenant == request.TenantID {
+			delete(s.uniques, key)
+			raw++
+		}
+	}
 	// Aggregates intentionally omit tenant identity. Once materialized, their
 	// contribution cannot be separated and is retained through erasure.
 	result := ErasureResult{RequestID: request.RequestID, TenantID: request.TenantID, DeletedRaw: raw}
@@ -129,13 +177,32 @@ func (s *MemoryStore) PurgeExpired(_ context.Context, now time.Time, rawRetentio
 			result.DeletedRaw++
 		}
 	}
+	for key, stored := range s.uniques {
+		if stored.createdAt.Before(rawCutoff) {
+			delete(s.uniques, key)
+			result.DeletedRaw++
+		}
+	}
 	for key := range s.aggregates {
 		if key.bucket.Before(aggregateCutoff) {
 			delete(s.aggregates, key)
 			result.DeletedAggregate++
 		}
 	}
+	for key := range s.metricAggregates {
+		bucket, err := time.Parse("2006-01-02", key.bucket)
+		if err == nil && bucket.Before(aggregateCutoff) {
+			delete(s.metricAggregates, key)
+			result.DeletedAggregate++
+		}
+	}
 	return result, nil
+}
+
+func (s *MemoryStore) ProjectionCounts() (aggregates, uniques int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.metricAggregates), len(s.uniques)
 }
 
 func (s *MemoryStore) Counts() (raw, aggregate int) {

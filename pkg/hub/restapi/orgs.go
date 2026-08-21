@@ -26,6 +26,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	hubtelemetry "github.com/faroshq/faros/pkg/hub/telemetry"
+	"github.com/faroshq/faros/telemetry/generated"
 )
 
 // CreateOrgRequest is the POST /api/orgs body.
@@ -160,6 +162,13 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 	view := projectOrg(created)
 	// The creator is seeded as the sole admin (Membership + UMI above).
 	view.Role = tenancyv1alpha1.MembershipRoleAdmin
+	h.mgr.trackPlatform(r.Context(), hubtelemetry.Event{
+		Action:     generated.ActionOrganizationCreated,
+		OccurredAt: time.Now().UTC(),
+		OrgID:      created.Name,
+		Actor:      user,
+		Properties: map[string]any{"outcome": "success"},
+	})
 	writeJSON(w, http.StatusCreated, view)
 }
 

@@ -30,12 +30,27 @@ import (
 )
 
 func testEvent(id, tenant string) cloudevents.Event {
+	definition, ok := generated.LookupEvent(generated.ActionOrganizationCreated)
+	if !ok {
+		panic("generated organization event missing")
+	}
+	identifiers := make(map[string]string, len(definition.Identifiers))
+	for _, name := range definition.Identifiers {
+		identifiers[name] = strings.Repeat("a", 64)
+	}
+	properties := make(map[string]interface{}, len(definition.AdditionalProperties))
+	for name, property := range definition.AdditionalProperties {
+		properties[name] = property.Enum[0]
+	}
+	occurredAt := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
 	event := cloudevents.NewEvent()
 	event.SetID(id)
-	event.SetSource("test")
+	event.SetSource("faros://installation/" + strings.TrimSpace(tenant) + "/hub")
 	event.SetType(generated.ActionOrganizationCreated)
+	event.SetSubject(definition.Owner)
+	event.SetTime(occurredAt)
 	event.SetExtension("tenant", tenant)
-	if err := event.SetData(cloudevents.ApplicationJSON, map[string]any{"id": id}); err != nil {
+	if err := event.SetData(cloudevents.ApplicationJSON, Record{InstallationID: strings.TrimSpace(tenant), Provider: definition.Owner, Action: definition.Action, OccurredAt: occurredAt, Identifiers: identifiers, Properties: properties}); err != nil {
 		panic(err)
 	}
 	return event
@@ -161,6 +176,63 @@ func TestParseBatchRejectsUnsupportedSpecVersionAndUndeclaredType(t *testing.T) 
 	}
 }
 
+func TestParseBatchRejectsSpoofedOrNonCatalogRecord(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*cloudevents.Event, *Record)
+	}{
+		{name: "action mismatch", mutate: func(_ *cloudevents.Event, record *Record) { record.Action = "workspace_created" }},
+		{name: "provider mismatch", mutate: func(_ *cloudevents.Event, record *Record) { record.Provider = "edges" }},
+		{name: "subject mismatch", mutate: func(event *cloudevents.Event, _ *Record) { event.SetSubject("edges") }},
+		{name: "installation mismatch", mutate: func(_ *cloudevents.Event, record *Record) { record.InstallationID = "tenant-b" }},
+		{name: "raw identifier", mutate: func(_ *cloudevents.Event, record *Record) { record.Identifiers["org"] = "org-raw" }},
+		{name: "undeclared identifier", mutate: func(_ *cloudevents.Event, record *Record) { record.Identifiers["resource"] = strings.Repeat("b", 64) }},
+		{name: "missing property", mutate: func(_ *cloudevents.Event, record *Record) { delete(record.Properties, "outcome") }},
+		{name: "unbounded property", mutate: func(_ *cloudevents.Event, record *Record) { record.Properties["outcome"] = "anything" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := testEvent("invalid-record", "tenant-a")
+			var record Record
+			if err := json.Unmarshal(event.Data(), &record); err != nil {
+				t.Fatal(err)
+			}
+			tt.mutate(&event, &record)
+			if err := event.SetData(cloudevents.ApplicationJSON, record); err != nil {
+				t.Fatal(err)
+			}
+			payload, err := json.Marshal([]cloudevents.Event{event})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/v1/events", bytes.NewReader(payload))
+			request.Header.Set("Content-Type", CloudEventsBatchContentType)
+			if _, err := ParseBatch(request, payload, 10, 10*1024); !errors.Is(err, ErrInvalidEvent) {
+				t.Fatalf("ParseBatch() error = %v, want ErrInvalidEvent", err)
+			}
+		})
+	}
+
+	event := testEvent("unknown-field", "tenant-a")
+	var raw map[string]interface{}
+	if err := json.Unmarshal(event.Data(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	raw["content"] = "must not pass"
+	if err := event.SetData(cloudevents.ApplicationJSON, raw); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal([]cloudevents.Event{event})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/events", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", CloudEventsBatchContentType)
+	if _, err := ParseBatch(request, payload, 10, 10*1024); !errors.Is(err, ErrInvalidEvent) {
+		t.Fatalf("unknown field error = %v, want ErrInvalidEvent", err)
+	}
+}
+
 func TestIngestAuthDuplicateAndMetrics(t *testing.T) {
 	server, store := testServer(t)
 	handler := server.Handler()
@@ -190,6 +262,10 @@ func TestIngestAuthDuplicateAndMetrics(t *testing.T) {
 	raw, aggregate := store.Counts()
 	if raw != 1 || aggregate != 1 {
 		t.Fatalf("counts = raw %d aggregate %d, want 1 and 1", raw, aggregate)
+	}
+	metricAggregates, uniques := store.ProjectionCounts()
+	if metricAggregates != 2 || uniques != 2 {
+		t.Fatalf("metric duplicate counts = %d aggregates and %d uniques, want 2 and 2", metricAggregates, uniques)
 	}
 
 	metrics := httptest.NewRecorder()
@@ -236,7 +312,7 @@ func TestErasureIsIdempotentAndRetainsAggregates(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
 		t.Fatal(err)
 	}
-	if !result.Existing || result.DeletedRaw != 1 {
+	if !result.Existing || result.DeletedRaw != 3 {
 		t.Fatalf("repeat erasure result = %+v", result)
 	}
 
@@ -275,9 +351,11 @@ func TestErasureIsIdempotentAndRetainsAggregates(t *testing.T) {
 
 func TestMemoryAggregatesUseFixedComponentAndDeclaredType(t *testing.T) {
 	store := NewMemoryStore()
+	event := receiverTestEvent(generated.ActionOrganizationCreated, "tenant-a", time.Unix(0, 0).UTC(), map[string]interface{}{"outcome": "success"})
+	event.ID = "event-1"
 	if _, err := store.Insert(nil, []Event{{
-		Tenant: "tenant-a", ID: "event-1", Source: "faros://installation/tenant-a/hub", Type: generated.ActionOrganizationCreated,
-		DataContentType: "application/json", Data: []byte(`{"ok":true}`), ReceivedAt: time.Unix(0, 0).UTC(),
+		Tenant: event.Tenant, ID: event.ID, Source: event.Source, Type: event.Type, Subject: event.Subject, Time: event.Time,
+		DataContentType: "application/json", Data: event.Data, Record: event.Record, ReceivedAt: event.Time,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +374,10 @@ func TestMemoryAggregatesUseFixedComponentAndDeclaredType(t *testing.T) {
 func TestRetentionAndReadiness(t *testing.T) {
 	server, store := testServer(t)
 	old := time.Now().UTC().Add(-48 * time.Hour)
-	if _, err := store.Insert(nil, []Event{{Tenant: "tenant-a", ID: "old", Source: "test", Type: generated.ActionOrganizationCreated, Time: old, DataContentType: "application/json", Data: []byte(`{"old":true}`), ReceivedAt: old}}); err != nil {
+	event := receiverTestEvent(generated.ActionOrganizationCreated, "tenant-a", old, map[string]interface{}{"outcome": "success"})
+	event.ID = "old"
+	event.ReceivedAt = old
+	if _, err := store.Insert(nil, []Event{event}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.PurgeExpired(nil, time.Now().UTC(), 24*time.Hour, 72*time.Hour); err != nil {
@@ -315,4 +396,21 @@ func TestRetentionAndReadiness(t *testing.T) {
 	if _, err := io.ReadAll(response.Body); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func receiverTestEvent(action, tenant string, occurredAt time.Time, properties map[string]interface{}) Event {
+	definition, ok := generated.LookupEvent(action)
+	if !ok {
+		panic("generated event missing: " + action)
+	}
+	identifiers := make(map[string]string, len(definition.Identifiers))
+	for index, name := range definition.Identifiers {
+		identifiers[name] = strings.Repeat(string(rune('a'+index)), 64)
+	}
+	record := Record{InstallationID: tenant, Provider: definition.Owner, Action: action, OccurredAt: occurredAt, Identifiers: identifiers, Properties: properties}
+	data, err := json.Marshal(record)
+	if err != nil {
+		panic(err)
+	}
+	return Event{Tenant: tenant, ID: action + "-id", Source: "faros://installation/" + tenant + "/hub", Type: action, Subject: definition.Owner, Time: occurredAt, DataContentType: "application/json", Data: data, Record: record, ReceivedAt: occurredAt}
 }

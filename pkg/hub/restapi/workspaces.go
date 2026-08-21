@@ -26,6 +26,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
+	hubtelemetry "github.com/faroshq/faros/pkg/hub/telemetry"
+	"github.com/faroshq/faros/telemetry/generated"
 )
 
 // CreateWorkspaceRequest is the POST body for creating a Workspace.
@@ -203,6 +205,18 @@ func (h *Handler) createWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	// The creator was just seeded as workspace admin (UMI row above).
 	view.Role = tenancyv1alpha1.MembershipRoleAdmin
+	// workspaceView is best-effort for the response projection; the
+	// authoritative creation chain above has already completed. Emit using the
+	// generated workspace UUID even when the optional cluster-name projection
+	// is temporarily unavailable and the response uses its fallback view.
+	h.mgr.trackPlatform(r.Context(), hubtelemetry.Event{
+		Action:      generated.ActionWorkspaceCreated,
+		OccurredAt:  time.Now().UTC(),
+		OrgID:       orgUUID,
+		WorkspaceID: wsUUID,
+		Actor:       tc.User,
+		Properties:  map[string]any{"outcome": "success"},
+	})
 	writeJSON(w, http.StatusCreated, view)
 }
 

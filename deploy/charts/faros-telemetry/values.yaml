@@ -53,3 +53,11 @@ securityContext:
   capabilities:
     drop: [ALL]
   readOnlyRootFilesystem: true
+
+# Dashboard provisioning only. This chart does not install Grafana or
+# PostgreSQL. Point Grafana's PostgreSQL datasource at the receiver database.
+grafana:
+  dashboards:
+    enabled: false
+    labels:
+      grafana_dashboard: "1"

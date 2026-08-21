@@ -193,6 +193,7 @@ type Manager struct {
 	bootstrapper WorkspaceOps
 	kubeconfig   KubeconfigConfig
 	providers    ProviderLookup // optional; nil = enableProvider returns 501
+	telemetry    PlatformTelemetry
 	// orgProviders / providerCreds back the org-owned ("bring your own")
 	// provider surface. Both optional and wired together — the endpoints return
 	// 501 unless both are set. See org_providers.go.
@@ -204,7 +205,18 @@ type Manager struct {
 // against root:faros:users) and the WorkspaceOps. Production callers
 // pass a kcp.Bootstrapper; tests pass a fake.
 func NewManager(client *farosclient.Client, bootstrapper WorkspaceOps) *Manager {
-	return &Manager{client: client, bootstrapper: bootstrapper}
+	return &Manager{client: client, bootstrapper: bootstrapper, telemetry: noopPlatformTelemetry{}}
+}
+
+// WithTelemetry installs the platform activation-event sink. A nil sink
+// restores the no-op default so minimal hubs and tests remain safe.
+func (m *Manager) WithTelemetry(t PlatformTelemetry) *Manager {
+	if t == nil {
+		m.telemetry = noopPlatformTelemetry{}
+	} else {
+		m.telemetry = t
+	}
+	return m
 }
 
 // WithKubeconfig sets the kubeconfig-download configuration. Optional —

@@ -46,7 +46,19 @@ type Event struct {
 	Time            time.Time
 	DataContentType string
 	Data            []byte
+	Record          Record
 	ReceivedAt      time.Time
+}
+
+// Record is the defensively decoded hub payload. Identifier values are keyed
+// pseudonyms; no raw product identifiers or content are accepted here.
+type Record struct {
+	InstallationID string                 `json:"installation_id"`
+	Provider       string                 `json:"provider"`
+	Action         string                 `json:"action"`
+	OccurredAt     time.Time              `json:"occurred_at"`
+	Identifiers    map[string]string      `json:"identifiers"`
+	Properties     map[string]interface{} `json:"properties,omitempty"`
 }
 
 type IngestStats struct {

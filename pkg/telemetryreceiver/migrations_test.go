@@ -44,7 +44,7 @@ func TestEmbeddedMigrationParsesWithGoose(t *testing.T) {
 	}
 	defer provider.Close()
 	sources := provider.ListSources()
-	if len(sources) != 1 || sources[0].Version != 1 || sources[0].Path != "001_initial.sql" {
+	if len(sources) != 2 || sources[0].Version != 1 || sources[0].Path != "001_initial.sql" || sources[1].Version != 2 || sources[1].Path != "002_metric_projections.sql" {
 		t.Fatalf("goose sources = %+v", sources)
 	}
 }
