@@ -679,9 +679,10 @@ func (s *Server) promoteProjectWithSelection(ctx context.Context, c *asclient.Cl
 	if wasPromoted {
 		outcome = "promoted"
 	}
-	// The project spec write and its reconciliation/status projection succeeded;
-	// only now report publication. Validation, build, and update failures above
-	// intentionally emit nothing.
+	// The durable production-binding spec write succeeded; only now report the
+	// accepted publication intent. Runtime readiness remains asynchronous and is
+	// deliberately not claimed by this event. Validation, build, and update
+	// failures above intentionally emit nothing.
 	s.trackProjectPublished(ctx, id, reconciled, outcome)
 
 	raw, _ := json.Marshal(reconciled)

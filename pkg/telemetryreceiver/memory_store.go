@@ -37,7 +37,7 @@ type memoryMetricKey struct {
 }
 
 type memoryUniqueKey struct {
-	bucket, metric, step, labels, tenant, kind, hash string
+	bucket, metric, eventType, step, labels, tenant, kind, hash string
 }
 
 type memoryUnique struct {
@@ -47,6 +47,7 @@ type memoryUnique struct {
 type memoryErasure struct {
 	request ErasureRequest
 	result  ErasureResult
+	created time.Time
 }
 
 // MemoryStore is a deterministic store for focused receiver tests and local
@@ -119,7 +120,7 @@ func (s *MemoryStore) Insert(_ context.Context, events []Event) (IngestStats, er
 		for _, projection := range allProjections[index] {
 			increment := true
 			if projection.UniqueHash != "" {
-				uniqueKey := memoryUniqueKey{projection.BucketStart, projection.MetricKey, projection.FunnelStep, projection.LabelsKey, event.Tenant, projection.UniqueKind, projection.UniqueHash}
+				uniqueKey := memoryUniqueKey{projection.BucketStart, projection.MetricKey, projection.EventType, projection.FunnelStep, projection.LabelsKey, event.Tenant, projection.UniqueKind, projection.UniqueHash}
 				if _, exists := s.uniques[uniqueKey]; exists {
 					increment = false
 				} else {
@@ -164,25 +165,30 @@ func (s *MemoryStore) EraseTenant(_ context.Context, request ErasureRequest) (Er
 	// Aggregates intentionally omit tenant identity. Once materialized, their
 	// contribution cannot be separated and is retained through erasure.
 	result := ErasureResult{RequestID: request.RequestID, TenantID: request.TenantID, DeletedRaw: raw}
-	s.erasures[request.RequestID] = memoryErasure{request: request, result: result}
+	s.erasures[request.RequestID] = memoryErasure{request: request, result: result, created: time.Now().UTC()}
 	return result, nil
 }
 
 func (s *MemoryStore) PurgeExpired(_ context.Context, now time.Time, rawRetention, aggregateRetention time.Duration) (PurgeResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rawCutoff := now.Add(-rawRetention)
 	aggregateCutoff := now.Add(-aggregateRetention)
 	var result PurgeResult
 	for key, stored := range s.events {
-		if stored.receivedAt.Before(rawCutoff) {
+		if stored.receivedAt.Before(now.Add(-effectiveEventRetention(stored.event.Type, rawRetention))) {
 			delete(s.events, key)
 			result.DeletedRaw++
 		}
 	}
 	for key, stored := range s.uniques {
-		if stored.createdAt.Before(rawCutoff) {
+		if stored.createdAt.Before(now.Add(-effectiveEventRetention(key.eventType, rawRetention))) {
 			delete(s.uniques, key)
+			result.DeletedRaw++
+		}
+	}
+	for key, erasure := range s.erasures {
+		if erasure.created.Before(now.Add(-boundedRawRetention(rawRetention))) {
+			delete(s.erasures, key)
 			result.DeletedRaw++
 		}
 	}

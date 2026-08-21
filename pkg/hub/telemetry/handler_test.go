@@ -47,7 +47,11 @@ func TestProviderHandlerValidatesAuthBodyAndCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	t.Cleanup(func() {
+		if err := r.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
 	auth := authFunc(func(_ context.Context, _ *http.Request, p string) error {
 		if p != "agents" {
 			return ErrUnauthorized

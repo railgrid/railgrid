@@ -34,7 +34,11 @@ func TestEmbeddedMigrationParsesWithGoose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("database Close() error = %v", err)
+		}
+	})
 	store, err := database.NewStore(database.DialectPostgres, "faros_telemetry_schema_migrations")
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +47,11 @@ func TestEmbeddedMigrationParsesWithGoose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("goose migration parse = %v", err)
 	}
-	defer provider.Close()
+	t.Cleanup(func() {
+		if err := provider.Close(); err != nil {
+			t.Errorf("provider Close() error = %v", err)
+		}
+	})
 	sources := provider.ListSources()
 	if len(sources) != 2 || sources[0].Version != 1 || sources[0].Path != "001_initial.sql" || sources[1].Version != 2 || sources[1].Path != "002_metric_projections.sql" {
 		t.Fatalf("goose sources = %+v", sources)
@@ -53,7 +61,10 @@ func TestEmbeddedMigrationParsesWithGoose(t *testing.T) {
 		t.Fatal(err)
 	}
 	sql := string(raw)
-	if !strings.Contains(sql, "PRIMARY KEY (metric_key, funnel_step, event_type)") || !strings.Contains(sql, "SELECT DISTINCT metric_key, window_days") {
+	if !strings.Contains(sql, "PRIMARY KEY (metric_key, funnel_step, event_type)") ||
+		!strings.Contains(sql, "PRIMARY KEY (bucket_start, metric_key, event_type, funnel_step") ||
+		!strings.Contains(sql, "COALESCE(u.labels, '{}'::jsonb) AS labels") ||
+		!strings.Contains(sql, "SELECT DISTINCT metric_key, window_days") {
 		t.Fatal("metric catalog must preserve event selection identity and de-duplicate counter metadata joins")
 	}
 }

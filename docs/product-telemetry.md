@@ -43,7 +43,7 @@ The current event inventory is:
 | `edge_first_ready` | edges | `org`, `workspace`, `resource` | `edge_type`: `kubernetes_cluster`, `linux_server`; `outcome`: `ready` |
 | `app_studio_project_created` | app-studio | `org`, `workspace`, `project`, `actor` | `outcome`: `success` |
 | `app_studio_preview_ready` | app-studio | `org`, `workspace`, `project` | `outcome`: `ready`; `preview_kind`: `development` |
-| `app_studio_project_published` | app-studio | `org`, `workspace`, `project`, `actor` | `outcome`: `published`, `promoted` |
+| `app_studio_project_published` | app-studio | `org`, `workspace`, `project`, `actor` | durable production-binding acceptance; `outcome`: `published`, `promoted` |
 | `agents_agent_created` | agents | `org`, `workspace`, `actor`, `resource` | `outcome`: `success` |
 | `agents_run_terminal` | agents | `org`, `workspace`, `resource` | `outcome`: `succeeded`, `failed`, `aborted` |
 
@@ -183,7 +183,8 @@ operator-configured, read-only PostgreSQL datasource.
 There are two retention classes:
 
 1. Raw pseudonymous event rows and pseudonymous metric-uniqueness rows are
-   retained for at most 90 days. Uniqueness rows retain installation/tenant
+   retained for the shorter of the operator limit and each event catalog's
+   declaration (at most 90 days). Uniqueness rows retain installation/tenant
    scope and keyed identifier hashes so 7-day and 28-day funnels can count a
    subject once across a window.
 2. Anonymous daily aggregate rows are retained for 13 months by default.
@@ -201,7 +202,8 @@ conversion. Their generated descriptions state this explicitly.
 `POST /v1/erasure` with the admin token and a `request_id` plus `tenant_id`
 deletes that tenant's raw events and pseudonymous uniqueness rows and records
 an idempotent erasure receipt. Repeating the same request is safe; reusing its
-ID for another tenant is rejected. Anonymous aggregate rows cannot be
+ID for another tenant is rejected while the receipt remains within the raw
+retention bound. Anonymous aggregate rows cannot be
 subtracted by tenant because they intentionally contain no tenant dimension,
 so they remain until aggregate retention expires.
 

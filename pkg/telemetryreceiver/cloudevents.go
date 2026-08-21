@@ -28,6 +28,7 @@ import (
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 	cehttp "github.com/cloudevents/sdk-go/v2/protocol/http"
+
 	"github.com/faroshq/faros/telemetry/catalog"
 	"github.com/faroshq/faros/telemetry/generated"
 )
@@ -216,10 +217,7 @@ func normalizeTenantID(value string) (string, bool) {
 }
 
 func normalizeEventType(value string) (string, bool) {
-	value = strings.TrimSpace(value)
-	if strings.HasPrefix(value, cloudEventsTypePrefix) {
-		value = strings.TrimPrefix(value, cloudEventsTypePrefix)
-	}
-	_, ok := generated.LookupEvent(value)
-	return value, ok
+	value = strings.TrimPrefix(strings.TrimSpace(value), cloudEventsTypePrefix)
+	definition, ok := generated.LookupEvent(value)
+	return value, ok && definition.Status == "active"
 }

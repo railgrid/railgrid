@@ -1,7 +1,7 @@
 version: 1
 internal_events: true
 action: app_studio_project_published
-description: An App Studio project was published or promoted.
+description: An App Studio production binding was durably accepted for initial publication or re-promotion; runtime readiness is tracked separately.
 owner: app-studio
 product_group: app_studio
 product_categories:
@@ -25,6 +25,6 @@ privacy:
   no_raw_content: true
 additional_properties:
   outcome:
-    description: The publication or promotion outcome.
+    description: Whether the accepted production binding was an initial publication or a re-promotion.
     type: string
     enum: [published, promoted]

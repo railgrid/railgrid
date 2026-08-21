@@ -31,10 +31,10 @@ type ProjectionRule struct {
 }
 
 type Projection struct {
-	BucketStart, MetricKey, MetricKind, FunnelStep, LabelsKey string
-	StepOrder, WindowDays                                     int
-	Labels                                                    []byte
-	UniqueKind, UniqueHash                                    string
+	BucketStart, MetricKey, MetricKind, EventType, FunnelStep, LabelsKey string
+	StepOrder, WindowDays                                                int
+	Labels                                                               []byte
+	UniqueKind, UniqueHash                                               string
 }
 
 type ProjectionPlan struct {
@@ -110,7 +110,7 @@ func (p ProjectionPlan) Project(event Event) ([]Projection, error) {
 		if err != nil {
 			return nil, err
 		}
-		projection := Projection{BucketStart: event.ReceivedAt.UTC().Format("2006-01-02"), MetricKey: rule.MetricKey, MetricKind: rule.MetricKind, FunnelStep: rule.FunnelStep, StepOrder: rule.StepOrder, WindowDays: rule.WindowDays, Labels: encoded, LabelsKey: string(encoded), UniqueKind: rule.Unique}
+		projection := Projection{BucketStart: event.ReceivedAt.UTC().Format("2006-01-02"), MetricKey: rule.MetricKey, MetricKind: rule.MetricKind, EventType: event.Type, FunnelStep: rule.FunnelStep, StepOrder: rule.StepOrder, WindowDays: rule.WindowDays, Labels: encoded, LabelsKey: string(encoded), UniqueKind: rule.Unique}
 		if rule.Unique != "" {
 			projection.UniqueHash = event.Record.Identifiers[rule.Unique]
 			if !identifierHashPattern.MatchString(projection.UniqueHash) {

@@ -16,6 +16,7 @@ package telemetryreceiver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,6 +27,7 @@ import (
 	"time"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
+
 	"github.com/faroshq/faros/telemetry/generated"
 )
 
@@ -366,7 +368,7 @@ func TestMemoryAggregatesUseFixedComponentAndDeclaredType(t *testing.T) {
 	store := NewMemoryStore()
 	event := receiverTestEvent(generated.ActionOrganizationCreated, "tenant-a", time.Unix(0, 0).UTC(), map[string]interface{}{"outcome": "success"})
 	event.ID = "event-1"
-	if _, err := store.Insert(nil, []Event{{
+	if _, err := store.Insert(context.Background(), []Event{{
 		Tenant: event.Tenant, ID: event.ID, Source: event.Source, Type: event.Type, Subject: event.Subject, Time: event.Time,
 		DataContentType: "application/json", Data: event.Data, Record: event.Record, ReceivedAt: event.Time,
 	}}); err != nil {
@@ -390,10 +392,10 @@ func TestRetentionAndReadiness(t *testing.T) {
 	event := receiverTestEvent(generated.ActionOrganizationCreated, "tenant-a", old, map[string]interface{}{"outcome": "success"})
 	event.ID = "old"
 	event.ReceivedAt = old
-	if _, err := store.Insert(nil, []Event{event}); err != nil {
+	if _, err := store.Insert(context.Background(), []Event{event}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PurgeExpired(nil, time.Now().UTC(), 24*time.Hour, 72*time.Hour); err != nil {
+	if _, err := store.PurgeExpired(context.Background(), time.Now().UTC(), 24*time.Hour, 72*time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	raw, aggregate := store.Counts()

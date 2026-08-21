@@ -104,9 +104,9 @@ func (s *PostgresStore) Insert(ctx context.Context, events []Event) (IngestStats
 			if projection.UniqueHash != "" {
 				uniqueResult, err := tx.Exec(ctx, `
 					INSERT INTO faros_telemetry_metric_uniques
-						(bucket_start, metric_key, funnel_step, labels_key, labels, tenant_id, unique_kind, unique_hash, created_at)
-					VALUES ($1::date, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
-					ON CONFLICT DO NOTHING`, projection.BucketStart, projection.MetricKey, projection.FunnelStep, projection.LabelsKey, projection.Labels, event.Tenant, projection.UniqueKind, projection.UniqueHash, receivedAt)
+						(bucket_start, metric_key, event_type, funnel_step, labels_key, labels, tenant_id, unique_kind, unique_hash, created_at)
+					VALUES ($1::date, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)
+					ON CONFLICT DO NOTHING`, projection.BucketStart, projection.MetricKey, projection.EventType, projection.FunnelStep, projection.LabelsKey, projection.Labels, event.Tenant, projection.UniqueKind, projection.UniqueHash, receivedAt)
 				if err != nil {
 					return IngestStats{}, fmt.Errorf("insert telemetry metric unique: %w", err)
 				}
@@ -187,12 +187,21 @@ func (s *PostgresStore) PurgeExpired(ctx context.Context, now time.Time, rawRete
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var result PurgeResult
-	if err := tx.QueryRow(ctx, `
-		WITH deleted_events AS (DELETE FROM faros_telemetry_events WHERE received_at < $1 RETURNING 1),
-		deleted_uniques AS (DELETE FROM faros_telemetry_metric_uniques WHERE created_at < $1 RETURNING 1)
-		SELECT (SELECT COUNT(*) FROM deleted_events) + (SELECT COUNT(*) FROM deleted_uniques)`, now.Add(-rawRetention)).Scan(&result.DeletedRaw); err != nil {
-		return PurgeResult{}, fmt.Errorf("purge telemetry events: %w", err)
+	for _, retention := range catalogRetentions(rawRetention) {
+		var deleted int64
+		if err := tx.QueryRow(ctx, `
+			WITH deleted_events AS (DELETE FROM faros_telemetry_events WHERE event_type = $1 AND received_at < $2 RETURNING 1),
+			deleted_uniques AS (DELETE FROM faros_telemetry_metric_uniques WHERE event_type = $1 AND created_at < $2 RETURNING 1)
+			SELECT (SELECT COUNT(*) FROM deleted_events) + (SELECT COUNT(*) FROM deleted_uniques)`, retention.Action, now.Add(-retention.Retention)).Scan(&deleted); err != nil {
+			return PurgeResult{}, fmt.Errorf("purge telemetry event %s: %w", retention.Action, err)
+		}
+		result.DeletedRaw += deleted
 	}
+	var deletedReceipts int64
+	if err := tx.QueryRow(ctx, `WITH deleted AS (DELETE FROM faros_telemetry_erasure_requests WHERE created_at < $1 RETURNING 1) SELECT COUNT(*) FROM deleted`, now.Add(-boundedRawRetention(rawRetention))).Scan(&deletedReceipts); err != nil {
+		return PurgeResult{}, fmt.Errorf("purge telemetry erasure receipts: %w", err)
+	}
+	result.DeletedRaw += deletedReceipts
 	if err := tx.QueryRow(ctx, `WITH deleted AS (DELETE FROM faros_telemetry_aggregates WHERE bucket_start < $1 RETURNING 1) SELECT COUNT(*) FROM deleted`, now.Add(-aggregateRetention)).Scan(&result.DeletedAggregate); err != nil {
 		return PurgeResult{}, fmt.Errorf("purge telemetry aggregates: %w", err)
 	}

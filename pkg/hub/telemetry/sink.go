@@ -70,8 +70,10 @@ func (s *HTTPSink) Send(ctx context.Context, records []Record) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
 	_, _ = io.CopyN(io.Discard, resp.Body, 4096)
+	if err := resp.Body.Close(); err != nil {
+		return fmt.Errorf("close receiver response: %w", err)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("receiver returned status %d", resp.StatusCode)
 	}

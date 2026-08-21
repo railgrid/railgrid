@@ -1,6 +1,6 @@
 version: 1
 key_path: app_studio_project_published_total
-description: Total App Studio project publication and promotion outcomes.
+description: Total durably accepted App Studio production-binding publication and re-promotion requests; not runtime readiness.
 owner: app-studio
 product_group: app_studio
 product_categories: [publishing]
@@ -14,5 +14,5 @@ events:
     unique: project
 labels:
   outcome:
-    description: Publication or promotion outcome.
+    description: Accepted production-binding request kind.
     values: [published, promoted]

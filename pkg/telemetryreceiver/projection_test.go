@@ -15,6 +15,7 @@
 package telemetryreceiver
 
 import (
+	"context"
 	"reflect"
 	"testing"
 	"time"
@@ -88,14 +89,14 @@ func TestMemoryProjectionDedupErasureAndRetention(t *testing.T) {
 	event := receiverTestEvent(generated.ActionOrganizationCreated, "tenant-a", now, map[string]interface{}{"outcome": "success"})
 	duplicateSubject := event
 	duplicateSubject.ID = "different-cloud-event-id"
-	if stats, err := store.Insert(nil, []Event{event, duplicateSubject}); err != nil || stats.Accepted != 2 {
+	if stats, err := store.Insert(context.Background(), []Event{event, duplicateSubject}); err != nil || stats.Accepted != 2 {
 		t.Fatalf("insert = %+v, %v", stats, err)
 	}
 	aggregates, uniques := store.ProjectionCounts()
 	if aggregates != 1 || uniques != 1 {
 		t.Fatalf("projection counts = %d aggregates, %d uniques, want 1 and 1", aggregates, uniques)
 	}
-	if _, err := store.EraseTenant(nil, ErasureRequest{RequestID: "erase", TenantID: "tenant-a"}); err != nil {
+	if _, err := store.EraseTenant(context.Background(), ErasureRequest{RequestID: "erase", TenantID: "tenant-a"}); err != nil {
 		t.Fatal(err)
 	}
 	aggregates, uniques = store.ProjectionCounts()
@@ -104,14 +105,30 @@ func TestMemoryProjectionDedupErasureAndRetention(t *testing.T) {
 	}
 
 	old := receiverTestEvent(generated.ActionOrganizationCreated, "tenant-b", now.Add(-91*24*time.Hour), map[string]interface{}{"outcome": "success"})
-	if _, err := store.Insert(nil, []Event{old}); err != nil {
+	if _, err := store.Insert(context.Background(), []Event{old}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PurgeExpired(nil, now, 90*24*time.Hour, 13*30*24*time.Hour); err != nil {
+	if _, err := store.PurgeExpired(context.Background(), now, 90*24*time.Hour, 13*30*24*time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	aggregates, uniques = store.ProjectionCounts()
 	if aggregates != 2 || uniques != 0 {
 		t.Fatalf("after raw purge = %d aggregates, %d uniques", aggregates, uniques)
+	}
+}
+
+func TestEffectiveEventRetentionUsesTheShorterCatalogOrOperatorBound(t *testing.T) {
+	const day = 24 * time.Hour
+	if got := effectiveEventRetention(generated.ActionOrganizationCreated, 120*day); got != 90*day {
+		t.Fatalf("catalog-bounded retention = %v, want 90d", got)
+	}
+	if got := effectiveEventRetention(generated.ActionOrganizationCreated, 30*day); got != 30*day {
+		t.Fatalf("operator-bounded retention = %v, want 30d", got)
+	}
+	if got := effectiveEventRetention("unknown", 30*day); got != 30*day {
+		t.Fatalf("unknown-event retention = %v, want configured bound", got)
+	}
+	if got := boundedRawRetention(120 * day); got != 90*day {
+		t.Fatalf("global raw retention bound = %v, want 90d", got)
 	}
 }

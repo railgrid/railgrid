@@ -34,7 +34,7 @@ var identifierValue = map[string]func(Event) string{
 func validateProviderEvent(provider string, e Event) error {
 	e.Action = strings.TrimSpace(e.Action)
 	definition, ok := generated.LookupEvent(e.Action)
-	if !ok || definition.Owner != provider {
+	if !ok || definition.Status != "active" || definition.Owner != provider {
 		return fmt.Errorf("action is not declared for provider: %w", ErrInvalidEvent)
 	}
 	declaredIdentifiers := make(map[string]struct{}, len(definition.Identifiers))

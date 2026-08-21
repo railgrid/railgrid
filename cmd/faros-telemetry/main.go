@@ -27,9 +27,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/faroshq/faros/pkg/telemetryreceiver"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/faroshq/faros/pkg/telemetryreceiver"
 )
 
 const (
@@ -80,7 +81,11 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("open migration database: %w", err)
 	}
-	defer sqlDB.Close()
+	defer func() {
+		if err := sqlDB.Close(); err != nil {
+			logger.Warn("closing telemetry migration database", "error", err)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := telemetryreceiver.RunMigrations(ctx, sqlDB); err != nil {
 		cancel()

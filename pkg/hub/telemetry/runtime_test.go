@@ -112,7 +112,11 @@ func TestCatalogValidationAndPrivacyNormalization(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	t.Cleanup(func() {
+		if err := r.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
 	bad := agentEvent()
 	bad.Properties["outcome"] = "invented"
 	if !errors.Is(r.Track(context.Background(), "agents", bad), ErrInvalidEvent) {
@@ -162,7 +166,11 @@ func TestPlatformCatalogEventsUseInternalBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	t.Cleanup(func() {
+		if err := r.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
 	event := Event{Action: "organization_created", OrgID: "org", Actor: "actor", Properties: map[string]any{"outcome": "success"}}
 	if err := r.TrackPlatform(context.Background(), event); err != nil {
 		t.Fatal(err)
