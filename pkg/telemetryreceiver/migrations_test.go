@@ -53,7 +53,7 @@ func TestEmbeddedMigrationParsesWithGoose(t *testing.T) {
 		}
 	})
 	sources := provider.ListSources()
-	if len(sources) != 2 || sources[0].Version != 1 || sources[0].Path != "001_initial.sql" || sources[1].Version != 2 || sources[1].Path != "002_metric_projections.sql" {
+	if len(sources) != 3 || sources[0].Version != 1 || sources[0].Path != "001_initial.sql" || sources[1].Version != 2 || sources[1].Path != "002_metric_projections.sql" || sources[2].Version != 3 || sources[2].Path != "003_retention_and_funnel_labels.sql" {
 		t.Fatalf("goose sources = %+v", sources)
 	}
 	raw, err := fs.ReadFile(migrationFS, "002_metric_projections.sql")
@@ -61,10 +61,17 @@ func TestEmbeddedMigrationParsesWithGoose(t *testing.T) {
 		t.Fatal(err)
 	}
 	sql := string(raw)
-	if !strings.Contains(sql, "PRIMARY KEY (metric_key, funnel_step, event_type)") ||
-		!strings.Contains(sql, "PRIMARY KEY (bucket_start, metric_key, event_type, funnel_step") ||
-		!strings.Contains(sql, "COALESCE(u.labels, '{}'::jsonb) AS labels") ||
-		!strings.Contains(sql, "SELECT DISTINCT metric_key, window_days") {
+	if !strings.Contains(sql, "PRIMARY KEY (metric_key, funnel_step, event_type)") || !strings.Contains(sql, "SELECT DISTINCT metric_key, window_days") {
 		t.Fatal("metric catalog must preserve event selection identity and de-duplicate counter metadata joins")
+	}
+	raw, err = fs.ReadFile(migrationFS, "003_retention_and_funnel_labels.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql = string(raw)
+	if !strings.Contains(sql, "PRIMARY KEY (bucket_start, metric_key, event_type, funnel_step") ||
+		!strings.Contains(sql, "COALESCE(u.labels, '{}'::jsonb) AS labels") ||
+		!strings.Contains(sql, "u.event_type = c.event_type") {
+		t.Fatal("migration 003 must bind uniqueness retention to event type and preserve funnel labels")
 	}
 }
