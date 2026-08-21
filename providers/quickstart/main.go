@@ -26,7 +26,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +36,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -45,6 +48,35 @@ type helloResponse struct {
 	ServedAt    time.Time `json:"servedAt"`
 	UserHeader  string    `json:"userHeader,omitempty"`
 	TokenLength int       `json:"tokenLength,omitempty"`
+
+	// TenantHeader and ClusterHeader complete the identity picture. Together
+	// with UserHeader they are what a self-hosted copy of this provider proves
+	// when reached over an edge tunnel: the hub's injected identity survived
+	// the revdial hop rather than being dropped or rewritten somewhere in it
+	// (docs/byo-provider-edge-transport.md E-6).
+	TenantHeader  string `json:"tenantHeader,omitempty"`
+	ClusterHeader string `json:"clusterHeader,omitempty"`
+
+	// TokenFingerprint is the first 12 hex characters of SHA-256 over the
+	// Authorization header. TokenLength alone says a credential arrived; it
+	// cannot say WHOSE, and telling those apart is the whole point on the edge
+	// path — a Service configured auth=secret would substitute its own token
+	// and a length check could easily still pass. A caller that knows the token
+	// it sent can recompute this and assert the value reached the far end
+	// unchanged (E-5). Never the token itself: this is echoed over the same
+	// hop it is describing.
+	TokenFingerprint string `json:"tokenFingerprint,omitempty"`
+}
+
+// tokenFingerprint hashes an Authorization header value to a short, safely
+// echoable identifier. Empty in, empty out — an absent credential must not
+// produce a fingerprint that looks like a present one.
+func tokenFingerprint(authorization string) string {
+	if authorization == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(authorization))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // Subcommands:
@@ -94,15 +126,52 @@ func runServe() {
 	mux.HandleFunc("/api/hello", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		resp := helloResponse{
-			Message:    "hello from the quickstart provider",
-			Provider:   "quickstart",
-			ServedAt:   time.Now().UTC(),
-			UserHeader: r.Header.Get("X-Faros-User"),
+			Message:       "hello from the quickstart provider",
+			Provider:      "quickstart",
+			ServedAt:      time.Now().UTC(),
+			UserHeader:    r.Header.Get("X-Faros-User"),
+			TenantHeader:  r.Header.Get("X-Faros-Tenant"),
+			ClusterHeader: r.Header.Get("X-Faros-Cluster"),
 		}
 		if auth := r.Header.Get("Authorization"); auth != "" {
 			resp.TokenLength = len(auth)
+			resp.TokenFingerprint = tokenFingerprint(auth)
 		}
 		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	// Streaming probe. Writes numbered chunks with an explicit flush between
+	// each, so a caller can tell a streamed response from a buffered one by
+	// WHEN bytes arrive rather than only what they contain.
+	//
+	// This exists for the edge path. A self-hosted provider is reached through
+	// the agent's reverse tunnel, and a reverse proxy anywhere along it that
+	// buffers turns "tail my logs" into "hang until the process exits" — a
+	// failure that looks like a hung backend and is invisible to any test that
+	// only reads the body to EOF (docs/byo-provider-edge-transport.md E-7).
+	mux.HandleFunc("/api/stream", func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+		chunks := 3
+		if n := r.URL.Query().Get("chunks"); n != "" {
+			if parsed, err := strconv.Atoi(n); err == nil && parsed > 0 && parsed <= 100 {
+				chunks = parsed
+			}
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		for i := 1; i <= chunks; i++ {
+			fmt.Fprintf(w, "chunk %d\n", i)
+			flusher.Flush()
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(150 * time.Millisecond):
+			}
+		}
 	})
 
 	// Static portal assets (main.js, icon.svg, /assets/*) come from the

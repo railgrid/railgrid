@@ -1545,8 +1545,30 @@ func waitForWorkspaceReady(ctx context.Context, client dynamic.Interface, name s
 		if err != nil {
 			return false, nil
 		}
+		// A terminating workspace keeps reporting Ready until it is actually
+		// gone, so phase alone would hand back a workspace whose RBAC is being
+		// garbage-collected. Writing into it then fails as
+		// "workspace access not permitted" — a permission error for what is
+		// really a lifecycle race, and one that looks nothing like its cause.
+		if ws.GetDeletionTimestamp() != nil {
+			return false, nil
+		}
 		phase, _, _ := unstructured.NestedString(ws.Object, "status", "phase")
 		return phase == "Ready", nil
+	})
+}
+
+// waitForWorkspaceGone blocks until name no longer exists under client. Used
+// before recreating a workspace that is still terminating: kcp accepts the
+// Create only once the old object is gone, and until then returns AlreadyExists
+// for an object nobody can usefully write to.
+func waitForWorkspaceGone(ctx context.Context, client dynamic.Interface, name string, timeout time.Duration) error {
+	return wait.PollUntilContextTimeout(ctx, 500*time.Millisecond, timeout, true, func(ctx context.Context) (bool, error) {
+		_, err := client.Resource(workspaceGVR).Get(ctx, name, metav1.GetOptions{})
+		if errors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, nil
 	})
 }
 
@@ -1785,17 +1807,54 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 		if !ok {
 			continue
 		}
+		// A terminating binding keeps phase Bound (and keeps serving) until
+		// kcp's cascade cleanup finishes, so it must stay in the list — but
+		// flagged, or a Disable that is stuck on leftover CR finalizers is
+		// indistinguishable from one that never happened.
+		terminating := item.GetDeletionTimestamp() != nil
 		phase, _, _ := unstructured.NestedString(item.Object, "status", "phase")
-		if phase != "Bound" {
+		if phase != "Bound" && !terminating {
 			continue
 		}
 		out[providerName] = ProviderBinding{
-			Name:       item.GetName(),
-			ExportPath: path,
-			SelfHosted: strings.HasPrefix(path, kcppaths.TenantsParent+":"),
+			Name:            item.GetName(),
+			ExportPath:      path,
+			SelfHosted:      strings.HasPrefix(path, kcppaths.TenantsParent+":"),
+			Terminating:     terminating,
+			DeletionBlocked: deletionBlockedMessage(&item),
 		}
 	}
 	return out, nil
+}
+
+// deletionBlockedMessage returns kcp's explanation of why a terminating
+// APIBinding cannot finish deleting, or "" when deletion is not blocked (or
+// not in progress). kcp's apibindingdeletion controller records the blocker on
+// the BindingResourceDeleteSuccess condition — e.g. "Some content in the
+// workspace has finalizers remaining: <finalizer> in N resource instances" —
+// which names exactly what a user (or their provider) must clean up.
+func deletionBlockedMessage(item *unstructured.Unstructured) string {
+	if item.GetDeletionTimestamp() == nil {
+		return ""
+	}
+	conditions, _, _ := unstructured.NestedSlice(item.Object, "status", "conditions")
+	for _, c := range conditions {
+		cond, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if cond["type"] != string(apisv1alpha2.BindingResourceDeleteSuccess) || cond["status"] != "False" {
+			continue
+		}
+		if msg, ok := cond["message"].(string); ok && msg != "" {
+			return msg
+		}
+		if reason, ok := cond["reason"].(string); ok && reason != "" {
+			return reason
+		}
+		return "deletion is not progressing"
+	}
+	return ""
 }
 
 // ProviderBinding describes one bound provider APIBinding in a workspace.
@@ -1815,6 +1874,15 @@ type ProviderBinding struct {
 	// SelfHosted is true when ExportPath is under the tenant fleet, i.e. the
 	// binding targets an Org's own provider rather than a platform one.
 	SelfHosted bool
+	// Terminating is true when the binding has been deleted but kcp's cascade
+	// cleanup (which removes every CR of the bound APIs first) has not finished.
+	// The binding still serves until then, so it still counts as enabled.
+	Terminating bool
+	// DeletionBlocked is kcp's explanation of what is holding a terminating
+	// binding's deletion open — typically leftover CR finalizers whose
+	// controller is gone. Empty when deletion is progressing normally or the
+	// binding is not terminating.
+	DeletionBlocked string
 }
 
 // providerNameFromExportPath maps an APIBinding's export path to the provider

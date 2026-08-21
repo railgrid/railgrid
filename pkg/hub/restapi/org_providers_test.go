@@ -34,6 +34,19 @@ type fakeOrgProviderOps struct {
 	targets []kcp.EdgeInstallTarget
 	// registered records EnsureOrgProviderWorkspace calls.
 	registered []string
+	// recordedEdges maps "org/provider" → "workspace/edge" as stamped by
+	// RecordProviderEdgeBinding.
+	recordedEdges map[string]string
+}
+
+// RecordProviderEdgeBinding records what registration stamped, so a test can
+// assert the edge was captured rather than only that registration returned 201.
+func (f *fakeOrgProviderOps) RecordProviderEdgeBinding(_ context.Context, orgUUID, providerName, wsUUID, edgeName string) error {
+	if f.recordedEdges == nil {
+		f.recordedEdges = map[string]string{}
+	}
+	f.recordedEdges[orgUUID+"/"+providerName] = wsUUID + "/" + edgeName
+	return nil
 }
 
 func (f *fakeOrgProviderOps) EnsureOrgProviderWorkspace(_ context.Context, _, name string) (string, error) {

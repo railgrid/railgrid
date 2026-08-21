@@ -1,6 +1,6 @@
 # Edge-fronted BYO providers
 
-**Status:** Design + phase 1 (fail-fast gating) implemented
+**Status:** Design + phase 1 (fail-fast gating) + phase 2 (transport) implemented
 **Reads as a delta on:** [byo-providers.md](./byo-providers.md), [edges-marketplace.md](./edges-marketplace.md), [platform-internal-networking.md](./platform-internal-networking.md), [provider-connectivity-contract.md](./provider-connectivity-contract.md)
 
 [byo-providers.md](./byo-providers.md) gets an org-owned provider *registered*:
@@ -234,9 +234,35 @@ rightward is byte-identical to today.
 | 8 | Org-scoped resolution on the backend-proxy path | `pkg/hub/providers/proxy.go` |
 | 9 | Binding-driven provider selection (drop the hardcoded `infrastructure`) | `providers/app-studio/api/dataplane_client.go` |
 
-Items 1–5 are phase 1 (this change): the transport contract and the fail-fast
-behaviour. 6–9 are phase 2, and none of them are reachable by a tenant until 7
-lands, so shipping 1–5 first changes no live routing.
+Items 1–5 were phase 1: the transport contract and the fail-fast behaviour.
+6–8 are phase 2 and are now implemented; the data plane of an org-owned
+provider routes over its edge.
+
+Item 9 turned out to be subsumed by 8 for the flow the product actually
+offers. App Studio addresses `/services/providers/infrastructure/...`, and the
+backend proxy now resolves that name in the CALLER's Org — so an Org running
+its own copy is reached without App Studio knowing anything about bindings.
+The hardcoded name only matters if an Org registers a provider under a name
+other than the platform provider's, which the Self-Hosting UI never does
+(`register(p.name, p.name, edge)`). Binding-driven selection is still the
+right answer for that case and remains open.
+
+Two deviations from the design as written, both forced by what the hub can
+actually know:
+
+- **The Service target is read from the provider's own CatalogEntry, not
+  derived.** E-4 assumed `{name}.faros-provider-{name}.svc`, but the address
+  is the chart's to choose — an operator-mode install lands on
+  `<release>-<chart>.<serve-ns>.svc`, which the hub cannot predict. The hub
+  therefore reads `spec.backend.url` but does not trust it: it must parse as
+  `<service>.<namespace>.svc[.cluster.local]`, so the worst a tenant can aim
+  it at is something inside the cluster the tunnel already terminates in. An
+  IP, an external host, or a bare name is refused.
+- **The Service is reconciled by the catalog controller, not created at
+  registration.** It cannot exist earlier: the address only appears once the
+  chart has run and published its CatalogEntry. Registration records the edge
+  binding; the controller reconciles the Service when the provider first
+  reports itself.
 
 ## Consequences worth accepting deliberately
 

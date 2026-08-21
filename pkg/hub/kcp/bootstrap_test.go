@@ -91,3 +91,80 @@ func TestEnsureBuiltinCatalogEntries_DoesNotTouchChartOwnedEntry(t *testing.T) {
 		t.Fatalf("displayName = %q, want chart-owned value", displayName)
 	}
 }
+
+// binding builds an unstructured APIBinding with the given deletion state for
+// deletionBlockedMessage tests.
+func binding(deleting bool, conditions []any) *unstructured.Unstructured {
+	obj := map[string]any{
+		"apiVersion": "apis.kcp.io/v1alpha2",
+		"kind":       "APIBinding",
+		"metadata":   map[string]any{"name": "infrastructure"},
+		"status":     map[string]any{"phase": "Bound"},
+	}
+	if deleting {
+		obj["metadata"].(map[string]any)["deletionTimestamp"] = "2026-08-21T10:00:00Z"
+	}
+	if conditions != nil {
+		obj["status"].(map[string]any)["conditions"] = conditions
+	}
+	return &unstructured.Unstructured{Object: obj}
+}
+
+func TestDeletionBlockedMessage(t *testing.T) {
+	const finalizerMsg = "Some content in the workspace has finalizers remaining: instances.infrastructure.faros.sh in 3 resource instances"
+
+	tests := []struct {
+		name string
+		item *unstructured.Unstructured
+		want string
+	}{
+		{
+			name: "not terminating",
+			item: binding(false, nil),
+			want: "",
+		},
+		{
+			name: "terminating without conditions yet",
+			item: binding(true, nil),
+			want: "",
+		},
+		{
+			name: "terminating, delete condition still true",
+			item: binding(true, []any{
+				map[string]any{"type": "BindingResourceDeleteSuccess", "status": "True"},
+			}),
+			want: "",
+		},
+		{
+			name: "blocked on finalizers",
+			item: binding(true, []any{
+				map[string]any{"type": "Ready", "status": "True"},
+				map[string]any{
+					"type":    "BindingResourceDeleteSuccess",
+					"status":  "False",
+					"reason":  "SomeFinalizersRemain",
+					"message": finalizerMsg,
+				},
+			}),
+			want: finalizerMsg,
+		},
+		{
+			name: "blocked with reason only",
+			item: binding(true, []any{
+				map[string]any{
+					"type":   "BindingResourceDeleteSuccess",
+					"status": "False",
+					"reason": "ResourceDeletionFailed",
+				},
+			}),
+			want: "ResourceDeletionFailed",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deletionBlockedMessage(tc.item); got != tc.want {
+				t.Fatalf("deletionBlockedMessage() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

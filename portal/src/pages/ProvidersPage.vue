@@ -653,16 +653,18 @@ function dependencyNotice(p: ProviderDTO): string {
                       ? 'border border-border-default bg-surface-overlay text-text-muted'
                       : p.builtinRoute
                         ? 'border border-border-default bg-surface-overlay text-text-secondary'
-                        : providers.hasStaleClaims(p.name)
+                        : providers.isDisabling(p.name)
                           ? 'border border-warning/30 bg-warning-subtle text-warning'
-                          : providers.isEnabled(p.name)
-                            ? 'border border-accent/30 bg-accent/10 text-accent'
-                            : providers.hasMissingDependencies(p)
-                              ? 'border border-warning/30 bg-warning-subtle text-warning'
-                              : 'border border-success/30 bg-success-subtle text-success'
+                          : providers.hasStaleClaims(p.name)
+                            ? 'border border-warning/30 bg-warning-subtle text-warning'
+                            : providers.isEnabled(p.name)
+                              ? 'border border-accent/30 bg-accent/10 text-accent'
+                              : providers.hasMissingDependencies(p)
+                                ? 'border border-warning/30 bg-warning-subtle text-warning'
+                                : 'border border-success/30 bg-success-subtle text-success'
                   "
                 >
-                  {{ !p.ready ? 'Pending' : p.builtinRoute ? 'Built-in' : providers.hasStaleClaims(p.name) ? 'Degraded' : providers.isEnabled(p.name) ? 'Enabled' : providers.hasMissingDependencies(p) ? 'Blocked' : 'Available' }}
+                  {{ !p.ready ? 'Pending' : p.builtinRoute ? 'Built-in' : providers.isDisabling(p.name) ? 'Disabling' : providers.hasStaleClaims(p.name) ? 'Degraded' : providers.isEnabled(p.name) ? 'Enabled' : providers.hasMissingDependencies(p) ? 'Blocked' : 'Available' }}
                 </span>
               </div>
               <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">{{ p.name }}<span v-if="p.version"> · {{ p.version }}</span></p>
@@ -674,6 +676,31 @@ function dependencyNotice(p: ProviderDTO): string {
           <p v-if="p.description" class="mt-3 line-clamp-3 text-[11px] leading-relaxed text-text-muted">
             {{ p.description }}
           </p>
+
+          <!-- A disable that kcp cannot finish. The binding is gone from the
+               user's point of view the moment they click Disable, but kcp
+               first cascade-deletes every CR of the bound APIs — and a CR
+               finalizer whose controller is gone holds that open forever.
+               kcp's condition message names the exact finalizer/resources, so
+               show it verbatim; it is the only actionable clue anywhere. -->
+          <div
+            v-if="providers.isDisabling(p.name) && providers.deletionBlocked(p.name)"
+            class="mt-3 rounded-md border border-warning/30 bg-warning-subtle p-2.5"
+          >
+            <div class="flex items-center gap-1.5 text-[10px] font-semibold text-warning">
+              <AlertTriangle class="h-3 w-3 flex-shrink-0" :stroke-width="2" />
+              Disable is stuck
+            </div>
+            <p class="mt-1 text-[10px] leading-relaxed text-warning">
+              {{ providers.deletionBlocked(p.name) }}
+            </p>
+            <p class="mt-1.5 text-[10px] leading-relaxed text-text-muted">
+              kcp removes a provider's resources before the binding itself. Resources
+              holding a finalizer wait for their controller to release it — if that
+              controller is gone, delete the listed resources (or strip their
+              finalizers) to let the disable finish.
+            </p>
+          </div>
 
           <!-- A provider whose claims point at a replaced dependency keeps
                reporting Enabled and healthy while seeing none of the resources
@@ -754,8 +781,17 @@ function dependencyNotice(p: ProviderDTO): string {
 
             <!-- Enable / Disable: only when provider declares an APIExport -->
             <template v-if="p.apiExportName && p.ready">
+              <!-- Mid-deletion: neither Enable (name still taken) nor Disable
+                   (already deleting) is actionable, so say what's happening. -->
+              <span
+                v-if="providers.isDisabling(p.name)"
+                class="inline-flex items-center gap-1 rounded-lg border border-warning/30 bg-warning-subtle px-2.5 py-1 text-[11px] font-medium text-warning"
+              >
+                <Loader2 class="h-3 w-3 animate-spin" :stroke-width="2" />
+                Disabling&hellip;
+              </span>
               <button
-                v-if="!providers.isEnabled(p.name)"
+                v-else-if="!providers.isEnabled(p.name)"
                 class="inline-flex items-center gap-1 rounded-lg border border-success/30 bg-success-subtle px-2.5 py-1 text-[11px] font-medium text-success transition-colors hover:bg-success/15 disabled:cursor-not-allowed disabled:opacity-60"
                 :disabled="!!busy[p.name] || providers.hasMissingDependencies(p)"
                 :title="dependencyNotice(p)"

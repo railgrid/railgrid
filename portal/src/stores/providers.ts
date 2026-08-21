@@ -80,6 +80,13 @@ export interface EnabledProviderDetail {
   // workspace uses — what every dependent looks like after that dependency is
   // swapped for a self-hosted one. Absent in the healthy case.
   staleClaims?: StaleClaim[]
+  // true when the provider was disabled but kcp is still cascade-deleting the
+  // bound APIs' resources — the binding stays live (and listed) until then.
+  terminating?: boolean
+  // kcp's explanation of what is holding a terminating binding open (leftover
+  // CR finalizers, failed deletes). A binding in this state never finishes
+  // disabling on its own. Absent while deletion progresses normally.
+  deletionBlocked?: string
 }
 
 // StaleClaim mirrors pkg/hub/restapi.StaleClaim. kcp reports a binding with a
@@ -355,6 +362,19 @@ export const useProvidersStore = defineStore('providers', () => {
   // Worth showing prominently despite looking like a detail: kcp keeps
   // reporting such a provider as Enabled and healthy, so nothing else in the UI
   // distinguishes it from one that works.
+  // isDisabling / deletionBlocked expose the Disable-in-progress state. kcp
+  // deletes an APIBinding asynchronously (all CRs of the bound APIs go first),
+  // so after a Disable the binding can linger — indefinitely, when a leftover
+  // CR finalizer's controller is gone. Without these the catalog re-renders
+  // such a binding as plain Enabled and the Disable button looks broken.
+  function isDisabling(name: string): boolean {
+    return !!bindingsByProvider.value[name]?.terminating
+  }
+
+  function deletionBlocked(name: string): string {
+    return bindingsByProvider.value[name]?.deletionBlocked ?? ''
+  }
+
   function staleClaims(name: string): StaleClaim[] {
     return bindingsByProvider.value[name]?.staleClaims ?? []
   }
@@ -518,9 +538,14 @@ export const useProvidersStore = defineStore('providers', () => {
       const detail = await res.text().catch(() => '')
       throw new Error(`disable ${p.name} failed: ${res.status} ${res.statusText} ${detail}`)
     }
-    const next = { ...bindingNamesByProvider.value }
-    delete next[p.name]
-    bindingNamesByProvider.value = next
+    // Resync from the server rather than deleting the map entry locally: kcp
+    // deletes the binding asynchronously (every CR of the bound APIs goes
+    // first), so right after a 204 the binding usually still exists — now
+    // flagged terminating, possibly with a deletionBlocked reason the card
+    // must show. A local delete would render "disabled" for a binding that
+    // can be stuck alive indefinitely. This also stops a bogus 404 (e.g. a
+    // proxy answering instead of the hub) from silently reading as success.
+    await refreshBindings()
   }
 
   function byName(name: string): ProviderDTO | undefined {
@@ -548,6 +573,8 @@ export const useProvidersStore = defineStore('providers', () => {
     hasMissingDependencies,
     staleClaims,
     hasStaleClaims,
+    isDisabling,
+    deletionBlocked,
     dependencyLabel,
     dependencyLabels,
     load,

@@ -43,6 +43,7 @@ package kcp
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -132,6 +133,20 @@ func (b *Bootstrapper) EnsureOrgProviderWorkspace(ctx context.Context, orgUUID, 
 			"type": map[string]any{"name": "provider", "path": kcppaths.Root},
 		},
 	}}
+
+	// Re-registering right after a delete is the common case — the portal offers
+	// both actions side by side — and kcp keeps the old Workspace around while
+	// it terminates. Adopting that object looks like it works (Create returns
+	// AlreadyExists, and the workspace still reports Ready) and then fails at
+	// the first write with "workspace access not permitted", because the
+	// bindings granting that access are already being collected. Wait it out and
+	// make a genuinely new one instead.
+	if existing, err := parent.Resource(workspaceGVR).Get(ctx, name, metav1.GetOptions{}); err == nil && existing.GetDeletionTimestamp() != nil {
+		logger.Info("Waiting for the previous org provider workspace to finish deleting before recreating it")
+		if werr := waitForWorkspaceGone(ctx, parent, name, 2*time.Minute); werr != nil {
+			return "", fmt.Errorf("org provider workspace %s in org %s is still deleting; retry once it is gone: %w", name, orgUUID, werr)
+		}
+	}
 
 	if _, err := parent.Resource(workspaceGVR).Create(ctx, ws, metav1.CreateOptions{}); err != nil {
 		if !errors.IsAlreadyExists(err) {

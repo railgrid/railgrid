@@ -111,6 +111,16 @@ type Provider struct {
 	// seen the entry.
 	CatalogEntryCluster string
 
+	// EdgeRoute, when non-nil, says this provider's backend is reached through
+	// an edge tunnel rather than by dialling BackendURL.
+	//
+	// Only ever set for an org-owned provider, and only from the binding the
+	// HUB recorded at registration — never from the CatalogEntry, which the
+	// tenant's own chart authors (docs/byo-provider-edge-transport.md E-1).
+	// When set, BackendURL is ignored for routing: it names an address inside
+	// the tenant's cluster, meaningful there and undialable from here.
+	EdgeRoute *EdgeRoute
+
 	// LocalUIAssets, when non-nil, is an embedded fs.FS that the UI proxy
 	// serves under /ui/providers/{Name}/* instead of forwarding to UIURL.
 	// Populated for first-party providers whose Vite-built portal/dist is

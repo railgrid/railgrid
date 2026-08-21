@@ -814,6 +814,12 @@ func (s *Server) Run(ctx context.Context) error {
 		if err := providers.SetupCatalogWithManager(providersMgr, providerRegistry, kcpConfig, providers.CatalogReconcilerOptions{
 			HubExternalURL: s.opts.HubExternalURL,
 			HubInternalURL: s.opts.HubInternalURL,
+			// Org-owned providers are reached over their edge tunnel. The
+			// adapter lives here because this is the only place that imports
+			// both packages: pkg/hub/kcp deliberately does not depend on
+			// pkg/hub/providers, so the two EdgeRoute types are mirrored rather
+			// than shared, exactly as ProviderClaim is.
+			EdgeRoutes: edgeRouteResolver{bootstrapper},
 		}); err != nil {
 			return fmt.Errorf("setting up provider catalog controller: %w", err)
 		}

@@ -290,6 +290,17 @@ type EnabledProviderDetail struct {
 	// as healthy while serving none of the claimed resources, so this is the
 	// only place the condition is visible before a downstream 404.
 	StaleClaims []StaleClaim `json:"staleClaims,omitempty"`
+	// Terminating is true when the provider has been disabled but kcp is still
+	// cascade-deleting the bound APIs' resources. The binding (and the
+	// provider's API surface) remains live until that finishes, so the portal
+	// must render this as "disabling", not as enabled or disabled.
+	Terminating bool `json:"terminating,omitempty"`
+	// DeletionBlocked is kcp's explanation of what is holding a terminating
+	// binding open — e.g. "Some content in the workspace has finalizers
+	// remaining: <finalizer> in 3 resource instances". A binding in this state
+	// never finishes disabling on its own; whoever owns the named finalizer has
+	// to act, and this message is the only place the user learns that.
+	DeletionBlocked string `json:"deletionBlocked,omitempty"`
 }
 
 // StaleClaim describes one mispointed claim in terms the portal can render
@@ -386,10 +397,12 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 	for provider, binding := range bindings {
 		names[provider] = binding.Name
 		details[provider] = EnabledProviderDetail{
-			BindingName: binding.Name,
-			ExportPath:  binding.ExportPath,
-			SelfHosted:  binding.SelfHosted,
-			StaleClaims: staleClaimsFor(stale[provider], binding.SelfHosted),
+			BindingName:     binding.Name,
+			ExportPath:      binding.ExportPath,
+			SelfHosted:      binding.SelfHosted,
+			StaleClaims:     staleClaimsFor(stale[provider], binding.SelfHosted),
+			Terminating:     binding.Terminating,
+			DeletionBlocked: binding.DeletionBlocked,
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")

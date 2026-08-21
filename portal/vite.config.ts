@@ -40,6 +40,15 @@ export default defineConfig(() => ({
         changeOrigin: true,
         secure: false,
       },
+      // Tenant-scoped REST surface (enable/disable providers, enabled-set,
+      // org management). Without this, a portal tab opened directly on the
+      // Vite port gets a Vite 404 for these calls — which the disable flow
+      // used to swallow as success, making Disable a silent no-op in dev.
+      '/api/orgs': {
+        target: 'https://localhost:9443',
+        changeOrigin: true,
+        secure: false,
+      },
       '/services/providers': {
         target: 'https://localhost:9443',
         changeOrigin: true,

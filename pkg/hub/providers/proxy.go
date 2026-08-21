@@ -270,13 +270,30 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prov, found := p.reg.Get(name)
+	// Resolve in the caller's Org first, so an Org running its own copy of a
+	// provider reaches THAT copy. Platform-only resolution here was not a
+	// missing feature but a wrong answer: it silently served the platform
+	// provider to a tenant who had deliberately replaced it.
+	//
+	// UI proxy stays platform-scoped: it serves static assets, and an org's
+	// bundle is not something the hub hosts.
+	prov, found := p.resolveProvider(r, name)
 	if !found {
 		http.Error(w, "provider not found: "+name, http.StatusNotFound)
 		return
 	}
 	if !prov.Ready() {
 		http.Error(w, "provider not ready: "+name, http.StatusServiceUnavailable)
+		return
+	}
+
+	// An org-owned provider runs in the tenant's own cluster, so its backend is
+	// reached over the edge tunnel. Do this before pick(): BackendURL for such
+	// a provider is an address inside that cluster, and dialling it from here
+	// would either fail or — worse, if it happened to resolve — reach something
+	// else entirely.
+	if prov.EdgeRoute != nil {
+		p.serveOverEdge(w, r, prov, rest)
 		return
 	}
 

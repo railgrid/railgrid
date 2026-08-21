@@ -67,6 +67,10 @@ type CatalogReconciler struct {
 	hubExternalURL string
 	hubInternalURL string
 
+	// edgeRoutes resolves an org-owned provider's edge transport. Nil in
+	// registry-only mode and on hubs that predate edge transport.
+	edgeRoutes EdgeRouteResolver
+
 	// clusterPaths caches logical-cluster-ID → canonical workspace path. The
 	// path is what tells a platform provider apart from an org-owned one and
 	// attributes the latter to its Org; the reconcile request carries only the
@@ -88,6 +92,11 @@ type CatalogReconcilerOptions struct {
 	// mints kubeconfigs, so they are currently unused by the reconciler.
 	HubExternalURL string
 	HubInternalURL string
+
+	// EdgeRoutes resolves an org-owned provider's edge transport and reconciles
+	// the hub-owned Service in front of it. Nil leaves org-owned providers on
+	// their declared backend URL, which is the pre-edge-transport behaviour.
+	EdgeRoutes EdgeRouteResolver
 }
 
 // SetupCatalogWithManager wires the reconciler into a multicluster manager.
@@ -102,6 +111,7 @@ func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *re
 		noKCP:          kcpConfig == nil,
 		hubExternalURL: opts.HubExternalURL,
 		hubInternalURL: opts.HubInternalURL,
+		edgeRoutes:     opts.EdgeRoutes,
 		clusterPaths:   map[string]string{},
 	}
 	if kcpConfig != nil {
@@ -282,6 +292,28 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		CatalogEntryCluster: string(req.ClusterName),
 	}
 	prov.EdgeProxyAccess = entry.Spec.EdgeProxyAccess
+
+	// An org-owned provider runs in the tenant's own cluster, so its data plane
+	// travels the edge tunnel rather than a URL the hub dials. Resolve that
+	// route from the binding the HUB recorded at registration — never from this
+	// CatalogEntry, which the tenant's own chart wrote — and reconcile the
+	// hub-owned Service the tunnel lands on.
+	//
+	// A failure here is not fatal to the registry entry: the provider still
+	// exists, is still discoverable, and its control half (Templates, Instances
+	// through kcp) is unaffected. It just has no reachable backend, which the
+	// proxy reports as 503 rather than dialling an address inside someone
+	// else's cluster.
+	if orgUUID != "" && r.edgeRoutes != nil && entry.Spec.Backend != nil {
+		route, err := r.edgeRoutes.ResolveProviderEdgeRoute(ctx, orgUUID, entry.Name, entry.Spec.Backend.URL)
+		if err != nil {
+			logger.Info("Could not resolve edge route for org-owned provider; its backend stays unroutable",
+				"provider", entry.Name, "error", err.Error())
+		} else {
+			prov.EdgeRoute = route
+		}
+	}
+
 	if sh := entry.Spec.SelfHosting; sh != nil {
 		mapped := &SelfHosting{
 			Supported:   sh.Supported,
