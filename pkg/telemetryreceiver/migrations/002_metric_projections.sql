@@ -39,10 +39,11 @@ CREATE INDEX faros_telemetry_metric_uniques_window_idx
 CREATE TABLE faros_telemetry_metric_catalog (
     metric_key TEXT NOT NULL,
     metric_kind TEXT NOT NULL CHECK (metric_kind IN ('counter', 'funnel')),
+    event_type TEXT NOT NULL,
     funnel_step TEXT NOT NULL DEFAULT '',
     step_order INTEGER NOT NULL CHECK (step_order > 0),
     window_days INTEGER NOT NULL CHECK (window_days IN (0, 7, 28)),
-    PRIMARY KEY (metric_key, funnel_step)
+    PRIMARY KEY (metric_key, funnel_step, event_type)
 );
 
 CREATE VIEW faros_telemetry_metric_daily AS
@@ -52,14 +53,17 @@ FROM faros_telemetry_metric_aggregates;
 -- "all" counters mean all retained aggregate buckets (13 months by default),
 -- not privacy-unsafe exact all-time distinct subjects.
 CREATE VIEW faros_telemetry_counter_current AS
-SELECT c.metric_key, a.labels, SUM(a.value)::BIGINT AS value,
-       c.window_days
-FROM faros_telemetry_metric_catalog c
+WITH counters AS (
+    SELECT DISTINCT metric_key, window_days
+    FROM faros_telemetry_metric_catalog
+    WHERE metric_kind = 'counter'
+)
+SELECT c.metric_key, a.labels, SUM(a.value)::BIGINT AS value, c.window_days
+FROM counters c
 JOIN faros_telemetry_metric_aggregates a
   ON a.metric_key = c.metric_key
- AND a.funnel_step = c.funnel_step
+ AND a.funnel_step = ''
  AND (c.window_days = 0 OR a.bucket_start >= CURRENT_DATE - (c.window_days - 1))
-WHERE c.metric_kind = 'counter'
 GROUP BY c.metric_key, a.labels, c.window_days;
 
 -- Windowed distinct values use the raw uniqueness rows so the same subject is

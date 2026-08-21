@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/faroshq/faros/telemetry/catalog"
 	"github.com/faroshq/faros/telemetry/generated"
 )
 
@@ -55,6 +56,24 @@ func TestGeneratedProjectionPlanIsDeterministicAndAppliesFiltersLabelsUnique(t *
 	}
 	if len(projections) != 1 || projections[0].MetricKey != "edge_first_ready_total" {
 		t.Fatalf("failed projections = %+v, want counter only", projections)
+	}
+}
+
+func TestProjectionPlanPreservesEveryCounterEventSelection(t *testing.T) {
+	metric := catalog.MetricDefinition{
+		KeyPath: "multi_event_total", MetricKind: "counter", Status: "active", TimeFrame: "all",
+		Events: []catalog.EventSelection{{Name: "event_one", Unique: "resource"}, {Name: "event_two", Unique: "resource"}},
+	}
+	plan, err := BuildProjectionPlan([]catalog.MetricDefinition{metric})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := plan.CatalogRows()
+	if len(rows) != 2 || rows[0].EventType != "event_one" || rows[1].EventType != "event_two" {
+		t.Fatalf("catalog rows = %+v, want both counter event selections", rows)
+	}
+	if rows[0].MetricKey != rows[1].MetricKey || rows[0].FunnelStep != "" || rows[1].FunnelStep != "" {
+		t.Fatalf("counter selection identities = %+v", rows)
 	}
 }
 

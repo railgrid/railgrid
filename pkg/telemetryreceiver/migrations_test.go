@@ -17,6 +17,7 @@ package telemetryreceiver
 import (
 	"database/sql"
 	"io/fs"
+	"strings"
 	"testing"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -46,5 +47,13 @@ func TestEmbeddedMigrationParsesWithGoose(t *testing.T) {
 	sources := provider.ListSources()
 	if len(sources) != 2 || sources[0].Version != 1 || sources[0].Path != "001_initial.sql" || sources[1].Version != 2 || sources[1].Path != "002_metric_projections.sql" {
 		t.Fatalf("goose sources = %+v", sources)
+	}
+	raw, err := fs.ReadFile(migrationFS, "002_metric_projections.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sql := string(raw)
+	if !strings.Contains(sql, "PRIMARY KEY (metric_key, funnel_step, event_type)") || !strings.Contains(sql, "SELECT DISTINCT metric_key, window_days") {
+		t.Fatal("metric catalog must preserve event selection identity and de-duplicate counter metadata joins")
 	}
 }

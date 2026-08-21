@@ -50,13 +50,13 @@ func (s *PostgresStore) SyncCatalog(ctx context.Context) error {
 	for _, rule := range s.plan.CatalogRows() {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO faros_telemetry_metric_catalog
-				(metric_key, metric_kind, funnel_step, step_order, window_days)
-			VALUES ($1, $2, $3, $4, $5)
-			ON CONFLICT (metric_key, funnel_step) DO UPDATE SET
+				(metric_key, metric_kind, event_type, funnel_step, step_order, window_days)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (metric_key, funnel_step, event_type) DO UPDATE SET
 				metric_kind = EXCLUDED.metric_kind,
 				step_order = EXCLUDED.step_order,
 				window_days = EXCLUDED.window_days`,
-			rule.MetricKey, rule.MetricKind, rule.FunnelStep, rule.StepOrder, rule.WindowDays); err != nil {
+			rule.MetricKey, rule.MetricKind, rule.EventType, rule.FunnelStep, rule.StepOrder, rule.WindowDays); err != nil {
 			return fmt.Errorf("sync telemetry metric catalog: %w", err)
 		}
 	}
