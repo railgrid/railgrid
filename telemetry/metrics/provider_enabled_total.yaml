@@ -1,0 +1,21 @@
+version: 1
+key_path: provider_enabled_total
+description: Total provider enablement outcomes.
+owner: platform
+product_group: platform
+product_categories: [providers]
+value_type: number
+metric_kind: counter
+status: active
+time_frame: all
+data_source: internal_events
+events:
+  - name: provider_enabled
+    unique: workspace
+labels:
+  provider:
+    description: Enabled provider identifier.
+    values: [agents, app-studio, code, databricks, edges, infrastructure, kuery, quickstart, vibe-studio]
+  outcome:
+    description: Provider enablement outcome.
+    values: [success, failure, already_enabled, forbidden]

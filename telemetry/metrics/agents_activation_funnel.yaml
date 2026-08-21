@@ -1,0 +1,21 @@
+version: 1
+key_path: agents_activation_funnel
+description: Agents progressing from creation through a successful terminal run for the same agent resource identity.
+owner: agents
+product_group: agents
+product_categories: [activation, runs]
+value_type: number
+metric_kind: funnel
+status: active
+time_frame: 28d
+data_source: internal_events
+events:
+  - name: agents_agent_created
+    unique: resource
+    filter:
+      outcome: success
+  - name: agents_run_terminal
+    unique: resource
+    filter:
+      outcome: succeeded
+labels: {}

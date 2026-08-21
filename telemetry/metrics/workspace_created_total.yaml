@@ -1,0 +1,18 @@
+version: 1
+key_path: workspace_created_total
+description: Total workspace creation outcomes.
+owner: platform
+product_group: platform
+product_categories: [tenancy]
+value_type: number
+metric_kind: counter
+status: active
+time_frame: all
+data_source: internal_events
+events:
+  - name: workspace_created
+    unique: workspace
+labels:
+  outcome:
+    description: Workspace creation outcome.
+    values: [success, failure, conflict]

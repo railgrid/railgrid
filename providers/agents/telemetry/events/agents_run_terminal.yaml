@@ -1,0 +1,29 @@
+version: 1
+internal_events: true
+action: agents_run_terminal
+description: An Agents provider agent's run reached a terminal outcome for the same agent resource identity.
+owner: agents
+product_group: agents
+product_categories:
+  - runs
+identifiers:
+  - org
+  - workspace
+  - resource
+tiers:
+  - free
+  - premium
+  - ultimate
+milestone: "0.1"
+status: active
+introduced_by_url: https://github.com/faroshq/faros
+retention_days: 90
+privacy:
+  class: pseudonymous
+  pseudonymize: [org, workspace, resource]
+  no_raw_content: true
+additional_properties:
+  outcome:
+    description: The bounded terminal run outcome.
+    type: string
+    enum: [succeeded, failed, aborted, timed_out]

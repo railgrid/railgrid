@@ -1,0 +1,30 @@
+version: 1
+internal_events: true
+action: app_studio_project_published
+description: An App Studio project was published or promoted.
+owner: app-studio
+product_group: app_studio
+product_categories:
+  - publishing
+identifiers:
+  - org
+  - workspace
+  - project
+  - actor
+tiers:
+  - free
+  - premium
+  - ultimate
+milestone: "0.1"
+status: active
+introduced_by_url: https://github.com/faroshq/faros
+retention_days: 90
+privacy:
+  class: pseudonymous
+  pseudonymize: [org, workspace, project, actor]
+  no_raw_content: true
+additional_properties:
+  outcome:
+    description: The publication or promotion outcome.
+    type: string
+    enum: [published, promoted, failed]

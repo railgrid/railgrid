@@ -1,0 +1,30 @@
+version: 1
+internal_events: true
+action: agents_agent_created
+description: An Agents provider agent was created.
+owner: agents
+product_group: agents
+product_categories:
+  - agents
+identifiers:
+  - org
+  - workspace
+  - actor
+  - resource
+tiers:
+  - free
+  - premium
+  - ultimate
+milestone: "0.1"
+status: active
+introduced_by_url: https://github.com/faroshq/faros
+retention_days: 90
+privacy:
+  class: pseudonymous
+  pseudonymize: [org, workspace, actor, resource]
+  no_raw_content: true
+additional_properties:
+  outcome:
+    description: Whether agent creation completed.
+    type: string
+    enum: [success, failure, conflict]

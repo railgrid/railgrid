@@ -1,0 +1,25 @@
+version: 1
+key_path: app_studio_activation_funnel
+description: Projects progressing from creation through a ready preview to publication.
+owner: app-studio
+product_group: app_studio
+product_categories: [activation, publishing]
+value_type: number
+metric_kind: funnel
+status: active
+time_frame: 28d
+data_source: internal_events
+events:
+  - name: app_studio_project_created
+    unique: project
+    filter:
+      outcome: success
+  - name: app_studio_preview_ready
+    unique: project
+    filter:
+      outcome: ready
+  - name: app_studio_project_published
+    unique: project
+    filter:
+      outcome: published
+labels: {}

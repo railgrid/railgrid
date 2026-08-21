@@ -1,0 +1,18 @@
+version: 1
+key_path: agents_run_terminal_total
+description: Total terminal run outcomes in the Agents provider.
+owner: agents
+product_group: agents
+product_categories: [runs]
+value_type: number
+metric_kind: counter
+status: active
+time_frame: all
+data_source: internal_events
+events:
+  - name: agents_run_terminal
+    unique: resource
+labels:
+  outcome:
+    description: Terminal run outcome.
+    values: [succeeded, failed, aborted, timed_out]

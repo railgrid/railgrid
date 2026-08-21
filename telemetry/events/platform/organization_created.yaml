@@ -1,0 +1,28 @@
+version: 1
+internal_events: true
+action: organization_created
+description: A Faros organization was created.
+owner: platform
+product_group: platform
+product_categories:
+  - tenancy
+identifiers:
+  - org
+  - actor
+tiers:
+  - free
+  - premium
+  - ultimate
+milestone: "0.1"
+status: active
+introduced_by_url: https://github.com/faroshq/faros
+retention_days: 90
+privacy:
+  class: pseudonymous
+  pseudonymize: [org, actor]
+  no_raw_content: true
+additional_properties:
+  outcome:
+    description: Whether organization creation completed.
+    type: string
+    enum: [success, failure, conflict]

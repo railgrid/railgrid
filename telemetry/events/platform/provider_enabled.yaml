@@ -1,0 +1,34 @@
+version: 1
+internal_events: true
+action: provider_enabled
+description: A provider was enabled in a Faros workspace.
+owner: platform
+product_group: platform
+product_categories:
+  - providers
+identifiers:
+  - org
+  - workspace
+  - actor
+  - resource
+tiers:
+  - free
+  - premium
+  - ultimate
+milestone: "0.1"
+status: active
+introduced_by_url: https://github.com/faroshq/faros
+retention_days: 90
+privacy:
+  class: pseudonymous
+  pseudonymize: [org, workspace, actor, resource]
+  no_raw_content: true
+additional_properties:
+  provider:
+    description: The bounded provider identifier.
+    type: string
+    enum: [agents, app-studio, code, databricks, edges, infrastructure, kuery, quickstart, vibe-studio]
+  outcome:
+    description: Whether provider enablement completed.
+    type: string
+    enum: [success, failure, already_enabled, forbidden]

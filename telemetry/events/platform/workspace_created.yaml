@@ -1,0 +1,29 @@
+version: 1
+internal_events: true
+action: workspace_created
+description: A Faros workspace was created for an organization.
+owner: platform
+product_group: platform
+product_categories:
+  - tenancy
+identifiers:
+  - org
+  - workspace
+  - actor
+tiers:
+  - free
+  - premium
+  - ultimate
+milestone: "0.1"
+status: active
+introduced_by_url: https://github.com/faroshq/faros
+retention_days: 90
+privacy:
+  class: pseudonymous
+  pseudonymize: [org, workspace, actor]
+  no_raw_content: true
+additional_properties:
+  outcome:
+    description: Whether workspace creation completed.
+    type: string
+    enum: [success, failure, conflict]

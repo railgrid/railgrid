@@ -1,0 +1,21 @@
+version: 1
+key_path: app_studio_preview_ready_total
+description: Total App Studio projects whose preview became ready.
+owner: app-studio
+product_group: app_studio
+product_categories: [preview]
+value_type: number
+metric_kind: counter
+status: active
+time_frame: all
+data_source: internal_events
+events:
+  - name: app_studio_preview_ready
+    unique: project
+labels:
+  preview_kind:
+    description: Preview environment kind.
+    values: [development, production]
+  outcome:
+    description: Preview readiness outcome.
+    values: [ready, failed]

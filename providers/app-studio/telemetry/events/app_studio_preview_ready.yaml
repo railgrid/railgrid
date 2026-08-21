@@ -1,0 +1,33 @@
+version: 1
+internal_events: true
+action: app_studio_preview_ready
+description: An App Studio project preview became ready.
+owner: app-studio
+product_group: app_studio
+product_categories:
+  - preview
+identifiers:
+  - org
+  - workspace
+  - project
+tiers:
+  - free
+  - premium
+  - ultimate
+milestone: "0.1"
+status: active
+introduced_by_url: https://github.com/faroshq/faros
+retention_days: 90
+privacy:
+  class: pseudonymous
+  pseudonymize: [org, workspace, project]
+  no_raw_content: true
+additional_properties:
+  preview_kind:
+    description: The bounded preview environment kind.
+    type: string
+    enum: [development, production]
+  outcome:
+    description: Whether the preview became ready.
+    type: string
+    enum: [ready, failed]
