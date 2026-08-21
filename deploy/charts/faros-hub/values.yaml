@@ -105,6 +105,7 @@ hub:
       memory: 256Mi
     limits:
       memory: 1Gi  # Includes embedded kcp overhead
+
   # -- TLS configuration for hub serving
   tls:
     # Provide an existing Secret with tls.crt and tls.key
@@ -124,6 +125,25 @@ hub:
         kind: ClusterIssuer
         group: cert-manager.io
       dnsNames: []
+
+# -- Opt-in product telemetry. The default is entirely off and performs no
+# outbound network activity. SaaS mode requires an existing Secret; secret
+# values are never rendered in pod args or chart values.
+telemetry:
+  mode: "off"
+  endpoint: ""
+  installationID: ""
+  existingSecret: ""
+  sinkTokenKey: "sink-token"
+  hmacSecretKey: "hmac-secret"
+  queueSize: 1024
+  batchSize: 100
+  flushInterval: 2s
+  enqueueTimeout: 25ms
+  sendTimeout: 5s
+  shutdownTimeout: 5s
+  maxRequestBytes: 65536
+  maxRetries: 3
 
 # -- Identity provider (OIDC) settings (see docs/idp.md)
 idp:

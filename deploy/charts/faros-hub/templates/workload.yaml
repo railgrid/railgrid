@@ -13,6 +13,9 @@ Workload kind depends on the kcp mode:
 {{- if and (gt (int .Values.replicaCount) 1) (not .Values.kcp.external.enabled) }}
 {{- fail "replicaCount > 1 requires kcp.external.enabled=true: embedded kcp keeps a per-replica etcd on its own PVC and cannot be scaled." }}
 {{- end }}
+{{- if and (eq .Values.telemetry.mode "saas") (or (not .Values.telemetry.endpoint) (not .Values.telemetry.installationID) (not .Values.telemetry.existingSecret)) }}
+{{- fail "telemetry.mode=saas requires telemetry.endpoint, telemetry.installationID, and telemetry.existingSecret" }}
+{{- end }}
 apiVersion: apps/v1
 {{- if .Values.kcp.external.enabled }}
 kind: Deployment
@@ -120,6 +123,32 @@ spec:
             - --embedded-graphql
             {{- end }}
             - --data-dir=/data/hub
+            - --telemetry-mode={{ .Values.telemetry.mode }}
+            {{- if eq .Values.telemetry.mode "saas" }}
+            - --telemetry-endpoint={{ .Values.telemetry.endpoint }}
+            - --telemetry-installation-id={{ .Values.telemetry.installationID }}
+            - --telemetry-queue-size={{ .Values.telemetry.queueSize }}
+            - --telemetry-batch-size={{ .Values.telemetry.batchSize }}
+            - --telemetry-flush-interval={{ .Values.telemetry.flushInterval }}
+            - --telemetry-enqueue-timeout={{ .Values.telemetry.enqueueTimeout }}
+            - --telemetry-send-timeout={{ .Values.telemetry.sendTimeout }}
+            - --telemetry-shutdown-timeout={{ .Values.telemetry.shutdownTimeout }}
+            - --telemetry-max-request-bytes={{ .Values.telemetry.maxRequestBytes }}
+            - --telemetry-max-retries={{ .Values.telemetry.maxRetries }}
+            {{- end }}
+          {{- if eq .Values.telemetry.mode "saas" }}
+          env:
+            - name: FAROS_TELEMETRY_SINK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.telemetry.existingSecret }}
+                  key: {{ .Values.telemetry.sinkTokenKey }}
+            - name: FAROS_TELEMETRY_HMAC_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.telemetry.existingSecret }}
+                  key: {{ .Values.telemetry.hmacSecretKey }}
+          {{- end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           ports:

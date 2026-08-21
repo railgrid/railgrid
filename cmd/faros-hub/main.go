@@ -38,6 +38,8 @@ import (
 
 func main() {
 	opts := hub.NewOptions()
+	opts.TelemetrySinkToken = os.Getenv("FAROS_TELEMETRY_SINK_TOKEN")
+	opts.TelemetryHMACSecret = os.Getenv("FAROS_TELEMETRY_HMAC_SECRET")
 
 	cmd := &cobra.Command{
 		Use:   "faros-hub",
@@ -75,6 +77,17 @@ func main() {
 	cmd.Flags().StringSliceVar(&opts.Providers, "providers", providers.BuiltinNames(),
 		"First-party providers to enable as CatalogEntries (comma-separated or repeat). "+
 			"Defaults to all known builtins. Dependencies are enforced — e.g. mcp requires server-edges.")
+	cmd.Flags().StringVar(&opts.TelemetryMode, "telemetry-mode", opts.TelemetryMode, "Product telemetry mode: off or saas (default off)")
+	cmd.Flags().StringVar(&opts.TelemetryEndpoint, "telemetry-endpoint", "", "SaaS telemetry receiver /v1/events endpoint")
+	cmd.Flags().StringVar(&opts.TelemetryInstallationID, "telemetry-installation-id", "", "Stable opaque installation identifier for SaaS telemetry")
+	cmd.Flags().IntVar(&opts.TelemetryQueueSize, "telemetry-queue-size", 0, "Bounded telemetry event queue (default 1024)")
+	cmd.Flags().IntVar(&opts.TelemetryBatchSize, "telemetry-batch-size", 0, "Maximum CloudEvents per receiver batch (default 100)")
+	cmd.Flags().DurationVar(&opts.TelemetryFlushInterval, "telemetry-flush-interval", 0, "Maximum telemetry batch delay (default 2s)")
+	cmd.Flags().DurationVar(&opts.TelemetryEnqueueTimeout, "telemetry-enqueue-timeout", 0, "Maximum product request enqueue delay (default 25ms)")
+	cmd.Flags().DurationVar(&opts.TelemetrySendTimeout, "telemetry-send-timeout", 0, "Receiver request timeout (default 5s)")
+	cmd.Flags().DurationVar(&opts.TelemetryShutdownTimeout, "telemetry-shutdown-timeout", 0, "Bounded telemetry shutdown drain (default 5s)")
+	cmd.Flags().Int64Var(&opts.TelemetryMaxRequestBytes, "telemetry-max-request-bytes", 0, "Maximum provider telemetry request body (default 64KiB)")
+	cmd.Flags().IntVar(&opts.TelemetryMaxRetries, "telemetry-max-retries", 0, "Receiver attempts per batch (default 3)")
 
 	cmd.Flags().StringVar(&opts.GraphQLAddr, "graphql-addr", opts.GraphQLAddr, "Address of an external GraphQL gateway to proxy /graphql/* requests to (empty to disable)")
 	cmd.Flags().BoolVar(&opts.EmbeddedGraphQL, "embedded-graphql", opts.EmbeddedGraphQL, "Run GraphQL listener+gateway in-process (requires embedded or external kcp; overrides --graphql-addr)")

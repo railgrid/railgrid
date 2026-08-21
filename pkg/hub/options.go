@@ -16,7 +16,11 @@ limitations under the License.
 
 package hub
 
-import "github.com/faroshq/faros/pkg/kcppaths"
+import (
+	"time"
+
+	"github.com/faroshq/faros/pkg/kcppaths"
+)
 
 // Options holds configuration for the hub server.
 type Options struct {
@@ -85,6 +89,22 @@ type Options struct {
 	// pkg/hub/kcp.builtinEntries[].Requires.
 	Providers []string
 
+	// Product telemetry is explicitly opt-in. Off is the self-hosted default
+	// and creates neither a worker nor an outbound HTTP client.
+	TelemetryMode            string
+	TelemetryEndpoint        string
+	TelemetrySinkToken       string
+	TelemetryHMACSecret      string
+	TelemetryInstallationID  string
+	TelemetryQueueSize       int
+	TelemetryBatchSize       int
+	TelemetryFlushInterval   time.Duration
+	TelemetryEnqueueTimeout  time.Duration
+	TelemetrySendTimeout     time.Duration
+	TelemetryShutdownTimeout time.Duration
+	TelemetryMaxRequestBytes int64
+	TelemetryMaxRetries      int
+
 	// GraphQLAddr is the address of an external GraphQL gateway to proxy /graphql/ requests to.
 	// If empty and EmbeddedGraphQL is false, the graphql proxy is disabled.
 	GraphQLAddr string
@@ -150,5 +170,6 @@ func NewOptions() *Options {
 		GraphQLAPIExportLogicalCluster: kcppaths.SystemControllers,
 		GraphQLGRPCAddr:                "localhost:50051",
 		GraphQLPlayground:              true,
+		TelemetryMode:                  "off",
 	}
 }

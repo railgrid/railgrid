@@ -34,6 +34,8 @@ import (
 	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
 	"github.com/kcp-dev/multicluster-provider/apiexport"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -63,6 +65,7 @@ import (
 	"github.com/faroshq/faros/pkg/hub/restapi"
 	"github.com/faroshq/faros/pkg/hub/serviceaccounts"
 	"github.com/faroshq/faros/pkg/hub/sharedstore"
+	hubtelemetry "github.com/faroshq/faros/pkg/hub/telemetry"
 	"github.com/faroshq/faros/pkg/hub/tenant"
 	"github.com/faroshq/faros/pkg/hub/workloadidentity"
 	"github.com/faroshq/faros/pkg/kcppaths"
@@ -112,6 +115,24 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := kcp.ValidateProviders(s.opts.Providers); err != nil {
 		return err
 	}
+	telemetryRegistry := prometheus.NewRegistry()
+	telemetryRuntime, err := hubtelemetry.NewRuntime(hubtelemetry.Config{
+		Mode: s.opts.TelemetryMode, Endpoint: s.opts.TelemetryEndpoint,
+		SinkToken: s.opts.TelemetrySinkToken, HMACSecret: s.opts.TelemetryHMACSecret,
+		InstallationID: s.opts.TelemetryInstallationID, QueueSize: s.opts.TelemetryQueueSize,
+		BatchSize: s.opts.TelemetryBatchSize, FlushInterval: s.opts.TelemetryFlushInterval,
+		EnqueueTimeout: s.opts.TelemetryEnqueueTimeout, SendTimeout: s.opts.TelemetrySendTimeout,
+		ShutdownTimeout: s.opts.TelemetryShutdownTimeout, MaxRequestBytes: s.opts.TelemetryMaxRequestBytes,
+		MaxRetries: s.opts.TelemetryMaxRetries,
+	}, telemetryRegistry)
+	if err != nil {
+		return fmt.Errorf("configuring product telemetry: %w", err)
+	}
+	defer func() {
+		if err := telemetryRuntime.Close(); err != nil {
+			logger.Error(err, "Product telemetry shutdown did not drain within its bound")
+		}
+	}()
 
 	var kcpConfig *rest.Config
 	var bootstrapper *kcp.Bootstrapper
@@ -371,6 +392,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// Create HTTP mux
 	router := mux.NewRouter()
+	router.Handle("/metrics", promhttp.HandlerFor(prometheus.Gatherers{prometheus.DefaultGatherer, telemetryRegistry}, promhttp.HandlerOpts{})).Methods(http.MethodGet)
 
 	// Auth routes (OIDC)
 	var authHandler *auth.Handler
@@ -403,6 +425,22 @@ func (s *Server) Run(ctx context.Context) error {
 	// (wired below alongside other multicluster controllers) keeps in sync
 	// with ProviderCatalogEntry resources.
 	providerRegistry := providers.NewRegistry()
+	if telemetryRuntime.Enabled() {
+		if kcpConfig == nil {
+			return fmt.Errorf("saas product telemetry requires kcp for provider identity verification")
+		}
+		authenticator, authErr := hubtelemetry.NewTokenReviewAuthenticator(kcpConfig, func(name string) (string, bool) {
+			provider, ok := providerRegistry.Get(name)
+			if !ok || provider.OrgUUID != "" || provider.WorkspaceCluster == "" {
+				return "", false
+			}
+			return provider.WorkspaceCluster, true
+		})
+		if authErr != nil {
+			return fmt.Errorf("creating product telemetry provider authenticator: %w", authErr)
+		}
+		router.Handle("/api/providers/{name}/telemetry", hubtelemetry.NewProviderHandler(telemetryRuntime, authenticator, telemetryRuntime.MaxRequestBytes())).Methods(http.MethodPost)
+	}
 	// Provider action invocations ride the backend proxy like every other
 	// data-plane verb (/services/providers/{name}/actions/clusters/...): the
 	// owning provider authorizes them with caller-scoped SSAR gates and kcp
