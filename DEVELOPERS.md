@@ -10,6 +10,7 @@ Deep-dive reference for contributors working on faros internals.
 - [SSH Server-Mode Internals](#ssh-server-mode-internals)
 - [kcp Workspace Hierarchy](#kcp-workspace-hierarchy)
 - [MCP Integration](#mcp-integration)
+- [Product telemetry](#product-telemetry)
 - [Hub Controller Reference](#hub-controller-reference)
 
 ## Local Development with Tilt
@@ -378,6 +379,12 @@ faros mcp url --edge my-cluster
 ```
 
 This bypasses the `Kubernetes` MCP resource and connects directly to a single edge's Kubernetes API.
+
+## Product telemetry
+
+The opt-in managed-SaaS product-event contract, catalog/code-generation workflow,
+provider TokenReview authentication, retention/erasure model, and receiver
+deployment are documented in [docs/product-telemetry.md](docs/product-telemetry.md).
 
 ---
 

@@ -161,6 +161,7 @@ faros ssh my-server -- df -h     # single command
 - [Security & Auth](https://faroshq.github.io/faros/security.html)
 - [Ingress Setup](https://faroshq.github.io/faros/ingress/)
 - [Developer Guide](https://faroshq.github.io/faros/developers.html)
+- [Product telemetry](docs/product-telemetry.md)
 
 ## Contributing
 
