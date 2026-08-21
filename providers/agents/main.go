@@ -25,14 +25,19 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
+
+	producttelemetry "github.com/faroshq/provider-sdk/telemetry"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/faroshq/provider-agents/api"
 )
@@ -73,6 +78,13 @@ func runServe() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	productTracker := newProductTelemetryTracker()
+	defer func() {
+		if err := productTracker.Close(); err != nil {
+			log.Printf("product telemetry shutdown failed")
+		}
+	}()
+
 	srv, err := api.New(ctx, api.Config{
 		HubURL:             os.Getenv("FAROS_HUB_URL"),
 		HubInsecure:        os.Getenv("FAROS_HUB_INSECURE") == "true",
@@ -87,6 +99,7 @@ func runServe() {
 	if err != nil {
 		log.Fatalf("build server: %v", err)
 	}
+	srv.SetTelemetryTracker(productTracker)
 
 	// Background executor: autonomous schedule firing + trigger webhooks via
 	// the APIExport virtual workspace. Interface-based (see the executor
@@ -121,6 +134,72 @@ func runServe() {
 		log.Printf("shutdown error: %v", err)
 	}
 	srv.Close()
+}
+
+func productTelemetryEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_PRODUCT_TELEMETRY_ENABLED")), "true")
+}
+
+// newProductTelemetryTracker is the only construction site for the
+// asynchronous SDK client. Self-hosted providers stay on the no-op path unless
+// product telemetry is explicitly opted in.
+func newProductTelemetryTracker() producttelemetry.Tracker {
+	if !productTelemetryEnabled() {
+		return producttelemetry.NoopTracker{}
+	}
+	hubInsecure := strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_HUB_INSECURE")), "true")
+	tracker, err := producttelemetry.NewClient(producttelemetry.Config{
+		Enabled:       true,
+		ProviderName:  "agents",
+		HubURL:        os.Getenv("FAROS_HUB_URL"),
+		ProviderToken: providerTelemetryToken(),
+		HTTPClient:    productTelemetryHTTPClient(hubInsecure),
+	})
+	if err != nil {
+		// Do not include configuration values, credentials, or event data in the
+		// startup log. Serving the Agents product remains independent of telemetry.
+		log.Printf("WARNING product telemetry unavailable; continuing without it")
+		return producttelemetry.NoopTracker{}
+	}
+	return tracker
+}
+
+// providerTelemetryToken reads the provisioned provider ServiceAccount token
+// from the same kubeconfig used by the provider's init/executor. The hub's
+// FAROS_HUB_TOKEN is the heartbeat credential and is not necessarily accepted
+// by the telemetry ingress TokenReview, so it must not be used here.
+func providerTelemetryToken() string {
+	paths := []string{
+		os.Getenv("FAROS_PROVIDER_KUBECONFIG"),
+		"/var/run/secrets/faros/faros-provider-kubeconfig",
+		os.Getenv("KUBECONFIG"),
+	}
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		cfg, err := clientcmd.BuildConfigFromFlags("", path)
+		if err != nil || cfg == nil {
+			continue
+		}
+		if token := strings.TrimSpace(cfg.BearerToken); token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
+func productTelemetryHTTPClient(insecureSkipVerify bool) *http.Client {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return &http.Client{}
+	}
+	transport := base.Clone()
+	if insecureSkipVerify {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // explicit local/dev opt-in via FAROS_HUB_INSECURE
+	}
+	return &http.Client{Transport: transport}
 }
 
 // oauthAppsFromEnv reads platform-wide OAuth app credentials, mirroring the

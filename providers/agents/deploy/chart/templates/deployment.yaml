@@ -83,6 +83,10 @@ spec:
               value: {{ .Values.hub.url | quote }}
             - name: FAROS_PROVIDER_NAME
               value: "agents"
+            {{- if .Values.telemetry.enabled }}
+            - name: FAROS_PRODUCT_TELEMETRY_ENABLED
+              value: "true"
+            {{- end }}
             # Provider kubeconfig — used for the kcp front-proxy host + TLS
             # only; the tenant client drops its credential and acts as the
             # calling user via the forwarded bearer token.

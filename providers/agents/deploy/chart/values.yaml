@@ -52,6 +52,13 @@ hub:
     name: ""
     key: token
 
+# Product activation telemetry is opt-in. When disabled (the default), the
+# provider constructs no network telemetry client and makes no telemetry calls.
+# When enabled, providerKubeconfig must contain the provider ServiceAccount
+# bearer token. hub.tokenSecretRef remains the optional heartbeat credential.
+telemetry:
+  enabled: false
+
 # Optional Secret whose keys are injected wholesale as environment variables
 # (LLM/channel credentials) — the containerized equivalent of sourcing .env.
 envFromSecret: ""

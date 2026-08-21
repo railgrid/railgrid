@@ -246,6 +246,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, agentSettings{}, err
 		}
+		id := s.mcpIdentity(ctx, r)
 		req := createAgentRequest{
 			Name: in.Name, DisplayName: in.DisplayName, Description: in.Description,
 			SystemPrompt: in.SystemPrompt, Autonomy: in.Autonomy,
@@ -256,6 +257,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, agentSettings{}, err
 		}
+		s.trackAgentCreated(ctx, id, a.Name)
 		return nil, settingsView(a), nil
 	})
 

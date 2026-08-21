@@ -26,4 +26,4 @@ additional_properties:
   outcome:
     description: The bounded terminal run outcome.
     type: string
-    enum: [succeeded, failed, aborted, timed_out]
+    enum: [succeeded, failed, aborted]

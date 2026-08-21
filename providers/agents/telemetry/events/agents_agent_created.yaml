@@ -27,4 +27,4 @@ additional_properties:
   outcome:
     description: Whether agent creation completed.
     type: string
-    enum: [success, failure, conflict]
+    enum: [success]

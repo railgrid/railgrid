@@ -198,7 +198,7 @@ func (s *Server) validateChannelUniqueness(ctx context.Context, c *agentsclient.
 }
 
 func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireClient(w, r)
+	c, id, ok := s.requireClient(w, r)
 	if !ok {
 		return
 	}
@@ -212,6 +212,7 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeUpdateError(w, err)
 		return
 	}
+	s.trackAgentCreated(r.Context(), id, out.Name)
 	writeJSON(w, http.StatusCreated, out)
 }
 

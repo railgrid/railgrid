@@ -20,6 +20,8 @@ import (
 	"net/http"
 	"time"
 
+	producttelemetry "github.com/faroshq/provider-sdk/telemetry"
+
 	"github.com/faroshq/provider-agents/engine"
 	"github.com/faroshq/provider-agents/store"
 	"github.com/faroshq/provider-agents/tenant"
@@ -57,6 +59,10 @@ type Config struct {
 	// per-connection client id/secret — mirroring the code provider. Empty →
 	// users bring their own OAuth app credentials per connection.
 	OAuthApps map[string]OAuthApp
+	// Telemetry is the optional product telemetry dependency. A nil value uses
+	// the no-op implementation, which is the safe default for self-hosted and
+	// test deployments.
+	Telemetry producttelemetry.Tracker
 }
 
 // OAuthApp is one platform-wide OAuth application's credentials.
@@ -67,13 +73,14 @@ type OAuthApp struct {
 
 // Server holds the provider's backend dependencies.
 type Server struct {
-	cfg      Config
-	store    store.Store
-	gql      *tenant.GraphQLClient
-	engine   *engine.Engine
-	bg       *background
-	events   *eventBus
-	liveRuns *runRegistry
+	cfg       Config
+	store     store.Store
+	telemetry producttelemetry.Tracker
+	gql       *tenant.GraphQLClient
+	engine    *engine.Engine
+	bg        *background
+	events    *eventBus
+	liveRuns  *runRegistry
 	// capabilities caches what the hub's aggregate tool endpoint federates for
 	// a workspace, so the portal can hide flows the tenant cannot perform.
 	capabilities *capabilityCache
@@ -111,9 +118,14 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		gql = tenant.NewGraphQLClient(cfg.HubURL, cfg.HubInsecure)
 	}
 
+	tracker := cfg.Telemetry
+	if tracker == nil {
+		tracker = producttelemetry.NoopTracker{}
+	}
 	return &Server{
 		cfg:          cfg,
 		store:        st,
+		telemetry:    tracker,
 		gql:          gql,
 		engine:       engine.New(),
 		events:       newEventBus(),
@@ -122,6 +134,16 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		s2sAuth:      newS2SAuthCache(),
 		started:      time.Now().UTC(),
 	}, nil
+}
+
+// SetTelemetryTracker replaces the optional product telemetry dependency.
+// Passing nil restores the safe no-op implementation and keeps servers built
+// directly in tests independent from the production main package.
+func (s *Server) SetTelemetryTracker(tracker producttelemetry.Tracker) {
+	if tracker == nil {
+		tracker = producttelemetry.NoopTracker{}
+	}
+	s.telemetry = tracker
 }
 
 // Close releases server resources.

@@ -461,6 +461,8 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 	if err != nil {
 		return
 	}
+	priorPhase := stored.Phase
+	outcome, terminal := terminalRunOutcome(out.Phase)
 	stored.Phase = out.Phase
 	stored.Message = out.Message
 	stored.Checkpoint = nil
@@ -479,7 +481,24 @@ func (s *Server) finishRun(ctx context.Context, scope store.Scope, runID string,
 	}
 	stored.UpdatedAt = end
 	stored.FinishedAt = &end
-	_ = s.store.SaveRun(ctx, scope, stored)
+	// A run timeout/cancel is itself a terminal outcome, so its canceled
+	// execution context cannot also be the persistence context. Bound the
+	// cancellation-independent finalization so storage and telemetry remain
+	// durable without allowing shutdown to hang indefinitely.
+	finalizeCtx, cancelFinalize := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancelFinalize()
+	if err := s.store.SaveRun(finalizeCtx, scope, stored); err != nil {
+		// The run's existing product semantics intentionally do not propagate a
+		// persistence failure from this best-effort finalization path. It does,
+		// however, define the telemetry boundary: an event is valid only after
+		// the terminal transition is durably accepted.
+		return
+	}
+	if terminal {
+		if _, wasTerminal := terminalRunOutcome(priorPhase); !wasTerminal {
+			s.trackRunTerminal(finalizeCtx, scope, stored.AgentName, outcome)
+		}
+	}
 }
 
 // runEvent is one run lifecycle change pushed to /api/events subscribers. A

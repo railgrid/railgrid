@@ -2,6 +2,11 @@
 
 Agents provider chart. Ships the provider Deployment, Service, and CatalogEntry for long-running personal AI agents. Configure durable storage with store.databaseURLSecretRef (Postgres is the only hard dependency beyond the hub).
 
+Product activation telemetry is disabled by default. The self-hosted chart makes
+no telemetry network calls unless `telemetry.enabled=true` is explicitly set;
+when enabled, the mounted `providerKubeconfig` must contain the provider
+ServiceAccount bearer token. No extra telemetry secret is required.
+
 Helm chart for the faros **agents** provider. `values.yaml` is the source of
 truth and carries the full inline notes; this table summarises it.
 
@@ -65,6 +70,8 @@ helm upgrade --install agents oci://ghcr.io/faroshq/charts/faros-agents-provider
 | `hub.insecure` | `false` |  |
 | `hub.tokenSecretRef.name` | `""` |  |
 | `hub.tokenSecretRef.key` | `token` |  |
+| `telemetry` |  | Opt-in product activation telemetry; disabled by default and no-network when false. |
+| `telemetry.enabled` | `false` | Set `true` only for an explicit telemetry opt-in; uses the mounted provider kubeconfig token. |
 | `envFromSecret` | `""` | Optional Secret whose keys are injected wholesale as environment variables (LLM/channel credentials) — the containerized equivalent of sourcing .env. |
 | `podLabels` | `{}` |  |
 | `podAnnotations` | `{}` |  |
@@ -74,4 +81,3 @@ helm upgrade --install agents oci://ghcr.io/faroshq/charts/faros-agents-provider
 | `nodeSelector` | `{}` |  |
 | `tolerations` | `[]` |  |
 | `affinity` | `{}` |  |
-

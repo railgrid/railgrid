@@ -33,6 +33,17 @@ Self-hosting is the usual choice here if you want the agents' data — conversat
 history, memory, credentials for the channels they speak on — to stay in your own
 Postgres and your own cluster.
 
+## Product activation telemetry
+
+Product activation telemetry is disabled by default. A self-hosted installation
+makes no telemetry network calls unless the chart value
+`telemetry.enabled=true` (or `FAROS_PRODUCT_TELEMETRY_ENABLED=true`) is
+explicitly set. When enabled, the provider authenticates telemetry with the
+ServiceAccount bearer in `providerKubeconfig`; no extra telemetry secret is
+required. Events contain only bounded pseudonymous scope, actor, and agent
+resource identifiers plus fixed outcome values — never agent names, prompts,
+run content, or credentials.
+
 ## Further reading
 
 - [docs/agents-provider-architecture.md](../../docs/agents-provider-architecture.md)
