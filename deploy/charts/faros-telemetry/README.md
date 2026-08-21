@@ -30,14 +30,16 @@ identified by `(tenant, source, id)`, are not written twice, and are reported
 in the JSON response without incrementing aggregates.
 
 ```json
-[{"specversion":"1.0","id":"evt-1","source":"app","type":"run.completed","tenant":"org-123","datacontenttype":"application/json","data":{"ok":true}}]
+[{"specversion":"1.0","id":"evt-1","source":"faros://installation/org-123/hub","type":"dev.faros.telemetry.organization_created","tenant":"org-123","datacontenttype":"application/json","data":{"ok":true}}]
 ```
 
 ## Retention and erasure
 
 Raw payloads default to 90 days (`retention.raw: 2160h`). Aggregate buckets
 default to 13 months (`retention.aggregate: 9360h`) and contain only bucket,
-source, type, and count; they intentionally omit tenant identity. `POST
+the fixed `faros-hub` component class, a catalog-declared event action, and
+count; they intentionally omit tenant, installation, and caller source
+identity. `POST
 /v1/erasure` with the admin token and `{"request_id":"...","tenant_id":"..."}`
 deletes that tenant's raw rows and records an idempotency receipt. Repeating
 the same request is safe. Because aggregate contributions are not tenant

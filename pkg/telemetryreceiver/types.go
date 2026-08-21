@@ -23,7 +23,10 @@ import (
 const (
 	CloudEventsBatchContentType = "application/cloudevents-batch+json"
 	CloudEventsSpecVersion      = "1.0"
-	defaultBucket               = time.Minute
+	// aggregateComponent is deliberately fixed. Aggregate rows are anonymous
+	// and must not expose caller-controlled source or installation dimensions.
+	aggregateComponent = "faros-hub"
+	defaultBucket      = time.Minute
 )
 
 var (

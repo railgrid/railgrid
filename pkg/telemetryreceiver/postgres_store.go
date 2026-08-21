@@ -40,6 +40,11 @@ func (s *PostgresStore) Insert(ctx context.Context, events []Event) (IngestStats
 	defer func() { _ = tx.Rollback(ctx) }()
 	var stats IngestStats
 	for _, event := range events {
+		typeName, ok := normalizeEventType(event.Type)
+		if !ok {
+			return IngestStats{}, fmt.Errorf("%w: event type %q is not declared", ErrInvalidEvent, event.Type)
+		}
+		event.Type = typeName
 		receivedAt := event.ReceivedAt
 		if receivedAt.IsZero() {
 			receivedAt = time.Now().UTC()
@@ -63,7 +68,7 @@ func (s *PostgresStore) Insert(ctx context.Context, events []Event) (IngestStats
 			INSERT INTO faros_telemetry_aggregates (bucket_start, source, event_type, event_count)
 			VALUES ($1, $2, $3, 1)
 			ON CONFLICT (bucket_start, source, event_type)
-			DO UPDATE SET event_count = faros_telemetry_aggregates.event_count + 1`, bucket, event.Source, event.Type); err != nil {
+			DO UPDATE SET event_count = faros_telemetry_aggregates.event_count + 1`, bucket, aggregateComponent, event.Type); err != nil {
 			return IngestStats{}, fmt.Errorf("update telemetry aggregate: %w", err)
 		}
 		stats.Accepted++

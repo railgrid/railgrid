@@ -22,10 +22,14 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 	cehttp "github.com/cloudevents/sdk-go/v2/protocol/http"
+	"github.com/faroshq/faros/telemetry/generated"
 )
+
+const cloudEventsTypePrefix = "dev.faros.telemetry."
 
 // ParseBatch uses the CloudEvents SDK for the envelope and spec validation,
 // then applies Faros-specific tenant, JSON-data, privacy, and size rules.
@@ -60,6 +64,9 @@ func ParseBatch(request *http.Request, payload []byte, maxEvents, maxEventBytes 
 		if len(rawEvents[i]) > maxEventBytes {
 			return nil, fmt.Errorf("cloud event %d exceeds limit %d bytes", i, maxEventBytes)
 		}
+		if cloudEvent.SpecVersion() != CloudEventsSpecVersion {
+			return nil, fmt.Errorf("cloud event %d: %w: unsupported specversion %q", i, ErrInvalidEvent, cloudEvent.SpecVersion())
+		}
 		if err := cloudEvent.Validate(); err != nil {
 			return nil, fmt.Errorf("cloud event %d: %w", i, err)
 		}
@@ -77,11 +84,19 @@ func normalizeEvent(cloudEvent cloudevents.Event) (Event, error) {
 	if err != nil {
 		return Event{}, fmt.Errorf("%w: tenant extension is required", ErrInvalidEvent)
 	}
-	tenant, ok := tenancy.(string)
-	if !ok || tenant == "" {
+	rawTenant, ok := tenancy.(string)
+	if !ok {
 		return Event{}, fmt.Errorf("%w: tenant extension must be a non-empty string", ErrInvalidEvent)
 	}
-	if len(cloudEvent.ID()) > 256 || len(cloudEvent.Source()) > 512 || len(cloudEvent.Type()) > 256 || len(cloudEvent.Subject()) > 512 || len(tenant) > 256 {
+	tenant, ok := normalizeTenantID(rawTenant)
+	if !ok {
+		return Event{}, fmt.Errorf("%w: tenant extension must be a non-empty identifier without embedded whitespace", ErrInvalidEvent)
+	}
+	typeName, ok := normalizeEventType(cloudEvent.Type())
+	if !ok {
+		return Event{}, fmt.Errorf("%w: event type %q is not declared", ErrInvalidEvent, cloudEvent.Type())
+	}
+	if len(cloudEvent.ID()) > 256 || len(cloudEvent.Source()) > 512 || len(typeName) > 256 || len(cloudEvent.Subject()) > 512 {
 		return Event{}, fmt.Errorf("%w: metadata exceeds length limit", ErrInvalidEvent)
 	}
 	if len(cloudEvent.DataEncoded) == 0 || !json.Valid(cloudEvent.DataEncoded) {
@@ -104,10 +119,27 @@ func normalizeEvent(cloudEvent cloudevents.Event) (Event, error) {
 		Tenant:          tenant,
 		ID:              cloudEvent.ID(),
 		Source:          cloudEvent.Source(),
-		Type:            cloudEvent.Type(),
+		Type:            typeName,
 		Subject:         cloudEvent.Subject(),
 		Time:            eventTime,
 		DataContentType: contentType,
 		Data:            append([]byte(nil), cloudEvent.DataEncoded...),
 	}, nil
+}
+
+func normalizeTenantID(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 256 || strings.IndexFunc(value, unicode.IsSpace) >= 0 {
+		return "", false
+	}
+	return value, true
+}
+
+func normalizeEventType(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, cloudEventsTypePrefix) {
+		value = strings.TrimPrefix(value, cloudEventsTypePrefix)
+	}
+	_, ok := generated.LookupEvent(value)
+	return value, ok
 }

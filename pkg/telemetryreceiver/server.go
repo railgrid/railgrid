@@ -146,7 +146,16 @@ func (s *Server) handleErasure(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid erasure request")
 		return
 	}
-	if request.RequestID == "" || request.TenantID == "" || len(request.RequestID) > 128 || len(request.TenantID) > 256 {
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		s.metrics.erasure.WithLabelValues("rejected").Inc()
+		writeError(w, http.StatusBadRequest, "invalid erasure request")
+		return
+	}
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	tenantID, tenantOK := normalizeTenantID(request.TenantID)
+	request.TenantID = tenantID
+	if request.RequestID == "" || !tenantOK || len(request.RequestID) > 128 {
 		s.metrics.erasure.WithLabelValues("rejected").Inc()
 		writeError(w, http.StatusBadRequest, "request_id and tenant_id are required")
 		return

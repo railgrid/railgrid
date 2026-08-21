@@ -16,6 +16,7 @@ package telemetryreceiver
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -60,10 +61,19 @@ func memoryEventKey(event Event) string {
 }
 
 func (s *MemoryStore) Insert(_ context.Context, events []Event) (IngestStats, error) {
+	normalizedEvents := make([]Event, len(events))
+	copy(normalizedEvents, events)
+	for i := range normalizedEvents {
+		typeName, ok := normalizeEventType(normalizedEvents[i].Type)
+		if !ok {
+			return IngestStats{}, fmt.Errorf("%w: event type %q is not declared", ErrInvalidEvent, normalizedEvents[i].Type)
+		}
+		normalizedEvents[i].Type = typeName
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var stats IngestStats
-	for _, event := range events {
+	for _, event := range normalizedEvents {
 		key := memoryEventKey(event)
 		if _, exists := s.events[key]; exists {
 			stats.Duplicates++
@@ -75,7 +85,7 @@ func (s *MemoryStore) Insert(_ context.Context, events []Event) (IngestStats, er
 		}
 		event.ReceivedAt = receivedAt
 		s.events[key] = memoryEvent{event: event, receivedAt: receivedAt}
-		aggregateKey := memoryAggregateKey{bucket: receivedAt.UTC().Truncate(defaultBucket), source: event.Source, type_: event.Type}
+		aggregateKey := memoryAggregateKey{bucket: receivedAt.UTC().Truncate(defaultBucket), source: aggregateComponent, type_: event.Type}
 		s.aggregates[aggregateKey]++
 		stats.Accepted++
 	}

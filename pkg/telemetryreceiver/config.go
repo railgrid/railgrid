@@ -41,7 +41,7 @@ func (c Config) withDefaults() Config {
 }
 
 func (c Config) validate() error {
-	if c.IngestToken == "" || c.AdminToken == "" || c.MaxBatchEvents <= 0 || c.MaxEventBytes <= 0 {
+	if c.IngestToken == "" || c.AdminToken == "" || c.IngestToken == c.AdminToken || c.MaxBatchEvents <= 0 || c.MaxEventBytes <= 0 {
 		return ErrInvalidConfig
 	}
 	return nil

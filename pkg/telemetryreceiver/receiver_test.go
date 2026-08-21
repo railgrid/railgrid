@@ -26,13 +26,14 @@ import (
 	"time"
 
 	cloudevents "github.com/cloudevents/sdk-go/v2"
+	"github.com/faroshq/faros/telemetry/generated"
 )
 
 func testEvent(id, tenant string) cloudevents.Event {
 	event := cloudevents.NewEvent()
 	event.SetID(id)
 	event.SetSource("test")
-	event.SetType("test.received")
+	event.SetType(generated.ActionOrganizationCreated)
 	event.SetExtension("tenant", tenant)
 	if err := event.SetData(cloudevents.ApplicationJSON, map[string]any{"id": id}); err != nil {
 		panic(err)
@@ -78,6 +79,34 @@ func TestParseBatchUsesCloudEventsValidationAndTenantRule(t *testing.T) {
 		t.Fatalf("tenant = %q, want tenant-a", got)
 	}
 
+	withWhitespace := testEvent("event-whitespace", "  tenant-a  ")
+	payload, err = json.Marshal([]cloudevents.Event{withWhitespace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodPost, "/v1/events", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", CloudEventsBatchContentType)
+	events, err = ParseBatch(request, payload, 10, 10*1024)
+	if err != nil {
+		t.Fatalf("ParseBatch() whitespace tenant error = %v", err)
+	}
+	if got := events[0].Tenant; got != "tenant-a" {
+		t.Fatalf("trimmed tenant = %q, want tenant-a", got)
+	}
+
+	for _, tenant := range []string{" ", "tenant a"} {
+		invalid := testEvent("event-invalid-tenant-"+tenant, tenant)
+		payload, err = json.Marshal([]cloudevents.Event{invalid})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request = httptest.NewRequest(http.MethodPost, "/v1/events", bytes.NewReader(payload))
+		request.Header.Set("Content-Type", CloudEventsBatchContentType)
+		if _, err := ParseBatch(request, payload, 10, 10*1024); !errors.Is(err, ErrInvalidEvent) {
+			t.Fatalf("ParseBatch() tenant %q error = %v, want ErrInvalidEvent", tenant, err)
+		}
+	}
+
 	withoutTenant := testEvent("event-2", "")
 	withoutTenant.Context.GetExtensions()["tenant"] = nil
 	payload, err = json.Marshal([]cloudevents.Event{withoutTenant})
@@ -88,6 +117,47 @@ func TestParseBatchUsesCloudEventsValidationAndTenantRule(t *testing.T) {
 	request.Header.Set("Content-Type", CloudEventsBatchContentType)
 	if _, err := ParseBatch(request, payload, 10, 10*1024); !errors.Is(err, ErrInvalidEvent) {
 		t.Fatalf("ParseBatch() error = %v, want ErrInvalidEvent", err)
+	}
+}
+
+func TestParseBatchRejectsUnsupportedSpecVersionAndUndeclaredType(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*cloudevents.Event)
+	}{
+		{name: "unsupported specversion", mutate: func(event *cloudevents.Event) { event.SetSpecVersion("0.3") }},
+		{name: "undeclared type", mutate: func(event *cloudevents.Event) { event.SetType("dev.faros.telemetry.not_declared") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := testEvent("event-"+strings.ReplaceAll(tt.name, " ", "-"), "tenant-a")
+			tt.mutate(&event)
+			payload, err := json.Marshal([]cloudevents.Event{event})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/v1/events", bytes.NewReader(payload))
+			request.Header.Set("Content-Type", CloudEventsBatchContentType)
+			if _, err := ParseBatch(request, payload, 10, 10*1024); !errors.Is(err, ErrInvalidEvent) {
+				t.Fatalf("ParseBatch() error = %v, want ErrInvalidEvent", err)
+			}
+		})
+	}
+
+	event := testEvent("event-prefixed", "tenant-a")
+	event.SetType("dev.faros.telemetry." + generated.ActionOrganizationCreated)
+	payload, err := json.Marshal([]cloudevents.Event{event})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/events", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", CloudEventsBatchContentType)
+	events, err := ParseBatch(request, payload, 10, 10*1024)
+	if err != nil {
+		t.Fatalf("ParseBatch() prefixed type error = %v", err)
+	}
+	if events[0].Type != generated.ActionOrganizationCreated {
+		t.Fatalf("normalized type = %q, want %q", events[0].Type, generated.ActionOrganizationCreated)
 	}
 }
 
@@ -126,6 +196,13 @@ func TestIngestAuthDuplicateAndMetrics(t *testing.T) {
 	handler.ServeHTTP(metrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if !strings.Contains(metrics.Body.String(), `faros_telemetry_events_total{outcome="duplicate"} 1`) {
 		t.Fatalf("metrics missing duplicate count: %s", metrics.Body.String())
+	}
+}
+
+func TestNewServerRejectsIdenticalCredentials(t *testing.T) {
+	_, err := NewServer(NewMemoryStore(), Config{IngestToken: "same-secret", AdminToken: "same-secret"})
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("NewServer() error = %v, want ErrInvalidConfig", err)
 	}
 }
 
@@ -170,12 +247,56 @@ func TestErasureIsIdempotentAndRetainsAggregates(t *testing.T) {
 	if response.Code != http.StatusConflict {
 		t.Fatalf("conflicting erasure status = %d, want %d", response.Code, http.StatusConflict)
 	}
+
+	request = httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(body+`{"unexpected":true}`))
+	request.Header.Set("Authorization", "Bearer admin-secret")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("trailing JSON erasure status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(body+strings.Repeat(" ", 64*1024)))
+	request.Header.Set("Authorization", "Bearer admin-secret")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("oversize erasure status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/v1/erasure", strings.NewReader(`{"request_id":"erase-space","tenant_id":"  tenant-b  "}`))
+	request.Header.Set("Authorization", "Bearer admin-secret")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("trimmed tenant erasure status = %d, want %d", response.Code, http.StatusAccepted)
+	}
+}
+
+func TestMemoryAggregatesUseFixedComponentAndDeclaredType(t *testing.T) {
+	store := NewMemoryStore()
+	if _, err := store.Insert(nil, []Event{{
+		Tenant: "tenant-a", ID: "event-1", Source: "faros://installation/tenant-a/hub", Type: generated.ActionOrganizationCreated,
+		DataContentType: "application/json", Data: []byte(`{"ok":true}`), ReceivedAt: time.Unix(0, 0).UTC(),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for key := range store.aggregates {
+		if key.source != aggregateComponent {
+			t.Fatalf("aggregate source = %q, want fixed %q", key.source, aggregateComponent)
+		}
+		if key.type_ != generated.ActionOrganizationCreated {
+			t.Fatalf("aggregate type = %q, want %q", key.type_, generated.ActionOrganizationCreated)
+		}
+	}
 }
 
 func TestRetentionAndReadiness(t *testing.T) {
 	server, store := testServer(t)
 	old := time.Now().UTC().Add(-48 * time.Hour)
-	if _, err := store.Insert(nil, []Event{{Tenant: "tenant-a", ID: "old", Source: "test", Type: "old", Time: old, DataContentType: "application/json", Data: []byte(`{"old":true}`), ReceivedAt: old}}); err != nil {
+	if _, err := store.Insert(nil, []Event{{Tenant: "tenant-a", ID: "old", Source: "test", Type: generated.ActionOrganizationCreated, Time: old, DataContentType: "application/json", Data: []byte(`{"old":true}`), ReceivedAt: old}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.PurgeExpired(nil, time.Now().UTC(), 24*time.Hour, 72*time.Hour); err != nil {

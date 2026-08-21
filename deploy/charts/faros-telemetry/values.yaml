@@ -1,0 +1,55 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/faroshq/faros-telemetry
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 8090
+
+# All three values are references to existing Secrets. The chart deliberately
+# does not generate credentials or persist them in Helm release values.
+secrets:
+  database:
+    name: ""
+    key: database-url
+  ingestToken:
+    name: ""
+    key: ingest-token
+  adminToken:
+    name: ""
+    key: admin-token
+
+retention:
+  # 90 days of raw event payloads; this is the erasure-bearing store.
+  raw: 2160h
+  # 13 months of non-identifying aggregate buckets.
+  aggregate: 9360h
+janitorInterval: 1h
+
+ingest:
+  maxBatchEvents: 1000
+  maxEventBytes: 262144
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: true
