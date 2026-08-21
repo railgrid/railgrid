@@ -1,6 +1,6 @@
 version: 1
 key_path: agents_activation_funnel
-description: Agents progressing from creation through a successful terminal run for the same agent resource identity.
+description: Independently deduplicated 28-day agent creation and successful-run stage volumes for the same resource identity; not an ordered cohort funnel.
 owner: agents
 product_group: agents
 product_categories: [activation, runs]

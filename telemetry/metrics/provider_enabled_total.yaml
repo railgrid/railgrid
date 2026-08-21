@@ -18,4 +18,4 @@ labels:
     values: [agents, app-studio, code, databricks, edges, infrastructure, kuery, quickstart, vibe-studio]
   outcome:
     description: Provider enablement outcome.
-    values: [success, failure, already_enabled, forbidden]
+    values: [success]

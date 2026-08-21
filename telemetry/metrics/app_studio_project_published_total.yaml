@@ -15,4 +15,4 @@ events:
 labels:
   outcome:
     description: Publication or promotion outcome.
-    values: [published, promoted, failed]
+    values: [published, promoted]

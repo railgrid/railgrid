@@ -1,6 +1,6 @@
 version: 1
 key_path: app_studio_activation_funnel
-description: Projects progressing from creation through a ready preview to publication.
+description: Independently deduplicated 28-day project creation, preview-ready, and publication stage volumes; not an ordered cohort funnel.
 owner: app-studio
 product_group: app_studio
 product_categories: [activation, publishing]

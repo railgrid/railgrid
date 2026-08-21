@@ -15,7 +15,7 @@ events:
 labels:
   preview_kind:
     description: Preview environment kind.
-    values: [development, production]
+    values: [development]
   outcome:
     description: Preview readiness outcome.
-    values: [ready, failed]
+    values: [ready]

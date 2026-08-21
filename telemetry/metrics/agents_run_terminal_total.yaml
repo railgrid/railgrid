@@ -15,4 +15,4 @@ events:
 labels:
   outcome:
     description: Terminal run outcome.
-    values: [succeeded, failed, aborted, timed_out]
+    values: [succeeded, failed, aborted]

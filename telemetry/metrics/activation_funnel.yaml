@@ -1,6 +1,6 @@
 version: 1
 key_path: activation_funnel
-description: Organizations progressing from creation through workspace, provider, and first-edge activation.
+description: Independently workspace-deduplicated 28-day activation milestone volumes from workspace creation through first-edge readiness; not a cohort-conversion funnel.
 owner: platform
 product_group: platform
 product_categories: [activation]
@@ -10,20 +10,16 @@ status: active
 time_frame: 28d
 data_source: internal_events
 events:
-  - name: organization_created
-    unique: org
-    filter:
-      outcome: success
   - name: workspace_created
-    unique: org
+    unique: workspace
     filter:
       outcome: success
   - name: provider_enabled
-    unique: org
+    unique: workspace
     filter:
       outcome: success
   - name: edge_first_ready
-    unique: org
+    unique: workspace
     filter:
       outcome: ready
 labels: {}

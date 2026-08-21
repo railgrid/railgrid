@@ -26,4 +26,4 @@ additional_properties:
   outcome:
     description: Whether workspace creation completed.
     type: string
-    enum: [success, failure, conflict]
+    enum: [success]

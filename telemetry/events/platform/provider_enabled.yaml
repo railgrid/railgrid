@@ -31,4 +31,4 @@ additional_properties:
   outcome:
     description: Whether provider enablement completed.
     type: string
-    enum: [success, failure, already_enabled, forbidden]
+    enum: [success]

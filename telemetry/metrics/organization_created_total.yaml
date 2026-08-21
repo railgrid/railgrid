@@ -15,4 +15,4 @@ events:
 labels:
   outcome:
     description: Organization creation outcome.
-    values: [success, failure, conflict]
+    values: [success]

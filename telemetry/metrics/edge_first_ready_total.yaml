@@ -18,4 +18,4 @@ labels:
     values: [kubernetes_cluster, linux_server]
   outcome:
     description: First-edge readiness outcome.
-    values: [ready, failed]
+    values: [ready]
