@@ -61,7 +61,35 @@ func EffectiveSchema(tmpl *infrav1alpha1.Template) (*apiextensionsv1.JSONSchemaP
 	if err := injectFarosActions(&spec, tmpl.Spec.Development != nil); err != nil {
 		return nil, err
 	}
+	if err := injectFarosNetworkPhase(&spec, tmpl.Spec.Development != nil); err != nil {
+		return nil, err
+	}
 	return &spec, nil
+}
+
+// injectFarosNetworkPhase adds the platform-owned setup/runtime phase to
+// development contracts. The Instance controller overwrites the value before
+// materializing the runtime CR, so a tenant cannot keep setup egress enabled.
+func injectFarosNetworkPhase(spec *apiextensionsv1.JSONSchemaProps, enabled bool) error {
+	if _, exists := spec.Properties[infrav1alpha1.FarosNetworkPhaseField]; exists {
+		return fmt.Errorf("spec.schema declares reserved property %q; the platform injects network phase", infrav1alpha1.FarosNetworkPhaseField)
+	}
+	if !enabled {
+		return nil
+	}
+	if spec.Properties == nil {
+		spec.Properties = map[string]apiextensionsv1.JSONSchemaProps{}
+	}
+	spec.Properties[infrav1alpha1.FarosNetworkPhaseField] = apiextensionsv1.JSONSchemaProps{
+		Type:        "string",
+		Description: "Platform-reserved network phase. Setup egress is removed when the runtime graph becomes Ready.",
+		Enum: []apiextensionsv1.JSON{
+			{Raw: []byte(`"` + infrav1alpha1.FarosNetworkPhaseSetup + `"`)},
+			{Raw: []byte(`"` + infrav1alpha1.FarosNetworkPhaseRuntime + `"`)},
+		},
+		Default: &apiextensionsv1.JSON{Raw: []byte(`"` + infrav1alpha1.FarosNetworkPhaseSetup + `"`)},
+	}
+	return nil
 }
 
 // injectFarosMode adds the platform-reserved farosMode property. The enum

@@ -500,6 +500,34 @@ spec:
                         for a single root component)
                       rule: self.all(k, !has(self[k].workspacePath) || self[k].workspacePath
                         == k || self[k].workspacePath == '.')
+                  idleTimeoutSeconds:
+                    description: |-
+                      IdleTimeoutSeconds is the maximum period without an authorized data-plane
+                      request before a development instance is deleted. Zero disables the
+                      limit. Activity is recorded on the runtime CR by the provider's runtime
+                      credential, never by the workload pod or caller.
+                    format: int64
+                    maximum: 604800
+                    minimum: 0
+                    type: integer
+                  maxLifetimeSeconds:
+                    description: |-
+                      MaxLifetimeSeconds is the hard wall-clock lifetime for a development
+                      instance. Zero disables the limit; platform sandbox templates set a
+                      finite value so abandoned runs are deleted by the Instance controller
+                      and their runtime resources pass through normal finalizer cleanup.
+                    format: int64
+                    maximum: 604800
+                    minimum: 0
+                    type: integer
+                  providerActions:
+                    description: |-
+                      ProviderActions controls whether the development pod receives the
+                      short-lived setup token used by the optional Provider Actions bridge.
+                      It defaults to true for backwards compatibility with existing
+                      development templates. A coding-only sandbox should set it to false so
+                      none of its containers receive a projected ServiceAccount token.
+                    type: boolean
                   scaffold:
                     description: |-
                       Scaffold optionally names starter code for a fresh project built on

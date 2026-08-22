@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1
+# Copyright 2026 The Faros Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+
+# The base is an explicit build input so operators can pin it by digest. The
+# resulting image is also selected at runtime by FAROS_DEV_IMAGE_UNIVERSAL;
+# both controls are intentional because this image executes tenant source.
+ARG BASE_IMAGE=docker.io/library/node:22-bookworm
+FROM ${BASE_IMAGE}
+
+USER root
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+        bash \
+        ca-certificates \
+        curl \
+        git \
+        golang-go \
+        jq \
+        make \
+        python3 \
+        python3-venv \
+        ripgrep \
+    && rm -rf /var/lib/apt/lists/* \
+    && install -d -o 1000 -g 1000 /workspace /tmp/faros-home /tmp/faros-cache
+
+# The node Debian base already supplies uid/gid 1000. Keep the image usable
+# with the overlay's pod-level runAsNonRoot boundary without relying on that
+# image's named user surviving a downstream rebuild.
+USER 1000:1000
+WORKDIR /workspace
+ENV HOME=/tmp/faros-home \
+    TMPDIR=/tmp \
+    XDG_CACHE_HOME=/tmp/faros-cache \
+    NPM_CONFIG_CACHE=/tmp/faros-cache/npm
+
+CMD ["sleep", "infinity"]

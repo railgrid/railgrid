@@ -141,6 +141,43 @@ func TestReconcileHappyPath(t *testing.T) {
 	}
 }
 
+func TestReconcileUniversalCodingSandboxDisabledByDefault(t *testing.T) {
+	tmpl := newTestTemplate(t, infrav1alpha1.UniversalCodingSandboxTemplateName)
+	r, stb := newTestReconciler(t, tmpl)
+	reconcileUntilSettled(t, r, tmpl.Name)
+
+	var got infrav1alpha1.Template
+	if err := r.Client.Get(context.Background(), types.NamespacedName{Name: tmpl.Name}, &got); err != nil {
+		t.Fatalf("get template: %v", err)
+	}
+	ready := findCondition(got.Status.Conditions, infrav1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != infrav1alpha1.ReasonCodingSandboxDisabled {
+		t.Fatalf("disabled coding sandbox condition = %+v", ready)
+	}
+	if len(stb.SeenSetups) != 0 {
+		t.Fatalf("disabled coding sandbox reached backend: %v", stb.SeenSetups)
+	}
+}
+
+func TestReconcileUniversalCodingSandboxRejectsUnsafeContractWhenEnabled(t *testing.T) {
+	tmpl := newTestTemplate(t, infrav1alpha1.UniversalCodingSandboxTemplateName)
+	r, stb := newTestReconciler(t, tmpl)
+	r.CodingSandboxEnabled = true
+	reconcileUntilSettled(t, r, tmpl.Name)
+
+	var got infrav1alpha1.Template
+	if err := r.Client.Get(context.Background(), types.NamespacedName{Name: tmpl.Name}, &got); err != nil {
+		t.Fatalf("get template: %v", err)
+	}
+	ready := findCondition(got.Status.Conditions, infrav1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != infrav1alpha1.ReasonInvalidSpec {
+		t.Fatalf("unsafe enabled coding sandbox condition = %+v", ready)
+	}
+	if len(stb.SeenSetups) != 0 {
+		t.Fatalf("unsafe enabled coding sandbox reached backend: %v", stb.SeenSetups)
+	}
+}
+
 // TestReconcileInvalidSchema pins the values-contract gate: a Template whose
 // schema claims a platform-reserved property must park on
 // SchemaValid=False/InvalidSpec without ever reaching the backend — the

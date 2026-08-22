@@ -126,10 +126,15 @@ func newExecHandler(t *testing.T, executor *fakeExecutor, authorizer *fakeExecAu
 
 func execInstance() *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
-		"metadata": map[string]any{"name": "app"},
+		"metadata": map[string]any{"name": "app", "generation": int64(2)},
+		"spec":     map[string]any{"template": infrav1alpha1.UniversalCodingSandboxTemplateName},
 		"status": map[string]any{
-			"runtimeNamespace": "ws-default",
-			"controlSecretRef": map[string]any{"name": "app-control", "namespace": "ws-default"},
+			"farosNetworkPhase":  infrav1alpha1.FarosNetworkPhaseRuntime,
+			"phase":              "Ready",
+			"observedGeneration": int64(2),
+			"conditions":         []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(2)}},
+			"runtimeNamespace":   "ws-default",
+			"controlSecretRef":   map[string]any{"name": "app-control", "namespace": "ws-default"},
 			"components": map[string]any{"backend": map[string]any{
 				"controlServiceRef": map[string]any{"name": "app-backend-control", "namespace": "ws-default"},
 			}},
@@ -137,7 +142,107 @@ func execInstance() *unstructured.Unstructured {
 	}}
 }
 
-func TestHandlerExecStartAuthorizesAndPassesPlatformDevelopment(t *testing.T) {
+func TestHandlerExecDeniesSetupPhaseBeforeExecutorOrAuthorizer(t *testing.T) {
+	executor := &fakeExecutor{}
+	authorizer := &fakeExecAuthorizer{}
+	h := newExecHandler(t, executor, authorizer, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
+	instance := h.instances.(*fakeInstanceGetter).instance
+	status := instance.Object["status"].(map[string]any)
+	status[infrav1alpha1.FarosNetworkPhaseStatusField] = infrav1alpha1.FarosNetworkPhaseSetup
+	status["conditions"] = []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(2)}}
+	status["phase"] = "Ready"
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body %q", rec.Code, rec.Body.String())
+	}
+	if executor.startCall.Request.Action != "" {
+		t.Fatalf("executor was called for setup-phase Instance: %+v", executor.startCall)
+	}
+	if authorizer.got.Component != "" {
+		t.Fatalf("authorizer was called for setup-phase Instance: %+v", authorizer.got)
+	}
+}
+
+func TestHandlerExecDeniesRuntimePhaseUntilInstanceReady(t *testing.T) {
+	h := newExecHandler(t, &fakeExecutor{}, &fakeExecAuthorizer{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
+	instance := h.instances.(*fakeInstanceGetter).instance
+	instance.Object["status"].(map[string]any)["conditions"] = []any{map[string]any{"type": "Ready", "status": "False"}}
+	instance.Object["status"].(map[string]any)["phase"] = "Pending"
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlerExecIgnoresTamperedTenantSpecPhase(t *testing.T) {
+	h := newExecHandler(t, &fakeExecutor{}, &fakeExecAuthorizer{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
+	instance := h.instances.(*fakeInstanceGetter).instance
+	status := instance.Object["status"].(map[string]any)
+	status[infrav1alpha1.FarosNetworkPhaseStatusField] = infrav1alpha1.FarosNetworkPhaseSetup
+	status["conditions"] = []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(2)}}
+	status["phase"] = "Ready"
+	instance.Object["spec"].(map[string]any)["values"] = map[string]any{
+		infrav1alpha1.FarosNetworkPhaseField: infrav1alpha1.FarosNetworkPhaseRuntime,
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 despite forged tenant spec phase; body %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlerExecDeniesStaleReadyMirrorDuringRuntimeConvergence(t *testing.T) {
+	h := newExecHandler(t, &fakeExecutor{}, &fakeExecAuthorizer{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
+	instance := h.instances.(*fakeInstanceGetter).instance
+	status := instance.Object["status"].(map[string]any)
+	status[infrav1alpha1.FarosNetworkPhaseStatusField] = infrav1alpha1.FarosNetworkPhaseRuntime
+	status["phase"] = "Ready"
+	status["observedGeneration"] = int64(2)
+	status["conditions"] = []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(1)}}
+	instance.Object["spec"].(map[string]any)["values"] = map[string]any{
+		infrav1alpha1.FarosNetworkPhaseField: infrav1alpha1.FarosNetworkPhaseRuntime,
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want stale Ready mirror denied; body %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlerExecDeniesStaleTenantStatusGeneration(t *testing.T) {
+	h := newExecHandler(t, &fakeExecutor{}, &fakeExecAuthorizer{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
+	instance := h.instances.(*fakeInstanceGetter).instance
+	status := instance.Object["status"].(map[string]any)
+	status["observedGeneration"] = int64(1)
+	status["conditions"] = []any{map[string]any{"type": "Ready", "status": "True", "observedGeneration": int64(1)}}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want stale tenant status denied; body %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlerExecPreservesOrdinaryDevelopmentCompatibility(t *testing.T) {
+	h := newExecHandler(t, &fakeExecutor{result: ExecResult{SessionID: "session-1", State: "running"}}, &fakeExecAuthorizer{}, &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}})
+	instance := h.instances.(*fakeInstanceGetter).instance
+	instance.Object["spec"].(map[string]any)["template"] = "ordinary-development"
+	instance.Object["status"].(map[string]any)[infrav1alpha1.FarosNetworkPhaseStatusField] = infrav1alpha1.FarosNetworkPhaseSetup
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want ordinary development exec compatibility; body %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlerExecAllowsReadyRuntimeAndPassesPlatformDevelopment(t *testing.T) {
 	executor := &fakeExecutor{result: ExecResult{SessionID: "session-1", State: "running", Stdout: "123456789"}}
 	authorizer := &fakeExecAuthorizer{}
 	development := &fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{WorkingDir: "/workspace/backend"}}
@@ -158,6 +263,25 @@ func TestHandlerExecStartAuthorizesAndPassesPlatformDevelopment(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"truncated":true`) {
 		t.Fatalf("result was not bounded: %s", rec.Body.String())
+	}
+}
+
+func TestHandlerExecRecordsActivityAfterAuthorization(t *testing.T) {
+	rt := &activityRuntime{fakeRuntime: &fakeRuntime{}}
+	h := NewHandler(
+		&fakeInstanceGetter{instance: execInstance()},
+		&fakeContractGetter{contract: execContract()},
+		rt,
+		WithExec(&fakeExecutor{result: ExecResult{SessionID: "session-1", State: "running"}}, &fakeExecAuthorizer{}),
+		WithDevelopmentGetter(&fakeDevelopmentGetter{component: &infrav1alpha1.TemplateDevelopmentComponent{}}),
+	)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, execRequest(t, ExecActionStart))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %q", rec.Code, rec.Body.String())
+	}
+	if rt.calls != 1 {
+		t.Fatalf("activity calls = %d, want 1", rt.calls)
 	}
 }
 

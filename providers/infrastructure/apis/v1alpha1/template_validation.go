@@ -28,6 +28,22 @@ import (
 // convention, graph resource ids — so they stay strict DNS-label-ish.
 var componentNameRE = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
+// immutableImageRefRE accepts a complete container image reference pinned by
+// a sha256 digest. Tags (including tag@digest combinations) are intentionally
+// not enough for the coding sandbox because it executes tenant source.
+var immutableImageRefRE = regexp.MustCompile(`^[^@\s]+@sha256:[a-f0-9]{64}$`)
+
+// ValidateImmutableImageRef validates the image reference used for
+// platform-owned tenant-code execution. Keeping this in the API package lets
+// chart/operator admission and backend setup share one exact rule.
+func ValidateImmutableImageRef(image string) error {
+	image = strings.TrimSpace(image)
+	if !immutableImageRefRE.MatchString(image) {
+		return fmt.Errorf("image %q must be pinned by an immutable sha256 digest (name@sha256:<64 lowercase hex digits>)", image)
+	}
+	return nil
+}
+
 // ValidateDevelopment checks the structural rules on spec.development and its
 // relationship to spec.dataPlane that kubebuilder markers cannot express: map
 // key shapes, workspacePath sanity (relative, inside the workspace, no
@@ -50,6 +66,12 @@ func (s *TemplateSpec) ValidateDevelopment() error {
 
 	if s.Development == nil {
 		return nil
+	}
+	if s.Development.MaxLifetimeSeconds < 0 || s.Development.MaxLifetimeSeconds > 604800 {
+		return fmt.Errorf("spec.development.maxLifetimeSeconds must be between 0 and 604800")
+	}
+	if s.Development.IdleTimeoutSeconds < 0 || s.Development.IdleTimeoutSeconds > 604800 {
+		return fmt.Errorf("spec.development.idleTimeoutSeconds must be between 0 and 604800")
 	}
 	if len(s.Development.Components) == 0 {
 		return fmt.Errorf("spec.development.components must declare at least one component")

@@ -1,3 +1,9 @@
+{{- if and .Values.codingSandbox.enabled (not (regexMatch `^[^@\s]+@sha256:[a-f0-9]{64}$` (default "" .Values.development.images.universal))) }}
+{{- fail "codingSandbox.enabled=true requires development.images.universal to be an immutable name@sha256:<64 lowercase hex digits> reference" }}
+{{- end }}
+{{- if and .Values.codingSandbox.enabled (not (regexMatch `^[^@\s]+@sha256:[a-f0-9]{64}$` (default "" .Values.development.agentImage))) }}
+{{- fail "codingSandbox.enabled=true requires development.agentImage to be an immutable name@sha256:<64 lowercase hex digits> reference" }}
+{{- end }}
 {{- if not .Values.operator.enabled }}
 # Legacy single-Deployment serve (bootstrap.* init-container flow). When
 # operator.enabled=true the operator owns the provider serve Deployment on the
@@ -53,6 +59,16 @@ spec:
             # init writes a throwaway file copy; keep it off the read-only root.
             - name: INFRASTRUCTURE_KUBECONFIG
               value: /tmp/infrastructure.kubeconfig
+            - name: FAROS_CODING_SANDBOX_ENABLED
+              value: {{ .Values.codingSandbox.enabled | quote }}
+            {{- if .Values.development.images.universal }}
+            - name: FAROS_DEV_IMAGE_UNIVERSAL
+              value: {{ .Values.development.images.universal | quote }}
+            {{- end }}
+            {{- if .Values.development.agentImage }}
+            - name: FAROS_DEV_AGENT_IMAGE
+              value: {{ .Values.development.agentImage | quote }}
+            {{- end }}
             {{- if $centralName }}
             - name: KRO_KUBECONFIG
               value: /var/run/secrets/kro/kubeconfig
@@ -104,6 +120,8 @@ spec:
               value: {{ .Values.hub.url | quote }}
             - name: FAROS_PROVIDER_NAME
               value: "infrastructure"
+            - name: FAROS_CODING_SANDBOX_ENABLED
+              value: {{ .Values.codingSandbox.enabled | quote }}
             {{- if .Values.hub.insecure }}
             - name: FAROS_HUB_INSECURE
               value: "true"

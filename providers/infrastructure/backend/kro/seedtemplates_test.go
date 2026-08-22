@@ -69,6 +69,43 @@ func TestSeedTemplatesBuildRGD(t *testing.T) {
 	}
 }
 
+func TestUniversalCodingSandboxPreservesLegacyExposureHostnameInRGDSchema(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "install", "templates", "universal-coding-sandbox.yaml"))
+	if err != nil {
+		t.Fatalf("read universal coding sandbox seed: %v", err)
+	}
+	tmpl := decodeTemplate(t, raw)
+
+	var sourceSchema map[string]any
+	if err := json.Unmarshal(tmpl.Spec.Schema.Raw, &sourceSchema); err != nil {
+		t.Fatalf("decode source schema: %v", err)
+	}
+	sourceProperties, ok := sourceSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("source schema has no properties")
+	}
+	legacyProperty, ok := sourceProperties["farosExposureHostname"].(map[string]any)
+	if !ok || legacyProperty["type"] != "string" {
+		t.Fatalf("source farosExposureHostname = %#v, want optional string property", sourceProperties["farosExposureHostname"])
+	}
+
+	rgd, err := buildRGD(tmpl, testTokens())
+	if err != nil {
+		t.Fatalf("buildRGD: %v", err)
+	}
+	got, found, err := unstructured.NestedString(rgd.Object, "spec", "schema", "spec", "farosExposureHostname")
+	if err != nil {
+		t.Fatalf("read built farosExposureHostname schema: %v", err)
+	}
+	if !found {
+		t.Fatal("built CodingSandbox RGD schema dropped farosExposureHostname")
+	}
+	want := `string | description="Deprecated compatibility field retained for existing CodingSandbox instances. Ignored for internal sandboxes; no hostname or route is created."`
+	if got != want {
+		t.Fatalf("built farosExposureHostname schema = %q, want %q", got, want)
+	}
+}
+
 const seedHTTPRouteReadyWhen = `${httpRoute.status.parents.exists(p, p.parentRef.group == "gateway.networking.k8s.io" && p.parentRef.kind == "Gateway" && p.parentRef.name == "${faros.gatewayName}" && p.parentRef.namespace == "${faros.gatewayNamespace}" && p.conditions.exists(c, c.type == "Accepted" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation) && p.conditions.exists(c, c.type == "ResolvedRefs" && c.status == "True" && c.observedGeneration == httpRoute.metadata.generation))}`
 
 // TestSeedTemplatesHTTPRoutesRequireCurrentGatewayStatus ensures every route

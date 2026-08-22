@@ -204,6 +204,25 @@ jobs:
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/faros-dev-agent:${{ needs.meta.outputs.semver }}
             ${{ env.REGISTRY }}/${{ github.repository_owner }}/faros-dev-agent:latest
 
+      # The infrastructure provider's universal coding sandbox image is a
+      # second platform-owned companion. It contains the pinned, shared
+      # Node/Go/Python toolchain and is selected only by the operator's
+      # immutable FAROS_DEV_IMAGE_UNIVERSAL configuration.
+      - name: Build and push universal dev image
+        if: needs.meta.outputs.provider == 'infrastructure'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./providers/infrastructure/dev-agent
+          file: ./providers/infrastructure/dev-agent/Dockerfile.universal
+          platforms: linux/amd64,linux/arm64
+          push: true
+          cache-from: type=gha,scope=universal-dev
+          cache-to: type=gha,mode=max,scope=universal-dev
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/faros-universal-dev:${{ needs.meta.outputs.version }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/faros-universal-dev:${{ needs.meta.outputs.semver }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/faros-universal-dev:latest
+
       # Second companion image: the access gate (faros-access-proxy) that
       # publishable templates render in front of every app
       # (providers/infrastructure/accessproxy — see docs/app-studio-publishing.md).

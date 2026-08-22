@@ -173,17 +173,19 @@ func appPublicPortSuffix(raw string) string {
 	return ""
 }
 
-// DefaultNodeDevImage / DefaultDevAgentImage back the dev-overlay images when
-// the env knobs are unset, so a stock deployment (and local dev) can run
-// node-toolchain sandboxes out of the box. Production should pin digests via
-// FAROS_DEV_IMAGE_NODE / FAROS_DEV_AGENT_IMAGE (they run tenant code — see
-// docs/app-studio-template-sandboxes.md §9).
+// DefaultNodeDevImage / DefaultUniversalDevImage / DefaultDevAgentImage back
+// the dev-overlay images when the env knobs are unset, so a stock deployment
+// (and local dev) can run node or universal coding sandboxes out of the box.
+// Production should pin digests via FAROS_DEV_IMAGE_NODE,
+// FAROS_DEV_IMAGE_UNIVERSAL, and FAROS_DEV_AGENT_IMAGE (they run tenant code —
+// see docs/app-studio-template-sandboxes.md §9).
 const (
 	// DefaultNodeDevImage is a plain node toolchain image — the dev agent is
 	// injected by init container, so nothing faros-specific is baked in
 	// (bookworm, not slim: dev flows need git and the usual build tools).
-	DefaultNodeDevImage  = "docker.io/library/node:22-bookworm"
-	DefaultDevAgentImage = "ghcr.io/faroshq/faros-dev-agent:latest"
+	DefaultNodeDevImage      = "docker.io/library/node:22-bookworm"
+	DefaultUniversalDevImage = "ghcr.io/faroshq/faros-universal-dev:latest"
+	DefaultDevAgentImage     = "ghcr.io/faroshq/faros-dev-agent:latest"
 )
 
 // devImageTokens collects the platform-managed dev-mode images: every
@@ -194,8 +196,9 @@ const (
 // a pointer to the missing env var (see applyDevOverlay).
 func devImageTokens() map[string]string {
 	out := map[string]string{
-		devImageTokenPrefix + "node}": DefaultNodeDevImage,
-		devAgentImageToken:            DefaultDevAgentImage,
+		devImageTokenPrefix + "node}":      DefaultNodeDevImage,
+		devImageTokenPrefix + "universal}": DefaultUniversalDevImage,
+		devAgentImageToken:                 DefaultDevAgentImage,
 	}
 	const envPrefix = "FAROS_DEV_IMAGE_"
 	for _, kv := range os.Environ() {
@@ -239,6 +242,15 @@ func (b *Backend) Name() string { return Name }
 // error (malformed schema/backendConfig) is returned so the Template
 // controller surfaces BackendError; a successful apply reports Ready=true.
 func (b *Backend) SetupTemplate(ctx context.Context, tmpl *infrav1alpha1.Template) (backend.TemplateStatus, error) {
+	// The Template controller gates this platform-owned entry by feature flag,
+	// but the backend also fails closed regardless of that flag. This protects
+	// direct SetupTemplate callers and prevents a mutable tenant-code image from
+	// reaching the runtime cluster during a gate/configuration race.
+	if tmpl.Name == infrav1alpha1.UniversalCodingSandboxTemplateName {
+		if err := validateUniversalDevImages(b.tokens); err != nil {
+			return backend.TemplateStatus{Ready: false, Message: err.Error()}, fmt.Errorf("template %q: %w", tmpl.Name, err)
+		}
+	}
 	rgd, err := buildRGD(tmpl, b.tokens)
 	if err != nil {
 		return backend.TemplateStatus{Ready: false, Message: err.Error()}, err
@@ -249,6 +261,21 @@ func (b *Backend) SetupTemplate(ctx context.Context, tmpl *infrav1alpha1.Templat
 	klog.FromContext(ctx).WithName("backend.kro").Info("applied ResourceGraphDefinition to runtime cluster",
 		"template", tmpl.Name, "rgd", tmpl.Name)
 	return backend.TemplateStatus{Ready: true, Message: "RGD applied to runtime cluster"}, nil
+}
+
+func validateUniversalDevImages(tokens map[string]string) error {
+	for _, image := range []struct {
+		name  string
+		token string
+	}{
+		{name: "universal", token: devImageTokenPrefix + "universal}"},
+		{name: "dev agent", token: devAgentImageToken},
+	} {
+		if err := infrav1alpha1.ValidateImmutableImageRef(strings.TrimSpace(tokens[image.token])); err != nil {
+			return fmt.Errorf("universal coding sandbox %s image: %w", image.name, err)
+		}
+	}
+	return nil
 }
 
 // TeardownTemplate removes the Template's RGD from the runtime cluster. kro

@@ -1,0 +1,332 @@
+apiVersion: infrastructure.faros.sh/v1alpha1
+kind: Template
+metadata:
+  name: universal-coding-sandbox
+  labels:
+    faros.sh/platform-owned: "true"
+spec:
+  displayName: "Universal coding sandbox"
+  description: "A platform-owned, private coding workspace with bounded source operations and argv-only execution."
+  category: Development
+  version: 0.1.0
+  # The workspace is never published as a hostname. Callers use the instance
+  # data plane, which authorizes them against the ordinary flattened Instance.
+  exposure: internal
+  backend: kro
+  sampleValues:
+    name: coding-sandbox
+  agent:
+    usage: |
+      Provisions one private coding workspace. Set farosMode to development;
+      the platform replaces the workload image with the universal dev image,
+      mounts a per-instance workspace, and injects the coordinator/executor.
+      The image is platform-selected and should be pinned by the operator to a
+      digest with FAROS_DEV_IMAGE_UNIVERSAL and FAROS_DEV_AGENT_IMAGE. There is no public URL, no runtime
+      kubeconfig, and no ServiceAccount token in the workload containers.
+
+      Use the component data plane at
+      /instances/<name>/components/workspace/workspace for bounded list, read,
+      mutate, diff, and checkpoint operations. POST /sync remains the
+      authoritative full-file seed path and POST /exec remains the bounded
+      argv-only execution path; both carry the same source revision/digest
+      evidence. Mutations are compare-and-swap operations and reject stale
+      evidence, unsafe paths, symlinks, binary content, oversized files, and
+      oversized workspaces.
+
+      The development workload has an enforceable default-deny egress
+      NetworkPolicy. During graph bootstrap only, a second policy permits DNS
+      and HTTPS while the platform-owned farosNetworkPhase is setup. Once the
+      Instance controller observes Ready it switches the phase to runtime,
+      removes that setup allowance, and selects a runtime policy that permits
+      DNS only to CoreDNS pods in kube-system and TCP 443 only to public IPv4
+      destinations. The runtime policy excludes loopback, RFC1918, link-local
+      and metadata, CGNAT, multicast, and reserved ranges; it has no
+      tenant-selected CIDR or port inputs and does not permit general internal
+      HTTPS. Operators that disable NetworkPolicy enforcement should treat this
+      template as unavailable. The policy shape is covered by unit tests, but a
+      planned live gate must still prove npm ci against registry.npmjs.org.
+    prerequisites:
+      - "The caller needs read access to the flattened Instance; the data plane acts on the caller's own credential."
+    outputs:
+      - "components.workspace.workspace — bounded workspace list/read/mutate/diff/checkpoint endpoint."
+      - "components.workspace.sync — authoritative source seed endpoint; preserves the existing /sync contract."
+      - "components.workspace.exec — bounded argv execution; preserves the existing /exec contract."
+      - "status.runtimeNamespace and status.controlSecretRef — platform-computed data-plane routing state."
+  instanceCRD:
+    group: infrastructure.faros.sh
+    version: v1alpha1
+    resource: codingsandboxes
+    kind: CodingSandbox
+  schema:
+    type: object
+    properties:
+      name:
+        type: string
+        description: "Logical name; used for the private workspace workload."
+      farosExposureHostname:
+        type: string
+        description: "Deprecated compatibility field retained for existing CodingSandbox instances. Ignored for internal sandboxes; no hostname or route is created."
+    required:
+      - name
+  development:
+    # Coding sandboxes do not receive the optional Provider Actions projected
+    # token. The coordinator still gets its own short-lived control token from
+    # the setup-only graph so the existing /sync and /exec contracts work.
+    providerActions: false
+    # Test fixtures may shorten these values; production seeds retain a cache
+    # for up to 12 hours. App Studio may evict an unclaimed cache for tenant
+    # quota pressure, but infrastructure must not delete a successful cache
+    # after the old 30-minute idle window.
+    maxLifetimeSeconds: 43200
+    idleTimeoutSeconds: 43200
+    components:
+      workspace:
+        workspacePath: .
+        devImage: "${faros.devImage.universal}"
+        workingDir: /workspace
+        startCommand: "sleep infinity"
+  dataPlane:
+    runtimeNamespacePath: status.runtimeNamespace
+    tokenSecretPath: status.controlSecretRef
+    endpoints:
+      status:
+        fromStatus: true
+    components:
+      workspace:
+        # The component endpoint is one bounded operation family. The caller
+        # supplies /list, /read, /mutate, /diff, or /checkpoint after this
+        # declared verb; the dev-agent rejects every other operation.
+        endpoints:
+          workspace:
+            servicePath: status.components.workspace.controlServiceRef
+            port: control
+            upstreamPath: /workspace
+            methods: ["GET", "POST"]
+          sync:
+            servicePath: status.components.workspace.controlServiceRef
+            port: control
+            upstreamPath: /sync
+            methods: ["POST"]
+          restart:
+            servicePath: status.components.workspace.controlServiceRef
+            port: control
+            upstreamPath: /restart
+            methods: ["POST"]
+          log:
+            servicePath: status.components.workspace.controlServiceRef
+            port: control
+            upstreamPath: /logs
+            methods: ["GET"]
+            stream: true
+          process:
+            servicePath: status.components.workspace.controlServiceRef
+            port: control
+            upstreamPath: /status
+            methods: ["GET"]
+        exec:
+          maxTimeoutSeconds: 120
+          maxOutputBytes: 262144
+  backendConfig:
+    resources:
+      # Production mode is retained as a safe fallback for the ordinary
+      # flattened Instance API. No Service, route, Secret, or ServiceAccount
+      # is authored here; development mode adds the existing setup-only
+      # control Service and token machinery through the dev overlay, plus the
+      # phase-gated egress policies below.
+      - id: workspaceDeployment
+        template:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ${schema.spec.name}
+            namespace: default
+            annotations:
+              faros.sh/network-access: default-deny-egress
+          spec:
+            replicas: 1
+            strategy:
+              type: Recreate
+            selector:
+              matchLabels:
+                app: ${schema.spec.name}
+            template:
+              metadata:
+                labels:
+                  app: ${schema.spec.name}
+                annotations:
+                  faros.sh/network-access: default-deny-egress
+              spec:
+                automountServiceAccountToken: false
+                securityContext:
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                  runAsGroup: 1000
+                  fsGroup: 1000
+                  seccompProfile:
+                    type: RuntimeDefault
+                containers:
+                  - name: workspace
+                    image: ${faros.devImage.universal}
+                    imagePullPolicy: IfNotPresent
+                    command: ["/bin/sh", "-c", "sleep infinity"]
+                    workingDir: /workspace
+                    ports:
+                      - name: http
+                        containerPort: 8080
+                    resources:
+                      requests:
+                        cpu: 100m
+                        memory: 128Mi
+                      limits:
+                        cpu: 500m
+                        memory: 512Mi
+                    securityContext:
+                      runAsNonRoot: true
+                      runAsUser: 1000
+                      runAsGroup: 1000
+                      allowPrivilegeEscalation: false
+                      readOnlyRootFilesystem: false
+                      capabilities:
+                        drop: ["ALL"]
+      # This policy is the runtime boundary, not an annotation: when the
+      # development pod exists, Egress is denied unless another policy allows
+      # it. The phase-gated setup/runtime policies below are selected by a
+      # controller-owned phase.
+      - id: workspaceDefaultDenyEgress
+        includeWhen: ["${schema.spec.farosMode == \"development\"}"]
+        template:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: ${schema.spec.name}-default-deny-egress
+            namespace: default
+            labels:
+              app: ${schema.spec.name}
+              faros.sh/network-policy: default-deny-egress
+          spec:
+            podSelector:
+              matchLabels:
+                app: ${schema.spec.name}
+            policyTypes: [Egress]
+      # Explicit setup seam: the same DNS + public HTTPS boundary used at
+      # runtime, and only while the Instance controller holds the pod in setup.
+      # Keeping setup no broader than runtime prevents a stale Ready condition
+      # during phase convergence from exposing private or metadata addresses.
+      - id: workspaceSetupEgress
+        includeWhen: ["${schema.spec.farosMode == \"development\" && schema.spec.farosNetworkPhase == \"setup\"}"]
+        template:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: ${schema.spec.name}-setup-egress
+            namespace: default
+            labels:
+              app: ${schema.spec.name}
+              faros.sh/network-policy: setup-egress
+          spec:
+            podSelector:
+              matchLabels:
+                app: ${schema.spec.name}
+                faros.sh/network-phase: setup
+            policyTypes: [Egress]
+            egress:
+              - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: kube-system
+                    podSelector:
+                      matchLabels:
+                        k8s-app: kube-dns
+                ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+              - to:
+                  - ipBlock:
+                      cidr: 0.0.0.0/0
+                      except:
+                        # RFC 6890 special-purpose and non-public IPv4 space.
+                        - 0.0.0.0/8
+                        - 10.0.0.0/8
+                        - 100.64.0.0/10
+                        - 127.0.0.0/8
+                        - 169.254.0.0/16
+                        - 172.16.0.0/12
+                        - 192.0.0.0/24
+                        - 192.0.2.0/24
+                        - 192.31.196.0/24
+                        - 192.52.193.0/24
+                        - 192.88.99.0/24
+                        - 192.168.0.0/16
+                        - 192.175.48.0/24
+                        - 198.18.0.0/15
+                        - 198.51.100.0/24
+                        - 203.0.113.0/24
+                        - 224.0.0.0/4
+                        - 240.0.0.0/4
+                ports:
+                  - protocol: TCP
+                    port: 443
+      # Runtime package access has the same narrow boundary. DNS may reach
+      # only the cluster's CoreDNS pods; HTTPS may reach only globally
+      # routable IPv4 addresses. The default-deny policy remains selected for
+      # the same pod, so every other protocol and destination stays blocked.
+      - id: workspaceRuntimeEgress
+        includeWhen: ["${schema.spec.farosMode == \"development\" && schema.spec.farosNetworkPhase == \"runtime\"}"]
+        template:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: ${schema.spec.name}-runtime-egress
+            namespace: default
+            labels:
+              app: ${schema.spec.name}
+              faros.sh/network-policy: runtime-egress
+          spec:
+            podSelector:
+              matchLabels:
+                app: ${schema.spec.name}
+                faros.sh/network-phase: runtime
+            policyTypes: [Egress]
+            egress:
+              - to:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: kube-system
+                    podSelector:
+                      matchLabels:
+                        k8s-app: kube-dns
+                ports:
+                  - protocol: UDP
+                    port: 53
+                  - protocol: TCP
+                    port: 53
+              - to:
+                  - ipBlock:
+                      cidr: 0.0.0.0/0
+                      except:
+                        # RFC 6890 special-purpose and non-public IPv4 space.
+                        - 0.0.0.0/8
+                        - 10.0.0.0/8
+                        - 100.64.0.0/10
+                        - 127.0.0.0/8
+                        - 169.254.0.0/16
+                        - 172.16.0.0/12
+                        - 192.0.0.0/24
+                        - 192.0.2.0/24
+                        - 192.31.196.0/24
+                        - 192.52.193.0/24
+                        - 192.88.99.0/24
+                        - 192.168.0.0/16
+                        - 192.175.48.0/24
+                        - 198.18.0.0/15
+                        - 198.51.100.0/24
+                        - 203.0.113.0/24
+                        - 224.0.0.0/4
+                        - 240.0.0.0/4
+                ports:
+                  - protocol: TCP
+                    port: 443
+    status:
+      ready: ${workspaceDeployment.status.readyReplicas}

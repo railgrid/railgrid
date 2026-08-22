@@ -5,6 +5,9 @@
 
 export interface Template {
   name: string
+  // Platform-owned templates remain addressable through getTemplate(name) for
+  // product flows, but are omitted from the tenant-facing catalog list.
+  platformOwned?: boolean
   displayName: string
   description: string
   category?: string
@@ -23,7 +26,6 @@ export interface Template {
   // columns + grouped detail fields). Absent → default raw-values rendering.
   view?: TemplateView
 }
-
 export type TemplateExposure = 'internal' | 'optional' | 'public'
 
 // FieldType selects how a view value is rendered. 'text' is the default.

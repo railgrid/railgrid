@@ -102,6 +102,19 @@ spec:
                         type: string
                     type: object
                 type: object
+              codingSandbox:
+                description: |-
+                  CodingSandbox controls the platform-owned universal coding sandbox. The
+                  feature is disabled by default; self-hosted/BYO installations opt in
+                  explicitly and must configure immutable universal and dev-agent image
+                  digests in Development.Images["universal"] and Development.AgentImage.
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled permits seeding, admitting, and reconciling the
+                      universal-coding-sandbox Template.
+                    type: boolean
+                type: object
               development:
                 description: |-
                   Development configures the platform-managed development-mode images

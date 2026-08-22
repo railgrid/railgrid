@@ -493,6 +493,20 @@ local_resource(
     labels=['providers-app-studio'],
 )
 
+# Platform-curated Node/Go/Python toolchain image for the private coding
+# environment. It is separate from the injected dev-agent binary so the image
+# can be pinned independently in a production InfrastructureProvider CR.
+local_resource(
+    'universal-dev-image',
+    cmd='make load-universal-dev-image',
+    deps=[
+        'providers/infrastructure/dev-agent/Dockerfile.universal',
+        'Makefile',
+    ],
+    resource_deps=['kro-mgmt-up'],
+    labels=['providers-kro'],
+)
+
 # --- providers-kuery (fleet query engine) ---
 # Local Postgres for the kuery store. Dev always runs the same SQL backend
 # as production — SQLite hid real Postgres-only query bugs, so it is not an

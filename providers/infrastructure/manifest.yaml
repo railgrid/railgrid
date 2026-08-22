@@ -145,6 +145,22 @@ spec:
       - name: hub.url
         value: "{{hubURL}}"
         description: Where the provider reports its health.
+      - name: codingSandbox.enabled
+        value: "true"
+        description: >-
+          Opts into the platform-owned universal coding sandbox on this BYO
+          installation. Hosted platform defaults keep this feature disabled.
+      - name: development.images.universal
+        description: >-
+          Required immutable universal toolchain image for tenant code. Use a
+          complete name@sha256:<64 lowercase hex digits> reference; mutable
+          tags are rejected by chart/operator validation.
+      - name: development.agentImage
+        description: >-
+          Required immutable faros-dev-agent injector/bootstrap image for the
+          universal sandbox. Use a complete
+          name@sha256:<64 lowercase hex digits> reference; mutable tags are
+          rejected by chart/operator validation.
       # Exposure. Published apps are reached through YOUR ingress — the platform
       # has no route into your cluster and cannot supply any of this. Declared
       # with no value so the hub renders them as <value> and says so, rather

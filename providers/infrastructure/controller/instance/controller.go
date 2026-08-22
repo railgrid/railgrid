@@ -120,6 +120,9 @@ type Config struct {
 	// CredentialsNamespace is the namespace in the tenant workspace the
 	// cloud-credentials Secret lives in (default "default").
 	CredentialsNamespace string
+	// CodingSandboxEnabled gates the platform-owned universal coding sandbox
+	// even when a manually applied Template bypassed catalog seeding.
+	CodingSandboxEnabled bool
 }
 
 // Controller reconciles Instances across tenant workspaces.
@@ -261,6 +264,17 @@ func (r *reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return c.failValidation(ctx, tenantClient, inst, infrav1alpha1.ReasonInvalidValues,
 			fmt.Sprintf("template %q has an invalid values schema; see the Template's SchemaValid condition", templateName))
 	}
+	if templateName == infrav1alpha1.UniversalCodingSandboxTemplateName && !c.cfg.CodingSandboxEnabled {
+		return c.failValidation(ctx, tenantClient, inst, infrav1alpha1.ReasonCodingSandboxDisabled,
+			"the universal coding sandbox is disabled by provider configuration")
+	}
+	if reason, due := lifecycleDue(time.Now(), inst.GetCreationTimestamp(), tmpl.Spec.Development, nil); due {
+		if err := tenantClient.Delete(ctx, inst); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("delete expired sandbox: %w", err)
+		}
+		log.Info("sandbox lifecycle limit reached", "reason", reason)
+		return ctrl.Result{}, nil
+	}
 
 	values, _, _ := unstructured.NestedMap(inst.Object, "spec", "values")
 	if _, errs := contract.ValidateAndDefault(ctx, values); len(errs) != 0 {
@@ -293,9 +307,28 @@ func (r *reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	// Materialize / converge the runtime CR and mirror its status.
 	stampedValues, _, _ := unstructured.NestedMap(inst.Object, "spec", "values")
+	stampedValues = runtime.DeepCopyJSON(stampedValues)
+	if stampedValues == nil {
+		stampedValues = map[string]any{}
+	}
+	currentRuntime, _ := c.currentRuntime(ctx, tenant, tmpl, inst)
+	if tmpl.Spec.Development != nil {
+		phase := infrav1alpha1.FarosNetworkPhaseSetup
+		if runtimeReady(currentRuntime) {
+			phase = infrav1alpha1.FarosNetworkPhaseRuntime
+		}
+		stampedValues[infrav1alpha1.FarosNetworkPhaseField] = phase
+	}
 	runtimeObj, err := c.syncRuntime(ctx, tenant, tmpl, inst, stampedValues)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("syncing runtime instance: %w", err)
+	}
+	if reason, due := lifecycleDue(time.Now(), inst.GetCreationTimestamp(), tmpl.Spec.Development, runtimeObj); due {
+		if err := tenantClient.Delete(ctx, inst); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("delete idle sandbox: %w", err)
+		}
+		log.Info("sandbox lifecycle limit reached", "reason", reason)
+		return ctrl.Result{}, nil
 	}
 
 	ready, err := c.mirrorStatus(ctx, tenantClient, inst, tmpl, runtimeObj, validCondition(metav1.ConditionTrue, infrav1alpha1.ReasonReady, ""), oidcCond)
@@ -305,7 +338,7 @@ func (r *reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 
 	log.V(2).Info("instance reconciled", "template", templateName, "ready", ready)
 	if ready {
-		return ctrl.Result{RequeueAfter: requeueReady}, nil
+		return ctrl.Result{RequeueAfter: lifecycleRequeueAfter(time.Now(), inst.GetCreationTimestamp(), tmpl.Spec.Development, runtimeObj, requeueReady)}, nil
 	}
 	return ctrl.Result{RequeueAfter: requeueNotReady}, nil
 }

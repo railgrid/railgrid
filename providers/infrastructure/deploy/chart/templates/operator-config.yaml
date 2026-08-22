@@ -1,6 +1,12 @@
 {{- if .Values.operator.enabled -}}
 {{- $providerSecret := .Values.operator.providerKubeconfigSecret.name | default (printf "%s-provider-kubeconfig" (include "infrastructure.fullname" .)) -}}
 {{- $runtimeSecret := .Values.operator.runtimeKubeconfigSecret.name | default (printf "%s-runtime-kubeconfig" (include "infrastructure.fullname" .)) -}}
+{{- if and .Values.codingSandbox.enabled (not (regexMatch `^[^@\s]+@sha256:[a-f0-9]{64}$` (default "" .Values.development.images.universal))) }}
+{{- fail "codingSandbox.enabled=true requires development.images.universal to be an immutable name@sha256:<64 lowercase hex digits> reference" }}
+{{- end }}
+{{- if and .Values.codingSandbox.enabled (not (regexMatch `^[^@\s]+@sha256:[a-f0-9]{64}$` (default "" .Values.development.agentImage))) }}
+{{- fail "codingSandbox.enabled=true requires development.agentImage to be an immutable name@sha256:<64 lowercase hex digits> reference" }}
+{{- end }}
 {{- if .Values.operator.providerKubeconfig }}
 # Provider (kcp) kubeconfig Secret, rendered from --set-file
 # operator.providerKubeconfig=... . Omit to reference an existing Secret via
@@ -82,6 +88,18 @@ spec:
       tag: {{ .Values.operator.provider.image.tag | default .Values.image.tag | default .Chart.AppVersion | quote }}
     replicas: {{ .Values.operator.provider.replicas }}
     port: {{ .Values.operator.provider.port }}
+  codingSandbox:
+    enabled: {{ .Values.codingSandbox.enabled }}
+  {{- if or .Values.development.agentImage .Values.development.images }}
+  development:
+    {{- with .Values.development.agentImage }}
+    agentImage: {{ . | quote }}
+    {{- end }}
+    {{- if .Values.development.images }}
+    images:
+      {{- toYaml .Values.development.images | nindent 6 }}
+    {{- end }}
+  {{- end }}
   {{- if or .Values.operator.application.baseDomain .Values.operator.application.gateway.name .Values.operator.application.gateway.namespace }}
   # Exposure layer for the `application` template (serve container's
   # FAROS_APP_BASE_DOMAIN / FAROS_GATEWAY_NAME / FAROS_GATEWAY_NAMESPACE).

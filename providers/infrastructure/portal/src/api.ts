@@ -33,7 +33,6 @@ class ContextChangedError extends Error {
     this.name = 'ContextChangedError'
   }
 }
-
 export function isContextChangedError(error: unknown): boolean {
   return error instanceof ContextChangedError || (error as { reason?: string } | null)?.reason === 'ContextChanged'
 }
@@ -167,7 +166,7 @@ interface RawObject {
 }
 
 // ── Mappers ─────────────────────────────────────────────────────────────────
-function templateFromGQL(name: string, spec: Record<string, unknown>): Template {
+function templateFromGQL(name: string, spec: Record<string, unknown>, labels: Record<string, string> = {}): Template {
   const instanceCRD = (spec.instanceCRD ?? {}) as { kind?: string }
   // spec.schema is a preserve-unknown-fields field → the gateway returns it as a
   // JSON string (JSONString scalar); parse it back into the JSONSchema object.
@@ -207,6 +206,7 @@ function templateFromGQL(name: string, spec: Record<string, unknown>): Template 
   }
   return {
     name,
+    platformOwned: labels['faros.sh/platform-owned'] === 'true',
     displayName: (spec.displayName as string) || name,
     description: (spec.description as string) ?? '',
     category: spec.category as string | undefined,
@@ -332,11 +332,11 @@ async function templateQuery<T>(make: (spec: string) => string, variables: Recor
 }
 
 async function fetchTemplates(): Promise<Template[]> {
-  const data = await templateQuery<Infra<{ Templates?: { items?: Array<{ metadata: { name: string }; spec: Record<string, unknown> }> } }>>(
-    spec => `{ ${GROUP_FIELD} { ${VERSION} { Templates { items { metadata { name } spec { ${spec} } } } } } }`,
+  const data = await templateQuery<Infra<{ Templates?: { items?: Array<{ metadata: { name: string; labels?: Record<string, string> }; spec: Record<string, unknown> }> } }>>(
+    spec => `{ ${GROUP_FIELD} { ${VERSION} { Templates { items { metadata { name labels } spec { ${spec} } } } } } }`,
   )
   const items = data[GROUP_FIELD]?.[VERSION]?.Templates?.items ?? []
-  const templates = items.map(t => templateFromGQL(t.metadata.name, t.spec ?? {}))
+  const templates = items.map(t => templateFromGQL(t.metadata.name, t.spec ?? {}, t.metadata.labels ?? {}))
   cachedTemplates = { fetchedAt: Date.now(), templates }
   return templates
 }
@@ -380,6 +380,7 @@ export const api = {
     const expectedContext = requestContext()
     let items = await fetchTemplates()
     assertCurrentContext(expectedContext)
+    items = items.filter(t => !t.platformOwned)
     if (filter.category) items = items.filter(t => t.category === filter.category)
     if (filter.cloud) items = items.filter(t => t.cloud === filter.cloud)
     return { items }

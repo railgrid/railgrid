@@ -147,6 +147,12 @@ spec:
                   - type
                   type: object
                 type: array
+              farosNetworkPhase:
+                description: |-
+                  NetworkPhase is the controller-owned runtime network phase. It is
+                  mirrored from the runtime Instance only after the runtime reports Ready;
+                  callers must not use spec.values as an execution-readiness signal.
+                type: string
               message:
                 description: Message carries human-readable detail for the current
                   phase.

@@ -109,6 +109,12 @@ jobs:
             # Self-contained Dockerfile with module-local paths — keeps its
             # own context (no provider-sdk dependency).
             context: ./providers/infrastructure/dev-agent
+          # Universal coding sandbox toolchain image. It is published by
+          # provider-release.yaml on the infrastructure provider's tag.
+          - name: infrastructure/universal-dev
+            image: ${{ github.repository_owner }}/faros-universal-dev
+            context: ./providers/infrastructure/dev-agent
+            dockerfile: ./providers/infrastructure/dev-agent/Dockerfile.universal
           # Second infrastructure companion: the access gate every publishable
           # template renders in front of its app. Non-default Dockerfile in the
           # provider module root, hence the explicit context/dockerfile.

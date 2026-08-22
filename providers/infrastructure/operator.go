@@ -145,12 +145,16 @@ func runBootstrapLoop(ctx context.Context, providerCfg, runtimeCfg *rest.Config,
 // runtime cluster from the provider kubeconfig. This is the env-driven path —
 // the CRD operator (`controller` subcommand) does the same steps per CR.
 func bootstrapOnce(ctx context.Context, providerCfg, runtimeCfg *rest.Config, providerKubeconfig []byte) error {
+	if err := validateLegacyCodingSandboxImage(); err != nil {
+		return err
+	}
 	workspacePath := os.Getenv("INFRASTRUCTURE_WORKSPACE_PATH")
 	if err := operator.Bootstrap(ctx, providerCfg, operator.BootstrapOptions{
-		WorkspacePath:     workspacePath,
-		APIExportName:     apiExportName,
-		CatalogEntryFile:  os.Getenv("FAROS_CATALOGENTRY_FILE"),
-		SkipSeedTemplates: os.Getenv("INFRASTRUCTURE_SKIP_SEED_TEMPLATES") != "",
+		WorkspacePath:        workspacePath,
+		APIExportName:        apiExportName,
+		CatalogEntryFile:     os.Getenv("FAROS_CATALOGENTRY_FILE"),
+		SkipSeedTemplates:    os.Getenv("INFRASTRUCTURE_SKIP_SEED_TEMPLATES") != "",
+		CodingSandboxEnabled: codingSandboxEnabled(),
 	}); err != nil {
 		return err
 	}

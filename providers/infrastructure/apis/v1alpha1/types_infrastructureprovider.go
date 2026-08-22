@@ -107,6 +107,24 @@ type InfrastructureProviderSpec struct {
 	// run tenant code — production should pin digests.
 	// +optional
 	Development DevelopmentSpec `json:"development,omitempty"`
+
+	// CodingSandbox controls the platform-owned universal coding sandbox. The
+	// feature is disabled by default; self-hosted/BYO installations opt in
+	// explicitly and must configure immutable universal and dev-agent image
+	// digests in Development.Images["universal"] and Development.AgentImage.
+	// +optional
+	CodingSandbox CodingSandboxSpec `json:"codingSandbox,omitempty"`
+}
+
+// CodingSandboxSpec configures the platform-owned universal coding sandbox
+// admission and seed gate. It is intentionally separate from Development:
+// ordinary template development images may remain available while this
+// higher-risk tenant-code substrate is disabled.
+type CodingSandboxSpec struct {
+	// Enabled permits seeding, admitting, and reconciling the
+	// universal-coding-sandbox Template.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // PublishingSpec is operator-owned configuration for the template-embedded

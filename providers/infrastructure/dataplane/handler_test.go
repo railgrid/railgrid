@@ -71,6 +71,17 @@ type fakeRuntime struct {
 	gotTokenName      string
 }
 
+type activityRuntime struct {
+	*fakeRuntime
+	calls int
+	err   error
+}
+
+func (f *activityRuntime) RecordActivity(context.Context, *unstructured.Unstructured) error {
+	f.calls++
+	return f.err
+}
+
 func (f *fakeRuntime) Host() string { return f.host }
 func (f *fakeRuntime) Transport() (http.RoundTripper, error) {
 	return http.DefaultTransport, nil
@@ -209,6 +220,30 @@ func TestHandlerStatusVerbServedFromCR(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "runtimeNamespace") {
 		t.Errorf("status body missing runtimeNamespace: %s", rec.Body.String())
+	}
+}
+
+func TestHandlerRecordsActivityAfterAuthorization(t *testing.T) {
+	rt := &activityRuntime{fakeRuntime: &fakeRuntime{host: "http://unused"}}
+	h := NewHandler(&fakeInstanceGetter{instance: runnerInstance(testNamespace)}, &fakeContractGetter{contract: sandboxRunnerContract()}, rt)
+	rec := doRequest(h, http.MethodGet, dataplaneURL("status"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	if rt.calls != 1 {
+		t.Fatalf("activity calls = %d, want 1", rt.calls)
+	}
+}
+
+func TestHandlerFailsClosedWhenActivityMarkerCannotBeWritten(t *testing.T) {
+	rt := &activityRuntime{fakeRuntime: &fakeRuntime{host: "http://unused"}, err: context.DeadlineExceeded}
+	h := NewHandler(&fakeInstanceGetter{instance: runnerInstance(testNamespace)}, &fakeContractGetter{contract: sandboxRunnerContract()}, rt)
+	rec := doRequest(h, http.MethodGet, dataplaneURL("status"))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (body %q)", rec.Code, rec.Body.String())
+	}
+	if rt.calls != 1 {
+		t.Fatalf("activity calls = %d, want 1", rt.calls)
 	}
 }
 

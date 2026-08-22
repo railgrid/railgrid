@@ -51,6 +51,10 @@ type Reconciler struct {
 	// it; an unknown backend name surfaces as a status condition,
 	// not a crash.
 	Backends *backend.Registry
+	// CodingSandboxEnabled gates the platform-owned universal coding sandbox
+	// Template. It defaults false so a manually submitted copy cannot bypass
+	// the bootstrap seed gate.
+	CodingSandboxEnabled bool
 }
 
 // SetupWithManager wires the reconciler into a controller-runtime
@@ -93,6 +97,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		// Update returns a fresh ResourceVersion; let the next event
 		// loop drive us forward rather than racing the update here.
 		return ctrl.Result{Requeue: true}, nil
+	}
+	if tmpl.Name == infrav1alpha1.UniversalCodingSandboxTemplateName && !r.CodingSandboxEnabled {
+		setCondition(&tmpl, infrav1alpha1.ConditionReady, metav1.ConditionFalse,
+			infrav1alpha1.ReasonCodingSandboxDisabled,
+			"the universal coding sandbox is disabled by provider configuration")
+		return r.writeStatus(ctx, &tmpl, patchBase)
+	}
+	if err := infrav1alpha1.ValidateUniversalCodingSandboxTemplate(&tmpl); err != nil {
+		setCondition(&tmpl, infrav1alpha1.ConditionSchemaValid, metav1.ConditionFalse,
+			infrav1alpha1.ReasonInvalidSpec, err.Error())
+		setCondition(&tmpl, infrav1alpha1.ConditionReady, metav1.ConditionFalse,
+			infrav1alpha1.ReasonInvalidSpec, err.Error())
+		return r.writeStatus(ctx, &tmpl, patchBase)
 	}
 
 	// Retired platform templates are deleted on sight (see retired.go).

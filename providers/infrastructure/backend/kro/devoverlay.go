@@ -102,6 +102,8 @@ const (
 	// stable, but default omitted values to empty strings: kro evaluates every
 	// referenced schema field even when a project has no action grant.
 	devActionsSchemaFieldMarker = `string | default=""`
+
+	devTokenBootstrapActiveDeadlineSeconds = int64(120)
 )
 
 // applyDevOverlay extends simpleSpec (farosMode field), the resource graph,
@@ -141,12 +143,21 @@ func applyDevOverlay(tmpl *infrav1alpha1.Template, simpleSpec map[string]any, re
 		}
 		simpleSpec[field] = devActionsSchemaFieldMarker
 	}
+	if _, exists := simpleSpec[infrav1alpha1.FarosNetworkPhaseField]; exists {
+		return nil, nil, fmt.Errorf("template %q: schema declares reserved field %q", tmpl.Name, infrav1alpha1.FarosNetworkPhaseField)
+	}
+	simpleSpec[infrav1alpha1.FarosNetworkPhaseField] = fmt.Sprintf("string | enum=%q default=%q",
+		infrav1alpha1.FarosNetworkPhaseSetup+","+infrav1alpha1.FarosNetworkPhaseRuntime, infrav1alpha1.FarosNetworkPhaseSetup)
 
 	agentImage := tokens[devAgentImageToken]
 	if agentImage == "" {
 		return nil, nil, fmt.Errorf("template %q: dev agent image is not configured; set FAROS_DEV_AGENT_IMAGE", tmpl.Name)
 	}
 	previewConsoleVerificationJWKS := tokens[previewConsoleVerificationJWKSConfigKey]
+	providerActions := true
+	if dev.ProviderActions != nil {
+		providerActions = *dev.ProviderActions
+	}
 
 	byID, err := indexResources(resources)
 	if err != nil {
@@ -195,6 +206,7 @@ func applyDevOverlay(tmpl *infrav1alpha1.Template, simpleSpec map[string]any, re
 			devImage,
 			agentImage,
 			previewConsoleVerificationJWKS,
+			providerActions,
 			byID,
 		)
 		if err != nil {
@@ -213,7 +225,7 @@ func applyDevOverlay(tmpl *infrav1alpha1.Template, simpleSpec map[string]any, re
 		}
 	}
 
-	tokenRes, err := synthesizeControlToken(tmpl.Name, namespaceExpr, byID)
+	tokenRes, err := synthesizeControlToken(tmpl.Name, namespaceExpr, agentImage, byID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -255,7 +267,7 @@ func findComponentWorkload(byID map[string]map[string]any, name string) (string,
 // synthesizeComponent builds the dev-mode resources for one component: the
 // workspace PVC, the dev variant of the workload, and the control Service.
 // Returns the resources plus the namespace expression the workload deploys to.
-func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateDevelopmentComponent, workloadID string, workload map[string]any, devImage, agentImage, previewConsoleVerificationJWKS string, byID map[string]map[string]any) ([]any, string, error) {
+func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateDevelopmentComponent, workloadID string, workload map[string]any, devImage, agentImage, previewConsoleVerificationJWKS string, providerActions bool, byID map[string]map[string]any) ([]any, string, error) {
 	prodTemplate, _ := workload["template"].(map[string]any)
 	namespace, _, _ := nestedString(prodTemplate, "metadata", "namespace")
 	if namespace == "" {
@@ -287,6 +299,7 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 		devImage,
 		agentImage,
 		previewConsoleVerificationJWKS,
+		providerActions,
 		workingDir,
 		pvcName,
 		"${schema.spec.name}-dev-"+name+"-platform-state",
@@ -391,7 +404,7 @@ func synthesizeComponent(templateName, name string, comp infrav1alpha1.TemplateD
 // are built from scratch with their own mounts and minimal environments.
 // mountedWorkspace reports whether the overlay added the workspace mount (and
 // so needs the per-component workspace PVC).
-func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopmentComponent, prodTemplate map[string]any, devImage, agentImage, previewConsoleVerificationJWKS, workingDir, pvcName, statePVCName, caBundleResourceID string) (dev, selector map[string]any, mountedWorkspace bool, err error) {
+func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopmentComponent, prodTemplate map[string]any, devImage, agentImage, previewConsoleVerificationJWKS string, providerActions bool, workingDir, pvcName, statePVCName, caBundleResourceID string) (dev, selector map[string]any, mountedWorkspace bool, err error) {
 	tmplCopy, err := deepCopyMap(prodTemplate)
 	if err != nil {
 		return nil, nil, false, err
@@ -412,6 +425,18 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	if podSpec == nil {
 		return nil, nil, false, fmt.Errorf("workload has no pod template spec")
 	}
+	podTemplate, _, _ := nestedMap(spec, "template")
+	podMetadata, _, _ := nestedMap(podTemplate, "metadata")
+	podLabels, _, _ := nestedMap(podMetadata, "labels")
+	if podLabels == nil {
+		podLabels = map[string]any{}
+		podMetadata["labels"] = podLabels
+	}
+	// NetworkPolicy resources can select the development pod without granting
+	// the pod a ServiceAccount. The Instance controller owns this phase value:
+	// setup is narrowly allowed during graph bootstrap, runtime is default
+	// deny after readiness.
+	podLabels["faros.sh/network-phase"] = "${schema.spec." + infrav1alpha1.FarosNetworkPhaseField + "}"
 	containers, _ := podSpec["containers"].([]any)
 	if len(containers) != 1 {
 		return nil, nil, false, fmt.Errorf("workload has %d containers; the dev overlay supports exactly one production container", len(containers))
@@ -434,7 +459,10 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 		appReadOnlyRoot, _ = existingSecurity["readOnlyRootFilesystem"].(bool)
 	}
 	app["securityContext"] = devContainerSecurityContext(appReadOnlyRoot)
-	app["env"] = appendDevRuntimeEnv(app, comp, workingDir, appPort)
+	if _, hasResources := app["resources"]; !hasResources {
+		app["resources"] = devAppResources()
+	}
+	app["env"] = appendDevRuntimeEnv(app, comp, workingDir, appPort, providerActions)
 	ensureContainerPort(app, "runtime", devRuntimePort)
 	app["livenessProbe"] = devExecProbe(devRuntimeAddress, 1)
 	app["readinessProbe"] = devExecProbe(devRuntimeAddress, 1)
@@ -493,7 +521,21 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 		},
 	}
 	actionsTokenVolume := map[string]any{"name": devActionsTokenVolumeName, "emptyDir": map[string]any{"medium": "Memory"}}
-	extraVolumes = append(extraVolumes, stateVolume, noServiceAccountVolume, caBundleVolume, actionsBootstrapVolume, actionsTokenVolume)
+	extraVolumes = append(extraVolumes, stateVolume, noServiceAccountVolume, caBundleVolume)
+	if providerActions {
+		extraVolumes = append(extraVolumes, actionsBootstrapVolume, actionsTokenVolume)
+	}
+	// Coding-only pods receive no automatic or inherited ServiceAccount token.
+	// Keep the legacy Provider Actions posture byte-for-byte when enabled: its
+	// existing app SA mount and pod automount setting remain authoritative.
+	if !providerActions {
+		podSpec["automountServiceAccountToken"] = false
+		appMounts, _ := app["volumeMounts"].([]any)
+		if saMount := mountForPath(appMounts, devServiceAccountDir, false); saMount != nil {
+			saMount["name"] = "faros-dev-no-serviceaccount"
+			saMount["readOnly"] = true
+		}
+	}
 
 	coordinator := map[string]any{
 		"name":            "faros-platform-coordinator",
@@ -506,19 +548,24 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 			map[string]any{"name": "control", "containerPort": int64(devAgentPort)},
 			map[string]any{"name": "exec", "containerPort": int64(devExecPort)},
 		},
-		"env": devCoordinatorEnv(comp, workingDir),
+		"env":       devCoordinatorEnv(comp, workingDir, providerActions),
+		"resources": devCoordinatorResources(),
 		"volumeMounts": []any{
 			workspaceForSidecar,
 			map[string]any{"name": "faros-dev-platform-state", "mountPath": devPlatformStateDir},
 			map[string]any{"name": "faros-dev-coordinator-tmp", "mountPath": "/tmp"},
 			map[string]any{"name": "faros-dev-no-serviceaccount", "mountPath": devServiceAccountDir, "readOnly": true},
-			map[string]any{"name": devActionsBootstrapVolumeName, "mountPath": devActionsBootstrapDir, "readOnly": true},
-			map[string]any{"name": devActionsTokenVolumeName, "mountPath": devActionsDir},
 			map[string]any{"name": devActionsCABundleVolumeName, "mountPath": "/etc/faros/actions-ca", "readOnly": true},
 		},
 		"livenessProbe":   devHTTPProbePath(devAgentPort, 0, "/healthz"),
 		"readinessProbe":  devHTTPProbePath(devAgentPort, 0, "/readyz"),
 		"securityContext": devContainerSecurityContext(true),
+	}
+	if providerActions {
+		coordinator["volumeMounts"] = append(coordinator["volumeMounts"].([]any),
+			map[string]any{"name": devActionsBootstrapVolumeName, "mountPath": devActionsBootstrapDir, "readOnly": true},
+			map[string]any{"name": devActionsTokenVolumeName, "mountPath": devActionsDir},
+		)
 	}
 	extraVolumes = append(extraVolumes, map[string]any{"name": "faros-dev-coordinator-tmp", "emptyDir": map[string]any{}})
 
@@ -534,6 +581,7 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 			map[string]any{"name": "HOME", "value": "/tmp/faros-exec-home"},
 			map[string]any{"name": "TMPDIR", "value": "/tmp"},
 		},
+		"resources": devExecutorResources(),
 		"volumeMounts": []any{
 			copyVolumeMount(workspaceMount, workingDir),
 			map[string]any{"name": agentBinMount["name"], "mountPath": devAgentBinDir, "readOnly": true},
@@ -552,12 +600,14 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 			return nil, nil, false, fmt.Errorf("production workload already mounts reserved Provider Actions path %q", reservedPath)
 		}
 	}
-	app["volumeMounts"] = append(app["volumeMounts"].([]any), map[string]any{
-		"name": devActionsTokenVolumeName, "mountPath": devActionsDir, "readOnly": true,
-	})
-	app["volumeMounts"] = append(app["volumeMounts"].([]any), map[string]any{
-		"name": devActionsCABundleVolumeName, "mountPath": "/etc/faros/actions-ca", "readOnly": true,
-	})
+	if providerActions {
+		app["volumeMounts"] = append(app["volumeMounts"].([]any), map[string]any{
+			"name": devActionsTokenVolumeName, "mountPath": devActionsDir, "readOnly": true,
+		})
+		app["volumeMounts"] = append(app["volumeMounts"].([]any), map[string]any{
+			"name": devActionsCABundleVolumeName, "mountPath": "/etc/faros/actions-ca", "readOnly": true,
+		})
+	}
 	// These annotations let the attestor bind the reviewed projected token to
 	// the exact tenant/project instance that requested the exchange. They are
 	// non-secret CEL-resolved identity context and are checked in addition to
@@ -573,11 +623,13 @@ func synthesizeDevDeployment(name string, comp infrav1alpha1.TemplateDevelopment
 	if annotations == nil {
 		annotations = map[string]any{}
 	}
-	annotations["faros.sh/actions-tenant"] = "${schema.spec." + infrav1alpha1.FarosActionsTenantPathField + "}"
-	annotations["faros.sh/actions-project"] = "${schema.spec." + infrav1alpha1.FarosActionsProjectField + "}"
-	annotations["faros.sh/actions-project-uid"] = "${schema.spec." + infrav1alpha1.FarosActionsProjectUIDField + "}"
-	annotations["faros.sh/actions-environment"] = "${schema.spec." + infrav1alpha1.FarosActionsEnvironmentField + "}"
-	annotations["faros.sh/actions-instance"] = "${schema.spec." + infrav1alpha1.FarosActionsInstanceField + "}"
+	if providerActions {
+		annotations["faros.sh/actions-tenant"] = "${schema.spec." + infrav1alpha1.FarosActionsTenantPathField + "}"
+		annotations["faros.sh/actions-project"] = "${schema.spec." + infrav1alpha1.FarosActionsProjectField + "}"
+		annotations["faros.sh/actions-project-uid"] = "${schema.spec." + infrav1alpha1.FarosActionsProjectUIDField + "}"
+		annotations["faros.sh/actions-environment"] = "${schema.spec." + infrav1alpha1.FarosActionsEnvironmentField + "}"
+		annotations["faros.sh/actions-instance"] = "${schema.spec." + infrav1alpha1.FarosActionsInstanceField + "}"
+	}
 	podTemplateMetadata["annotations"] = annotations
 	extraVolumes = append(extraVolumes, map[string]any{"name": "faros-dev-exec-tmp", "emptyDir": map[string]any{}})
 	podSpec["containers"] = []any{coordinator, app, executor}
@@ -665,7 +717,28 @@ func devContainerSecurityContext(readOnlyRootFilesystem bool) map[string]any {
 	}
 }
 
-func devCoordinatorEnv(comp infrav1alpha1.TemplateDevelopmentComponent, workingDir string) []any {
+func devCoordinatorResources() map[string]any {
+	return map[string]any{
+		"requests": map[string]any{"cpu": "25m", "memory": "32Mi"},
+		"limits":   map[string]any{"cpu": "250m", "memory": "256Mi"},
+	}
+}
+
+func devAppResources() map[string]any {
+	return map[string]any{
+		"requests": map[string]any{"cpu": "100m", "memory": "128Mi"},
+		"limits":   map[string]any{"cpu": "1", "memory": "1Gi"},
+	}
+}
+
+func devExecutorResources() map[string]any {
+	return map[string]any{
+		"requests": map[string]any{"cpu": "25m", "memory": "32Mi"},
+		"limits":   map[string]any{"cpu": "500m", "memory": "512Mi"},
+	}
+}
+
+func devCoordinatorEnv(comp infrav1alpha1.TemplateDevelopmentComponent, workingDir string, providerActions bool) []any {
 	env := []any{
 		map[string]any{"name": "FAROS_DEV_WORKDIR", "value": workingDir},
 		map[string]any{"name": "FAROS_DEV_STATE_DIR", "value": devPlatformStateDir},
@@ -681,8 +754,10 @@ func devCoordinatorEnv(comp infrav1alpha1.TemplateDevelopmentComponent, workingD
 			env = append(env, map[string]any{"name": "FAROS_DEV_RELOAD_RULES", "value": string(rules)})
 		}
 	}
-	env = append(env, devActionsEnv(true)...)
-	env = append(env, devActionsTrustEnv(true)...)
+	if providerActions {
+		env = append(env, devActionsEnv(true)...)
+		env = append(env, devActionsTrustEnv(true)...)
+	}
 	return append(env, map[string]any{
 		"name": "FAROS_DEV_CONTROL_TOKEN",
 		"valueFrom": map[string]any{
@@ -821,9 +896,12 @@ func hasMountPath(mounts []any, path string, matchExpressions bool) bool {
 // adds only the runtime-supervisor contract. Platform credentials are removed
 // from a copied production container so an old overlay cannot leak them into
 // the app process; the coordinator is the sole token consumer.
-func appendDevRuntimeEnv(container map[string]any, comp infrav1alpha1.TemplateDevelopmentComponent, workingDir, port string) []any {
-	env := append([]any{}, devActionsEnv(false)...)
-	env = append(env, devActionsTrustEnv(false)...)
+func appendDevRuntimeEnv(container map[string]any, comp infrav1alpha1.TemplateDevelopmentComponent, workingDir, port string, providerActions bool) []any {
+	var env []any
+	if providerActions {
+		env = append(env, devActionsEnv(false)...)
+		env = append(env, devActionsTrustEnv(false)...)
+	}
 	env = append(env, []any{
 		map[string]any{"name": "FAROS_DEV_WORKDIR", "value": workingDir},
 		map[string]any{"name": "FAROS_DEV_START_COMMAND", "value": comp.StartCommand},
@@ -872,7 +950,7 @@ func appendDevRuntimeEnv(container map[string]any, comp infrav1alpha1.TemplateDe
 	for _, raw := range existing {
 		entry, _ := raw.(map[string]any)
 		name, _ := entry["name"].(string)
-		if reserved[name] {
+		if reserved[name] || (!providerActions && (strings.HasPrefix(name, "FAROS_ACTIONS_") || strings.HasPrefix(name, "FAROS_PROJECT"))) {
 			continue
 		}
 		filtered = append(filtered, raw)
@@ -883,7 +961,7 @@ func appendDevRuntimeEnv(container map[string]any, comp infrav1alpha1.TemplateDe
 // synthesizeControlToken is the instance-wide control-token Secret + one-shot
 // generator Job (the proven sandbox-runner pattern), gated to development
 // mode. The token authenticates every component's data-plane control calls.
-func synthesizeControlToken(templateName, namespace string, byID map[string]map[string]any) ([]any, error) {
+func synthesizeControlToken(templateName, namespace, agentImage string, byID map[string]map[string]any) ([]any, error) {
 	for _, id := range []string{"farosDevControlSecret", "farosDevTokenAccount", "farosDevTokenRole", "farosDevTokenBinding", "farosDevTokenJob"} {
 		if _, taken := byID[id]; taken {
 			return nil, fmt.Errorf("template %q: graph already declares resource id %q (reserved for the dev overlay)", templateName, id)
@@ -895,16 +973,50 @@ func synthesizeControlToken(templateName, namespace string, byID map[string]map[
 	}
 	include := []any{devModeCondition}
 
-	script := `set -eu
-SECRET="${farosDevControlSecret.metadata.name}"
-if [ -z "$(kubectl get secret "$SECRET" -o jsonpath='{.data.token}' 2>/dev/null)" ]; then
-  TOKEN="$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom | head -c 64)"
-  kubectl patch secret "$SECRET" --type merge -p "{\"stringData\":{\"token\":\"$TOKEN\"}}"
-  echo "generated dev control token for $SECRET"
-else
-  echo "dev control token already present for $SECRET"
-fi
-`
+	jobSpec := map[string]any{
+		"activeDeadlineSeconds": devTokenBootstrapActiveDeadlineSeconds,
+		"backoffLimit":          int64(2),
+		// The universal sandbox is a warm, platform-owned workspace. Its
+		// completed bootstrap Job must remain present for the cache lifetime;
+		// finalization removes this exact Job (and any orphaned pod) when the
+		// Instance is deleted. Ordinary development templates keep their
+		// existing short-lived Job behavior below.
+		"template": map[string]any{
+			"metadata": map[string]any{"labels": labels},
+			"spec": map[string]any{
+				"serviceAccountName":           "${farosDevTokenAccount.metadata.name}",
+				"automountServiceAccountToken": true,
+				"restartPolicy":                "OnFailure",
+				"securityContext": map[string]any{
+					"runAsNonRoot": true,
+					"runAsUser":    int64(1001),
+					"runAsGroup":   int64(1001),
+					"seccompProfile": map[string]any{
+						"type": "RuntimeDefault",
+					},
+				},
+				"containers": []any{map[string]any{
+					"name":            "token",
+					"image":           agentImage,
+					"imagePullPolicy": "IfNotPresent",
+					"command":         []any{"/faros-dev-agent", "--bootstrap-control-token", "${farosDevControlSecret.metadata.name}"},
+					"securityContext": map[string]any{
+						"runAsNonRoot":             true,
+						"runAsUser":                int64(1001),
+						"runAsGroup":               int64(1001),
+						"allowPrivilegeEscalation": false,
+						"readOnlyRootFilesystem":   true,
+						"capabilities": map[string]any{
+							"drop": []any{"ALL"},
+						},
+					},
+				}},
+			},
+		},
+	}
+	if templateName != infrav1alpha1.UniversalCodingSandboxTemplateName {
+		jobSpec["ttlSecondsAfterFinished"] = int64(600)
+	}
 
 	return []any{
 		map[string]any{
@@ -928,9 +1040,10 @@ fi
 				"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "Role",
 				"metadata": meta("${schema.spec.name}-dev-token"),
 				"rules": []any{map[string]any{
-					"apiGroups": []any{""},
-					"resources": []any{"secrets"},
-					"verbs":     []any{"get", "patch"},
+					"apiGroups":     []any{""},
+					"resources":     []any{"secrets"},
+					"resourceNames": []any{"${farosDevControlSecret.metadata.name}"},
+					"verbs":         []any{"get", "patch"},
 				}},
 			},
 		},
@@ -953,22 +1066,7 @@ fi
 			"template": map[string]any{
 				"apiVersion": "batch/v1", "kind": "Job",
 				"metadata": meta("${schema.spec.name}-dev-token"),
-				"spec": map[string]any{
-					"backoffLimit":            int64(5),
-					"ttlSecondsAfterFinished": int64(600),
-					"template": map[string]any{
-						"metadata": map[string]any{"labels": labels},
-						"spec": map[string]any{
-							"serviceAccountName": "${farosDevTokenAccount.metadata.name}",
-							"restartPolicy":      "OnFailure",
-							"containers": []any{map[string]any{
-								"name":    "token",
-								"image":   "bitnami/kubectl",
-								"command": []any{"/bin/sh", "-c", script},
-							}},
-						},
-					},
-				},
+				"spec":     jobSpec,
 			},
 		},
 	}, nil

@@ -64,10 +64,11 @@ func startInstanceController(ctx context.Context, providerConfig *rest.Config) {
 			Name:      instanceLeaseName,
 		}, func(termCtx context.Context) {
 			ctrl, err := instance.New(instance.Config{
-				ProviderConfig: providerConfig,
-				APIExportName:  install.APIExportName,
-				BaseDomain:     baseDomain,
-				Runtime:        runtimeClient,
+				ProviderConfig:       providerConfig,
+				APIExportName:        install.APIExportName,
+				BaseDomain:           baseDomain,
+				Runtime:              runtimeClient,
+				CodingSandboxEnabled: codingSandboxEnabled(),
 			})
 			if err != nil {
 				log.Printf("instance controller: NOT started: %v", err)

@@ -11,9 +11,12 @@ You may obtain a copy of the License at
 package kro
 
 import (
+	"context"
 	"maps"
+	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -220,7 +223,63 @@ func testTokens() map[string]string {
 	}
 	maps.Copy(tokens, accessGateTokens())
 	maps.Copy(tokens, devImageTokens())
+	// Graph-build fixtures model the operator's secure universal-sandbox
+	// configuration. The default token map remains mutable for ordinary
+	// development and is validated separately when the universal template is
+	// admitted.
+	tokens[devImageTokenPrefix+"universal}"] = "ghcr.io/example/universal-dev@sha256:" + strings.Repeat("a", 64)
+	tokens[devAgentImageToken] = "ghcr.io/example/dev-agent@sha256:" + strings.Repeat("b", 64)
 	return tokens
+}
+
+func TestDevImageTokensIncludeUniversalDefaultAndDigestOverride(t *testing.T) {
+	t.Setenv("FAROS_DEV_IMAGE_UNIVERSAL", "ghcr.io/example/universal-dev@sha256:"+strings.Repeat("a", 64))
+	tokens := devImageTokens()
+	if got, want := tokens[devImageTokenPrefix+"universal}"], "ghcr.io/example/universal-dev@sha256:"+strings.Repeat("a", 64); got != want {
+		t.Fatalf("universal dev image token = %q, want digest override %q", got, want)
+	}
+
+	t.Setenv("FAROS_DEV_IMAGE_UNIVERSAL", "")
+	tokens = devImageTokens()
+	if got, want := tokens[devImageTokenPrefix+"universal}"], DefaultUniversalDevImage; got != want {
+		t.Fatalf("universal dev image default = %q, want %q", got, want)
+	}
+}
+
+func TestBackendRejectsMutableUniversalImageRegardlessOfGate(t *testing.T) {
+	for _, gate := range []string{"", "false", "true"} {
+		t.Run("gate="+gate, func(t *testing.T) {
+			t.Setenv("FAROS_CODING_SANDBOX_ENABLED", gate)
+			b := New(nil)
+			status, err := b.SetupTemplate(context.Background(), &infrav1alpha1.Template{
+				ObjectMeta: metav1.ObjectMeta{Name: infrav1alpha1.UniversalCodingSandboxTemplateName},
+			})
+			if err == nil {
+				t.Fatal("expected mutable universal image to be rejected")
+			}
+			if status.Ready {
+				t.Fatal("mutable universal image unexpectedly reported ready")
+			}
+			if !strings.Contains(err.Error(), "immutable sha256 digest") {
+				t.Fatalf("error = %q, want immutable digest explanation", err)
+			}
+		})
+	}
+}
+
+func TestBackendRejectsMutableUniversalDevAgentImage(t *testing.T) {
+	t.Setenv("FAROS_DEV_IMAGE_UNIVERSAL", "ghcr.io/example/universal-dev@sha256:"+strings.Repeat("a", 64))
+	t.Setenv("FAROS_DEV_AGENT_IMAGE", "ghcr.io/example/dev-agent:latest")
+	b := New(nil)
+	status, err := b.SetupTemplate(context.Background(), &infrav1alpha1.Template{
+		ObjectMeta: metav1.ObjectMeta{Name: infrav1alpha1.UniversalCodingSandboxTemplateName},
+	})
+	if err == nil || !strings.Contains(err.Error(), "dev agent image") {
+		t.Fatalf("error = %v, want mutable dev-agent rejection", err)
+	}
+	if status.Ready {
+		t.Fatal("mutable dev-agent image unexpectedly reported ready")
+	}
 }
 
 func TestBuildRGDRequiresBackendConfig(t *testing.T) {

@@ -245,6 +245,12 @@ type TemplateSpec struct {
 // every per-template CRD. Tenants set it to development only when the
 // Template declares a Development block (the injected enum enforces this).
 const (
+	// UniversalCodingSandboxTemplateName identifies the platform-owned coding
+	// sandbox. It is deliberately a well-known catalog name so every seed,
+	// controller, and data-plane admission path can enforce the same feature
+	// gate without trusting tenant-provided labels.
+	UniversalCodingSandboxTemplateName = "universal-coding-sandbox"
+
 	// FarosModeField is the reserved instance spec property name. Templates
 	// MUST NOT declare it in spec.schema themselves.
 	FarosModeField = "farosMode"
@@ -273,12 +279,54 @@ const (
 	// reserved instance field: templates must not author trust material, and
 	// production-mode instances never receive it in their tenant schema.
 	FarosActionsCABundleField = "farosActionsCABundle"
+
+	// FarosNetworkPhaseField is a platform-reserved development value. The
+	// Instance controller holds a new sandbox in setup until its runtime graph
+	// is Ready, then switches it to runtime. Templates use it only to select
+	// an explicit setup egress policy; tenants cannot choose the phase.
+	FarosNetworkPhaseField   = "farosNetworkPhase"
+	// FarosNetworkPhaseStatusField is the controller-owned status mirror of
+	// FarosNetworkPhaseField. Tenant spec values are never authoritative for
+	// execution readiness.
+	FarosNetworkPhaseStatusField = "farosNetworkPhase"
+	FarosNetworkPhaseSetup   = "setup"
+	FarosNetworkPhaseRuntime = "runtime"
+	// FarosLastActivityAnnotation is written to a runtime Instance by the
+	// provider data plane after caller authorization. It is deliberately not
+	// stored in tenant-visible Instance status.
+	FarosLastActivityAnnotation = "faros.sh/last-activity"
 )
 
 // TemplateDevelopment is the development-mode contract for a template's
 // instances. The backend synthesizes the dev overlay from it mechanically at
 // RGD build time — template authors write this block, never a second graph.
 type TemplateDevelopment struct {
+	// ProviderActions controls whether the development pod receives the
+	// short-lived setup token used by the optional Provider Actions bridge.
+	// It defaults to true for backwards compatibility with existing
+	// development templates. A coding-only sandbox should set it to false so
+	// none of its containers receive a projected ServiceAccount token.
+	// +optional
+	ProviderActions *bool `json:"providerActions,omitempty"`
+
+	// MaxLifetimeSeconds is the hard wall-clock lifetime for a development
+	// instance. Zero disables the limit; platform sandbox templates set a
+	// finite value so abandoned runs are deleted by the Instance controller
+	// and their runtime resources pass through normal finalizer cleanup.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=604800
+	MaxLifetimeSeconds int64 `json:"maxLifetimeSeconds,omitempty"`
+
+	// IdleTimeoutSeconds is the maximum period without an authorized data-plane
+	// request before a development instance is deleted. Zero disables the
+	// limit. Activity is recorded on the runtime CR by the provider's runtime
+	// credential, never by the workload pod or caller.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=604800
+	IdleTimeoutSeconds int64 `json:"idleTimeoutSeconds,omitempty"`
+
 	// Build optionally declares the repository-owned GitHub Actions workflow
 	// that builds this template's production images. App Studio observes and
 	// dispatches this workflow; it never authors or rewrites it. Absence means
@@ -723,11 +771,12 @@ const (
 
 // Standard reason strings paired with the condition types above.
 const (
-	ReasonReconciling     = "Reconciling"
-	ReasonReady           = "Ready"
-	ReasonInvalidSpec     = "InvalidSpec"
-	ReasonBackendNotFound = "BackendNotFound"
-	ReasonBackendError    = "BackendError"
+	ReasonReconciling           = "Reconciling"
+	ReasonReady                 = "Ready"
+	ReasonInvalidSpec           = "InvalidSpec"
+	ReasonBackendNotFound       = "BackendNotFound"
+	ReasonBackendError          = "BackendError"
+	ReasonCodingSandboxDisabled = "CodingSandboxDisabled"
 )
 
 // Standard finalizer the Template controller adds. Cleanup on delete:

@@ -29,6 +29,23 @@ func devComponent(workspacePath string) TemplateDevelopmentComponent {
 	}
 }
 
+func TestValidateImmutableImageRef(t *testing.T) {
+	valid := "ghcr.io/faroshq/faros-universal-dev@sha256:" + strings.Repeat("a", 64)
+	if err := ValidateImmutableImageRef(valid); err != nil {
+		t.Fatalf("valid digest image rejected: %v", err)
+	}
+	for _, image := range []string{
+		"ghcr.io/faroshq/faros-universal-dev:latest",
+		"ghcr.io/faroshq/faros-universal-dev@sha256:" + strings.Repeat("A", 64),
+		"ghcr.io/faroshq/faros-universal-dev@sha256:" + strings.Repeat("a", 63),
+		"",
+	} {
+		if err := ValidateImmutableImageRef(image); err == nil {
+			t.Fatalf("mutable/invalid image %q was accepted", image)
+		}
+	}
+}
+
 func TestValidateDevelopment(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

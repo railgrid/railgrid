@@ -110,6 +110,11 @@ var rgdGVR = schema.GroupVersionResource{
 //   - spec.schema.status      = Template.spec.backendConfig.status (optional)
 //   - spec.resources          = Template.spec.backendConfig.resources (verbatim)
 func buildRGD(tmpl *infrav1alpha1.Template, tokens map[string]string) (*unstructured.Unstructured, error) {
+	if tmpl.Name == infrav1alpha1.UniversalCodingSandboxTemplateName {
+		if err := validateUniversalDevImages(tokens); err != nil {
+			return nil, err
+		}
+	}
 	if tmpl.Spec.Schema == nil || len(tmpl.Spec.Schema.Raw) == 0 {
 		return nil, fmt.Errorf("template %q: spec.schema is required", tmpl.Name)
 	}

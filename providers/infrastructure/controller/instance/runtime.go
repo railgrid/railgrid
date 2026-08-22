@@ -46,6 +46,18 @@ func runtimeGVRFor(tmpl *infrav1alpha1.Template) schema.GroupVersionResource {
 	}
 }
 
+func (c *Controller) currentRuntime(ctx context.Context, tenant string, tmpl *infrav1alpha1.Template, inst *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	ns := kro.RuntimeNamespace(tenant, inst.GetNamespace())
+	obj, err := c.cfg.Runtime.Resource(runtimeGVRFor(tmpl)).Namespace(ns).Get(ctx, inst.GetName(), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return obj, nil
+}
+
 // syncRuntime ensures the tenant's runtime namespace and converges the
 // per-template kro CR on the stamped values. Returns the live runtime
 // object (its status feeds the mirror).
@@ -211,6 +223,7 @@ func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Clien
 
 	conds, _ := next["conditions"].([]any)
 	prevConds, _ := prevStatus["conditions"].([]any)
+	conds = stampConditionObservedGeneration(conds, "Ready", inst.GetGeneration())
 	conds = upsertCondition(conds, prevConds, valid, inst.GetGeneration())
 	if oidc != nil {
 		conds = upsertCondition(conds, prevConds, oidc, inst.GetGeneration())
@@ -245,6 +258,9 @@ func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Clien
 	if prev, ok := prevStatus[runtimeRefKey]; ok && next[runtimeRefKey] == nil {
 		next[runtimeRefKey] = prev
 	}
+	if networkPhase, ok := runtimeNetworkPhase(tmpl, runtimeObj); ok {
+		next[infrav1alpha1.FarosNetworkPhaseStatusField] = networkPhase
+	}
 
 	ready := conditionTrue(conds, "Ready")
 
@@ -258,6 +274,26 @@ func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Clien
 		return ready, fmt.Errorf("update status: %w", err)
 	}
 	return ready, nil
+}
+
+// runtimeNetworkPhase exposes the controller-owned network gate on the
+// tenant-facing Instance status. The runtime object's spec is the only source
+// of the phase; the tenant Instance spec is deliberately ignored. Runtime
+// phase is published only after the authoritative runtime object is both in
+// the runtime network phase and Ready, so a Ready condition from an older
+// setup-phase observation cannot open /exec prematurely.
+func runtimeNetworkPhase(tmpl *infrav1alpha1.Template, runtimeObj *unstructured.Unstructured) (string, bool) {
+	if tmpl == nil || tmpl.Spec.Development == nil {
+		return "", false
+	}
+	if runtimeObj == nil {
+		return infrav1alpha1.FarosNetworkPhaseSetup, true
+	}
+	phase, found, err := unstructured.NestedString(runtimeObj.Object, "spec", infrav1alpha1.FarosNetworkPhaseField)
+	if err != nil || !found || phase != infrav1alpha1.FarosNetworkPhaseRuntime || !runtimeReadyForNetwork(runtimeObj) {
+		return infrav1alpha1.FarosNetworkPhaseSetup, true
+	}
+	return infrav1alpha1.FarosNetworkPhaseRuntime, true
 }
 
 // upsertCondition replaces the entry of cond's type. To avoid churning
@@ -292,6 +328,24 @@ func upsertCondition(conds, prevConds []any, cond *conditionSpec, generation int
 		"lastTransitionTime": transition,
 		"observedGeneration": generation,
 	})
+}
+
+// stampConditionObservedGeneration makes the tenant-facing Ready condition
+// independently prove freshness against the tenant Instance generation. The
+// runtime condition's generation remains an internal controller input to the
+// network-phase gate; data-plane callers must not have to infer freshness from
+// a cross-cluster generation.
+func stampConditionObservedGeneration(conds []any, conditionType string, generation int64) []any {
+	for i, raw := range conds {
+		condition, ok := raw.(map[string]any)
+		if !ok || condition["type"] != conditionType {
+			continue
+		}
+		condition["observedGeneration"] = generation
+		conds[i] = condition
+		break
+	}
+	return conds
 }
 
 // conditionTrue reports whether the named condition is present with
@@ -343,6 +397,24 @@ func (c *Controller) finalize(ctx context.Context, tenantClient client.Client, t
 			return ctrl.Result{RequeueAfter: 3 * time.Second}, nil
 		} else if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, fmt.Errorf("check runtime instance gone: %w", err)
+		}
+	}
+
+	// The run-sandbox token Job is retained for the warm cache lifetime and its
+	// succeeded pod/Job/Secret have historically outlived the runtime CR
+	// without ownerReferences. Clean those exact resources before dropping the
+	// Instance finalizer; other templates never enter this path.
+	if runSandboxInstanceTemplateName(inst) == runSandboxTemplateName {
+		cleanupNamespace := ns
+		if cleanupNamespace == "" {
+			cleanupNamespace = kro.RuntimeNamespace(tenant, inst.GetNamespace())
+		}
+		done, err := cleanupRunSandboxTokenResources(ctx, c.cfg.Runtime, runSandboxTemplateName, cleanupNamespace, inst.GetName())
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("cleanup run-sandbox token resources: %w", err)
+		}
+		if !done {
+			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 	}
 

@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -66,6 +67,253 @@ func TestRunHealthcheckUsesContainerLocalTCPAddress(t *testing.T) {
 	}
 	if err := runHealthcheck(""); err == nil {
 		t.Fatal("runHealthcheck accepted an empty address")
+	}
+}
+
+func TestBootstrapControlTokenUsesOnlyNamedSecret(t *testing.T) {
+	var requests []*http.Request
+	var patchBody []byte
+	client := &http.Client{Transport: actionsTestRoundTripper(func(r *http.Request) (*http.Response, error) {
+		requests = append(requests, r)
+		if r.Method == http.MethodGet {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"metadata":{"name":"control","resourceVersion":"1"},"data":{}}`)),
+				Header:     make(http.Header),
+				Request:    r,
+			}, nil
+		}
+		var err error
+		patchBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header), Request: r}, nil
+	})}
+	if err := bootstrapControlToken(context.Background(), client, "https://kubernetes.default.svc:443", "tenant-a", "control", "service-account"); err != nil {
+		t.Fatalf("bootstrapControlToken: %v", err)
+	}
+	if len(requests) != 2 || requests[0].Method != http.MethodGet || requests[1].Method != http.MethodPatch {
+		t.Fatalf("requests = %v, want GET then PATCH", requests)
+	}
+	wantURL := "https://kubernetes.default.svc:443/api/v1/namespaces/tenant-a/secrets/control"
+	for _, request := range requests {
+		if request.URL.String() != wantURL {
+			t.Errorf("request URL = %q, want %q", request.URL, wantURL)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer service-account" {
+			t.Errorf("authorization = %q", got)
+		}
+	}
+	if got := requests[1].Header.Get("Content-Type"); got != "application/merge-patch+json" {
+		t.Fatalf("patch content type = %q", got)
+	}
+	var document struct {
+		Metadata   map[string]string `json:"metadata"`
+		Immutable  bool              `json:"immutable"`
+		StringData map[string]string `json:"stringData"`
+	}
+	if err := json.Unmarshal(patchBody, &document); err != nil {
+		t.Fatalf("decode patch: %v", err)
+	}
+	if document.Metadata["resourceVersion"] != "1" || !document.Immutable {
+		t.Fatalf("patch precondition/immutability = %#v/%v, want resourceVersion 1 and immutable=true", document.Metadata, document.Immutable)
+	}
+	if token := document.StringData["token"]; len(token) != 64 || strings.Trim(token, "0123456789abcdef") != "" {
+		t.Fatalf("generated token = %q, want 64 lowercase hex characters", token)
+	}
+}
+
+func TestBootstrapControlTokenDoesNotPatchImmutableExistingSecret(t *testing.T) {
+	patches := 0
+	client := &http.Client{Transport: actionsTestRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodPatch {
+			patches++
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"metadata":{"resourceVersion":"7"},"immutable":true,"data":{"token":"already-set"}}`)), Header: make(http.Header), Request: r}, nil
+	})}
+	if err := bootstrapControlToken(context.Background(), client, "https://kubernetes.default.svc:443", "tenant-a", "control", "service-account"); err != nil {
+		t.Fatalf("bootstrapControlToken: %v", err)
+	}
+	if patches != 0 {
+		t.Fatalf("existing control token triggered %d patch requests, want none", patches)
+	}
+}
+
+func TestBootstrapControlTokenSealsExistingMutableSecretWithoutRotation(t *testing.T) {
+	var patchBody []byte
+	client := &http.Client{Transport: actionsTestRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.Method == http.MethodGet {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"metadata":{"resourceVersion":"7"},"data":{"token":"already-set"}}`)), Header: make(http.Header), Request: r}, nil
+		}
+		var err error
+		patchBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header), Request: r}, nil
+	})}
+	if err := bootstrapControlToken(context.Background(), client, "https://kubernetes.default.svc:443", "tenant-a", "control", "service-account"); err != nil {
+		t.Fatalf("bootstrapControlToken: %v", err)
+	}
+	var document struct {
+		Metadata  map[string]string `json:"metadata"`
+		Immutable bool              `json:"immutable"`
+		Data      map[string]string `json:"stringData"`
+	}
+	if err := json.Unmarshal(patchBody, &document); err != nil {
+		t.Fatalf("decode seal patch: %v", err)
+	}
+	if document.Metadata["resourceVersion"] != "7" || !document.Immutable || len(document.Data) != 0 {
+		t.Fatalf("seal patch = %#v, want only immutable=true with resourceVersion 7", document)
+	}
+}
+
+func TestBootstrapControlTokenConcurrentWritersFirstPatchWins(t *testing.T) {
+	type patchDocument struct {
+		Metadata   map[string]string `json:"metadata"`
+		Immutable  bool              `json:"immutable"`
+		StringData map[string]string `json:"stringData"`
+	}
+	type secretState struct {
+		sync.Mutex
+		token       string
+		resourceVer string
+		immutable   bool
+		gets        int
+		patches     []patchDocument
+		getsReady   chan struct{}
+		releaseGets chan struct{}
+	}
+	state := &secretState{
+		resourceVer: "1",
+		getsReady:   make(chan struct{}),
+		releaseGets: make(chan struct{}),
+	}
+	client := &http.Client{Transport: actionsTestRoundTripper(func(r *http.Request) (*http.Response, error) {
+		switch r.Method {
+		case http.MethodGet:
+			state.Lock()
+			state.gets++
+			if state.gets == 2 {
+				close(state.getsReady)
+			}
+			token, resourceVersion, immutable := state.token, state.resourceVer, state.immutable
+			state.Unlock()
+			data := "{}"
+			if token != "" {
+				data = `{"token":"` + token + `"}`
+			}
+			body := `{"metadata":{"resourceVersion":"` + resourceVersion + `"},"immutable":` + fmt.Sprint(immutable) + `,"data":` + data + `}`
+			<-state.releaseGets
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header), Request: r}, nil
+		case http.MethodPatch:
+			raw, err := io.ReadAll(r.Body)
+			if err != nil {
+				return nil, err
+			}
+			var document patchDocument
+			if err := json.Unmarshal(raw, &document); err != nil {
+				return nil, err
+			}
+			state.Lock()
+			state.patches = append(state.patches, document)
+			if document.Metadata["resourceVersion"] != state.resourceVer || state.token != "" {
+				state.Unlock()
+				return &http.Response{StatusCode: http.StatusConflict, Status: "409 Conflict", Body: io.NopCloser(strings.NewReader(`{"reason":"Conflict"}`)), Header: make(http.Header), Request: r}, nil
+			}
+			state.token = document.StringData["token"]
+			state.immutable = document.Immutable
+			state.resourceVer = "2"
+			state.Unlock()
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header), Request: r}, nil
+		default:
+			return nil, fmt.Errorf("unexpected method %s", r.Method)
+		}
+	})}
+
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			errs <- bootstrapControlToken(context.Background(), client, "https://kubernetes.default.svc:443", "tenant-a", "control", "service-account")
+		}()
+	}
+	<-state.getsReady
+	close(state.releaseGets)
+	var successes, conflicts int
+	for range 2 {
+		if err := <-errs; err == nil {
+			successes++
+		} else if strings.Contains(err.Error(), "Conflict") {
+			conflicts++
+		} else {
+			t.Fatalf("unexpected bootstrap error: %v", err)
+		}
+	}
+	state.Lock()
+	defer state.Unlock()
+	if successes != 1 || conflicts != 1 || len(state.patches) != 2 {
+		t.Fatalf("concurrent results = successes %d conflicts %d patches %d, want 1/1/2", successes, conflicts, len(state.patches))
+	}
+	if len(state.token) != 64 || !state.immutable || state.resourceVer != "2" {
+		t.Fatalf("secret state = token length %d immutable %v resourceVersion %q, want 64/true/2", len(state.token), state.immutable, state.resourceVer)
+	}
+	for _, patch := range state.patches {
+		if patch.Metadata["resourceVersion"] != "1" || !patch.Immutable || len(patch.StringData["token"]) != 64 {
+			t.Fatalf("concurrent patch = %#v, want resourceVersion 1, immutable=true, generated token", patch)
+		}
+	}
+}
+
+func TestBootstrapControlTokenRedactsSecretResponseBodies(t *testing.T) {
+	tests := []struct {
+		name string
+		fn   func(*http.Request) (*http.Response, error)
+	}{
+		{
+			name: "get",
+			fn: func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusForbidden,
+					Status:     "403 Forbidden",
+					Body:       io.NopCloser(strings.NewReader(`{"reason":"Forbidden","message":"token=super-secret"}`)),
+					Header:     make(http.Header), Request: r,
+				}, nil
+			},
+		},
+		{
+			name: "patch",
+			fn: func(r *http.Request) (*http.Response, error) {
+				if r.Method == http.MethodGet {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Body:       io.NopCloser(strings.NewReader(`{"metadata":{"name":"control","resourceVersion":"1"},"data":{}}`)),
+						Header:     make(http.Header), Request: r,
+					}, nil
+				}
+				return &http.Response{
+					StatusCode: http.StatusConflict,
+					Status:     "409 Conflict",
+					Body:       io.NopCloser(strings.NewReader(`{"reason":"Conflict","message":"token=super-secret"}`)),
+					Header:     make(http.Header), Request: r,
+				}, nil
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := &http.Client{Transport: actionsTestRoundTripper(test.fn)}
+			err := bootstrapControlToken(context.Background(), client, "https://kubernetes.default.svc:443", "tenant-a", "control", "service-account")
+			if err == nil {
+				t.Fatal("bootstrapControlToken succeeded, want Kubernetes API error")
+			}
+			if !strings.Contains(err.Error(), "reason") || !strings.Contains(err.Error(), "Forbidden") && !strings.Contains(err.Error(), "Conflict") {
+				t.Fatalf("error = %q, want status and safe reason", err)
+			}
+			if strings.Contains(err.Error(), "super-secret") || strings.Contains(err.Error(), "token=") {
+				t.Fatalf("error leaked Secret response body: %q", err)
+			}
+		})
 	}
 }
 

@@ -63,6 +63,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	applyDefaults(&cr)
+	if err := validateCodingSandboxConfig(cr.Spec); err != nil {
+		return r.fail(ctx, &cr, v1alpha1.ConditionBootstrapped, "CodingSandboxInvalid", err)
+	}
 
 	providerKC, err := r.secretValue(ctx, cr.Namespace, cr.Spec.ProviderKubeconfigSecret)
 	if err != nil {
@@ -119,8 +122,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	// 1. Bootstrap the provider workspace.
 	if err := Bootstrap(ctx, providerCfg, BootstrapOptions{
-		WorkspacePath: workspacePath,
-		APIExportName: APIExportName,
+		WorkspacePath:        workspacePath,
+		APIExportName:        APIExportName,
+		CodingSandboxEnabled: cr.Spec.CodingSandbox.Enabled,
 	}); err != nil {
 		return r.fail(ctx, &cr, v1alpha1.ConditionBootstrapped, "BootstrapFailed", err)
 	}

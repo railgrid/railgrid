@@ -51,6 +51,9 @@ func EnsureProviderServe(
 	cr *v1alpha1.InfrastructureProvider,
 	providerKubeconfig, runtimeKubeconfig, hubToken []byte,
 ) error {
+	if err := validateCodingSandboxConfig(cr.Spec); err != nil {
+		return err
+	}
 	if err := ensureNamespace(ctx, cs, ServeNamespace); err != nil {
 		return err
 	}
@@ -156,6 +159,9 @@ func EnsureProviderServe(
 			envName := "FAROS_DEV_IMAGE_" + strings.ToUpper(strings.ReplaceAll(toolchain, "-", "_"))
 			env = append(env, corev1.EnvVar{Name: envName, Value: image})
 		}
+	}
+	if cr.Spec.CodingSandbox.Enabled {
+		env = append(env, corev1.EnvVar{Name: "FAROS_CODING_SANDBOX_ENABLED", Value: "true"})
 	}
 	volMounts := []corev1.VolumeMount{
 		{Name: "provider-kubeconfig", MountPath: "/var/run/secrets/faros/provider", ReadOnly: true},

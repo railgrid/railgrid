@@ -68,11 +68,13 @@ helm upgrade --install infrastructure oci://ghcr.io/faroshq/charts/faros-infrast
 | `tenantLimitRange` |  | Default container resource policy stamped into every tenant namespace as a LimitRange named "faros-defaults" (defaultRequest 50m/128Mi, default limit 500m/512Mi, max 2cpu/2Gi per container). Create-only — operators may hand-tune a tenant's copy without it being overwritten. Disable when the runti… |
 | `tenantLimitRange.enabled` | `true` |  |
 | `development` |  | Development-mode images (docs/app-studio-template-sandboxes.md). These run TENANT code, so production deployments should pin them by digest. Empty values fall back to the in-binary defaults (node → docker.io/library/node:22-bookworm, agent → ghcr.io/faroshq/faros-dev-agent:latest). |
-| `development.agentImage` | `""` | The injector image carrying the static faros-dev-agent binary (FAROS_DEV_AGENT_IMAGE). |
+| `development.agentImage` | `""` | The injector image carrying the static faros-dev-agent binary and universal token-bootstrap mode (FAROS_DEV_AGENT_IMAGE). Required as an immutable digest when codingSandbox.enabled is true. |
 | `development.previewConsole` |  | Public ES256 JSON Web Key Set used by the injected preview-console bridge to verify short-lived capabilities issued by App Studio. Configure the current key and, during rotation, the previous key. Never put a private signing key here. Empty disables the optional bridge without preventing developm… |
 | `development.previewConsole.verificationJWKS` | `""` |  |
 | `development.images` |  | Toolchain image per ${faros.devImage.<toolchain>} token — each key K maps to FAROS_DEV_IMAGE_<K>. A template referencing an unconfigured toolchain (other than node) fails setup with a pointer to the missing env var. |
 | `development.images.node` | `""` |  |
+| `development.images.universal` | `""` | Universal coding sandbox image (`${faros.devImage.universal}`). Pin this tenant-code image by digest in production. |
+| `codingSandbox.enabled` | `false` | Platform-owned universal coding sandbox gate. Hosted deployments leave this disabled; BYO/self-hosted installs may set it `true`, but must also provide both `development.images.universal` and `development.agentImage` as immutable `name@sha256:<64 lowercase hex digits>` references. |
 | `providerKubeconfig` |  | python: "docker.io/library/python:3.12-slim" go: "docker.io/library/golang:1.26" Container images are NOT configured here. Templates declare them as schema fields with sane defaults (e.g. the database template's spec.version defaults to "16") — the same convention every template follows. See prov… |
 | `providerKubeconfig.secretName` | `faros-provider-kubeconfig` |  |
 | `bootstrap` |  | Self-bootstrap via an init container. When enabled, an init container runs `infrastructure init` BEFORE the serve container: it installs the CRDs, CachedResource, and APIExport into the provider workspace. Both containers share ONE kubeconfig (no separately-minted runtime token). |
@@ -129,4 +131,3 @@ helm upgrade --install infrastructure oci://ghcr.io/faroshq/charts/faros-infrast
 | `operator.publishing.insecure` | `false` |  |
 | `operator.publishing.publicScheme` | `https` |  |
 | `operator.publishing.publicPort` | `0` |  |
-

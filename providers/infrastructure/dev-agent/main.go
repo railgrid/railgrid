@@ -8,7 +8,7 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Command faros-dev-agent provides three capability-separated modes for
+// Command faros-dev-agent provides four capability-separated modes for
 // development components. Default mode is the trusted coordinator: it serves
 // authenticated public control on :7070 and execution sessions on :7071,
 // owns workspace sync serialization, and stores durable records only beneath
@@ -39,13 +39,20 @@ You may obtain a copy of the License at
 // container-local TCP health check and exits. This mode is used by the
 // runtime-supervisor and executor Kubernetes exec probes; it intentionally
 // does not load the coordinator configuration or expose a shell.
+// Invoked as `faros-dev-agent --bootstrap-control-token <secret-name>` it
+// performs the one-shot control-Secret GET/merge-patch used by the platform's
+// development token bootstrap Job. It uses only the projected ServiceAccount
+// token and Kubernetes CA, and never starts a listener.
 package main
 
 import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
@@ -58,6 +65,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -81,10 +89,15 @@ const (
 	controlTokenHeader      = "X-Sandbox-Control-Token"
 	agentBinaryName         = "faros-dev-agent"
 
-	previewConsolePluginName = "preview-console-plugin.mjs"
-	previewConsoleJWKSName   = "preview-console-jwks.json"
-	previewConsoleJWKSEnv    = "FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS"
-	workspaceManifestName    = ".faros-workspace-manifest.json"
+	previewConsolePluginName    = "preview-console-plugin.mjs"
+	previewConsoleJWKSName      = "preview-console-jwks.json"
+	previewConsoleJWKSEnv       = "FAROS_PREVIEW_CONSOLE_VERIFICATION_JWKS"
+	workspaceManifestName       = ".faros-workspace-manifest.json"
+	serviceAccountTokenPath     = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	serviceAccountCAPath        = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+	serviceAccountNamespacePath = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+	kubernetesServiceHostEnv    = "KUBERNETES_SERVICE_HOST"
+	kubernetesServicePortEnv    = "KUBERNETES_SERVICE_PORT_HTTPS"
 )
 
 //go:embed preview-console-plugin.mjs
@@ -145,6 +158,12 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) >= 3 && os.Args[1] == "--bootstrap-control-token" {
+		if err := runControlTokenBootstrap(os.Args[2]); err != nil {
+			log.Fatalf("bootstrap control token: %v", err)
+		}
+		return
+	}
 	cfg, err := configFromEnv()
 	if err != nil {
 		log.Fatalf("config: %v", err)
@@ -172,6 +191,193 @@ func main() {
 	if err := runCoordinator(ctx, cfg); err != nil {
 		log.Fatalf("coordinator: %v", err)
 	}
+}
+
+// runControlTokenBootstrap is a deliberately narrow init/Job mode. It uses
+// only the projected ServiceAccount credential to GET and, when needed,
+// merge-patch one named Secret in the current namespace. Keeping this in the
+// scratch dev-agent image avoids shipping a shell or a second mutable utility
+// image in the token bootstrap Job.
+func runControlTokenBootstrap(secretName string) error {
+	secretName = strings.TrimSpace(secretName)
+	if secretName == "" || strings.ContainsAny(secretName, "/\\") {
+		return errors.New("secret name is required and must not contain a slash")
+	}
+	bearer, err := os.ReadFile(serviceAccountTokenPath)
+	if err != nil {
+		return fmt.Errorf("read ServiceAccount token: %w", err)
+	}
+	namespace, err := os.ReadFile(serviceAccountNamespacePath)
+	if err != nil {
+		return fmt.Errorf("read ServiceAccount namespace: %w", err)
+	}
+	caPEM, err := os.ReadFile(serviceAccountCAPath)
+	if err != nil {
+		return fmt.Errorf("read ServiceAccount CA: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		return errors.New("ServiceAccount CA is not a valid certificate")
+	}
+	apiServer, err := kubernetesAPIServerURL()
+	if err != nil {
+		return err
+	}
+	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	return bootstrapControlToken(ctx, client, apiServer, strings.TrimSpace(string(namespace)), secretName, strings.TrimSpace(string(bearer)))
+}
+
+func kubernetesAPIServerURL() (string, error) {
+	host := strings.TrimSpace(os.Getenv(kubernetesServiceHostEnv))
+	port := strings.TrimSpace(os.Getenv(kubernetesServicePortEnv))
+	if port == "" {
+		port = strings.TrimSpace(os.Getenv("KUBERNETES_SERVICE_PORT"))
+	}
+	if host == "" || port == "" {
+		return "", fmt.Errorf("%s and Kubernetes service port are required", kubernetesServiceHostEnv)
+	}
+	return "https://" + net.JoinHostPort(host, port), nil
+}
+
+// bootstrapControlToken is kept independent from the projected-file wiring
+// so its request/patch behavior can be tested without a Kubernetes cluster.
+func bootstrapControlToken(ctx context.Context, client *http.Client, apiServer, namespace, secretName, bearer string) error {
+	if client == nil {
+		return errors.New("HTTP client is required")
+	}
+	if namespace == "" || secretName == "" || bearer == "" {
+		return errors.New("namespace, Secret name, and ServiceAccount token are required")
+	}
+	secretURL := strings.TrimRight(apiServer, "/") + "/api/v1/namespaces/" + url.PathEscape(namespace) + "/secrets/" + url.PathEscape(secretName)
+	get, err := http.NewRequestWithContext(ctx, http.MethodGet, secretURL, nil)
+	if err != nil {
+		return fmt.Errorf("build Secret GET: %w", err)
+	}
+	get.Header.Set("Authorization", "Bearer "+bearer)
+	get.Header.Set("Accept", "application/json")
+	response, err := client.Do(get)
+	if err != nil {
+		return fmt.Errorf("GET control Secret: %w", err)
+	}
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	_ = response.Body.Close()
+	if readErr != nil {
+		return fmt.Errorf("read control Secret response: %w", readErr)
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return kubernetesResponseError("GET control Secret", response, body)
+	}
+	var secret struct {
+		Data      map[string]string `json:"data"`
+		Immutable *bool             `json:"immutable"`
+		Metadata  struct {
+			ResourceVersion string `json:"resourceVersion"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(body, &secret); err != nil {
+		return fmt.Errorf("decode control Secret: %w", err)
+	}
+	if strings.TrimSpace(secret.Data["token"]) != "" {
+		if secret.Immutable != nil && *secret.Immutable {
+			return nil
+		}
+		return patchControlSecret(ctx, client, secretURL, bearer, secret.Metadata.ResourceVersion, map[string]any{
+			"immutable": true,
+		})
+	}
+	if secret.Immutable != nil && *secret.Immutable {
+		return errors.New("control Secret is immutable but has no token")
+	}
+	if strings.TrimSpace(secret.Metadata.ResourceVersion) == "" {
+		return errors.New("control Secret response did not include resourceVersion")
+	}
+	rawToken := make([]byte, 32)
+	if _, err := rand.Read(rawToken); err != nil {
+		return fmt.Errorf("generate control token: %w", err)
+	}
+	token := hex.EncodeToString(rawToken)
+	return patchControlSecret(ctx, client, secretURL, bearer, secret.Metadata.ResourceVersion, map[string]any{
+		"immutable":  true,
+		"stringData": map[string]string{"token": token},
+	})
+}
+
+func patchControlSecret(ctx context.Context, client *http.Client, secretURL, bearer, resourceVersion string, fields map[string]any) error {
+	resourceVersion = strings.TrimSpace(resourceVersion)
+	if resourceVersion == "" {
+		return errors.New("control Secret response did not include resourceVersion")
+	}
+	patchDocument := map[string]any{
+		"metadata": map[string]string{"resourceVersion": resourceVersion},
+	}
+	for key, value := range fields {
+		patchDocument[key] = value
+	}
+	patch, err := json.Marshal(patchDocument)
+	if err != nil {
+		return fmt.Errorf("encode control Secret patch: %w", err)
+	}
+	patchRequest, err := http.NewRequestWithContext(ctx, http.MethodPatch, secretURL, bytes.NewReader(patch))
+	if err != nil {
+		return fmt.Errorf("build control Secret patch: %w", err)
+	}
+	patchRequest.Header.Set("Authorization", "Bearer "+bearer)
+	patchRequest.Header.Set("Accept", "application/json")
+	patchRequest.Header.Set("Content-Type", "application/merge-patch+json")
+	response, err := client.Do(patchRequest)
+	if err != nil {
+		return fmt.Errorf("patch control Secret: %w", err)
+	}
+	body, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	_ = response.Body.Close()
+	if readErr != nil {
+		return fmt.Errorf("read control Secret patch response: %w", readErr)
+	}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return kubernetesResponseError("patch control Secret", response, body)
+	}
+	return nil
+}
+
+// kubernetesResponseError intentionally extracts only the bounded Status
+// reason. Kubernetes Status.message and arbitrary response bodies can contain
+// echoed Secret data, so neither is ever included in a bootstrap error.
+func kubernetesResponseError(operation string, response *http.Response, body []byte) error {
+	status := fmt.Sprintf("HTTP %d", response.StatusCode)
+	if statusText := http.StatusText(response.StatusCode); statusText != "" {
+		status += " " + statusText
+	}
+	var statusObject struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(body, &statusObject); err == nil {
+		reason := strings.TrimSpace(statusObject.Reason)
+		if kubernetesReasonSafe(reason) {
+			return fmt.Errorf("%s: Kubernetes API returned %s (reason %s)", operation, status, reason)
+		}
+	}
+	return fmt.Errorf("%s: Kubernetes API returned %s", operation, status)
+}
+
+func kubernetesReasonSafe(reason string) bool {
+	if reason == "" || len(reason) > 128 {
+		return false
+	}
+	for _, r := range reason {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' && r != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 const healthcheckTimeout = time.Second
@@ -624,11 +830,12 @@ type agentServer struct {
 	logs         *ringLog
 	runtime      runtimeOperations
 	mutationMu   *sync.Mutex
+	checkpoints  map[string]workspaceCheckpoint
 }
 
 func newAgentServer(ctx context.Context, cfg *agentConfig) *agentServer {
 	logs := newRingLog(500)
-	s := &agentServer{config: cfg, actionsState: ensureActionsTokenState(cfg), logs: logs, mutationMu: &sync.Mutex{}}
+	s := &agentServer{config: cfg, actionsState: ensureActionsTokenState(cfg), logs: logs, mutationMu: &sync.Mutex{}, checkpoints: map[string]workspaceCheckpoint{}}
 	s.supervisor = newSupervisor(ctx, cfg, logs)
 	s.runtime = &localRuntime{supervisor: s.supervisor, logs: logs}
 	s.initMux()
@@ -636,7 +843,7 @@ func newAgentServer(ctx context.Context, cfg *agentConfig) *agentServer {
 }
 
 func newCoordinatorServer(cfg *agentConfig, runtime runtimeOperations, mutationMu *sync.Mutex) *agentServer {
-	s := &agentServer{config: cfg, actionsState: ensureActionsTokenState(cfg), runtime: runtime, mutationMu: mutationMu}
+	s := &agentServer{config: cfg, actionsState: ensureActionsTokenState(cfg), runtime: runtime, mutationMu: mutationMu, checkpoints: map[string]workspaceCheckpoint{}}
 	s.initMux()
 	return s
 }
@@ -650,6 +857,7 @@ func (s *agentServer) initMux() {
 	mux.HandleFunc("/env", s.handleEnv)
 	mux.HandleFunc("/logs", s.handleLogs)
 	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/workspace/", s.handleWorkspace)
 	s.mux = mux
 }
 

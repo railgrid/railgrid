@@ -32,6 +32,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"os"
+	"strconv"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -57,6 +59,13 @@ var templateGVR = schema.GroupVersionResource{
 	Resource: "templates",
 }
 
+// SeedTemplatesOptions controls optional platform-owned seed entries. The
+// universal coding sandbox is deliberately opt-in because it executes tenant
+// source and therefore needs an operator-selected, immutable image.
+type SeedTemplatesOptions struct {
+	CodingSandboxEnabled bool
+}
+
 // SeedTemplates upserts every Template YAML baked into install/templates/
 // into the workspace the supplied rest.Config points at. Idempotent —
 // existing Templates are patched in place, ResourceVersion preserved.
@@ -66,6 +75,30 @@ var templateGVR = schema.GroupVersionResource{
 // seed should not block the rest of the init chain (operators can
 // hand-apply later), but we still log loudly.
 func SeedTemplates(ctx context.Context, config *rest.Config) error {
+	enabled, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv("FAROS_CODING_SANDBOX_ENABLED")))
+	if err := validateSeedImageConfig(); err != nil {
+		return err
+	}
+	return SeedTemplatesWithOptions(ctx, config, SeedTemplatesOptions{CodingSandboxEnabled: enabled})
+}
+
+func validateSeedImageConfig() error {
+	enabled, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv("FAROS_CODING_SANDBOX_ENABLED")))
+	if !enabled {
+		return nil
+	}
+	if err := infrav1alpha1.ValidateImmutableImageRef(os.Getenv("FAROS_DEV_IMAGE_UNIVERSAL")); err != nil {
+		return fmt.Errorf("coding sandbox universal image is not immutable: %w", err)
+	}
+	if err := infrav1alpha1.ValidateImmutableImageRef(os.Getenv("FAROS_DEV_AGENT_IMAGE")); err != nil {
+		return fmt.Errorf("coding sandbox dev-agent image is not immutable: %w", err)
+	}
+	return nil
+}
+
+// SeedTemplatesWithOptions is the explicit form used by the operator, whose
+// InfrastructureProvider CR is the source of truth for feature enablement.
+func SeedTemplatesWithOptions(ctx context.Context, config *rest.Config, opts SeedTemplatesOptions) error {
 	log := klog.FromContext(ctx).WithName("install.seedtemplates")
 
 	dyn, err := dynamic.NewForConfig(config)
@@ -83,6 +116,10 @@ func SeedTemplates(ctx context.Context, config *rest.Config) error {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
 		}
+		if !shouldSeedTemplate(strings.TrimSuffix(e.Name(), ".yaml"), opts.CodingSandboxEnabled) {
+			log.Info("skipping disabled platform template", "template", strings.TrimSuffix(e.Name(), ".yaml"))
+			continue
+		}
 		raw, err := fs.ReadFile(seedTemplatesFS, "templates/"+e.Name())
 		if err != nil {
 			return fmt.Errorf("read embedded templates/%s: %w", e.Name(), err)
@@ -94,6 +131,10 @@ func SeedTemplates(ctx context.Context, config *rest.Config) error {
 	}
 	log.Info("seeded Templates", "count", applied)
 	return nil
+}
+
+func shouldSeedTemplate(name string, codingSandboxEnabled bool) bool {
+	return name != infrav1alpha1.UniversalCodingSandboxTemplateName || codingSandboxEnabled
 }
 
 // applyTemplate CREATEs or UPDATEs a single Template from raw YAML.

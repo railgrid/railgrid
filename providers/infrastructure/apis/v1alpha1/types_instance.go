@@ -113,6 +113,12 @@ type InstanceStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// NetworkPhase is the controller-owned runtime network phase. It is
+	// mirrored from the runtime Instance only after the runtime reports Ready;
+	// callers must not use spec.values as an execution-readiness signal.
+	// +optional
+	NetworkPhase string `json:"farosNetworkPhase,omitempty"`
+
 	// Template echoes spec.template as resolved at last reconcile.
 	// +optional
 	Template string `json:"template,omitempty"`

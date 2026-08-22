@@ -214,6 +214,23 @@ External providers cannot plug into the in-tree aggregator at
 This provider therefore runs a standalone MCP server alongside the
 central one.
 
+## Universal coding sandbox
+
+The platform-owned `universal-coding-sandbox` Template is disabled by default:
+it is neither seeded nor admitted until `FAROS_CODING_SANDBOX_ENABLED=true` is
+set by the operator. Enabling it also requires
+`FAROS_DEV_IMAGE_UNIVERSAL` to be a complete immutable
+`name@sha256:<64 lowercase hex digits>` reference, and
+`FAROS_DEV_AGENT_IMAGE` must pin the injected/bootstrap `faros-dev-agent` image
+to the same immutable form. The shipped image recipe is
+`dev-agent/Dockerfile.universal`; it combines Node with Go and Python plus the
+bounded `faros-dev-agent` workspace/exec data plane.
+
+The sandbox is private (no hostname or HTTPRoute), uses a persistent workspace,
+and enforces the 12-hour idle and hard lifetime bounds. Hosted installations
+keep the feature disabled; BYO chart self-hosting values explicitly opt in and
+must provide immutable universal and dev-agent image references.
+
 ## Env vars
 
 | Var | Default | Purpose |
@@ -226,6 +243,9 @@ central one.
 | `FAROS_PROVIDER_KUBECONFIG` | `/var/run/secrets/faros/faros-provider-kubeconfig` | Mounted kcp kubeconfig |
 | `FAROS_TENANT_CREDENTIALS_SECRET` | `cloud-credentials` | Secret name in tenant workspace |
 | `FAROS_TENANT_CREDENTIALS_NAMESPACE` | `default` | Namespace in tenant workspace |
+| `FAROS_CODING_SANDBOX_ENABLED` | `false` | Opts into seeding/admitting the platform-owned universal coding sandbox; enabled deployments require immutable universal and dev-agent images |
+| `FAROS_DEV_IMAGE_UNIVERSAL` | `ghcr.io/faroshq/faros-universal-dev:latest` | Platform-selected Node/Go/Python image token; the coding sandbox gate accepts only a digest-pinned override |
+| `FAROS_DEV_AGENT_IMAGE` | `ghcr.io/faroshq/faros-dev-agent:latest` | Platform-selected injector and control-token bootstrap image; the coding sandbox gate accepts only a digest-pinned override |
 | `FAROS_DEV_ALLOW_TENANT_QUERY` | (unset) | `true` lets `?tenant=` replace `X-Faros-Tenant` (dev only) |
 | `KRO_KUBECONFIG` | (unset → stub mode) | Central kro cluster kubeconfig |
 | `KRO_NAMESPACE_PREFIX` | `faros-tenants-` | Per-tenant namespace prefix |

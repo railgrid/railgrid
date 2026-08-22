@@ -97,7 +97,9 @@ tenantLimitRange:
 # Development-mode images (docs/app-studio-template-sandboxes.md). These run
 # TENANT code, so production deployments should pin them by digest. Empty
 # values fall back to the in-binary defaults (node → docker.io/library/node:22-bookworm,
-# agent → ghcr.io/faroshq/faros-dev-agent:latest).
+# universal → ghcr.io/faroshq/faros-universal-dev:latest,
+# agent → ghcr.io/faroshq/faros-dev-agent:latest). When codingSandbox.enabled
+# is true, both universal and agentImage must be immutable digest references.
 development:
   # The injector image carrying the static faros-dev-agent binary
   # (FAROS_DEV_AGENT_IMAGE).
@@ -114,8 +116,19 @@ development:
   # (other than node) fails setup with a pointer to the missing env var.
   images:
     node: ""
+    # Universal coding sandbox image. Set this to an immutable digest in
+    # production; the platform-owned universal-coding-sandbox Template uses
+    # ${faros.devImage.universal} and tenants cannot select this image.
+    universal: ""
     # python: "docker.io/library/python:3.12-slim"
     # go: "docker.io/library/golang:1.26"
+
+# Platform-owned universal coding sandbox. Disabled by default (including the
+# hosted chart). BYO/self-hosted installs opt in explicitly and must pin both
+# the universal and dev-agent images by digest; the chart fails rendering when
+# either opt-in image is mutable or absent.
+codingSandbox:
+  enabled: false
 
 # Container images are NOT configured here. Templates declare them as schema
 # fields with sane defaults (e.g. the database template's spec.version defaults

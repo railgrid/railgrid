@@ -1,6 +1,6 @@
 .PHONY: sync-portalkit verify-portalkit
 .PHONY: build-access-proxy docker-build-access-proxy
-.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-console-dev-key verify-app-studio-preview-console-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks test-databricks-provider-chart dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
+.PHONY: dev-edge-create dev-run-edge build test lint fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-hub-embedded-graphql run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-console-dev-key verify-app-studio-preview-console-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code build-databricks-provider build-databricks-provider-portal codegen-databricks-provider run-provider-databricks install-provider-databricks init-provider-databricks uninstall-provider-databricks test-databricks-provider-chart dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -1839,6 +1839,8 @@ uninstall-provider-agents: ## Delete the agents CatalogEntry + Provider
 DEV_AGENT_DIR ?= providers/infrastructure/dev-agent
 DEV_AGENT_IMAGE ?= ghcr.io/faroshq/faros-dev-agent:latest
 DEV_AGENT_PLATFORM ?= linux/$(ARCH)
+UNIVERSAL_DEV_IMAGE ?= ghcr.io/faroshq/faros-universal-dev:latest
+UNIVERSAL_DEV_BASE_IMAGE ?= docker.io/library/node:22-bookworm
 
 docker-build-dev-agent: ## Build the faros-dev-agent injector image used by dev-mode components
 	docker build -f $(DEV_AGENT_DIR)/Dockerfile \
@@ -1849,6 +1851,17 @@ docker-build-dev-agent: ## Build the faros-dev-agent injector image used by dev-
 load-dev-agent-image: docker-build-dev-agent ## Load the dev agent image into the local kind runtime cluster
 	@echo ">>> loading $(DEV_AGENT_IMAGE) into kind cluster $(KRO_KIND_NAME)"
 	kind load docker-image $(DEV_AGENT_IMAGE) --name $(KRO_KIND_NAME)
+
+docker-build-universal-dev-image: ## Build the universal coding image; pin UNIVERSAL_DEV_BASE_IMAGE to a digest in production
+	docker build -f $(DEV_AGENT_DIR)/Dockerfile.universal \
+		--platform $(DEV_AGENT_PLATFORM) \
+		--provenance=false \
+		--build-arg BASE_IMAGE=$(UNIVERSAL_DEV_BASE_IMAGE) \
+		-t $(UNIVERSAL_DEV_IMAGE) $(DEV_AGENT_DIR)
+
+load-universal-dev-image: docker-build-universal-dev-image ## Load the universal coding image into the local kind runtime cluster
+	@echo ">>> loading $(UNIVERSAL_DEV_IMAGE) into kind cluster $(KRO_KIND_NAME)"
+	kind load docker-image $(UNIVERSAL_DEV_IMAGE) --name $(KRO_KIND_NAME)
 
 ## Apply the infrastructure CatalogEntry into root:faros:providers. Idempotent.
 ## Requires the hub to be running so the admin kubeconfig exists.

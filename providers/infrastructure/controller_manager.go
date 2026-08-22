@@ -181,8 +181,9 @@ func runTemplateControllerManager(ctx context.Context, config *rest.Config) erro
 	}
 
 	if err := (&template.Reconciler{
-		Client:   mgr.GetClient(),
-		Backends: registry,
+		Client:               mgr.GetClient(),
+		Backends:             registry,
+		CodingSandboxEnabled: codingSandboxEnabled(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("template controller: %w", err)
 	}

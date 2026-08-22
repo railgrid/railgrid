@@ -12,6 +12,7 @@ package kro
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -118,6 +119,8 @@ func devTestTemplate(t *testing.T) *infrav1alpha1.Template {
 func devTestTokens() map[string]string {
 	tokens := testTokens()
 	tokens["${faros.devImage.python}"] = "docker.io/library/python:3.12"
+	tokens[devImageTokenPrefix+"universal}"] = "ghcr.io/example/universal-dev@sha256:" + strings.Repeat("a", 64)
+	tokens[devAgentImageToken] = "ghcr.io/example/dev-agent@sha256:" + strings.Repeat("b", 64)
 	return tokens
 }
 
@@ -384,6 +387,103 @@ func TestDevOverlayGatesProdWorkloadsAndAddsDevVariants(t *testing.T) {
 		if err != nil || !found || value != devActionsSchemaFieldMarker {
 			t.Errorf("RGD schema %s = %q (found=%t err=%v), want %q", field, value, found, err, devActionsSchemaFieldMarker)
 		}
+	}
+}
+
+func TestDevOverlayUniversalControlTokenJobIsRetainedForWarmCache(t *testing.T) {
+	tmpl := devTestTemplate(t)
+	tmpl.Name = infrav1alpha1.UniversalCodingSandboxTemplateName
+
+	first, err := buildRGD(tmpl, devTestTokens())
+	if err != nil {
+		t.Fatalf("build universal RGD: %v", err)
+	}
+	second, err := buildRGD(tmpl, devTestTokens())
+	if err != nil {
+		t.Fatalf("rebuild universal RGD: %v", err)
+	}
+	firstResources := rgdResources(t, first)
+	secondResources := rgdResources(t, second)
+
+	firstSecret := firstResources["farosDevControlSecret"]
+	secondSecret := secondResources["farosDevControlSecret"]
+	if !reflect.DeepEqual(firstSecret, secondSecret) {
+		t.Fatalf("control Secret changed across an equivalent graph rebuild:\nfirst=%v\nsecond=%v", firstSecret, secondSecret)
+	}
+	firstJob := firstResources["farosDevTokenJob"]
+	secondJob := secondResources["farosDevTokenJob"]
+	if !reflect.DeepEqual(firstJob, secondJob) {
+		t.Fatalf("control token Job changed across an equivalent graph rebuild:\nfirst=%v\nsecond=%v", firstJob, secondJob)
+	}
+	jobTemplate, _ := firstJob["template"].(map[string]any)
+	jobSpec, _ := jobTemplate["spec"].(map[string]any)
+	if _, found := jobSpec["ttlSecondsAfterFinished"]; found {
+		t.Fatal("universal coding sandbox token Job has a TTL; a warm cache must retain the completed bootstrap")
+	}
+}
+
+func TestDevOverlayOrdinaryControlTokenJobKeepsShortTTL(t *testing.T) {
+	rgd, err := buildRGD(devTestTemplate(t), devTestTokens())
+	if err != nil {
+		t.Fatalf("build RGD: %v", err)
+	}
+	job := rgdResources(t, rgd)["farosDevTokenJob"]
+	template, _ := job["template"].(map[string]any)
+	spec, _ := template["spec"].(map[string]any)
+	if got := numberValue(spec["ttlSecondsAfterFinished"]); got != 600 {
+		t.Fatalf("ordinary development token Job TTL = %d, want 600", got)
+	}
+}
+
+func TestDevOverlayControlTokenBootstrapIsScopedAndHardened(t *testing.T) {
+	tmpl := devTestTemplate(t)
+	tmpl.Name = infrav1alpha1.UniversalCodingSandboxTemplateName
+	rgd, err := buildRGD(tmpl, devTestTokens())
+	if err != nil {
+		t.Fatalf("build universal RGD: %v", err)
+	}
+	byID := rgdResources(t, rgd)
+
+	job := byID["farosDevTokenJob"]["template"].(map[string]any)
+	spec := job["spec"].(map[string]any)
+	if got := numberValue(spec["activeDeadlineSeconds"]); got <= 0 {
+		t.Fatalf("token Job activeDeadlineSeconds = %d, want positive deadline", got)
+	}
+	jobTemplate := spec["template"].(map[string]any)
+	podSpec := jobTemplate["spec"].(map[string]any)
+	if podSpec["automountServiceAccountToken"] != true || podSpec["restartPolicy"] != "OnFailure" {
+		t.Fatalf("token Job pod spec = %v, want ServiceAccount token and OnFailure", podSpec)
+	}
+	podSecurity := podSpec["securityContext"].(map[string]any)
+	if podSecurity["runAsNonRoot"] != true || numberValue(podSecurity["runAsUser"]) != 1001 || numberValue(podSecurity["runAsGroup"]) != 1001 {
+		t.Fatalf("token Job pod securityContext = %v", podSecurity)
+	}
+	seccomp := podSecurity["seccompProfile"].(map[string]any)
+	if seccomp["type"] != "RuntimeDefault" {
+		t.Fatalf("token Job seccompProfile = %v, want RuntimeDefault", seccomp)
+	}
+	containers := podSpec["containers"].([]any)
+	container := containers[0].(map[string]any)
+	if container["image"] != "ghcr.io/example/dev-agent@sha256:"+strings.Repeat("b", 64) {
+		t.Fatalf("token bootstrap image = %q, want immutable dev-agent image", container["image"])
+	}
+	if got := container["command"]; !reflect.DeepEqual(got, []any{"/faros-dev-agent", "--bootstrap-control-token", "${farosDevControlSecret.metadata.name}"}) {
+		t.Fatalf("token bootstrap command = %v", got)
+	}
+	containerSecurity := container["securityContext"].(map[string]any)
+	if containerSecurity["runAsNonRoot"] != true || numberValue(containerSecurity["runAsUser"]) != 1001 || numberValue(containerSecurity["runAsGroup"]) != 1001 || containerSecurity["allowPrivilegeEscalation"] != false || containerSecurity["readOnlyRootFilesystem"] != true {
+		t.Fatalf("token container securityContext = %v", containerSecurity)
+	}
+	capabilities := containerSecurity["capabilities"].(map[string]any)
+	if !reflect.DeepEqual(capabilities["drop"], []any{"ALL"}) {
+		t.Fatalf("token container capabilities = %v, want drop ALL", capabilities)
+	}
+
+	role := byID["farosDevTokenRole"]["template"].(map[string]any)
+	rules := role["rules"].([]any)
+	rule := rules[0].(map[string]any)
+	if !reflect.DeepEqual(rule["resourceNames"], []any{"${farosDevControlSecret.metadata.name}"}) {
+		t.Fatalf("token Role resourceNames = %v, want exact control Secret", rule["resourceNames"])
 	}
 }
 
@@ -796,6 +896,38 @@ func TestDevOverlayStatusAdditions(t *testing.T) {
 	} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("status mapping lacks %s (got %s)", want, raw)
+		}
+	}
+}
+
+func TestDevOverlayCodingOnlyDisablesProviderActionsAndAutomaticSAToken(t *testing.T) {
+	tmpl := devTestTemplate(t)
+	disabled := false
+	tmpl.Spec.Development.ProviderActions = &disabled
+	rgd, err := buildRGD(tmpl, devTestTokens())
+	if err != nil {
+		t.Fatalf("buildRGD: %v", err)
+	}
+	byID := rgdResources(t, rgd)
+	dep := byID["backendDevDeployment"]["template"].(map[string]any)
+	podSpec, _, _ := nestedMap(dep, "spec", "template", "spec")
+	if podSpec["automountServiceAccountToken"] != false {
+		t.Fatalf("automountServiceAccountToken = %v, want false", podSpec["automountServiceAccountToken"])
+	}
+	containers := podSpec["containers"].([]any)
+	for _, raw := range containers {
+		container := raw.(map[string]any)
+		if _, ok := container["resources"]; !ok {
+			t.Errorf("coding-only container %q has no resource ceiling", container["name"])
+		}
+		if hasTestEnv(container, "FAROS_ACTIONS_BOOTSTRAP_TOKEN_FILE") || hasTestEnv(container, "FAROS_ACTIONS_TOKEN_FILE") {
+			t.Errorf("coding-only container %q received Provider Actions environment", container["name"])
+		}
+		if _, ok := findMount(container, devActionsBootstrapDir); ok {
+			t.Errorf("coding-only container %q mounted bootstrap SA token", container["name"])
+		}
+		if _, ok := findMount(container, devActionsDir); ok {
+			t.Errorf("coding-only container %q mounted action token", container["name"])
 		}
 	}
 }

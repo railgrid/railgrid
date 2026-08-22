@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -156,11 +157,59 @@ func TestStatelessExecutorFailStopsWhenCleanupCannotBeProven(t *testing.T) {
 	}
 }
 
+func TestStatelessExecutorSerializesCommands(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var calls atomic.Int32
+	var active atomic.Int32
+	var maxActive atomic.Int32
+	srv := &statelessExecutor{
+		workspace: t.TempDir(),
+		execute: func(context.Context, string, persistentExecRequest) (execResponse, error) {
+			call := calls.Add(1)
+			current := active.Add(1)
+			for observed := maxActive.Load(); current > observed && !maxActive.CompareAndSwap(observed, current); observed = maxActive.Load() {
+			}
+			defer active.Add(-1)
+			if call == 1 {
+				close(firstStarted)
+				<-releaseFirst
+			}
+			return execResponse{Phase: "completed", ExitCode: 0}, nil
+		},
+	}
+	request := func() *http.Request {
+		return httptest.NewRequest(http.MethodPost, "/internal/exec", strings.NewReader(
+			`{"argv":["/bin/true"],"sourceRevision":1,"sourceDigest":"sha256:test"}`,
+		))
+	}
+	done := make(chan struct{}, 2)
+	for range 2 {
+		go func() {
+			srv.ServeHTTP(httptest.NewRecorder(), request())
+			done <- struct{}{}
+		}()
+		if calls.Load() == 0 {
+			<-firstStarted
+		}
+	}
+	time.Sleep(20 * time.Millisecond)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("concurrent execute calls before release = %d, want 1", got)
+	}
+	close(releaseFirst)
+	<-done
+	<-done
+	if got := maxActive.Load(); got != 1 {
+		t.Fatalf("max concurrent executions = %d, want 1", got)
+	}
+}
+
 func TestPersistentExecVerifiesAppliedRevisionDigestAndSanitizesEnvironment(t *testing.T) {
 	workdir := t.TempDir()
 	srv := newTestAgent(t, &agentConfig{WorkDir: workdir, ControlToken: "test-token"})
 	executor := &statelessExecutor{workspace: workdir}
-	files := []syncFile{{Path: "main.sh", Content: "#!/bin/sh\nprintf '%s\\n' \"$ONLY_EXPLICIT\"\n"}}
+	files := []syncFile{{Path: "main.sh", Content: "#!/bin/sh\nprintf '%s\\n' \"$NPM_CONFIG_CACHE\"\nprintf '%s\\n' \"$ONLY_EXPLICIT\"\nprintf '%s\\n' \"$AWS_SECRET_ACCESS_KEY\"\n"}}
 	digest, err := digestSyncFiles(files)
 	if err != nil {
 		t.Fatal(err)
@@ -169,6 +218,8 @@ func TestPersistentExecVerifiesAppliedRevisionDigestAndSanitizesEnvironment(t *t
 		t.Fatalf("sync status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	t.Setenv("ONLY_EXPLICIT", "must-not-inherit")
+	t.Setenv("NPM_CONFIG_CACHE", "/tmp/caller-selected-cache")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "must-not-inherit")
 	raw, err := json.Marshal(persistentExecRequest{
 		Argv: []string{"/bin/sh", "main.sh"}, WorkDir: ".", SourceRevision: 7, SourceDigest: digest,
 	})
@@ -185,7 +236,7 @@ func TestPersistentExecVerifiesAppliedRevisionDigestAndSanitizesEnvironment(t *t
 	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.ExitCode != 0 || got.Stdout != "\n" || got.SourceRevision != 7 || got.SourceDigest != digest {
+	if got.ExitCode != 0 || got.Stdout != "/tmp/faros-cache/npm\n\n\n" || got.SourceRevision != 7 || got.SourceDigest != digest {
 		t.Fatalf("persistent exec response = %+v", got)
 	}
 
@@ -215,7 +266,7 @@ func TestPersistentExecBoundsOutputAndKillsTimedOutProcess(t *testing.T) {
 		t.Fatalf("sync status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	result, err := runPersistentExec(context.Background(), workdir, persistentExecRequest{
-		Argv: []string{"/bin/sh", "-c", "yes output & yes error >&2"}, WorkDir: ".",
+		Argv: []string{"/bin/sh", "-c", "while :; do printf output; printf error >&2; done"}, WorkDir: ".",
 		TimeoutMS: 30, MaxOutputBytes: 128, SourceRevision: 1, SourceDigest: digest,
 	})
 	if err != nil {

@@ -37,6 +37,9 @@ type BootstrapOptions struct {
 	CatalogEntryFile string
 	// SkipSeedTemplates leaves the catalog empty (GitOps-managed clusters).
 	SkipSeedTemplates bool
+	// CodingSandboxEnabled opts the platform-owned universal coding sandbox
+	// into the embedded catalog seed. It is false by default.
+	CodingSandboxEnabled bool
 }
 
 // Bootstrap runs one idempotent pass of the provider-workspace bootstrap using
@@ -98,7 +101,9 @@ func Bootstrap(ctx context.Context, providerCfg *rest.Config, opts BootstrapOpti
 	}
 
 	if !opts.SkipSeedTemplates {
-		if err := install.SeedTemplates(ctx, providerCfg); err != nil {
+		if err := install.SeedTemplatesWithOptions(ctx, providerCfg, install.SeedTemplatesOptions{
+			CodingSandboxEnabled: opts.CodingSandboxEnabled,
+		}); err != nil {
 			// Non-fatal — the catalog can be managed out-of-band.
 			log.Info("WARNING failed to seed Templates", "err", err.Error())
 		}

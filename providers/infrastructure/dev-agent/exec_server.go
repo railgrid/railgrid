@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -85,6 +86,7 @@ type statelessExecutor struct {
 	workspace string
 	execute   func(context.Context, string, persistentExecRequest) (execResponse, error)
 	exit      func(int)
+	mu        sync.Mutex
 	failed    atomic.Bool
 }
 
@@ -118,6 +120,15 @@ func (s *statelessExecutor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	execute := s.execute
 	if execute == nil {
 		execute = runPersistentExec
+	}
+	// A process baseline is meaningful only when one command owns the executor
+	// namespace at a time. Serialize at the server boundary and recheck fail-stop
+	// state after waiting for a preceding request.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failed.Load() {
+		http.Error(w, "executor is unavailable after an unproven process cleanup", http.StatusServiceUnavailable)
+		return
 	}
 	result, err := execute(r.Context(), s.workspace, req)
 	if err != nil {
@@ -228,6 +239,10 @@ func runPersistentExec(parent context.Context, workspace string, req persistentE
 	if err := enableChildSubreaper(); err != nil {
 		return execResponse{}, fmt.Errorf("enable child subreaper: %w", err)
 	}
+	processBaseline, err := captureExecProcessBaseline()
+	if err != nil {
+		return execResponse{}, fmt.Errorf("capture exec process baseline: %w", err)
+	}
 	if err := cmd.Start(); err != nil {
 		return execResponse{}, fmt.Errorf("start %q: %w", req.Argv[0], err)
 	}
@@ -245,21 +260,25 @@ func runPersistentExec(parent context.Context, workspace string, req persistentE
 	case <-timer.C:
 		response.Phase = "timed_out"
 		response.TimedOut = true
-		_ = cmd.Process.Kill()
-		if err := cleanupExecProcesses(execMarker, 2*time.Second); err != nil {
+		if err := killExecProcessGroup(cmd.Process.Pid); err != nil {
+			return execResponse{}, fmt.Errorf("%w: terminate timed-out command: %v", errExecCleanupUnproven, err)
+		}
+		if err := cleanupExecProcesses(execMarker, processBaseline, 2*time.Second); err != nil {
 			return execResponse{}, err
 		}
 		waitErr = <-waitCh
 	case <-parent.Done():
 		response.Phase = "cancelled"
 		response.Cancelled = true
-		_ = cmd.Process.Kill()
-		if err := cleanupExecProcesses(execMarker, 2*time.Second); err != nil {
+		if err := killExecProcessGroup(cmd.Process.Pid); err != nil {
+			return execResponse{}, fmt.Errorf("%w: terminate cancelled command: %v", errExecCleanupUnproven, err)
+		}
+		if err := cleanupExecProcesses(execMarker, processBaseline, 2*time.Second); err != nil {
 			return execResponse{}, err
 		}
 		waitErr = <-waitCh
 	}
-	if err := cleanupExecProcesses(execMarker, 2*time.Second); err != nil {
+	if err := cleanupExecProcesses(execMarker, processBaseline, 2*time.Second); err != nil {
 		return execResponse{}, err
 	}
 	reapExitedChildren()
@@ -433,11 +452,12 @@ func sanitizedExecEnvironment(workDir string) []string {
 	// network and PID namespace, so deployment-level secret/credential exposure
 	// must be handled by the dev workload itself.
 	values := map[string]string{
-		"HOME":   "/tmp",
-		"LANG":   "C.UTF-8",
-		"PATH":   "/usr/local/go/bin:/go/bin:/usr/local/bin:/usr/bin:/bin",
-		"PWD":    workDir,
-		"TMPDIR": "/tmp",
+		"HOME":             "/tmp",
+		"LANG":             "C.UTF-8",
+		"NPM_CONFIG_CACHE": "/tmp/faros-cache/npm",
+		"PATH":             "/usr/local/go/bin:/go/bin:/usr/local/bin:/usr/bin:/bin",
+		"PWD":              workDir,
+		"TMPDIR":           "/tmp",
 	}
 	keys := make([]string, 0, len(values))
 	for key := range values {

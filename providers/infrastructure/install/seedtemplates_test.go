@@ -20,9 +20,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"io/fs"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 
@@ -88,6 +90,440 @@ func TestSeedTemplatesExcludeOptInTerraformContrib(t *testing.T) {
 		if entry.Name() == "terraform-stack.yaml" || entry.Name() == "terraform-stack-template.yaml" {
 			t.Fatalf("opt-in Terraform contrib fixture must not be embedded as seed %q", entry.Name())
 		}
+	}
+}
+
+func TestSeedTemplatesCodingSandboxIsOptIn(t *testing.T) {
+	if shouldSeedTemplate(infrav1alpha1.UniversalCodingSandboxTemplateName, false) {
+		t.Fatal("disabled coding sandbox must not be seeded")
+	}
+	if !shouldSeedTemplate(infrav1alpha1.UniversalCodingSandboxTemplateName, true) {
+		t.Fatal("enabled coding sandbox must be seeded")
+	}
+	if !shouldSeedTemplate("application", false) {
+		t.Fatal("ordinary templates must remain seeded when coding sandbox is disabled")
+	}
+}
+
+func TestSeedTemplatesRequiresImmutableUniversalImageWhenEnabled(t *testing.T) {
+	t.Setenv("FAROS_CODING_SANDBOX_ENABLED", "true")
+	t.Setenv("FAROS_DEV_IMAGE_UNIVERSAL", "ghcr.io/faroshq/faros-universal-dev:latest")
+	t.Setenv("FAROS_DEV_AGENT_IMAGE", "ghcr.io/faroshq/faros-dev-agent@sha256:"+strings.Repeat("b", 64))
+	if err := validateSeedImageConfig(); err == nil {
+		t.Fatal("expected mutable universal image to be rejected")
+	}
+
+	t.Setenv("FAROS_DEV_IMAGE_UNIVERSAL", "ghcr.io/faroshq/faros-universal-dev@sha256:"+strings.Repeat("a", 64))
+	if err := validateSeedImageConfig(); err != nil {
+		t.Fatalf("valid universal and agent digests rejected: %v", err)
+	}
+
+	t.Setenv("FAROS_DEV_AGENT_IMAGE", "ghcr.io/faroshq/faros-dev-agent:latest")
+	if err := validateSeedImageConfig(); err == nil || !strings.Contains(err.Error(), "dev-agent image") {
+		t.Fatalf("mutable dev-agent image error = %v, want dev-agent validation", err)
+	}
+}
+
+func TestUniversalCodingSandboxContract(t *testing.T) {
+	raw, err := fs.ReadFile(seedTemplatesFS, "templates/universal-coding-sandbox.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tmpl infrav1alpha1.Template
+	if err := utilyaml.UnmarshalStrict(raw, &tmpl); err != nil {
+		t.Fatalf("decode universal coding sandbox: %v", err)
+	}
+	if got, want := tmpl.Name, "universal-coding-sandbox"; got != want {
+		t.Fatalf("name = %q, want %q", got, want)
+	}
+	if got, want := tmpl.Spec.ExposureClass(), infrav1alpha1.ExposureInternal; got != want {
+		t.Fatalf("exposure = %q, want %q", got, want)
+	}
+	if tmpl.Spec.Development == nil || tmpl.Spec.Development.ProviderActions == nil || *tmpl.Spec.Development.ProviderActions {
+		t.Fatal("coding sandbox must explicitly disable Provider Actions token projection")
+	}
+	if got, want := tmpl.Spec.Development.MaxLifetimeSeconds, int64(12*time.Hour/time.Second); got != want {
+		t.Fatalf("coding sandbox max lifetime = %d, want %d", got, want)
+	}
+	if got, want := tmpl.Spec.Development.IdleTimeoutSeconds, int64(12*time.Hour/time.Second); got != want {
+		t.Fatalf("coding sandbox idle timeout = %d, want %d", got, want)
+	}
+	component, ok := tmpl.Spec.Development.Components["workspace"]
+	if !ok || component.DevImage != "${faros.devImage.universal}" || component.WorkspacePath != "." {
+		t.Fatalf("workspace development component = %#v", component)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(tmpl.Spec.Schema.Raw, &schema); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("coding sandbox schema has no properties")
+	}
+	legacyHostname, ok := properties["farosExposureHostname"].(map[string]any)
+	if !ok || legacyHostname["type"] != "string" {
+		t.Fatalf("farosExposureHostname compatibility property = %#v, want optional string", properties["farosExposureHostname"])
+	}
+	if description, _ := legacyHostname["description"].(string); !strings.Contains(description, "Deprecated compatibility field") || !strings.Contains(description, "no hostname or route") {
+		t.Fatalf("farosExposureHostname description = %q, want an internal/deprecated compatibility explanation", description)
+	}
+	if tmpl.Spec.DataPlane == nil {
+		t.Fatal("coding sandbox has no data-plane contract")
+	}
+	dataComponent, ok := tmpl.Spec.DataPlane.Components["workspace"]
+	if !ok {
+		t.Fatal("data plane has no workspace component")
+	}
+	workspaceEndpoint, ok := dataComponent.Endpoints["workspace"]
+	if !ok {
+		t.Fatal("workspace component has no workspace endpoint")
+	}
+	if workspaceEndpoint.ServicePath != "status.components.workspace.controlServiceRef" || workspaceEndpoint.Port != "control" || workspaceEndpoint.UpstreamPath != "/workspace" {
+		t.Fatalf("workspace endpoint = %#v", workspaceEndpoint)
+	}
+	syncEndpoint := dataComponent.Endpoints["sync"]
+	if len(syncEndpoint.Methods) != 1 || syncEndpoint.Methods[0] != "POST" || syncEndpoint.UpstreamPath != "/sync" {
+		t.Fatalf("sync endpoint must preserve POST /sync: %#v", syncEndpoint)
+	}
+	if dataComponent.Exec == nil || dataComponent.Exec.MaxTimeoutSeconds != 120 || dataComponent.Exec.MaxOutputBytes != 262144 {
+		t.Fatalf("exec policy = %#v", dataComponent.Exec)
+	}
+
+	var backend map[string]any
+	if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &backend); err != nil {
+		t.Fatalf("decode backendConfig: %v", err)
+	}
+	resources, ok := backend["resources"].([]any)
+	if !ok || len(resources) != 4 {
+		t.Fatalf("backend resources = %#v, want workload plus three egress policies", backend["resources"])
+	}
+	byID := make(map[string]map[string]any, len(resources))
+	for i, rawResource := range resources {
+		resource, ok := rawResource.(map[string]any)
+		if !ok {
+			t.Fatalf("resource %d = %#v, want object", i, rawResource)
+		}
+		id, ok := resource["id"].(string)
+		if !ok || id == "" {
+			t.Fatalf("resource %d has invalid id: %#v", i, resource["id"])
+		}
+		if _, exists := byID[id]; exists {
+			t.Fatalf("duplicate resource id %q", id)
+		}
+		byID[id] = resource
+	}
+	resource, ok := byID["workspaceDeployment"]
+	if !ok {
+		t.Fatal("workload resource workspaceDeployment is missing")
+	}
+	deployment, ok := resource["template"].(map[string]any)
+	if !ok {
+		t.Fatalf("workload template = %#v, want object", resource["template"])
+	}
+	if deployment["kind"] != "Deployment" {
+		t.Fatalf("workload kind = %#v", deployment["kind"])
+	}
+	if deployment["metadata"].(map[string]any)["annotations"].(map[string]any)["faros.sh/network-access"] != "default-deny-egress" {
+		t.Fatal("workload must carry default-deny egress marker")
+	}
+	podTemplate := deployment["spec"].(map[string]any)["template"].(map[string]any)
+	podSpec := podTemplate["spec"].(map[string]any)
+	if podSpec["automountServiceAccountToken"] != false {
+		t.Fatal("workload must disable automatic ServiceAccount token projection")
+	}
+	if _, found := podSpec["serviceAccountName"]; found {
+		t.Fatal("workload must not select a ServiceAccount")
+	}
+	containers, _ := podSpec["containers"].([]any)
+	if len(containers) != 1 {
+		t.Fatalf("workload containers = %#v", containers)
+	}
+	container, _ := containers[0].(map[string]any)
+	if _, found := container["resources"]; !found {
+		t.Fatal("workload must declare bounded resources")
+	}
+	security, _ := container["securityContext"].(map[string]any)
+	if security["runAsNonRoot"] != true || security["allowPrivilegeEscalation"] != false {
+		t.Fatalf("workload security context = %#v", security)
+	}
+
+	asMap := func(value any, what string) map[string]any {
+		t.Helper()
+		got, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("%s = %#v, want object", what, value)
+		}
+		return got
+	}
+	policy := func(id string) map[string]any {
+		t.Helper()
+		resource, ok := byID[id]
+		if !ok {
+			t.Fatalf("NetworkPolicy resource %q is missing", id)
+		}
+		template := asMap(resource["template"], id+" template")
+		if template["kind"] != "NetworkPolicy" {
+			t.Fatalf("resource %q kind = %#v, want NetworkPolicy", id, template["kind"])
+		}
+		return asMap(template["spec"], id+" spec")
+	}
+	assertIncludeWhen := func(id, want string) {
+		t.Helper()
+		includeWhen, ok := byID[id]["includeWhen"].([]any)
+		if !ok || len(includeWhen) != 1 || includeWhen[0] != want {
+			t.Fatalf("%s includeWhen = %#v, want [%s]", id, byID[id]["includeWhen"], want)
+		}
+	}
+	assertPolicyTypes := func(id string, spec map[string]any) {
+		t.Helper()
+		policyTypes, ok := spec["policyTypes"].([]any)
+		if !ok || len(policyTypes) != 1 || policyTypes[0] != "Egress" {
+			t.Fatalf("%s policyTypes = %#v, want [Egress]", id, spec["policyTypes"])
+		}
+	}
+	assertSelector := func(id string, spec map[string]any, wantPhase string) {
+		t.Helper()
+		selector := asMap(spec["podSelector"], id+" podSelector")
+		labels := asMap(selector["matchLabels"], id+" podSelector.matchLabels")
+		if labels["app"] != "${schema.spec.name}" {
+			t.Fatalf("%s app selector = %#v, want platform name", id, labels["app"])
+		}
+		if wantPhase == "" {
+			if _, found := labels["faros.sh/network-phase"]; found {
+				t.Fatalf("%s selector unexpectedly pins a phase: %#v", id, labels)
+			}
+			return
+		}
+		if labels["faros.sh/network-phase"] != wantPhase {
+			t.Fatalf("%s phase selector = %#v, want %q", id, labels["faros.sh/network-phase"], wantPhase)
+		}
+	}
+	assertPorts := func(id string, raw any, want ...struct {
+		protocol string
+		port     float64
+	}) {
+		t.Helper()
+		ports, ok := raw.([]any)
+		if !ok || len(ports) != len(want) {
+			t.Fatalf("%s ports = %#v, want %v entries", id, raw, len(want))
+		}
+		for i, expected := range want {
+			port := asMap(ports[i], id+" ports entry")
+			if port["protocol"] != expected.protocol || port["port"] != expected.port {
+				t.Fatalf("%s ports[%d] = %#v, want protocol %s port %g", id, i, port, expected.protocol, expected.port)
+			}
+		}
+	}
+
+	defaultDeny := policy("workspaceDefaultDenyEgress")
+	assertIncludeWhen("workspaceDefaultDenyEgress", `${schema.spec.farosMode == "development"}`)
+	assertPolicyTypes("workspaceDefaultDenyEgress", defaultDeny)
+	assertSelector("workspaceDefaultDenyEgress", defaultDeny, "")
+	if _, found := defaultDeny["egress"]; found {
+		t.Fatal("default-deny policy must not grant egress itself")
+	}
+
+	setup := policy("workspaceSetupEgress")
+	assertIncludeWhen("workspaceSetupEgress", `${schema.spec.farosMode == "development" && schema.spec.farosNetworkPhase == "setup"}`)
+	assertPolicyTypes("workspaceSetupEgress", setup)
+	assertSelector("workspaceSetupEgress", setup, "setup")
+	setupEgress, ok := setup["egress"].([]any)
+	if !ok || len(setupEgress) != 2 {
+		t.Fatalf("setup egress = %#v, want the same bounded DNS and public HTTPS rules as runtime", setup["egress"])
+	}
+
+	runtimePolicy := policy("workspaceRuntimeEgress")
+	assertIncludeWhen("workspaceRuntimeEgress", `${schema.spec.farosMode == "development" && schema.spec.farosNetworkPhase == "runtime"}`)
+	assertPolicyTypes("workspaceRuntimeEgress", runtimePolicy)
+	assertSelector("workspaceRuntimeEgress", runtimePolicy, "runtime")
+	runtimeEgress, ok := runtimePolicy["egress"].([]any)
+	if !ok || len(runtimeEgress) != 2 {
+		t.Fatalf("runtime egress = %#v, want DNS and public HTTPS rules", runtimePolicy["egress"])
+	}
+	if !reflect.DeepEqual(setupEgress, runtimeEgress) {
+		t.Fatalf("setup egress = %#v is broader than runtime egress = %#v", setupEgress, runtimeEgress)
+	}
+
+	dnsRule := asMap(runtimeEgress[0], "workspaceRuntimeEgress DNS rule")
+	dnsTargets, ok := dnsRule["to"].([]any)
+	if !ok || len(dnsTargets) != 1 {
+		t.Fatalf("runtime DNS targets = %#v, want one CoreDNS selector", dnsRule["to"])
+	}
+	dnsTarget := asMap(dnsTargets[0], "workspaceRuntimeEgress DNS target")
+	namespaceSelector := asMap(dnsTarget["namespaceSelector"], "runtime DNS namespaceSelector")
+	namespaceLabels := asMap(namespaceSelector["matchLabels"], "runtime DNS namespaceSelector.matchLabels")
+	if namespaceLabels["kubernetes.io/metadata.name"] != "kube-system" {
+		t.Fatalf("runtime DNS namespace selector = %#v, want kube-system", namespaceLabels)
+	}
+	coreDNSSelector := asMap(dnsTarget["podSelector"], "runtime DNS podSelector")
+	coreDNSLabels := asMap(coreDNSSelector["matchLabels"], "runtime DNS podSelector.matchLabels")
+	if coreDNSLabels["k8s-app"] != "kube-dns" {
+		t.Fatalf("runtime DNS pod selector = %#v, want k8s-app=kube-dns", coreDNSLabels)
+	}
+	assertPorts("workspaceRuntimeEgress DNS", dnsRule["ports"],
+		struct {
+			protocol string
+			port     float64
+		}{"UDP", 53},
+		struct {
+			protocol string
+			port     float64
+		}{"TCP", 53},
+	)
+
+	httpsRule := asMap(runtimeEgress[1], "workspaceRuntimeEgress HTTPS rule")
+	httpsTargets, ok := httpsRule["to"].([]any)
+	if !ok || len(httpsTargets) != 1 {
+		t.Fatalf("runtime HTTPS targets = %#v, want one public ipBlock", httpsRule["to"])
+	}
+	httpsTarget := asMap(httpsTargets[0], "workspaceRuntimeEgress HTTPS target")
+	ipBlock := asMap(httpsTarget["ipBlock"], "runtime HTTPS ipBlock")
+	if ipBlock["cidr"] != "0.0.0.0/0" {
+		t.Fatalf("runtime HTTPS cidr = %#v, want 0.0.0.0/0", ipBlock["cidr"])
+	}
+	excepts, ok := ipBlock["except"].([]any)
+	if !ok {
+		t.Fatalf("runtime HTTPS ipBlock except = %#v, want reserved-range exclusions", ipBlock["except"])
+	}
+	wantExcept := map[string]struct{}{
+		"0.0.0.0/8": {}, "10.0.0.0/8": {}, "100.64.0.0/10": {},
+		"127.0.0.0/8": {}, "169.254.0.0/16": {}, "172.16.0.0/12": {},
+		"192.0.0.0/24": {}, "192.0.2.0/24": {}, "192.31.196.0/24": {},
+		"192.52.193.0/24": {}, "192.88.99.0/24": {}, "192.168.0.0/16": {},
+		"192.175.48.0/24": {},
+		"198.18.0.0/15":   {}, "198.51.100.0/24": {}, "203.0.113.0/24": {},
+		"224.0.0.0/4": {}, "240.0.0.0/4": {},
+	}
+	if len(excepts) != len(wantExcept) {
+		t.Fatalf("runtime HTTPS exclusions = %#v, want exactly the public IPv4 boundary", excepts)
+	}
+	for _, rawExcept := range excepts {
+		got, ok := rawExcept.(string)
+		if !ok {
+			t.Fatalf("runtime HTTPS exclusion = %#v, want CIDR string", rawExcept)
+		}
+		if _, found := wantExcept[got]; !found {
+			t.Fatalf("runtime HTTPS has unexpected exclusion %q", got)
+		}
+		delete(wantExcept, got)
+	}
+	if len(wantExcept) != 0 {
+		t.Fatalf("runtime HTTPS is missing exclusions: %v", wantExcept)
+	}
+	assertPorts("workspaceRuntimeEgress HTTPS", httpsRule["ports"], struct {
+		protocol string
+		port     float64
+	}{"TCP", 443})
+}
+
+func TestUniversalCodingSandboxAdmissionRejectsUnsafeVariants(t *testing.T) {
+	raw, err := fs.ReadFile(seedTemplatesFS, "templates/universal-coding-sandbox.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var base infrav1alpha1.Template
+	if err := utilyaml.UnmarshalStrict(raw, &base); err != nil {
+		t.Fatalf("decode universal coding sandbox: %v", err)
+	}
+	if err := infrav1alpha1.ValidateUniversalCodingSandboxTemplate(&base); err != nil {
+		t.Fatalf("valid universal coding sandbox rejected: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*infrav1alpha1.Template)
+	}{
+		{
+			name: "tenant image schema input",
+			mutate: func(tmpl *infrav1alpha1.Template) {
+				var schema map[string]any
+				if err := json.Unmarshal(tmpl.Spec.Schema.Raw, &schema); err != nil {
+					t.Fatalf("decode schema: %v", err)
+				}
+				properties := schema["properties"].(map[string]any)
+				properties["image"] = map[string]any{"type": "string"}
+				tmpl.Spec.Schema.Raw, _ = json.Marshal(schema)
+			},
+		},
+		{
+			name: "schema preserves arbitrary tenant fields",
+			mutate: func(tmpl *infrav1alpha1.Template) {
+				var schema map[string]any
+				if err := json.Unmarshal(tmpl.Spec.Schema.Raw, &schema); err != nil {
+					t.Fatalf("decode schema: %v", err)
+				}
+				// A preserve-unknown schema admits an image (or any other
+				// workload-affecting value) even when the named properties do
+				// not list it. The platform-owned contract must reject this
+				// escape hatch rather than rely on the API server to prune it.
+				schema["x-kubernetes-preserve-unknown-fields"] = true
+				tmpl.Spec.Schema.Raw, _ = json.Marshal(schema)
+			},
+		},
+		{
+			name: "schema accepts arbitrary additional properties",
+			mutate: func(tmpl *infrav1alpha1.Template) {
+				var schema map[string]any
+				if err := json.Unmarshal(tmpl.Spec.Schema.Raw, &schema); err != nil {
+					t.Fatalf("decode schema: %v", err)
+				}
+				schema["additionalProperties"] = true
+				tmpl.Spec.Schema.Raw, _ = json.Marshal(schema)
+			},
+		},
+		{
+			name: "public exposure",
+			mutate: func(tmpl *infrav1alpha1.Template) {
+				tmpl.Spec.Exposure = infrav1alpha1.ExposurePublic
+			},
+		},
+		{
+			name: "component image input",
+			mutate: func(tmpl *infrav1alpha1.Template) {
+				component := tmpl.Spec.Development.Components["workspace"]
+				component.ImageInput = "image"
+				tmpl.Spec.Development.Components["workspace"] = component
+			},
+		},
+		{
+			name: "upgrade endpoint",
+			mutate: func(tmpl *infrav1alpha1.Template) {
+				endpoint := tmpl.Spec.DataPlane.Components["workspace"].Endpoints["workspace"]
+				endpoint.Upgrade = true
+				component := tmpl.Spec.DataPlane.Components["workspace"]
+				component.Endpoints["workspace"] = endpoint
+				tmpl.Spec.DataPlane.Components["workspace"] = component
+			},
+		},
+		{
+			name: "mutable workload image",
+			mutate: func(tmpl *infrav1alpha1.Template) {
+				var backend map[string]any
+				if err := json.Unmarshal(tmpl.Spec.BackendConfig.Raw, &backend); err != nil {
+					t.Fatalf("decode backend: %v", err)
+				}
+				for _, rawResource := range backend["resources"].([]any) {
+					resource := rawResource.(map[string]any)
+					if resource["id"] != "workspaceDeployment" {
+						continue
+					}
+					deployment := resource["template"].(map[string]any)
+					pod := deployment["spec"].(map[string]any)["template"].(map[string]any)
+					container := pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+					container["image"] = "${schema.spec.image}"
+				}
+				tmpl.Spec.BackendConfig.Raw, _ = json.Marshal(backend)
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			variant := base.DeepCopy()
+			tc.mutate(variant)
+			if err := infrav1alpha1.ValidateUniversalCodingSandboxTemplate(variant); err == nil {
+				t.Fatal("unsafe universal coding sandbox variant was accepted")
+			}
+		})
 	}
 }
 

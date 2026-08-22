@@ -65,6 +65,14 @@ type Handler struct {
 	authorizer  ExecAuthorizer
 }
 
+// ActivityRecorder persists an accepted data-plane call on the runtime object
+// that backs an Instance. It is optional so existing in-memory/test Runtime
+// implementations remain valid; the production runtime implements it with a
+// provider-owned status.runtimeRef patch.
+type ActivityRecorder interface {
+	RecordActivity(context.Context, *unstructured.Unstructured) error
+}
+
 // HandlerOption configures optional data-plane capabilities while preserving
 // the original three-argument NewHandler call sites.
 type HandlerOption func(*Handler)
@@ -190,6 +198,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
+	if err := h.recordActivity(r.Context(), instance); err != nil {
+		http.Error(w, "activity marker unavailable: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 
 	// 5a. A status verb is served straight from the instance status — no hop.
 	if target.FromStatus {
@@ -224,6 +236,10 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity,
 	}
 	if h.executor == nil || h.authorizer == nil {
 		http.Error(w, "exec is unavailable on this provider", http.StatusServiceUnavailable)
+		return
+	}
+	if !instanceReadyForExec(instance, templateName) {
+		http.Error(w, "exec is unavailable until the Instance is Ready and network phase is runtime", http.StatusConflict)
 		return
 	}
 	reqBody, idempotencyKey, err := decodeExecRequest(w, r, component.Exec)
@@ -289,6 +305,10 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity,
 		writeExecAuthorizationError(w, err)
 		return
 	}
+	if err := h.recordActivity(r.Context(), instance); err != nil {
+		http.Error(w, "activity marker unavailable: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	call := ExecCall{
 		Workspace:        req.workspace,
 		Resource:         req.resource,
@@ -327,6 +347,107 @@ func (h *Handler) serveExec(w http.ResponseWriter, r *http.Request, id identity,
 	if err := json.NewEncoder(w).Encode(result); err != nil {
 		return
 	}
+}
+
+// instanceReadyForExec is deliberately fail-closed. The controller stamps the
+// platform-owned network phase while the runtime is being bootstrapped and
+// mirrors the runtime's readiness onto the Instance. Exec may only reach the
+// dev-agent after both signals say that the live runtime is ready.
+func instanceReadyForExec(instance *unstructured.Unstructured, templateName string) bool {
+	if instance == nil {
+		return false
+	}
+	generation := instance.GetGeneration()
+	if generation <= 0 {
+		return false
+	}
+	statusObserved, found, err := unstructured.NestedFieldNoCopy(instance.Object, "status", "observedGeneration")
+	if err != nil || !found {
+		return false
+	}
+	observedGeneration, ok := observedGenerationValue(statusObserved)
+	if !ok || observedGeneration != generation {
+		return false
+	}
+	phase, found, err := unstructured.NestedString(instance.Object, "status", "phase")
+	if err != nil || !found || phase != "Ready" {
+		return false
+	}
+	conditions, found, err := unstructured.NestedSlice(instance.Object, "status", "conditions")
+	if err != nil || !found {
+		return false
+	}
+	ready := false
+	for _, raw := range conditions {
+		condition, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if conditionType, _ := condition["type"].(string); conditionType != "Ready" {
+			continue
+		}
+		status, _ := condition["status"].(string)
+		conditionObserved, ok := observedGenerationValue(condition["observedGeneration"])
+		if !ok || conditionObserved != generation {
+			return false
+		}
+		ready = status == "True"
+		break
+	}
+	if !ready {
+		return false
+	}
+	// The platform-owned universal sandbox has a status phase gate that must
+	// be present and runtime. Ordinary development templates predate the
+	// universal network-phase contract; when their controller has not yet
+	// mirrored a phase, preserve their existing Ready-based exec behavior.
+	rawPhase, found, err := unstructured.NestedFieldNoCopy(instance.Object, "status", infrav1alpha1.FarosNetworkPhaseStatusField)
+	if err != nil {
+		return false
+	}
+	if templateName == infrav1alpha1.UniversalCodingSandboxTemplateName {
+		if !found {
+			return false
+		}
+		networkPhase, ok := rawPhase.(string)
+		return ok && networkPhase == infrav1alpha1.FarosNetworkPhaseRuntime
+	}
+	return true
+}
+
+func observedGenerationValue(value any) (int64, bool) {
+	switch value := value.(type) {
+	case int64:
+		return value, true
+	case int32:
+		return int64(value), true
+	case int:
+		return int64(value), true
+	case uint64:
+		if value > uint64(^uint64(0)>>1) {
+			return 0, false
+		}
+		return int64(value), true
+	case uint32:
+		return int64(value), true
+	case uint:
+		return int64(value), true
+	case float64:
+		if value != float64(int64(value)) {
+			return 0, false
+		}
+		return int64(value), true
+	default:
+		return 0, false
+	}
+}
+
+func (h *Handler) recordActivity(ctx context.Context, instance *unstructured.Unstructured) error {
+	recorder, ok := h.runtime.(ActivityRecorder)
+	if !ok {
+		return nil
+	}
+	return recorder.RecordActivity(ctx, instance)
 }
 
 func writeExecAuthorizationError(w http.ResponseWriter, err error) {

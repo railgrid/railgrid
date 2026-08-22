@@ -39,6 +39,23 @@ function templateList(view?: unknown): Response {
   } } } })
 }
 
+function templateListWithPlatformOwned(): Response {
+  return response({ data: { infrastructure_faros_sh: { v1alpha1: {
+    Templates: {
+      items: [
+        {
+          metadata: { name: 'universal-coding-sandbox', labels: { 'faros.sh/platform-owned': 'true' } },
+          spec: { displayName: 'Universal coding sandbox', instanceCRD: { kind: 'Instance' } },
+        },
+        {
+          metadata: { name: 'widget', labels: {} },
+          spec: { displayName: 'Widget', instanceCRD: { kind: 'Widget' } },
+        },
+      ],
+    },
+  } } } })
+}
+
 function instance(overrides: Record<string, unknown> = {}) {
   return {
     apiVersion: 'infrastructure.faros.sh/v1alpha1',
@@ -76,8 +93,33 @@ function instanceYaml(value: unknown): Response {
 afterEach(() => {
   vi.unstubAllGlobals()
 })
-
 describe('stable Instance API lifecycle contract', () => {
+  it('hides platform-owned templates from the catalog but keeps direct lookup available', async () => {
+    setTenant('platform-owned-catalog')
+    setToken('platform-owned-token')
+    const queries: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const { query } = request(init)
+      queries.push(query)
+      if (query.includes('Templates {')) return templateListWithPlatformOwned()
+      if (query.includes('Template(name:')) {
+        return response({ data: { infrastructure_faros_sh: { v1alpha1: {
+          Template: {
+            metadata: { name: 'universal-coding-sandbox' },
+            spec: { displayName: 'Universal coding sandbox', instanceCRD: { kind: 'Instance' } },
+          },
+        } } } })
+      }
+      throw new Error('unexpected query')
+    }))
+
+    await expect(api.listTemplates()).resolves.toMatchObject({ items: [{ name: 'widget' }] })
+    expect(queries.some(query => query.includes('metadata { name labels }'))).toBe(true)
+    await expect(api.getTemplate('universal-coding-sandbox')).resolves.toMatchObject({
+      template: { name: 'universal-coding-sandbox', displayName: 'Universal coding sandbox' },
+    })
+  })
+
   it('lists the stable Instances field with UID/deletion metadata and identities', async () => {
     setTenant('list-contract')
     setToken('list-token')
