@@ -33,6 +33,7 @@ class ProjectsElement extends HTMLElement {
         h(App, {
           ctx: this.state.ctx,
           navigate: (path: string) => this.navigate(path),
+          requestFullBleed: (fullBleed: boolean) => this.requestFullBleed(fullBleed),
         }),
     })
     this.app.mount(this.host)
@@ -49,6 +50,15 @@ class ProjectsElement extends HTMLElement {
     this.dispatchEvent(
       new CustomEvent('faros-navigate', {
         detail: { path },
+        bubbles: true,
+      }),
+    )
+  }
+
+  private requestFullBleed(fullBleed: boolean): void {
+    this.dispatchEvent(
+      new CustomEvent('faros-layout-change', {
+        detail: { fullBleed },
         bubbles: true,
       }),
     )

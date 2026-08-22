@@ -119,7 +119,7 @@ func projectAssistantActionFeedItemFromToolCall(toolCall projectToolCallStreamEv
 		projectAssistantProviderReadTool(toolCall.Name) {
 		item.Diagnostic = projectAssistantActionFeedDiagnosticForTool(toolCall.ID, toolCall.Name, toolCall.Error)
 	}
-	if projectToolBaseName(toolCall.Name) == projectToolInspectDevelopmentPreview {
+	if base := projectToolBaseName(toolCall.Name); base == projectToolInspectDevelopmentPreview || base == projectToolInteractDevelopmentPreview {
 		projectAssistantApplyPreviewInspectionPresentation(&item, toolCall.ID, toolCall.PreviewInspection)
 	}
 	if toolCall.Mutation != nil && projectAssistantWorkspaceMutationTool(toolCall.Name) && !projectAssistantToolDisclosureMinimal {
@@ -147,8 +147,8 @@ func projectAssistantActionFeedItemFromAssistantToolCall(toolCall projectAssista
 		projectAssistantProviderReadTool(toolCall.Name) {
 		item.Diagnostic = projectAssistantActionFeedDiagnosticForTool(toolCall.ID, toolCall.Name, toolCall.Error)
 	}
-	if projectToolBaseName(toolCall.Name) == projectToolInspectDevelopmentPreview {
-		projectAssistantApplyPreviewInspectionPresentation(&item, toolCall.ID, projectAssistantPreviewInspectionActionFromText(string(toolCall.Result)))
+	if base := projectToolBaseName(toolCall.Name); base == projectToolInspectDevelopmentPreview || base == projectToolInteractDevelopmentPreview {
+		projectAssistantApplyPreviewInspectionPresentation(&item, toolCall.ID, projectAssistantPreviewInspectionActionFromToolResult(toolCall.Name, string(toolCall.Result)))
 	}
 	return item
 }
@@ -243,6 +243,9 @@ func presentProjectAssistantAction(id, name, rawStatus, arguments, summary, errT
 	case projectToolInspectDevelopmentPreview:
 		item.Target = projectAssistantActionSafeTarget(projectAssistantActionArgumentField(args, arguments, "path", "path"))
 		item.Title = projectAssistantActionLifecycleTitle(status, "Inspecting development preview", "Inspected development preview", "Preview inspection failed")
+	case projectToolInteractDevelopmentPreview:
+		item.Target = projectAssistantActionSafeTarget(projectAssistantActionArgumentField(args, arguments, "path", "path"))
+		item.Title = projectAssistantActionLifecycleTitle(status, "Interacting with preview", "Interacted with preview", "Preview interaction failed")
 	case projectToolCheckProjectReadiness:
 		item.Title = projectAssistantActionLifecycleTitle(status, "Checking project readiness", "Checked project readiness", "Readiness check failed")
 	case projectToolPrepareProjectDeployment:
@@ -544,7 +547,7 @@ func projectAssistantActionFeedItemKind(name string) string {
 		return projectAssistantActionFeedItemPlan
 	case base == projectToolCheckProjectReadiness || base == projectToolPrepareProjectDeployment ||
 		base == projectToolVerifyDevelopmentRuntime || base == projectToolGetRuntimeStatus ||
-		base == projectToolGetPreviewURL || base == projectToolInspectDevelopmentPreview || base == projectToolGetRuntimeLogs ||
+		base == projectToolGetPreviewURL || base == projectToolInspectDevelopmentPreview || base == projectToolInteractDevelopmentPreview || base == projectToolGetRuntimeLogs ||
 		base == projectToolRestartRuntime || base == projectToolSetRuntimeEnv || base == projectToolExecCommand:
 		return projectAssistantActionFeedItemRun
 	case base == projectToolCommitProjectFiles || base == projectToolCommitFiles:
@@ -651,7 +654,7 @@ func projectAssistantActionFeedGrouping(item *projectAssistantActionFeedItem, ba
 		item.GroupTitle = "Updated files"
 	case projectToolCheckProjectReadiness, projectToolPrepareProjectDeployment,
 		projectToolVerifyDevelopmentRuntime, projectToolGetRuntimeStatus,
-		projectToolGetPreviewURL, projectToolInspectDevelopmentPreview, projectToolGetRuntimeLogs, projectToolRestartRuntime, projectToolExecCommand:
+		projectToolGetPreviewURL, projectToolInspectDevelopmentPreview, projectToolInteractDevelopmentPreview, projectToolGetRuntimeLogs, projectToolRestartRuntime, projectToolExecCommand:
 		item.GroupKey = "run:checks"
 		item.GroupTitle = "Ran checks"
 	}
@@ -774,11 +777,21 @@ func projectAssistantApplyPreviewInspectionPresentation(item *projectAssistantAc
 	if item == nil || preview == nil {
 		return
 	}
+	if preview.Interaction {
+		item.Outcome = projectAssistantPreviewInteractionOutcome(preview)
+	}
 	diagnostic := projectAssistantActionFeedDiagnostic(id, "")
 	diagnostic.Operation = projectToolInspectDevelopmentPreview
+	if preview.Interaction {
+		diagnostic.Operation = projectToolInteractDevelopmentPreview
+	}
 	switch preview.FailureKind {
 	case "assertion":
-		item.Title = "Preview assertions did not match"
+		if preview.Interaction {
+			item.Title = "Preview interaction failed"
+		} else {
+			item.Title = "Preview assertions did not match"
+		}
 		item.Severity = projectAssistantActionFeedSeverityAttention
 		diagnostic.Category = "validation"
 		diagnostic.Code = "preview_assertion_mismatch"
@@ -822,6 +835,26 @@ func projectAssistantApplyPreviewInspectionPresentation(item *projectAssistantAc
 		return
 	}
 	item.Diagnostic = diagnostic
+}
+
+func projectAssistantPreviewInteractionOutcome(preview *projectAssistantPreviewInspectionAction) string {
+	if preview == nil || !preview.Interaction {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	if preview.InteractionStepCount > 0 {
+		applied := min(max(preview.AppliedInteractionStepCount, 0), preview.InteractionStepCount)
+		if applied == preview.InteractionStepCount {
+			parts = append(parts, fmt.Sprintf("%d actions applied", applied))
+		} else {
+			parts = append(parts, fmt.Sprintf("%d/%d actions applied", applied, preview.InteractionStepCount))
+		}
+	}
+	if preview.AssertionCount > 0 {
+		failed := min(max(preview.FailedAssertionCount, 0), preview.AssertionCount)
+		parts = append(parts, fmt.Sprintf("%d/%d assertions matched", preview.AssertionCount-failed, preview.AssertionCount))
+	}
+	return strings.Join(parts, " · ")
 }
 
 func projectAssistantActionFeedMutationDiagnostic(id, name string, mutation *projectAssistantMutation, failure *projectAssistantMutationFailure, rawError string) *projectAssistantActionDiagnostic {

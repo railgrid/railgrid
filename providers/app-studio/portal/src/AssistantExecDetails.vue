@@ -2,7 +2,6 @@
 import { computed } from 'vue'
 import { Check, ExternalLink, Loader2, Terminal, X } from 'lucide-vue-next'
 import {
-  assistantExecStatusPresentation,
   formatAssistantExecCommand,
   formatAssistantExecDuration,
   formatAssistantExecExit,
@@ -24,28 +23,32 @@ const disclosure = computed(() => parseAssistantExecDisclosure(props.exec))
 const command = computed(() => formatAssistantExecCommand(disclosure.value))
 const exitLabel = computed(() => formatAssistantExecExit(disclosure.value))
 const durationLabel = computed(() => formatAssistantExecDuration(disclosure.value?.durationMs))
-const outputLabel = computed(() => disclosure.value?.outputTruncated ? 'Output was truncated to the bounded limit.' : '')
-const activityMetadata = computed(() => {
+const outputLabel = computed(() => disclosure.value?.outputTruncated ? 'Output truncated to the latest bounded lines.' : '')
+const activityOutput = computed(() => {
   const exec = disclosure.value
   if (!exec) return []
-  return [
-    exec.component ? { label: 'Component', value: exec.component } : undefined,
-    { label: 'Relative cwd', value: exec.workdir || '.' },
-    durationLabel.value ? { label: 'Duration', value: durationLabel.value } : undefined,
-    exitLabel.value ? { label: 'Exit status', value: exitLabel.value } : undefined,
-  ].filter((row): row is { label: string; value: string } => Boolean(row))
+  const lines = [...(exec.stdout || [])]
+  if (exec.stderr?.length) {
+    if (lines.length) lines.push('')
+    lines.push(...exec.stderr)
+  }
+  return lines
 })
 const activityStatus = computed(() => {
   const exec = disclosure.value
-  const presentation = assistantExecStatusPresentation(exec)
-  switch (presentation.state) {
-    case 'running': return { label: presentation.label, tone: 'running', icon: Loader2 }
+  switch (exec?.status) {
+    case 'succeeded': return { label: 'Success', tone: 'success', icon: Check }
+    case 'running': return { label: 'Running', tone: 'running', icon: Loader2 }
+    case 'permission_required': return { label: 'Approval required', tone: 'attention', icon: Loader2 }
+    case 'timed_out': return { label: 'Timed out', tone: 'danger', icon: X }
+    case 'canceled':
+    case 'cancelled': return { label: 'Canceled', tone: 'muted', icon: X }
+    case 'blocked': return { label: 'Blocked', tone: 'attention', icon: X }
     case 'failed':
-    case 'timed_out': return { label: presentation.label, tone: 'danger', icon: X }
-    case 'blocked': return { label: presentation.label, tone: 'attention', icon: X }
-    case 'canceled': return { label: presentation.label, tone: 'muted', icon: X }
+    case 'error': return { label: exitLabel.value ? `Failed · ${exitLabel.value}` : 'Failed', tone: 'danger', icon: X }
     default:
-      return { label: 'Success', tone: 'success', icon: Check }
+      if (exec?.exitCode === 0) return { label: 'Success', tone: 'success', icon: Check }
+      return { label: exitLabel.value || 'Completed', tone: 'muted', icon: Check }
   }
 })
 const requestRows = computed(() => {
@@ -95,38 +98,12 @@ const requestRows = computed(() => {
   </div>
 
   <div v-else-if="disclosure" class="mt-1 rounded-lg border border-border-default bg-surface-raised/55 px-3 py-2.5 text-[11px] text-text-secondary">
-    <div class="font-medium text-text-muted">Direct command</div>
+    <div class="font-medium text-text-muted">Shell</div>
     <div v-if="command" class="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-text-secondary">
-      {{ command }}
+      <span class="select-none text-text-muted">$ </span>{{ command }}
     </div>
-
-    <div v-if="disclosure.argv?.length" class="mt-2 min-w-0">
-      <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-text-muted">Sanitized argv</div>
-      <div class="flex flex-wrap gap-1" aria-label="Sanitized argv">
-        <code
-          v-for="(token, index) in disclosure.argv"
-          :key="`${index}-${token}`"
-          class="max-w-full break-all rounded border border-border-subtle bg-surface px-1.5 py-0.5 font-mono text-[11px] text-text-primary"
-        >{{ token }}</code>
-      </div>
-    </div>
-
-    <dl v-if="activityMetadata.length" class="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[10px] text-text-muted">
-      <template v-for="row in activityMetadata" :key="row.label">
-        <dt>{{ row.label }}</dt>
-        <dd class="min-w-0 break-words font-mono text-text-secondary">{{ row.value }}</dd>
-      </template>
-    </dl>
-
-    <section v-if="disclosure.stdout?.length" class="mt-2" aria-label="Standard output">
-      <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-text-muted">stdout</div>
-      <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-text-secondary">{{ disclosure.stdout.join('\n') }}</pre>
-    </section>
-    <section v-if="disclosure.stderr?.length" class="mt-2" aria-label="Standard error">
-      <div class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-danger">stderr</div>
-      <pre class="max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-text-secondary">{{ disclosure.stderr.join('\n') }}</pre>
-    </section>
-    <div v-if="!disclosure.stdout?.length && !disclosure.stderr?.length" class="mt-2 font-mono text-[11px] leading-5 text-text-muted">No output</div>
+    <pre v-if="activityOutput.length" class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-text-secondary">{{ activityOutput.join('\n') }}</pre>
+    <div v-else class="mt-2 font-mono text-[11px] leading-5 text-text-muted">No output</div>
     <div v-if="outputLabel" class="mt-2 text-[11px] text-text-muted">{{ outputLabel }}</div>
     <div v-if="disclosure.detail || disclosure.detailURL" class="mt-2 text-[11px] leading-5 text-text-secondary">
       <span v-if="disclosure.detail">{{ disclosure.detail }}</span>
@@ -142,7 +119,7 @@ const requestRows = computed(() => {
       </a>
     </div>
     <div class="mt-3 flex items-center justify-between gap-3 text-[11px] text-text-muted">
-      <span>{{ [durationLabel, exitLabel].filter(Boolean).join(' · ') }}</span>
+      <span>{{ durationLabel }}</span>
       <span
         class="inline-flex items-center gap-1.5 font-medium"
         :class="{

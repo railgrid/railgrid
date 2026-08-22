@@ -29,6 +29,7 @@ const elementRef = ref<HTMLElement | null>(null)
 // Loading state covers script fetch + customElements.whenDefined.
 const loadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const loadError = ref<string | null>(null)
+const providerFullBleedOverride = ref<boolean | null>(null)
 
 // Each provider's tag is faros-provider-<name>. The hyphen requirement
 // of custom element names matches naturally because provider names are
@@ -49,7 +50,14 @@ const isAppStudioLandingRoute = computed(() =>
   ['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_MODELS_ROUTE].includes(providerRouteSegment.value),
 )
 const isFullBleedProvider = computed(() =>
-  props.providerName === 'app-studio' && !isAppStudioLandingRoute.value,
+  props.providerName === 'app-studio' &&
+  (!isAppStudioLandingRoute.value || providerFullBleedOverride.value === true),
+)
+
+watch(
+  () => [props.providerName, providerRouteSegment.value] as const,
+  () => { providerFullBleedOverride.value = null },
+  { flush: 'sync' },
 )
 
 // On entry resolve OR provider switch, (re)load the script and mount.
@@ -196,9 +204,19 @@ function onNavigate(e: Event) {
   router.push(`/providers/${entry.value.name}/${p.replace(/^\//, '')}`)
 }
 
-onMounted(() => mountRef.value?.addEventListener('faros-navigate', onNavigate))
+function onLayoutChange(e: Event) {
+  if (props.providerName !== 'app-studio') return
+  const fullBleed = (e as CustomEvent<{ fullBleed?: unknown }>).detail?.fullBleed
+  if (typeof fullBleed === 'boolean') providerFullBleedOverride.value = fullBleed
+}
+
+onMounted(() => {
+  mountRef.value?.addEventListener('faros-navigate', onNavigate)
+  mountRef.value?.addEventListener('faros-layout-change', onLayoutChange)
+})
 onBeforeUnmount(() => {
   mountRef.value?.removeEventListener('faros-navigate', onNavigate)
+  mountRef.value?.removeEventListener('faros-layout-change', onLayoutChange)
   // Leave the script + custom element class registered — re-visits are
   // free and the registry can't be unregistered anyway. Just detach.
   if (elementRef.value && mountRef.value?.contains(elementRef.value)) {

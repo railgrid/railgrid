@@ -6,7 +6,6 @@ import {
   ChevronRight,
   CircleAlert,
   CircleHelp,
-  Clipboard,
   FileSearch,
   GitCommitHorizontal,
   Loader2,
@@ -27,9 +26,7 @@ import type { ProjectAssistantActionFeedItem, ProjectAssistantActionKind, Projec
 import AssistantExecDetails from './AssistantExecDetails.vue'
 
 const props = withDefaults(defineProps<{ messageId: string; items: ProjectAssistantActionFeedItem[]; stopping?: boolean }>(), { stopping: false })
-const openDiagnosticID = ref<string | null>(null)
 const openExecID = ref<string | null>(null)
-const copiedDiagnosticID = ref<string | null>(null)
 const manuallyCollapsed = ref(false)
 const userExpanded = ref(false)
 const collapsedGroups = ref<Set<string>>(new Set())
@@ -181,27 +178,6 @@ function kindIcon(kind: ProjectAssistantActionKind) {
   }
 }
 
-async function copyDiagnostic(item: typeof rows.value[number]) {
-  if (!item.diagnostic) return
-  const text = [
-    `category: ${item.diagnostic.category}`,
-    ...(item.diagnostic.code ? [`code: ${item.diagnostic.code}`] : []),
-    ...(item.diagnostic.operation ? [`operation: ${item.diagnostic.operation}`] : []),
-    ...(item.diagnostic.path ? [`path: ${item.diagnostic.path}`] : []),
-    `message: ${item.diagnostic.message}`,
-    ...(item.diagnostic.guidance ? [`guidance: ${item.diagnostic.guidance}`] : []),
-    `referenceID: ${item.diagnostic.referenceID}`,
-  ].join('\n')
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch {
-    return
-  }
-  copiedDiagnosticID.value = item.id
-  window.setTimeout(() => {
-    if (copiedDiagnosticID.value === item.id) copiedDiagnosticID.value = null
-  }, 1_500)
-}
 </script>
 
 <template>
@@ -274,17 +250,6 @@ async function copyDiagnostic(item: typeof rows.value[number]) {
                 <span v-if="item.target" class="min-w-0 truncate font-mono text-[11px] text-text-muted">{{ item.target }}</span>
                 <span v-if="item.outcome" class="ml-auto shrink-0 truncate text-[11px]" :class="isError(item.status, item.severity) ? 'text-danger' : 'text-text-muted'">{{ item.outcome }}</span>
               </template>
-              <button
-                v-if="item.diagnostic"
-                type="button"
-                class="ml-auto inline-flex h-7 shrink-0 items-center gap-1 px-1 text-[11px] font-medium text-text-muted transition hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
-                :aria-expanded="openDiagnosticID === item.id"
-                :aria-controls="`${panelID}-${item.id}-diagnostic`"
-                @click="openDiagnosticID = openDiagnosticID === item.id ? null : item.id"
-              >
-                <CircleAlert class="h-3.5 w-3.5" :stroke-width="1.75" />
-                Details
-              </button>
             </div>
             <div
               v-if="item.exec && openExecID === item.id"
@@ -292,26 +257,6 @@ async function copyDiagnostic(item: typeof rows.value[number]) {
               class="mb-1 ml-5 min-w-0"
             >
               <AssistantExecDetails :exec="item.exec" variant="activity" />
-            </div>
-            <div
-              v-if="item.diagnostic && openDiagnosticID === item.id"
-              :id="`${panelID}-${item.id}-diagnostic`"
-              class="mb-1 ml-5 mt-1 rounded-lg border p-2.5 text-[11px] leading-5 text-text-secondary"
-              :class="item.severity === 'attention' ? 'border-warning/20 bg-warning-subtle/40' : 'border-danger/20 bg-danger-subtle/40'"
-            >
-              <dl class="grid grid-cols-[auto_1fr] gap-x-3">
-                <dt class="font-medium text-text-muted">Category</dt><dd>{{ item.diagnostic.category }}</dd>
-                <template v-if="item.diagnostic.code"><dt class="font-medium text-text-muted">Code</dt><dd class="font-mono">{{ item.diagnostic.code }}</dd></template>
-                <template v-if="item.diagnostic.operation"><dt class="font-medium text-text-muted">Operation</dt><dd class="font-mono">{{ item.diagnostic.operation }}</dd></template>
-                <template v-if="item.diagnostic.path"><dt class="font-medium text-text-muted">Path</dt><dd class="font-mono">{{ item.diagnostic.path }}</dd></template>
-                <dt class="font-medium text-text-muted">Message</dt><dd>{{ item.diagnostic.message }}</dd>
-                <template v-if="item.diagnostic.guidance"><dt class="font-medium text-text-muted">Recovery</dt><dd>{{ item.diagnostic.guidance }}</dd></template>
-                <dt class="font-medium text-text-muted">Reference</dt><dd class="font-mono">{{ item.diagnostic.referenceID }}</dd>
-              </dl>
-              <button type="button" class="mt-1 inline-flex min-h-11 items-center gap-1.5 px-1 text-[11px] font-medium text-text-muted hover:text-text-primary" @click="copyDiagnostic(item)">
-                <Clipboard class="h-3.5 w-3.5" :stroke-width="1.75" />
-                {{ copiedDiagnosticID === item.id ? 'Copied' : 'Copy diagnostic info' }}
-              </button>
             </div>
           </div>
         </div>

@@ -953,6 +953,98 @@ func TestProjectAssistantActionFeedExplainsTypedPreviewFailures(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantActionFeedPresentsPreviewInteractionAsRun(t *testing.T) {
+	for _, tt := range []struct {
+		status string
+		title  string
+	}{
+		{status: "running", title: "Interacting with preview"},
+		{status: "succeeded", title: "Interacted with preview"},
+		{status: "failed", title: "Preview interaction failed"},
+	} {
+		t.Run(tt.status, func(t *testing.T) {
+			item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+				ID:       "interaction-" + tt.status,
+				Name:     projectToolInteractDevelopmentPreview,
+				Status:   tt.status,
+				Sequence: 1,
+			})
+			if item.Kind != projectAssistantActionFeedItemRun || item.Title != tt.title {
+				t.Fatalf("interaction item = %#v, want run/%q", item, tt.title)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantActionFeedSummarizesPreviewInteractionOutcome(t *testing.T) {
+	result := json.RawMessage(`{
+		"status":"failed",
+		"failureKind":"assertion",
+		"summary":"3 of 3 post-interaction assertions did not hold",
+		"snapshot":"hostile rendered page output",
+		"steps":[
+			{"action":"click","applied":true},
+			{"action":"fill","applied":true},
+			{"action":"fill","applied":true},
+			{"action":"click","applied":true}
+		],
+		"assertions":[
+			{"kind":"text_present","passed":false},
+			{"kind":"text_present","passed":false},
+			{"kind":"role_present","passed":false}
+		]
+	}`)
+	item := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
+		ID:     "interaction-assertions",
+		Name:   projectToolInteractDevelopmentPreview,
+		Status: "failed",
+		Result: result,
+	})
+	if item.Kind != projectAssistantActionFeedItemRun || item.Title != "Preview interaction failed" ||
+		item.Outcome != "4 actions applied · 0/3 assertions matched" || item.Severity != projectAssistantActionFeedSeverityAttention {
+		t.Fatalf("interaction item = %#v", item)
+	}
+	if item.Diagnostic == nil || item.Diagnostic.Operation != projectToolInteractDevelopmentPreview ||
+		item.Diagnostic.Code != "preview_assertion_mismatch" || item.Diagnostic.Message != "3 of 3 preview assertions did not match." {
+		t.Fatalf("interaction diagnostic = %#v", item.Diagnostic)
+	}
+	raw, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "hostile rendered page output") {
+		t.Fatalf("interaction action leaked preview output: %s", raw)
+	}
+	live := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+		ID:                "interaction-assertions",
+		Name:              projectToolInteractDevelopmentPreview,
+		Status:            "failed",
+		PreviewInspection: projectAssistantPreviewInspectionActionFromToolResult(projectToolInteractDevelopmentPreview, string(result)),
+		Sequence:          1,
+	})
+	if live.Kind != item.Kind || live.Title != item.Title || live.Outcome != item.Outcome ||
+		live.Diagnostic == nil || live.Diagnostic.Operation != projectToolInteractDevelopmentPreview {
+		t.Fatalf("live interaction item = %#v, want reload-equivalent presentation %#v", live, item)
+	}
+}
+
+func TestProjectAssistantActionFeedSummarizesSuccessfulPreviewInteraction(t *testing.T) {
+	item := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
+		ID:     "interaction-succeeded",
+		Name:   projectToolInteractDevelopmentPreview,
+		Status: "succeeded",
+		Result: json.RawMessage(`{
+			"status":"succeeded",
+			"steps":[{"action":"click","applied":true},{"action":"fill","applied":true}],
+			"assertions":[{"kind":"role_present","passed":true}]
+		}`),
+	})
+	if item.Kind != projectAssistantActionFeedItemRun || item.Title != "Interacted with preview" ||
+		item.Outcome != "2 actions applied · 1/1 assertions matched" || item.Diagnostic != nil {
+		t.Fatalf("successful interaction item = %#v", item)
+	}
+}
+
 func TestProjectAssistantPreviewDiagnosticSurvivesMetadataRoundTripWithoutPageOutput(t *testing.T) {
 	preview := projectAssistantPreviewInspectionResult{
 		Status:      "failed",

@@ -14,11 +14,25 @@ test('uses host catalog chrome on landing routes and keeps project workbenches f
   assert.match(providerFrame, /const APP_STUDIO_CREATE_ROUTE = '~new'/)
   assert.match(providerFrame, /const APP_STUDIO_MODELS_ROUTE = '~models'/)
   assert.match(providerFrame, /props\.providerName === 'app-studio' &&[\s\S]*\['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_MODELS_ROUTE\]\.includes\(providerRouteSegment\.value\)/)
-  assert.match(providerFrame, /props\.providerName === 'app-studio' && !isAppStudioLandingRoute\.value/)
+  assert.match(providerFrame, /props\.providerName === 'app-studio' &&[\s\S]*!isAppStudioLandingRoute\.value \|\| providerFullBleedOverride\.value === true/)
   assert.match(providerFrame, /<header v-if="entry && !isFullBleedProvider"/)
   assert.match(app, /<h2[^>]*>Projects<\/h2>/)
   assert.doesNotMatch(app, />App Studio<\/h1>/)
   assert.doesNotMatch(app, /max-w-\[1600px\]/)
+  assert.match(app, /watch\(\s*isBuilderVisible,[\s\S]*props\.requestFullBleed\?\.\(visible\)[\s\S]*immediate: true, flush: 'sync'/)
+  assert.match(providerFrame, /faros-layout-change/)
+  assert.match(providerFrame, /providerFullBleedOverride\.value === true/)
+})
+
+test('keeps project search and creation controls mounted during the initial list read', () => {
+  const headerStart = app.indexOf('<header v-if="isProjectIndexRoute"')
+  const galleryStart = app.indexOf('<div v-if="(loading || !projectsLoaded)', headerStart)
+  assert.ok(headerStart >= 0 && galleryStart > headerStart)
+  const controls = app.slice(headerStart, galleryStart)
+  assert.match(controls, />\s*New project\s*</)
+  assert.match(controls, /placeholder="Search"/)
+  assert.doesNotMatch(controls, /v-if="projectsLoaded && projects\.length > 0"/)
+  assert.match(controls, /:disabled="loading \|\| !projectsLoaded"/)
 })
 
 test('presents Projects and Models as provider sections without a generic settings action', () => {

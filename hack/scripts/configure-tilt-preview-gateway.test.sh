@@ -154,6 +154,8 @@ export PREVIEW_GATEWAY_STATE_DIR="$state_dir"
 export PREVIEW_GATEWAY_TIMEOUT=1s
 export PREVIEW_GATEWAY_CONTEXT=kind-faros-kro
 export PREVIEW_GATEWAY_HOSTNAME='*.apps.127.0.0.1.sslip.io'
+export PREVIEW_GATEWAY_PORT=10443
+export PREVIEW_GATEWAY_SERVICE_PORT=443
 
 "$script_dir/configure-tilt-preview-gateway.sh" apply
 test -s "$state_dir/tls.crt"
@@ -174,10 +176,22 @@ grep -F 'port: 10443' "$PREVIEW_GATEWAY_TEST_MANIFESTS" >/dev/null
 grep -F 'kind: EnvoyProxy' "$PREVIEW_GATEWAY_TEST_MANIFESTS" >/dev/null
 grep -F 'type: ClusterIP' "$PREVIEW_GATEWAY_TEST_MANIFESTS" >/dev/null
 grep -F 'name: app-studio-preview-proxy' "$PREVIEW_GATEWAY_TEST_MANIFESTS" >/dev/null
+grep -F 'name: https-public-443' "$PREVIEW_GATEWAY_TEST_MANIFESTS" >/dev/null
+grep -F 'port: 443' "$PREVIEW_GATEWAY_TEST_MANIFESTS" >/dev/null
+grep -F 'targetPort: 10443' "$PREVIEW_GATEWAY_TEST_MANIFESTS" >/dev/null
 
 certificate_digest="$(openssl x509 -in "$state_dir/tls.crt" -outform DER | openssl dgst -sha256)"
 "$script_dir/configure-tilt-preview-gateway.sh" apply
 test "$certificate_digest" = "$(openssl x509 -in "$state_dir/tls.crt" -outform DER | openssl dgst -sha256)"
+
+: >"$PREVIEW_GATEWAY_TEST_MANIFESTS"
+export PREVIEW_GATEWAY_SERVICE_PORT=10443
+"$script_dir/configure-tilt-preview-gateway.sh" apply
+if grep -F 'name: https-public-' "$PREVIEW_GATEWAY_TEST_MANIFESTS" >/dev/null; then
+  echo 'same-port configuration unexpectedly rendered a Service alias' >&2
+  exit 1
+fi
+export PREVIEW_GATEWAY_SERVICE_PORT=443
 
 "$script_dir/configure-tilt-preview-gateway.sh" cleanup
 grep -F 'delete gateway app-studio-preview' "$PREVIEW_GATEWAY_TEST_LOG" >/dev/null
@@ -187,6 +201,14 @@ if grep -F 'uninstall envoy-gateway' "$PREVIEW_GATEWAY_TEST_LOG" >/dev/null; the
   echo 'cleanup unexpectedly uninstalled the shared Envoy controller' >&2
   exit 1
 fi
+
+export PREVIEW_GATEWAY_SERVICE_PORT=0
+if "$script_dir/configure-tilt-preview-gateway.sh" apply >"$fake_state/invalid-port.out" 2>&1; then
+  echo 'apply unexpectedly accepted an invalid HTTPS Service port' >&2
+  exit 1
+fi
+grep -F 'invalid HTTPS Service port: 0' "$fake_state/invalid-port.out" >/dev/null
+export PREVIEW_GATEWAY_SERVICE_PORT=443
 
 touch "$PREVIEW_GATEWAY_TEST_RESOURCES/secret"
 export PREVIEW_GATEWAY_TEST_OWNERSHIP='another-owner|shared-gateway'

@@ -26,6 +26,7 @@ Environment:
   PREVIEW_GATEWAY_LISTENER_NAME       listener name (default: https)
   PREVIEW_GATEWAY_TLS_SECRET          TLS Secret name (default: app-studio-preview-tls)
   PREVIEW_GATEWAY_PORT                HTTPS listener port (default: 10443)
+  PREVIEW_GATEWAY_SERVICE_PORT        Client-facing Service port (default: PREVIEW_GATEWAY_PORT)
   PREVIEW_GATEWAY_STATE_DIR           certificate state directory (default: .kcp/tilt-preview-gateway-tls)
   PREVIEW_GATEWAY_TIMEOUT             kubectl/Helm wait timeout (default: 5m)
   PREVIEW_GATEWAY_UNINSTALL           cleanup only: also helm-uninstall (default: false)
@@ -59,6 +60,7 @@ hostname="${PREVIEW_GATEWAY_HOSTNAME:-*.apps.127.0.0.1.sslip.io}"
 listener_name="${PREVIEW_GATEWAY_LISTENER_NAME:-https}"
 tls_secret="${PREVIEW_GATEWAY_TLS_SECRET:-app-studio-preview-tls}"
 gateway_port="${PREVIEW_GATEWAY_PORT:-10443}"
+gateway_service_port="${PREVIEW_GATEWAY_SERVICE_PORT:-$gateway_port}"
 state_dir="${PREVIEW_GATEWAY_STATE_DIR:-.kcp/tilt-preview-gateway-tls}"
 timeout="${PREVIEW_GATEWAY_TIMEOUT:-5m}"
 
@@ -137,6 +139,7 @@ valid_kubernetes_name "$listener_name" || die "invalid listener name: $listener_
 valid_kubernetes_name "$tls_secret" || die "invalid TLS Secret name: $tls_secret"
 valid_hostname "$hostname" || die "expected wildcard DNS hostname, got: $hostname"
 valid_port "$gateway_port" || die "invalid HTTPS listener port: $gateway_port"
+valid_port "$gateway_service_port" || die "invalid HTTPS Service port: $gateway_service_port"
 [[ -n "$kube_context" ]] || die "preview Gateway context must not be empty"
 
 cert_file="${state_dir}/tls.crt"
@@ -298,8 +301,26 @@ assert_owned_or_absent "$namespace" secret "$tls_secret"
 # A plain kind cluster has no LoadBalancer implementation. Make Envoy's data
 # plane Service a ClusterIP: the host only reaches it through Tilt's explicit
 # port-forward, and Envoy Gateway can then publish a real Gateway address
-# instead of leaving Programmed=False with AddressNotAssigned.
+# instead of leaving Programmed=False with AddressNotAssigned. A trusted public
+# proxy may advertise standard HTTPS while Envoy continues listening on the
+# unprivileged development port, so add that client-facing Service alias
+# declaratively when the two ports differ.
 assert_owned_or_absent "$namespace" envoyproxy "$proxy_config"
+envoy_service_patch=""
+if [[ "$gateway_service_port" != "$gateway_port" ]]; then
+  envoy_service_patch="$(cat <<EOF
+        patch:
+          value:
+            spec:
+              ports:
+                - name: https-public-${gateway_service_port}
+                  appProtocol: https
+                  protocol: TCP
+                  port: ${gateway_service_port}
+                  targetPort: ${gateway_port}
+EOF
+)"
+fi
 cat <<EOF | "${kubectl[@]}" apply -f - >/dev/null
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
@@ -315,6 +336,7 @@ spec:
     kubernetes:
       envoyService:
         type: ClusterIP
+${envoy_service_patch}
 EOF
 
 assert_owned_or_absent "$namespace" gateway "$gateway_name"

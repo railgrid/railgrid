@@ -161,6 +161,67 @@ func TestAttachAssistantThreadMessagePresentationRepairsHistoricalItems(t *testi
 	}
 }
 
+func TestAttachAssistantThreadDynamicToolPresentationRepairsHistoricalInteraction(t *testing.T) {
+	ctx := context.Background()
+	memoryStore := store.NewMemoryStore()
+	server := NewWithWorkspace(nil, memoryStore, nil, "", false)
+	scope := store.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "demo", ProjectUID: "project-uid"}
+	runID := "run-interaction"
+	now := time.Now().UTC()
+	if err := memoryStore.SaveAssistantRun(ctx, scope, store.AssistantRun{
+		ID: runID, Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusCompleted,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := `{
+		"status":"failed","failureKind":"assertion",
+		"steps":[{"action":"click","applied":true},{"action":"fill","applied":true}],
+		"assertions":[{"kind":"text_present","passed":false}]
+	}`
+	payload, err := json.Marshal(projectAssistantRunToolResultPayload{
+		Result: result, Disposition: projectAssistantToolDispositionFailed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callID := "interaction-call"
+	if _, err := memoryStore.AppendAssistantRunEvent(ctx, scope, store.AssistantRunEvent{
+		RunID: runID, Sequence: 1, Type: projectAssistantRunToolResultEventType,
+		CallID: callID, ToolName: projectToolInteractDevelopmentPreview, ArgsDigest: "digest", Payload: payload, CreatedAt: now,
+	}, 0); err != nil {
+		t.Fatal(err)
+	}
+	legacyAction := projectAssistantActionFeedItem{
+		ID: projectAssistantActionPublicID(callID), Kind: projectAssistantActionFeedItemOther,
+		Status: projectAssistantActionFeedStatusFailed, Title: "Action failed", Severity: projectAssistantActionFeedSeverityError,
+		Sequence: 21,
+	}
+	legacyData, err := json.Marshal(legacyAction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := server.attachAssistantThreadDynamicToolPresentation(ctx, scope, []assistantThreadItem{{
+		ID: "legacy-action", TurnID: runID, Type: assistantThreadEventDynamicToolCall,
+		Status: "failed", Content: "Action failed", Data: legacyData,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Content != "Preview interaction failed" || items[0].Status != "failed" {
+		t.Fatalf("repaired items = %#v", items)
+	}
+	var repaired projectAssistantActionFeedItem
+	if json.Unmarshal(items[0].Data, &repaired) != nil {
+		t.Fatalf("decode repaired action: %s", items[0].Data)
+	}
+	if repaired.Kind != projectAssistantActionFeedItemRun || repaired.Sequence != legacyAction.Sequence ||
+		repaired.Outcome != "2 actions applied · 0/1 assertions matched" || repaired.Diagnostic == nil ||
+		repaired.Diagnostic.Operation != projectToolInteractDevelopmentPreview {
+		t.Fatalf("repaired action = %#v", repaired)
+	}
+}
+
 func TestAssistantThreadTerminalEventDoesNotEndStreamForNewerTurn(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	server := NewWithWorkspace(nil, memoryStore, nil, "", false)

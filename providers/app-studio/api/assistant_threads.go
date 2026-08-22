@@ -273,12 +273,104 @@ func (s *Server) listProjectAssistantThreadItems(w http.ResponseWriter, r *http.
 		s.writeAssistantThreadError(w, err)
 		return
 	}
-	items, err := s.attachAssistantThreadMessagePresentation(r.Context(), scope, materializeAssistantThreadItems(events))
+	items, err := s.attachAssistantThreadDynamicToolPresentation(r.Context(), scope, materializeAssistantThreadItems(events))
+	if err != nil {
+		s.writeAssistantThreadError(w, err)
+		return
+	}
+	items, err = s.attachAssistantThreadMessagePresentation(r.Context(), scope, items)
 	if err != nil {
 		s.writeAssistantThreadError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// attachAssistantThreadDynamicToolPresentation repairs generic historical
+// interaction items from the run ledger at read time. Older mirrors persisted
+// interact_development_preview as an opaque "Action failed" item because the
+// action feed did not classify that tool. The ledger already contains the
+// bounded result needed to rebuild its product-facing presentation, so no
+// historical thread event or untrusted page output needs to be rewritten.
+func (s *Server) attachAssistantThreadDynamicToolPresentation(ctx context.Context, scope store.Scope, items []assistantThreadItem) ([]assistantThreadItem, error) {
+	type wantedAction struct {
+		index    int
+		sequence int
+	}
+	wantedByRun := map[string]map[string][]wantedAction{}
+	for index := range items {
+		item := items[index]
+		if item.Type != assistantThreadEventDynamicToolCall || strings.TrimSpace(item.TurnID) == "" {
+			continue
+		}
+		var action projectAssistantActionFeedItem
+		if json.Unmarshal(item.Data, &action) != nil || action.Kind != projectAssistantActionFeedItemOther || strings.TrimSpace(action.ID) == "" {
+			continue
+		}
+		if wantedByRun[item.TurnID] == nil {
+			wantedByRun[item.TurnID] = map[string][]wantedAction{}
+		}
+		wantedByRun[item.TurnID][action.ID] = append(wantedByRun[item.TurnID][action.ID], wantedAction{index: index, sequence: action.Sequence})
+	}
+	for runID, wanted := range wantedByRun {
+		after := int64(0)
+		for len(wanted) > 0 {
+			events, err := s.store.ListAssistantRunEvents(ctx, scope, runID, after, projectAssistantRunEventPageSize)
+			if errors.Is(err, store.ErrAssistantRunNotFound) {
+				break
+			}
+			if err != nil {
+				return nil, fmt.Errorf("repair assistant thread action presentation: %w", err)
+			}
+			for _, event := range events {
+				if event.Type != projectAssistantRunToolResultEventType || projectToolBaseName(event.ToolName) != projectToolInteractDevelopmentPreview {
+					continue
+				}
+				publicID := projectAssistantActionPublicID(event.CallID)
+				targets := wanted[publicID]
+				if len(targets) == 0 {
+					continue
+				}
+				var outcome projectAssistantRunToolResultPayload
+				if json.Unmarshal(event.Payload, &outcome) != nil {
+					continue
+				}
+				status := "succeeded"
+				if outcome.Canceled {
+					status = "canceled"
+				} else if outcome.Failed || outcome.Disposition == projectAssistantToolDispositionFailed {
+					status = "failed"
+				}
+				action := projectAssistantActionFeedItemFromAssistantToolCall(projectAssistantToolCall{
+					ID: event.CallID, Name: event.ToolName, Status: status,
+					Result: json.RawMessage(outcome.Result), Error: outcome.Error,
+				})
+				for _, target := range targets {
+					action.Sequence = target.sequence
+					data, marshalErr := json.Marshal(action)
+					if marshalErr != nil {
+						return nil, fmt.Errorf("encode repaired assistant thread action: %w", marshalErr)
+					}
+					items[target.index].Content = action.Title
+					items[target.index].Data = data
+					switch action.Status {
+					case projectAssistantActionFeedStatusFailed, projectAssistantActionFeedStatusRejected:
+						items[target.index].Status = "failed"
+					case projectAssistantActionFeedStatusRunning, projectAssistantActionFeedStatusWaiting:
+						items[target.index].Status = "in_progress"
+					default:
+						items[target.index].Status = "completed"
+					}
+				}
+				delete(wanted, publicID)
+			}
+			if len(events) < projectAssistantRunEventPageSize {
+				break
+			}
+			after = events[len(events)-1].Sequence
+		}
+	}
+	return items, nil
 }
 
 func (s *Server) startProjectAssistantThreadTurn(w http.ResponseWriter, r *http.Request) {

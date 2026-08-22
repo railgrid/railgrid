@@ -112,9 +112,12 @@ type projectAssistantPreviewInspectionResult struct {
 // console output, network URLs, titles, and assertion text are deliberately
 // excluded because preview content is untrusted application data.
 type projectAssistantPreviewInspectionAction struct {
-	FailureKind          string `json:"failureKind,omitempty"`
-	AssertionCount       int    `json:"assertionCount,omitempty"`
-	FailedAssertionCount int    `json:"failedAssertionCount,omitempty"`
+	FailureKind                 string `json:"failureKind,omitempty"`
+	AssertionCount              int    `json:"assertionCount,omitempty"`
+	FailedAssertionCount        int    `json:"failedAssertionCount,omitempty"`
+	Interaction                 bool   `json:"interaction,omitempty"`
+	InteractionStepCount        int    `json:"interactionStepCount,omitempty"`
+	AppliedInteractionStepCount int    `json:"appliedInteractionStepCount,omitempty"`
 }
 
 func projectAssistantPreviewInspectionActionFromResult(result projectAssistantPreviewInspectionResult) *projectAssistantPreviewInspectionAction {
@@ -146,10 +149,34 @@ func projectAssistantPreviewInspectionActionFromText(raw string) *projectAssista
 }
 
 func projectAssistantPreviewInspectionActionFromToolResult(name, raw string) *projectAssistantPreviewInspectionAction {
-	switch projectToolBaseName(name) {
-	case projectToolInspectDevelopmentPreview, projectToolInteractDevelopmentPreview:
-	default:
+	base := projectToolBaseName(name)
+	if base != projectToolInspectDevelopmentPreview && base != projectToolInteractDevelopmentPreview {
 		return nil
+	}
+	if base == projectToolInteractDevelopmentPreview {
+		var result projectAssistantPreviewInteractionResult
+		if json.Unmarshal([]byte(strings.TrimSpace(raw)), &result) != nil {
+			return nil
+		}
+		action := projectAssistantPreviewInspectionActionFromResult(result.projectAssistantPreviewInspectionResult)
+		if action == nil {
+			action = &projectAssistantPreviewInspectionAction{}
+		}
+		action.Interaction = true
+		action.AssertionCount = len(result.Assertions)
+		action.FailedAssertionCount = 0
+		for _, assertion := range result.Assertions {
+			if !assertion.Passed {
+				action.FailedAssertionCount++
+			}
+		}
+		action.InteractionStepCount = len(result.Steps)
+		for _, step := range result.Steps {
+			if step.Applied {
+				action.AppliedInteractionStepCount++
+			}
+		}
+		return action
 	}
 	return projectAssistantPreviewInspectionActionFromText(raw)
 }

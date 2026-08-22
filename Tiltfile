@@ -4,6 +4,26 @@
 
 trigger_mode(TRIGGER_MODE_AUTO)
 
+# Public URL overrides keep the default sslip.io local loop intact while
+# allowing a developer to put trusted DNS/TLS in front of the same dynamic
+# virtual-host routing. The public app port may be explicitly empty when the
+# external endpoint uses the normal HTTPS port.
+faros_hub_external_url = os.getenv('FAROS_HUB_EXTERNAL_URL', 'https://localhost:9443')
+preview_app_base_domain = os.getenv('FAROS_APP_BASE_DOMAIN', 'apps.127.0.0.1.sslip.io')
+preview_gateway_port = os.getenv('PREVIEW_GATEWAY_PORT', '10443')
+preview_app_public_port = os.getenv('FAROS_APP_PUBLIC_PORT', preview_gateway_port)
+preview_app_public_port_suffix = (':' + preview_app_public_port) if preview_app_public_port else ''
+preview_app_frame_source = 'https://*.' + preview_app_base_domain + preview_app_public_port_suffix
+preview_hub_public_url = os.getenv(
+    'FAROS_ACCESS_HUB_PUBLIC_URL',
+    'https://console.127.0.0.1.sslip.io:9443',
+)
+preview_hub_public_host = preview_hub_public_url.replace('https://', '').replace('http://', '').split('/')[0].split(':')[0]
+# CoreDNS sends browser-worker traffic directly to Envoy's ClusterIP. Expose
+# the port advertised in app URLs there even when the internal listener and
+# host port-forward stay on an unprivileged development port.
+preview_gateway_service_port = preview_app_public_port or '443'
+
 # ---------------------------------------------------------------------------
 # portal — Vue.js SPA dev server on :3000
 # ---------------------------------------------------------------------------
@@ -29,10 +49,10 @@ local_resource(
 make certs && \
 go build -o bin/faros-hub ./cmd/faros-hub
 ''',
-    serve_cmd='''./bin/faros-hub \
+    serve_cmd=('''./bin/faros-hub \
   --serving-cert-file=certs/apiserver.crt \
   --serving-key-file=certs/apiserver.key \
-  --hub-external-url=https://localhost:9443 \
+  --hub-external-url=%s \
   --dev-mode -v 4 \
   --static-auth-token=dev-token \
   --static-auth-token=dev-token2 \
@@ -46,11 +66,15 @@ go build -o bin/faros-hub ./cmd/faros-hub
   --graphql-grpc-addr=localhost:50051 \
   --graphql-playground \
   --portal-dev-url=http://localhost:3000 \
-  --portal-frame-source=https://*.apps.127.0.0.1.sslip.io:10443 \
-  --published-apps-domain=apps.127.0.0.1.sslip.io \
+  --portal-frame-source=%s \
+  --published-apps-domain=%s \
   --kubeconfig=.faros-kro.kubeconfig \
   --hub-internal-url=https://host.docker.internal:9443
-''',
+''' % (
+        faros_hub_external_url,
+        preview_app_frame_source,
+        preview_app_base_domain,
+    )),
     deps=[
         'cmd/faros-hub',
         'pkg',
@@ -112,10 +136,6 @@ go build -o bin/faros-hub ./cmd/faros-hub
 
 preview_gateway_name = 'app-studio-preview'
 preview_gateway_namespace = 'envoy-gateway-system'
-preview_app_base_domain = 'apps.127.0.0.1.sslip.io'
-preview_app_public_port = '10443'
-preview_hub_public_url = 'https://console.127.0.0.1.sslip.io:9443'
-preview_hub_public_host = 'console.127.0.0.1.sslip.io'
 preview_kro_kubeconfig = '.faros-kro.kubeconfig'
 preview_kro_context = 'kind-faros-kro'
 preview_kro_node = 'faros-kro-control-plane'
@@ -658,8 +678,14 @@ local_resource(
 # wait for the Gateway, TLS secret, and Envoy Gateway controller together.
 local_resource(
     'preview-gateway-up',
-    cmd=('PREVIEW_GATEWAY_CONTEXT=%s make dev-preview-gateway-up' %
-         preview_kro_context),
+    cmd=(('PREVIEW_GATEWAY_CONTEXT=%s PREVIEW_GATEWAY_HOSTNAME="*.%s" ' +
+          'PREVIEW_GATEWAY_PORT=%s PREVIEW_GATEWAY_SERVICE_PORT=%s ' +
+          'make dev-preview-gateway-up') % (
+             preview_kro_context,
+             preview_app_base_domain,
+             preview_gateway_port,
+             preview_gateway_service_port,
+         )),
     deps=[
         'Makefile',
         'hack/scripts/configure-tilt-preview-gateway.sh',
@@ -669,12 +695,11 @@ local_resource(
     labels=['providers-kro'],
 )
 
-# The public preview hostname deliberately resolves to 127.0.0.1 so a host
-# browser reaches the port-forward below. The App Studio browser worker runs
-# inside faros-kro, where that same answer would point Chromium back at its own
-# pod and fail with ERR_CONNECTION_REFUSED. Override only the preview wildcard
-# inside this kind cluster so browser inspection and screenshots take the same
-# route as other in-cluster clients: directly to the Envoy Gateway Service.
+# With the default sslip.io domain, the public preview hostname resolves to
+# 127.0.0.1 so a host browser reaches the port-forward below. For any configured
+# public domain, the browser worker still needs an in-cluster route that avoids
+# leaving the cluster. Override the preview wildcard inside kind so inspection
+# and screenshots reach the Envoy Gateway Service directly in either mode.
 local_resource(
     'app-studio-preview-dns',
     cmd='''
@@ -1003,17 +1028,17 @@ done
         preview_app_base_domain,
         preview_gateway_namespace,
         preview_gateway_namespace,
-        preview_app_public_port,
-        preview_app_public_port,
-        preview_app_public_port,
-        preview_app_public_port,
+        preview_gateway_port,
+        preview_gateway_port,
+        preview_gateway_port,
+        preview_gateway_port,
         preview_gateway_namespace,
     ),
     resource_deps=['preview-gateway-up'],
     readiness_probe=probe(
         period_secs=2,
         timeout_secs=1,
-        tcp_socket=tcp_socket_action(port=int(preview_app_public_port)),
+        tcp_socket=tcp_socket_action(port=int(preview_gateway_port)),
     ),
     labels=['providers-app-studio'],
 )

@@ -61,7 +61,7 @@ test('renders exec_command as the same compact action row with details collapsed
   assert.doesNotMatch(html, /bg-surface-raised\/70 p-2\.5/)
 })
 
-test('keeps exec mechanics distinct and accessible inside the click-only expansion', async () => {
+test('keeps the studio-sandbox shell disclosure inside the click-only expansion', async () => {
   const { default: AssistantExecDetails } = await vite.ssrLoadModule('/src/AssistantExecDetails.vue')
   const html = await renderToString(createSSRApp(AssistantExecDetails, {
     variant: 'activity',
@@ -76,20 +76,13 @@ test('keeps exec mechanics distinct and accessible inside the click-only expansi
       stderr: ['COMMAND_WARNING'],
     },
   }))
-  assert.match(html, /Direct command/)
-  assert.match(html, />go test \.\/\.\.\.<\/div>/)
-  assert.doesNotMatch(html, /Shell|\$ /)
-  assert.match(html, /Sanitized argv/)
-  assert.match(html, /Relative cwd/)
-  assert.match(html, /backend/)
-  assert.match(html, /Duration/)
+  assert.match(html, /Shell/)
+  assert.match(html, /\$ <\/span>go test \.\/\.\.\./)
   assert.match(html, /1\.3 s/)
-  assert.match(html, /Exit status/)
-  assert.match(html, /exit 1/)
-  assert.match(html, /aria-label="Standard output"/)
-  assert.match(html, /aria-label="Standard error"/)
   assert.match(html, /COMMAND_OUTPUT/)
   assert.match(html, /COMMAND_WARNING/)
+  assert.match(html, /Failed · exit 1/)
+  assert.doesNotMatch(html, /Direct command|Sanitized argv|Relative cwd|Exit status|stdout|stderr|backend/)
 })
 
 test('uses nested exec state labels and keeps each disclosure collapsed by default', async () => {
@@ -119,10 +112,10 @@ test('uses nested exec state labels and keeps each disclosure collapsed by defau
     assert.match(html, new RegExp(`${label} npm run ${id}`))
     assert.match(html, new RegExp(`aria-expanded="false"[^>]+aria-controls="app-studio-assistant-actions-assistant-exec-states-exec-${id}-exec"`))
   }
-  assert.doesNotMatch(html, /Direct command|stdout|stderr/)
+  assert.doesNotMatch(html, /Shell|Direct command|stdout|stderr/)
 })
 
-test('renders only allowlisted structured failure diagnostics', async () => {
+test('keeps structured failure diagnostics out of the user-visible action history', async () => {
   const { default: AssistantActionLog } = await vite.ssrLoadModule('/src/AssistantActionLog.vue')
   const html = await renderToString(createSSRApp(AssistantActionLog, {
     messageId: 'assistant-2',
@@ -136,15 +129,14 @@ test('renders only allowlisted structured failure diagnostics', async () => {
       diagnostic: { category: 'timeout', message: 'Preview readiness timed out.', referenceID: 'run-2' },
     }],
   }))
-  assert.match(html, /Details/)
   assert.match(html, /aria-expanded="true"/)
   assert.match(html, /text-danger/)
   assert.match(html, /max-h-\[min\(40vh,320px\)\]/)
   assert.match(html, /overflow-auto/)
   assert.match(html, /Failed:/)
-  assert.match(html, /aria-controls="app-studio-assistant-actions-assistant-2-failed-1-diagnostic"/)
-  assert.match(html, /inline-flex h-7[^>]*aria-expanded="false"[^>]*failed-1-diagnostic/)
-  assert.doesNotMatch(html, /rawError|arguments/)
+  assert.match(html, /Preview check failed/)
+  assert.match(html, /Development server did not become ready/)
+  assert.doesNotMatch(html, /Details|Preview readiness timed out|run-2|failed-1-diagnostic|Copy diagnostic info|rawError|arguments/)
 })
 
 test('renders preview assertion mismatches as attention rather than runtime errors', async () => {

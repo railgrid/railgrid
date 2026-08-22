@@ -287,7 +287,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	out := make([]ProjectView, 0, len(list.Items))
 	for i := range list.Items {
 		project := &list.Items[i]
-		out = append(out, s.projectViewWithThumbnail(r.Context(), projectView(r.Context(), c, project, id), id, project))
+		out = append(out, s.projectListView(r.Context(), c, project, id))
 	}
 	writeJSON(w, http.StatusOK, ListResponse[ProjectView]{Items: out})
 }
@@ -1640,6 +1640,15 @@ func (s *Server) projectViewWithSourceRevision(ctx context.Context, c *asclient.
 		view.SourceRevision = revision
 	}
 	return view
+}
+
+// projectListView includes the workspace revision before thumbnail
+// reconciliation. The capture scheduler uses that revision to prove the
+// development runtime is serving the exact committed source shown by the
+// gallery image.
+func (s *Server) projectListView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) ProjectView {
+	view := s.projectViewWithSourceRevision(ctx, c, p, id)
+	return s.projectViewWithThumbnail(ctx, view, id, p)
 }
 
 func projectEnvironmentViews(p *aiv1alpha1.Project) []ProjectEnvironmentView {

@@ -264,6 +264,7 @@ import type {
 const props = defineProps<{
   ctx: FarosContext | null
   navigate: (path: string) => void
+  requestFullBleed?: (fullBleed: boolean) => void
 }>()
 
 interface ProjectRequestGuard {
@@ -1207,6 +1208,11 @@ const conversationLoading = computed(() => projectRouteLoading.value || threadHi
 const conversationInteractionBusy = computed(() => conversationLoading.value || conversationRefreshing.value || projectRouteFailure.value)
 const isBuilderVisible = computed(() =>
   !isAppStudioLandingRoute.value || (!isModelsRoute.value && selected.value !== null),
+)
+watch(
+  isBuilderVisible,
+  (visible) => props.requestFullBleed?.(visible),
+  { immediate: true, flush: 'sync' },
 )
 const showNewProjectComposer = computed(() => isCreateRoute.value)
 const chatPaneStyle = computed(() => ({ flexBasis: `${splitWidth.value}%` }))
@@ -6649,7 +6655,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         <h2 class="truncate text-[14px] font-medium text-text-primary">Projects</h2>
         <div class="flex shrink-0 items-center gap-2">
           <button
-            v-if="projectsLoaded && projects.length > 0"
             type="button"
             class="flex h-9 items-center gap-2 rounded-md border border-accent bg-accent px-3 text-[13px] font-semibold text-white shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
             :disabled="busy"
@@ -6662,13 +6667,15 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       </header>
 
       <section v-if="isProjectIndexRoute" class="pb-6">
-        <div v-if="projectsLoaded && projects.length > 0" class="mb-4 flex flex-wrap items-center gap-3">
+        <div class="mb-4 flex flex-wrap items-center gap-3">
           <div class="relative w-full max-w-[260px]">
             <Search class="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
             <input
               v-model="projectQuery"
               class="h-9 w-full rounded-md border border-border-subtle bg-surface-raised py-1.5 pl-8 pr-8 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
               placeholder="Search"
+              :disabled="loading || !projectsLoaded"
+              :aria-busy="loading || !projectsLoaded"
             />
             <button
               v-if="projectQuery"
@@ -6679,8 +6686,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <X class="h-3.5 w-3.5" :stroke-width="1.75" />
             </button>
           </div>
-          <div class="rounded-md border border-border-subtle bg-surface-raised px-3 py-2 text-[12px] font-medium text-text-muted">
-            {{ projects.length }} {{ projects.length === 1 ? 'project' : 'projects' }}
+          <div class="min-w-[92px] rounded-md border border-border-subtle bg-surface-raised px-3 py-2 text-center text-[12px] font-medium text-text-muted" aria-live="polite">
+            <template v-if="projectsLoaded">
+              {{ projects.length }} {{ projects.length === 1 ? 'project' : 'projects' }}
+            </template>
+            <span v-else>Loading…</span>
           </div>
         </div>
 

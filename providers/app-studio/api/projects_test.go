@@ -58,7 +58,7 @@ func TestWriteProjectErrorMapsPreflightOutageToRetryableBadGateway(t *testing.T)
 	}
 }
 
-func TestProjectViewWithSourceRevisionPreservesWorkspaceFence(t *testing.T) {
+func TestProjectListViewPreservesWorkspaceFenceForThumbnailCapture(t *testing.T) {
 	ctx := context.Background()
 	id := identity{orgUUID: "org-a", workspaceUUID: "ws-a"}
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "uid-a"}}
@@ -72,7 +72,7 @@ func TestProjectViewWithSourceRevisionPreservesWorkspaceFence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	view := (&Server{workspaces: workspaces}).projectViewWithSourceRevision(ctx, nil, project, id)
+	view := (&Server{workspaces: workspaces}).projectListView(ctx, nil, project, id)
 	if view.SourceRevision != revision || revision <= 1 {
 		t.Fatalf("source revision = %d, want workspace revision %d greater than initial fence", view.SourceRevision, revision)
 	}
