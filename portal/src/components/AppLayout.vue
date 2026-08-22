@@ -10,7 +10,7 @@ import UserProfileModal from '@/components/UserProfileModal.vue'
 import TenantContextChip from '@/components/TenantContextChip.vue'
 import AccountAccessMenu from '@/components/AccountAccessMenu.vue'
 import FirstWorkspaceWizard from '@/components/FirstWorkspaceWizard.vue'
-import { Hexagon, LayoutDashboard, Zap, GripHorizontal, GripVertical, Puzzle, Dot, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
+import { Hexagon, LayoutDashboard, Zap, GripHorizontal, GripVertical, Puzzle, Dot, PanelLeftClose, PanelLeftOpen, ChevronDown, CircleHelp, ExternalLink } from 'lucide-vue-next'
 import { useProvidersStore } from '@/stores/providers'
 import { useAdminStore } from '@/stores/admin'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -621,6 +621,20 @@ watchEffect(() => {
       <!-- end scrollable nav region -->
 
       <div class="mx-2 my-2 h-px bg-border-default/50" />
+
+      <a
+        href="https://faros.sh/docs/"
+        target="_blank"
+        rel="noreferrer noopener"
+        aria-label="Help — open Faros documentation"
+        class="mb-2 flex items-center rounded-md text-text-muted transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+        :class="sidebarExpanded ? 'w-full gap-2 px-2.5 py-2' : 'h-8 w-8 justify-center p-0'"
+        :title="sidebarExpanded ? undefined : 'Help'"
+      >
+        <CircleHelp class="h-4 w-4 shrink-0" :stroke-width="1.75" aria-hidden="true" />
+        <span v-if="sidebarExpanded" class="text-[11px] font-medium">Help</span>
+        <ExternalLink v-if="sidebarExpanded" class="ml-auto h-3 w-3 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
+      </a>
 
       <!-- Situational tools and account controls live behind one stable
            account affordance so the provider tree keeps the vertical space. -->
