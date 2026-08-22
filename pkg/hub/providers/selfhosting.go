@@ -287,9 +287,19 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 
 	out.Steps = []InstallStep{
 		{
-			Title:       "Create the namespace",
-			Description: "Where the provider runs in your cluster.",
-			Command:     fmt.Sprintf("kubectl create namespace %s", namespace),
+			Title: "Create the namespace",
+			// Which credential these run with is the one thing the commands
+			// cannot show, and getting it wrong fails deep inside helm rather
+			// than up front. Three kubeconfigs are plausibly in scope here: the
+			// one shown above (kcp, and only ever the content of a Secret), an
+			// edge kubeconfig from `faros kubeconfig edge` (which authenticates
+			// as the agent, whose ClusterRole is an allowlist that excludes
+			// provider API groups), and the cluster-admin credential these
+			// actually need. Say so where the reader is looking.
+			Description: "Where the provider runs in your cluster. Run every command below with your OWN " +
+				"cluster-admin credentials for that cluster — not the kubeconfig shown above, and not a " +
+				"`faros kubeconfig edge` one.",
+			Command: fmt.Sprintf("kubectl create namespace %s", namespace),
 		},
 		{
 			Title: "Store the credential",
@@ -301,9 +311,11 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 				namespace, KubeconfigSecretName, KubeconfigSecretKey, kubeconfigFile),
 		},
 		{
-			Title:       "Install the provider",
-			Description: "The chart's init job registers the provider into your organization's workspace.",
-			Command:     helm.String(),
+			Title: "Install the provider",
+			Description: "The chart's init job registers the provider into your organization's workspace. " +
+				"It installs a CRD, ClusterRoles and its own custom resource, so it needs cluster-admin " +
+				"in the target cluster.",
+			Command: helm.String(),
 		},
 	}
 	return out

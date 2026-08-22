@@ -369,6 +369,37 @@ func unresolved(values []ResolvedValue, name string) bool {
 	return false
 }
 
+// The commands cannot show which credential they need, and using the wrong one
+// fails deep inside helm — as it did with a `faros kubeconfig edge` context,
+// which authenticates as the agent whose ClusterRole excludes provider API
+// groups:
+//
+//	infrastructureproviders.infrastructure.faros.sh "..." is forbidden:
+//	User "system:serviceaccount:faros-agent:faros-agent" cannot get ...
+//
+// Three kubeconfigs are plausibly in scope, so the steps have to name the right
+// one rather than leave the reader to infer it.
+func TestRenderInstallInstructionsNamesTheCredentialToUse(t *testing.T) {
+	got := RenderInstallInstructions(baseSelfHosting(), baseOptions())
+
+	joined := ""
+	for _, s := range got.Steps {
+		joined += s.Title + "\n" + s.Description + "\n"
+	}
+	if !strings.Contains(joined, "cluster-admin") {
+		t.Errorf("no step says cluster-admin is required:\n%s", joined)
+	}
+	// Naming what NOT to use matters as much: the kcp kubeconfig is displayed
+	// immediately above these commands, which is what makes it the tempting
+	// wrong answer.
+	if !strings.Contains(joined, "not the kubeconfig shown above") {
+		t.Errorf("steps do not warn against the credential shown above them:\n%s", joined)
+	}
+	if !strings.Contains(joined, "faros kubeconfig edge") {
+		t.Errorf("steps do not warn against an edge kubeconfig:\n%s", joined)
+	}
+}
+
 func TestSelfHostingInstallable(t *testing.T) {
 	for _, tc := range []struct {
 		name string

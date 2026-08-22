@@ -464,6 +464,27 @@ in URL paths.
 
 ## Known gaps
 
+- **The install is not edge-driven, and an edge kubeconfig cannot stand in for
+  one.** The generated commands run against the Org's own cluster with the
+  Org's own cluster-admin credential. A `faros kubeconfig edge` context looks
+  like it should work — it reaches the right cluster — but it authenticates as
+  the agent, whose ClusterRole
+  ([deploy/charts/faros-agent/templates/rbac.yaml](../deploy/charts/faros-agent/templates/rbac.yaml))
+  is an allowlist of API groups that deliberately excludes provider groups. The
+  chart gets far enough to install the CRD (`apiextensions.k8s.io` is on the
+  list) and then fails on its own custom resource:
+
+  ```
+  infrastructureproviders.infrastructure.faros.sh "…" is forbidden:
+  User "system:serviceaccount:faros-agent:faros-agent" cannot get …
+  ```
+
+  Widening that allowlist is not the fix. The agent is the platform's foothold
+  in a tenant's cluster, and letting it create arbitrary provider resources
+  would grow the platform's reach there — the opposite of what BYO is for.
+  Installing a provider is an administrative act by the tenant, performed with
+  the tenant's own credential. The install steps now say so explicitly.
+
 - **Nothing checks the virtual-workspace URL before handing out a credential.**
   On a multi-shard platform whose shards advertise unreachable virtual-workspace
   URLs (see [Platform prerequisite](#platform-prerequisite-a-publicly-dialable-virtual-workspace-url)),
