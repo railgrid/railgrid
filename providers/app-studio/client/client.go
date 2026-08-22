@@ -45,6 +45,10 @@ var ProjectGVR = schema.GroupVersionResource{
 	Resource: "projects",
 }
 
+var infrastructureInstancesGVR = schema.GroupVersionResource{
+	Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "instances",
+}
+
 // projectResource describes the Project CRD for the GraphQL tenant client. The
 // Project is cluster-scoped in the workspace.
 var projectResource = tenant.Resource{
@@ -113,6 +117,24 @@ func (c *Client) Projects() *TypedResource[aiv1alpha1.Project, aiv1alpha1.Projec
 		client: c.Resource(projectResource, ""),
 		gvk:    ProjectGVR.GroupVersion().WithKind("Project"),
 	}
+}
+
+// ListInfrastructureInstances uses the provider's stable typed Instances
+// GraphQL field in production. Generic dynamic Resource.List is intentionally
+// not used here because Infrastructure does not expose an InstancesYaml list
+// field; the dynamic path remains useful for unit fakes.
+func (c *Client) ListInfrastructureInstances(ctx context.Context, opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+	if c.scope != nil {
+		items, err := c.scope.ListInfrastructureInstances(ctx, opts)
+		if err != nil {
+			return nil, err
+		}
+		return &unstructured.UnstructuredList{Items: items}, nil
+	}
+	if c.dynamic == nil {
+		return nil, fmt.Errorf("client is not configured")
+	}
+	return c.dynamic.Resource(infrastructureInstancesGVR).List(ctx, opts)
 }
 
 // TypedResource provides typed CRUD operations for a specific resource type.

@@ -28,6 +28,18 @@ import (
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 )
 
+func TestProjectToolCallTerminalStatusPreservesCanceledSpellings(t *testing.T) {
+	for _, spelling := range []string{"canceled", "cancelled"} {
+		result := `{"status":"` + spelling + `"}`
+		if got := projectToolCallResultStatus(projectToolExecCommand, result); got != "canceled" {
+			t.Fatalf("result status for %q = %q, want canceled", spelling, got)
+		}
+		if got := projectToolCallTerminalStatus(projectToolExecCommand, result, false); got != "canceled" {
+			t.Fatalf("terminal status for %q = %q, want canceled", spelling, got)
+		}
+	}
+}
+
 func TestProjectLLMSettingsUseCodexStreamRecoveryDefaults(t *testing.T) {
 	settings := defaultProjectLLMSettings()
 	if settings.MaxRetries != 5 {
@@ -347,6 +359,55 @@ func TestInitialCreationPromptUsesOrdinaryMutationAndVerificationContract(t *tes
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("initial prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestProjectPromptSeparatesCodingPreviewAndRepositoryBoundaries(t *testing.T) {
+	unbound := &aiv1alpha1.Project{Spec: aiv1alpha1.ProjectSpec{DisplayName: "Go todo"}}
+	prompt := projectSystemPromptForMode(
+		unbound,
+		&ProjectRepositoryView{Ref: "demo-repo", Status: projectRepositoryStatusProvisioning},
+		projectAssistantCollaborationModeDefault,
+		true,
+	)
+	for _, want := range []string{
+		"codingEnvironment field, when present, controls source authoring and command execution",
+		"publicPreview=false means it is never evidence of a hosted browser preview",
+		"Repository readiness governs Git commit and CI handoff only",
+		"exec_command is verification-only with respect to source",
+		"gofmt -d rather than gofmt -w",
+		"Hosted development/preview template: NONE",
+		"lack of a hosted template is not an authoring, compiler, or test blocker",
+		"Repository state prevents commit_project_files only",
+		"successful workspace checkpointing remains durable in App Studio",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("unbound prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, stale := range []string{
+		"bind it before writing runtime source",
+		"do not write it anyway",
+		"Repository state does not permit a commit in this run",
+	} {
+		if strings.Contains(prompt, stale) {
+			t.Fatalf("unbound prompt retained stale authoring blocker %q:\n%s", stale, prompt)
+		}
+	}
+
+	bound := unbound.DeepCopy()
+	bound.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: "simple-webapp"}
+	boundPrompt := projectSystemPromptForMode(bound, nil, projectAssistantCollaborationModeDefault, false)
+	for _, want := range []string{
+		"Hosted development/preview template: simple-webapp",
+		"ONLY runtime installed in that hosted preview component",
+		"An active codingEnvironment is separate",
+		"source may still be authored, persisted, compiled, and tested there",
+		"do not claim it runs in the hosted preview",
+	} {
+		if !strings.Contains(boundPrompt, want) {
+			t.Fatalf("bound prompt missing %q:\n%s", want, boundPrompt)
 		}
 	}
 }

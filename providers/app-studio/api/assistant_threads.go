@@ -801,7 +801,7 @@ func (s *Server) interruptProjectAssistantThreadTurn(w http.ResponseWriter, r *h
 			return
 		}
 	}
-	stopped, found, err := s.projectAssistantSupervisor().Stop(scope, turn.ID)
+	stopped, found, err := s.projectAssistantSupervisor().StopWithIdentity(r.Context(), id, scope, turn.ID)
 	if err != nil {
 		s.writeAssistantThreadError(w, err)
 		return

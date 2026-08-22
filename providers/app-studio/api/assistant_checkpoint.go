@@ -93,6 +93,7 @@ type projectAssistantCheckpointState struct {
 	MutationRecoveryIdentities       map[string]projectAssistantMutationRecoveryIdentity `json:"mutationRecoveryIdentities,omitempty"`
 	SessionSnapshot                  *projectEinoAssistantSessionSnapshot                `json:"sessionSnapshot,omitempty"`
 	RolloutBudget                    *projectAssistantRolloutBudgetState                 `json:"rolloutBudget,omitempty"`
+	Sandbox                          *projectAssistantSandboxCheckpoint                  `json:"sandbox,omitempty"`
 	Eino                             *projectAssistantEinoCheckpointState                `json:"eino,omitempty"`
 }
 

@@ -202,19 +202,33 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 		browserRef = ref
 	}
 	if req.RunState != nil {
+		checkpointed, checkpointErr := s.checkpointProjectAssistantRunSandboxIfDirty(ctx, req.RunState)
+		if checkpointErr != nil {
+			return projectAssistantPreviewInspectionResult{
+				Status:           "failed",
+				FailureKind:      "not_current",
+				Summary:          projectAssistantRunSandboxCheckpointFailure(checkpointErr),
+				ScreenshotStatus: projectAssistantPreviewScreenshotStatusForUnavailable(includeScreenshot),
+			}, nil
+		}
 		revision, _ := req.RunState.SourceMutationRevisions()
 		if revision > 0 {
 			status, failure := req.RunState.DevelopmentSyncEvidence(revision)
-			if status != "succeeded" {
-				if failure == "" {
-					failure = "the current workspace mutation has not completed development synchronization"
+			if checkpointed || status != "succeeded" {
+				if checkpointed {
+					status, failure = req.RunState.WaitForDevelopmentSync(ctx, revision, projectSandboxSyncTimeout+time.Second)
 				}
-				return projectAssistantPreviewInspectionResult{
-					Status:           "failed",
-					FailureKind:      "not_current",
-					Summary:          failure,
-					ScreenshotStatus: projectAssistantPreviewScreenshotStatusForUnavailable(includeScreenshot),
-				}, nil
+				if status != "succeeded" {
+					if failure == "" {
+						failure = "the current workspace mutation has not completed development synchronization"
+					}
+					return projectAssistantPreviewInspectionResult{
+						Status:           "failed",
+						FailureKind:      "not_current",
+						Summary:          failure,
+						ScreenshotStatus: projectAssistantPreviewScreenshotStatusForUnavailable(includeScreenshot),
+					}, nil
+				}
 			}
 		}
 	}

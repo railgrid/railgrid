@@ -53,11 +53,21 @@ var templateResource = tenant.Resource{GVR: templatesGVR, Kind: "Template", Plur
 
 const projectTemplateImmutableInputsAnnotation = "faros.sh/immutable-inputs"
 
+const (
+	projectTemplatePlatformOwnedLabel = "faros.sh/platform-owned"
+	projectTemplatePlatformOwnedValue = "true"
+)
+
 // projectTemplateInfo is the slice of an infrastructure Template App Studio
 // needs: the instance kind the development binding creates, and the declared
 // development components keyed by name with their workspace subdirectories.
 type projectTemplateInfo struct {
 	Name string
+
+	// PlatformOwned is true only for the exact server-owned label value. A
+	// missing or malformed label keeps the existing public-template behavior;
+	// callers use this bit only at selection and user-facing catalog boundaries.
+	PlatformOwned bool
 
 	// Instance CRD coordinates from Template.spec.instanceCRD.
 	APIVersion string
@@ -149,7 +159,10 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 	if obj == nil {
 		return projectTemplateInfo{}, fmt.Errorf("template is nil")
 	}
-	info := projectTemplateInfo{Name: obj.GetName()}
+	info := projectTemplateInfo{
+		Name:          obj.GetName(),
+		PlatformOwned: projectTemplateIsPlatformOwned(obj),
+	}
 
 	// Instance coordinates are the FLATTENED tenant-facing kind: every
 	// template's instances are authored as instances.infrastructure.faros.sh
@@ -214,6 +227,17 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 	info.BuildWorkflowPath = strings.TrimSpace(workflowPath)
 
 	return info, nil
+}
+
+// projectTemplateIsPlatformOwned identifies templates reserved for App Studio
+// and other platform internals. Kubernetes labels are strings, so only the
+// exact contract value is authoritative; absent, malformed, or alternate
+// values retain the historical tenant-visible behavior.
+func projectTemplateIsPlatformOwned(obj *unstructured.Unstructured) bool {
+	if obj == nil {
+		return false
+	}
+	return obj.GetLabels()[projectTemplatePlatformOwnedLabel] == projectTemplatePlatformOwnedValue
 }
 
 // WorkspacePaths projects the components down to the name → workspacePath map
@@ -400,6 +424,13 @@ func validateProjectDevelopmentTemplate(info projectTemplateInfo) error {
 	return nil
 }
 
+func validateProjectTemplateSelection(info projectTemplateInfo) error {
+	if info.PlatformOwned {
+		return fmt.Errorf("template %q is platform-owned and cannot be selected for a project", info.Name)
+	}
+	return nil
+}
+
 func applyProjectDevelopmentTemplateWithContext(p *aiv1alpha1.Project, info projectTemplateInfo, context projectTemplateBindingContext) error {
 	if p == nil {
 		return fmt.Errorf("project is required")
@@ -518,6 +549,9 @@ func (s *Server) ActionsRuntimeConfig() bindings.ActionsRuntimeConfig {
 func (s *Server) selectProjectTemplate(ctx context.Context, c *asclient.Client, id identity, p *aiv1alpha1.Project, templateName string) (*aiv1alpha1.Project, projectTemplateInfo, error) {
 	info, err := fetchProjectTemplate(ctx, c, templateName)
 	if err != nil {
+		return nil, projectTemplateInfo{}, err
+	}
+	if err := validateProjectTemplateSelection(info); err != nil {
 		return nil, projectTemplateInfo{}, err
 	}
 	if err := validateProjectDevelopmentTemplate(info); err != nil {
@@ -716,7 +750,7 @@ func developmentTemplateViews(items []unstructured.Unstructured) []projectDevelo
 	for i := range items {
 		obj := &items[i]
 		info, err := projectTemplateInfoFromUnstructured(obj)
-		if err != nil || len(info.Components) == 0 {
+		if err != nil || info.PlatformOwned || len(info.Components) == 0 {
 			continue
 		}
 		view := projectDevelopmentTemplateView{

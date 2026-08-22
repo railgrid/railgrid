@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -152,6 +153,7 @@ func TestCreateProjectLivePathListsCatalogCallsPreflightOnceAndCreatesInstance(t
 			}, nil
 		},
 	}
+	server.SetReplicaRouting("replica-a", "10.0.0.1:8091", "internal-token")
 	created, err := server.createProjectFromRequest(
 		context.Background(),
 		client,
@@ -351,6 +353,114 @@ func TestCreateProjectExplicitTemplateFailsClosedBeforeCreation(t *testing.T) {
 	}
 	if len(repositories.Items) != 0 {
 		t.Fatalf("repositories = %+v, want none after explicit validation failure", repositories.Items)
+	}
+}
+
+func TestResolveProjectCreateTemplateRejectsPlatformOwnedExplicitAndInferred(t *testing.T) {
+	platformOwned := applicationTemplateObject()
+	platformOwned.SetName("universal-coding-sandbox")
+	platformOwned.SetLabels(map[string]string{projectTemplatePlatformOwnedLabel: projectTemplatePlatformOwnedValue})
+	client := newProjectCreationTestClient(platformOwned)
+
+	for _, inferred := range []bool{false, true} {
+		name := "explicit"
+		if inferred {
+			name = "inferred"
+		}
+		t.Run(name, func(t *testing.T) {
+			info, err := resolveProjectCreateTemplate(
+				context.Background(),
+				client,
+				"universal-coding-sandbox",
+				inferred,
+			)
+			if info != nil {
+				t.Fatalf("resolved info = %#v, want no selectable template", info)
+			}
+			var validationErr *ValidationError
+			if !errors.As(err, &validationErr) {
+				t.Fatalf("error = %v, want ValidationError", err)
+			}
+			if !strings.Contains(validationErr.Error(), "platform-owned") {
+				t.Fatalf("validation error = %q, want platform-owned rejection", validationErr)
+			}
+			recorder := httptest.NewRecorder()
+			writeProjectError(recorder, err)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("HTTP status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+
+	projects, err := client.Projects().List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list projects after platform-owned rejection: %v", err)
+	}
+	if len(projects.Items) != 0 {
+		t.Fatalf("projects = %+v, want none after validation rejection", projects.Items)
+	}
+}
+
+func TestCreateProjectRejectsPlatformOwnedExplicitAndInferred(t *testing.T) {
+	for _, inferred := range []bool{false, true} {
+		name := "explicit"
+		if inferred {
+			name = "inferred"
+		}
+		t.Run(name, func(t *testing.T) {
+			platformOwned := applicationTemplateObject()
+			platformOwned.SetName("universal-coding-sandbox")
+			platformOwned.SetLabels(map[string]string{projectTemplatePlatformOwnedLabel: projectTemplatePlatformOwnedValue})
+			client := newProjectCreationTestClient(platformOwned)
+			server := &Server{}
+			id := identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenantPath: "root:faros:tenants:org-a:ws-1"}
+			var (
+				created *aiv1alpha1.Project
+				err     error
+			)
+			if inferred {
+				created, err = server.createProjectFromRequestWithPreflight(
+					context.Background(),
+					client,
+					id,
+					CreateProjectRequest{InferDevelopmentTemplate: true},
+					nil,
+					nil,
+					&projectCreatePreflight{
+						Naming:       projectNamingResult{DisplayName: "Customer Portal", RepositoryName: "customer-portal"},
+						TemplateName: "universal-coding-sandbox",
+					},
+				)
+			} else {
+				created, err = server.createProjectFromRequest(
+					context.Background(),
+					client,
+					id,
+					CreateProjectRequest{DisplayName: "Customer Portal", TemplateName: "universal-coding-sandbox"},
+					nil,
+					nil,
+				)
+			}
+			if created != nil {
+				t.Fatalf("created project = %#v, want no project", created)
+			}
+			var validationErr *ValidationError
+			if !errors.As(err, &validationErr) || !strings.Contains(validationErr.Error(), "platform-owned") {
+				t.Fatalf("create error = %v, want platform-owned ValidationError", err)
+			}
+			recorder := httptest.NewRecorder()
+			writeProjectError(recorder, err)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("HTTP status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+			}
+			projects, listErr := client.Projects().List(context.Background(), metav1.ListOptions{})
+			if listErr != nil {
+				t.Fatalf("list projects after rejection: %v", listErr)
+			}
+			if len(projects.Items) != 0 {
+				t.Fatalf("projects = %+v, want none after platform-owned rejection", projects.Items)
+			}
+		})
 	}
 }
 

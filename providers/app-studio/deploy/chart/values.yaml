@@ -74,6 +74,17 @@ assistant:
   #   "minimal" — fully opaque generic labels only ("Edited files"), for
   #     deployments whose users should not see implementation detail.
   toolDisclosure: ""
+  # Provision one private, platform-owned universal coding sandbox for each
+  # active assistant run. This is the source authoring/compiler/test surface;
+  # it is separate from the project's hosted development preview.
+  runSandbox:
+    # off | byo-only | force. Force is development-only and the process
+    # rejects it unless developmentMode is explicitly true.
+    mode: "off"
+    developmentMode: false
+    # Deprecated boolean compatibility input. true maps to byo-only and emits
+    # a startup warning; it never selects the platform Infrastructure export.
+    enabled: null
 
 # Browser-console sharing starts automatically while the embedded preview is
 # open. Until both signing fields are configured, App Studio stays available

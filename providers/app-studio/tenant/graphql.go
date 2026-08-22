@@ -265,6 +265,60 @@ func (s *Scope) ListWithOptions(ctx context.Context, res Resource, namespace str
 	return decodeList(str)
 }
 
+// ListInfrastructureInstances uses the Infrastructure provider's stable
+// typed Instances list field. The generic <Plural>Yaml escape hatch is not
+// present on that API schema, so callers that need quota/ownership metadata
+// must use this bounded selection instead.
+func (s *Scope) ListInfrastructureInstances(ctx context.Context, listOptions metav1.ListOptions) ([]unstructured.Unstructured, error) {
+	res := Resource{
+		GVR:  schema.GroupVersionResource{Group: "infrastructure.faros.sh", Version: "v1alpha1", Resource: "instances"},
+		Kind: "Instance", Plural: "Instances",
+	}
+	varDefs := []string{}
+	args := []string{}
+	vars := map[string]any{}
+	if listOptions.LabelSelector != "" {
+		varDefs = append(varDefs, "$labelSelector: String")
+		args = append(args, "labelselector: $labelSelector")
+		vars["labelSelector"] = listOptions.LabelSelector
+	}
+	field := "Instances"
+	if len(args) > 0 {
+		field += "(" + strings.Join(args, ", ") + ")"
+	}
+	inner := field + ` { items { metadata { name deletionTimestamp labels annotations } status { phase } } }`
+	sel, path := wrapSelection(res, inner)
+	query := "query { " + sel + " }"
+	if len(varDefs) > 0 {
+		query = "query(" + strings.Join(varDefs, ", ") + ") { " + sel + " }"
+	}
+	data, err := s.exec(ctx, query, vars, &res, "")
+	if err != nil {
+		return nil, err
+	}
+	value, err := nestedValue(data, append(path, "Instances")...)
+	if err != nil {
+		return nil, err
+	}
+	container, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("graphql field %q is not an object", "Instances")
+	}
+	rawItems, ok := container["items"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("graphql field %q is missing items", "Instances")
+	}
+	items := make([]unstructured.Unstructured, 0, len(rawItems))
+	for _, raw := range rawItems {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("graphql field %q contains a non-object item", "Instances")
+		}
+		items = append(items, unstructured.Unstructured{Object: item})
+	}
+	return items, nil
+}
+
 // Apply create-or-updates obj via the generic applyYaml mutation.
 func (s *Scope) Apply(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	y, err := yaml.Marshal(obj.Object)
@@ -331,22 +385,30 @@ func resourceFromObject(obj *unstructured.Unstructured) *Resource {
 // nestedString walks the GraphQL data object along path and returns the leaf
 // string (the serialized object/list the *Yaml fields return).
 func nestedString(data json.RawMessage, path ...string) (string, error) {
-	var cur any
-	if err := json.Unmarshal(data, &cur); err != nil {
-		return "", fmt.Errorf("decode graphql data: %w", err)
-	}
-	for _, key := range path {
-		m, ok := cur.(map[string]any)
-		if !ok || m[key] == nil {
-			return "", fmt.Errorf("graphql response missing field %q", key)
-		}
-		cur = m[key]
+	cur, err := nestedValue(data, path...)
+	if err != nil {
+		return "", err
 	}
 	str, ok := cur.(string)
 	if !ok {
 		return "", fmt.Errorf("graphql field %q is not a string", path[len(path)-1])
 	}
 	return str, nil
+}
+
+func nestedValue(data json.RawMessage, path ...string) (any, error) {
+	var cur any
+	if err := json.Unmarshal(data, &cur); err != nil {
+		return nil, fmt.Errorf("decode graphql data: %w", err)
+	}
+	for _, key := range path {
+		m, ok := cur.(map[string]any)
+		if !ok || m[key] == nil {
+			return nil, fmt.Errorf("graphql response missing field %q", key)
+		}
+		cur = m[key]
+	}
+	return cur, nil
 }
 
 // decodeObject parses a serialized (YAML or JSON) object into unstructured.

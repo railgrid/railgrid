@@ -673,7 +673,7 @@ func (s *Server) projectAssistantThreadSnapshot(ctx context.Context, scope store
 		status := "in_progress"
 		eventType := assistantThreadEventItemStarted
 		switch action.Status {
-		case projectAssistantActionFeedStatusSucceeded, projectAssistantActionFeedStatusSkipped:
+		case projectAssistantActionFeedStatusSucceeded, projectAssistantActionFeedStatusSkipped, projectAssistantActionFeedStatusCanceled:
 			status, eventType = "completed", assistantThreadEventItemCompleted
 		case projectAssistantActionFeedStatusFailed, projectAssistantActionFeedStatusRejected:
 			status, eventType = "failed", assistantThreadEventItemCompleted

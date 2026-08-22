@@ -19,6 +19,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -28,6 +29,7 @@ import (
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/faroshq/provider-app-studio/client"
+	"github.com/faroshq/provider-app-studio/store"
 )
 
 func applicationTemplateObject() *unstructured.Unstructured {
@@ -116,6 +118,41 @@ func TestProjectTemplateInfoFromUnstructured(t *testing.T) {
 	unstructured.RemoveNestedField(obj.Object, "spec", "instanceCRD")
 	if _, err := projectTemplateInfoFromUnstructured(obj); err != nil {
 		t.Errorf("info without instanceCRD: %v", err)
+	}
+}
+
+func TestProjectTemplatePlatformOwnedLabelRequiresExactValue(t *testing.T) {
+	tests := []struct {
+		name   string
+		labels map[string]string
+		want   bool
+	}{
+		{name: "missing", want: false},
+		{name: "exact", labels: map[string]string{projectTemplatePlatformOwnedLabel: "true"}, want: true},
+		{name: "alternate value", labels: map[string]string{projectTemplatePlatformOwnedLabel: "false"}, want: false},
+		{name: "malformed value", labels: map[string]string{projectTemplatePlatformOwnedLabel: "yes"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := applicationTemplateObject()
+			if tt.labels != nil {
+				obj.SetLabels(tt.labels)
+			}
+			info, err := projectTemplateInfoFromUnstructured(obj)
+			if err != nil {
+				t.Fatalf("projectTemplateInfoFromUnstructured: %v", err)
+			}
+			if info.PlatformOwned != tt.want {
+				t.Fatalf("PlatformOwned = %v, want %v", info.PlatformOwned, tt.want)
+			}
+			selectionErr := validateProjectTemplateSelection(info)
+			if tt.want && (selectionErr == nil || !strings.Contains(selectionErr.Error(), "platform-owned")) {
+				t.Fatalf("validateProjectTemplateSelection = %v, want platform-owned rejection", selectionErr)
+			}
+			if !tt.want && selectionErr != nil {
+				t.Fatalf("validateProjectTemplateSelection returned %v for public template", selectionErr)
+			}
+		})
 	}
 }
 
@@ -475,7 +512,13 @@ func TestDevelopmentTemplateViews(t *testing.T) {
 	second := applicationTemplateObject()
 	second.SetName("api-service")
 
-	views := developmentTemplateViews([]unstructured.Unstructured{*withDev, *prodOnly, *broken, *second})
+	// Platform-owned development templates remain readable to runtime flows but
+	// must not appear in the tenant-facing picker.
+	platformOwned := applicationTemplateObject()
+	platformOwned.SetName("universal-coding-sandbox")
+	platformOwned.SetLabels(map[string]string{projectTemplatePlatformOwnedLabel: projectTemplatePlatformOwnedValue})
+
+	views := developmentTemplateViews([]unstructured.Unstructured{*withDev, *prodOnly, *broken, *second, *platformOwned})
 
 	if len(views) != 2 {
 		t.Fatalf("views = %+v, want exactly the two development templates", views)
@@ -551,8 +594,11 @@ func TestListDevelopmentTemplatesHandler(t *testing.T) {
 		unstructured.RemoveNestedField(prodOnly.Object, "spec", "development")
 		second := applicationTemplateObject()
 		second.SetName("api-service")
+		platformOwned := applicationTemplateObject()
+		platformOwned.SetName("universal-coding-sandbox")
+		platformOwned.SetLabels(map[string]string{projectTemplatePlatformOwnedLabel: projectTemplatePlatformOwnedValue})
 
-		w := serve(t, templateCatalogDynamicClient{items: []unstructured.Unstructured{*withDev, *prodOnly, *second}})
+		w := serve(t, templateCatalogDynamicClient{items: []unstructured.Unstructured{*withDev, *prodOnly, *second, *platformOwned}})
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, body %s", w.Code, w.Body.String())
 		}
@@ -602,6 +648,50 @@ func TestListDevelopmentTemplatesHandler(t *testing.T) {
 			t.Error("missing Retry-After header on initializing response")
 		}
 	})
+}
+
+func TestPutProjectTemplateRejectsPlatformOwnedAsBadRequest(t *testing.T) {
+	platformOwned := applicationTemplateObject()
+	platformOwned.SetName("universal-coding-sandbox")
+	platformOwned.SetLabels(map[string]string{projectTemplatePlatformOwnedLabel: projectTemplatePlatformOwnedValue})
+	project := &aiv1alpha1.Project{
+		TypeMeta:   metav1.TypeMeta{APIVersion: aiv1alpha1.SchemeGroupVersion.String(), Kind: "Project"},
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid-demo"},
+		Spec:       defaultProjectSpec("demo", "Demo", "", nil),
+	}
+	projectObject, err := runtime.DefaultUnstructuredConverter.ToUnstructured(project)
+	if err != nil {
+		t.Fatalf("convert project: %v", err)
+	}
+	client := newProjectCreationTestClient(&unstructured.Unstructured{Object: projectObject}, platformOwned)
+	server := &Server{
+		store:            store.NewMemoryStore(),
+		projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
+	}
+	router := mux.NewRouter()
+	server.Register(router)
+
+	request := httptest.NewRequest(http.MethodPut, "/api/projects/demo/template", strings.NewReader(`{"template":"universal-coding-sandbox"}`))
+	request.Header.Set("X-Faros-Tenant", "root:faros:tenants:org-a:ws-1")
+	request.Header.Set("X-Faros-Cluster", "cluster-a")
+	request.Header.Set("X-Faros-User", "alice")
+	request.Header.Set("Authorization", "Bearer test-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s; want 400 for platform-owned template", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "platform-owned") {
+		t.Fatalf("body = %s; want platform-owned rejection", response.Body.String())
+	}
+	got, err := client.Projects().Get(context.Background(), "demo", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get project after rejected selection: %v", err)
+	}
+	if got.Spec.Template != nil {
+		t.Fatalf("project template after rejected selection = %+v, want unchanged", got.Spec.Template)
+	}
 }
 
 func TestRouteProjectSyncFiles(t *testing.T) {

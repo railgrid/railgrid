@@ -110,6 +110,16 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	runState := newProjectEinoAssistantRunState()
 	runState.SetAgentOptimizationMode(projectEinoAssistantOptimizationModeFromEnvironment())
 	runState.SetTurnPolicy(req.TurnPolicy)
+	if e.server != nil {
+		eligibility := e.server.ResolveCodingSandboxEligibility(ctx, req.Identity, req.WorkspaceScope)
+		var initializer func(context.Context) (*projectAssistantRunSandbox, func(), error)
+		if eligibility.Eligible && projectAssistantTurnProfileAllowsMutation(req.TurnPolicy.profile) {
+			initializer = func(initCtx context.Context) (*projectAssistantRunSandbox, func(), error) {
+				return e.server.setupProjectAssistantRunSandbox(initCtx, req, runState, nil)
+			}
+		}
+		runState.ConfigureSandboxCapabilityWithContext(ctx, eligibility, initializer)
+	}
 	if req.SkillSnapshot == nil && e.server != nil {
 		snapshot, err := e.server.projectAssistantSkillSnapshotForIdentity(ctx, req.WorkspaceScope, req.Identity)
 		if err != nil {
@@ -157,6 +167,16 @@ func (e projectEinoAssistantEngine) StreamProjectAssistant(
 	turn := newProjectAssistantTurnItem(projectAssistantTurnMessage, req.Identity, req.Project.Name)
 	turn.ProjectUID = req.MessageScope.ProjectUID
 	result, runErr := e.runProjectAssistantTurnLoop(ctx, req, runState, checkpointStore, checkpointID, []projectAssistantTurnItem{turn})
+	runSandbox := runState.Sandbox()
+	sandboxSetupGuard := newProjectAssistantRunSandboxSetupGuard(runSandbox, runState.SandboxRelease())
+	cacheSafe := true
+	if runSandbox != nil && !projectAssistantRunSandboxSuspended(runErr) {
+		if checkpointErr := runSandbox.checkpointForTerminalSettlement(ctx, req); checkpointErr != nil {
+			runErr = errors.Join(runErr, checkpointErr)
+			cacheSafe = false
+		}
+	}
+	runErr = sandboxSetupGuard.finish(ctx, runErr, cacheSafe)
 	return result, e.finishProjectAssistantRunAudit(ctx, req, auditRecorder, runErr)
 }
 
@@ -248,6 +268,16 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 	resumeRunReq.TurnPolicy = projectAssistantTurnPolicyForProfile(profile)
 	resumeRunReq.TurnProfile = profile
 	runState.SetTurnPolicy(resumeRunReq.TurnPolicy)
+	if e.server != nil {
+		eligibility := e.server.ResolveCodingSandboxEligibility(ctx, req.Identity, req.WorkspaceScope)
+		var initializer func(context.Context) (*projectAssistantRunSandbox, func(), error)
+		if eligibility.Eligible && projectAssistantTurnProfileAllowsMutation(resumeRunReq.TurnPolicy.profile) {
+			initializer = func(initCtx context.Context) (*projectAssistantRunSandbox, func(), error) {
+				return e.server.setupProjectAssistantRunSandbox(initCtx, req, runState, state.Sandbox)
+			}
+		}
+		runState.ConfigureSandboxCapabilityWithContext(ctx, eligibility, initializer)
+	}
 	checkpointStore := newProjectEinoAssistantCheckpointStoreWithCheckpoint(state.Eino.CheckpointID, state.Eino.Checkpoint)
 	turn := newProjectAssistantTurnItem(projectAssistantTurnResume, req.Identity, req.Project.Name)
 	turn.ProjectUID = req.MessageScope.ProjectUID
@@ -264,6 +294,21 @@ func (e projectEinoAssistantEngine) ResumeProjectAssistant(
 		return projectAssistantRunResult{}, err
 	}
 	result, runErr := e.runProjectAssistantTurnLoop(ctx, resumeRunReq, runState, checkpointStore, state.Eino.CheckpointID, []projectAssistantTurnItem{turn})
+	if runState.Sandbox() == nil && state.Sandbox != nil && !projectAssistantRunSandboxSuspended(runErr) && runState.SandboxRemoteEnabled() {
+		if _, attachErr := runState.EnsureSandbox(ctx); attachErr != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("resume assistant run sandbox for terminal settlement: %w", attachErr))
+		}
+	}
+	runSandbox := runState.Sandbox()
+	sandboxSetupGuard := newProjectAssistantRunSandboxSetupGuard(runSandbox, runState.SandboxRelease())
+	cacheSafe := true
+	if runSandbox != nil && !projectAssistantRunSandboxSuspended(runErr) {
+		if checkpointErr := runSandbox.checkpointForTerminalSettlement(ctx, resumeRunReq); checkpointErr != nil {
+			runErr = errors.Join(runErr, checkpointErr)
+			cacheSafe = false
+		}
+	}
+	runErr = sandboxSetupGuard.finish(ctx, runErr, cacheSafe)
 	return result, e.finishProjectAssistantRunAudit(ctx, resumeRunReq, auditRecorder, runErr)
 }
 
@@ -295,6 +340,14 @@ func (e projectEinoAssistantEngine) restoreProjectAssistantDirtyBundle(
 	for _, path := range paths {
 		runState.RecordSuccessfulMutationPath(path)
 	}
+	// A template-less project has no legacy development instance or preview to
+	// synchronize. Keep the durable dirty bundle and mutation revision in the
+	// run state, but do not turn the absence of that optional preview target
+	// into a synthetic synchronization failure.
+	if !projectAssistantDevelopmentTemplateBound(req.Project) {
+		runState.RecordSourceMutation()
+		return nil
+	}
 	revision := runState.BeginDevelopmentSyncForNextMutation()
 	if e.server == nil || !e.server.scheduleDevelopmentSyncAfterMutationWithCompletion(
 		req.Identity,
@@ -312,7 +365,7 @@ func (e projectEinoAssistantEngine) resumeCurrentDevelopmentSync(
 	req projectAssistantRunRequest,
 	runState *projectEinoAssistantRunState,
 ) {
-	if runState == nil {
+	if runState == nil || !projectAssistantDevelopmentTemplateBound(req.Project) {
 		return
 	}
 	revision, _ := runState.SourceMutationRevisions()
@@ -515,7 +568,7 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 	if e.server != nil {
 		workspaceStore = e.server.workspaces
 	}
-	filesystemMiddleware, err := projectEinoAssistantFilesystemMiddleware(ctx, workspaceStore, req)
+	filesystemMiddleware, err := projectEinoAssistantFilesystemMiddleware(ctx, workspaceStore, req, runState)
 	if err != nil {
 		return nil, fmt.Errorf("create App Studio Eino filesystem middleware: %w", err)
 	}
@@ -672,10 +725,10 @@ func (e projectEinoAssistantEngine) runProjectAssistantTurnLoop(
 	for _, item := range items {
 		loop.Push(item)
 	}
-	// Let Eino own cancellation and safe-point unwinding. The outer context is
-	// observed separately so a user Stop can request graceful cancellation,
-	// suppress a stale checkpoint, and attach a durable cause.
-	loop.Run(context.WithoutCancel(ctx))
+	// Give Eino the supervisor-owned context so a canceled run reaches the
+	// active agent and its tools immediately. The watcher below still owns the
+	// graceful-stop policy (including checkpoint suppression and stop cause).
+	loop.Run(ctx)
 	stopWatcherDone := make(chan struct{})
 	go func() {
 		select {

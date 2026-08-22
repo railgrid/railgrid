@@ -57,6 +57,7 @@ type projectAssistantRunSnapshot struct {
 
 type projectAssistantSupervisor struct {
 	store        store.Store
+	server       *Server
 	ctx          context.Context
 	cancel       context.CancelFunc
 	lifecycleLog func(string, store.Scope, store.AssistantRun)
@@ -930,7 +931,18 @@ func (s *projectAssistantSupervisor) Abort(scope store.Scope, runID string) bool
 
 // Stop makes cancellation observable before asking Eino to unwind. Pending
 // runs have no active loop, so they use the existing synchronous terminal path.
+// Callers with the authenticated request identity should use
+// StopWithIdentity so a suspended run sandbox can be deleted through the
+// caller-scoped client.
 func (s *projectAssistantSupervisor) Stop(scope store.Scope, runID string) (store.AssistantRun, bool, error) {
+	return s.stopWithIdentity(context.Background(), identity{}, scope, runID)
+}
+
+func (s *projectAssistantSupervisor) StopWithIdentity(ctx context.Context, id identity, scope store.Scope, runID string) (store.AssistantRun, bool, error) {
+	return s.stopWithIdentity(ctx, id, scope, runID)
+}
+
+func (s *projectAssistantSupervisor) stopWithIdentity(ctx context.Context, id identity, scope store.Scope, runID string) (store.AssistantRun, bool, error) {
 	if s == nil {
 		return store.AssistantRun{}, false, nil
 	}
@@ -953,7 +965,19 @@ func (s *projectAssistantSupervisor) Stop(scope store.Scope, runID string) (stor
 			return store.AssistantRun{}, ok, err
 		}
 		run, getErr := s.store.GetAssistantRun(context.Background(), scope, runID)
-		return run, true, getErr
+		if getErr != nil {
+			return run, true, getErr
+		}
+		if s.server != nil {
+			cleanupCtx := ctx
+			if cleanupCtx == nil {
+				cleanupCtx = context.Background()
+			}
+			if err := s.server.cleanupInterruptedProjectAssistantRunSandbox(cleanupCtx, id, scope, run); err != nil {
+				return run, true, err
+			}
+		}
+		return run, true, nil
 	}
 	s.mu.Unlock()
 	active.transitionMu.Lock()
@@ -1184,7 +1208,7 @@ func (s *projectAssistantSupervisor) sendCoalesced(ch chan projectAssistantRunSn
 }
 
 func (a *projectAssistantSnapshotAccumulator) UpdateText(ctx context.Context, content string, immediate bool) error {
-	return a.update(ctx, func(active *projectAssistantSupervisedRun) { active.message.Content = content }, immediate)
+	return a.update(ctx, func(active *projectAssistantSupervisedRun) { active.message.Content = content }, immediate, false)
 }
 
 func (a *projectAssistantSnapshotAccumulator) SetStatus(ctx context.Context, status store.AssistantRunStatus) error {
@@ -1210,18 +1234,25 @@ func (a *projectAssistantSnapshotAccumulator) SetStatus(ctx context.Context, sta
 // one revisioned persistence transition. Callers that publish metadata derived
 // from the run must use this rather than separate status and metadata updates.
 func (a *projectAssistantSnapshotAccumulator) UpdateSnapshot(ctx context.Context, mutate func(*store.AssistantRun, *store.Message)) error {
-	return a.update(ctx, func(active *projectAssistantSupervisedRun) { mutate(&active.run, &active.message) }, true)
+	return a.update(ctx, func(active *projectAssistantSupervisedRun) { mutate(&active.run, &active.message) }, true, false)
+}
+
+// UpdateStoppingToolSnapshot permits only an already-produced terminal tool
+// result to settle while Stop owns the run's stopping -> interrupted
+// transition. Callers must not use this for model text, plans, or new work.
+func (a *projectAssistantSnapshotAccumulator) UpdateStoppingToolSnapshot(ctx context.Context, mutate func(*store.AssistantRun, *store.Message)) error {
+	return a.update(ctx, func(active *projectAssistantSupervisedRun) { mutate(&active.run, &active.message) }, true, true)
 }
 
 func (a *projectAssistantSnapshotAccumulator) UpdateMessage(ctx context.Context, content string, metadata map[string]any) error {
 	return a.update(ctx, func(active *projectAssistantSupervisedRun) {
 		active.message.Content = content
 		active.message.Metadata = metadata
-	}, true)
+	}, true, false)
 }
 
 func (a *projectAssistantSnapshotAccumulator) UpdateRun(ctx context.Context, mutate func(*store.AssistantRun)) error {
-	return a.update(ctx, func(active *projectAssistantSupervisedRun) { mutate(&active.run) }, true)
+	return a.update(ctx, func(active *projectAssistantSupervisedRun) { mutate(&active.run) }, true, false)
 }
 
 // ClaimPending serializes the resume compare-and-swap with the rest of this
@@ -1291,7 +1322,7 @@ func (a *projectAssistantSnapshotAccumulator) ClaimPending(ctx context.Context, 
 	return run, nil
 }
 
-func (a *projectAssistantSnapshotAccumulator) update(ctx context.Context, mutate func(*projectAssistantSupervisedRun), immediate bool) error {
+func (a *projectAssistantSnapshotAccumulator) update(ctx context.Context, mutate func(*projectAssistantSupervisedRun), immediate, allowStoppingToolSettlement bool) error {
 	if a == nil || a.supervisor == nil {
 		return errors.New("assistant snapshot accumulator not configured")
 	}
@@ -1319,7 +1350,7 @@ func (a *projectAssistantSnapshotAccumulator) update(ctx context.Context, mutate
 	// the run after its durable stop request has been accepted. Treat them as
 	// successful no-ops so worker unwinding can still perform the terminal
 	// transition.
-	if active.run.Status == store.AssistantRunStatusStopping {
+	if active.run.Status == store.AssistantRunStatusStopping && !allowStoppingToolSettlement {
 		s.mu.Unlock()
 		return nil
 	}
@@ -1394,7 +1425,7 @@ func (a *projectAssistantSnapshotAccumulator) flushText() {
 	// Do not capture content before releasing the lock: a chunk can arrive
 	// between this timer firing and the durable save. The transition below
 	// snapshots whatever text is current when it takes transition ownership.
-	_ = a.update(context.Background(), func(*projectAssistantSupervisedRun) {}, true)
+	_ = a.update(context.Background(), func(*projectAssistantSupervisedRun) {}, true, false)
 }
 
 // recordPersistenceFailure makes a best effort to leave an explicit terminal

@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -88,6 +89,61 @@ func TestRuntimeNetworkPhaseMirrorsOnlyCurrentReadyRuntime(t *testing.T) {
 				t.Fatalf("runtimeNetworkPhase() = %q/%v, want %q/true", got, ok, test.want)
 			}
 		})
+	}
+}
+
+func TestDesiredNetworkPhaseDoesNotOscillateDuringRuntimeRollout(t *testing.T) {
+	tests := []struct {
+		name    string
+		runtime *unstructured.Unstructured
+		want    string
+	}{
+		{
+			name: "runtime absent stays setup",
+			want: infrav1alpha1.FarosNetworkPhaseSetup,
+		},
+		{
+			name:    "setup generation not ready stays setup",
+			runtime: runtimeForNetwork(2, 1, infrav1alpha1.FarosNetworkPhaseSetup, "True"),
+			want:    infrav1alpha1.FarosNetworkPhaseSetup,
+		},
+		{
+			name:    "setup generation ready transitions to runtime",
+			runtime: runtimeForNetwork(2, 2, infrav1alpha1.FarosNetworkPhaseSetup, "True"),
+			want:    infrav1alpha1.FarosNetworkPhaseRuntime,
+		},
+		{
+			name:    "selected runtime stays runtime while rollout is unready",
+			runtime: runtimeForNetwork(3, 2, infrav1alpha1.FarosNetworkPhaseRuntime, "False"),
+			want:    infrav1alpha1.FarosNetworkPhaseRuntime,
+		},
+		{
+			name:    "selected runtime stays runtime while readiness is stale",
+			runtime: runtimeForNetwork(3, 2, infrav1alpha1.FarosNetworkPhaseRuntime, "True"),
+			want:    infrav1alpha1.FarosNetworkPhaseRuntime,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := desiredNetworkPhase(test.runtime); got != test.want {
+				t.Fatalf("desiredNetworkPhase() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestInstanceRequeueAfterWaitsForCurrentRuntimeNetwork(t *testing.T) {
+	tmpl := developmentTemplate()
+	created := metav1.Time{}
+	now := time.Time{}
+
+	if got := instanceRequeueAfter(now, created, tmpl,
+		runtimeForNetwork(3, 2, infrav1alpha1.FarosNetworkPhaseRuntime, "True"), true); got != requeueNotReady {
+		t.Fatalf("stale runtime requeue = %s, want convergence interval %s", got, requeueNotReady)
+	}
+	if got := instanceRequeueAfter(now, created, tmpl,
+		runtimeForNetwork(3, 3, infrav1alpha1.FarosNetworkPhaseRuntime, "True"), true); got != requeueReady {
+		t.Fatalf("current runtime requeue = %s, want ready interval %s", got, requeueReady)
 	}
 }
 

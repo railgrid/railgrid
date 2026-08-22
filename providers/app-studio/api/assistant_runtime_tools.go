@@ -190,17 +190,18 @@ func newProjectAssistantVerifyRuntimeGraphTool(runCtx projectAssistantWorkflowRu
 }
 
 type projectAssistantRuntimeVerificationContext struct {
-	Args                    *projectAssistantRuntimeVerificationToolInput
-	CheckedMutationRevision uint64
-	DevelopmentSyncStatus   string
-	DevelopmentSyncFailure  string
-	Readiness               *projectAssistantReadinessWorkflowResult
-	RunContext              projectAssistantWorkflowRunContext
-	RuntimeInput            projectAssistantRuntimeWorkflowInput
-	Runtime                 *projectAssistantRuntimeWorkflowResult
-	Logs                    *projectAssistantRuntimeLogsResult
-	BrowserConsole          *projectAssistantBrowserConsoleResult
-	RequireProcessEvidence  bool
+	Args                     *projectAssistantRuntimeVerificationToolInput
+	CheckedMutationRevision  uint64
+	DevelopmentSyncStatus    string
+	DevelopmentSyncFailure   string
+	SandboxCheckpointFailure string
+	Readiness                *projectAssistantReadinessWorkflowResult
+	RunContext               projectAssistantWorkflowRunContext
+	RuntimeInput             projectAssistantRuntimeWorkflowInput
+	Runtime                  *projectAssistantRuntimeWorkflowResult
+	Logs                     *projectAssistantRuntimeLogsResult
+	BrowserConsole           *projectAssistantBrowserConsoleResult
+	RequireProcessEvidence   bool
 }
 
 func initializeProjectAssistantRuntimeVerification(runCtx projectAssistantWorkflowRunContext) func(context.Context, *projectAssistantRuntimeVerificationToolInput) (*projectAssistantRuntimeVerificationContext, error) {
@@ -217,8 +218,27 @@ func initializeProjectAssistantRuntimeVerification(runCtx projectAssistantWorkfl
 		}
 		developmentSyncStatus := ""
 		developmentSyncFailure := ""
+		sandboxCheckpointFailure := ""
+		checkpointed := false
+		if currentRunCtx.Server != nil && currentRunCtx.RunState != nil {
+			var checkpointErr error
+			checkpointed, checkpointErr = currentRunCtx.Server.checkpointProjectAssistantRunSandboxIfDirty(ctx, currentRunCtx.RunState)
+			if checkpointErr != nil {
+				developmentSyncStatus = "unknown"
+				developmentSyncFailure = projectAssistantRunSandboxCheckpointFailure(checkpointErr)
+				sandboxCheckpointFailure = developmentSyncFailure
+			}
+		}
 		if checkedMutationRevision > 0 && currentRunCtx.RunState != nil {
-			developmentSyncStatus, developmentSyncFailure = currentRunCtx.RunState.DevelopmentSyncEvidence(checkedMutationRevision)
+			if checkpointed {
+				developmentSyncStatus, developmentSyncFailure = currentRunCtx.RunState.WaitForDevelopmentSync(
+					ctx,
+					checkedMutationRevision,
+					projectSandboxSyncTimeout+time.Second,
+				)
+			} else if developmentSyncFailure == "" {
+				developmentSyncStatus, developmentSyncFailure = currentRunCtx.RunState.DevelopmentSyncEvidence(checkedMutationRevision)
+			}
 			if developmentSyncStatus == "pending" {
 				developmentSyncStatus, developmentSyncFailure = currentRunCtx.RunState.WaitForDevelopmentSync(
 					ctx,
@@ -256,12 +276,13 @@ func initializeProjectAssistantRuntimeVerification(runCtx projectAssistantWorkfl
 			}
 		}
 		return &projectAssistantRuntimeVerificationContext{
-			Args:                    args,
-			CheckedMutationRevision: checkedMutationRevision,
-			DevelopmentSyncStatus:   developmentSyncStatus,
-			DevelopmentSyncFailure:  developmentSyncFailure,
-			RunContext:              currentRunCtx,
-			RequireProcessEvidence:  requireProcessEvidence,
+			Args:                     args,
+			CheckedMutationRevision:  checkedMutationRevision,
+			DevelopmentSyncStatus:    developmentSyncStatus,
+			DevelopmentSyncFailure:   developmentSyncFailure,
+			SandboxCheckpointFailure: sandboxCheckpointFailure,
+			RunContext:               currentRunCtx,
+			RequireProcessEvidence:   requireProcessEvidence,
 		}, nil
 	}
 }
@@ -503,6 +524,12 @@ func formatProjectAssistantRuntimeVerification(ctx context.Context, input *proje
 		PreviewURL:              input.Runtime.PreviewURL,
 		Logs:                    input.Logs,
 		BrowserConsole:          input.BrowserConsole,
+	}
+	if reason := strings.TrimSpace(input.SandboxCheckpointFailure); reason != "" {
+		result.Status = "not_ready"
+		result.Summary = "The latest workspace mutation is not current because the run sandbox checkpoint could not be applied."
+		result.Blockers = []string{reason}
+		return result, nil
 	}
 	if input.CheckedMutationRevision > 0 {
 		switch strings.TrimSpace(input.DevelopmentSyncStatus) {

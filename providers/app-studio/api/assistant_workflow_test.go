@@ -71,6 +71,23 @@ func (t projectAssistantLegacyExecTool) InvokableRun(context.Context, string, ..
 	return "legacy exec tool unexpectedly ran", nil
 }
 
+type projectAssistantExecProjectionGraphTool struct {
+	result string
+	err    error
+	calls  *int
+}
+
+func (t projectAssistantExecProjectionGraphTool) Info(context.Context) (*einoschema.ToolInfo, error) {
+	return &einoschema.ToolInfo{Name: projectToolExecCommand}, nil
+}
+
+func (t projectAssistantExecProjectionGraphTool) InvokableRun(context.Context, string, ...einotool.Option) (string, error) {
+	if t.calls != nil {
+		*t.calls++
+	}
+	return t.result, t.err
+}
+
 func TestProjectAssistantDurableGraphToolFailureIsExactModelFeedback(t *testing.T) {
 	ctx := context.Background()
 	messages, scope := newAssistantRunEventLedgerTestStore(t, "run-graph-failure")
@@ -105,6 +122,275 @@ func TestProjectAssistantDurableGraphToolFailureIsExactModelFeedback(t *testing.
 	}
 	if !payload.Failed || payload.Result != result || payload.Error != backendErr.Error() {
 		t.Fatalf("durable graph failure = %#v", payload)
+	}
+}
+
+func TestProjectAssistantDurableExecGraphToolProjectsPublicActionFeed(t *testing.T) {
+	for _, tt := range []struct {
+		name           string
+		result         string
+		wantStatus     string
+		wantExecStatus string
+		wantAction     string
+		wantExit       int
+		wantStdout     string
+		wantStderr     string
+	}{
+		{
+			name:       "success",
+			result:     `{"status":"succeeded","summary":"Command succeeded in component \"workspace\".","exitCode":0,"durationMs":742,"stdout":["NODE_SANDBOX_OK","TOKEN=stdout-secret"],"outputTruncated":true}`,
+			wantStatus: "succeeded",
+			wantAction: "succeeded",
+			wantExit:   0,
+			wantStdout: "NODE_SANDBOX_OK\nTOKEN=[redacted]",
+		},
+		{
+			name:       "failure",
+			result:     `{"status":"failed","summary":"Command failed in component \"workspace\" token=summary-secret","exitCode":1,"durationMs":1834,"stderr":["compile warning","OPENAI_API_KEY=stderr-secret"]}`,
+			wantStatus: "failed",
+			wantAction: "failed",
+			wantExit:   1,
+			wantStderr: "compile warning\nOPENAI_API_KEY=[redacted]",
+		},
+		{
+			name:       "canceled",
+			result:     `{"status":"canceled","summary":"Command execution was canceled.","exitCode":130,"durationMs":314,"stdout":["partial output"]}`,
+			wantStatus: "canceled",
+			wantAction: projectAssistantActionFeedStatusCanceled,
+			wantExit:   130,
+			wantStdout: "partial output",
+		},
+		{
+			name:           "timed out",
+			result:         `{"status":"timed_out","summary":"Command timed out","exitCode":124,"durationMs":2000}`,
+			wantStatus:     "failed",
+			wantExecStatus: "timed_out",
+			wantAction:     "failed",
+			wantExit:       124,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runID := "run-exec-projection-" + tt.name
+			messages, scope := newAssistantRunEventLedgerTestStore(t, runID)
+			var events []projectToolCallStreamEvent
+			calls := 0
+			state := newProjectEinoAssistantRunState()
+			tool := projectAssistantDurableGraphTool{
+				InvokableTool: projectAssistantExecProjectionGraphTool{result: tt.result, calls: &calls},
+				spec:          projectAssistantToolSpec{Name: projectToolExecCommand, Risk: projectAssistantToolRiskRuntime},
+				ledger:        newProjectAssistantRunEventLedger(messages, scope, runID),
+				admitMutation: func(context.Context) error { return nil },
+				runState:      state,
+				onToolCall: func(event projectToolCallStreamEvent) {
+					events = append(events, event)
+				},
+			}
+
+			args := `{"component":"workspace","argv":["go","test","--token","secret-value"],"timeoutSeconds":45}`
+			if _, err := tool.invokableRun(context.Background(), "exec-"+tt.name, args); err != nil {
+				t.Fatalf("exec graph invocation: %v", err)
+			}
+			if len(events) != 2 {
+				t.Fatalf("projected events = %#v, want running and terminal", events)
+			}
+			if events[0].Status != "running" || events[1].Status != tt.wantStatus {
+				t.Fatalf("projected lifecycle = %#v, want running then %s", events, tt.wantStatus)
+			}
+			if events[0].Exec == nil || events[1].Exec == nil {
+				t.Fatalf("exec metadata missing from projected events: %#v", events)
+			}
+			if events[0].Exec.Argv[3] != "[redacted]" || events[1].Exec.Argv[3] != "[redacted]" {
+				t.Fatalf("exec argv was not sanitized: running=%#v terminal=%#v", events[0].Exec.Argv, events[1].Exec.Argv)
+			}
+			wantExecStatus := tt.wantExecStatus
+			if wantExecStatus == "" {
+				wantExecStatus = tt.wantStatus
+			}
+			if events[1].Exec.Status != wantExecStatus || events[1].Exec.ExitCode == nil || *events[1].Exec.ExitCode != tt.wantExit {
+				t.Fatalf("terminal exec metadata = %#v, want status %s exit %d", events[1].Exec, wantExecStatus, tt.wantExit)
+			}
+
+			metadata := projectAssistantMessageMetadata("Working", events)
+			actions, ok := metadata[projectMessageMetadataAssistantActionFeed].([]projectAssistantActionFeedItem)
+			if !ok {
+				t.Fatalf("public action metadata = %#v, want action feed", metadata)
+			}
+			if len(actions) != 1 {
+				t.Fatalf("public action feed = %#v, want one upserted exec action", actions)
+			}
+			action := actions[0]
+			if action.Kind != projectAssistantActionFeedItemRun || action.Status != tt.wantAction || action.Exec == nil {
+				t.Fatalf("public exec action = %#v, want kind=run status=%s with metadata", action, tt.wantAction)
+			}
+			if tt.wantStatus == "canceled" && action.Severity == projectAssistantActionFeedSeverityError {
+				t.Fatalf("canceled exec action projected error severity: %#v", action)
+			}
+			if action.Exec.Component != "workspace" || action.Exec.AuthorityProfile != "application-container" || action.Exec.NetworkProfile != "application-runtime" || action.Exec.WritebackPolicy != "runtime-workspace-only" {
+				t.Fatalf("public exec authority metadata = %#v", action.Exec)
+			}
+			if action.Exec.ExitCode == nil || *action.Exec.ExitCode != tt.wantExit || action.Exec.DurationMS == 0 {
+				t.Fatalf("public terminal exec metadata = %#v", action.Exec)
+			}
+			if strings.Join(action.Exec.Stdout, "\n") != tt.wantStdout || strings.Join(action.Exec.Stderr, "\n") != tt.wantStderr {
+				t.Fatalf("public terminal exec output = stdout %#v stderr %#v", action.Exec.Stdout, action.Exec.Stderr)
+			}
+			encoded, err := json.Marshal(metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(encoded), "secret-value") || strings.Contains(string(encoded), "stdout-secret") || strings.Contains(string(encoded), "stderr-secret") || strings.Contains(string(encoded), "summary-secret") || strings.Contains(string(encoded), "sessionID") {
+				t.Fatalf("public action metadata leaked command material: %s", encoded)
+			}
+			if tt.wantStdout != "" && !strings.Contains(strings.Join(action.Exec.Stdout, "\n"), tt.wantStdout) {
+				t.Fatalf("public action metadata lost stdout: %s", encoded)
+			}
+			if tt.wantStderr != "" && !strings.Contains(strings.Join(action.Exec.Stderr, "\n"), tt.wantStderr) {
+				t.Fatalf("public action metadata lost stderr: %s", encoded)
+			}
+
+			threadID := "thread-exec-projection-" + tt.name
+			now := time.Now().UTC()
+			if _, err := messages.CreateAssistantThread(context.Background(), scope, store.AssistantThread{ID: threadID, ActorID: "tester", CreatedAt: now, UpdatedAt: now}, nil); err != nil {
+				t.Fatalf("create projection thread: %v", err)
+			}
+			mirrorTurn := store.AssistantTurn{ID: runID, ThreadID: threadID, ActorID: "tester", ClientUserMessageID: "user-" + tt.name, Status: store.AssistantTurnStatusInProgress, CreatedAt: now, UpdatedAt: now}
+			if _, err := messages.CreateAssistantTurn(context.Background(), scope, mirrorTurn, nil); err != nil {
+				t.Fatalf("create projection turn: %v", err)
+			}
+			mirrorServer := NewWithWorkspace(nil, messages, nil, "", false)
+			mirrorState := assistantThreadMirrorState{actionStatuses: map[string]string{}}
+			mirrorRun := store.AssistantRun{ID: runID, ActiveMessageID: "assistant-" + tt.name, Status: store.AssistantRunStatusCompleted}
+			if err := mirrorServer.projectAssistantThreadSnapshot(context.Background(), scope, threadID, mirrorTurn, mirrorRun, &mirrorState, projectAssistantRunSnapshot{
+				Run: mirrorRun, Message: store.Message{ID: mirrorRun.ActiveMessageID, Metadata: metadata},
+			}); err != nil {
+				t.Fatalf("mirror exec action into public thread: %v", err)
+			}
+			threadEvents, err := messages.ListAssistantThreadEvents(context.Background(), scope, threadID, 0, 20)
+			if err != nil {
+				t.Fatalf("list public thread events: %v", err)
+			}
+			var publicAction *projectAssistantActionFeedItem
+			for _, item := range materializeAssistantThreadItems(threadEvents) {
+				if item.Type != assistantThreadEventDynamicToolCall {
+					continue
+				}
+				var persisted projectAssistantActionFeedItem
+				if err := json.Unmarshal(item.Data, &persisted); err != nil {
+					t.Fatalf("decode public dynamicToolCall data: %v", err)
+				}
+				publicAction = &persisted
+			}
+			var publicExec *projectAssistantExecMetadata
+			if publicAction != nil {
+				publicExec = publicAction.Exec
+			}
+			if publicExec == nil || strings.Join(publicExec.Stdout, "\n") != tt.wantStdout || strings.Join(publicExec.Stderr, "\n") != tt.wantStderr {
+				t.Fatalf("public dynamicToolCall exec = %#v, want stdout %q stderr %q", publicExec, tt.wantStdout, tt.wantStderr)
+			}
+			publicData, err := json.Marshal(publicExec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(publicData), "sessionID") || strings.Contains(string(publicData), "secret-value") || strings.Contains(string(publicData), "stdout-secret") || strings.Contains(string(publicData), "stderr-secret") || strings.Contains(string(publicData), "summary-secret") {
+				t.Fatalf("public dynamicToolCall leaked private execution material: %s", publicData)
+			}
+			if tt.wantStatus == "canceled" && (publicAction.Status != projectAssistantActionFeedStatusCanceled || publicAction.Severity == projectAssistantActionFeedSeverityError || publicExec.Status != "canceled") {
+				t.Fatalf("public canceled dynamicToolCall = %#v, want non-error terminal action with nested canceled exec", publicAction)
+			}
+
+			ledgerEvents := listAssistantRunEventLedgerEvents(t, messages, scope, runID)
+			if len(ledgerEvents) != 2 || ledgerEvents[0].Type != projectAssistantRunToolCallEventType || ledgerEvents[1].Type != projectAssistantRunToolResultEventType {
+				t.Fatalf("durable exec events = %#v, want one Begin/Finish pair", ledgerEvents)
+			}
+			var payload projectAssistantRunToolResultPayload
+			if err := json.Unmarshal(ledgerEvents[1].Payload, &payload); err != nil {
+				t.Fatalf("decode durable exec result: %v", err)
+			}
+			wantDisposition := projectAssistantToolDispositionSucceeded
+			if tt.wantStatus != "succeeded" {
+				wantDisposition = projectAssistantToolDispositionFailed
+			}
+			if payload.Disposition != wantDisposition || payload.Failed {
+				t.Fatalf("durable exec disposition = %#v, want semantic %s without transport failure", payload, wantDisposition)
+			}
+
+			var replayEvents []projectToolCallStreamEvent
+			replayTool := tool
+			replayTool.ledger = newProjectAssistantRunEventLedger(messages, scope, runID)
+			replayTool.onToolCall = func(event projectToolCallStreamEvent) {
+				replayEvents = append(replayEvents, event)
+			}
+			if _, err := replayTool.invokableRun(context.Background(), "exec-"+tt.name, args); err != nil {
+				t.Fatalf("exec graph replay: %v", err)
+			}
+			if calls != 1 {
+				t.Fatalf("exec backend calls after replay = %d, want one", calls)
+			}
+			if len(replayEvents) != 1 || replayEvents[0].Status != tt.wantStatus || replayEvents[0].Exec == nil {
+				t.Fatalf("replay projection = %#v, want one terminal %s event", replayEvents, tt.wantStatus)
+			}
+			if replayLedgerEvents := listAssistantRunEventLedgerEvents(t, messages, scope, runID); len(replayLedgerEvents) != 2 {
+				t.Fatalf("durable events after replay = %#v, want original Begin/Finish pair only", replayLedgerEvents)
+			}
+		})
+	}
+}
+
+func TestProjectAssistantGraphExecProjectionUsesRequestCallbackAndExcludesOtherGraphs(t *testing.T) {
+	runID := "run-exec-projection-callback"
+	messages, scope := newAssistantRunEventLedgerTestStore(t, runID)
+	var events []projectToolCallStreamEvent
+	req := projectAssistantRunRequest{
+		ApprovalMode: store.AssistantApprovalModeOnRequest,
+		StreamCallbacks: projectAssistantStreamCallbacks{
+			OnToolCall: func(event projectToolCallStreamEvent) {
+				events = append(events, event)
+			},
+		},
+		eventLedger: newProjectAssistantRunEventLedger(messages, scope, runID),
+	}
+	runState := newProjectEinoAssistantRunState()
+	runCtx := projectAssistantWorkflowRunContextForRequest(nil, req, runState)
+	runCtx.AdmitMutation = func(context.Context) error { return nil }
+
+	graph, err := applyProjectAssistantGraphToolPermission(
+		projectAssistantExecProjectionGraphTool{
+			result: `{"status":"succeeded","summary":"Command succeeded.","exitCode":0,"durationMs":5}`,
+		},
+		projectAssistantToolSpec{Name: projectToolExecCommand, Risk: projectAssistantToolRiskRuntime},
+		runCtx,
+	)
+	if err != nil {
+		t.Fatalf("wrap exec graph: %v", err)
+	}
+	durable, ok := graph.(projectAssistantDurableGraphTool)
+	if !ok {
+		t.Fatalf("wrapped exec graph = %T, want durable wrapper", graph)
+	}
+	if _, err := durable.invokableRun(context.Background(), "request-callback", `{"component":"workspace","argv":["go","test"]}`); err != nil {
+		t.Fatalf("invoke wrapped exec graph: %v", err)
+	}
+	if len(events) != 2 || events[0].Status != "running" || events[1].Status != "succeeded" {
+		t.Fatalf("request callback events = %#v, want running then succeeded", events)
+	}
+
+	other, err := applyProjectAssistantGraphToolPermission(
+		projectAssistantExecProjectionGraphTool{result: `{"status":"succeeded"}`},
+		projectAssistantToolSpec{Name: projectToolGetRuntimeStatus, Risk: projectAssistantToolRiskRead},
+		runCtx,
+	)
+	if err != nil {
+		t.Fatalf("wrap non-exec graph: %v", err)
+	}
+	otherDurable, ok := other.(projectAssistantDurableGraphTool)
+	if !ok {
+		t.Fatalf("wrapped non-exec graph = %T, want durable wrapper", other)
+	}
+	if _, err := otherDurable.invokableRun(context.Background(), "runtime-status", `{}`); err != nil {
+		t.Fatalf("invoke wrapped non-exec graph: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("non-exec graph emitted action events: %#v", events)
 	}
 }
 
@@ -423,6 +709,9 @@ func TestProjectAssistantInspectDevelopmentTemplatesGraphToolFiltersAndBoundsCat
 	broken := applicationTemplateObject()
 	broken.SetName("broken")
 	unstructured.RemoveNestedField(broken.Object, "spec", "development", "components", "frontend", "workspacePath")
+	platformOwned := applicationTemplateObject()
+	platformOwned.SetName("universal-coding-sandbox")
+	platformOwned.SetLabels(map[string]string{projectTemplatePlatformOwnedLabel: projectTemplatePlatformOwnedValue})
 
 	server := NewWithWorkspace(nil, store.NewMemoryStore(), workspace.NewFileStore(t.TempDir()), "", false)
 	project := &aiv1alpha1.Project{}
@@ -430,7 +719,7 @@ func TestProjectAssistantInspectDevelopmentTemplatesGraphToolFiltersAndBoundsCat
 	project.UID = "test-project-uid-demo"
 	req := projectAssistantRunRequest{
 		Identity:       identity{orgUUID: "org-a", workspaceUUID: "ws-1"},
-		Client:         asclient.NewFromDynamic(templateCatalogDynamicClient{items: []unstructured.Unstructured{*broken, *prodOnly, *withDev}}),
+		Client:         asclient.NewFromDynamic(templateCatalogDynamicClient{items: []unstructured.Unstructured{*broken, *prodOnly, *withDev, *platformOwned}}),
 		Project:        project,
 		WorkspaceScope: workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "ws-1", ProjectName: project.Name, ProjectUID: "test-project-uid"},
 		TurnProfile:    projectAssistantTurnProfileImplementation,
@@ -869,6 +1158,139 @@ func TestRuntimeVerificationAwaitsPendingCurrentRevisionSync(t *testing.T) {
 	}
 }
 
+func TestVerifyDevelopmentRuntimeCheckpointsDirtySandboxBeforeVerification(t *testing.T) {
+	ctx := context.Background()
+	files := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "shop", ProjectUID: "uid"}
+	if err := files.ApplyFiles(ctx, scope, []workspace.File{{Path: "main.go", Content: "old\n"}}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := files.ReadFile(ctx, scope, workspace.ReadOptions{Path: "main.go", MaxBytes: workspace.MaxReadMaxBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision, err := files.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldDigest := projectSandboxSyncDigest([]projectSandboxSyncFile{{Path: "main.go", Content: "old\n"}})
+	newDigest := projectSandboxSyncDigest([]projectSandboxSyncFile{{Path: "main.go", Content: "new\n"}})
+	state := newProjectEinoAssistantRunState()
+	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
+	state.RecordSourceMutation()
+	fakeSandbox := &sandboxClientFake{response: projectAssistantSandboxWorkspaceResponse{
+		SourceRevision: revision + 1,
+		SourceDigest:   newDigest,
+		Changes: []projectAssistantSandboxWorkspaceChange{{
+			Path: "main.go", Operation: string(workspace.ManagedFileReplace), Content: "new\n", ExpectedVersion: current.Version,
+		}},
+	}}
+	project := &aiv1alpha1.Project{}
+	project.Name = "shop"
+	project.UID = "project-uid"
+	project.Spec.Template = &aiv1alpha1.ProjectTemplateSpec{Name: "application"}
+	id := identity{orgUUID: "org", workspaceUUID: "ws"}
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), files, "", false)
+	var syncCalls atomic.Int32
+	server.developmentSyncAfterMutation = func(_ identity, _ *aiv1alpha1.Project, name string) error {
+		if name != projectActionWorkspaceSync {
+			t.Fatalf("sync action = %q, want %q", name, projectActionWorkspaceSync)
+		}
+		syncCalls.Add(1)
+		return nil
+	}
+	sandbox := &projectAssistantRunSandbox{
+		server: server, client: fakeSandbox, id: id, project: project, scope: scope, runState: state,
+		metadata: projectAssistantRunSandboxMetadata{
+			Status: "active", SourceRevision: revision, SourceDigest: oldDigest,
+			RemoteRevision: revision + 1, RemoteDigest: newDigest, RemoteCheckpointID: "baseline",
+		},
+	}
+	state.SetSandbox(sandbox)
+	tool, err := newProjectAssistantVerifyRuntimeGraphTool(projectAssistantWorkflowRunContext{
+		Server: server, Project: project, Identity: id, WorkspaceScope: scope, Workspace: files, RunState: state,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invokable, ok := tool.(einotool.InvokableTool)
+	if !ok {
+		t.Fatalf("runtime verification tool = %T, want InvokableTool", tool)
+	}
+	if _, err := invokable.InvokableRun(ctx, `{}`); err != nil {
+		t.Fatal(err)
+	}
+	if fakeSandbox.workspaceCalls != 2 {
+		t.Fatalf("runtime checkpoint worker calls = %d, want diff plus baseline create", fakeSandbox.workspaceCalls)
+	}
+	if syncCalls.Load() != 1 {
+		t.Fatalf("runtime checkpoint sync calls = %d, want one", syncCalls.Load())
+	}
+	if status, failure := state.DevelopmentSyncEvidence(1); status != "succeeded" || failure != "" {
+		t.Fatalf("runtime checkpoint sync evidence = (%q, %q), want succeeded", status, failure)
+	}
+}
+
+func TestVerifyDevelopmentRuntimeFailsClosedOnSandboxCheckpointConflict(t *testing.T) {
+	ctx := context.Background()
+	files := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "shop", ProjectUID: "uid"}
+	if err := files.ApplyFiles(ctx, scope, []workspace.File{{Path: "main.go", Content: "old\n"}}); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := files.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.CreateFile(ctx, scope, workspace.CreateOptions{Path: "drift.txt", Content: "drift"}); err != nil {
+		t.Fatal(err)
+	}
+	state := newProjectEinoAssistantRunState()
+	state.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation))
+	state.RecordSourceMutation()
+	project := &aiv1alpha1.Project{}
+	project.Name = "shop"
+	project.UID = "project-uid"
+	id := identity{orgUUID: "org", workspaceUUID: "ws"}
+	server := NewWithWorkspace(nil, store.NewMemoryStore(), files, "", false)
+	fakeSandbox := &sandboxClientFake{response: projectAssistantSandboxWorkspaceResponse{SourceRevision: revision + 1, SourceDigest: "new"}}
+	sandbox := &projectAssistantRunSandbox{
+		server: server, client: fakeSandbox, id: id, project: project, scope: scope, runState: state,
+		metadata: projectAssistantRunSandboxMetadata{
+			Status: "active", SourceRevision: revision,
+			SourceDigest:       projectSandboxSyncDigest([]projectSandboxSyncFile{{Path: "main.go", Content: "old\n"}}),
+			RemoteRevision:     revision + 1,
+			RemoteDigest:       "new",
+			RemoteCheckpointID: "baseline",
+		},
+	}
+	state.SetSandbox(sandbox)
+	tool, err := newProjectAssistantVerifyRuntimeGraphTool(projectAssistantWorkflowRunContext{
+		Server: server, Project: project, Identity: id, WorkspaceScope: scope, Workspace: files, RunState: state,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invokable, ok := tool.(einotool.InvokableTool)
+	if !ok {
+		t.Fatalf("runtime verification tool = %T, want InvokableTool", tool)
+	}
+	raw, err := invokable.InvokableRun(ctx, `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result projectAssistantRuntimeVerificationResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("decode runtime verification result: %v\n%s", err, raw)
+	}
+	if result.Status != "not_ready" || len(result.Blockers) != 1 || !strings.Contains(result.Blockers[0], "not current") {
+		t.Fatalf("runtime conflict result = %#v, want truthful not-current blocker", result)
+	}
+	if fakeSandbox.workspaceCalls != 0 {
+		t.Fatalf("conflicting runtime checkpoint called worker %d times, want zero", fakeSandbox.workspaceCalls)
+	}
+}
+
 func TestFormatProjectAssistantRuntimeVerificationRejectsEmptyProcessLogs(t *testing.T) {
 	result, err := formatProjectAssistantRuntimeVerification(context.Background(), &projectAssistantRuntimeVerificationContext{
 		CheckedMutationRevision: 4,
@@ -1122,7 +1544,7 @@ func TestFormatProjectAssistantRuntimeVerificationSeparatesRepositoryHandoffFrom
 		RequireProcessEvidence:  true,
 		Readiness: &projectAssistantReadinessWorkflowResult{
 			Status:     "needs_repository",
-			Summary:    "Project Demo is waiting for its Git repository to become ready.",
+			Summary:    "Project Demo is waiting for its Git repository to become ready for commit and CI handoff; authorized App Studio workspace authoring and coding-environment execution remain available.",
 			Repository: &projectAssistantWorkflowRepo{Status: projectRepositoryStatusProvisioning},
 		},
 		Runtime: &projectAssistantRuntimeWorkflowResult{
@@ -1261,7 +1683,7 @@ func TestFormatProjectAssistantReadinessUsesConversationalRepositorySummary(t *t
 		t.Fatalf("format readiness returned error: %v", err)
 	}
 	if result.Status != "needs_repository" ||
-		result.Summary != "Project Six String Shop is waiting for its Git repository to become ready." {
+		result.Summary != "Project Six String Shop is waiting for its Git repository to become ready for commit and CI handoff; authorized App Studio workspace authoring and coding-environment execution remain available." {
 		t.Fatalf("result = %#v, want conversational provisioning summary", result)
 	}
 }

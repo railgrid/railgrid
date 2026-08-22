@@ -58,6 +58,9 @@ helm upgrade --install app-studio oci://ghcr.io/faroshq/charts/faros-app-studio-
 | `providerKubeconfig.secretName` | `faros-provider-kubeconfig` |  |
 | `assistant` |  | Assistant chat behavior. |
 | `assistant.toolDisclosure` | `""` | How much tool-level detail the chat disclosures show. "" / "summary" (default) — tool names + per-tool sanitized summaries (paths, queries, counts — never raw file contents or secrets). "minimal" — fully opaque generic labels only ("Edited files"), for deployments whose users should not see imple… |
+| `assistant.runSandbox.mode` | `off` | Coding sandbox policy: off disables it, byo-only fails closed until a scoped BYO binding resolves, and force uses the platform provider only with explicit development mode. |
+| `assistant.runSandbox.developmentMode` | `false` | Explicit development-only authority required by force mode. |
+| `assistant.runSandbox.enabled` | `null` | Deprecated boolean. true maps to byo-only with a startup warning. |
 | `previewConsole` |  | Browser-console sharing starts automatically while the embedded preview is open. Until both signing fields are configured, App Studio stays available but reports console instrumentation as unavailable. The private key signs short-lived iframe capabilities. Its matching current and previous public… |
 | `previewConsole.enabled` | `true` |  |
 | `previewConsole.signingKeyID` | `""` |  |
@@ -95,4 +98,3 @@ helm upgrade --install app-studio oci://ghcr.io/faroshq/charts/faros-app-studio-
 | `nodeSelector` | `{}` |  |
 | `tolerations` | `[]` |  |
 | `affinity` | `{}` |  |
-

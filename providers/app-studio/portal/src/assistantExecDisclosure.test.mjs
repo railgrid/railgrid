@@ -23,6 +23,13 @@ test('parses approval disclosures while rejecting unknown statuses and fields', 
   assert.equal(parseAssistantExecDisclosure({ ...exec, rawArguments: 'token=secret' }), undefined)
 })
 
+test('infers failed exec state from a non-zero exit when nested status is absent or unknown', async () => {
+  const { assistantExecStatusPresentation } = await vite.ssrLoadModule('/src/assistantExecDisclosure.ts')
+  assert.equal(assistantExecStatusPresentation({ argv: ['make', 'test'], exitCode: 2 }, 'succeeded').label, 'Failed')
+  assert.equal(assistantExecStatusPresentation({ argv: ['make', 'test'], status: 'future_status', exitCode: 2 }).label, 'Failed')
+  assert.equal(assistantExecStatusPresentation({ argv: ['make', 'test'], exitCode: 0 }, 'succeeded').label, 'Ran')
+})
+
 test('renders approval metadata and bounded command output', async () => {
   const { default: AssistantExecDetails } = await vite.ssrLoadModule('/src/AssistantExecDetails.vue')
   const html = await renderToString(createSSRApp(AssistantExecDetails, {
@@ -54,6 +61,7 @@ test('renders completed activity status, duration, and bounded stdout/stderr', a
     exec: {
       component: 'frontend',
       argv: ['npm', 'run', 'build'],
+      workdir: 'web',
       status: 'failed',
       exitCode: 2,
       durationMs: 2040,
@@ -65,9 +73,21 @@ test('renders completed activity status, duration, and bounded stdout/stderr', a
   }))
   assert.match(html, /exit 2/)
   assert.match(html, /2\.0 s/)
+  assert.match(html, /Direct command/)
+  assert.match(html, />npm run build<\/div>/)
+  assert.doesNotMatch(html, /Shell|\$ /)
+  assert.match(html, /Sanitized argv/)
+  assert.match(html, /Relative cwd/)
+  assert.match(html, /web/)
+  assert.match(html, /Exit status/)
+  assert.match(html, /aria-label="Standard output"/)
+  assert.match(html, /aria-label="Standard error"/)
+  assert.match(html, /stdout/)
+  assert.match(html, /stderr/)
   assert.match(html, /building/)
   assert.match(html, /failed/)
-  assert.match(html, /Output truncated/)
+  assert.match(html, /Failed/)
+  assert.match(html, /Output was truncated to the bounded limit\./)
 })
 
 test('does not render unknown disclosure fields', async () => {

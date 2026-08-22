@@ -20,7 +20,9 @@ import (
 	"context"
 	"encoding/gob"
 	"encoding/json"
+	"path"
 	"strings"
+	"time"
 
 	"github.com/faroshq/provider-app-studio/workspace"
 )
@@ -44,9 +46,31 @@ type projectEinoAssistantSessionSnapshot struct {
 	// listed directory never reaches the development sandbox, and source
 	// written for a different toolchain than the one listed cannot run in it.
 	DevelopmentComponents map[string]projectTemplateComponent `json:"developmentComponents,omitempty"`
-	Memory                projectEinoAssistantSessionMemory   `json:"memory"`
-	LastBuildRun          *projectEinoAssistantSessionBuild   `json:"lastBuildRun,omitempty"`
-	ContextIssue          string                              `json:"contextIssue,omitempty"`
+	// CodingEnvironment is the server-owned contract for the active per-run
+	// authoring/execution workspace. It is intentionally separate from
+	// DevelopmentComponents: the latter describes a project's hosted preview
+	// binding, while this environment is the private universal sandbox used by
+	// the assistant turn itself.
+	CodingEnvironment *projectEinoAssistantCodingEnvironment `json:"codingEnvironment,omitempty"`
+	Memory            projectEinoAssistantSessionMemory      `json:"memory"`
+	LastBuildRun      *projectEinoAssistantSessionBuild      `json:"lastBuildRun,omitempty"`
+	ContextIssue      string                                 `json:"contextIssue,omitempty"`
+}
+
+// projectEinoAssistantCodingEnvironment is a server-authored, model-visible
+// capability contract for the active per-run universal coding sandbox. Keep
+// this contract small and declarative: it identifies where source and argv
+// execution live, not a production runtime or a public preview endpoint.
+type projectEinoAssistantCodingEnvironment struct {
+	Kind              string   `json:"kind"`
+	Status            string   `json:"status"`
+	Template          string   `json:"template"`
+	WorkspaceRoot     string   `json:"workspaceRoot"`
+	ExecComponent     string   `json:"execComponent"`
+	Toolchains        []string `json:"toolchains"`
+	SourcePersistence string   `json:"sourcePersistence"`
+	NetworkExposure   string   `json:"networkExposure"`
+	PublicPreview     bool     `json:"publicPreview"`
 }
 
 type projectEinoAssistantSessionMemory struct {
@@ -70,7 +94,7 @@ func init() {
 }
 
 func projectEinoAssistantSessionContextMessage(ctx context.Context, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) (chatMessage, bool) {
-	snapshot := projectEinoAssistantSnapshot(ctx, req)
+	snapshot := projectEinoAssistantSnapshot(ctx, req, runState)
 	if runState != nil {
 		runState.SetSessionSnapshot(snapshot)
 	}
@@ -84,7 +108,7 @@ func projectEinoAssistantSessionContextMessage(ctx context.Context, req projectA
 	}, true
 }
 
-func projectEinoAssistantSnapshot(ctx context.Context, req projectAssistantRunRequest) projectEinoAssistantSessionSnapshot {
+func projectEinoAssistantSnapshot(ctx context.Context, req projectAssistantRunRequest, runState *projectEinoAssistantRunState) projectEinoAssistantSessionSnapshot {
 	snapshot := projectEinoAssistantSessionSnapshot{
 		LastFileSnapshot: []string{},
 	}
@@ -111,8 +135,58 @@ func projectEinoAssistantSnapshot(ctx context.Context, req projectAssistantRunRe
 	snapshot.LastFileSnapshot = files
 	snapshot.RecommendedChecks = projectAssistantRecommendedRuntimeChecks(files)
 	snapshot.DevelopmentComponents = projectAssistantTemplateComponents(ctx, req)
+	snapshot.CodingEnvironment = projectEinoAssistantCodingEnvironmentForRun(runState)
 	snapshot.ContextIssue = issue
 	return snapshot
+}
+
+// projectEinoAssistantCodingEnvironmentForRun projects the active sandbox's
+// server-owned execution contract into model context. The run sandbox is
+// always provisioned from the universal template and exposes one component
+// rooted at the project workspace; still, read the component and lifecycle
+// status from the live sandbox so a missing or closed target fails closed.
+func projectEinoAssistantCodingEnvironmentForRun(runState *projectEinoAssistantRunState) *projectEinoAssistantCodingEnvironment {
+	if runState == nil {
+		return nil
+	}
+	sandbox := runState.Sandbox()
+	if sandbox == nil {
+		eligibility := runState.SandboxEligibility()
+		if eligibility == nil || !eligibility.Eligible {
+			return nil
+		}
+		return &projectEinoAssistantCodingEnvironment{
+			Kind: "assistant-run-sandbox", Status: "available", Template: projectAssistantRunSandboxDefaultTemplate,
+			WorkspaceRoot: ".", ExecComponent: projectAssistantRunSandboxWorkspaceVerb,
+			Toolchains: []string{"go", "node", "python"}, SourcePersistence: "project-workspace",
+			NetworkExposure: "internal", PublicPreview: false,
+		}
+	}
+	metadata := sandbox.metadataSnapshot()
+	status := strings.ToLower(strings.TrimSpace(metadata.Status))
+	if (status != "active" && status != "ready") || strings.TrimSpace(metadata.Template) != projectAssistantRunSandboxDefaultTemplate {
+		return nil
+	}
+	now := time.Now().UTC()
+	if (!metadata.HardExpiresAt.IsZero() && !now.Before(metadata.HardExpiresAt)) ||
+		(!metadata.IdleExpiresAt.IsZero() && !now.Before(metadata.IdleExpiresAt)) {
+		return nil
+	}
+	component, ok := sandbox.target.Components[projectAssistantRunSandboxWorkspaceVerb]
+	if !ok || path.Clean(strings.TrimSpace(component.WorkspacePath)) != "." {
+		return nil
+	}
+	return &projectEinoAssistantCodingEnvironment{
+		Kind:              "assistant-run-sandbox",
+		Status:            "ready",
+		Template:          projectAssistantRunSandboxDefaultTemplate,
+		WorkspaceRoot:     ".",
+		ExecComponent:     projectAssistantRunSandboxWorkspaceVerb,
+		Toolchains:        []string{"go", "node", "python"},
+		SourcePersistence: "project-workspace",
+		NetworkExposure:   "internal",
+		PublicPreview:     false,
+	}
 }
 
 // projectAssistantTemplateComponents reads the bound template's development
@@ -180,6 +254,11 @@ func cloneProjectEinoAssistantSessionSnapshot(src *projectEinoAssistantSessionSn
 	out := *src
 	out.LastFileSnapshot = append([]string(nil), src.LastFileSnapshot...)
 	out.RecommendedChecks = append([]string(nil), src.RecommendedChecks...)
+	if src.CodingEnvironment != nil {
+		environment := *src.CodingEnvironment
+		environment.Toolchains = append([]string(nil), src.CodingEnvironment.Toolchains...)
+		out.CodingEnvironment = &environment
+	}
 	if src.LastBuildRun != nil {
 		build := *src.LastBuildRun
 		out.LastBuildRun = &build

@@ -27,6 +27,10 @@ test('parses only the fresh allowlisted action feed contract', () => {
     feed.parseAssistantActionFeed([action({ status: 'skipped', title: 'Skipped duplicate read' })]),
     [action({ status: 'skipped', title: 'Skipped duplicate read' })],
   )
+  assert.deepEqual(
+    feed.parseAssistantActionFeed([action({ status: 'canceled', title: 'Canceled command' })]),
+    [action({ status: 'canceled', title: 'Canceled command' })],
+  )
   assert.deepEqual(feed.parseAssistantActionFeed([action({ tool: 'read_file' })]), [])
   assert.deepEqual(feed.parseAssistantActionFeed([action({ arguments: 'offset=200 limit=50' })]), [])
 })
@@ -166,6 +170,12 @@ test('suppresses plan events and rejects malformed diagnostics', () => {
     severity: 'error',
     title: 'Action failed',
   })]).length, 1)
+  assert.equal(feed.parseAssistantActionFeed([action({
+    kind: 'other',
+    status: 'canceled',
+    severity: 'normal',
+    title: 'Action canceled',
+  })]).length, 1)
   assert.deepEqual(feed.parseAssistantActionFeed([action({
     status: 'failed',
     severity: 'error',
@@ -202,6 +212,7 @@ test('never groups failures, rejected actions, diagnostics, or milestones', () =
   assert.equal(grouped.length, 3)
   assert.equal(feed.assistantActionStatusLabel('failed'), 'Failed')
   assert.equal(feed.assistantActionStatusLabel('rejected'), 'Rejected')
+  assert.equal(feed.assistantActionStatusLabel('canceled'), 'Canceled')
   assert.equal(feed.assistantActionStatusLabel('skipped'), 'Skipped')
 })
 

@@ -752,7 +752,15 @@ func projectAssistantRunDisplayStatus(status store.AssistantRunStatus, fallback 
 // both a fresh run and a resumed continuation. It derives the metadata revision
 // from the same transition that persists the run and message.
 func (s *Server) persistProjectAssistantDurableMetadata(ctx context.Context, accumulator *projectAssistantSnapshotAccumulator, workspaceScope workspace.Scope, state *projectAssistantDurableMetadataState, runStatus *store.AssistantRunStatus) error {
-	return accumulator.UpdateSnapshot(ctx, func(run *store.AssistantRun, message *store.Message) {
+	return s.persistProjectAssistantDurableMetadataWith(ctx, accumulator.UpdateSnapshot, workspaceScope, state, runStatus)
+}
+
+func (s *Server) persistProjectAssistantStoppingToolMetadata(ctx context.Context, accumulator *projectAssistantSnapshotAccumulator, workspaceScope workspace.Scope, state *projectAssistantDurableMetadataState) error {
+	return s.persistProjectAssistantDurableMetadataWith(ctx, accumulator.UpdateStoppingToolSnapshot, workspaceScope, state, nil)
+}
+
+func (s *Server) persistProjectAssistantDurableMetadataWith(ctx context.Context, update func(context.Context, func(*store.AssistantRun, *store.Message)) error, workspaceScope workspace.Scope, state *projectAssistantDurableMetadataState, runStatus *store.AssistantRunStatus) error {
+	return update(ctx, func(run *store.AssistantRun, message *store.Message) {
 		if runStatus != nil {
 			run.Status = *runStatus
 			run.Error = append(json.RawMessage(nil), state.terminalError...)
@@ -939,7 +947,12 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 			}
 			syncSteeringSegment()
 			state.upsertToolCall(event)
-			recordSnapshotErr(persistMetadata(ctx, nil))
+			recordSnapshotErr(persistProjectAssistantToolCallSnapshot(ctx, func(persistCtx context.Context) error {
+				if projectAssistantToolCallCanSettleStopping(event.Status) {
+					return s.persistProjectAssistantStoppingToolMetadata(persistCtx, accumulator, workspaceScope, state)
+				}
+				return s.persistProjectAssistantDurableMetadata(persistCtx, accumulator, workspaceScope, state, nil)
+			}))
 		},
 		OnAssistantEvent: func(event projectAssistantEvent) {
 			callbackMu.Lock()
@@ -1121,6 +1134,33 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 		if committed, ok := accumulator.CommittedRun(); ok {
 			accumulator.supervisor.log("failed", projectMessageScope(id.orgUUID, id.workspaceUUID, project), committed)
 		}
+	}
+}
+
+// persistProjectAssistantToolCallSnapshot preserves a terminal tool event that
+// races with a user stop. The run context is canceled before an in-flight tool
+// returns its bounded canceled result; using that canceled context would leave
+// the durable action row at "running", which terminal projection can only
+// classify as a generic failure. Detach only this already-produced tool event,
+// and retain the normal bounded persistence timeout.
+func persistProjectAssistantToolCallSnapshot(ctx context.Context, persist func(context.Context) error) error {
+	if persist == nil {
+		return nil
+	}
+	if ctx == nil || ctx.Err() == nil {
+		return persist(ctx)
+	}
+	persistCtx, cancel := detachedProjectPersistenceContext(ctx)
+	defer cancel()
+	return persist(persistCtx)
+}
+
+func projectAssistantToolCallCanSettleStopping(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "succeeded", "failed", "canceled", "cancelled", "timed_out", "blocked", "rejected":
+		return true
+	default:
+		return false
 	}
 }
 

@@ -26,30 +26,35 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/eino-examples/adk/common/tool/graphtool"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
+	"github.com/eino-contrib/jsonschema"
 
 	"github.com/faroshq/provider-app-studio/workspace"
 )
 
 const (
-	projectAssistantExecDefaultTimeout   = 30
-	projectAssistantExecMaxTimeout       = 120
-	projectAssistantExecMaxArgv          = 32
-	projectAssistantExecMaxArgBytes      = 256
-	projectAssistantExecMaxWorkdir       = 256
-	projectAssistantExecMaxSnapshot      = 8 << 20
-	projectAssistantExecMaxOutput        = 1 << 20
-	projectAssistantExecPollInterval     = 250 * time.Millisecond
-	projectAssistantExecPollTimeout      = 2 * time.Minute
-	projectAssistantExecCancelTimeout    = 5 * time.Second
-	projectAssistantExecSnapshotAttempts = 3
+	projectAssistantExecDefaultTimeout    = 30
+	projectAssistantExecMaxTimeout        = 120
+	projectAssistantExecMaxArgv           = 32
+	projectAssistantExecMaxArgBytes       = 256
+	projectAssistantExecMaxWorkdir        = 256
+	projectAssistantExecMaxSnapshot       = 8 << 20
+	projectAssistantExecMaxOutput         = 1 << 20
+	projectAssistantExecPollInterval      = 250 * time.Millisecond
+	projectAssistantExecPollTimeout       = 2 * time.Minute
+	projectAssistantExecCancelTimeout     = 5 * time.Second
+	projectAssistantExecSnapshotAttempts  = 3
+	projectAssistantExecStartRetryTimeout = 10 * time.Second
+	projectAssistantExecStartRetryPoll    = 250 * time.Millisecond
 )
 
 var errProjectAssistantExecRevisionChanged = errors.New("workspace mutation revision changed while preparing the execution snapshot")
@@ -115,9 +120,9 @@ type projectAssistantExecCommandResult struct {
 
 // projectAssistantExecMetadata is the allowlisted, public execution contract
 // shared by approval interrupts and action-feed items. It intentionally omits
-// environment, credentials, image, and raw process output; command output can
-// contain application secrets and remains available only to the model/tool
-// boundary under the existing bounded result contract.
+// environment, credentials, image, and raw session identity. Terminal stdout
+// and stderr are copied only from the server-owned, bounded result envelope and
+// are bounded again before entering the public thread/action projection.
 type projectAssistantExecMetadata struct {
 	Component        string   `json:"component,omitempty"`
 	Argv             []string `json:"argv,omitempty"`
@@ -130,7 +135,51 @@ type projectAssistantExecMetadata struct {
 	Summary          string   `json:"summary,omitempty"`
 	ExitCode         *int     `json:"exitCode,omitempty"`
 	DurationMS       int64    `json:"durationMs,omitempty"`
+	Stdout           []string `json:"stdout,omitempty"`
+	Stderr           []string `json:"stderr,omitempty"`
 	OutputTruncated  bool     `json:"outputTruncated,omitempty"`
+}
+
+// projectAssistantExecCommandToolSpecForRun keeps the ordinary multi-component
+// workflow contract intact while making an active run sandbox's single
+// component explicit to the model. The run sandbox is deliberately backed by
+// the universal template's canonical "workspace" component; this is a
+// presentation constraint, not a new execution authority or component alias.
+func projectAssistantExecCommandToolSpecForRun(spec projectAssistantToolSpec, runCtx projectAssistantWorkflowRunContext) projectAssistantToolSpec {
+	if projectToolBaseName(spec.Name) != projectToolExecCommand {
+		return spec
+	}
+	if runCtx.RunState == nil || (!runCtx.RunState.SandboxRemoteEnabled() && runCtx.RunState.Sandbox() == nil) {
+		return spec
+	}
+	spec.Description = "Run one approved compiler, test, or lint argv in the synchronized active per-run universal coding sandbox. It supports Go, Node.js, and Python, exposes exactly one component named \"workspace\", and has no public preview. ALWAYS pass component=\"workspace\"; do not use app, frontend, backend, or any other component name. Pass argv tokens rather than a shell string; App Studio forwards no credentials or environment overrides. Commands MUST NOT mutate source files: use App Studio source tools for changes, and run formatters in check/diff mode (for example, gofmt -d, never gofmt -w). Direct command writes are not persisted and invalidate the synchronized source evidence required by later commands."
+	spec.Parameters = projectAssistantExecCommandParametersForRun(spec.Parameters)
+	return spec
+}
+
+func projectAssistantExecCommandParametersForRun(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err != nil {
+		return raw
+	}
+	properties, ok := document["properties"].(map[string]any)
+	if !ok {
+		return raw
+	}
+	component, ok := properties["component"].(map[string]any)
+	if !ok {
+		return raw
+	}
+	component["description"] = "The active per-run universal sandbox has exactly one component: workspace. Always use workspace."
+	component["enum"] = []any{projectAssistantRunSandboxWorkspaceVerb}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return raw
+	}
+	return encoded
 }
 
 func cloneProjectAssistantExecMetadata(src *projectAssistantExecMetadata) *projectAssistantExecMetadata {
@@ -138,7 +187,12 @@ func cloneProjectAssistantExecMetadata(src *projectAssistantExecMetadata) *proje
 		return nil
 	}
 	out := *src
-	out.Argv = append([]string(nil), src.Argv...)
+	out.Argv = projectAssistantExecPublicArgv(src.Argv)
+	var stdoutTruncated, stderrTruncated bool
+	out.Stdout, stdoutTruncated = projectAssistantExecPublicOutput(src.Stdout)
+	out.Stderr, stderrTruncated = projectAssistantExecPublicOutput(src.Stderr)
+	out.Summary = trimProjectAssistantWorkflowString(projectAssistantExecRedactSecrets(src.Summary), 240)
+	out.OutputTruncated = src.OutputTruncated || stdoutTruncated || stderrTruncated
 	if src.ExitCode != nil {
 		code := *src.ExitCode
 		out.ExitCode = &code
@@ -194,15 +248,32 @@ func mergeProjectAssistantExecMetadata(existing, next *projectAssistantExecMetad
 	if out.DurationMS == 0 {
 		out.DurationMS = existing.DurationMS
 	}
+	if len(out.Stdout) == 0 {
+		out.Stdout = append([]string(nil), existing.Stdout...)
+	}
+	if len(out.Stderr) == 0 {
+		out.Stderr = append([]string(nil), existing.Stderr...)
+	}
 	if !out.OutputTruncated {
 		out.OutputTruncated = existing.OutputTruncated
 	}
+	// A checkpoint assembled from mixed lifecycle events can fill fields from
+	// either side of the merge. Re-run the public boundary after those
+	// fallbacks so a malformed/internal event cannot reintroduce raw output or
+	// credential-bearing argv into the action projection.
+	out.Argv = projectAssistantExecPublicArgv(out.Argv)
+	out.Summary = trimProjectAssistantWorkflowString(projectAssistantExecRedactSecrets(out.Summary), 240)
+	var stdoutTruncated, stderrTruncated bool
+	out.Stdout, stdoutTruncated = projectAssistantExecPublicOutput(out.Stdout)
+	out.Stderr, stderrTruncated = projectAssistantExecPublicOutput(out.Stderr)
+	out.OutputTruncated = out.OutputTruncated || stdoutTruncated || stderrTruncated
 	return out
 }
 
 // projectAssistantExecMetadataForToolArguments projects only the execution
 // contract that the portal needs. It never carries environment values or raw
-// stdout/stderr, and masks argv tokens that look like credential material.
+// session identity, masks argv tokens that look like credential material, and
+// bounds terminal output independently from the model-facing result.
 func projectAssistantExecMetadataForToolArguments(name string, args map[string]any, result string, status string) *projectAssistantExecMetadata {
 	if projectToolBaseName(name) != projectToolExecCommand {
 		return nil
@@ -239,11 +310,29 @@ func projectAssistantExecMetadataForToolArguments(name string, args map[string]a
 	if commandResult.Status != "" {
 		metadata.Status = commandResult.Status
 	}
-	metadata.Summary = trimProjectAssistantWorkflowString(commandResult.Summary, 240)
+	metadata.Summary = trimProjectAssistantWorkflowString(projectAssistantExecRedactSecrets(commandResult.Summary), 240)
 	metadata.ExitCode = commandResult.ExitCode
 	metadata.DurationMS = commandResult.DurationMS
-	metadata.OutputTruncated = commandResult.OutputTruncated
+	stdout, stdoutTruncated := projectAssistantExecPublicOutput(commandResult.Stdout)
+	stderr, stderrTruncated := projectAssistantExecPublicOutput(commandResult.Stderr)
+	metadata.Stdout = stdout
+	metadata.Stderr = stderr
+	metadata.OutputTruncated = commandResult.OutputTruncated || stdoutTruncated || stderrTruncated
 	return metadata
+}
+
+func projectAssistantExecPublicOutput(lines []string) ([]string, bool) {
+	if len(lines) == 0 {
+		return nil, false
+	}
+	raw := strings.Join(lines, "\n")
+	sanitized := strings.ReplaceAll(raw, "\x00", "\ufffd")
+	redacted := projectAssistantExecRedactSecrets(sanitized)
+	bounded, truncated := boundedProjectAssistantExecOutput(redacted)
+	// Sanitization is not truncation. Preserve the server's explicit
+	// outputTruncated flag separately and report only whether the bounded
+	// projection had to discard bytes.
+	return bounded, truncated
 }
 
 func projectAssistantExecPublicArgv(argv []string) []string {
@@ -252,8 +341,15 @@ func projectAssistantExecPublicArgv(argv []string) []string {
 	for index, token := range out {
 		lower := strings.ToLower(strings.TrimSpace(token))
 		if redactNext {
-			out[index] = "[redacted]"
+			out[index] = projectAssistantExecRedactSecrets(token)
+			if out[index] == token {
+				out[index] = "[redacted]"
+			}
 			redactNext = false
+			continue
+		}
+		if redacted := projectAssistantExecRedactSecrets(token); redacted != token {
+			out[index] = redacted
 			continue
 		}
 		if projectAssistantExecSensitiveArg(lower) {
@@ -274,7 +370,7 @@ func projectAssistantExecPublicArgv(argv []string) []string {
 
 func projectAssistantExecSensitiveArg(value string) bool {
 	value = strings.TrimLeft(value, "-")
-	for _, marker := range []string{"token", "password", "passwd", "secret", "apikey", "api-key", "authorization", "credential", "private-key", "cookie"} {
+	for _, marker := range []string{"token", "password", "passwd", "secret", "apikey", "api-key", "api_key", "access-token", "access_token", "authorization", "credential", "private-key", "private_key", "secret-key", "secret_key", "cookie"} {
 		if value == marker || strings.HasPrefix(value, marker+"=") {
 			return true
 		}
@@ -283,7 +379,7 @@ func projectAssistantExecSensitiveArg(value string) bool {
 }
 
 func projectAssistantExecSensitiveValue(value string) bool {
-	for _, marker := range []string{"secret=", "password=", "token=", "bearer "} {
+	for _, marker := range []string{"secret=", "password=", "token=", "api_key=", "api-key=", "access_token=", "access-token=", "authorization=", "cookie=", "bearer "} {
 		if strings.Contains(value, marker) {
 			return true
 		}
@@ -291,23 +387,91 @@ func projectAssistantExecSensitiveValue(value string) bool {
 	return false
 }
 
+// These patterns include the complete value token so ReplaceAllStringFunc can
+// retain JSON/string quoting while replacing only the secret contents. A
+// replacement such as {"token":"[redacted]"} must remain valid and readable
+// rather than consuming the closing quote or object delimiter.
+var projectAssistantExecKeyValueSecretPattern = regexp.MustCompile(`(?i)(\b(?:token|authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|password|passwd|secret|credential|private[_-]?key|secret[_-]?key|cookie)\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|(?:Bearer\s+)?[^\s,;{}\[\]"']+)`)
+var projectAssistantExecEnvSecretPattern = regexp.MustCompile(`(?i)(\b[A-Z][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|COOKIE)\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|(?:Bearer\s+)?[^\s,;{}\[\]"']+)`)
+
+var projectAssistantExecSecretPatterns = []*regexp.Regexp{
+	// Authorization headers and query-string credentials are frequently
+	// emitted without a key/value delimiter around the secret itself.
+	regexp.MustCompile(`(?i)(\bBearer\s+)([A-Za-z0-9._~+/=-]{8,})`),
+	regexp.MustCompile(`(?i)([?&](?:token|api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization|credential)=)([^&\s,;{}\[\]"']+)`),
+	// Avoid returning private-key material even when it is presented as a
+	// multiline PEM block rather than a key/value pair.
+	regexp.MustCompile(`(?is)(-----BEGIN [^-]*PRIVATE KEY-----).*?(-----END [^-]*PRIVATE KEY-----)`),
+	// A few provider ecosystems use recognizable opaque key prefixes without
+	// printing a field name (for example sk-... or ghp-...).
+	regexp.MustCompile(`(?i)\b(?:sk|pk)[_-][A-Za-z0-9_-]{12,}\b|\b(?:ghp|github_pat)[_-][A-Za-z0-9_-]{12,}\b|\bxox[baprs][-_][A-Za-z0-9_-]{12,}\b|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bAIza[A-Za-z0-9_-]{20,}\b`),
+}
+
+func projectAssistantExecRedactKeyValueSecrets(value string, pattern *regexp.Regexp) string {
+	return pattern.ReplaceAllStringFunc(value, func(match string) string {
+		submatches := pattern.FindStringSubmatch(match)
+		if len(submatches) < 2 {
+			return "[redacted]"
+		}
+		prefix := submatches[1]
+		secret := strings.TrimSpace(match[len(prefix):])
+		if len(secret) >= 2 && ((secret[0] == '"' && secret[len(secret)-1] == '"') || (secret[0] == '\'' && secret[len(secret)-1] == '\'')) {
+			return prefix + secret[:1] + "[redacted]" + secret[len(secret)-1:]
+		}
+		return prefix + "[redacted]"
+	})
+}
+
+func projectAssistantExecRedactSecrets(value string) string {
+	redacted := projectAssistantExecRedactKeyValueSecrets(value, projectAssistantExecKeyValueSecretPattern)
+	redacted = projectAssistantExecRedactKeyValueSecrets(redacted, projectAssistantExecEnvSecretPattern)
+	for index, pattern := range projectAssistantExecSecretPatterns {
+		replacement := "$1[redacted]"
+		if index == len(projectAssistantExecSecretPatterns)-2 {
+			replacement = "$1[redacted]$2"
+		}
+		if index == len(projectAssistantExecSecretPatterns)-1 {
+			replacement = "[redacted]"
+		}
+		redacted = pattern.ReplaceAllString(redacted, replacement)
+	}
+	return redacted
+}
+
 func newProjectAssistantExecCommandGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
 	workflow := compose.NewWorkflow[*projectAssistantExecCommandInput, *projectAssistantExecCommandResult]()
 	workflow.AddLambdaNode("exec-command", compose.InvokableLambda(execProjectAssistantCommand(runCtx))).
 		AddInput(compose.START)
 	workflow.End().AddInput("exec-command")
+	spec, ok := projectAssistantWorkflowToolSpec(projectToolExecCommand)
+	if !ok {
+		return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolExecCommand)
+	}
+	presentation := projectAssistantExecCommandToolSpecForRun(spec, runCtx)
 	inner, err := graphtool.NewInvokableGraphTool(
 		workflow,
 		projectToolExecCommand,
-		"Run one approved compiler, test, or lint argv in the synchronized development runtime for one component. App Studio sends an expected source revision/digest rather than a second source snapshot; no App Studio credentials or environment overrides are forwarded, and the command cannot write back to App Studio source.",
+		presentation.Description,
 		compose.WithGraphName("app-studio-exec-command"),
 	)
 	if err != nil {
 		return nil, err
 	}
-	spec, ok := projectAssistantWorkflowToolSpec(projectToolExecCommand)
-	if !ok {
-		return nil, fmt.Errorf("project assistant workflow spec %q is not configured", projectToolExecCommand)
+	if presentation.Description != spec.Description || string(presentation.Parameters) != string(spec.Parameters) {
+		info, infoErr := inner.Info(context.Background())
+		if infoErr != nil {
+			return nil, infoErr
+		}
+		info.Desc = presentation.Description
+		if info.Extra == nil {
+			info.Extra = map[string]any{}
+		}
+		info.Extra[projectEinoToolParametersExtraKey] = string(presentation.Parameters)
+		var parameters jsonschema.Schema
+		if err := json.Unmarshal(presentation.Parameters, &parameters); err != nil {
+			return nil, fmt.Errorf("decode exec_command sandbox parameters: %w", err)
+		}
+		info.ParamsOneOf = schema.NewParamsOneOfByJSONSchema(&parameters)
 	}
 	permitted, err := applyProjectAssistantGraphToolPermission(inner, spec, runCtx)
 	if err != nil {
@@ -402,6 +566,16 @@ func execProjectAssistantCommand(runCtx projectAssistantWorkflowRunContext) func
 		if len(blockers) > 0 {
 			return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was rejected.", Blockers: blockers}, nil
 		}
+		sandbox, sandboxErr := current.RunState.EnsureSandbox(ctx)
+		if sandboxErr != nil {
+			if errors.Is(sandboxErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+				return &projectAssistantExecCommandResult{Status: "canceled", Summary: "Command canceled before the coding sandbox was ready."}, nil
+			}
+			return &projectAssistantExecCommandResult{Status: "failed", Summary: "Coding sandbox setup failed: " + sandboxErr.Error()}, nil
+		}
+		if sandbox != nil {
+			return execProjectAssistantRunSandboxCommand(ctx, current, sandbox, args)
+		}
 		server, id, target, blocked := projectAssistantRuntimeCallContext(ctx, current)
 		if blocked != nil {
 			return &projectAssistantExecCommandResult{Status: blocked.Status, Summary: blocked.Summary, Blockers: blocked.Blockers}, nil
@@ -440,7 +614,9 @@ func execProjectAssistantCommand(runCtx projectAssistantWorkflowRunContext) func
 		}
 		requestID := projectAssistantExecRequestID(current.AssistantRunID, compose.GetToolCallID(ctx))
 		start := projectSandboxExecRequest{Action: "start", RequestID: requestID, Argv: args.Argv, Workdir: args.Workdir, TimeoutSeconds: args.TimeoutSeconds, SourceRevision: sourceRevision, SourceDigest: digest}
-		started, err := projectAssistantExecCall(ctx, server, id, target.dataPlaneRefFor(component), start)
+		started, err := retryProjectAssistantExecStart(ctx, start, func(startCtx context.Context, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
+			return projectAssistantExecCall(startCtx, server, id, target.dataPlaneRefFor(component), request)
+		})
 		if err != nil {
 			return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution could not start: " + err.Error(), Component: component, SourceRevision: sourceRevision, SourceDigest: digest, SyncStatus: syncStatus}, nil
 		}
@@ -449,16 +625,16 @@ func execProjectAssistantCommand(runCtx projectAssistantWorkflowRunContext) func
 		}
 		startedAt := time.Now()
 		result := started
-		cancelSent := false
+		var cancelOnce sync.Once
 		cancelSession := func() {
-			if cancelSent {
-				return
-			}
-			cancelSent = true
-			cancelCtx, cancel := context.WithTimeout(context.Background(), projectAssistantExecCancelTimeout)
-			defer cancel()
-			_, _ = projectAssistantExecCall(cancelCtx, server, id, target.dataPlaneRefFor(component), projectSandboxExecRequest{Action: "cancel", SessionID: started.SessionID, RequestID: requestID})
+			cancelOnce.Do(func() {
+				cancelCtx, cancel := context.WithTimeout(context.Background(), projectAssistantExecCancelTimeout)
+				defer cancel()
+				_, _ = projectAssistantExecCall(cancelCtx, server, id, target.dataPlaneRefFor(component), projectSandboxExecRequest{Action: "cancel", SessionID: started.SessionID, RequestID: requestID})
+			})
 		}
+		stopRemoteCancel := context.AfterFunc(ctx, cancelSession)
+		defer stopRemoteCancel()
 		defer func() {
 			// A request can be canceled while the HTTP poll is in flight. Keep
 			// the remote process bounded even when that poll returns ctx.Err
@@ -490,6 +666,80 @@ func execProjectAssistantCommand(runCtx projectAssistantWorkflowRunContext) func
 		}
 		return projectAssistantExecResult(result, component, sourceRevision, digest, syncStatus, time.Since(startedAt), ""), nil
 	}
+}
+
+func execProjectAssistantRunSandboxCommand(ctx context.Context, current projectAssistantWorkflowRunContext, sandbox *projectAssistantRunSandbox, args *projectAssistantExecCommandInput) (*projectAssistantExecCommandResult, error) {
+	// The universal run sandbox is intentionally a single-component execution
+	// target. Keep this server-side fence independent from the target metadata:
+	// a malformed or future template must not turn an assistant-run sandbox
+	// into a multi-component command router merely by adding another map entry.
+	if args == nil || args.Component != projectAssistantRunSandboxWorkspaceVerb {
+		return &projectAssistantExecCommandResult{
+			Status:   "blocked",
+			Summary:  "Command execution was rejected.",
+			Blockers: []string{fmt.Sprintf("run sandbox execution only permits component %q", projectAssistantRunSandboxWorkspaceVerb)},
+		}, nil
+	}
+	component, _, err := projectAssistantExecComponent(sandbox.target, args.Component)
+	if err != nil {
+		return &projectAssistantExecCommandResult{Status: "blocked", Summary: "Command execution was rejected.", Blockers: []string{err.Error()}}, nil
+	}
+	requestID := projectAssistantExecRequestID(current.AssistantRunID, compose.GetToolCallID(ctx))
+	start := projectSandboxExecRequest{Action: "start", RequestID: requestID, Argv: args.Argv, Workdir: args.Workdir, TimeoutSeconds: args.TimeoutSeconds}
+	started, err := sandbox.exec(ctx, sandbox.target.dataPlaneRefFor(component), start)
+	if err != nil {
+		return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution could not start: " + err.Error(), Component: component}, nil
+	}
+	if started.SessionID == "" {
+		return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution returned no session ID.", Component: component}, nil
+	}
+	startedAt := time.Now()
+	result := started
+	var cancelOnce sync.Once
+	cancelSession := func() {
+		cancelOnce.Do(func() {
+			cancelCtx, cancel := context.WithTimeout(context.Background(), projectAssistantExecCancelTimeout)
+			defer cancel()
+			_, _ = sandbox.exec(cancelCtx, sandbox.target.dataPlaneRefFor(component), projectSandboxExecRequest{Action: "cancel", SessionID: started.SessionID, RequestID: requestID})
+		})
+	}
+	stopRemoteCancel := context.AfterFunc(ctx, cancelSession)
+	defer stopRemoteCancel()
+	defer func() {
+		if !projectAssistantExecTerminal(result.State) {
+			cancelSession()
+		}
+	}()
+	deadline := time.NewTimer(projectAssistantExecPollTimeout)
+	defer deadline.Stop()
+	for !projectAssistantExecTerminal(result.State) {
+		select {
+		case <-ctx.Done():
+			cancelSession()
+			meta := sandbox.metadataSnapshot()
+			revision, digest := projectAssistantSandboxRemoteFence(meta)
+			return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "canceled"), nil
+		case <-deadline.C:
+			cancelSession()
+			meta := sandbox.metadataSnapshot()
+			revision, digest := projectAssistantSandboxRemoteFence(meta)
+			return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "timed_out"), nil
+		case <-time.After(projectAssistantExecPollInterval):
+		}
+		result, err = sandbox.exec(ctx, sandbox.target.dataPlaneRefFor(component), projectSandboxExecRequest{Action: "poll", SessionID: started.SessionID, RequestID: requestID})
+		if err != nil {
+			if ctx.Err() != nil {
+				cancelSession()
+				meta := sandbox.metadataSnapshot()
+				revision, digest := projectAssistantSandboxRemoteFence(meta)
+				return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), "canceled"), nil
+			}
+			return &projectAssistantExecCommandResult{Status: "error", Summary: "Command execution polling failed: " + err.Error(), Component: component, SessionID: started.SessionID}, nil
+		}
+	}
+	meta := sandbox.metadataSnapshot()
+	revision, digest := projectAssistantSandboxRemoteFence(meta)
+	return projectAssistantExecResult(result, component, revision, digest, "succeeded", time.Since(startedAt), ""), nil
 }
 
 func projectAssistantExecResult(raw projectSandboxExecResponse, component string, revision uint64, digest, syncStatus string, duration time.Duration, override string) *projectAssistantExecCommandResult {
@@ -536,6 +786,89 @@ func boundedProjectAssistantExecOutput(raw string) ([]string, bool) {
 	return lines, truncated
 }
 
+type projectAssistantExecHTTPError struct {
+	status int
+	detail string
+}
+
+func (e *projectAssistantExecHTTPError) Error() string {
+	if e == nil {
+		return "exec endpoint failed"
+	}
+	return fmt.Sprintf("exec endpoint returned %d: %s", e.status, e.detail)
+}
+
+type projectAssistantExecUpstreamUnavailableError struct {
+	cause error
+}
+
+func (e *projectAssistantExecUpstreamUnavailableError) Error() string {
+	if e == nil || e.cause == nil {
+		return "exec upstream unavailable"
+	}
+	return e.cause.Error()
+}
+
+func (e *projectAssistantExecUpstreamUnavailableError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func projectAssistantExecLooksUpstreamUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "context canceled") || strings.Contains(strings.ToLower(err.Error()), "context deadline exceeded") {
+		return false
+	}
+	detail := strings.ToLower(err.Error())
+	return strings.Contains(detail, "upstream unavailable") || strings.Contains(detail, "connection refused") || strings.Contains(detail, "service unavailable")
+}
+
+func projectAssistantExecStartRetryable(err error) bool {
+	var statusErr *projectAssistantExecHTTPError
+	if errors.As(err, &statusErr) {
+		return statusErr.status == http.StatusBadGateway || statusErr.status == http.StatusServiceUnavailable
+	}
+	var unavailableErr *projectAssistantExecUpstreamUnavailableError
+	return errors.As(err, &unavailableErr)
+}
+
+// retryProjectAssistantExecStart retries only the initial idempotent START
+// request. The caller supplies one immutable request, including its requestID,
+// so every attempt uses the same idempotency key. Poll and cancel never pass
+// through this helper.
+func retryProjectAssistantExecStart(ctx context.Context, request projectSandboxExecRequest, start func(context.Context, projectSandboxExecRequest) (projectSandboxExecResponse, error)) (projectSandboxExecResponse, error) {
+	if start == nil {
+		return projectSandboxExecResponse{}, errors.New("exec start function is not configured")
+	}
+	retryCtx, cancel := context.WithTimeout(ctx, projectAssistantExecStartRetryTimeout)
+	defer cancel()
+	ticker := time.NewTicker(projectAssistantExecStartRetryPoll)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		response, err := start(retryCtx, request)
+		if err == nil {
+			return response, nil
+		}
+		if !projectAssistantExecStartRetryable(err) {
+			return projectSandboxExecResponse{}, err
+		}
+		lastErr = err
+		select {
+		case <-retryCtx.Done():
+			if ctx.Err() != nil {
+				return projectSandboxExecResponse{}, ctx.Err()
+			}
+			return projectSandboxExecResponse{}, fmt.Errorf("exec start did not become available within %s: %w", projectAssistantExecStartRetryTimeout, lastErr)
+		case <-ticker.C:
+		}
+	}
+}
+
 func projectAssistantExecCall(ctx context.Context, server *Server, id identity, ref dataPlaneRef, request projectSandboxExecRequest) (projectSandboxExecResponse, error) {
 	payload, err := json.Marshal(request)
 	if err != nil {
@@ -543,10 +876,13 @@ func projectAssistantExecCall(ctx context.Context, server *Server, id identity, 
 	}
 	body, status, err := server.dataPlanePostBoundedWithHeaders(ctx, id, ref, dataPlaneVerbExec, payload, projectAssistantExecMaxOutput*2, http.Header{"Idempotency-Key": []string{request.RequestID}})
 	if err != nil {
+		if projectAssistantExecLooksUpstreamUnavailable(err) {
+			return projectSandboxExecResponse{}, &projectAssistantExecUpstreamUnavailableError{cause: err}
+		}
 		return projectSandboxExecResponse{}, err
 	}
 	if status < 200 || status >= 300 {
-		return projectSandboxExecResponse{}, fmt.Errorf("exec endpoint returned %d: %s", status, truncateProjectToolInfo(string(body)))
+		return projectSandboxExecResponse{}, &projectAssistantExecHTTPError{status: status, detail: truncateProjectToolInfo(string(body))}
 	}
 	var response projectSandboxExecResponse
 	if err := json.Unmarshal(body, &response); err != nil {

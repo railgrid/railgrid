@@ -327,13 +327,29 @@ func (s *Server) syncProjectDevelopmentTarget(ctx context.Context, c *asclient.C
 	return aggregated, nil
 }
 
+// projectDevelopmentSyncHTTPError preserves the upstream status so the
+// run-sandbox seed path can retry only readiness races. Other callers retain
+// the same human-readable error string through Error.
+type projectDevelopmentSyncHTTPError struct {
+	component string
+	status    int
+	detail    string
+}
+
+func (e *projectDevelopmentSyncHTTPError) Error() string {
+	if e == nil {
+		return "development sync failed"
+	}
+	return fmt.Sprintf("component %s sync returned %d: %s", e.component, e.status, e.detail)
+}
+
 func validateProjectComponentSyncResponse(component string, status int, body []byte) error {
 	boundedBody := strings.TrimSpace(string(body))
 	if len(boundedBody) > projectDevelopmentSyncErrorMaxBytes {
 		boundedBody = boundedBody[:projectDevelopmentSyncErrorMaxBytes] + "..."
 	}
 	if status < 200 || status >= 300 {
-		return fmt.Errorf("component %s sync returned %d: %s", component, status, boundedBody)
+		return &projectDevelopmentSyncHTTPError{component: component, status: status, detail: boundedBody}
 	}
 	var result projectSandboxSyncResult
 	if err := json.Unmarshal(body, &result); err != nil {

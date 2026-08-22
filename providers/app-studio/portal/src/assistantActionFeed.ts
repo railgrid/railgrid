@@ -13,7 +13,7 @@ export interface AssistantActionLogItem extends ProjectAssistantActionFeedItem {
 }
 
 const kinds = new Set<ProjectAssistantActionKind>(['inspect', 'clarify', 'edit', 'run', 'commit', 'plan', 'other'])
-const statuses = new Set<ProjectAssistantActionStatus>(['running', 'waiting', 'succeeded', 'skipped', 'failed', 'rejected', 'retrying', 'recovered'])
+const statuses = new Set<ProjectAssistantActionStatus>(['running', 'waiting', 'succeeded', 'skipped', 'failed', 'rejected', 'canceled', 'retrying', 'recovered'])
 const severities = new Set<ProjectAssistantActionSeverity>(['normal', 'attention', 'error'])
 const diagnosticCategories = new Set<ProjectAssistantDiagnosticCategory>(['timeout', 'permission', 'validation', 'runtime', 'provider', 'unknown'])
 const itemKeys = new Set(['id', 'kind', 'status', 'title', 'target', 'outcome', 'count', 'severity', 'groupKey', 'groupTitle', 'sequence', 'recoveryOf', 'diagnostic', 'exec'])
@@ -100,6 +100,7 @@ export function parseAssistantActionFeed(value: unknown): ProjectAssistantAction
       || parsed.status === 'waiting'
       || parsed.status === 'failed'
       || parsed.status === 'rejected'
+      || parsed.status === 'canceled'
     return parsed && parsed.kind !== 'plan' && visibleOther ? [parsed] : []
   })
 }
@@ -174,6 +175,8 @@ export function assistantActionStatusLabel(status: ProjectAssistantActionStatus,
       return 'Skipped'
     case 'rejected':
       return 'Rejected'
+    case 'canceled':
+      return 'Canceled'
     case 'retrying':
       return 'Retrying'
     case 'recovered':

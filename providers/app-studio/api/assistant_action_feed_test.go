@@ -47,6 +47,18 @@ func TestProjectAssistantActionFeedReadHidesExecutionMechanics(t *testing.T) {
 	}
 }
 
+func TestProjectAssistantActionFeedCanceledNonExecIsNeutral(t *testing.T) {
+	item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
+		ID:        "read-canceled",
+		Name:      projectToolReadFile,
+		Status:    "canceled",
+		Arguments: `{"path":"src/App.vue"}`,
+	})
+	if item.Status != projectAssistantActionFeedStatusCanceled || item.Title != "Canceled" || item.Severity != projectAssistantActionFeedSeverityNormal {
+		t.Fatalf("canceled non-exec action = %#v, want neutral canceled terminal", item)
+	}
+}
+
 func TestProjectAssistantActionFeedSkillsAreVisibleWithLifecycleTitles(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -209,21 +221,81 @@ func TestApplyProjectAssistantActionFeedUpdateRemovesInvisibleTerminalAction(t *
 }
 
 func TestFinalizeProjectAssistantActionFeedClosesOutstandingActions(t *testing.T) {
-	waiting := []projectAssistantActionFeedItem{{
-		ID:         "action-1",
-		Kind:       projectAssistantActionFeedItemRun,
-		Status:     projectAssistantActionFeedStatusWaiting,
-		Title:      "Restarting development runtime",
-		Severity:   projectAssistantActionFeedSeverityAttention,
-		Diagnostic: projectAssistantActionFeedDiagnostic("action-1", "old failure"),
-	}}
-	completed := finalizeProjectAssistantActionFeed(append([]projectAssistantActionFeedItem(nil), waiting...), store.AssistantRunStatusCompleted)
-	if len(completed) != 1 || completed[0].Status != projectAssistantActionFeedStatusSucceeded || completed[0].Title != "Ran checks" || completed[0].Severity != projectAssistantActionFeedSeverityNormal || completed[0].Diagnostic != nil {
-		t.Fatalf("completed actions = %#v, want a closed successful action", completed)
+	waiting := []projectAssistantActionFeedItem{
+		{
+			ID:       "action-running",
+			Kind:     projectAssistantActionFeedItemEdit,
+			Status:   projectAssistantActionFeedStatusRunning,
+			Title:    "Editing files",
+			Severity: projectAssistantActionFeedSeverityAttention,
+		},
+		{
+			ID:       "action-waiting",
+			Kind:     projectAssistantActionFeedItemRun,
+			Status:   projectAssistantActionFeedStatusWaiting,
+			Title:    "Restarting development runtime",
+			Severity: projectAssistantActionFeedSeverityAttention,
+		},
+		{
+			ID:       "action-succeeded",
+			Kind:     projectAssistantActionFeedItemEdit,
+			Status:   projectAssistantActionFeedStatusSucceeded,
+			Title:    "Edited files",
+			Severity: projectAssistantActionFeedSeverityNormal,
+		},
+		{
+			ID:       "action-canceled",
+			Kind:     projectAssistantActionFeedItemEdit,
+			Status:   projectAssistantActionFeedStatusCanceled,
+			Title:    "Canceled",
+			Severity: projectAssistantActionFeedSeverityNormal,
+		},
+		{
+			ID:       "action-failed",
+			Kind:     projectAssistantActionFeedItemEdit,
+			Status:   projectAssistantActionFeedStatusFailed,
+			Title:    "Edit failed",
+			Severity: projectAssistantActionFeedSeverityError,
+			Diagnostic: &projectAssistantActionDiagnostic{
+				Category:    "validation",
+				Message:     "The edit failed.",
+				ReferenceID: "action-existing-failure",
+			},
+		},
 	}
-	failed := finalizeProjectAssistantActionFeed(append([]projectAssistantActionFeedItem(nil), waiting...), store.AssistantRunStatusFailed)
-	if len(failed) != 1 || failed[0].Status != projectAssistantActionFeedStatusFailed || failed[0].Title != "Run failed" || failed[0].Severity != projectAssistantActionFeedSeverityError || failed[0].Diagnostic == nil {
-		t.Fatalf("failed actions = %#v, want a closed failed action", failed)
+	completed := finalizeProjectAssistantActionFeed(append([]projectAssistantActionFeedItem(nil), waiting...), store.AssistantRunStatusCompleted)
+	if len(completed) != len(waiting) {
+		t.Fatalf("completed actions = %#v, want %d actions", completed, len(waiting))
+	}
+	if completed[0].Status != projectAssistantActionFeedStatusFailed || completed[0].Title != "Edit failed" || completed[0].Severity != projectAssistantActionFeedSeverityError || completed[0].Diagnostic == nil {
+		t.Fatalf("completed running edit = %#v, want failed action with diagnostic", completed[0])
+	}
+	if completed[1].Status != projectAssistantActionFeedStatusFailed || completed[1].Title != "Run failed" || completed[1].Severity != projectAssistantActionFeedSeverityError || completed[1].Diagnostic == nil {
+		t.Fatalf("completed waiting action = %#v, want failed action with diagnostic", completed[1])
+	}
+	for index, want := range waiting[2:] {
+		got := completed[index+2]
+		if got.Status != want.Status || got.Title != want.Title || got.Severity != want.Severity || got.Diagnostic != want.Diagnostic {
+			t.Fatalf("completed terminal action %d = %#v, want unchanged %#v", index+2, got, want)
+		}
+	}
+	for _, runStatus := range []store.AssistantRunStatus{
+		store.AssistantRunStatusFailed,
+		store.AssistantRunStatusInterrupted,
+		store.AssistantRunStatusAborted,
+	} {
+		terminal := finalizeProjectAssistantActionFeed(append([]projectAssistantActionFeedItem(nil), waiting[:1]...), runStatus)
+		if len(terminal) != 1 || terminal[0].Status != projectAssistantActionFeedStatusFailed || terminal[0].Diagnostic == nil {
+			t.Fatalf("%s running action = %#v, want failed action with diagnostic", runStatus, terminal)
+		}
+	}
+
+	for _, runStatus := range []store.AssistantRunStatus{store.AssistantRunStatusPendingPermission, store.AssistantRunStatusPendingInput} {
+		pending := finalizeProjectAssistantActionFeed(append([]projectAssistantActionFeedItem(nil), waiting[:2]...), runStatus)
+		if len(pending) != 2 || pending[0].Status != projectAssistantActionFeedStatusRunning || pending[0].Diagnostic != nil ||
+			pending[1].Status != projectAssistantActionFeedStatusWaiting || pending[1].Diagnostic != nil {
+			t.Fatalf("%s pending action = %#v, want unresolved running action", runStatus, pending)
+		}
 	}
 }
 
@@ -946,7 +1018,7 @@ func TestProjectAssistantActionFeedMinimalDisclosureHidesTargetAndOutcome(t *tes
 	}
 }
 
-func TestProjectAssistantActionFeedExecCarriesStructuredResultWithoutOutput(t *testing.T) {
+func TestProjectAssistantActionFeedExecCarriesBoundedStructuredOutput(t *testing.T) {
 	item := projectAssistantActionFeedItemFromToolCall(projectToolCallStreamEvent{
 		ID:     "exec-1",
 		Name:   projectToolExecCommand,
@@ -962,6 +1034,9 @@ func TestProjectAssistantActionFeedExecCarriesStructuredResultWithoutOutput(t *t
 			Summary:         "Command failed in component \"backend\".",
 			ExitCode:        func() *int { value := 2; return &value }(),
 			DurationMS:      123,
+			Stdout:          []string{"NODE_SANDBOX_OK"},
+			Stderr:          []string{"compile warning"},
+			OutputTruncated: true,
 		},
 	})
 	if item.Exec == nil || item.Exec.Component != "backend" || item.Exec.Status != "failed" || item.Exec.ExitCode == nil || *item.Exec.ExitCode != 2 || item.Exec.DurationMS != 123 {
@@ -971,7 +1046,7 @@ func TestProjectAssistantActionFeedExecCarriesStructuredResultWithoutOutput(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "stdout") || strings.Contains(string(data), "stderr") {
-		t.Fatalf("exec action item exposed raw output fields: %s", data)
+	if !strings.Contains(string(data), "NODE_SANDBOX_OK") || !strings.Contains(string(data), "compile warning") || strings.Contains(string(data), "sessionID") {
+		t.Fatalf("exec action item lost bounded output or exposed session identity: %s", data)
 	}
 }

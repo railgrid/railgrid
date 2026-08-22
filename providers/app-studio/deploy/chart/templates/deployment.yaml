@@ -3,6 +3,9 @@
 {{- if and (ne (int .Values.replicaCount) 1) (not .Values.workspace.emptyDir) (not .Values.workspace.existingClaim) -}}
 {{- fail "app-studio replicaCount > 1 requires workspace.emptyDir=true: a single ReadWriteOnce PVC cannot back multiple replicas (workspaces are rebuilt from git on adoption)" -}}
 {{- end -}}
+{{- if and (eq (default "off" .Values.assistant.runSandbox.mode) "force") (ne (int .Values.replicaCount) 1) -}}
+{{- fail "assistant.runSandbox.mode=force requires replicaCount=1 until coding sandbox claims have distributed CAS" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -164,9 +167,27 @@ spec:
             {{- with .Values.assistant.toolDisclosure }}
             # "minimal" hides action targets and outcomes from the chat.
             # Default "summary" shows product-level action details only;
-            # raw tool names, arguments, and output are never exposed.
+            # raw tool envelopes/arguments remain hidden, while bounded,
+            # sanitized command stdout/stderr is available on explicit expand.
             - name: APP_STUDIO_TOOL_DISCLOSURE
               value: {{ . | quote }}
+            {{- end }}
+            {{- /* A non-null deprecated boolean must reach the process without
+                  the chart's default mode=off masking migration semantics.
+                  Non-off explicit modes remain authoritative. */}}
+            {{- if not (and (ne .Values.assistant.runSandbox.enabled nil) (eq (default "off" .Values.assistant.runSandbox.mode) "off")) }}
+            {{- with .Values.assistant.runSandbox.mode }}
+            - name: APP_STUDIO_RUN_SANDBOX_MODE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            - name: APP_STUDIO_DEVELOPMENT_MODE
+              value: {{ .Values.assistant.runSandbox.developmentMode | quote }}
+            - name: APP_STUDIO_REPLICA_COUNT
+              value: {{ .Values.replicaCount | quote }}
+            {{- if ne .Values.assistant.runSandbox.enabled nil }}
+            - name: APP_STUDIO_RUN_SANDBOX
+              value: {{ .Values.assistant.runSandbox.enabled | quote }}
             {{- end }}
             - name: APP_STUDIO_PREVIEW_CONSOLE_ENABLED
               value: {{ .Values.previewConsole.enabled | quote }}

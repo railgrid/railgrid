@@ -134,8 +134,8 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolDefineInitialProjectPlan,
-				Description: "Define or revise the execution plan for a new project's initial build after a development template is bound. First call select_project_template when the project has no template. targetPaths describe intended work for planning and progress only; App Studio derives write authority from the user's creation request and workspace boundary, never from model-authored paths. If the template changes, this plan is invalidated and must be defined again from the returned component contract.",
-				Parameters:  json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string","minLength":1,"description":"Short summary of the initial build."},"steps":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12,"description":"Concrete implementation and verification steps derived from the bound template's components."},"targetPaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":50,"description":"Informational project-relative files or directories the build intends to change. These paths do not grant or restrict write authority. Directories must end with /."},"acceptanceCriteria":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12,"description":"Observable outcomes required before the initial build can complete."}},"required":["summary","steps","targetPaths","acceptanceCriteria"]}`),
+				Description: "Define or revise the execution plan for a new project's initial build when a hosted development template is bound or the active per-run coding sandbox is ready. A hosted preview template is optional for authoring in that sandbox; do not select one solely to edit or test source. targetPaths describe intended work for planning and progress only; App Studio derives write authority from the user's creation request and the server-owned project workspace boundary, never from model-authored paths. If the hosted template changes, this plan is invalidated and must be defined again from the returned component contract.",
+				Parameters:  json.RawMessage(`{"type":"object","properties":{"summary":{"type":"string","minLength":1,"description":"Short summary of the initial build."},"steps":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12,"description":"Concrete implementation and verification steps derived from the bound template components or the active coding sandbox workspace/toolchain contract."},"targetPaths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":50,"description":"Informational project-relative files or directories the build intends to change. These paths do not grant or restrict write authority. Directories must end with /."},"acceptanceCriteria":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":12,"description":"Observable outcomes required before the initial build can complete."}},"required":["summary","steps","targetPaths","acceptanceCriteria"]}`),
 				Risk:        projectAssistantToolRiskPlan,
 			},
 			call: func(context.Context, projectAssistantToolCallRequest) (string, error) {
@@ -219,6 +219,13 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				if !ok {
 					return "", errors.New("create_file requires content")
 				}
+				sandbox, err := ensureProjectAssistantRunSandboxForRequest(ctx, req)
+				if err != nil {
+					return "", err
+				}
+				if sandbox != nil {
+					return projectAssistantToolJSONResult(sandbox.mutate(ctx, projectAssistantSandboxWorkspaceRequest{Action: "create", Path: path, Content: content}))
+				}
 				return projectAssistantToolJSONResult(s.workspaces.CreateFile(ctx, req.WorkspaceScope, workspace.CreateOptions{Path: path, Content: content}))
 			},
 		},
@@ -241,6 +248,16 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 					return "", err
 				}
 				content, _ := projectToolRawString(req.Arguments["content"])
+				sandbox, err := ensureProjectAssistantRunSandboxForRequest(ctx, req)
+				if err != nil {
+					return "", err
+				}
+				if sandbox != nil {
+					if observed := req.RunState.ReadFileVersion(path); observed != "" {
+						effVersion = observed
+					}
+					return projectAssistantToolJSONResult(sandbox.mutate(ctx, projectAssistantSandboxWorkspaceRequest{Action: "replace", Path: path, Content: content, ExpectedVersion: effVersion}))
+				}
 				return projectAssistantToolJSONResult(s.workspaces.ReplaceFile(ctx, req.WorkspaceScope, workspace.ReplaceOptions{Path: path, Content: content, ExpectedVersion: effVersion}))
 			},
 		},
@@ -265,6 +282,16 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				oldString, _ := projectToolRawString(req.Arguments["oldString"])
 				newString, _ := projectToolRawString(req.Arguments["newString"])
 				replaceAll, _ := req.Arguments["replaceAll"].(bool)
+				sandbox, err := ensureProjectAssistantRunSandboxForRequest(ctx, req)
+				if err != nil {
+					return "", err
+				}
+				if sandbox != nil {
+					if observed := req.RunState.ReadFileVersion(path); observed != "" {
+						effVersion = observed
+					}
+					return projectAssistantToolJSONResult(sandbox.mutate(ctx, projectAssistantSandboxWorkspaceRequest{Action: "edit", Path: path, OldString: oldString, NewString: newString, ReplaceAll: replaceAll, ExpectedVersion: effVersion}))
+				}
 				opts := workspace.EditOptions{
 					Path: path, OldString: oldString, NewString: newString, ReplaceAll: replaceAll, ExpectedVersion: effVersion,
 				}
@@ -292,6 +319,16 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 				if err != nil {
 					return "", err
 				}
+				sandbox, err := ensureProjectAssistantRunSandboxForRequest(ctx, req)
+				if err != nil {
+					return "", err
+				}
+				if sandbox != nil {
+					if observed := req.RunState.ReadFileVersion(path); observed != "" {
+						effVersion = observed
+					}
+					return projectAssistantToolJSONResult(sandbox.mutate(ctx, projectAssistantSandboxWorkspaceRequest{Action: "delete", Path: path, ExpectedVersion: effVersion}))
+				}
 				return projectAssistantToolJSONResult(s.workspaces.DeleteFile(ctx, req.WorkspaceScope, workspace.DeleteOptions{Path: path, ExpectedVersion: effVersion}))
 			},
 		},
@@ -314,6 +351,16 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 					return "", err
 				}
 				destinationPath, _ := projectToolRawString(req.Arguments["destinationPath"])
+				sandbox, err := ensureProjectAssistantRunSandboxForRequest(ctx, req)
+				if err != nil {
+					return "", err
+				}
+				if sandbox != nil {
+					if observed := req.RunState.ReadFileVersion(sourcePath); observed != "" {
+						effVersion = observed
+					}
+					return projectAssistantToolJSONResult(sandbox.mutate(ctx, projectAssistantSandboxWorkspaceRequest{Action: "move", SourcePath: sourcePath, DestinationPath: destinationPath, ExpectedVersion: effVersion}))
+				}
 				return projectAssistantToolJSONResult(s.workspaces.MoveFile(ctx, req.WorkspaceScope, workspace.MoveOptions{
 					SourcePath: sourcePath, DestinationPath: destinationPath, ExpectedVersion: effVersion,
 				}))
@@ -322,7 +369,7 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 		projectAssistantToolFunc{
 			spec: projectAssistantToolSpec{
 				Name:        projectToolSelectTemplate,
-				Description: "Bind the project's development environment to an infrastructure template (or switch it). Interview the user about their requirements first (backend? persistent data? background jobs?), inspect candidates with infrastructure__list_templates / infrastructure__describe_template, and confirm the choice with the user before calling this — switching tears the current development environment down and re-provisions it (workspace files and git history are preserved and re-synced).",
+				Description: "Bind the project's hosted development/preview environment to an infrastructure template (or switch it). An active per-run coding sandbox can author and test source without this binding; call this only when a hosted preview or template-backed runtime is required. Interview the user about their requirements first (backend? persistent data? background jobs?), inspect candidates with infrastructure__list_templates / infrastructure__describe_template, and confirm the choice with the user before calling this — switching tears the current hosted development environment down and re-provisions it (workspace files and git history are preserved and re-synced).",
 				Parameters:  json.RawMessage(`{"type":"object","properties":{"template":{"type":"string","description":"Catalog name of the infrastructure template to back the development environment (e.g. application). The template must declare development components."}},"required":["template"]}`),
 				Risk:        projectAssistantToolRiskWrite,
 			},
@@ -543,6 +590,13 @@ func projectAssistantLocalToolRegistry(server *Server) projectAssistantToolRegis
 // read result has no metadata channel for an opaque version. Keeping read_file
 // here makes the complete-read/version contract explicit and bounded.
 func projectAssistantReadFileTool(ctx context.Context, files *workspace.FileStore, req projectAssistantToolCallRequest) (string, error) {
+	if req.RunState != nil {
+		if sandbox, err := ensureProjectAssistantRunSandboxForRequest(ctx, req); err != nil {
+			return "", err
+		} else if sandbox != nil {
+			return projectAssistantReadFileFromRunSandbox(ctx, sandbox, req)
+		}
+	}
 	if files == nil {
 		return "", errors.New("project workspace store is not configured")
 	}
@@ -601,6 +655,55 @@ func projectAssistantReadFileTool(ctx context.Context, files *workspace.FileStor
 		if req.RunState != nil && result.Version != "" {
 			req.RunState.RecordObservedReadFileVersion(result.Path, result.Version)
 		}
+	}
+	return projectAssistantToolJSONResult(result, nil)
+}
+
+func projectAssistantReadFileFromRunSandbox(ctx context.Context, sandbox *projectAssistantRunSandbox, req projectAssistantToolCallRequest) (string, error) {
+	rawPath, ok := projectToolRawString(req.Arguments["file_path"])
+	if !ok || strings.TrimSpace(rawPath) == "" {
+		return "", errors.New("read_file requires file_path")
+	}
+	offset := projectEinoAssistantPositiveJSONInt(req.Arguments["offset"], 1)
+	limit := projectEinoAssistantPositiveJSONInt(req.Arguments["limit"], 2000)
+	if offset < 1 {
+		offset = 1
+	}
+	if limit < 1 {
+		limit = 2000
+	}
+	if limit > 2000 {
+		limit = 2000
+	}
+	file, err := sandbox.read(ctx, rawPath)
+	if err != nil {
+		return "", err
+	}
+	result := struct {
+		Path      string `json:"path"`
+		Content   string `json:"content"`
+		Size      int64  `json:"size"`
+		Version   string `json:"version,omitempty"`
+		Complete  bool   `json:"complete"`
+		Truncated bool   `json:"truncated,omitempty"`
+		Binary    bool   `json:"binary,omitempty"`
+		Offset    int    `json:"offset"`
+		Limit     int    `json:"limit"`
+	}{Path: file.Path, Size: file.Size, Version: file.Version, Truncated: file.Truncated, Binary: file.Binary, Offset: offset, Limit: limit}
+	if !file.Binary {
+		lines := strings.Split(file.Content, "\n")
+		start := offset - 1
+		if start < len(lines) {
+			end := start + limit
+			if end > len(lines) {
+				end = len(lines)
+			}
+			result.Content = strings.Join(lines[start:end], "\n")
+		}
+		result.Complete = !file.Truncated && offset == 1 && limit >= len(lines)
+	}
+	if result.Complete && result.Version != "" && req.RunState != nil {
+		req.RunState.RecordObservedReadFileVersion(result.Path, result.Version)
 	}
 	return projectAssistantToolJSONResult(result, nil)
 }

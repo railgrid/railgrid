@@ -26,6 +26,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/cloudwego/eino/adk"
+
 	"github.com/faroshq/provider-app-studio/store"
 )
 
@@ -104,6 +106,7 @@ type projectAssistantRunToolCallOutcome struct {
 	Result       string
 	Error        string
 	Failed       bool
+	Canceled     bool
 	Disposition  projectAssistantToolDisposition
 	PlanSnapshot *projectAssistantPlanSnapshot
 }
@@ -120,7 +123,7 @@ func (o projectAssistantRunToolCallOutcome) Succeeded() bool {
 }
 
 func (o projectAssistantRunToolCallOutcome) InvokeResult() (string, error) {
-	if !o.Failed {
+	if !o.Failed || o.Canceled {
 		return o.Result, nil
 	}
 	return o.Result, errors.New(o.Error)
@@ -137,8 +140,68 @@ type projectAssistantRunToolResultPayload struct {
 	Result       string                          `json:"result"`
 	Error        string                          `json:"error"`
 	Failed       bool                            `json:"failed"`
+	Canceled     bool                            `json:"canceled,omitempty"`
 	Disposition  projectAssistantToolDisposition `json:"disposition,omitempty"`
 	PlanSnapshot *projectAssistantPlanSnapshot   `json:"planSnapshot,omitempty"`
+}
+
+// projectAssistantRunToolCancellation identifies errors produced by a
+// server-owned run stop, as opposed to a business interrupt such as an
+// approval/follow-up checkpoint. Eino's CancelError and stream-cancelled
+// sentinel do not carry a useful model-facing result and must never be copied
+// into the durable conversation transcript.
+func projectAssistantRunToolCancellation(err error) bool {
+	if err == nil {
+		return false
+	}
+	// At the tool ledger boundary Eino can surface its internal interrupt
+	// signal rather than the public CancelError, after the invocation context
+	// has already been detached for durable persistence. Internal graph state is
+	// never a model-facing tool failure; approval/input interrupts happen before
+	// an effectful tool is admitted to this result path.
+	if strings.HasPrefix(strings.TrimSpace(err.Error()), "interrupt signal:") {
+		return true
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, adk.ErrStreamCanceled) {
+		return true
+	}
+	var cancelErr *adk.CancelError
+	return errors.As(err, &cancelErr)
+}
+
+type projectAssistantRunToolCanceledResult struct {
+	Status  string `json:"status"`
+	Summary string `json:"summary"`
+}
+
+// projectAssistantRunToolCanceledResultJSON intentionally contains no
+// command argv, session output, or framework error text. The result remains
+// valid bounded JSON so a canceled run can be replayed into later history
+// without leaking a partial command response or invalid transcript content.
+func projectAssistantRunToolCanceledResultJSON(toolName string, args json.RawMessage) string {
+	if projectToolBaseName(toolName) == projectToolExecCommand {
+		component := ""
+		var input projectAssistantExecCommandInput
+		if err := json.Unmarshal(args, &input); err == nil {
+			component = truncateProjectToolInfo(strings.TrimSpace(input.Component))
+		}
+		encoded, err := json.Marshal(projectAssistantExecCommandResult{
+			Status:    "canceled",
+			Summary:   "Command execution was canceled before a terminal result was recorded.",
+			Component: component,
+		})
+		if err == nil {
+			return string(encoded)
+		}
+	}
+	encoded, err := json.Marshal(projectAssistantRunToolCanceledResult{
+		Status:  "canceled",
+		Summary: "Tool execution was canceled before a terminal result was recorded.",
+	})
+	if err != nil {
+		return `{"status":"canceled","summary":"Tool execution was canceled."}`
+	}
+	return string(encoded)
 }
 
 func newProjectAssistantRunEventLedger(
@@ -456,27 +519,6 @@ func (l *projectAssistantRunEventLedger) finishToolCall(
 	invokeErr error,
 	plan *projectAssistantPlanSnapshot,
 ) (projectAssistantRunToolCallOutcome, error) {
-	outcome := projectAssistantRunToolCallOutcome{
-		Result:      result,
-		Disposition: projectAssistantToolResultDisposition(token.ToolName, result, invokeErr),
-	}
-	if invokeErr != nil {
-		outcome.Error = invokeErr.Error()
-		outcome.Failed = true
-	}
-	if plan != nil && projectToolBaseName(token.ToolName) != projectEinoAssistantWriteTodosTool {
-		return projectAssistantRunToolCallOutcome{}, errors.New("assistant run tool plan snapshot is only valid for write_todos")
-	}
-	if plan != nil && !outcome.Succeeded() {
-		return projectAssistantRunToolCallOutcome{}, errors.New("assistant run tool plan snapshot requires a successful result")
-	}
-	if outcome.Succeeded() && plan != nil {
-		if !projectAssistantPlanSnapshotValid(*plan) {
-			return projectAssistantRunToolCallOutcome{}, errors.New("assistant run tool plan snapshot is invalid")
-		}
-		copy := cloneProjectAssistantPlanSnapshot(*plan)
-		outcome.PlanSnapshot = &copy
-	}
 	if l == nil || l.store == nil || strings.TrimSpace(l.runID) == "" {
 		return projectAssistantRunToolCallOutcome{}, fmt.Errorf("assistant run tool ledger is not configured")
 	}
@@ -512,10 +554,52 @@ func (l *projectAssistantRunEventLedger) finishToolCall(
 			}
 			return persisted, nil
 		}
+		persistResult, persistErr, persistPlan := result, invokeErr, plan
+		canceled := projectAssistantRunToolCancellation(invokeErr)
+		if canceled {
+			// Eino cancellation errors can contain an entire interrupt/checkpoint
+			// graph. They are control-plane details, not model-facing tool
+			// output. Replace them before either durable event or conversation
+			// projection is written, and suppress a plan snapshot from a tool
+			// that did not complete successfully.
+			persistResult = projectAssistantRunToolCanceledResultJSON(token.ToolName, state.Arguments)
+			persistErr = nil
+			persistPlan = nil
+		}
+		outcome := projectAssistantRunToolCallOutcome{
+			Result:      persistResult,
+			Disposition: projectAssistantToolResultDisposition(token.ToolName, persistResult, persistErr),
+			Canceled:    canceled,
+		}
+		if persistErr != nil {
+			outcome.Error = persistErr.Error()
+			outcome.Failed = true
+		}
+		if canceled {
+			// A canceled effect is not a success, even though its clean JSON
+			// result is deliberately returned to Eino without rethrowing the
+			// framework cancellation error.
+			outcome.Failed = true
+			outcome.Disposition = projectAssistantToolDispositionFailed
+		}
+		if persistPlan != nil && projectToolBaseName(token.ToolName) != projectEinoAssistantWriteTodosTool {
+			return projectAssistantRunToolCallOutcome{}, errors.New("assistant run tool plan snapshot is only valid for write_todos")
+		}
+		if persistPlan != nil && !outcome.Succeeded() {
+			return projectAssistantRunToolCallOutcome{}, errors.New("assistant run tool plan snapshot requires a successful result")
+		}
+		if outcome.Succeeded() && persistPlan != nil {
+			if !projectAssistantPlanSnapshotValid(*persistPlan) {
+				return projectAssistantRunToolCallOutcome{}, errors.New("assistant run tool plan snapshot is invalid")
+			}
+			copy := cloneProjectAssistantPlanSnapshot(*persistPlan)
+			outcome.PlanSnapshot = &copy
+		}
 		payload, err := json.Marshal(projectAssistantRunToolResultPayload{
 			Result:       outcome.Result,
 			Error:        outcome.Error,
 			Failed:       outcome.Failed,
+			Canceled:     outcome.Canceled,
 			Disposition:  outcome.Disposition,
 			PlanSnapshot: outcome.PlanSnapshot,
 		})
@@ -743,8 +827,20 @@ func (l *projectAssistantRunEventLedger) applyEventLocked(event store.AssistantR
 			Result:       payload.Result,
 			Error:        payload.Error,
 			Failed:       payload.Failed,
+			Canceled:     payload.Canceled,
 			Disposition:  payload.Disposition,
 			PlanSnapshot: payload.PlanSnapshot,
+		}
+		if outcome.Canceled {
+			if outcome.PlanSnapshot != nil {
+				return fmt.Errorf("%w: canceled tool result at sequence %d contains a plan snapshot", errProjectAssistantRunToolLedgerCorrupt, event.Sequence)
+			}
+			// Reconstruct the bounded cancellation result from the durable tool
+			// request rather than trusting a potentially partial or stale payload.
+			outcome.Result = projectAssistantRunToolCanceledResultJSON(toolName, state.Arguments)
+			outcome.Error = ""
+			outcome.Failed = true
+			outcome.Disposition = projectAssistantToolDispositionFailed
 		}
 		if outcome.PlanSnapshot != nil && !projectAssistantPlanSnapshotValid(*outcome.PlanSnapshot) {
 			return fmt.Errorf("%w: invalid plan snapshot at sequence %d", errProjectAssistantRunToolLedgerCorrupt, event.Sequence)

@@ -35,13 +35,14 @@ import (
 const (
 	infraDataPlaneProvider = "infrastructure"
 
-	dataPlaneVerbLog     = "log"
-	dataPlaneVerbSync    = "sync"
-	dataPlaneVerbRestart = "restart"
-	dataPlaneVerbProxy   = "proxy"
-	dataPlaneVerbEnv     = "env"
-	dataPlaneVerbProcess = "process"
-	dataPlaneVerbExec    = "exec"
+	dataPlaneVerbLog       = "log"
+	dataPlaneVerbSync      = "sync"
+	dataPlaneVerbRestart   = "restart"
+	dataPlaneVerbProxy     = "proxy"
+	dataPlaneVerbEnv       = "env"
+	dataPlaneVerbProcess   = "process"
+	dataPlaneVerbExec      = "exec"
+	dataPlaneVerbWorkspace = "workspace"
 
 	dataPlaneCallTimeout = 30 * time.Second
 )
@@ -103,6 +104,9 @@ func (s *Server) newDataPlaneRequest(ctx context.Context, method string, id iden
 // sandboxDataPlaneClient returns an HTTP client for data-plane calls, honoring
 // the same TLS-skip knob the MCP client uses for hub-internal addressing.
 func (s *Server) sandboxDataPlaneClient(timeout time.Duration) *http.Client {
+	if s != nil && s.sandboxDataPlaneClientFactory != nil {
+		return s.sandboxDataPlaneClientFactory(timeout)
+	}
 	return &http.Client{Timeout: timeout, Transport: projectMCPTransport(s.mcpInsecureSkipTLSVerify)}
 }
 

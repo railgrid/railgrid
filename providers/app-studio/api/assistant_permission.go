@@ -230,7 +230,7 @@ func projectAssistantPermissionDenialReason(
 		}
 		if templateBootstrapAllowed {
 			return fmt.Sprintf(
-				"permission denied: template_not_bound; denied paths: %s; recovery: call select_project_template first, then define_initial_project_plan from the returned component contract before editing source",
+				"permission denied: template_not_bound; denied paths: %s; recovery: if the active per-run coding sandbox is ready, define_initial_project_plan and keep source under its server-owned project workspace root; otherwise select a hosted development/preview template first, then define_initial_project_plan from its component contract",
 				strings.Join(paths, ", "),
 			)
 		}

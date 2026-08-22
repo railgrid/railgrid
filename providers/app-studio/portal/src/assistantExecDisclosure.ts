@@ -163,6 +163,85 @@ export function formatAssistantExecCommand(exec?: ProjectAssistantExecDisclosure
   return exec.argv.map((token) => /[\s"'\\]/.test(token) ? JSON.stringify(token) : token).join(' ')
 }
 
+export type AssistantExecDisplayState = 'running' | 'ran' | 'failed' | 'canceled' | 'timed_out' | 'blocked'
+
+export interface AssistantExecStatusPresentation {
+  state: AssistantExecDisplayState
+  label: 'Running' | 'Ran' | 'Failed' | 'Canceled' | 'Timed out' | 'Blocked'
+  busy: boolean
+  error: boolean
+  attention: boolean
+}
+
+/**
+ * Resolve the user-facing execution state from the nested, server-owned exec
+ * disclosure. The action-feed status describes the tool lifecycle and can be
+ * settled before the command itself has reported its terminal result, so it
+ * must only be a fallback when the nested status is absent.
+ */
+export function assistantExecStatusPresentation(
+  exec?: ProjectAssistantExecDisclosure,
+  fallbackStatus?: string,
+): AssistantExecStatusPresentation {
+  const nestedStatus = exec?.status
+  const status = nestedStatus || fallbackStatus
+  const nonZeroExit = exec?.exitCode !== undefined && exec.exitCode !== null && exec.exitCode !== 0
+  let state: AssistantExecDisplayState
+  switch (status) {
+    case 'running':
+      state = 'running'
+      break
+    case 'failed':
+    case 'error':
+      state = 'failed'
+      break
+    case 'canceled':
+    case 'cancelled':
+      state = 'canceled'
+      break
+    case 'timed_out':
+      state = 'timed_out'
+      break
+    case 'blocked':
+    case 'permission_required':
+    case 'waiting':
+    case 'rejected':
+      state = 'blocked'
+      break
+    case 'retrying':
+      state = 'running'
+      break
+    case 'succeeded':
+    case 'skipped':
+    case 'recovered':
+      // A missing nested status is still actionable when the server supplied a
+      // non-zero exit code. The outer action can settle before the command
+      // disclosure does, so do not call that command successful by default.
+      state = !nestedStatus && nonZeroExit ? 'failed' : 'ran'
+      break
+    default:
+      // Keep unknown future statuses truthful when the bounded disclosure has
+      // enough evidence to classify the command locally.
+      state = nonZeroExit ? 'failed' : 'ran'
+      break
+  }
+
+  switch (state) {
+    case 'running':
+      return { state, label: 'Running', busy: true, error: false, attention: false }
+    case 'failed':
+      return { state, label: 'Failed', busy: false, error: true, attention: false }
+    case 'timed_out':
+      return { state, label: 'Timed out', busy: false, error: true, attention: false }
+    case 'blocked':
+      return { state, label: 'Blocked', busy: false, error: false, attention: true }
+    case 'canceled':
+      return { state, label: 'Canceled', busy: false, error: false, attention: false }
+    default:
+      return { state: 'ran', label: 'Ran', busy: false, error: false, attention: false }
+  }
+}
+
 export function formatAssistantExecDuration(durationMs?: number): string {
   if (durationMs === undefined) return ''
   if (durationMs < 1_000) return `${durationMs} ms`

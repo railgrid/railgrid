@@ -133,7 +133,7 @@ func projectEinoAssistantSuccessfulToolContent(content string) bool {
 	decoded := map[string]any{}
 	if err := json.Unmarshal([]byte(content), &decoded); err == nil {
 		switch strings.ToLower(projectToolString(decoded["status"])) {
-		case "failed", "partial_failure", "error":
+		case "failed", "partial_failure", "error", "timed_out":
 			return false
 		}
 	}
@@ -155,7 +155,7 @@ func projectAssistantToolResultDisposition(name, content string, invokeErr error
 		effectful := projectAssistantToolNameHasEffect(name)
 		for _, field := range []string{"status", "phase", "outcome"} {
 			switch strings.ToLower(projectToolString(decoded[field])) {
-			case "error", "failed", "failure", "partial_failure":
+			case "error", "failed", "failure", "partial_failure", "timed_out":
 				return projectAssistantToolDispositionFailed
 			case "blocked", "cancelled", "canceled", "denied", "not_configured", "not_ready", "rejected", "unavailable":
 				if effectful {

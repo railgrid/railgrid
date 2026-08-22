@@ -37,6 +37,80 @@ func TestProjectAssistantRunErrorInfoClassifiesExhaustedModelRetries(t *testing.
 	}
 }
 
+func TestPersistProjectAssistantToolCallSnapshotDetachesCanceledRunContext(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	err := persistProjectAssistantToolCallSnapshot(canceled, func(persistCtx context.Context) error {
+		called = true
+		if err := persistCtx.Err(); err != nil {
+			t.Fatalf("persistence context remained canceled: %v", err)
+		}
+		if deadline, ok := persistCtx.Deadline(); !ok || time.Until(deadline) <= 0 {
+			t.Fatal("persistence context is not bounded")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("tool-call snapshot was not persisted")
+	}
+}
+
+func TestTerminalToolResultSettlesWhileRunIsStopping(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	scope := store.Scope{OrgUUID: "org-1", WorkspaceUUID: "workspace-1", ProjectName: "project-1", ProjectUID: "project-uid-1"}
+	run := store.AssistantRun{ID: "run-1", Mode: store.AssistantRunModeDefault, Status: store.AssistantRunStatusRunning, ClientRequestID: "request-1", UserMessageID: "user-1", ActiveMessageID: "assistant-1", Revision: 1, CreatedAt: now, UpdatedAt: now}
+	user := store.Message{ID: "user-1", Role: "user", ActorID: "test-user", Content: "run it", CreatedAt: now, UpdatedAt: now}
+	running := projectToolCallStreamEvent{ID: "exec-1", Name: projectToolExecCommand, Status: "running", Exec: &projectAssistantExecMetadata{Argv: []string{"sleep", "45"}, Status: "running", Component: "workspace"}}
+	assistant := store.Message{ID: run.ActiveMessageID, Role: "assistant", Metadata: projectAssistantDurableMetadataForTransition(run, "Working", false, false, []projectToolCallStreamEvent{running}, nil), CreatedAt: now.Add(time.Microsecond), UpdatedAt: now.Add(time.Microsecond)}
+	msgStore := store.NewMemoryStore()
+	if _, err := msgStore.CreateAssistantRun(ctx, scope, user, assistant, run); err != nil {
+		t.Fatal(err)
+	}
+	supervisor := newProjectAssistantSupervisor(ctx, msgStore)
+	accumulator, err := supervisor.Attach(scope, run, assistant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := accumulator.SetStatus(ctx, store.AssistantRunStatusStopping); err != nil {
+		t.Fatal(err)
+	}
+	canceled := running
+	canceled.Status = "canceled"
+	canceled.Exec = &projectAssistantExecMetadata{Argv: []string{"sleep", "45"}, Status: "canceled", Component: "workspace"}
+	state := &projectAssistantDurableMetadataState{status: "Working", toolCalls: []projectToolCallStreamEvent{canceled}}
+	server := NewWithWorkspace(nil, msgStore, nil, "", false)
+	if err := server.persistProjectAssistantStoppingToolMetadata(ctx, accumulator, workspace.Scope{}, state); err != nil {
+		t.Fatal(err)
+	}
+	aborted, err := supervisor.AbortWith(scope, run.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !aborted {
+		t.Fatal("stopping run was not interrupted")
+	}
+	page, err := msgStore.ListMessages(ctx, scope, 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range page.Items {
+		if message.ID != assistant.ID {
+			continue
+		}
+		actions := projectAssistantActionFeedFromMetadata(message.Metadata[projectMessageMetadataAssistantActionFeed])
+		if len(actions) != 1 || actions[0].Status != projectAssistantActionFeedStatusCanceled || actions[0].Exec == nil || actions[0].Exec.Status != "canceled" {
+			t.Fatalf("interrupted command action = %#v, want non-error terminal canceled exec", actions)
+		}
+		return
+	}
+	t.Fatal("assistant message was not persisted")
+}
+
 func TestProjectAssistantRunErrorInfoClassifiesStructuredProviderFailures(t *testing.T) {
 	tests := []struct {
 		name string
@@ -513,8 +587,8 @@ func TestProjectAssistantSetStatusClosesRestoredWaitingAction(t *testing.T) {
 		t.Fatal("terminal assistant message not found")
 	}
 	actions := projectAssistantActionFeedFromMetadata(message.Metadata[projectMessageMetadataAssistantActionFeed])
-	if len(actions) != 1 || actions[0].Status != projectAssistantActionFeedStatusSucceeded || actions[0].Title != "Ran checks" {
-		t.Fatalf("terminal actions = %#v, want closed successful action", actions)
+	if len(actions) != 1 || actions[0].Status != projectAssistantActionFeedStatusFailed || actions[0].Title != "Run failed" || actions[0].Severity != projectAssistantActionFeedSeverityError || actions[0].Diagnostic == nil {
+		t.Fatalf("terminal actions = %#v, want failed action with diagnostic", actions)
 	}
 	if interrupt := projectAssistantUIInterruptFromMetadata(message.Metadata[projectMessageMetadataAssistantInterrupt]); interrupt != nil {
 		t.Fatalf("terminal interrupt = %#v, want cleared", interrupt)

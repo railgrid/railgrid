@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/cloudwego/eino/adk"
+	einofs "github.com/cloudwego/eino/adk/filesystem"
 	einofilesystem "github.com/cloudwego/eino/adk/middlewares/filesystem"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
@@ -99,6 +100,7 @@ func projectEinoAssistantFilesystemMiddleware(
 	ctx context.Context,
 	store *workspace.FileStore,
 	req projectAssistantRunRequest,
+	runState *projectEinoAssistantRunState,
 ) (adk.ChatModelAgentMiddleware, error) {
 	policy := normalizeProjectAssistantTurnPolicy(req.TurnPolicy, req.TurnProfile)
 	if !policy.AllowsTool(projectAssistantToolSpec{
@@ -107,9 +109,15 @@ func projectEinoAssistantFilesystemMiddleware(
 	}) {
 		return nil, nil
 	}
-	backend, err := workspace.NewEinoReadOnlyBackend(store, req.WorkspaceScope)
-	if err != nil {
-		return nil, fmt.Errorf("create scoped read-only backend: %w", err)
+	var backend einofs.Backend
+	if runState != nil && runState.SandboxRemoteEnabled() {
+		backend = &projectAssistantRunSandboxFilesystemBackend{runState: runState}
+	} else {
+		local, err := workspace.NewEinoReadOnlyBackend(store, req.WorkspaceScope)
+		if err != nil {
+			return nil, fmt.Errorf("create scoped read-only backend: %w", err)
+		}
+		backend = local
 	}
 	return einofilesystem.New(ctx, &einofilesystem.MiddlewareConfig{
 		Backend:      backend,
@@ -127,6 +135,123 @@ func projectEinoAssistantFilesystemMiddleware(
 		},
 		CustomSystemPrompt: &projectEinoFilesystemInstruction,
 	})
+}
+
+// projectAssistantRunSandboxFilesystemBackend adapts the single Infrastructure
+// workspace verb to Eino's read-only filesystem protocol. Mutating Eino
+// operations stay disabled; App Studio's structured mutation tools use the
+// same remote verb directly and checkpoint bounded changes explicitly.
+type projectAssistantRunSandboxFilesystemBackend struct {
+	runState *projectEinoAssistantRunState
+}
+
+func (b *projectAssistantRunSandboxFilesystemBackend) sandbox(ctx context.Context) (*projectAssistantRunSandbox, error) {
+	if b == nil || b.runState == nil {
+		return nil, errors.New("assistant run sandbox is not configured")
+	}
+	sandbox, err := b.runState.EnsureSandbox(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if sandbox == nil {
+		return nil, errors.New("assistant run sandbox is unavailable")
+	}
+	return sandbox, nil
+}
+
+func (b *projectAssistantRunSandboxFilesystemBackend) LsInfo(ctx context.Context, req *einofilesystem.LsInfoRequest) ([]einofilesystem.FileInfo, error) {
+	if req == nil {
+		return nil, errors.New("ls request is required")
+	}
+	sandbox, err := b.sandbox(ctx)
+	if err != nil {
+		return nil, err
+	}
+	files, err := sandbox.list(ctx, strings.TrimPrefix(path.Clean(strings.TrimSpace(req.Path)), "/"), workspace.MaxListLimit)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]einofilesystem.FileInfo, 0, len(files.Entries))
+	for _, entry := range files.Entries {
+		result = append(result, einofilesystem.FileInfo{Path: "/" + entry.Path, Size: entry.Size, IsDir: strings.EqualFold(entry.Type, "directory")})
+	}
+	return result, nil
+}
+
+func (b *projectAssistantRunSandboxFilesystemBackend) Read(ctx context.Context, req *einofilesystem.ReadRequest) (*einofilesystem.FileContent, error) {
+	if req == nil {
+		return nil, errors.New("read request is required")
+	}
+	sandbox, err := b.sandbox(ctx)
+	if err != nil {
+		return nil, err
+	}
+	file, err := sandbox.read(ctx, strings.TrimPrefix(path.Clean(strings.TrimSpace(req.FilePath)), "/"))
+	if err != nil {
+		return nil, err
+	}
+	content := file.Content
+	lines := strings.Split(content, "\n")
+	start := req.Offset
+	if start <= 0 {
+		start = 1
+	}
+	if start > len(lines) {
+		return &einofilesystem.FileContent{}, nil
+	}
+	end := len(lines)
+	if req.Limit > 0 && start+req.Limit-1 < end {
+		end = start + req.Limit - 1
+	}
+	return &einofilesystem.FileContent{Content: strings.Join(lines[start-1:end], "\n")}, nil
+}
+
+func (b *projectAssistantRunSandboxFilesystemBackend) GlobInfo(ctx context.Context, req *einofilesystem.GlobInfoRequest) ([]einofilesystem.FileInfo, error) {
+	if req == nil {
+		return nil, errors.New("glob request is required")
+	}
+	sandbox, err := b.sandbox(ctx)
+	if err != nil {
+		return nil, err
+	}
+	response, err := sandbox.request(ctx, projectAssistantSandboxWorkspaceRequest{Action: "glob", Path: req.Path, Pattern: req.Pattern})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]einofilesystem.FileInfo, 0, len(response.Files.Files))
+	for _, file := range response.Files.Files {
+		result = append(result, einofilesystem.FileInfo{Path: "/" + file.Path, Size: file.Size})
+	}
+	return result, nil
+}
+
+func (b *projectAssistantRunSandboxFilesystemBackend) GrepRaw(ctx context.Context, req *einofilesystem.GrepRequest) ([]einofilesystem.GrepMatch, error) {
+	if req == nil {
+		return nil, errors.New("grep request is required")
+	}
+	sandbox, err := b.sandbox(ctx)
+	if err != nil {
+		return nil, err
+	}
+	response, err := sandbox.request(ctx, projectAssistantSandboxWorkspaceRequest{
+		Action: "grep", Path: req.Path, GrepPattern: req.Pattern, Glob: req.Glob, FileType: req.FileType,
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]einofilesystem.GrepMatch, 0, len(response.Matches))
+	for _, match := range response.Matches {
+		result = append(result, einofilesystem.GrepMatch{Content: match.Content, Path: "/" + strings.TrimPrefix(match.Path, "/"), Line: match.Line})
+	}
+	return result, nil
+}
+
+func (*projectAssistantRunSandboxFilesystemBackend) Write(context.Context, *einofilesystem.WriteRequest) error {
+	return errors.New("assistant run sandbox filesystem backend is read-only")
+}
+
+func (*projectAssistantRunSandboxFilesystemBackend) Edit(context.Context, *einofilesystem.EditRequest) error {
+	return errors.New("assistant run sandbox filesystem backend is read-only")
 }
 
 type projectEinoAssistantFilesystemTelemetry struct {

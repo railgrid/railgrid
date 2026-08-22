@@ -268,7 +268,7 @@ export interface ProjectAssistantRunStart {
 }
 
 export type ProjectAssistantActionKind = 'inspect' | 'clarify' | 'edit' | 'run' | 'commit' | 'plan' | 'other'
-export type ProjectAssistantActionStatus = 'running' | 'waiting' | 'succeeded' | 'skipped' | 'failed' | 'rejected' | 'retrying' | 'recovered'
+export type ProjectAssistantActionStatus = 'running' | 'waiting' | 'succeeded' | 'skipped' | 'failed' | 'rejected' | 'canceled' | 'retrying' | 'recovered'
 export type ProjectAssistantActionSeverity = 'normal' | 'attention' | 'error'
 export type ProjectAssistantDiagnosticCategory = 'timeout' | 'permission' | 'validation' | 'runtime' | 'provider' | 'unknown'
 

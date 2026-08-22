@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -437,6 +438,79 @@ func TestAssistantRunEventLedgerFinishesAfterCallerCancellation(t *testing.T) {
 	}
 	if replay.Replay == nil || replay.Replay.Error != backendErr.Error() || replay.Replay.Result != "model-visible failure" {
 		t.Fatalf("cancelled failure replay = %#v, want exact durable outcome", replay)
+	}
+}
+
+func TestAssistantRunEventLedgerNormalizesCanceledExecResult(t *testing.T) {
+	ctx := context.Background()
+	messageStore, scope := newAssistantRunEventLedgerTestStore(t, "run-canceled-exec")
+	ledger := newProjectAssistantRunEventLedger(messageStore, scope, "run-canceled-exec")
+	spec := projectAssistantToolSpec{Name: projectToolExecCommand, Risk: projectAssistantToolRiskRuntime}
+	args := map[string]any{
+		"component":      "workspace",
+		"argv":           []string{"sh", "-c", "sleep 45; echo SHOULD_NOT_PRINT"},
+		"timeoutSeconds": 75,
+	}
+
+	decision, err := ledger.BeginToolCall(ctx, "call-canceled-exec", spec, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	outcome, err := ledger.FinishToolCall(canceledCtx, decision.Token, "partial output must not survive", errors.New("interrupt signal: unbounded internal checkpoint SHOULD_NOT_PRINT"))
+	if err != nil {
+		t.Fatalf("FinishToolCall cancellation: %v", err)
+	}
+	if !outcome.Canceled || !outcome.Failed || outcome.Error != "" {
+		t.Fatalf("canceled outcome = %#v, want bounded canceled failure without framework error", outcome)
+	}
+	if len(outcome.Result) > 512 || strings.Contains(outcome.Result, "SHOULD_NOT_PRINT") || strings.Contains(outcome.Result, "interrupt signal") {
+		t.Fatalf("canceled result is unbounded or leaked command state: %q", outcome.Result)
+	}
+	var result projectAssistantExecCommandResult
+	if err := json.Unmarshal([]byte(outcome.Result), &result); err != nil {
+		t.Fatalf("canceled result is not valid JSON: %v\n%s", err, outcome.Result)
+	}
+	if result.Status != "canceled" || result.Component != "workspace" {
+		t.Fatalf("canceled result = %#v, want workspace canceled", result)
+	}
+
+	events := listAssistantRunEventLedgerEvents(t, messageStore, scope, "run-canceled-exec")
+	if len(events) != 2 {
+		t.Fatalf("canceled events = %#v, want call and result", events)
+	}
+	var payload projectAssistantRunToolResultPayload
+	if err := json.Unmarshal(events[1].Payload, &payload); err != nil {
+		t.Fatalf("decode canceled event: %v", err)
+	}
+	if !payload.Canceled || !payload.Failed || payload.Error != "" || payload.Result != outcome.Result {
+		t.Fatalf("canceled event payload = %#v, want normalized durable result", payload)
+	}
+
+	items, err := messageStore.ListAssistantConversationItems(ctx, scope, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("conversation items = %#v, want call and result", items)
+	}
+	var toolMessage chatMessage
+	if err := json.Unmarshal(items[1].Payload, &toolMessage); err != nil {
+		t.Fatalf("canceled conversation payload is invalid JSON: %v", err)
+	}
+	if toolMessage.Content != outcome.Result {
+		t.Fatalf("canceled conversation result = %q, want %q", toolMessage.Content, outcome.Result)
+	}
+
+	restarted := newProjectAssistantRunEventLedger(messageStore, scope, "run-canceled-exec")
+	replay, err := restarted.BeginToolCall(ctx, "call-canceled-exec", spec, args)
+	if err != nil || replay.Replay == nil {
+		t.Fatalf("canceled replay = %#v, err=%v", replay, err)
+	}
+	replayedResult, replayErr := replay.Replay.InvokeResult()
+	if replayErr != nil || replayedResult != outcome.Result || !replay.Replay.Canceled {
+		t.Fatalf("canceled InvokeResult = (%q, %v), replay=%#v", replayedResult, replayErr, replay.Replay)
 	}
 }
 

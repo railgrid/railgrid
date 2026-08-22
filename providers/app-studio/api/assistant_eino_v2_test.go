@@ -31,6 +31,8 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/store"
@@ -278,6 +280,108 @@ func TestEinoV2PublishesReconnectForPreStreamFailure(t *testing.T) {
 	}
 	if len(statuses) != 1 || statuses[0] != "Model connection was interrupted; reconnecting 1/5" {
 		t.Fatalf("statuses = %#v, want one reconnect warning", statuses)
+	}
+}
+
+func TestEinoV2EligibleSandboxDoesNotProvisionBeforeTextOnlyModelResponse(t *testing.T) {
+	h := newProjectAssistantV2ToolHarness(t, "lazy-sandbox-text")
+	h.server.ConfigureCodingSandbox(CodingSandboxConfig{Mode: CodingSandboxModeForce, DevelopmentMode: true, ReplicaCount: 1})
+	setupCalls := 0
+	h.server.runSandboxSetupFactory = func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState, *projectAssistantSandboxCheckpoint) (*projectAssistantRunSandbox, func(), error) {
+		setupCalls++
+		return nil, nil, errors.New("sandbox setup must remain lazy")
+	}
+	modelCalls := 0
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{{
+		Message: schema.AssistantMessage("No source changes are needed.", nil),
+		Inspect: func([]*schema.Message) {
+			modelCalls++
+			if setupCalls != 0 {
+				t.Fatalf("sandbox setup calls before model = %d, want zero", setupCalls)
+			}
+		},
+	}}}
+	engine := projectEinoAssistantEngine{
+		server: h.server,
+		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+			return model, nil
+		},
+		newTools: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+			return nil, nil
+		},
+	}
+	result, err := engine.StreamProjectAssistant(context.Background(), h.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "No source changes are needed." || modelCalls != 1 || setupCalls != 0 {
+		t.Fatalf("result=%q modelCalls=%d setupCalls=%d", result.Content, modelCalls, setupCalls)
+	}
+}
+
+func TestEinoV2FirstRemoteSourceToolProvisionsSandboxExactlyOnce(t *testing.T) {
+	h := newProjectAssistantV2ToolHarness(t, "lazy-sandbox-read")
+	h.req.TurnProfile = projectAssistantTurnProfileImplementation
+	h.req.TurnPolicy = projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation)
+	h.server.ConfigureCodingSandbox(CodingSandboxConfig{Mode: CodingSandboxModeForce, DevelopmentMode: true, ReplicaCount: 1})
+	setupCalls := 0
+	sourceRevision, err := h.workspaces.SourceRevision(context.Background(), h.req.WorkspaceScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceDigest := projectSandboxSyncDigest(nil)
+	fake := &sandboxClientFake{response: projectAssistantSandboxWorkspaceResponse{
+		File:           workspace.FileContent{Path: "main.go", Content: "package main\n", Version: "v1"},
+		SourceRevision: sourceRevision,
+		SourceDigest:   sourceDigest,
+	}}
+	h.server.runSandboxSetupFactory = func(_ context.Context, req projectAssistantRunRequest, state *projectEinoAssistantRunState, _ *projectAssistantSandboxCheckpoint) (*projectAssistantRunSandbox, func(), error) {
+		setupCalls++
+		now := time.Now().UTC()
+		return &projectAssistantRunSandbox{
+			server: h.server, client: fake, id: req.Identity, project: req.Project, scope: req.WorkspaceScope, runState: state,
+			target: projectDevelopmentSyncTargetInfo{Components: map[string]projectTemplateComponent{projectAssistantRunSandboxWorkspaceVerb: {WorkspacePath: "."}}},
+			metadata: projectAssistantRunSandboxMetadata{
+				Version: 3, Status: "active", RunID: projectAssistantRunID(req), Template: projectAssistantRunSandboxDefaultTemplate,
+				ProviderExportPath: projectAssistantPlatformInfrastructureExportPath, TransportGeneration: projectAssistantSandboxTransportGeneration,
+				SourceRevision: sourceRevision, RemoteRevision: sourceRevision, SourceDigest: sourceDigest, RemoteDigest: sourceDigest,
+				RemoteCheckpointID: "baseline", CreatedAt: now, LastActivityAt: now,
+				IdleExpiresAt: now.Add(time.Hour), HardExpiresAt: now.Add(time.Hour),
+			},
+		}, func() {}, nil
+	}
+	toolCall := schema.AssistantMessage("", []schema.ToolCall{{ID: "read-1", Type: "function", Function: schema.FunctionCall{Name: projectToolReadFile, Arguments: `{"file_path":"main.go","offset":1,"limit":200}`}}})
+	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{
+		{Message: toolCall, Inspect: func([]*schema.Message) {
+			if setupCalls != 0 {
+				t.Fatalf("setup before first model sample = %d", setupCalls)
+			}
+		}},
+		{Message: schema.AssistantMessage("Source inspected.", nil), Inspect: func([]*schema.Message) {
+			if setupCalls != 1 || fake.workspaceCalls != 1 {
+				t.Fatalf("after first remote tool setupCalls=%d workspaceCalls=%d, want one each", setupCalls, fake.workspaceCalls)
+			}
+		}},
+	}}
+	readTool, ok := h.server.projectAssistantToolRegistry().Get(projectToolReadFile)
+	if !ok {
+		t.Fatalf("%s missing", projectToolReadFile)
+	}
+	engine := projectEinoAssistantEngine{
+		server: h.server,
+		newModel: func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState) (einomodel.BaseChatModel, error) {
+			return model, nil
+		},
+		newTools: func(_ context.Context, req projectAssistantRunRequest, state *projectEinoAssistantRunState) ([]einotool.BaseTool, error) {
+			return []einotool.BaseTool{newProjectEinoAssistantServerTool(h.server, readTool, req, state)}, nil
+		},
+	}
+	result, err := engine.StreamProjectAssistant(context.Background(), h.req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Content != "Source inspected." || setupCalls != 1 || fake.workspaceCalls != 2 {
+		t.Fatalf("result=%q setupCalls=%d workspaceCalls=%d, want one setup plus read and terminal checkpoint", result.Content, setupCalls, fake.workspaceCalls)
 	}
 }
 
@@ -684,6 +788,63 @@ func TestInitialProjectPlanRequiresBoundTemplateAndPreservesAuthority(t *testing
 	}
 }
 
+func TestInitialProjectPlanUsesReadyRunSandboxWorkspaceRootWithoutTemplate(t *testing.T) {
+	project := &aiv1alpha1.Project{}
+	project.APIVersion = aiv1alpha1.SchemeGroupVersion.String()
+	project.Kind = "Project"
+	project.Name = "todo"
+	project.UID = "project-uid-todo"
+	projectObject, err := runtime.DefaultUnstructuredConverter.ToUnstructured(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runState := newProjectEinoAssistantRunState()
+	runState.ApprovePlan(projectAssistantInitialCreationPlan("Build a Go todo app"))
+	runState.SetSandbox(&projectAssistantRunSandbox{
+		target: projectDevelopmentSyncTargetInfo{Components: map[string]projectTemplateComponent{
+			projectAssistantRunSandboxWorkspaceVerb: {WorkspacePath: "."},
+		}},
+		metadata: projectAssistantRunSandboxMetadata{
+			Status:        "active",
+			Template:      projectAssistantRunSandboxDefaultTemplate,
+			HardExpiresAt: time.Now().Add(time.Hour),
+		},
+	})
+	tool := projectEinoAssistantTool{
+		req: projectAssistantRunRequest{
+			Client:  newProjectCreationTestClient(&unstructured.Unstructured{Object: projectObject}),
+			Project: project,
+		},
+		runState: runState,
+	}
+	result, err := tool.invokeInitialProjectPlanTool(
+		context.Background(),
+		"call-plan-sandbox",
+		projectAssistantToolSpec{Name: projectToolDefineInitialProjectPlan, Risk: projectAssistantToolRiskPlan},
+		map[string]any{
+			"summary":            "Build the Go todo app",
+			"steps":              []any{"Create the HTTP service", "Run Go tests"},
+			"targetPaths":        []any{"cmd/"},
+			"acceptanceCriteria": []any{"The todo endpoints respond", "go test ./... passes"},
+		},
+	)
+	if err != nil || !strings.Contains(result, `"status":"defined"`) {
+		t.Fatalf("sandbox-backed plan = (%q, %v), want defined plan", result, err)
+	}
+	plan := runState.ExecutionPlan()
+	if plan == nil || !plan.RunLocal || !plan.AllowAllWrites {
+		t.Fatalf("sandbox-backed execution authority = %#v, want run-local project workspace root grant", plan)
+	}
+	for _, path := range []string{"go.mod", "cmd/todo/main.go", "test/todo_test.go"} {
+		if !projectAssistantApprovedPlanAllowsWrite(plan, projectToolCreateFile, map[string]any{"path": path, "content": "source"}) {
+			t.Fatalf("sandbox-backed root authority rejected project path %q", path)
+		}
+	}
+	if projectAssistantApprovedPlanAllowsWrite(plan, projectToolCreateFile, map[string]any{"path": "../outside", "content": "source"}) {
+		t.Fatal("sandbox-backed root authority accepted a path outside the project workspace")
+	}
+}
+
 func TestTemplateSelectionInvalidatesExecutionPlanAndRepairsLegacyAuthority(t *testing.T) {
 	runState := newProjectEinoAssistantRunState()
 	legacy := projectAssistantApprovedPlan{
@@ -972,6 +1133,9 @@ func TestEinoV2RestoresDurableDirtyBundleIntoCurrentMutationRevision(t *testing.
 	if got := strings.Join(runState.SuccessfulMutationPaths(), ","); got != "src/App.tsx" {
 		t.Fatalf("restored paths = %q, want src/App.tsx", got)
 	}
+	if status, failure := runState.DevelopmentSyncEvidence(1); status != "unknown" || strings.Contains(failure, "not scheduled") {
+		t.Fatalf("template-less dirty restore preview sync evidence = (%q, %q), want unknown without a synthetic scheduling failure", status, failure)
+	}
 }
 
 func TestEinoV2RestoresCommitSettlementBeforeDirtyBundle(t *testing.T) {
@@ -1044,6 +1208,27 @@ func TestEinoV2UsesPriorUncommittedPathsWithoutRestoringMutationRevision(t *test
 func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 	ctx := context.Background()
 	h := newProjectAssistantV2ToolHarnessWithApprovalMode(t, "v2-resume-run-local-grant", store.AssistantApprovalModeAlwaysAsk)
+	h.server.ConfigureCodingSandbox(CodingSandboxConfig{Mode: CodingSandboxModeBYOOnly, ReplicaCount: 1})
+	type resolverCall struct {
+		id    identity
+		scope workspace.Scope
+	}
+	var resolverCalls []resolverCall
+	h.server.codingSandboxResolver = func(_ context.Context, id identity, scope workspace.Scope) (CodingSandboxEligibility, error) {
+		resolverCalls = append(resolverCalls, resolverCall{id: id, scope: scope})
+		return CodingSandboxEligibility{Reason: "test has no BYO binding"}, nil
+	}
+	assertResolverCalls := func(want int) {
+		t.Helper()
+		if len(resolverCalls) != want {
+			t.Fatalf("sandbox resolver calls = %#v, want %d", resolverCalls, want)
+		}
+		for i, call := range resolverCalls {
+			if call.id != h.req.Identity || call.scope != h.req.WorkspaceScope {
+				t.Fatalf("sandbox resolver call %d = identity %#v scope %#v, want exact request identity %#v scope %#v", i+1, call.id, call.scope, h.req.Identity, h.req.WorkspaceScope)
+			}
+		}
+	}
 	writeTestWorkspaceFiles(t, ctx, h.workspaces, h.req.WorkspaceScope, []workspace.File{{
 		Path: "src/App.tsx",
 		Content: `export function App() {
@@ -1128,6 +1313,7 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 	}
 
 	_, err = engine.StreamProjectAssistant(ctx, h.req)
+	assertResolverCalls(1)
 	var firstPermission *projectAssistantPermissionRequiredError
 	if !errors.As(err, &firstPermission) {
 		t.Fatalf("StreamProjectAssistant error = %v, want permission interrupt", err)
@@ -1162,6 +1348,7 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 		RequestID: firstPermission.RequestID,
 		Decision:  string(projectAssistantPermissionAllow),
 	}, checkpoint)
+	assertResolverCalls(2)
 	var secondPermission *projectAssistantPermissionRequiredError
 	if !errors.As(err, &secondPermission) {
 		t.Fatalf("ResumeProjectAssistant error = %v, want second permission interrupt", err)
@@ -1200,6 +1387,7 @@ func TestEinoV2ResumeDoesNotTreatPlanAsMutationAuthority(t *testing.T) {
 			"path": "src/Admin.tsx", "oldString": "old", "newString": "new",
 		},
 	}, checkpoint)
+	assertResolverCalls(3)
 	var freshPermission *projectAssistantPermissionRequiredError
 	if !errors.As(err, &freshPermission) {
 		t.Fatalf("edited-scope resume error = %v, want a fresh permission interrupt", err)

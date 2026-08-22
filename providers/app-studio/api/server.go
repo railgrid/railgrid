@@ -74,9 +74,22 @@ type Server struct {
 	// projectClientFor is an optional test seam for handlers that need a
 	// workspace-scoped Project client without opening a GraphQL listener.
 	// Production leaves it nil and uses clientFor's caller-scoped GraphQL path.
-	projectClientFor    func(identity) (*asclient.Client, error)
-	assistantRunManager *projectAssistantRunManager
-	assistantSupervisor *projectAssistantSupervisor
+	projectClientFor     func(identity) (*asclient.Client, error)
+	assistantRunManager  *projectAssistantRunManager
+	assistantSupervisor  *projectAssistantSupervisor
+	runSandboxManager    *projectAssistantSandboxManager
+	runSandboxConfig     CodingSandboxConfig
+	runSandboxConfigured bool
+	// codingSandboxResolver resolves a caller's organization-scoped BYO
+	// provider binding. Nil is fail-closed. Platform force mode never calls it.
+	codingSandboxResolver  func(context.Context, identity, workspace.Scope) (CodingSandboxEligibility, error)
+	runSandboxSetupFactory func(context.Context, projectAssistantRunRequest, *projectEinoAssistantRunState, *projectAssistantSandboxCheckpoint) (*projectAssistantRunSandbox, func(), error)
+	// runSandboxClientFactory is an App Studio-only seam for the Infrastructure
+	// workspace protocol. Production uses the authenticated data-plane client.
+	runSandboxClientFactory func(*Server) projectAssistantSandboxClient
+	// sandboxDataPlaneClientFactory is a narrow HTTP seam for protocol tests;
+	// production leaves it nil and uses the authenticated TLS transport.
+	sandboxDataPlaneClientFactory func(time.Duration) *http.Client
 	// replicaRouting carries this replica's identity/address/token for
 	// project affinity and durable run claims (replica_affinity.go). Nil
 	// until SetReplicaRouting; affinity is a no-op without it.
@@ -163,7 +176,25 @@ func NewWithWorkspaceContext(parent context.Context, gql *tenant.GraphQLClient, 
 	s.assistantEngine = NewEinoAssistantEngine(s)
 	s.assistantRunManager = newProjectAssistantRunManager()
 	s.assistantSupervisor = newProjectAssistantSupervisor(parent, msgStore)
+	s.assistantSupervisor.server = s
+	s.runSandboxManager = newProjectAssistantSandboxManager()
+	if config, _, err := ParseCodingSandboxConfig(getenv); err == nil {
+		s.runSandboxConfig = config
+		s.runSandboxConfigured = true
+	}
 	return s
+}
+
+// ConfigureCodingSandbox installs the immutable, server-owned sandbox policy
+// validated by the process before it begins serving requests.
+func (s *Server) ConfigureCodingSandbox(config CodingSandboxConfig) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runSandboxConfig = config
+	s.runSandboxConfigured = true
 }
 
 func (s *Server) Shutdown(ctx context.Context) {
@@ -179,6 +210,7 @@ func (s *Server) projectAssistantSupervisor() *projectAssistantSupervisor {
 	if s.assistantSupervisor == nil {
 		s.assistantSupervisor = newProjectAssistantSupervisor(context.Background(), s.store)
 	}
+	s.assistantSupervisor.server = s
 	return s.assistantSupervisor
 }
 
@@ -198,6 +230,18 @@ func (s *Server) projectAssistantRunManager() *projectAssistantRunManager {
 		s.assistantRunManager = newProjectAssistantRunManager()
 	}
 	return s.assistantRunManager
+}
+
+func (s *Server) projectAssistantSandboxManager() *projectAssistantSandboxManager {
+	if s == nil {
+		return newProjectAssistantSandboxManager()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.runSandboxManager == nil {
+		s.runSandboxManager = newProjectAssistantSandboxManager()
+	}
+	return s.runSandboxManager
 }
 
 func (s *Server) developmentSyncLock(id identity, project *aiv1alpha1.Project) *sync.Mutex {

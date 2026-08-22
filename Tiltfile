@@ -119,6 +119,16 @@ preview_hub_public_host = 'console.127.0.0.1.sslip.io'
 preview_kro_kubeconfig = '.faros-kro.kubeconfig'
 preview_kro_context = 'kind-faros-kro'
 preview_kro_node = 'faros-kro-control-plane'
+dev_agent_image = 'ghcr.io/faroshq/faros-dev-agent:latest'
+dev_agent_image_repository = 'ghcr.io/faroshq/faros-dev-agent'
+universal_dev_image = 'ghcr.io/faroshq/faros-universal-dev:latest'
+universal_dev_image_repository = 'ghcr.io/faroshq/faros-universal-dev'
+# The local loop keeps the historical force default, while allowing an
+# explicit off/byo-only mode to avoid constructing any platform sandbox
+# resources. Keep this in Starlark as well as the shell fallback below so the
+# effective mode controls Tilt's resource graph (not only the provider env).
+app_studio_sandbox_mode = os.getenv('APP_STUDIO_RUN_SANDBOX_MODE', '').strip().lower() or 'force'
+app_studio_sandbox_force = app_studio_sandbox_mode == 'force'
 # Host address as seen FROM INSIDE the faros-kro containers. Resolve
 # host.docker.internal inside the node first: on Docker Desktop/OrbStack the
 # bridge gateway below is the VM, not the host, and dialing it gets connection
@@ -330,7 +340,7 @@ local_resource(
 local_resource(
     'app-studio',
     cmd='make build-app-studio-provider',
-    serve_cmd='make run-provider-app-studio',
+    serve_cmd='APP_STUDIO_RUN_SANDBOX_MODE=${APP_STUDIO_RUN_SANDBOX_MODE:-force} APP_STUDIO_DEVELOPMENT_MODE=true APP_STUDIO_REPLICA_COUNT=1 make run-provider-app-studio',
     deps=[
         'providers/app-studio/main.go',
         'providers/app-studio/heartbeat.go',
@@ -351,7 +361,10 @@ local_resource(
         'providers/app-studio/deploy/chart/values.yaml',
         'providers/app-studio/.env',
     ],
-    resource_deps=['hub', 'app-studio-db', 'dev-agent-image', 'app-studio-preview-console-key'],
+    resource_deps=(
+        ['hub', 'app-studio-db', 'dev-agent-image', 'app-studio-preview-console-key']
+        + (['universal-dev-image'] if app_studio_sandbox_force else [])
+    ),
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8085, path='/healthz'),
@@ -485,7 +498,24 @@ local_resource(
 # infrastructure provider (docs/app-studio-template-sandboxes.md §2).
 local_resource(
     'dev-agent-image',
-    cmd='make load-dev-agent-image',
+    cmd=('''
+set -eu
+make load-dev-agent-image
+dev_agent_digest="$(docker exec {kro_node} ctr -n k8s.io images ls 'name=={dev_agent_image}' | awk 'NR == 2 {{ print $3 }}')"
+case "$dev_agent_digest" in
+  sha256:????????????????????????????????????????????????????????????????) ;;
+  *) echo "local dev-agent image has no immutable sha256 manifest digest" >&2; exit 1 ;;
+esac
+# kind imports the local tag but does not create its digest-qualified image
+# name. Add that CRI-visible alias so Infrastructure can use the immutable
+# reference without pulling from a registry.
+docker exec {kro_node} ctr -n k8s.io images tag --force \
+  {dev_agent_image} {dev_agent_repository}@$dev_agent_digest
+''').format(
+        kro_node=preview_kro_node,
+        dev_agent_image=dev_agent_image,
+        dev_agent_repository=dev_agent_image_repository,
+    ),
     deps=[
         'providers/infrastructure/dev-agent',
     ],
@@ -496,16 +526,34 @@ local_resource(
 # Platform-curated Node/Go/Python toolchain image for the private coding
 # environment. It is separate from the injected dev-agent binary so the image
 # can be pinned independently in a production InfrastructureProvider CR.
-local_resource(
-    'universal-dev-image',
-    cmd='make load-universal-dev-image',
-    deps=[
-        'providers/infrastructure/dev-agent/Dockerfile.universal',
-        'Makefile',
-    ],
-    resource_deps=['kro-mgmt-up'],
-    labels=['providers-kro'],
-)
+if app_studio_sandbox_force:
+    local_resource(
+        'universal-dev-image',
+        cmd=('''
+set -eu
+make load-universal-dev-image
+universal_digest="$(docker exec {kro_node} ctr -n k8s.io images ls 'name=={universal_image}' | awk 'NR == 2 {{ print $3 }}')"
+case "$universal_digest" in
+  sha256:????????????????????????????????????????????????????????????????) ;;
+  *) echo "local universal image has no immutable sha256 manifest digest" >&2; exit 1 ;;
+esac
+# kind imports the local tag but does not create its digest-qualified image
+# name. Add that CRI-visible alias so the same immutable reference admitted by
+# Infrastructure resolves without pulling from a registry.
+docker exec {kro_node} ctr -n k8s.io images tag --force \
+  {universal_image} {universal_repository}@$universal_digest
+''').format(
+                       kro_node=preview_kro_node,
+                       universal_image=universal_dev_image,
+                       universal_repository=universal_dev_image_repository,
+                   ),
+        deps=[
+            'providers/infrastructure/dev-agent/Dockerfile.universal',
+            'Makefile',
+        ],
+        resource_deps=['kro-mgmt-up'],
+        labels=['providers-kro'],
+    )
 
 # --- providers-kuery (fleet query engine) ---
 # Local Postgres for the kuery store. Dev always runs the same SQL backend
@@ -684,6 +732,42 @@ local_resource(
     labels=['providers-kro'],
 )
 
+infrastructure_sandbox_digest_script = ''
+infrastructure_sandbox_env = 'FAROS_CODING_SANDBOX_ENABLED=false \\'
+infrastructure_resource_deps = [
+    'hub',
+    'dev-agent-image',
+    'kro-mgmt-up',
+    'preview-gateway-up',
+    'app-studio-preview-dns',
+    'app-studio-preview-port-forward',
+    'app-studio-preview-console-key',
+]
+if app_studio_sandbox_force:
+    infrastructure_sandbox_digest_script = ('''
+dev_agent_digest="$(docker exec {kro_node} ctr -n k8s.io images ls 'name=={dev_agent_image}' | awk 'NR == 2 {{ print $3 }}')"
+case "$dev_agent_digest" in
+  sha256:????????????????????????????????????????????????????????????????) ;;
+  *) echo "local dev-agent image has no immutable sha256 manifest digest" >&2; exit 1 ;;
+esac
+universal_digest="$(docker exec {kro_node} ctr -n k8s.io images ls 'name=={universal_image}' | awk 'NR == 2 {{ print $3 }}')"
+case "$universal_digest" in
+  sha256:????????????????????????????????????????????????????????????????) ;;
+  *) echo "local universal image has no immutable sha256 manifest digest" >&2; exit 1 ;;
+esac
+''').format(
+        kro_node=preview_kro_node,
+        dev_agent_image=dev_agent_image,
+        universal_image=universal_dev_image,
+    )
+    infrastructure_sandbox_env = ('''FAROS_CODING_SANDBOX_ENABLED=true \\
+FAROS_DEV_AGENT_IMAGE="{dev_agent_repository}@$dev_agent_digest" \\
+FAROS_DEV_IMAGE_UNIVERSAL="{universal_repository}@$universal_digest" \\''').format(
+        dev_agent_repository=dev_agent_image_repository,
+        universal_repository=universal_dev_image_repository,
+    )
+    infrastructure_resource_deps = infrastructure_resource_deps + ['universal-dev-image']
+
 local_resource(
     'infrastructure',
     cmd='make build-infrastructure-provider',
@@ -694,7 +778,7 @@ if [ -z "$host_gateway" ]; then
   host_gateway="$(docker inspect -f '{docker_gateway_format}' {kro_node})"
 fi
 test -n "$host_gateway"
-KRO_KUBECONFIG={kro_kubeconfig} \
+{sandbox_digest_script}KRO_KUBECONFIG={kro_kubeconfig} \
 FAROS_GATEWAY_NAME={gateway_name} \
 FAROS_GATEWAY_NAMESPACE={gateway_namespace} \
 FAROS_APP_BASE_DOMAIN={base_domain} \
@@ -702,6 +786,7 @@ FAROS_APP_PUBLIC_PORT={public_port} \
 FAROS_ACCESS_HUB_URL="https://$host_gateway:9443" \
 FAROS_ACCESS_HUB_PUBLIC_URL={hub_public_url} \
 FAROS_ACCESS_HUB_INSECURE=true \
+{sandbox_env}
 make run-provider-infrastructure
 ''').format(
                    docker_gateway_format=docker_gateway_format,
@@ -712,6 +797,8 @@ make run-provider-infrastructure
                    base_domain=preview_app_base_domain,
                    public_port=preview_app_public_port,
                    hub_public_url=preview_hub_public_url,
+                   sandbox_digest_script=infrastructure_sandbox_digest_script,
+                   sandbox_env=infrastructure_sandbox_env,
                ),
     deps=[
         'providers/infrastructure/main.go',
@@ -748,14 +835,7 @@ make run-provider-infrastructure
     # backend cluster the catalog reads from. Both must be green
     # before the provider starts; otherwise it boots in stub mode
     # which is fine but confusing for the dev who just ran `tilt up`.
-    resource_deps=[
-        'hub',
-        'kro-mgmt-up',
-        'preview-gateway-up',
-        'app-studio-preview-dns',
-        'app-studio-preview-port-forward',
-        'app-studio-preview-console-key',
-    ],
+    resource_deps=infrastructure_resource_deps,
     readiness_probe=probe(
         period_secs=5,
         http_get=http_get_action(port=8082, path='/healthz'),
@@ -780,12 +860,31 @@ local_resource(
 #   infrastructure (long-lived) → picks up INFRASTRUCTURE_KUBECONFIG
 # Manual so devs control when re-bootstrap happens (it overwrites
 # the runtime kubeconfig and rotates the token).
+infrastructure_init_cmd = 'make init-provider-infrastructure'
+infrastructure_init_resource_deps = ['hub', 'infrastructure-register']
+if app_studio_sandbox_force:
+    # The init command owns Template seeding, so it must receive the same
+    # immutable universal image contract as the long-lived provider. Without
+    # this, local force mode can run against a stale platform Template even
+    # though the serving process correctly enables coding sandboxes.
+    infrastructure_init_cmd = ('''set -eu
+{sandbox_digest_script}{sandbox_env}
+make init-provider-infrastructure
+''').format(
+        sandbox_digest_script=infrastructure_sandbox_digest_script,
+        sandbox_env=infrastructure_sandbox_env,
+    )
+    infrastructure_init_resource_deps = infrastructure_init_resource_deps + [
+        'dev-agent-image',
+        'universal-dev-image',
+        'kro-mgmt-up',
+    ]
 local_resource(
     'infrastructure-init',
-    cmd='make init-provider-infrastructure',
+    cmd=infrastructure_init_cmd,
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
-    resource_deps=['hub', 'infrastructure-register'],
+    resource_deps=infrastructure_init_resource_deps,
     labels=['providers-kro'],
 )
 

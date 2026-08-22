@@ -51,6 +51,7 @@ const (
 	projectAssistantActionFeedStatusRunning   = "running"
 	projectAssistantActionFeedStatusWaiting   = "waiting"
 	projectAssistantActionFeedStatusSucceeded = "succeeded"
+	projectAssistantActionFeedStatusCanceled  = "canceled"
 	projectAssistantActionFeedStatusSkipped   = "skipped"
 	projectAssistantActionFeedStatusFailed    = "failed"
 	projectAssistantActionFeedStatusRejected  = "rejected"
@@ -566,6 +567,12 @@ func projectAssistantActionFeedItemStatus(status string) string {
 		return projectAssistantActionFeedStatusWaiting
 	case "failed":
 		return projectAssistantActionFeedStatusFailed
+	case "error", "timed_out":
+		return projectAssistantActionFeedStatusFailed
+	case "canceled", "cancelled":
+		// Cancellation is a truthful terminal process outcome, but it is not a
+		// failed action: the nested exec metadata carries the canceled state.
+		return projectAssistantActionFeedStatusCanceled
 	case "rejected":
 		return projectAssistantActionFeedStatusRejected
 	case "skipped":
@@ -621,6 +628,8 @@ func projectAssistantActionLifecycleTitle(status, active, succeeded, failed stri
 		return failed
 	case projectAssistantActionFeedStatusSkipped:
 		return "Skipped duplicate read"
+	case projectAssistantActionFeedStatusCanceled:
+		return "Canceled"
 	default:
 		return succeeded
 	}

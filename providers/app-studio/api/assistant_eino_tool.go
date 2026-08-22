@@ -660,10 +660,7 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 	if settlementErr := t.recordV2CommitSettlement(ctx, spec, args, successful); settlementErr != nil {
 		return "", settlementErr
 	}
-	status := projectToolCallResultStatus(spec.Name, result)
-	if !successful {
-		status = "failed"
-	}
+	status := projectToolCallTerminalStatus(spec.Name, result, successful)
 	t.emitToolCall(projectToolCallStreamEvent{
 		ID:                callID,
 		Name:              spec.Name,
@@ -845,10 +842,7 @@ func (t projectEinoAssistantTool) replayDurableToolCall(
 		}
 		result = outcome.Result
 	}
-	status := projectToolCallResultStatus(spec.Name, result)
-	if !successful {
-		status = "failed"
-	}
+	status := projectToolCallTerminalStatus(spec.Name, result, successful)
 	t.emitToolCall(projectToolCallStreamEvent{
 		ID:                callID,
 		Name:              spec.Name,
@@ -898,6 +892,13 @@ func (t projectEinoAssistantTool) recordV2WorkspaceMutation(ctx context.Context,
 		return nil
 	}
 	paths := t.recordV2SuccessfulMutationPaths(name, result)
+	if sandbox := projectAssistantRunSandboxForRequest(projectAssistantToolCallRequest{RunState: t.runState}); sandbox != nil {
+		// Remote mutations stay in the run sandbox until the explicit bounded
+		// checkpoint.  Marking the local store dirty or syncing the legacy
+		// project instance here would expose a partial run and split authority.
+		t.runState.RecordSourceMutation()
+		return nil
+	}
 	var persistErr error
 	if len(paths) > 0 && t.req.Workspace != nil {
 		if _, err := t.req.Workspace.AddUncommittedPaths(ctx, t.req.WorkspaceScope, paths); err != nil {
@@ -988,6 +989,11 @@ func projectEinoAssistantPartialMutationResult(result string, invokeErr error) s
 }
 
 func (t projectEinoAssistantTool) v2CommitArguments(ctx context.Context, args map[string]any) (map[string]any, error) {
+	if sandbox := projectAssistantRunSandboxForRequest(projectAssistantToolCallRequest{RunState: t.runState}); sandbox != nil {
+		if err := sandbox.checkpoint(ctx, t.req); err != nil {
+			return nil, err
+		}
+	}
 	if t.req.Workspace == nil {
 		return nil, errors.New("project workspace store is not configured")
 	}
@@ -1164,6 +1170,25 @@ func projectAssistantInitialBuildActive(req projectAssistantRunRequest, runState
 	return runState != nil && runState.ApprovedPlan() != nil && runState.ApprovedPlan().RunLocal
 }
 
+// projectAssistantRunSandboxReadyForInitialPlan reports whether the current
+// run has an authoring workspace that can stand in for a project-bound hosted
+// development template. The sandbox pointer is published only after the
+// infrastructure Instance has passed its readiness fence and its workspace
+// baseline has been created; the metadata checks below keep a closed or
+// expired sandbox from reopening initial-plan authority after that point.
+//
+// The universal run sandbox's workspace component is rooted at the project
+// workspace (".") when it is created/attached. Keeping the check here about
+// sandbox lifecycle, rather than trusting model-supplied paths, preserves
+// that server-owned root boundary for the initial creation grant.
+func projectAssistantRunSandboxReadyForInitialPlan(runState *projectEinoAssistantRunState) bool {
+	environment := projectEinoAssistantCodingEnvironmentForRun(runState)
+	if environment == nil || environment.WorkspaceRoot != "." || environment.ExecComponent != projectAssistantRunSandboxWorkspaceVerb {
+		return false
+	}
+	return true
+}
+
 func (t projectEinoAssistantTool) retireApprovedPlan(_ context.Context) error {
 	if t.server == nil && t.req.executionAuthority == nil {
 		return store.ErrAssistantRunConflict
@@ -1237,12 +1262,13 @@ func (t projectEinoAssistantTool) invokeInitialProjectPlanTool(
 	if authority == nil || !authority.RunLocal {
 		return t.finishFailedToolCall(callID, spec.Name, projectEinoToolArgumentsString(args), "initial project planning is unavailable outside the initial build"), nil
 	}
-	if t.req.Project == nil || t.req.Project.Spec.Template == nil || strings.TrimSpace(t.req.Project.Spec.Template.Name) == "" {
+	sandboxReady := projectAssistantRunSandboxReadyForInitialPlan(t.runState)
+	if t.req.Project == nil || ((t.req.Project.Spec.Template == nil || strings.TrimSpace(t.req.Project.Spec.Template.Name) == "") && !sandboxReady) {
 		return t.finishFailedToolCall(
 			callID,
 			spec.Name,
 			projectEinoToolArgumentsString(args),
-			"template_not_bound: select a development template first, then define the execution plan from the returned component workspace paths and toolchains",
+			"template_not_bound: select a hosted development/preview template first, or continue from the active per-run coding sandbox; then define the execution plan from its server-owned workspace contract",
 		), nil
 	}
 	// Checkpoints created before execution plans were separated from authority
@@ -1257,6 +1283,15 @@ func (t projectEinoAssistantTool) invokeInitialProjectPlanTool(
 	}
 	if existing := t.runState.ExecutionPlan(); existing != nil {
 		plan = mergeProjectAssistantInitialExecutionPlans(*existing, plan)
+	}
+	// A fresh project prompt is the user-derived source-edit authority for this
+	// run. When the active universal sandbox is the authoring environment, its
+	// server-owned workspace component is rooted at "."; retain that root grant
+	// instead of narrowing writes to model-authored targetPaths. Those paths
+	// remain informational plan/progress metadata and are still normalized and
+	// validated by projectAssistantInitialExecutionPlanFromArguments.
+	if sandboxReady && authority.AllowAllWrites && authority.RunLocal {
+		plan.AllowAllWrites = true
 	}
 
 	persistCtx, cancelPersist := detachedProjectPersistenceContext(ctx)
@@ -1306,7 +1341,7 @@ func (t projectEinoAssistantTool) refreshInitialBuildAfterTemplateSelection(ctx 
 	// A template switch changes the authoritative workspacePath/toolchain
 	// contract. Never retain an execution plan created against the old contract.
 	t.runState.ClearExecutionPlan()
-	t.runState.SetSessionSnapshot(projectEinoAssistantSnapshot(ctx, t.req))
+	t.runState.SetSessionSnapshot(projectEinoAssistantSnapshot(ctx, t.req, t.runState))
 }
 
 func projectAssistantInitialPlanProgress(plan projectAssistantApprovedPlan) projectAssistantPlanSnapshot {

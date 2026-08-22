@@ -257,6 +257,7 @@ type projectAssistantWorkflowRunContext struct {
 	ApprovalMode   store.AssistantApprovalMode
 	EventLedger    *projectAssistantRunEventLedger
 	AdmitMutation  func(context.Context) error
+	OnToolCall     func(projectToolCallStreamEvent)
 	// Identity and Client carry the caller's tenant identity and project
 	// client so runtime/preview tools can query the live development
 	// runtime instead of returning a placeholder status.
@@ -280,6 +281,7 @@ func projectAssistantWorkflowRunContextForRequest(server *Server, req projectAss
 		ApprovalMode:     req.ApprovalMode,
 		EventLedger:      req.eventLedger,
 		AdmitMutation:    authority.AdmitMutation,
+		OnToolCall:       req.StreamCallbacks.OnToolCall,
 		Identity:         req.Identity,
 		Client:           req.Client,
 		ExecutionContext: req.executionContext,
@@ -303,6 +305,7 @@ func (c projectAssistantWorkflowRunContext) current() projectAssistantWorkflowRu
 	c.Identity = req.Identity
 	c.Client = req.Client
 	c.AdmitMutation = projectAssistantExecutionAuthorityFor(c.Server, req).AdmitMutation
+	c.OnToolCall = req.StreamCallbacks.OnToolCall
 	return c
 }
 
@@ -317,7 +320,7 @@ func projectAssistantWorkflowToolSpecs() []projectAssistantToolSpec {
 		},
 		{
 			Name:         projectToolCheckProjectReadiness,
-			Description:  "Check deterministic App Studio project readiness from memory, repository status, and workspace context before edits, verification, or commit.",
+			Description:  "Check deterministic App Studio handoff readiness from memory, repository status, and workspace context before verification or commit. This does not grant or block authorized coding-workspace edits or compiler/test execution.",
 			Parameters:   json.RawMessage(`{"type":"object","properties":{"includeFiles":{"type":"boolean","description":"Whether to include a bounded current workspace file list."},"maxFiles":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum workspace file paths to include when includeFiles is true."}}}`),
 			Risk:         projectAssistantToolRiskRead,
 			ParallelSafe: true,
@@ -331,7 +334,7 @@ func projectAssistantWorkflowToolSpecs() []projectAssistantToolSpec {
 		},
 		{
 			Name:         projectToolInspectDevelopmentTemplates,
-			Description:  "Inspect every development-capable infrastructure template available to this project in one read. Use this before choosing a template for a project that has none; it does not bind or change a template.",
+			Description:  "Inspect every selectable hosted development/preview infrastructure template available to this project in one read. These templates govern the long-lived app preview/runtime, not the private per-run coding environment. Use this before choosing a hosted preview template; it does not bind or change one.",
 			Parameters:   json.RawMessage(`{"type":"object","properties":{}}`),
 			Risk:         projectAssistantToolRiskRead,
 			ParallelSafe: true,
@@ -397,10 +400,16 @@ func projectAssistantWorkflowToolSpec(name string) (projectAssistantToolSpec, bo
 func newProjectAssistantGraphWorkflowTools(ctx context.Context, runCtx projectAssistantWorkflowRunContext, policy projectAssistantTurnPolicy) ([]einotool.BaseTool, error) {
 	specs := projectAssistantWorkflowToolSpecs()
 	out := make([]einotool.BaseTool, 0, len(specs))
-	for _, spec := range specs {
-		if !policy.AllowsTool(spec) {
+	for _, baseSpec := range specs {
+		if !policy.AllowsTool(baseSpec) {
 			continue
 		}
+		// The active per-run sandbox is a single-component universal runtime,
+		// while ordinary project runtimes may expose several template-backed
+		// components. Keep the catalog contract static for policy selection, but
+		// make the model-facing exec_command presentation reflect the runtime it
+		// will actually address.
+		spec := projectAssistantExecCommandToolSpecForRun(baseSpec, runCtx)
 		graphTool, err := newProjectAssistantGraphWorkflowTool(spec, runCtx)
 		if err != nil {
 			return nil, err
@@ -411,6 +420,28 @@ func newProjectAssistantGraphWorkflowTools(ctx context.Context, runCtx projectAs
 		out = append(out, graphTool)
 	}
 	return out, nil
+}
+
+// emitProjectAssistantWorkflowExecToolCall gives the Eino-native exec workflow
+// the same public callback boundary as ordinary App Studio tools. Other graph
+// workflows remain unchanged; this adapter exists specifically because
+// exec_command is rendered with a typed, sanitized execution disclosure.
+func emitProjectAssistantWorkflowExecToolCall(
+	runState *projectEinoAssistantRunState,
+	callback func(projectToolCallStreamEvent),
+	event projectToolCallStreamEvent,
+) {
+	if callback == nil || projectToolBaseName(event.Name) != projectToolExecCommand {
+		return
+	}
+	if strings.TrimSpace(event.ID) == "" {
+		event.ID = "tool-1"
+	}
+	if runState != nil {
+		runState.EmitToolCall(callback, event)
+		return
+	}
+	callback(event)
 }
 
 // applyProjectAssistantGraphToolPermission is the single permission boundary
@@ -440,12 +471,20 @@ func applyProjectAssistantGraphToolPermission(
 			Spec:          spec,
 			RunState:      runCtx.RunState,
 			Ledger:        runCtx.EventLedger,
+			OnToolCall:    runCtx.OnToolCall,
 		}, nil
 	}
 
 	wrapped := invokable
 	if runCtx.EventLedger != nil {
-		durable, err := newProjectAssistantDurableGraphTool(invokable, spec, runCtx.EventLedger, runCtx.AdmitMutation)
+		durable, err := newProjectAssistantDurableGraphTool(
+			invokable,
+			spec,
+			runCtx.EventLedger,
+			runCtx.AdmitMutation,
+			runCtx.RunState,
+			runCtx.OnToolCall,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -465,9 +504,10 @@ func applyProjectAssistantGraphToolPermission(
 // safely returns the same denial without attempting an unkeyed ledger append.
 type projectAssistantDeniedGraphTool struct {
 	einotool.InvokableTool
-	Spec     projectAssistantToolSpec
-	RunState *projectEinoAssistantRunState
-	Ledger   *projectAssistantRunEventLedger
+	Spec       projectAssistantToolSpec
+	RunState   *projectEinoAssistantRunState
+	Ledger     *projectAssistantRunEventLedger
+	OnToolCall func(projectToolCallStreamEvent)
 }
 
 func (t projectAssistantDeniedGraphTool) InvokableRun(
@@ -482,6 +522,14 @@ func (t projectAssistantDeniedGraphTool) InvokableRun(
 	reason := projectAssistantPermissionDenialReason(t.Spec, t.RunState, args, false)
 	result := projectEinoAssistantSafeToolFailureResult(projectToolBaseName(t.Spec.Name), errors.New(reason))
 	if t.Ledger == nil {
+		emitProjectAssistantWorkflowExecToolCall(t.RunState, t.OnToolCall, projectToolCallStreamEvent{
+			ID:        compose.GetToolCallID(ctx),
+			Name:      t.Spec.Name,
+			Status:    "rejected",
+			Arguments: summarizeProjectToolArgumentsMap(t.Spec.Name, args),
+			Error:     projectEinoAssistantSafeErrorText(errors.New(reason)),
+			Exec:      projectAssistantExecMetadataForToolArguments(t.Spec.Name, args, result, "rejected"),
+		})
 		return result, nil
 	}
 	callID := strings.TrimSpace(compose.GetToolCallID(ctx))
@@ -493,12 +541,28 @@ func (t projectAssistantDeniedGraphTool) InvokableRun(
 		return "", err
 	}
 	if decision.Replay != nil {
+		emitProjectAssistantWorkflowExecToolCall(t.RunState, t.OnToolCall, projectToolCallStreamEvent{
+			ID:        callID,
+			Name:      t.Spec.Name,
+			Status:    "rejected",
+			Arguments: summarizeProjectToolArgumentsMap(t.Spec.Name, args),
+			Error:     projectEinoAssistantSafeErrorText(errors.New(reason)),
+			Exec:      projectAssistantExecMetadataForToolArguments(t.Spec.Name, args, decision.Replay.Result, "rejected"),
+		})
 		return decision.Replay.Result, nil
 	}
 	outcome, err := t.Ledger.FinishToolCall(ctx, decision.Token, result, errors.New(reason))
 	if err != nil {
 		return "", err
 	}
+	emitProjectAssistantWorkflowExecToolCall(t.RunState, t.OnToolCall, projectToolCallStreamEvent{
+		ID:        callID,
+		Name:      t.Spec.Name,
+		Status:    "rejected",
+		Arguments: summarizeProjectToolArgumentsMap(t.Spec.Name, args),
+		Error:     projectEinoAssistantSafeErrorText(errors.New(reason)),
+		Exec:      projectAssistantExecMetadataForToolArguments(t.Spec.Name, args, outcome.Result, "rejected"),
+	})
 	return outcome.Result, nil
 }
 
@@ -555,6 +619,8 @@ type projectAssistantDurableGraphTool struct {
 	spec          projectAssistantToolSpec
 	ledger        *projectAssistantRunEventLedger
 	admitMutation func(context.Context) error
+	runState      *projectEinoAssistantRunState
+	onToolCall    func(projectToolCallStreamEvent)
 }
 
 func newProjectAssistantDurableGraphTool(
@@ -562,6 +628,8 @@ func newProjectAssistantDurableGraphTool(
 	spec projectAssistantToolSpec,
 	ledger *projectAssistantRunEventLedger,
 	admitMutation func(context.Context) error,
+	runState *projectEinoAssistantRunState,
+	onToolCall func(projectToolCallStreamEvent),
 ) (einotool.BaseTool, error) {
 	invokable, ok := graphTool.(einotool.InvokableTool)
 	if !ok {
@@ -572,6 +640,8 @@ func newProjectAssistantDurableGraphTool(
 		spec:          spec,
 		ledger:        ledger,
 		admitMutation: admitMutation,
+		runState:      runState,
+		onToolCall:    onToolCall,
 	}, nil
 }
 
@@ -609,10 +679,13 @@ func (t projectAssistantDurableGraphTool) invokableRun(
 	if decision.Replay != nil {
 		result, replayErr := decision.Replay.InvokeResult()
 		if replayErr != nil && decision.Replay.Failed && strings.TrimSpace(decision.Replay.Result) != "" {
+			t.emitExecToolCall(callID, args, decision.Replay.Result, decision.Replay.Error, false, false)
 			return decision.Replay.Result, nil
 		}
+		t.emitExecToolCall(callID, args, decision.Replay.Result, decision.Replay.Error, false, decision.Replay.Succeeded())
 		return result, replayErr
 	}
+	t.emitExecToolCall(callID, args, "", "", true, true)
 	result, invokeErr := t.InvokableTool.InvokableRun(ctx, argumentsInJSON, opts...)
 	modelResult := result
 	returnFailureToModel := invokeErr != nil && !projectEinoAssistantPropagateToolError(invokeErr)
@@ -623,6 +696,7 @@ func (t projectAssistantDurableGraphTool) invokableRun(
 	if err != nil {
 		return "", err
 	}
+	t.emitExecToolCall(callID, args, outcome.Result, outcome.Error, false, outcome.Succeeded())
 	if returnFailureToModel {
 		if !outcome.Failed {
 			return "", errors.New("assistant run graph tool failure was not recorded as failed")
@@ -630,6 +704,35 @@ func (t projectAssistantDurableGraphTool) invokableRun(
 		return outcome.Result, nil
 	}
 	return outcome.InvokeResult()
+}
+
+func (t projectAssistantDurableGraphTool) emitExecToolCall(
+	callID string,
+	args map[string]any,
+	result string,
+	errorText string,
+	running bool,
+	succeeded bool,
+) {
+	if projectToolBaseName(t.spec.Name) != projectToolExecCommand {
+		return
+	}
+	status := "running"
+	if !running {
+		status = projectToolCallTerminalStatus(t.spec.Name, result, succeeded)
+	}
+	event := projectToolCallStreamEvent{
+		ID:        callID,
+		Name:      t.spec.Name,
+		Status:    status,
+		Arguments: summarizeProjectToolArgumentsMap(t.spec.Name, args),
+		Summary:   summarizeProjectToolResult(t.spec.Name, result),
+		Exec:      projectAssistantExecMetadataForToolArguments(t.spec.Name, args, result, status),
+	}
+	if strings.TrimSpace(errorText) != "" && !projectAssistantRunToolCancellation(errors.New(errorText)) {
+		event.Error = projectEinoAssistantSafeErrorText(errors.New(errorText))
+	}
+	emitProjectAssistantWorkflowExecToolCall(t.runState, t.onToolCall, event)
 }
 
 func newProjectAssistantPlanningGraphTool(runCtx projectAssistantWorkflowRunContext) (einotool.BaseTool, error) {
@@ -669,7 +772,7 @@ func newProjectAssistantReadinessGraphTool(runCtx projectAssistantWorkflowRunCon
 	graphTool, err := graphtool.NewInvokableGraphTool[*projectAssistantWorkflowToolInput, *projectAssistantReadinessWorkflowResult](
 		workflow,
 		projectToolCheckProjectReadiness,
-		"Check deterministic App Studio project readiness from memory, repository status, and workspace context before edits, verification, or commit.",
+		"Check deterministic App Studio handoff readiness from memory, repository status, and workspace context before verification or commit. This does not grant or block authorized coding-workspace edits or compiler/test execution.",
 		compose.WithGraphName("app-studio-check-project-readiness"),
 	)
 	if err != nil {
@@ -768,7 +871,7 @@ func filterProjectAssistantDevelopmentTemplates(ctx context.Context, catalog *pr
 	for i := range catalog.Items {
 		obj := &catalog.Items[i]
 		info, err := projectTemplateInfoFromUnstructured(obj)
-		if err != nil || len(info.Components) == 0 {
+		if err != nil || info.PlatformOwned || len(info.Components) == 0 {
 			continue
 		}
 		displayName, _, _ := unstructured.NestedString(obj.Object, "spec", "displayName")
@@ -789,12 +892,12 @@ func filterProjectAssistantDevelopmentTemplates(ctx context.Context, catalog *pr
 	if len(candidates) == 0 {
 		return &projectAssistantTemplateInspectionResult{
 			Status:    "empty",
-			Summary:   "No development-capable infrastructure templates are available in this workspace.",
+			Summary:   "No selectable hosted development/preview templates are available in this workspace. This does not describe or disable an active private coding environment.",
 			Templates: candidates,
 		}, nil
 	}
 	truncated := boundProjectAssistantTemplateCandidates(candidates)
-	summary := fmt.Sprintf("Found %d development-capable template(s). agent.usage below is the template's authoritative environment contract — read the DEVELOPMENT MODE guidance before choosing, then call select_project_template.", len(candidates))
+	summary := fmt.Sprintf("Found %d selectable hosted development/preview template(s). These govern the long-lived app runtime and browser preview, not the private per-run coding environment. agent.usage below is each hosted template's authoritative environment contract — read the DEVELOPMENT MODE guidance before choosing, then call select_project_template only when a hosted preview is required.", len(candidates))
 	if truncated {
 		summary += " Some agent.usage text was shortened to fit; call infrastructure__describe_template on a candidate for its full contract before writing code against it."
 	}
@@ -1209,9 +1312,9 @@ func formatProjectAssistantReadinessWorkflowResult(ctx context.Context, input pr
 		result.Summary = fmt.Sprintf("Project %s needs requirements before runtime verification.", displayName)
 	case "needs_repository":
 		if input.Repository != nil && input.Repository.Status == projectRepositoryStatusProvisioning {
-			result.Summary = fmt.Sprintf("Project %s is waiting for its Git repository to become ready.", displayName)
+			result.Summary = fmt.Sprintf("Project %s is waiting for its Git repository to become ready for commit and CI handoff; authorized App Studio workspace authoring and coding-environment execution remain available.", displayName)
 		} else {
-			result.Summary = fmt.Sprintf("Project %s needs a ready Git repository before handoff can finish.", displayName)
+			result.Summary = fmt.Sprintf("Project %s needs a ready Git repository before Git handoff can finish; this does not block authorized App Studio workspace authoring.", displayName)
 		}
 	case "needs_workspace_context":
 		result.Summary = fmt.Sprintf("Project %s needs workspace files before runtime verification.", displayName)

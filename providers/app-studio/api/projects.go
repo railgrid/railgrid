@@ -522,6 +522,12 @@ func resolveProjectCreateTemplate(ctx context.Context, c *asclient.Client, name 
 		// provisioning.
 		return nil, err
 	}
+	if err := validateProjectTemplateSelection(info); err != nil {
+		// A platform-owned Template is never a valid project choice. This is a
+		// server-side validation boundary for both explicit requests and model
+		// or preflight-inferred names; do not fall back to an unbound project.
+		return nil, newValidationError(err.Error())
+	}
 	if err := validateProjectDevelopmentTemplate(info); err != nil {
 		if inferred {
 			// A malformed or no-longer-development-capable catalog entry is
@@ -743,6 +749,15 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer releaseAssistantReservation()
+	// Cached coding environments are intentionally retained after a terminal
+	// assistant turn, but remain owned by the Project. Delete the exact cache
+	// before the Project CR so pre-ownerReference caches cannot become orphans.
+	// New caches also carry a Project ownerReference as the controller/kubectl
+	// deletion backstop.
+	if err := s.deleteProjectAssistantRunSandboxCache(r.Context(), c, id, p); err != nil {
+		writeProjectError(w, err)
+		return
+	}
 	// Instances are torn down by the Project reconciler's finalizer when the
 	// CR below is deleted (ownerReferences cover the no-controller case).
 	// App-access RBAC grants reference the instance by name only and become
@@ -1372,16 +1387,14 @@ func finalizeProjectAssistantActionFeed(actions []projectAssistantActionFeedItem
 		if actions[i].Status != projectAssistantActionFeedStatusRunning && actions[i].Status != projectAssistantActionFeedStatusWaiting {
 			continue
 		}
-		switch runStatus {
-		case store.AssistantRunStatusCompleted:
-			actions[i].Status = projectAssistantActionFeedStatusSucceeded
-			actions[i].Severity = projectAssistantActionFeedSeverityNormal
-			actions[i].Diagnostic = nil
-		default:
-			actions[i].Status = projectAssistantActionFeedStatusFailed
-			actions[i].Severity = projectAssistantActionFeedSeverityError
-			actions[i].Diagnostic = projectAssistantActionFeedDiagnostic(actions[i].ID, "")
+		if !assistantRunTerminal(runStatus) {
+			// Pending permission/input runs still own an unresolved action. Keep
+			// its waiting state until the user resumes or rejects it.
+			continue
 		}
+		actions[i].Status = projectAssistantActionFeedStatusFailed
+		actions[i].Severity = projectAssistantActionFeedSeverityError
+		actions[i].Diagnostic = projectAssistantActionFeedDiagnostic(actions[i].ID, "")
 		actions[i].Title = projectAssistantActionFeedItemTitle(actions[i].Kind, actions[i].Status)
 	}
 	if assistantRunTerminal(runStatus) {

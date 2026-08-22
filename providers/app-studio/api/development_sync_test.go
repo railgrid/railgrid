@@ -130,7 +130,8 @@ func TestSystemPromptCarriesComponentDirectoryContract(t *testing.T) {
 
 	for _, required := range []string{
 		"developmentComponents",
-		"NEVER synced to the development sandbox",
+		"files outside every component directory are not synchronized to that preview runtime",
+		"An active codingEnvironment is separate",
 	} {
 		if !strings.Contains(prompt, required) {
 			t.Errorf("system prompt for a template-backed project missing %q", required)

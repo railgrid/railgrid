@@ -1421,7 +1421,9 @@ func projectToolCallResultStatus(name, result string) string {
 	switch strings.ToLower(projectToolString(decoded["status"])) {
 	case "pending", "running":
 		return "running"
-	case "failed", "partial_failure", "error":
+	case "canceled", "cancelled":
+		return "canceled"
+	case "failed", "partial_failure", "error", "timed_out":
 		return "failed"
 	}
 	if baseName != projectToolCommitFiles && baseName != projectToolCommitProjectFiles {
@@ -1435,6 +1437,14 @@ func projectToolCallResultStatus(name, result string) string {
 	default:
 		return "succeeded"
 	}
+}
+
+func projectToolCallTerminalStatus(name, result string, succeeded bool) string {
+	status := projectToolCallResultStatus(name, result)
+	if !succeeded && status != "canceled" {
+		return "failed"
+	}
+	return status
 }
 
 func projectToolBaseName(name string) string {
@@ -2165,23 +2175,23 @@ func projectSystemPromptForMode(p *aiv1alpha1.Project, repository *ProjectReposi
 	b.WriteString("For App Studio product capability questions, answer only from explicit evidence in tool results, project metadata, project memory, or this system prompt; if evidence is missing, say \"I don't see that capability available in this workspace\" and explain what you can verify. ")
 	b.WriteString("App Studio is an easy button for business users, including non-technical users who should not need to understand databases, networking, infrastructure templates, or deployment architecture to build useful apps. ")
 	b.WriteString("Translate technical choices into business outcomes and safe next steps. ")
-	b.WriteString("When a live development sandbox exists, assume App Studio source changes run in that sandbox; separate development sandbox guidance from production launch guidance. ")
+	b.WriteString("Treat the active coding environment, the project development preview/runtime, and the source repository as independent boundaries. The authoritative turn snapshot's codingEnvironment field, when present, controls source authoring and command execution in the private per-run workspace. Its sourcePersistence=project-workspace means successful terminal checkpointing persists changes to App Studio even when Git is unavailable; publicPreview=false means it is never evidence of a hosted browser preview. The developmentComponents field describes only the separately hosted project preview/runtime. Repository readiness governs Git commit and CI handoff only; it never blocks authorized project-workspace mutations or coding-environment execution. In the coding environment, exec_command is verification-only with respect to source: never let a compiler, formatter, shell, or script modify project source files. Make source changes through the App Studio file tools, then use non-writing check modes such as gofmt -d rather than gofmt -w; direct command writes invalidate the synchronized source evidence needed by subsequent commands and terminal checkpointing. ")
 	b.WriteString("Do not ask the user to choose databases, networking, infrastructure templates, or deployment architecture when App Studio can infer a safe next step from their business intent and available evidence. ")
 	b.WriteString("In Default mode, strongly prefer making reasonable assumptions and continuing instead of stopping for clarification. Use ask_follow_up only when the answer cannot be discovered and a reasonable assumption would materially change the result or make proceeding risky. Never write multiple-choice clarification questions only in assistant prose.\n\n")
 	b.WriteString("Collaboration mode: " + string(collaborationMode) + "\n")
 	b.WriteString("Project metadata:\n")
 	b.WriteString("- Name: " + p.Name + "\n")
 	if p.Spec.Template != nil && strings.TrimSpace(p.Spec.Template.Name) != "" {
-		b.WriteString("- Development template: " + strings.TrimSpace(p.Spec.Template.Name) + " (the development environment runs this infrastructure template in development mode; source directories map to its declared components, so keep new code under the component directories). " +
-			"The turn snapshot's developmentComponents field gives each component's binding contract. Its workspacePath is the exact workspace directory file sync routes from — ALL application source MUST live under one of those directories (never invent your own top-level source directories); files outside every component directory are NEVER synced to the development sandbox and cannot run, so only non-runtime files like README or docs belong outside. " +
-			"Its toolchain is the ONLY runtime installed in that component's sandbox image and its startCommand is exactly what the sandbox executes: write each component in its declared toolchain, including that toolchain's manifest at the component root (node → package.json with a dev or start script binding $PORT, go → go.mod, python → requirements.txt or pyproject.toml, ruby → Gemfile). Source in any other language cannot run there no matter how correct it is — the image has no compiler or interpreter for it, the start command finds nothing to launch, and the component silently never listens. A Dockerfile does NOT change this: it is used only for the production image build, never for the development sandbox. If the user asks for a stack the bound template's toolchain cannot run, say so and either use the declared toolchain or bind a different template — do not write it anyway. " +
+		b.WriteString("- Hosted development/preview template: " + strings.TrimSpace(p.Spec.Template.Name) + " (the hosted preview environment runs this infrastructure template in development mode; source directories map to its declared components). " +
+			"The turn snapshot's developmentComponents field gives each hosted component's binding contract. Its workspacePath is the exact workspace directory file sync routes from: source intended to run in the hosted preview must live under one of those directories; files outside every component directory are not synchronized to that preview runtime. " +
+			"Its toolchain is the ONLY runtime installed in that hosted preview component and its startCommand is exactly what that component executes: write previewable source in its declared toolchain, including that toolchain's manifest at the component root (node → package.json with a dev or start script binding $PORT, go → go.mod, python → requirements.txt or pyproject.toml, ruby → Gemfile). A Dockerfile changes only the production image build, never the hosted development preview. An active codingEnvironment is separate: when it declares the requested language, source may still be authored, persisted, compiled, and tested there, but do not claim it runs in the hosted preview unless a compatible development component exists. Bind a different public template only when a compatible hosted preview is required and available. " +
 			"This template is the app's ENVIRONMENT CONTRACT: before reasoning about what infrastructure, backing services, or environment variables the app has, call infrastructure__describe_template on THIS template and treat its agent.usage / agent.outputs as authoritative. " +
 			"Backing services the template declares (for example a managed database) exist for the development instance too, with the same injected environment (for example DATABASE_URL) — do not conclude a declared service is missing just because the app code does not use it yet, and do not provision a separate instance of a service the bound template already provides.\n")
 		if initialBuild {
 			b.WriteString("STARTER CODE IS ALREADY PRESENT: this project was created from the " + strings.TrimSpace(p.Spec.Template.Name) + " template and its runnable starter code is already in the workspace under the component directories — the workspace is NOT empty. Build ON it: customize the existing files rather than recreating the app from scratch. Prefer editing existing files over creating new ones, and never create_file a path that already exists. Because these files exist, editing them requires a version: before you replace, edit, move, or delete ANY existing file, first do ONE COMPLETE read of it (read_file at offset 1 covering the whole file, not a partial range) — a partial, ranged, or truncated read does NOT record a usable version and the mutation will fail with an update error. Start by reading the component manifests and entry files (for example each component's package.json and its server/entry and main UI file) completely, then edit them.\n")
 		}
 	} else {
-		b.WriteString("- Development template: NONE — the project has no development environment, running process, or preview. If an authorized implementation requires runnable source, inspect the development templates once, choose a template whose declared component toolchains match the application, and bind it before writing runtime source. Template selection is independent of repository provisioning; repository state gates commits only. Inspection-only requests and Plan mode do not authorize binding a template.\n")
+		b.WriteString("- Hosted development/preview template: NONE — the project has no hosted development process or browser preview. When the authoritative turn snapshot contains a ready codingEnvironment, continue authorized source work there and persist changes to the Project workspace; lack of a hosted template is not an authoring, compiler, or test blocker. Inspect and bind a public development template only when a compatible hosted preview/runtime is required. Template selection is independent of repository provisioning, and repository state gates Git commits only. Inspection-only requests and Plan mode do not authorize binding a template.\n")
 	}
 	b.WriteString("- Display name: " + p.Spec.DisplayName + "\n")
 	if strings.TrimSpace(p.Spec.Description) != "" {

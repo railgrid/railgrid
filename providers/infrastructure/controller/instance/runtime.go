@@ -23,6 +23,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -425,11 +427,35 @@ func (c *Controller) finalize(ctx context.Context, tenantClient client.Client, t
 		return ctrl.Result{}, fmt.Errorf("cleanup registry pull secret: %w", err)
 	}
 
-	controllerutil.RemoveFinalizer(inst, finalizer)
-	if err := tenantClient.Update(ctx, inst); err != nil {
+	if err := removeInstanceFinalizer(ctx, tenantClient, client.ObjectKeyFromObject(inst)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// removeInstanceFinalizer removes only this controller's finalizer from the
+// latest tenant object. Finalization runs after cross-cluster cleanup and can
+// race with status or metadata writers, so updating the object observed at
+// the start of Reconcile is not safe: a conflict must refetch and retry. A
+// deleted object is already finalized, and an object that no longer carries
+// our finalizer has been finalized by another worker, so both are successful
+// outcomes.
+func removeInstanceFinalizer(ctx context.Context, tenantClient client.Client, key types.NamespacedName) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		current := &unstructured.Unstructured{}
+		current.SetGroupVersionKind(instanceGVK)
+		if err := tenantClient.Get(ctx, key, current); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		if !controllerutil.ContainsFinalizer(current, finalizer) {
+			return nil
+		}
+		controllerutil.RemoveFinalizer(current, finalizer)
+		return tenantClient.Update(ctx, current)
+	})
 }
 
 // runtimeTarget resolves where the Instance's runtime CR lives: preferably

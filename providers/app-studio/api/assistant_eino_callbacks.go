@@ -33,6 +33,13 @@ import (
 func projectEinoAssistantRunOptions(req projectAssistantRunRequest, runState *projectEinoAssistantRunState) []adk.AgentRunOption {
 	handler := newProjectEinoAssistantModelCallbackHandler(req.StreamCallbacks, runState, req.auditRecorder)
 	opts := []adk.AgentRunOption{}
+	// TurnLoop.Stop can only propagate a graceful/immediate cancellation into
+	// the active agent (and therefore into a running tool) when the agent run
+	// opts into Eino's cancellation context. Without this option Stop merely
+	// waits for the current tool to return, leaving a remote exec session alive
+	// while the durable run is already being interrupted.
+	cancelOption, _ := adk.WithCancel()
+	opts = append(opts, cancelOption)
 	if handler != nil {
 		opts = append(opts, adk.WithCallbacks(handler))
 	}

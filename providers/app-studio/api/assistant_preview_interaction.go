@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 const projectAssistantPreviewInteractionMaxSteps = 20
@@ -60,8 +61,22 @@ func (s *Server) interactProjectDevelopmentPreviewResult(ctx context.Context, re
 	// Interacting with a page whose latest edit has not synced is misleading —
 	// same freshness guard inspection uses.
 	if req.RunState != nil {
+		checkpointed, checkpointErr := s.checkpointProjectAssistantRunSandboxIfDirty(ctx, req.RunState)
+		if checkpointErr != nil {
+			return projectAssistantPreviewInteractionResult{
+				projectAssistantPreviewInspectionResult: projectAssistantPreviewInspectionResult{
+					Status: "failed", FailureKind: "not_current",
+					Summary:          projectAssistantRunSandboxCheckpointFailure(checkpointErr),
+					ScreenshotStatus: projectAssistantPreviewScreenshotStatusForUnavailable(includeScreenshot),
+				},
+			}, nil
+		}
 		if revision, _ := req.RunState.SourceMutationRevisions(); revision > 0 {
-			if status, failure := req.RunState.DevelopmentSyncEvidence(revision); status != "succeeded" {
+			status, failure := req.RunState.DevelopmentSyncEvidence(revision)
+			if checkpointed {
+				status, failure = req.RunState.WaitForDevelopmentSync(ctx, revision, projectSandboxSyncTimeout+time.Second)
+			}
+			if status != "succeeded" {
 				if failure == "" {
 					failure = "the current workspace mutation has not completed development synchronization"
 				}

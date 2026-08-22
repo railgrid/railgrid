@@ -313,11 +313,7 @@ func (r *reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	currentRuntime, _ := c.currentRuntime(ctx, tenant, tmpl, inst)
 	if tmpl.Spec.Development != nil {
-		phase := infrav1alpha1.FarosNetworkPhaseSetup
-		if runtimeReady(currentRuntime) {
-			phase = infrav1alpha1.FarosNetworkPhaseRuntime
-		}
-		stampedValues[infrav1alpha1.FarosNetworkPhaseField] = phase
+		stampedValues[infrav1alpha1.FarosNetworkPhaseField] = desiredNetworkPhase(currentRuntime)
 	}
 	runtimeObj, err := c.syncRuntime(ctx, tenant, tmpl, inst, stampedValues)
 	if err != nil {
@@ -337,10 +333,57 @@ func (r *reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	log.V(2).Info("instance reconciled", "template", templateName, "ready", ready)
-	if ready {
-		return ctrl.Result{RequeueAfter: lifecycleRequeueAfter(time.Now(), inst.GetCreationTimestamp(), tmpl.Spec.Development, runtimeObj, requeueReady)}, nil
+	return ctrl.Result{RequeueAfter: instanceRequeueAfter(time.Now(), inst.GetCreationTimestamp(), tmpl, runtimeObj, ready)}, nil
+}
+
+// desiredNetworkPhase chooses the next controller-owned network phase for a
+// development Instance. The setup -> runtime transition is deliberately
+// one-way: a runtime object that has already selected the runtime phase keeps
+// that phase while its new generation rolls out. Reverting it to setup during
+// that window causes the runtime graph to oscillate between egress policies
+// and can prevent the data plane from ever becoming ready.
+//
+// A missing object, or an object still in setup, remains in setup until its
+// current generation is fully ready. The stricter readiness predicate is
+// important here because a Ready condition from an older generation must not
+// authorize the phase transition.
+func desiredNetworkPhase(runtimeObj *unstructured.Unstructured) string {
+	if runtimeObj == nil {
+		return infrav1alpha1.FarosNetworkPhaseSetup
 	}
-	return ctrl.Result{RequeueAfter: requeueNotReady}, nil
+
+	phase, found, err := unstructured.NestedString(runtimeObj.Object, "spec", infrav1alpha1.FarosNetworkPhaseField)
+	if err == nil && found && phase == infrav1alpha1.FarosNetworkPhaseRuntime {
+		return infrav1alpha1.FarosNetworkPhaseRuntime
+	}
+	// Keep the coarse readiness check as a cheap guard; the generation-aware
+	// predicate is the authority for this transition.
+	if runtimeReady(runtimeObj) && runtimeReadyForNetwork(runtimeObj) {
+		return infrav1alpha1.FarosNetworkPhaseRuntime
+	}
+	return infrav1alpha1.FarosNetworkPhaseSetup
+}
+
+// instanceRequeueAfter keeps development Instances on the short convergence
+// poll until the runtime generation that selected the runtime network phase
+// is actually Ready. mirrorStatus intentionally reports the coarse backend
+// Ready condition separately, so it can be true while the network gate is
+// still setup during the setup -> runtime rollout.
+func instanceRequeueAfter(now time.Time, created metav1.Time, tmpl *infrav1alpha1.Template, runtimeObj *unstructured.Unstructured, ready bool) time.Duration {
+	var development *infrav1alpha1.TemplateDevelopment
+	if tmpl != nil {
+		development = tmpl.Spec.Development
+	}
+	if development != nil {
+		phase, ok := runtimeNetworkPhase(tmpl, runtimeObj)
+		if !ok || phase != infrav1alpha1.FarosNetworkPhaseRuntime {
+			return requeueNotReady
+		}
+	}
+	if !ready {
+		return requeueNotReady
+	}
+	return lifecycleRequeueAfter(now, created, development, runtimeObj, requeueReady)
 }
 
 // failValidation reports a terminal validation outcome on the Instance and
