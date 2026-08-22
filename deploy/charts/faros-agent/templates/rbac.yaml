@@ -6,39 +6,32 @@ metadata:
   labels:
     {{- include "faros-agent.labels" . | nindent 4 }}
 rules:
-  # The agent needs broad permissions to manage workloads on behalf of the hub
-  - apiGroups: [""]
+  # The agent manages workloads on behalf of the hub, and installs whatever a
+  # tenant deploys through it — including provider charts, whose CRs live in API
+  # groups no fixed list can enumerate ahead of time.
+  #
+  # This is a wildcard rather than the allowlist it used to be, because the
+  # allowlist was never a boundary. It granted rbac.authorization.k8s.io/* with
+  # verbs ["*"], and "*" includes escalate and bind: an agent could always
+  # create a ClusterRole with any permission and bind itself to it. Verified by
+  # doing exactly that with the old rules — self-granted cluster-admin, then
+  # `auth can-i '*' '*'` returned yes.
+  #
+  # So the list bought no containment. What it did buy was a confusing failure:
+  # installing a provider through an edge kubeconfig got far enough to create
+  # the CRD (apiextensions.k8s.io was listed) and then died on the provider's
+  # own custom resource, looking like a bug in the chart.
+  #
+  # Narrowing this for real means removing the escalate/bind path, which needs
+  # its own design — the agent legitimately creates RBAC for the workloads it
+  # deploys. Until then, state the privilege honestly instead of implying a
+  # limit that does not hold.
+  - apiGroups: ["*"]
     resources: ["*"]
     verbs: ["*"]
-  - apiGroups: ["apps"]
-    resources: ["*"]
-    verbs: ["*"]
-  - apiGroups: ["batch"]
-    resources: ["*"]
-    verbs: ["*"]
-  - apiGroups: ["networking.k8s.io"]
-    resources: ["*"]
-    verbs: ["*"]
-  - apiGroups: ["rbac.authorization.k8s.io"]
-    resources: ["*"]
-    verbs: ["*"]
-  - apiGroups: ["policy"]
-    resources: ["*"]
-    verbs: ["*"]
-  - apiGroups: ["autoscaling"]
-    resources: ["*"]
-    verbs: ["*"]
-  - apiGroups: ["storage.k8s.io"]
-    resources: ["*"]
-    verbs: ["*"]
-  - apiGroups: ["admissionregistration.k8s.io"]
-    resources: ["*"]
-    verbs: ["*"]
-  - apiGroups: ["apiextensions.k8s.io"]
-    resources: ["*"]
-    verbs: ["*"]
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["*"]
+  # Non-resource URLs (/healthz, /version, /openapi) are not covered by
+  # apiGroups and are needed for discovery.
+  - nonResourceURLs: ["*"]
     verbs: ["*"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

@@ -369,16 +369,10 @@ func unresolved(values []ResolvedValue, name string) bool {
 	return false
 }
 
-// The commands cannot show which credential they need, and using the wrong one
-// fails deep inside helm — as it did with a `faros kubeconfig edge` context,
-// which authenticates as the agent whose ClusterRole excludes provider API
-// groups:
-//
-//	infrastructureproviders.infrastructure.faros.sh "..." is forbidden:
-//	User "system:serviceaccount:faros-agent:faros-agent" cannot get ...
-//
-// Three kubeconfigs are plausibly in scope, so the steps have to name the right
-// one rather than leave the reader to infer it.
+// The commands cannot show which credential they run with, and the kubeconfig
+// displayed directly above them is the wrong one — it addresses kcp, not the
+// tenant's cluster. Proximity makes it the likely mistake, so the steps have to
+// rule it out by name and point at the two that do work.
 func TestRenderInstallInstructionsNamesTheCredentialToUse(t *testing.T) {
 	got := RenderInstallInstructions(baseSelfHosting(), baseOptions())
 
@@ -389,14 +383,13 @@ func TestRenderInstallInstructionsNamesTheCredentialToUse(t *testing.T) {
 	if !strings.Contains(joined, "cluster-admin") {
 		t.Errorf("no step says cluster-admin is required:\n%s", joined)
 	}
-	// Naming what NOT to use matters as much: the kcp kubeconfig is displayed
-	// immediately above these commands, which is what makes it the tempting
-	// wrong answer.
-	if !strings.Contains(joined, "not the kubeconfig shown above") {
-		t.Errorf("steps do not warn against the credential shown above them:\n%s", joined)
+	if !strings.Contains(joined, "Not the kubeconfig shown above") {
+		t.Errorf("steps do not rule out the credential shown above them:\n%s", joined)
 	}
+	// An edge context is a legitimate way to reach the cluster — the agent holds
+	// cluster-admin there — so the steps must offer it rather than warn it off.
 	if !strings.Contains(joined, "faros kubeconfig edge") {
-		t.Errorf("steps do not warn against an edge kubeconfig:\n%s", joined)
+		t.Errorf("steps do not mention an edge context as a way to reach the cluster:\n%s", joined)
 	}
 }
 

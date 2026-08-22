@@ -464,26 +464,28 @@ in URL paths.
 
 ## Known gaps
 
-- **The install is not edge-driven, and an edge kubeconfig cannot stand in for
-  one.** The generated commands run against the Org's own cluster with the
-  Org's own cluster-admin credential. A `faros kubeconfig edge` context looks
-  like it should work — it reaches the right cluster — but it authenticates as
-  the agent, whose ClusterRole
-  ([deploy/charts/faros-agent/templates/rbac.yaml](../deploy/charts/faros-agent/templates/rbac.yaml))
-  is an allowlist of API groups that deliberately excludes provider groups. The
-  chart gets far enough to install the CRD (`apiextensions.k8s.io` is on the
-  list) and then fails on its own custom resource:
+- **The agent holds cluster-admin in the tenant's cluster, and its ClusterRole
+  now says so.** It used to be an allowlist of API groups, which read like a
+  containment boundary and was not one: it granted
+  `rbac.authorization.k8s.io/*` with `verbs: ["*"]`, and `*` covers `escalate`
+  and `bind`, so the agent could always mint a ClusterRole with any permission
+  and bind itself to it. Verified by doing exactly that with the old rules — the
+  ServiceAccount self-granted `cluster-admin`, after which
+  `auth can-i '*' '*'` returned `yes`.
+
+  What the list did buy was a confusing failure. Installing a provider through
+  an edge kubeconfig got far enough to create the CRD (`apiextensions.k8s.io`
+  was on the list) and then died on the provider's own custom resource:
 
   ```
   infrastructureproviders.infrastructure.faros.sh "…" is forbidden:
   User "system:serviceaccount:faros-agent:faros-agent" cannot get …
   ```
 
-  Widening that allowlist is not the fix. The agent is the platform's foothold
-  in a tenant's cluster, and letting it create arbitrary provider resources
-  would grow the platform's reach there — the opposite of what BYO is for.
-  Installing a provider is an administrative act by the tenant, performed with
-  the tenant's own credential. The install steps now say so explicitly.
+  Bounding the agent for real means removing that escalate/bind path, which
+  needs its own design — the agent legitimately creates RBAC for the workloads
+  it deploys. Until then the grant is stated honestly rather than implying a
+  limit that does not hold.
 
 - **Nothing checks the virtual-workspace URL before handing out a credential.**
   On a multi-shard platform whose shards advertise unreachable virtual-workspace
