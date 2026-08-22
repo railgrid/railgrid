@@ -5,7 +5,8 @@ Agents provider chart. Ships the provider Deployment, Service, and CatalogEntry 
 Product activation telemetry is disabled by default. The self-hosted chart makes
 no telemetry network calls unless `telemetry.enabled=true` is explicitly set;
 when enabled, the mounted `providerKubeconfig` must contain the provider
-ServiceAccount bearer token. No extra telemetry secret is required.
+ServiceAccount bearer token. Its configured CA is also used to trust a private
+hub certificate. No extra telemetry secret is required.
 
 Helm chart for the faros **agents** provider. `values.yaml` is the source of
 truth and carries the full inline notes; this table summarises it.

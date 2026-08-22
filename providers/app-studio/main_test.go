@@ -17,15 +17,19 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/pem"
 	"errors"
 	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	producttelemetry "github.com/faroshq/provider-sdk/telemetry"
+	"k8s.io/client-go/rest"
 )
 
 func TestProductTelemetryDisabledByDefault(t *testing.T) {
@@ -48,6 +52,70 @@ func TestProductTelemetryRequiresProviderServiceAccountToken(t *testing.T) {
 	tracker := newProductTelemetryTracker("")
 	if _, ok := tracker.(producttelemetry.NoopTracker); !ok {
 		t.Fatalf("tracker without provider ServiceAccount token = %T, want telemetry.NoopTracker", tracker)
+	}
+}
+
+func TestProductTelemetryUsesProviderKubeconfigCA(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+
+	for _, tc := range []struct {
+		name   string
+		caFile bool
+	}{
+		{name: "data"},
+		{name: "file", caFile: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &rest.Config{BearerToken: "provider-token"}
+			if tc.caFile {
+				path := filepath.Join(t.TempDir(), "hub-ca.pem")
+				if err := os.WriteFile(path, caPEM, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				cfg.CAFile = path
+			} else {
+				cfg.CAData = caPEM
+			}
+			t.Setenv("FAROS_PRODUCT_TELEMETRY_ENABLED", "true")
+			t.Setenv("FAROS_HUB_URL", server.URL)
+
+			tracker := newProductTelemetryTrackerWithConfig(cfg.BearerToken, cfg)
+			if _, ok := tracker.(producttelemetry.NoopTracker); ok {
+				t.Fatal("private-CA telemetry unexpectedly disabled")
+			}
+			if err := tracker.Track(context.Background(), producttelemetry.Event{Action: "project_created"}); err != nil {
+				t.Fatalf("Track() error = %v", err)
+			}
+			if err := tracker.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestProductTelemetryInvalidProviderKubeconfigCAFallsBackToNoop(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		serverCalls++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+	t.Setenv("FAROS_PRODUCT_TELEMETRY_ENABLED", "true")
+	t.Setenv("FAROS_HUB_URL", server.URL)
+
+	tracker := newProductTelemetryTrackerWithConfig("provider-token", &rest.Config{TLSClientConfig: rest.TLSClientConfig{CAData: []byte("not a certificate")}})
+	if _, ok := tracker.(producttelemetry.NoopTracker); !ok {
+		t.Fatalf("invalid configured CA tracker = %T, want NoopTracker", tracker)
+	}
+	if err := tracker.Track(context.Background(), producttelemetry.Event{Action: "project_created"}); err != nil {
+		t.Fatalf("noop Track() error = %v", err)
+	}
+	if serverCalls != 0 {
+		t.Fatalf("invalid configured CA made %d telemetry calls", serverCalls)
 	}
 }
 

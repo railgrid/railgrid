@@ -34,7 +34,8 @@ Product telemetry is disabled by default. Self-hosted installations make no
 telemetry network calls unless `telemetry.enabled=true` is explicitly set and
 the provider has `hub.url` plus its provisioned `providerKubeconfig`. The
 telemetry client uses the ServiceAccount token in that kubeconfig, not the
-legacy heartbeat token. When enabled, App Studio sends only bounded activation
+legacy heartbeat token, and applies the kubeconfig CA when the hub uses a
+private certificate. When enabled, App Studio sends only bounded activation
 events to the hub; it never sends
 project names, prompts, URLs, commits, source content, or credentials.
 

@@ -25,7 +25,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,14 +83,27 @@ func newProductTelemetryTracker(providerToken string) producttelemetry.Tracker {
 	if !productTelemetryEnabled() {
 		return producttelemetry.NoopTracker{}
 	}
+	var providerConfig *rest.Config
+	if cfg, err := loadProviderConfig(); err == nil {
+		providerConfig = cfg
+	}
+	return newProductTelemetryTrackerWithConfig(providerToken, providerConfig)
+}
+
+func newProductTelemetryTrackerWithConfig(providerToken string, providerConfig *rest.Config) producttelemetry.Tracker {
+	if !productTelemetryEnabled() {
+		return producttelemetry.NoopTracker{}
+	}
 	hubInsecure := strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_HUB_INSECURE")), "true")
 	tracker, err := producttelemetry.NewClient(producttelemetry.Config{
-		Enabled:       true,
-		ProviderName:  "app-studio",
-		HubURL:        os.Getenv("FAROS_HUB_URL"),
-		ProviderToken: providerToken,
-		AllowInsecure: hubInsecure,
-		HTTPClient:    productTelemetryHTTPClient(hubInsecure),
+		Enabled:            true,
+		ProviderName:       "app-studio",
+		HubURL:             os.Getenv("FAROS_HUB_URL"),
+		ProviderToken:      providerToken,
+		AllowInsecure:      hubInsecure,
+		InsecureSkipVerify: hubInsecure,
+		CAFile:             providerTelemetryCAFile(providerConfig),
+		CAData:             providerTelemetryCAData(providerConfig),
 	})
 	if err != nil {
 		// Keep the failure bounded and free of configuration values, credentials,
@@ -102,16 +114,18 @@ func newProductTelemetryTracker(providerToken string) producttelemetry.Tracker {
 	return tracker
 }
 
-func productTelemetryHTTPClient(insecureSkipVerify bool) *http.Client {
-	base, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		return &http.Client{}
+func providerTelemetryCAFile(cfg *rest.Config) string {
+	if cfg == nil {
+		return ""
 	}
-	transport := base.Clone()
-	if insecureSkipVerify {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // explicit local/dev opt-in via FAROS_HUB_INSECURE
+	return strings.TrimSpace(cfg.CAFile)
+}
+
+func providerTelemetryCAData(cfg *rest.Config) []byte {
+	if cfg == nil {
+		return nil
 	}
-	return &http.Client{Transport: transport}
+	return append([]byte(nil), cfg.CAData...)
 }
 
 func previewConsoleEnvironmentConfig() (bool, string, string) {
@@ -208,10 +222,12 @@ func runServe() {
 	// ServiceAccount through a workspace-scoped TokenReview. The heartbeat
 	// token is a separate legacy credential and must not be trusted here.
 	providerToken := ""
+	var providerConfig *rest.Config
 	if cfg, cfgErr := loadProviderConfig(); cfgErr == nil && cfg != nil {
+		providerConfig = cfg
 		providerToken = cfg.BearerToken
 	}
-	productTracker := newProductTelemetryTracker(providerToken)
+	productTracker := newProductTelemetryTrackerWithConfig(providerToken, providerConfig)
 	defer func() {
 		if err := productTracker.Close(); err != nil {
 			log.Printf("product telemetry shutdown failed")

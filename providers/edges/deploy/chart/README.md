@@ -59,7 +59,7 @@ helm upgrade --install edges oci://ghcr.io/faroshq/charts/faros-edges-provider \
 | `hub.tokenSecretRef.name` | `""` |  |
 | `hub.tokenSecretRef.key` | `token` |  |
 | `hub.insecure` | `false` | Skip TLS verification and allow HTTP telemetry transport for explicit local/development use only. |
-| `hub.caData` | `""` | Hub CA bundle (PEM) embedded into per-agent kubeconfigs so agents trust the hub serving cert. Provide EITHER caData (inline PEM) or caSecretRef. |
+| `hub.caData` | `""` | Hub CA bundle (PEM) used by provider telemetry and embedded into per-agent kubeconfigs so both trust the hub serving cert. Provide EITHER caData (inline PEM) or caSecretRef. |
 | `hub.caSecretRef.name` | `""` |  |
 | `hub.caSecretRef.key` | `ca.crt` |  |
 | `telemetry` |  | Opt-in product activation telemetry; disabled by default and no-network when false. |

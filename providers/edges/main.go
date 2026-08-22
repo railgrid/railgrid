@@ -32,7 +32,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -121,7 +120,7 @@ func runServe() error {
 	if internalURL := strings.TrimSpace(os.Getenv("FAROS_HUB_INTERNAL_URL")); internalURL != "" {
 		telemetryHubURL = internalURL
 	}
-	productTracker := newProductTelemetryTracker(telemetryHubURL, providerTelemetryToken(kcpConfig))
+	productTracker := newProductTelemetryTrackerWithConfig(telemetryHubURL, providerTelemetryToken(kcpConfig), kcpConfig)
 	defer func() {
 		if err := productTracker.Close(); err != nil {
 			stdlog.Printf("product telemetry shutdown failed")
@@ -300,17 +299,24 @@ func productTelemetryEnabled() bool {
 // provider remains fully functional with the no-op tracker in the default
 // self-hosted configuration.
 func newProductTelemetryTracker(hubURL, providerToken string) producttelemetry.Tracker {
+	return newProductTelemetryTrackerWithConfig(hubURL, providerToken, nil)
+}
+
+func newProductTelemetryTrackerWithConfig(hubURL, providerToken string, providerConfig *rest.Config) producttelemetry.Tracker {
 	if !productTelemetryEnabled() {
 		return producttelemetry.NoopTracker{}
 	}
 	hubInsecure := strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_HUB_INSECURE")), "true")
+	tlsConfig := providerTelemetryTLSConfig(providerConfig)
 	tracker, err := producttelemetry.NewClient(producttelemetry.Config{
-		Enabled:       true,
-		ProviderName:  "edges",
-		HubURL:        hubURL,
-		ProviderToken: providerToken,
-		AllowInsecure: hubInsecure,
-		HTTPClient:    productTelemetryHTTPClient(hubInsecure),
+		Enabled:            true,
+		ProviderName:       "edges",
+		HubURL:             hubURL,
+		ProviderToken:      providerToken,
+		AllowInsecure:      hubInsecure,
+		InsecureSkipVerify: hubInsecure,
+		CAFile:             tlsConfig.CAFile,
+		CAData:             tlsConfig.CAData,
 	})
 	if err != nil {
 		// Do not include configuration values, credentials, or event data in the
@@ -340,16 +346,20 @@ func providerTelemetryToken(cfg *rest.Config) string {
 	return ""
 }
 
-func productTelemetryHTTPClient(insecureSkipVerify bool) *http.Client {
-	base, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		return &http.Client{}
+func providerTelemetryTLSConfig(cfg *rest.Config) producttelemetry.HTTPClientConfig {
+	if caFile := strings.TrimSpace(os.Getenv("FAROS_HUB_CA_FILE")); caFile != "" {
+		return producttelemetry.HTTPClientConfig{CAFile: caFile}
 	}
-	transport := base.Clone()
-	if insecureSkipVerify {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // explicit local/dev opt-in via FAROS_HUB_INSECURE
+	if caData := os.Getenv("FAROS_HUB_CA_DATA"); caData != "" {
+		return producttelemetry.HTTPClientConfig{CAData: []byte(caData)}
 	}
-	return &http.Client{Transport: transport}
+	if cfg == nil {
+		return producttelemetry.HTTPClientConfig{}
+	}
+	return producttelemetry.HTTPClientConfig{
+		CAFile: strings.TrimSpace(cfg.CAFile),
+		CAData: append([]byte(nil), cfg.CAData...),
+	}
 }
 
 // loadKCPConfig resolves the provider's kcp credential (its provisioned SA

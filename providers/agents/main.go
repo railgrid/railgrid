@@ -25,7 +25,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -37,6 +36,7 @@ import (
 	"time"
 
 	producttelemetry "github.com/faroshq/provider-sdk/telemetry"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/faroshq/provider-agents/api"
@@ -148,13 +148,16 @@ func newProductTelemetryTracker() producttelemetry.Tracker {
 		return producttelemetry.NoopTracker{}
 	}
 	hubInsecure := strings.EqualFold(strings.TrimSpace(os.Getenv("FAROS_HUB_INSECURE")), "true")
+	providerConfig := providerTelemetryConfig()
 	tracker, err := producttelemetry.NewClient(producttelemetry.Config{
-		Enabled:       true,
-		ProviderName:  "agents",
-		HubURL:        os.Getenv("FAROS_HUB_URL"),
-		ProviderToken: providerTelemetryToken(),
-		AllowInsecure: hubInsecure,
-		HTTPClient:    productTelemetryHTTPClient(hubInsecure),
+		Enabled:            true,
+		ProviderName:       "agents",
+		HubURL:             os.Getenv("FAROS_HUB_URL"),
+		ProviderToken:      providerTelemetryTokenFromConfig(providerConfig),
+		AllowInsecure:      hubInsecure,
+		InsecureSkipVerify: hubInsecure,
+		CAFile:             providerTelemetryCAFile(providerConfig),
+		CAData:             providerTelemetryCAData(providerConfig),
 	})
 	if err != nil {
 		// Do not include configuration values, credentials, or event data in the
@@ -170,6 +173,11 @@ func newProductTelemetryTracker() producttelemetry.Tracker {
 // FAROS_HUB_TOKEN is the heartbeat credential and is not necessarily accepted
 // by the telemetry ingress TokenReview, so it must not be used here.
 func providerTelemetryToken() string {
+	return providerTelemetryTokenFromConfig(providerTelemetryConfig())
+}
+
+func providerTelemetryConfig() *rest.Config {
+	var first *rest.Config
 	paths := []string{
 		os.Getenv("FAROS_PROVIDER_KUBECONFIG"),
 		"/var/run/secrets/faros/faros-provider-kubeconfig",
@@ -184,23 +192,43 @@ func providerTelemetryToken() string {
 		if err != nil || cfg == nil {
 			continue
 		}
-		if token := strings.TrimSpace(cfg.BearerToken); token != "" {
-			return token
+		if first == nil {
+			first = cfg
+		}
+		if providerTelemetryTokenFromConfig(cfg) != "" {
+			return cfg
+		}
+	}
+	return first
+}
+
+func providerTelemetryTokenFromConfig(cfg *rest.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	if token := strings.TrimSpace(cfg.BearerToken); token != "" {
+		return token
+	}
+	if path := strings.TrimSpace(cfg.BearerTokenFile); path != "" {
+		if data, err := os.ReadFile(path); err == nil {
+			return strings.TrimSpace(string(data))
 		}
 	}
 	return ""
 }
 
-func productTelemetryHTTPClient(insecureSkipVerify bool) *http.Client {
-	base, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		return &http.Client{}
+func providerTelemetryCAFile(cfg *rest.Config) string {
+	if cfg == nil {
+		return ""
 	}
-	transport := base.Clone()
-	if insecureSkipVerify {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // explicit local/dev opt-in via FAROS_HUB_INSECURE
+	return strings.TrimSpace(cfg.CAFile)
+}
+
+func providerTelemetryCAData(cfg *rest.Config) []byte {
+	if cfg == nil {
+		return nil
 	}
-	return &http.Client{Transport: transport}
+	return append([]byte(nil), cfg.CAData...)
 }
 
 // oauthAppsFromEnv reads platform-wide OAuth app credentials, mirroring the

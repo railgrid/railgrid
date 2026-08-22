@@ -18,11 +18,21 @@ package telemetry
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -84,7 +94,7 @@ func TestHTTPClientPostsBoundedEventToProviderEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	occurredAt := time.Date(2026, 8, 21, 15, 0, 0, 123000000, time.FixedZone("UTC+2", 2*60*60))
 	if err := client.Track(context.Background(), Event{
@@ -131,6 +141,178 @@ func TestHTTPClientPostsBoundedEventToProviderEndpoint(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("HTTP client did not send queued event")
 	}
+}
+
+func TestHTTPClientAppendsPrivateCAFromDataAndFile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*Config, string)
+	}{
+		{name: "data", set: func(cfg *Config, pemData string) { cfg.CAData = []byte(pemData) }},
+		{name: "file", set: func(cfg *Config, pemData string) {
+			path := filepath.Join(t.TempDir(), "hub-ca.pem")
+			if err := os.WriteFile(path, []byte(pemData), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg.CAFile = path
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := make(chan struct{}, 1)
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests <- struct{}{}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			defer server.Close()
+
+			caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+			cfg := Config{
+				Enabled:       true,
+				ProviderName:  "app-studio",
+				HubURL:        server.URL,
+				ProviderToken: "provider-token",
+				MaxRetries:    1,
+			}
+			tc.set(&cfg, string(caPEM))
+			tracker, err := NewClient(cfg)
+			if err != nil {
+				t.Fatalf("NewClient() error = %v", err)
+			}
+			if err := tracker.Track(context.Background(), Event{Action: "project_created"}); err != nil {
+				t.Fatalf("Track() error = %v", err)
+			}
+			if err := tracker.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+			select {
+			case <-requests:
+			default:
+				t.Fatal("private-CA telemetry request did not reach hub")
+			}
+		})
+	}
+}
+
+func TestHTTPClientPreservesExistingRootsWhenAppendingPrivateCA(t *testing.T) {
+	existingRootServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer existingRootServer.Close()
+	privateCAServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer privateCAServer.Close()
+
+	existingRoots := x509.NewCertPool()
+	existingRootPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: existingRootServer.Certificate().Raw})
+	if !existingRoots.AppendCertsFromPEM(existingRootPEM) {
+		t.Fatal("append existing test root")
+	}
+	previousDefaultTransport := http.DefaultTransport
+	http.DefaultTransport = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: existingRoots}}
+	t.Cleanup(func() { http.DefaultTransport = previousDefaultTransport })
+
+	privateCAPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: privateCAServer.Certificate().Raw})
+	client, err := NewHTTPClient(HTTPClientConfig{CAData: privateCAPEM})
+	if err != nil {
+		t.Fatalf("NewHTTPClient() error = %v", err)
+	}
+	for _, serverURL := range []string{existingRootServer.URL, privateCAServer.URL} {
+		response, err := client.Get(serverURL)
+		if err != nil {
+			t.Fatalf("GET %s: %v", serverURL, err)
+		}
+		if err := response.Body.Close(); err != nil {
+			t.Fatalf("close response body: %v", err)
+		}
+		if response.StatusCode != http.StatusAccepted {
+			t.Fatalf("GET %s status = %d, want %d", serverURL, response.StatusCode, http.StatusAccepted)
+		}
+	}
+}
+
+func TestHTTPClientRejectsUntrustedAndInvalidConfiguredCA(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+	caPEM := testSelfSignedCertificate(t)
+	tracker, err := NewClient(Config{
+		Enabled:        true,
+		ProviderName:   "app-studio",
+		HubURL:         server.URL,
+		ProviderToken:  "provider-token",
+		CAData:         caPEM,
+		MaxRetries:     1,
+		InitialBackoff: time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("untrusted CA NewClient() error = %v", err)
+	}
+	if err := tracker.Track(context.Background(), Event{Action: "project_created"}); err != nil {
+		t.Fatalf("Track() error = %v", err)
+	}
+	if err := tracker.Close(); !errors.Is(err, ErrDeliveryFailed) {
+		t.Fatalf("untrusted CA Close() error = %v, want ErrDeliveryFailed", err)
+	}
+
+	if _, err := NewClient(Config{
+		Enabled:       true,
+		ProviderName:  "app-studio",
+		HubURL:        server.URL,
+		ProviderToken: "provider-token",
+		CAData:        []byte("not a PEM certificate"),
+	}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("invalid CA NewClient() error = %v, want ErrInvalidConfig", err)
+	}
+
+	if _, err := NewClient(Config{
+		Enabled:       true,
+		ProviderName:  "app-studio",
+		HubURL:        server.URL,
+		ProviderToken: "provider-token",
+		CAFile:        filepath.Join(t.TempDir(), "missing-ca.pem"),
+	}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("unreadable CA file NewClient() error = %v, want ErrInvalidConfig", err)
+	}
+
+	validCA := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	invalidCAPath := filepath.Join(t.TempDir(), "invalid-ca.pem")
+	if err := os.WriteFile(invalidCAPath, []byte("not a PEM certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewClient(Config{
+		Enabled:       true,
+		ProviderName:  "app-studio",
+		HubURL:        server.URL,
+		ProviderToken: "provider-token",
+		CAData:        validCA,
+		CAFile:        invalidCAPath,
+	}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("mixed valid and invalid CA sources NewClient() error = %v, want ErrInvalidConfig", err)
+	}
+}
+
+func testSelfSignedCertificate(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test CA key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "untrusted-test-ca"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create test CA certificate: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }
 
 func TestTrackDoesNotWaitForSlowNetworkBeyondEnqueueTimeout(t *testing.T) {
@@ -250,7 +432,7 @@ func TestTrackRejectsInvalidAndOversizedEventsBeforeNetwork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	for _, event := range []Event{
 		{Action: "Invalid Action"},
@@ -275,7 +457,7 @@ func TestNewClientRequiresEnabledConfigurationAndNoopIsSafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("disabled NewClient() error = %v", err)
 	}
-	if err := tracker.Track(nil, Event{}); err != nil {
+	if err := tracker.Track(context.Background(), Event{}); err != nil {
 		t.Fatalf("noop Track() error = %v", err)
 	}
 }

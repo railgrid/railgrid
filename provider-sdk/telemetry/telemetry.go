@@ -23,6 +23,8 @@ package telemetry
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,6 +32,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -142,6 +145,17 @@ type Config struct {
 	// AllowInsecure permits an http HubURL for explicit local/development use.
 	// Production telemetry should always leave this false.
 	AllowInsecure bool
+	// InsecureSkipVerify permits a provider to opt into the same local/dev TLS
+	// escape hatch as AllowInsecure. Providers must only set this from their
+	// explicit FAROS_HUB_INSECURE development setting. It is deliberately
+	// separate from CA configuration so normal TLS verification remains the
+	// default.
+	InsecureSkipVerify bool
+	// CAFile and CAData augment (rather than replace) the system trust roots.
+	// Providers commonly source these from their provider kubeconfig or a
+	// mounted private-hub CA bundle.
+	CAFile string
+	CAData []byte
 
 	QueueSize      int
 	EnqueueTimeout time.Duration
@@ -157,6 +171,83 @@ type Config struct {
 	// HTTPClient is injectable for tests and provider-specific transport/TLS
 	// configuration. Request contexts still enforce SendTimeout.
 	HTTPClient *http.Client
+}
+
+// HTTPClientConfig configures the standard transport used by an enabled
+// telemetry client. CA material is appended to the host's system roots so a
+// private hub does not make public/system certificates unusable. A malformed
+// or unreadable configured CA is an error; callers should keep the existing
+// no-op tracker in that case.
+type HTTPClientConfig struct {
+	CAFile             string
+	CAData             []byte
+	InsecureSkipVerify bool
+}
+
+// NewHTTPClient builds the provider-SDK telemetry transport boundary. It is
+// exported so providers that need the same hub TLS policy can share the exact
+// CA and development-insecure behavior without reimplementing transports.
+func NewHTTPClient(cfg HTTPClientConfig) (*http.Client, error) {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		// The standard library default is a *http.Transport. Keep a useful
+		// fallback for tests or callers that replace it, while still allowing
+		// TLS configuration to be applied deterministically.
+		base = &http.Transport{}
+	}
+	transport := base.Clone()
+
+	caFile := strings.TrimSpace(cfg.CAFile)
+	caSources := make([][]byte, 0, 2)
+	if len(cfg.CAData) > 0 {
+		caSources = append(caSources, cfg.CAData)
+	}
+	if caFile != "" {
+		fileData, err := os.ReadFile(caFile)
+		if err != nil {
+			return nil, fmt.Errorf("telemetry: read configured CA: %w", ErrInvalidConfig)
+		}
+		caSources = append(caSources, fileData)
+	}
+	if len(caSources) > 0 {
+		tlsConfig := transport.TLSClientConfig
+		if tlsConfig == nil {
+			tlsConfig = &tls.Config{}
+		} else {
+			tlsConfig = tlsConfig.Clone()
+		}
+		roots := tlsConfig.RootCAs
+		if roots != nil {
+			roots = roots.Clone()
+		} else {
+			var err error
+			roots, err = x509.SystemCertPool()
+			if err != nil || roots == nil {
+				roots = x509.NewCertPool()
+			}
+		}
+		for _, caData := range caSources {
+			if len(bytes.TrimSpace(caData)) == 0 {
+				return nil, fmt.Errorf("telemetry: configured CA is empty: %w", ErrInvalidConfig)
+			}
+			if !roots.AppendCertsFromPEM(caData) {
+				return nil, fmt.Errorf("telemetry: configured CA contains no valid certificates: %w", ErrInvalidConfig)
+			}
+		}
+		tlsConfig.RootCAs = roots
+		transport.TLSClientConfig = tlsConfig
+	}
+	if cfg.InsecureSkipVerify {
+		tlsConfig := transport.TLSClientConfig
+		if tlsConfig == nil {
+			tlsConfig = &tls.Config{}
+		} else {
+			tlsConfig = tlsConfig.Clone()
+		}
+		tlsConfig.InsecureSkipVerify = true //nolint:gosec // explicit provider local/dev opt-in
+		transport.TLSClientConfig = tlsConfig
+	}
+	return &http.Client{Transport: transport}, nil
 }
 
 // Client is the asynchronous HTTP tracker. It owns a bounded queue and one
@@ -286,7 +377,14 @@ func NewClient(cfg Config) (Tracker, error) {
 
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{}
+		httpClient, err = NewHTTPClient(HTTPClientConfig{
+			CAFile:             cfg.CAFile,
+			CAData:             cfg.CAData,
+			InsecureSkipVerify: cfg.InsecureSkipVerify,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 	// Redirects are never part of the telemetry contract. Following one can
 	// forward the provider bearer and event body to a different or downgraded
@@ -321,7 +419,7 @@ func providerEndpoint(rawHubURL, provider string, allowInsecure bool) (string, e
 	if err != nil || hubURL.Scheme == "" || hubURL.Host == "" || hubURL.User != nil {
 		return "", fmt.Errorf("telemetry: invalid hub URL: %w", ErrInvalidConfig)
 	}
-	if hubURL.Scheme != "https" && !(allowInsecure && hubURL.Scheme == "http") {
+	if hubURL.Scheme != "https" && (!allowInsecure || hubURL.Scheme != "http") {
 		return "", fmt.Errorf("telemetry: hub URL must use https unless insecure transport is explicitly allowed: %w", ErrInvalidConfig)
 	}
 	if hubURL.RawQuery != "" || hubURL.Fragment != "" {
