@@ -104,9 +104,9 @@ func TestNewHTTPClientWithCAFileAppendsCertificateToDedicatedTransport(t *testin
 		t.Fatal("CA client did not install a dedicated RootCAs pool")
 	}
 
-	// Ensure the appended certificate is represented in the pool, while also
-	// checking that the loaded value is an X.509 certificate rather than just
-	// syntactically valid PEM.
+	// Verify the supplied self-signed certificate against the configured roots
+	// with server authentication. Since it is not a system root, successful
+	// verification proves the PEM file was appended to the TLS trust pool.
 	cert, err := x509.ParseCertificate(der)
 	if err != nil {
 		t.Fatal(err)
@@ -117,15 +117,5 @@ func TestNewHTTPClientWithCAFileAppendsCertificateToDedicatedTransport(t *testin
 		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}); err != nil {
 		t.Fatalf("appended receiver CA does not establish trust: %v", err)
-	}
-	found := false
-	for _, subject := range transport.TLSClientConfig.RootCAs.Subjects() {
-		if string(subject) == string(cert.RawSubject) {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("appended receiver certificate was not found in telemetry RootCAs")
 	}
 }
