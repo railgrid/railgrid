@@ -287,9 +287,18 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 
 	out.Steps = []InstallStep{
 		{
-			Title:       "Create the namespace",
-			Description: "Where the provider runs in your cluster.",
-			Command:     fmt.Sprintf("kubectl create namespace %s", namespace),
+			Title: "Create the namespace",
+			// Which credential these run with is the one thing the commands
+			// cannot show, and the kubeconfig displayed directly above them is
+			// the wrong one — it addresses kcp, and only ever belongs inside the
+			// Secret step 2 creates. Naming the alternatives is the whole point:
+			// either a cluster-admin credential for the target cluster, or a
+			// `faros kubeconfig edge` context, which reaches that cluster
+			// through the agent.
+			Description: "Where the provider runs in your cluster. Run every command below against that " +
+				"cluster — with your own cluster-admin credentials, or a `faros kubeconfig edge` context " +
+				"for it. Not the kubeconfig shown above: that one addresses faros, not your cluster.",
+			Command: fmt.Sprintf("kubectl create namespace %s", namespace),
 		},
 		{
 			Title: "Store the credential",
@@ -301,9 +310,11 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 				namespace, KubeconfigSecretName, KubeconfigSecretKey, kubeconfigFile),
 		},
 		{
-			Title:       "Install the provider",
-			Description: "The chart's init job registers the provider into your organization's workspace.",
-			Command:     helm.String(),
+			Title: "Install the provider",
+			Description: "The chart's init job registers the provider into your organization's workspace. " +
+				"It installs a CRD, ClusterRoles and its own custom resource, so whichever credential you " +
+				"use needs cluster-admin in the target cluster.",
+			Command: helm.String(),
 		},
 	}
 	return out

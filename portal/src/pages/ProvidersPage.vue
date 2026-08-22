@@ -695,10 +695,9 @@ function dependencyNotice(p: ProviderDTO): string {
               {{ providers.deletionBlocked(p.name) }}
             </p>
             <p class="mt-1.5 text-[10px] leading-relaxed text-text-muted">
-              kcp removes a provider's resources before the binding itself. Resources
-              holding a finalizer wait for their controller to release it — if that
-              controller is gone, delete the listed resources (or strip their
-              finalizers) to let the disable finish.
+              Some of this provider's resources are still waiting to be cleaned
+              up. If this doesn't resolve on its own, delete the resources listed
+              above (or remove their finalizers) to let the disable finish.
             </p>
           </div>
 

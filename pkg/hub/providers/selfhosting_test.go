@@ -369,6 +369,30 @@ func unresolved(values []ResolvedValue, name string) bool {
 	return false
 }
 
+// The commands cannot show which credential they run with, and the kubeconfig
+// displayed directly above them is the wrong one — it addresses kcp, not the
+// tenant's cluster. Proximity makes it the likely mistake, so the steps have to
+// rule it out by name and point at the two that do work.
+func TestRenderInstallInstructionsNamesTheCredentialToUse(t *testing.T) {
+	got := RenderInstallInstructions(baseSelfHosting(), baseOptions())
+
+	joined := ""
+	for _, s := range got.Steps {
+		joined += s.Title + "\n" + s.Description + "\n"
+	}
+	if !strings.Contains(joined, "cluster-admin") {
+		t.Errorf("no step says cluster-admin is required:\n%s", joined)
+	}
+	if !strings.Contains(joined, "Not the kubeconfig shown above") {
+		t.Errorf("steps do not rule out the credential shown above them:\n%s", joined)
+	}
+	// An edge context is a legitimate way to reach the cluster — the agent holds
+	// cluster-admin there — so the steps must offer it rather than warn it off.
+	if !strings.Contains(joined, "faros kubeconfig edge") {
+		t.Errorf("steps do not mention an edge context as a way to reach the cluster:\n%s", joined)
+	}
+}
+
 func TestSelfHostingInstallable(t *testing.T) {
 	for _, tc := range []struct {
 		name string
