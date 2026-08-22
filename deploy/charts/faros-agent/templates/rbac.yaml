@@ -6,9 +6,6 @@ metadata:
   labels:
     {{- include "faros-agent.labels" . | nindent 4 }}
 rules:
-  # Cluster-admin. The agent installs whatever a tenant deploys through it,
-  # including provider charts whose CRs live in API groups no fixed list can
-  # enumerate ahead of time. See docs/byo-providers.md.
   - apiGroups: ["*"]
     resources: ["*"]
     verbs: ["*"]
