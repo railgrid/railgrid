@@ -60,7 +60,7 @@ export const useAdminStore = defineStore('admin', () => {
   const forbidden = ref(false)
   const error = ref<string | null>(null)
   // isAdmin: null = not checked yet, true/false after checkAccess. Drives the
-  // sidebar menu item + the /bonkers route guard so non-admins never load the
+  // account menu item + the /bonkers route guard so non-admins never load the
   // page (which would 403 on its data fetches).
   const isAdmin = ref<boolean | null>(null)
 

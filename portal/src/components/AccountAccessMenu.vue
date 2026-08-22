@@ -26,6 +26,7 @@ import {
   Pin,
   Plug,
   Settings,
+  ShieldAlert,
   Sun,
   Terminal,
   UserRound,
@@ -35,13 +36,14 @@ import { useThemeStore, type ThemeMode } from '@/stores/theme'
 
 interface Props {
   expanded?: boolean
-  time: string
+  showPlatformAdmin?: boolean
   showUndock?: boolean
   undockLabel?: string
 }
 
 const props = withDefaults(defineProps<Props>(), {
   expanded: false,
+  showPlatformAdmin: false,
   showUndock: false,
   undockLabel: 'Undock',
 })
@@ -70,7 +72,8 @@ const panelId = useId()
 const email = computed(() => auth.user?.email?.trim() || 'Authenticated user')
 const mcpActive = computed(() => route.path === '/mcp' || route.path.startsWith('/mcp/'))
 const settingsActive = computed(() => route.path === '/tenant' || route.path.startsWith('/tenant/'))
-const contextRouteActive = computed(() => mcpActive.value || settingsActive.value)
+const adminActive = computed(() => route.path === '/bonkers' || route.path.startsWith('/bonkers/'))
+const contextRouteActive = computed(() => mcpActive.value || settingsActive.value || adminActive.value)
 const initials = computed(() => {
   const value = email.value === 'Authenticated user' ? '' : email.value
   const parts = value.split(/[@.\s_-]+/).filter(Boolean)
@@ -337,7 +340,6 @@ onBeforeUnmount(() => {
         </span>
         <ChevronDown class="h-3 w-3 -rotate-90 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
       </button>
-
       <div class="my-1 h-px bg-border-subtle" />
 
       <div class="px-2 py-1.5">
@@ -359,23 +361,6 @@ onBeforeUnmount(() => {
         <span class="flex-1">MCP Access</span>
         <ChevronDown class="h-3 w-3 -rotate-90 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
       </router-link>
-
-      <div class="my-1 h-px bg-border-subtle" />
-
-      <div class="px-2 py-1.5">
-        <span class="k-eyebrow">Session</span>
-      </div>
-      <div class="flex items-start gap-2 px-2 py-1.5">
-        <UserRound class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
-        <div class="min-w-0 flex-1">
-          <span class="block text-[10px] text-text-muted">Authenticated as</span>
-          <span class="block truncate font-mono text-[11px] text-text-secondary">{{ email }}</span>
-        </div>
-        <div class="shrink-0 text-right">
-          <span class="block text-[10px] text-text-muted">Local time</span>
-          <span class="block font-mono text-[11px] tabular-nums text-text-secondary">{{ time }}</span>
-        </div>
-      </div>
 
       <div class="my-1 h-px bg-border-subtle" />
 
@@ -408,6 +393,18 @@ onBeforeUnmount(() => {
       >
         <Settings class="h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" aria-hidden="true" />
         <span class="flex-1">Settings</span>
+        <ChevronDown class="h-3 w-3 -rotate-90 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
+      </router-link>
+      <router-link
+        v-if="showPlatformAdmin"
+        to="/bonkers"
+        class="k-menu-item"
+        :class="adminActive ? 'is-selected' : ''"
+        :aria-current="adminActive ? 'page' : undefined"
+        @click="closeMenu()"
+      >
+        <ShieldAlert class="h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" aria-hidden="true" />
+        <span class="flex-1">Platform admin</span>
         <ChevronDown class="h-3 w-3 -rotate-90 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
       </router-link>
       <button v-if="showUndock" type="button" class="k-menu-item" @click="emitAndClose('undock')">

@@ -10,7 +10,7 @@ import UserProfileModal from '@/components/UserProfileModal.vue'
 import TenantContextChip from '@/components/TenantContextChip.vue'
 import AccountAccessMenu from '@/components/AccountAccessMenu.vue'
 import FirstWorkspaceWizard from '@/components/FirstWorkspaceWizard.vue'
-import { Hexagon, LayoutDashboard, Zap, GripHorizontal, GripVertical, Puzzle, Dot, ShieldAlert, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
+import { Hexagon, LayoutDashboard, Zap, GripHorizontal, GripVertical, Puzzle, Dot, PanelLeftClose, PanelLeftOpen, ChevronDown } from 'lucide-vue-next'
 import { useProvidersStore } from '@/stores/providers'
 import { useAdminStore } from '@/stores/admin'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -21,7 +21,7 @@ const providersStore = useProvidersStore()
 const tenantStore = useTenantStore()
 const adminStore = useAdminStore()
 
-// Probe platform-admin access once so the sidebar can show the /bonkers entry
+// Probe platform-admin access once so the account menu can show the /bonkers entry
 // only to allowlisted identities. Non-admins get a single quiet 403 and the
 // menu item stays hidden.
 onMounted(() => { void adminStore.checkAccess() })
@@ -79,19 +79,6 @@ const slotClass = computed(() => [
   // out and manage their own width.
   layoutProps.fullBleed ? 'h-full min-h-0' : 'mx-auto w-full max-w-5xl',
 ])
-
-const now = ref(new Date())
-let timer: ReturnType<typeof setInterval>
-
-onMounted(() => {
-  timer = setInterval(() => { now.value = new Date() }, 1000)
-})
-onUnmounted(() => clearInterval(timer))
-
-const pad = (n: number) => String(n).padStart(2, '0')
-const timeStr = computed(() =>
-  `${pad(now.value.getHours())}:${pad(now.value.getMinutes())}:${pad(now.value.getSeconds())}`
-)
 
 interface NavItem {
   label: string
@@ -635,24 +622,11 @@ watchEffect(() => {
 
       <div class="mx-2 my-2 h-px bg-border-default/50" />
 
-      <!-- Platform admin (/bonkers): only rendered for allowlisted identities
-           (adminStore.isAdmin, set by the access probe on mount). -->
-      <router-link
-        v-if="adminStore.isAdmin"
-        to="/bonkers"
-        class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-[11px] font-medium transition-all duration-200"
-        :class="[isActive('/bonkers') ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
-        :title="sidebarExpanded ? undefined : 'Platform admin'"
-      >
-        <ShieldAlert class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
-        <span v-if="sidebarExpanded">Platform admin</span>
-      </router-link>
-
-      <!-- Situational tools and session controls live behind one stable
+      <!-- Situational tools and account controls live behind one stable
            account affordance so the provider tree keeps the vertical space. -->
       <AccountAccessMenu
         :expanded="sidebarExpanded"
-        :time="timeStr"
+        :show-platform-admin="adminStore.isAdmin === true"
         show-undock
         @cli="showCliModal = true"
         @profile="showProfileModal = true"
@@ -742,7 +716,7 @@ watchEffect(() => {
         {{ auth.clusterName }}
       </span>
       <AccountAccessMenu
-        :time="timeStr"
+        :show-platform-admin="adminStore.isAdmin === true"
         show-undock
         @cli="showCliModal = true"
         @profile="showProfileModal = true"
@@ -860,7 +834,7 @@ watchEffect(() => {
           {{ auth.clusterName }}
         </span>
         <AccountAccessMenu
-          :time="timeStr"
+          :show-platform-admin="adminStore.isAdmin === true"
           :show-undock="hasCustomPos && !isDragging"
           undock-label="Reset position"
           @cli="showCliModal = true"

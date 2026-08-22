@@ -17,8 +17,7 @@ limitations under the License.
 <!--
 Compact org/workspace context chip. Renders the current selection as a
 single clickable button; clicking opens a popover with two small
-dropdowns for switching and a footer link to the full /tenant settings
-page.
+dropdowns for switching and a workspace kubeconfig download.
 
 Shown in the sidebar (vertical mode) above the static nav and in the
 horizontal/floating dock between the logo and nav. Sized to be
@@ -32,7 +31,7 @@ unobtrusive — the goal is "where am I" awareness, not management.
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useTenantStore } from '@/stores/tenant'
-import { Building2, FolderTree, ChevronDown, Settings, AlertCircle, Download, Loader2 } from 'lucide-vue-next'
+import { Building2, FolderTree, ChevronDown, AlertCircle, Download, Loader2 } from 'lucide-vue-next'
 
 defineProps<{ variant?: 'sidebar' | 'horizontal' }>()
 
@@ -273,14 +272,6 @@ onUnmounted(() => {
           </select>
         </div>
 
-        <router-link
-          to="/tenant"
-          class="flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-surface-overlay/60 hover:text-accent"
-          @click="open = false"
-        >
-          <Settings class="h-3 w-3" :stroke-width="2" />
-          Manage tenants
-        </router-link>
       </div>
     </Transition>
     </Teleport>
