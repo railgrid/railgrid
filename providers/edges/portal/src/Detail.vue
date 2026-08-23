@@ -220,13 +220,13 @@ function rel(ts?: string): string {
     <template v-else-if="edge">
       <!-- Overview -->
       <div class="detail-grid">
-        <div class="field">
+        <div class="field k-card">
           <span class="lbl">Status</span>
           <span class="k-badge" :class="edge.connected ? 'k-badge--success' : 'k-badge--warning'">
             <CircleDot :size="12" /> {{ edge.connected ? 'Connected' : (edge.phase || 'Disconnected') }}
           </span>
         </div>
-        <div class="field">
+        <div class="field k-card">
           <span class="lbl">Agent version</span>
           <span class="row" style="gap: 6px;">
             <span class="mono">{{ edge.agentVersion || '—' }}</span>
@@ -235,10 +235,10 @@ function rel(ts?: string): string {
             </span>
           </span>
         </div>
-        <div class="field"><span class="lbl">Hostname</span><span class="mono">{{ edge.hostname || '—' }}</span></div>
-        <div class="field"><span class="lbl">Last heartbeat</span><span>{{ rel(edge.lastHeartbeatTime) }}</span></div>
-        <div class="field"><span class="lbl">Created</span><span>{{ rel(edge.creationTimestamp) }}</span></div>
-        <div class="field"><span class="lbl">Workspace</span><span class="mono">{{ edge.workspacePath || '—' }}</span></div>
+        <div class="field k-card"><span class="lbl">Hostname</span><span class="mono">{{ edge.hostname || '—' }}</span></div>
+        <div class="field k-card"><span class="lbl">Last heartbeat</span><span>{{ rel(edge.lastHeartbeatTime) }}</span></div>
+        <div class="field k-card"><span class="lbl">Created</span><span>{{ rel(edge.creationTimestamp) }}</span></div>
+        <div class="field k-card"><span class="lbl">Workspace</span><span class="mono">{{ edge.workspacePath || '—' }}</span></div>
       </div>
 
       <!-- Labels -->
@@ -256,16 +256,22 @@ function rel(ts?: string): string {
             <ArrowUpCircle :size="14" />
             {{ upgradeCond?.message || 'A newer agent version is available.' }}
           </span>
-          <button class="k-btn k-btn--ghost compact-control" @click="showUpgrade = !showUpgrade">
+          <button
+            type="button"
+            class="k-btn k-btn--ghost compact-control"
+            :aria-expanded="showUpgrade"
+            aria-controls="edges-upgrade-commands"
+            @click="showUpgrade = !showUpgrade"
+          >
             {{ showUpgrade ? 'Hide' : 'Show' }} commands
-            <component :is="showUpgrade ? ChevronUp : ChevronDown" :size="14" />
+            <component :is="showUpgrade ? ChevronUp : ChevronDown" :size="14" aria-hidden="true" />
           </button>
         </div>
 
-        <div v-if="showUpgrade" style="margin-top: 12px; display: flex; flex-direction: column; gap: 12px;">
+        <div v-if="showUpgrade" id="edges-upgrade-commands" style="margin-top: 12px; display: flex; flex-direction: column; gap: 12px;">
           <!-- Kubernetes: CLI or Helm. -->
           <template v-if="type === 'kubernetes'">
-            <div class="snippet">
+            <div class="snippet k-card">
               <div class="snippet-head"><span>Option A — CLI</span>
                 <button class="copy" @click="copy(upgradeCliCommand, 'up-cli')">
                   <component :is="copied === 'up-cli' ? Check : Copy" :size="12" /> {{ copied === 'up-cli' ? 'Copied' : 'Copy' }}
@@ -273,7 +279,7 @@ function rel(ts?: string): string {
               </div>
               <pre>{{ upgradeCliCommand }}</pre>
             </div>
-            <div class="snippet">
+            <div class="snippet k-card">
               <div class="snippet-head"><span>Option B — Helm</span>
                 <button class="copy" @click="copy(upgradeHelmSnippet, 'up-helm')">
                   <component :is="copied === 'up-helm' ? Check : Copy" :size="12" /> {{ copied === 'up-helm' ? 'Copied' : 'Copy' }}
@@ -284,7 +290,7 @@ function rel(ts?: string): string {
           </template>
 
           <!-- Server: replace the binary and restart the unit. -->
-          <div v-else class="snippet">
+          <div v-else class="snippet k-card">
             <div class="snippet-head"><span>Replace binary and restart</span>
               <button class="copy" @click="copy(upgradeServerSnippet, 'up-srv')">
                 <component :is="copied === 'up-srv' ? Check : Copy" :size="12" /> {{ copied === 'up-srv' ? 'Copied' : 'Copy' }}
@@ -301,7 +307,7 @@ function rel(ts?: string): string {
       <div v-if="!edge.connected && edge.joinToken" class="section">
         <h3>Connect the agent</h3>
         <p class="muted">This edge is waiting for its agent. Run on the target {{ type === 'server' ? 'server' : 'cluster' }}:</p>
-        <div class="snippet">
+        <div class="snippet k-card">
           <div class="snippet-head"><span>faros agent join</span>
             <button class="copy" @click="copy(`faros agent join --edge-name ${name} --type ${type} --token ${edge.joinToken}`, 'join')">
               <component :is="copied === 'join' ? Check : Copy" :size="12" /> {{ copied === 'join' ? 'Copied' : 'Copy' }}
@@ -315,7 +321,7 @@ function rel(ts?: string): string {
       <div v-if="type === 'kubernetes' && edge.connected" class="section">
         <h3>Connect to this cluster</h3>
         <p class="muted">Download a kubeconfig scoped to this edge and use kubectl through the hub tunnel:</p>
-        <div class="snippet">
+        <div class="snippet k-card">
           <div class="snippet-head"><span>kubectl</span>
             <button class="copy" @click="copy(`faros kubeconfig edge ${name} > ${name}.kubeconfig\nkubectl --kubeconfig ${name}.kubeconfig get nodes`, 'kube')">
               <component :is="copied === 'kube' ? Check : Copy" :size="12" /> {{ copied === 'kube' ? 'Copied' : 'Copy' }}
@@ -330,7 +336,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
       <div v-if="type === 'server' && edge.connected" class="section">
         <h3>SSH access</h3>
         <p class="muted">Open an interactive shell in the browser, or SSH from your own terminal:</p>
-        <div class="snippet">
+        <div class="snippet k-card">
           <div class="snippet-head"><span>faros ssh</span>
             <button class="copy" @click="copy(`faros ssh ${name}`, 'ssh')">
               <component :is="copied === 'ssh' ? Check : Copy" :size="12" /> {{ copied === 'ssh' ? 'Copied' : 'Copy' }}
@@ -349,7 +355,14 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
       <div class="section">
         <div class="row" style="justify-content: space-between; align-items: baseline;">
           <h3>Services</h3>
-          <button v-if="type === 'kubernetes'" class="k-btn k-btn--ghost" @click="startAdd"><Plus :size="14" /> Add service</button>
+          <button
+            v-if="type === 'kubernetes'"
+            type="button"
+            class="k-btn k-btn--ghost"
+            :aria-expanded="adding"
+            aria-controls="edges-service-create"
+            @click="startAdd"
+          ><Plus :size="14" aria-hidden="true" /> Add service</button>
         </div>
         <p class="muted">
           {{ type === 'server'
@@ -359,7 +372,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
         <div v-if="svcError" class="banner error">{{ svcError }}</div>
 
         <!-- Declare form (kube edges) -->
-        <div v-if="adding" class="svc-card">
+        <div v-if="adding" id="edges-service-create" class="svc-card k-card">
           <div class="svc-head"><span class="svc-title"><Plus :size="15" /> New service</span></div>
           <div class="svc-form">
             <label>Name<input v-model="draft.name" class="svc-input k-input" placeholder="home-assistant" /></label>
@@ -387,7 +400,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
             : 'No services declared yet. Add one to point at a Kubernetes Service in this cluster.' }}
         </div>
         <div v-else-if="services.length" class="svc-cards">
-          <div v-for="es in services" :key="es.name" class="svc-card">
+          <div v-for="es in services" :key="es.name" class="svc-card k-card">
             <div class="svc-head">
               <span class="svc-title">
                 <Home v-if="es.serviceType === 'home-assistant'" :size="15" />

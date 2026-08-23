@@ -136,7 +136,7 @@ function fmt(s: number) {
     <div v-if="error" class="banner error">{{ error }}</div>
 
     <!-- Step 1 -->
-    <div v-if="step === 1" class="wiz-card">
+    <div v-if="step === 1" class="wiz-card k-card">
       <label class="lbl">Edge name</label>
       <input v-model="name" class="k-input" placeholder="e.g. prod-us-east-1" @keyup.enter="canContinue && handleCreate()" />
 
@@ -163,7 +163,7 @@ function fmt(s: number) {
     </div>
 
     <!-- Step 2 -->
-    <div v-else-if="step === 2" class="wiz-card">
+    <div v-else-if="step === 2" class="wiz-card k-card">
       <h3>Install the agent on your {{ edgeType === 'kubernetes' ? 'cluster' : 'server' }}</h3>
       <p class="muted">Run one of the commands below from the target. This updates automatically when
         <b>{{ trimmed }}</b> connects.</p>
@@ -172,7 +172,7 @@ function fmt(s: number) {
       <div v-else-if="!joinToken" class="muted row"><Loader2 :size="14" class="spin" /> Generating join token…</div>
 
       <template v-if="joinToken || tokenError">
-        <div v-if="edgeType === 'kubernetes'" class="snippet">
+        <div v-if="edgeType === 'kubernetes'" class="snippet k-card">
           <div class="snippet-head"><span>Helm (recommended)</span>
             <button class="copy" :disabled="!joinToken" @click="copy(helmSnippet, 'helm')">
               <component :is="copied === 'helm' ? Check : Copy" :size="12" /> {{ copied === 'helm' ? 'Copied' : 'Copy' }}
@@ -180,7 +180,7 @@ function fmt(s: number) {
           </div>
           <pre>{{ helmText }}</pre>
         </div>
-        <div class="snippet">
+        <div class="snippet k-card">
           <div class="snippet-head"><span>CLI — faros agent join</span>
             <button class="copy" :disabled="!joinToken" @click="copy(cliSnippet, 'cli')">
               <component :is="copied === 'cli' ? Check : Copy" :size="12" /> {{ copied === 'cli' ? 'Copied' : 'Copy' }}
@@ -197,7 +197,7 @@ function fmt(s: number) {
     </div>
 
     <!-- Step 3 -->
-    <div v-else class="wiz-card center">
+    <div v-else class="wiz-card k-card center">
       <PartyPopper :size="30" />
       <h3><b>{{ trimmed }}</b> is online</h3>
       <p class="muted">Agent {{ agentVersion || '—' }} · connected after {{ fmt(elapsed) }}</p>

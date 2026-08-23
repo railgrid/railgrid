@@ -19,7 +19,7 @@ import { Hexagon, ArrowLeft } from 'lucide-vue-next'
       <p class="mt-2 text-[13px] text-text-muted">This page doesn't exist</p>
       <router-link
         to="/"
-        class="mt-8 inline-flex items-center gap-2 rounded-xl border border-border-subtle bg-surface-raised/80 px-5 py-2.5 text-[12px] font-medium text-text-secondary backdrop-blur transition-all duration-200 hover:border-accent/30 hover:text-text-primary"
+        class="k-btn k-btn--ghost mt-8 inline-flex items-center gap-2 rounded-md border border-border-subtle bg-surface-raised/80 px-5 py-2.5 text-[12px] font-medium text-text-secondary backdrop-blur transition-all duration-200 hover:border-accent/30 hover:text-text-primary"
       >
         <ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" />
         Back to dashboard

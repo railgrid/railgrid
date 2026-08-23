@@ -1,15 +1,81 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
-import { RefreshCw, Trash2, Plus, Boxes, ChevronRight, ChevronDown, Store, Rocket } from 'lucide-vue-next'
-import { listWorkloads, createWorkload, deleteWorkload, deployMarketplaceApp, listEdges, type WorkloadDraft } from './api'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { RefreshCw, Plus, ChevronRight, ChevronDown, Store, Rocket } from 'lucide-vue-next'
+import { listWorkloads, listWorkloadsPage, createWorkload, deleteWorkload, deployMarketplaceApp, listEdges, type WorkloadDraft } from './api'
 import type { Workload, Edge, ErrorResponse } from './types'
 import { confirmDialog } from './portalkit/confirm'
+import ResourceTable from './portalkit/ResourceTable.vue'
+import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
+import StatusBadge from './portalkit/StatusBadge.vue'
 import { MARKETPLACE_CATEGORIES, type MarketplaceApp } from './marketplace'
+import { isCompleteFirstCursorPage, type ResourceTableChange, type TableFilterDefinition, type TablePageInfo } from './portalkit/table'
+import { createFullListReadCoordinator, createInFlightReadCoordinator, hasActiveTableFilters, sameTableRequest, tablePageInfo as makeTablePageInfo, type PaginationMode, type TableRequestState } from './pagination'
 
 const workloads = ref<Workload[]>([])
 const edges = ref<Edge[]>([])
 const loading = ref(true)
+const loaded = ref(false)
 const error = ref<string | null>(null)
+const workloadColumns = [
+  { key: 'expand', label: '' },
+  { key: 'name', label: 'Name' },
+  { key: 'image', label: 'Image' },
+  { key: 'placement', label: 'Placement' },
+  { key: 'status', label: 'Status' },
+  { key: 'ready', label: 'Ready' },
+  { key: 'actions', label: '' },
+]
+const workloadRows = computed<Array<Record<string, unknown>>>(() => workloads.value.map(workload => ({
+  ...workload,
+  expand: '',
+  image: workload.image || '—',
+  strategy: workload.strategy || 'Spread',
+  placement: `${workload.strategy || 'Spread'} · ${selectorText(workload.selector)}`,
+  status: workload.phase || 'Pending',
+  ready: `${workload.readyReplicas ?? 0}/${workload.replicas ?? 1}`,
+  actions: '',
+})))
+
+const WORKLOAD_STRATEGY_OPTIONS = [
+  { value: 'Spread', label: 'Spread' },
+  { value: 'Singleton', label: 'Singleton' },
+]
+const WORKLOAD_STATUS_OPTIONS = [
+  { value: 'Pending', label: 'Pending' },
+  { value: 'Running', label: 'Running' },
+  { value: 'Failed', label: 'Failed' },
+  { value: 'Unknown', label: 'Unknown' },
+]
+
+type WorkloadFilterValues = {
+  strategy: string
+  status: string
+}
+
+type WorkloadPaginationMode = PaginationMode
+
+const tableMode = ref<WorkloadPaginationMode>('server')
+const tablePage = ref(1)
+const tablePageSize = ref(10)
+const tableQuery = ref('')
+const filterValues = ref<WorkloadFilterValues>({ strategy: '', status: '' })
+const tableCursor = ref<string | null>(null)
+const tablePageInfo = ref<TablePageInfo | null>(null)
+// Client-side filtering is authoritative only after a complete, query-
+// independent cursor walk has committed. During a pending walk, keep the
+// last complete rows visible and let newer query/filter edits join the same
+// in-flight read rather than starting another walk.
+const clientAuthorityReady = ref(false)
+const clientReadPending = ref(false)
+const completeWorkloadRead = createFullListReadCoordinator(() => listWorkloads())
+// Edge joins are query-independent but must stay fresh for every server or
+// client refresh. Share an in-flight join across clear/re-entry without
+// retaining it as a long-lived cache.
+const edgeRead = createInFlightReadCoordinator(() => listEdges())
+const workloadFilters: TableFilterDefinition[] = [
+  { key: 'strategy', label: 'Strategy', options: WORKLOAD_STRATEGY_OPTIONS },
+  { key: 'status', label: 'Status', allLabel: 'Any status', options: WORKLOAD_STATUS_OPTIONS },
+]
 
 // Marketplace deploy state.
 const showMarket = ref(true)
@@ -40,7 +106,7 @@ async function onDeploy() {
       port: app.port,
     })
     closeDeploy()
-    await refresh()
+    await refresh(true)
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Deploy failed'
   } finally {
@@ -69,17 +135,194 @@ function toggle(name: string) {
   expanded.value = expanded.value === name ? null : name
 }
 
-async function refresh() {
+type WorkloadTableRequest = Omit<TableRequestState, 'filters'> & { filters: WorkloadFilterValues }
+
+let latestRefreshID = 0
+let stopped = false
+let clientReadToken = 0
+
+function cloneWorkloadFilters(filters: WorkloadFilterValues): WorkloadFilterValues {
+  return { strategy: filters.strategy, status: filters.status }
+}
+
+function currentWorkloadRequest(): WorkloadTableRequest {
+  const filters = cloneWorkloadFilters(filterValues.value)
+  return {
+    mode: tableMode.value,
+    active: hasActiveTableFilters(tableQuery.value, filters),
+    page: tablePage.value,
+    pageSize: tablePageSize.value,
+    query: tableQuery.value,
+    filters,
+    cursor: tableCursor.value,
+  }
+}
+
+function workloadRequestIsCurrent(requestID: number, request: WorkloadTableRequest): boolean {
+  const current = currentWorkloadRequest()
+  return !stopped && latestRefreshID === requestID && sameTableRequest(current, request)
+}
+
+// A complete client read is query-independent. Query/filter-only changes are
+// allowed to update the controlled table state while its target + edge join is
+// pending; page, page-size, mode, mutation, and context changes still fail
+// this guard through the stable request dimensions below.
+function workloadClientReadIsCurrent(requestID: number, request: WorkloadTableRequest, readGeneration: number): boolean {
+  const current = currentWorkloadRequest()
+  return !stopped && latestRefreshID === requestID && tableMode.value === 'client' &&
+    current.active && current.page === request.page &&
+    current.pageSize === request.pageSize && current.cursor === request.cursor &&
+    completeWorkloadRead.generation() === readGeneration && clientAuthorityReady.value === false
+}
+
+// The optional event union keeps direct template @click/@retry bindings
+// type-safe while mutation callers can request a forced client read.
+async function refresh(forceClientRead: boolean | Event = false) {
+  const requestID = ++latestRefreshID
+  const readToken = ++clientReadToken
+  const request = currentWorkloadRequest()
+  const wasClientAuthorityReady = clientAuthorityReady.value
+  const forceCompleteRead = request.mode === 'client' && (wasClientAuthorityReady || forceClientRead === true)
+  if (forceCompleteRead) {
+    clientAuthorityReady.value = false
+    // Keep the visible complete rows while a polling/CRUD replacement is in
+    // flight, but make the old cache non-authoritative. Query edits during
+    // this window therefore join the active walk instead of queueing another
+    // forced walk; a failed replacement also cannot be mistaken for ready
+    // data on the next edit.
+    completeWorkloadRead.clear()
+  }
+  clientReadPending.value = request.mode === 'client'
+  const readGeneration = completeWorkloadRead.generation()
   loading.value = true
   error.value = null
+  // Do not render an unfiltered page as though it matched a newly-entered
+  // query/filter. Same-page polling keeps cached rows visible until the
+  // replacement arrives.
+  if (request.active && request.mode === 'server') {
+    workloads.value = []
+    tablePageInfo.value = null
+  }
   try {
-    ;[workloads.value, edges.value] = await Promise.all([listWorkloads(), listEdges()])
+    if (request.active || request.mode === 'client') {
+      // A query-independent full read is shared across rapid query/filter
+      // edits. Polling and CRUD refreshes force one fresh walk; query changes
+      // while that walk is pending join it and commit the newest request.
+      const shouldForceCompleteRead = forceCompleteRead || (
+        request.mode === 'client' && !wasClientAuthorityReady &&
+        completeWorkloadRead.peek() !== null && !completeWorkloadRead.pending()
+      )
+      // The full source and its supporting edge join form one query-
+      // independent transition. Query/filter edits leave this request alive;
+      // the stable client guard below commits the latest reactive state once
+      // both reads settle.
+      const [nextWorkloads, nextEdges] = await Promise.all([
+        completeWorkloadRead.read(shouldForceCompleteRead),
+        edgeRead.read(),
+      ])
+      if (!workloadClientReadIsCurrent(requestID, request, readGeneration)) {
+        return
+      }
+      workloads.value = nextWorkloads
+      edges.value = nextEdges
+      tableMode.value = 'client'
+      tablePage.value = 1
+      tableCursor.value = null
+      tablePageInfo.value = null
+      clientAuthorityReady.value = true
+    } else {
+      const [nextPage, nextEdges] = await Promise.all([
+        listWorkloadsPage({
+          limit: request.pageSize,
+          ...(request.cursor ? { continue: request.cursor } : {}),
+        }),
+        edgeRead.read(),
+      ])
+      if (!workloadRequestIsCurrent(requestID, request)) return
+      workloads.value = nextPage.items
+      edges.value = nextEdges
+      tableCursor.value = request.cursor
+      tablePageInfo.value = makeTablePageInfo(nextPage.continue)
+    }
+    loaded.value = true
     if (!deployEdge.value && edges.value.length) deployEdge.value = edges.value[0].name
   } catch (e) {
+    const current = request.mode === 'client' && request.active
+      ? workloadClientReadIsCurrent(requestID, request, readGeneration)
+      : workloadRequestIsCurrent(requestID, request)
+    if (!current) return
     error.value = (e as ErrorResponse)?.message ?? 'Failed to load workloads'
   } finally {
-    loading.value = false
+    if (clientReadToken === readToken) clientReadPending.value = false
+    if (!stopped && latestRefreshID === requestID) loading.value = false
   }
+}
+
+function handleWorkloadTableChange(change: ResourceTableChange) {
+  const wasClientMode = tableMode.value === 'client'
+  const canReuseCurrentServerPage = !wasClientMode && isCompleteFirstCursorPage({
+    page: tablePage.value,
+    cursor: tableCursor.value,
+    pageInfo: tablePageInfo.value,
+  })
+  filterValues.value = {
+    strategy: change.filters.strategy ?? '',
+    status: change.filters.status ?? '',
+  }
+  tablePage.value = change.page
+  tablePageSize.value = change.pageSize
+  tableQuery.value = change.query
+  tableCursor.value = change.cursor
+  tablePageInfo.value = null
+
+  const active = hasActiveTableFilters(tableQuery.value, filterValues.value)
+  if (!active) {
+    tableMode.value = 'server'
+    clientAuthorityReady.value = false
+    // Returning from local filtering always starts at the first bounded page;
+    // ordinary unfiltered page navigation preserves its incoming cursor.
+    if (wasClientMode || change.reason === 'query' || change.reason === 'filter') {
+      tablePage.value = 1
+      tableCursor.value = null
+    }
+    completeWorkloadRead.clear()
+    workloads.value = []
+    void refresh()
+    return
+  }
+
+  // A terminal first server page is already a complete authority. Promote it
+  // synchronously so entering a query never causes an unnecessary full walk.
+  if (canReuseCurrentServerPage) {
+    completeWorkloadRead.seed(workloads.value)
+    tableMode.value = 'client'
+    clientAuthorityReady.value = true
+    tablePage.value = 1
+    tableCursor.value = null
+    tablePageInfo.value = null
+    return
+  }
+
+  // Once a complete source is resident, table changes are local. During the
+  // pending transition, query/filter-only changes are absorbed by the stable
+  // client guard; other dimensions invalidate and restart the read.
+  if (tableMode.value === 'client') {
+    if (!clientAuthorityReady.value) {
+      if (clientReadPending.value && (change.reason === 'query' || change.reason === 'filter')) return
+      void refresh()
+    }
+    return
+  }
+
+  // Entering a query/filter changes the authority from one server page to a
+  // complete source. Do not expose the partial page as a local result.
+  tableMode.value = 'client'
+  clientAuthorityReady.value = false
+  tablePage.value = 1
+  tableCursor.value = null
+  tablePageInfo.value = null
+  workloads.value = []
+  void refresh()
 }
 
 function parseSelector(s: string): Record<string, string> {
@@ -106,7 +349,7 @@ async function onCreate() {
     await createWorkload(d)
     showCreate.value = false
     draft.value = { name: '', image: 'nginx:latest', replicas: 1, strategy: 'Spread', selector: 'env=dev' }
-    await refresh()
+    await refresh(true)
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Create failed'
   } finally {
@@ -118,7 +361,7 @@ async function onDelete(w: Workload) {
   if (!(await confirmDialog({ title: `Delete workload "${w.name}"?`, message: 'Its Deployments on every edge are removed.', danger: true, confirmLabel: 'Delete' }))) return
   try {
     await deleteWorkload(w.name)
-    await refresh()
+    await refresh(true)
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Delete failed'
   }
@@ -126,36 +369,28 @@ async function onDelete(w: Workload) {
 
 onMounted(refresh)
 const timer = setInterval(refresh, 10000)
-onUnmounted(() => clearInterval(timer))
+onUnmounted(() => {
+  stopped = true
+  latestRefreshID += 1
+  clearInterval(timer)
+})
 
-function phaseClass(p?: string): string {
-  return p === 'Running' ? 'k-badge--success' : 'k-badge--warning'
-}
 function selectorText(s?: Record<string, string>): string {
   if (!s || !Object.keys(s).length) return 'all edges'
   return Object.entries(s).map(([k, v]) => `${k}=${v}`).join(', ')
 }
-
-function isExplicitControlTarget(event: Event): boolean {
-  const currentTarget = event.currentTarget as Element | null
-  const target = event.target as Element | null
-  if (!target || target === currentTarget) return false
-  const control = target.closest?.(
-    'a, button, input, select, textarea, summary, [contenteditable="true"], [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])',
-  )
-  return Boolean(control && control !== currentTarget)
+function workloadEdges(row: Record<string, unknown>): NonNullable<Workload['edges']> {
+  return Array.isArray(row.edges) ? row.edges as NonNullable<Workload['edges']> : []
+}
+function workloadTone(status: unknown): 'success' | 'danger' | null {
+  const phase = String(status).toLowerCase()
+  if (phase === 'running') return 'success'
+  if (phase === 'failed') return 'danger'
+  return null
 }
 
-function onWorkloadRowClick(name: string, event: MouseEvent): void {
-  if (isExplicitControlTarget(event)) return
-  toggle(name)
-}
-
-function onWorkloadRowKeydown(name: string, event: KeyboardEvent): void {
-  if (event.repeat || isExplicitControlTarget(event)) return
-  if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return
-  event.preventDefault()
-  toggle(name)
+function workloadRowAriaLabel(row: Record<string, unknown>): string {
+  return `Toggle workload ${String(row.name)}`
 }
 </script>
 
@@ -170,30 +405,40 @@ function onWorkloadRowKeydown(name: string, event: KeyboardEvent): void {
         <button class="k-btn k-btn--ghost" :disabled="loading" @click="refresh">
           <RefreshCw :size="14" :class="{ spin: loading }" /> Refresh
         </button>
-        <button class="k-btn k-btn--primary" @click="showCreate = !showCreate">
-          <Plus :size="14" /> New workload
+        <button
+          type="button"
+          class="k-btn k-btn--primary"
+          :aria-expanded="showCreate"
+          aria-controls="edges-workload-create"
+          @click="showCreate = !showCreate"
+        >
+          <Plus :size="14" aria-hidden="true" /> New workload
         </button>
       </div>
     </header>
 
-    <div v-if="error" class="banner error">{{ error }}</div>
-
     <!-- Marketplace -->
-    <div class="market">
-      <div class="market-head clickable" @click="showMarket = !showMarket">
-        <component :is="showMarket ? ChevronDown : ChevronRight" :size="16" />
-        <Store :size="16" />
-        <h3>Marketplace</h3>
+    <div class="market k-card">
+      <button
+        type="button"
+        class="market-head"
+        :aria-expanded="showMarket"
+        aria-controls="edges-marketplace-body"
+        @click="showMarket = !showMarket"
+      >
+        <component :is="showMarket ? ChevronDown : ChevronRight" :size="16" aria-hidden="true" />
+        <Store :size="16" aria-hidden="true" />
+        <span class="market-head-title">Marketplace</span>
         <span class="muted">one-click self-hosted apps, deployed as Helm workloads onto an edge</span>
-      </div>
-      <div v-if="showMarket" class="market-body">
+      </button>
+      <div v-if="showMarket" id="edges-marketplace-body" class="market-body">
         <div v-if="edges.length === 0" class="muted pad">
           Connect a KubernetesCluster edge first — marketplace apps deploy onto one.
         </div>
         <div v-for="grp in MARKETPLACE_CATEGORIES" :key="grp.category" class="market-cat">
           <div class="market-cat-label">{{ grp.category }}</div>
           <div class="market-grid">
-            <div v-for="app in grp.apps" :key="app.type" class="market-card">
+            <div v-for="app in grp.apps" :key="app.type" class="market-card k-card">
               <div class="market-card-top">
                 <span class="market-name">{{ app.label }}</span>
                 <span class="k-badge k-badge--muted">{{ app.category }}</span>
@@ -210,7 +455,7 @@ function onWorkloadRowKeydown(name: string, event: KeyboardEvent): void {
     </div>
 
     <!-- Deploy dialog -->
-    <div v-if="deployApp" class="wiz-card" style="margin-bottom: 16px;">
+    <div v-if="deployApp" class="wiz-card k-card">
       <h3>Deploy {{ deployApp.label }}</h3>
       <div class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
@@ -237,7 +482,7 @@ function onWorkloadRowKeydown(name: string, event: KeyboardEvent): void {
     </div>
 
     <!-- Create form -->
-    <div v-if="showCreate" class="wiz-card" style="margin-bottom: 16px;">
+    <div v-if="showCreate" id="edges-workload-create" class="wiz-card k-card">
       <h3>New workload</h3>
       <label class="fld">
         <span class="lbl">Name</span>
@@ -270,68 +515,65 @@ function onWorkloadRowKeydown(name: string, event: KeyboardEvent): void {
       </div>
     </div>
 
-    <div v-if="loading && workloads.length === 0" class="muted pad">Loading workloads…</div>
-
-    <div v-else-if="workloads.length === 0" class="empty">
-      <Boxes :size="28" />
-      <div class="empty-title">No workloads yet</div>
-      <div class="muted">Click <b>New workload</b> to deploy one across your Kubernetes edges.</div>
-    </div>
-
-    <div v-else class="edges-table-wrap k-table">
-      <table class="k-table__table">
-      <thead>
-        <tr>
-          <th></th>
-          <th>Name</th>
-          <th>Image</th>
-          <th>Placement</th>
-          <th>Status</th>
-          <th>Ready</th>
-          <th></th>
+    <ResourceTable
+      :columns="workloadColumns"
+      :rows="workloadRows"
+      row-key="name"
+      :row-aria-label="workloadRowAriaLabel"
+      :loaded="loaded"
+      :loading="loading"
+      :error="error"
+      :stale="loaded && !!error"
+      retryable
+      searchable
+      search-placeholder="Search workloads…"
+      :filters="workloadFilters"
+      :pagination-mode="tableMode"
+      :page="tablePage"
+      :page-size="tablePageSize"
+      :query="tableQuery"
+      :filter-values="filterValues"
+      :cursor="tableCursor"
+      :page-info="tablePageInfo"
+      paginated
+      empty-text="No workloads yet. Create one to deploy it across matching edges."
+      @retry="refresh"
+      @change="handleWorkloadTableChange"
+      @row-click="(row) => toggle(String(row.name))"
+    >
+      <template #expand="{ row }">
+        <button
+          type="button"
+          class="k-table-action"
+          :aria-label="`Toggle workload ${String(row.name)}`"
+          :aria-expanded="expanded === row.name"
+          @click="toggle(String(row.name))"
+        >
+          <component :is="expanded === row.name ? ChevronDown : ChevronRight" :size="14" />
+        </button>
+      </template>
+      <template #name="{ value }"><span class="name">{{ value }}</span></template>
+      <template #image="{ value }"><span class="mono muted">{{ value }}</span></template>
+      <template #placement="{ value }"><span class="muted">{{ value }}</span></template>
+      <template #status="{ value }"><StatusBadge :status="String(value)" :tone="workloadTone(value)" /></template>
+      <template #ready="{ value }"><span class="mono">{{ value }}</span></template>
+      <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Delete workload ${String(row.name)}`" @click="onDelete(row as unknown as Workload)" /></div></template>
+      <template #after-row="{ row }">
+        <tr v-if="expanded === row.name" class="detail-row">
+          <td :colspan="workloadColumns.length">
+            <div class="es-head">Per-edge status</div>
+            <div v-if="workloadEdges(row).length === 0" class="muted">Not scheduled onto any edge yet (no edge matches the selector, or agents haven't reported).</div>
+            <div v-else class="es-list">
+              <div v-for="edge in workloadEdges(row)" :key="edge.edgeName" class="es-item">
+                <span class="es-name">{{ edge.edgeName }}</span>
+                <StatusBadge :status="edge.phase || 'Pending'" :tone="workloadTone(edge.phase || 'Pending')" />
+                <span class="es-ready mono">{{ edge.readyReplicas ?? 0 }} ready</span>
+                <span v-if="edge.message" class="muted es-msg">{{ edge.message }}</span>
+              </div>
+            </div>
+          </td>
         </tr>
-      </thead>
-      <tbody>
-        <template v-for="w in workloads" :key="w.name">
-          <tr
-            class="is-interactive"
-            tabindex="0"
-            :aria-label="`Toggle workload ${w.name}`"
-            :aria-expanded="expanded === w.name"
-            @click="onWorkloadRowClick(w.name, $event)"
-            @keydown="onWorkloadRowKeydown(w.name, $event)"
-          >
-            <td><component :is="expanded === w.name ? ChevronDown : ChevronRight" :size="14" /></td>
-            <td class="name">{{ w.name }}</td>
-            <td class="mono muted">{{ w.image || '—' }}</td>
-            <td class="muted">{{ w.strategy || 'Spread' }} · {{ selectorText(w.selector) }}</td>
-            <td>
-              <span class="k-badge" :class="phaseClass(w.phase)">{{ w.phase || 'Pending' }}</span>
-            </td>
-            <td class="mono">{{ w.readyReplicas ?? 0 }}/{{ w.replicas ?? 1 }}</td>
-            <td class="actions">
-              <button class="k-table-action k-table-action--delete" title="Delete" @click.stop="onDelete(w)"><Trash2 :size="14" /></button>
-            </td>
-          </tr>
-          <tr v-if="expanded === w.name" class="detail-row">
-            <td colspan="7">
-              <div class="es-head">Per-edge status</div>
-              <div v-if="!w.edges || w.edges.length === 0" class="muted">
-                Not scheduled onto any edge yet (no edge matches the selector, or agents haven't reported).
-              </div>
-              <div v-else class="es-list">
-                <div v-for="e in w.edges" :key="e.edgeName" class="es-item">
-                  <span class="es-name">{{ e.edgeName }}</span>
-                  <span class="k-badge" :class="phaseClass(e.phase)">{{ e.phase || 'Pending' }}</span>
-                  <span class="es-ready mono">{{ e.readyReplicas ?? 0 }} ready</span>
-                  <span v-if="e.message" class="muted es-msg">{{ e.message }}</span>
-                </div>
-              </div>
-            </td>
-          </tr>
-        </template>
-      </tbody>
-      </table>
-    </div>
+      </template>
+    </ResourceTable>
   </div>
 </template>

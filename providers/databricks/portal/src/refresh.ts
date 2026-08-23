@@ -14,6 +14,78 @@ export interface LatestRefreshController {
 }
 
 /**
+ * Share one bounded read between callers that arrive while it is in flight.
+ * The read itself remains serialized: a subsequent caller starts only after
+ * the previous promise has settled. This is useful for query-independent
+ * complete-list walks, where replacing the query must not discard a result
+ * that is still valid for the newest local filter.
+ */
+export interface CoalescedRead<T> {
+  request(): Promise<T>
+  /** Ignore an in-flight result for the next caller, while staying serialized. */
+  invalidate(): void
+  stop(): void
+}
+
+export function createCoalescedRead<T>(read: () => Promise<T>): CoalescedRead<T> {
+  let pending: Promise<T> | undefined
+  let queued: Promise<T> | undefined
+  let invalidated = false
+  let stopped = false
+
+  function start(): Promise<T> {
+    if (stopped) return Promise.reject(new Error('read controller is stopped'))
+    let current: Promise<T>
+    try {
+      current = Promise.resolve(read())
+    } catch (error) {
+      current = Promise.reject(error)
+    }
+    pending = current
+    void current.then(
+      () => {
+        if (pending === current && !invalidated) pending = undefined
+      },
+      () => {
+        if (pending === current && !invalidated) pending = undefined
+      },
+    )
+    return current
+  }
+
+  return {
+    request() {
+      if (stopped) return Promise.reject(new Error('read controller is stopped'))
+      if (!pending) {
+        invalidated = false
+        return start()
+      }
+      if (!invalidated) return pending
+      if (queued) return queued
+      queued = pending.then(
+        () => {
+          queued = undefined
+          invalidated = false
+          return start()
+        },
+        () => {
+          queued = undefined
+          invalidated = false
+          return start()
+        },
+      )
+      return queued
+    },
+    invalidate() {
+      if (pending) invalidated = true
+    },
+    stop() {
+      stopped = true
+    },
+  }
+}
+
+/**
  * Serializes mutations by resource identity rather than by page. A save and
  * delete for the same object share one key, while unrelated rows can proceed
  * independently. The boolean return makes duplicate clicks a no-op at the

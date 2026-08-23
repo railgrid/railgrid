@@ -17,6 +17,24 @@ export interface ErrorResponse {
   message: string
 }
 
+// Kubernetes list options are deliberately small: the GraphQL gateway treats
+// continue tokens as opaque values and the portal only needs bounded server
+// pages for the resource lists it owns.
+export interface KubernetesListOptions {
+  limit?: number
+  continue?: string
+}
+
+// KubernetesListPage is the typed transport envelope returned by a GraphQL
+// list query. A null/empty continue token means this is the terminal page;
+// remainingItemCount is only supplied by Kubernetes when it can be estimated.
+export interface KubernetesListPage<T> {
+  items: T[]
+  continue?: string
+  remainingItemCount?: number
+  resourceVersion?: string
+}
+
 export interface Connection {
   name: string
   uid?: string

@@ -39,3 +39,7 @@ assertEqual(nextValidWarehouseRef(warehouses, 'orders', 'orders-large'), 'orders
 assertEqual(nextValidWarehouseRef(warehouses, 'orders', 'finance-sql'), 'orders-sql', 'replaces mismatched warehouse')
 assertEqual(nextValidWarehouseRef(warehouses, 'finance', ''), 'finance-sql', 'selects first matching warehouse')
 assertEqual(nextValidWarehouseRef(warehouses, 'unknown', 'orders-sql'), '', 'clears when no warehouse matches')
+
+const manyWarehouses = Array.from({ length: 101 }, (_, index) => ({ name: `warehouse-${index}`, connectionRef: 'orders' }))
+assertEqual(warehousesForConnection(manyWarehouses, 'orders').length, 101, 'connection selection retains warehouses after item 100')
+assertEqual(nextValidWarehouseRef(manyWarehouses, 'orders', 'warehouse-100'), 'warehouse-100', 'valid warehouse selection after item 100 is preserved')

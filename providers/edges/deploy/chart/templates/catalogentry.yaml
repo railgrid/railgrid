@@ -25,6 +25,7 @@ data:
       vendor: "faros"
       version: {{ .Chart.AppVersion | quote }}
       category: "Edges"
+      iconURL: "/ui/providers/edges/icon.svg"
       # Grants the provider SA get/list/watch/proxy on the edge kinds in the
       # tenant workspace on Enable (join-token validation + SSH creds reads).
       edgeProxyAccess: true

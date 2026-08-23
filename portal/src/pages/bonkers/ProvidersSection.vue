@@ -1,16 +1,57 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { Plus, Trash2, Download } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
+import { Download, Plus } from 'lucide-vue-next'
 
-import { useAdminStore, type KubeconfigServer } from '@/stores/admin'
+import ResourceTable from '@/portalkit/ResourceTable.vue'
+import ResourceTableDeleteButton from '@/portalkit/ResourceTableDeleteButton.vue'
+import StatusBadge from '@/portalkit/StatusBadge.vue'
 import { confirmDialog } from '@/portalkit/confirm'
+import { useAdminStore, type KubeconfigServer } from '@/stores/admin'
 
 const admin = useAdminStore()
+
+const columns = [
+  { key: 'name', label: 'Name' },
+  { key: 'status', label: 'Status' },
+  { key: 'apiExportName', label: 'APIExport' },
+  { key: 'workspaceCluster', label: 'Workspace cluster' },
+  { key: 'actions', label: '' },
+]
+
+const providerRows = computed<Record<string, unknown>[]>(() =>
+  admin.providers.map((provider) => ({
+    ...provider,
+    status: [
+      provider.builtin ? 'core' : '',
+      provider.onboarded ? 'provisioned' : '',
+      provider.registered ? 'registered' : '',
+      provider.registered ? (provider.ready ? 'ready' : 'not ready') : '',
+    ].filter(Boolean).join(' '),
+  })),
+)
 
 const newName = ref('')
 const newDisplayName = ref('')
 const busy = ref(false)
+const deletingName = ref<string | null>(null)
 const actionError = ref<string | null>(null)
+
+function providerName(row: Record<string, unknown>): string {
+  return String(row.name ?? '')
+}
+
+function providerDisplayName(row: Record<string, unknown>): string {
+  const displayName = String(row.displayName ?? '').trim()
+  return displayName || providerName(row)
+}
+
+function providerFlag(row: Record<string, unknown>, key: 'builtin' | 'onboarded' | 'registered' | 'ready'): boolean {
+  return row[key] === true
+}
+
+async function refresh() {
+  await admin.refresh()
+}
 
 async function create() {
   const name = newName.value.trim()
@@ -59,6 +100,7 @@ const serverTitles: Record<KubeconfigServer, string> = {
 async function remove(name: string) {
   if (!(await confirmDialog({ title: `Delete Provider "${name}"?`, message: 'This tears down its workspace (full teardown).', danger: true, confirmLabel: 'Delete' }))) return
   busy.value = true
+  deletingName.value = name
   actionError.value = null
   try {
     await admin.deleteProvider(name)
@@ -66,6 +108,7 @@ async function remove(name: string) {
   } catch (e) {
     if ((e as Error).message !== 'forbidden') actionError.value = (e as Error).message
   } finally {
+    deletingName.value = null
     busy.value = false
   }
 }
@@ -87,7 +130,7 @@ async function remove(name: string) {
         <input
           v-model="newName"
           placeholder="e.g. code"
-          class="mt-1 w-48 rounded-lg border border-border-subtle bg-surface-raised/60 px-3 py-1.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent/40 focus:outline-none"
+          class="k-input mt-1 w-48 font-mono text-sm"
           @keyup.enter="create"
         />
       </div>
@@ -96,12 +139,13 @@ async function remove(name: string) {
         <input
           v-model="newDisplayName"
           placeholder="e.g. Code"
-          class="mt-1 w-56 rounded-lg border border-border-subtle bg-surface-raised/60 px-3 py-1.5 text-sm text-text-primary placeholder:text-text-muted focus:border-accent/40 focus:outline-none"
+          class="k-input mt-1 w-56 text-sm"
           @keyup.enter="create"
         />
       </div>
       <button
-        class="inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white shadow-[0_0_16px_var(--color-accent-glow)] hover:bg-accent-hover disabled:opacity-50"
+        type="button"
+        class="k-btn k-btn--primary px-3 py-1.5 text-sm disabled:opacity-50"
         :disabled="busy || !newName.trim()"
         @click="create"
       >
@@ -111,85 +155,94 @@ async function remove(name: string) {
     </div>
     <p v-if="actionError" class="mb-2 text-sm text-danger">{{ actionError }}</p>
 
-    <table class="w-full text-sm">
-      <thead class="text-left text-[11px] uppercase text-text-muted">
-        <tr>
-          <th class="py-1 pr-4">Name</th>
-          <th class="py-1 pr-4">Status</th>
-          <th class="py-1 pr-4">APIExport</th>
-          <th class="py-1 pr-4">Workspace cluster</th>
-          <th class="py-1"></th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="p in admin.providers" :key="p.name" class="border-t border-border-subtle/50">
-          <td class="py-1.5 pr-4 text-text-primary">{{ p.displayName || p.name }}</td>
-          <td class="py-1.5 pr-4">
-            <span
-              v-if="p.builtin"
-              class="rounded-sm border border-border-default/40 bg-surface-overlay/50 px-2 py-px text-[10px] text-text-muted"
-            >core</span>
-            <span
-              v-if="p.onboarded"
-              class="ml-1 rounded-sm border border-success/30 bg-success-subtle px-2 py-px text-[10px] text-success"
-            >provisioned</span>
-            <span
-              v-if="p.registered"
-              class="ml-1 rounded-sm border border-accent/30 bg-accent/10 px-2 py-px text-[10px] text-accent"
-            >registered</span>
-            <span v-if="!p.onboarded && !p.registered && !p.builtin" class="text-[11px] text-text-muted">—</span>
-          </td>
-          <td class="py-1.5 pr-4 text-text-muted">{{ p.apiExportName || '—' }}</td>
-          <td class="py-1.5 pr-4 text-text-muted">{{ p.workspaceCluster || '(not provisioned)' }}</td>
-          <td class="py-1.5 text-right">
-            <!-- Builtins are bootstrapped by the hub; they have no Provider object. -->
-            <span v-if="p.builtin" class="text-[11px] text-text-muted">managed by hub</span>
-            <template v-else>
-              <span class="mr-3 inline-flex items-center gap-1 text-xs">
-                <Download class="h-3.5 w-3.5 text-text-muted" :stroke-width="2" />
-                <template v-if="admin.kubeconfigServers.length > 1">
-                  <span class="text-text-muted">kubeconfig</span>
-                  <template v-for="(s, i) in admin.kubeconfigServers" :key="s">
-                    <span v-if="i > 0" class="text-text-muted">·</span>
-                    <button
-                      class="text-accent disabled:opacity-50"
-                      :disabled="busy"
-                      :title="serverTitles[s]"
-                      @click="downloadKubeconfig(p.name, s)"
-                    >
-                      {{ serverLabels[s] }}
-                    </button>
-                  </template>
+    <ResourceTable
+      :columns="columns"
+      :rows="providerRows"
+      row-key="name"
+      :interactive="false"
+      searchable
+      search-placeholder="Search providers…"
+      :search-keys="['name', 'displayName', 'category', 'version', 'status', 'apiExportName', 'workspaceCluster']"
+      paginated
+      :page-size="10"
+      :loaded="admin.loaded"
+      :loading="admin.loading"
+      :error="admin.error"
+      :stale="admin.loaded && !!admin.error"
+      retryable
+      empty-text="No providers provisioned or registered."
+      @retry="refresh"
+    >
+      <template #name="{ row }">
+        <span v-if="providerDisplayName(row) !== providerName(row)" class="text-text-primary">
+          {{ providerDisplayName(row) }}
+        </span>
+        <span class="block font-mono text-[12px] font-semibold text-text-primary">
+          {{ providerName(row) }}
+        </span>
+      </template>
+      <template #status="{ row }">
+        <div class="flex flex-wrap gap-1">
+          <StatusBadge v-if="providerFlag(row, 'builtin')" status="core" tone="muted" />
+          <StatusBadge v-if="providerFlag(row, 'onboarded')" status="provisioned" tone="success" />
+          <StatusBadge v-if="providerFlag(row, 'registered')" status="registered" tone="success" />
+          <StatusBadge
+            v-if="providerFlag(row, 'registered')"
+            :status="providerFlag(row, 'ready') ? 'ready' : 'not ready'"
+            :tone="providerFlag(row, 'ready') ? 'success' : 'danger'"
+          />
+          <span v-if="!providerFlag(row, 'builtin') && !providerFlag(row, 'onboarded') && !providerFlag(row, 'registered')" class="text-[11px] text-text-muted">—</span>
+        </div>
+      </template>
+      <template #apiExportName="{ value }">
+        <span class="font-mono text-[11px] text-text-muted">{{ value || '—' }}</span>
+      </template>
+      <template #workspaceCluster="{ value }">
+        <span class="font-mono text-[11px] text-text-muted">{{ value || '(not provisioned)' }}</span>
+      </template>
+      <template #actions="{ row }">
+        <div class="flex items-center justify-end gap-2">
+          <!-- Builtins are bootstrapped by the hub; they have no Provider object. -->
+          <span v-if="providerFlag(row, 'builtin')" class="text-[11px] text-text-muted">managed by hub</span>
+          <template v-else>
+            <span class="inline-flex items-center gap-1 text-xs">
+              <Download class="h-3.5 w-3.5 text-text-muted" :stroke-width="2" />
+              <template v-if="admin.kubeconfigServers.length > 1">
+                <span class="text-text-muted">kubeconfig</span>
+                <template v-for="(server, i) in admin.kubeconfigServers" :key="server">
+                  <span v-if="i > 0" class="text-text-muted">·</span>
+                  <button
+                    type="button"
+                    class="k-btn k-btn--ghost px-1 py-0.5 text-[11px] text-accent disabled:opacity-50"
+                    :disabled="busy"
+                    :title="serverTitles[server]"
+                    @click="downloadKubeconfig(providerName(row), server)"
+                  >
+                    {{ serverLabels[server] }}
+                  </button>
                 </template>
-                <button
-                  v-else
-                  class="text-accent disabled:opacity-50"
-                  :disabled="busy"
-                  :title="
-                    admin.kubeconfigServers.length
-                      ? serverTitles[admin.kubeconfigServers[0]]
-                      : 'Download the minted provider kubeconfig'
-                  "
-                  @click="downloadKubeconfig(p.name, admin.kubeconfigServers[0])"
-                >
-                  kubeconfig
-                </button>
-              </span>
+              </template>
               <button
-                class="inline-flex items-center gap-1 text-xs text-danger disabled:opacity-50"
+                v-else
+                type="button"
+                class="k-btn k-btn--ghost px-1 py-0.5 text-[11px] text-accent disabled:opacity-50"
                 :disabled="busy"
-                @click="remove(p.name)"
+                :title="admin.kubeconfigServers.length ? serverTitles[admin.kubeconfigServers[0]] : 'Download the minted provider kubeconfig'"
+                @click="downloadKubeconfig(providerName(row), admin.kubeconfigServers[0])"
               >
-                <Trash2 class="h-3.5 w-3.5" :stroke-width="2" />
-                Delete
+                kubeconfig
               </button>
-            </template>
-          </td>
-        </tr>
-        <tr v-if="!admin.providers.length && !admin.loading">
-          <td colspan="5" class="py-3 text-text-muted">No providers provisioned or registered.</td>
-        </tr>
-      </tbody>
-    </table>
+            </span>
+            <ResourceTableDeleteButton
+              :label="`Delete provider ${providerName(row)}`"
+              :busy-label="`Deleting provider ${providerName(row)}…`"
+              :busy="deletingName === providerName(row)"
+              :disabled="busy"
+              @click="remove(providerName(row))"
+            />
+          </template>
+        </div>
+      </template>
+    </ResourceTable>
   </section>
 </template>

@@ -17,6 +17,7 @@ spec:
   vendor: "faros"
   version: "0.1.0"
   category: "Edges"
+  iconURL: "/ui/providers/edges/icon.svg"
   # On Enable, grant the provider SA get/list/watch/proxy on the edge kinds in
   # the tenant workspace. The tunnel needs it to read the edge CR directly (join-
   # token validation + SSH creds) — without it the agent tunnel is rejected.

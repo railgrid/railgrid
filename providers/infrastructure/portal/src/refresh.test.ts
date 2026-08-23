@@ -20,6 +20,29 @@ describe('latest refresh controller', () => {
     expect(committed).toHaveLength(1)
     refresh.stop()
   })
+
+  it('starts a latest query walk after an older walk is rejected as stale', async () => {
+    let releaseFirst!: () => void
+    let query = 'old'
+    const calls: string[] = []
+    const committed: string[] = []
+    const refresh = createLatestRefreshController(async requestID => {
+      const requestQuery = query
+      calls.push(requestQuery)
+      if (requestQuery === 'old') await new Promise<void>(resolve => { releaseFirst = resolve })
+      if (refresh.isCurrent(requestID) && requestQuery === query) committed.push(requestQuery)
+    })
+
+    const first = refresh.request()
+    query = 'new'
+    const second = refresh.request()
+    releaseFirst()
+    await Promise.all([first, second])
+
+    expect(calls).toEqual(['old', 'new'])
+    expect(committed).toEqual(['new'])
+    refresh.stop()
+  })
 })
 
 describe('resource tombstones', () => {

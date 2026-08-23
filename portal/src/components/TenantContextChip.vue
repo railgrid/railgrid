@@ -183,7 +183,7 @@ onUnmounted(() => {
     <button
       ref="triggerRef"
       type="button"
-      class="group flex w-full items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-overlay/60 px-2 py-1 text-left text-[11px] transition-colors hover:border-accent/30"
+      class="k-btn k-btn--ghost group flex w-full items-center gap-1.5 px-2 py-1 text-left text-[11px] transition-colors hover:border-accent/30"
       :class="open ? 'border-accent/40 bg-surface-overlay' : ''"
       :title="`${orgLabel} · ${wsLabel}`"
       @click="open = !open"
@@ -215,7 +215,7 @@ onUnmounted(() => {
           Organization
         </label>
         <select
-          class="mt-1 w-full rounded-md border border-border-default/50 bg-surface-overlay/60 px-2 py-1 text-[11px] text-text-primary focus:border-accent focus:outline-none"
+          class="k-input mt-1 w-full px-2 py-1 text-[11px]"
           :value="tenant.orgUUID ?? ''"
           :disabled="tenant.orgs.length === 0"
           @change="onOrgChange"
@@ -230,7 +230,7 @@ onUnmounted(() => {
           Workspace
         </label>
         <select
-          class="mt-1 w-full rounded-md border border-border-default/50 bg-surface-overlay/60 px-2 py-1 text-[11px] text-text-primary focus:border-accent focus:outline-none"
+          class="k-input mt-1 w-full px-2 py-1 text-[11px]"
           :value="tenant.workspaceUUID ?? ''"
           :disabled="!tenant.orgUUID || workspaces.length === 0"
           @change="onWorkspaceChange"
@@ -251,7 +251,7 @@ onUnmounted(() => {
         <div class="flex items-stretch gap-1">
           <button
             type="button"
-            class="flex flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:bg-surface-overlay/60 hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+            class="k-btn k-btn--ghost flex flex-1 items-center gap-1.5 px-2 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
             :disabled="!tenant.workspaceUUID || downloading"
             :title="tenant.workspaceUUID ? 'Download kubeconfig for the active workspace' : 'Select a workspace first'"
             @click="onDownloadKubeconfig"
@@ -262,7 +262,7 @@ onUnmounted(() => {
           </button>
           <select
             v-model="installVariant"
-            class="rounded-md border border-border-default/50 bg-surface-overlay/60 px-1 py-1 text-[10px] text-text-muted focus:border-accent focus:outline-none"
+            class="k-input w-auto px-1 py-1 text-[10px] text-text-muted"
             :title="installVariant === 'krew'
               ? 'Exec plugin will call kubectl-faros (krew install)'
               : 'Exec plugin will call faros (curl/tar.gz install)'"

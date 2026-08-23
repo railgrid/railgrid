@@ -102,7 +102,7 @@ async function submit() {
 
 <template>
   <section class="page">
-    <button type="button" class="link back" :disabled="submitting" @click="emit('navigate', 'catalog')"><ArrowLeft :size="14" aria-hidden="true" /> Back to templates</button>
+    <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="submitting" @click="emit('navigate', 'catalog')"><ArrowLeft :size="14" aria-hidden="true" /> Back to templates</button>
     <div v-if="loading && !loaded" class="page-loading-shell" role="status" aria-live="polite" aria-busy="true">
       <span>Loading template…</span>
       <div class="shimmer page-loading-line page-loading-line-short" aria-hidden="true" />
@@ -110,7 +110,7 @@ async function submit() {
     </div>
     <div v-else-if="!template && readError" class="read-error" role="alert" aria-live="assertive">
       <span>{{ readError }}</span>
-      <button type="button" class="read-retry" @click="load">Retry</button>
+      <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
     </div>
     <template v-else-if="template">
       <header class="page-head">
@@ -121,7 +121,7 @@ async function submit() {
       </header>
       <div v-if="readError" class="stale-banner" role="alert" aria-live="assertive">
         <span>Showing the last successful template. {{ readError }}</span>
-        <button type="button" class="read-retry" @click="load">Retry</button>
+        <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
       </div>
       <span v-if="loading" class="sr-only" role="status" aria-live="polite">Rechecking template…</span>
       <form class="form" :aria-busy="submitting || loading" @submit.prevent="submit">
@@ -139,7 +139,7 @@ async function submit() {
           <button type="submit" class="k-btn k-btn--primary" :disabled="submitting || loading">
             {{ submitting ? 'Provisioning…' : 'Provision' }}
           </button>
-          <button type="button" class="link" :disabled="submitting" @click="emit('navigate', 'catalog')">Cancel</button>
+          <button type="button" class="k-btn k-btn--ghost" :disabled="submitting" @click="emit('navigate', 'catalog')">Cancel</button>
         </div>
       </form>
     </template>

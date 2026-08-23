@@ -168,7 +168,7 @@ export class Models extends StoreElement {
         <h3>Usage &amp; cost</h3>
         <div class="agents-seg" role="group" aria-label="Usage window">
           ${[7, 30, 90].map(
-            (d) => html`<button class="k-btn k-btn--primary ${d === this.windowDays ? 'on' : ''}"
+            (d) => html`<button class="k-btn k-btn--ghost ${d === this.windowDays ? 'on' : ''}"
               aria-pressed=${d === this.windowDays ? 'true' : 'false'}
               @click=${() => {
                 if (d === this.windowDays) return

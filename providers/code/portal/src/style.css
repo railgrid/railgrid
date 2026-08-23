@@ -10,7 +10,7 @@
 faros-provider-code {
   display: block;
   font-family: inherit;
-  color: var(--color-text-primary, inherit);
+  color: var(--color-text-primary, #e9e9f2);
 }
 
 faros-provider-code .sr-only {
@@ -26,7 +26,6 @@ faros-provider-code .sr-only {
 }
 
 faros-provider-code .app {
-  padding: 8px 0;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -70,7 +69,7 @@ faros-provider-code .panel-title {
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--color-text-secondary, currentColor);
+  color: var(--color-text-secondary, #8a8ca6);
 }
 faros-provider-code .panel-head {
   display: flex;
@@ -92,10 +91,6 @@ faros-provider-code .code-row-actions {
   align-items: center;
   display: flex;
   justify-content: flex-end;
-}
-faros-provider-code .code-back-action {
-  align-self: flex-start;
-  margin-bottom: 4px;
 }
 faros-provider-code .code-inline-action {
   background: transparent;
@@ -171,7 +166,7 @@ faros-provider-code .field {
 faros-provider-code .field-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--color-text-secondary, currentColor);
+  color: var(--color-text-secondary, #8a8ca6);
 }
 
 faros-provider-code .field-check {
@@ -196,7 +191,7 @@ faros-provider-code .error {
 }
 faros-provider-code .read-error {
   align-items: center;
-  background: var(--color-danger-subtle);
+  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   border-radius: 6px;
   display: flex;
   gap: 10px;
@@ -209,14 +204,14 @@ faros-provider-code .read-error > span {
   line-height: 1.45;
 }
 faros-provider-code .mutation-error {
-  background: var(--color-danger-subtle);
+  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   border-radius: 6px;
   margin: 0 0 12px;
   padding: 8px 10px;
 }
 faros-provider-code .detail-loading {
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-raised, #111320);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
   display: grid;
   gap: 14px;
@@ -244,10 +239,10 @@ faros-provider-code a:hover {
   text-decoration: underline;
 }
 faros-provider-code code {
-  background: var(--color-surface-overlay);
-  color: var(--color-text-secondary, currentColor);
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-secondary, #8a8ca6);
   padding: 1px 5px;
   border-radius: 4px;
-  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, Menlo, monospace);
   font-size: 11px;
 }

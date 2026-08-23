@@ -9,6 +9,7 @@ const TILE_TAG = 'faros-dashboard-tile-app-studio'
 class ProjectsElement extends HTMLElement {
   private app: VueApp | null = null
   private host: HTMLDivElement | null = null
+  private overlayRoot: HTMLDivElement | null = null
   private state = reactive<{ ctx: FarosContext | null }>({ ctx: null })
 
   set farosContext(v: FarosContext | null) {
@@ -27,7 +28,15 @@ class ProjectsElement extends HTMLElement {
     this.style.minHeight = '0'
     this.host = document.createElement('div')
     this.host.className = 'h-full min-h-0 w-full'
+    // Keep Vue Teleport targets inside the provider element. App Studio's
+    // Tailwind bundle is scoped to this custom element in main.ts; a body
+    // target would render the overlay markup outside that scope and lose all
+    // provider utilities in the host portal.
+    this.overlayRoot = document.createElement('div')
+    this.overlayRoot.id = 'app-studio-overlay-root'
+    this.overlayRoot.className = 'app-studio-overlay-root'
     this.appendChild(this.host)
+    this.appendChild(this.overlayRoot)
     this.app = createApp({
       render: () =>
         h(App, {
@@ -44,6 +53,8 @@ class ProjectsElement extends HTMLElement {
     this.app = null
     if (this.host?.parentNode === this) this.removeChild(this.host)
     this.host = null
+    if (this.overlayRoot?.parentNode === this) this.removeChild(this.overlayRoot)
+    this.overlayRoot = null
   }
 
   private navigate(path: string): void {

@@ -165,6 +165,45 @@ interface RawObject {
   }
 }
 
+/** Optional cursor controls accepted by the Instance list query. */
+export interface InstanceListOptions {
+  limit?: number
+  continue?: string
+}
+
+/** A typed page returned by the cursor-based Instance list query. */
+export interface InstanceListPage {
+  items: Instance[]
+  continue?: string
+  remainingItemCount?: number
+  resourceVersion?: string
+}
+
+interface RawInstanceListPage {
+  items: RawObject[]
+  continue?: string
+  remainingItemCount?: number
+  resourceVersion?: string
+}
+
+/** The identity-only page used to prove tombstone absence. */
+export interface InstanceIdentityPage {
+  identities: Array<{ name: string; uid?: string }>
+  continue?: string
+  remainingItemCount?: number
+  resourceVersion?: string
+}
+
+interface RawInstanceIdentityPage {
+  identities: Array<{ name: string; uid?: string }>
+  continue?: string
+  remainingItemCount?: number
+  resourceVersion?: string
+}
+
+const INSTANCE_LIST_PAGE_SIZE = 100
+const MAX_INSTANCE_LIST_PAGES = 100
+
 // ── Mappers ─────────────────────────────────────────────────────────────────
 function templateFromGQL(name: string, spec: Record<string, unknown>, labels: Record<string, string> = {}): Template {
   const instanceCRD = (spec.instanceCRD ?? {}) as { kind?: string }
@@ -375,6 +414,260 @@ async function fetchInstanceYaml(name: string): Promise<RawObject | null> {
   }
 }
 
+function protocolError(message: string): ErrorResponse {
+  return { reason: 'ProtocolError', message }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function validateInstanceListOptions(options: InstanceListOptions): InstanceListOptions {
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+    throw protocolError('Instance list options must be an object; retry the read.')
+  }
+  const { limit, continue: continueToken } = options
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit <= 0)) {
+    throw protocolError('GraphQL Instance list limit must be a positive safe integer; retry the read.')
+  }
+  if (continueToken !== undefined && typeof continueToken !== 'string') {
+    throw protocolError('GraphQL Instance list continue must be a string; retry the read.')
+  }
+  return options
+}
+
+function optionalInstanceListString(
+  collection: Record<string, unknown>,
+  key: 'continue' | 'resourceVersion',
+): string | undefined {
+  if (!(key in collection) || collection[key] === undefined || collection[key] === null) return undefined
+  if (typeof collection[key] !== 'string') {
+    throw protocolError(`GraphQL returned an invalid Instance list ${key}; retry the read.`)
+  }
+  return collection[key] as string
+}
+
+function optionalRemainingItemCount(collection: Record<string, unknown>): number | undefined {
+  if (!('remainingItemCount' in collection) || collection.remainingItemCount === undefined || collection.remainingItemCount === null) return undefined
+  const value = collection.remainingItemCount
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw protocolError('GraphQL returned an invalid Instance list remainingItemCount; retry the read.')
+  }
+  return value
+}
+
+function optionalInstanceString(record: Record<string, unknown>, key: string, label: string): void {
+  const value = record[key]
+  if (value !== undefined && value !== null && typeof value !== 'string') {
+    throw protocolError(`GraphQL returned malformed ${label}; retry the read.`)
+  }
+}
+
+function validateInstanceListItem(value: unknown, index: number): RawObject {
+  if (!isRecord(value) || !isRecord(value.metadata)) {
+    throw protocolError(`GraphQL returned malformed Instances item ${index} metadata; retry the read.`)
+  }
+  const metadata = value.metadata
+  if (typeof metadata.name !== 'string' || metadata.name.trim() === '') {
+    throw protocolError(`GraphQL returned malformed Instances item ${index} metadata.name; retry the read.`)
+  }
+  for (const key of ['uid', 'namespace', 'creationTimestamp', 'deletionTimestamp']) {
+    optionalInstanceString(metadata, key, `Instances item ${index} metadata.${key}`)
+  }
+  if (metadata.generation !== undefined && metadata.generation !== null &&
+    (typeof metadata.generation !== 'number' || !Number.isSafeInteger(metadata.generation) || metadata.generation < 0)) {
+    throw protocolError(`GraphQL returned malformed Instances item ${index} metadata.generation; retry the read.`)
+  }
+  if (metadata.labels !== undefined && metadata.labels !== null) {
+    if (!isRecord(metadata.labels) || Object.values(metadata.labels).some(value => typeof value !== 'string')) {
+      throw protocolError(`GraphQL returned malformed Instances item ${index} metadata.labels; retry the read.`)
+    }
+  }
+  if (value.spec !== undefined && value.spec !== null && !isRecord(value.spec)) {
+    throw protocolError(`GraphQL returned malformed Instances item ${index} spec; retry the read.`)
+  }
+  if (value.status !== undefined && value.status !== null) {
+    if (!isRecord(value.status)) {
+      throw protocolError(`GraphQL returned malformed Instances item ${index} status; retry the read.`)
+    }
+    const status = value.status
+    if (status.observedGeneration !== undefined && status.observedGeneration !== null &&
+      (typeof status.observedGeneration !== 'number' || !Number.isSafeInteger(status.observedGeneration) || status.observedGeneration < 0)) {
+      throw protocolError(`GraphQL returned malformed Instances item ${index} status.observedGeneration; retry the read.`)
+    }
+    if (status.conditions !== undefined && status.conditions !== null) {
+      if (!Array.isArray(status.conditions)) {
+        throw protocolError(`GraphQL returned malformed Instances item ${index} status.conditions; retry the read.`)
+      }
+      status.conditions.forEach((condition, conditionIndex) => {
+        if (!isRecord(condition) || typeof condition.type !== 'string' || condition.type.trim() === '' || typeof condition.status !== 'string') {
+          throw protocolError(`GraphQL returned malformed Instances item ${index} status.conditions[${conditionIndex}]; retry the read.`)
+        }
+        for (const key of ['reason', 'message', 'lastTransitionTime']) {
+          optionalInstanceString(condition, key, `Instances item ${index} status.conditions[${conditionIndex}].${key}`)
+        }
+      })
+    }
+  }
+  return value as RawObject
+}
+
+const INSTANCE_LIST_SELECTION = 'items { metadata { uid name namespace creationTimestamp deletionTimestamp generation labels } spec { template } status { observedGeneration phase message conditions { type status reason message lastTransitionTime } } }'
+const INSTANCE_IDENTITY_SELECTION = 'items { metadata { uid name } }'
+
+async function fetchInstancePage(options: InstanceListOptions = {}): Promise<RawInstanceListPage> {
+  const request = validateInstanceListOptions(options)
+  const variables: Record<string, unknown> = {}
+  if (request.limit !== undefined) variables.limit = request.limit
+  if (request.continue !== undefined) variables.continue = request.continue
+  let data: unknown
+  try {
+    data = await graphqlQuery<unknown>(
+      `query($limit: Int, $continue: String) { ${GROUP_FIELD} { ${VERSION} { Instances(limit: $limit, continue: $continue) { ${INSTANCE_LIST_SELECTION} continue remainingItemCount resourceVersion } } } }`,
+      variables,
+    )
+  } catch (e) {
+    // A tenant that has not accepted the API binding sees the same stable
+    // NotFound shape as the legacy list. Keep that read contract as empty.
+    if ((e as ErrorResponse).reason === 'NotFound') return { items: [] }
+    throw e
+  }
+  const group = isRecord(data) ? data[GROUP_FIELD] : undefined
+  const version = isRecord(group) ? group[VERSION] : undefined
+  const collection = isRecord(version) ? version.Instances : undefined
+  if (!isRecord(collection) || !Array.isArray(collection.items)) {
+    throw protocolError('GraphQL did not return a valid Instances list; retry the read.')
+  }
+  const items = collection.items.map(validateInstanceListItem)
+  const nextToken = optionalInstanceListString(collection, 'continue')
+  const remainingItemCount = optionalRemainingItemCount(collection)
+  if (remainingItemCount !== undefined && remainingItemCount > 0 && !nextToken) {
+    throw protocolError('GraphQL returned Instance remainingItemCount without a continuation token; retry the read.')
+  }
+  return {
+    items,
+    // Kubernetes uses an empty continuation token for a terminal page; keep
+    // the typed page contract unambiguous by exposing terminal as undefined.
+    continue: nextToken || undefined,
+    remainingItemCount,
+    resourceVersion: optionalInstanceListString(collection, 'resourceVersion'),
+  }
+}
+
+function validateInstanceIdentityItem(value: unknown, index: number): { name: string; uid?: string } {
+  if (!isRecord(value) || !isRecord(value.metadata)) {
+    throw protocolError(`GraphQL returned malformed Instance identity ${index}; retry the read.`)
+  }
+  const metadata = value.metadata
+  if (typeof metadata.name !== 'string' || metadata.name.trim() === '') {
+    throw protocolError(`GraphQL returned malformed Instance identity ${index} name; retry the read.`)
+  }
+  optionalInstanceString(metadata, 'uid', `Instance identity ${index} uid`)
+  return {
+    name: metadata.name,
+    ...(typeof metadata.uid === 'string' ? { uid: metadata.uid } : {}),
+  }
+}
+
+async function fetchInstanceIdentityPage(options: InstanceListOptions = {}): Promise<RawInstanceIdentityPage> {
+  const request = validateInstanceListOptions(options)
+  const variables: Record<string, unknown> = {}
+  if (request.limit !== undefined) variables.limit = request.limit
+  if (request.continue !== undefined) variables.continue = request.continue
+  let data: unknown
+  try {
+    data = await graphqlQuery<unknown>(
+      `query($limit: Int, $continue: String) { ${GROUP_FIELD} { ${VERSION} { Instances(limit: $limit, continue: $continue) { ${INSTANCE_IDENTITY_SELECTION} continue remainingItemCount resourceVersion } } } }`,
+      variables,
+    )
+  } catch (e) {
+    if ((e as ErrorResponse).reason === 'NotFound') return { identities: [] }
+    throw e
+  }
+  const group = isRecord(data) ? data[GROUP_FIELD] : undefined
+  const version = isRecord(group) ? group[VERSION] : undefined
+  const collection = isRecord(version) ? version.Instances : undefined
+  if (!isRecord(collection) || !Array.isArray(collection.items)) {
+    throw protocolError('GraphQL did not return a valid Instance identity list; retry the read.')
+  }
+  const identities = collection.items.map(validateInstanceIdentityItem)
+  const nextToken = optionalInstanceListString(collection, 'continue')
+  const remainingItemCount = optionalRemainingItemCount(collection)
+  if (remainingItemCount !== undefined && remainingItemCount > 0 && !nextToken) {
+    throw protocolError('GraphQL returned Instance identity remainingItemCount without a continuation token; retry the read.')
+  }
+  return {
+    identities,
+    continue: nextToken || undefined,
+    remainingItemCount,
+    resourceVersion: optionalInstanceListString(collection, 'resourceVersion'),
+  }
+}
+
+async function enrichInstances(items: Instance[], templates: Template[]): Promise<void> {
+  await Promise.all(
+    items.map(async i => {
+      const tmpl = templates.find(t => t.name === i.template)
+      if (!tmpl || !columnsNeedInstanceData(tmpl.view)) return
+      try {
+        const full = await fetchInstanceYaml(i.name)
+        if (!full) return
+        const parsed = instanceFromObj(full)
+        // InstanceYaml is a second read and can race a delete/recreate. Do
+        // not merge values from a same-name replacement into the listed UID.
+        if (i.uid && parsed.uid && i.uid !== parsed.uid) return
+        i.values = parsed.values
+        i.status = parsed.status
+      } catch {
+        // Leave an unenriched baseline row rather than breaking the table.
+      }
+    }),
+  )
+}
+
+async function listInstancesPage(options: InstanceListOptions = {}): Promise<InstanceListPage> {
+  const expectedContext = requestContext()
+  const raw = await fetchInstancePage(options)
+  const items = raw.items.map(instanceFromObj)
+  // Enrichment is deliberately page-local. This keeps a cursor page bounded
+  // and prevents a page's template view from triggering reads for other pages.
+  const templates = await getTemplates()
+  await enrichInstances(items, templates)
+  assertCurrentContext(expectedContext)
+  return {
+    items,
+    continue: raw.continue,
+    remainingItemCount: raw.remainingItemCount,
+    resourceVersion: raw.resourceVersion,
+  }
+}
+
+async function listInstanceIdentities(): Promise<Array<{ name: string; uid?: string }>> {
+  const expectedContext = requestContext()
+  const identities: Array<{ name: string; uid?: string }> = []
+  const seenTokens = new Set<string>()
+  let continueToken: string | undefined
+
+  for (let pageNumber = 0; pageNumber < MAX_INSTANCE_LIST_PAGES; pageNumber += 1) {
+    assertCurrentContext(expectedContext)
+    const page = await fetchInstanceIdentityPage({
+      limit: INSTANCE_LIST_PAGE_SIZE,
+      ...(continueToken === undefined ? {} : { continue: continueToken }),
+    })
+    assertCurrentContext(expectedContext)
+    identities.push(...page.identities)
+    const nextToken = page.continue
+    if (!nextToken) return identities
+    if (seenTokens.has(nextToken)) {
+      throw protocolError('GraphQL returned a repeated Instance identity continuation token; retry the read.')
+    }
+    seenTokens.add(nextToken)
+    continueToken = nextToken
+  }
+
+  throw protocolError(`GraphQL Instance identity list exceeded the ${MAX_INSTANCE_LIST_PAGES}-page safety limit; retry the read.`)
+}
+
 export const api = {
   async listTemplates(filter: { category?: string; cloud?: string } = {}): Promise<{ items: Template[] }> {
     const expectedContext = requestContext()
@@ -415,47 +708,45 @@ export const api = {
     return instanceFromObj(created)
   },
 
+  async listInstancesPage(options: InstanceListOptions = {}): Promise<InstanceListPage> {
+    return listInstancesPage(options)
+  },
+
+  /**
+   * Walk only Instance metadata. This is intentionally separate from
+   * listInstances(): callers proving deletion absence must not trigger
+   * template lookups or InstanceYaml enrichment for off-page rows.
+   */
+  async listInstanceIdentities(): Promise<Array<{ name: string; uid?: string }>> {
+    return listInstanceIdentities()
+  },
+
   async listInstances(): Promise<{ items: Instance[]; identities: Array<{ name: string; uid?: string }> }> {
     const expectedContext = requestContext()
-    // One LIST for every template's instances. metadata + template + status
-    // baseline only — the (arbitrary) values are enriched per instance below
-    // when a template's view actually references them.
-    const SEL = 'items { metadata { uid name namespace creationTimestamp deletionTimestamp generation labels } spec { template } status { observedGeneration phase message conditions { type status reason message lastTransitionTime } } }'
-    let raw: RawObject[] = []
-    try {
-      const data = await graphqlQuery<Infra<{ Instances?: { items?: RawObject[] } }>>(
-        `{ ${GROUP_FIELD} { ${VERSION} { Instances { ${SEL} } } } }`,
-      )
-      raw = data[GROUP_FIELD]?.[VERSION]?.Instances?.items ?? []
-    } catch (e) {
-      if ((e as ErrorResponse).reason !== 'NotFound') throw e
+    const items: Instance[] = []
+    const identities: Array<{ name: string; uid?: string }> = []
+    const seenTokens = new Set<string>()
+    let continueToken: string | undefined
+
+    for (let pageNumber = 0; pageNumber < MAX_INSTANCE_LIST_PAGES; pageNumber += 1) {
+      assertCurrentContext(expectedContext)
+      const page = await listInstancesPage({
+        limit: INSTANCE_LIST_PAGE_SIZE,
+        ...(continueToken === undefined ? {} : { continue: continueToken }),
+      })
+      assertCurrentContext(expectedContext)
+      items.push(...page.items)
+      identities.push(...page.items.map(item => ({ name: item.name, uid: item.uid })))
+      const nextToken = page.continue
+      if (!nextToken) return { items, identities }
+      if (seenTokens.has(nextToken)) {
+        throw protocolError('GraphQL returned a repeated Instance continuation token; retry the read.')
+      }
+      seenTokens.add(nextToken)
+      continueToken = nextToken
     }
-    const items = raw.map(instanceFromObj)
-    // Enrich instances whose template defines columns referencing spec.*/status.*
-    // — the LIST above carries only the status baseline, so fetch the full
-    // object via InstanceYaml for just those instances. Runs in parallel;
-    // failures leave the cell empty rather than breaking the table.
-    const templates = await getTemplates()
-    await Promise.all(
-      items.map(async i => {
-        const tmpl = templates.find(t => t.name === i.template)
-        if (!tmpl || !columnsNeedInstanceData(tmpl.view)) return
-        try {
-          const full = await fetchInstanceYaml(i.name)
-          if (!full) return
-          const parsed = instanceFromObj(full)
-          // InstanceYaml is a second read and can race a delete/recreate. Do
-          // not merge values from a same-name replacement into the listed UID.
-          if (i.uid && parsed.uid && i.uid !== parsed.uid) return
-          i.values = parsed.values
-          i.status = parsed.status
-        } catch {
-          // leave unenriched
-        }
-      }),
-    )
-    assertCurrentContext(expectedContext)
-    return { items, identities: raw.map(item => ({ name: item.metadata?.name ?? '', uid: item.metadata?.uid })) }
+
+    throw protocolError(`GraphQL Instance list exceeded the ${MAX_INSTANCE_LIST_PAGES}-page safety limit; retry the read.`)
   },
 
   async getInstance(name: string): Promise<Instance> {

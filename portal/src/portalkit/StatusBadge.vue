@@ -36,6 +36,7 @@ const config = computed(() => {
     case 'succeeded':
     case 'committed':
     case 'active':
+    case 'connected':
     case 'loaded':
       return { ...toneConfig.success, icon: CheckCircle }
     case 'scheduling':
@@ -53,6 +54,8 @@ const config = computed(() => {
     case 'error':
     case 'repository missing':
     case 'connection missing':
+    case 'disconnected':
+    case 'unreachable':
     case 'needs attention':
       return { ...toneConfig.danger, icon: AlertTriangle }
     default:

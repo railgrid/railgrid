@@ -217,12 +217,12 @@ onBeforeUnmount(() => {
     </button>
   </Teleport>
 
-  <Teleport v-if="mounted && mobileOpen" to="body">
+  <Teleport v-if="mounted && mobileOpen" to="#app-studio-overlay-root">
     <div class="fixed inset-0 z-[100] flex items-end bg-surface/70 backdrop-blur-sm md:hidden" @pointerdown.self="closeMobile()">
       <section
         :id="mobilePanelID"
         ref="mobileSheetRef"
-        class="flex max-h-[75vh] w-full flex-col rounded-t-2xl border border-border-subtle bg-surface-raised shadow-2xl"
+        class="flex max-h-[75vh] w-full flex-col rounded-t-lg border border-border-subtle bg-surface-raised shadow-2xl"
         role="dialog"
         aria-modal="true"
         :aria-labelledby="`${mobilePanelID}-title`"
@@ -234,7 +234,7 @@ onBeforeUnmount(() => {
           <button
             ref="mobileCloseRef"
             type="button"
-            class="flex h-11 w-11 items-center justify-center rounded-lg text-text-muted hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            class="flex h-11 w-11 items-center justify-center rounded-md text-text-muted hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             aria-label="Close plan"
             @click="closeMobile()"
           >

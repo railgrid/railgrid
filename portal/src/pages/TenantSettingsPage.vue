@@ -44,13 +44,14 @@ flash strips, matching the rest of the portal.
 -->
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
 import MemberList from '@/components/MemberList.vue'
 import { useTenantStore, type AppAccessGrantRow, type MemberRow, type SARow, type TokenResponse, type WorkspaceRow } from '@/stores/tenant'
 import { useProvidersStore } from '@/stores/providers'
 import { confirmDialog } from '@/portalkit/confirm'
 import { toast } from '@/portalkit/toast'
+import { useEscapeKey } from '@/composables/useEscapeKey'
 import {
   Building2,
   Check,
@@ -624,6 +625,46 @@ const newSARole = ref<'admin' | 'member'>('member')
 const saBusy = ref<Record<string, boolean>>({})
 const issuedToken = ref<TokenResponse | null>(null)
 const issuedTokenSA = ref<string | null>(null)
+const tokenDialogRef = ref<HTMLElement | null>(null)
+const tokenCloseButton = ref<HTMLButtonElement | null>(null)
+let tokenPreviousFocus: HTMLElement | null = null
+
+function onTokenDialogKeydown(event: KeyboardEvent) {
+  if (!issuedToken.value || event.key !== 'Tab') return
+  const focusable = Array.from(tokenDialogRef.value?.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+  ) ?? [])
+  if (!focusable.length) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+useEscapeKey(() => dismissToken(), () => !!issuedToken.value)
+
+watch(
+  () => !!issuedToken.value,
+  (open) => {
+    if (open) {
+      tokenPreviousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      window.addEventListener('keydown', onTokenDialogKeydown)
+      nextTick(() => tokenCloseButton.value?.focus())
+    } else {
+      window.removeEventListener('keydown', onTokenDialogKeydown)
+      const target = tokenPreviousFocus
+      tokenPreviousFocus = null
+      nextTick(() => target?.isConnected && target.focus())
+    }
+  },
+)
+
+onBeforeUnmount(() => window.removeEventListener('keydown', onTokenDialogKeydown))
 
 async function reloadSAs() {
   // Every SA endpoint (list included) requires workspace admin; for
@@ -801,7 +842,7 @@ function fmtDate(s?: string | null): string {
               <li v-for="o in tenant.orgs" :key="o.uuid">
                 <!-- Org row -->
                 <div
-                  class="group flex items-center gap-1 rounded-lg px-1.5 py-1.5 transition-colors"
+                  class="group flex items-center gap-1 rounded-md px-1.5 py-1.5 transition-colors"
                   :class="
                     sel?.kind === 'org' && sel.org === o.uuid
                       ? 'bg-accent/10 text-accent'
@@ -810,7 +851,7 @@ function fmtDate(s?: string | null): string {
                 >
                   <button
                     type="button"
-                    class="rounded p-0.5 text-text-muted hover:text-text-secondary"
+                    class="k-btn k-btn--ghost rounded-md border-0 bg-transparent p-0.5 text-text-muted hover:bg-transparent hover:text-text-secondary"
                     :aria-label="isExpanded(o.uuid) ? 'Collapse' : 'Expand'"
                     @click="toggleExpand(o.uuid)"
                   >
@@ -819,7 +860,7 @@ function fmtDate(s?: string | null): string {
                   </button>
                   <button
                     type="button"
-                    class="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    class="k-btn k-btn--ghost flex min-w-0 flex-1 items-center gap-2 border-0 bg-transparent p-0 text-left hover:bg-transparent"
                     @click="clickOrg(o.uuid)"
                   >
                     <Building2 class="h-4 w-4 shrink-0" :stroke-width="1.75" />
@@ -840,7 +881,7 @@ function fmtDate(s?: string | null): string {
                   <li v-for="w in workspacesOf(o.uuid)" :key="w.uuid">
                     <button
                       type="button"
-                      class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors"
+                      class="k-btn k-btn--ghost flex w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 py-1.5 text-left transition-colors hover:bg-surface-hover"
                       :class="
                         sel?.kind === 'ws' && sel.ws === w.uuid
                           ? 'bg-accent/10 text-accent'
@@ -871,14 +912,15 @@ function fmtDate(s?: string | null): string {
                     <div v-if="newWsFor === o.uuid" class="flex items-center gap-1 px-2 py-1">
                       <input
                         v-model="newWsName"
-                        class="w-full min-w-0 flex-1 rounded-md border border-border-default/50 bg-surface-overlay/60 px-2 py-1 text-[12px] text-text-primary focus:border-accent focus:outline-none"
+                        class="k-input w-full min-w-0 flex-1 px-2 py-1 text-[12px]"
                         placeholder="Workspace name"
                         autofocus
                         @keyup.enter="onCreateWorkspace"
                         @keyup.esc="newWsFor = null"
                       />
                       <button
-                        class="rounded-md border border-accent/30 bg-accent/10 p-1 text-accent hover:bg-accent/20 disabled:opacity-50"
+                        type="button"
+                        class="k-btn k-btn--primary p-1 disabled:opacity-50"
                         :disabled="newWsBusy || !newWsName.trim()"
                         aria-label="Create workspace"
                         @click="onCreateWorkspace"
@@ -887,7 +929,8 @@ function fmtDate(s?: string | null): string {
                         <Check v-else class="h-3 w-3" :stroke-width="2" />
                       </button>
                       <button
-                        class="rounded-md border border-border-subtle p-1 text-text-muted hover:text-text-secondary"
+                        type="button"
+                        class="k-btn k-btn--ghost p-1 text-text-muted hover:text-text-secondary"
                         aria-label="Cancel"
                         @click="newWsFor = null"
                       >
@@ -897,7 +940,7 @@ function fmtDate(s?: string | null): string {
                     <button
                       v-else
                       type="button"
-                      class="flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-[11px] text-text-muted transition-colors hover:bg-surface-overlay/60 hover:text-text-secondary"
+                      class="k-btn k-btn--ghost flex w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 py-1 text-left text-[11px] text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
                       @click="openNewWs(o.uuid)"
                     >
                       <Plus class="h-3 w-3" :stroke-width="2" />
@@ -913,14 +956,15 @@ function fmtDate(s?: string | null): string {
               <div v-if="newOrgOpen" class="flex items-center gap-1 px-1.5 py-1">
                 <input
                   v-model="newOrgName"
-                  class="w-full min-w-0 flex-1 rounded-md border border-border-default/50 bg-surface-overlay/60 px-2 py-1 text-[12px] text-text-primary focus:border-accent focus:outline-none"
+                  class="k-input w-full min-w-0 flex-1 px-2 py-1 text-[12px]"
                   placeholder="Organization name"
                   autofocus
                   @keyup.enter="onCreateOrg"
                   @keyup.esc="newOrgOpen = false"
                 />
                 <button
-                  class="rounded-md border border-accent/30 bg-accent/10 p-1 text-accent hover:bg-accent/20 disabled:opacity-50"
+                  type="button"
+                  class="k-btn k-btn--primary p-1 disabled:opacity-50"
                   :disabled="orgBusy || !newOrgName.trim()"
                   aria-label="Create organization"
                   @click="onCreateOrg"
@@ -929,7 +973,8 @@ function fmtDate(s?: string | null): string {
                   <Check v-else class="h-3 w-3" :stroke-width="2" />
                 </button>
                 <button
-                  class="rounded-md border border-border-subtle p-1 text-text-muted hover:text-text-secondary"
+                  type="button"
+                  class="k-btn k-btn--ghost p-1 text-text-muted hover:text-text-secondary"
                   aria-label="Cancel"
                   @click="newOrgOpen = false"
                 >
@@ -939,7 +984,7 @@ function fmtDate(s?: string | null): string {
               <button
                 v-else
                 type="button"
-                class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] font-medium text-text-muted transition-colors hover:bg-surface-overlay/60 hover:text-text-secondary"
+                    class="k-btn k-btn--ghost flex w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 py-1.5 text-left text-[12px] font-medium text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
                 @click="newOrgOpen = true"
               >
                 <Plus class="h-3.5 w-3.5" :stroke-width="2" />
@@ -971,7 +1016,8 @@ function fmtDate(s?: string | null): string {
                     <h2 class="truncate text-lg font-semibold text-text-primary">{{ selOrg.displayName }}</h2>
                     <button
                       v-if="canManageOrg"
-                      class="rounded-md border border-border-subtle px-2 py-0.5 text-[11px] text-text-muted transition-colors hover:border-accent/30 hover:text-accent disabled:opacity-50"
+                      type="button"
+                      class="k-btn k-btn--ghost px-2 py-0.5 text-[11px] text-text-muted transition-colors hover:text-accent disabled:opacity-50"
                       :disabled="!!selOrg.deletionRequestedAt"
                       @click="startEditOrgName"
                     >
@@ -986,12 +1032,13 @@ function fmtDate(s?: string | null): string {
                   <div v-else class="mt-1 flex items-center gap-2">
                     <input
                       v-model="orgNameDraft"
-                      class="flex-1 rounded-md border border-border-default/50 bg-surface-overlay/60 px-2 py-1 text-sm text-text-primary focus:border-accent focus:outline-none"
+                      class="k-input flex-1 px-2 py-1 text-sm"
                       @keyup.enter="saveOrgName"
                       @keyup.esc="editingOrgName = false"
                     />
                     <button
-                      class="rounded-md border border-success/30 bg-success-subtle px-2 py-1 text-[11px] font-medium text-success transition-colors hover:bg-success/15 disabled:opacity-60"
+                      type="button"
+                      class="k-btn k-btn--ghost px-2 py-1 text-[11px] text-success transition-colors hover:border-success/40 hover:bg-success-subtle disabled:opacity-60"
                       :disabled="orgBusy || !orgNameDraft.trim()"
                       @click="saveOrgName"
                     >
@@ -999,7 +1046,8 @@ function fmtDate(s?: string | null): string {
                       <Check v-else class="inline h-3 w-3" :stroke-width="2" /> Save
                     </button>
                     <button
-                      class="rounded-md border border-border-subtle px-2 py-1 text-[11px] text-text-muted hover:text-text-secondary"
+                      type="button"
+                      class="k-btn k-btn--ghost px-2 py-1 text-[11px] text-text-muted hover:text-text-secondary"
                       @click="editingOrgName = false"
                     >
                       Cancel
@@ -1036,7 +1084,7 @@ function fmtDate(s?: string | null): string {
                   <template v-if="canManageOrg">
                     <button
                       v-if="!selOrg.deletionRequestedAt"
-                      class="inline-flex items-center gap-1 rounded-lg border border-danger/30 bg-danger-subtle px-2.5 py-1 text-[11px] font-medium text-danger transition-colors hover:bg-danger/15 disabled:opacity-50"
+                      class="k-btn k-btn--danger px-2.5 py-1 text-[11px] disabled:opacity-50"
                       :disabled="orgBusy || selOrg.personal"
                       :title="selOrg.personal ? 'Personal organizations cannot be deleted' : 'Soft-delete with 30-day grace'"
                       @click="onDeleteOrg"
@@ -1045,7 +1093,7 @@ function fmtDate(s?: string | null): string {
                     </button>
                     <button
                       v-else
-                      class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20 disabled:opacity-50"
+                      class="k-btn k-btn--ghost px-2.5 py-1 text-[11px] text-accent transition-colors hover:bg-accent-subtle disabled:opacity-50"
                       :disabled="orgBusy"
                       @click="onUndeleteOrg"
                     >
@@ -1054,7 +1102,7 @@ function fmtDate(s?: string | null): string {
                   </template>
                   <button
                     v-if="!selOrg.personal"
-                    class="inline-flex items-center gap-1 rounded-lg border border-warning/30 bg-warning-subtle px-2.5 py-1 text-[11px] font-medium text-warning transition-colors hover:bg-warning/15 disabled:opacity-50"
+                    class="k-btn k-btn--ghost px-2.5 py-1 text-[11px] text-warning transition-colors hover:border-warning/40 hover:bg-warning-subtle disabled:opacity-50"
                     :disabled="orgBusy"
                     @click="onLeaveOrg"
                   >
@@ -1106,7 +1154,8 @@ function fmtDate(s?: string | null): string {
                     <h2 class="truncate text-lg font-semibold text-text-primary">{{ selWs.displayName || selWs.uuid }}</h2>
                     <button
                       v-if="canManageWs"
-                      class="rounded-md border border-border-subtle px-2 py-0.5 text-[11px] text-text-muted transition-colors hover:border-accent/30 hover:text-accent disabled:opacity-50"
+                      type="button"
+                      class="k-btn k-btn--ghost px-2 py-0.5 text-[11px] text-text-muted transition-colors hover:text-accent disabled:opacity-50"
                       :disabled="!!selWs.deletionRequestedAt"
                       @click="startEditWsName"
                     >
@@ -1121,12 +1170,13 @@ function fmtDate(s?: string | null): string {
                   <div v-else class="mt-1 flex items-center gap-2">
                     <input
                       v-model="wsNameDraft"
-                      class="flex-1 rounded-md border border-border-default/50 bg-surface-overlay/60 px-2 py-1 text-sm text-text-primary focus:border-accent focus:outline-none"
+                      class="k-input flex-1 px-2 py-1 text-sm"
                       @keyup.enter="saveWsName"
                       @keyup.esc="editingWsName = false"
                     />
                     <button
-                      class="rounded-md border border-success/30 bg-success-subtle px-2 py-1 text-[11px] font-medium text-success transition-colors hover:bg-success/15 disabled:opacity-60"
+                      type="button"
+                      class="k-btn k-btn--ghost px-2 py-1 text-[11px] text-success transition-colors hover:border-success/40 hover:bg-success-subtle disabled:opacity-60"
                       :disabled="wsBusy || !wsNameDraft.trim()"
                       @click="saveWsName"
                     >
@@ -1134,7 +1184,8 @@ function fmtDate(s?: string | null): string {
                       <Check v-else class="inline h-3 w-3" :stroke-width="2" /> Save
                     </button>
                     <button
-                      class="rounded-md border border-border-subtle px-2 py-1 text-[11px] text-text-muted hover:text-text-secondary"
+                      type="button"
+                      class="k-btn k-btn--ghost px-2 py-1 text-[11px] text-text-muted hover:text-text-secondary"
                       @click="editingWsName = false"
                     >
                       Cancel
@@ -1142,7 +1193,8 @@ function fmtDate(s?: string | null): string {
                   </div>
                 </div>
                 <button
-                  class="inline-flex shrink-0 items-center gap-1 rounded-lg border border-border-subtle px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:border-accent/30 hover:text-accent disabled:opacity-50"
+                  type="button"
+                  class="k-btn k-btn--ghost inline-flex shrink-0 items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:text-accent disabled:opacity-50"
                   :disabled="kubeconfigBusy || !!selWs.deletionRequestedAt"
                   title="Download a kubeconfig targeting this workspace's control plane"
                   @click="onDownloadKubeconfig"
@@ -1178,7 +1230,8 @@ function fmtDate(s?: string | null): string {
                 <div class="flex flex-wrap gap-2">
                   <button
                     v-if="!selWs.deletionRequestedAt"
-                    class="inline-flex items-center gap-1 rounded-lg border border-danger/30 bg-danger-subtle px-2.5 py-1 text-[11px] font-medium text-danger transition-colors hover:bg-danger/15 disabled:opacity-50"
+                    type="button"
+                    class="k-btn k-btn--danger inline-flex items-center gap-1 px-2.5 py-1 text-[11px] disabled:opacity-50"
                     :disabled="wsBusy"
                     title="Soft-delete with 30-day grace"
                     @click="onDeleteWorkspace"
@@ -1187,7 +1240,8 @@ function fmtDate(s?: string | null): string {
                   </button>
                   <button
                     v-else
-                    class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20 disabled:opacity-50"
+                    type="button"
+                    class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] text-accent transition-colors hover:bg-accent-subtle disabled:opacity-50"
                     :disabled="wsBusy"
                     @click="onUndeleteWorkspace"
                   >
@@ -1235,7 +1289,8 @@ function fmtDate(s?: string | null): string {
               <div v-else-if="appAccessGrants.length === 0" class="text-sm text-text-muted">
                 No app access grants. Public apps need none; private apps grant access per person.
               </div>
-              <table v-else class="w-full text-sm">
+              <div v-else class="k-table">
+                <table class="w-full text-sm">
                 <thead>
                   <tr class="text-left text-[10px] font-semibold uppercase tracking-wider text-text-muted">
                     <th class="py-2 pr-3">App</th>
@@ -1258,7 +1313,7 @@ function fmtDate(s?: string | null): string {
                          is visible to every workspace member). -->
                     <td v-if="canManageWs" class="py-2 pr-0 text-right">
                       <button
-                        class="rounded-md border border-danger/30 bg-danger-subtle px-2 py-1 text-[11px] font-medium text-danger hover:bg-danger/15 disabled:opacity-50"
+                        class="k-btn k-btn--danger px-2 py-1 text-[11px] disabled:opacity-50"
                         :disabled="!!appAccessBusy[grant.binding]"
                         @click="onRevokeAppAccess(grant)"
                       >
@@ -1269,7 +1324,8 @@ function fmtDate(s?: string | null): string {
                     </td>
                   </tr>
                 </tbody>
-              </table>
+                </table>
+              </div>
             </section>
 
             <!-- Service accounts -->
@@ -1292,19 +1348,20 @@ function fmtDate(s?: string | null): string {
               <div v-if="canManageWs" class="mb-4 flex flex-wrap items-center gap-2">
                 <input
                   v-model="newSAName"
-                  class="min-w-[200px] flex-1 rounded-md border border-border-default/50 bg-surface-overlay/60 px-3 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
+                  class="k-input min-w-[200px] w-auto flex-1 text-sm"
                   placeholder="Service account name"
                   @keyup.enter="onCreateSA"
                 />
                 <select
                   v-model="newSARole"
-                  class="rounded-md border border-border-default/50 bg-surface-overlay/60 px-3 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
+                  class="k-input w-auto text-sm"
                 >
                   <option value="member">member</option>
                   <option value="admin">admin</option>
                 </select>
                 <button
-                  class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-3 py-1.5 text-[12px] font-medium text-accent transition-colors hover:bg-accent/20 disabled:opacity-60"
+                  type="button"
+                  class="k-btn k-btn--primary px-3 py-1.5 text-[12px] disabled:opacity-60"
                   :disabled="!!saBusy.__new__ || !newSAName.trim()"
                   @click="onCreateSA"
                 >
@@ -1339,7 +1396,7 @@ function fmtDate(s?: string | null): string {
                   </div>
                   <div class="flex flex-wrap items-center gap-1">
                     <button
-                      class="rounded-md border border-accent/30 bg-accent/10 px-2 py-1 text-[11px] font-medium text-accent hover:bg-accent/20 disabled:opacity-50"
+                      class="k-btn k-btn--ghost px-2 py-1 text-[11px] text-accent hover:bg-accent-subtle disabled:opacity-50"
                       :disabled="!!saBusy[s.uuid]"
                       @click="onIssueToken(s.uuid, s.displayName)"
                     >
@@ -1348,14 +1405,14 @@ function fmtDate(s?: string | null): string {
                       Issue token
                     </button>
                     <button
-                      class="rounded-md border border-warning/30 bg-warning-subtle px-2 py-1 text-[11px] font-medium text-warning hover:bg-warning/15 disabled:opacity-50"
+                      class="k-btn k-btn--ghost px-2 py-1 text-[11px] text-warning hover:border-warning/40 hover:bg-warning-subtle disabled:opacity-50"
                       :disabled="!!saBusy[s.uuid]"
                       @click="onRevokeTokens(s.uuid, s.displayName)"
                     >
                       Revoke
                     </button>
                     <button
-                      class="rounded-md border border-danger/30 bg-danger-subtle px-2 py-1 text-[11px] font-medium text-danger hover:bg-danger/15 disabled:opacity-50"
+                      class="k-btn k-btn--danger px-2 py-1 text-[11px] disabled:opacity-50"
                       :disabled="!!saBusy[s.uuid]"
                       @click="onDeleteSA(s.uuid, s.displayName)"
                     >
@@ -1383,33 +1440,35 @@ function fmtDate(s?: string | null): string {
          later (we don't store the plaintext) so the user must copy it now. -->
     <div
       v-if="issuedToken"
-      class="fixed inset-0 z-[120] flex items-center justify-center bg-surface/70 backdrop-blur-sm"
+      class="k-modal-overlay"
+      role="presentation"
     >
-      <div class="w-full max-w-lg rounded-xl border border-border-default bg-surface-raised p-5 shadow-2xl">
+      <div ref="tokenDialogRef" class="k-modal w-full max-w-lg p-5" role="dialog" aria-modal="true" aria-labelledby="issued-token-title" aria-describedby="issued-token-description">
         <div class="mb-3 flex items-start justify-between gap-3">
           <div>
-            <h3 class="flex items-center gap-2 text-base font-semibold text-text-primary">
+            <h3 id="issued-token-title" class="flex items-center gap-2 text-base font-semibold text-text-primary">
               <KeyRound class="h-4 w-4 text-accent" :stroke-width="1.75" />
               Token for "{{ issuedTokenSA }}"
             </h3>
-            <p class="mt-1 text-[12px] text-text-muted">
+            <p id="issued-token-description" class="mt-1 text-[12px] text-text-muted">
               Copy this token now — it cannot be retrieved later.
               <span v-if="issuedToken.expiresAt"> Expires {{ fmtDate(issuedToken.expiresAt) }}.</span>
             </p>
           </div>
-          <button class="text-text-muted hover:text-text-secondary" @click="dismissToken">
+          <button ref="tokenCloseButton" type="button" class="k-btn k-btn--ghost p-1 text-text-muted hover:text-text-secondary" aria-label="Close token dialog" @click="dismissToken">
             <X class="h-4 w-4" />
           </button>
         </div>
         <textarea
           readonly
           rows="4"
-          class="w-full resize-none rounded-md border border-border-default/50 bg-surface-overlay/40 p-2 font-mono text-[11px] text-text-secondary focus:border-accent focus:outline-none"
+          class="k-input w-full resize-none bg-surface-overlay/40 p-2 font-mono text-[11px] text-text-secondary"
           :value="issuedToken.token"
         />
         <div class="mt-3 flex justify-end gap-2">
           <button
-            class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-3 py-1.5 text-[12px] font-medium text-accent hover:bg-accent/20"
+            type="button"
+            class="k-btn k-btn--ghost px-3 py-1.5 text-[12px] text-accent hover:bg-accent-subtle"
             @click="copyToken"
           >
             <Check v-if="copiedToken" class="h-3 w-3" :stroke-width="2" />
@@ -1417,7 +1476,8 @@ function fmtDate(s?: string | null): string {
             {{ copiedToken ? 'Copied' : 'Copy' }}
           </button>
           <button
-            class="rounded-lg border border-border-subtle px-3 py-1.5 text-[12px] font-medium text-text-muted hover:text-text-secondary"
+            type="button"
+            class="k-btn k-btn--ghost px-3 py-1.5 text-[12px] text-text-muted hover:text-text-secondary"
             @click="dismissToken"
           >
             Done

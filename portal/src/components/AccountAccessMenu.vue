@@ -285,7 +285,7 @@ onBeforeUnmount(() => {
     :aria-controls="panelId"
     aria-haspopup="dialog"
     :aria-expanded="isOpen"
-    class="group flex min-w-0 items-center rounded-md border border-border-subtle bg-surface-overlay/50 text-left transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
+    class="k-btn k-btn--ghost group flex min-w-0 items-center rounded-md text-left transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
     :class="[
       expanded ? 'w-full gap-2 px-2.5 py-2' : 'h-8 w-8 justify-center p-0',
       contextRouteActive ? 'border-accent/30 text-accent' : '',

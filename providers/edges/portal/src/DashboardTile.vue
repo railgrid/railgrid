@@ -9,7 +9,8 @@
 // is therefore "N of M connected" rather than a bare total, because the ratio
 // is the fact worth glancing at.
 
-import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { AlertTriangle, Check, ChevronRight } from 'lucide-vue-next'
 import { listEdges, setTenant, setToken } from './api'
 import type { Edge } from './types'
 import {
@@ -23,25 +24,6 @@ import {
   type TileContext,
   type TilePoller,
 } from './portalkit/dashboardtile'
-import { ic } from './portalkit/icons'
-
-// Inline chevron — provider bundles are self-contained (no shared icon lib),
-// the same reason the infrastructure tile inlines its own.
-const ChevronRight = (props: { class?: string }) =>
-  h(
-    'svg',
-    {
-      xmlns: 'http://www.w3.org/2000/svg',
-      viewBox: '0 0 24 24',
-      fill: 'none',
-      stroke: 'currentColor',
-      'stroke-width': 2,
-      'stroke-linecap': 'round',
-      'stroke-linejoin': 'round',
-      class: props.class,
-    },
-    [h('path', { d: 'm9 18 6-6-6-6' })],
-  )
 
 const props = defineProps<{ context: TileContext | null }>()
 
@@ -121,14 +103,14 @@ watch(() => props.context, () => poller?.refresh())
     <template v-else>
       <div :class="tileClass.stats">
         <span :class="[tileClass.stat, tileClass.statTotal]">
-          <span v-html="ic('check', tileClass.statIcon)" />
+          <Check :class="tileClass.statIcon" :stroke-width="1.75" aria-hidden="true" />
           <span :class="tileClass.statNum">{{ stats.connected }}</span>
           <span :class="tileClass.statLabel">of</span>
           <span class="tabular-nums">{{ stats.total }}</span>
           <span :class="tileClass.statLabel">connected</span>
         </span>
         <span v-if="stats.offline > 0" :class="[tileClass.stat, tileClass.statBad]">
-          <span v-html="ic('alert-triangle', tileClass.statIcon)" />
+          <AlertTriangle :class="tileClass.statIcon" :stroke-width="1.75" aria-hidden="true" />
           <span class="tabular-nums">{{ stats.offline }}</span>
           <span :class="tileClass.statLabel">offline</span>
         </span>
@@ -153,7 +135,7 @@ watch(() => props.context, () => poller?.refresh())
               <span
                 :class="[tileClass.rowSecondary, edge.connected ? '' : 'text-danger']"
               >{{ age(edge.lastHeartbeatTime) }}</span>
-              <ChevronRight :class="tileClass.chevron" />
+              <ChevronRight :class="tileClass.chevron" :stroke-width="1.75" aria-hidden="true" />
             </button>
           </li>
         </ul>

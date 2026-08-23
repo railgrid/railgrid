@@ -182,7 +182,7 @@ onUnmounted(() => {
 
 <template>
   <section class="page">
-    <button class="link back" type="button" :disabled="!!warehouse && operationLocked(warehouse.name)" @click="emit('back')"><ArrowLeft :size="14" aria-hidden="true" /> Warehouses</button>
+    <button class="k-btn k-btn--ghost k-back-action" type="button" :disabled="!!warehouse && operationLocked(warehouse.name)" @click="emit('back')"><ArrowLeft :size="14" aria-hidden="true" /> Warehouses</button>
 
     <header class="page-head">
       <div>
@@ -198,17 +198,17 @@ onUnmounted(() => {
 
     <div v-if="error && !warehouse" class="error read-error" role="alert" aria-live="assertive">
       <span>{{ error }}</span>
-      <button class="secondary" type="button" @click="load">Retry</button>
+      <button class="k-btn k-btn--ghost" type="button" @click="load">Retry</button>
     </div>
     <p v-else-if="loading && !warehouse" class="muted" role="status" aria-live="polite">Loading…</p>
     <div v-if="error && warehouse" class="error read-error" role="alert" aria-live="assertive">
       <span>Showing cached warehouse data. {{ error }}</span>
-      <button class="secondary" type="button" @click="load">Retry</button>
+      <button class="k-btn k-btn--ghost" type="button" @click="load">Retry</button>
     </div>
     <span v-else-if="loading && warehouse" class="sr-only" role="status" aria-live="polite">Updating…</span>
     <div v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">
       <span>{{ mutationError }}</span>
-      <button class="secondary" type="button" @click="mutationError = null">Dismiss</button>
+      <button class="k-btn k-btn--ghost" type="button" @click="mutationError = null">Dismiss</button>
     </div>
 
     <template v-if="warehouse">
@@ -237,12 +237,12 @@ onUnmounted(() => {
         <form class="form" @submit.prevent="saveEdit">
           <div class="field">
             <label class="field-label" for="warehouse-edit-id">Warehouse ID</label>
-            <input id="warehouse-edit-id" ref="editIDInput" v-model="editWarehouseID" :disabled="saving" placeholder="abc123def4567890" autocomplete="off" required aria-required="true" aria-describedby="warehouse-edit-id-hint warehouse-edit-error" :aria-invalid="!!saveError" />
+            <input id="warehouse-edit-id" class="k-input" ref="editIDInput" v-model="editWarehouseID" :disabled="saving" placeholder="abc123def4567890" autocomplete="off" required aria-required="true" aria-describedby="warehouse-edit-id-hint warehouse-edit-error" :aria-invalid="!!saveError" />
             <span id="warehouse-edit-id-hint" class="field-hint">Use the 16-character ID from SQL Warehouses → Connection details (/sql/1.0/warehouses/&lt;id&gt;), not the numeric ?o= workspace ID.</span>
           </div>
         <div class="actions">
-            <button class="primary" type="submit" :disabled="saving || operationLocked(warehouse.name)">{{ saving ? 'Saving…' : 'Save' }}</button>
-            <button class="secondary" type="button" :disabled="saving" @click="editing = false">Cancel</button>
+            <button class="k-btn k-btn--primary" type="submit" :disabled="saving || operationLocked(warehouse.name)">{{ saving ? 'Saving…' : 'Save' }}</button>
+            <button class="k-btn k-btn--ghost" type="button" :disabled="saving" @click="editing = false">Cancel</button>
             <span v-if="saveError" id="warehouse-edit-error" ref="saveErrorRef" class="error" role="alert" aria-live="assertive" tabindex="-1">{{ saveError }}</span>
           </div>
         </form>
@@ -256,8 +256,8 @@ onUnmounted(() => {
       />
 
       <div class="actions">
-        <button class="secondary" type="button" :disabled="operationLocked(warehouse.name)" @click="startEdit">Edit</button>
-        <button class="danger resource-delete-button" type="button" :disabled="operationLocked(warehouse.name)" @click="remove">{{ operationPhase(warehouse.name) === 'deleting' ? 'Deleting warehouse…' : 'Delete warehouse' }}</button>
+        <button class="k-btn k-btn--ghost" type="button" :disabled="operationLocked(warehouse.name)" @click="startEdit">Edit</button>
+        <button class="k-btn k-btn--danger resource-delete-button" type="button" :disabled="operationLocked(warehouse.name)" @click="remove">{{ operationPhase(warehouse.name) === 'deleting' ? 'Deleting warehouse…' : 'Delete warehouse' }}</button>
       </div>
     </template>
   </section>

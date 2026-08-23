@@ -84,20 +84,23 @@ function downloadKubeconfig() {
         </div>
         <div class="flex items-center gap-2">
           <button
-            class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20"
+            type="button"
+            class="k-btn k-btn--primary px-2.5 py-1 text-[11px]"
             @click="downloadKubeconfig"
           >
             <Download class="h-3 w-3" :stroke-width="2" />
             Download
           </button>
           <button
-            class="rounded-lg border border-border-subtle px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:border-accent/30 hover:text-accent"
+            type="button"
+            class="k-btn k-btn--ghost px-2.5 py-1 text-[11px] text-text-muted transition-colors hover:text-accent"
             @click="revealed = !revealed"
           >
             {{ revealed ? 'Hide' : 'Show' }}
           </button>
           <button
-            class="inline-flex items-center gap-1 rounded-lg border border-border-subtle px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:border-accent/30 hover:text-accent"
+            type="button"
+            class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] text-text-muted transition-colors hover:text-accent"
             @click="copy('kubeconfig', registration.kubeconfig)"
           >
             <component :is="copied === 'kubeconfig' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
@@ -140,7 +143,8 @@ function downloadKubeconfig() {
             <p v-if="step.description" class="mt-0.5 text-[11px] text-text-muted">{{ step.description }}</p>
           </div>
           <button
-            class="inline-flex flex-shrink-0 items-center gap-1 rounded-lg border border-border-subtle px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:border-accent/30 hover:text-accent"
+            type="button"
+            class="k-btn k-btn--ghost inline-flex flex-shrink-0 items-center gap-1 px-2.5 py-1 text-[11px] text-text-muted transition-colors hover:text-accent"
             @click="copy(step.title, step.command)"
           >
             <component :is="copied === step.title ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
@@ -180,7 +184,8 @@ function downloadKubeconfig() {
         class="rounded-lg border border-border-subtle bg-surface-overlay/60"
       >
         <button
-          class="flex w-full items-center gap-2 p-4 text-left"
+          type="button"
+          class="k-btn k-btn--ghost flex w-full items-center gap-2 rounded-none border-0 p-4 text-left"
           @click="valuesDocOpen = !valuesDocOpen"
         >
           <ChevronRight

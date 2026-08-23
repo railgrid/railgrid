@@ -213,14 +213,16 @@ defineExpose({ resize, focusTerminal, clearTerminal, reconnect })
       <div class="flex items-center gap-1">
         <button
           v-if="connectionStatus === 'disconnected' || connectionStatus === 'error'"
-          class="flex h-5 w-5 items-center justify-center rounded text-text-muted transition-colors hover:bg-surface-hover hover:text-accent"
+          type="button"
+          class="k-btn k-btn--ghost flex h-5 w-5 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-colors hover:bg-surface-hover hover:text-accent"
           title="Reconnect"
           @click="reconnect"
         >
           <RotateCw class="h-3 w-3" :stroke-width="2" />
         </button>
         <button
-          class="flex h-5 w-5 items-center justify-center rounded text-text-muted transition-colors hover:bg-surface-hover hover:text-accent disabled:opacity-30"
+          type="button"
+          class="k-btn k-btn--ghost flex h-5 w-5 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-colors hover:bg-surface-hover hover:text-accent disabled:opacity-30"
           title="Clear"
           :disabled="connectionStatus !== 'connected'"
           @click="clearTerminal"

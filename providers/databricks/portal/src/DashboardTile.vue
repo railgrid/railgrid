@@ -7,7 +7,8 @@
 // "which warehouses are running" is the fact worth a dashboard slot, and the
 // table count rides along as context.
 
-import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { Check, ChevronRight, Link2, Package } from 'lucide-vue-next'
 import { api, setTenant, setTenantSelection, setToken } from './api'
 import type { Connection, Warehouse } from './types'
 import {
@@ -21,24 +22,6 @@ import {
   type TileContext,
   type TilePoller,
 } from './portalkit/dashboardtile'
-import { ic } from './portalkit/icons'
-
-// Inline chevron — provider bundles are self-contained (no shared icon lib).
-const ChevronRight = (props: { class?: string }) =>
-  h(
-    'svg',
-    {
-      xmlns: 'http://www.w3.org/2000/svg',
-      viewBox: '0 0 24 24',
-      fill: 'none',
-      stroke: 'currentColor',
-      'stroke-width': 2,
-      'stroke-linecap': 'round',
-      'stroke-linejoin': 'round',
-      class: props.class,
-    },
-    [h('path', { d: 'm9 18 6-6-6-6' })],
-  )
 
 const props = defineProps<{ context: TileContext | null }>()
 
@@ -107,17 +90,17 @@ watch(() => props.context, () => poller?.refresh())
     <template v-else>
       <div :class="tileClass.stats">
         <span :class="[tileClass.stat, tileClass.statTotal]">
-          <span v-html="ic('package', tileClass.statIcon)" />
+          <Package :class="tileClass.statIcon" :stroke-width="1.75" aria-hidden="true" />
           <span :class="tileClass.statNum">{{ stats.total }}</span>
           <span :class="tileClass.statLabel">{{ stats.total === 1 ? 'warehouse' : 'warehouses' }}</span>
         </span>
         <span v-if="stats.running > 0" :class="[tileClass.stat, tileClass.statOk]">
-          <span v-html="ic('check', tileClass.statIcon)" />
+          <Check :class="tileClass.statIcon" :stroke-width="1.75" aria-hidden="true" />
           <span class="tabular-nums">{{ stats.running }}</span>
           <span :class="tileClass.statLabel">running</span>
         </span>
         <span :class="[tileClass.stat, tileClass.statMuted]">
-          <span v-html="ic('link', tileClass.statIcon)" />
+          <Link2 :class="tileClass.statIcon" :stroke-width="1.75" aria-hidden="true" />
           <span class="tabular-nums">{{ stats.connections }}</span>
           <span>{{ stats.connections === 1 ? 'connection' : 'connections' }}</span>
         </span>
@@ -138,7 +121,7 @@ watch(() => props.context, () => poller?.refresh())
               />
               <span :class="tileClass.rowPrimary">{{ w.name }}</span>
               <span :class="tileClass.rowSecondary">{{ (w.state || 'unknown').toLowerCase() }}</span>
-              <ChevronRight :class="tileClass.chevron" />
+              <ChevronRight :class="tileClass.chevron" :stroke-width="1.75" aria-hidden="true" />
             </button>
           </li>
         </ul>

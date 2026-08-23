@@ -337,7 +337,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
 </script>
 
 <template>
-  <Teleport to="body">
+  <Teleport to="#app-studio-overlay-root">
     <div
       v-if="open"
       class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-surface/60 p-4 sm:items-center"

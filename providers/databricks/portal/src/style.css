@@ -5,7 +5,7 @@
 
 faros-provider-databricks {
   display: block;
-  color: var(--color-text-primary);
+  color: var(--color-text-primary, #e9e9f2);
 }
 
 faros-provider-databricks .sr-only {
@@ -24,7 +24,6 @@ faros-provider-databricks .app {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 8px 0;
 }
 
 faros-provider-databricks .page {
@@ -48,7 +47,7 @@ faros-provider-databricks .page-title {
 
 faros-provider-databricks .page-meta,
 faros-provider-databricks .muted {
-  color: var(--color-text-secondary);
+  color: var(--color-text-secondary, #8a8ca6);
   font-size: 12px;
   line-height: 1.5;
   margin: 0;
@@ -73,7 +72,7 @@ faros-provider-databricks .databricks-resource-panel-head {
 }
 
 faros-provider-databricks .databricks-resource-panel-title {
-  color: var(--color-text-secondary);
+  color: var(--color-text-secondary, #8a8ca6);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -89,113 +88,28 @@ faros-provider-databricks .row-actions {
   gap: 8px;
 }
 
-faros-provider-databricks button.primary,
-faros-provider-databricks button.secondary,
-faros-provider-databricks button.danger,
-faros-provider-databricks button.icon-button {
-  align-items: center;
-  border-radius: 4px;
-  cursor: pointer;
-  display: inline-flex;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  justify-content: center;
-  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
-}
-
-faros-provider-databricks button.primary {
-  background: var(--color-accent);
-  border: 1px solid var(--color-accent);
-  box-shadow: 0 0 16px var(--color-accent-glow);
-  color: var(--color-on-accent, var(--color-surface));
-  min-height: 32px;
-  padding: 6px 14px;
-}
-
-faros-provider-databricks button.primary:hover {
-  background: var(--color-accent-hover);
-  box-shadow: 0 0 22px var(--color-accent-glow);
-}
-
-faros-provider-databricks button.secondary {
-  background: var(--color-surface-overlay);
-  border: 1px solid var(--color-border-default);
-  color: var(--color-text-primary);
-  min-height: 32px;
-  padding: 6px 14px;
-}
-
-faros-provider-databricks button.secondary:hover,
-faros-provider-databricks button.icon-button:hover {
-  background: var(--color-surface-hover);
-}
-
-faros-provider-databricks button.danger {
-  background: transparent;
-  border: 1px solid var(--color-border-default);
-  color: var(--color-danger);
-  min-height: 32px;
-  padding: 6px 14px;
-}
-
 faros-provider-databricks button.resource-delete-button {
   inline-size: 10rem;
   white-space: nowrap;
 }
 
-faros-provider-databricks button.danger:hover {
-  background: var(--color-danger-subtle);
-  border-color: var(--color-danger);
-}
-
-faros-provider-databricks button.link {
-  align-items: center;
-  background: transparent;
-  border: none;
-  color: var(--color-accent);
-  cursor: pointer;
-  display: inline-flex;
-  font: inherit;
-  font-size: 12px;
-  gap: 4px;
+/* Text-level actions keep the shared ghost-button focus and typography while
+ * trimming the control to the surrounding copy. */
+faros-provider-databricks .databricks-inline-action {
+  border-color: transparent;
+  min-height: 0;
   padding: 0;
 }
 
-faros-provider-databricks button.link:hover {
-  color: var(--color-accent-hover);
+faros-provider-databricks .databricks-inline-action:hover {
+  border-color: transparent;
 }
 
-faros-provider-databricks button.link.back {
-  color: var(--color-text-muted);
-  margin-bottom: 4px;
-}
-
-faros-provider-databricks button.link.back:hover {
-  color: var(--color-accent);
-}
-
-faros-provider-databricks button.icon-button {
-  background: transparent;
-  border: 1px solid var(--color-border-subtle);
-  color: var(--color-text-secondary);
-  height: 30px;
+faros-provider-databricks .databricks-dialog-close {
+  flex: none;
+  min-height: 30px;
+  min-width: 30px;
   padding: 0;
-  width: 30px;
-}
-
-faros-provider-databricks button.icon-button.danger {
-  color: var(--color-danger);
-}
-
-faros-provider-databricks button.icon-button.danger:hover {
-  background: var(--color-danger-subtle);
-  border-color: var(--color-danger);
-}
-
-faros-provider-databricks button:disabled {
-  cursor: progress;
-  opacity: 0.55;
 }
 
 faros-provider-databricks .icon-text {
@@ -222,7 +136,7 @@ faros-provider-databricks .split-create-main {
 
 faros-provider-databricks .split-create-toggle {
   border-bottom-left-radius: 0 !important;
-  border-left-color: var(--color-accent-hover) !important;
+  border-left-color: var(--color-accent-hover, #a18aff) !important;
   border-top-left-radius: 0 !important;
   min-width: 30px;
   padding-left: 8px !important;
@@ -236,22 +150,17 @@ faros-provider-databricks .split-create-main + .split-create-toggle {
 faros-provider-databricks .split-create-main:focus-visible,
 faros-provider-databricks .split-create-toggle:focus-visible,
 faros-provider-databricks .split-create-menu-item:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--color-accent, #8b6bff);
   outline-offset: 2px;
   position: relative;
   z-index: 1;
 }
 
 faros-provider-databricks .split-create-menu {
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 6px;
-  box-shadow: 0 12px 34px color-mix(in srgb, var(--color-surface) 72%, transparent);
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 176px;
-  padding: 4px;
   position: absolute;
   right: 0;
   top: calc(100% + 4px);
@@ -259,34 +168,7 @@ faros-provider-databricks .split-create-menu {
 }
 
 faros-provider-databricks .split-create-menu-item {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: 4px;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  display: flex;
-  font: inherit;
-  font-size: 12px;
-  gap: 8px;
-  min-height: 30px;
-  padding: 6px 8px;
-  text-align: left;
   width: 100%;
-}
-
-faros-provider-databricks .split-create-menu-item:hover,
-faros-provider-databricks .split-create-menu-item:focus-visible {
-  background: var(--color-surface-overlay);
-  color: var(--color-text-primary);
-  outline: none;
-}
-
-faros-provider-databricks .form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  max-width: 36rem;
 }
 
 faros-provider-databricks .form-grid {
@@ -301,10 +183,6 @@ faros-provider-databricks .form-grid {
   }
 }
 
-faros-provider-databricks .form-grid.compact {
-  gap: 10px;
-}
-
 faros-provider-databricks .span-2 {
   grid-column: 1 / -1;
 }
@@ -317,7 +195,7 @@ faros-provider-databricks .field {
 }
 
 faros-provider-databricks .field-label {
-  color: var(--color-text-secondary);
+  color: var(--color-text-secondary, #8a8ca6);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0;
@@ -325,56 +203,22 @@ faros-provider-databricks .field-label {
 }
 
 faros-provider-databricks .field-hint {
-  color: var(--color-text-muted);
+  color: var(--color-text-muted, #5d5f78);
   font-size: 11px;
   line-height: 1.5;
 }
 
-faros-provider-databricks input:not([type="checkbox"]):not([type="radio"]),
-faros-provider-databricks select {
-  background: var(--color-surface-overlay);
-  border: 1px solid var(--color-border-default);
-  border-radius: 4px;
-  color: var(--color-text-primary);
-  font: inherit;
-  font-size: 13px;
-  min-height: 34px;
-  outline: none;
-  padding: 7px 9px;
-  width: 100%;
-}
-
-faros-provider-databricks .form input:not([type="checkbox"]):not([type="radio"]),
-faros-provider-databricks .form select {
-  border-radius: 4px;
-  font-size: 12px;
-  min-height: 32px;
-  padding: 6px 10px;
-}
-
-faros-provider-databricks input:not([type="checkbox"]):not([type="radio"]):focus,
-faros-provider-databricks select:focus {
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 3px var(--color-accent-subtle), 0 0 14px var(--color-accent-glow);
-}
-
-faros-provider-databricks input:not([type="checkbox"]):not([type="radio"]):disabled {
-  color: var(--color-text-muted);
-  cursor: not-allowed;
-  opacity: 0.75;
-}
-
 faros-provider-databricks .mono {
-  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
 }
 
 faros-provider-databricks .strong {
-  color: var(--color-text-primary);
+  color: var(--color-text-primary, #e9e9f2);
   font-weight: 600;
 }
 
 faros-provider-databricks code {
-  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
 }
 
 faros-provider-databricks .props {
@@ -386,26 +230,18 @@ faros-provider-databricks .props {
 }
 
 faros-provider-databricks .props dt {
-  color: var(--color-text-muted);
+  color: var(--color-text-muted, #5d5f78);
 }
 
 faros-provider-databricks .props dd {
-  color: var(--color-text-secondary);
+  color: var(--color-text-secondary, #8a8ca6);
   margin: 0;
   min-width: 0;
   word-break: break-word;
 }
 
-faros-provider-databricks .truncate-cell {
-  display: inline-block;
-  max-width: min(36vw, 32rem);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  vertical-align: bottom;
-}
-
 faros-provider-databricks .row-message {
-  color: var(--color-text-muted);
+  color: var(--color-text-muted, #5d5f78);
   display: block;
   font-size: 11px;
   margin-top: 4px;
@@ -435,24 +271,24 @@ faros-provider-databricks .read-error > span {
 }
 
 faros-provider-databricks .error {
-  background: var(--color-danger-subtle);
-  color: var(--color-danger);
+  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
+  color: var(--color-danger, #ff5d5d);
 }
 
 faros-provider-databricks .warning {
-  background: var(--color-warning-subtle);
-  color: var(--color-warning);
+  background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12));
+  color: var(--color-warning, #f0a63a);
 }
 
 faros-provider-databricks .empty {
-  color: var(--color-text-muted);
+  color: var(--color-text-muted, #5d5f78);
   font-size: 12px;
   margin: 0;
 }
 
 faros-provider-databricks .import-backdrop {
   align-items: center;
-  background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+  background: color-mix(in srgb, var(--color-surface, #0a0b12) 82%, transparent);
   display: flex;
   inset: 0;
   justify-content: center;
@@ -462,10 +298,10 @@ faros-provider-databricks .import-backdrop {
 }
 
 faros-provider-databricks .import-dialog {
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border-default);
+  background: var(--color-surface-raised, #111320);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
   border-radius: 6px;
-  box-shadow: 0 22px 70px color-mix(in srgb, var(--color-surface) 72%, transparent);
+  box-shadow: 0 22px 70px color-mix(in srgb, var(--color-surface, #0a0b12) 72%, transparent);
   display: flex;
   flex-direction: column;
   max-height: min(760px, calc(100vh - 48px));
@@ -482,14 +318,14 @@ faros-provider-databricks .import-actions {
   padding: 16px 18px;
 }
 
-faros-provider-databricks .import-head { align-items: flex-start; border-bottom: 1px solid var(--color-border-subtle); }
+faros-provider-databricks .import-head { align-items: flex-start; border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
 faros-provider-databricks .import-head h2 { font-size: 16px; font-weight: 600; margin: 2px 0 3px; }
-faros-provider-databricks .import-head p { color: var(--color-text-muted); font-size: 11px; margin: 0; }
-faros-provider-databricks .import-eyebrow { color: var(--color-text-muted); font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
-faros-provider-databricks .import-head .icon-button svg { height: 15px; width: 15px; }
+faros-provider-databricks .import-head p { color: var(--color-text-muted, #5d5f78); font-size: 11px; margin: 0; }
+faros-provider-databricks .import-eyebrow { color: var(--color-text-muted, #5d5f78); font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+faros-provider-databricks .import-head .databricks-dialog-close svg { height: 15px; width: 15px; }
 
 faros-provider-databricks .import-steps {
-  border-bottom: 1px solid var(--color-border-subtle);
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   list-style: none;
@@ -497,75 +333,56 @@ faros-provider-databricks .import-steps {
   padding: 0 18px;
 }
 
-faros-provider-databricks .import-steps li { border-bottom: 2px solid transparent; color: var(--color-text-muted); font-family: var(--font-mono); font-size: 10px; padding: 9px 4px 8px; text-align: center; text-transform: uppercase; }
-faros-provider-databricks .import-steps li[aria-current='step'] { border-bottom-color: var(--color-accent); color: var(--color-accent); }
+faros-provider-databricks .import-steps li { border-bottom: 2px solid transparent; color: var(--color-text-muted, #5d5f78); font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); font-size: 10px; padding: 9px 4px 8px; text-align: center; text-transform: uppercase; }
+faros-provider-databricks .import-steps li[aria-current='step'] { border-bottom-color: var(--color-accent, #8b6bff); color: var(--color-accent, #8b6bff); }
 faros-provider-databricks .import-body { min-height: 260px; overflow-y: auto; padding: 18px; }
 faros-provider-databricks .import-stack,
-faros-provider-databricks .choice-list,
 faros-provider-databricks .review-list,
 faros-provider-databricks .result-list { display: flex; flex-direction: column; gap: 10px; }
 
-faros-provider-databricks .choice-row span,
 faros-provider-databricks .review-row > span,
 faros-provider-databricks .result-summary span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-faros-provider-databricks .choice-row strong,
 faros-provider-databricks .review-row strong,
 faros-provider-databricks .result-summary strong { font-size: 13px; font-weight: 600; }
-faros-provider-databricks .choice-row small,
 faros-provider-databricks .review-row small,
 faros-provider-databricks .result-summary small,
-faros-provider-databricks .result-row small { color: var(--color-text-muted); font-size: 11px; line-height: 1.45; }
+faros-provider-databricks .result-row small { color: var(--color-text-muted, #5d5f78); font-size: 11px; line-height: 1.45; }
 
-faros-provider-databricks .choice-row,
 faros-provider-databricks .review-row,
-faros-provider-databricks .result-row { align-items: center; background: var(--color-surface-overlay); border: 1px solid var(--color-border-subtle); border-radius: 4px; display: grid; gap: 10px; padding: 10px 12px; }
-faros-provider-databricks .choice-row { cursor: pointer; grid-template-columns: 18px minmax(0, 1fr); }
-faros-provider-databricks .choice-row:hover { background: var(--color-surface-hover); }
-faros-provider-databricks .choice-row.unsupported { cursor: not-allowed; opacity: .6; }
-faros-provider-databricks .choice-row input { accent-color: var(--color-accent); height: 14px; margin: 0; width: 14px; }
+faros-provider-databricks .result-row { align-items: center; background: var(--color-surface-overlay, #171927); border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); border-radius: 4px; display: grid; gap: 10px; padding: 10px 12px; }
 faros-provider-databricks .lazy-tree { display: grid; gap: 0; outline: none; }
-faros-provider-databricks .lazy-tree-group { border-left: 1px solid var(--color-border-subtle); display: grid; gap: 0; margin-left: 8px; padding-left: 10px; }
+faros-provider-databricks .lazy-tree-group { border-left: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); display: grid; gap: 0; margin-left: 8px; padding-left: 10px; }
 faros-provider-databricks .lazy-tree-item { outline: none; }
-faros-provider-databricks .lazy-tree-item:focus > .lazy-tree-row { background: var(--color-accent-subtle); outline: 1px solid color-mix(in srgb, var(--color-accent) 55%, transparent); outline-offset: -1px; }
+faros-provider-databricks .lazy-tree-item:focus > .lazy-tree-row { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); outline: 1px solid color-mix(in srgb, var(--color-accent, #8b6bff) 55%, transparent); outline-offset: -1px; }
 faros-provider-databricks .lazy-tree-row { align-items: center; background: transparent; border: 0; border-radius: 3px; display: grid; gap: 6px; grid-template-columns: 14px 14px minmax(0, 1fr); min-height: 30px; padding: 4px 6px; transition: background 140ms ease, outline-color 140ms ease; }
-faros-provider-databricks .lazy-tree-row:not(.disabled):hover { background: color-mix(in srgb, var(--color-accent) 5%, transparent); }
+faros-provider-databricks .lazy-tree-row:not(.disabled):hover { background: color-mix(in srgb, var(--color-accent, #8b6bff) 5%, transparent); }
 faros-provider-databricks .lazy-tree-row.disabled { cursor: not-allowed; opacity: .58; }
-faros-provider-databricks .lazy-tree-expander { align-items: center; background: transparent; border: 0; color: var(--color-text-muted); display: flex; height: 16px; justify-content: center; padding: 0; width: 16px; }
+faros-provider-databricks .lazy-tree-expander { align-items: center; background: transparent; border: 0; color: var(--color-text-muted, #5d5f78); display: flex; height: 16px; justify-content: center; padding: 0; width: 16px; }
 faros-provider-databricks .lazy-tree-expander svg { height: 14px; transition: transform 140ms ease; width: 14px; }
 faros-provider-databricks .lazy-tree-expander svg.expanded { transform: rotate(90deg); }
 faros-provider-databricks .lazy-tree-expander-spacer { height: 16px; width: 16px; }
 faros-provider-databricks .lazy-tree-copy { display: grid; gap: 2px; min-width: 0; }
-faros-provider-databricks .lazy-tree-copy strong { color: var(--color-text-primary); font-family: var(--font-mono); font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-faros-provider-databricks .lazy-tree-copy small { color: var(--color-text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-faros-provider-databricks .lazy-tree-error { color: var(--color-danger); font-size: 11px; margin: 5px 0 6px 40px; }
+faros-provider-databricks .lazy-tree-copy strong { color: var(--color-text-primary, #e9e9f2); font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+faros-provider-databricks .lazy-tree-copy small { color: var(--color-text-muted, #5d5f78); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+faros-provider-databricks .lazy-tree-error { color: var(--color-danger, #ff5d5d); font-size: 11px; margin: 5px 0 6px 40px; }
 faros-provider-databricks .lazy-tree-more { margin: 5px 0 5px 40px; }
 faros-provider-databricks .lazy-tree-root-more { justify-self: start; margin-top: 6px; }
 faros-provider-databricks .review-row { align-items: start; grid-template-columns: minmax(0, 1fr) minmax(220px, .8fr); }
 faros-provider-databricks .result-summary { align-items: center; display: flex; gap: 10px; padding: 4px 2px 10px; }
-faros-provider-databricks .result-summary > svg { color: var(--color-accent); height: 20px; width: 20px; }
+faros-provider-databricks .result-summary > svg { color: var(--color-accent, #8b6bff); height: 20px; width: 20px; }
 faros-provider-databricks .result-row { grid-template-columns: minmax(120px, .7fr) auto minmax(0, 1fr); }
-faros-provider-databricks .result-state { border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: 3px; font-family: var(--font-mono); font-size: 10px; padding: 2px 5px; text-transform: uppercase; }
-faros-provider-databricks .result-state.created { background: var(--color-success-subtle); color: var(--color-success); }
-faros-provider-databricks .result-state.existing { background: var(--color-accent-subtle); color: var(--color-accent); }
+faros-provider-databricks .result-state { border: 1px solid color-mix(in srgb, currentColor 35%, transparent); border-radius: 3px; font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace); font-size: 10px; padding: 2px 5px; text-transform: uppercase; }
+faros-provider-databricks .result-state.created { background: var(--color-success-subtle, rgba(47, 214, 160, 0.12)); color: var(--color-success, #2fd6a0); }
+faros-provider-databricks .result-state.existing { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); color: var(--color-accent, #8b6bff); }
 faros-provider-databricks .result-state.conflict,
-faros-provider-databricks .result-state.failed { background: var(--color-danger-subtle); color: var(--color-danger); }
-faros-provider-databricks .prerequisite { background: var(--color-warning-subtle); border: 1px solid color-mix(in srgb, var(--color-warning) 35%, transparent); border-radius: 4px; color: var(--color-warning); font-size: 12px; padding: 10px 12px; }
-faros-provider-databricks .import-loading { align-items: center; color: var(--color-text-secondary); display: flex; font-size: 12px; gap: 7px; margin: 12px 0 0; }
+faros-provider-databricks .result-state.failed { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); color: var(--color-danger, #ff5d5d); }
+faros-provider-databricks .prerequisite { background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); border: 1px solid color-mix(in srgb, var(--color-warning, #f0a63a) 35%, transparent); border-radius: 4px; color: var(--color-warning, #f0a63a); font-size: 12px; padding: 10px 12px; }
+faros-provider-databricks .import-loading { align-items: center; color: var(--color-text-secondary, #8a8ca6); display: flex; font-size: 12px; gap: 7px; margin: 12px 0 0; }
 faros-provider-databricks .import-loading svg,
 faros-provider-databricks .import-actions svg { height: 14px; width: 14px; }
 faros-provider-databricks .spin { animation: provider-spin .8s linear infinite; }
-faros-provider-databricks .import-actions { border-top: 1px solid var(--color-border-subtle); }
+faros-provider-databricks .import-actions { border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
 faros-provider-databricks .import-spacer { flex: 1; }
-
-
-@keyframes provider-shimmer {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
-  }
-}
 
 
 @keyframes provider-spin { to { transform: rotate(360deg); } }

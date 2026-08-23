@@ -5,11 +5,26 @@
     "provider-sdk/portalkit-vue"
   ],
   "providerRoots": [
-    "providers/*/portal/src"
+    "portal",
+    "hack/dex/web",
+    "providers/*/portal"
   ],
   "vendoredSegments": [
     "portalkit",
     "portalkit-vue"
+  ],
+  "canonicalConsumerPaths": [
+    "portal/src/assets/faros-ui.css"
+  ],
+  "tokenAuthorityPaths": [
+    "portal/src/assets/main.css",
+    "hack/dex/web/static/main.css",
+    "portal/src/components/TerminalDock.vue",
+    "providers/agents/portal/public/index.html",
+    "providers/app-studio/portal/index.html",
+    "providers/infrastructure/portal/public/index.html",
+    "providers/kuery/portal/public/index.html",
+    "providers/quickstart/portal/public/index.html"
   ],
   "includeTests": false,
   "exceptions": "hack/ui-conformance-exceptions.json"

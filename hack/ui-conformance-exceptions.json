@@ -135,6 +135,213 @@
       "match": "#8b6bff",
       "reference": "design-book §8 Kuery graph",
       "reason": "Cytoscape cannot read CSS variables, so this exact dark fallback keeps the graph canvas legible."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 57,
+      "column": 20,
+      "match": "#0b0c11",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 58,
+      "column": 20,
+      "match": "#c8c8d0",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 59,
+      "column": 16,
+      "match": "#8b6bff",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 60,
+      "column": 29,
+      "match": "#8b6bff33",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 61,
+      "column": 15,
+      "match": "#0b0c11",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 62,
+      "column": 13,
+      "match": "#f87171",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 63,
+      "column": 15,
+      "match": "#34d399",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 64,
+      "column": 16,
+      "match": "#fbbf24",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 65,
+      "column": 14,
+      "match": "#60a5fa",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 66,
+      "column": 17,
+      "match": "#a78bfa",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 67,
+      "column": 14,
+      "match": "#22d3ee",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 68,
+      "column": 15,
+      "match": "#c8c8d0",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 69,
+      "column": 21,
+      "match": "#404050",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 70,
+      "column": 19,
+      "match": "#fca5a5",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 71,
+      "column": 21,
+      "match": "#6ee7b7",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 72,
+      "column": 22,
+      "match": "#fcd34d",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 73,
+      "column": 20,
+      "match": "#93c5fd",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 74,
+      "column": 23,
+      "match": "#c4b5fd",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 75,
+      "column": 20,
+      "match": "#67e8f9",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 76,
+      "column": 21,
+      "match": "#f0f0f5",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "raw-color",
+      "path": "portal/src/components/TerminalInstance.vue",
+      "line": 196,
+      "column": 65,
+      "match": "#0b0c11",
+      "reference": "design-book §8 terminal canvas colors",
+      "reason": "The terminal canvas uses its sanctioned fixed dark ANSI palette and cannot consume host UI color tokens."
+    },
+    {
+      "rule": "pill-radius",
+      "path": "portal/src/components/ControlPlaneProvisioning.vue",
+      "line": 67,
+      "column": 77,
+      "match": "rounded-full",
+      "reference": "design-book §8 decorative blurred accent orbs",
+      "reason": "This oversized blurred oval is an explicitly sanctioned ambient ground texture."
+    },
+    {
+      "rule": "pill-radius",
+      "path": "portal/src/pages/AuthCallback.vue",
+      "line": 63,
+      "column": 77,
+      "match": "rounded-full",
+      "reference": "design-book §8 decorative blurred accent orbs",
+      "reason": "This oversized blurred oval is an explicitly sanctioned ambient ground texture."
     }
   ]
 }

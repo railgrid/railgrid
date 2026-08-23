@@ -67,7 +67,7 @@ const options: Option[] = [
       :title="o.title"
       :aria-pressed="theme.mode === o.mode"
       :aria-label="o.title"
-      class="flex h-7 items-center justify-center rounded-lg transition-all duration-200"
+      class="k-btn k-btn--ghost h-7 rounded-md border-0 p-0 transition-all duration-200"
       :class="
         theme.mode === o.mode
           ? 'bg-accent/15 text-accent shadow-sm'
@@ -93,7 +93,7 @@ const options: Option[] = [
       type="button"
       :title="o.title"
       :aria-pressed="theme.mode === o.mode"
-      class="flex h-5 w-6 items-center justify-center rounded text-text-muted transition-all duration-200"
+      class="k-btn k-btn--ghost h-5 w-6 rounded-md border-0 p-0 text-text-muted transition-all duration-200"
       :class="
         theme.mode === o.mode
           ? 'bg-accent/20 text-accent'

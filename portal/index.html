@@ -7,16 +7,21 @@
     <title>Faros Portal</title>
     <script>
       // Apply theme before first paint to prevent flash. Unset preference
-      // follows the OS. Dark is the hard fallback: any failure (no matchMedia,
-      // thrown error) renders dark, which matches the CSS base in main.css.
+      // defaults to dark. Following the OS is an explicit `system` preference;
+      // any failure (no matchMedia, storage access, or thrown error) renders
+      // dark, which matches the CSS base in main.css.
       // Must stay in lockstep with stores/theme.ts — a mismatch here IS the
       // flash this script exists to prevent.
       (function() {
         try {
-          var t = localStorage.getItem('faros-theme') || 'system';
-          var prefersDark = window.matchMedia
+          var stored = localStorage.getItem('faros-theme');
+          var t = stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'dark';
+          var hasMatchMedia = typeof window.matchMedia === 'function';
+          var prefersDark = hasMatchMedia
             && window.matchMedia('(prefers-color-scheme: dark)').matches;
-          var d = t === 'system' ? (prefersDark ? 'dark' : 'light') : t;
+          var d = t === 'system'
+            ? (hasMatchMedia ? (prefersDark ? 'dark' : 'light') : 'dark')
+            : t;
           document.documentElement.className = d;
         } catch (e) {
           document.documentElement.className = 'dark';

@@ -265,7 +265,7 @@ function friendlyError(error: unknown, fallback: string): string {
         <input
           v-model="query"
           type="search"
-          class="h-9 w-full rounded-lg border border-border-default bg-surface pl-9 pr-9 text-[12px] text-text-primary outline-none transition focus:border-accent/50"
+          class="h-9 w-full rounded-md border border-border-default bg-surface pl-9 pr-9 text-[12px] text-text-primary outline-none transition focus:border-accent/50"
           placeholder="Search skills"
           aria-label="Search skills"
         />
@@ -281,7 +281,7 @@ function friendlyError(error: unknown, fallback: string): string {
       </label>
       <button
           type="button"
-          class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border-subtle bg-surface px-2.5 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+          class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-2.5 text-[11px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
           :disabled="catalogLoading || actionBusy || !projectName"
           aria-label="Refresh skills"
           @click="refreshCatalog()"
@@ -333,7 +333,7 @@ function friendlyError(error: unknown, fallback: string): string {
             :key="skill.id"
             type="button"
             role="listitem"
-            class="group flex min-w-0 items-center gap-2.5 rounded-xl px-2.5 py-2.5 text-left transition hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            class="group flex min-w-0 items-center gap-2.5 rounded-md px-2.5 py-2.5 text-left transition hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             :class="skill.id === selectedSkillID ? 'bg-accent-subtle' : ''"
             :disabled="actionBusy"
             :aria-busy="activationSkillID === skill.id ? 'true' : undefined"
@@ -398,7 +398,7 @@ function friendlyError(error: unknown, fallback: string): string {
                 <span class="absolute top-1 h-5 w-5 rounded-xs bg-text-primary shadow-sm transition-all" :class="selectedSkill.enabled === false ? 'left-1' : 'left-6'" />
               </button>
             </div>
-            <button type="button" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-text-muted transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60" :disabled="actionBusy" aria-label="Close skill details" @click="closeSkillDetail">
+            <button type="button" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60" :disabled="actionBusy" aria-label="Close skill details" @click="closeSkillDetail">
               <X class="h-5 w-5" :stroke-width="1.75" />
             </button>
           </header>

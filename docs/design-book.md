@@ -102,8 +102,10 @@ qualifies.
 
 ## 4. Typography
 
-Self-hosted via `@fontsource`, imported in `portal/src/main.ts`. No other
-faces, no CDN fonts.
+Self-hosted via `@fontsource`, imported in `portal/src/main.ts`. Dex renders as
+a standalone document, so `hack/dex/web/static/fonts/` embeds the matching
+`@fontsource` WOFF2 files and `main.css` declares them locally. No other faces,
+no CDN fonts.
 
 | Role | Face | Usage |
 |---|---|---|
@@ -137,10 +139,12 @@ writing any CSS**:
 | `.k-table` | 6px table wrapper; mono 9–10px uppercase headers, 13px rows, accent-tint hover via `.is-interactive` |
 | `.k-cell-mono` | Data-like cells (names, ids, timestamps) |
 | `.k-badge` (+ `--success/--warning/--danger/--muted`, `__dot`) | **Square 3px mono tag**: 10px/600 uppercase, `0.06em`, `*-subtle` bg, `color-mix(currentColor 35%)` hairline |
-| `.k-btn` (+ `--primary/--ghost/--danger`) | 4px control; primary = solid accent + glow; ghost = overlay bg + hairline; danger = danger-subtle tint, **no glow** |
+| `.k-btn` (+ `--primary/--ghost/--text/--danger`) | 4px control; primary = solid accent + glow; ghost = overlay bg + hairline; text = transparent, borderless inline action; danger = danger-subtle tint, **no glow** |
+| `.k-back-action` | Intrinsic-width back-navigation modifier for `.k-btn`; start-aligned in flex/grid page flows, muted → accent on hover |
 | `.k-input` | 4px overlay-bg input; focus = accent border + 3px subtle ring + glow |
 | `.k-eyebrow` / `.k-kpi` | Tracked uppercase label over an expanded tabular numeral |
 | `.k-menu` / `.k-menu-item` (+ `--danger`, `.is-selected`, `.k-menu-sep`) | Dropdown/context menu panel + items; selection = accent-subtle, no glow |
+| `.k-layout-selector` (+ `__trigger`, `__menu`, `__item`) | Controlled grid/list presentation menu; compact icon trigger, radio semantics, no glow |
 | `.k-kbd` | Shortcut key-cap: mono 9px uppercase, 3px, darker bottom edge |
 | `[data-k-tip="…"]` | CSS-only tooltip: 300ms delay, shows on hover AND focus, 260px max |
 | `.k-progress` / `.k-progress__bar` (+ `--accent/--warning/--danger`) | 2px-radius track, semantic fill |
@@ -183,6 +187,18 @@ texture (login, empty states — sparingly), `.island` floating dock card,
   Enter/Space activates the row, and nested links, buttons, inputs, selects,
   summaries, and other explicit controls do not activate the row. Do not turn a
   row into `role="button"`. Labeled actions remain appropriate on detail pages.
+  `ResourceTable` has exactly two blessed configurations:
+  - **Queryable** (default): the current resource-list contract. Search, filters,
+    and client/server pagination remain independently configured; configured
+    controls have matching initial-loading skeletons, filters apply to the
+    authoritative result set, and query/filter/page changes reset to page one.
+    Every existing `ResourceTable` remains Queryable until it is explicitly
+    reviewed for conversion; never infer Simple from omitted control props.
+  - **Simple** (`variant="simple"`): explicit opt-in for a short, bounded,
+    contextual list. It has no search, filters, pagination, controlled query,
+    filter values, page, cursor, or page metadata. Loading begins directly with
+    the table skeleton. Empty/error, native row semantics, nested-control
+    isolation, and row-action accessibility are identical to Queryable.
 - **Modals / dialogs.** 6px, surface-raised, hairline, heavy elevation shadow
   allowed. The scrim derives from **surface** (`color-mix(surface 60%)`), never
   from text (a text-derived scrim inverts to white in dark). Use the portalkit
@@ -324,6 +340,25 @@ App-studio's `PreviewActionsMenu` / `ResponseModePicker` /
   hairline `border-subtle` divider.
 - Keyboard: arrows + Home/End, Escape closes, focus returns to the trigger.
 
+### Layout selector — ✅ implemented as `portalkit-vue/LayoutSelector.vue`
+
+Use the shared selector when the same resource collection has grid and list
+presentations. It is a controlled component (`modelValue` plus
+`update:modelValue`) with exactly two stable values: `grid` and `list`. The
+optional persistence helper validates stored values, defaults to `grid`, and
+treats unavailable or failing browser storage as a non-fatal preference miss.
+
+- Trigger: compact current-layout icon plus chevron, with `aria-haspopup`,
+  `aria-expanded`, `aria-controls`, and an accessible name that includes the
+  current mode. Focus uses a crisp accent outline; it never glows.
+- Menu: visible mono-uppercase Layout label and `role="menu"`; Grid and List
+  are `role="menuitemradio"` with `aria-checked`. Selection uses the standard
+  `accent-subtle` menu state and no glow.
+- Keyboard: click, Enter, and Space select; closed ArrowDown/ArrowUp opens on
+  the first/last item; open arrows wrap; Home/End jump; Escape closes and
+  restores trigger focus. Tab closes after normal focus movement without a
+  focus trap. Pointer or focus movement outside closes the menu.
+
 ### Provider route tabs — ✅ implemented as PortalKit `Tabs`
 
 This is the labeled provider-level route/section navigation used by Agents, App
@@ -397,12 +432,28 @@ track (`rounded-xs`), `accent` filled portion, 12×12px square 2px-radius
 readouts are mono `tabular-nums`.
 
 ### Pagination
-None exists — lists poll and truncate today. When needed:
-- Prefer "Load more" (a `.k-btn--ghost`) or infinite scroll for streams.
-- True pagination: 4px-radius ghost icon-buttons (‹ ›) + mono `tabular-nums`
-  "12–24 of 96" label in `text-muted`; current page indicator uses
-  `accent-subtle` bg + `accent` text like an active tab. No number soup —
-  never render more than 5 page buttons.
+`portalkit/ResourceTable.vue` owns filtering and true pagination for bounded
+resource lists. Opt in with `searchable`, `filters`, `paginated`, and
+`page-size`; it searches and filters the complete loaded row set before slicing
+the visible page. A filter or page-size change returns to page one, while polling
+retains the current page when it remains valid. The shared presentation is:
+- 4px-radius ghost icon-buttons (‹ ›) + mono `tabular-nums` "12–24 of 96" label
+  in `text-muted`.
+- Current page indicator in `accent-subtle` with `accent` text. No number soup.
+- Search plus compact categorical selects above the table; one `Clear filters`
+  action appears only when a filter is active.
+- For wide tables, only the table canvas scrolls horizontally. Search/filter
+  controls and the pagination footer remain pinned to the full card width.
+- Prefer "Load more" (a `.k-btn--ghost`) or infinite scroll for streams such as
+  activity/event feeds; do not force page navigation onto an append-only flow.
+
+For a cursor-backed resource list, set `pagination-mode="server"` and control
+the table with `page`, `page-size`, `query`, `filter-values`, `cursor`, and
+`page-info`. Handle the typed `change` event to fetch the supplied page. Server
+mode renders the supplied rows as-is; it does not apply local search, filters,
+or slicing. Cursor values are opaque, and `page-info` should expose only the
+next-page state the backend actually returned—never an exact total inferred
+from a remaining-item count.
 
 ### Date / time picker
 None exists — all dates are read-only mono output via `portal/src/utils/time.ts`

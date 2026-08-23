@@ -8,6 +8,9 @@ const loadingShell = await readFile(new URL('./ProductionSettingsLoadingShell.vu
 const statusBadge = await readFile(new URL('./portalkit/StatusBadge.vue', import.meta.url), 'utf8')
 const styles = await readFile(new URL('./style.css', import.meta.url), 'utf8')
 const main = await readFile(new URL('./main.ts', import.meta.url), 'utf8')
+const element = await readFile(new URL('./element.ts', import.meta.url), 'utf8')
+const shareDialog = await readFile(new URL('./ProjectShareDialog.vue', import.meta.url), 'utf8')
+const assistantPlanPopover = await readFile(new URL('./AssistantPlanPopover.vue', import.meta.url), 'utf8')
 const providerFrame = await readFile(new URL('../../../../portal/src/pages/ProviderFrame.vue', import.meta.url), 'utf8')
 const api = await readFile(new URL('./api.ts', import.meta.url), 'utf8')
 
@@ -95,6 +98,25 @@ test('compiles text-on-accent with a host-token fallback without leaking self-re
   assert.match(styles, /--color-on-accent:\s*var\(--color-on-accent,\s*#[f]{3}\)/)
   assert.match(main, /const styles = rawStyles\.replace\(/)
   assert.match(main, /--color-\[\\w-\]\+:var\\\(--color\[\^;}\]\*;\?\/g/)
+})
+
+test('keeps Tailwind overlays inside the provider scope and preserves their focus surfaces', () => {
+  assert.match(element, /this\.overlayRoot = document\.createElement\('div'\)/)
+  assert.match(element, /this\.overlayRoot\.id = 'app-studio-overlay-root'/)
+  assert.match(element, /this\.overlayRoot\.className = 'app-studio-overlay-root'/)
+  assert.match(element, /this\.appendChild\(this\.overlayRoot\)/)
+  assert.match(element, /this\.removeChild\(this\.overlayRoot\)/)
+  assert.match(styles, /\.app-studio-overlay-root\s*\{[\s\S]*display:\s*contents/)
+  assert.match(main, /@scope \(faros-provider-app-studio\)/)
+  assert.match(shareDialog, /<Teleport to="#app-studio-overlay-root">/)
+  assert.match(shareDialog, /dialogCloseButton\.value\?\.focus\(\)/)
+  assert.match(shareDialog, /role="dialog"[\s\S]*aria-modal="true"/)
+  assert.doesNotMatch(shareDialog, /<Teleport to="body">/)
+  assert.match(assistantPlanPopover, /<Teleport v-if="mounted && mobileOpen" to="#app-studio-overlay-root">/)
+  assert.match(assistantPlanPopover, /mobileCloseRef\.value\?\.focus\(\)/)
+  assert.match(assistantPlanPopover, /mobileTriggerRef\.value\?\.focus\(\)/)
+  assert.match(assistantPlanPopover, /role="dialog"[\s\S]*aria-modal="true"/)
+  assert.doesNotMatch(assistantPlanPopover, /<Teleport v-if="mounted && mobileOpen" to="body">/)
 })
 
 test('announces preview recovery failures assertively', () => {

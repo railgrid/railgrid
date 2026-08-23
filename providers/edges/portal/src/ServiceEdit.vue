@@ -136,7 +136,7 @@ function phaseClass(p?: string): string {
     <div v-if="error" class="banner error">{{ error }}</div>
 
     <!-- Provider info (from the catalog) -->
-    <div class="wiz-card" style="margin-bottom: 16px;">
+    <div class="wiz-card k-card">
       <div class="es-head">Provider info</div>
       <div class="row" style="gap: 28px; flex-wrap: wrap;">
         <div>
@@ -168,7 +168,7 @@ function phaseClass(p?: string): string {
     </div>
 
     <!-- Configuration -->
-    <div class="wiz-card" style="margin-bottom: 16px;">
+    <div class="wiz-card k-card">
       <div class="es-head">Configuration</div>
       <div class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
@@ -224,7 +224,7 @@ function phaseClass(p?: string): string {
     </div>
 
     <!-- Credentials -->
-    <div class="wiz-card" style="margin-bottom: 16px;">
+    <div class="wiz-card k-card">
       <div class="es-head">Credentials</div>
       <div class="muted" style="margin-bottom: 8px;">{{ entry?.credential.hint ?? 'Credential' }} — makes the service Ready. Stored as a Secret, never on the agent host.</div>
       <div class="row" style="gap: 8px; align-items: flex-end;">
@@ -238,7 +238,7 @@ function phaseClass(p?: string): string {
     </div>
 
     <!-- Status -->
-    <div class="wiz-card">
+    <div class="wiz-card k-card">
       <div class="es-head">Status <span class="k-badge" :class="phaseClass(service.phase)">{{ service.phase || 'Pending' }}</span></div>
       <div v-if="service.url" class="muted mono" style="margin-bottom: 8px; font-size: 12px;">{{ service.url }}</div>
       <ConditionsPanel :conditions="service.conditions" empty-text="No conditions reported yet." />

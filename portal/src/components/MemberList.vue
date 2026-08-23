@@ -57,20 +57,21 @@ async function submit() {
     <div v-if="!readonly" class="flex flex-wrap items-center gap-2">
       <input
         v-model="newUser"
-        class="min-w-[200px] flex-1 rounded-md border border-border-default/50 bg-surface-overlay/60 px-3 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
+        class="k-input min-w-[200px] w-auto flex-1 text-sm"
         placeholder="email or user UUID"
         @keyup.enter="submit"
       />
       <select
         v-model="newRole"
-        class="rounded-md border border-border-default/50 bg-surface-overlay/60 px-3 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
+        class="k-input w-auto text-sm"
         title="Admins manage members and settings; members use what's already here."
       >
         <option value="member">member</option>
         <option value="admin">admin</option>
       </select>
       <button
-        class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-3 py-1.5 text-[12px] font-medium text-accent transition-colors hover:bg-accent/20 disabled:opacity-60"
+        type="button"
+        class="k-btn k-btn--primary px-3 py-1.5 text-[12px]"
         :disabled="!!busy.__new__ || !newUser.trim()"
         @click="submit"
       >
@@ -84,7 +85,8 @@ async function submit() {
     <div v-else-if="members.length === 0" class="mt-3 text-sm text-text-muted">
       No members yet.<template v-if="!readonly"> Anyone you add gains access to {{ scopeLabel }}.</template>
     </div>
-    <table v-else class="mt-3 w-full text-sm">
+    <div v-else class="k-table mt-3">
+      <table class="w-full text-sm">
       <thead>
         <tr class="text-left text-[10px] font-semibold uppercase tracking-wider text-text-muted">
           <th class="py-2 pr-3">User</th>
@@ -123,7 +125,7 @@ async function submit() {
             >{{ m.role }}</span>
             <select
               v-else
-              class="rounded-md border border-border-default/50 bg-surface-overlay/60 px-2 py-1 text-[12px] text-text-primary focus:border-accent focus:outline-none disabled:opacity-60"
+              class="k-input w-auto px-2 py-1 text-[12px] disabled:opacity-60"
               :value="m.role"
               :disabled="!!busy[m.user]"
               @change="(e) => emit('changeRole', m.user, (e.target as HTMLSelectElement).value as 'admin' | 'member')"
@@ -134,7 +136,8 @@ async function submit() {
           </td>
           <td v-if="!readonly" class="py-2 pr-0 text-right">
             <button
-              class="rounded-md border border-danger/30 bg-danger-subtle px-2 py-1 text-[11px] font-medium text-danger hover:bg-danger/15 disabled:opacity-50"
+              type="button"
+              class="k-btn k-btn--danger px-2 py-1 text-[11px] disabled:opacity-50"
               :disabled="!!busy[m.user]"
               @click="emit('remove', m.user)"
             >
@@ -145,6 +148,7 @@ async function submit() {
           </td>
         </tr>
       </tbody>
-    </table>
+      </table>
+    </div>
   </div>
 </template>

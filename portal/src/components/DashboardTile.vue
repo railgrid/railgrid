@@ -207,7 +207,7 @@ onBeforeUnmount(() => {
     <button
       v-if="editMode"
       type="button"
-      class="tile-no-drag absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-border-subtle bg-surface-overlay text-text-muted transition-colors hover:border-danger/40 hover:text-danger"
+      class="tile-no-drag k-btn k-btn--ghost absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay p-0 text-text-muted transition-colors hover:border-danger/40 hover:text-danger"
       title="Remove tile"
       @click.stop="emit('remove', provider.name)"
     >
@@ -272,7 +272,7 @@ onBeforeUnmount(() => {
           v-for="l in quickLinks"
           :key="l.to"
           :to="l.to"
-          class="tile-no-drag rounded-lg border border-border-subtle bg-surface-overlay px-2 py-1 text-[11px] text-text-secondary transition-colors hover:border-accent/40 hover:text-accent"
+          class="tile-no-drag k-btn k-btn--ghost rounded-md border border-border-subtle bg-surface-overlay px-2 py-1 text-[11px] text-text-secondary transition-colors hover:border-accent/40 hover:text-accent"
         >{{ l.label }}</router-link>
       </div>
       <p v-else :class="tileClass.empty">

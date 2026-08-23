@@ -21,7 +21,10 @@ export function inlineCssAssets({ styleId }) {
           : new TextDecoder().decode(asset.source))
         .join('\n')
       const id = JSON.stringify(styleId)
-      const source = JSON.stringify(css)
+      // Vue SFC styles are emitted separately from the Tailwind entry CSS.
+      // Scope that asset too, otherwise it can leak selectors into the host
+      // document even though the runtime entry styles are scoped.
+      const source = JSON.stringify(`@scope (faros-provider-app-studio) {\n${css}\n}`)
 
       entry.code = `;(()=>{if(typeof document==='undefined'||document.getElementById(${id}))return;const style=document.createElement('style');style.id=${id};style.textContent=${source};document.head.appendChild(style)})();${entry.code}`
       for (const asset of cssAssets) delete bundle[asset.fileName]

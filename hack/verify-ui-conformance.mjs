@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Static, dependency-free guard for the Violet Circuit provider UI contract.
+ * Static, dependency-free guard for the Violet Circuit frontend contract.
  *
  * This intentionally is a scanner rather than a formatter.  It reports every
  * violation with a stable path/line/column/rule tuple so a migration can be
@@ -46,6 +46,8 @@ const SOURCE_EXTENSIONS = new Set([
 const DEFAULT_CANONICAL_ROOTS = ['provider-sdk/portalkit', 'provider-sdk/portalkit-vue']
 const DEFAULT_PROVIDER_ROOTS = ['providers/*/portal/src']
 const DEFAULT_VENDORED_SEGMENTS = ['portalkit', 'portalkit-vue']
+const DEFAULT_CANONICAL_CONSUMER_PATHS = []
+const DEFAULT_TOKEN_AUTHORITY_PATHS = []
 
 // This is the token vocabulary documented in docs/design-book.md §2 and
 // declared by portal/src/assets/main.css.  Keep this list explicit: deriving
@@ -167,6 +169,8 @@ const DEFAULT_CONFIG = Object.freeze({
   canonicalRoots: DEFAULT_CANONICAL_ROOTS,
   providerRoots: DEFAULT_PROVIDER_ROOTS,
   vendoredSegments: DEFAULT_VENDORED_SEGMENTS,
+  canonicalConsumerPaths: DEFAULT_CANONICAL_CONSUMER_PATHS,
+  tokenAuthorityPaths: DEFAULT_TOKEN_AUTHORITY_PATHS,
   includeTests: false,
   exceptions: 'hack/ui-conformance-exceptions.json',
 })
@@ -181,6 +185,8 @@ function cloneDefaultConfig() {
     canonicalRoots: [...DEFAULT_CONFIG.canonicalRoots],
     providerRoots: [...DEFAULT_CONFIG.providerRoots],
     vendoredSegments: [...DEFAULT_CONFIG.vendoredSegments],
+    canonicalConsumerPaths: [...DEFAULT_CONFIG.canonicalConsumerPaths],
+    tokenAuthorityPaths: [...DEFAULT_CONFIG.tokenAuthorityPaths],
   }
 }
 
@@ -202,7 +208,16 @@ function assertStringArray(value, label) {
 
 function validateConfig(raw) {
   assertPlainObject(raw, 'configuration')
-  const allowed = new Set(['version', 'canonicalRoots', 'providerRoots', 'vendoredSegments', 'includeTests', 'exceptions'])
+  const allowed = new Set([
+    'version',
+    'canonicalRoots',
+    'providerRoots',
+    'vendoredSegments',
+    'canonicalConsumerPaths',
+    'tokenAuthorityPaths',
+    'includeTests',
+    'exceptions',
+  ])
   for (const key of Object.keys(raw)) {
     if (!allowed.has(key)) fail(`configuration has unknown key ${JSON.stringify(key)}`)
   }
@@ -210,6 +225,8 @@ function validateConfig(raw) {
   assertStringArray(raw.canonicalRoots, 'configuration.canonicalRoots')
   assertStringArray(raw.providerRoots, 'configuration.providerRoots')
   assertStringArray(raw.vendoredSegments, 'configuration.vendoredSegments')
+  assertStringArray(raw.canonicalConsumerPaths, 'configuration.canonicalConsumerPaths')
+  assertStringArray(raw.tokenAuthorityPaths, 'configuration.tokenAuthorityPaths')
   if (typeof raw.includeTests !== 'boolean') fail('configuration.includeTests must be boolean')
   if (!(typeof raw.exceptions === 'string' || Array.isArray(raw.exceptions) || (raw.exceptions && typeof raw.exceptions === 'object'))) {
     fail('configuration.exceptions must be a registry path, array, or registry object')
@@ -503,7 +520,7 @@ function scanRegex(diagnostics, source, masked, starts, regex, rule, message) {
 }
 
 function isProviderSource(source) {
-  return source.kind === 'provider'
+  return source.kind === 'provider' && !source.canonicalConsumer
 }
 
 function cssRegions(source, masked) {
@@ -747,16 +764,31 @@ function isInsideURL(text, index) {
   return close >= index
 }
 
+function isTokenAuthorityDeclaration(source, masked, index) {
+  if (!source.tokenAuthority) return false
+  const lineStart = masked.lastIndexOf('\n', index - 1)
+  const semicolon = masked.lastIndexOf(';', index - 1)
+  const brace = masked.lastIndexOf('{', index - 1)
+  const declarationStart = Math.max(lineStart, semicolon, brace) + 1
+  const prefix = masked.slice(declarationStart, index)
+  return /--(?:color|faros)-[A-Za-z0-9_-]+\s*:\s*[^;{}]*$/.test(prefix)
+}
+
 function scanColors(diagnostics, source, masked, starts) {
   for (const match of masked.matchAll(/var\(\s*(--color-[A-Za-z0-9_-]+)/g)) {
     const token = match[1].slice('--color-'.length)
     if (!COLOR_TOKENS.has(token)) addMatch(diagnostics, source, starts, RULES.UNKNOWN_COLOR_TOKEN, match.index + match[0].indexOf(match[1]), match[1], `unknown design token ${match[1]}`)
   }
 
+  for (const match of masked.matchAll(/(--color-[A-Za-z0-9_-]+)\s*:/g)) {
+    const token = match[1].slice('--color-'.length)
+    if (!COLOR_TOKENS.has(token)) addMatch(diagnostics, source, starts, RULES.UNKNOWN_COLOR_TOKEN, match.index, match[1], `unknown design token declaration ${match[1]}`)
+  }
+
   const rawRe = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\(/g
   for (const match of masked.matchAll(rawRe)) {
     const raw = match[0].endsWith('(') ? masked.slice(match.index, Math.min(masked.length, match.index + 120)).match(/^(?:rgba?|hsla?)\([^)]*\)/)?.[0] ?? match[0] : match[0]
-    if (isInsideURL(masked, match.index) || isAllowedFallback(masked, match.index, raw)) continue
+    if (isInsideURL(masked, match.index) || isAllowedFallback(masked, match.index, raw) || isTokenAuthorityDeclaration(source, masked, match.index)) continue
     addMatch(diagnostics, source, starts, RULES.RAW_COLOR, match.index, raw, 'raw color must use a design token (dark-base var() fallbacks are the only CSS literal exception)')
   }
 
@@ -883,6 +915,12 @@ export function scan(options = {}) {
     ...collectFiles(repoRoot, canonicalRoots, config, 'canonical'),
     ...collectFiles(repoRoot, providerRoots, config, 'provider'),
   ]
+  const canonicalConsumerPaths = new Set(config.canonicalConsumerPaths.map(normalizeRelativePath))
+  const tokenAuthorityPaths = new Set(config.tokenAuthorityPaths.map(normalizeRelativePath))
+  for (const source of sources) {
+    source.canonicalConsumer = canonicalConsumerPaths.has(source.path)
+    source.tokenAuthority = tokenAuthorityPaths.has(source.path)
+  }
   const filesByPath = new Map()
   for (const source of sources) {
     try {
@@ -941,8 +979,8 @@ function usage() {
   return [
     'Usage: node hack/verify-ui-conformance.mjs [options]',
     '',
-    'Scans canonical provider-sdk/portalkit* roots and providers/*/portal/src.',
-    'dist, node_modules, and byte-synced provider src/portalkit copies are excluded.',
+    'Scans the host portal, Dex, every provider portal, and canonical provider-sdk/portalkit* roots.',
+    'dist, node_modules, and byte-synced provider portalkit copies are excluded.',
     '',
     'Options:',
     '  --config PATH          JSON config (default hack/ui-conformance.config.json)',

@@ -28,6 +28,12 @@ func TestEmbeddedFarosWebAssetsKeepOIDCFrontendContract(t *testing.T) {
 	for _, path := range []string{
 		"static/main.css",
 		"static/faros-mark.svg",
+		"static/fonts/instrument-sans-latin-wght-normal.woff2",
+		"static/fonts/ibm-plex-mono-latin-400-normal.woff2",
+		"static/fonts/ibm-plex-mono-latin-600-normal.woff2",
+		"static/fonts/ibm-plex-mono-latin-700-normal.woff2",
+		"static/fonts/LICENSE-instrument-sans.txt",
+		"static/fonts/LICENSE-ibm-plex-mono.txt",
 		"static/img/google-icon.svg",
 		"templates/header.html",
 		"templates/login.html",
@@ -89,11 +95,21 @@ func TestEmbeddedFarosWebAssetsKeepOIDCFrontendContract(t *testing.T) {
 		"fonts.gstatic.com",
 		"preconnect",
 		"@import",
-		"font-face",
 		"Continue with",
 	} {
 		if strings.Contains(strings.ToLower(content), strings.ToLower(forbidden)) {
 			t.Fatalf("embedded Dex overlay contains forbidden upstream/dependency text %q", forbidden)
+		}
+	}
+
+	for _, localFont := range []string{
+		`url("./fonts/instrument-sans-latin-wght-normal.woff2")`,
+		`url("./fonts/ibm-plex-mono-latin-400-normal.woff2")`,
+		`url("./fonts/ibm-plex-mono-latin-600-normal.woff2")`,
+		`url("./fonts/ibm-plex-mono-latin-700-normal.woff2")`,
+	} {
+		if !strings.Contains(content, localFont) {
+			t.Fatalf("embedded Dex overlay does not load local design-system font %q", localFont)
 		}
 	}
 

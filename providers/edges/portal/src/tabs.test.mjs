@@ -1,54 +1,58 @@
-import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
-import test from 'node:test'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { describe, expect, it } from 'vitest'
 
-const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-const services = await readFile(new URL('./Services.vue', import.meta.url), 'utf8')
-const workloads = await readFile(new URL('./Workloads.vue', import.meta.url), 'utf8')
-const styles = await readFile(new URL('./style.css', import.meta.url), 'utf8')
+const readSource = (file) => readFileSync(resolve(process.cwd(), 'src', file), 'utf8')
+const app = readSource('App.vue')
+const services = readSource('Services.vue')
+const workloads = readSource('Workloads.vue')
+const styles = readSource('style.css')
 
-test('uses PortalKit tabs for route navigation and keeps the route contract', () => {
-  assert.match(app, /import Tabs from '\.\/portalkit\/Tabs\.vue'/)
-  assert.match(app, /const edgeRouteTabs = \[[\s\S]*id: 'edges'[\s\S]*Server[\s\S]*id: 'workloads'[\s\S]*Boxes[\s\S]*id: 'services'[\s\S]*Plug/)
+describe('Edges portal conformance', () => {
+  it('uses PortalKit tabs for route navigation and keeps the route contract', () => {
+    expect(app).toMatch(/import Tabs from '\.\/portalkit\/Tabs\.vue'/)
+    expect(app).toMatch(/const edgeRouteTabs = \[[\s\S]*id: 'edges'[\s\S]*Server[\s\S]*id: 'workloads'[\s\S]*Boxes[\s\S]*id: 'services'[\s\S]*Plug/)
 
-  const routeTabs = app.match(/<Tabs[\s\S]*?@select="\(id\) => navigate\(id === 'edges' \? '' : id\)"\s*\/>/)?.[0]
-  assert.ok(routeTabs, 'route navigation should be rendered by PortalKit Tabs')
-  assert.match(routeTabs, /v-if="!wizardOpen && !selected"/)
-  assert.match(routeTabs, /:tabs="edgeRouteTabs"/)
-  assert.match(routeTabs, /:active="view"/)
-  assert.match(routeTabs, /aria-label="Edges sections"/)
-  assert.doesNotMatch(routeTabs, /wiz-steps|wiz-step|style=/)
-})
+    const routeTabs = app.match(/<Tabs[\s\S]*?@select="\(id\) => navigate\(id === 'edges' \? '' : id\)"\s*\/>/)?.[0]
+    expect(routeTabs).toBeTruthy()
+    expect(routeTabs).toMatch(/v-if="!wizardOpen && !selected"/)
+    expect(routeTabs).toMatch(/:tabs="edgeRouteTabs"/)
+    expect(routeTabs).toMatch(/:active="view"/)
+    expect(routeTabs).toMatch(/aria-label="Edges sections"/)
+    expect(routeTabs).not.toMatch(/wiz-steps|wiz-step|style=/)
+  })
 
-test('keeps wizard progression styling and overlay route guards intact', () => {
-  assert.match(styles, /faros-provider-edges \.edges-app \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*gap: 16px;/)
-  assert.match(app, /<Workloads v-if="view === 'workloads' && !wizardOpen && !selected" \/>/)
-  assert.match(app, /<Services v-else-if="view === 'services' && !wizardOpen && !selected" \/>/)
-  assert.match(app, /<Wizard v-else-if="wizardOpen"/)
-  assert.match(app, /<Detail[\s\S]*v-else-if="selected"/)
-  assert.match(styles, /\.wiz-steps\s*\{[\s\S]*\.wiz-step\s*\{[\s\S]*\.wiz-step\.active\s*\{[\s\S]*\.wiz-step\.done\s*\{/)
-})
+  it('keeps wizard progression styling and overlay route guards intact', () => {
+    expect(styles).toMatch(/faros-provider-edges \.edges-app \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*gap: 16px;/)
+    expect(app).toMatch(/<Workloads v-if="view === 'workloads' && !wizardOpen && !selected" \/>/)
+    expect(app).toMatch(/<Services v-else-if="view === 'services' && !wizardOpen && !selected" \/>/)
+    expect(app).toMatch(/<Wizard v-else-if="wizardOpen"/)
+    expect(app).toMatch(/<Detail[\s\S]*v-else-if="selected"/)
+    expect(styles).toMatch(/\.wiz-steps\s*\{[\s\S]*\.wiz-step\s*\{[\s\S]*\.wiz-step\.active\s*\{[\s\S]*\.wiz-step\.done\s*\{/)
+  })
 
-test('keeps header actions intrinsic while descriptive copy wraps', () => {
-  assert.match(styles, /\.edges-header\s*>\s*:first-child\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;/)
-  assert.match(styles, /\.header-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*flex-wrap:\s*wrap;/)
-  assert.match(styles, /\.header-actions button\s*\{[^}]*flex:\s*0 0 auto;[^}]*white-space:\s*nowrap;/)
-  assert.match(styles, /@media \(max-width:\s*720px\)[\s\S]*?\.edges-header\s*\{[^}]*align-items:\s*stretch;[^}]*flex-direction:\s*column;/)
-})
+  it('keeps header actions intrinsic while descriptive copy wraps', () => {
+    expect(styles).toMatch(/\.edges-header\s*>\s*:first-child\s*\{[^}]*flex:\s*1 1 auto;[^}]*min-width:\s*0;/)
+    expect(styles).toMatch(/\.header-actions\s*\{[^}]*flex:\s*0 0 auto;[^}]*flex-wrap:\s*wrap;/)
+    expect(styles).toMatch(/\.header-actions button\s*\{[^}]*flex:\s*0 0 auto;[^}]*white-space:\s*nowrap;/)
+    expect(styles).toMatch(/@media \(max-width:\s*720px\)[\s\S]*?\.edges-header\s*\{[^}]*align-items:\s*stretch;[^}]*flex-direction:\s*column;/)
+  })
 
-test('gives native interactive rows keyboard and nested-control semantics', () => {
-  const rows = [
-    [app, 'onEdgeRowClick', 'onEdgeRowKeydown', 'Open .* edge'],
-    [services, 'onServiceRowClick', 'onServiceRowKeydown', 'Open service'],
-    [workloads, 'onWorkloadRowClick', 'onWorkloadRowKeydown', 'Toggle workload'],
-  ]
-  for (const [source, clickHandler, keyHandler, label] of rows) {
-    assert.match(source, /tabindex="0"/)
-    assert.match(source, new RegExp(`:aria-label="\\x60${label}`))
-    assert.match(source, new RegExp(`@click="${clickHandler}\\(`))
-    assert.match(source, new RegExp(`@keydown="${keyHandler}\\(`))
-    assert.match(source, /function isExplicitControlTarget\(event: Event\)/)
-    assert.match(source, /event\.repeat \|\| isExplicitControlTarget\(event\)/)
-  }
-  assert.match(workloads, /:aria-expanded="expanded === w\.name"/)
+  it('keeps interactive table rows labeled and nested actions explicit', () => {
+    for (const [source, labelFunction] of [
+      [app, 'edgeRowAriaLabel'],
+      [services, 'serviceRowAriaLabel'],
+      [workloads, 'workloadRowAriaLabel'],
+    ]) {
+      expect(source).toMatch(new RegExp(`function ${labelFunction}\\(row: Record<string, unknown>\\)`))
+      expect(source).toMatch(new RegExp(`:row-aria-label="${labelFunction}"`))
+      expect(source).toMatch(/@row-click=/)
+    }
+
+    expect(app).toMatch(/ResourceTableDeleteButton/)
+    expect(services).toMatch(/ResourceTableEditButton/)
+    expect(services).toMatch(/ResourceTableDeleteButton/)
+    expect(workloads).toMatch(/ResourceTableDeleteButton/)
+    expect(workloads).toMatch(/<button[\s\S]*class="k-table-action"[\s\S]*:aria-expanded="expanded === row\.name"[\s\S]*@click="toggle\(String\(row\.name\)\)"/)
+  })
 })

@@ -188,7 +188,7 @@ onUnmounted(() => {
 
 <template>
   <section class="page">
-    <button class="link back" type="button" :disabled="!!conn && operationLocked(conn.name)" @click="emit('back')"><ArrowLeft :size="14" aria-hidden="true" /> Connections</button>
+    <button class="k-btn k-btn--ghost k-back-action" type="button" :disabled="!!conn && operationLocked(conn.name)" @click="emit('back')"><ArrowLeft :size="14" aria-hidden="true" /> Connections</button>
 
     <header class="page-head">
       <div>
@@ -204,17 +204,17 @@ onUnmounted(() => {
 
     <div v-if="error && !conn" class="error read-error" role="alert" aria-live="assertive">
       <span>{{ error }}</span>
-      <button class="secondary" type="button" @click="load">Retry</button>
+      <button class="k-btn k-btn--ghost" type="button" @click="load">Retry</button>
     </div>
     <p v-else-if="loading && !conn" class="muted" role="status" aria-live="polite">Loading…</p>
     <div v-if="error && conn" class="error read-error" role="alert" aria-live="assertive">
       <span>Showing cached connection data. {{ error }}</span>
-      <button class="secondary" type="button" @click="load">Retry</button>
+      <button class="k-btn k-btn--ghost" type="button" @click="load">Retry</button>
     </div>
     <span v-else-if="loading && conn" class="sr-only" role="status" aria-live="polite">Updating…</span>
     <div v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">
       <span>{{ mutationError }}</span>
-      <button class="secondary" type="button" @click="mutationError = null">Dismiss</button>
+      <button class="k-btn k-btn--ghost" type="button" @click="mutationError = null">Dismiss</button>
     </div>
 
     <template v-if="conn">
@@ -250,17 +250,17 @@ onUnmounted(() => {
         <form class="form" @submit.prevent="saveEdit">
           <div class="field">
             <label class="field-label" for="connection-edit-host">Workspace host</label>
-            <input id="connection-edit-host" ref="editHostInput" v-model="editHost" :disabled="saving" autocomplete="url" required aria-required="true" aria-describedby="connection-edit-host-hint connection-edit-error" :aria-invalid="!!saveError" />
+            <input id="connection-edit-host" class="k-input" ref="editHostInput" v-model="editHost" :disabled="saving" autocomplete="url" required aria-required="true" aria-describedby="connection-edit-host-hint connection-edit-error" :aria-invalid="!!saveError" />
             <span id="connection-edit-host-hint" class="field-hint">Use the HTTPS root URL from Databricks, with no path.</span>
           </div>
           <div class="field">
             <label class="field-label" for="connection-edit-token">New token <span class="muted">(optional)</span></label>
-            <input id="connection-edit-token" v-model="editToken" :disabled="saving" type="password" autocomplete="new-password" placeholder="Leave blank to keep current token" aria-describedby="connection-edit-token-hint connection-edit-error" :aria-invalid="!!saveError" />
+            <input id="connection-edit-token" class="k-input" v-model="editToken" :disabled="saving" type="password" autocomplete="new-password" placeholder="Leave blank to keep current token" aria-describedby="connection-edit-token-hint connection-edit-error" :aria-invalid="!!saveError" />
             <span id="connection-edit-token-hint" class="field-hint">Create a replacement personal access token in Databricks before pasting it here. The existing token remains in place when this is blank.</span>
           </div>
           <div class="actions">
-            <button class="primary" type="submit" :disabled="saving || operationLocked(conn.name)">{{ saving ? 'Saving…' : 'Save changes' }}</button>
-            <button class="secondary" type="button" :disabled="saving" @click="editing = false">Cancel</button>
+            <button class="k-btn k-btn--primary" type="submit" :disabled="saving || operationLocked(conn.name)">{{ saving ? 'Saving…' : 'Save changes' }}</button>
+            <button class="k-btn k-btn--ghost" type="button" :disabled="saving" @click="editing = false">Cancel</button>
             <span v-if="saveError" id="connection-edit-error" ref="saveErrorRef" class="error" role="alert" aria-live="assertive" tabindex="-1">{{ saveError }}</span>
           </div>
         </form>
@@ -274,8 +274,8 @@ onUnmounted(() => {
       />
 
       <div class="actions">
-        <button class="secondary" type="button" :disabled="operationLocked(conn.name)" @click="startEdit">Edit connection</button>
-        <button class="danger resource-delete-button" type="button" :disabled="operationLocked(conn.name)" @click="remove">{{ operationPhase(conn.name) === 'deleting' ? 'Deleting connection…' : 'Delete connection' }}</button>
+        <button class="k-btn k-btn--ghost" type="button" :disabled="operationLocked(conn.name)" @click="startEdit">Edit connection</button>
+        <button class="k-btn k-btn--danger resource-delete-button" type="button" :disabled="operationLocked(conn.name)" @click="remove">{{ operationPhase(conn.name) === 'deleting' ? 'Deleting connection…' : 'Delete connection' }}</button>
       </div>
     </template>
   </section>

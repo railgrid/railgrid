@@ -7,14 +7,49 @@
    owns every form action and callback.
 */
 
+/* Dex is a standalone document, so it cannot inherit the portal's @fontsource
+   imports. Embed the same local font files with the auth assets instead of
+   falling through to platform-dependent system faces. */
+@font-face {
+  font-family: "Instrument Sans Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400 700;
+  src: url("./fonts/instrument-sans-latin-wght-normal.woff2") format("woff2-variations");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("./fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url("./fonts/ibm-plex-mono-latin-600-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url("./fonts/ibm-plex-mono-latin-700-normal.woff2") format("woff2");
+}
+
 :root {
   color-scheme: dark;
   --faros-surface: #0a0b12;
   --faros-surface-raised: #111320;
   --faros-surface-overlay: #171927;
-  --faros-surface-hover: #1d2030;
+  --faros-surface-hover: #1e2033;
   --faros-border-subtle: rgba(255, 255, 255, 0.07);
-  --faros-border-default: rgba(255, 255, 255, 0.12);
+  --faros-border-default: rgba(255, 255, 255, 0.11);
   --faros-accent: #8b6bff;
   --faros-accent-hover: #a18aff;
   --faros-accent-subtle: rgba(139, 107, 255, 0.14);
@@ -26,8 +61,15 @@
   --faros-text-primary: #e9e9f2;
   --faros-text-secondary: #8a8ca6;
   --faros-text-muted: #5d5f78;
-  --faros-font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --faros-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --faros-on-accent: #ffffff;
+  /* §8: provider identity tiles keep the provider's brand-approved ground. */
+  --faros-brand-tile-google: #ffffff;
+  --faros-brand-tile-light: #f5f5f5;
+  --faros-brand-tile-oidc: rgba(255, 255, 255, 0.94);
+  --faros-brand-tile-bitbucket: #205081;
+  --faros-brand-tile-atlassian: #cfdcea;
+  --faros-font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --faros-font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 *,
@@ -51,8 +93,8 @@ body {
   margin: 0;
   overflow-x: hidden;
   background:
-    radial-gradient(56rem 30rem at 50% -12rem, rgba(139, 107, 255, 0.20), transparent 68%),
-    radial-gradient(36rem 24rem at 100% 110%, rgba(47, 214, 160, 0.08), transparent 70%),
+    radial-gradient(56rem 30rem at 50% -12rem, color-mix(in srgb, var(--faros-accent) 20%, transparent), transparent 68%),
+    radial-gradient(36rem 24rem at 100% 110%, color-mix(in srgb, var(--faros-success) 8%, transparent), transparent 70%),
     var(--faros-surface);
   background-attachment: fixed;
   color: var(--faros-text-primary);
@@ -70,8 +112,8 @@ body::before {
   z-index: 0;
   inset: 0;
   background-image:
-    linear-gradient(rgba(139, 107, 255, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(139, 107, 255, 0.045) 1px, transparent 1px);
+    linear-gradient(color-mix(in srgb, var(--faros-accent) 4.5%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--faros-accent) 4.5%, transparent) 1px, transparent 1px);
   background-size: 42px 42px;
   content: "";
   mask-image: linear-gradient(to bottom, black, transparent 78%);
@@ -126,7 +168,7 @@ body::before {
   border: 1px solid var(--faros-border-default);
   border-radius: 6px;
   background: var(--faros-surface-raised);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 24px 80px rgba(0, 0, 0, 0.24);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--faros-surface) 40%, transparent);
 }
 
 .theme-heading {
@@ -259,15 +301,15 @@ body::before {
 
 /* Provider tiles retain the provider's own icon colors, as required by their
    brand guidelines; the surrounding control remains Faros-owned. */
-.dex-btn-icon--google { background-color: #ffffff; background-image: url(../static/img/google-icon.svg); }
+.dex-btn-icon--google { background-color: var(--faros-brand-tile-google); background-image: url(../static/img/google-icon.svg); }
 .dex-btn-icon--local { background-color: var(--faros-accent-subtle); background-image: url(../static/img/email-icon.svg); }
-.dex-btn-icon--gitea { background-color: #f5f5f5; background-image: url(../static/img/gitea-icon.svg); }
-.dex-btn-icon--github { background-color: #f5f5f5; background-image: url(../static/img/github-icon.svg); }
-.dex-btn-icon--gitlab { background-color: #f5f5f5; background-image: url(../static/img/gitlab-icon.svg); background-size: contain; }
-.dex-btn-icon--keystone { background-color: #f5f5f5; background-image: url(../static/img/keystone-icon.svg); background-size: contain; }
-.dex-btn-icon--oidc { background-color: rgba(255, 255, 255, 0.94); background-image: url(../static/img/oidc-icon.svg); background-size: contain; }
-.dex-btn-icon--bitbucket-cloud { background-color: #205081; background-image: url(../static/img/bitbucket-icon.svg); }
-.dex-btn-icon--atlassian-crowd { background-color: #cfdcea; background-image: url(../static/img/atlassian-crowd-icon.svg); }
+.dex-btn-icon--gitea { background-color: var(--faros-brand-tile-light); background-image: url(../static/img/gitea-icon.svg); }
+.dex-btn-icon--github { background-color: var(--faros-brand-tile-light); background-image: url(../static/img/github-icon.svg); }
+.dex-btn-icon--gitlab { background-color: var(--faros-brand-tile-light); background-image: url(../static/img/gitlab-icon.svg); background-size: contain; }
+.dex-btn-icon--keystone { background-color: var(--faros-brand-tile-light); background-image: url(../static/img/keystone-icon.svg); background-size: contain; }
+.dex-btn-icon--oidc { background-color: var(--faros-brand-tile-oidc); background-image: url(../static/img/oidc-icon.svg); background-size: contain; }
+.dex-btn-icon--bitbucket-cloud { background-color: var(--faros-brand-tile-bitbucket); background-image: url(../static/img/bitbucket-icon.svg); }
+.dex-btn-icon--atlassian-crowd { background-color: var(--faros-brand-tile-atlassian); background-image: url(../static/img/atlassian-crowd-icon.svg); }
 .dex-btn-icon--ldap { background-color: var(--faros-accent-subtle); background-image: url(../static/img/ldap-icon.svg); }
 .dex-btn-icon--saml { background-color: var(--faros-accent-subtle); background-image: url(../static/img/saml-icon.svg); }
 .dex-btn-icon--linkedin { background-image: url(../static/img/linkedin-icon.svg); background-size: contain; }
@@ -286,7 +328,7 @@ body::before {
   border-color: var(--faros-accent);
   background: var(--faros-accent);
   box-shadow: 0 0 16px var(--faros-accent-glow);
-  color: #ffffff;
+  color: var(--faros-on-accent);
 }
 
 .theme-btn--primary:hover {
@@ -437,6 +479,8 @@ button {
   *::before,
   *::after {
     scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }

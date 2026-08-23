@@ -131,13 +131,15 @@ const collapseAll = () => {
   <div class="relative">
     <div class="absolute right-2 top-2 z-10 flex gap-1">
       <button
-        class="rounded-md border border-border-subtle bg-surface-raised/80 px-2 py-0.5 text-[10px] font-medium text-text-muted backdrop-blur transition-colors hover:border-accent/30 hover:text-text-primary"
+        type="button"
+        class="k-btn k-btn--ghost px-2 py-0.5 text-[10px] font-medium text-text-muted backdrop-blur transition-colors hover:text-text-primary"
         @click="expandAll"
       >
         Expand all
       </button>
       <button
-        class="rounded-md border border-border-subtle bg-surface-raised/80 px-2 py-0.5 text-[10px] font-medium text-text-muted backdrop-blur transition-colors hover:border-accent/30 hover:text-text-primary"
+        type="button"
+        class="k-btn k-btn--ghost px-2 py-0.5 text-[10px] font-medium text-text-muted backdrop-blur transition-colors hover:text-text-primary"
         @click="collapseAll"
       >
         Collapse all
@@ -151,7 +153,8 @@ const collapseAll = () => {
       >
         <button
           v-if="item.line.isFoldStart"
-          class="mr-0.5 inline-flex h-[1.45em] w-4 shrink-0 items-center justify-center text-text-muted/50 transition-colors hover:text-accent"
+          type="button"
+          class="k-btn k-btn--ghost mr-0.5 inline-flex h-[1.45em] w-4 shrink-0 items-center justify-center border-0 p-0 text-text-muted/50 transition-colors hover:text-accent"
           @click="toggle(item.idx)"
           :title="collapsed.has(item.idx) ? 'Expand' : 'Collapse'"
         >

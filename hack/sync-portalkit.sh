@@ -32,7 +32,7 @@ VUE_PORTALS=(
   "providers/edges/portal"
   "providers/infrastructure/portal"
 )
-VUE_FILES=(confirm.ts ConditionsPanel.vue ConfirmDialog.vue ResourceTable.vue ResourceTableDeleteButton.vue ResourceTableEditButton.vue StatusBadge.vue Tabs.vue)
+VUE_FILES=(confirm.ts ConditionsPanel.vue ConfirmDialog.vue LayoutSelector.vue layoutPreference.ts ResourceTable.vue table.ts ResourceTableDeleteButton.vue ResourceTableEditButton.vue StatusBadge.vue Tabs.vue)
 
 # Plain assets from the vanilla kit are shared by both portal styles.
 VUE_SHARED_FILES=(dashboardtile.ts faros-ui.css icons.ts styles.ts tabs.ts tenant.ts toast.ts)
@@ -49,7 +49,7 @@ VUE_CANONICAL_ONLY=()
 # recipe. Remove only this known migration set; arbitrary unexpected files are
 # deliberately left in place so --verify can report them instead of hiding
 # drift.
-OBSOLETE_FILES=(tabs.css ConfirmDialog.css ResourceTableDeleteButton.css ResourceTableEditButton.css)
+OBSOLETE_FILES=(tabs.css ConfirmDialog.css ResourceTable.css ResourceTableDeleteButton.css ResourceTableEditButton.css)
 
 sync_group() {
   local src="$1"; shift

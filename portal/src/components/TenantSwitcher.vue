@@ -71,7 +71,7 @@ function onWorkspaceChange(e: Event) {
       Organization
     </label>
     <select
-      class="w-full rounded-md border border-border-default/40 bg-surface-overlay/40 px-2 py-1 text-[11px] text-text-primary focus:border-accent focus:outline-none"
+      class="k-input w-full px-2 py-1 text-[11px]"
       :value="tenant.orgUUID ?? ''"
       :disabled="tenant.loading || tenant.orgs.length === 0"
       @change="onOrgChange"
@@ -86,7 +86,7 @@ function onWorkspaceChange(e: Event) {
       Workspace
     </label>
     <select
-      class="w-full rounded-md border border-border-default/40 bg-surface-overlay/40 px-2 py-1 text-[11px] text-text-primary focus:border-accent focus:outline-none"
+      class="k-input w-full px-2 py-1 text-[11px]"
       :value="tenant.workspaceUUID ?? ''"
       :disabled="
         tenant.loading ||

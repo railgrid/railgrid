@@ -265,7 +265,7 @@ function formatTimestamp(value?: string): string {
       </div>
       <button
         type="button"
-        class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+        class="inline-flex h-8 items-center gap-1.5 rounded-md border border-border-subtle bg-surface px-3 text-[12px] font-medium text-text-secondary transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
         :disabled="loading || busy || !projectName"
         title="Refresh integrations"
         @click="loadIntegrations"
@@ -442,7 +442,7 @@ function formatTimestamp(value?: string): string {
       </div>
 
       <div v-if="loading && integrations.length === 0" class="grid gap-2" role="status" aria-live="polite">
-        <div v-for="i in 3" :key="i" class="h-16 animate-pulse rounded-xl border border-border-subtle bg-surface" />
+        <div v-for="i in 3" :key="i" class="shimmer h-16 rounded-xl border border-border-subtle bg-surface" />
       </div>
       <div v-else-if="!loading && integrations.length === 0" class="flex min-h-28 items-center justify-center rounded-xl border border-dashed border-border-subtle bg-surface p-4 text-center text-[12px] text-text-muted">
         No provider integrations have been granted for this project.

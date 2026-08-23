@@ -11,6 +11,8 @@ const BASE_CONFIG = {
   canonicalRoots: ['provider-sdk/portalkit'],
   providerRoots: ['providers/fixture/portal/src'],
   vendoredSegments: ['portalkit', 'portalkit-vue'],
+  canonicalConsumerPaths: [],
+  tokenAuthorityPaths: [],
   includeTests: false,
   exceptions: { version: 1, exceptions: [] },
 }
@@ -135,16 +137,96 @@ test('scans canonical CSS and multiline control glyph context', () => {
 test('keeps the canonical stylesheet handoff and native table-row contract', () => {
   const styles = fs.readFileSync(new URL('../provider-sdk/portalkit/styles.ts', import.meta.url), 'utf8')
   const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const hostCss = fs.readFileSync(new URL('../portal/src/assets/main.css', import.meta.url), 'utf8')
   const table = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourceTable.vue', import.meta.url), 'utf8')
 
   assert.match(styles, /import farosUIStyles from '\.\/faros-ui\.css\?raw'/)
   assert.match(css, /--faros-ui-canonical:\s*1/)
+  assert.match(hostCss, /@import "\.\/faros-ui\.css" layer\(components\);/)
   assert.match(styles, /Never mutate an existing style element/)
   assert.doesNotMatch(styles, /style\.textContent !== farosUIStyles/)
   assert.match(table, /:tabindex="interactive \? 0 : undefined"/)
   assert.match(table, /@keydown="onRowKeydown\(row, \$event\)"/)
   assert.match(table, /isExplicitControlTarget/)
   assert.doesNotMatch(table, /:role="interactive \? 'button' : undefined"/)
+})
+
+test('keeps sidebar divider and child toggles on the borderless text-button recipe', () => {
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const layout = fs.readFileSync(new URL('../portal/src/components/AppLayout.vue', import.meta.url), 'utf8')
+
+  assert.match(css, /\.k-btn--text\s*\{[^}]*background:\s*transparent;[^}]*border-color:\s*transparent;/s)
+  assert.equal((layout.match(/k-btn k-btn--text mt-3 mb-1/g) ?? []).length, 2)
+  assert.equal((layout.match(/k-btn k-btn--text -mr-1 flex h-4 w-4/g) ?? []).length, 2)
+})
+
+test('keeps page-level back navigation intrinsic-width on the shared recipe', () => {
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const provision = fs.readFileSync(new URL('../providers/infrastructure/portal/src/views/ProvisionPage.vue', import.meta.url), 'utf8')
+
+  assert.match(css, /\.k-back-action\s*\{[^}]*align-self:\s*flex-start;[^}]*inline-size:\s*fit-content;/s)
+  assert.match(provision, /class="k-btn k-btn--ghost k-back-action"/)
+})
+
+test('keeps resource-table controls and wide-table scrolling in the canonical recipe', () => {
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const table = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourceTable.vue', import.meta.url), 'utf8')
+  const sync = fs.readFileSync(new URL('./sync-portalkit.sh', import.meta.url), 'utf8')
+
+  assert.match(table, /class="k-table k-table--resource"/)
+  assert.match(table, /class="k-table__controls"/)
+  assert.match(table, /class="k-table__scroll" role="region" aria-label="Scrollable table" tabindex="0"/)
+  assert.match(table, /class="k-table__pagination"/)
+  assert.doesNotMatch(table, /ResourceTable\.css/)
+
+  assert.match(css, /\.k-table\.k-table--resource\s*\{[^}]*overflow:\s*hidden;/s)
+  assert.match(css, /\.k-table__scroll\s*\{[^}]*overflow-x:\s*auto;/s)
+  assert.match(css, /\.k-table__cell svg\s*\{[^}]*display:\s*inline-block;[^}]*vertical-align:\s*middle;/s)
+  assert.match(table, /v-if="hasConfiguredControls" class="k-table__loading-controls" aria-hidden="true"/)
+  assert.match(table, /v-for="filter in filters"[^>]*k-table__loading-control--filter/)
+  assert.match(table, /variant\?: 'queryable' \| 'simple'/)
+  assert.match(table, /variant: 'queryable'/)
+  assert.match(table, /:class="`k-table--\$\{variant\}`"/)
+  assert.match(css, /\.k-table__scroll:focus-visible\s*\{[^}]*box-shadow:\s*inset/s)
+  assert.match(css, /\.k-table__pending-cell\s*\{[^}]*text-align:\s*center;/s)
+  assert.match(css, /\.k-table__page-size\s*\{[^}]*margin-inline-start:\s*auto;/s)
+  assert.match(css, /\.k-table__search-input::\-webkit-search-cancel-button\s*\{[^}]*appearance:\s*none;/s)
+  assert.match(css, /\.k-table th\s*\{[^}]*font-family:\s*var\(--font-mono/s)
+  assert.match(css, /\.k-table__heading\s*\{[^}]*font-family:\s*var\(--font-mono/s)
+
+  assert.match(sync, /VUE_FILES=\([^\n]*ResourceTable\.vue table\.ts/)
+  assert.match(sync, /OBSOLETE_FILES=\([^\n]*ResourceTable\.css/)
+})
+
+test('keeps platform-admin flat lists and navigation on shared host patterns', () => {
+  const root = new URL('../portal/src/pages/bonkers/', import.meta.url)
+  for (const file of ['ProvidersSection.vue', 'IdentitiesSection.vue', 'UsersSection.vue']) {
+    const source = fs.readFileSync(new URL(file, root), 'utf8')
+    assert.match(source, /import ResourceTable from '@\/portalkit\/ResourceTable\.vue'/)
+    assert.match(source, /<ResourceTable/)
+    assert.match(source, /:interactive="false"/)
+    assert.match(source, /:loaded="admin\.loaded"/)
+    assert.doesNotMatch(source, /<table\b/)
+  }
+
+  const providers = fs.readFileSync(new URL('ProvidersSection.vue', root), 'utf8')
+  const identities = fs.readFileSync(new URL('IdentitiesSection.vue', root), 'utf8')
+  assert.match(providers, /provider\.registered \? \(provider\.ready \? 'ready' : 'not ready'\) : ''/)
+  assert.match(providers, /:status="providerFlag\(row, 'ready'\) \? 'ready' : 'not ready'"/)
+  assert.match(identities, /\[row\.path, row\.group, row\.resource, row\.export\]/)
+
+  const store = fs.readFileSync(new URL('../portal/src/stores/admin.ts', import.meta.url), 'utf8')
+  const shell = fs.readFileSync(new URL('../portal/src/pages/BonkersPage.vue', import.meta.url), 'utf8')
+  const appLayout = fs.readFileSync(new URL('../portal/src/components/AppLayout.vue', import.meta.url), 'utf8')
+  assert.match(store, /const loaded = ref\(false\)/)
+  assert.match(store, /identities\.value = i\s+loaded\.value = true/)
+  assert.match(shell, /import \{ useSidebarExpansion \} from '@\/composables\/useSidebarExpansion'/)
+  assert.match(shell, /:class="sidebarExpanded \? 'w-48' : 'w-14'"/)
+  assert.match(appLayout, /const \{ sidebarExpanded, toggleSidebar \} = useSidebarExpansion\(\)/)
+  assert.match(shell, /shadow-\[0_0_14px_var\(--color-accent-glow\)\]/)
+  assert.match(shell, /:aria-current="\$route\.path === s\.to \? 'page' : undefined"/)
+  assert.match(shell, /auth\.logout\(\)\s+void router\.replace\('\/login'\)/)
+  assert.match(appLayout, /setLayoutInsets\(\{ left: '0px', right: '0px', bottom: '0px' \}\)/)
 })
 
 test('keeps dense checkboxes compact without decorative focus glow', () => {
@@ -249,4 +331,33 @@ test('canonical roots are replaceable without weakening provider scanning', () =
   })
   const result = fixture.run({ canonicalRoots: ['custom'] })
   assert.ok(result.diagnostics.some((diagnostic) => diagnostic.rule === RULES.LEGACY_PK && diagnostic.path === 'custom/canonical.ts'))
+})
+
+test('scans host and standalone surfaces while recognizing exact authorities', () => {
+  const fixture = fixtureRepo({
+    'portal/src/assets/faros-ui.css': '.k-card { color: var(--color-text-primary); }\n',
+    'portal/src/assets/main.css': ':root { --color-surface: #0a0b12; }\n.bad { color: #abc; }\n',
+    'providers/fixture/portal/public/index.html': '<style>:root { --color-surface: #0a0b12; } body { color: #abc; }</style>\n',
+  }, {
+    providerRoots: ['portal', 'providers/*/portal'],
+    canonicalConsumerPaths: ['portal/src/assets/faros-ui.css'],
+    tokenAuthorityPaths: ['portal/src/assets/main.css', 'providers/fixture/portal/public/index.html'],
+  })
+  const result = fixture.run()
+  assert.ok(result.files.includes('portal/src/assets/faros-ui.css'))
+  assert.ok(result.files.includes('providers/fixture/portal/public/index.html'))
+  assert.ok(!result.diagnostics.some((diagnostic) => diagnostic.rule === RULES.PROVIDER_K_SELECTOR))
+  assert.equal(result.diagnostics.filter((diagnostic) => diagnostic.rule === RULES.RAW_COLOR).length, 2)
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.path === 'portal/src/assets/main.css' && diagnostic.match === '#abc'))
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.path.endsWith('/public/index.html') && diagnostic.match === '#abc'))
+})
+
+test('rejects unknown color token declarations in authority stylesheets', () => {
+  const fixture = fixtureRepo({
+    'providers/fixture/portal/src/style.css': ':root { --color-surafce: #0a0b12; }\n',
+  }, {
+    tokenAuthorityPaths: ['providers/fixture/portal/src/style.css'],
+  })
+  const result = fixture.run()
+  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.rule === RULES.UNKNOWN_COLOR_TOKEN && diagnostic.match === '--color-surafce'))
 })

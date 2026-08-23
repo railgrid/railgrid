@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import AppLayout from '@/components/AppLayout.vue'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
 import SelfHostInstructions from '@/components/SelfHostInstructions.vue'
+import { confirmDialog } from '@/portalkit/confirm'
 import { useProvidersStore, type ProviderDTO, type PermissionClaim } from '@/stores/providers'
 import { useOrgProvidersStore, type OrgProviderRegistration } from '@/stores/orgProviders'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -88,9 +89,12 @@ async function showInstructions(name: string) {
 }
 
 async function removeSelfHosted(name: string) {
-  if (!window.confirm(
-    `Remove the self-hosted "${name}"?\n\nThis deletes its workspace and everything in it, including its API. Workspaces that enabled it will stop working until you disable it there.`,
-  )) return
+  if (!(await confirmDialog({
+    title: `Remove self-hosted "${name}"?`,
+    message: 'This deletes its workspace and everything in it, including its API. Workspaces that enabled it will stop working until you disable it there.',
+    confirmLabel: 'Remove',
+    danger: true,
+  }))) return
   selfHostError.value = null
   selfHostBusy.value = { ...selfHostBusy.value, [name]: true }
   try {
@@ -323,25 +327,23 @@ function dependencyNotice(p: ProviderDTO): string {
 
       <!-- Catalog vs Self-Hosting. Hidden entirely when the hub has no
            org-provider support, so the tab never leads to a dead surface. -->
-      <div v-if="orgProviders.supported" class="mb-5 flex items-center gap-1 border-b border-border-subtle">
+      <nav v-if="orgProviders.supported" class="k-tabs mb-5" aria-label="Provider sections">
         <button
           v-for="t in tabs"
           :key="t.key"
-          class="-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors"
-          :class="
-            tab === t.key
-              ? 'border-accent text-accent'
-              : 'border-transparent text-text-muted hover:text-text-secondary'
-          "
+          type="button"
+          class="k-tab"
+          :class="{ 'k-tab--active': tab === t.key }"
+          :aria-current="tab === t.key ? 'page' : undefined"
           @click="tab = t.key"
         >
           {{ t.label }}
           <span
             v-if="t.key === 'self-hosting' && orgProviders.items.length"
-            class="ml-1 rounded-sm bg-accent/10 px-1 py-px text-[10px] text-accent"
+            class="k-tab__count"
           >{{ orgProviders.items.length }}</span>
         </button>
-      </div>
+      </nav>
 
       <div v-if="providers.loading && !providers.loaded" class="text-sm text-text-muted">
         Loading providers&hellip;
@@ -408,7 +410,7 @@ function dependencyNotice(p: ProviderDTO): string {
           <select
             id="self-host-edge"
             v-model="selectedEdgeKey"
-            class="rounded-lg border border-border-subtle bg-surface-overlay px-2 py-1 text-[11px] text-text-primary"
+            class="k-input w-auto px-2 py-1 text-[11px]"
           >
             <option v-for="t in eligibleEdges" :key="`${t.workspace}/${t.name}`" :value="`${t.workspace}/${t.name}`">
               {{ edgeLabel(t) }}
@@ -438,7 +440,8 @@ function dependencyNotice(p: ProviderDTO): string {
               </p>
             </div>
             <button
-              class="rounded-lg border border-border-subtle p-1 text-text-muted transition-colors hover:border-accent/30 hover:text-accent"
+              type="button"
+              class="k-btn k-btn--ghost p-1 text-text-muted transition-colors hover:text-accent"
               title="Close"
               @click="activeRegistration = null"
             >
@@ -490,7 +493,8 @@ function dependencyNotice(p: ProviderDTO): string {
               </div>
               <div class="flex items-center gap-2">
                 <button
-                  class="inline-flex items-center gap-1 rounded-lg border border-border-subtle px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:border-accent/30 hover:text-accent disabled:opacity-60"
+                  type="button"
+                  class="k-btn k-btn--ghost px-2.5 py-1 text-[11px] text-text-muted transition-colors hover:text-accent disabled:opacity-60"
                   :disabled="!!selfHostBusy[p.name]"
                   @click="showInstructions(p.name)"
                 >
@@ -499,7 +503,8 @@ function dependencyNotice(p: ProviderDTO): string {
                   Install details
                 </button>
                 <button
-                  class="inline-flex items-center gap-1 rounded-lg border border-danger/30 bg-danger-subtle px-2.5 py-1 text-[11px] font-medium text-danger transition-colors hover:bg-danger/15 disabled:opacity-60"
+                  type="button"
+                  class="k-btn k-btn--danger px-2.5 py-1 text-[11px] disabled:opacity-60"
                   :disabled="!!selfHostBusy[p.name]"
                   @click="removeSelfHosted(p.name)"
                 >
@@ -549,7 +554,8 @@ function dependencyNotice(p: ProviderDTO): string {
               </p>
               <div class="mt-4 flex items-center gap-2">
                 <button
-                  class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  type="button"
+                  class="k-btn k-btn--primary px-2.5 py-1 text-[11px] disabled:cursor-not-allowed disabled:opacity-50"
                   :disabled="!!selfHostBusy[p.name] || !canSelfHost"
                   :title="canSelfHost ? undefined : (orgProviders.installTargetsReason ?? 'no connected cluster to install into')"
                   @click="selfHost(p)"
@@ -586,12 +592,13 @@ function dependencyNotice(p: ProviderDTO): string {
               v-model="search"
               type="search"
               placeholder="Search providers…"
-              class="w-full rounded-lg border border-border-subtle bg-surface-raised/60 py-1.5 pl-8 pr-3 text-sm text-text-primary placeholder:text-text-muted focus:border-accent/40 focus:outline-none"
+              class="k-input w-full bg-surface-raised/60 py-1.5 pl-8 pr-3 text-sm"
             />
           </div>
           <div class="flex flex-wrap items-center gap-1.5">
             <button
-              class="rounded-sm border px-2.5 py-1 text-[11px] font-medium transition-colors"
+              type="button"
+              class="k-btn k-btn--ghost rounded-sm px-2.5 py-1 text-[11px] font-medium transition-colors"
               :class="
                 selectedCategory === null
                   ? 'border-accent/40 bg-accent/10 text-accent'
@@ -604,7 +611,8 @@ function dependencyNotice(p: ProviderDTO): string {
             <button
               v-for="chip in categoryChips"
               :key="chip.name"
-              class="inline-flex items-center gap-1 rounded-sm border px-2.5 py-1 text-[11px] font-medium transition-colors"
+              type="button"
+              class="k-btn k-btn--ghost inline-flex items-center gap-1 rounded-sm px-2.5 py-1 text-[11px] font-medium transition-colors"
               :class="
                 selectedCategory === chip.name
                   ? 'border-accent/40 bg-accent/10 text-accent'
@@ -735,7 +743,7 @@ function dependencyNotice(p: ProviderDTO): string {
           <div class="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
             <button
               type="button"
-              class="inline-flex items-center gap-1 rounded-md border border-border-subtle px-1.5 py-0.5 transition-colors hover:border-accent/30 hover:text-accent"
+              class="k-btn k-btn--ghost inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] transition-colors hover:text-accent"
               @click="selectedCategory = selectedCategory === p.categoryName ? null : p.categoryName"
             >
               <component :is="categoryIcon(p.categoryIcon)" class="h-3 w-3" :stroke-width="2" />
@@ -772,7 +780,7 @@ function dependencyNotice(p: ProviderDTO): string {
             <router-link
               v-if="p.hasUI && p.ready && (!p.apiExportName || providers.isEnabled(p.name))"
               :to="p.builtinRoute ? `/${p.builtinRoute}` : `/providers/${p.name}`"
-              class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20"
+              class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent-subtle"
             >
               Open
               <ExternalLink class="h-3 w-3" :stroke-width="2" />
@@ -791,7 +799,8 @@ function dependencyNotice(p: ProviderDTO): string {
               </span>
               <button
                 v-else-if="!providers.isEnabled(p.name)"
-                class="inline-flex items-center gap-1 rounded-lg border border-success/30 bg-success-subtle px-2.5 py-1 text-[11px] font-medium text-success transition-colors hover:bg-success/15 disabled:cursor-not-allowed disabled:opacity-60"
+                type="button"
+                class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-success transition-colors hover:border-success/40 hover:bg-success-subtle disabled:cursor-not-allowed disabled:opacity-60"
                 :disabled="!!busy[p.name] || providers.hasMissingDependencies(p)"
                 :title="dependencyNotice(p)"
                 @click="openEnableDialog(p)"
@@ -802,7 +811,8 @@ function dependencyNotice(p: ProviderDTO): string {
               </button>
               <button
                 v-else
-                class="inline-flex items-center gap-1 rounded-lg border border-border-default bg-surface-overlay px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:border-danger/30 hover:text-danger disabled:cursor-not-allowed disabled:opacity-60"
+                type="button"
+                class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:border-danger/30 hover:text-danger disabled:cursor-not-allowed disabled:opacity-60"
                 :disabled="!!busy[p.name]"
                 @click="onDisable(p)"
               >

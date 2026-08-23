@@ -7,8 +7,10 @@ import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import { createLatestRefreshController, sameResourceIdentity, type ResourceTombstones } from '../refresh'
+import { isCurrentInstanceListRequest, type InstanceListRequest } from '../instanceListRequest'
 import { resolve, type ResolvedValue } from '../view'
 import type { Instance, TemplateView, ViewColumn } from '../types'
+import { isCompleteFirstCursorPage, type TableFilterDefinition, type TableFilterState } from '../portalkit/table'
 
 const emit = defineEmits<{
   (e: 'navigate', view: string): void
@@ -23,9 +25,44 @@ const loaded = ref(false)
 const deletingInstanceKey = ref<string | null>(null)
 const deleteError = ref<string | null>(null)
 const viewByTemplate = ref<Map<string, TemplateView>>(new Map())
+const templateFilterOptions = ref<Array<{ value: string; label: string }>>([])
 const tombstones = props.tombstones
+const paginationMode = ref<'server' | 'client'>('server')
+const page = ref(1)
+const pageSize = ref(10)
+const query = ref('')
+const filterValues = ref<TableFilterState>({ template: '', status: '' })
+const cursor = ref<string | null>(null)
+const pageInfo = ref<{ hasNext: boolean; nextCursor: string | null } | null>(null)
+// Client mode becomes a ready local authority after a complete cursor walk (or
+// an explicitly terminal first page) has committed. A pending walk is still
+// query-independent, so query/filter edits can wait for that same read.
+const clientAuthorityReady = ref(false)
+let reconcileAfterNextServerRead = false
+let pendingReadMode: InstanceListRequest['mode'] | null = null
 let pollHandle: number | null = null
 let active = true
+
+const STATUS_FILTER_OPTIONS = [
+  { value: 'Ready', label: 'Ready' },
+  { value: 'Pending', label: 'Pending' },
+  { value: 'Failed', label: 'Failed' },
+  { value: 'Deleting', label: 'Deleting' },
+]
+
+const filters = computed<TableFilterDefinition[]>(() => [
+  {
+    key: 'template',
+    label: 'Template',
+    options: templateFilterOptions.value,
+  },
+  {
+    key: 'status',
+    label: 'Status',
+    allLabel: 'Any status',
+    options: STATUS_FILTER_OPTIONS,
+  },
+])
 
 interface DynamicColumn {
   key: string
@@ -100,41 +137,196 @@ function errorMessage(error: unknown, fallback: string): string {
   return value.reason ? `${value.reason}: ${value.message || fallback}` : value.message || fallback
 }
 
+function cloneFilters(values: TableFilterState): TableFilterState {
+  return { template: values.template || '', status: values.status || '' }
+}
+
+function hasActiveFilters(value: string, values: TableFilterState): boolean {
+  return !!value.trim() || Object.values(values).some(Boolean)
+}
+
+function currentRequest(): InstanceListRequest {
+  const filters = cloneFilters(filterValues.value)
+  return {
+    mode: paginationMode.value,
+    active: hasActiveFilters(query.value, filters),
+    page: page.value,
+    pageSize: pageSize.value,
+    query: query.value,
+    filters,
+    cursor: cursor.value,
+  }
+}
+
+function requestIsCurrent(requestID: number, request: InstanceListRequest): boolean {
+  return isCurrentInstanceListRequest(request, currentRequest(), refresh.isCurrent(requestID))
+}
+
+function updateTemplateMetadata(templates: Array<{ name: string; displayName: string; view?: TemplateView }>) {
+  const views = new Map<string, TemplateView>()
+  const options = templates
+    .map(template => ({ value: template.name, label: template.displayName || template.name }))
+    .sort((left, right) => left.label.localeCompare(right.label, undefined, { sensitivity: 'base' }))
+  for (const template of templates) if (template.view) views.set(template.name, template.view)
+  viewByTemplate.value = views
+  templateFilterOptions.value = options
+}
+
 const refresh = createLatestRefreshController(async requestID => {
+  const request = currentRequest()
   loading.value = true
   try {
-    const result = await api.listInstances()
-    if (!refresh.isCurrent(requestID)) return
+    let nextItems: Instance[]
+    let nextIdentities: Array<{ name: string; uid?: string }>
+    let nextCursor: string | null = null
+    let nextPageInfo: { hasNext: boolean; nextCursor: string | null } | null = null
+
+    if (request.active || request.mode === 'client') {
+      const result = await api.listInstances()
+      if (!requestIsCurrent(requestID, request)) return
+      nextItems = result.items
+      nextIdentities = result.identities
+    } else {
+      const result = await api.listInstancesPage({
+        limit: request.pageSize,
+        ...(request.cursor ? { continue: request.cursor } : {}),
+      })
+      if (!requestIsCurrent(requestID, request)) return
+      nextItems = result.items
+      nextIdentities = []
+      nextCursor = request.cursor
+      nextPageInfo = {
+        hasNext: !!result.continue,
+        nextCursor: result.continue ?? null,
+      }
+
+      // A page is not an absence proof. Only the explicit identity walk may
+      // reconcile a deletion marker after a list-page delete operation.
+      if (reconcileAfterNextServerRead) {
+        try {
+          const identities = await api.listInstanceIdentities()
+          if (!requestIsCurrent(requestID, request)) return
+          tombstones.reconcile(identities)
+          reconcileAfterNextServerRead = false
+        } catch (caught) {
+          if (isContextChangedError(caught)) throw caught
+          // Keep the marker until a later complete identity read succeeds.
+        }
+      }
+    }
+
+    if (!requestIsCurrent(requestID, request)) return
     try {
       const templates = await api.listTemplates()
-      if (!refresh.isCurrent(requestID)) return
-      const views = new Map<string, TemplateView>()
-      for (const template of templates.items) if (template.view) views.set(template.name, template.view)
-      viewByTemplate.value = views
+      if (!requestIsCurrent(requestID, request)) return
+      updateTemplateMetadata(templates.items)
     } catch (caught) {
       if (isContextChangedError(caught)) throw caught
       // Instance state remains useful when optional presentation metadata is
       // temporarily unavailable. Keep the last successful view map.
     }
+
+    if (!requestIsCurrent(requestID, request)) return
     // Once the API server has exposed deletionTimestamp, keep that UID in the
     // Deleting state even if a later cache snapshot briefly omits the field.
-    for (const instance of result.items) {
+    for (const instance of nextItems) {
       if (instance.deletionTimestamp) tombstones.add(instanceKey(instance), instance.uid)
     }
-    items.value = result.items
-    tombstones.reconcile(result.identities)
+    items.value = nextItems
+    if (request.active || request.mode === 'client') {
+      // Complete cursor walks are the only full absence proofs. This remains
+      // safe even while the ResourceTable is showing a client-side subset.
+      tombstones.reconcile(nextIdentities)
+      reconcileAfterNextServerRead = false
+      clientAuthorityReady.value = true
+      cursor.value = null
+      pageInfo.value = null
+    } else {
+      clientAuthorityReady.value = false
+      cursor.value = nextCursor
+      pageInfo.value = nextPageInfo
+    }
     loaded.value = true
     error.value = null
   } catch (caught) {
-    if (!refresh.isCurrent(requestID) || isContextChangedError(caught)) return
+    if (!requestIsCurrent(requestID, request) || isContextChangedError(caught)) return
     error.value = errorMessage(caught, 'failed to list instances')
   } finally {
+    if (pendingReadMode === request.mode) pendingReadMode = null
     if (refresh.isCurrent(requestID)) loading.value = false
   }
 })
 
 function load(): Promise<void> {
+  pendingReadMode = paginationMode.value
   return refresh.request()
+}
+
+function resetToFirstServerPage() {
+  page.value = 1
+  cursor.value = null
+}
+
+function handleTableChange(change: {
+  reason: 'page' | 'page-size' | 'query' | 'filter'
+  page: number
+  pageSize: number
+  query: string
+  filters: TableFilterState
+  cursor: string | null
+}) {
+  const wasClientMode = paginationMode.value === 'client'
+  const canReuseCurrentServerPage = paginationMode.value === 'server' && isCompleteFirstCursorPage({
+    page: page.value,
+    cursor: cursor.value,
+    pageInfo: pageInfo.value,
+  })
+  const nextFilters = cloneFilters(change.filters)
+  const activeQuery = hasActiveFilters(change.query, nextFilters)
+  page.value = change.page
+  pageSize.value = change.pageSize
+  query.value = change.query
+  filterValues.value = nextFilters
+  cursor.value = change.cursor
+  pageInfo.value = null
+
+  if (!activeQuery) {
+    // Returning to an empty query must switch back to the bounded page path;
+    // ResourceTable also emits page one with a null cursor on clear.
+    paginationMode.value = 'server'
+    clientAuthorityReady.value = false
+    if (wasClientMode || change.reason === 'query' || change.reason === 'filter') resetToFirstServerPage()
+    items.value = []
+    void load()
+    return
+  }
+
+  if (paginationMode.value === 'client') {
+    // Both a pending and a ready client source are query-independent. The
+    // pending walk is allowed to commit against the latest reactive query;
+    // only an in-flight server read left by clear, or a page-size authority
+    // change, needs a replacement read. The refresh controller serializes it
+    // behind the rejected server response.
+    if (pendingReadMode === 'server' || change.reason === 'page-size') {
+      clientAuthorityReady.value = false
+      items.value = []
+      void load()
+    }
+    return
+  }
+  // Entering a query/filter changes the data authority from one page to the
+  // complete cursor walk. Clear the page immediately so old rows cannot be
+  // mistaken for the new result while that walk is in flight.
+  paginationMode.value = 'client'
+  page.value = 1
+  cursor.value = null
+  if (canReuseCurrentServerPage) {
+    clientAuthorityReady.value = true
+    return
+  }
+  clientAuthorityReady.value = false
+  items.value = []
+  void load()
 }
 
 async function deleteInstance(instance: Instance) {
@@ -156,6 +348,12 @@ async function deleteInstance(instance: Instance) {
     await api.deleteInstance(currentInstance.name)
     if (active) {
       tombstones.add(instanceKey(currentInstance), currentInstance.uid)
+      reconcileAfterNextServerRead = true
+      // The complete source is stale until the post-delete read proves the
+      // tombstone's absence/presence, so query edits during that read must
+      // wait for its refreshed source rather than filtering an acknowledged
+      // stale snapshot.
+      clientAuthorityReady.value = false
       await load()
     }
   } catch (caught) {
@@ -210,12 +408,22 @@ onUnmounted(() => {
 
     <div v-if="deleteError" class="mutation-error" role="alert" aria-live="assertive">
       <span>{{ deleteError }}</span>
-      <button type="button" class="read-retry" @click="deleteError = null">Dismiss</button>
+      <button type="button" class="k-btn k-btn--ghost" @click="deleteError = null">Dismiss</button>
     </div>
 
     <ResourceTable
       :columns="columns"
       :rows="rows"
+      searchable
+      search-placeholder="Search instances…"
+      :filters="filters"
+      :pagination-mode="paginationMode"
+      :page="page"
+      :page-size="pageSize"
+      :query="query"
+      :filter-values="filterValues"
+      :cursor="cursor"
+      :page-info="pageInfo"
       row-key="rowKey"
       :loaded="loaded"
       :loading="loading"
@@ -226,12 +434,13 @@ onUnmounted(() => {
       empty-text="No instances in this workspace yet."
       :row-aria-label="(row) => `Open instance ${String(rowInstance(row).name)}`"
       @retry="load"
+      @change="handleTableChange"
       @row-click="selectInstance"
     >
       <template #name="{ value, row }">
         <button
           type="button"
-          class="instance-name-link"
+          class="k-btn k-btn--ghost instance-name-link"
           :disabled="instanceIsDeleting(rowInstance(row)) || deletingInstanceKey === instanceKey(rowInstance(row))"
           :aria-label="`Open instance ${String(value)}`"
           @click.stop="selectInstance(row)"
@@ -266,7 +475,7 @@ onUnmounted(() => {
 
     <div v-if="loaded && !error && items.length === 0" class="empty-followup">
       <span>Each workspace has its own instances.</span>
-      <button type="button" class="link" @click="emit('navigate', 'catalog')">Browse templates</button>
+      <button type="button" class="k-btn k-btn--ghost" @click="emit('navigate', 'catalog')">Browse templates</button>
     </div>
   </section>
 </template>

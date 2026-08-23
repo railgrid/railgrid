@@ -64,6 +64,23 @@ interface RawCR {
 type ResourceKind = 'Connection' | 'Warehouse' | 'Table'
 type ResourceListKind = 'Connections' | 'Warehouses' | 'Tables'
 
+/** Optional cursor controls accepted by a Kubernetes list query. */
+export interface KubernetesListOptions {
+  limit?: number
+  continue?: string
+}
+
+/** A typed page returned by a Kubernetes cursor list query. */
+export interface KubernetesListPage<T> {
+  items: T[]
+  continue?: string
+  remainingItemCount?: number
+  resourceVersion?: string
+}
+
+const LIST_PAGE_SIZE = 100
+const MAX_LIST_PAGES = 100
+
 export function setBasePath(ctxBasePath?: string | null) {
   const base = (ctxBasePath || '/ui/providers/databricks').replace(/\/+$/, '')
   const nextBasePath = base.endsWith('/ui/providers/databricks')
@@ -542,26 +559,115 @@ const F_CONNECTION = `${GQL_META} spec { host authType secretRef { name namespac
 const F_WAREHOUSE = `${GQL_META} spec { connectionRef warehouseID } status { state observedGeneration ${GQL_COND} }`
 const F_TABLE = `${GQL_META} spec { connectionRef warehouseRef catalog schema table } status { refreshedAt columns { name type nullable comment } observedGeneration ${GQL_COND} }`
 
-async function gqlList(kind: ResourceListKind, fields: string): Promise<RawCR[]> {
-  const query = `query { ${GRAPHQL_GROUP} { ${VERSION} { ${kind} { items { ${fields} } } } } }`
+interface RawKubernetesListPage {
+  items: RawCR[]
+  continue?: string
+  remainingItemCount?: number
+  resourceVersion?: string
+}
+
+function validateListOptions(options: KubernetesListOptions): KubernetesListOptions {
+  if (options.limit !== undefined && (!Number.isSafeInteger(options.limit) || options.limit <= 0)) {
+    throw protocolError('GraphQL list limit must be a positive safe integer; retry the read.')
+  }
+  if (options.continue !== undefined && typeof options.continue !== 'string') {
+    throw protocolError('GraphQL list continue must be a string; retry the read.')
+  }
+  return options
+}
+
+function optionalListString(collection: Record<string, unknown>, key: 'continue' | 'resourceVersion', kind: ResourceListKind): string | undefined {
+  if (!(key in collection) || collection[key] === undefined || collection[key] === null) return undefined
+  if (typeof collection[key] !== 'string') {
+    throw protocolError(`GraphQL returned an invalid ${kind} ${key}; retry the read.`)
+  }
+  const value = collection[key] as string
+  return key === 'continue' && value === '' ? undefined : value
+}
+
+function optionalRemainingItemCount(collection: Record<string, unknown>, kind: ResourceListKind): number | undefined {
+  if (!('remainingItemCount' in collection) || collection.remainingItemCount === undefined || collection.remainingItemCount === null) return undefined
+  const value = collection.remainingItemCount
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw protocolError(`GraphQL returned an invalid ${kind} remainingItemCount; retry the read.`)
+  }
+  return value
+}
+
+async function gqlListPage(kind: ResourceListKind, fields: string, options: KubernetesListOptions = {}): Promise<RawKubernetesListPage> {
+  const request = validateListOptions(options)
+  const variables: Record<string, unknown> = {}
+  if (request.limit !== undefined) variables.limit = request.limit
+  if (request.continue !== undefined) variables.continue = request.continue
+  const query = `query($limit: Int, $continue: String) { ${GRAPHQL_GROUP} { ${VERSION} { ${kind}(limit: $limit, continue: $continue) { items { ${fields} } continue remainingItemCount resourceVersion } } } }`
   const data = await graphqlQuery<unknown>(
     query,
-    {},
+    variables,
   )
   const group = isRecord(data) ? data[GRAPHQL_GROUP] : undefined
   const version = isRecord(group) ? group[VERSION] : undefined
   const collection = isRecord(version) ? version[kind] : undefined
-  const items = isRecord(collection) ? collection.items : undefined
+  if (!isRecord(collection)) throw protocolError(`GraphQL did not return a valid ${kind} list; retry the read.`)
+  const items = collection.items
   if (!Array.isArray(items)) throw protocolError(`GraphQL did not return a valid ${kind} list; retry the read.`)
   const resourceKind: ResourceKind = kind === 'Connections' ? 'Connection' : kind === 'Warehouses' ? 'Warehouse' : 'Table'
-  return items.map((item, index) => {
+  const parsedItems = items.map((item, index) => {
     try {
       return validateResource(item, resourceKind, 'read')
     } catch (error) {
       if ((error as Partial<ErrorResponse>).reason === 'ProtocolError') throw error
       throw protocolError(`GraphQL returned malformed ${kind} item ${index}; retry the read.`)
     }
-  }).sort((left, right) => left.metadata.name.localeCompare(right.metadata.name))
+  })
+  const nextToken = optionalListString(collection, 'continue', kind)
+  const remainingItemCount = optionalRemainingItemCount(collection, kind)
+  if (remainingItemCount !== undefined && remainingItemCount > 0 && !nextToken) {
+    throw protocolError(`GraphQL returned ${kind} remainingItemCount without a continuation token; retry the read.`)
+  }
+  if (remainingItemCount === 0 && nextToken) {
+    throw protocolError(`GraphQL returned ${kind} a continuation token with no remaining items; retry the read.`)
+  }
+  return {
+    items: parsedItems,
+    continue: nextToken,
+    remainingItemCount,
+    resourceVersion: optionalListString(collection, 'resourceVersion', kind),
+  }
+}
+
+function mapListPage<T>(page: RawKubernetesListPage, map: (item: RawCR) => T): KubernetesListPage<T> {
+  return {
+    items: page.items.map(map),
+    continue: page.continue,
+    remainingItemCount: page.remainingItemCount,
+    resourceVersion: page.resourceVersion,
+  }
+}
+
+async function gqlListAll<T>(kind: ResourceListKind, fields: string, map: (item: RawCR) => T & { name: string }): Promise<T[]> {
+  const items: Array<T & { name: string }> = []
+  const seenTokens = new Set<string>()
+  const generation = contextGeneration
+  let continueToken: string | undefined
+
+  for (let pageNumber = 0; pageNumber < MAX_LIST_PAGES; pageNumber += 1) {
+    assertContextUnchanged(generation)
+    const page = await gqlListPage(kind, fields, {
+      limit: LIST_PAGE_SIZE,
+      ...(continueToken === undefined ? {} : { continue: continueToken }),
+    })
+    assertContextUnchanged(generation)
+    items.push(...page.items.map(map))
+    const nextToken = page.continue
+    if (!nextToken) return items.sort((left, right) => left.name.localeCompare(right.name))
+    if (seenTokens.has(nextToken)) {
+      throw protocolError(`GraphQL returned a repeated ${kind} continuation token; retry the read.`)
+    }
+    seenTokens.add(nextToken)
+    continueToken = nextToken
+  }
+
+  throw protocolError(`GraphQL ${kind} list exceeded the ${MAX_LIST_PAGES}-page safety limit; retry the read.`)
 }
 
 async function gqlGet(kind: ResourceKind, name: string, fields: string): Promise<RawCR> {
@@ -638,8 +744,12 @@ export const api = {
     return validateRegistrationResponse(await providerJSON<unknown>('/api/v1/registrations', { method: 'POST', body: JSON.stringify(input) }), input.items.length)
   },
 
+  async listConnectionsPage(options: KubernetesListOptions = {}): Promise<KubernetesListPage<Connection>> {
+    return mapListPage(await gqlListPage('Connections', F_CONNECTION, options), connectionFromCR)
+  },
+
   async listConnections(): Promise<Connection[]> {
-    return (await gqlList('Connections', F_CONNECTION)).map(connectionFromCR)
+    return gqlListAll('Connections', F_CONNECTION, connectionFromCR)
   },
 
   async getConnection(name: string): Promise<Connection> {
@@ -715,8 +825,12 @@ export const api = {
     }
   },
 
+  async listWarehousesPage(options: KubernetesListOptions = {}): Promise<KubernetesListPage<Warehouse>> {
+    return mapListPage(await gqlListPage('Warehouses', F_WAREHOUSE, options), warehouseFromCR)
+  },
+
   async listWarehouses(): Promise<Warehouse[]> {
-    return (await gqlList('Warehouses', F_WAREHOUSE)).map(warehouseFromCR)
+    return gqlListAll('Warehouses', F_WAREHOUSE, warehouseFromCR)
   },
 
   async getWarehouse(name: string): Promise<Warehouse> {
@@ -745,8 +859,12 @@ export const api = {
     await deleteCR('Warehouse', name)
   },
 
+  async listTablesPage(options: KubernetesListOptions = {}): Promise<KubernetesListPage<Table>> {
+    return mapListPage(await gqlListPage('Tables', F_TABLE, options), tableFromCR)
+  },
+
   async listTables(): Promise<Table[]> {
-    return (await gqlList('Tables', F_TABLE)).map(tableFromCR)
+    return gqlListAll('Tables', F_TABLE, tableFromCR)
   },
 
   async saveTable(input: {

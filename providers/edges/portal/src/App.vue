@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { Server, Boxes, RefreshCw, Trash2, CircleDot, Plus, Plug } from 'lucide-vue-next'
+import { Server, Boxes, RefreshCw, Plus, Plug } from 'lucide-vue-next'
 import { setToken, setTenant, listEdges, deleteEdge } from './api'
 import Wizard from './Wizard.vue'
 import Detail from './Detail.vue'
 import Workloads from './Workloads.vue'
 import Services from './Services.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
+import ResourceTable from './portalkit/ResourceTable.vue'
+import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
+import StatusBadge from './portalkit/StatusBadge.vue'
 import Tabs from './portalkit/Tabs.vue'
 import { confirmDialog } from './portalkit/confirm'
 import type { Edge, EdgeType, FarosContext, ErrorResponse } from './types'
@@ -67,6 +70,27 @@ watch(view, (v) => {
 const edges = ref<Edge[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
+// Nested list views keep their own cursor/cache authority. Remount them when
+// the shell changes tenant or token so a prior workspace's rows and cursors
+// cannot remain visible while the new context is loading.
+const contextGeneration = ref(0)
+const edgeColumns = [
+  { key: 'name', label: 'Name' },
+  { key: 'typeLabel', label: 'Type' },
+  { key: 'status', label: 'Status' },
+  { key: 'agentVersion', label: 'Agent' },
+  { key: 'lastHeartbeat', label: 'Last heartbeat' },
+  { key: 'actions', label: '' },
+]
+const edgeRows = computed<Array<Record<string, unknown>>>(() => edges.value.map(edge => ({
+  ...edge,
+  rowKey: `${edge.type}/${edge.name}`,
+  typeLabel: edge.type === 'server' ? 'Server' : 'Kubernetes',
+  status: edge.connected ? 'Connected' : (edge.phase || 'Disconnected'),
+  agentVersion: edge.agentVersion || '—',
+  lastHeartbeat: rel(edge.lastHeartbeatTime),
+  actions: '',
+})))
 
 async function refresh() {
   loading.value = true
@@ -100,32 +124,11 @@ async function onDelete(edge: Edge) {
   }
 }
 
-function isExplicitControlTarget(event: Event): boolean {
-  const currentTarget = event.currentTarget as Element | null
-  const target = event.target as Element | null
-  if (!target || target === currentTarget) return false
-  const control = target.closest?.(
-    'a, button, input, select, textarea, summary, [contenteditable="true"], [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])',
-  )
-  return Boolean(control && control !== currentTarget)
-}
-
-function onEdgeRowClick(edge: Edge, event: MouseEvent): void {
-  if (isExplicitControlTarget(event)) return
-  openDetail(edge)
-}
-
-function onEdgeRowKeydown(edge: Edge, event: KeyboardEvent): void {
-  if (event.repeat || isExplicitControlTarget(event)) return
-  if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return
-  event.preventDefault()
-  openDetail(edge)
-}
-
 // Re-auth + reload whenever the shell pushes a new context (token/workspace).
 watch(
   () => [props.ctx?.token, props.ctx?.tenant] as const,
   ([token, tenant]) => {
+    contextGeneration.value += 1
     setToken(token ?? null)
     setTenant(tenant ?? null)
     if (tenant) refresh()
@@ -149,10 +152,14 @@ function rel(ts?: string): string {
   if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`
   return `${Math.floor(secs / 86400)}d ago`
 }
+
+function edgeRowAriaLabel(row: Record<string, unknown>): string {
+  return `Open ${row.type === 'server' ? 'server' : 'Kubernetes'} edge ${String(row.name)}`
+}
 </script>
 
 <template>
-  <div ref="rootRef" class="edges-app">
+  <div ref="rootRef" class="edges-app" :key="contextGeneration">
     <!-- Section nav: Edges | Workloads | Services. Mirrors the sidebar's sub-nav
          items and pushes the shell route via navigate(). Hidden while the wizard
          or a detail view is open so those flows stay focused. -->
@@ -200,59 +207,31 @@ function rel(ts?: string): string {
       </div>
     </header>
 
-    <div v-if="error" class="banner error">{{ error }}</div>
-
-    <div v-if="loading && edges.length === 0" class="muted pad">Loading edges…</div>
-
-    <div v-else-if="edges.length === 0" class="empty">
-      <Boxes :size="28" />
-      <div class="empty-title">No edges connected yet</div>
-      <div class="muted">Click <b>Connect edge</b> to onboard one, or run <code>faros edge create</code>.</div>
-    </div>
-
-    <div v-else class="edges-table-wrap k-table">
-      <table class="k-table__table">
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Type</th>
-            <th>Status</th>
-            <th>Agent</th>
-            <th>Last heartbeat</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="e in edges"
-            :key="e.type + '/' + e.name"
-            class="is-interactive"
-            tabindex="0"
-            :aria-label="`Open ${e.type === 'server' ? 'server' : 'Kubernetes'} edge ${e.name}`"
-            @click="onEdgeRowClick(e, $event)"
-            @keydown="onEdgeRowKeydown(e, $event)"
-          >
-            <td class="name">{{ e.name }}</td>
-            <td>
-              <span class="k-badge k-badge--muted">
-                <component :is="e.type === 'server' ? Server : Boxes" :size="12" />
-                {{ e.type === 'server' ? 'Server' : 'Kubernetes' }}
-              </span>
-            </td>
-            <td>
-              <span class="k-badge" :class="e.connected ? 'k-badge--success' : 'k-badge--warning'">
-                <CircleDot :size="11" /> {{ e.connected ? 'Connected' : (e.phase || 'Disconnected') }}
-              </span>
-            </td>
-            <td class="mono muted">{{ e.agentVersion || '—' }}</td>
-            <td class="muted">{{ rel(e.lastHeartbeatTime) }}</td>
-            <td class="actions">
-              <button class="k-table-action k-table-action--delete" title="Delete" @click.stop="onDelete(e)"><Trash2 :size="14" /></button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <ResourceTable
+      :columns="edgeColumns"
+      :rows="edgeRows"
+      row-key="rowKey"
+      :row-aria-label="edgeRowAriaLabel"
+      :loaded="firstLoadDone"
+      :loading="loading"
+      :error="error"
+      retryable
+      searchable
+      search-placeholder="Search edges…"
+      :filters="[{ key: 'typeLabel', label: 'Type' }, { key: 'status', label: 'Status', allLabel: 'Any status' }]"
+      paginated
+      :page-size="10"
+      empty-text="No edges connected yet. Connect an edge to get started."
+      @retry="refresh"
+      @row-click="(row) => openDetail(row as unknown as Edge)"
+    >
+      <template #name="{ value }"><span class="name">{{ value }}</span></template>
+      <template #typeLabel="{ value, row }"><span class="k-badge k-badge--muted"><component :is="row.type === 'server' ? Server : Boxes" :size="12" />{{ value }}</span></template>
+      <template #status="{ value }"><StatusBadge :status="String(value)" /></template>
+      <template #agentVersion="{ value }"><span class="mono muted">{{ value }}</span></template>
+      <template #lastHeartbeat="{ value }"><span class="muted">{{ value }}</span></template>
+      <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Delete edge ${String(row.name)}`" @click="onDelete(row as unknown as Edge)" /></div></template>
+    </ResourceTable>
     </template>
     <ConfirmDialog />
   </div>

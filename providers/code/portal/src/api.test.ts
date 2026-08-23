@@ -210,6 +210,241 @@ describe('Kubernetes deletion state', () => {
   })
 })
 
+describe('Kubernetes cursor list pages', () => {
+  const connection = {
+    metadata: { name: 'connection', uid: 'connection-uid' },
+    spec: { provider: 'github', type: 'pat', owner: 'faros', secretRef: { name: 'token' } },
+  }
+  const repository = {
+    metadata: { name: 'repository', uid: 'repository-uid' },
+    spec: { connectionRef: 'connection', name: 'repository' },
+  }
+  const packageResource = {
+    metadata: { name: 'package-cr', uid: 'package-uid' },
+    spec: { repositoryRef: 'repository' },
+    status: { packageName: 'package', type: 'container' },
+  }
+
+  it('sends limit on the first page and the opaque continue token on the next page', async () => {
+    setAPIContext({ tenant: 'page-variables', token: 'page-token' })
+    const calls: FetchCall[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const call = request(init)
+      calls.push(call)
+      return response({
+        data: {
+          code_faros_sh: {
+            v1alpha1: {
+              Connections: {
+                resourceVersion: calls.length === 1 ? 'rv-1' : 'rv-2',
+                continue: calls.length === 1 ? 'opaque-next' : null,
+                ...(calls.length === 1 ? { remainingItemCount: 1, items: [connection] } : { items: [] }),
+              },
+            },
+          },
+        },
+      })
+    }))
+
+    const first = await api.listConnectionsPage({ limit: 1 })
+    const second = await api.listConnectionsPage({ limit: 1, continue: first.continue || undefined })
+
+    expect(first.items).toHaveLength(1)
+    expect(first.continue).toBe('opaque-next')
+    expect(first.remainingItemCount).toBe(1)
+    expect(first.resourceVersion).toBe('rv-1')
+    expect(second.items).toEqual([])
+    expect(second.continue).toBeUndefined()
+    expect(calls[0].variables).toEqual({ limit: 1 })
+    expect(calls[1].variables).toEqual({ limit: 1, continue: 'opaque-next' })
+    expect(calls[0].query).toContain('$limit: Int')
+    expect(calls[0].query).toContain('$continue: String')
+  })
+
+  it('normalizes an empty terminal continue token', async () => {
+    setAPIContext({ tenant: 'page-terminal-empty', token: 'page-terminal-empty-token' })
+    vi.stubGlobal('fetch', vi.fn(async () => response({
+      data: {
+        code_faros_sh: {
+          v1alpha1: {
+            Connections: { items: [connection], continue: '', remainingItemCount: 0 },
+          },
+        },
+      },
+    })))
+
+    await expect(api.listConnectionsPage({ limit: 1 })).resolves.toMatchObject({
+      items: [{ name: 'connection' }],
+      continue: undefined,
+      remainingItemCount: 0,
+    })
+  })
+
+  it('rejects a non-terminal remaining item count without a continue token', async () => {
+    setAPIContext({ tenant: 'page-inconsistent-count', token: 'page-inconsistent-count-token' })
+    vi.stubGlobal('fetch', vi.fn(async () => response({
+      data: {
+        code_faros_sh: {
+          v1alpha1: {
+            Connections: { items: [connection], continue: null, remainingItemCount: 1 },
+          },
+        },
+      },
+    })))
+
+    await expect(api.listConnectionsPage({ limit: 1 })).rejects.toMatchObject({ reason: 'ProtocolError' })
+  })
+
+  it('composes a repository package label selector with limit and continue', async () => {
+    setAPIContext({ tenant: 'page-label', token: 'page-label-token' })
+    let call: FetchCall | undefined
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      call = request(init)
+      return response({
+        data: { code_faros_sh: { v1alpha1: { Packages: { items: [packageResource], continue: null } } } },
+      })
+    }))
+
+    await expect(api.listPackagesPage('repository', { limit: 2, continue: 'opaque-package' })).resolves.toMatchObject({
+      items: [{ name: 'package' }],
+      continue: undefined,
+    })
+    expect(call?.variables).toEqual({
+      sel: 'code.faros.sh/repository=repository',
+      limit: 2,
+      continue: 'opaque-package',
+    })
+    expect(call?.query).toContain('Packages(labelselector: $sel, limit: $limit, continue: $continue)')
+  })
+
+  it('walks all cursor pages for legacy repository lists', async () => {
+    setAPIContext({ tenant: 'page-walk', token: 'page-walk-token' })
+    const calls: FetchCall[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const call = request(init)
+      calls.push(call)
+      const next = call.variables.continue === undefined ? 'opaque-repositories' : null
+      return response({
+        data: {
+          code_faros_sh: {
+            v1alpha1: {
+              Repositories: {
+                items: [call.variables.continue === undefined ? repository : { ...repository, metadata: { ...repository.metadata, name: 'repository-2', uid: 'repository-2-uid' } }],
+                continue: next,
+              },
+            },
+          },
+        },
+      })
+    }))
+
+    await expect(api.listRepositories()).resolves.toMatchObject([
+      { name: 'repository' },
+      { name: 'repository-2' },
+    ])
+    expect(calls).toHaveLength(2)
+    expect(calls[0].variables).toEqual({ limit: 100 })
+    expect(calls[1].variables).toEqual({ limit: 100, continue: 'opaque-repositories' })
+  })
+
+  it('fails closed when a list repeats a continue token', async () => {
+    setAPIContext({ tenant: 'page-repeat', token: 'page-repeat-token' })
+    const calls: FetchCall[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(request(init))
+      return response({
+        data: { code_faros_sh: { v1alpha1: { Connections: { items: [connection], continue: 'same-token' } } } },
+      })
+    }))
+
+    await expect(api.listConnections()).rejects.toMatchObject({ reason: 'ProtocolError' })
+    expect(calls).toHaveLength(2)
+  })
+
+  it('rejects a cursor walk when the workspace context changes in flight', async () => {
+    setAPIContext({ tenant: 'page-stale-context', token: 'page-stale-context-token' })
+    const calls: FetchCall[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(request(init))
+      setAPIContext({ tenant: 'page-new-context', token: 'page-new-context-token' })
+      return response({
+        data: {
+          code_faros_sh: {
+            v1alpha1: {
+              Connections: { items: [connection], continue: 'opaque-next' },
+            },
+          },
+        },
+      })
+    }))
+
+    await expect(api.listConnections()).rejects.toMatchObject({ reason: 'ContextChanged' })
+    expect(calls).toHaveLength(1)
+  })
+
+  it('fails closed at the maximum cursor page count', async () => {
+    setAPIContext({ tenant: 'page-cap', token: 'page-cap-token' })
+    const calls: FetchCall[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(request(init))
+      return response({
+        data: {
+          code_faros_sh: {
+            v1alpha1: {
+              Connections: { items: [connection], continue: `token-${calls.length}` },
+            },
+          },
+        },
+      })
+    }))
+
+    await expect(api.listConnections()).rejects.toMatchObject({ reason: 'ProtocolError' })
+    expect(calls).toHaveLength(100)
+  })
+
+  it.each([
+    ['continue', { continue: 7 }],
+    ['remainingItemCount', { remainingItemCount: -1 }],
+    ['resourceVersion', { resourceVersion: 7 }],
+  ] as const)('rejects malformed list pagination metadata in %s', async (_field, metadata) => {
+    setAPIContext({ tenant: `page-malformed-${_field}`, token: `page-malformed-${_field}-token` })
+    vi.stubGlobal('fetch', vi.fn(async () => response({
+      data: { code_faros_sh: { v1alpha1: { Connections: { items: [], ...metadata } } } },
+    })))
+
+    await expect(api.listConnectionsPage({ limit: 1 })).rejects.toMatchObject({ reason: 'ProtocolError' })
+  })
+
+  it('keeps DeployKeys and Collaborators on their unpaged legacy list path', async () => {
+    setAPIContext({ tenant: 'page-legacy', token: 'page-legacy-token' })
+    const calls: FetchCall[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const call = request(init)
+      calls.push(call)
+      const isDeployKey = call.query.includes('DeployKeys')
+      return response({
+        data: {
+          code_faros_sh: {
+            v1alpha1: {
+              [isDeployKey ? 'DeployKeys' : 'Collaborators']: {
+                items: [isDeployKey
+                  ? { metadata: { name: 'key', uid: 'key-uid' }, spec: { repositoryRef: 'repository' } }
+                  : { metadata: { name: 'collab', uid: 'collab-uid' }, spec: { repositoryRef: 'repository', username: 'octocat' } }],
+              },
+            },
+          },
+        },
+      })
+    }))
+
+    await expect(api.listDeployKeys('repository')).resolves.toHaveLength(1)
+    await expect(api.listCollaborators('repository')).resolves.toHaveLength(1)
+    expect(calls).toHaveLength(2)
+    expect(calls.every(call => Object.keys(call.variables).length === 0)).toBe(true)
+    expect(calls.every(call => !call.query.includes('limit:'))).toBe(true)
+  })
+})
+
 describe('oauthConfig', () => {
   it('does not advertise an enabled OAuth flow without a start URL', async () => {
     setAPIContext({ tenant: 'oauth-config', token: 'oauth-token' })

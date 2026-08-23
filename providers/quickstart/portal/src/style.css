@@ -52,7 +52,7 @@ faros-provider-quickstart .quickstart-panel-title {
 faros-provider-quickstart .quickstart-dump {
   margin: 0;
   padding: 10px 12px;
-  font-family: "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace);
   font-size: 11px;
   overflow-x: auto;
 }
@@ -62,7 +62,7 @@ faros-provider-quickstart code {
   color: var(--color-text-secondary, currentColor);
   padding: 1px 5px;
   border-radius: 4px;
-  font-family: "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace);
   font-size: 11px;
 }
 

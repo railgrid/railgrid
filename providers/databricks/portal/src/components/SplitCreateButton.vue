@@ -147,13 +147,13 @@ onBeforeUnmount(() => {
 <template>
   <div ref="root" class="split-create" @keydown="handleKeydown">
     <div class="split-create-actions">
-      <button ref="mainButton" class="primary split-create-main" type="button" :data-split-create-trigger="kind" :disabled="disabled" @click="primaryClick">
+      <button ref="mainButton" class="k-btn k-btn--primary split-create-main" type="button" :data-split-create-trigger="kind" :disabled="disabled" @click="primaryClick">
         <Plus class="button-icon" :stroke-width="1.75" />
         {{ primaryLabel }}
       </button>
       <button
         ref="menuButton"
-        class="primary split-create-toggle"
+        class="k-btn k-btn--primary split-create-toggle"
         type="button"
         :data-split-create-trigger="kind"
         :disabled="disabled"
@@ -167,12 +167,12 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <div v-if="open" :id="menuID" class="split-create-menu" role="menu" :aria-label="`${primaryLabel} options`">
-      <button class="split-create-menu-item" type="button" role="menuitem" tabindex="-1" @click="choose('browse')">
+    <div v-if="open" :id="menuID" class="split-create-menu k-menu" role="menu" :aria-label="`${primaryLabel} options`">
+      <button class="k-menu-item split-create-menu-item" type="button" role="menuitem" tabindex="-1" @click="choose('browse')">
         <Search class="button-icon" :stroke-width="1.75" aria-hidden="true" />
         Browse catalog
       </button>
-      <button class="split-create-menu-item" type="button" role="menuitem" tabindex="-1" @click="choose('manual')">
+      <button class="k-menu-item split-create-menu-item" type="button" role="menuitem" tabindex="-1" @click="choose('manual')">
         <PencilLine class="button-icon" :stroke-width="1.75" aria-hidden="true" />
         Enter manually
       </button>

@@ -8,10 +8,24 @@ import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { api } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
+import { isCompleteFirstCursorPage, type ResourceTableChange } from '../portalkit/table'
 import { importPrerequisiteMessage, nextValidWarehouseRef, warehousesForConnection } from '../tableRefs'
 import type { Connection, ErrorResponse, Table, Warehouse } from '../types'
-import { createLatestRefreshController, createOperationLocks, operationKey, type LatestRefreshController } from '../refresh'
+import { createCoalescedRead, createLatestRefreshController, createOperationLocks, operationKey, type LatestRefreshController } from '../refresh'
 import { resourceNameError } from '../resourceName'
+import {
+  cloneTableFilters,
+  databricksHybridTransition,
+  databricksServerPageTransition,
+  DATABRICKS_PAGE_SIZE,
+  EMPTY_TABLE_FILTERS,
+  hasActiveFilters,
+  pageInfo as toPageInfo,
+  serverCursorChange,
+  tableFilters,
+  type DatabricksPaginationMode,
+  type TableFilterValues,
+} from '../databricksPagination'
 
 const emit = defineEmits<{ (e: 'open', name: string): void; (e: 'browse', trigger?: HTMLElement): void }>()
 
@@ -23,6 +37,25 @@ const loaded = ref(false)
 const error = ref<string | null>(null)
 const mutationError = ref<string | null>(null)
 const operations = createOperationLocks()
+const completeRead = createCoalescedRead(() => api.listTables())
+const supportRead = createCoalescedRead(() => Promise.all([
+  api.listConnections(),
+  api.listWarehouses(),
+]))
+const serverPageRead = createCoalescedRead(() => {
+  const request = currentTableRequest()
+  return api.listTablesPage({
+    limit: request.pageSize,
+    ...(request.cursor ? { continue: request.cursor } : {}),
+  })
+})
+const tableMode = ref<DatabricksPaginationMode>('server')
+const tablePage = ref(1)
+const tablePageSize = ref(DATABRICKS_PAGE_SIZE)
+const tableQuery = ref('')
+const tableFiltersValue = ref<TableFilterValues>(cloneTableFilters(EMPTY_TABLE_FILTERS))
+const tableCursor = ref<string | null>(null)
+const tablePageInfo = ref<ReturnType<typeof toPageInfo> | null>(null)
 const showForm = ref(false)
 const editing = ref<string | null>(null)
 const submitting = ref(false)
@@ -30,6 +63,20 @@ const formError = ref<string | null>(null)
 const nameInput = ref<HTMLInputElement | null>(null)
 const formErrorRef = ref<HTMLElement | null>(null)
 let refresh!: LatestRefreshController
+let mounted = false
+let fullWalkPending = false
+let supportReadPending = false
+let serverPageReadPending = false
+let forceNextLoad = false
+let authorityGeneration = 0
+
+function invalidateCompleteAuthority(): void {
+  authorityGeneration += 1
+  completeRead.invalidate()
+  supportRead.invalidate()
+  serverPageRead.invalidate()
+  forceNextLoad = true
+}
 
 const form = reactive({
   name: '',
@@ -50,6 +97,7 @@ const rows = computed<Array<Record<string, unknown>>>(() =>
 
 const tableImportBlocker = computed(() => !loaded.value ? '' : importPrerequisiteMessage(connections.value, warehouses.value))
 const formWarehouses = computed(() => warehousesForConnection(warehouses.value, form.connectionRef))
+const filterDefinitions = computed(() => tableFilters(warehouses.value))
 
 function errMessage(e: unknown): string {
   const err = e as ErrorResponse
@@ -107,7 +155,13 @@ function editTable(row: Record<string, unknown>) {
   showForm.value = true
 }
 
-function load() {
+function load(): void
+function load(force: boolean): void
+function load(event: Event): void
+function load(forceOrEvent: boolean | Event = false): void {
+  const force = typeof forceOrEvent === 'boolean' ? forceOrEvent : forceNextLoad
+  forceNextLoad = false
+  if (!force && (fullWalkPending || supportReadPending || serverPageReadPending)) return
   refresh.request()
 }
 
@@ -150,27 +204,39 @@ async function submit() {
     return
   }
   const desiredName = form.name.trim()
-  const duplicate = tables.value.find(table => table.name === desiredName)
-  if (duplicate && duplicate.name !== editing.value) {
-    await focusFormError(`Table "${desiredName}" already exists.`)
-    return
-  }
   const lock = operationKey('table', desiredName)
-  if (operations.isTombstoned(lock)) {
-    await focusFormError(`Table "${desiredName}" is still being removed. Retry after the list refresh confirms it is gone.`)
-    return
-  }
   if (!operations.acquire(lock, editing.value ? 'saving' : 'creating')) {
     await focusFormError(`Table "${desiredName}" already has an update in progress.`)
     return
   }
-  if (!formWarehouses.value.some(warehouse => warehouse.name === form.warehouseRef)) {
-    operations.release(lock)
-    await focusFormError('Selected warehouse must belong to the selected connection.')
-    return
-  }
   submitting.value = true
   try {
+    // The visible table/supporting rows may be partial cursor pages. Resolve
+    // every duplicate and foreign-key check against complete authoritative
+    // collections before saving.
+    const [existingTables, availableConnections, availableWarehouses] = await Promise.all([
+      completeRead.request(),
+      api.listConnections(),
+      api.listWarehouses(),
+    ])
+    operations.reconcile('table', existingTables.map(({ name, uid }) => ({ name, uid })))
+    if (operations.isTombstoned(lock)) {
+      await focusFormError(`Table "${desiredName}" is still being removed. Retry after the list refresh confirms it is gone.`)
+      return
+    }
+    const duplicate = existingTables.find(table => table.name === desiredName)
+    if (duplicate && duplicate.name !== editing.value) {
+      await focusFormError(`Table "${desiredName}" already exists.`)
+      return
+    }
+    if (!availableConnections.some(connection => connection.name === form.connectionRef)) {
+      await focusFormError('Selected connection is no longer available in this workspace.')
+      return
+    }
+    if (!availableWarehouses.some(warehouse => warehouse.name === form.warehouseRef && warehouse.connectionRef === form.connectionRef)) {
+      await focusFormError('Selected warehouse must belong to the selected connection.')
+      return
+    }
     await api.saveTable({
       name: desiredName,
       connectionRef: form.connectionRef,
@@ -179,6 +245,7 @@ async function submit() {
       schema: form.schema,
       table: form.table,
     })
+    invalidateCompleteAuthority()
     resetForm()
     showForm.value = false
     load()
@@ -188,6 +255,94 @@ async function submit() {
     submitting.value = false
     operations.release(lock)
   }
+}
+
+interface TableRequest {
+  mode: DatabricksPaginationMode
+  active: boolean
+  page: number
+  pageSize: number
+  query: string
+  filters: TableFilterValues
+  cursor: string | null
+}
+
+function currentTableRequest(): TableRequest {
+  return {
+    mode: tableMode.value,
+    active: hasActiveFilters(tableQuery.value, tableFiltersValue.value),
+    page: tablePage.value,
+    pageSize: tablePageSize.value,
+    query: tableQuery.value,
+    filters: cloneTableFilters(tableFiltersValue.value),
+    cursor: tableCursor.value,
+  }
+}
+
+function tableRequestIsCurrent(requestID: number, request: TableRequest): boolean {
+  const current = currentTableRequest()
+  return refresh.isCurrent(requestID) &&
+    current.mode === request.mode &&
+    current.active === request.active &&
+    current.page === request.page &&
+    current.pageSize === request.pageSize &&
+    current.query === request.query &&
+    current.cursor === request.cursor &&
+    current.filters.warehouseRef === request.filters.warehouseRef &&
+    current.filters.status === request.filters.status
+}
+
+function handleTableChange(change: ResourceTableChange): void {
+  const canReuseCurrentServerPage = tableMode.value === 'server' && isCompleteFirstCursorPage({
+    page: tablePage.value,
+    cursor: tableCursor.value,
+    pageInfo: tablePageInfo.value,
+  })
+  const filters: TableFilterValues = {
+    warehouseRef: change.filters.warehouseRef || '',
+    status: change.filters.status || '',
+  }
+  const active = hasActiveFilters(change.query, filters)
+  const serverChange = serverCursorChange(change)
+  tablePage.value = change.page
+  tablePageSize.value = change.pageSize
+  tableQuery.value = change.query
+  tableFiltersValue.value = filters
+  tableCursor.value = change.cursor
+  tablePageInfo.value = null
+
+  if (!active) {
+    invalidateCompleteAuthority()
+    fullWalkPending = false
+    tableMode.value = 'server'
+    tables.value = []
+    tablePage.value = serverChange.page
+    tableCursor.value = serverChange.cursor
+    load()
+    return
+  }
+
+  const transition = databricksHybridTransition({
+    mode: tableMode.value,
+    active,
+    completeFirstPage: canReuseCurrentServerPage,
+    fullWalkPending: fullWalkPending || supportReadPending || serverPageReadPending,
+  })
+  if (transition.mode === 'client' && transition.reuseRows) {
+    tableMode.value = 'client'
+    tablePage.value = 1
+    tableCursor.value = null
+    tablePageInfo.value = null
+    operations.reconcile('table', tables.value.map(({ name, uid }) => ({ name, uid })))
+    return
+  }
+  if (!transition.reload) {
+    if (transition.mode === 'server' && tableMode.value === 'server') tables.value = []
+    return
+  }
+  if (transition.clearRows || tableMode.value === 'server') tables.value = []
+  fullWalkPending = true
+  load(true)
 }
 
 async function remove(row: Record<string, unknown>) {
@@ -207,6 +362,7 @@ async function remove(row: Record<string, unknown>) {
   mutationError.value = null
   try {
     await api.deleteTable(table.name)
+    invalidateCompleteAuthority()
     operations.tombstone(lock, table.uid)
     tables.value = tables.value.filter(item => item.name !== table.name)
     load()
@@ -218,30 +374,124 @@ async function remove(row: Record<string, unknown>) {
 }
 
 refresh = createLatestRefreshController(async requestID => {
+  const request = currentTableRequest()
+  let walkGeneration: number | undefined
+  let supportGeneration: number | undefined
+  let serverPageGeneration: number | undefined
   loading.value = true
+  if (request.active && request.mode === 'server') {
+    tables.value = []
+    tablePageInfo.value = null
+  }
   try {
-    const [connList, warehouseList, tableList] = await Promise.all([
-      api.listConnections(),
-      api.listWarehouses(),
-      api.listTables(),
-    ])
-    if (!refresh.isCurrent(requestID)) return
-    connections.value = connList
-    warehouses.value = warehouseList
-    tables.value = tableList
-    operations.reconcile('connection', connList.map(({ name, uid }) => ({ name, uid })))
-    operations.reconcile('warehouse', warehouseList.map(({ name, uid }) => ({ name, uid })))
-    operations.reconcile('table', tableList.map(({ name, uid }) => ({ name, uid })))
+    supportReadPending = true
+    supportGeneration = authorityGeneration
+    const [availableConnections, availableWarehouses] = await supportRead.request()
+    supportReadPending = false
+    if (!mounted || supportGeneration !== authorityGeneration) return
+    connections.value = availableConnections
+    warehouses.value = availableWarehouses
+
+    const currentAfterSupport = currentTableRequest()
+    if (currentAfterSupport.active || currentAfterSupport.mode === 'client') {
+      fullWalkPending = true
+      walkGeneration = authorityGeneration
+      const tableList = await completeRead.request()
+      if (!mounted) return
+      if (walkGeneration !== authorityGeneration) return
+      const current = currentTableRequest()
+      if (!current.active && current.mode === 'server') return
+      tables.value = tableList
+      if (current.mode === 'server') {
+        tableMode.value = 'client'
+        tablePage.value = 1
+      }
+      tableCursor.value = null
+      tablePageInfo.value = null
+      operations.reconcile('table', tableList.map(({ name, uid }) => ({ name, uid })))
+      loaded.value = true
+      error.value = null
+      fullWalkPending = false
+    } else {
+      if (!tableRequestIsCurrent(requestID, request)) return
+      serverPageReadPending = true
+      serverPageGeneration = authorityGeneration
+      const tablePageResult = await serverPageRead.request()
+      serverPageReadPending = false
+      if (!mounted || serverPageGeneration !== authorityGeneration) return
+      const currentAfterPage = currentTableRequest()
+      const currentIsActive = currentAfterPage.active || currentAfterPage.mode === 'client'
+      const nextPageInfo = toPageInfo(tablePageResult.continue)
+      const pageTransition = databricksServerPageTransition({
+        active: currentIsActive,
+        page: request.page,
+        cursor: request.cursor,
+        pageInfo: nextPageInfo,
+      })
+      if (currentIsActive && pageTransition.startFullWalk) {
+        // A page captured before query entry is not visible authority unless
+        // it is an explicit complete first page. Do not flash its rows.
+        fullWalkPending = true
+        walkGeneration = authorityGeneration
+        const tableList = await completeRead.request()
+        if (!mounted) return
+        if (walkGeneration !== authorityGeneration) return
+        const current = currentTableRequest()
+        if (!current.active && current.mode === 'server') return
+        tables.value = tableList
+        if (current.mode === 'server') {
+          tableMode.value = 'client'
+          tablePage.value = 1
+        }
+        tableCursor.value = null
+        tablePageInfo.value = null
+        operations.reconcile('table', tableList.map(({ name, uid }) => ({ name, uid })))
+      } else if (currentIsActive) {
+        tables.value = tablePageResult.items
+        tableCursor.value = request.cursor
+        tablePageInfo.value = nextPageInfo
+        if (pageTransition.promoteToClient) {
+          tableMode.value = 'client'
+          tablePage.value = 1
+          tableCursor.value = null
+          tablePageInfo.value = null
+          operations.reconcile('table', tablePageResult.items.map(({ name, uid }) => ({ name, uid })))
+        }
+      } else {
+        if (!tableRequestIsCurrent(requestID, request)) return
+        tables.value = tablePageResult.items
+        tableCursor.value = request.cursor
+        tablePageInfo.value = nextPageInfo
+        if (isCompleteFirstCursorPage({
+          page: request.page,
+          cursor: request.cursor,
+          pageInfo: tablePageInfo.value,
+        })) {
+          operations.reconcile('table', tablePageResult.items.map(({ name, uid }) => ({ name, uid })))
+        }
+      }
+    }
     loaded.value = true
     error.value = null
-    if (!form.connectionRef) form.connectionRef = connList[0]?.name ?? ''
-    if (connList.length && !connList.some(c => c.name === form.connectionRef)) form.connectionRef = connList[0].name
-    form.warehouseRef = nextValidWarehouseRef(warehouseList, form.connectionRef, form.warehouseRef)
+    if (!form.connectionRef) form.connectionRef = connections.value[0]?.name ?? ''
+    if (connections.value.length && !connections.value.some(c => c.name === form.connectionRef)) form.connectionRef = connections.value[0].name
+    form.warehouseRef = nextValidWarehouseRef(warehouses.value, form.connectionRef, form.warehouseRef)
   } catch (e) {
-    if (!refresh.isCurrent(requestID)) return
+    fullWalkPending = false
+    supportReadPending = false
+    serverPageReadPending = false
+    const current = currentTableRequest()
+    const staleWalk = walkGeneration !== undefined && walkGeneration !== authorityGeneration
+    const staleSupport = supportGeneration !== undefined && supportGeneration !== authorityGeneration
+    const staleServerPage = serverPageGeneration !== undefined && serverPageGeneration !== authorityGeneration
+    const staleServerRequest = !(current.active || current.mode === 'client') && !tableRequestIsCurrent(requestID, request)
+    if (!mounted || staleWalk || staleSupport || staleServerPage || staleServerRequest) return
     const err = e as ErrorResponse
     error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
   } finally {
+    fullWalkPending = false
+    supportReadPending = false
+    serverPageReadPending = false
     if (refresh.isCurrent(requestID)) loading.value = false
   }
 })
@@ -250,10 +500,16 @@ watch(() => form.connectionRef, connectionRef => {
   form.warehouseRef = nextValidWarehouseRef(warehouses.value, connectionRef, form.warehouseRef)
 })
 onMounted(() => {
+  mounted = true
   load()
 })
 onUnmounted(() => {
+  mounted = false
+  invalidateCompleteAuthority()
   refresh.stop()
+  completeRead.stop()
+  supportRead.stop()
+  serverPageRead.stop()
 })
 </script>
 
@@ -265,7 +521,7 @@ onUnmounted(() => {
         <p class="page-meta">Imported table handles that App Studio can use by tableRef.</p>
       </div>
       <div class="actions">
-        <button class="secondary icon-text" type="button" @click="load">
+        <button class="k-btn k-btn--ghost icon-text" type="button" @click="load">
           <RefreshCw class="button-icon" :stroke-width="1.75" />
           Refresh
         </button>
@@ -278,7 +534,7 @@ onUnmounted(() => {
     <div v-if="showForm" class="databricks-resource-panel k-card">
       <div class="databricks-resource-panel-head">
         <h3 class="databricks-resource-panel-title">{{ editing ? 'Update table' : 'Import table' }}</h3>
-        <button v-if="!editing" class="link" type="button" :disabled="submitting" @click="fillDemo" title="Prefill samples.nyctaxi.trips — Databricks demo data available in every workspace">Fill with demo data</button>
+        <button v-if="!editing" class="k-btn k-btn--ghost databricks-inline-action" type="button" :disabled="submitting" @click="fillDemo" title="Prefill samples.nyctaxi.trips — Databricks demo data available in every workspace">Fill with demo data</button>
       </div>
       <div v-if="tableImportBlocker" class="warning" role="status">
         {{ tableImportBlocker }}
@@ -286,12 +542,12 @@ onUnmounted(() => {
       <form class="form-grid" @submit.prevent="submit">
         <label class="field" for="table-name">
           <span class="field-label">Name</span>
-          <input id="table-name" ref="nameInput" v-model="form.name" :disabled="!!editing || submitting" autocomplete="off" placeholder="order-history" required aria-required="true" aria-describedby="table-name-hint table-form-error" :aria-invalid="!!formError" />
+          <input id="table-name" class="k-input" ref="nameInput" v-model="form.name" :disabled="!!editing || submitting" autocomplete="off" placeholder="order-history" required aria-required="true" aria-describedby="table-name-hint table-form-error" :aria-invalid="!!formError" />
           <span id="table-name-hint" class="field-hint">The stable tableRef exposed to App Studio. Use lowercase letters, numbers, and hyphens; the name is preserved exactly.</span>
         </label>
         <label class="field" for="table-connection">
           <span class="field-label">Connection</span>
-          <select id="table-connection" v-model="form.connectionRef" :disabled="submitting" required aria-required="true" aria-describedby="table-connection-hint table-form-error" :aria-invalid="!!formError">
+          <select id="table-connection" class="k-input" v-model="form.connectionRef" :disabled="submitting" required aria-required="true" aria-describedby="table-connection-hint table-form-error" :aria-invalid="!!formError">
             <option value="" disabled>Select connection</option>
             <option v-for="conn in connections" :key="conn.name" :value="conn.name">{{ conn.name }}</option>
           </select>
@@ -299,7 +555,7 @@ onUnmounted(() => {
         </label>
         <label class="field" for="table-warehouse">
           <span class="field-label">Warehouse</span>
-          <select id="table-warehouse" v-model="form.warehouseRef" :disabled="submitting" required aria-required="true" aria-describedby="table-warehouse-hint table-form-error" :aria-invalid="!!formError">
+          <select id="table-warehouse" class="k-input" v-model="form.warehouseRef" :disabled="submitting" required aria-required="true" aria-describedby="table-warehouse-hint table-form-error" :aria-invalid="!!formError">
             <option value="" disabled>{{ formWarehouses.length ? 'Select warehouse' : 'No warehouses for this connection' }}</option>
             <option v-for="wh in formWarehouses" :key="wh.name" :value="wh.name">{{ wh.name }}</option>
           </select>
@@ -307,22 +563,22 @@ onUnmounted(() => {
         </label>
         <label class="field" for="table-catalog">
           <span class="field-label">Catalog</span>
-          <input id="table-catalog" v-model="form.catalog" :disabled="submitting" autocomplete="off" placeholder="sales" required aria-required="true" aria-describedby="table-catalog-hint table-form-error" :aria-invalid="!!formError" />
+          <input id="table-catalog" class="k-input" v-model="form.catalog" :disabled="submitting" autocomplete="off" placeholder="sales" required aria-required="true" aria-describedby="table-catalog-hint table-form-error" :aria-invalid="!!formError" />
           <span id="table-catalog-hint" class="field-hint">The Databricks catalog containing the table.</span>
         </label>
         <label class="field" for="table-schema">
           <span class="field-label">Schema</span>
-          <input id="table-schema" v-model="form.schema" :disabled="submitting" autocomplete="off" placeholder="gold" required aria-required="true" aria-describedby="table-schema-hint table-form-error" :aria-invalid="!!formError" />
+          <input id="table-schema" class="k-input" v-model="form.schema" :disabled="submitting" autocomplete="off" placeholder="gold" required aria-required="true" aria-describedby="table-schema-hint table-form-error" :aria-invalid="!!formError" />
           <span id="table-schema-hint" class="field-hint">The Databricks schema containing the table.</span>
         </label>
         <label class="field" for="table-table">
           <span class="field-label">Table</span>
-          <input id="table-table" v-model="form.table" :disabled="submitting" autocomplete="off" placeholder="order_history" required aria-required="true" aria-describedby="table-table-hint table-form-error" :aria-invalid="!!formError" />
+          <input id="table-table" class="k-input" v-model="form.table" :disabled="submitting" autocomplete="off" placeholder="order_history" required aria-required="true" aria-describedby="table-table-hint table-form-error" :aria-invalid="!!formError" />
           <span id="table-table-hint" class="field-hint">The exact table identifier in the selected catalog and schema.</span>
         </label>
         <div class="form-actions span-2">
-          <button class="primary" type="submit" :disabled="submitting">{{ submitting ? 'Saving...' : 'Save' }}</button>
-          <button class="secondary" type="button" :disabled="submitting" @click="closeForm">Cancel</button>
+          <button class="k-btn k-btn--primary" type="submit" :disabled="submitting">{{ submitting ? 'Saving...' : 'Save' }}</button>
+          <button class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="closeForm">Cancel</button>
           <span v-if="formError" id="table-form-error" ref="formErrorRef" class="error" role="alert" aria-live="assertive" tabindex="-1">{{ formError }}</span>
         </div>
       </form>
@@ -330,7 +586,7 @@ onUnmounted(() => {
 
     <div v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">
       <span>{{ mutationError }}</span>
-      <button class="secondary" type="button" @click="mutationError = null">Dismiss</button>
+      <button class="k-btn k-btn--ghost" type="button" @click="mutationError = null">Dismiss</button>
     </div>
 
     <ResourceTable
@@ -343,6 +599,17 @@ onUnmounted(() => {
         { key: 'actions', label: '' },
       ]"
       :rows="rows"
+      searchable
+      search-placeholder="Search tables…"
+      :filters="filterDefinitions"
+      paginated
+      :pagination-mode="tableMode"
+      :page="tablePage"
+      :page-size="tablePageSize"
+      :query="tableQuery"
+      :filter-values="tableFiltersValue"
+      :cursor="tableCursor"
+      :page-info="tablePageInfo"
       row-key="name"
       :loaded="loaded"
       :loading="loading"
@@ -351,9 +618,10 @@ onUnmounted(() => {
       retryable
       :row-aria-label="(row) => `Open table ${String(row.name)}`"
       @retry="load"
+      @change="handleTableChange"
       @row-click="(row) => openResource(String(row.name))"
     >
-      <template #name="{ value }"><button class="link mono strong" type="button" :disabled="operationLocked(String(value))" @click.stop="openResource(String(value))">{{ value }}</button></template>
+      <template #name="{ value }"><button class="k-btn k-btn--ghost databricks-inline-action mono strong" type="button" :disabled="operationLocked(String(value))" @click.stop="openResource(String(value))">{{ value }}</button></template>
       <template #fullName="{ value }"><span class="mono">{{ value }}</span></template>
       <template #warehouseRef="{ value }"><span class="mono">{{ value }}</span></template>
       <template #columnCount="{ value }"><span>{{ value }}</span></template>

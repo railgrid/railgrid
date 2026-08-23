@@ -104,7 +104,8 @@ function startOIDCLogin() {
   <div class="contour-grid relative flex min-h-screen bg-surface">
     <!-- Theme toggle -->
     <button
-      class="fixed right-4 top-4 z-50 flex h-8 w-8 items-center justify-center rounded-lg border border-border-subtle bg-surface-raised text-text-muted transition-all hover:border-accent/30 hover:text-text-secondary"
+      type="button"
+      class="k-btn k-btn--ghost fixed right-4 top-4 z-50 h-8 w-8 p-0 text-text-muted transition-all hover:text-text-secondary"
       title="Toggle theme"
       @click="theme.toggle()"
     >
@@ -154,7 +155,8 @@ function startOIDCLogin() {
             <!-- OIDC -->
             <button
               v-if="auth.authMode === 'both' || auth.authMode === 'oidc'"
-              class="group flex w-full items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2.5 text-[13px] font-semibold text-white shadow-[0_0_16px_var(--color-accent-glow)] transition-all duration-200 hover:bg-accent-hover active:scale-[0.98]"
+              type="button"
+              class="k-btn k-btn--primary group w-full px-4 py-2.5 text-[13px] active:scale-[0.98]"
               @click="startOIDCLogin"
             >
               <ShieldCheck class="h-4 w-4 transition-transform duration-200 group-hover:scale-110" :stroke-width="1.75" />
@@ -172,7 +174,7 @@ function startOIDCLogin() {
             <button
               v-if="oidcAvailable && tokenAvailable && !showTokenForm"
               type="button"
-              class="group flex w-full items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:text-text-secondary"
+              class="k-btn k-btn--ghost group w-full px-2 py-1.5 text-[11px] font-medium text-text-muted transition-colors hover:text-text-secondary"
               @click="showTokenForm = true"
             >
               <Plus class="h-3 w-3 transition-transform group-hover:rotate-90" :stroke-width="2" />
@@ -184,7 +186,7 @@ function startOIDCLogin() {
               <div>
                 <label for="token" class="mb-1 block text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Bearer Token</label>
                 <div
-                  class="flex items-center gap-2 rounded-lg border bg-surface-overlay px-3 py-2.5 transition-all duration-200"
+                  class="k-input flex items-center gap-2 px-3 py-2.5 transition-all duration-200"
                   :class="inputFocused ? 'border-accent ring-[3px] ring-accent/15' : 'border-border-default'"
                 >
                   <KeyRound class="h-3.5 w-3.5 shrink-0 text-text-muted transition-colors" :class="{ 'text-accent': inputFocused }" :stroke-width="1.75" />
@@ -202,7 +204,7 @@ function startOIDCLogin() {
               <button
                 type="submit"
                 :disabled="!tokenInput || auth.loading"
-                class="group flex w-full items-center justify-center gap-2 rounded-lg border border-border-default bg-surface-overlay px-4 py-2.5 text-[12px] font-semibold text-text-primary transition-all duration-200 hover:border-accent/30 hover:bg-surface-hover active:scale-[0.98] disabled:pointer-events-none disabled:opacity-30"
+                class="k-btn k-btn--ghost group w-full px-4 py-2.5 text-[12px] active:scale-[0.98] disabled:pointer-events-none disabled:opacity-30"
               >
                 <Loader2
                   v-if="auth.loading"

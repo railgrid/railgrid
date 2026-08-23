@@ -132,7 +132,7 @@ onUnmounted(() => {
 
 <template>
   <section class="page" :aria-busy="loading">
-    <button class="k-btn k-btn--ghost code-back-action" type="button" @click="emit('back')"><ArrowLeft :size="14" aria-hidden="true" /> Connections</button>
+    <button class="k-btn k-btn--ghost k-back-action" type="button" @click="emit('back')"><ArrowLeft :size="14" aria-hidden="true" /> Connections</button>
 
     <header class="page-head">
       <div>

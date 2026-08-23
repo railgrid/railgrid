@@ -175,7 +175,7 @@ onUnmounted(() => {
   <section class="page instance-detail" :aria-busy="loading">
     <button
       type="button"
-      class="k-btn k-btn--ghost"
+      class="k-btn k-btn--ghost k-back-action"
       :disabled="deleting"
       @click="emit('navigate', 'instances')"
     >
@@ -191,18 +191,18 @@ onUnmounted(() => {
     </div>
     <div v-else-if="!loaded && error" class="read-error" role="alert" aria-live="assertive">
       <span>{{ error }}</span>
-      <button type="button" class="read-retry" @click="load">Retry</button>
+      <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
     </div>
 
     <template v-else-if="inst">
       <span v-if="loading" class="sr-only" role="status" aria-live="polite">Updating instance…</span>
       <div v-if="error" class="stale-banner" role="alert" aria-live="assertive">
         <span>Showing the last successful result. {{ error }}</span>
-        <button type="button" class="read-retry" @click="load">Retry</button>
+        <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
       </div>
       <div v-if="deleteError" class="mutation-error" role="alert" aria-live="assertive">
         <span>{{ deleteError }}</span>
-        <button type="button" class="read-retry" @click="deleteError = null">Dismiss</button>
+        <button type="button" class="k-btn k-btn--ghost" @click="deleteError = null">Dismiss</button>
       </div>
 
       <header class="instance-detail-head">
@@ -221,7 +221,7 @@ onUnmounted(() => {
       <div v-if="displayedMessage" class="instance-message">{{ displayedMessage }}</div>
 
       <template v-if="view?.detail?.length">
-        <div v-for="(group, groupIndex) in view.detail" :key="group.title || groupIndex" class="detail-group">
+        <div v-for="(group, groupIndex) in view.detail" :key="group.title || groupIndex" class="detail-group k-card">
           <div v-if="group.title" class="detail-group-title">{{ group.title }}</div>
           <dl class="detail-fields">
             <div v-for="field in group.fields" :key="field.label" class="detail-field">
@@ -232,7 +232,7 @@ onUnmounted(() => {
         </div>
       </template>
 
-      <div v-else class="detail-group">
+      <div v-else class="detail-group k-card">
         <div class="detail-group-title">Values</div>
         <pre>{{ JSON.stringify(inst.values, null, 2) }}</pre>
       </div>
@@ -244,7 +244,7 @@ onUnmounted(() => {
         empty-text="No conditions yet. The infrastructure controller has not reconciled this instance."
       />
 
-      <div class="detail-group">
+      <div class="detail-group k-card">
         <div class="detail-group-title">Child resources</div>
         <ResourceTable
           :columns="[

@@ -163,7 +163,7 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
         <p class="mt-1 text-[12px] text-text-muted">
           <span class="font-mono text-text-secondary">{{ tenant.activeWorkspace?.displayName || 'This workspace' }}</span>
           is empty. Two minutes here and it won't be — or
-          <button class="text-text-secondary underline decoration-dotted underline-offset-2 hover:text-text-primary" @click="emit('dismiss')">
+          <button type="button" class="k-btn k-btn--ghost border-0 bg-transparent p-0 text-text-secondary underline decoration-dotted underline-offset-2 hover:bg-transparent hover:text-text-primary" @click="emit('dismiss')">
             skip and explore on your own</button>.
         </p>
       </div>
@@ -175,7 +175,7 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
       <li v-for="(label, i) in steps" :key="label" class="flex flex-1 items-center gap-2">
         <button
           type="button"
-          class="flex items-center gap-2 text-left"
+          class="k-btn k-btn--ghost flex items-center gap-2 border-0 bg-transparent p-0 text-left hover:bg-transparent"
           @click="step = i"
         >
           <span
@@ -184,7 +184,7 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
               i < step
                 ? 'border-accent/40 bg-accent/15 text-accent'
                 : i === step
-                  ? 'border-accent bg-accent text-white'
+                  ? 'border-accent bg-accent text-on-accent'
                   : 'border-border-default bg-surface-overlay text-text-muted'
             "
           >
@@ -325,7 +325,7 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
                   <router-link
                     v-if="providers.isEnabled(p.name) && p.hasUI"
                     :to="`/providers/${p.name}`"
-                    class="inline-flex items-center gap-1 rounded-lg border border-border-subtle px-2.5 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:border-accent/30 hover:text-accent"
+                    class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:text-accent"
                   >
                     Open
                     <ExternalLink class="h-3 w-3" :stroke-width="2" />
@@ -339,7 +339,7 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
                   <button
                     v-else
                     type="button"
-                    class="inline-flex items-center gap-1 rounded-lg border border-accent/30 bg-accent/10 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+                    class="k-btn k-btn--primary inline-flex items-center gap-1 px-2.5 py-1 text-[11px] disabled:cursor-not-allowed disabled:opacity-50"
                     :disabled="!!busy[p.name] || providers.hasMissingDependencies(p)"
                     :title="dependencyNotice(p)"
                     @click="openEnableDialog(p)"
@@ -413,7 +413,7 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
       <div class="flex items-center justify-between gap-3 border-t border-border-subtle px-6 py-4">
         <button
           type="button"
-          class="flex items-center gap-1.5 text-[11px] font-medium text-text-muted transition-colors hover:text-text-secondary"
+          class="k-btn k-btn--ghost flex items-center gap-1.5 border-0 bg-transparent px-0 py-0 text-[11px] font-medium text-text-muted transition-colors hover:bg-transparent hover:text-text-secondary"
           @click="step === 0 ? emit('dismiss') : back()"
         >
           <ArrowLeft v-if="step > 0" class="h-3 w-3" :stroke-width="2" />
@@ -422,7 +422,7 @@ const firstEnabled = computed(() => catalog.value.find((p) => providers.isEnable
 
         <button
           type="button"
-          class="group flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-[12px] font-semibold text-white shadow-[0_0_16px_var(--color-accent-glow)] transition-all hover:bg-accent-hover active:scale-[0.98]"
+          class="k-btn k-btn--primary group px-4 py-2 text-[12px] active:scale-[0.98]"
           @click="step === steps.length - 1 ? emit('dismiss') : next()"
         >
           <span>{{ step === steps.length - 1 ? 'Go to dashboard' : 'Continue' }}</span>

@@ -13,11 +13,41 @@
 <meta charset="utf-8">
 <title>Kuery provider · faros</title>
 <style>
-  body { font-family: ui-sans-serif, system-ui, sans-serif; max-width: 540px; margin: 4em auto; padding: 0 1em; line-height: 1.6; color: #0f172a; background: #f5f7fa; }
-  @media (prefers-color-scheme: dark) { body { color: #eeeef3; background: #06060b; } code { background: #171927; } a { color: #8b6bff; } }
-  h1 { font-size: 16px; }
-  code, a { color: #6b48e8; }
-  code { padding: 1px 5px; border-radius: 4px; background: #eef1f6; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  :root {
+    color-scheme: dark;
+    --color-surface: #0a0b12;
+    --color-surface-raised: #111320;
+    --color-surface-overlay: #171927;
+    --color-border-subtle: rgba(255, 255, 255, 0.07);
+    --color-accent: #8b6bff;
+    --color-accent-hover: #a18aff;
+    --color-text-primary: #e9e9f2;
+    --color-text-secondary: #8a8ca6;
+    --color-text-muted: #5d5f78;
+    --font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      color-scheme: light;
+      --color-surface: #f1f1f6;
+      --color-surface-raised: #ffffff;
+      --color-surface-overlay: #eaeaf2;
+      --color-border-subtle: #e7e6f1;
+      --color-accent: #6b48e8;
+      --color-accent-hover: #5a38d6;
+      --color-text-primary: #14152a;
+      --color-text-secondary: #565975;
+      --color-text-muted: #8d8fa6;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { font-family: var(--font-sans); max-width: 540px; margin: 4em auto; padding: 0 1em; line-height: 1.6; color: var(--color-text-primary); background: var(--color-surface); }
+  h1 { font-size: 16px; color: var(--color-text-primary); }
+  p { color: var(--color-text-secondary); }
+  code, a { color: var(--color-accent); }
+  code { padding: 1px 5px; border: 1px solid var(--color-border-subtle); border-radius: 3px; background: var(--color-surface-overlay); font-family: var(--font-mono); font-size: 12px; }
+  a:hover { color: var(--color-accent-hover); }
 </style>
 </head>
 <body>

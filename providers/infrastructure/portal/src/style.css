@@ -11,11 +11,7 @@
 faros-provider-infrastructure {
   display: block;
   font-family: inherit;
-  color: var(--color-text-primary);
-}
-
-faros-provider-infrastructure .app {
-  padding: 8px 0;
+  color: var(--color-text-primary, #e9e9f2);
 }
 
 faros-provider-infrastructure .page {
@@ -40,7 +36,7 @@ faros-provider-infrastructure .page-title {
 faros-provider-infrastructure .page-meta {
   margin: 0;
   font-size: 12px;
-  color: var(--color-text-muted);
+  color: var(--color-text-muted, #5d5f78);
 }
 
 faros-provider-infrastructure .grid {
@@ -62,7 +58,9 @@ faros-provider-infrastructure .grid {
 }
 
 faros-provider-infrastructure .filters {
+  align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -78,17 +76,30 @@ faros-provider-infrastructure .template-card {
   flex-direction: column;
   gap: 8px;
   padding: 14px 16px;
-  border-radius: 6px;
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border-subtle);
-  color: var(--color-text-primary);
+  color: var(--color-text-primary, #e9e9f2);
   cursor: pointer;
   font: inherit;
   transition: border-color 0.12s ease;
 }
 
 faros-provider-infrastructure .template-card:hover {
-  border-color: var(--color-accent);
+  border-color: var(--color-accent, #8b6bff);
+}
+
+/* Compact inline controls retain the canonical k-* focus/colour contract;
+ * their surrounding value/table cell owns the spacing. The copy affordance
+ * has no standalone design-book recipe, so keep this local geometry narrow. */
+faros-provider-infrastructure .view-value-code { text-transform: none; }
+faros-provider-infrastructure .view-value-copy,
+faros-provider-infrastructure .instance-name-link {
+  min-height: 0;
+  padding: 0;
+}
+faros-provider-infrastructure .view-value-copy {
+  border-color: transparent;
+}
+faros-provider-infrastructure .view-value-copy:hover {
+  border-color: transparent;
 }
 
 faros-provider-infrastructure .template-card-head {
@@ -100,18 +111,13 @@ faros-provider-infrastructure .template-card-head {
 
 faros-provider-infrastructure .exposure-icon {
   align-items: center;
-  color: var(--color-text-muted);
+  color: var(--color-text-muted, #5d5f78);
   cursor: help;
   display: inline-flex;
   flex: none;
   height: 18px;
   justify-content: center;
   width: 18px;
-}
-
-faros-provider-infrastructure .exposure-icon svg {
-  height: 14px;
-  width: 14px;
 }
 
 faros-provider-infrastructure .template-card-title {
@@ -122,7 +128,7 @@ faros-provider-infrastructure .template-card-title {
 faros-provider-infrastructure .template-card-desc {
   margin: 0;
   font-size: 12px;
-  color: var(--color-text-secondary);
+  color: var(--color-text-secondary, #8a8ca6);
   line-height: 1.5;
 }
 
@@ -130,7 +136,7 @@ faros-provider-infrastructure .template-card-foot {
   display: flex;
   justify-content: space-between;
   font-size: 10px;
-  color: var(--color-text-muted);
+  color: var(--color-text-muted, #5d5f78);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -151,7 +157,7 @@ faros-provider-infrastructure .dynform-row {
 }
 
 faros-provider-infrastructure .dynform-group {
-  border: 1px solid var(--color-border-subtle);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
   margin: 0.4rem 0;
   padding: 0.5rem 0.8rem 0.2rem;
@@ -171,49 +177,23 @@ faros-provider-infrastructure .dynform-row label {
 faros-provider-infrastructure .dynform-label {
   font-size: 11px;
   font-weight: 600;
-  color: var(--color-text-secondary);
+  color: var(--color-text-secondary, #8a8ca6);
 }
 
 faros-provider-infrastructure .dynform-label .required {
-  color: var(--color-warning);
+  color: var(--color-warning, #f0a63a);
   margin-left: 2px;
 }
 
 faros-provider-infrastructure .dynform-desc {
   font-size: 11px;
-  color: var(--color-text-muted);
+  color: var(--color-text-muted, #5d5f78);
 }
 
 faros-provider-infrastructure .actions {
   display: flex;
   gap: 8px;
   margin-top: 8px;
-}
-
-
-
-faros-provider-infrastructure button.link {
-  align-items: center;
-  background: transparent;
-  border: none;
-  color: var(--color-accent);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  display: inline-flex;
-  gap: 4px;
-  padding: 0;
-}
-
-faros-provider-infrastructure button.link.back {
-  align-self: flex-start;
-  margin-bottom: 4px;
-}
-
-faros-provider-infrastructure button.link:disabled,
-faros-provider-infrastructure button.danger:disabled {
-  cursor: progress;
-  opacity: 0.6;
 }
 
 
@@ -231,33 +211,33 @@ faros-provider-infrastructure .panel-title {
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--color-text-secondary);
+  color: var(--color-text-secondary, #8a8ca6);
 }
 
 faros-provider-infrastructure pre {
   margin: 0;
-  background: var(--color-surface-overlay);
-  color: var(--color-text-primary);
-  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-primary, #e9e9f2);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 4px;
   padding: 10px 12px;
-  font-family: "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
   font-size: 11px;
   overflow-x: auto;
   white-space: pre-wrap;
 }
 
 faros-provider-infrastructure code {
-  background: var(--color-surface-overlay);
-  color: var(--color-text-secondary);
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-secondary, #8a8ca6);
   padding: 1px 5px;
   border-radius: 4px;
-  font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, Menlo, monospace);
   font-size: 11px;
 }
 
 faros-provider-infrastructure .muted {
-  color: var(--color-text-muted);
+  color: var(--color-text-muted, #5d5f78);
   font-size: 12px;
 }
 
@@ -277,7 +257,7 @@ faros-provider-infrastructure .page-loading-shell {
 
 faros-provider-infrastructure .page-loading-line,
 faros-provider-infrastructure .page-loading-panel {
-  background: linear-gradient(90deg, var(--color-surface-overlay), var(--color-surface-hover), var(--color-surface-overlay));
+  background: linear-gradient(90deg, var(--color-surface-overlay, #171927), var(--color-surface-hover, #1e2033), var(--color-surface-overlay, #171927));
   background-size: 200% 100%;
   border-radius: 4px;
 }
@@ -286,7 +266,7 @@ faros-provider-infrastructure .page-loading-line { height: 12px; width: 100%; }
 faros-provider-infrastructure .page-loading-line-short { width: 34%; }
 faros-provider-infrastructure .page-loading-line-mid { width: 68%; }
 faros-provider-infrastructure .page-loading-panel {
-  border: 1px solid var(--color-border-subtle);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   height: 96px;
 }
 
@@ -297,9 +277,6 @@ faros-provider-infrastructure .catalog-loading-grid {
 }
 
 faros-provider-infrastructure .catalog-loading-card {
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 6px;
   min-height: 126px;
   padding: 16px;
 }
@@ -308,10 +285,10 @@ faros-provider-infrastructure .read-error,
 faros-provider-infrastructure .mutation-error,
 faros-provider-infrastructure .stale-banner {
   align-items: center;
-  background: var(--color-danger-subtle);
-  border: 1px solid color-mix(in srgb, var(--color-danger) 35%, transparent);
+  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
+  border: 1px solid color-mix(in srgb, var(--color-danger, #ff5d5d) 35%, transparent);
   border-radius: 6px;
-  color: var(--color-danger);
+  color: var(--color-danger, #ff5d5d);
   display: flex;
   font-size: 12px;
   gap: 10px;
@@ -319,29 +296,10 @@ faros-provider-infrastructure .stale-banner {
   padding: 10px 12px;
 }
 
-faros-provider-infrastructure .read-retry {
-  background: transparent;
-  border: 1px solid currentColor;
-  border-radius: 4px;
-  color: inherit;
-  cursor: pointer;
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 4px 9px;
-}
-
-faros-provider-infrastructure .read-retry:hover,
-faros-provider-infrastructure .read-retry:focus-visible {
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  outline: none;
-}
-
 faros-provider-infrastructure .empty-state,
 faros-provider-infrastructure .empty-followup,
 faros-provider-infrastructure .detail-empty {
-  color: var(--color-text-muted);
+  color: var(--color-text-muted, #5d5f78);
   font-size: 12px;
 }
 
@@ -365,48 +323,46 @@ faros-provider-infrastructure .instance-detail-title {
 faros-provider-infrastructure .instance-detail-head { justify-content: space-between; }
 faros-provider-infrastructure .refresh-cadence,
 faros-provider-infrastructure .cell-mono {
-  color: var(--color-text-muted);
-  font-family: var(--font-mono);
+  color: var(--color-text-muted, #5d5f78);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
   font-size: 10px;
 }
 
 faros-provider-infrastructure .instance-name-link {
-  color: var(--color-text-primary);
+  color: var(--color-text-primary, #e9e9f2);
   font-weight: 600;
 }
 faros-provider-infrastructure .instance-name-link {
   background: transparent;
-  border: 0;
+  border-color: transparent;
   cursor: pointer;
   font: inherit;
   padding: 0;
   text-align: left;
 }
+faros-provider-infrastructure .instance-name-link:hover { border-color: transparent; }
 faros-provider-infrastructure .instance-name-link:hover,
-faros-provider-infrastructure .instance-name-link:focus-visible { color: var(--color-accent); }
-faros-provider-infrastructure .instance-name-link:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-faros-provider-infrastructure .instance-name-link:disabled { color: var(--color-text-muted); cursor: default; }
-faros-provider-infrastructure .cell-empty { color: var(--color-text-muted); }
+faros-provider-infrastructure .instance-name-link:focus-visible { color: var(--color-accent, #8b6bff); }
+faros-provider-infrastructure .instance-name-link:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 2px; }
+faros-provider-infrastructure .instance-name-link:disabled { color: var(--color-text-muted, #5d5f78); cursor: default; }
+faros-provider-infrastructure .cell-empty { color: var(--color-text-muted, #5d5f78); }
 faros-provider-infrastructure .row-actions { align-items: center; display: flex; justify-content: flex-end; }
 faros-provider-infrastructure .instance-message {
-  background: var(--color-surface-overlay);
-  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-overlay, #171927);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
-  color: var(--color-text-secondary);
+  color: var(--color-text-secondary, #8a8ca6);
   font-size: 12px;
   padding: 9px 12px;
 }
 
 faros-provider-infrastructure .detail-group {
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 6px;
   overflow: hidden;
 }
 
 faros-provider-infrastructure .detail-group-title {
-  border-bottom: 1px solid var(--color-border-subtle);
-  color: var(--color-text-muted);
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  color: var(--color-text-muted, #5d5f78);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.12em;
@@ -417,12 +373,12 @@ faros-provider-infrastructure .detail-group-title {
 faros-provider-infrastructure .detail-fields { margin: 0; }
 faros-provider-infrastructure .detail-field {
   align-items: baseline;
-  border-bottom: 1px solid var(--color-border-subtle);
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   display: flex;
   gap: 16px;
   padding: 10px 16px;
 }
 faros-provider-infrastructure .detail-field:last-child { border-bottom: 0; }
-faros-provider-infrastructure .detail-field dt { color: var(--color-text-muted); flex: 0 0 160px; font-size: 12px; }
-faros-provider-infrastructure .detail-field dd { color: var(--color-text-secondary); margin: 0; min-width: 0; overflow-wrap: anywhere; }
+faros-provider-infrastructure .detail-field dt { color: var(--color-text-muted, #5d5f78); flex: 0 0 160px; font-size: 12px; }
+faros-provider-infrastructure .detail-field dd { color: var(--color-text-secondary, #8a8ca6); margin: 0; min-width: 0; overflow-wrap: anywhere; }
 faros-provider-infrastructure .detail-empty { padding: 24px 16px; text-align: center; }

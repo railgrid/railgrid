@@ -55,11 +55,22 @@ test('wizard focus trap follows the natural tab sequence', async () => {
   const source = await readFile(new URL('./ResourceImportWizard.vue', import.meta.url), 'utf8')
   assert.match(source, /function dialogTabStops\(\)/)
   assert.match(source, /\.filter\(element => element\.tabIndex === 0\)/)
-  assert.match(source, /<header[\s\S]*class="icon-button"[\s\S]*aria-label="Close"/)
+  assert.match(source, /<header[\s\S]*class="k-btn k-btn--ghost databricks-dialog-close"[\s\S]*aria-label="Close"/)
+  assert.doesNotMatch(source, /class="icon-button"/)
+})
+
+test('split create uses canonical buttons and menu items', async () => {
+  const source = await readFile(new URL('./components/SplitCreateButton.vue', import.meta.url), 'utf8')
+  assert.match(source, /class="k-btn k-btn--primary split-create-main"/)
+  assert.match(source, /class="k-btn k-btn--primary split-create-toggle"/)
+  assert.match(source, /class="split-create-menu k-menu" role="menu"/)
+  assert.match(source, /class="k-menu-item split-create-menu-item" type="button" role="menuitem" tabindex="-1"/)
+  assert.doesNotMatch(source, /class="(?:secondary|icon-button)[^"]*"/)
 })
 
 test('lazy tree uses dense transparent rows without decorative focus glow', async () => {
   const styles = await readFile(new URL('./style.css', import.meta.url), 'utf8')
+  const wizard = await readFile(new URL('./ResourceImportWizard.vue', import.meta.url), 'utf8')
   const row = styles.match(/faros-provider-databricks \.lazy-tree-row \{([^}]*)\}/)?.[1] ?? ''
   const focus = styles.match(/faros-provider-databricks \.lazy-tree-item:focus > \.lazy-tree-row \{([^}]*)\}/)?.[1] ?? ''
   const description = styles.match(/faros-provider-databricks \.lazy-tree-copy small \{([^}]*)\}/)?.[1] ?? ''
@@ -70,7 +81,10 @@ test('lazy tree uses dense transparent rows without decorative focus glow', asyn
   assert.match(focus, /outline:/)
   assert.match(styles, /\.lazy-tree-item:focus\s*>\s*\.lazy-tree-row/)
   assert.doesNotMatch(styles, /\.lazy-tree-row input\s*\{/)
-  assert.match(styles, /input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\)/)
+  assert.doesNotMatch(styles, /input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\)/)
+  assert.doesNotMatch(styles, /faros-provider-databricks select:focus/)
+  assert.match(wizard, /<select[^>]*class="k-input"/)
+  assert.match(wizard, /<input[^>]*class="k-input"/)
   assert.doesNotMatch(styles, /faros-provider-databricks input\s*,/)
   assert.doesNotMatch(styles, /faros-provider-databricks input:focus/)
   assert.match(description, /overflow:\s*hidden/)

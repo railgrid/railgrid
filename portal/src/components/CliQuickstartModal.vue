@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useEscapeKey } from '@/composables/useEscapeKey'
 import { Terminal, X, Copy, Check, ExternalLink, Download, Package, Code2 } from 'lucide-vue-next'
@@ -7,6 +7,40 @@ import { Terminal, X, Copy, Check, ExternalLink, Download, Package, Code2 } from
 const emit = defineEmits<{ close: [] }>()
 
 useEscapeKey(() => emit('close'))
+
+const dialogRef = ref<HTMLElement | null>(null)
+const closeButton = ref<HTMLButtonElement | null>(null)
+let previousFocus: HTMLElement | null = null
+
+function onKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Tab') return
+  const focusable = Array.from(dialogRef.value?.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+  ) ?? [])
+  if (!focusable.length) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+onMounted(() => {
+  previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  window.addEventListener('keydown', onKeydown)
+  nextTick(() => closeButton.value?.focus())
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  const target = previousFocus
+  previousFocus = null
+  nextTick(() => target?.isConnected && target.focus())
+})
 
 const auth = useAuthStore()
 
@@ -73,10 +107,10 @@ const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
 <template>
   <Teleport to="body">
     <div
-      class="fixed inset-0 z-[100] flex items-center justify-center bg-surface/60 backdrop-blur-sm"
+      class="k-modal-overlay"
       @click.self="$emit('close')"
     >
-      <div class="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-xl border border-border-subtle bg-surface-raised shadow-2xl">
+      <div ref="dialogRef" class="k-modal w-full max-w-2xl max-h-[90vh] overflow-y-auto p-0" role="dialog" aria-modal="true" aria-labelledby="cli-quickstart-title">
         <!-- Header (terminal-style) -->
         <div class="flex items-center justify-between border-b border-border-subtle bg-surface-overlay/60 px-4 py-2.5">
           <div class="flex items-center gap-2">
@@ -91,7 +125,10 @@ const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
             </span>
           </div>
           <button
-            class="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted transition-all hover:bg-surface-hover hover:text-text-primary"
+            ref="closeButton"
+            type="button"
+            class="k-btn k-btn--ghost h-7 w-7 p-0 text-text-muted transition-all hover:text-text-primary"
+            aria-label="Close CLI quickstart dialog"
             @click="$emit('close')"
           >
             <X class="h-3.5 w-3.5" :stroke-width="2" />
@@ -101,7 +138,7 @@ const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
         <div class="space-y-5 p-6">
           <!-- Intro -->
           <div>
-            <h2 class="text-[15px] font-bold text-text-primary">Install & log in to the CLI</h2>
+            <h2 id="cli-quickstart-title" class="text-[15px] font-bold text-text-primary">Install & log in to the CLI</h2>
             <p class="mt-1 text-[12px] text-text-muted">
               The <span class="font-mono text-text-secondary">faros</span> CLI talks to this hub at
               <span class="font-mono text-text-secondary">{{ hubURL }}</span>.
@@ -112,7 +149,7 @@ const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
           <!-- Step 1: install method tabs -->
           <div>
             <div class="mb-2 flex items-center gap-2">
-              <span class="flex h-5 w-5 items-center justify-center rounded-full bg-accent text-[10px] font-bold text-white">
+                <span class="flex h-5 w-5 items-center justify-center rounded-full bg-accent text-[10px] font-bold text-on-accent">
                 1
               </span>
               <span class="text-[11px] font-semibold uppercase tracking-[0.15em] text-text-muted">
@@ -125,7 +162,7 @@ const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
                 v-for="m in methods"
                 :key="m.id"
                 type="button"
-                class="flex flex-1 items-center gap-1.5 rounded-lg border px-2.5 py-2 text-left transition-all"
+                class="k-btn k-btn--ghost flex flex-1 items-center gap-1.5 rounded-md border px-2.5 py-2 text-left transition-all"
                 :class="
                   method === m.id
                     ? 'border-accent/40 bg-accent/5'
@@ -146,7 +183,7 @@ const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
                 <span class="font-mono text-[9px] uppercase tracking-[0.2em] text-text-muted/70">$ shell</span>
                 <button
                   type="button"
-                  class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                  class="k-btn k-btn--ghost flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-muted transition-all hover:text-accent"
                   @click="copy(installSnippet, 'install')"
                 >
                   <component :is="copiedField === 'install' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
@@ -171,7 +208,7 @@ const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
           <!-- Step 2: login -->
           <div>
             <div class="mb-2 flex items-center gap-2">
-              <span class="flex h-5 w-5 items-center justify-center rounded-full bg-accent text-[10px] font-bold text-white">
+                <span class="flex h-5 w-5 items-center justify-center rounded-full bg-accent text-[10px] font-bold text-on-accent">
                 2
               </span>
               <span class="text-[11px] font-semibold uppercase tracking-[0.15em] text-text-muted">
@@ -184,7 +221,7 @@ const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
                 <span class="font-mono text-[9px] uppercase tracking-[0.2em] text-text-muted/70">$ shell</span>
                 <button
                   type="button"
-                  class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                  class="k-btn k-btn--ghost flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-muted transition-all hover:text-accent"
                   @click="copy(loginSnippet, 'login')"
                 >
                   <component :is="copiedField === 'login' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
@@ -204,7 +241,7 @@ const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
           <!-- Step 3: verify -->
           <div>
             <div class="mb-2 flex items-center gap-2">
-              <span class="flex h-5 w-5 items-center justify-center rounded-full bg-accent text-[10px] font-bold text-white">
+                <span class="flex h-5 w-5 items-center justify-center rounded-full bg-accent text-[10px] font-bold text-on-accent">
                 3
               </span>
               <span class="text-[11px] font-semibold uppercase tracking-[0.15em] text-text-muted">
@@ -217,7 +254,7 @@ const releasesURL = 'https://github.com/faroshq/faros/releases/latest'
                 <span class="font-mono text-[9px] uppercase tracking-[0.2em] text-text-muted/70">$ shell</span>
                 <button
                   type="button"
-                  class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-text-muted transition-all hover:bg-surface-hover hover:text-accent"
+                  class="k-btn k-btn--ghost flex items-center gap-1 px-1.5 py-0.5 text-[10px] text-text-muted transition-all hover:text-accent"
                   @click="copy(verifySnippet, 'verify')"
                 >
                   <component :is="copiedField === 'verify' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />

@@ -86,6 +86,7 @@ html.light .k-card {
 .k-table th {
   padding: 12px 20px;
   text-align: left;
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
@@ -184,6 +185,28 @@ html.light .k-card {
 .k-btn--ghost:hover {
   background: var(--color-surface-hover, #1e2033);
   border-color: color-mix(in srgb, var(--color-accent, #8b6bff) 30%, transparent);
+}
+.k-btn--text {
+  background: transparent;
+  border-color: transparent;
+  color: inherit;
+  box-shadow: none;
+}
+.k-btn--text:hover {
+  background: transparent;
+  border-color: transparent;
+}
+/* Back navigation sits at the start of a page flow. Explicit intrinsic sizing
+ * prevents column flex/grid parents from stretching it into a full-width bar. */
+.k-back-action {
+  align-self: flex-start;
+  inline-size: fit-content;
+  justify-self: start;
+  margin-block-end: 4px;
+  color: var(--color-text-muted, #5d5f78);
+}
+.k-back-action:hover {
+  color: var(--color-accent, #8b6bff);
 }
 .k-btn--danger {
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
@@ -286,6 +309,97 @@ html.light .k-menu {
   height: 1px;
   margin: 4px 0;
   background: var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+}
+
+/* ── Layout selector ──────────────────────────────────────────────────────
+ * Compact controlled grid/list menu. It uses the menu selection language but
+ * never glows: layout is a presentation preference, not a primary action. */
+.k-layout-selector {
+  position: relative;
+  display: inline-flex;
+}
+.k-layout-selector__trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 34px;
+  height: 32px;
+  padding: 5px 7px;
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-radius: 4px;
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-secondary, #8a8ca6);
+  cursor: pointer;
+  box-shadow: none;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.k-layout-selector__trigger:hover,
+.k-layout-selector__trigger[aria-expanded="true"] {
+  border-color: var(--color-border-default, rgba(255, 255, 255, 0.11));
+  background: var(--color-surface-hover, var(--color-surface-overlay, #171927));
+  color: var(--color-text-primary, #e9e9f2);
+  box-shadow: none;
+}
+.k-layout-selector__trigger:focus {
+  outline: none;
+  box-shadow: none;
+}
+.k-layout-selector__trigger:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+  box-shadow: none;
+}
+.k-layout-selector__menu {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 5px);
+  right: 0;
+  width: 154px;
+}
+.k-layout-selector__label {
+  padding: 5px 8px 4px;
+  color: var(--color-text-muted, #5d5f78);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+.k-layout-selector__item {
+  display: grid;
+  grid-template-columns: 16px 1fr 14px;
+  min-height: 30px;
+  box-shadow: none;
+}
+.k-layout-selector__item:hover,
+.k-layout-selector__item:focus,
+.k-layout-selector__item:focus-visible,
+.k-layout-selector__item.is-selected {
+  box-shadow: none;
+}
+.k-layout-selector__item:focus {
+  outline: none;
+}
+.k-layout-selector__item:focus-visible {
+  outline: 1px solid var(--color-accent, #8b6bff);
+  outline-offset: -1px;
+}
+.k-layout-selector__icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+.k-layout-selector__chevron {
+  width: 11px;
+  height: 11px;
+  color: var(--color-text-muted, #5d5f78);
+}
+.k-layout-selector__check {
+  width: 13px;
+  height: 13px;
+  color: var(--color-accent, #8b6bff);
 }
 
 /* ── Kbd (shortcut key-cap) ───────────────────────────────────────────────*/
@@ -792,18 +906,130 @@ html.light [data-k-tip]::after {
 .k-table__skeleton--wide { width: 82%; }
 .k-table__skeleton--mid { width: 64%; }
 .k-table__skeleton--small { width: 42%; }
+.k-table.k-table--resource {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  width: 100%;
+}
+.k-table__controls,
+.k-table__loading-controls {
+  align-items: center;
+  background: var(--color-surface, #0a0b12);
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+}
+.k-table__loading-control {
+  border-radius: 4px;
+  height: 32px;
+}
+.k-table__loading-control--search {
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+.k-table__loading-control--filter { flex: 0 0 132px; }
+.k-table__loading-control--clear {
+  flex: 0 0 84px;
+  height: 30px;
+}
+.k-table__search {
+  flex: 1 1 220px;
+  min-width: 180px;
+  position: relative;
+}
+.k-table__search-icon {
+  color: var(--color-text-muted, #5d5f78);
+  height: 14px;
+  inset: 9px auto auto 10px;
+  pointer-events: none;
+  position: absolute;
+  width: 14px;
+}
+.k-table__search-input,
+.k-table__filter-select,
+.k-table__page-size-select {
+  background: var(--color-surface-overlay, #171927);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-radius: 4px;
+  color: var(--color-text-primary, #e9e9f2);
+  font: inherit;
+  font-size: 12px;
+  height: 32px;
+}
+.k-table__search-input {
+  padding: 0 30px;
+  width: 100%;
+}
+.k-table__search-input::placeholder { color: var(--color-text-muted, #5d5f78); }
+.k-table__search-input::-webkit-search-decoration,
+.k-table__search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+.k-table__search-input:focus,
+.k-table__filter-select:focus,
+.k-table__page-size-select:focus {
+  border-color: var(--color-accent, #8b6bff);
+  box-shadow: 0 0 0 2px var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  outline: 0;
+}
+.k-table__search-clear {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-text-muted, #5d5f78);
+  cursor: pointer;
+  display: inline-flex;
+  height: 24px;
+  inset: 4px 4px auto auto;
+  justify-content: center;
+  padding: 0;
+  position: absolute;
+  width: 24px;
+}
+.k-table__search-clear:hover { background: var(--color-surface-hover, #1e2033); color: var(--color-text-primary, #e9e9f2); }
+.k-table__search-clear svg { height: 13px; width: 13px; }
+.k-table__filter-select { min-width: 132px; padding: 0 28px 0 10px; }
+.k-table__clear-filters {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-accent, #8b6bff);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  height: 30px;
+  padding: 0 8px;
+}
+.k-table__clear-filters:hover { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); }
+.k-table__scroll {
+  max-width: 100%;
+  overscroll-behavior-inline: contain;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.k-table__scroll:focus { outline: 0; }
+.k-table__scroll:focus-visible { box-shadow: inset 0 0 0 2px var(--color-accent, #8b6bff); }
 .k-table__table { min-width: 100%; }
 .k-table__head-row { border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
 .k-table__heading {
   padding: 12px 20px;
   text-align: left;
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.15em;
   color: var(--color-text-muted, #5d5f78);
 }
-.k-table__row { border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
+.k-table__row {
+  animation: none;
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+}
 .k-table__row:last-child { border-bottom: 0; }
 .k-table__cell {
   padding: 12px 20px;
@@ -812,12 +1038,80 @@ html.light [data-k-tip]::after {
   color: var(--color-text-secondary, #8a8ca6);
   transition: color 0.1s ease;
 }
+/* Tailwind preflight makes SVGs block-level. Table-cell icons are inline
+ * content, so restore their intrinsic inline flow and keep link labels intact. */
+.k-table__cell svg {
+  display: inline-block;
+  vertical-align: middle;
+}
 .k-table__row.k-table__row--interactive { cursor: pointer; }
 .k-table__row.k-table__row--interactive:hover { background: color-mix(in srgb, var(--color-accent, #8b6bff) 4%, transparent); }
 .k-table__row.k-table__row--interactive:hover .k-table__cell { color: var(--color-text-primary, #e9e9f2); }
+.k-table__row.k-table__row--interactive:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: -2px;
+}
 .k-table__empty-cell { padding: 36px 20px; text-align: center; color: var(--color-text-muted, #5d5f78); }
 .k-table__empty-icon { width: 24px; height: 24px; margin: 0 auto 8px; opacity: 0.7; }
 .k-table__empty-label { margin: 0; font-size: 12px; }
+.k-table__pending-cell { padding: 36px 20px; text-align: center; }
+.k-table__pending-label { color: var(--color-text-muted, #5d5f78); font-size: 12px; margin: 0; }
+.k-table__pagination {
+  align-items: center;
+  background: var(--color-surface, #0a0b12);
+  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  display: flex;
+  gap: 12px;
+  min-height: 52px;
+  padding: 9px 12px 9px 16px;
+}
+.k-table__range,
+.k-table__page-indicator {
+  color: var(--color-text-muted, #5d5f78);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.k-table__range strong { color: var(--color-text-secondary, #8a8ca6); font-weight: 500; }
+.k-table__page-size {
+  align-items: center;
+  color: var(--color-text-muted, #5d5f78);
+  display: flex;
+  font-size: 11px;
+  gap: 7px;
+  margin-inline-start: auto;
+  white-space: nowrap;
+}
+.k-table__page-size-select { height: 30px; padding: 0 24px 0 8px; }
+.k-table__page-actions { align-items: center; display: flex; gap: 6px; justify-content: flex-end; }
+.k-table__page-indicator {
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  border-radius: 4px;
+  color: var(--color-accent, #8b6bff);
+  min-width: 52px;
+  padding: 6px 8px;
+  text-align: center;
+}
+.k-table__page-button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 4px;
+  color: var(--color-text-secondary, #8a8ca6);
+  cursor: pointer;
+  display: inline-flex;
+  height: 30px;
+  justify-content: center;
+  padding: 0;
+  width: 30px;
+}
+.k-table__page-button:hover:not(:disabled) {
+  background: var(--color-surface-hover, #1e2033);
+  border-color: var(--color-border-default, rgba(255, 255, 255, 0.11));
+  color: var(--color-text-primary, #e9e9f2);
+}
+.k-table__page-button:disabled { cursor: not-allowed; opacity: 0.4; }
+.k-table__page-button svg { height: 14px; width: 14px; }
 .k-table-action {
   align-items: center;
   background: transparent;
@@ -853,6 +1147,17 @@ html.light [data-k-tip]::after {
 .k-table-action__icon { width: 14px; height: 14px; }
 .k-table-action__icon--spinning { animation: k-table-action-spin 0.8s linear infinite; }
 @keyframes k-table-action-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 600px) {
+  .k-table__search,
+  .k-table__loading-control--search { flex-basis: 100%; }
+  .k-table__filter-select,
+  .k-table__loading-control--filter { flex: 1 1 130px; min-width: 0; }
+  .k-table__pagination { flex-wrap: wrap; padding-inline: 12px; }
+  .k-table__range { flex-basis: 100%; }
+  .k-table__page-size { margin-inline-start: 0; }
+  .k-table__page-actions { margin-inline-start: auto; }
+}
 
 /* ── Status / conditions ──────────────────────────────────────────────────
  * Standalone bundles cannot rely on the host's main.css for the live dot. */

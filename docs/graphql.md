@@ -285,6 +285,38 @@ This confirms the endpoint is reachable. To run a real query use `kubectl create
 }
 ```
 
+### Paginate a Kubernetes list
+
+GraphQL Kubernetes list fields accept optional `limit` and `continue`
+arguments. A list response contains `items`, `continue`,
+`remainingItemCount`, and `resourceVersion`:
+
+```graphql
+query ListEdges($limit: Int, $continue: String) {
+  faros_sh {
+    v1alpha1 {
+      Edges(limit: $limit, continue: $continue) {
+        items { metadata { name namespace } }
+        continue
+        remainingItemCount
+        resourceVersion
+      }
+    }
+  }
+}
+```
+
+Send the returned `continue` value as the next request's cursor. Cursor values
+are opaque; do not construct or interpret them. Clients normalize a terminal
+empty cursor to no cursor, and `remainingItemCount` must not be used to claim
+an exact total.
+
+For eligible single-kind GraphQL lists, Faros uses a hybrid portal strategy:
+an unfiltered view requests one cursor page; entering search or a filter walks
+the cursor pages (with a safety bound) and then filters the complete result
+locally; clearing the search/filter returns to server page one. Composite or
+federated lists, and REST-backed lists, remain client-side.
+
 ### Get a specific resource by name
 
 ```graphql

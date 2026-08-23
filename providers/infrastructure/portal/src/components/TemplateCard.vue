@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Globe2, Lock } from 'lucide-vue-next'
 import type { Template } from '../types'
 
 const props = defineProps<{ template: Template }>()
@@ -23,7 +24,8 @@ const exposure = computed(() => {
 
 <template>
   <button
-    class="template-card"
+    type="button"
+    class="template-card k-card"
     @click="$emit('select', template.name)"
   >
     <div class="template-card-head">
@@ -31,15 +33,9 @@ const exposure = computed(() => {
       <span v-if="template.cloud" class="k-badge k-badge--muted">{{ template.cloud }}</span>
       <span v-if="exposure" class="exposure-icon" :title="exposure.title" :aria-label="exposure.title" role="img">
         <!-- internal: closed padlock — never public -->
-        <svg v-if="exposure.kind === 'internal'" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3.5" y="7" width="9" height="6.5" rx="1" />
-          <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
-        </svg>
+        <Lock v-if="exposure.kind === 'internal'" :size="14" :stroke-width="1.75" aria-hidden="true" />
         <!-- optional: dashed globe — may be published if the instance asks -->
-        <svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="8" cy="8" r="6" stroke-dasharray="2.4 2" />
-          <path d="M2.5 8h11M8 2.2c-3.2 3.4-3.2 8.2 0 11.6M8 2.2c3.2 3.4 3.2 8.2 0 11.6" />
-        </svg>
+        <Globe2 v-else :size="14" :stroke-width="1.75" aria-hidden="true" />
       </span>
     </div>
     <p class="template-card-desc">{{ template.description }}</p>

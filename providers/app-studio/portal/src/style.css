@@ -77,6 +77,12 @@ faros-provider-app-studio *::after {
   box-sizing: border-box;
 }
 
+/* The custom element owns this target; teleported overlays should not add a
+   layout box to the provider while remaining descendants of the scoped root. */
+faros-provider-app-studio .app-studio-overlay-root {
+  display: contents;
+}
+
 @keyframes app-studio-running-ripple {
   from { background-position: 100% 0; }
   to { background-position: -100% 0; }

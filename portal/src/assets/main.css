@@ -1,6 +1,6 @@
 @import "tailwindcss";
 /* The host imports this generated copy; provider-sdk/portalkit is canonical. */
-@import "./faros-ui.css";
+@import "./faros-ui.css" layer(components);
 
 /*
  * Some built-in providers ship their UI as separate Vite bundles under
@@ -193,13 +193,13 @@ html.light .contour-grid {
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border-default);
   box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.4),
-    0 8px 24px rgba(0, 0, 0, 0.5);
+    0 1px 2px color-mix(in srgb, var(--color-surface) 40%, transparent),
+    0 8px 24px color-mix(in srgb, var(--color-surface) 50%, transparent);
 }
 html.light .island {
   box-shadow:
-    0 1px 2px rgba(20, 21, 42, 0.04),
-    0 8px 24px rgba(20, 21, 42, 0.08);
+    0 1px 2px color-mix(in srgb, var(--color-text-primary) 4%, transparent),
+    0 8px 24px color-mix(in srgb, var(--color-text-primary) 8%, transparent);
 }
 
 /* ── Island nav item ── */
@@ -265,12 +265,26 @@ html.light .island {
   }
 }
 
+/* Motion is a state affordance, not a requirement for understanding the
+ * host. Keep focus/hover state changes available while removing entry,
+ * shimmer, spinner, and live-pulse motion for reduced-motion users. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--color-accent) 15%, transparent);
-  border-radius: 9999px; /* true capsule on the 4px thumb */
+  border-radius: 2px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--color-accent) 30%, transparent);

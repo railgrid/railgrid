@@ -235,7 +235,7 @@ function onLayoutUpdated() {
           <div class="font-medium text-text-secondary">No providers enabled in this workspace</div>
           <div class="mt-1 text-xs">
             Enable a provider from the <router-link to="/providers" class="text-accent hover:text-accent-hover">catalog</router-link> to see a dashboard summary,
-            or walk through the <button class="text-accent hover:text-accent-hover" @click="welcomeForced = true">getting started guide</button>.
+            or walk through the <button type="button" class="k-btn k-btn--ghost border-0 bg-transparent p-0 text-accent hover:bg-transparent hover:text-accent-hover" @click="welcomeForced = true">getting started guide</button>.
             Each provider is enabled per workspace.
           </div>
         </div>
@@ -251,7 +251,7 @@ function onLayoutUpdated() {
               <div class="relative">
                 <button
                   type="button"
-                  class="flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-raised px-3 py-1.5 text-[12px] font-medium text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                  class="k-btn k-btn--ghost flex items-center gap-1.5 px-3 py-1.5 text-[12px] disabled:cursor-not-allowed disabled:opacity-50"
                   :disabled="addable.length === 0"
                   @click="addOpen = !addOpen"
                 >
@@ -265,7 +265,7 @@ function onLayoutUpdated() {
                     v-for="name in addable"
                     :key="name"
                     type="button"
-                    class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-text-secondary transition-colors hover:bg-surface-raised hover:text-text-primary"
+                    class="k-menu-item"
                     @click="onAdd(name)"
                   >
                     <Puzzle class="h-3.5 w-3.5 flex-shrink-0 text-text-muted" :stroke-width="1.75" />
@@ -275,14 +275,14 @@ function onLayoutUpdated() {
               </div>
               <button
                 type="button"
-                class="flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-raised px-3 py-1.5 text-[12px] font-medium text-text-secondary transition-colors hover:text-text-primary"
+                class="k-btn k-btn--ghost flex items-center gap-1.5 px-3 py-1.5 text-[12px]"
                 @click="dash.reset()"
               >
                 <RotateCcw class="h-3.5 w-3.5" :stroke-width="2" /> Reset
               </button>
               <button
                 type="button"
-                class="flex items-center gap-1.5 rounded-lg border border-accent/40 bg-accent/10 px-3 py-1.5 text-[12px] font-medium text-accent transition-colors hover:bg-accent/15"
+                class="k-btn k-btn--primary flex items-center gap-1.5 px-3 py-1.5 text-[12px]"
                 @click="toggleEdit"
               >
                 <Check class="h-3.5 w-3.5" :stroke-width="2" /> Done
@@ -293,14 +293,14 @@ function onLayoutUpdated() {
                    customize controls stay a single coherent group. -->
               <button
                 type="button"
-                class="flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-raised px-3 py-1.5 text-[12px] font-medium text-text-secondary transition-colors hover:text-text-primary"
+                class="k-btn k-btn--ghost flex items-center gap-1.5 px-3 py-1.5 text-[12px]"
                 @click="welcomeForced = true"
               >
                 <Rocket class="h-3.5 w-3.5" :stroke-width="2" /> Getting started
               </button>
               <button
                 type="button"
-                class="flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-raised px-3 py-1.5 text-[12px] font-medium text-text-secondary transition-colors hover:text-text-primary"
+                class="k-btn k-btn--ghost flex items-center gap-1.5 px-3 py-1.5 text-[12px]"
                 @click="toggleEdit"
               >
                 <LayoutGrid class="h-3.5 w-3.5" :stroke-width="2" /> Customize
@@ -322,7 +322,7 @@ function onLayoutUpdated() {
           <div v-if="addable.length > 0">
             <div class="font-medium text-text-secondary">Your dashboard is empty</div>
             <div class="mt-1 text-xs">
-              You've removed all tiles. Use <button class="text-accent hover:text-accent-hover" @click="editMode = true; addOpen = true">Customize → Add tile</button> to bring them back.
+              You've removed all tiles. Use <button type="button" class="k-btn k-btn--ghost border-0 bg-transparent p-0 text-accent hover:bg-transparent hover:text-accent-hover" @click="editMode = true; addOpen = true">Customize → Add tile</button> to bring them back.
             </div>
           </div>
           <div v-else>

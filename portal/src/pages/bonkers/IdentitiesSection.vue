@@ -1,7 +1,31 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+
+import ResourceTable from '@/portalkit/ResourceTable.vue'
 import { useAdminStore } from '@/stores/admin'
 
 const admin = useAdminStore()
+
+const columns = [
+  { key: 'groupResource', label: 'Group / Resource' },
+  { key: 'export', label: 'Export' },
+  { key: 'identityHash', label: 'identityHash' },
+]
+
+const identityRows = computed<Record<string, unknown>[]>(() =>
+  admin.identities.map((identity) => ({
+    ...identity,
+    groupResource: `${identity.resource}.${identity.group}`,
+  })),
+)
+
+function identityRowKey(row: Record<string, unknown>): string {
+  return [row.path, row.group, row.resource, row.export].map(value => String(value ?? '')).join('/')
+}
+
+async function refresh() {
+  await admin.refresh()
+}
 </script>
 
 <template>
@@ -12,24 +36,34 @@ const admin = useAdminStore()
       <code>edges.faros.sh</code> for kuery) into that provider's Helm values
       (<code>apiExport.edgesIdentityHash</code>).
     </p>
-    <table class="w-full text-sm">
-      <thead class="text-left text-[11px] uppercase text-text-muted">
-        <tr>
-          <th class="py-1 pr-4">Group / Resource</th>
-          <th class="py-1 pr-4">Export</th>
-          <th class="py-1">identityHash</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="(id, i) in admin.identities" :key="i" class="border-t border-border-subtle/50">
-          <td class="py-1.5 pr-4 text-text-primary">{{ id.resource }}.{{ id.group }}</td>
-          <td class="py-1.5 pr-4 text-text-muted">{{ id.export }}</td>
-          <td class="py-1.5 font-mono text-[11px] text-text-muted">{{ id.identityHash || '(not minted yet)' }}</td>
-        </tr>
-        <tr v-if="!admin.identities.length && !admin.loading">
-          <td colspan="3" class="py-3 text-text-muted">No first-party identities found.</td>
-        </tr>
-      </tbody>
-    </table>
+
+    <ResourceTable
+      :columns="columns"
+      :rows="identityRows"
+      :row-key="identityRowKey"
+      :interactive="false"
+      searchable
+      search-placeholder="Search root identities…"
+      :search-keys="['groupResource', 'group', 'resource', 'export', 'identityHash', 'path']"
+      paginated
+      :page-size="10"
+      :loaded="admin.loaded"
+      :loading="admin.loading"
+      :error="admin.error"
+      :stale="admin.loaded && !!admin.error"
+      retryable
+      empty-text="No first-party identities found."
+      @retry="refresh"
+    >
+      <template #groupResource="{ row }">
+        <span class="font-mono text-[12px] text-text-primary">{{ row.groupResource }}</span>
+      </template>
+      <template #export="{ value }">
+        <span class="font-mono text-[11px] text-text-muted">{{ value || '—' }}</span>
+      </template>
+      <template #identityHash="{ value }">
+        <span class="font-mono text-[11px] text-text-muted">{{ value || '(not minted yet)' }}</span>
+      </template>
+    </ResourceTable>
   </section>
 </template>

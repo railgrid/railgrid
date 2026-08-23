@@ -229,7 +229,7 @@ export class Activity extends StoreElement {
         <span class="agents-filter-label">Range</span>
         <div class="agents-seg" role="group" aria-label="Run range">
           ${RANGES.map(
-            (r) => html`<button class="k-btn k-btn--primary agents-range-button ${r.id === this.range ? 'on' : ''}"
+            (r) => html`<button class="k-btn k-btn--ghost agents-range-button ${r.id === this.range ? 'on' : ''}"
               aria-pressed=${r.id === this.range ? 'true' : 'false'}
               @click=${() => {
                 if (r.id === this.range) return

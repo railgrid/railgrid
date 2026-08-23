@@ -13,11 +13,15 @@ import type {
   ConnectionDetail,
   DeployKey,
   ErrorResponse,
+  KubernetesListOptions,
+  KubernetesListPage,
   Package,
   PackageRow,
   Repository,
   RepositoryDetail,
 } from './types'
+
+export type { KubernetesListOptions, KubernetesListPage } from './types'
 
 const GROUP = 'code.faros.sh'
 const VERSION = 'v1alpha1'
@@ -626,6 +630,131 @@ function listResourceKind(kind: string): CodeResourceKind {
   }
 }
 
+const DEFAULT_LIST_LIMIT = 100
+const MAX_LIST_PAGES = 100
+
+interface RawListPage {
+  items: RawCR[]
+  continue?: string
+  remainingItemCount?: number
+  resourceVersion?: string
+}
+
+function requestReadContext(context?: APIReadContext): APIRequestContext {
+  return context === undefined ? captureRequestContext() : explicitRequestContext(context)
+}
+
+function validateListOptions(options: KubernetesListOptions | undefined, label: string): void {
+  if (options === undefined) return
+  if (options.limit !== undefined &&
+    (typeof options.limit !== 'number' || !Number.isSafeInteger(options.limit) || options.limit <= 0)) {
+    throw protocolError(`${label} limit had an invalid shape`)
+  }
+  if (options.continue !== undefined && typeof options.continue !== 'string') {
+    throw protocolError(`${label} continue had an invalid shape`)
+  }
+}
+
+function mapListPage<T>(page: RawListPage, map: (item: RawCR) => T): KubernetesListPage<T> {
+  return {
+    items: page.items.map(map),
+    continue: page.continue,
+    remainingItemCount: page.remainingItemCount,
+    resourceVersion: page.resourceVersion,
+  }
+}
+
+// gqlListPage queries one Kubernetes list page. The gateway treats limit and
+// continue as optional arguments, so undefined variables are omitted from the
+// JSON request while the query remains usable for both the first and next page.
+async function gqlListPage(
+  kind: string,
+  fields: string,
+  labelselector: string | undefined,
+  options: KubernetesListOptions | undefined,
+  context?: APIRequestContext,
+): Promise<RawListPage> {
+  validateListOptions(options, `${kind} list`)
+  const declarations = labelselector === undefined
+    ? ['$limit: Int', '$continue: String']
+    : ['$sel: String!', '$limit: Int', '$continue: String']
+  const args = [
+    ...(labelselector === undefined ? [] : ['labelselector: $sel']),
+    'limit: $limit',
+    'continue: $continue',
+  ]
+  const variables: Record<string, unknown> = {}
+  if (labelselector !== undefined) variables.sel = labelselector
+  if (options?.limit !== undefined) variables.limit = options.limit
+  if (options?.continue !== undefined) variables.continue = options.continue
+  const query = `query(${declarations.join(', ')}) { code_faros_sh { v1alpha1 { ${kind}(${args.join(', ')}) { resourceVersion continue remainingItemCount items { ${fields} } } } } }`
+  const data = await graphqlQuery<unknown>(query, variables, context)
+  const version = codeVersionPayload(data, `${kind} list`)
+  if (!hasOwn(version, kind) || !isRecord(version[kind])) {
+    throw protocolError(`${kind} list response was missing ${kind}`)
+  }
+  const list = version[kind]
+  if (!hasOwn(list, 'items') || !Array.isArray(list.items)) {
+    throw protocolError(`${kind} list response was missing its items array`)
+  }
+
+  const continueValue = list.continue
+  if (continueValue !== undefined && continueValue !== null && typeof continueValue !== 'string') {
+    throw protocolError(`${kind} list response had an invalid continue token`)
+  }
+  const remainingItemCount = list.remainingItemCount
+  validateOptionalInteger(remainingItemCount, `${kind} list response remainingItemCount`)
+  const resourceVersion = list.resourceVersion
+  validateOptionalString(resourceVersion, `${kind} list response resourceVersion`)
+
+  const resourceKind = listResourceKind(kind)
+  const items = list.items.map((item, index) => validateResourceForKind(item, resourceKind, `${kind} list item ${index}`))
+  const nextContinue = typeof continueValue === 'string' && continueValue.length > 0 ? continueValue : undefined
+  if (typeof remainingItemCount === 'number' &&
+    ((remainingItemCount > 0 && nextContinue === undefined) || (remainingItemCount === 0 && nextContinue !== undefined))) {
+    throw protocolError(`${kind} list response had inconsistent continue and remainingItemCount metadata`)
+  }
+  return {
+    items,
+    continue: nextContinue,
+    remainingItemCount: typeof remainingItemCount === 'number' ? remainingItemCount : undefined,
+    resourceVersion: typeof resourceVersion === 'string' ? resourceVersion : undefined,
+  }
+}
+
+// gqlListAll walks only lists with a server-side selector (or workspace-wide
+// lists). Opaque cursor repetition and unbounded streams are protocol failures;
+// returning a partial aggregate would make the UI silently incomplete.
+async function gqlListAll(
+  kind: string,
+  fields: string,
+  labelselector: string | undefined,
+  context: APIRequestContext,
+): Promise<RawCR[]> {
+  const items: RawCR[] = []
+  const seenContinueTokens = new Set<string>()
+  let continueToken: string | undefined
+  for (let pageNumber = 0; pageNumber < MAX_LIST_PAGES; pageNumber += 1) {
+    const page = await gqlListPage(
+      kind,
+      fields,
+      labelselector,
+      continueToken === undefined
+        ? { limit: DEFAULT_LIST_LIMIT }
+        : { limit: DEFAULT_LIST_LIMIT, continue: continueToken },
+      context,
+    )
+    items.push(...page.items)
+    if (!page.continue) return items
+    if (seenContinueTokens.has(page.continue)) {
+      throw protocolError(`${kind} list response repeated a continue token`)
+    }
+    seenContinueTokens.add(page.continue)
+    continueToken = page.continue
+  }
+  throw protocolError(`${kind} list exceeded the maximum page count`)
+}
+
 // gqlList queries a resource's list field and returns the RawCR-shaped items. An
 // optional labelselector narrows the set server-side.
 async function gqlList(kind: string, fields: string, labelselector?: string, context?: APIRequestContext): Promise<RawCR[]> {
@@ -674,8 +803,18 @@ async function gqlGet(kind: CodeResourceKind, resource: string, name: string, fi
 
 export const api = {
   // ── Connections ──────────────────────────────────────────────────────────
+  async listConnectionsPage(
+    options: KubernetesListOptions = {},
+    context?: APIReadContext,
+  ): Promise<KubernetesListPage<Connection>> {
+    return mapListPage(
+      await gqlListPage('Connections', F_CONNECTION, undefined, options, requestReadContext(context)),
+      connFromCR,
+    )
+  },
+
   async listConnections(context?: APIReadContext): Promise<Connection[]> {
-    return (await gqlList('Connections', F_CONNECTION, undefined, context ? explicitRequestContext(context) : undefined)).map(connFromCR)
+    return (await gqlListAll('Connections', F_CONNECTION, undefined, requestReadContext(context))).map(connFromCR)
   },
 
   // getConnection fetches one Connection with the full spec/status the detail
@@ -757,8 +896,18 @@ export const api = {
   },
 
   // ── Repositories ─────────────────────────────────────────────────────────
+  async listRepositoriesPage(
+    options: KubernetesListOptions = {},
+    context?: APIReadContext,
+  ): Promise<KubernetesListPage<Repository>> {
+    return mapListPage(
+      await gqlListPage('Repositories', F_REPOSITORY, undefined, options, requestReadContext(context)),
+      repoFromCR,
+    )
+  },
+
   async listRepositories(context?: APIReadContext): Promise<Repository[]> {
-    return (await gqlList('Repositories', F_REPOSITORY, undefined, context ? explicitRequestContext(context) : undefined)).map(repoFromCR)
+    return (await gqlListAll('Repositories', F_REPOSITORY, undefined, requestReadContext(context))).map(repoFromCR)
   },
 
   async getRepository(name: string): Promise<RepositoryDetail> {
@@ -879,12 +1028,38 @@ export const api = {
   // every page view (which GitHub rate-limits). listPackages narrows to one
   // repository by the label the crawler stamps; listAllPackages spans the
   // workspace for the Packages tab.
+  async listPackagesPage(
+    repositoryRef: string,
+    options: KubernetesListOptions = {},
+    context?: APIReadContext,
+  ): Promise<KubernetesListPage<Package>> {
+    return mapListPage(
+      await gqlListPage('Packages', F_PACKAGE, `${PACKAGE_REPO_LABEL}=${repositoryRef}`, options, requestReadContext(context)),
+      pkgFromCR,
+    )
+  },
+
   async listPackages(repositoryRef: string): Promise<Package[]> {
-    return (await gqlList('Packages', F_PACKAGE, `${PACKAGE_REPO_LABEL}=${repositoryRef}`)).map(pkgFromCR)
+    return (await gqlListAll(
+      'Packages',
+      F_PACKAGE,
+      `${PACKAGE_REPO_LABEL}=${repositoryRef}`,
+      requestReadContext(),
+    )).map(pkgFromCR)
+  },
+
+  async listAllPackagesPage(
+    options: KubernetesListOptions = {},
+    context?: APIReadContext,
+  ): Promise<KubernetesListPage<PackageRow>> {
+    return mapListPage(
+      await gqlListPage('Packages', F_PACKAGE, undefined, options, requestReadContext(context)),
+      pkgRowFromCR,
+    )
   },
 
   async listAllPackages(): Promise<PackageRow[]> {
-    return (await gqlList('Packages', F_PACKAGE)).map(pkgRowFromCR)
+    return (await gqlListAll('Packages', F_PACKAGE, undefined, requestReadContext())).map(pkgRowFromCR)
   },
 }
 

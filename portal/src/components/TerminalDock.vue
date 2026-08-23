@@ -334,14 +334,16 @@ onUnmounted(() => {
           <span class="min-w-0 flex-1 truncate font-mono text-[11px]">{{ session.displayName }}</span>
           <button
             v-if="store.sessions.length > 1 && store.panelState.splitLayout !== 'single'"
-            class="flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-muted opacity-0 transition-all hover:bg-surface-hover hover:text-accent group-hover:opacity-100"
+            type="button"
+            class="k-btn k-btn--ghost flex h-4 w-4 shrink-0 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted opacity-0 transition-all hover:bg-surface-hover hover:text-accent group-hover:opacity-100"
             :title="session.isPinned ? 'Unpin from split view' : 'Pin to split view'"
             @click.stop="store.toggleSessionPin(session.id)"
           >
             <component :is="session.isPinned ? Pin : PinOff" class="h-2.5 w-2.5" :stroke-width="2" />
           </button>
           <button
-            class="flex h-4 w-4 shrink-0 items-center justify-center rounded text-text-muted opacity-0 transition-all hover:bg-danger-subtle hover:text-danger group-hover:opacity-100"
+            type="button"
+            class="k-btn k-btn--ghost flex h-4 w-4 shrink-0 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted opacity-0 transition-all hover:bg-danger-subtle hover:text-danger group-hover:opacity-100"
             title="Close"
             @click.stop="store.closeSession(session.id)"
           >
@@ -353,28 +355,32 @@ onUnmounted(() => {
       <div class="flex shrink-0 items-center gap-0.5">
         <button
           v-if="store.sessions.length > 1"
-          class="flex h-6 w-6 items-center justify-center rounded text-text-muted transition-colors hover:bg-surface-hover hover:text-accent"
+          type="button"
+          class="k-btn k-btn--ghost flex h-6 w-6 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-colors hover:bg-surface-hover hover:text-accent"
           :title="splitTitle"
           @click="store.cycleSplitLayout()"
         >
           <component :is="splitIcon" class="h-3 w-3" :stroke-width="1.75" />
         </button>
         <button
-          class="flex h-6 w-6 items-center justify-center rounded text-text-muted transition-colors hover:bg-surface-hover hover:text-accent"
+          type="button"
+          class="k-btn k-btn--ghost flex h-6 w-6 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-colors hover:bg-surface-hover hover:text-accent"
           :title="store.panelState.isFullscreen ? 'Exit fullscreen' : 'Fullscreen'"
           @click="store.toggleFullscreen()"
         >
           <component :is="store.panelState.isFullscreen ? Minimize2 : Maximize2" class="h-3 w-3" :stroke-width="1.75" />
         </button>
         <button
-          class="flex h-6 w-6 items-center justify-center rounded text-text-muted transition-colors hover:bg-surface-hover hover:text-accent"
+          type="button"
+          class="k-btn k-btn--ghost flex h-6 w-6 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-colors hover:bg-surface-hover hover:text-accent"
           :title="store.panelState.isMinimized ? 'Restore' : 'Minimize'"
           @click="store.toggleMinimize()"
         >
           <component :is="store.panelState.isMinimized ? ChevronUp : ChevronDown" class="h-3 w-3" :stroke-width="1.75" />
         </button>
         <button
-          class="flex h-6 w-6 items-center justify-center rounded text-text-muted transition-colors hover:bg-danger-subtle hover:text-danger"
+          type="button"
+          class="k-btn k-btn--ghost flex h-6 w-6 items-center justify-center rounded-md border-0 bg-transparent p-0 text-text-muted transition-colors hover:bg-danger-subtle hover:text-danger"
           title="Close all"
           @click="store.closeAllSessions()"
         >
@@ -386,7 +392,7 @@ onUnmounted(() => {
     <!-- Content area -->
     <div
       v-if="!store.panelState.isMinimized"
-      class="panel-content relative min-h-0 flex-1 overflow-hidden bg-[#0b0c11]"
+      class="panel-content relative min-h-0 flex-1 overflow-hidden bg-surface"
       :class="`layout-${store.panelState.splitLayout}`"
     >
       <template v-for="session in store.sessions" :key="session.id">
@@ -477,7 +483,7 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 1px;
-  background: rgb(var(--border) / 1);
+  background: var(--color-border-subtle);
 }
 .panel-content.layout-grid .terminal-pane {
   min-height: 180px;
@@ -485,7 +491,7 @@ onUnmounted(() => {
 }
 
 .terminal-pane.active-pane {
-  outline: 1px solid rgb(var(--accent) / 0.5);
+  outline: 1px solid color-mix(in srgb, var(--color-accent) 50%, transparent);
   outline-offset: -1px;
 }
 
@@ -496,7 +502,7 @@ onUnmounted(() => {
   transition: background 0.15s;
 }
 .pane-resize-handle:hover {
-  background: rgb(var(--accent) / 0.4);
+  background: color-mix(in srgb, var(--color-accent) 40%, transparent);
 }
 .pane-resize-handle.vertical {
   width: 4px;

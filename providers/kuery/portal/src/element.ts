@@ -650,7 +650,7 @@ export class KueryElement extends HTMLElement {
   private _renderTopology(): string {
     const opt = (value: string, label: string, sel: string) =>
       `<option value="${esc(value)}"${value === sel ? ' selected' : ''}>${esc(label)}</option>`
-    const edgeOptions = [opt('', 'all edges', this._fEdge)]
+    const edgeOptions = [opt('', 'All edges', this._fEdge)]
       .concat(this._edges.map((e) => opt(e, e, this._fEdge)))
       .join('')
 
@@ -663,10 +663,10 @@ export class KueryElement extends HTMLElement {
     const layoutOptions = layouts.map(([v, l]) => opt(v, l, this._topoLayout)).join('')
 
     const facets = this._topologyFacets()
-    const kindOptions = [opt('', 'all kinds', this._topoKind)]
+    const kindOptions = [opt('', 'All kinds', this._topoKind)]
       .concat(facets.kinds.map((k) => opt(k, k, this._topoKind)))
       .join('')
-    const nsOptions = [opt('', 'all namespaces', this._topoNamespace)]
+    const nsOptions = [opt('', 'All namespaces', this._topoNamespace)]
       .concat(facets.namespaces.map((n) => opt(n, n, this._topoNamespace)))
       .join('')
 
@@ -692,10 +692,10 @@ export class KueryElement extends HTMLElement {
         </div>
         <p class="meta">Click a node to expand, again to collapse; <b>Expand all</b> walks the whole net. Arrows show impact flow: <b>A→B</b> means deleting A breaks B — so a Namespace/owner points <i>into</i> its pods, not out. Pan with arrows/WASD, zoom +/−, <b>F</b> full screen.</p>
         <div class="kuery-toolbar">
-          <select class="k-input kuery-control" id="t-layout" title="layout">${layoutOptions}</select>
-          <select class="k-input kuery-control" id="f-edge" title="edge">${edgeOptions}</select>
-          <select class="k-input kuery-control" id="t-kind" title="kind">${kindOptions}</select>
-          <select class="k-input kuery-control" id="t-ns" title="namespace">${nsOptions}</select>
+          <select class="k-input kuery-control" id="t-layout" title="Layout" aria-label="Layout">${layoutOptions}</select>
+          <select class="k-input kuery-control" id="f-edge" title="Edge" aria-label="Edge">${edgeOptions}</select>
+          <select class="k-input kuery-control" id="t-kind" title="Kind" aria-label="Kind">${kindOptions}</select>
+          <select class="k-input kuery-control" id="t-ns" title="Namespace" aria-label="Namespace">${nsOptions}</select>
           <button class="k-btn k-btn--ghost" id="t-expand-all" type="button">Expand all</button>
           <button class="k-btn k-btn--ghost" id="t-reset" type="button">Reset</button>
           <button class="k-btn k-btn--ghost" id="t-full" type="button">${this._topoFull ? 'Exit full screen' : 'Full screen'}</button>
@@ -825,7 +825,7 @@ export class KueryElement extends HTMLElement {
         </div>
         <p class="meta">Write a kuery QuerySpec and run it against your fleet. Editor autocompletes from the schema (Ctrl/Cmd-Space). Every query is scoped to your workspace automatically.</p>
         <div class="kuery-toolbar">
-          <select class="k-input kuery-control" id="pg-example">${exampleOpts}</select>
+          <select class="k-input kuery-control" id="pg-example" aria-label="Query example">${exampleOpts}</select>
           <button class="k-btn k-btn--primary" id="pg-run" type="button">${this._pgRunning ? 'Running…' : `Run ${ic('play')}`}</button>
           <button class="k-btn k-btn--ghost" id="pg-docs-toggle" type="button">API &amp; access</button>
         </div>
@@ -933,7 +933,7 @@ export class KueryElement extends HTMLElement {
   }
 
   private _renderInventory(): string {
-    const edgeOptions = ['<option value="">all edges</option>']
+    const edgeOptions = ['<option value="">All edges</option>']
       .concat(this._edges.map((e) => `<option value="${esc(e)}"${e === this._fEdge ? ' selected' : ''}>${esc(e)}</option>`))
       .join('')
 
@@ -970,15 +970,15 @@ export class KueryElement extends HTMLElement {
         </div>
         <p class="meta">One query across every connected edge. Click a row for its impact (declared blast radius).</p>
         <div class="kuery-toolbar">
-          <select class="k-input kuery-control" id="f-edge">${edgeOptions}</select>
-          <input class="k-input kuery-control" id="f-kind" placeholder="kind (e.g. Deployment)" value="${esc(this._fKind)}" />
-          <input class="k-input kuery-control" id="f-ns" placeholder="namespace" value="${esc(this._fNamespace)}" />
-          <input class="k-input kuery-control" id="f-name" placeholder="name (exact)" value="${esc(this._fName)}" />
+          <select class="k-input kuery-control" id="f-edge" aria-label="Edge">${edgeOptions}</select>
+          <input class="k-input kuery-control" id="f-kind" aria-label="Kind" placeholder="Kind (e.g. Deployment)" value="${esc(this._fKind)}" />
+          <input class="k-input kuery-control" id="f-ns" aria-label="Namespace" placeholder="Namespace" value="${esc(this._fNamespace)}" />
+          <input class="k-input kuery-control" id="f-name" aria-label="Name" placeholder="Name (exact)" value="${esc(this._fName)}" />
           <button class="k-btn k-btn--primary" id="f-go" type="button">Search</button>
         </div>
         <div class="k-table kuery-inventory-table">
           <table class="objects">
-          <thead><tr><th>edge</th><th>kind</th><th>namespace</th><th>name</th><th>age</th></tr></thead>
+          <thead><tr><th>Edge</th><th>Kind</th><th>Namespace</th><th>Name</th><th>Age</th></tr></thead>
           <tbody>${body}</tbody>
           </table>
         </div>

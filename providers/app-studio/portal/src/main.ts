@@ -23,11 +23,16 @@ import './element'
 // (--spacing, --color-black, fonts) are literal, identical to the host's, and
 // harmless, so we leave them alone.
 const styles = rawStyles.replace(/--color-[\w-]+:var\(--color[^;}]*;?/g, '')
+// App Studio renders in the host document's light DOM, so Tailwind's generated
+// utilities must be scoped to this provider element before they are injected.
+// Keeping the scope here (rather than switching to Shadow DOM) preserves the
+// host's inherited design tokens and the existing custom-element contract.
+const scopedStyles = `@scope (faros-provider-app-studio) {\n${styles}\n}`
 
 const STYLE_ID = 'faros-provider-app-studio-css'
 if (typeof document !== 'undefined' && !document.getElementById(STYLE_ID)) {
   const s = document.createElement('style')
   s.id = STYLE_ID
-  s.textContent = styles
+  s.textContent = scopedStyles
   document.head.appendChild(s)
 }

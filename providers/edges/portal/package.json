@@ -5,9 +5,10 @@
   "description": "edges provider's portal-side micro-frontend. Built with Vite into a single main.js custom-element bundle the faros hub serves under /ui/providers/edges/.",
   "type": "module",
   "scripts": {
+    "prebuild": "vitest run && vue-tsc --noEmit",
     "build": "vite build",
     "dev": "vite",
-    "test": "node --test src/tabs.test.mjs",
+    "test": "vitest run",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
@@ -20,6 +21,7 @@
     "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "^5.6.3",
     "vite": "^6.4.1",
+    "vitest": "^3.2.7",
     "vue-tsc": "^2.1.10"
   }
 }

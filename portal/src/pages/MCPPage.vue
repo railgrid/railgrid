@@ -293,7 +293,8 @@ function rel(ts?: string): string {
             </div>
           </div>
           <button
-            class="flex items-center gap-1.5 rounded-md bg-accent px-3 py-2 text-[12px] font-medium text-white shadow-[0_0_16px_var(--color-accent-glow)] transition-all hover:bg-accent-hover"
+            type="button"
+            class="k-btn k-btn--primary px-3 py-2 text-[12px]"
             @click="showCreate = !showCreate"
           >
             <Plus class="h-3.5 w-3.5" :stroke-width="2" /> New server
@@ -305,22 +306,22 @@ function rel(ts?: string): string {
           <div class="grid gap-3">
             <label class="grid gap-1">
               <span class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Name</span>
-              <input v-model="draft.name" placeholder="ops" class="rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 font-mono text-[12px] text-text-primary" />
+              <input v-model="draft.name" placeholder="ops" class="k-input font-mono text-[12px]" />
             </label>
             <label class="grid gap-1">
               <span class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Display name</span>
-              <input v-model="draft.displayName" placeholder="Ops endpoint" class="rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 text-[12px] text-text-primary" />
+              <input v-model="draft.displayName" placeholder="Ops endpoint" class="k-input text-[12px]" />
             </label>
             <label class="grid gap-1">
               <span class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Instructions (optional)</span>
-              <textarea v-model="draft.instructions" rows="2" placeholder="This is production — ask before destructive operations." class="rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 text-[12px] text-text-primary" />
+              <textarea v-model="draft.instructions" rows="2" placeholder="This is production — ask before destructive operations." class="k-input text-[12px]" />
             </label>
             <label class="flex items-center gap-2 text-[12px] text-text-secondary">
-              <input v-model="draft.readOnly" type="checkbox" class="h-3.5 w-3.5" /> Read-only
+              <input v-model="draft.readOnly" type="checkbox" class="k-checkbox" /> Read-only
             </label>
             <div class="flex justify-end gap-2">
-              <button class="rounded-lg border border-border-subtle px-3 py-2 text-[12px] text-text-secondary hover:bg-surface-hover" @click="showCreate = false">Cancel</button>
-              <button class="rounded-md bg-accent px-3 py-2 text-[12px] font-medium text-white shadow-[0_0_16px_var(--color-accent-glow)] hover:bg-accent-hover disabled:opacity-40" :disabled="busy || !draft.name.trim()" @click="create">Create</button>
+              <button type="button" class="k-btn k-btn--ghost px-3 py-2 text-[12px]" @click="showCreate = false">Cancel</button>
+              <button type="button" class="k-btn k-btn--primary px-3 py-2 text-[12px]" :disabled="busy || !draft.name.trim()" @click="create">Create</button>
             </div>
           </div>
         </section>
@@ -328,6 +329,11 @@ function rel(ts?: string): string {
         <ResourceTable
           :columns="columns"
           :rows="rows"
+          searchable
+          search-placeholder="Search MCP servers…"
+          :filters="[{ key: 'phase', label: 'Status', allLabel: 'Any status' }]"
+          paginated
+          :page-size="10"
           row-key="name"
           :loaded="loaded"
           :loading="loading"
@@ -362,7 +368,7 @@ function rel(ts?: string): string {
           <template #actions="{ row }">
             <div class="flex justify-end">
               <button
-                class="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted transition-all hover:bg-danger/10 hover:text-danger"
+                class="k-btn k-btn--danger h-7 w-7 p-0 text-text-muted transition-all hover:text-danger"
                 type="button"
                 title="Delete"
                 :aria-label="`Delete MCP server ${String((row as any).name)}`"
@@ -379,7 +385,7 @@ function rel(ts?: string): string {
       <template v-else-if="selectedServer">
         <div class="mb-6 flex items-start justify-between">
           <div class="flex items-center gap-3">
-            <button class="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted hover:bg-surface-hover hover:text-text-primary" title="Back" @click="closeDetail">
+            <button type="button" class="k-btn k-btn--ghost h-8 w-8 p-0 text-text-muted hover:text-text-primary" title="Back" @click="closeDetail">
               <ArrowLeft class="h-4 w-4" :stroke-width="1.75" />
             </button>
             <div>
@@ -393,7 +399,7 @@ function rel(ts?: string): string {
               <p class="text-[12px] text-text-muted">{{ selectedServer.displayName || 'MCP endpoint' }}</p>
             </div>
           </div>
-          <button class="flex items-center gap-1.5 rounded-lg border border-border-subtle px-2.5 py-1.5 text-[12px] text-text-secondary hover:border-danger/40 hover:text-danger" @click="remove(selectedServer.name)">
+          <button type="button" class="k-btn k-btn--danger px-2.5 py-1.5 text-[12px]" @click="remove(selectedServer.name)">
             <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" /> Delete
           </button>
         </div>
@@ -404,14 +410,14 @@ function rel(ts?: string): string {
           <template v-if="connect[selectedServer.name]">
             <div class="mb-3 flex items-center gap-2">
               <code class="min-w-0 flex-1 truncate rounded-lg bg-surface-overlay px-3 py-2 font-mono text-[12px] text-text-secondary">{{ connect[selectedServer.name].endpointURL }}</code>
-              <button class="flex h-8 items-center gap-1.5 rounded-lg border border-border-subtle px-2.5 text-[12px] text-text-secondary hover:bg-surface-hover" @click="copy(connect[selectedServer.name].endpointURL, 'url')">
+              <button type="button" class="k-btn k-btn--ghost h-8 px-2.5 text-[12px]" @click="copy(connect[selectedServer.name].endpointURL, 'url')">
                 <Check v-if="copiedField === 'url'" class="h-3.5 w-3.5 text-success" :stroke-width="2" />
                 <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" /> Copy
               </button>
             </div>
             <div v-if="!connect[selectedServer.name].tokenReady" class="mb-3 flex items-center justify-between rounded-lg border border-warning/30 bg-warning/5 p-3 text-[12px] text-warning">
               <span>Token is still being provisioned.</span>
-              <button class="flex items-center gap-1.5 rounded-lg border border-warning/30 px-2 py-1 hover:bg-warning/10" @click="loadConnect(selectedServer.name)">
+              <button type="button" class="k-btn k-btn--ghost px-2 py-1 text-warning hover:border-warning/40 hover:bg-warning-subtle" @click="loadConnect(selectedServer.name)">
                 <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" /> Refresh
               </button>
             </div>
@@ -419,7 +425,8 @@ function rel(ts?: string): string {
               <button
                 v-for="c in clients"
                 :key="c.id"
-                class="rounded-lg border px-2.5 py-1.5 text-[12px] transition-all"
+                type="button"
+                class="k-btn k-btn--ghost px-2.5 py-1.5 text-[12px] transition-all"
                 :class="selectedClient === c.id ? 'border-accent bg-accent/10 text-accent' : 'border-border-subtle text-text-secondary hover:bg-surface-hover'"
                 @click="selectedClient = c.id"
               >
@@ -429,7 +436,8 @@ function rel(ts?: string): string {
             <div class="relative">
               <pre class="overflow-x-auto rounded-lg bg-surface-overlay p-3 font-mono text-[12px] leading-relaxed text-text-secondary"><code>{{ displaySnippet }}</code></pre>
               <button
-                class="absolute right-2 top-2 flex h-7 items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-raised px-2.5 text-[11px] text-text-secondary hover:bg-surface-hover disabled:opacity-40"
+                type="button"
+                class="k-btn k-btn--ghost absolute right-2 top-2 h-7 px-2.5 text-[11px] disabled:opacity-40"
                 :disabled="!connect[selectedServer.name].tokenReady"
                 @click="copySnippet"
               >
@@ -456,7 +464,7 @@ function rel(ts?: string): string {
           </div>
           <div v-else class="grid gap-2">
             <div v-for="p in selectedServer.federatedProviders" :key="p.name" class="rounded-xl border border-border-subtle bg-surface-raised">
-              <button class="flex w-full items-center justify-between p-3.5 text-left" @click="toggleProvider(p.name)">
+              <button type="button" class="k-btn k-btn--ghost flex w-full items-center justify-between rounded-md border-0 bg-transparent p-3.5 text-left hover:bg-surface-hover" @click="toggleProvider(p.name)">
                 <div class="flex min-w-0 items-center gap-2">
                   <component :is="isProviderOpen(p.name) ? ChevronDown : ChevronRight" class="h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="2" />
                   <span class="font-mono text-[13px] font-semibold text-text-primary">{{ p.displayName || p.name }}</span>

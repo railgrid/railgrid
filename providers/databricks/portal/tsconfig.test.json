@@ -9,6 +9,8 @@
   "include": [
     "src/api.ts",
     "src/api.behavior.test.ts",
+    "src/databricksPagination.ts",
+    "src/databricksPagination.test.ts",
     "src/refresh.ts",
     "src/registrationFlow.ts",
     "src/registrationFlow.test.ts",
