@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ArrowLeft } from 'lucide-vue-next'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import ViewValue from '../components/ViewValue.vue'
 import { api, isContextChangedError } from '../api'
 import ConditionsPanel, { type ConditionInfo } from '../portalkit/ConditionsPanel.vue'
+import ResourceTable from '../portalkit/ResourceTable.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import { createLatestRefreshController, sameResourceIdentity, type ResourceTombstones } from '../refresh'
 import { resolve } from '../view'
@@ -54,6 +56,12 @@ const conditionObservedGeneration = computed(() => {
   if (inst.value?.observedGeneration !== undefined) return inst.value.observedGeneration
   return undefined
 })
+const childRows = computed<Array<Record<string, unknown>>>(() => (inst.value?.children ?? []).map(child => ({
+  ...child,
+  rowID: `${child.apiVersion}/${child.kind}/${child.namespace}/${child.name}`,
+  namespaceLabel: child.namespace || '—',
+  phaseLabel: child.phase || '—',
+})))
 
 function errorMessage(error: unknown, fallback: string): string {
   const value = error as { reason?: string; message?: string }
@@ -167,11 +175,12 @@ onUnmounted(() => {
   <section class="page instance-detail" :aria-busy="loading">
     <button
       type="button"
-      class="link back"
+      class="k-btn k-btn--ghost"
       :disabled="deleting"
       @click="emit('navigate', 'instances')"
     >
-      ← Back to instances
+      <ArrowLeft :size="14" aria-hidden="true" />
+      <span>Back to instances</span>
     </button>
 
     <div v-if="!loaded && loading" class="page-loading-shell" role="status" aria-live="polite" aria-busy="true">
@@ -204,7 +213,7 @@ onUnmounted(() => {
           </div>
           <p class="page-meta">{{ inst.template }}</p>
         </div>
-        <button type="button" class="danger" :disabled="deleting || deletionInProgress" @click="executeDelete">
+        <button type="button" class="k-btn k-btn--danger" :disabled="deleting || deletionInProgress" @click="executeDelete">
           {{ deleting || deletionInProgress ? 'Deleting…' : 'Delete' }}
         </button>
       </header>
@@ -237,17 +246,22 @@ onUnmounted(() => {
 
       <div class="detail-group">
         <div class="detail-group-title">Child resources</div>
-        <div v-if="!inst.children?.length" class="detail-empty">No child resources have been reported yet.</div>
-        <table v-else class="table">
-          <thead>
-            <tr><th>Kind</th><th>Name</th><th>Namespace</th><th>Phase</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="child in inst.children" :key="`${child.apiVersion}/${child.kind}/${child.namespace}/${child.name}`">
-              <td>{{ child.kind }}</td><td>{{ child.name }}</td><td>{{ child.namespace }}</td><td>{{ child.phase }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <ResourceTable
+          :columns="[
+            { key: 'kind', label: 'Kind' },
+            { key: 'name', label: 'Name' },
+            { key: 'namespaceLabel', label: 'Namespace' },
+            { key: 'phaseLabel', label: 'Phase' },
+          ]"
+          :rows="childRows"
+          row-key="rowID"
+          :interactive="false"
+          empty-text="No child resources have been reported yet."
+        >
+          <template #kind="{ value }"><span class="k-cell-mono">{{ value }}</span></template>
+          <template #name="{ value }"><span class="k-cell-mono">{{ value }}</span></template>
+          <template #phaseLabel="{ value }"><StatusBadge :status="String(value)" /></template>
+        </ResourceTable>
       </div>
     </template>
   </section>

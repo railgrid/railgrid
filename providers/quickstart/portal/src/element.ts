@@ -61,24 +61,26 @@ export class QuickstartElement extends HTMLElement {
       : '(no context yet)'
 
     this.innerHTML = `
-      <div class="grid">
-        <div class="panel">
-          <div class="panel-head">
-            <h2 class="panel-title">Portal handshake</h2>
-            <span class="badge ${ctx ? 'ok' : 'warn'}">${ctx ? 'Connected' : 'Waiting'}</span>
+      <div class="quickstart-grid">
+        <section class="k-card quickstart-panel">
+          <div class="quickstart-panel-head">
+            <h2 class="quickstart-panel-title">Portal handshake</h2>
+            <span class="k-badge ${ctx ? 'k-badge--success' : 'k-badge--warning'}" role="status">
+              ${ctx ? 'Connected' : 'Waiting'}
+            </span>
           </div>
-          <p class="meta">Context delivered by the shell as a JS property — no postMessage shuttle.</p>
-          <pre class="${ctx ? '' : 'muted'}" id="ctx-dump">${escapeHTML(ctxDump)}</pre>
-        </div>
+          <p class="quickstart-meta">Context delivered by the shell as a JS property — no postMessage shuttle.</p>
+          <pre class="k-card quickstart-dump ${ctx ? '' : 'quickstart-muted'}" id="ctx-dump">${escapeHTML(ctxDump)}</pre>
+        </section>
 
-        <div class="panel">
-          <div class="panel-head">
-            <h2 class="panel-title">Backend proxy</h2>
-            <span class="badge warn" id="api-status">${escapeHTML(apiStateLabel)}</span>
+        <section class="k-card quickstart-panel">
+          <div class="quickstart-panel-head">
+            <h2 class="quickstart-panel-title">Backend proxy</h2>
+            <span class="k-badge k-badge--warning" id="api-status" role="status">${escapeHTML(apiStateLabel)}</span>
           </div>
-          <p class="meta">GET <code id="api-url">${escapeHTML(this._apiURL())}</code></p>
-          <pre class="${this._apiState ? '' : 'muted'}" id="api-dump">${escapeHTML(apiStateDump)}</pre>
-        </div>
+          <p class="quickstart-meta">GET <code id="api-url">${escapeHTML(this._apiURL())}</code></p>
+          <pre class="k-card quickstart-dump ${this._apiState ? '' : 'quickstart-muted'}" id="api-dump">${escapeHTML(apiStateDump)}</pre>
+        </section>
       </div>
     `
 
@@ -86,7 +88,7 @@ export class QuickstartElement extends HTMLElement {
     // above; restore the resolved color class once the API call settles.
     if (this._apiState) {
       const s = this.querySelector<HTMLElement>('#api-status')
-      if (s) s.className = 'badge ' + this._apiState.cls
+      if (s) s.className = `k-badge ${this._apiState.cls === 'ok' ? 'k-badge--success' : 'k-badge--warning'}`
     }
   }
 

@@ -191,8 +191,8 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <div v-if="showForm" class="panel">
-      <h3 class="panel-title">Connect with a token</h3>
+    <div v-if="showForm" class="databricks-resource-panel k-card">
+      <h3 class="databricks-resource-panel-title">Connect with a token</h3>
       <form class="form" @submit.prevent="submit">
         <div class="field">
           <label class="field-label" for="connection-name">Name</label>
@@ -239,6 +239,7 @@ onUnmounted(() => {
       :stale="loaded && !!error"
       retryable
       empty-text="No connections yet."
+      :row-aria-label="(row) => `Open connection ${String(row.name)}`"
       @retry="load"
       @row-click="(row) => openResource(String(row.name))"
     >

@@ -4,6 +4,7 @@ import { ArrowLeft, Save, KeyRound } from 'lucide-vue-next'
 import { updateEdgeService, connectEdgeService } from './api'
 import type { CatalogEntry, CatalogCredentialField, EdgeServiceEdit } from './api'
 import type { EdgeService, Edge, ErrorResponse } from './types'
+import ConditionsPanel from './portalkit/ConditionsPanel.vue'
 
 // A dedicated per-service page: provider info (from the catalog) + editable
 // configuration + credentials + status. Reached from the Services list via the
@@ -115,19 +116,8 @@ async function onSaveCreds() {
   }
 }
 
-function statusClass(v?: string): string {
-  return v === 'True' ? 'ok' : v === 'False' ? 'down' : 'pending'
-}
 function phaseClass(p?: string): string {
-  return p === 'Ready' ? 'ok' : p === 'Unreachable' ? 'down' : 'pending'
-}
-function age(ts?: string): string {
-  if (!ts) return ''
-  const secs = Math.max(0, Math.floor((Date.now() - new Date(ts).getTime()) / 1000))
-  if (secs < 60) return `${secs}s`
-  if (secs < 3600) return `${Math.floor(secs / 60)}m`
-  if (secs < 86400) return `${Math.floor(secs / 3600)}h`
-  return `${Math.floor(secs / 86400)}d`
+  return p === 'Ready' ? 'k-badge--success' : p === 'Unreachable' ? 'k-badge--danger' : 'k-badge--warning'
 }
 </script>
 
@@ -135,9 +125,9 @@ function age(ts?: string): string {
   <div class="edges-app">
     <header class="edges-header">
       <div style="display: flex; align-items: center; gap: 10px;">
-        <button class="icon" title="Back to services" @click="emit('back')"><ArrowLeft :size="16" /></button>
+        <button class="k-btn k-btn--ghost" type="button" aria-label="Back to services" title="Back to services" @click="emit('back')"><ArrowLeft :size="16" aria-hidden="true" /> Back</button>
         <div>
-          <h1>{{ service.name }} <span class="status" :class="phaseClass(service.phase)">{{ service.phase || 'Pending' }}</span></h1>
+          <h1>{{ service.name }} <span class="k-badge" :class="phaseClass(service.phase)">{{ service.phase || 'Pending' }}</span></h1>
           <p>{{ entry?.displayName ?? service.serviceType }}<span v-if="entry?.description"> — {{ entry.description }}</span></p>
         </div>
       </div>
@@ -151,7 +141,7 @@ function age(ts?: string): string {
       <div class="row" style="gap: 28px; flex-wrap: wrap;">
         <div>
           <span class="lbl">Auth</span>
-          <div><span class="pill">{{ authLabel(entry?.auth) }}</span></div>
+          <div><span class="k-badge k-badge--muted">{{ authLabel(entry?.auth) }}</span></div>
         </div>
         <div>
           <span class="lbl">Default port</span>
@@ -183,20 +173,20 @@ function age(ts?: string): string {
       <div class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
           <span class="lbl">Type</span>
-          <select v-model="form.serviceType" class="input" @change="onTypeChange">
+          <select v-model="form.serviceType" class="k-input" @change="onTypeChange">
             <option v-for="c in catalog" :key="c.type" :value="c.type">{{ c.displayName }}</option>
           </select>
         </label>
         <label class="fld" style="flex: 0 0 120px;">
           <span class="lbl">Scheme</span>
-          <select v-model="form.scheme" class="input" :disabled="schemeLocked" :title="schemeLocked ? 'Fixed by the service type' : ''">
+          <select v-model="form.scheme" class="k-input" :disabled="schemeLocked" :title="schemeLocked ? 'Fixed by the service type' : ''">
             <option value="http">http</option>
             <option value="https">https</option>
           </select>
         </label>
         <label class="fld" style="flex: 0 0 120px;">
           <span class="lbl">Port</span>
-          <input v-model="form.port" type="number" min="1" max="65535" class="input" />
+          <input v-model="form.port" type="number" min="1" max="65535" class="k-input" />
         </label>
       </div>
       <div class="row" style="gap: 16px; margin: 6px 0;">
@@ -210,26 +200,26 @@ function age(ts?: string): string {
       <div v-if="targetMode === 'host'" class="row" style="gap: 12px;">
         <label class="fld" style="flex: 1;">
           <span class="lbl">Host {{ entry?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span>
-          <input v-model="form.host" class="input" placeholder="192.168.1.1, myui.example.com" />
+          <input v-model="form.host" class="k-input" placeholder="192.168.1.1, myui.example.com" />
           <span v-if="entry?.hostHelp" class="muted" style="font-size: 12px; margin-top: 4px;">{{ entry.hostHelp }}</span>
         </label>
       </div>
       <div v-else class="row" style="gap: 12px;">
         <label class="fld" style="flex: 1;">
           <span class="lbl">Target namespace</span>
-          <input v-model="form.targetNamespace" class="input" placeholder="home" />
+          <input v-model="form.targetNamespace" class="k-input" placeholder="home" />
         </label>
         <label class="fld" style="flex: 1;">
           <span class="lbl">Target service name</span>
-          <input v-model="form.targetName" class="input" placeholder="home-assistant" />
+          <input v-model="form.targetName" class="k-input" placeholder="home-assistant" />
         </label>
       </div>
       <label class="fld" style="margin-top: 8px;">
         <span class="lbl">AI instructions (optional)</span>
-        <textarea v-model="instructions" class="input" rows="3" placeholder="Describe this service's entities/rooms so the AI knows your setup."></textarea>
+        <textarea v-model="instructions" class="k-input" rows="3" placeholder="Describe this service's entities/rooms so the AI knows your setup."></textarea>
       </label>
       <div class="wiz-actions">
-        <button class="btn primary" :disabled="busy" @click="onSaveConfig"><Save :size="14" /> Save configuration</button>
+        <button class="k-btn k-btn--primary" :disabled="busy" @click="onSaveConfig"><Save :size="14" /> Save configuration</button>
       </div>
     </div>
 
@@ -240,30 +230,18 @@ function age(ts?: string): string {
       <div class="row" style="gap: 8px; align-items: flex-end;">
         <label v-for="f in credFields" :key="f.key" class="fld" style="flex: 1;">
           <span class="lbl">{{ f.label }}</span>
-          <input v-model="credInputs[f.key]" :type="f.secret ? 'password' : 'text'" class="input" :placeholder="f.label" />
+          <input v-model="credInputs[f.key]" :type="f.secret ? 'password' : 'text'" class="k-input" :placeholder="f.label" />
           <span v-if="f.help" class="muted" style="font-size: 12px; margin-top: 4px;">{{ f.help }}</span>
         </label>
-        <button class="btn" :disabled="busy || !credFilled" @click="onSaveCreds"><KeyRound :size="14" /> {{ service.hasCredentials ? 'Update' : 'Set' }} credentials</button>
+        <button class="k-btn k-btn--ghost" :disabled="busy || !credFilled" @click="onSaveCreds"><KeyRound :size="14" /> {{ service.hasCredentials ? 'Update' : 'Set' }} credentials</button>
       </div>
     </div>
 
     <!-- Status -->
     <div class="wiz-card">
-      <div class="es-head">Status <span class="status" :class="phaseClass(service.phase)">{{ service.phase || 'Pending' }}</span></div>
+      <div class="es-head">Status <span class="k-badge" :class="phaseClass(service.phase)">{{ service.phase || 'Pending' }}</span></div>
       <div v-if="service.url" class="muted mono" style="margin-bottom: 8px; font-size: 12px;">{{ service.url }}</div>
-      <table v-if="service.conditions.length" class="edges-table" style="font-size: 12px;">
-        <thead><tr><th>Condition</th><th>Status</th><th>Reason</th><th>Message</th><th>Age</th></tr></thead>
-        <tbody>
-          <tr v-for="c in service.conditions" :key="c.type">
-            <td class="name">{{ c.type }}</td>
-            <td><span class="status" :class="statusClass(c.status)">{{ c.status }}</span></td>
-            <td class="mono muted">{{ c.reason || '—' }}</td>
-            <td class="muted">{{ c.message || '—' }}</td>
-            <td class="mono muted">{{ age(c.lastTransitionTime) }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-else class="muted">No conditions reported yet.</div>
+      <ConditionsPanel :conditions="service.conditions" empty-text="No conditions reported yet." />
     </div>
   </div>
 </template>

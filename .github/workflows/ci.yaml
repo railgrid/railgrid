@@ -57,6 +57,13 @@ jobs:
     - name: Verify portalkit is synced
       run: make verify-portalkit
 
+  verify-ui-conformance:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Verify provider UI conformance
+      run: make verify-ui-conformance
+
   verify-codegen:
     runs-on: ubuntu-latest
     steps:
@@ -67,3 +74,65 @@ jobs:
         go-version: v1.26.1
     - name: Verify codegen
       run: make verify-codegen
+
+  # Standalone provider portals are separate npm projects and are not covered
+  # by the root Go test target. Providers with a prebuild hook already run
+  # their test/typecheck contract as part of `npm run build`, so those matrix
+  # entries skip duplicate invocations below.
+  provider-portals:
+    name: Provider portal (${{ matrix.provider }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - provider: agents
+            test: true
+            typecheck: true
+          - provider: app-studio
+            test: true
+            typecheck: true
+          - provider: code
+            test: false
+            typecheck: false
+          - provider: databricks
+            test: true
+            typecheck: true
+          - provider: edges
+            test: true
+            typecheck: true
+          - provider: infrastructure
+            test: false
+            typecheck: false
+          - provider: kuery
+            test: false
+            typecheck: true
+          - provider: quickstart
+            test: false
+            typecheck: true
+    defaults:
+      run:
+        working-directory: providers/${{ matrix.provider }}/portal
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: providers/${{ matrix.provider }}/portal/package-lock.json
+
+      - name: Install portal dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Test portal
+        if: matrix.test
+        run: npm test
+
+      - name: Typecheck portal
+        if: matrix.typecheck
+        run: npm run typecheck
+
+      - name: Build portal
+        run: npm run build

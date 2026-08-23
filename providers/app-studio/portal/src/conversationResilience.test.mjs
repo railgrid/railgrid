@@ -673,6 +673,6 @@ test('App latches one stable theme-colored stop control until interruption settl
   assert.doesNotMatch(composerAction, /Loader2|animate-spin/)
   assert.equal((appSource.match(/:type="assistantComposerShowsStop \? 'button' : 'submit'"/g) ?? []).length, 1)
   assert.match(appSource, /v-if="conversationWorkingLabel === 'Running'"/)
-  assert.match(appSource, /rounded-full bg-accent text-white enabled:hover:bg-accent-hover/)
+  assert.match(appSource, /rounded-full bg-accent text-on-accent enabled:hover:bg-accent-hover/)
   assert.doesNotMatch(appSource, /bg-danger-subtle text-danger transition hover:bg-danger-subtle\/80/)
 })

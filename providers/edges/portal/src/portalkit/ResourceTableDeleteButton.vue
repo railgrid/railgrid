@@ -8,21 +8,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Loader2, Trash2 } from 'lucide-vue-next'
-import deleteButtonStyles from './ResourceTableDeleteButton.css?raw'
+import { ensureFarosUIStyles } from '../portalkit/styles'
 
-// Standalone provider portals register one IIFE main.js and do not load Vite's
-// extracted SFC CSS asset. Inject this small canonical recipe explicitly so the
-// control renders identically in the real provider host, not only in Vite dev.
-const STYLE_ID = 'faros-portalkit-resource-table-delete-css'
-if (typeof document !== 'undefined') {
-  let style = document.getElementById(STYLE_ID) as HTMLStyleElement | null
-  if (!style) {
-    style = document.createElement('style')
-    style.id = STYLE_ID
-    document.head.appendChild(style)
-  }
-  if (style.textContent !== deleteButtonStyles) style.textContent = deleteButtonStyles
-}
+// Standalone provider portals load the exact canonical recipe through the
+// shared helper; the host portal already imports the same faros-ui.css file.
+ensureFarosUIStyles()
 
 const props = withDefaults(defineProps<{
   /** Accessible resource-specific action, for example "Delete connection". */
@@ -46,8 +36,8 @@ const emit = defineEmits<{
 
 <template>
   <button
-    class="pk-resource-delete"
-    :class="{ 'is-busy': busy }"
+    class="k-table-action k-table-action--delete"
+    :class="{ 'k-table-action--busy': busy }"
     type="button"
     :title="accessibleLabel"
     :aria-label="accessibleLabel"
@@ -55,7 +45,7 @@ const emit = defineEmits<{
     :disabled="disabled || busy"
     @click.stop="emit('click', $event)"
   >
-    <Loader2 v-if="busy" class="pk-resource-delete-icon is-spinning" :stroke-width="1.75" aria-hidden="true" />
-    <Trash2 v-else class="pk-resource-delete-icon" :stroke-width="1.75" aria-hidden="true" />
+    <Loader2 v-if="busy" class="k-table-action__icon k-table-action__icon--spinning" :stroke-width="1.75" aria-hidden="true" />
+    <Trash2 v-else class="k-table-action__icon" :stroke-width="1.75" aria-hidden="true" />
   </button>
 </template>

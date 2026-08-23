@@ -97,7 +97,7 @@ function restoreImportFocus(kind: 'warehouse' | 'table' | null, trigger: HTMLEle
 
 function focusDestination(path: 'connections' | 'warehouses'): void {
   void nextTick(() => {
-    rootRef.value?.querySelector<HTMLElement>(`[data-pk-tab-id="${path}"]`)?.focus()
+    rootRef.value?.querySelector<HTMLElement>(`[data-k-tab-id="${path}"]`)?.focus()
   })
 }
 

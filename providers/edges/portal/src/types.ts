@@ -79,6 +79,7 @@ export interface EdgeService {
   edgeKind?: string // LinuxServer | KubernetesCluster
   targetNamespace?: string // kube edges only
   targetName?: string // kube edges only
+  host?: string // direct address; takes precedence over targetRef on either edge kind
   serviceType?: string
   scheme?: string
   port?: number

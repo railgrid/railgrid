@@ -106,19 +106,19 @@ const PATHS: Record<IconName, string> = {
   'alert-triangle': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 20h16a2 2 0 0 0 1.73-2Z"/><path d="M12 9v4M12 17h.01"/>',
 }
 
-// Self-inject the .ic sizing rule once (browser only), so any portal that
+// Self-inject the .k-icon sizing rule once (browser only), so any portal that
 // imports ic() gets correct icon sizing without wiring a separate stylesheet —
 // important for the raw-CSS-injection portals (agents/kuery/quickstart).
-const ICON_STYLE_ID = 'faros-portalkit-icons-css'
+const ICON_STYLE_ID = 'k-icons-css'
 if (typeof document !== 'undefined' && !document.getElementById(ICON_STYLE_ID)) {
   const s = document.createElement('style')
   s.id = ICON_STYLE_ID
-  s.textContent = '.ic{width:1.05em;height:1.05em;display:inline-block;vertical-align:-0.16em;flex:none;stroke-width:2}'
+  s.textContent = '.k-icon{width:1.05em;height:1.05em;display:inline-block;vertical-align:-0.16em;flex:none;stroke-width:2}'
   document.head.appendChild(s)
 }
 
 // ic returns the inline SVG markup for an icon, optionally with extra classes.
 export function ic(name: IconName, extraClass = ''): string {
-  const cls = extraClass ? `ic ${extraClass}` : 'ic'
+  const cls = extraClass ? `k-icon ${extraClass}` : 'k-icon'
   return `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${PATHS[name]}</svg>`
 }

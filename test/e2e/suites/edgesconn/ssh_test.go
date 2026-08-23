@@ -46,7 +46,7 @@ func TestSSHThroughTunnel(t *testing.T) {
 		marker   = "faros_ssh_tunnel_ok"
 	)
 
-	workDir := t.TempDir()
+	workDir := suiteTempDir(t, "ssh-server-mode")
 	kubeconfig := filepath.Join(workDir, "faros.kubeconfig")
 
 	// 1. Log in + resolve the tenant workspace.
@@ -103,7 +103,7 @@ func TestSSHUserMappingInherited(t *testing.T) {
 		sshPass  = "mappedpass"
 	)
 
-	workDir := t.TempDir()
+	workDir := suiteTempDir(t, "ssh-user-mapping")
 	kubeconfig := filepath.Join(workDir, "faros.kubeconfig")
 
 	runCLI(t, kubeconfig, farosBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)

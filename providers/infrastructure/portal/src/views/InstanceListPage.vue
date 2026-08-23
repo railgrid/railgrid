@@ -204,7 +204,7 @@ onUnmounted(() => {
       </div>
       <div class="instance-list-actions">
         <span class="refresh-cadence">auto-refresh 10s</span>
-        <button type="button" class="primary" @click="emit('navigate', 'catalog')">Browse templates</button>
+        <button type="button" class="k-btn k-btn--primary" @click="emit('navigate', 'catalog')">Browse templates</button>
       </div>
     </header>
 
@@ -224,6 +224,7 @@ onUnmounted(() => {
       interactive
       retryable
       empty-text="No instances in this workspace yet."
+      :row-aria-label="(row) => `Open instance ${String(rowInstance(row).name)}`"
       @retry="load"
       @row-click="selectInstance"
     >

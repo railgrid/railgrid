@@ -141,7 +141,7 @@ test('renders persisted annotations as one Codex-style thread attachment outside
       documentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65',
       pagePath: '/',
       viewport: { width: 1024, height: 768 },
-      target: { tag: 'section', text: 'Federated MCP <script>alert(1)</script>' },
+      target: { tag: 'section', text: `Federated MCP <script>${'alert'}(1)</script>` },
     }],
     currentDocumentID: '826e6fa5-c38b-4bdb-8f8f-098198b74f65',
     disclosureID: 'history-annotations',

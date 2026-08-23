@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ArrowLeft, Boxes, ChevronRight, ClipboardList, Hash, Loader2, Plug, Search, TriangleAlert } from 'lucide-vue-next'
+import { ArrowDown, ArrowLeft, ArrowUp, Boxes, ChevronRight, ClipboardList, Hash, Loader2, Plug, Search, TriangleAlert } from 'lucide-vue-next'
 import {
   filterAssistantSlashCommands,
   type AssistantSlashCommand,
@@ -194,7 +194,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="open" class="fixed inset-0 z-40 bg-black/30 md:absolute md:inset-auto md:bottom-full md:left-0 md:mb-2 md:bg-transparent" @mousedown.self="emit('close')">
+  <div v-if="open" class="fixed inset-0 z-40 bg-surface/60 md:absolute md:inset-auto md:bottom-full md:left-0 md:mb-2 md:bg-transparent" @mousedown.self="emit('close')">
     <section
       class="fixed inset-x-2 bottom-2 z-50 flex max-h-[70vh] flex-col overflow-hidden rounded-lg border border-border-default bg-surface-raised shadow-2xl md:relative md:inset-auto md:bottom-auto md:w-[420px] md:max-h-[390px]"
       role="dialog"
@@ -208,7 +208,12 @@ onBeforeUnmount(() => {
           <div class="text-[12px] font-semibold text-text-primary">
             {{ view === 'commands' ? 'Commands' : view === 'skills' ? 'Attach a skill' : view === 'providers' ? 'Choose a provider' : selectedProvider?.displayName || 'Choose a resource' }}
           </div>
-          <div v-if="view === 'commands'" class="text-[10px] text-text-muted">Use ↑↓ to navigate · Enter to select · Esc to close</div>
+          <div v-if="view === 'commands'" class="flex items-center gap-1 text-[10px] text-text-muted">
+            <span>Use</span>
+            <ArrowUp class="h-2.5 w-2.5" :stroke-width="1.75" aria-hidden="true" />
+            <ArrowDown class="h-2.5 w-2.5" :stroke-width="1.75" aria-hidden="true" />
+            <span>to navigate · Enter to select · Esc to close</span>
+          </div>
         </div>
       </header>
 

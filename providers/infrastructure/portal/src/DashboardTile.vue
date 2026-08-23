@@ -16,6 +16,7 @@
 // nothing), we just render an empty state instead of bubbling errors.
 
 import { computed, onMounted, onUnmounted, ref, watch, h } from 'vue'
+import { ArrowRight } from 'lucide-vue-next'
 import { api, isContextChangedError, setTenant, setToken } from './api'
 import { tileClass } from './portalkit/dashboardtile'
 import { ic } from './portalkit/icons'
@@ -287,7 +288,7 @@ function dotFor(phase: string) {
             class="ml-1 font-medium text-accent transition-colors hover:text-accent-hover"
             @click="dispatchNavigate('templates')"
           >
-            Browse templates →
+            Browse templates <ArrowRight :size="14" aria-hidden="true" />
           </button>
         </div>
         <div class="mt-1 text-text-muted/70">
@@ -297,7 +298,7 @@ function dotFor(phase: string) {
             class="font-medium text-accent transition-colors hover:text-accent-hover"
             @click="dispatchNavigate('instances')"
           >
-            Open Instances →
+            Open Instances <ArrowRight :size="14" aria-hidden="true" />
           </button>
         </div>
       </div>

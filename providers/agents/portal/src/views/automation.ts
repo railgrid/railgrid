@@ -214,11 +214,11 @@ export class AutomationSection extends StoreElement {
   render(): TemplateResult {
     const rows = this.rows
     const slice = this.slice
-    return html`<section class="agents-panel agents-config-sec">
+    return html`<section class="agents-panel k-card agents-config-sec">
       <div class="agents-panel-head">
         <h3>${icon(this.meta.glyph)} ${this.meta.title}</h3>
         ${this.editing === null
-          ? html`<button class="secondary" @click=${() => this.openCreate()}>${icon('plus')} New ${this.meta.one}</button>`
+          ? html`<button class="k-btn k-btn--ghost secondary" @click=${() => this.openCreate()}>${icon('plus')} New ${this.meta.one}</button>`
           : nothing}
       </div>
       <p class="muted">${this.meta.blurb}</p>
@@ -226,7 +226,7 @@ export class AutomationSection extends StoreElement {
         ? errorState(slice.error, () => void this.store.load(this.kind === 'schedule' ? 'schedules' : 'triggers'))
         : rows.length === 0
           ? html`<p class="agents-hint">${icon(this.meta.glyph)} ${this.meta.empty}</p>`
-          : html`<div class="agents-tablewrap">
+          : html`<div class="agents-tablewrap k-table">
               <table class="agents-table">
                 <thead>
                   <tr>
@@ -258,9 +258,9 @@ export class AutomationSection extends StoreElement {
         ? html`${s.type === 'wakeup' ? s.runAt || '' : s.schedule || ''}${s.timeZone ? html` <span class="muted">${s.timeZone}</span>` : nothing}`
         : html`${s.source}${s.connectionRef ? html` <span class="muted">${s.connectionRef}</span>` : nothing}`
     const status = st?.disabledReason
-      ? html`<span class="agents-badge agents-badge-warn">${st.disabledReason}</span>`
+      ? html`<span class="k-badge agents-badge k-badge--warning agents-badge-warn">${st.disabledReason}</span>`
       : s.suspend
-        ? html`<span class="agents-badge">paused</span>`
+        ? html`<span class="k-badge agents-badge">paused</span>`
         : this.kind === 'schedule'
           ? st?.nextRun
             ? html`next ${fmtTime(st.nextRun)}`
@@ -275,16 +275,16 @@ export class AutomationSection extends StoreElement {
       <td class="muted">
         ${status}
         ${lastRunID
-          ? html` <button class="agents-linkbtn" @click=${() => this.navigate({ kind: 'run', id: lastRunID })}>last run</button>`
+          ? html` <button class="k-btn k-btn--ghost agents-linkbtn" @click=${() => this.navigate({ kind: 'run', id: lastRunID })}>last run</button>`
           : nothing}
       </td>
       <td class="agents-row-actions">
-        <button class="agents-iconbtn" aria-label="Run ${name} now" title="Run now" @click=${() => void this.runNow(name)}>
+        <button class="k-btn k-btn--ghost agents-iconbtn" aria-label="Run ${name} now" title="Run now" @click=${() => void this.runNow(name)}>
           ${icon('play')}
         </button>
-        <button class="agents-iconbtn" aria-label="Edit ${name}" title="Edit" @click=${() => this.openEdit(r)}>${icon('pencil')}</button>
+        <button class="k-btn k-btn--ghost agents-iconbtn" aria-label="Edit ${name}" title="Edit" @click=${() => this.openEdit(r)}>${icon('pencil')}</button>
         <button
-          class="agents-iconbtn"
+          class="k-btn k-btn--ghost agents-iconbtn"
           aria-label=${s.suspend ? `Resume ${name}` : `Pause ${name}`}
           title=${s.suspend ? 'Resume' : 'Pause'}
           @click=${() => void this.toggleSuspend(r)}
@@ -292,7 +292,7 @@ export class AutomationSection extends StoreElement {
           ${s.suspend ? icon('play') : icon('pause')}
         </button>
         <button
-          class="agents-iconbtn agents-iconbtn-danger"
+          class="k-btn k-btn--ghost agents-iconbtn agents-iconbtn-danger"
           aria-label="Delete ${name}"
           title="Delete"
           @click=${() => void this.del(name)}
@@ -311,13 +311,13 @@ export class AutomationSection extends StoreElement {
       this.draft = { ...this.draft, [k]: t.type === 'checkbox' ? t.checked : t.value }
     }
     const channels = this.store.agent(this.agent)?.spec?.channels || []
-    return html`<form class="agents-obj-form" @submit=${(e: Event) => void this.save(e)}>
+    return html`<form class="agents-obj-form k-card" @submit=${(e: Event) => void this.save(e)}>
       <h4>${isEdit ? `Edit ${this.meta.one} ${this.editing}` : `New ${this.meta.one}`}</h4>
       ${isEdit
         ? nothing
         : html`<label>
             Name *
-            <input .value=${d.name} placeholder=${this.meta.namePlaceholder} autocomplete="off" @input=${set('name')} />
+            <input class="k-input" .value=${d.name} placeholder=${this.meta.namePlaceholder} autocomplete="off" @input=${set('name')} />
             ${this.nameError ? html`<span class="agents-fielderr">${this.nameError}</span>` : nothing}
           </label>`}
       ${this.kind === 'schedule'
@@ -325,32 +325,32 @@ export class AutomationSection extends StoreElement {
             <div class="agents-grid2">
               <label>
                 Type
-                <select @change=${set('type')}>
+                <select class="k-input" @change=${set('type')}>
                   <option value="cron" ?selected=${d.type !== 'wakeup'}>recurring (cron)</option>
                   <option value="wakeup" ?selected=${d.type === 'wakeup'}>one-shot (runAt)</option>
                 </select>
               </label>
-              <label>Timezone<input .value=${d.timeZone} placeholder="Europe/Vilnius" @input=${set('timeZone')} /></label>
+              <label>Timezone<input class="k-input" .value=${d.timeZone} placeholder="Europe/Vilnius" @input=${set('timeZone')} /></label>
             </div>
             ${d.type === 'wakeup'
               ? html`<label
-                  >Run at (RFC3339)<input class="mono" .value=${d.runAt} placeholder="2026-01-01T09:00:00Z" @input=${set('runAt')} />
+                  >Run at (RFC3339)<input class="k-input mono" .value=${d.runAt} placeholder="2026-01-01T09:00:00Z" @input=${set('runAt')} />
                 </label>`
               : html`<label
-                  >Cron<input class="mono" .value=${d.schedule} placeholder="0 9 * * *" @input=${set('schedule')} />
+                  >Cron<input class="k-input mono" .value=${d.schedule} placeholder="0 9 * * *" @input=${set('schedule')} />
                   <span class="agents-hint">5-field cron · crontab.guru</span>
                 </label>`}
           `
         : html`<div class="agents-grid2">
             <label>
               Source
-              <select @change=${set('source')}>
+              <select class="k-input" @change=${set('source')}>
                 ${['webhook', 'github'].map((v) => html`<option value=${v} ?selected=${v === d.source}>${v}</option>`)}
               </select>
             </label>
             <label>
               Connection
-              <select @change=${set('connectionRef')}>
+              <select class="k-input" @change=${set('connectionRef')}>
                 <option value="">— none —</option>
                 ${this.store.connections.data.map(
                   (c) => html`<option value=${c.metadata.name} ?selected=${c.metadata.name === d.connectionRef}>${c.metadata.name}</option>`,
@@ -360,11 +360,11 @@ export class AutomationSection extends StoreElement {
           </div>`}
       <label>
         Task${this.kind === 'trigger' ? ' on fire' : ''}
-        <textarea rows="3" placeholder=${this.meta.taskPlaceholder} .value=${d.task} @input=${set('task')}></textarea>
+        <textarea class="k-input" rows="3" placeholder=${this.meta.taskPlaceholder} .value=${d.task} @input=${set('task')}></textarea>
       </label>
       <label>
         Channel
-        <select @change=${set('channelRef')}>
+        <select class="k-input" @change=${set('channelRef')}>
           <option value="" ?selected=${!d.channelRef}>— primary channel —</option>
           ${channels.map(
             (ch) => html`<option value=${ch.name} ?selected=${ch.name === d.channelRef}>${ch.name}${ch.primary ? ' (primary)' : ''}</option>`,
@@ -374,8 +374,8 @@ export class AutomationSection extends StoreElement {
       </label>
       <label class="agents-check"><input type="checkbox" .checked=${d.suspend} @change=${set('suspend')} /> Paused</label>
       <div class="agents-form-actions">
-        <button type="submit">${isEdit ? 'Save' : `Create ${this.meta.one}`}</button>
-        <button type="button" class="secondary" @click=${() => (this.editing = null)}>Cancel</button>
+        <button class="k-btn k-btn--primary" type="submit">${isEdit ? 'Save' : `Create ${this.meta.one}`}</button>
+        <button type="button" class="k-btn k-btn--ghost secondary" @click=${() => (this.editing = null)}>Cancel</button>
       </div>
     </form>`
   }

@@ -1,5 +1,7 @@
 // Activity list + run trace viewer.
 
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { Activity } from '../views/activity'
 import type { RunDetailView } from '../views/run-detail'
@@ -24,6 +26,27 @@ const run = (over: Partial<RunSummary> = {}): RunSummary => ({
 })
 
 describe('activity list', () => {
+  it('keeps the shared route panel inset responsive without changing every agents panel', () => {
+    const styles = readFileSync(resolve(process.cwd(), 'src/style.css'), 'utf8')
+
+    expect(styles).toMatch(/\.agents-route-panel\s*\{\s*padding:\s*20px;/)
+    expect(styles).toMatch(/@media \(max-width:\s*720px\)[\s\S]*?\.agents-route-panel\s*\{\s*padding:\s*14px;/)
+    expect(styles).not.toMatch(/\.agents-panel\s*\{[^}]*padding:/)
+  })
+
+  it('groups the activity heading and filters inside the card layout', async () => {
+    const api = stubApi({ listRuns: vi.fn().mockResolvedValue({ items: [run()], nextCursor: '' }) })
+    const el = await mount<Activity>('agents-activity', { store: makeStore(api), api })
+
+    expect(el.querySelector('.agents-activity-panel')).not.toBeNull()
+    expect(el.querySelector('.agents-activity-panel.agents-route-panel')).not.toBeNull()
+    expect(el.querySelector('.agents-activity-head h3')?.textContent).toBe('Activity')
+    expect(el.querySelector('.agents-filters')?.getAttribute('aria-label')).toBe('Run filters')
+    expect(el.querySelectorAll('.agents-filter-label')).toHaveLength(4)
+    expect(el.querySelectorAll('.agents-filters .k-input')).toHaveLength(3)
+    expect(el.querySelector('.agents-filters .agents-seg')?.getAttribute('aria-label')).toBe('Run range')
+  })
+
   it('renders a run row with phase, duration and usage', async () => {
     const listRuns = vi.fn().mockResolvedValue({ items: [run()], nextCursor: '' })
     const api = stubApi({ listRuns })

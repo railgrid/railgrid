@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ArrowLeft } from 'lucide-vue-next'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { api } from '../api'
@@ -170,7 +171,7 @@ onUnmounted(() => {
 
 <template>
   <section class="page">
-    <button class="link back" type="button" :disabled="!!table && operationLocked(table.name)" @click="emit('back')">← Tables</button>
+    <button class="link back" type="button" :disabled="!!table && operationLocked(table.name)" @click="emit('back')"><ArrowLeft :size="14" aria-hidden="true" /> Tables</button>
 
     <header class="page-head">
       <div>
@@ -200,13 +201,13 @@ onUnmounted(() => {
     </div>
 
     <template v-if="table">
-      <div v-if="hint" class="panel">
-        <h3 class="panel-title">Status</h3>
+      <div v-if="hint" class="databricks-resource-panel k-card">
+        <h3 class="databricks-resource-panel-title">Status</h3>
         <p class="muted">{{ hint }}</p>
       </div>
 
-      <div class="panel">
-        <h3 class="panel-title">Overview</h3>
+      <div class="databricks-resource-panel k-card">
+        <h3 class="databricks-resource-panel-title">Overview</h3>
         <dl class="props">
           <dt>Connection</dt><dd><code>{{ table.connectionRef }}</code></dd>
           <dt>Warehouse</dt><dd><code>{{ table.warehouseRef }}</code></dd>
@@ -228,9 +229,9 @@ onUnmounted(() => {
         </dl>
       </div>
 
-      <div class="panel">
-        <div class="panel-head">
-          <h3 class="panel-title">Schema</h3>
+      <div class="databricks-resource-panel k-card">
+        <div class="databricks-resource-panel-head">
+          <h3 class="databricks-resource-panel-title">Schema</h3>
           <span class="muted">{{ schemaTruncated ? `${table.columns.length} cached columns` : `${table.columns.length} columns` }}</span>
         </div>
         <p v-if="schemaTruncated" class="warning" role="status">{{ schemaNotice }}</p>

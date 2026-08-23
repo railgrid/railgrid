@@ -241,11 +241,11 @@ onUnmounted(() => {
         <h2 class="page-title">Connections</h2>
         <p class="page-meta">A connection binds your workspace to a git account. Repositories are created under it.</p>
       </div>
-      <div class="actions">
-        <button v-if="oauthEnabled" class="primary" :disabled="oauthBusy || !loaded" @click="connectGitHub">
+      <div class="code-form-actions">
+        <button v-if="oauthEnabled" class="k-btn k-btn--primary" :disabled="oauthBusy || !loaded" @click="connectGitHub">
           {{ oauthBusy ? 'Waiting for GitHub…' : 'Connect with GitHub' }}
         </button>
-        <button :class="oauthEnabled ? 'secondary' : 'primary'" :disabled="!loaded" @click="showForm = !showForm">
+        <button class="k-btn" :class="oauthEnabled ? 'k-btn--ghost' : 'k-btn--primary'" :disabled="!loaded" @click="showForm = !showForm">
           {{ showForm ? 'Cancel' : 'Add token manually' }}
         </button>
       </div>
@@ -255,20 +255,20 @@ onUnmounted(() => {
       Tip: a platform admin can enable one-click “Connect with GitHub” by configuring the provider’s GitHub OAuth app.
     </p>
 
-    <div v-if="showForm" class="panel">
+    <div v-if="showForm" class="panel k-card">
       <h3 class="panel-title">{{ connType === 'oauth' ? 'Confirm GitHub connection' : 'Connect with a token' }}</h3>
       <form class="form" @submit.prevent="submit">
         <p v-if="connType === 'oauth'" class="muted">
           Authorized via GitHub<span v-if="owner"> as <code>{{ owner }}</code></span>. Pick the org/account to create repositories under, then confirm.
         </p>
-        <div class="field"><span class="field-label">Name</span><input v-model="name" placeholder="my-github" autocomplete="off" /></div>
-        <div class="field"><span class="field-label">Owner (org or user)</span><input v-model="owner" placeholder="acme" autocomplete="off" /></div>
-        <div v-if="connType === 'pat'" class="field"><span class="field-label">Personal access token</span><input v-model="token" type="password" placeholder="ghp_…" autocomplete="off" /></div>
-        <div v-else class="field"><span class="field-label">Credential</span><input value="GitHub OAuth — authorized" disabled /></div>
-        <div v-if="connType === 'pat'" class="field"><span class="field-label">Base URL (GHES, optional)</span><input v-model="baseURL" placeholder="https://github.example.com/api/v3" autocomplete="off" /></div>
-        <div class="actions">
-          <button class="primary" type="submit" :disabled="submitting">{{ submitting ? 'Connecting…' : 'Create' }}</button>
-          <button class="secondary" type="button" @click="() => { showForm = false; resetForm() }">Cancel</button>
+        <label class="field"><span class="field-label">Name</span><input v-model="name" class="k-input" placeholder="my-github" autocomplete="off" /></label>
+        <label class="field"><span class="field-label">Owner (org or user)</span><input v-model="owner" class="k-input" placeholder="acme" autocomplete="off" /></label>
+        <label v-if="connType === 'pat'" class="field"><span class="field-label">Personal access token</span><input v-model="token" class="k-input" type="password" placeholder="ghp_…" autocomplete="off" /></label>
+        <label v-else class="field"><span class="field-label">Credential</span><input class="k-input" value="GitHub OAuth — authorized" disabled /></label>
+        <label v-if="connType === 'pat'" class="field"><span class="field-label">Base URL (GHES, optional)</span><input v-model="baseURL" class="k-input" placeholder="https://github.example.com/api/v3" autocomplete="off" /></label>
+        <div class="code-form-actions">
+          <button class="k-btn k-btn--primary" type="submit" :disabled="submitting">{{ submitting ? 'Connecting…' : 'Create' }}</button>
+          <button class="k-btn k-btn--ghost" type="button" @click="() => { showForm = false; resetForm() }">Cancel</button>
           <span v-if="formError" class="error" role="alert">{{ formError }}</span>
         </div>
         <p class="muted">The token is stored as a Secret in your workspace; the provider validates it and shows the login below.</p>
@@ -286,15 +286,16 @@ onUnmounted(() => {
       :stale="loaded && !!error"
       retryable
       empty-text="No connections yet."
+      :row-aria-label="(row) => `Open connection ${String(row.name)}`"
       @retry="load"
       @row-click="openConnection"
     >
-      <template #name="{ value, row }"><span v-if="row.deleting">{{ value }}</span><button v-else class="link" type="button" @click.stop="openConnection(row)">{{ value }}</button></template>
+      <template #name="{ value, row }"><span v-if="row.deleting">{{ value }}</span><button v-else class="k-btn k-btn--ghost code-inline-action" type="button" @click.stop="openConnection(row)">{{ value }}</button></template>
       <template #owner="{ value }">{{ value }}</template>
       <template #login="{ value }">{{ value || '—' }}</template>
       <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>
       <template #actions="{ row }">
-        <div class="row-actions">
+        <div class="code-row-actions">
           <ResourceTableDeleteButton
             :label="`Delete connection ${String(row.name)}`"
             :busy-label="`Deleting connection ${String(row.name)}…`"

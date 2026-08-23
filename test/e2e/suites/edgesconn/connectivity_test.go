@@ -60,7 +60,7 @@ func TestKubectlThroughTunnel(t *testing.T) {
 
 	edgeName := "conn-k8s"
 	kindName := "faros-edgesconn"
-	workDir := t.TempDir()
+	workDir := suiteTempDir(t, "kubectl-through-tunnel")
 	kubeconfig := filepath.Join(workDir, "faros.kubeconfig")    // tenant login context
 	kindKubeconfig := filepath.Join(workDir, "kind.kubeconfig") // agent's backing cluster
 	edgeKubeconfig := filepath.Join(workDir, "edge.kubeconfig") // consumer, through the tunnel
@@ -340,7 +340,8 @@ func createKindCluster(t *testing.T, name, kubeconfig string) {
 
 func startAgent(t *testing.T, edgeName, joinToken, tenantWS string, extra ...string) *exec.Cmd {
 	t.Helper()
-	logf, _ := os.Create(filepath.Join(t.TempDir(), "agent.log"))
+	logDir := suiteTempDir(t, "agent-"+edgeName)
+	logf, _ := os.Create(filepath.Join(logDir, "agent.log"))
 	args := append([]string{
 		"agent", "run",
 		"--hub-url", hubURL,

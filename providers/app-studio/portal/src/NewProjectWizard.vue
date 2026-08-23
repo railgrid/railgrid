@@ -273,7 +273,7 @@ watch(
             </div>
             <button
               type="button"
-              class="inline-flex h-9 w-fit items-center gap-1.5 rounded-md border border-accent bg-accent px-3 text-[13px] font-semibold text-white shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+              class="inline-flex h-9 w-fit items-center gap-1.5 rounded-md border border-accent bg-accent px-3 text-[13px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
               :disabled="!canPlan"
               @click="runPlan"
             >
@@ -334,7 +334,7 @@ watch(
         <span v-else class="min-w-0 flex-1 text-[12px] text-text-muted">Nothing is created until you confirm.</span>
         <button
           type="button"
-          class="inline-flex h-9 items-center gap-2 rounded-md border border-accent bg-accent px-3.5 text-[13px] font-semibold text-white shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
+          class="inline-flex h-9 items-center gap-2 rounded-md border border-accent bg-accent px-3.5 text-[13px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
           :disabled="disabled"
           @click="confirmCreate"
         >

@@ -32,6 +32,15 @@ async function mountConnections(caps: Capabilities, agents = [agentFixture('scou
 // localStorage carries the manual dismissal, and jsdom keeps it between tests.
 beforeEach(() => localStorage.clear())
 
+describe('connections route layout', () => {
+  it('uses the shared padded route panel for connections and toolsets', async () => {
+    const { el } = await mountConnections({ providers: [] }, [])
+
+    expect(el.querySelector(':scope > .agents-menu > .agents-route-panel')).not.toBeNull()
+    expect(el.querySelector('agents-toolsets .agents-route-panel')).not.toBeNull()
+  })
+})
+
 describe('capability gating', () => {
   it('offers assisted setup when infrastructure federates and an agent exists', async () => {
     const { el } = await mountConnections({ providers: ['infrastructure', 'code'] })

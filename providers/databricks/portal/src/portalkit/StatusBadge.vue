@@ -4,7 +4,7 @@ import { computed } from 'vue'
 import { AlertTriangle, CheckCircle, Circle, Clock, XCircle } from 'lucide-vue-next'
 
 type Tone = 'success' | 'warning' | 'danger' | 'muted'
-type ToneConfig = { toneClass: string; dotClass: string; pulseClass: string }
+type ToneConfig = { toneClass: string; dotClass: string }
 
 const props = withDefaults(
   defineProps<{
@@ -16,10 +16,10 @@ const props = withDefaults(
 )
 
 const toneConfig: Record<Tone, ToneConfig> = {
-  success: { toneClass: 'tone-success', dotClass: 'dot-success', pulseClass: 'pulse-success' },
-  warning: { toneClass: 'tone-warning', dotClass: 'dot-warning', pulseClass: 'pulse-warning' },
-  danger: { toneClass: 'tone-danger', dotClass: 'dot-danger', pulseClass: 'pulse-danger' },
-  muted: { toneClass: 'tone-muted', dotClass: 'dot-muted', pulseClass: 'pulse-muted' },
+  success: { toneClass: 'k-badge--success', dotClass: 'k-badge__dot--success' },
+  warning: { toneClass: 'k-badge--warning', dotClass: 'k-badge__dot--warning' },
+  danger: { toneClass: 'k-badge--danger', dotClass: 'k-badge__dot--danger' },
+  muted: { toneClass: 'k-badge--muted', dotClass: 'k-badge__dot--muted' },
 }
 
 const config = computed(() => {
@@ -59,21 +59,24 @@ const config = computed(() => {
       return { ...toneConfig.muted, icon: Circle }
   }
 })
+
+const isLive = computed(() => {
+  const status = props.status?.toLowerCase()
+  return status === 'ready' &&
+    props.connected !== false &&
+    config.value.toneClass === toneConfig.success.toneClass
+})
 </script>
 
 <template>
   <span
-    class="status-badge"
+    class="k-badge"
     :class="config.toneClass"
   >
-    <span class="status-badge-dot-wrap">
-      <span
-        v-if="status?.toLowerCase() === 'ready' && connected !== false"
-        class="live-dot status-badge-pulse"
-        :class="config.pulseClass"
-      />
-      <span class="status-badge-dot" :class="config.dotClass" />
-    </span>
+    <span
+      class="k-badge__dot"
+      :class="isLive ? 'live-dot' : config.dotClass"
+    />
     {{ status }}
   </span>
 </template>

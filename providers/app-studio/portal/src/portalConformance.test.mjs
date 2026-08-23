@@ -7,6 +7,7 @@ const productionForm = await readFile(new URL('./ProductionForm.vue', import.met
 const loadingShell = await readFile(new URL('./ProductionSettingsLoadingShell.vue', import.meta.url), 'utf8')
 const statusBadge = await readFile(new URL('./portalkit/StatusBadge.vue', import.meta.url), 'utf8')
 const styles = await readFile(new URL('./style.css', import.meta.url), 'utf8')
+const main = await readFile(new URL('./main.ts', import.meta.url), 'utf8')
 const providerFrame = await readFile(new URL('../../../../portal/src/pages/ProviderFrame.vue', import.meta.url), 'utf8')
 const api = await readFile(new URL('./api.ts', import.meta.url), 'utf8')
 
@@ -81,13 +82,19 @@ test('replaces the stable project-card fallback with authenticated commit screen
   assert.match(api, /getProjectThumbnail[\s\S]*\/thumbnail/)
 })
 
-test('styles the shared status badge inside the App Studio light DOM', () => {
-  assert.match(statusBadge, /class="status-badge"/)
-  assert.match(styles, /faros-provider-app-studio \.status-badge \{/)
-  assert.match(styles, /faros-provider-app-studio \.status-badge\.tone-success \{/)
-  assert.match(styles, /faros-provider-app-studio \.status-badge-dot-wrap \{/)
-  assert.match(styles, /font-size: 10px;/)
-  assert.match(styles, /border-radius: 3px;/)
+test('uses the canonical status badge recipe without a provider-local restatement', () => {
+  assert.match(statusBadge, /class="k-badge"/)
+  assert.match(statusBadge, /class="k-badge__dot"/)
+  assert.doesNotMatch(statusBadge, /k-badge__dot-wrap|k-badge__pulse/)
+  assert.match(statusBadge, /status === 'ready'/)
+  assert.doesNotMatch(styles, /faros-provider-app-studio \.status-badge/)
+  assert.doesNotMatch(styles, /faros-provider-app-studio \.k-badge/)
+})
+
+test('compiles text-on-accent with a host-token fallback without leaking self-referential tokens', () => {
+  assert.match(styles, /--color-on-accent:\s*var\(--color-on-accent,\s*#[f]{3}\)/)
+  assert.match(main, /const styles = rawStyles\.replace\(/)
+  assert.match(main, /--color-\[\\w-\]\+:var\\\(--color\[\^;}\]\*;\?\/g/)
 })
 
 test('announces preview recovery failures assertively', () => {

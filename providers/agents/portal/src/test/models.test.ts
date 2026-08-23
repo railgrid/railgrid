@@ -38,7 +38,7 @@ describe('models view on an empty workspace', () => {
     expect(text).toContain('New model')
     // The dashboard rendered rather than throwing before it.
     expect(text).not.toContain('Loading usage…')
-    expect(el.querySelector('.agents-panel')).toBeTruthy()
+    expect(el.querySelector('.agents-panel.agents-route-panel')).toBeTruthy()
   })
 
   it('opens the create form when New model is clicked', async () => {

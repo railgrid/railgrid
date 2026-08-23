@@ -15,6 +15,8 @@
 //   toast('ok', 'Instance provisioned')
 //   toast('error', 'Build failed', { label: 'View log', run: () => open() })
 
+import { ensureFarosUIStyles } from './styles'
+
 export type ToastKind = 'ok' | 'error' | 'info'
 
 export interface ToastAction {
@@ -25,8 +27,7 @@ export interface ToastAction {
 const DURATION: Record<ToastKind, number> = { ok: 4000, info: 6000, error: 9000 }
 const MAX_VISIBLE = 3
 
-const STYLE_ID = 'pk-toast-styles'
-const HOST_ID = 'pk-toasts'
+const HOST_ID = 'k-toasts'
 
 const ICONS: Record<ToastKind, string> = {
   ok: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
@@ -38,43 +39,8 @@ const ICONS: Record<ToastKind, string> = {
 const X_ICON =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>'
 
-function ensureStyles(): void {
-  if (document.getElementById(STYLE_ID)) return
-  const s = document.createElement('style')
-  s.id = STYLE_ID
-  s.textContent = `
-#${HOST_ID} { position: fixed; right: 16px; bottom: 16px; z-index: 2147483001;
-  display: flex; flex-direction: column; align-items: flex-end; gap: 8px; max-width: 360px; }
-.pk-toast { display: flex; align-items: flex-start; gap: 9px; padding: 10px 12px; border-radius: 6px;
-  font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif); font-size: 13px; line-height: 1.45;
-  background: var(--color-surface-raised, #111320); color: var(--color-text-primary, #e9e9f2);
-  border: 1px solid var(--color-border-default, rgba(255,255,255,.11));
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.4);
-  animation: pk-toast-in 0.16s cubic-bezier(0.2, 0.8, 0.3, 1); }
-@keyframes pk-toast-in { from { opacity: 0; transform: translateY(8px); } }
-.pk-toast-ic { flex: none; margin-top: 1px; width: 14px; height: 14px; }
-.pk-toast-ic svg { display: block; width: 100%; height: 100%; }
-.pk-toast-ok .pk-toast-ic { color: var(--color-success, #2fd6a0); }
-.pk-toast-error .pk-toast-ic { color: var(--color-danger, #ff5d5d); }
-.pk-toast-info .pk-toast-ic { color: var(--color-accent, #8b6bff); }
-.pk-toast-error { border-color: var(--color-danger, #ff5d5d); }
-.pk-toast-msg { flex: 1; overflow-wrap: anywhere; }
-.pk-toast-action { flex: none; border: 1px solid color-mix(in srgb, var(--color-accent, #8b6bff) 35%, transparent);
-  background: var(--color-accent-subtle, rgba(139,107,255,.14)); color: var(--color-accent, #8b6bff);
-  border-radius: 4px; padding: 2px 8px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
-.pk-toast-action:hover { background: color-mix(in srgb, var(--color-accent, #8b6bff) 22%, transparent); }
-.pk-toast-x { flex: none; display: grid; place-items: center; width: 20px; height: 20px; margin: -2px -4px 0 0;
-  border: 0; background: transparent; color: var(--color-text-muted, #5d5f78); border-radius: 4px; cursor: pointer; }
-.pk-toast-x svg { width: 12px; height: 12px; }
-.pk-toast-x:hover { background: var(--color-surface-hover, #1e2033); color: inherit; }
-@media (prefers-reduced-motion: reduce) { .pk-toast { animation: none; } }
-@media (max-width: 640px) { #${HOST_ID} { left: 12px; right: 12px; max-width: none; align-items: stretch; } }
-`
-  document.head.appendChild(s)
-}
-
 function host(): HTMLElement {
-  ensureStyles()
+  ensureFarosUIStyles()
   let el = document.getElementById(HOST_ID)
   if (!el) {
     el = document.createElement('div')
@@ -86,14 +52,27 @@ function host(): HTMLElement {
   return el
 }
 
-let seq = 0
+// Each standalone provider bundle gets its own module instance, but all of
+// them render into the document-level toast host. Keep numeric IDs in a
+// shared global sequence so one bundle cannot dismiss another bundle's card
+// or timer after both start at sequence 1.
+const TOAST_SEQUENCE_KEY = Symbol.for('faros.portalkit.toast.sequence')
+type ToastGlobal = typeof globalThis & { [key: symbol]: unknown }
+const toastGlobal = globalThis as ToastGlobal
+
+function nextToastID(): number {
+  const next = Number(toastGlobal[TOAST_SEQUENCE_KEY] ?? 0) + 1
+  toastGlobal[TOAST_SEQUENCE_KEY] = next
+  return next
+}
+
 const timers = new Map<number, ReturnType<typeof setTimeout>>()
 
 export function dismissToast(id: number): void {
   const t = timers.get(id)
   if (t) clearTimeout(t)
   timers.delete(id)
-  document.getElementById(`pk-toast-${id}`)?.remove()
+  document.getElementById(`k-toast-${id}`)?.remove()
   const h = document.getElementById(HOST_ID)
   if (h && h.childElementCount === 0) h.remove()
 }
@@ -104,26 +83,26 @@ export function clearToasts(): void {
 
 export function toast(kind: ToastKind, message: string, action?: ToastAction): number {
   const h = host()
-  const id = ++seq
+  const id = nextToastID()
 
   const card = document.createElement('div')
-  card.id = `pk-toast-${id}`
-  card.className = `pk-toast pk-toast-${kind}`
+  card.id = `k-toast-${id}`
+  card.className = `k-toast k-toast--${kind}`
   if (kind === 'error') card.setAttribute('role', 'alert')
 
   const ic = document.createElement('span')
-  ic.className = 'pk-toast-ic'
+  ic.className = 'k-toast__icon'
   ic.innerHTML = ICONS[kind]
   card.appendChild(ic)
 
   const msg = document.createElement('span')
-  msg.className = 'pk-toast-msg'
+  msg.className = 'k-toast__message'
   msg.textContent = message
   card.appendChild(msg)
 
   if (action) {
     const btn = document.createElement('button')
-    btn.className = 'pk-toast-action'
+    btn.className = 'k-toast__action'
     btn.textContent = action.label
     btn.addEventListener('click', () => {
       action.run()
@@ -133,7 +112,7 @@ export function toast(kind: ToastKind, message: string, action?: ToastAction): n
   }
 
   const x = document.createElement('button')
-  x.className = 'pk-toast-x'
+  x.className = 'k-toast__dismiss'
   x.setAttribute('aria-label', 'Dismiss notification')
   x.innerHTML = X_ICON
   x.addEventListener('click', () => dismissToast(id))

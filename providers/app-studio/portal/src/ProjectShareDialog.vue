@@ -660,7 +660,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', handleKeydown))
             </button>
             <button
               type="button"
-              class="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-4 text-[12px] font-semibold text-white shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none"
+              class="inline-flex h-8 items-center gap-1.5 rounded-md bg-accent px-4 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none"
               :disabled="!canSave"
               @click="primaryAction"
             >

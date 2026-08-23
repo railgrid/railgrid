@@ -15,6 +15,7 @@ import {
 } from 'lucide-vue-next'
 import { api } from './api'
 import { confirmDialog } from './portalkit/confirm'
+import StatusBadge from './portalkit/StatusBadge.vue'
 import {
   buildProjectIntegrationCreatePayload,
   buildProjectIntegrationRevokePayload,
@@ -288,7 +289,7 @@ function formatTimestamp(value?: string): string {
       <span>{{ notice }}</span>
     </div>
 
-    <section class="grid gap-3 rounded-2xl border border-accent/20 bg-accent-subtle/40 p-4" aria-labelledby="automatic-integrations-title">
+    <section class="k-card grid gap-3 border-accent/20 bg-accent-subtle/40 p-4" aria-labelledby="automatic-integrations-title">
       <div class="flex items-start gap-2">
         <ShieldCheck class="mt-0.5 h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
         <div class="min-w-0">
@@ -303,7 +304,7 @@ function formatTimestamp(value?: string): string {
       </div>
     </section>
 
-    <section v-if="!automaticProviderAccessOnly" class="grid gap-3 rounded-2xl border border-border-subtle bg-surface-raised p-4">
+    <section v-if="!automaticProviderAccessOnly" class="k-card grid gap-3 p-4">
       <div class="flex items-start gap-2">
         <Plus class="mt-0.5 h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
         <div>
@@ -327,7 +328,7 @@ function formatTimestamp(value?: string): string {
             <select
               id="integration-provider"
               v-model="providerName"
-              class="h-9 rounded-lg border border-border-subtle bg-surface px-2.5 text-[13px] text-text-primary outline-none transition focus:border-accent/50"
+              class="k-input h-9"
               :disabled="busy"
             >
               <option value="" disabled>Select a Ready provider</option>
@@ -341,7 +342,7 @@ function formatTimestamp(value?: string): string {
             <select
               id="integration-action"
               v-model="actionID"
-              class="h-9 rounded-lg border border-border-subtle bg-surface px-2.5 font-mono text-[12px] text-text-primary outline-none transition focus:border-accent/50"
+              class="k-input h-9 font-mono"
               :disabled="busy || !selectedProvider"
             >
               <option value="" disabled>Select an action</option>
@@ -355,7 +356,7 @@ function formatTimestamp(value?: string): string {
             <input
               id="integration-alias"
               v-model="alias"
-              class="h-9 rounded-lg border border-border-subtle bg-surface px-2.5 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+              class="k-input h-9"
               placeholder="sales"
               autocomplete="off"
               :disabled="busy"
@@ -366,7 +367,7 @@ function formatTimestamp(value?: string): string {
             <input
               id="integration-resource-name"
               v-model="resourceName"
-              class="h-9 rounded-lg border border-border-subtle bg-surface px-2.5 font-mono text-[12px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
+              class="k-input h-9 font-mono"
               placeholder="orders"
               autocomplete="off"
               :disabled="busy"
@@ -392,11 +393,11 @@ function formatTimestamp(value?: string): string {
             <div>
               <dt class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">Action policy</dt>
               <dd class="mt-0.5 flex flex-wrap gap-1.5">
-                <span class="rounded-full border border-border-subtle bg-surface px-2 py-0.5 text-[11px] text-text-secondary">
+                <span class="k-badge k-badge--muted">
                   {{ selectedAction.readOnly ? 'Read-only' : 'May mutate' }}
                 </span>
-                <span class="rounded-full border border-border-subtle bg-surface px-2 py-0.5 text-[11px] text-text-secondary">Risk: {{ selectedAction.risk || 'unspecified' }}</span>
-                <span class="rounded-full border border-border-subtle bg-surface px-2 py-0.5 text-[11px] text-text-secondary">Consent: {{ selectedActionRequiresConsent ? 'Required' : 'Not required' }}</span>
+                <span class="k-badge k-badge--muted">Risk: {{ selectedAction.risk || 'unspecified' }}</span>
+                <span class="k-badge k-badge--muted">Consent: {{ selectedActionRequiresConsent ? 'Required' : 'Not required' }}</span>
               </dd>
             </div>
             <div class="sm:col-span-2">
@@ -420,7 +421,7 @@ function formatTimestamp(value?: string): string {
           <p class="text-[11px] leading-4 text-text-muted">No credentials, provider URLs, or backend coordinates are accepted by this form.</p>
           <button
             type="submit"
-            class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-accent/30 bg-accent/10 px-3 text-[12px] font-semibold text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+            class="k-btn k-btn--primary h-9"
             :disabled="!canCreate"
           >
             <Loader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
@@ -431,13 +432,13 @@ function formatTimestamp(value?: string): string {
       </form>
     </section>
 
-    <section class="grid gap-3 rounded-2xl border border-border-subtle bg-surface-raised p-4">
+    <section class="k-card grid gap-3 p-4">
       <div class="flex items-center justify-between gap-3">
         <div>
           <h3 class="text-[13px] font-semibold text-text-primary">Current provider access</h3>
           <p class="mt-0.5 text-[11px] text-text-muted">Automatic bindings are read-only here. Audit and revocation state remain visible.</p>
         </div>
-        <span class="rounded-full border border-border-subtle bg-surface px-2 py-0.5 text-[11px] font-medium text-text-muted">{{ integrations.length }}</span>
+        <span class="k-badge k-badge--muted">{{ integrations.length }}</span>
       </div>
 
       <div v-if="loading && integrations.length === 0" class="grid gap-2" role="status" aria-live="polite">
@@ -447,14 +448,14 @@ function formatTimestamp(value?: string): string {
         No provider integrations have been granted for this project.
       </div>
       <div v-else class="grid gap-2">
-        <article v-for="integration in integrations" :key="`${integration.environment}:${integration.alias}`" class="grid gap-3 rounded-xl border border-border-subtle bg-surface p-3">
+        <article v-for="integration in integrations" :key="`${integration.environment}:${integration.alias}`" class="k-card k-card--flat grid gap-3 p-3">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-2">
                 <h4 class="font-mono text-[13px] font-semibold text-text-primary">{{ integration.alias }}</h4>
-                <span class="rounded-full border border-accent/25 bg-accent-subtle px-2 py-0.5 text-[11px] font-medium text-accent">{{ providerDisplayName(integration.provider) }}</span>
-                <span class="rounded-full border border-border-subtle bg-surface-raised px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-muted">Automatic</span>
-                <span v-if="integration.phase" class="rounded-full border border-border-subtle bg-surface-raised px-2 py-0.5 text-[11px] text-text-muted">{{ integration.phase }}</span>
+                <span class="k-badge">{{ providerDisplayName(integration.provider) }}</span>
+                <span class="k-badge k-badge--muted">Automatic</span>
+                <StatusBadge v-if="integration.phase" :status="integration.phase" />
               </div>
               <p class="mt-1 font-mono text-[11px] text-text-secondary">
                 {{ integration.resourceRef?.apiVersion }}/{{ integration.resourceRef?.kind }}/{{ integration.resourceRef?.resource }}/{{ integration.resourceRef?.name || 'unknown' }}
@@ -463,7 +464,7 @@ function formatTimestamp(value?: string): string {
             <button
               v-if="!automaticProviderAccessOnly"
               type="button"
-              class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-danger/30 bg-danger-subtle px-2.5 text-[11px] font-medium text-danger transition hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-60"
+              class="k-btn k-btn--danger h-8"
               :disabled="busy"
               @click="removeIntegration(integration)"
             >
@@ -476,12 +477,7 @@ function formatTimestamp(value?: string): string {
               <div class="min-w-0">
                 <div class="flex flex-wrap items-center gap-2">
                   <span class="font-mono text-[12px] font-medium text-text-primary">{{ grant.name }}/{{ grant.version }}</span>
-                  <span
-                    class="rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
-                    :class="grant.revoked ? 'border-danger/30 bg-danger-subtle text-danger' : 'border-success/30 bg-success-subtle text-success'"
-                  >
-                    {{ grant.revoked ? 'Revoked' : 'Granted' }}
-                  </span>
+                  <StatusBadge :status="grant.revoked ? 'Revoked' : 'Granted'" :tone="grant.revoked ? 'danger' : 'success'" />
                 </div>
                 <code class="mt-1 block break-all text-[10px] leading-4 text-text-muted">{{ grant.schemaDigest }}</code>
                 <div class="mt-1 text-[10px] text-text-muted">
@@ -494,14 +490,14 @@ function formatTimestamp(value?: string): string {
               <button
                 v-if="!automaticProviderAccessOnly && !grant.revoked"
                 type="button"
-                class="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-warning/30 bg-warning-subtle px-2.5 text-[11px] font-medium text-warning transition hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-60"
+                class="k-btn k-btn--ghost h-8 text-warning"
                 :disabled="busy"
                 @click="revokeAction(integration, grant.name, grant.version)"
               >
                 <Undo2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                 Revoke
               </button>
-              <span v-else-if="grant.revoked" class="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg border border-border-subtle bg-surface px-2.5 text-[11px] text-text-muted">
+              <span v-else-if="grant.revoked" class="k-badge k-badge--muted h-8">
                 <ShieldCheck class="h-3.5 w-3.5" :stroke-width="1.75" />
                 Access blocked
               </span>

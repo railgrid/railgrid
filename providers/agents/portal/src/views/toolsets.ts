@@ -79,17 +79,17 @@ export class Toolsets extends StoreElement {
 
   render(): TemplateResult {
     const slice = this.store.toolsets
-    return html`<div class="agents-panel">
+    return html`<div class="agents-panel k-card agents-route-panel">
       <div class="agents-panel-head">
         <h3>${icon('package')} Toolsets</h3>
-        ${this.editing === null ? html`<button class="secondary" @click=${() => this.openCreate()}>${icon('plus')} New toolset</button>` : nothing}
+        ${this.editing === null ? html`<button class="k-btn k-btn--ghost secondary" @click=${() => this.openCreate()}>${icon('plus')} New toolset</button>` : nothing}
       </div>
       <p class="muted">Shared bundles of Tools. Define once, link from any agent's Config pane.</p>
       ${slice.error
         ? errorState(slice.error, () => void this.store.load('toolsets'))
         : slice.data.length === 0
           ? html`<p class="agents-hint">${icon('package')} No toolsets yet.</p>`
-          : html`<div class="agents-tablewrap">
+          : html`<div class="agents-tablewrap k-table">
               <table class="agents-table">
                 <thead>
                   <tr><th>Name</th><th>Tools</th><th>Used by</th><th class="agents-th-actions">Actions</th></tr>
@@ -106,14 +106,14 @@ export class Toolsets extends StoreElement {
                           <strong>${t.spec.displayName || t.metadata.name}</strong>
                           ${t.spec.displayName ? html`<span class="agents-hint"> ${t.metadata.name}</span>` : nothing}
                         </td>
-                        <td>${conns.length ? conns.map((c) => html`<span class="agents-badge">${c}</span>`) : html`<span class="muted">—</span>`}</td>
+                        <td>${conns.length ? conns.map((c) => html`<span class="k-badge agents-badge">${c}</span>`) : html`<span class="muted">—</span>`}</td>
                         <td class="muted">${used} agent${used === 1 ? '' : 's'}</td>
                         <td class="agents-row-actions">
-                          <button class="agents-iconbtn" aria-label="Edit ${t.metadata.name}" title="Edit" @click=${() => this.openEdit(t)}>
+                          <button class="k-btn k-btn--ghost agents-iconbtn" aria-label="Edit ${t.metadata.name}" title="Edit" @click=${() => this.openEdit(t)}>
                             ${icon('pencil')}
                           </button>
                           <button
-                            class="agents-iconbtn agents-iconbtn-danger"
+                            class="k-btn k-btn--ghost agents-iconbtn agents-iconbtn-danger"
                             aria-label="Delete ${t.metadata.name}"
                             title="Delete"
                             @click=${() => void this.del(t.metadata.name)}
@@ -134,13 +134,13 @@ export class Toolsets extends StoreElement {
   private form(): TemplateResult {
     const toolConns = this.store.toolConnections()
     const isEdit = !!this.editing
-    return html`<form class="agents-toolset-form" @submit=${(e: Event) => void this.save(e)}>
+    return html`<form class="agents-toolset-form k-card" @submit=${(e: Event) => void this.save(e)}>
       <h4>${isEdit ? html`Edit toolset <code>${this.editing}</code>` : 'New toolset'}</h4>
       ${isEdit
-        ? html`<label>Display name<input .value=${this.draftDisplay} @input=${(e: Event) => (this.draftDisplay = (e.target as HTMLInputElement).value)} /></label>`
+        ? html`<label>Display name<input class="k-input" .value=${this.draftDisplay} @input=${(e: Event) => (this.draftDisplay = (e.target as HTMLInputElement).value)} /></label>`
         : html`<div class="agents-grid2">
             <label
-              >Name *<input
+              >Name *<input class="k-input"
                 required
                 pattern="[a-z0-9-]+"
                 placeholder="dev-tools"
@@ -148,7 +148,7 @@ export class Toolsets extends StoreElement {
                 @input=${(e: Event) => (this.draftName = (e.target as HTMLInputElement).value)}
             /></label>
             <label
-              >Display name<input
+              >Display name<input class="k-input"
                 placeholder="optional"
                 .value=${this.draftDisplay}
                 @input=${(e: Event) => (this.draftDisplay = (e.target as HTMLInputElement).value)}
@@ -178,8 +178,8 @@ export class Toolsets extends StoreElement {
         <span class="agents-hint">Tool families are derived from these connections — never picked by hand.</span>
       </fieldset>
       <div class="agents-form-actions">
-        <button type="submit">${isEdit ? 'Save' : 'Create toolset'}</button>
-        <button type="button" class="secondary" @click=${() => (this.editing = null)}>Cancel</button>
+        <button class="k-btn k-btn--primary" type="submit">${isEdit ? 'Save' : 'Create toolset'}</button>
+        <button type="button" class="k-btn k-btn--ghost secondary" @click=${() => (this.editing = null)}>Cancel</button>
       </div>
     </form>`
   }

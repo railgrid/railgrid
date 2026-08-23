@@ -149,28 +149,30 @@ export class Connections extends StoreElement {
 
   render(): TemplateResult {
     return html`
-      <div class="agents-panel">
-        <h3>Connections</h3>
-        <p class="muted">
-          Shared credentials for external systems. Each is a ${icon('wrench')} <strong>Tool</strong> agents call, a
-          ${icon('megaphone')} <strong>Channel</strong> they message you on, or a ${icon('plug')} generic
-          <strong>Connection</strong>. Stored as Secrets in your workspace.
-        </p>
-        ${sliceView<Connection>({
-          slice: this.store.connections,
-          emptyIcon: 'plug',
-          emptyText: 'No connections yet — add one below.',
-          retry: () => void this.store.load('connections'),
-          content: (rows) => this.table(rows),
-        })}
-        ${this.editorArea()}
+      <div class="agents-menu">
+        <div class="agents-panel k-card agents-route-panel">
+          <h3>Connections</h3>
+          <p class="muted">
+            Shared credentials for external systems. Each is a ${icon('wrench')} <strong>Tool</strong> agents call, a
+            ${icon('megaphone')} <strong>Channel</strong> they message you on, or a ${icon('plug')} generic
+            <strong>Connection</strong>. Stored as Secrets in your workspace.
+          </p>
+          ${sliceView<Connection>({
+            slice: this.store.connections,
+            emptyIcon: 'plug',
+            emptyText: 'No connections yet — add one below.',
+            retry: () => void this.store.load('connections'),
+            content: (rows) => this.table(rows),
+          })}
+          ${this.editorArea()}
+        </div>
+        <agents-toolsets .store=${this.store} .api=${this.api}></agents-toolsets>
       </div>
-      <agents-toolsets .store=${this.store} .api=${this.api}></agents-toolsets>
     `
   }
 
   private table(rows: Connection[]): TemplateResult {
-    return html`<div class="agents-tablewrap">
+    return html`<div class="agents-tablewrap k-table">
       <table class="agents-table">
         <thead>
           <tr><th>Name</th><th>Kind</th><th>Type</th><th>Endpoint / channel</th><th class="agents-th-actions">Actions</th></tr>
@@ -189,12 +191,12 @@ export class Connections extends StoreElement {
                   ${c.status?.webhookPath ? html`<span class="agents-inbound-on" title="Inbound enabled">${icon('swap')}</span>` : nothing}
                   ${c.status?.oauthConnected ? html`<span class="agents-inbound-on" title="OAuth connected">${icon('link')}</span>` : nothing}
                 </td>
-                <td><span class="agents-badge agents-badge-cat agents-cat-${cat}">${icon(meta.icon)} ${meta.label}</span></td>
-                <td><span class="agents-badge">${connShape(c).typeLabel}</span></td>
+                <td><span class="k-badge agents-badge agents-badge-cat agents-cat-${cat}">${icon(meta.icon)} ${meta.label}</span></td>
+                <td><span class="k-badge agents-badge">${connShape(c).typeLabel}</span></td>
                 <td class="agents-cell-task muted">
                   ${needsInstance(c)
                     ? html`<button
-                        class="agents-badge agents-badge-warn agents-badge-btn"
+                        class="k-badge agents-badge k-badge--warning agents-badge-warn agents-badge-btn"
                         title="Edit this connection and name the searxng instance it should search through"
                         @click=${() => {
                           this.editing = name
@@ -205,14 +207,14 @@ export class Connections extends StoreElement {
                       </button>`
                     : c.spec.config?.instance || c.spec.baseURL || c.spec.channel || '—'}
                   ${unwired(c, this.store.agents.data)
-                    ? html`<span class="agents-badge agents-badge-warn" title="No agent has been granted this tool — add it under an agent's Config → Tools"
+                    ? html`<span class="k-badge agents-badge k-badge--warning agents-badge-warn" title="No agent has been granted this tool — add it under an agent's Config → Tools"
                         >not wired to an agent</span
                       >`
                     : nothing}
                 </td>
                 <td class="agents-row-actions">
                   <button
-                    class="agents-iconbtn"
+                    class="k-btn k-btn--ghost agents-iconbtn"
                     aria-label="Edit ${name}"
                     title="Edit"
                     @click=${() => {
@@ -223,11 +225,11 @@ export class Connections extends StoreElement {
                     ${icon('pencil')}
                   </button>
                   ${cat === 'channel'
-                    ? html`<button class="agents-iconbtn" aria-label="Send a test message via ${name}" title="Send a test message" @click=${() => void this.test(name)}>
+                    ? html`<button class="k-btn k-btn--ghost agents-iconbtn" aria-label="Send a test message via ${name}" title="Send a test message" @click=${() => void this.test(name)}>
                           ${icon('send')}
                         </button>
                         <button
-                          class="agents-iconbtn"
+                          class="k-btn k-btn--ghost agents-iconbtn"
                           aria-label="Enable inbound chat for ${name}"
                           title=${c.status?.webhookPath ? 'Inbound enabled' : 'Enable inbound chat'}
                           @click=${() => void this.enableInbound(name)}
@@ -237,7 +239,7 @@ export class Connections extends StoreElement {
                     : nothing}
                   ${c.spec.auth === 'oauth'
                     ? html`<button
-                        class="agents-iconbtn"
+                        class="k-btn k-btn--ghost agents-iconbtn"
                         aria-label="Connect OAuth for ${name}"
                         title=${c.status?.oauthConnected ? 'Reconnect OAuth' : 'Connect OAuth'}
                         @click=${() => void this.oauth(name)}
@@ -245,7 +247,7 @@ export class Connections extends StoreElement {
                         ${icon('link')}
                       </button>`
                     : nothing}
-                  <button class="agents-iconbtn agents-iconbtn-danger" aria-label="Delete ${name}" title="Delete" @click=${() => void this.del(name)}>
+                  <button class="k-btn k-btn--ghost agents-iconbtn agents-iconbtn-danger" aria-label="Delete ${name}" title="Delete" @click=${() => void this.del(name)}>
                     ${icon('trash')}
                   </button>
                 </td>
@@ -269,7 +271,7 @@ export class Connections extends StoreElement {
 
   private picker(): TemplateResult {
     const tile = (d: ConnTypeDef): TemplateResult => html`<button
-      class="agents-conn-tile"
+      class="k-btn k-btn--ghost agents-conn-tile"
       @click=${() => {
         this.connType = d.id
         this.connMode = ''
@@ -299,7 +301,7 @@ export class Connections extends StoreElement {
   private field(f: ConnField): TemplateResult {
     return html`<label>
       ${f.label}${f.required ? ' *' : ''}
-      <input
+      <input class="k-input"
         name=${f.key}
         type=${f.password ? 'password' : 'text'}
         placeholder=${f.placeholder || ''}
@@ -321,14 +323,14 @@ export class Connections extends StoreElement {
     const platformApp = isOAuthMode && this.store.oauthApps.has(def.id)
     if (platformApp) fields = fields.filter((f) => f.key !== 'clientID' && f.key !== 'clientSecret')
     return html`<form
-      class="agents-conn-form"
+      class="agents-conn-form k-card"
       @submit=${(e: Event) => {
         e.preventDefault()
         void this.create(def, e.target as HTMLFormElement)
       }}
     >
-      <div class="agents-conn-formhead">
-        <button type="button" class="agents-back" @click=${() => (this.connType = null)}>${icon('arrow-left')} connection types</button>
+      <div class="agents-conn-form k-cardhead">
+        <button type="button" class="k-btn k-btn--ghost agents-back" @click=${() => (this.connType = null)}>${icon('arrow-left')} connection types</button>
         <h4>${icon(def.glyph)} ${def.label}</h4>
       </div>
       <p class="muted">${def.desc}</p>
@@ -342,13 +344,13 @@ export class Connections extends StoreElement {
         : nothing}
       <label>
         Name *
-        <input name="name" required pattern="[a-z0-9-]+" placeholder=${`my-${def.id}`} autocomplete="off" />
+        <input class="k-input" name="name" required pattern="[a-z0-9-]+" placeholder=${`my-${def.id}`} autocomplete="off" />
         <span class="agents-hint">A short id you'll reference from agents.</span>
       </label>
       ${def.modes
         ? html`<div class="agents-modeseg" role="group" aria-label="Authentication mode">
             ${def.modes.map(
-              (m) => html`<button type="button" class="agents-modebtn ${m.id === mode ? 'sel' : ''}" @click=${() => (this.connMode = m.id)}>
+              (m) => html`<button type="button" class="k-btn k-btn--ghost agents-modebtn ${m.id === mode ? 'sel' : ''}" @click=${() => (this.connMode = m.id)}>
                 ${m.label}
               </button>`,
             )}
@@ -364,7 +366,7 @@ export class Connections extends StoreElement {
       ${advanced.length
         ? html`<details class="agents-adv"><summary>Advanced</summary>${advanced.map((f) => this.field(f))}</details>`
         : nothing}
-      <div><button type="submit">Create connection</button></div>
+      <div><button class="k-btn k-btn--primary" type="submit">Create connection</button></div>
     </form>`
   }
 
@@ -381,29 +383,29 @@ export class Connections extends StoreElement {
     else endpointLabel = 'Channel / chat ID'
     const isOAuth = c.spec.auth === 'oauth'
     return html`<form
-      class="agents-conn-form"
+      class="agents-conn-form k-card"
       @submit=${(e: Event) => {
         e.preventDefault()
         void this.saveEdit(c, e.target as HTMLFormElement, usesChannel)
       }}
     >
-      <div class="agents-conn-formhead">
-        <button type="button" class="agents-back" @click=${() => (this.editing = null)}>${icon('arrow-left')} connections</button>
+      <div class="agents-conn-form k-cardhead">
+        <button type="button" class="k-btn k-btn--ghost agents-back" @click=${() => (this.editing = null)}>${icon('arrow-left')} connections</button>
         <h4>
           Edit ${icon(CATEGORY_META[cat].icon)} <code>${c.metadata.name}</code>
-          ${c.spec.type === 'discord' ? html`<span class="agents-badge">${shape.typeLabel}</span>` : nothing}
+          ${c.spec.type === 'discord' ? html`<span class="k-badge agents-badge">${shape.typeLabel}</span>` : nothing}
         </h4>
       </div>
-      <label>Display name<input name="displayName" .value=${c.spec.displayName || ''} placeholder=${c.metadata.name} /></label>
+      <label>Display name<input class="k-input" name="displayName" .value=${c.spec.displayName || ''} placeholder=${c.metadata.name} /></label>
       ${instanceBacked(c)
         ? html`<label>
             Instance name *
-            <input name="instance" .value=${c.spec.config?.instance || ''} placeholder="search" required autocomplete="off" />
+            <input class="k-input" name="instance" .value=${c.spec.config?.instance || ''} placeholder="search" required autocomplete="off" />
             <span class="agents-hint">
               The instance under Infrastructure. Agents reach it over the platform's internal path — there is no URL and no token.
             </span>
           </label>`
-        : html`<label>${endpointLabel}<input name="endpoint" .value=${(usesChannel ? c.spec.channel : c.spec.baseURL) || ''} /></label>`}
+        : html`<label>${endpointLabel}<input class="k-input" name="endpoint" .value=${(usesChannel ? c.spec.channel : c.spec.baseURL) || ''} /></label>`}
       ${instanceBacked(c)
         ? nothing
         : shape.discordWebhook
@@ -415,12 +417,12 @@ export class Connections extends StoreElement {
             </p>`
           : html`<label>
               New ${shape.discordBot ? 'bot token' : 'secret / token'}
-              <input name="secret" type="password" placeholder="leave blank to keep the current one" autocomplete="off" />
+              <input class="k-input" name="secret" type="password" placeholder="leave blank to keep the current one" autocomplete="off" />
               <span class="agents-hint">Only set this to rotate the credential.</span>
             </label>`}
       <div class="agents-form-actions">
-        <button type="submit">Save changes</button>
-        <button type="button" class="secondary" @click=${() => (this.editing = null)}>Cancel</button>
+        <button class="k-btn k-btn--primary" type="submit">Save changes</button>
+        <button type="button" class="k-btn k-btn--ghost secondary" @click=${() => (this.editing = null)}>Cancel</button>
       </div>
     </form>`
   }

@@ -26,18 +26,18 @@ export function sliceView<T>(o: SliceViewOptions<T>): TemplateResult {
 }
 
 export function loadingState(label = 'Loading…'): TemplateResult {
-  return html`<div class="agents-state agents-state-loading" role="status">
+  return html`<div class="k-card agents-state agents-state-loading" role="status">
     <span class="agents-spinner" aria-hidden="true"></span> ${label}
   </div>`
 }
 
 export function emptyState(name: IconName, text: string): TemplateResult {
-  return html`<div class="agents-state agents-state-empty">${icon(name)} ${text}</div>`
+  return html`<div class="k-card agents-state agents-state-empty" role="status">${icon(name)} ${text}</div>`
 }
 
 export function errorState(message: string, retry?: () => void): TemplateResult {
-  return html`<div class="agents-state agents-state-error" role="alert">
+  return html`<div class="k-card agents-state agents-state-error" role="alert">
     <span>${icon('x')} ${message}</span>
-    ${retry ? html`<button class="secondary" @click=${retry}>${icon('refresh')} Retry</button>` : null}
+    ${retry ? html`<button class="k-btn k-btn--ghost secondary" @click=${retry}>${icon('refresh')} Retry</button>` : null}
   </div>`
 }

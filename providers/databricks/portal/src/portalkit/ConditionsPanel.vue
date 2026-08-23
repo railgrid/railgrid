@@ -42,9 +42,9 @@ function conditionTone(status: string): 'success' | 'warning' | 'muted' {
 </script>
 
 <template>
-  <div class="conditions-panel">
-    <h3 class="conditions-title">Conditions</h3>
-    <p v-if="observedGeneration !== undefined && !reconciled" class="conditions-stale">
+  <div class="k-conditions">
+    <h3 class="k-conditions__title">Conditions</h3>
+    <p v-if="observedGeneration !== undefined && !reconciled" class="k-conditions__stale">
       Controller has not caught up - spec generation {{ generation }}, observed {{ observedGeneration }}.
     </p>
     <ResourceTable
@@ -59,10 +59,10 @@ function conditionTone(status: string): 'success' | 'warning' | 'muted' {
       :interactive="false"
       :empty-text="emptyText || 'No conditions yet. The controller has not reconciled this resource.'"
     >
-      <template #type="{ value }"><span class="conditions-type">{{ value }}</span></template>
+      <template #type="{ value }"><span class="k-conditions__type">{{ value }}</span></template>
       <template #status="{ value }"><StatusBadge :status="String(value)" :tone="conditionTone(String(value))" /></template>
-      <template #messageLabel="{ value }"><span class="conditions-message">{{ value }}</span></template>
-      <template #sinceLabel="{ value }"><span class="conditions-muted">{{ value }}</span></template>
+      <template #messageLabel="{ value }"><span class="k-conditions__message">{{ value }}</span></template>
+      <template #sinceLabel="{ value }"><span class="k-conditions__muted">{{ value }}</span></template>
     </ResourceTable>
   </div>
 </template>

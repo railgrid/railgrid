@@ -71,7 +71,7 @@ export class AgentCreateWizard extends StoreElement {
 
         <label>
           Name *
-          <input
+          <input class="k-input"
             name="name"
             .value=${this.name}
             placeholder="research-bot"
@@ -86,7 +86,7 @@ export class AgentCreateWizard extends StoreElement {
 
         <label>
           Model credential *
-          <select
+          <select class="k-input"
             .value=${this.modelCredential}
             aria-invalid=${this.errors.modelCredential ? 'true' : nothing}
             @change=${(e: Event) => (this.modelCredential = (e.target as HTMLSelectElement).value)}
@@ -98,7 +98,7 @@ export class AgentCreateWizard extends StoreElement {
           ${creds.length === 0
             ? html`<span class="agents-hint"
                 >No model credentials yet —
-                <button type="button" class="agents-linkbtn" @click=${() => this.navigate({ kind: 'menu', menu: 'models' })}>
+                <button type="button" class="k-btn k-btn--ghost agents-linkbtn" @click=${() => this.navigate({ kind: 'menu', menu: 'models' })}>
                   add one under Models
                 </button>
                 first.</span
@@ -109,7 +109,7 @@ export class AgentCreateWizard extends StoreElement {
         <label>
           System prompt
           <span class="agents-hint">optional — persona and standing instructions, not mechanics</span>
-          <textarea
+          <textarea class="k-input"
             rows="3"
             placeholder="You are a concise assistant that…"
             .value=${this.systemPrompt}
@@ -119,7 +119,7 @@ export class AgentCreateWizard extends StoreElement {
 
         <label>
           Primary channel <span class="agents-hint">optional — where this agent messages you</span>
-          <select @change=${(e: Event) => (this.channel = (e.target as HTMLSelectElement).value)}>
+          <select class="k-input" @change=${(e: Event) => (this.channel = (e.target as HTMLSelectElement).value)}>
             <option value="">— none —</option>
             ${channels.map((c) => html`<option value=${c.metadata.name} ?selected=${c.metadata.name === this.channel}>${c.spec.displayName || c.metadata.name} (${c.spec.type})</option>`)}
           </select>
@@ -142,8 +142,8 @@ export class AgentCreateWizard extends StoreElement {
         </fieldset>
 
         <div class="agents-form-actions">
-          <button type="submit">${icon('check')} Create agent</button>
-          <button type="button" class="secondary" @click=${() => this.cancel()}>Cancel</button>
+          <button class="k-btn k-btn--primary" type="submit">${icon('check')} Create agent</button>
+          <button type="button" class="k-btn k-btn--ghost secondary" @click=${() => this.cancel()}>Cancel</button>
         </div>
       </form>
     </div>`

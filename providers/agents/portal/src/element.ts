@@ -24,7 +24,6 @@ import { tabClass, tabCountClass, tabsClass } from './portalkit/tabs'
 import type { FarosContext } from './types'
 import { DEFAULT_ROUTE, MENUS, activeMenu, parseHash, syncHash, type MenuKey, type Route } from './router'
 
-import './ui/toast'
 import './views/agents-list'
 import './views/agent-detail'
 import './views/activity'
@@ -111,10 +110,10 @@ export class AgentsElement extends LightElement {
   }
 
   render(): TemplateResult {
-    if (!this.ctx) return html`<div class="agents-empty"><p class="muted">Connecting…</p></div>`
+    if (!this.ctx) return html`<div class="k-card agents-empty"><p class="muted" role="status">Connecting…</p></div>`
     if (!this.api.hasWorkspace()) {
-      return html`<div class="agents-empty">
-        <p class="muted">Select an organization and workspace in the sidebar to use your agents.</p>
+      return html`<div class="k-card agents-empty">
+        <p class="muted" role="status">Select an organization and workspace in the sidebar to use your agents.</p>
       </div>`
     }
     syncHash(this.route)
@@ -123,7 +122,6 @@ export class AgentsElement extends LightElement {
         ${this.renderNav()}
         <div class="agents-view">${this.renderRoute()}</div>
       </div>
-      <agents-toasts></agents-toasts>
     `
   }
 
@@ -167,13 +165,13 @@ export class AgentsElement extends LightElement {
         const n = counts[m]
         const isActive = m === active
         return html`<button
-          class="${tabClass({ active: isActive })} agents-navtab ${isActive ? 'sel' : ''}"
+          class="k-btn k-btn--ghost ${tabClass({ active: isActive })} agents-navtab ${isActive ? 'sel' : ''}"
           type="button"
           aria-current=${isActive ? 'page' : nothing}
           @click=${() => this.go({ kind: 'menu', menu: m })}
         >
-          <span class="pk-tab-icon">${icon(meta.icon)}</span>
-          <span class="pk-tab-label">${meta.label}</span>
+          <span class="k-tab__icon">${icon(meta.icon)}</span>
+          <span>${meta.label}</span>
           ${n
             ? html`<span class="${tabCountClass({ attention: m === 'activity' })} agents-navcount ${m === 'activity' ? 'attn' : ''}">${n}</span>`
             : nothing}

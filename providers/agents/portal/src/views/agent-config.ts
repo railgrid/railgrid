@@ -93,7 +93,7 @@ export class AgentConfig extends StoreElement {
 
   render(): TemplateResult {
     const a = this.store.agent(this.name)
-    if (!a) return html`<div class="agents-state agents-state-loading">Loading configuration…</div>`
+    if (!a) return html`<div class="k-card agents-state agents-state-loading" role="status">Loading configuration…</div>`
     return html`
       ${this.personaSection()} ${this.modelSection(a)} ${this.policySection()} ${this.toolsSection(a)} ${this.channelsSection(a)}
       <agents-automation .store=${this.store} .api=${this.api} kind="schedule" .agent=${this.name}></agents-automation>
@@ -105,16 +105,16 @@ export class AgentConfig extends StoreElement {
   // ---- persona -------------------------------------------------------------
 
   private personaSection(): TemplateResult {
-    return html`<section class="agents-panel agents-config-sec">
+    return html`<section class="agents-panel k-card agents-config-sec">
       <h3>${icon('sparkles')} Persona</h3>
       <p class="muted">Who this agent is and how it should behave on every run.</p>
       <label>
         Display name
-        <input .value=${this.displayName} @input=${(e: Event) => (this.displayName = (e.target as HTMLInputElement).value)} />
+        <input class="k-input" .value=${this.displayName} @input=${(e: Event) => (this.displayName = (e.target as HTMLInputElement).value)} />
       </label>
       <label>
         Description
-        <input
+        <input class="k-input"
           placeholder="What this agent is for — shown to you, not to the model."
           .value=${this.description}
           @input=${(e: Event) => (this.description = (e.target as HTMLInputElement).value)}
@@ -122,7 +122,7 @@ export class AgentConfig extends StoreElement {
       </label>
       <label>
         System prompt
-        <textarea
+        <textarea class="k-input"
           rows="6"
           placeholder="You are a concise assistant that…"
           .value=${this.systemPrompt}
@@ -130,7 +130,7 @@ export class AgentConfig extends StoreElement {
         ></textarea>
       </label>
       <div class="agents-form-actions">
-        <button
+        <button class="k-btn k-btn--primary"
           @click=${() =>
             void this.save(
               { displayName: this.displayName.trim(), description: this.description.trim(), systemPrompt: this.systemPrompt },
@@ -153,19 +153,19 @@ export class AgentConfig extends StoreElement {
   private modelSection(a: Agent): TemplateResult {
     const creds = this.store.credentials.data
     const available = creds.filter((c) => c.name !== this.modelCredential && !this.fallbacks.includes(c.name))
-    return html`<section class="agents-panel agents-config-sec">
+    return html`<section class="agents-panel k-card agents-config-sec">
       <h3>${icon('brain')} Model</h3>
       <p class="muted">Which credential this agent reasons with. Fallbacks are tried in order when the primary fails.</p>
       <label>
         Model credential
-        <select @change=${(e: Event) => (this.modelCredential = (e.target as HTMLSelectElement).value)}>
+        <select class="k-input" @change=${(e: Event) => (this.modelCredential = (e.target as HTMLSelectElement).value)}>
           <option value="">— no model —</option>
           ${creds.map((c) => html`<option value=${c.name} ?selected=${c.name === this.modelCredential}>${c.name}${c.model ? ` (${c.model})` : ''}</option>`)}
         </select>
         ${creds.length === 0
           ? html`<span class="agents-hint"
               >No models yet —
-              <button type="button" class="agents-linkbtn" @click=${() => this.navigate({ kind: 'menu', menu: 'models' })}>
+              <button type="button" class="k-btn k-btn--ghost agents-linkbtn" @click=${() => this.navigate({ kind: 'menu', menu: 'models' })}>
                 add one under Models</button
               >.</span
             >`
@@ -179,7 +179,7 @@ export class AgentConfig extends StoreElement {
                 (f, i) => html`<span class="agents-chip"
                   >${f}
                   <button
-                    class="agents-chip-x"
+                    class="k-btn k-btn--ghost agents-chip-x"
                     aria-label="Remove fallback ${f}"
                     @click=${() => (this.fallbacks = this.fallbacks.filter((_, j) => j !== i))}
                   >
@@ -190,8 +190,7 @@ export class AgentConfig extends StoreElement {
             </div>`
           : html`<span class="agents-hint">None — a model failure fails the run.</span>`}
         ${available.length
-          ? html`<select
-              class="agents-addselect"
+          ? html`<select class="k-input agents-addselect"
               @change=${(e: Event) => {
                 const sel = e.target as HTMLSelectElement
                 if (sel.value) this.fallbacks = [...this.fallbacks, sel.value]
@@ -204,7 +203,7 @@ export class AgentConfig extends StoreElement {
           : nothing}
       </div>
       <div class="agents-form-actions">
-        <button
+        <button class="k-btn k-btn--primary"
           @click=${() =>
             void this.save(
               { modelCredential: this.modelCredential, modelFallbacks: this.fallbacks },
@@ -225,7 +224,7 @@ export class AgentConfig extends StoreElement {
   // ---- autonomy + budget ---------------------------------------------------
 
   private policySection(): TemplateResult {
-    return html`<section class="agents-panel agents-config-sec">
+    return html`<section class="agents-panel k-card agents-config-sec">
       <h3>${icon('gauge')} Autonomy &amp; budget</h3>
       <p class="muted">
         Autonomy decides which tool calls stop and wait for you. It is enforced on every run — a paused run shows up in
@@ -245,7 +244,7 @@ export class AgentConfig extends StoreElement {
         <div class="agents-grid2">
           <label>
             Monthly budget (USD)
-            <input
+            <input class="k-input"
               inputmode="decimal"
               placeholder="blank = unlimited"
               .value=${this.budgetUSD}
@@ -254,7 +253,7 @@ export class AgentConfig extends StoreElement {
           </label>
           <label>
             Monthly token cap
-            <input
+            <input class="k-input"
               inputmode="numeric"
               placeholder="blank = unlimited"
               .value=${this.budgetTokens}
@@ -268,7 +267,7 @@ export class AgentConfig extends StoreElement {
         <div class="agents-grid2">
           <label>
             Max tool turns
-            <input
+            <input class="k-input"
               inputmode="numeric"
               placeholder="blank = provider default"
               .value=${this.maxToolTurns}
@@ -278,7 +277,7 @@ export class AgentConfig extends StoreElement {
           </label>
           <label>
             Run timeout (seconds)
-            <input
+            <input class="k-input"
               inputmode="numeric"
               placeholder="blank = provider default"
               .value=${this.timeoutSeconds}
@@ -289,7 +288,7 @@ export class AgentConfig extends StoreElement {
         </div>
       </div>
       <div class="agents-form-actions">
-        <button
+        <button class="k-btn k-btn--primary"
           @click=${() => {
             const tokens = intOrZero(this.budgetTokens)
             const turns = intOrZero(this.maxToolTurns)
@@ -335,7 +334,7 @@ export class AgentConfig extends StoreElement {
     // web_fetch alone does not need one.
     const hasSearchTool = (interactive?.connections || []).some((n) => this.store.connectionType(n) === 'websearch')
 
-    return html`<section class="agents-panel agents-config-sec">
+    return html`<section class="agents-panel k-card agents-config-sec">
       <h3>${icon('wrench')} Tools &amp; toolsets</h3>
       <p class="muted">
         What this agent can call. Chat always gets a granted tool; tick <strong>background</strong> to also allow it on schedules,
@@ -357,7 +356,7 @@ export class AgentConfig extends StoreElement {
             })
           : html`<p class="agents-hint">
               No toolsets yet — create one in the
-              <button type="button" class="agents-linkbtn" @click=${() => this.navigate({ kind: 'menu', menu: 'connections' })}>
+              <button type="button" class="k-btn k-btn--ghost agents-linkbtn" @click=${() => this.navigate({ kind: 'menu', menu: 'connections' })}>
                 Connections
               </button>
               tab.
@@ -409,7 +408,7 @@ export class AgentConfig extends StoreElement {
             })
           : html`<p class="agents-hint">
               No tools yet — add a GitHub / MCP / web-search connection under
-              <button type="button" class="agents-linkbtn" @click=${() => this.navigate({ kind: 'menu', menu: 'connections' })}>
+              <button type="button" class="k-btn k-btn--ghost agents-linkbtn" @click=${() => this.navigate({ kind: 'menu', menu: 'connections' })}>
                 Connections</button
               >.
             </p>`}
@@ -534,7 +533,7 @@ export class AgentConfig extends StoreElement {
 
   private channelsSection(a: Agent): TemplateResult {
     const conns = this.store.channelConnections()
-    return html`<section class="agents-panel agents-config-sec">
+    return html`<section class="agents-panel k-card agents-config-sec">
       <h3>${icon('megaphone')} Channels</h3>
       <p class="muted">
         Where this agent messages you — and, for chat channels, where you message it. Bind a <strong>primary</strong> channel plus any
@@ -543,7 +542,7 @@ export class AgentConfig extends StoreElement {
       ${conns.length === 0
         ? html`<p class="agents-hint">
             No channels yet — add a Telegram / Slack / Discord / email connection under
-            <button type="button" class="agents-linkbtn" @click=${() => this.navigate({ kind: 'menu', menu: 'connections' })}>
+            <button type="button" class="k-btn k-btn--ghost agents-linkbtn" @click=${() => this.navigate({ kind: 'menu', menu: 'connections' })}>
               Connections</button
             >.
           </p>`
@@ -553,15 +552,13 @@ export class AgentConfig extends StoreElement {
           this.channels,
           (r) => r.key,
           (r) => html`<div class="agents-chan-row">
-            <input
-              class="agents-chan-name"
+            <input class="k-input agents-chan-name"
               placeholder="primary"
               aria-label="Channel role name"
               .value=${r.name || ''}
               @input=${(e: Event) => this.patchRow(r.key, { name: (e.target as HTMLInputElement).value })}
             />
-            <select
-              class="agents-chan-conn"
+            <select class="k-input agents-chan-conn"
               aria-label="Channel connection"
               @change=${(e: Event) => this.patchRow(r.key, { connectionRef: (e.target as HTMLSelectElement).value })}
             >
@@ -582,7 +579,7 @@ export class AgentConfig extends StoreElement {
               primary
             </label>
             <button
-              class="agents-iconbtn agents-iconbtn-danger"
+              class="k-btn k-btn--ghost agents-iconbtn agents-iconbtn-danger"
               aria-label="Remove channel ${r.name || ''}"
               title="Remove channel"
               @click=${() => (this.channels = this.channels.filter((x) => x.key !== r.key))}
@@ -595,7 +592,7 @@ export class AgentConfig extends StoreElement {
       ${this.channelError ? html`<div class="agents-fielderr">${this.channelError}</div>` : nothing}
       <div class="agents-form-actions">
         <button
-          class="secondary"
+          class="k-btn k-btn--ghost secondary"
           ?disabled=${conns.length === 0}
           @click=${() =>
             (this.channels = [
@@ -605,7 +602,7 @@ export class AgentConfig extends StoreElement {
         >
           ${icon('plus')} Add channel
         </button>
-        <button @click=${() => void this.saveChannels()}>${icon('check')} Save channels</button>
+        <button class="k-btn k-btn--primary" @click=${() => void this.saveChannels()}>${icon('check')} Save channels</button>
       </div>
       ${this.inboundLines(a)}
     </section>`
@@ -665,21 +662,21 @@ export class AgentConfig extends StoreElement {
         const conn = conns.find((c) => c.metadata.name === ch.connectionRef)
         if (!conn) {
           return html`<div class="agents-inbound-line">
-            <span class="agents-badge">${ch.name}</span>
+            <span class="k-badge agents-badge">${ch.name}</span>
             <span class="muted">Connection “${ch.connectionRef}” not found — pick one above and save.</span>
           </div>`
         }
         const inb = channelInbound(conn)
         return html`<div class="agents-inbound-line">
-          <span class="agents-badge ${inb.on ? 'agents-cat-channel' : ''}"
+          <span class="k-badge agents-badge ${inb.on ? 'agents-cat-channel' : ''}"
             >${ch.name}${ch.primary ? ' ★' : ''} · ${icon('swap')} inbound ${inb.on ? 'on' : 'off'}</span
           >
           <span class="muted">${inb.note}</span>
           <span class="agents-inbound-actions">
             ${inb.canEnable
-              ? html`<button class="secondary" @click=${() => void this.enableInbound(ch.connectionRef)}>Enable inbound</button>`
+              ? html`<button class="k-btn k-btn--ghost secondary" @click=${() => void this.enableInbound(ch.connectionRef)}>Enable inbound</button>`
               : nothing}
-            <button class="secondary" @click=${() => void this.testChannel(ch.connectionRef)}>${icon('send')} Test</button>
+            <button class="k-btn k-btn--ghost secondary" @click=${() => void this.testChannel(ch.connectionRef)}>${icon('send')} Test</button>
           </span>
         </div>`
       })}
@@ -711,7 +708,7 @@ export class AgentConfig extends StoreElement {
     const others = this.store.agents.data.filter((x) => x.metadata.name !== this.name)
     if (!others.length) return nothing
     const current = new Set(a.spec?.delegates || [])
-    return html`<section class="agents-panel agents-config-sec">
+    return html`<section class="agents-panel k-card agents-config-sec">
       <h3>${icon('corner-down-right')} Delegates</h3>
       <p class="muted">Agents this one may hand work to. A delegated run bills against this agent's budget.</p>
       <div class="agents-checkrow">

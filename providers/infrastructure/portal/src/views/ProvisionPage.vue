@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onUnmounted, ref, watch } from 'vue'
+import { ArrowLeft } from 'lucide-vue-next'
 import DynamicForm from '../components/DynamicForm.vue'
 import { api, isContextChangedError } from '../api'
 import type { Template, ErrorResponse } from '../types'
@@ -101,7 +102,7 @@ async function submit() {
 
 <template>
   <section class="page">
-    <button type="button" class="link back" :disabled="submitting" @click="emit('navigate', 'catalog')">← Back to templates</button>
+    <button type="button" class="link back" :disabled="submitting" @click="emit('navigate', 'catalog')"><ArrowLeft :size="14" aria-hidden="true" /> Back to templates</button>
     <div v-if="loading && !loaded" class="page-loading-shell" role="status" aria-live="polite" aria-busy="true">
       <span>Loading template…</span>
       <div class="shimmer page-loading-line page-loading-line-short" aria-hidden="true" />
@@ -125,17 +126,17 @@ async function submit() {
       <span v-if="loading" class="sr-only" role="status" aria-live="polite">Rechecking template…</span>
       <form class="form" :aria-busy="submitting || loading" @submit.prevent="submit">
         <div class="dynform-row">
-          <label>
+          <label for="infrastructure-instance-name">
             <span class="dynform-label">Instance name<span class="required">*</span></span>
             <span class="dynform-desc">DNS-1123 subdomain. Lowercase alnum, '-', '.'.</span>
           </label>
-          <input v-model="instanceName" placeholder="my-instance" />
+          <input id="infrastructure-instance-name" v-model="instanceName" class="k-input" placeholder="my-instance" />
         </div>
         <DynamicForm :schema="template.inputsSchema" v-model:values="values" />
         <div v-if="mutationError" class="read-error" role="alert" aria-live="assertive">{{ mutationError }}</div>
         <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Provisioning instance…</span>
         <div class="actions">
-          <button type="submit" class="primary" :disabled="submitting || loading">
+          <button type="submit" class="k-btn k-btn--primary" :disabled="submitting || loading">
             {{ submitting ? 'Provisioning…' : 'Provision' }}
           </button>
           <button type="button" class="link" :disabled="submitting" @click="emit('navigate', 'catalog')">Cancel</button>

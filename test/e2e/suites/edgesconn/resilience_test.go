@@ -33,7 +33,7 @@ import (
 func TestInvalidJoinTokenRejected(t *testing.T) {
 	const edgeName = "reject-srv"
 
-	workDir := t.TempDir()
+	workDir := suiteTempDir(t, "invalid-join-token")
 	kubeconfig := filepath.Join(workDir, "faros.kubeconfig")
 	runCLI(t, kubeconfig, farosBin, "login", "--hub-url", hubURL, "--insecure-skip-tls-verify", "--token", staticToken)
 	tenantWS := clusterFromKubeconfig(t, kubeconfig)

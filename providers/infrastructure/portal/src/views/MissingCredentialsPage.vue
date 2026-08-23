@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { ArrowLeft } from 'lucide-vue-next'
 
 const props = defineProps<{ tenantPath?: string | null }>()
 const emit = defineEmits<{ (e: 'navigate', view: string): void }>()
@@ -19,7 +20,7 @@ const cmd = computed(() => {
 
 <template>
   <section class="page">
-    <button class="link back" @click="emit('navigate', 'catalog')">← Back to templates</button>
+    <button class="link back" @click="emit('navigate', 'catalog')"><ArrowLeft :size="14" aria-hidden="true" /> Back to templates</button>
     <header class="page-head">
       <div>
         <h2 class="page-title">Cloud credentials missing</h2>
@@ -31,7 +32,7 @@ const cmd = computed(() => {
       </div>
     </header>
 
-    <section class="panel">
+    <section class="panel k-card">
       <h3 class="panel-title">Create it</h3>
       <pre>{{ cmd }}</pre>
       <p class="page-meta">
@@ -41,7 +42,7 @@ const cmd = computed(() => {
       </p>
     </section>
 
-    <section class="panel">
+    <section class="panel k-card">
       <h3 class="panel-title">Why?</h3>
       <p>
         This provider is a broker: when you provision a template it creates the

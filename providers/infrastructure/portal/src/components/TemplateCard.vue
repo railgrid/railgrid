@@ -28,7 +28,7 @@ const exposure = computed(() => {
   >
     <div class="template-card-head">
       <div class="template-card-title">{{ template.displayName || template.name }}</div>
-      <span v-if="template.cloud" class="cloud-pill">{{ template.cloud }}</span>
+      <span v-if="template.cloud" class="k-badge k-badge--muted">{{ template.cloud }}</span>
       <span v-if="exposure" class="exposure-icon" :title="exposure.title" :aria-label="exposure.title" role="img">
         <!-- internal: closed padlock — never public -->
         <svg v-if="exposure.kind === 'internal'" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">

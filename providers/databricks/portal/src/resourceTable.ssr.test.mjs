@@ -93,12 +93,7 @@ test('background refresh keeps rows and only updates the out-of-flow live region
   assert.match(html, /Updating…/)
   assert.match(html, /style="[^"]*position:absolute/)
   assert.doesNotMatch(html, /resource-table-updating/)
-  assert.equal((html.match(/resource-table-row/g) ?? []).length, 2)
-})
-
-test('polled resource rows cannot replay the global entrance animation', async () => {
-  const style = await readFile(new URL('./style.css', import.meta.url), 'utf8')
-  assert.match(style, /faros-provider-databricks \.resource-table-row \{[\s\S]*?animation: none;/)
+  assert.equal((html.match(/k-table__row(?=[ "\n])/g) ?? []).length, 2)
 })
 
 test('successful empty reads are the only empty-state case before a retrying background error', async () => {
@@ -131,8 +126,96 @@ test('status tones distinguish retryable and actionable condition failures', asy
   const StatusBadge = (await vite.ssrLoadModule('/src/portalkit/StatusBadge.vue')).default
   const retrying = await renderToString(createSSRApp(StatusBadge, { status: 'Retrying' }))
   const attention = await renderToString(createSSRApp(StatusBadge, { status: 'Needs attention' }))
-  assert.match(retrying, /tone-warning/)
-  assert.match(attention, /tone-danger/)
+  assert.match(retrying, /k-badge--warning/)
+  assert.match(attention, /k-badge--danger/)
+})
+
+test('status badges render exactly one dot and only ready pulses', async () => {
+  const StatusBadge = (await vite.ssrLoadModule('/src/portalkit/StatusBadge.vue')).default
+  const ready = await renderToString(createSSRApp(StatusBadge, { status: 'Ready' }))
+  const readyDots = ready.match(/<span class="[^"]*k-badge__dot[^"]*"/g) ?? []
+  assert.equal(readyDots.length, 1, 'Ready should render exactly one status dot')
+  assert.match(readyDots[0], /live-dot/)
+  assert.doesNotMatch(ready, /k-badge__dot-wrap|k-badge__pulse/)
+
+  const active = await renderToString(createSSRApp(StatusBadge, { status: 'Active' }))
+  const activeDots = active.match(/<span class="[^"]*k-badge__dot[^"]*"/g) ?? []
+  assert.equal(activeDots.length, 1, 'Active should render exactly one status dot')
+  assert.doesNotMatch(activeDots[0], /live-dot/)
+  assert.doesNotMatch(active, /k-badge__dot-wrap|k-badge__pulse/)
+
+  const pending = await renderToString(createSSRApp(StatusBadge, { status: 'Pending' }))
+  const pendingDots = pending.match(/<span class="[^"]*k-badge__dot[^"]*"/g) ?? []
+  assert.equal(pendingDots.length, 1)
+  assert.doesNotMatch(pendingDots[0], /live-dot/)
+})
+
+test('lazy checkbox tree renders selected leaves as natively checked', async () => {
+  const LazyCheckboxTree = (await vite.ssrLoadModule('/src/LazyCheckboxTree.vue')).default
+  const tree = {
+    roots: ['table:main:sales:orders'],
+    selectedLeafIds: ['table:main:sales:orders'],
+    nodes: {
+      'table:main:sales:orders': {
+        id: 'table:main:sales:orders',
+        kind: 'table',
+        label: 'orders',
+        detail: 'MANAGED',
+        depth: 1,
+        disabled: false,
+        expanded: false,
+        childrenLoaded: true,
+        loading: false,
+        childIds: [],
+      },
+    },
+  }
+  const html = await renderToString(createSSRApp(LazyCheckboxTree, { tree }))
+
+  assert.match(html, /role="treeitem"[^>]*aria-checked="true"/)
+  assert.match(html, /class="k-checkbox"[^>]*checked/)
+})
+
+test('canonical table recipe keeps wide columns reachable inside its card frame', async () => {
+  const canonical = await readFile(new URL('../../../../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const vendored = await readFile(new URL('./portalkit/faros-ui.css', import.meta.url), 'utf8')
+  for (const css of [canonical, vendored]) {
+    const tableBlock = css.match(/\.k-table\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+    assert.match(tableBlock, /overflow-x:\s*auto/)
+    assert.match(tableBlock, /border-radius:\s*6px/)
+    assert.doesNotMatch(tableBlock, /overflow:\s*hidden/)
+  }
+})
+
+test('canonical fallback keeps semantic tokens valid without overriding host values', async () => {
+  const css = await readFile(new URL('../../../../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const host = await readFile(new URL('../../../../portal/src/assets/main.css', import.meta.url), 'utf8')
+  const darkTheme = host.match(/@theme\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  const tokens = [
+    'color-surface', 'color-surface-raised', 'color-surface-overlay', 'color-surface-hover',
+    'color-border-subtle', 'color-border-default', 'color-accent', 'color-accent-hover',
+    'color-accent-subtle', 'color-accent-glow', 'color-text-primary', 'color-text-secondary',
+    'color-text-muted', 'color-success', 'color-success-subtle', 'color-warning',
+    'color-warning-subtle', 'color-danger', 'color-danger-hover', 'color-danger-subtle',
+    'color-danger-surface', 'color-on-accent', 'font-display', 'font-mono', 'font-sans',
+  ]
+  for (const token of tokens) {
+    const fallback = darkTheme.match(new RegExp(`--${token}:\\s*([^;]+);`))?.[1]
+    assert.ok(fallback, `${token} must be defined by the host dark theme`)
+    const escaped = fallback.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    assert.match(css, new RegExp(`var\\(--${token},\\s*${escaped}\\)`), `${token} must have the dark-base fallback`)
+  }
+  assert.doesNotMatch(css, /var\(--(?:color|font)-[a-z-]+\)/)
+  assert.match(css, /@keyframes live-pulse/)
+  assert.match(css, /\.live-dot\s*\{[^}]*animation:/)
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.live-dot\s*\{ animation: none; \}/)
+})
+
+test('canonical confirm dialog treats Enter on Cancel as cancellation', async () => {
+  const source = await readFile(new URL('../../../../provider-sdk/portalkit-vue/ConfirmDialog.vue', import.meta.url), 'utf8')
+  assert.match(source, /const cancelBtn = ref<HTMLButtonElement \| null>\(null\)/)
+  assert.match(source, /if \(document\.activeElement === cancelBtn\.value\) onCancel\(\)/)
+  assert.match(source, /<button ref="cancelBtn"[^>]*k-modal-btn--cancel/)
 })
 
 test('resource table delete action has an accessible idle and busy contract', async () => {
@@ -169,46 +252,18 @@ test('resource table edit action has an accessible disabled contract', async () 
   assert.match(disabled, /disabled/)
 })
 
-test('resource table delete action follows the quiet infrastructure row treatment', async () => {
+test('resource table delete action uses the canonical shared recipe', async () => {
   const source = await readFile(new URL('./portalkit/ResourceTableDeleteButton.vue', import.meta.url), 'utf8')
-  assert.match(source, /import deleteButtonStyles from '\.\/ResourceTableDeleteButton\.css\?raw'/)
-  assert.match(source, /faros-portalkit-resource-table-delete-css/)
-  assert.match(source, /style\.textContent = deleteButtonStyles/)
-  assert.doesNotMatch(source, /<style(?: scoped)?>/)
-
-  const actionStyle = await readFile(new URL('./portalkit/ResourceTableDeleteButton.css', import.meta.url), 'utf8')
-  assert.match(actionStyle, /border: 0;/)
-  assert.match(actionStyle, /border-radius: 6px;/)
-  assert.match(actionStyle, /color: color-mix\(in srgb, var\(--color-text-muted\) 40%, transparent\);/)
-  assert.match(actionStyle, /opacity: 0;/)
-  assert.match(actionStyle, /\.resource-table-row:hover \.pk-resource-delete/)
-  assert.match(actionStyle, /\.resource-table-row:focus-within \.pk-resource-delete/)
-  assert.match(actionStyle, /height: 14px;[\s\S]*width: 14px;/)
-  assert.match(actionStyle, /@media \(hover: none\)[\s\S]*opacity: 1;/)
-  assert.match(actionStyle, /\.pk-resource-delete:hover,[\s\S]*color: var\(--color-danger\);/)
-
-  const providerStyle = await readFile(new URL('./style.css', import.meta.url), 'utf8')
-  assert.match(providerStyle, /\.resource-table-row\.is-interactive:hover \{\s*background: var\(--color-surface-hover\);/)
-  assert.match(providerStyle, /\.resource-table-cell:last-child \{[\s\S]*padding-left: 16px;[\s\S]*padding-right: 16px;[\s\S]*text-align: right;[\s\S]*width: 28px;/)
+  assert.match(source, /class="k-table-action k-table-action--delete"/)
+  assert.match(source, /ensureFarosUIStyles\(\)/)
+  assert.doesNotMatch(source, /\.css\?raw/)
 })
 
-test('resource table edit action follows the same quiet row reveal contract', async () => {
+test('resource table edit action uses the canonical shared recipe', async () => {
   const source = await readFile(new URL('./portalkit/ResourceTableEditButton.vue', import.meta.url), 'utf8')
-  assert.match(source, /import editButtonStyles from '\.\/ResourceTableEditButton\.css\?raw'/)
-  assert.match(source, /faros-portalkit-resource-table-edit-css/)
-  assert.match(source, /style\.textContent = editButtonStyles/)
-  assert.doesNotMatch(source, /<style(?: scoped)?>/)
-
-  const actionStyle = await readFile(new URL('./portalkit/ResourceTableEditButton.css', import.meta.url), 'utf8')
-  assert.match(actionStyle, /border: 0;/)
-  assert.match(actionStyle, /border-radius: 6px;/)
-  assert.match(actionStyle, /color: color-mix\(in srgb, var\(--color-text-muted\) 40%, transparent\);/)
-  assert.match(actionStyle, /opacity: 0;/)
-  assert.match(actionStyle, /\.resource-table-row:hover \.pk-resource-edit/)
-  assert.match(actionStyle, /\.resource-table-row:focus-within \.pk-resource-edit/)
-  assert.match(actionStyle, /height: 14px;[\s\S]*width: 14px;/)
-  assert.match(actionStyle, /@media \(hover: none\)[\s\S]*opacity: 1;/)
-  assert.match(actionStyle, /\.pk-resource-edit:hover,[\s\S]*color: var\(--color-text-primary\);/)
+  assert.match(source, /class="k-table-action k-table-action--edit"/)
+  assert.match(source, /ensureFarosUIStyles\(\)/)
+  assert.doesNotMatch(source, /\.css\?raw/)
 })
 
 test('Databricks resource lists use the canonical delete action', async () => {
@@ -225,6 +280,19 @@ test('Databricks tables use the canonical edit action', async () => {
   assert.match(source, /<ResourceTableEditButton/)
   assert.match(source, /:label="`Edit table \$\{String\(row\.name\)\}`"/)
   assert.doesNotMatch(source, /import \{[^}]*Pencil/)
+})
+
+test('interactive resource lists provide action-oriented row labels', async () => {
+  const views = {
+    ConnectionsView: 'Open connection',
+    TablesView: 'Open table',
+    WarehousesView: 'Open warehouse',
+  }
+  for (const [view, label] of Object.entries(views)) {
+    const source = await readFile(new URL(`./views/${view}.vue`, import.meta.url), 'utf8')
+    const needle = ':row-aria-label="(row) => `' + label
+    assert.ok(source.includes(needle), `${view} should label interactive rows`)
+  }
 })
 
 test('canonical source exposes the row-key contract', async () => {
@@ -248,7 +316,7 @@ test('wizard and split-create sources preserve focus across deferred initializat
   assert.match(wizard, /function navigateTo/)
   assert.match(app, /restoreImportFocus\(/)
   assert.match(app, /function focusDestination/)
-  assert.match(app, /data-pk-tab-id=/)
+  assert.match(app, /data-k-tab-id=/)
   assert.doesNotMatch(app, /data-databricks-nav=/)
   assert.match(app, /focusDestination\(path\)/)
   assert.match(app, /@browse="\(trigger\) => openImport\('warehouse', trigger\)"/)
@@ -262,7 +330,7 @@ test('wizard and split-create sources preserve focus across deferred initializat
   assert.match(tables, /class="secondary icon-text" type="button" @click="load"/)
   assert.match(tables, /@row-click="\(row\) => openResource\(String\(row\.name\)\)"/)
   assert.doesNotMatch(tables, /selectedTable|schemaRows|schemaLoaded|schemaPending|schemaError|schemaCache|schemaCached/)
-  assert.doesNotMatch(tables, /<h3 class="panel-title">Schema<\/h3>/)
+  assert.doesNotMatch(tables, /<h3 class="databricks-resource-panel-title">Schema<\/h3>/)
   assert.doesNotMatch(tables, /setInterval\(load/)
   assert.match(tableDetail, /status === 'Pending'.*schemaCached/)
   assert.match(tableDetail, /status === 'Status unavailable'.*showing cached columns/)
@@ -280,6 +348,6 @@ test('route tabs use PortalKit items and icons', async () => {
   assert.match(app, /\{ id: 'warehouses', label: 'Warehouses', icon: Warehouse \}/)
   assert.match(app, /\{ id: 'tables', label: 'Tables', icon: Table2 \}/)
   assert.match(app, /<Tabs :tabs="tabs" :active="route\.page" aria-label="Databricks resource sections" @select="navigate" \/>/)
-  assert.match(app, /querySelector<HTMLElement>\(`\[data-pk-tab-id="\$\{path\}"\]`\)/)
+  assert.match(app, /querySelector<HTMLElement>\(`\[data-k-tab-id="\$\{path\}"\]`\)/)
   assert.doesNotMatch(style, /faros-provider-databricks \.tabs(?:\s|\{|\.)/)
 })

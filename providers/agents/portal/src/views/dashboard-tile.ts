@@ -157,7 +157,7 @@ export class AgentsDashboardTile extends LightElement {
               <ul class="agents-tile-rows">
               ${rows.map(
                 (run) => html`<li>
-                  <button type="button" @click=${() => this.navigate(`activity/${run.id}`)}>
+                  <button class="k-btn k-btn--primary" type="button" @click=${() => this.navigate(`activity/${run.id}`)}>
                     <span class="agents-tile-dot ${phaseDot(run.phase)}" aria-hidden="true"></span>
                     <span class="agents-tile-agent">${run.agent}</span>
                     <span class=${FAILED_PHASES.has(run.phase) ? 'agents-tile-bad' : 'agents-tile-dim'}

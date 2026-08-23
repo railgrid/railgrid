@@ -5,12 +5,12 @@
 
   Tabs owns presentation and selection notification only. It deliberately does
   not know about routes: callers map `select` to their own navigation state.
-  The shared tabs.css recipe is injected once because standalone provider
+  The shared faros-ui.css recipe is injected once because standalone provider
   portals render this component in light DOM without a Vite CSS asset.
 -->
 <script setup lang="ts">
 import type { Component } from 'vue'
-import tabStyles from './tabs.css?raw'
+import { ensureFarosUIStyles } from '../portalkit/styles'
 
 export interface PortalTabItem {
   id: string
@@ -32,16 +32,7 @@ const emit = defineEmits<{
   select: [id: string]
 }>()
 
-const STYLE_ID = 'faros-portalkit-tabs-css'
-if (typeof document !== 'undefined') {
-  let style = document.getElementById(STYLE_ID) as HTMLStyleElement | null
-  if (!style) {
-    style = document.createElement('style')
-    style.id = STYLE_ID
-    document.head.appendChild(style)
-  }
-  if (style.textContent !== tabStyles) style.textContent = tabStyles
-}
+ensureFarosUIStyles()
 
 function isActive(tab: PortalTabItem): boolean {
   return tab.active ?? props.active === tab.id
@@ -53,25 +44,25 @@ function select(tab: PortalTabItem): void {
 </script>
 
 <template>
-  <nav class="pk-tabs" :aria-label="ariaLabel || 'Sections'">
+  <nav class="k-tabs" :aria-label="ariaLabel || 'Sections'">
     <button
       v-for="tab in tabs"
       :key="tab.id"
-      class="pk-tab"
-      :class="{ 'is-active': isActive(tab) }"
+      class="k-tab"
+      :class="{ 'k-tab--active': isActive(tab) }"
       type="button"
-      :data-pk-tab-id="tab.id"
+      :data-k-tab-id="tab.id"
       :aria-current="isActive(tab) ? 'page' : undefined"
       :disabled="tab.disabled || undefined"
       @click="select(tab)"
     >
-      <span v-if="$slots.icon || tab.icon" class="pk-tab-icon">
+      <span v-if="$slots.icon || tab.icon" class="k-tab__icon">
         <slot name="icon" :tab="tab">
           <component :is="tab.icon" aria-hidden="true" />
         </slot>
       </span>
-      <span class="pk-tab-label">{{ tab.label }}</span>
-      <span v-if="tab.count !== undefined" class="pk-tab-count">{{ tab.count }}</span>
+      <span class="k-tab__label">{{ tab.label }}</span>
+      <span v-if="tab.count !== undefined" class="k-tab__count">{{ tab.count }}</span>
     </button>
   </nav>
 </template>

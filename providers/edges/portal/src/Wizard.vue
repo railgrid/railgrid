@@ -138,7 +138,7 @@ function fmt(s: number) {
     <!-- Step 1 -->
     <div v-if="step === 1" class="wiz-card">
       <label class="lbl">Edge name</label>
-      <input v-model="name" class="input" placeholder="e.g. prod-us-east-1" @keyup.enter="canContinue && handleCreate()" />
+      <input v-model="name" class="k-input" placeholder="e.g. prod-us-east-1" @keyup.enter="canContinue && handleCreate()" />
 
       <label class="lbl">Type</label>
       <div class="types">
@@ -151,10 +151,10 @@ function fmt(s: number) {
       </div>
 
       <label class="lbl">Labels <span class="muted">(optional)</span></label>
-      <input v-model="labels" class="input" placeholder="env=prod, region=us-east" />
+      <input v-model="labels" class="k-input" placeholder="env=prod, region=us-east" />
 
       <div class="wiz-actions">
-        <button class="btn primary" :disabled="!canContinue" @click="handleCreate">
+        <button class="k-btn k-btn--primary" :disabled="!canContinue" @click="handleCreate">
           <Loader2 v-if="saving" :size="14" class="spin" />
           {{ saving ? 'Creating…' : 'Create & continue' }}
           <ArrowRight v-if="!saving" :size="14" />
@@ -192,7 +192,7 @@ function fmt(s: number) {
 
       <div class="waiting"><Loader2 :size="14" class="spin" /> Waiting for <b>{{ trimmed }}</b> to connect… <span class="muted">({{ fmt(elapsed) }})</span></div>
       <div class="wiz-actions">
-        <button class="btn" @click="emit('connected')">Skip — I'll come back later</button>
+        <button class="k-btn k-btn--ghost" @click="emit('connected')">Skip — I'll come back later</button>
       </div>
     </div>
 
@@ -202,7 +202,7 @@ function fmt(s: number) {
       <h3><b>{{ trimmed }}</b> is online</h3>
       <p class="muted">Agent {{ agentVersion || '—' }} · connected after {{ fmt(elapsed) }}</p>
       <div class="wiz-actions">
-        <button class="btn primary" @click="emit('connected')">View edges <ArrowRight :size="14" /></button>
+        <button class="k-btn k-btn--primary" @click="emit('connected')">View edges <ArrowRight :size="14" /></button>
       </div>
     </div>
   </div>

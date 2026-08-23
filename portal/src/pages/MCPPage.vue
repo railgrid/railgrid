@@ -36,7 +36,7 @@ import { authFetch } from '@/auth/session'
 import { useTenantStore } from '@/stores/tenant'
 import AppLayout from '@/components/AppLayout.vue'
 import { confirmDialog } from '@/portalkit/confirm'
-import ResourceTable from '@/components/ResourceTable.vue'
+import ResourceTable from '@/portalkit/ResourceTable.vue'
 
 interface FederatedTool {
   name: string
@@ -87,6 +87,7 @@ const tenant = useTenantStore()
 const { orgUUID, workspaceUUID } = storeToRefs(tenant)
 
 const loading = ref(true)
+const loaded = ref(false)
 const error = ref<string | null>(null)
 const servers = ref<MCPServer[]>([])
 
@@ -148,6 +149,7 @@ function base(): string | null {
 async function load() {
   const b = base()
   if (!b) {
+    loaded.value = false
     loading.value = false
     error.value = 'Select an organization and workspace to manage MCP servers.'
     return
@@ -159,6 +161,7 @@ async function load() {
     if (!res.ok) throw new Error(`Failed to load MCP servers (${res.status})`)
     const body = (await res.json()) as { items?: MCPServer[] }
     servers.value = body.items ?? []
+    loaded.value = true
   } catch (e) {
     error.value = (e as Error).message
   } finally {
@@ -325,9 +328,15 @@ function rel(ts?: string): string {
         <ResourceTable
           :columns="columns"
           :rows="rows"
+          row-key="name"
+          :loaded="loaded"
           :loading="loading"
           :error="error"
+          :stale="loaded && !!error"
+          retryable
           empty-text="No MCP servers yet. Create one to connect an AI client."
+          :row-aria-label="(row) => `Open MCP server ${String(row.name)}`"
+          @retry="load"
           @row-click="openDetail"
         >
           <template #name="{ row }">
@@ -354,7 +363,9 @@ function rel(ts?: string): string {
             <div class="flex justify-end">
               <button
                 class="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted transition-all hover:bg-danger/10 hover:text-danger"
+                type="button"
                 title="Delete"
+                :aria-label="`Delete MCP server ${String((row as any).name)}`"
                 @click.stop="remove((row as any).name)"
               >
                 <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ArrowLeft } from 'lucide-vue-next'
 import { api } from '../api'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
@@ -181,7 +182,7 @@ onUnmounted(() => {
 
 <template>
   <section class="page">
-    <button class="link back" type="button" :disabled="!!warehouse && operationLocked(warehouse.name)" @click="emit('back')">← Warehouses</button>
+    <button class="link back" type="button" :disabled="!!warehouse && operationLocked(warehouse.name)" @click="emit('back')"><ArrowLeft :size="14" aria-hidden="true" /> Warehouses</button>
 
     <header class="page-head">
       <div>
@@ -211,13 +212,13 @@ onUnmounted(() => {
     </div>
 
     <template v-if="warehouse">
-      <div v-if="hint" class="panel">
-        <h3 class="panel-title">Status</h3>
+      <div v-if="hint" class="databricks-resource-panel k-card">
+        <h3 class="databricks-resource-panel-title">Status</h3>
         <p class="muted">{{ hint }}</p>
       </div>
 
-      <div class="panel">
-        <h3 class="panel-title">Overview</h3>
+      <div class="databricks-resource-panel k-card">
+        <h3 class="databricks-resource-panel-title">Overview</h3>
         <dl class="props">
           <dt>Connection</dt><dd><code>{{ warehouse.connectionRef }}</code></dd>
           <dt>Warehouse ID</dt><dd><code>{{ warehouse.warehouseID }}</code></dd>
@@ -231,8 +232,8 @@ onUnmounted(() => {
         </dl>
       </div>
 
-      <div v-if="editing" class="panel">
-        <h3 class="panel-title">Edit warehouse</h3>
+      <div v-if="editing" class="databricks-resource-panel k-card">
+        <h3 class="databricks-resource-panel-title">Edit warehouse</h3>
         <form class="form" @submit.prevent="saveEdit">
           <div class="field">
             <label class="field-label" for="warehouse-edit-id">Warehouse ID</label>

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "canonicalRoots": [
+    "provider-sdk/portalkit",
+    "provider-sdk/portalkit-vue"
+  ],
+  "providerRoots": [
+    "providers/*/portal/src"
+  ],
+  "vendoredSegments": [
+    "portalkit",
+    "portalkit-vue"
+  ],
+  "includeTests": false,
+  "exceptions": "hack/ui-conformance-exceptions.json"
+}

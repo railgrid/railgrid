@@ -15,27 +15,24 @@ faros-provider-kuery {
   display: block;
 }
 
-faros-provider-kuery .grid {
+faros-provider-kuery .kuery-grid {
   display: grid;
   gap: 12px;
   grid-template-columns: 1fr;
 }
 
 @media (min-width: 720px) {
-  faros-provider-kuery .grid {
+  faros-provider-kuery .kuery-grid {
     grid-template-columns: 1fr 1fr;
   }
 }
 
-faros-provider-kuery .panel {
-  background: var(--color-surface-raised, #111320);
-  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-  border-radius: 6px;
+faros-provider-kuery .kuery-panel {
   padding: 14px 16px;
   color: var(--color-text-primary, inherit);
 }
 
-faros-provider-kuery .panel-head {
+faros-provider-kuery .kuery-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -43,7 +40,7 @@ faros-provider-kuery .panel-head {
   margin-bottom: 10px;
 }
 
-faros-provider-kuery .panel-title {
+faros-provider-kuery .kuery-panel-title {
   margin: 0;
   font-size: 11px;
   font-weight: 600;
@@ -52,35 +49,9 @@ faros-provider-kuery .panel-title {
   text-transform: uppercase;
 }
 
-faros-provider-kuery .badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, Menlo, monospace);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding: 2.5px 8px;
-  border-radius: 3px;
-  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
-  background: var(--color-surface-overlay, transparent);
-  color: var(--color-text-muted, inherit);
-}
-
-faros-provider-kuery .badge.ok {
-  color: var(--color-success);
-  background: var(--color-success-subtle);
-}
-
-faros-provider-kuery .badge.warn {
-  color: var(--color-warning);
-  background: var(--color-warning-subtle);
-}
-
 faros-provider-kuery pre {
   margin: 0;
-  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
+  background: var(--color-surface-overlay);
   color: var(--color-text-primary, inherit);
   border: 1px solid var(--color-border-subtle, transparent);
   border-radius: 6px;
@@ -91,7 +62,7 @@ faros-provider-kuery pre {
 }
 
 faros-provider-kuery code {
-  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
+  background: var(--color-surface-overlay);
   color: var(--color-text-secondary, currentColor);
   padding: 1px 5px;
   border-radius: 4px;
@@ -111,75 +82,38 @@ faros-provider-kuery .muted {
 
 /* ── inventory toolbar ─────────────────────────────────────────────── */
 
-faros-provider-kuery .toolbar {
+faros-provider-kuery .kuery-toolbar {
   display: flex;
   gap: 6px;
   margin: 0 0 10px;
   flex-wrap: wrap;
 }
 
-faros-provider-kuery .toolbar input,
-faros-provider-kuery .toolbar select {
-  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
-  color: var(--color-text-primary, inherit);
-  border: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.15));
-  border-radius: 4px;
-  padding: 5px 8px;
-  font-size: 11px;
+faros-provider-kuery .kuery-toolbar .kuery-control {
   min-width: 120px;
-}
-
-faros-provider-kuery .toolbar input:focus,
-faros-provider-kuery .toolbar select:focus {
-  outline: none;
-  border-color: var(--color-accent, #8b6bff);
-  box-shadow: 0 0 0 3px var(--color-accent-subtle), 0 0 14px var(--color-accent-glow);
-}
-
-faros-provider-kuery button {
-  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
-  color: var(--color-accent, #8b6bff);
-  border: 1px solid var(--color-accent, #8b6bff);
-  border-radius: 4px;
-  padding: 5px 12px;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-faros-provider-kuery button:hover {
-  filter: brightness(1.1);
+  width: auto;
 }
 
 /* ── inventory table ───────────────────────────────────────────────── */
 
 faros-provider-kuery table.objects {
   width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
 }
 
-faros-provider-kuery table.objects th {
-  text-align: left;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--color-text-muted, inherit);
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.15));
+/* The shared table recipe intentionally clips its rounded shell. Inventory
+   rows are wider than a phone viewport, so this surface owns the horizontal
+   scroll instead of losing columns at the edge. */
+faros-provider-kuery .kuery-inventory-table {
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
-faros-provider-kuery table.objects td {
-  padding: 5px 8px;
-  border-bottom: 1px solid var(--color-border-subtle, rgba(0, 0, 0, 0.08));
+faros-provider-kuery .kuery-inventory-table table.objects {
+  min-width: 560px;
 }
 
 faros-provider-kuery tr.row {
   cursor: pointer;
-}
-
-faros-provider-kuery tr.row:hover td {
-  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
 }
 
 faros-provider-kuery .name {
@@ -188,7 +122,7 @@ faros-provider-kuery .name {
 }
 
 faros-provider-kuery .error {
-  color: var(--color-danger, #d33);
+  color: var(--color-danger);
   font-size: 11px;
 }
 
@@ -219,14 +153,14 @@ faros-provider-kuery .head-actions {
 }
 
 /* Segmented Graph / List toggle. */
-faros-provider-kuery .seg {
+faros-provider-kuery .kuery-view-switch {
   display: inline-flex;
-  border: 1px solid var(--color-border-subtle, rgba(127, 127, 127, 0.3));
+  border: 1px solid var(--color-border-subtle);
   border-radius: 4px;
   overflow: hidden;
 }
 
-faros-provider-kuery .seg-btn {
+faros-provider-kuery .kuery-view-btn {
   background: transparent;
   color: var(--color-text-muted, inherit);
   border: none;
@@ -238,12 +172,12 @@ faros-provider-kuery .seg-btn {
   cursor: pointer;
 }
 
-faros-provider-kuery .seg-btn.on {
+faros-provider-kuery .kuery-view-btn[aria-pressed="true"] {
   background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
   color: var(--color-accent, #8b6bff);
 }
 
-faros-provider-kuery .seg-btn:hover {
+faros-provider-kuery .kuery-view-btn:hover {
   filter: none;
   color: var(--color-text-primary, inherit);
 }
@@ -252,36 +186,36 @@ faros-provider-kuery .seg-btn:hover {
 faros-provider-kuery .kuery-graph {
   width: 100%;
   height: 440px;
-  border: 1px solid var(--color-border-subtle, rgba(127, 127, 127, 0.15));
+  border: 1px solid var(--color-border-subtle);
   border-radius: 6px;
-  background: var(--color-surface-base, rgba(0, 0, 0, 0.02));
+  background: var(--color-surface-base);
   outline: none;
 }
 
 /* Fullscreen: the panel fills the viewport and the graph grows to match. */
-faros-provider-kuery .panel.kuery-full {
+faros-provider-kuery .kuery-panel.kuery-full {
   position: fixed;
   inset: 0;
   z-index: 1000;
   margin: 0;
   border-radius: 0;
   overflow: auto;
-  background: var(--color-surface-overlay, var(--color-surface-base, #171927));
+  background: var(--color-surface-overlay);
 }
 
-faros-provider-kuery .panel.kuery-full .kuery-graph {
+faros-provider-kuery .kuery-panel.kuery-full .kuery-graph {
   height: calc(100vh - 150px);
 }
 
 /* Fullscreen API path: the panel itself is the fullscreen element. Give it a
    solid background (the API default is black) and let the graph fill it. */
-faros-provider-kuery .panel:fullscreen {
+faros-provider-kuery .kuery-panel:fullscreen {
   overflow: auto;
   padding: 16px;
-  background: var(--color-surface-overlay, var(--color-surface-base, #171927));
+  background: var(--color-surface-overlay);
 }
 
-faros-provider-kuery .panel:fullscreen .kuery-graph {
+faros-provider-kuery .kuery-panel:fullscreen .kuery-graph {
   height: calc(100vh - 150px);
 }
 
@@ -300,7 +234,7 @@ faros-provider-kuery .pg-split {
 
 faros-provider-kuery .pg-editor {
   min-height: 360px;
-  border: 1px solid var(--color-border-default, rgba(127, 127, 127, 0.45));
+  border: 1px solid var(--color-border-default);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -326,9 +260,9 @@ faros-provider-kuery .pg-result {
   max-height: 520px;
   overflow: auto;
   padding: 10px;
-  border: 1px solid var(--color-border-subtle, rgba(127, 127, 127, 0.15));
+  border: 1px solid var(--color-border-subtle);
   border-radius: 6px;
-  background: var(--color-surface-base, rgba(0, 0, 0, 0.02));
+  background: var(--color-surface-base);
   font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   white-space: pre-wrap;
@@ -361,7 +295,7 @@ faros-provider-kuery .rel-group-title {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--color-text-muted, #5d5f78);
-  border-bottom: 1px solid var(--color-border-subtle, rgba(127, 127, 127, 0.15));
+  border-bottom: 1px solid var(--color-border-subtle);
   padding-bottom: 3px;
 }
 
@@ -397,9 +331,11 @@ faros-dashboard-tile-kuery .kuery-tile-stats {
   color: var(--color-text-muted, #5d5f78);
 }
 faros-dashboard-tile-kuery .kuery-tile-stat { display: inline-flex; align-items: center; gap: 4px; }
-faros-dashboard-tile-kuery .kuery-tile-stat .ic { width: 12px; height: 12px; flex: none; }
+/* `ic()` supplies the canonical k-icon class; the attribute selector scopes
+   this tile's size without redeclaring the shared .k-icon recipe. */
+faros-dashboard-tile-kuery .kuery-tile-stat [class~="k-icon"] { width: 12px; height: 12px; flex: none; }
 faros-dashboard-tile-kuery .kuery-tile-stat strong {
-  font-weight: 620; font-variant-numeric: tabular-nums; color: var(--color-text-primary, #e8e9f3);
+  font-weight: 620; font-variant-numeric: tabular-nums; color: var(--color-text-primary);
 }
 faros-dashboard-tile-kuery .kuery-tile-label {
   margin-bottom: 8px; font-size: 10px; font-weight: 600; text-transform: uppercase;
@@ -418,11 +354,11 @@ faros-dashboard-tile-kuery .kuery-tile-rows button:hover {
 }
 faros-dashboard-tile-kuery .kuery-tile-dot {
   width: 6px; height: 6px; flex: none; border-radius: 9999px;
-  background: var(--color-success, #3fb950);
+  background: var(--color-success);
 }
 faros-dashboard-tile-kuery .kuery-tile-name {
   min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 12px; color: var(--color-text-primary, #e8e9f3);
+  font-size: 12px; color: var(--color-text-primary);
 }
 faros-dashboard-tile-kuery .kuery-tile-chev {
   width: 12px; height: 12px; flex: none; color: var(--color-text-muted, #5d5f78); opacity: 0.3;
@@ -438,4 +374,4 @@ faros-dashboard-tile-kuery .kuery-tile-empty {
   color: var(--color-text-muted, #5d5f78);
 }
 faros-dashboard-tile-kuery .kuery-tile-msg { font-size: 11px; color: var(--color-text-muted, #5d5f78); }
-faros-dashboard-tile-kuery .kuery-tile-err { font-size: 11px; color: var(--color-danger, #ff6b6b); }
+faros-dashboard-tile-kuery .kuery-tile-err { font-size: 11px; color: var(--color-danger); }

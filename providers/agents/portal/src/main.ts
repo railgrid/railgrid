@@ -6,11 +6,13 @@
 
 import { AgentsElement } from './element'
 import { AgentsDashboardTile } from './views/dashboard-tile'
+import { ensureFarosUIStyles } from './portalkit/styles'
 import styles from './style.css?raw'
-import tabStyles from './portalkit/tabs.css?raw'
 
 const TAG = 'faros-provider-agents'
 const TILE_TAG = 'faros-dashboard-tile-agents'
+
+ensureFarosUIStyles()
 
 // Hot-reload safety: customElements.define throws on a second registration for
 // the same tag. The portal may re-execute this script after a version bump
@@ -20,10 +22,9 @@ if (!customElements.get(TAG)) {
   if (!document.getElementById(styleId)) {
     const s = document.createElement('style')
     s.id = styleId
-    // PortalKit owns the tab recipe so the same markup and interaction states
-    // can be reused by Vue and other vanilla/Lit provider portals. Agents is
-    // the visual reference, while its provider-specific styles remain below.
-    s.textContent = `${tabStyles}\n${styles}`
+    // PortalKit owns the tab and component recipes. Agents keeps only its
+    // domain layout rules in this provider stylesheet.
+    s.textContent = styles
     document.head.appendChild(s)
   }
   customElements.define(TAG, AgentsElement)

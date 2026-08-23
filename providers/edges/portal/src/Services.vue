@@ -195,7 +195,29 @@ const timer = setInterval(refresh, 10000)
 onUnmounted(() => clearInterval(timer))
 
 function phaseClass(p?: string): string {
-  return p === 'Ready' ? 'ok' : p === 'Unreachable' ? 'down' : 'pending'
+  return p === 'Ready' ? 'k-badge--success' : p === 'Unreachable' ? 'k-badge--danger' : 'k-badge--warning'
+}
+
+function isExplicitControlTarget(event: Event): boolean {
+  const currentTarget = event.currentTarget as Element | null
+  const target = event.target as Element | null
+  if (!target || target === currentTarget) return false
+  const control = target.closest?.(
+    'a, button, input, select, textarea, summary, [contenteditable="true"], [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])',
+  )
+  return Boolean(control && control !== currentTarget)
+}
+
+function onServiceRowClick(service: EdgeService, event: MouseEvent): void {
+  if (isExplicitControlTarget(event)) return
+  openEdit(service)
+}
+
+function onServiceRowKeydown(service: EdgeService, event: KeyboardEvent): void {
+  if (event.repeat || isExplicitControlTarget(event)) return
+  if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return
+  event.preventDefault()
+  openEdit(service)
 }
 </script>
 
@@ -215,10 +237,10 @@ function phaseClass(p?: string): string {
         <p>Services running next to your edges (e.g. Home Assistant). Attach a token to make one Ready, and give it AI guidance — its tools appear in the MCP endpoint.</p>
       </div>
       <div class="header-actions">
-        <button class="btn" :disabled="loading" @click="refresh">
+        <button class="k-btn k-btn--ghost" :disabled="loading" @click="refresh">
           <RefreshCw :size="14" :class="{ spin: loading }" /> Refresh
         </button>
-        <button class="btn primary" @click="toggleCreate">
+        <button class="k-btn k-btn--primary" @click="toggleCreate">
           <Plus :size="14" /> New service
         </button>
       </div>
@@ -232,11 +254,11 @@ function phaseClass(p?: string): string {
       <div class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
           <span class="lbl">Name</span>
-          <input v-model="draft.name" class="input" placeholder="ha" />
+          <input v-model="draft.name" class="k-input" placeholder="ha" />
         </label>
         <label class="fld" style="flex: 1;">
           <span class="lbl">Edge</span>
-          <select v-model="draft.edgeName" class="input" @change="resetTargetMode">
+          <select v-model="draft.edgeName" class="k-input" @change="resetTargetMode">
             <option v-for="e in edges" :key="e.name" :value="e.name">{{ e.name }} ({{ e.type === 'server' ? 'LinuxServer' : 'KubernetesCluster' }})</option>
           </select>
         </label>
@@ -244,7 +266,7 @@ function phaseClass(p?: string): string {
       <div class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
           <span class="lbl">Type</span>
-          <select v-model="draft.serviceType" class="input" @change="onTypeChange">
+          <select v-model="draft.serviceType" class="k-input" @change="onTypeChange">
             <optgroup v-for="g in CATALOG_GROUPS" :key="g.category" :label="g.category">
               <option v-for="c in g.items" :key="c.type" :value="c.type">{{ c.displayName }}</option>
             </optgroup>
@@ -252,14 +274,14 @@ function phaseClass(p?: string): string {
         </label>
         <label class="fld" style="flex: 0 0 120px;">
           <span class="lbl">Scheme</span>
-          <select v-model="draft.scheme" class="input" :disabled="createSchemeLocked" :title="createSchemeLocked ? 'Fixed by the service type' : ''">
+          <select v-model="draft.scheme" class="k-input" :disabled="createSchemeLocked" :title="createSchemeLocked ? 'Fixed by the service type' : ''">
             <option value="http">http</option>
             <option value="https">https</option>
           </select>
         </label>
         <label class="fld" style="flex: 0 0 120px;">
           <span class="lbl">Port</span>
-          <input v-model="draft.port" type="number" min="1" max="65535" class="input" />
+          <input v-model="draft.port" type="number" min="1" max="65535" class="k-input" />
         </label>
       </div>
       <!-- Target: an explicit choice, independent of the edge kind. -->
@@ -278,7 +300,7 @@ function phaseClass(p?: string): string {
       <div v-if="targetMode === 'host'" class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
           <span class="lbl">Host {{ catalogFor(draft.serviceType)?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span>
-          <input v-model="draft.host" class="input" @blur="applyHostUrl" placeholder="192.168.1.1, myui.example.com, or paste https://myui.example.com — blank = 127.0.0.1" />
+          <input v-model="draft.host" class="k-input" @blur="applyHostUrl" placeholder="192.168.1.1, myui.example.com, or paste https://myui.example.com — blank = 127.0.0.1" />
           <span v-if="catalogFor(draft.serviceType)?.hostHelp" class="muted" style="font-size: 12px; margin-top: 4px;">{{ catalogFor(draft.serviceType)?.hostHelp }}</span>
         </label>
       </div>
@@ -286,20 +308,20 @@ function phaseClass(p?: string): string {
       <div v-else class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
           <span class="lbl">Target namespace</span>
-          <input v-model="draft.targetNamespace" class="input" placeholder="home" />
+          <input v-model="draft.targetNamespace" class="k-input" placeholder="home" />
         </label>
         <label class="fld" style="flex: 1;">
           <span class="lbl">Target service name</span>
-          <input v-model="draft.targetName" class="input" placeholder="home-assistant" />
+          <input v-model="draft.targetName" class="k-input" placeholder="home-assistant" />
         </label>
       </div>
       <label class="fld">
         <span class="lbl">AI instructions (optional)</span>
-        <textarea v-model="draft.instructions" class="input" rows="3" placeholder="Gates are cover.gate_main. Living room light is light.living_room."></textarea>
+        <textarea v-model="draft.instructions" class="k-input" rows="3" placeholder="Gates are cover.gate_main. Living room light is light.living_room."></textarea>
       </label>
       <div class="wiz-actions">
-        <button class="btn" @click="showCreate = false">Cancel</button>
-        <button class="btn primary" :disabled="busy || !canCreate" @click="onCreate">Create</button>
+        <button class="k-btn k-btn--ghost" @click="showCreate = false">Cancel</button>
+        <button class="k-btn k-btn--primary" :disabled="busy || !canCreate" @click="onCreate">Create</button>
       </div>
     </div>
 
@@ -311,8 +333,8 @@ function phaseClass(p?: string): string {
       <div class="muted">Click <b>New service</b> to declare one (e.g. Home Assistant) on a Kubernetes edge.</div>
     </div>
 
-    <div v-else class="edges-table-wrap">
-      <table class="edges-table">
+    <div v-else class="edges-table-wrap k-table">
+      <table class="k-table__table">
         <thead>
           <tr>
             <th>Name</th>
@@ -325,16 +347,24 @@ function phaseClass(p?: string): string {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="s in services" :key="s.name" class="clickable" @click="openEdit(s)">
+          <tr
+            v-for="s in services"
+            :key="s.name"
+            class="is-interactive"
+            tabindex="0"
+            :aria-label="`Open service ${s.name}`"
+            @click="onServiceRowClick(s, $event)"
+            @keydown="onServiceRowKeydown(s, $event)"
+          >
             <td class="name">{{ s.name }}</td>
             <td class="muted">{{ s.edgeName || '—' }}</td>
             <td class="mono muted">{{ catalogFor(s.serviceType)?.displayName || s.serviceType || '—' }}</td>
             <td class="mono muted">{{ s.host || (s.targetNamespace ? s.targetNamespace + '/' : '') + (s.targetName || '—') }}:{{ s.port || '' }}</td>
-            <td><span class="status" :class="phaseClass(s.phase)">{{ s.phase || 'Pending' }}</span></td>
+            <td><span class="k-badge" :class="phaseClass(s.phase)">{{ s.phase || 'Pending' }}</span></td>
             <td><Check v-if="s.hasCredentials" :size="16" class="ok-check" /><span v-else class="muted">—</span></td>
             <td class="actions">
-              <button class="icon" title="Edit" @click.stop="openEdit(s)"><Pencil :size="14" /></button>
-              <button class="icon danger" title="Delete" @click.stop="onDelete(s)"><Trash2 :size="14" /></button>
+              <button class="k-table-action k-table-action--edit" title="Edit" @click.stop="openEdit(s)"><Pencil :size="14" /></button>
+              <button class="k-table-action k-table-action--delete" title="Delete" @click.stop="onDelete(s)"><Trash2 :size="14" /></button>
             </td>
           </tr>
         </tbody>

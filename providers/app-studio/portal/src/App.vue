@@ -37,7 +37,7 @@ import {
   X,
 } from 'lucide-vue-next'
 import { api, isProjectAPIInitializingError, ProjectAPIRequestError } from './api'
-import PkConfirmDialog from './portalkit/ConfirmDialog.vue'
+import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import Tabs from './portalkit/Tabs.vue'
 import { confirmDialog, confirmState } from './portalkit/confirm'
 import {
@@ -5347,6 +5347,22 @@ function workbenchTabControlID(tab: WorkbenchTabDescriptor): string {
   return `app-studio-workbench-tab-${tab.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
 }
 
+function onWorkbenchTabKeydown(event: KeyboardEvent, tabID: string): void {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  const tabs = workbench.value.tabs
+  const currentIndex = tabs.findIndex(tab => tab.id === tabID)
+  if (currentIndex < 0 || tabs.length === 0) return
+  const nextIndex = event.key === 'Home'
+    ? 0
+    : event.key === 'End'
+      ? tabs.length - 1
+      : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length
+  const nextTab = tabs[nextIndex]
+  activateWorkbenchTabByID(nextTab.id)
+  void nextTick(() => document.getElementById(workbenchTabControlID(nextTab))?.focus())
+}
+
 async function requestDeleteProject(project: Project) {
   if (deletingProject.value) return
   const confirmed = await confirmDialog({
@@ -6649,7 +6665,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         <div class="flex shrink-0 items-center gap-2">
           <button
             type="button"
-            class="flex h-9 items-center gap-2 rounded-md border border-accent bg-accent px-3 text-[13px] font-semibold text-white shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
+            class="flex h-9 items-center gap-2 rounded-md border border-accent bg-accent px-3 text-[13px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none"
             :disabled="busy"
             @click="openNewProjectComposer"
           >
@@ -7533,8 +7549,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               :type="assistantComposerShowsStop ? 'button' : 'submit'"
               class="absolute bottom-2 right-2 flex h-8 w-8 items-center justify-center shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
               :class="assistantComposerShowsStop
-                ? 'rounded-full bg-accent text-white enabled:hover:bg-accent-hover disabled:cursor-default'
-                : 'rounded-md bg-accent text-white shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none'"
+                ? 'rounded-full bg-accent text-on-accent enabled:hover:bg-accent-hover disabled:cursor-default'
+                : 'rounded-md bg-accent text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-surface-hover disabled:text-text-muted disabled:opacity-100 disabled:shadow-none'"
               :disabled="assistantComposerShowsStop ? assistantComposerStopDisabled : busy || conversationInteractionBusy || !canSendPrompt"
               :title="assistantComposerShowsStop
                 ? assistantComposerStopDisabled ? 'Stop requested' : 'Stop generating'
@@ -7598,8 +7614,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               :id="workbenchTabControlID(tab)"
               :aria-selected="workbench.activeTabID === tab.id"
               :aria-controls="workbenchTabPanelID(tab)"
+              :tabindex="workbench.activeTabID === tab.id ? 0 : -1"
               :title="tab.title"
               @click="activateWorkbenchTabByID(tab.id)"
+              @keydown="onWorkbenchTabKeydown($event, tab.id)"
             >
               <img v-if="tab.kind === 'provider' && tab.providerTool?.iconURL" :src="tab.providerTool.iconURL" alt="" class="h-3.5 w-3.5 object-contain" />
               <component v-else :is="workbenchTabIcon(tab)" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
@@ -7639,7 +7657,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </button>
           <button
             type="button"
-            class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-accent bg-accent px-3 text-[12px] font-semibold text-white shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+            class="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-accent bg-accent px-3 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
             ref="shareButtonRef"
             title="Share project"
             aria-label="Share project"
@@ -7827,7 +7845,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               >
                 <span class="relative h-3.5 w-3.5 shrink-0">
                   <MessageSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
-                  <Plus class="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-accent p-px text-white" :stroke-width="2.5" />
+                  <Plus class="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-accent p-px text-on-accent" :stroke-width="2.5" />
                 </span>
                 {{ developmentPreviewAnnotationMode ? 'Annotating' : 'Annotate' }}
               </button>
@@ -7868,7 +7886,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               title="Development preview"
               sandbox="allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-scripts allow-same-origin"
 			  referrerpolicy="no-referrer"
-			  class="h-full min-h-[360px] w-full border-0 bg-white"
+			  class="h-full min-h-[360px] w-full border-0 bg-surface"
 			  @load="handleDevelopmentPreviewFrameLoad"
 			/>
 			<div
@@ -8713,7 +8731,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </div>
             <button
               type="button"
-              class="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-danger/30 bg-danger px-3 text-[13px] font-medium text-white transition hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-60"
+              class="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-danger/30 bg-danger px-3 text-[13px] font-medium text-on-accent transition hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-60"
               title="Delete project"
               :disabled="busy"
               @click="requestDeleteProject(settingsProject)"
@@ -8729,7 +8747,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
   </Teleport>
 
   <Teleport to="body">
-    <PkConfirmDialog />
+    <ConfirmDialog />
   </Teleport>
   <ProjectShareDialog
     v-if="shareDialogOpen"

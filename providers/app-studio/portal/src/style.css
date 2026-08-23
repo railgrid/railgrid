@@ -55,6 +55,10 @@
   --color-accent-hover: var(--color-accent-hover, #a18aff);
   --color-accent-subtle: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
   --color-accent-glow: var(--color-accent-glow, rgba(139, 107, 255, 0.3));
+  /* Keep foreground text on accent actions readable in both host themes.
+     `@theme inline` carries this semantic fallback into text-on-accent while
+     the host's runtime token remains authoritative when it is present. */
+  --color-on-accent: var(--color-on-accent, #fff);
   --color-text-primary: var(--color-text-primary, #e9e9f2);
   --color-text-secondary: var(--color-text-secondary, #8a8ca6);
   --color-text-muted: var(--color-text-muted, #5d5f78);
@@ -71,86 +75,6 @@ faros-provider-app-studio *,
 faros-provider-app-studio *::before,
 faros-provider-app-studio *::after {
   box-sizing: border-box;
-}
-
-/* StatusBadge is shared with provider portals that do not use Tailwind, so it
-   exposes semantic class names. Keep their light-DOM styling scoped here. */
-faros-provider-app-studio .status-badge {
-  align-items: center;
-  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
-  border-radius: 3px;
-  display: inline-flex;
-  flex-shrink: 0;
-  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
-  font-size: 10px;
-  font-weight: 600;
-  gap: 6px;
-  letter-spacing: 0.06em;
-  line-height: 1.2;
-  padding: 2.5px 8px;
-  text-transform: uppercase;
-  transition: background-color 0.15s ease, color 0.15s ease;
-  white-space: nowrap;
-}
-
-faros-provider-app-studio .status-badge.tone-success {
-  background: var(--color-success-subtle);
-  color: var(--color-success);
-}
-
-faros-provider-app-studio .status-badge.tone-warning {
-  background: var(--color-warning-subtle);
-  color: var(--color-warning);
-}
-
-faros-provider-app-studio .status-badge.tone-danger {
-  background: var(--color-danger-subtle);
-  color: var(--color-danger);
-}
-
-faros-provider-app-studio .status-badge.tone-muted {
-  background: var(--color-surface-overlay);
-  color: var(--color-text-muted);
-}
-
-faros-provider-app-studio .status-badge-dot-wrap {
-  display: flex;
-  height: 6px;
-  position: relative;
-  width: 6px;
-}
-
-faros-provider-app-studio .status-badge-pulse,
-faros-provider-app-studio .status-badge-dot {
-  border-radius: 999px;
-  display: inline-flex;
-  height: 6px;
-  position: absolute;
-  width: 6px;
-}
-
-faros-provider-app-studio .status-badge-pulse {
-  opacity: 0.6;
-}
-
-faros-provider-app-studio .dot-success,
-faros-provider-app-studio .pulse-success {
-  background: var(--color-success);
-}
-
-faros-provider-app-studio .dot-warning,
-faros-provider-app-studio .pulse-warning {
-  background: var(--color-warning);
-}
-
-faros-provider-app-studio .dot-danger,
-faros-provider-app-studio .pulse-danger {
-  background: var(--color-danger);
-}
-
-faros-provider-app-studio .dot-muted,
-faros-provider-app-studio .pulse-muted {
-  background: var(--color-text-muted);
 }
 
 @keyframes app-studio-running-ripple {

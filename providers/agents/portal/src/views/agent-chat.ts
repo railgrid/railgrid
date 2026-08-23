@@ -468,19 +468,18 @@ export class AgentChat extends StoreElement {
     }
     return html`<div class="agents-chat" @agents-approval=${(e: CustomEvent<{ inboxID: string; decision: 'approve' | 'deny' }>) => void this.resolveApproval(e.detail.inboxID, e.detail.decision)}>
       <div class="agents-chat-head">
-        <select
-          class="agents-session-picker"
+        <select class="k-input agents-session-picker"
           aria-label="Chat session"
           ?disabled=${this.streaming}
           @change=${(e: Event) => this.switchSession((e.target as HTMLSelectElement).value)}
         >
           ${list.map((s) => html`<option value=${s.id} ?selected=${s.id === this.sessionID}>${sessionLabel(s)}</option>`)}
         </select>
-        <button class="agents-iconbtn" aria-label="New chat" title="New chat" ?disabled=${this.streaming} @click=${() => this.newChat()}>
+        <button class="k-btn k-btn--ghost agents-iconbtn" aria-label="New chat" title="New chat" ?disabled=${this.streaming} @click=${() => this.newChat()}>
           ${icon('plus')}
         </button>
         <button
-          class="agents-iconbtn agents-iconbtn-danger"
+          class="k-btn k-btn--ghost agents-iconbtn agents-iconbtn-danger"
           aria-label="Delete this chat"
           title="Delete this chat"
           ?disabled=${this.streaming}
@@ -501,12 +500,12 @@ export class AgentChat extends StoreElement {
               This chat has a run still working — it kept going after the stream closed. Its reply will appear here when it finishes.
             </span>
             <button
-              class="agents-linkbtn"
+              class="k-btn k-btn--ghost agents-linkbtn"
               @click=${() => this.navigate({ kind: 'run', id: this.orphanRun!.id })}
             >
               View progress
             </button>
-            <button class="secondary" @click=${() => void this.cancelOrphan()}>Stop it</button>
+            <button class="k-btn k-btn--ghost secondary" @click=${() => void this.cancelOrphan()}>Stop it</button>
           </div>`
         : nothing}
       ${this.loadError ? errorState(this.loadError, () => void this.loadMessages(this.sessionID)) : nothing}
@@ -526,7 +525,7 @@ export class AgentChat extends StoreElement {
           void this.send()
         }}
       >
-        <textarea
+        <textarea class="k-input"
           rows="1"
           placeholder=${`Message ${this.name}…  (Enter to send, Shift+Enter for a newline)`}
           .value=${this.draft}
@@ -546,8 +545,8 @@ export class AgentChat extends StoreElement {
           }}
         ></textarea>
         ${this.streaming
-          ? html`<button type="button" class="secondary agents-stop" @click=${() => void this.stop()}>${icon('pause')} Stop</button>`
-          : html`<button type="submit" ?disabled=${!hasModel || !this.draft.trim()}>${icon('send')} Send</button>`}
+          ? html`<button type="button" class="k-btn k-btn--ghost secondary agents-stop" @click=${() => void this.stop()}>${icon('pause')} Stop</button>`
+          : html`<button class="k-btn k-btn--primary" type="submit" ?disabled=${!hasModel || !this.draft.trim()}>${icon('send')} Send</button>`}
       </form>
     </div>`
   }

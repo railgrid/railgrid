@@ -259,6 +259,15 @@ workspace / symlink — a standalone Docker build context must work). Edit the
 **canonical** source, then `make sync-portalkit`; CI runs `make verify-portalkit`
 (and it's in `make verify`) to fail on drift.
 
+The shared visual authority is `provider-sdk/portalkit/faros-ui.css`. The host
+copy at `portal/src/assets/faros-ui.css` and each vendored
+`src/portalkit/faros-ui.css` are exact sync outputs; the verifier also rejects
+unmanifested canonical files and unexpected copies. Standalone bundles call
+`ensureFarosUIStyles()`, which accepts the host's computed
+`--faros-ui-canonical: 1` marker or an existing `#k-faros-ui` style and otherwise
+appends the exact vendored stylesheet as a fallback. It never overwrites an
+existing style element.
+
 - **`provider-sdk/portalkit/`** — plain-TS kit for the **string-building
   (vanilla-TS)** portals (`agents`, `kuery`, `quickstart`):
   - `icons.ts` — `ic('name')` returns an inline SVG string (self-injects its
@@ -519,7 +528,7 @@ Prefer them; never hand-roll a native `window.confirm/alert` or a bespoke copy.
 | Need | Use (Vue) | Use (vanilla-TS) | Pattern |
 |------|-----------|------------------|---------|
 | **Confirm / destructive action** | `confirmDialog()` from `portalkit/confirm.ts` (+ one `<ConfirmDialog />` from `portalkit/ConfirmDialog.vue` mounted at the app root) | `confirmModal()` from `portalkit/modal.ts` | Promise-based; `await confirmDialog({ title, message?, confirmLabel?, danger? })` → `true/false`. **Never** `window.confirm/alert` — CI-free but reviewer-enforced. |
-| **Table / list** | `portalkit/ResourceTable.vue` | — | uppercase `text-[10px]` headers, `text-[13px]` cells, built-in loading/error/empty states; named slots per column. |
+| **Table / list** | `portalkit/ResourceTable.vue` | — | uppercase `text-[10px]` headers, `text-[13px]` cells, built-in loading/error/empty states; named slots per column. Interactive native rows use `tabindex="0"` with Enter/Space activation; nested explicit controls do not activate the row, and rows do not use `role="button"`. |
 | **Status / phase** | `portalkit/StatusBadge.vue` | — | Square mono tag + dot (3px radius, `k-badge` recipe); `ready` pulses. `ready/active`→success, `pending`→warning, `terminating`/disconnected→danger. |
 | **Icons** | `lucide-vue-next` (`h-4 w-4`, `:stroke-width="1.75"`) | `ic('name')` from `portalkit/icons.ts` | Vanilla portals get an inline SVG string; **no emoji anywhere**. |
 | **Tenant headers / basePath** | `portalkit/tenant.ts` (`readTenant`, `tenantHeaders`, `serviceBase`) | same | Security-critical; must match the hub proxy — see §5.7. |
@@ -570,8 +579,10 @@ invent a look. It is bound by the same design system, enforced by these rules:
 - **Namespace every selector** under the element tag (e.g.
   `faros-provider-edges .btn { … }`) so the styles cannot leak into the host.
 - **Match the same recipes** as the shared components, not approximations —
-  the canonical recipes are the `k-*` classes in `portal/src/assets/faros-ui.css`
-  (`k-card`, `k-table`, `k-badge`, `k-btn`, `k-input`, `k-eyebrow`/`k-kpi`),
+  the canonical recipes are the `k-*` classes in
+  `provider-sdk/portalkit/faros-ui.css` (the host copy is
+  `portal/src/assets/faros-ui.css`): `k-card`, `k-table`, `k-badge`, `k-btn`,
+  `k-input`, `k-eyebrow`/`k-kpi`,
   which cascade into every light-DOM provider; prefer using them directly. If
   you must hand-roll: buttons/inputs 4px radius; cards/tables 6px
   `surface-raised` with a `border-subtle` hairline; table headers `10px`/`600`

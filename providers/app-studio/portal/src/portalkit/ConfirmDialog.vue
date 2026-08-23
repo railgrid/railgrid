@@ -3,28 +3,20 @@
      `make sync-portalkit`.
 
      Mount ONE instance at the app root; it renders whenever confirmDialog()
-     sets confirmState.open. Enter confirms, Escape/backdrop cancels. Styles are
+     sets confirmState.open. Enter activates the focused action (or confirms by
+     default), Escape/backdrop cancels. Styles are
      self-injected + token-based, so the component drops into any Vue provider
      portal (Tailwind or plain-CSS) without an extracted CSS asset. -->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { confirmState, resolveConfirm } from './confirm'
-import confirmDialogStyles from './ConfirmDialog.css?raw'
+import { ensureFarosUIStyles } from '../portalkit/styles'
 
-// Standalone provider portals register one IIFE main.js and do not load Vite's
-// extracted SFC CSS asset. Inject this canonical recipe explicitly so the
-// dialog is styled in the real provider host, not only in Vite dev.
-const STYLE_ID = 'faros-portalkit-confirm-dialog-css'
-if (typeof document !== 'undefined') {
-  let style = document.getElementById(STYLE_ID) as HTMLStyleElement | null
-  if (!style) {
-    style = document.createElement('style')
-    style.id = STYLE_ID
-    document.head.appendChild(style)
-  }
-  if (style.textContent !== confirmDialogStyles) style.textContent = confirmDialogStyles
-}
+// Standalone provider portals load the exact canonical recipe through the
+// shared helper; the host portal already imports the same faros-ui.css file.
+ensureFarosUIStyles()
 
+const cancelBtn = ref<HTMLButtonElement | null>(null)
 const confirmBtn = ref<HTMLButtonElement | null>(null)
 const modalRef = ref<HTMLElement | null>(null)
 let previousFocus: HTMLElement | null = null
@@ -65,7 +57,8 @@ function onKeydown(e: KeyboardEvent) {
     onCancel()
   } else if (e.key === 'Enter') {
     e.preventDefault()
-    onConfirm()
+    if (document.activeElement === cancelBtn.value) onCancel()
+    else onConfirm()
   }
 }
 
@@ -89,17 +82,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
-  <div v-if="confirmState.open" class="pk-confirm-overlay" @click.self="onCancel">
-    <div ref="modalRef" class="pk-confirm-modal" :class="{ danger: confirmState.danger }" role="alertdialog" aria-modal="true" aria-labelledby="pk-confirm-title">
-      <h3 id="pk-confirm-title" class="pk-confirm-title">{{ confirmState.title }}</h3>
-      <p v-for="(line, i) in paragraphs" :key="i" class="pk-confirm-message">{{ line }}</p>
-      <div class="pk-confirm-actions">
-        <button type="button" class="pk-confirm-btn cancel" @click="onCancel">{{ confirmState.cancelLabel }}</button>
+  <div v-if="confirmState.open" class="k-modal-overlay" @click.self="onCancel">
+    <div ref="modalRef" class="k-modal" :class="{ 'k-modal--danger': confirmState.danger }" role="alertdialog" aria-modal="true" aria-labelledby="k-modal-title">
+      <h3 id="k-modal-title" class="k-modal__title">{{ confirmState.title }}</h3>
+      <p v-for="(line, i) in paragraphs" :key="i" class="k-modal__message">{{ line }}</p>
+      <div class="k-modal__actions">
+        <button ref="cancelBtn" type="button" class="k-modal-btn k-modal-btn--cancel" @click="onCancel">{{ confirmState.cancelLabel }}</button>
         <button
           ref="confirmBtn"
           type="button"
-          class="pk-confirm-btn confirm"
-          :class="{ danger: confirmState.danger }"
+          class="k-modal-btn k-modal-btn--confirm"
+          :class="{ 'k-modal-btn--danger': confirmState.danger }"
           @click="onConfirm"
         >{{ confirmState.confirmLabel }}</button>
       </div>

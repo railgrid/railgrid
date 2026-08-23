@@ -168,10 +168,10 @@ export class AssistedSearch extends StoreElement {
           >One of your agents can provision the SearXNG instance for you — instead of you hopping to Infrastructure and back.</span
         >
       </div>
-      <button type="button" class="secondary" @click=${() => this.start()}>Set it up</button>
+      <button type="button" class="k-btn k-btn--ghost secondary" @click=${() => this.start()}>Set it up</button>
       <button
         type="button"
-        class="agents-iconbtn"
+        class="k-btn k-btn--ghost agents-iconbtn"
         aria-label="Dismiss this suggestion"
         title="Dismiss — you can still add a web-search connection above"
         @click=${() => this.dismiss()}
@@ -202,7 +202,7 @@ export class AssistedSearch extends StoreElement {
         ${agents.length > 1
           ? html`<label>
               Agent
-              <select aria-invalid=${this.errors.agent ? 'true' : nothing} @change=${(e: Event) => (this.agent = (e.target as HTMLSelectElement).value)}>
+              <select class="k-input" aria-invalid=${this.errors.agent ? 'true' : nothing} @change=${(e: Event) => (this.agent = (e.target as HTMLSelectElement).value)}>
                 ${agents.map((a) => html`<option value=${a.metadata.name} ?selected=${a.metadata.name === this.agent}>${a.spec?.displayName || a.metadata.name}</option>`)}
               </select>
               ${this.errors.agent ? html`<span class="agents-fielderr">${this.errors.agent}</span>` : nothing}
@@ -211,7 +211,7 @@ export class AssistedSearch extends StoreElement {
 
         <label>
           Connection name
-          <input
+          <input class="k-input"
             name="connName"
             .value=${this.connName}
             autocomplete="off"
@@ -225,7 +225,7 @@ export class AssistedSearch extends StoreElement {
 
         <label>
           Instance name
-          <input
+          <input class="k-input"
             name="instance"
             .value=${this.instanceName()}
             autocomplete="off"
@@ -244,14 +244,14 @@ export class AssistedSearch extends StoreElement {
           Size
           <div class="agents-modeseg" role="group" aria-label="Instance size">
             ${INSTANCE_SIZES.map(
-              (s) => html`<button type="button" class="agents-modebtn ${s === this.size ? 'sel' : ''}" @click=${() => (this.size = s)}>${s}</button>`,
+              (s) => html`<button type="button" class="k-btn k-btn--ghost agents-modebtn ${s === this.size ? 'sel' : ''}" @click=${() => (this.size = s)}>${s}</button>`,
             )}
           </div>
         </label>
 
         <div class="agents-form-actions">
-          <button type="submit" ?disabled=${this.busy}>${icon('sparkles')} Create and hand off</button>
-          <button type="button" class="secondary" @click=${() => this.cancel()}>Cancel</button>
+          <button class="k-btn k-btn--primary" type="submit" ?disabled=${this.busy}>${icon('sparkles')} Create and hand off</button>
+          <button type="button" class="k-btn k-btn--ghost secondary" @click=${() => this.cancel()}>Cancel</button>
         </div>
       </form>
     </div>`

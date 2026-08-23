@@ -1,0 +1,890 @@
+/*
+ * faros-ui — shared component recipes for the whole portal surface.
+ *
+ * WHY THIS FILE EXISTS
+ * Every provider micro-frontend (including the self-contained code / kuery /
+ * app-studio bundles) renders inside the HOST portal's light DOM, so any class
+ * defined here reaches all of them — the same mechanism that already lets the
+ * global `.live-dot` rule style provider StatusBadge copies. These are the
+ * canonical "Precision Flat" recipes; host components and providers should use
+ * the `k-*` classes instead of re-deriving card / table / badge / button
+ * styling in eight separate stylesheets.
+ *
+ * Colour always flows through the semantic tokens defined in main.css
+ * (var(--color-*)). Each use carries the exact dark-base fallback for a
+ * standalone bundle, while a host-defined token still wins the cascade.
+ * Radii ("Violet Circuit" law): cards 6px, controls 4px,
+ * badges are 3px square mono tags — never pills. Glow-means-alive: only
+ * active/primary/focused elements get var(--color-accent-glow, rgba(139, 107, 255, 0.3)).
+ */
+
+/*
+ * This marker is intentionally part of the canonical stylesheet.  The
+ * standalone injector checks the computed root value before adding a local
+ * fallback, so a provider bundle can never replace a host-loaded stylesheet
+ * with an older vendored copy.
+ */
+:root {
+  --faros-ui-canonical: 1;
+}
+
+/* ── Eyebrow / KPI ────────────────────────────────────────────────────────
+ * Small uppercase tracked label + big expanded numeral (KPI recipe). */
+.k-eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--color-text-secondary, #8a8ca6);
+}
+.k-kpi {
+  font-family: var(--font-display, "Archivo Variable", "Instrument Sans Variable", ui-sans-serif, sans-serif);
+  font-stretch: 125%;
+  letter-spacing: -0.01em;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.1;
+  color: var(--color-text-primary, #e9e9f2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Card ─────────────────────────────────────────────────────────────────*/
+.k-card {
+  background: var(--color-surface-raised, #111320);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 6px;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-surface, #0a0b12) 40%, transparent);
+}
+html.light .k-card {
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary, #e9e9f2) 4%, transparent);
+}
+.k-card--flat {
+  box-shadow: none;
+}
+
+/* ── Table ────────────────────────────────────────────────────────────────
+ * Rounded surface card wrapper + 10px/600 uppercase headers + 13px rows with
+ * an accent-tinted hover. Wrap a <table> in `.k-table` (or apply to a card). */
+.k-table {
+  /* Keep the card frame while allowing wide tables to reach their rightmost
+   * columns inside the frame instead of clipping them at the viewport edge. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 6px;
+  background: var(--color-surface-raised, #111320);
+}
+.k-table table {
+  min-width: 100%;
+  border-collapse: collapse;
+}
+.k-table thead tr {
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+}
+.k-table th {
+  padding: 12px 20px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--color-text-muted, #5d5f78);
+}
+.k-table tbody tr {
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  transition: background 0.15s ease;
+}
+.k-table tbody tr:last-child {
+  border-bottom: 0;
+}
+.k-table tbody tr.is-interactive {
+  cursor: pointer;
+}
+.k-table tbody tr.is-interactive:hover {
+  background: color-mix(in srgb, var(--color-accent, #8b6bff) 4%, transparent);
+}
+.k-table td {
+  padding: 12px 20px;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--color-text-secondary, #8a8ca6);
+  transition: color 0.1s ease;
+}
+.k-table tbody tr.is-interactive:hover td {
+  color: var(--color-text-primary, #e9e9f2);
+}
+/* Data-like cells (names, ids, timestamps, emails). */
+.k-cell-mono {
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 12px;
+}
+
+/* ── Badge / status tag ───────────────────────────────────────────────────
+ * Square mono tag, not a pill: 3px corners, IBM Plex Mono, hairline border
+ * derived from the semantic colour via currentColor. */
+.k-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 3px;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  padding: 2.5px 8px;
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.k-badge--success { background: var(--color-success-subtle, rgba(47, 214, 160, 0.12)); color: var(--color-success, #2fd6a0); }
+.k-badge--warning { background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); color: var(--color-warning, #f0a63a); }
+.k-badge--danger  { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));  color: var(--color-danger, #ff5d5d); }
+.k-badge--muted   { background: var(--color-surface-overlay, #171927); color: var(--color-text-muted, #5d5f78); }
+.k-badge__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: currentColor;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────*/
+.k-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 4px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.k-btn:disabled {
+  pointer-events: none;
+  opacity: 0.4;
+}
+.k-btn--primary {
+  background: var(--color-accent, #8b6bff);
+  color: var(--color-on-accent, #ffffff);
+  box-shadow: 0 0 16px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
+}
+.k-btn--primary:hover {
+  background: var(--color-accent-hover, #a18aff);
+  box-shadow: 0 0 22px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
+}
+.k-btn--ghost {
+  background: var(--color-surface-overlay, #171927);
+  border-color: var(--color-border-default, rgba(255, 255, 255, 0.11));
+  color: var(--color-text-primary, #e9e9f2);
+}
+.k-btn--ghost:hover {
+  background: var(--color-surface-hover, #1e2033);
+  border-color: color-mix(in srgb, var(--color-accent, #8b6bff) 30%, transparent);
+}
+.k-btn--danger {
+  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
+  color: var(--color-danger, #ff5d5d);
+}
+.k-btn--danger:hover {
+  background: color-mix(in srgb, var(--color-danger, #ff5d5d) 18%, transparent);
+}
+
+/* ── Input ────────────────────────────────────────────────────────────────*/
+.k-input {
+  width: 100%;
+  border-radius: 4px;
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  background: var(--color-surface-overlay, #171927);
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--color-text-primary, #e9e9f2);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.k-input::placeholder {
+  color: var(--color-text-muted, #5d5f78);
+}
+.k-input:focus {
+  outline: none;
+  border-color: var(--color-accent, #8b6bff);
+  box-shadow:
+    0 0 0 3px var(--color-accent-subtle, rgba(139, 107, 255, 0.14)),
+    0 0 14px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
+}
+
+/* Native checkbox reset for dense controls. Keep the browser's native glyph
+ * and checked/indeterminate behavior; only normalize the box geometry and
+ * focus treatment so provider-wide text-input rules cannot stretch it. */
+.k-checkbox {
+  appearance: auto;
+  inline-size: 14px;
+  block-size: 14px;
+  width: 14px;
+  height: 14px;
+  min-inline-size: 0;
+  min-block-size: 0;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  accent-color: var(--color-accent, #8b6bff);
+  box-shadow: none;
+}
+.k-checkbox:focus {
+  outline: none;
+  box-shadow: none;
+}
+.k-checkbox:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+}
+
+/* ── Menu (dropdown / context) ────────────────────────────────────────────
+ * 6px panel, 4px items. Selection is accent-subtle WITHOUT glow — menus are
+ * not navigation. Destructive items sit below a .k-menu-sep hairline. */
+.k-menu {
+  border-radius: 6px;
+  background: var(--color-surface-raised, #111320);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  padding: 4px;
+  box-shadow: 0 12px 34px color-mix(in srgb, var(--color-surface, #0a0b12) 40%, transparent);
+}
+html.light .k-menu {
+  box-shadow: 0 12px 34px color-mix(in srgb, var(--color-text-primary, #e9e9f2) 14%, transparent);
+}
+.k-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  text-align: left;
+  color: var(--color-text-secondary, #8a8ca6);
+  cursor: pointer;
+  border: 0;
+  background: transparent;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.k-menu-item:hover {
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-primary, #e9e9f2);
+}
+.k-menu-item.is-selected {
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent, #8b6bff);
+}
+.k-menu-item--danger { color: var(--color-danger, #ff5d5d); }
+.k-menu-item--danger:hover { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); color: var(--color-danger, #ff5d5d); }
+.k-menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+}
+
+/* ── Kbd (shortcut key-cap) ───────────────────────────────────────────────*/
+.k-kbd {
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: var(--color-surface-overlay, #171927);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-bottom-color: color-mix(in srgb, var(--color-border-default, rgba(255, 255, 255, 0.11)) 60%, var(--color-text-muted, #5d5f78));
+  color: var(--color-text-secondary, #8a8ca6);
+}
+
+/* ── Tooltip (CSS-only) ───────────────────────────────────────────────────
+ * <button data-k-tip="Restart the pod">…</button> — shows after 300ms on
+ * hover AND keyboard focus. Two lines max by convention; longer content is a
+ * popover, not a tooltip. Never glows. */
+[data-k-tip] { position: relative; }
+[data-k-tip]::after {
+  content: attr(data-k-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 90;
+  width: max-content;
+  max-width: 260px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--color-surface-overlay, #171927);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-surface, #0a0b12) 35%, transparent);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-primary, #e9e9f2);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+html.light [data-k-tip]::after {
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-text-primary, #e9e9f2) 10%, transparent);
+}
+[data-k-tip]:hover::after,
+[data-k-tip]:focus-visible::after {
+  opacity: 1;
+  transition-delay: 0.3s;
+}
+
+/* ── Progress bar ─────────────────────────────────────────────────────────*/
+.k-progress {
+  height: 6px;
+  border-radius: 2px;
+  background: var(--color-surface-overlay, #171927);
+  overflow: hidden;
+}
+.k-progress__bar {
+  height: 100%;
+  background: var(--color-success, #2fd6a0);
+  transition: width 0.3s ease;
+}
+.k-progress__bar--accent { background: var(--color-accent, #8b6bff); }
+.k-progress__bar--warning { background: var(--color-warning, #f0a63a); }
+.k-progress__bar--danger { background: var(--color-danger, #ff5d5d); }
+
+/* ── Toggle switch (sharp — 3px track, 2px knob; not the iOS pill) ────────
+ * <button class="k-toggle" role="switch" aria-checked="true">
+ *   <span class="k-toggle__knob" /></button> */
+.k-toggle {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 22px;
+  border-radius: 3px;
+  border: 0;
+  background: var(--color-border-default, rgba(255, 255, 255, 0.11));
+  cursor: pointer;
+  transition: background 0.15s ease;
+  padding: 0;
+}
+.k-toggle[aria-checked="true"] { background: var(--color-accent, #8b6bff); }
+.k-toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+}
+.k-toggle:disabled { cursor: not-allowed; opacity: 0.6; }
+.k-toggle__knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 2px;
+  background: var(--color-text-primary, #e9e9f2);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-surface, #0a0b12) 30%, transparent);
+  transition: left 0.15s ease;
+}
+.k-toggle[aria-checked="true"] .k-toggle__knob { left: 21px; }
+
+/* ── Avatar (mono initials; prefer the email chip for identity) ───────────*/
+.k-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  background: var(--color-surface-overlay, #171927);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--color-text-secondary, #8a8ca6);
+}
+.k-avatar--sm { width: 20px; height: 20px; font-size: 8px; }
+
+/* ── File dropzone ────────────────────────────────────────────────────────
+ * Drag-over is a TARGET state, not an action: accent border + tint, no glow. */
+.k-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px;
+  border-radius: 6px;
+  border: 1px dashed var(--color-border-default, rgba(255, 255, 255, 0.11));
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 12px;
+  text-align: center;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.k-dropzone.is-dragover {
+  border-color: var(--color-accent, #8b6bff);
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent, #8b6bff);
+}
+.k-dropzone.is-error {
+  border-color: var(--color-danger, #ff5d5d);
+  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
+  color: var(--color-danger, #ff5d5d);
+}
+
+/* ── grid-layout-plus drag placeholder (default is a red block) ────────────*/
+.vgl-item--placeholder {
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)) !important;
+  border: 1px dashed color-mix(in srgb, var(--color-accent, #8b6bff) 40%, transparent) !important;
+  border-radius: 6px !important;
+  opacity: 1 !important;
+}
+
+/* ── Provider route tabs ──────────────────────────────────────────────────
+ * Route/section navigation shared by host-compiled and standalone providers.
+ * Keep this recipe in the host stylesheet and sync the exact file into
+ * standalone bundles; Tabs and the vanilla helpers only emit these classes. */
+.k-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  scrollbar-width: thin;
+}
+.k-tabs > .k-tab { flex: 0 0 auto; }
+.k-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 13px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-secondary, #8a8ca6);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: nowrap;
+  box-shadow: none;
+}
+.k-tab:hover:not(:disabled) {
+  background: var(--color-surface-hover, #1e2033);
+  color: var(--color-text-primary, #e9e9f2);
+  box-shadow: none;
+}
+.k-tab:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
+.k-tab--active,
+.k-tab[aria-current="page"] {
+  border: 0;
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent, #8b6bff);
+  font-weight: 600;
+  box-shadow: none;
+}
+.k-tab--active:hover:not(:disabled),
+.k-tab[aria-current="page"]:hover:not(:disabled) {
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent, #8b6bff);
+  box-shadow: none;
+}
+.k-tab:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.k-tab__icon {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.k-tab__icon svg {
+  width: 1.05em;
+  height: 1.05em;
+  display: inline-block;
+  vertical-align: -0.16em;
+  flex: none;
+  color: inherit;
+  stroke-width: 2;
+}
+.k-tab__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-secondary, #8a8ca6);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.k-tab--active .k-tab__count,
+.k-tab[aria-current="page"] .k-tab__count {
+  background: var(--color-accent, #8b6bff);
+  color: var(--color-on-accent, #ffffff);
+}
+.k-tab__count--attention {
+  background: var(--color-warning, #f0a63a);
+  color: var(--color-on-accent, #ffffff);
+}
+.k-tabs--compact {
+  gap: 4px;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.k-tabs--compact .k-tab {
+  min-height: 30px;
+  padding: 6px 12px;
+  font-size: inherit;
+}
+
+/* ── Modal / confirmation dialog ──────────────────────────────────────────
+ * Both the vanilla confirmModal helper and Vue ConfirmDialog emit this one
+ * recipe. It is global by design: standalone light-DOM providers inject the
+ * exact copied stylesheet through portalkit/styles.ts. */
+.k-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--color-surface, #0a0b12) 60%, transparent);
+  backdrop-filter: blur(2px);
+  animation: k-modal-fade 0.14s ease;
+}
+.k-modal {
+  width: min(440px, 100%);
+  padding: 22px 22px 18px;
+  border-radius: 6px;
+  background: var(--color-surface-raised, #111320);
+  color: var(--color-text-primary, #e9e9f2);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-surface, #0a0b12) 40%, transparent), 0 24px 70px color-mix(in srgb, var(--color-surface, #0a0b12) 55%, transparent);
+  font-family: var(--font-sans, "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif);
+  font-size: 14px;
+  line-height: 1.5;
+  animation: k-modal-rise 0.18s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.k-modal--vanilla {
+  padding: 0;
+  overflow: hidden;
+}
+.k-modal__head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 18px 20px 4px;
+}
+.k-modal__icon {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent, #8b6bff);
+}
+.k-modal--danger .k-modal__icon {
+  background: var(--color-danger-surface, rgba(255, 93, 93, 0.12));
+  color: var(--color-danger, #ff5d5d);
+}
+.k-modal__icon svg { width: 20px; height: 20px; }
+.k-modal__title {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 650;
+}
+.k-modal__head .k-modal__title { margin: 0; }
+.k-modal__message,
+.k-modal__body {
+  color: var(--color-text-secondary, #8a8ca6);
+  overflow-wrap: anywhere;
+}
+.k-modal__message { margin: 0 0 6px; }
+.k-modal__body {
+  padding: 6px 20px 4px 65px;
+  white-space: pre-wrap;
+}
+.k-modal__actions,
+.k-modal__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.k-modal__actions { margin-top: 16px; }
+.k-modal__foot { padding: 16px 20px 20px; }
+.k-modal-btn {
+  padding: 8px 16px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.k-modal-btn--cancel {
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-secondary, #8a8ca6);
+  border-color: var(--color-border-default, rgba(255, 255, 255, 0.11));
+}
+.k-modal-btn--cancel:hover {
+  background: var(--color-surface-hover, #1e2033);
+  color: var(--color-text-primary, #e9e9f2);
+}
+.k-modal-btn--confirm {
+  background: var(--color-accent, #8b6bff);
+  color: var(--color-on-accent, #ffffff);
+  box-shadow: 0 0 16px var(--color-accent-glow, rgba(139, 107, 255, 0.3));
+}
+.k-modal-btn--confirm:hover { background: var(--color-accent-hover, #a18aff); }
+.k-modal-btn--danger {
+  background: var(--color-danger, #ff5d5d);
+  color: var(--color-on-accent, #ffffff);
+  box-shadow: none;
+}
+.k-modal-btn--danger:hover { background: var(--color-danger-hover, #ff7676); }
+@keyframes k-modal-fade { from { opacity: 0; } }
+@keyframes k-modal-rise {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+}
+
+/* ── Toast / snackbar ──────────────────────────────────────────────────────
+ * The toast helper only creates DOM and behavior; the visual recipe lives
+ * here so host and standalone providers cannot drift. */
+#k-toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483001;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 360px;
+}
+.k-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-family: var(--font-sans, "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif);
+  font-size: 13px;
+  line-height: 1.45;
+  background: var(--color-surface-raised, #111320);
+  color: var(--color-text-primary, #e9e9f2);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  box-shadow: 0 12px 34px color-mix(in srgb, var(--color-surface, #0a0b12) 40%, transparent);
+  animation: k-toast-in 0.16s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+@keyframes k-toast-in { from { opacity: 0; transform: translateY(8px); } }
+.k-toast__icon { flex: none; margin-top: 1px; width: 14px; height: 14px; }
+.k-toast__icon svg { display: block; width: 100%; height: 100%; }
+.k-toast--ok .k-toast__icon { color: var(--color-success, #2fd6a0); }
+.k-toast--error .k-toast__icon { color: var(--color-danger, #ff5d5d); }
+.k-toast--info .k-toast__icon { color: var(--color-accent, #8b6bff); }
+.k-toast--error { border-color: var(--color-danger, #ff5d5d); }
+.k-toast__message { flex: 1; overflow-wrap: anywhere; }
+.k-toast__action {
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--color-accent, #8b6bff) 35%, transparent);
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent, #8b6bff);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.k-toast__action:hover { background: color-mix(in srgb, var(--color-accent, #8b6bff) 22%, transparent); }
+.k-toast__dismiss {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin: -2px -4px 0 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted, #5d5f78);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.k-toast__dismiss svg { width: 12px; height: 12px; }
+.k-toast__dismiss:hover { background: var(--color-surface-hover, #1e2033); color: inherit; }
+
+/* ── Resource table states and actions ────────────────────────────────────
+ * ResourceTable uses `.k-table` for the shell and these namespaced descendants
+ * for non-table states. The ordinary table geometry above remains the single
+ * source for headers, rows and cells. */
+.k-table__live {
+  block-size: 1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  inline-size: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+}
+.k-table__error,
+.k-table__stale {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-danger, #ff5d5d);
+  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
+  color: var(--color-danger, #ff5d5d);
+  font-size: 12px;
+}
+.k-table__stale { margin-bottom: 0; }
+.k-table__error-icon { flex: none; width: 15px; height: 15px; }
+.k-table__error-message { flex: 1; overflow-wrap: anywhere; }
+.k-table__retry {
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--color-danger, #ff5d5d) 45%, transparent);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-danger, #ff5d5d);
+  padding: 4px 9px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.k-table__retry:hover,
+.k-table__retry:focus-visible { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); }
+.k-table__loading { overflow: hidden; border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); border-radius: 6px; }
+.k-table__loading-head,
+.k-table__loading-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 0.7fr;
+  gap: 16px;
+  padding: 12px 20px;
+}
+.k-table__loading-head { border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
+.k-table__loading-row { border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
+.k-table__loading-row:last-child { border-bottom: 0; }
+.k-table__skeleton { height: 13px; border-radius: 2px; }
+.k-table__skeleton--short { width: 34%; height: 10px; }
+.k-table__skeleton--wide { width: 82%; }
+.k-table__skeleton--mid { width: 64%; }
+.k-table__skeleton--small { width: 42%; }
+.k-table__table { min-width: 100%; }
+.k-table__head-row { border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
+.k-table__heading {
+  padding: 12px 20px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--color-text-muted, #5d5f78);
+}
+.k-table__row { border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
+.k-table__row:last-child { border-bottom: 0; }
+.k-table__cell {
+  padding: 12px 20px;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--color-text-secondary, #8a8ca6);
+  transition: color 0.1s ease;
+}
+.k-table__row.k-table__row--interactive { cursor: pointer; }
+.k-table__row.k-table__row--interactive:hover { background: color-mix(in srgb, var(--color-accent, #8b6bff) 4%, transparent); }
+.k-table__row.k-table__row--interactive:hover .k-table__cell { color: var(--color-text-primary, #e9e9f2); }
+.k-table__empty-cell { padding: 36px 20px; text-align: center; color: var(--color-text-muted, #5d5f78); }
+.k-table__empty-icon { width: 24px; height: 24px; margin: 0 auto 8px; opacity: 0.7; }
+.k-table__empty-label { margin: 0; font-size: 12px; }
+.k-table-action {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: color-mix(in srgb, var(--color-text-muted, #5d5f78) 40%, transparent);
+  cursor: pointer;
+  display: inline-flex;
+  height: 28px;
+  justify-content: center;
+  opacity: 0;
+  padding: 0;
+  transition: background-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+  width: 28px;
+}
+.k-table-action--busy,
+.k-table-action:focus-visible,
+.k-table__row:hover .k-table-action,
+.k-table__row:focus-within .k-table-action { opacity: 1; }
+.k-table-action--delete:hover,
+.k-table-action--delete:focus-visible {
+  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
+  color: var(--color-danger, #ff5d5d);
+}
+.k-table-action--edit:hover,
+.k-table-action--edit:focus-visible {
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-primary, #e9e9f2);
+}
+.k-table-action:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 2px; }
+.k-table-action:disabled { cursor: not-allowed; }
+.k-table-action--busy { color: var(--color-danger, #ff5d5d); cursor: progress; }
+.k-table-action__icon { width: 14px; height: 14px; }
+.k-table-action__icon--spinning { animation: k-table-action-spin 0.8s linear infinite; }
+@keyframes k-table-action-spin { to { transform: rotate(360deg); } }
+
+/* ── Status / conditions ──────────────────────────────────────────────────
+ * Standalone bundles cannot rely on the host's main.css for the live dot. */
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.live-dot { animation: live-pulse 2.5s ease-in-out infinite; }
+.k-conditions { display: flex; flex-direction: column; gap: 10px; }
+.k-conditions__title { margin: 0; font-size: 14px; font-weight: 600; color: var(--color-text-primary, #e9e9f2); }
+.k-conditions__stale { margin: 0; color: var(--color-warning, #f0a63a); font-size: 12px; }
+.k-conditions__type { font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace); font-size: 12px; color: var(--color-text-primary, #e9e9f2); }
+.k-conditions__message { white-space: normal; color: var(--color-text-primary, #e9e9f2); }
+.k-conditions__muted { color: var(--color-text-muted, #5d5f78); }
+
+@media (prefers-reduced-motion: reduce) {
+  .live-dot { animation: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .k-modal-overlay,
+  .k-modal,
+  .k-toast,
+  .k-table-action__icon--spinning { animation: none; }
+}
+@media (hover: none) {
+  .k-table-action { opacity: 1; }
+}
+@media (max-width: 640px) {
+  #k-toasts { left: 12px; right: 12px; max-width: none; align-items: stretch; }
+}
+@media (max-width: 560px) {
+  .k-tabs { gap: 2px; padding-bottom: 8px; }
+  .k-tab { padding-right: 10px; padding-left: 10px; }
+}

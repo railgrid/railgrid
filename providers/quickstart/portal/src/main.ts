@@ -11,9 +11,13 @@
 // custom element.
 
 import { QuickstartElement } from './element'
+import { ensureFarosUIStyles } from './portalkit/styles'
 import styles from './style.css?raw'
 
 const TAG = 'faros-provider-quickstart'
+
+// Install the shared recipes before the light-DOM element is connected.
+ensureFarosUIStyles()
 
 // Hot-reload safety: customElements.define throws on a second registration
 // for the same tag. The portal can re-execute this script after a version

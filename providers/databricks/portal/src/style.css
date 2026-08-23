@@ -58,24 +58,21 @@ faros-provider-databricks .page-meta {
   max-width: 70ch;
 }
 
-faros-provider-databricks .panel {
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 6px;
+faros-provider-databricks .databricks-resource-panel {
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 14px 16px;
 }
 
-faros-provider-databricks .panel-head {
+faros-provider-databricks .databricks-resource-panel-head {
   align-items: center;
   display: flex;
   gap: 10px;
   justify-content: space-between;
 }
 
-faros-provider-databricks .panel-title {
+faros-provider-databricks .databricks-resource-panel-title {
   color: var(--color-text-secondary);
   font-size: 11px;
   font-weight: 600;
@@ -333,7 +330,7 @@ faros-provider-databricks .field-hint {
   line-height: 1.5;
 }
 
-faros-provider-databricks input,
+faros-provider-databricks input:not([type="checkbox"]):not([type="radio"]),
 faros-provider-databricks select {
   background: var(--color-surface-overlay);
   border: 1px solid var(--color-border-default);
@@ -347,7 +344,7 @@ faros-provider-databricks select {
   width: 100%;
 }
 
-faros-provider-databricks .form input,
+faros-provider-databricks .form input:not([type="checkbox"]):not([type="radio"]),
 faros-provider-databricks .form select {
   border-radius: 4px;
   font-size: 12px;
@@ -355,13 +352,13 @@ faros-provider-databricks .form select {
   padding: 6px 10px;
 }
 
-faros-provider-databricks input:focus,
+faros-provider-databricks input:not([type="checkbox"]):not([type="radio"]):focus,
 faros-provider-databricks select:focus {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 3px var(--color-accent-subtle), 0 0 14px var(--color-accent-glow);
 }
 
-faros-provider-databricks input:disabled {
+faros-provider-databricks input:not([type="checkbox"]):not([type="radio"]):disabled {
   color: var(--color-text-muted);
   cursor: not-allowed;
   opacity: 0.75;
@@ -453,305 +450,6 @@ faros-provider-databricks .empty {
   margin: 0;
 }
 
-faros-provider-databricks .resource-table {
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 6px;
-  overflow-x: auto;
-}
-
-faros-provider-databricks .resource-table-error {
-  align-items: center;
-  color: var(--color-danger);
-  display: flex;
-  font-size: 13px;
-  gap: 8px;
-  padding: 16px;
-}
-
-faros-provider-databricks .resource-table-stale {
-  align-items: center;
-  background: var(--color-danger-subtle);
-  border-bottom: 1px solid color-mix(in srgb, var(--color-danger) 35%, transparent);
-  color: var(--color-danger);
-  display: flex;
-  font-size: 12px;
-  gap: 8px;
-  padding: 9px 12px;
-}
-
-faros-provider-databricks .resource-table-error-message {
-  flex: 1;
-  line-height: 1.45;
-}
-
-faros-provider-databricks .resource-table-retry {
-  background: transparent;
-  border: 1px solid currentColor;
-  border-radius: 4px;
-  color: inherit;
-  cursor: pointer;
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 4px 9px;
-}
-
-faros-provider-databricks .resource-table-retry:hover,
-faros-provider-databricks .resource-table-retry:focus-visible {
-  background: color-mix(in srgb, currentColor 12%, transparent);
-  outline: none;
-}
-
-faros-provider-databricks .resource-table-error-icon {
-  flex-shrink: 0;
-  height: 16px;
-  width: 16px;
-}
-
-faros-provider-databricks .resource-table-loading-head,
-faros-provider-databricks .resource-table-loading-row {
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-
-faros-provider-databricks .resource-table-loading-head {
-  padding: 12px 20px;
-}
-
-faros-provider-databricks .resource-table-loading-row {
-  align-items: center;
-  display: flex;
-  gap: 24px;
-  padding: 14px 20px;
-}
-
-faros-provider-databricks .resource-table-loading-row:last-child {
-  border-bottom: none;
-}
-
-faros-provider-databricks .resource-table-skeleton {
-  border-radius: 4px;
-  height: 12px;
-}
-
-faros-provider-databricks .resource-table-skeleton-short {
-  width: 96px;
-}
-
-faros-provider-databricks .resource-table-skeleton-wide {
-  width: 128px;
-}
-
-faros-provider-databricks .resource-table-skeleton-mid {
-  width: 80px;
-}
-
-faros-provider-databricks .resource-table-skeleton-small {
-  width: 64px;
-}
-
-faros-provider-databricks .shimmer {
-  background: linear-gradient(90deg, var(--color-surface-overlay), var(--color-surface-hover), var(--color-surface-overlay));
-  background-size: 200% 100%;
-  animation: provider-shimmer 1.4s ease-in-out infinite;
-}
-
-faros-provider-databricks .resource-table-table {
-  border-collapse: collapse;
-  min-width: 100%;
-  width: 100%;
-}
-
-faros-provider-databricks .resource-table-head-row,
-faros-provider-databricks .resource-table-row {
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-
-faros-provider-databricks .resource-table-row {
-  /* Resource lists poll every five seconds. Never replay the host's global
-     stagger-in transform when refreshed rows are patched or reordered. */
-  animation: none;
-  transition: background-color 0.15s ease, color 0.1s ease;
-}
-
-faros-provider-databricks .resource-table-row:last-child {
-  border-bottom: none;
-}
-
-faros-provider-databricks .resource-table-row.is-interactive {
-  cursor: pointer;
-}
-
-faros-provider-databricks .resource-table-row.is-interactive:hover {
-  background: var(--color-surface-hover);
-}
-
-faros-provider-databricks .resource-table-heading {
-  color: var(--color-text-muted);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.15em;
-  padding: 12px 20px;
-  text-align: left;
-  text-transform: uppercase;
-}
-
-faros-provider-databricks .resource-table-cell {
-  color: var(--color-text-secondary);
-  font-size: 13px;
-  padding: 12px 20px;
-  transition: color 0.1s ease;
-  white-space: nowrap;
-}
-
-faros-provider-databricks .resource-table-heading:last-child,
-faros-provider-databricks .resource-table-cell:last-child {
-  padding-left: 16px;
-  padding-right: 16px;
-  text-align: right;
-  width: 28px;
-}
-
-faros-provider-databricks .resource-table-cell:last-child .row-actions {
-  justify-content: flex-end;
-}
-
-faros-provider-databricks .resource-table-row.is-interactive:hover .resource-table-cell {
-  color: var(--color-text-primary);
-}
-
-faros-provider-databricks .resource-table-empty-cell {
-  padding: 64px 20px;
-  text-align: center;
-}
-
-faros-provider-databricks .resource-table-empty-icon {
-  color: color-mix(in srgb, var(--color-text-muted) 20%, transparent);
-  height: 32px;
-  margin: 0 auto;
-  width: 32px;
-}
-
-faros-provider-databricks .resource-table-empty-label {
-  color: var(--color-text-muted);
-  font-size: 12px;
-  margin: 8px 0 0;
-}
-
-faros-provider-databricks .status-badge {
-  align-items: center;
-  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
-  border-radius: 3px;
-  display: inline-flex;
-  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
-  font-size: 10px;
-  font-weight: 600;
-  gap: 6px;
-  letter-spacing: 0.06em;
-  padding: 2.5px 8px;
-  text-transform: uppercase;
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-faros-provider-databricks .status-badge.tone-success {
-  background: var(--color-success-subtle);
-  color: var(--color-success);
-}
-
-faros-provider-databricks .status-badge.tone-warning {
-  background: var(--color-warning-subtle);
-  color: var(--color-warning);
-}
-
-faros-provider-databricks .status-badge.tone-danger {
-  background: var(--color-danger-subtle);
-  color: var(--color-danger);
-}
-
-faros-provider-databricks .status-badge.tone-muted {
-  background: var(--color-surface-overlay);
-  color: var(--color-text-muted);
-}
-
-faros-provider-databricks .status-badge-dot-wrap {
-  display: flex;
-  height: 6px;
-  position: relative;
-  width: 6px;
-}
-
-faros-provider-databricks .status-badge-pulse,
-faros-provider-databricks .status-badge-dot {
-  border-radius: 999px;
-  display: inline-flex;
-  height: 6px;
-  position: absolute;
-  width: 6px;
-}
-
-faros-provider-databricks .status-badge-pulse {
-  animation: provider-live-ping 1.4s cubic-bezier(0, 0, 0.2, 1) infinite;
-  opacity: 0.6;
-}
-
-faros-provider-databricks .dot-success,
-faros-provider-databricks .pulse-success {
-  background: var(--color-success);
-}
-
-faros-provider-databricks .dot-warning,
-faros-provider-databricks .pulse-warning {
-  background: var(--color-warning);
-}
-
-faros-provider-databricks .dot-danger,
-faros-provider-databricks .pulse-danger {
-  background: var(--color-danger);
-}
-
-faros-provider-databricks .dot-muted,
-faros-provider-databricks .pulse-muted {
-  background: var(--color-text-muted);
-}
-
-faros-provider-databricks .conditions-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-faros-provider-databricks .conditions-title {
-  color: var(--color-text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  margin: 0;
-  text-transform: uppercase;
-}
-
-faros-provider-databricks .conditions-stale {
-  color: var(--color-warning);
-  font-size: 12px;
-  margin: 0;
-}
-
-faros-provider-databricks .conditions-type {
-  color: var(--color-text-primary);
-  font-weight: 600;
-}
-
-faros-provider-databricks .conditions-message {
-  display: block;
-  max-width: 40ch;
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-
-faros-provider-databricks .conditions-muted {
-  color: var(--color-text-muted);
-}
-
 faros-provider-databricks .import-backdrop {
   align-items: center;
   background: color-mix(in srgb, var(--color-surface) 82%, transparent);
@@ -836,7 +534,6 @@ faros-provider-databricks .lazy-tree-expander { align-items: center; background:
 faros-provider-databricks .lazy-tree-expander svg { height: 14px; transition: transform 140ms ease; width: 14px; }
 faros-provider-databricks .lazy-tree-expander svg.expanded { transform: rotate(90deg); }
 faros-provider-databricks .lazy-tree-expander-spacer { height: 16px; width: 16px; }
-faros-provider-databricks .lazy-tree-row input { accent-color: var(--color-accent); height: 14px; margin: 0; width: 14px; }
 faros-provider-databricks .lazy-tree-copy { display: grid; gap: 2px; min-width: 0; }
 faros-provider-databricks .lazy-tree-copy strong { color: var(--color-text-primary); font-family: var(--font-mono); font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 faros-provider-databricks .lazy-tree-copy small { color: var(--color-text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -870,13 +567,6 @@ faros-provider-databricks .import-spacer { flex: 1; }
   }
 }
 
-@keyframes provider-live-ping {
-  75%,
-  100% {
-    opacity: 0;
-    transform: scale(2);
-  }
-}
 
 @keyframes provider-spin { to { transform: rotate(360deg); } }
 
@@ -889,7 +579,6 @@ faros-provider-databricks .import-spacer { flex: 1; }
 
 @media (prefers-reduced-motion: reduce) {
   faros-provider-databricks .shimmer,
-  faros-provider-databricks .status-badge-pulse,
   faros-provider-databricks .stagger-item {
     animation: none;
   }

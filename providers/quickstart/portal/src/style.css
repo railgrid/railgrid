@@ -15,27 +15,24 @@ faros-provider-quickstart {
   display: block;
 }
 
-faros-provider-quickstart .grid {
+faros-provider-quickstart .quickstart-grid {
   display: grid;
   gap: 12px;
   grid-template-columns: 1fr;
 }
 
 @media (min-width: 720px) {
-  faros-provider-quickstart .grid {
+  faros-provider-quickstart .quickstart-grid {
     grid-template-columns: 1fr 1fr;
   }
 }
 
-faros-provider-quickstart .panel {
-  background: var(--color-surface-raised, #111320);
-  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
-  border-radius: 6px;
+faros-provider-quickstart .quickstart-panel {
   padding: 14px 16px;
   color: var(--color-text-primary, inherit);
 }
 
-faros-provider-quickstart .panel-head {
+faros-provider-quickstart .quickstart-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -43,7 +40,7 @@ faros-provider-quickstart .panel-head {
   margin-bottom: 10px;
 }
 
-faros-provider-quickstart .panel-title {
+faros-provider-quickstart .quickstart-panel-title {
   margin: 0;
   font-size: 11px;
   font-weight: 600;
@@ -52,38 +49,8 @@ faros-provider-quickstart .panel-title {
   text-transform: uppercase;
 }
 
-faros-provider-quickstart .badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding: 2.5px 8px;
-  border-radius: 3px;
-  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
-  background: var(--color-surface-overlay, transparent);
-  color: var(--color-text-muted, inherit);
-}
-
-faros-provider-quickstart .badge.ok {
-  color: var(--color-success);
-  background: var(--color-success-subtle);
-}
-
-faros-provider-quickstart .badge.warn {
-  color: var(--color-warning);
-  background: var(--color-warning-subtle);
-}
-
-faros-provider-quickstart pre {
+faros-provider-quickstart .quickstart-dump {
   margin: 0;
-  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
-  color: var(--color-text-primary, inherit);
-  border: 1px solid var(--color-border-subtle, transparent);
-  border-radius: 4px;
   padding: 10px 12px;
   font-family: "IBM Plex Mono", ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
   font-size: 11px;
@@ -91,7 +58,7 @@ faros-provider-quickstart pre {
 }
 
 faros-provider-quickstart code {
-  background: var(--color-surface-overlay, rgba(0, 0, 0, 0.04));
+  background: var(--color-surface-overlay);
   color: var(--color-text-secondary, currentColor);
   padding: 1px 5px;
   border-radius: 4px;
@@ -99,12 +66,12 @@ faros-provider-quickstart code {
   font-size: 11px;
 }
 
-faros-provider-quickstart .meta {
+faros-provider-quickstart .quickstart-meta {
   margin: 0 0 8px;
   font-size: 11px;
   color: var(--color-text-muted, inherit);
 }
 
-faros-provider-quickstart .muted {
+faros-provider-quickstart .quickstart-muted {
   color: var(--color-text-muted, inherit);
 }

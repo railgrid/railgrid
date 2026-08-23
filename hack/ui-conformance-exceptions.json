@@ -1,0 +1,140 @@
+{
+  "version": 1,
+  "exceptions": [
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/element.ts",
+      "line": 1079,
+      "column": 44,
+      "match": "#888",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "The legend fallback is rendered inside the Cytoscape graph canvas and is part of the sanctioned Kuery graph palette."
+    },
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/graph.ts",
+      "line": 27,
+      "column": 12,
+      "match": "#e0b34f",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "RELATION_COLORS is the semantic edge palette for the Kuery graph, not UI chrome."
+    },
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/graph.ts",
+      "line": 28,
+      "column": 20,
+      "match": "#4f9be0",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "RELATION_COLORS is the semantic edge palette for the Kuery graph, not UI chrome."
+    },
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/graph.ts",
+      "line": 29,
+      "column": 16,
+      "match": "#9b6de0",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "RELATION_COLORS is the semantic edge palette for the Kuery graph, not UI chrome."
+    },
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/graph.ts",
+      "line": 30,
+      "column": 13,
+      "match": "#4fe0a8",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "RELATION_COLORS is the semantic edge palette for the Kuery graph, not UI chrome."
+    },
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/graph.ts",
+      "line": 31,
+      "column": 19,
+      "match": "#e07a4f",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "RELATION_COLORS is the semantic edge palette for the Kuery graph, not UI chrome."
+    },
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/graph.ts",
+      "line": 32,
+      "column": 15,
+      "match": "#e0519b",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "RELATION_COLORS is the semantic edge palette for the Kuery graph, not UI chrome."
+    },
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/graph.ts",
+      "line": 33,
+      "column": 13,
+      "match": "#8a93a8",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "RELATION_COLORS is the semantic edge palette for the Kuery graph, not UI chrome."
+    },
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/graph.ts",
+      "line": 34,
+      "column": 15,
+      "match": "#5fae7a",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "RELATION_COLORS is the semantic edge palette for the Kuery graph, not UI chrome."
+    },
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/graph.ts",
+      "line": 35,
+      "column": 16,
+      "match": "#5fae7a",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "RELATION_COLORS is the semantic edge palette for the Kuery graph, not UI chrome."
+    },
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/graph.ts",
+      "line": 242,
+      "column": 49,
+      "match": "rgba(127,127,127,0.16)",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "Cytoscape cannot read CSS variables, so this exact dark fallback keeps the graph canvas legible."
+    },
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/graph.ts",
+      "line": 243,
+      "column": 47,
+      "match": "rgba(127,127,127,0.45)",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "Cytoscape cannot read CSS variables, so this exact dark fallback keeps the graph canvas legible."
+    },
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/graph.ts",
+      "line": 244,
+      "column": 43,
+      "match": "#e9e9f2",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "Cytoscape cannot read CSS variables, so this exact dark fallback keeps the graph canvas legible."
+    },
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/graph.ts",
+      "line": 245,
+      "column": 42,
+      "match": "#5d5f78",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "Cytoscape cannot read CSS variables, so this exact dark fallback keeps the graph canvas legible."
+    },
+    {
+      "rule": "raw-color",
+      "path": "providers/kuery/portal/src/graph.ts",
+      "line": 246,
+      "column": 39,
+      "match": "#8b6bff",
+      "reference": "design-book §8 Kuery graph",
+      "reason": "Cytoscape cannot read CSS variables, so this exact dark fallback keeps the graph canvas legible."
+    }
+  ]
+}

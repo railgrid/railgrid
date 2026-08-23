@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { CornerDownRight, ExternalLink } from 'lucide-vue-next'
 import { api } from '../api'
 import type { ErrorResponse, PackageRow } from '../types'
 import ResourceTable from '../portalkit/ResourceTable.vue'
@@ -106,16 +107,16 @@ onUnmounted(() => {
       @retry="load"
     >
       <template #repositoryRef="{ row }">
-        <button v-if="row.showRepository && !row.deleting" class="link" type="button" @click="emit('open', String(row.repositoryRef))">{{ row.repositoryRef }}</button>
+        <button v-if="row.showRepository && !row.deleting" class="k-btn k-btn--ghost code-inline-action" type="button" @click="emit('open', String(row.repositoryRef))">{{ row.repositoryRef }}</button>
         <span v-else-if="row.showRepository">{{ row.repositoryRef }}</span>
-        <span v-else class="muted">↳</span>
+        <CornerDownRight v-else class="muted" :size="14" aria-label="Same repository as above" />
       </template>
       <template #name="{ row }"><strong><a v-if="row.htmlURL && !row.deleting" :href="String(row.htmlURL)" target="_blank" rel="noopener">{{ row.name }}</a><template v-else>{{ row.name }}</template></strong></template>
-      <template #type="{ value }"><span class="badge muted">{{ value }}</span></template>
+      <template #type="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
       <template #visibility="{ value }"><span class="muted">{{ value || '—' }}</span></template>
       <template #versionCount="{ value }"><span class="muted">{{ value || 0 }}</span></template>
       <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>
-      <template #url="{ row }"><a v-if="row.htmlURL && !row.deleting" class="link" :href="String(row.htmlURL)" target="_blank" rel="noopener">View ↗</a></template>
+      <template #url="{ row }"><a v-if="row.htmlURL && !row.deleting" :href="String(row.htmlURL)" target="_blank" rel="noopener">View <ExternalLink :size="12" aria-hidden="true" /></a></template>
     </ResourceTable>
     <p class="muted">Packages appear automatically when artifacts are pushed (e.g. <code>docker push</code>, <code>npm publish</code>); the provider crawls each repository periodically.</p>
   </section>

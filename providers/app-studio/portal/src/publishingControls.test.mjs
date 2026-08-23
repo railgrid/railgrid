@@ -372,10 +372,10 @@ test('restores the Share trigger after confirmed disable and uses one production
 })
 
 test('layers the shared confirm dialog at body and restores Disable access focus on cancel', () => {
-  const pkDialogStart = app.indexOf('<PkConfirmDialog />')
+  const pkDialogStart = app.indexOf('<ConfirmDialog />')
   const shareStart = app.indexOf('<ProjectShareDialog')
   assert.ok(pkDialogStart >= 0 && shareStart > pkDialogStart)
-  assert.match(app.slice(Math.max(0, pkDialogStart - 80), pkDialogStart + 40), /<Teleport to="body">[\s\S]*<PkConfirmDialog \/>/)
+  assert.match(app.slice(Math.max(0, pkDialogStart - 80), pkDialogStart + 40), /<Teleport to="body">[\s\S]*<ConfirmDialog \/>/)
 
   const unpublishStart = app.indexOf('async function unpublishCurrentProject')
   const unpublishEnd = app.indexOf('async function grantCurrentProjectAccess', unpublishStart)

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ArrowLeft } from 'lucide-vue-next'
 import { api } from '../api'
 import type { ConnectionDetail, ErrorResponse } from '../types'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
+import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import { createLatestRefreshController, createOperationLocks, operationKey, type LatestRefreshController, type ResourceDeletions } from '../refresh'
 
@@ -130,7 +132,7 @@ onUnmounted(() => {
 
 <template>
   <section class="page" :aria-busy="loading">
-    <button class="link back" type="button" @click="emit('back')">← Connections</button>
+    <button class="k-btn k-btn--ghost code-back-action" type="button" @click="emit('back')"><ArrowLeft :size="14" aria-hidden="true" /> Connections</button>
 
     <header class="page-head">
       <div>
@@ -142,32 +144,35 @@ onUnmounted(() => {
           <span v-else class="muted">Connection details unavailable</span>
         </p>
       </div>
-      <span v-if="conn" :class="['badge', !deleting && conn.validated ? 'ok' : 'warn']" :title="conn.message">
-        {{ deleting ? 'Deleting' : conn.validated ? 'validated' : 'pending' }}
-      </span>
+      <StatusBadge
+        v-if="conn"
+        :status="deleting ? 'Deleting' : conn.validated ? 'ready' : 'pending'"
+        :tone="deleting ? 'warning' : null"
+        :title="conn.message"
+      />
     </header>
 
     <div v-if="error && !conn" class="error read-error" role="alert" aria-live="assertive">
       <span>{{ error }}</span>
-      <button class="secondary" type="button" @click="load">Retry</button>
+      <button class="k-btn k-btn--ghost" type="button" @click="load">Retry</button>
     </div>
     <div v-else-if="loading && !conn" class="detail-loading" role="status" aria-live="polite" aria-label="Loading connection details" aria-busy="true">
       <div v-for="i in 4" :key="i" class="shimmer detail-loading-line" />
     </div>
     <div v-if="error && conn" class="error read-error" role="alert" aria-live="assertive">
       <span>Showing cached connection data. {{ error }}</span>
-      <button class="secondary" type="button" @click="load">Retry</button>
+      <button class="k-btn k-btn--ghost" type="button" @click="load">Retry</button>
     </div>
     <span v-else-if="loading && loaded" class="sr-only" role="status" aria-live="polite">Updating connection…</span>
     <p v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">{{ mutationError }}</p>
 
     <template v-if="conn">
-      <div v-if="!deleting && !conn.validated && hint" class="panel">
+      <div v-if="!deleting && !conn.validated && hint" class="panel k-card">
         <h3 class="panel-title">Status</h3>
         <p class="muted">{{ hint }}</p>
       </div>
 
-      <div class="panel">
+      <div class="panel k-card">
         <h3 class="panel-title">Overview</h3>
         <dl class="props">
           <dt>Provider</dt><dd>{{ conn.provider }}</dd>
@@ -201,8 +206,8 @@ onUnmounted(() => {
         empty-text="No conditions yet — the controller has not reconciled this connection."
       />
 
-      <div class="actions">
-        <button class="danger" type="button" :disabled="deleting || operations.isLocked(operationKey('connection', conn.name))" @click="remove">
+      <div class="code-form-actions">
+        <button class="k-btn k-btn--danger" type="button" :disabled="deleting || operations.isLocked(operationKey('connection', conn.name))" @click="remove">
           {{ deleting || operations.phase(operationKey('connection', conn.name)) === 'deleting' ? 'Deleting connection…' : 'Delete connection' }}
         </button>
       </div>

@@ -50,6 +50,6 @@ test('composer mounts both current settings', async () => {
   assert.match(app, /<template #controls>/)
   assert.match(composer, /right-12 flex min-w-0/)
   assert.match(composer, /<slot name="controls" \/>/)
-  assert.match(app, /rounded-md bg-accent text-white/)
+  assert.match(app, /rounded-md bg-accent text-on-accent/)
   assert.match(app, /<ArrowUp v-else class="h-4 w-4"/)
 })

@@ -129,11 +129,33 @@ const timer = setInterval(refresh, 10000)
 onUnmounted(() => clearInterval(timer))
 
 function phaseClass(p?: string): string {
-  return p === 'Running' ? 'ok' : 'down'
+  return p === 'Running' ? 'k-badge--success' : 'k-badge--warning'
 }
 function selectorText(s?: Record<string, string>): string {
   if (!s || !Object.keys(s).length) return 'all edges'
   return Object.entries(s).map(([k, v]) => `${k}=${v}`).join(', ')
+}
+
+function isExplicitControlTarget(event: Event): boolean {
+  const currentTarget = event.currentTarget as Element | null
+  const target = event.target as Element | null
+  if (!target || target === currentTarget) return false
+  const control = target.closest?.(
+    'a, button, input, select, textarea, summary, [contenteditable="true"], [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])',
+  )
+  return Boolean(control && control !== currentTarget)
+}
+
+function onWorkloadRowClick(name: string, event: MouseEvent): void {
+  if (isExplicitControlTarget(event)) return
+  toggle(name)
+}
+
+function onWorkloadRowKeydown(name: string, event: KeyboardEvent): void {
+  if (event.repeat || isExplicitControlTarget(event)) return
+  if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return
+  event.preventDefault()
+  toggle(name)
 }
 </script>
 
@@ -145,10 +167,10 @@ function selectorText(s?: Record<string, string>): string {
         <p>Deploy a workload across matching Kubernetes edges. Each edge's agent runs it locally.</p>
       </div>
       <div class="header-actions">
-        <button class="btn" :disabled="loading" @click="refresh">
+        <button class="k-btn k-btn--ghost" :disabled="loading" @click="refresh">
           <RefreshCw :size="14" :class="{ spin: loading }" /> Refresh
         </button>
-        <button class="btn primary" @click="showCreate = !showCreate">
+        <button class="k-btn k-btn--primary" @click="showCreate = !showCreate">
           <Plus :size="14" /> New workload
         </button>
       </div>
@@ -174,11 +196,11 @@ function selectorText(s?: Record<string, string>): string {
             <div v-for="app in grp.apps" :key="app.type" class="market-card">
               <div class="market-card-top">
                 <span class="market-name">{{ app.label }}</span>
-                <span class="chip">{{ app.category }}</span>
+                <span class="k-badge k-badge--muted">{{ app.category }}</span>
               </div>
               <p class="market-desc">{{ app.description }}</p>
               <div class="market-meta muted mono">{{ app.chart.chart }}@{{ app.chart.version }} · :{{ app.port }}</div>
-              <button class="btn primary sm" :disabled="edges.length === 0" @click="openDeploy(app)">
+              <button class="k-btn k-btn--primary compact-control" :disabled="edges.length === 0" @click="openDeploy(app)">
                 <Rocket :size="13" /> Deploy
               </button>
             </div>
@@ -193,11 +215,11 @@ function selectorText(s?: Record<string, string>): string {
       <div class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
           <span class="lbl">Name</span>
-          <input v-model="deployName" class="input" :placeholder="deployApp.type" />
+          <input v-model="deployName" class="k-input" :placeholder="deployApp.type" />
         </label>
         <label class="fld" style="flex: 1;">
           <span class="lbl">Edge</span>
-          <select v-model="deployEdge" class="input">
+          <select v-model="deployEdge" class="k-input">
             <option v-for="e in edges" :key="e.name" :value="e.name">{{ e.name }}</option>
           </select>
         </label>
@@ -207,8 +229,8 @@ function selectorText(s?: Record<string, string>): string {
         Auth: {{ credentialHint[deployApp.credential] }}.
       </div>
       <div class="wiz-actions">
-        <button class="btn" @click="closeDeploy">Cancel</button>
-        <button class="btn primary" :disabled="busy || !deployName.trim() || !deployEdge" @click="onDeploy">
+        <button class="k-btn k-btn--ghost" @click="closeDeploy">Cancel</button>
+        <button class="k-btn k-btn--primary" :disabled="busy || !deployName.trim() || !deployEdge" @click="onDeploy">
           <Rocket :size="14" /> Deploy
         </button>
       </div>
@@ -219,20 +241,20 @@ function selectorText(s?: Record<string, string>): string {
       <h3>New workload</h3>
       <label class="fld">
         <span class="lbl">Name</span>
-        <input v-model="draft.name" class="input" placeholder="nginx-demo" />
+        <input v-model="draft.name" class="k-input" placeholder="nginx-demo" />
       </label>
       <label class="fld">
         <span class="lbl">Image</span>
-        <input v-model="draft.image" class="input" placeholder="nginx:latest" />
+        <input v-model="draft.image" class="k-input" placeholder="nginx:latest" />
       </label>
       <div class="row" style="gap: 12px; align-items: flex-start;">
         <label class="fld" style="flex: 1;">
           <span class="lbl">Replicas</span>
-          <input v-model="draft.replicas" type="number" min="1" class="input" />
+          <input v-model="draft.replicas" type="number" min="1" class="k-input" />
         </label>
         <label class="fld" style="flex: 1;">
           <span class="lbl">Strategy</span>
-          <select v-model="draft.strategy" class="input">
+          <select v-model="draft.strategy" class="k-input">
             <option value="Spread">Spread (all matching edges)</option>
             <option value="Singleton">Singleton (one edge)</option>
           </select>
@@ -240,11 +262,11 @@ function selectorText(s?: Record<string, string>): string {
       </div>
       <label class="fld">
         <span class="lbl">Edge selector (key=value, comma-separated)</span>
-        <input v-model="draft.selector" class="input" placeholder="env=dev" />
+        <input v-model="draft.selector" class="k-input" placeholder="env=dev" />
       </label>
       <div class="wiz-actions">
-        <button class="btn" @click="showCreate = false">Cancel</button>
-        <button class="btn primary" :disabled="busy || !draft.name.trim() || !draft.image.trim()" @click="onCreate">Create</button>
+        <button class="k-btn k-btn--ghost" @click="showCreate = false">Cancel</button>
+        <button class="k-btn k-btn--primary" :disabled="busy || !draft.name.trim() || !draft.image.trim()" @click="onCreate">Create</button>
       </div>
     </div>
 
@@ -256,8 +278,8 @@ function selectorText(s?: Record<string, string>): string {
       <div class="muted">Click <b>New workload</b> to deploy one across your Kubernetes edges.</div>
     </div>
 
-    <div v-else class="edges-table-wrap">
-      <table class="edges-table">
+    <div v-else class="edges-table-wrap k-table">
+      <table class="k-table__table">
       <thead>
         <tr>
           <th></th>
@@ -271,17 +293,24 @@ function selectorText(s?: Record<string, string>): string {
       </thead>
       <tbody>
         <template v-for="w in workloads" :key="w.name">
-          <tr class="clickable" @click="toggle(w.name)">
+          <tr
+            class="is-interactive"
+            tabindex="0"
+            :aria-label="`Toggle workload ${w.name}`"
+            :aria-expanded="expanded === w.name"
+            @click="onWorkloadRowClick(w.name, $event)"
+            @keydown="onWorkloadRowKeydown(w.name, $event)"
+          >
             <td><component :is="expanded === w.name ? ChevronDown : ChevronRight" :size="14" /></td>
             <td class="name">{{ w.name }}</td>
             <td class="mono muted">{{ w.image || '—' }}</td>
             <td class="muted">{{ w.strategy || 'Spread' }} · {{ selectorText(w.selector) }}</td>
             <td>
-              <span class="status" :class="phaseClass(w.phase)">{{ w.phase || 'Pending' }}</span>
+              <span class="k-badge" :class="phaseClass(w.phase)">{{ w.phase || 'Pending' }}</span>
             </td>
             <td class="mono">{{ w.readyReplicas ?? 0 }}/{{ w.replicas ?? 1 }}</td>
             <td class="actions">
-              <button class="icon danger" title="Delete" @click.stop="onDelete(w)"><Trash2 :size="14" /></button>
+              <button class="k-table-action k-table-action--delete" title="Delete" @click.stop="onDelete(w)"><Trash2 :size="14" /></button>
             </td>
           </tr>
           <tr v-if="expanded === w.name" class="detail-row">
@@ -293,7 +322,7 @@ function selectorText(s?: Record<string, string>): string {
               <div v-else class="es-list">
                 <div v-for="e in w.edges" :key="e.edgeName" class="es-item">
                   <span class="es-name">{{ e.edgeName }}</span>
-                  <span class="status" :class="phaseClass(e.phase)">{{ e.phase || 'Pending' }}</span>
+                  <span class="k-badge" :class="phaseClass(e.phase)">{{ e.phase || 'Pending' }}</span>
                   <span class="es-ready mono">{{ e.readyReplicas ?? 0 }} ready</span>
                   <span v-if="e.message" class="muted es-msg">{{ e.message }}</span>
                 </div>

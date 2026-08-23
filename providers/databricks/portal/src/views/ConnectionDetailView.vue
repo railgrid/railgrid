@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ArrowLeft } from 'lucide-vue-next'
 import { api } from '../api'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
@@ -187,7 +188,7 @@ onUnmounted(() => {
 
 <template>
   <section class="page">
-    <button class="link back" type="button" :disabled="!!conn && operationLocked(conn.name)" @click="emit('back')">← Connections</button>
+    <button class="link back" type="button" :disabled="!!conn && operationLocked(conn.name)" @click="emit('back')"><ArrowLeft :size="14" aria-hidden="true" /> Connections</button>
 
     <header class="page-head">
       <div>
@@ -217,13 +218,13 @@ onUnmounted(() => {
     </div>
 
     <template v-if="conn">
-      <div v-if="hint" class="panel">
-        <h3 class="panel-title">Status</h3>
+      <div v-if="hint" class="databricks-resource-panel k-card">
+        <h3 class="databricks-resource-panel-title">Status</h3>
         <p class="muted">{{ hint }}</p>
       </div>
 
-      <div class="panel">
-        <h3 class="panel-title">Overview</h3>
+      <div class="databricks-resource-panel k-card">
+        <h3 class="databricks-resource-panel-title">Overview</h3>
         <dl class="props">
           <dt>Workspace host</dt><dd><code>{{ conn.host }}</code></dd>
           <dt>Type</dt><dd>{{ conn.authType }}</dd>
@@ -243,8 +244,8 @@ onUnmounted(() => {
         </dl>
       </div>
 
-      <div v-if="editing" class="panel">
-        <h3 class="panel-title">Update connection</h3>
+      <div v-if="editing" class="databricks-resource-panel k-card">
+        <h3 class="databricks-resource-panel-title">Update connection</h3>
         <p class="field-hint">Change the workspace host or rotate the token. Leave the token blank to keep the current Secret.</p>
         <form class="form" @submit.prevent="saveEdit">
           <div class="field">

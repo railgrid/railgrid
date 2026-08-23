@@ -124,8 +124,12 @@ Numbers that align in columns always get `font-variant-numeric: tabular-nums`.
 
 ## 5. The recipes (`k-*` classes)
 
-`portal/src/assets/faros-ui.css` is the component vocabulary. It cascades into
-every light-DOM provider — **use these classes before writing any CSS**:
+`provider-sdk/portalkit/faros-ui.css` is the canonical component vocabulary. The
+host copy at `portal/src/assets/faros-ui.css` and the copies vendored under each
+portal's `src/portalkit/` are exact sync outputs — `make sync-portalkit` writes
+them and `make verify-portalkit` rejects drift or unexpected files. The
+stylesheet cascades into every light-DOM provider — **use these classes before
+writing any CSS**:
 
 | Class | What it is |
 |---|---|
@@ -174,8 +178,11 @@ texture (login, empty states — sparingly), `.island` floating dock card,
   `portalkit/ResourceTableDeleteButton.vue` for compact row actions that reveal
   on row hover or keyboard focus (and remain visible on touch). Give every action
   a resource-specific accessible label, and keep destructive actions inside
-  `confirmDialog({ danger: true })`. Labeled actions remain appropriate on detail
-  pages.
+  `confirmDialog({ danger: true })`. `ResourceTable` keeps native table-row
+  semantics: interactive `<tr>` elements are focusable with `tabindex="0"`,
+  Enter/Space activates the row, and nested links, buttons, inputs, selects,
+  summaries, and other explicit controls do not activate the row. Do not turn a
+  row into `role="button"`. Labeled actions remain appropriate on detail pages.
 - **Modals / dialogs.** 6px, surface-raised, hairline, heavy elevation shadow
   allowed. The scrim derives from **surface** (`color-mix(surface 60%)`), never
   from text (a text-derived scrim inverts to white in dark). Use the portalkit
@@ -254,11 +261,19 @@ Two integration modes, one look:
 
 **Portalkit** (confirm dialogs, ResourceTable, StatusBadge, tenant helpers) is
 canonical in `provider-sdk/portalkit` (vanilla TS) and
-`provider-sdk/portalkit-vue` (SFC). The shared provider-tab assets are
-`provider-sdk/portalkit/tabs.css`, `tabs.ts`, and
-`provider-sdk/portalkit-vue/Tabs.vue`; edit canonical files, then run
-`make sync-portalkit`. Never edit the vendored copies under
-`*/src/portalkit/` — CI's `verify-portalkit` fails on drift.
+`provider-sdk/portalkit-vue` (SFC). The shared provider-tab recipe is in the
+canonical `provider-sdk/portalkit/faros-ui.css`; `tabs.ts` and
+`provider-sdk/portalkit-vue/Tabs.vue` provide class/component helpers. Edit
+canonical files, then run `make sync-portalkit`. Never edit the vendored copies
+under `*/src/portalkit/` — CI's `verify-portalkit` fails on drift.
+
+Standalone bundles call `ensureFarosUIStyles()` before rendering. It first
+accepts a host stylesheet whose computed `:root` marker
+`--faros-ui-canonical: 1` is present, or an existing `#k-faros-ui` style. If
+neither exists, it appends the exact vendored stylesheet as a
+`data-faros-ui-source="portalkit-fallback"` fallback. It never replaces or
+mutates an existing style element, so a provider's older fallback cannot
+overwrite the host's canonical CSS.
 
 ## 10. Extended component specs
 
@@ -289,9 +304,13 @@ and renders the identical recipe; it can migrate opportunistically. Contract:
   variant additionally turns the card border `danger`. No tinted backgrounds.
 - Type: 13px `text-primary` message; optional 10px mono uppercase eyebrow for
   the source ("EDGES", "BUILD").
-- Behavior: auto-dismiss 5s (errors 8s, or sticky with an explicit ✕), pause
-  on hover, `role="status"` (`role="alert"` for errors), entry = slide-up
-  fade (`agents-toast-in`), exit = fade. Toasts never glow.
+- Behavior: auto-dismiss `ok` in 4s, `info` in 6s, and `error` in 9s; pause on
+  hover and re-arm with the full duration on leave. Every card has an explicit
+  dismiss button; the host uses `role="status"` (`role="alert"` for errors).
+  Entry is a slide-up fade (`k-toast-in`); toasts never glow. The Agents
+  adapter delegates DOM, timers, actions, and the visible-item cap to this
+  canonical bus while retaining its subscription API and reconciling renderer
+  removals.
 
 ### Dropdown / context menu — ✅ implemented as `.k-menu` (faros-ui.css)
 App-studio's `PreviewActionsMenu` / `ResponseModePicker` /
@@ -308,11 +327,11 @@ App-studio's `PreviewActionsMenu` / `ResponseModePicker` /
 ### Provider route tabs — ✅ implemented as PortalKit `Tabs`
 
 This is the labeled provider-level route/section navigation used by Agents, App
-Studio, Code, Databricks, and Edges. The canonical assets are
-`provider-sdk/portalkit/tabs.css`, `tabs.ts`, and
-`provider-sdk/portalkit-vue/Tabs.vue`; `make sync-portalkit` vendors them into
-the portals. Infrastructure, Kuery, and Quickstart have no equivalent
-provider-level bar.
+Studio, Code, Databricks, Edges, and Kuery. The canonical recipe is in
+`provider-sdk/portalkit/faros-ui.css`; `tabs.ts` and
+`provider-sdk/portalkit-vue/Tabs.vue` provide helpers, and
+`make sync-portalkit` vendors the exact assets into the portals. Infrastructure
+and Quickstart have no equivalent provider-level bar.
 
 - Markup: a labeled nav with an icon + label and an optional count. Counts are
   square 3px-radius mono tags; tabs use the 4px control radius.
@@ -323,7 +342,7 @@ provider-level bar.
   no glow or shadow.
 - Semantics: each tab is `type="button"` and the active tab exposes
   `aria-current="page"`. Routing remains caller-owned; Vue `Tabs` emits
-  `select` and exposes each id as `data-pk-tab-id`.
+  `select` and exposes each id as `data-k-tab-id`.
 
 Detail/workbench tabsets are not automatically provider-route tabs; apply this
 spec when the tabset is the provider-level route/section bar.
@@ -339,10 +358,14 @@ spec when the tabset is the provider-level route/section bar.
 ### Checkbox / radio
 Native inputs + `accent-color: var(--color-accent)` (inherited from `body`) is
 the system default — keep it; don't hand-draw controls for standard forms.
-If a custom one is ever justified (indeterminate states, dense tables):
-14×14px, 3px radius (radio: circle), `border-default` 1px, checked =
-`accent` fill + white 10px check, focus = the standard 3px `accent-subtle`
-ring. Label: 12px `text-secondary`, gap 8px.
+For a dense native checkbox that sits inside a composite control, use the
+canonical `.k-checkbox` reset in `provider-sdk/portalkit/faros-ui.css`: 14×14px,
+zero min dimensions, padding, and margin, native accent color, and no ordinary
+focus shadow. Its `:focus-visible` treatment is only the compact 3px
+`accent-subtle` ring — never `accent-glow`. Keep the composite row (for example
+the `treeitem`) as the keyboard focus owner; a visually present checkbox may be
+`tabindex="-1"`/`aria-hidden="true"` and route pointer activation back to that
+row. Label: 12px `text-secondary`, gap 8px.
 
 ### Toggle switch — ✅ implemented as `.k-toggle` (faros-ui.css)
 Sharp: 3px track (`bg-accent` when `aria-checked="true"`, `border-default`

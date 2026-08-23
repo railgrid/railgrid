@@ -19,6 +19,8 @@ const props = withDefaults(defineProps<{
   retryable?: boolean
   emptyText?: string
   interactive?: boolean
+  /** Accessible name for an interactive row. A function can derive it from the row. */
+  rowAriaLabel?: string | ((row: Record<string, unknown>, index: number) => string)
 }>(), {
   // Vue casts an omitted Boolean prop to false in child components. A null
   // sentinel preserves omission so legacy callers retain loading -> content
@@ -51,10 +53,6 @@ const emit = defineEmits<{
   retry: []
 }>()
 
-function onRowClick(row: Record<string, unknown>) {
-  if (props.interactive) emit('rowClick', row)
-}
-
 function rowIdentity(row: Record<string, unknown>, index: number): string | number {
   if (typeof props.rowKey === 'function') return props.rowKey(row, index)
   if (typeof props.rowKey === 'string') {
@@ -67,16 +65,46 @@ function rowIdentity(row: Record<string, unknown>, index: number): string | numb
   }
   return index
 }
+
+function rowAriaLabel(row: Record<string, unknown>, index: number): string | undefined {
+  const label = typeof props.rowAriaLabel === 'function'
+    ? props.rowAriaLabel(row, index)
+    : props.rowAriaLabel
+  return label || undefined
+}
+
+function isExplicitControlTarget(event: Event): boolean {
+  const currentTarget = event.currentTarget as Element | null
+  const target = event.target as Element | null
+  if (!target || target === currentTarget) return false
+  const element = target as Element | null
+  const control = element?.closest?.(
+    'a, button, input, select, textarea, summary, [contenteditable="true"], [role="button"], [role="link"], [tabindex]:not([tabindex="-1"])',
+  )
+  return Boolean(control && control !== currentTarget)
+}
+
+function onRowClick(row: Record<string, unknown>, event?: MouseEvent | KeyboardEvent) {
+  if (!props.interactive || (event && isExplicitControlTarget(event))) return
+  emit('rowClick', row)
+}
+
+function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
+  if (!props.interactive || event.repeat || isExplicitControlTarget(event)) return
+  if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return
+  event.preventDefault()
+  onRowClick(row, event)
+}
 </script>
 
 <template>
   <div
-    class="resource-table"
+    class="k-table"
     :aria-busy="ariaBusy"
   >
     <!-- Keep the live region outside layout so background reads cannot move the table. -->
     <span
-      class="resource-table-live"
+      class="k-table__live"
       role="status"
       aria-live="polite"
       aria-atomic="true"
@@ -84,38 +112,38 @@ function rowIdentity(row: Record<string, unknown>, index: number): string | numb
     >
       {{ explicitReadState && loading && loaded ? 'Updating…' : '' }}
     </span>
-    <div v-if="showInitialError" class="resource-table-error" role="alert" aria-live="assertive">
-      <AlertCircle class="resource-table-error-icon" :stroke-width="1.75" />
-      <span class="resource-table-error-message">{{ error }}</span>
-      <button v-if="retryable" class="resource-table-retry" type="button" @click="emit('retry')">Retry</button>
+    <div v-if="showInitialError" class="k-table__error" role="alert" aria-live="assertive">
+      <AlertCircle class="k-table__error-icon" :stroke-width="1.75" />
+      <span class="k-table__error-message">{{ error }}</span>
+      <button v-if="retryable" class="k-table__retry" type="button" @click="emit('retry')">Retry</button>
     </div>
 
-    <div v-else-if="showInitialLoading" class="resource-table-loading" role="status" aria-live="polite" aria-label="Loading resources">
-      <div class="resource-table-loading-head">
-        <div class="shimmer resource-table-skeleton resource-table-skeleton-short" />
+    <div v-else-if="showInitialLoading" class="k-table__loading" role="status" aria-live="polite" aria-label="Loading resources">
+      <div class="k-table__loading-head">
+        <div class="shimmer k-table__skeleton k-table__skeleton--short" />
       </div>
-      <div v-for="i in 5" :key="i" class="resource-table-loading-row">
-        <div class="shimmer resource-table-skeleton resource-table-skeleton-wide" />
-        <div class="shimmer resource-table-skeleton resource-table-skeleton-mid" />
-        <div class="shimmer resource-table-skeleton resource-table-skeleton-small" />
+      <div v-for="i in 5" :key="i" class="k-table__loading-row">
+        <div class="shimmer k-table__skeleton k-table__skeleton--wide" />
+        <div class="shimmer k-table__skeleton k-table__skeleton--mid" />
+        <div class="shimmer k-table__skeleton k-table__skeleton--small" />
       </div>
     </div>
 
     <template v-else>
-      <div v-if="explicitReadState && error" class="resource-table-stale" role="alert" aria-live="assertive">
-        <AlertCircle class="resource-table-error-icon" :stroke-width="1.75" />
-        <span class="resource-table-error-message">
+      <div v-if="explicitReadState && error" class="k-table__stale" role="alert" aria-live="assertive">
+        <AlertCircle class="k-table__error-icon" :stroke-width="1.75" />
+        <span class="k-table__error-message">
           {{ stale ? 'Showing the last successful result. ' : '' }}{{ error }}
         </span>
-        <button v-if="retryable" class="resource-table-retry" type="button" @click="emit('retry')">Retry</button>
+        <button v-if="retryable" class="k-table__retry" type="button" @click="emit('retry')">Retry</button>
       </div>
-      <table class="resource-table-table">
+      <table class="k-table__table">
         <thead>
-          <tr class="resource-table-head-row">
+          <tr class="k-table__head-row">
             <th
               v-for="col in columns"
               :key="col.key"
-              class="resource-table-heading"
+              class="k-table__heading"
             >
               {{ col.label }}
             </th>
@@ -125,15 +153,18 @@ function rowIdentity(row: Record<string, unknown>, index: number): string | numb
           <tr
             v-for="(row, i) in rows"
             :key="rowIdentity(row, i)"
-            class="stagger-item resource-table-row"
-            :class="{ 'is-interactive': interactive }"
+            class="stagger-item k-table__row"
+            :class="{ 'k-table__row--interactive': interactive }"
+            :tabindex="interactive ? 0 : undefined"
+            :aria-label="interactive ? rowAriaLabel(row, i) : undefined"
             :style="{ animationDelay: `${i * 35}ms` }"
-            @click="onRowClick(row)"
+            @click="onRowClick(row, $event)"
+            @keydown="onRowKeydown(row, $event)"
           >
             <td
               v-for="col in columns"
               :key="col.key"
-              class="resource-table-cell"
+              class="k-table__cell"
             >
               <slot :name="col.key" :value="row[col.key]" :row="row">
                 {{ row[col.key] }}
@@ -141,9 +172,9 @@ function rowIdentity(row: Record<string, unknown>, index: number): string | numb
             </td>
           </tr>
           <tr v-if="rows.length === 0">
-            <td :colspan="columns.length" class="resource-table-empty-cell">
-              <Inbox class="resource-table-empty-icon" :stroke-width="1.25" />
-              <p class="resource-table-empty-label">{{ emptyText }}</p>
+            <td :colspan="columns.length" class="k-table__empty-cell">
+              <Inbox class="k-table__empty-icon" :stroke-width="1.25" />
+              <p class="k-table__empty-label">{{ emptyText }}</p>
             </td>
           </tr>
         </tbody>

@@ -69,7 +69,7 @@ func TestBYOProviderBackendThroughTunnel(t *testing.T) {
 	}
 
 	edgeName := "byo-server"
-	workDir := t.TempDir()
+	workDir := suiteTempDir(t, "byo-provider")
 	kubeconfig := filepath.Join(workDir, "faros.kubeconfig")
 
 	// Same bring-up as the kubectl-through-tunnel case: a tenant with edges
@@ -225,7 +225,8 @@ func startQuickstart(t *testing.T) {
 	}
 	bin := filepath.Join(repoRoot, "bin", "quickstart-provider")
 
-	logf, _ := os.Create(filepath.Join(t.TempDir(), "quickstart.log"))
+	logDir := suiteTempDir(t, "quickstart-provider")
+	logf, _ := os.Create(filepath.Join(logDir, "quickstart.log"))
 	cmd := exec.Command(bin, "serve")
 	cmd.Env = append(os.Environ(), "PORT="+quickstartPort)
 	cmd.Stdout = logf

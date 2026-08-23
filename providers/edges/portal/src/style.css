@@ -33,43 +33,23 @@ faros-provider-edges .edges-app { display: flex; flex-direction: column; gap: 16
 
 /* ── Header ── */
 faros-provider-edges .edges-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+faros-provider-edges .edges-header > :first-child { flex: 1 1 auto; min-width: 0; }
+faros-provider-edges .edges-header > :first-child > div { min-width: 0; }
 faros-provider-edges .edges-header h1 { font-size: 18px; font-weight: 600; margin: 0; color: var(--color-text-primary); }
 faros-provider-edges .edges-header p { margin: 4px 0 0; color: var(--color-text-secondary); font-size: 12px; }
-faros-provider-edges .header-actions { display: flex; gap: 8px; }
+faros-provider-edges .edges-header h1, faros-provider-edges .edges-header p { overflow-wrap: anywhere; }
+faros-provider-edges .header-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+faros-provider-edges .header-actions button { flex: 0 0 auto; white-space: nowrap; }
 
-/* ── Buttons ── */
-faros-provider-edges .btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 7px 12px; border: 1px solid var(--color-border-default); border-radius: 4px;
-  background: var(--color-surface-overlay); color: var(--color-text-primary);
-  font-size: 12px; font-weight: 500; cursor: pointer;
-  transition: border-color .15s, background .15s, opacity .15s;
+@media (max-width: 720px) {
+  faros-provider-edges .edges-header { align-items: stretch; flex-direction: column; }
+  faros-provider-edges .header-actions { justify-content: flex-start; width: 100%; }
 }
-faros-provider-edges .btn:hover { border-color: color-mix(in srgb, var(--color-accent) 30%, transparent); background: var(--color-surface-hover); }
-faros-provider-edges .btn:disabled { opacity: .4; cursor: default; }
-faros-provider-edges .btn:disabled:hover { border-color: var(--color-border-default); background: var(--color-surface-overlay); }
-faros-provider-edges .btn.primary { background: var(--color-accent); border-color: transparent; color: #fff; box-shadow: 0 0 16px var(--color-accent-glow); }
-faros-provider-edges .btn.primary:hover { background: var(--color-accent-hover); box-shadow: 0 0 22px var(--color-accent-glow); }
-faros-provider-edges .btn.danger:hover { border-color: color-mix(in srgb, var(--color-danger) 30%, transparent); background: var(--color-danger-subtle); color: var(--color-danger); }
-
-/* ── Icon buttons ── */
-faros-provider-edges .icon { display: inline-flex; align-items: center; justify-content: center; background: none; border: none; color: var(--color-text-muted); cursor: pointer; padding: 5px; border-radius: 4px; transition: color .15s, background .15s; }
-faros-provider-edges .icon:hover { color: var(--color-text-primary); background: var(--color-surface-hover); }
-faros-provider-edges .icon.danger:hover { color: var(--color-danger); background: var(--color-danger-subtle); }
 
 /* ── Inputs & labels ── */
-faros-provider-edges .input {
-  width: 100%; box-sizing: border-box; padding: 8px 12px;
-  border: 1px solid var(--color-border-default); border-radius: 4px;
-  background: var(--color-surface-overlay); color: var(--color-text-primary);
-  font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; transition: border-color .15s, box-shadow .15s;
-}
-faros-provider-edges .input:focus { outline: none; border-color: var(--color-accent); box-shadow: 0 0 0 3px var(--color-accent-subtle), 0 0 14px var(--color-accent-glow); }
-faros-provider-edges .input::placeholder { color: var(--color-text-muted); }
 faros-provider-edges .lbl { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .15em; color: var(--color-text-muted); }
 /* Labelled form field: label stacked above its control with a small gap. */
 faros-provider-edges .fld { display: flex; flex-direction: column; gap: 5px; }
-faros-provider-edges select.input { appearance: none; -webkit-appearance: none; cursor: pointer; }
 
 /* ── Cards ── */
 faros-provider-edges .wiz-card { border: 1px solid var(--color-border-subtle); background: var(--color-surface-raised); border-radius: 6px; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
@@ -122,21 +102,11 @@ faros-provider-edges .empty-title { margin-top: 12px; font-weight: 600; color: v
 faros-provider-edges .empty code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; color: var(--color-text-primary); background: var(--color-surface-overlay); padding: 1px 5px; border-radius: 4px; }
 
 /* ── Table (mirrors portal ResourceTable card) ── */
-faros-provider-edges .edges-table-wrap { overflow: hidden; border: 1px solid var(--color-border-subtle); border-radius: 6px; background: var(--color-surface-raised); }
-faros-provider-edges .edges-table { width: 100%; border-collapse: collapse; }
-faros-provider-edges .edges-table th { text-align: left; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .15em; color: var(--color-text-muted); padding: 12px 20px; border-bottom: 1px solid var(--color-border-subtle); }
-faros-provider-edges .edges-table td { padding: 12px 20px; border-bottom: 1px solid var(--color-border-subtle); color: var(--color-text-secondary); font-size: 13px; }
-faros-provider-edges .edges-table tbody tr:last-child td { border-bottom: none; }
-faros-provider-edges .edges-table tr.clickable { cursor: pointer; transition: background .12s; }
-faros-provider-edges .edges-table tr.clickable:hover td { background: color-mix(in srgb, var(--color-accent) 4%, transparent); color: var(--color-text-primary); }
+faros-provider-edges .edges-table-wrap { overflow-x: auto; }
 faros-provider-edges .name { font-weight: 500; color: var(--color-text-primary); }
 faros-provider-edges .actions { text-align: right; }
 
 /* ── Tags & status badges (square mono tags, mirror portal .k-badge) ── */
-faros-provider-edges .pill { display: inline-flex; align-items: center; gap: 5px; padding: 2.5px 8px; border-radius: 3px; background: var(--color-surface-overlay); border: 1px solid color-mix(in srgb, currentColor 35%, transparent); color: var(--color-text-secondary); font-family: var(--font-mono); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
-faros-provider-edges .status { display: inline-flex; align-items: center; gap: 5px; padding: 2.5px 8px; border-radius: 3px; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); font-family: var(--font-mono); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
-faros-provider-edges .status.ok { background: var(--color-success-subtle); color: var(--color-success); }
-faros-provider-edges .status.down { background: var(--color-warning-subtle); color: var(--color-warning); }
 
 /* ── Detail view ── */
 faros-provider-edges .detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 8px; }
@@ -164,10 +134,8 @@ faros-provider-edges .svc-card { border: 1px solid var(--color-border-default); 
 faros-provider-edges .svc-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 faros-provider-edges .svc-title { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13px; color: var(--color-text-primary); }
 faros-provider-edges .svc-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--color-text-secondary); }
-faros-provider-edges .svc-meta .pill.ok-pill { background: var(--color-success-subtle); color: var(--color-success); }
 faros-provider-edges .svc-connect { margin-top: 10px; }
-faros-provider-edges .svc-input { width: 100%; padding: 7px 10px; border: 1px solid var(--color-border-default); border-radius: 4px; background: var(--color-surface-base); color: var(--color-text-primary); font-size: 12px; box-sizing: border-box; margin-bottom: 8px; }
-faros-provider-edges .svc-input:focus { outline: none; border-color: var(--color-accent); box-shadow: 0 0 0 3px var(--color-accent-subtle), 0 0 14px var(--color-accent-glow); }
+faros-provider-edges .svc-input { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
 faros-provider-edges .muted.small { font-size: 11px; margin-top: 6px; }
 faros-provider-edges .svc-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 10px 0; }
 faros-provider-edges .svc-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--color-text-secondary); }
@@ -187,5 +155,4 @@ faros-provider-edges .market-card-top { display: flex; align-items: center; just
 faros-provider-edges .market-name { font-weight: 600; font-size: 13px; color: var(--color-text-primary); }
 faros-provider-edges .market-desc { margin: 0; font-size: 12px; color: var(--color-text-secondary); min-height: 32px; }
 faros-provider-edges .market-meta { font-size: 11px; }
-faros-provider-edges .chip { font-family: var(--font-mono); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; padding: 2.5px 8px; border-radius: 3px; border: 1px solid color-mix(in srgb, currentColor 35%, transparent); background: var(--color-surface-hover); color: var(--color-text-muted); white-space: nowrap; }
-faros-provider-edges .btn.sm { padding: 4px 10px; font-size: 12px; align-self: flex-start; }
+faros-provider-edges .compact-control { padding: 4px 10px; font-size: 12px; align-self: flex-start; }

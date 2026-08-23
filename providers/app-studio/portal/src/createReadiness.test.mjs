@@ -134,7 +134,7 @@ test('new-project route has one setup surface and a stable wizard entry label', 
   assert.equal(appSource.includes('workspaceSetupLabel'), false)
   assert.equal(appSource.includes('createPromptSubmitLabel'), false)
   assert.equal(appSource.includes('to create a durable project.'), false)
-  assert.match(appSource, /<nav[^>]*aria-label="App Studio sections"[\s\S]*Projects[\s\S]*Models/)
+  assert.match(appSource, /<Tabs[\s\S]*aria-label="App Studio sections"/)
   assert.match(appSource, /function openSettings\(\)[\s\S]*openModelsSection\(\)/)
   assert.equal(appSource.includes('error.value = gitConnectionCreateReady.value ? null : createReadinessError.value || createPromptBlockedMessage(createReadiness.value)'), false)
   assert.match(appSource, /if \(gitConnectionCreateReady\.value && llmConfigured\.value\) return true\s+error\.value = null\s+return false/)

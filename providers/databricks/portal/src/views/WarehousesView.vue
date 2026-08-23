@@ -209,8 +209,8 @@ onUnmounted(() => {
 
     <p v-if="loaded && !connections.length" class="empty">Add a connection first, then import warehouses under it.</p>
 
-    <div v-if="showForm" class="panel">
-      <h3 class="panel-title">New warehouse</h3>
+    <div v-if="showForm" class="databricks-resource-panel k-card">
+      <h3 class="databricks-resource-panel-title">New warehouse</h3>
       <form class="form" @submit.prevent="submit">
         <div class="field">
           <label class="field-label" for="warehouse-connection">Connection</label>
@@ -259,6 +259,7 @@ onUnmounted(() => {
       :stale="loaded && !!error"
       retryable
       empty-text="No warehouses yet."
+      :row-aria-label="(row) => `Open warehouse ${String(row.name)}`"
       @retry="load"
       @row-click="(row) => openResource(String(row.name))"
     >

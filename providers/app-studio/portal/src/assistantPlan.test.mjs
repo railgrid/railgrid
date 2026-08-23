@@ -60,7 +60,7 @@ test('rejects labels longer than one hundred twenty UTF-8 bytes', () => {
     undefined,
   )
   assert.equal(
-    parseAssistantPlan({ steps: [{ content: '😀'.repeat(31), status: 'pending' }] }),
+    parseAssistantPlan({ steps: [{ content: '\u{1F600}'.repeat(31), status: 'pending' }] }),
     undefined,
   )
 })

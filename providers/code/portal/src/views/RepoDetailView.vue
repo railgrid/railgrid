@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { AlertTriangle } from 'lucide-vue-next'
+import { AlertTriangle, ArrowLeft, ExternalLink } from 'lucide-vue-next'
 import { api } from '../api'
 import type { Collaborator, Connection, DeployKey, ErrorResponse, Package, RepositoryDetail } from '../types'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
@@ -387,7 +387,7 @@ onUnmounted(() => {
 
 <template>
   <section class="page" :aria-busy="repoLoading">
-    <button class="link back" type="button" @click="emit('back')">← Repositories</button>
+    <button class="k-btn k-btn--ghost code-back-action" type="button" @click="emit('back')"><ArrowLeft :size="14" aria-hidden="true" /> Repositories</button>
 
     <header class="page-head">
       <div>
@@ -404,31 +404,31 @@ onUnmounted(() => {
     </header>
 
     <div v-if="repoError && !repo" class="error read-error" role="alert" aria-live="assertive">
-      <span>{{ repoError }}</span><button class="secondary" type="button" @click="loadRepository">Retry</button>
+      <span>{{ repoError }}</span><button class="k-btn k-btn--ghost" type="button" @click="loadRepository">Retry</button>
     </div>
     <div v-else-if="repoLoading && !repo" class="detail-loading" role="status" aria-live="polite" aria-label="Loading repository details" aria-busy="true">
       <div v-for="i in 5" :key="i" class="shimmer detail-loading-line" />
     </div>
     <div v-if="repoError && repo" class="error read-error" role="alert" aria-live="assertive">
-      <span>Showing cached repository data. {{ repoError }}</span><button class="secondary" type="button" @click="loadRepository">Retry</button>
+      <span>Showing cached repository data. {{ repoError }}</span><button class="k-btn k-btn--ghost" type="button" @click="loadRepository">Retry</button>
     </div>
     <span v-else-if="repoLoading && repoLoaded" class="sr-only" role="status" aria-live="polite">Updating repository…</span>
 
     <template v-if="repo">
-      <div class="panel">
+      <div class="panel k-card">
         <h3 class="panel-title">Overview</h3>
         <dl class="props">
           <dt>Connection</dt>
           <dd>
             <div class="conn-edit" :aria-busy="connectionsLoading">
-              <select v-model="selectedConn" :disabled="repositoryDeleting || changingConn || !connectionsLoaded">
+              <select v-model="selectedConn" class="k-input" :disabled="repositoryDeleting || changingConn || !connectionsLoaded">
                 <option v-for="c in connectionChoices" :key="c.name" :value="c.name">{{ c.name }} ({{ c.owner }})</option>
               </select>
-              <button class="primary" type="button" :disabled="repositoryDeleting || changingConn || !connectionsLoaded || selectedConn === repo.connectionRef" @click="changeConnection">{{ changingConn ? 'Changing…' : 'Change' }}</button>
+              <button class="k-btn k-btn--primary" type="button" :disabled="repositoryDeleting || changingConn || !connectionsLoaded || selectedConn === repo.connectionRef" @click="changeConnection">{{ changingConn ? 'Changing…' : 'Change' }}</button>
             </div>
             <span v-if="connectionsLoading && !connectionsLoaded" class="muted" role="status" aria-live="polite">Loading connections…</span>
             <div v-if="connectionsError" class="error read-error" role="alert" aria-live="assertive">
-              <span>{{ connectionsLoaded ? 'Showing cached connection choices. ' : '' }}{{ connectionsError }}</span><button class="secondary" type="button" @click="loadConnections">Retry</button>
+              <span>{{ connectionsLoaded ? 'Showing cached connection choices. ' : '' }}{{ connectionsError }}</span><button class="k-btn k-btn--ghost" type="button" @click="loadConnections">Retry</button>
             </div>
             <span v-else-if="connectionsLoading && connectionsLoaded" class="sr-only" role="status" aria-live="polite">Updating connections…</span>
             <p v-if="ownerWillChange" class="conn-warn"><AlertTriangle :size="15" class="warn-ic" /> Owner <code>{{ newOwner }}</code> differs from current <code>{{ currentOwner }}</code> — this re-targets the repo to a different account and may create a new repo there.</p>
@@ -444,50 +444,50 @@ onUnmounted(() => {
       <ConditionsPanel :conditions="repo.conditions" :generation="repo.generation" :observed-generation="repo.observedGeneration" empty-text="No conditions yet — the controller has not reconciled this repository." />
 
       <div class="grid-2">
-        <div class="panel section-panel">
+        <div class="panel section-panel k-card">
           <div class="panel-head"><h3 class="panel-title">Deploy keys</h3><span v-if="keysLoaded" class="muted">{{ keyRows.length }}</span></div>
           <form class="form" @submit.prevent="addKey">
-            <div class="field"><span class="field-label">Title</span><input v-model="keyTitle" :disabled="repositoryDeleting" placeholder="ci-deploy" autocomplete="off" /></div>
-            <div class="field"><span class="field-label">Public key (leave empty to generate)</span><textarea v-model="keyPublic" :disabled="repositoryDeleting" rows="2" placeholder="ssh-ed25519 AAAA…" /></div>
+            <label class="field"><span class="field-label">Title</span><input v-model="keyTitle" class="k-input" :disabled="repositoryDeleting" placeholder="ci-deploy" autocomplete="off" /></label>
+            <label class="field"><span class="field-label">Public key (leave empty to generate)</span><textarea v-model="keyPublic" class="k-input" :disabled="repositoryDeleting" rows="2" placeholder="ssh-ed25519 AAAA…" /></label>
             <label class="field field-check"><input v-model="keyReadOnly" type="checkbox" :disabled="repositoryDeleting" /> read-only</label>
-            <div class="actions"><button class="primary" type="submit" :disabled="repositoryDeleting || keySubmitting || !keysLoaded">{{ keySubmitting ? 'Adding…' : 'Add deploy key' }}</button><span v-if="keyError" class="error" role="alert">{{ keyError }}</span></div>
+            <div class="code-form-actions"><button class="k-btn k-btn--primary" type="submit" :disabled="repositoryDeleting || keySubmitting || !keysLoaded">{{ keySubmitting ? 'Adding…' : 'Add deploy key' }}</button><span v-if="keyError" class="error" role="alert">{{ keyError }}</span></div>
             <p class="muted">A generated key's private half is written to a Secret in your workspace.</p>
           </form>
           <p v-if="keyDeleteError" class="error mutation-error" role="alert" aria-live="assertive">{{ keyDeleteError }}</p>
           <ResourceTable :columns="keyColumns" :rows="keyRows" row-key="name" :loaded="keysLoaded" :loading="keysLoading" :error="keysError" :stale="keysLoaded && !!keysError" retryable empty-text="No deploy keys." :interactive="false" @retry="loadKeys">
             <template #title="{ row }"><strong>{{ row.title }}</strong><div v-if="row.generated && row.secretName" class="muted">secret: <code>{{ row.secretName }}</code></div></template>
-            <template #access="{ value }"><span class="badge muted">{{ value }}</span></template>
+            <template #access="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
             <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>
-            <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Delete deploy key ${String(row.title)}`" :busy-label="`Deleting deploy key ${String(row.title)}…`" :busy="Boolean(row.deleting) || operations.phase(operationKey('deploy-key', String(row.name))) === 'deleting'" :disabled="repositoryDeleting || Boolean(row.deleting) || operations.isLocked(operationKey('deploy-key', String(row.name)))" @click="removeKey(row)" /></div></template>
+            <template #actions="{ row }"><div class="code-row-actions"><ResourceTableDeleteButton :label="`Delete deploy key ${String(row.title)}`" :busy-label="`Deleting deploy key ${String(row.title)}…`" :busy="Boolean(row.deleting) || operations.phase(operationKey('deploy-key', String(row.name))) === 'deleting'" :disabled="repositoryDeleting || Boolean(row.deleting) || operations.isLocked(operationKey('deploy-key', String(row.name)))" @click="removeKey(row)" /></div></template>
           </ResourceTable>
         </div>
 
-        <div class="panel section-panel">
+        <div class="panel section-panel k-card">
           <div class="panel-head"><h3 class="panel-title">Collaborators</h3><span v-if="collabsLoaded" class="muted">{{ collabRows.length }}</span></div>
           <form class="form" @submit.prevent="addCollab">
-            <div class="field"><span class="field-label">Username</span><input v-model="collabUser" :disabled="repositoryDeleting" placeholder="octocat" autocomplete="off" /></div>
-            <div class="field"><span class="field-label">Permission</span><select v-model="collabPerm" :disabled="repositoryDeleting"><option value="pull">pull</option><option value="push">push</option><option value="admin">admin</option></select></div>
-            <div class="actions"><button class="primary" type="submit" :disabled="repositoryDeleting || collabSubmitting || !collabsLoaded">{{ collabSubmitting ? 'Adding…' : 'Add collaborator' }}</button><span v-if="collabError" class="error" role="alert">{{ collabError }}</span></div>
+            <label class="field"><span class="field-label">Username</span><input v-model="collabUser" class="k-input" :disabled="repositoryDeleting" placeholder="octocat" autocomplete="off" /></label>
+            <label class="field"><span class="field-label">Permission</span><select v-model="collabPerm" class="k-input" :disabled="repositoryDeleting"><option value="pull">pull</option><option value="push">push</option><option value="admin">admin</option></select></label>
+            <div class="code-form-actions"><button class="k-btn k-btn--primary" type="submit" :disabled="repositoryDeleting || collabSubmitting || !collabsLoaded">{{ collabSubmitting ? 'Adding…' : 'Add collaborator' }}</button><span v-if="collabError" class="error" role="alert">{{ collabError }}</span></div>
           </form>
           <p v-if="collabDeleteError" class="error mutation-error" role="alert" aria-live="assertive">{{ collabDeleteError }}</p>
           <ResourceTable :columns="collabColumns" :rows="collabRows" row-key="name" :loaded="collabsLoaded" :loading="collabsLoading" :error="collabsError" :stale="collabsLoaded && !!collabsError" retryable empty-text="No collaborators." :interactive="false" @retry="loadCollaborators">
             <template #username="{ value }"><strong>{{ value }}</strong></template>
-            <template #permission="{ value }"><span class="badge muted">{{ value }}</span></template>
+            <template #permission="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
             <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>
-            <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Remove collaborator ${String(row.username)}`" :busy-label="`Removing collaborator ${String(row.username)}…`" :busy="Boolean(row.deleting) || operations.phase(operationKey('collaborator', String(row.name))) === 'deleting'" :disabled="repositoryDeleting || Boolean(row.deleting) || operations.isLocked(operationKey('collaborator', String(row.name)))" @click="removeCollab(row)" /></div></template>
+            <template #actions="{ row }"><div class="code-row-actions"><ResourceTableDeleteButton :label="`Remove collaborator ${String(row.username)}`" :busy-label="`Removing collaborator ${String(row.username)}…`" :busy="Boolean(row.deleting) || operations.phase(operationKey('collaborator', String(row.name))) === 'deleting'" :disabled="repositoryDeleting || Boolean(row.deleting) || operations.isLocked(operationKey('collaborator', String(row.name)))" @click="removeCollab(row)" /></div></template>
           </ResourceTable>
         </div>
       </div>
 
-      <div class="panel section-panel">
+      <div class="panel section-panel k-card">
         <div class="panel-head"><h3 class="panel-title">Packages</h3><span v-if="packagesLoaded" class="muted">{{ packageRows.length }}</span></div>
         <ResourceTable :columns="packageColumns" :rows="packageRows" row-key="rowKey" :loaded="packagesLoaded" :loading="packagesLoading" :error="packagesError" :stale="packagesLoaded && !!packagesError" retryable empty-text="No packages published to this repository yet." :interactive="false" @retry="loadPackages">
           <template #name="{ row }"><strong><a v-if="row.htmlURL && !repositoryDeleting && !row.deleting" :href="String(row.htmlURL)" target="_blank" rel="noopener">{{ row.name }}</a><template v-else>{{ row.name }}</template></strong></template>
-          <template #type="{ value }"><span class="badge muted">{{ value }}</span></template>
+          <template #type="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
           <template #visibility="{ value }"><span class="muted">{{ value || '—' }}</span></template>
           <template #versionCount="{ value }"><span class="muted">{{ value || 0 }}</span></template>
           <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>
-          <template #url="{ row }"><a v-if="row.htmlURL && !repositoryDeleting && !row.deleting" class="link" :href="String(row.htmlURL)" target="_blank" rel="noopener">View ↗</a></template>
+          <template #url="{ row }"><a v-if="row.htmlURL && !repositoryDeleting && !row.deleting" :href="String(row.htmlURL)" target="_blank" rel="noopener">View <ExternalLink :size="12" aria-hidden="true" /></a></template>
         </ResourceTable>
         <p class="muted">Packages appear automatically when artifacts are pushed (e.g. <code>docker push</code>, <code>npm publish</code>).</p>
       </div>

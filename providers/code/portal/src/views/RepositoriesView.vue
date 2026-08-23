@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { ExternalLink } from 'lucide-vue-next'
 import { api, normalizeResourceName } from '../api'
 import type { Connection, ErrorResponse, Repository } from '../types'
 import ResourceTable from '../portalkit/ResourceTable.vue'
@@ -206,7 +207,7 @@ onUnmounted(() => {
         <h2 class="page-title">Repositories</h2>
         <p class="page-meta">Repositories the provider manages on the git host. Click one to manage deploy keys and collaborators.</p>
       </div>
-      <button class="primary" :disabled="!loaded || !connectionsLoaded || !connectionChoices.length" @click="showForm = !showForm">
+      <button class="k-btn k-btn--primary" :disabled="!loaded || !connectionsLoaded || !connectionChoices.length" @click="showForm = !showForm">
         {{ showForm ? 'Cancel' : 'New repository' }}
       </button>
     </header>
@@ -214,34 +215,34 @@ onUnmounted(() => {
     <span v-if="connectionsLoading && !connectionsLoaded" class="sr-only" role="status" aria-live="polite">Loading connections…</span>
     <div v-if="connectionsError" class="error read-error" role="alert" aria-live="assertive">
       <span>{{ connectionsLoaded ? 'Showing cached connection choices. ' : '' }}{{ connectionsError }}</span>
-      <button class="secondary" type="button" @click="loadConnections">Retry connections</button>
+      <button class="k-btn k-btn--ghost" type="button" @click="loadConnections">Retry connections</button>
     </div>
     <span v-else-if="connectionsLoading && connectionsLoaded" class="sr-only" role="status" aria-live="polite">Updating connections…</span>
     <p v-if="connectionsLoaded && !connectionChoices.length" class="empty">Add a ready connection first, then create repositories under it.</p>
 
-    <div v-if="showForm" class="panel">
+    <div v-if="showForm" class="panel k-card">
       <h3 class="panel-title">New repository</h3>
       <form class="form" @submit.prevent="submit">
-        <div class="field">
+        <label class="field">
           <span class="field-label">Connection</span>
-          <select v-model="connectionRef" :disabled="connectionsLoading && !connectionsLoaded">
+          <select v-model="connectionRef" class="k-input" :disabled="connectionsLoading && !connectionsLoaded">
             <option v-for="c in connectionChoices" :key="c.name" :value="c.name">{{ c.name }} ({{ c.owner }})</option>
           </select>
-        </div>
-        <div class="field"><span class="field-label">Object name</span><input v-model="name" placeholder="my-service" autocomplete="off" /></div>
-        <div class="field"><span class="field-label">Repo name (defaults to object name)</span><input v-model="repo" placeholder="my-service" autocomplete="off" /></div>
-        <div class="field">
+        </label>
+        <label class="field"><span class="field-label">Object name</span><input v-model="name" class="k-input" placeholder="my-service" autocomplete="off" /></label>
+        <label class="field"><span class="field-label">Repo name (defaults to object name)</span><input v-model="repo" class="k-input" placeholder="my-service" autocomplete="off" /></label>
+        <label class="field">
           <span class="field-label">Visibility</span>
-          <select v-model="visibility">
+          <select v-model="visibility" class="k-input">
             <option value="private">private</option>
             <option value="public">public</option>
             <option value="internal">internal</option>
           </select>
-        </div>
-        <div class="field"><span class="field-label">Description</span><input v-model="description" autocomplete="off" /></div>
+        </label>
+        <label class="field"><span class="field-label">Description</span><input v-model="description" class="k-input" autocomplete="off" /></label>
         <label class="field field-check"><input v-model="autoInit" type="checkbox" /> Initialize with a README</label>
-        <div class="actions">
-          <button class="primary" type="submit" :disabled="submitting">{{ submitting ? 'Creating…' : 'Create' }}</button>
+        <div class="code-form-actions">
+          <button class="k-btn k-btn--primary" type="submit" :disabled="submitting">{{ submitting ? 'Creating…' : 'Create' }}</button>
           <span v-if="formError" class="error" role="alert">{{ formError }}</span>
         </div>
       </form>
@@ -258,16 +259,17 @@ onUnmounted(() => {
       :stale="loaded && !!error"
       retryable
       empty-text="No repositories yet."
+      :row-aria-label="(row) => `Open repository ${String(row.repo || row.name)}`"
       @retry="loadRepositories"
       @row-click="openRepository"
     >
-      <template #name="{ value, row }"><span v-if="row.deleting">{{ row.repo || value }}</span><button v-else class="link" type="button" @click.stop="openRepository(row)">{{ row.repo || value }}</button></template>
+      <template #name="{ value, row }"><span v-if="row.deleting">{{ row.repo || value }}</span><button v-else class="k-btn k-btn--ghost code-inline-action" type="button" @click.stop="openRepository(row)">{{ row.repo || value }}</button></template>
       <template #connectionRef="{ value }">{{ value }}</template>
       <template #visibility="{ value }">{{ value }}</template>
-      <template #url="{ row }"><a v-if="row.htmlURL && !row.deleting" :href="String(row.htmlURL)" target="_blank" rel="noopener" @click.stop>open ↗</a><span v-else class="muted">—</span></template>
+      <template #url="{ row }"><a v-if="row.htmlURL && !row.deleting" :href="String(row.htmlURL)" target="_blank" rel="noopener" @click.stop>open <ExternalLink :size="12" aria-hidden="true" /></a><span v-else class="muted">—</span></template>
       <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>
       <template #actions="{ row }">
-        <div class="row-actions">
+        <div class="code-row-actions">
           <ResourceTableDeleteButton
             :label="`Delete repository ${String(row.repo || row.name)}`"
             :busy-label="`Deleting repository ${String(row.repo || row.name)}…`"

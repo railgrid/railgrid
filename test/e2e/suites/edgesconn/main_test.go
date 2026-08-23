@@ -58,16 +58,19 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
+
+	"github.com/faroshq/faros/test/e2e/framework"
 )
 
 // Suite-shared state populated by TestMain.
 var (
-	repoRoot    string
-	hubURL      string // https://127.0.0.1:<port>
-	kcpServer   string // https://127.0.0.1:<port> (admin kubeconfig)
-	adminToken  string
-	farosBin    string
-	staticToken = "dev-token"
+	repoRoot     string
+	hubURL       string // https://127.0.0.1:<port>
+	kcpServer    string // https://127.0.0.1:<port> (admin kubeconfig)
+	adminToken   string
+	farosBin     string
+	suiteDataDir string
+	staticToken  = "dev-token"
 )
 
 const (
@@ -110,7 +113,9 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "tempdir:", err)
 		os.Exit(1)
 	}
+	suiteDataDir = dataDir
 	keepData := os.Getenv("FAROS_E2E_KEEP_DATA") == "true"
+	artifactDir := os.Getenv("FAROS_E2E_ARTIFACT_DIR")
 
 	hubLog, _ := os.Create(filepath.Join(dataDir, "hub.log"))
 	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "faros-hub"),
@@ -135,10 +140,25 @@ func TestMain(m *testing.M) {
 	}
 	fmt.Fprintf(os.Stderr, "hub started (pid=%d, log=%s)\n", hubCmd.Process.Pid, hubLog.Name())
 
+	var initLog, provLog *os.File
 	var provCmd *exec.Cmd
 	cleanup := func() {
 		killGroup(hubCmd)
 		killGroup(provCmd)
+		_ = hubLog.Close()
+		if initLog != nil {
+			_ = initLog.Close()
+		}
+		if provLog != nil {
+			_ = provLog.Close()
+		}
+		if artifactDir != "" {
+			if err := copyDir(dataDir, artifactDir); err != nil {
+				fmt.Fprintf(os.Stderr, "copy e2e artifacts: %v\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "e2e artifacts copied to %s\n", artifactDir)
+			}
+		}
 		if !keepData {
 			_ = os.RemoveAll(dataDir)
 		} else {
@@ -160,6 +180,19 @@ func TestMain(m *testing.M) {
 	}
 	adminToken = tok
 
+	// Embedded kcp can report /readyz before the tenancy APIBinding has settled.
+	// Gate every test's first CLI login on the shared readiness check so a
+	// transient "failed to create user" 500 is not attributed to connectivity.
+	tenantClient := framework.NewFarosClient(repoRoot, filepath.Join(dataDir, "tenant-api.kubeconfig"), hubURL)
+	apiCtx, apiCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	if err := framework.WaitForTenantAPI(apiCtx, tenantClient, hubURL, staticToken); err != nil {
+		apiCancel()
+		cleanup()
+		fmt.Fprintln(os.Stderr, "tenant API never ready:", err)
+		os.Exit(1)
+	}
+	apiCancel()
+
 	if err := applyEdgesManifests(); err != nil {
 		cleanup()
 		fmt.Fprintln(os.Stderr, "apply edges manifests:", err)
@@ -173,7 +206,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	initLog, _ := os.Create(filepath.Join(dataDir, "init.log"))
+	initLog, _ = os.Create(filepath.Join(dataDir, "init.log"))
 	initCmd := exec.Command(filepath.Join(repoRoot, "bin", "edges-provider"), "init")
 	initCmd.Env = append(os.Environ(),
 		"FAROS_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
@@ -188,7 +221,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	provLog, _ := os.Create(filepath.Join(dataDir, "provider.log"))
+	provLog, _ = os.Create(filepath.Join(dataDir, "provider.log"))
 	provCmd = exec.Command(filepath.Join(repoRoot, "bin", "edges-provider"), "serve")
 	provCmd.Env = append(os.Environ(),
 		"PORT="+providerPort,
@@ -330,6 +363,58 @@ func build(root string) error {
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// suiteTempDir keeps test workdirs and their kubeconfigs below the data
+// directory copied by TestMain on failure. t.TempDir would remove those files
+// before TestMain can preserve them for CI artifacts.
+func suiteTempDir(t *testing.T, pattern string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(suiteDataDir, pattern+"-")
+	if err != nil {
+		t.Fatalf("create suite temp dir: %v", err)
+	}
+	return dir
+}
+
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		// The embedded kcp state can be large and is not needed to diagnose a
+		// failed suite; hub/provider/agent logs and kubeconfigs are the useful
+		// artifacts. Keep the copy bounded for CI uploads.
+		if rel == "kcp" && info.IsDir() {
+			return filepath.SkipDir
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to copy symlink %s", path)
+		}
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close() //nolint:errcheck // best-effort artifact copy
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(out, in)
+		closeErr := out.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	})
 }
 
 func kcpDynamicRaw(clusterPath, token string) (dynamic.Interface, error) {

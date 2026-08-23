@@ -7,6 +7,7 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
+    "test": "node --test src/tabs.test.mjs",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {

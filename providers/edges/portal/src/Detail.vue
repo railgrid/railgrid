@@ -3,6 +3,7 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { ArrowLeft, RefreshCw, Trash2, CircleDot, Server, Boxes, Copy, Check, TerminalSquare, Home, Plug, Plus, ArrowUpCircle, ChevronDown, ChevronUp } from 'lucide-vue-next'
 import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, createKubeEdgeService, deleteEdgeService } from './api'
 import { confirmDialog } from './portalkit/confirm'
+import ConditionsPanel from './portalkit/ConditionsPanel.vue'
 import type { EdgeDetail, EdgeService, EdgeType, ErrorResponse } from './types'
 
 const props = defineProps<{ name: string; type: EdgeType; cluster: string | null; token: string | null }>()
@@ -198,7 +199,7 @@ function rel(ts?: string): string {
   <div class="edges-app">
     <header class="edges-header">
       <div class="row">
-        <button class="icon" title="Back" @click="emit('back')"><ArrowLeft :size="16" /></button>
+        <button class="k-btn k-btn--ghost" type="button" aria-label="Back to edges" title="Back to edges" @click="emit('back')"><ArrowLeft :size="16" aria-hidden="true" /> Back</button>
         <div>
           <h1 class="row">
             <component :is="type === 'server' ? Server : Boxes" :size="16" />
@@ -208,8 +209,8 @@ function rel(ts?: string): string {
         </div>
       </div>
       <div class="header-actions">
-        <button class="btn" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spin: loading }" /> Refresh</button>
-        <button class="btn danger" @click="onDelete"><Trash2 :size="14" /> Delete</button>
+        <button class="k-btn k-btn--ghost" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spin: loading }" /> Refresh</button>
+        <button class="k-btn k-btn--danger" @click="onDelete"><Trash2 :size="14" /> Delete</button>
       </div>
     </header>
 
@@ -221,7 +222,7 @@ function rel(ts?: string): string {
       <div class="detail-grid">
         <div class="field">
           <span class="lbl">Status</span>
-          <span class="status" :class="edge.connected ? 'ok' : 'down'">
+          <span class="k-badge" :class="edge.connected ? 'k-badge--success' : 'k-badge--warning'">
             <CircleDot :size="12" /> {{ edge.connected ? 'Connected' : (edge.phase || 'Disconnected') }}
           </span>
         </div>
@@ -229,7 +230,7 @@ function rel(ts?: string): string {
           <span class="lbl">Agent version</span>
           <span class="row" style="gap: 6px;">
             <span class="mono">{{ edge.agentVersion || '—' }}</span>
-            <span v-if="upgradeAvailable" class="status down" :title="upgradeCond?.message">
+            <span v-if="upgradeAvailable" class="k-badge k-badge--warning" :title="upgradeCond?.message">
               <ArrowUpCircle :size="11" /> Upgrade
             </span>
           </span>
@@ -244,7 +245,7 @@ function rel(ts?: string): string {
       <div v-if="edge.labels && Object.keys(edge.labels).length" class="section">
         <h3>Labels</h3>
         <div class="chips">
-          <span v-for="(v, k) in edge.labels" :key="k" class="pill">{{ k }}={{ v }}</span>
+          <span v-for="(v, k) in edge.labels" :key="k" class="k-badge k-badge--muted">{{ k }}={{ v }}</span>
         </div>
       </div>
 
@@ -255,7 +256,7 @@ function rel(ts?: string): string {
             <ArrowUpCircle :size="14" />
             {{ upgradeCond?.message || 'A newer agent version is available.' }}
           </span>
-          <button class="btn sm" @click="showUpgrade = !showUpgrade">
+          <button class="k-btn k-btn--ghost compact-control" @click="showUpgrade = !showUpgrade">
             {{ showUpgrade ? 'Hide' : 'Show' }} commands
             <component :is="showUpgrade ? ChevronUp : ChevronDown" :size="14" />
           </button>
@@ -338,7 +339,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
           <pre>faros ssh {{ name }}</pre>
         </div>
         <div class="wiz-actions" style="justify-content: flex-start;">
-          <button class="btn primary" @click="openTerminal">
+          <button class="k-btn k-btn--primary" @click="openTerminal">
             <TerminalSquare :size="14" /> Open terminal
           </button>
         </div>
@@ -348,7 +349,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
       <div class="section">
         <div class="row" style="justify-content: space-between; align-items: baseline;">
           <h3>Services</h3>
-          <button v-if="type === 'kubernetes'" class="btn" @click="startAdd"><Plus :size="14" /> Add service</button>
+          <button v-if="type === 'kubernetes'" class="k-btn k-btn--ghost" @click="startAdd"><Plus :size="14" /> Add service</button>
         </div>
         <p class="muted">
           {{ type === 'server'
@@ -361,22 +362,22 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
         <div v-if="adding" class="svc-card">
           <div class="svc-head"><span class="svc-title"><Plus :size="15" /> New service</span></div>
           <div class="svc-form">
-            <label>Name<input v-model="draft.name" class="svc-input" placeholder="home-assistant" /></label>
+            <label>Name<input v-model="draft.name" class="svc-input k-input" placeholder="home-assistant" /></label>
             <label>Type
-              <select v-model="draft.serviceType" class="svc-input">
+              <select v-model="draft.serviceType" class="svc-input k-input">
                 <option value="home-assistant">Home Assistant</option>
                 <option value="generic">Generic (proxy only)</option>
               </select>
             </label>
-            <label>Target namespace<input v-model="draft.targetNamespace" class="svc-input" placeholder="home" /></label>
-            <label>Target service<input v-model="draft.targetName" class="svc-input" placeholder="home-assistant" /></label>
-            <label>Port<input v-model.number="draft.port" type="number" class="svc-input" placeholder="8123" /></label>
+            <label>Target namespace<input v-model="draft.targetNamespace" class="svc-input k-input" placeholder="home" /></label>
+            <label>Target service<input v-model="draft.targetName" class="svc-input k-input" placeholder="home-assistant" /></label>
+            <label>Port<input v-model.number="draft.port" type="number" class="svc-input k-input" placeholder="8123" /></label>
           </div>
           <div class="wiz-actions" style="justify-content: flex-start;">
-            <button class="btn primary" :disabled="saving || !draftValid" @click="submitAdd">
+            <button class="k-btn k-btn--primary" :disabled="saving || !draftValid" @click="submitAdd">
               {{ saving ? 'Adding…' : 'Add service' }}
             </button>
-            <button class="btn" :disabled="saving" @click="adding = false">Cancel</button>
+            <button class="k-btn k-btn--ghost" :disabled="saving" @click="adding = false">Cancel</button>
           </div>
         </div>
 
@@ -394,10 +395,10 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                 {{ es.serviceType === 'home-assistant' ? 'Home Assistant' : (es.serviceType || es.name) }}
               </span>
               <div class="row">
-                <span class="status" :class="svcOk(es) ? 'ok' : 'down'">
+                <span class="k-badge" :class="svcOk(es) ? 'k-badge--success' : 'k-badge--warning'">
                   <CircleDot :size="12" /> {{ es.phase || 'Detected' }}
                 </span>
-                <button v-if="type === 'kubernetes'" class="icon danger" title="Delete service" @click="removeService(es.name)">
+                <button v-if="type === 'kubernetes'" class="k-table-action k-table-action--delete" title="Delete service" @click="removeService(es.name)">
                   <Trash2 :size="14" />
                 </button>
               </div>
@@ -406,29 +407,29 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
               <span v-if="es.version" class="mono">v{{ es.version }}</span>
               <span v-if="es.targetNamespace" class="mono">{{ es.targetName }}.{{ es.targetNamespace }}.svc:{{ es.port }}</span>
               <span v-else class="mono">:{{ es.port }}</span>
-              <span v-if="es.installType" class="pill">{{ es.installType }}</span>
-              <span v-if="es.hasCredentials" class="pill ok-pill">token set</span>
+              <span v-if="es.installType" class="k-badge k-badge--muted">{{ es.installType }}</span>
+              <span v-if="es.hasCredentials" class="k-badge k-badge--success">token set</span>
             </div>
 
             <!-- Connect form -->
             <div v-if="connectFor === es.name" class="svc-connect">
               <input
-                v-model="tokenInput" type="password" class="svc-input"
+                v-model="tokenInput" type="password" class="svc-input k-input"
                 placeholder="Paste a long-lived access token" autocomplete="off"
                 @keyup.enter="submitConnect"
               />
               <div class="wiz-actions" style="justify-content: flex-start;">
-                <button class="btn primary" :disabled="connecting || !tokenInput.trim()" @click="submitConnect">
+                <button class="k-btn k-btn--primary" :disabled="connecting || !tokenInput.trim()" @click="submitConnect">
                   <Plug :size="14" /> {{ connecting ? 'Connecting…' : 'Save token' }}
                 </button>
-                <button class="btn" :disabled="connecting" @click="connectFor = null">Cancel</button>
+                <button class="k-btn k-btn--ghost" :disabled="connecting" @click="connectFor = null">Cancel</button>
               </div>
               <p v-if="es.serviceType === 'home-assistant'" class="muted small">
                 Create one in Home Assistant → your profile → Security → Long-lived access tokens.
               </p>
             </div>
             <div v-else class="wiz-actions" style="justify-content: flex-start;">
-              <button class="btn" @click="startConnect(es.name)">
+              <button class="k-btn k-btn--ghost" @click="startConnect(es.name)">
                 <Plug :size="14" /> {{ es.hasCredentials ? 'Update token' : 'Connect' }}
               </button>
             </div>
@@ -438,22 +439,7 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
 
       <!-- Conditions -->
       <div class="section">
-        <h3>Conditions</h3>
-        <div v-if="edge.conditions.length === 0" class="muted">No conditions reported yet.</div>
-        <div v-else class="edges-table-wrap">
-          <table class="edges-table">
-            <thead><tr><th>Type</th><th>Status</th><th>Reason</th><th>Message</th><th>Updated</th></tr></thead>
-            <tbody>
-              <tr v-for="c in edge.conditions" :key="c.type">
-                <td class="name">{{ c.type }}</td>
-                <td><span class="status" :class="c.status === 'True' ? 'ok' : 'down'">{{ c.status }}</span></td>
-                <td class="muted">{{ c.reason || '—' }}</td>
-                <td class="muted">{{ c.message || '—' }}</td>
-                <td class="muted">{{ rel(c.lastTransitionTime) }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <ConditionsPanel :conditions="edge.conditions" empty-text="No conditions reported yet." />
       </div>
     </template>
   </div>

@@ -8,6 +8,7 @@
 // in); see main.ts for registration and style.css for the rules.
 
 import { ic } from './portalkit/icons'
+import { tabClass, tabsClass } from './portalkit/tabs'
 import {
   buildElements,
   buildTopologyElements,
@@ -499,8 +500,8 @@ export class KueryElement extends HTMLElement {
   // _viewToggle is the top-level Topology/Inventory/Playground switch.
   private _viewToggle(): string {
     const btn = (v: string, label: string) =>
-      `<button class="seg-btn${this._view === v ? ' on' : ''}" data-topview="${v}">${label}</button>`
-    return `<div class="seg">${btn('topology', 'Topology')}${btn('inventory', 'Inventory')}${btn('playground', 'Playground')}</div>`
+      `<button class="${tabClass({ active: this._view === v, className: 'kuery-top-tab' })}" type="button" data-topview="${v}"${this._view === v ? ' aria-current="page"' : ''}>${label}</button>`
+    return `<nav class="${tabsClass('kuery-top-tabs')}" aria-label="Kuery views">${btn('topology', 'Topology')}${btn('inventory', 'Inventory')}${btn('playground', 'Playground')}</nav>`
   }
 
   private _bindViewToggle(): void {
@@ -557,12 +558,12 @@ export class KueryElement extends HTMLElement {
       }
       this._cy = handle
     } catch (e) {
-      container.innerHTML = `<p class="error">graph failed to load: ${esc(e instanceof Error ? e.message : String(e))}</p>`
+      container.innerHTML = `<p class="k-card kuery-read-state kuery-error" role="alert">graph failed to load: ${esc(e instanceof Error ? e.message : String(e))}</p>`
     }
   }
 
   private _bindImpactToggle(): void {
-    this.querySelectorAll('.seg-btn').forEach((b) =>
+    this.querySelectorAll('[data-view]').forEach((b) =>
       b.addEventListener('click', () => {
         const v = (b as HTMLElement).dataset.view as 'graph' | 'list' | undefined
         if (v && v !== this._impactView) {
@@ -603,7 +604,7 @@ export class KueryElement extends HTMLElement {
       }
       this._cy = handle
     } catch (e) {
-      container.innerHTML = `<p class="error">graph failed to load: ${esc(e instanceof Error ? e.message : String(e))}</p>`
+      container.innerHTML = `<p class="k-card kuery-read-state kuery-error" role="alert">graph failed to load: ${esc(e instanceof Error ? e.message : String(e))}</p>`
     }
   }
 
@@ -671,37 +672,37 @@ export class KueryElement extends HTMLElement {
 
     let body: string
     if (this._loading) {
-      body = `<p class="muted">building fleet topology…</p>`
+      body = `<p class="k-card kuery-read-state muted" role="status">building fleet topology…</p>`
     } else if (this._topologyError) {
-      body = `<p class="error">${esc(this._topologyError)}</p>`
+      body = `<p class="k-card kuery-read-state kuery-error" role="alert">${esc(this._topologyError)}</p>`
     } else if (this._topology.length === 0) {
-      body = `<p class="muted">no clusters engaged — connect a kubernetes edge to see its tree</p>`
+      body = `<p class="k-card kuery-read-state muted" role="status">no clusters engaged — connect a kubernetes edge to see its tree</p>`
     } else {
       body = `<div id="kuery-graph" class="kuery-graph"></div>`
     }
 
     return `
-      <div class="panel${this._topoFull ? ' kuery-full' : ''}">
-        <div class="panel-head">
-          <h2 class="panel-title">Fleet topology</h2>
+      <section class="kuery-panel k-card${this._topoFull ? ' kuery-full' : ''}">
+        <div class="kuery-panel-head">
+          <h2 class="kuery-panel-title">Fleet topology</h2>
           <div class="head-actions">
             ${this._viewToggle()}
-            <span class="badge ${this._edges.length ? 'ok' : 'warn'}">${this._edges.length} edge${this._edges.length === 1 ? '' : 's'} engaged</span>
+            <span class="k-badge ${this._edges.length ? 'k-badge--success' : 'k-badge--warning'}">${this._edges.length} edge${this._edges.length === 1 ? '' : 's'} engaged</span>
           </div>
         </div>
         <p class="meta">Click a node to expand, again to collapse; <b>Expand all</b> walks the whole net. Arrows show impact flow: <b>A→B</b> means deleting A breaks B — so a Namespace/owner points <i>into</i> its pods, not out. Pan with arrows/WASD, zoom +/−, <b>F</b> full screen.</p>
-        <div class="toolbar">
-          <select id="t-layout" title="layout">${layoutOptions}</select>
-          <select id="f-edge" title="edge">${edgeOptions}</select>
-          <select id="t-kind" title="kind">${kindOptions}</select>
-          <select id="t-ns" title="namespace">${nsOptions}</select>
-          <button id="t-expand-all" type="button">Expand all</button>
-          <button id="t-reset" type="button">Reset</button>
-          <button id="t-full" type="button">${this._topoFull ? 'Exit full screen' : 'Full screen'}</button>
+        <div class="kuery-toolbar">
+          <select class="k-input kuery-control" id="t-layout" title="layout">${layoutOptions}</select>
+          <select class="k-input kuery-control" id="f-edge" title="edge">${edgeOptions}</select>
+          <select class="k-input kuery-control" id="t-kind" title="kind">${kindOptions}</select>
+          <select class="k-input kuery-control" id="t-ns" title="namespace">${nsOptions}</select>
+          <button class="k-btn k-btn--ghost" id="t-expand-all" type="button">Expand all</button>
+          <button class="k-btn k-btn--ghost" id="t-reset" type="button">Reset</button>
+          <button class="k-btn k-btn--ghost" id="t-full" type="button">${this._topoFull ? 'Exit full screen' : 'Full screen'}</button>
         </div>
         ${body}
         ${this._incomplete ? '<p class="meta">tree truncated — filter to one edge to see all of it</p>' : ''}
-      </div>
+      </section>
     `
   }
 
@@ -739,7 +740,7 @@ export class KueryElement extends HTMLElement {
   // and only fill its box). Falls back to the fixed overlay where the API is
   // unavailable. State + refit are driven by the fullscreenchange event.
   private _toggleFull(): void {
-    const panel = this.querySelector('.panel') as HTMLElement | null
+    const panel = this.querySelector('.kuery-panel') as HTMLElement | null
     if (!panel) return
     // Exit whichever fullscreen mode is currently active first.
     if (document.fullscreenElement) {
@@ -777,7 +778,7 @@ export class KueryElement extends HTMLElement {
   // the graph's fitted view in sync when entering/exiting API fullscreen
   // (including via the browser's Esc).
   private _onFullscreenChange(): void {
-    const panel = this.querySelector('.panel') as HTMLElement | null
+    const panel = this.querySelector('.kuery-panel') as HTMLElement | null
     this._topoFull = !!document.fullscreenElement && document.fullscreenElement === panel
     if (panel) panel.classList.toggle('kuery-full', this._topoFull)
     this._syncFullButton()
@@ -817,16 +818,16 @@ export class KueryElement extends HTMLElement {
       ? `<pre class="pg-result error">${esc(this._pgError)}</pre>`
       : `<pre class="pg-result">${esc(this._pgResult || '// results appear here')}</pre>`
     return `
-      <div class="panel">
-        <div class="panel-head">
-          <h2 class="panel-title">Query playground</h2>
+      <section class="kuery-panel k-card">
+        <div class="kuery-panel-head">
+          <h2 class="kuery-panel-title">Query playground</h2>
           <div class="head-actions">${this._viewToggle()}</div>
         </div>
         <p class="meta">Write a kuery QuerySpec and run it against your fleet. Editor autocompletes from the schema (Ctrl/Cmd-Space). Every query is scoped to your workspace automatically.</p>
-        <div class="toolbar">
-          <select id="pg-example">${exampleOpts}</select>
-          <button id="pg-run">${this._pgRunning ? 'Running…' : `Run ${ic('play')}`}</button>
-          <button id="pg-docs-toggle" type="button">API &amp; access</button>
+        <div class="kuery-toolbar">
+          <select class="k-input kuery-control" id="pg-example">${exampleOpts}</select>
+          <button class="k-btn k-btn--primary" id="pg-run" type="button">${this._pgRunning ? 'Running…' : `Run ${ic('play')}`}</button>
+          <button class="k-btn k-btn--ghost" id="pg-docs-toggle" type="button">API &amp; access</button>
         </div>
         <div class="pg-split">
           <div id="kuery-editor" class="pg-editor"></div>
@@ -836,7 +837,7 @@ export class KueryElement extends HTMLElement {
           <summary>Use this API from outside the portal</summary>
           ${this._renderApiDocs()}
         </details>
-      </div>
+      </section>
     `
   }
 
@@ -938,16 +939,17 @@ export class KueryElement extends HTMLElement {
 
     let body: string
     if (this._loading) {
-      body = `<tr><td colspan="5" class="muted">querying the fleet…</td></tr>`
+      body = `<tr><td colspan="5" class="muted" role="status">querying the fleet…</td></tr>`
     } else if (this._queryError) {
-      body = `<tr><td colspan="5" class="error">${esc(this._queryError)}</td></tr>`
+      body = `<tr><td colspan="5" class="kuery-error" role="alert">${esc(this._queryError)}</td></tr>`
     } else if (this._rows.length === 0) {
-      body = `<tr><td colspan="5" class="muted">no objects match — connect an edge or relax the filters</td></tr>`
+      body = `<tr><td colspan="5" class="muted" role="status">no objects match — connect an edge or relax the filters</td></tr>`
     } else {
       body = this._rows.map((r, i) => {
         const o = r.object ?? {}
         const m = o.metadata ?? {}
-        return `<tr data-row="${i}" class="row">
+        const label = `${o.kind || 'object'} ${m.namespace ? `${m.namespace}/` : ''}${m.name || '?'}`
+        return `<tr data-row="${i}" class="row is-interactive" tabindex="0" aria-label="Inspect ${esc(label)}">
           <td><code>${esc(edgeOf(r.cluster))}</code></td>
           <td>${esc(o.kind || '?')}</td>
           <td>${esc(m.namespace || '—')}</td>
@@ -958,28 +960,30 @@ export class KueryElement extends HTMLElement {
     }
 
     return `
-      <div class="panel">
-        <div class="panel-head">
-          <h2 class="panel-title">Fleet inventory</h2>
+      <section class="kuery-panel k-card">
+        <div class="kuery-panel-head">
+          <h2 class="kuery-panel-title">Fleet inventory</h2>
           <div class="head-actions">
             ${this._viewToggle()}
-            <span class="badge ${this._edges.length ? 'ok' : 'warn'}">${this._edges.length} edge${this._edges.length === 1 ? '' : 's'} engaged</span>
+            <span class="k-badge ${this._edges.length ? 'k-badge--success' : 'k-badge--warning'}">${this._edges.length} edge${this._edges.length === 1 ? '' : 's'} engaged</span>
           </div>
         </div>
         <p class="meta">One query across every connected edge. Click a row for its impact (declared blast radius).</p>
-        <div class="toolbar">
-          <select id="f-edge">${edgeOptions}</select>
-          <input id="f-kind" placeholder="kind (e.g. Deployment)" value="${esc(this._fKind)}" />
-          <input id="f-ns" placeholder="namespace" value="${esc(this._fNamespace)}" />
-          <input id="f-name" placeholder="name (exact)" value="${esc(this._fName)}" />
-          <button id="f-go">Search</button>
+        <div class="kuery-toolbar">
+          <select class="k-input kuery-control" id="f-edge">${edgeOptions}</select>
+          <input class="k-input kuery-control" id="f-kind" placeholder="kind (e.g. Deployment)" value="${esc(this._fKind)}" />
+          <input class="k-input kuery-control" id="f-ns" placeholder="namespace" value="${esc(this._fNamespace)}" />
+          <input class="k-input kuery-control" id="f-name" placeholder="name (exact)" value="${esc(this._fName)}" />
+          <button class="k-btn k-btn--primary" id="f-go" type="button">Search</button>
         </div>
-        <table class="objects">
+        <div class="k-table kuery-inventory-table">
+          <table class="objects">
           <thead><tr><th>edge</th><th>kind</th><th>namespace</th><th>name</th><th>age</th></tr></thead>
           <tbody>${body}</tbody>
-        </table>
+          </table>
+        </div>
         ${this._incomplete ? '<p class="meta">result truncated — narrow the filters</p>' : ''}
-      </div>
+      </section>
     `
   }
 
@@ -1003,13 +1007,20 @@ export class KueryElement extends HTMLElement {
         }
       }),
     )
-    this.querySelectorAll('tr.row').forEach((tr) =>
-      tr.addEventListener('click', () => {
+    this.querySelectorAll('tr.row').forEach((tr) => {
+      const inspect = () => {
         const i = Number((tr as HTMLElement).dataset.row)
         const row = this._rows[i]
         if (row) void this._runImpact(row)
-      }),
-    )
+      }
+      tr.addEventListener('click', (event) => !isNestedControl(event) && inspect())
+      tr.addEventListener('keydown', (ev) => {
+        const key = isNestedControl(ev) ? '' : (ev as KeyboardEvent).key
+        if (key !== 'Enter' && key !== ' ') return
+        ev.preventDefault()
+        inspect()
+      })
+    })
   }
 
   private _renderImpact(): string {
@@ -1022,11 +1033,11 @@ export class KueryElement extends HTMLElement {
 
     let body: string
     if (this._impactError) {
-      body = `<p class="error">${esc(this._impactError)}</p>`
+      body = `<p class="k-card kuery-read-state kuery-error" role="alert">${esc(this._impactError)}</p>`
     } else if (!this._impact) {
-      body = `<p class="muted">expanding declared coupling…</p>`
+      body = `<p class="k-card kuery-read-state muted" role="status">expanding declared coupling…</p>`
     } else if (empty) {
-      body = '<p class="muted">no declared coupling found — nothing references, selects, or descends from this object (network-level dependencies are not visible to kuery)</p>'
+      body = '<p class="k-card kuery-read-state muted" role="status">no declared coupling found — nothing references, selects, or descends from this object (network-level dependencies are not visible to kuery)</p>'
     } else if (this._impactView === 'graph') {
       // The graph mounts into this container after render (see _mountGraph).
       body = `${this._renderLegend()}<div id="kuery-graph" class="kuery-graph"></div>`
@@ -1036,26 +1047,26 @@ export class KueryElement extends HTMLElement {
 
     // Only offer the view toggle when there is a graph worth drawing.
     const toggle = hasData && !empty
-      ? `<div class="seg">
-           <button class="seg-btn${this._impactView === 'graph' ? ' on' : ''}" data-view="graph">Graph</button>
-           <button class="seg-btn${this._impactView === 'list' ? ' on' : ''}" data-view="list">List</button>
+      ? `<div class="kuery-view-switch" role="group" aria-label="Impact representation">
+           <button class="k-btn k-btn--ghost kuery-view-btn" type="button" data-view="graph" aria-pressed="${this._impactView === 'graph'}">Graph</button>
+           <button class="k-btn k-btn--ghost kuery-view-btn" type="button" data-view="list" aria-pressed="${this._impactView === 'list'}">List</button>
          </div>`
       : ''
 
     const hint = this._impactView === 'graph' && hasData && !empty ? ' Click a node to re-center on it.' : ''
 
     return `
-      <div class="panel">
-        <div class="panel-head">
-          <h2 class="panel-title">Impact: ${esc(title)}</h2>
+      <section class="kuery-panel k-card">
+        <div class="kuery-panel-head">
+          <h2 class="kuery-panel-title">Impact: ${esc(title)}</h2>
           <div class="head-actions">
             ${toggle}
-            <button id="impact-back">← back</button>
+            <button class="k-btn k-btn--ghost" id="impact-back" type="button">Back</button>
           </div>
         </div>
         <p class="meta">Declared blast radius on <code>${esc(edgeOf(this._impactOf?.cluster))}</code> — owners, descendants, spec references, selector matches, and cross-edge links. Not a network dependency map.${hint}</p>
         ${body}
-      </div>
+      </section>
     `
   }
 
@@ -1126,4 +1137,10 @@ function esc(s: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
+}
+
+function isNestedControl(event: Event): boolean {
+  const target = event.target
+  return target instanceof Element &&
+    !!target.closest('a,button,input,select,textarea,summary,[contenteditable="true"],[role="button"],[role="link"],[role="checkbox"],[role="switch"]')
 }

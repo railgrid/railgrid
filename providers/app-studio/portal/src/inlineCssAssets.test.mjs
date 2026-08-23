@@ -14,7 +14,7 @@ test('inlines emitted Vue component CSS into the IIFE entry chunk', () => {
     'main.css': {
       type: 'asset',
       fileName: 'main.css',
-      source: '.pk-overlay{position:fixed;inset:0}',
+      source: '.k-modal-overlay{position:fixed;inset:0}',
     },
     'icon.svg': {
       type: 'asset',
@@ -30,7 +30,7 @@ test('inlines emitted Vue component CSS into the IIFE entry chunk', () => {
   assert.equal(bundle['main.css'], undefined)
   assert.ok(bundle['icon.svg'])
   assert.match(bundle['main.js'].code, /app-studio-component-css/)
-  assert.match(bundle['main.js'].code, /\.pk-overlay\{position:fixed;inset:0\}/)
+  assert.match(bundle['main.js'].code, /\.k-modal-overlay\{position:fixed;inset:0\}/)
   assert.match(bundle['main.js'].code, /document\.head\.appendChild\(style\)/)
   assert.match(bundle['main.js'].code, /globalThis\.appStudioLoaded = true;/)
 })

@@ -1,4 +1,5 @@
 @import "tailwindcss";
+/* The host imports this generated copy; provider-sdk/portalkit is canonical. */
 @import "./faros-ui.css";
 
 /*

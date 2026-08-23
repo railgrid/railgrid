@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { ArrowRight } from 'lucide-vue-next'
 import TemplateCard from '../components/TemplateCard.vue'
 import { api, isContextChangedError } from '../api'
 import type { Template } from '../types'
@@ -62,15 +63,15 @@ function clearFilters() {
         <h2 class="page-title">Templates</h2>
         <p class="page-meta">Pick a template to provision into your tenant scope.</p>
       </div>
-      <button type="button" class="link" @click="emit('navigate', 'instances')">My instances →</button>
+      <button type="button" class="link" @click="emit('navigate', 'instances')">My instances <ArrowRight :size="14" aria-hidden="true" /></button>
     </header>
 
     <div v-if="categories.length > 1 || clouds.length > 0" class="filters">
-      <select v-model="category" aria-label="Filter templates by category">
+      <select v-model="category" class="k-input" aria-label="Filter templates by category">
         <option value="">All categories</option>
         <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
       </select>
-      <select v-if="clouds.length > 0" v-model="cloud" aria-label="Filter templates by cloud">
+      <select v-if="clouds.length > 0" v-model="cloud" class="k-input" aria-label="Filter templates by cloud">
         <option value="">All clouds</option>
         <option v-for="c in clouds" :key="c" :value="c">{{ c }}</option>
       </select>

@@ -54,7 +54,7 @@ export class ChatMessageView extends LightElement {
     const state = t.pending ? 'pending' : t.error ? 'err' : 'ok'
     return html`<div class="agents-toolcard is-${state}">
       <button
-        class="agents-toolcard-head"
+        class="k-btn k-btn--ghost agents-toolcard-head"
         aria-expanded=${open ? 'true' : 'false'}
         @click=${() => this.toggle(t.id)}
       >
@@ -91,8 +91,8 @@ export class ChatMessageView extends LightElement {
             ${a.resolved === 'approve' ? 'Approved — the run is resuming.' : 'Denied — the agent was told no.'}
           </div>`
         : html`<div class="agents-approval-actions">
-            <button @click=${() => decide('approve')}>${icon('check')} Approve</button>
-            <button class="secondary" @click=${() => decide('deny')}>${icon('x')} Deny</button>
+            <button class="k-btn k-btn--primary" @click=${() => decide('approve')}>${icon('check')} Approve</button>
+            <button class="k-btn k-btn--ghost secondary" @click=${() => decide('deny')}>${icon('x')} Deny</button>
           </div>`}
     </div>`
   }

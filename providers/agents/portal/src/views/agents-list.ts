@@ -52,7 +52,7 @@ export class AgentsList extends StoreElement {
       <div class="agents-menu">
         <div class="agents-panel-head">
           <h3>Agents</h3>
-          <button @click=${() => (this.creating = true)}>${icon('plus')} New agent</button>
+          <button class="k-btn k-btn--primary" @click=${() => (this.creating = true)}>${icon('plus')} New agent</button>
         </div>
         ${sliceView<Agent>({
           slice: this.store.agents,
@@ -88,14 +88,23 @@ export class AgentsList extends StoreElement {
     const primary = chans.find((ch) => ch.primary) || chans[0]
     const chan = primary ? primary.connectionRef + (chans.length > 1 ? ` +${chans.length - 1}` : '') : ''
     const open = (): void => this.navigate({ kind: 'agent', name, tab: 'config' })
+    const isNestedControl = (event: KeyboardEvent): boolean => {
+      const currentTarget = event.currentTarget as Element | null
+      const target = event.target as Element | null
+      const control = target?.closest?.(
+        'a, button, input, select, textarea, summary, [contenteditable="true"], [role="button"], [role="link"]',
+      )
+      return Boolean(control && control !== currentTarget)
+    }
     return html`
       <article
-        class="agents-card"
+        class="agents-card k-card"
         tabindex="0"
         role="link"
         aria-label="Open agent ${a.spec?.displayName || name}"
         @click=${open}
         @keydown=${(e: KeyboardEvent) => {
+          if (isNestedControl(e)) return
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
             open()
@@ -114,7 +123,7 @@ export class AgentsList extends StoreElement {
         </div>
         <div class="agents-card-actions">
           <button
-            class="agents-card-chat"
+            class="k-btn k-btn--ghost agents-card-chat"
             @click=${(e: Event) => {
               e.stopPropagation()
               open()
@@ -123,7 +132,7 @@ export class AgentsList extends StoreElement {
             ${icon('message')} Open
           </button>
           <button
-            class="secondary"
+            class="k-btn k-btn--ghost secondary"
             @click=${(e: Event) => {
               e.stopPropagation()
               this.navigate({ kind: 'agent', name, tab: 'runs' })
@@ -132,7 +141,7 @@ export class AgentsList extends StoreElement {
             ${icon('gauge')} Runs
           </button>
           <button
-            class="agents-iconbtn agents-iconbtn-danger"
+            class="k-btn k-btn--ghost agents-iconbtn agents-iconbtn-danger"
             aria-label="Delete agent ${name}"
             title="Delete agent"
             @click=${(e: Event) => {

@@ -275,9 +275,9 @@ onUnmounted(() => {
 
     <p v-if="tableImportBlocker" class="empty">{{ tableImportBlocker }}</p>
 
-    <div v-if="showForm" class="panel">
-      <div class="panel-head">
-        <h3 class="panel-title">{{ editing ? 'Update table' : 'Import table' }}</h3>
+    <div v-if="showForm" class="databricks-resource-panel k-card">
+      <div class="databricks-resource-panel-head">
+        <h3 class="databricks-resource-panel-title">{{ editing ? 'Update table' : 'Import table' }}</h3>
         <button v-if="!editing" class="link" type="button" :disabled="submitting" @click="fillDemo" title="Prefill samples.nyctaxi.trips — Databricks demo data available in every workspace">Fill with demo data</button>
       </div>
       <div v-if="tableImportBlocker" class="warning" role="status">
@@ -349,6 +349,7 @@ onUnmounted(() => {
       :error="error"
       :stale="loaded && !!error"
       retryable
+      :row-aria-label="(row) => `Open table ${String(row.name)}`"
       @retry="load"
       @row-click="(row) => openResource(String(row.name))"
     >
