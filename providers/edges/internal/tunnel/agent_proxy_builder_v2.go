@@ -229,13 +229,32 @@ func (p *Server) buildEdgeAgentProxyHandler() http.Handler {
 		// look-ups don't succeed.
 		<-dialer.Done()
 		cancelHeartbeat()
-		p.edgeConnManager.Delete(key)
+
+		// Identity-checked: the key is stable across reconnects, so if the agent
+		// has already dialled a replacement tunnel it — not us — owns this entry
+		// and the edge's status. Deleting unconditionally here erased a live
+		// registration and left a healthy agent unroutable until it restarted.
+		if !p.edgeConnManager.DeleteIf(key, dialer) {
+			p.logger.Info("Superseded edge agent tunnel closed; a newer tunnel owns this edge", "key", key)
+			return
+		}
 		p.logger.Info("Edge agent tunnel closed", "key", key)
 
 		// Proactively mark the Edge as Disconnected in the hub.  Agents may die
 		// without sending a clean disconnect heartbeat (e.g. SIGKILL), so the
 		// hub must be the authoritative source for connectivity state.
-		go p.markEdgeDisconnected(context.Background(), gvr, cluster, name)
+		//
+		// Re-check for a live tunnel first: a disconnect immediately followed by
+		// a reconnect can otherwise land this write after the new tunnel's
+		// markEdgeConnected and flap the edge to Disconnected. The
+		// LifecycleReconciler would repair it on its next pass, but not before
+		// the UI and CLI have shown a connected edge as down.
+		go func() {
+			if p.edgeConnManager.HasLocalConnection(key) {
+				return
+			}
+			p.markEdgeDisconnected(context.Background(), gvr, cluster, name)
+		}()
 	})
 
 	return mux

@@ -135,10 +135,25 @@ func (c *ConnManager) sweepClosed(logger klog.Logger) {
 
 // Store saves d under key, replacing any existing entry, and claims the
 // edge's registry lease so peers route to this replica.
+//
+// An agent that reconnects — pod restart, chart upgrade, network blip — dials a
+// fresh tunnel under the SAME key while the superseded handler is still parked
+// on <-dialer.Done(). Store therefore closes the dialer it displaces, so that
+// handler wakes now instead of whenever its half-open socket happens to die.
+// Paired with DeleteIf, that keeps a stale handler's cleanup from tearing down
+// the live tunnel that replaced it.
 func (c *ConnManager) Store(key string, d *revdial.Dialer) {
 	c.mu.Lock()
+	prev := c.dials[key]
 	c.dials[key] = d
 	c.mu.Unlock()
+
+	// Only local entries are ever stored, so this assertion holds; relayed
+	// remoteDialers are built per-Load and belong to a peer, never to us.
+	if old, ok := prev.(*revdial.Dialer); ok && old != d {
+		_ = old.Close()
+	}
+
 	if reg, _ := c.getRegistry(); reg != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), registryWriteTimeout)
 		defer cancel()
@@ -196,17 +211,33 @@ func (c *ConnManager) LoadLocal(key string) (Dialer, bool) {
 	return d, true
 }
 
-// Delete removes the entry for key and releases the registry claim (owner-
-// checked, so a reconnect that moved to a peer is not erased).
-func (c *ConnManager) Delete(key string) {
+// DeleteIf removes the entry for key only if it is still d, releases the
+// registry claim when it does, and reports whether it deleted anything.
+//
+// The delete MUST be identity-checked. Keys are stable across reconnects
+// ("{resource}/{cluster}/{name}"), so an unconditional delete on the tunnel-
+// close path is a use-after-replace: by the time a superseded handler runs its
+// cleanup, the agent has often already registered a healthy tunnel under the
+// same key, and erasing it strands a connected agent with no route. The failure
+// is silent and permanent — the hub answers "no active tunnel found for edge"
+// while the agent, whose socket is genuinely fine, sees no error and so never
+// reconnects. Only the sweeper's IsClosed check or an agent restart clears it.
+func (c *ConnManager) DeleteIf(key string, d Dialer) bool {
 	c.mu.Lock()
+	current, exists := c.dials[key]
+	if !exists || current != d {
+		c.mu.Unlock()
+		return false
+	}
 	delete(c.dials, key)
 	c.mu.Unlock()
+
 	if reg, _ := c.getRegistry(); reg != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), registryWriteTimeout)
 		defer cancel()
 		reg.ReleaseTunnel(ctx, key)
 	}
+	return true
 }
 
 // HasConnection returns true if ANY replica holds an active tunnel for key.
