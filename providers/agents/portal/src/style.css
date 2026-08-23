@@ -20,7 +20,7 @@ faros-provider-agents {
 /* Inline SVG icons (see portalkit/icons.ts): inherit color + size from the
  * surrounding text, so they sit cleanly inside buttons, chips and headings. */
 faros-provider-agents .ic { width: 1.05em; height: 1.05em; display: inline-block; vertical-align: -0.16em; flex: none; stroke-width: 2; }
-faros-provider-agents .agents-navtab, faros-provider-agents .agents-subtab,
+faros-provider-agents .pk-tab, faros-provider-agents .agents-navtab, faros-provider-agents .agents-subtab,
 faros-provider-agents .agents-card-chat, faros-provider-agents .agents-model-actions button,
 faros-provider-agents .agents-back, faros-provider-agents .agents-health,
 faros-provider-agents .agents-chip, faros-provider-agents .agents-phase { display: inline-flex; align-items: center; gap: 5px; }
@@ -30,24 +30,9 @@ faros-provider-agents .agents-view { display: flex; flex-direction: column; gap:
 faros-provider-agents .agents-empty { display: flex; align-items: center; justify-content: center; text-align: center; min-height: 340px; }
 faros-provider-agents .agents-menu { display: flex; flex-direction: column; gap: 18px; }
 
-/* --- top nav --- */
-faros-provider-agents .agents-nav {
-  display: flex; gap: 4px; flex-wrap: wrap; align-items: center;
-  padding-bottom: 10px; border-bottom: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
-}
-faros-provider-agents .agents-navtab {
-  background: transparent; color: var(--color-text-secondary, currentColor); border: 0; cursor: pointer;
-  padding: 7px 13px; border-radius: 4px; font: inherit; font-weight: 500; font-size: 13.5px;
-}
-faros-provider-agents .agents-navtab:hover { background: var(--color-surface-hover, #1e2033); color: var(--color-text-primary, inherit); }
-faros-provider-agents .agents-navtab.sel { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); color: var(--color-accent, #8b6bff); font-weight: 600; }
-faros-provider-agents .agents-navcount {
-  display: inline-block; min-width: 18px; text-align: center; padding: 0 5px; font-size: 11px; font-weight: 600;
-  border-radius: 3px; background: var(--color-surface-overlay, #171927); color: var(--color-text-secondary, currentColor);
-}
-faros-provider-agents .agents-navtab.sel .agents-navcount { background: var(--color-accent, #8b6bff); color: #fff; }
-/* Pending approvals are the one count that means "act now". */
-faros-provider-agents .agents-navcount.attn { background: var(--color-warning, #f0a63a); color: #fff; }
+/* --- top nav -------------------------------------------------------------
+   Layout and tab treatment live in the canonical PortalKit tabs.css. Keep the
+   provider class as a stable hook for the live-update indicator and tests. */
 faros-provider-agents .agents-offline {
   margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px;
   color: var(--color-text-muted, #5d5f78);
@@ -145,7 +130,7 @@ faros-provider-agents button:disabled { opacity: 0.5; cursor: default; }
 /* Glow-means-alive: only the solid accent (primary) button emits light. Every
  * other button-shaped control opts back out (the :is() keeps this rule's
  * specificity level with button:hover so it also suppresses the hover glow). */
-faros-provider-agents :is(button.secondary, .agents-navtab, .agents-back, .agents-subtab, .agents-card-chat,
+faros-provider-agents :is(button.secondary, .pk-tab, .agents-navtab, .agents-back, .agents-subtab, .agents-card-chat,
     .agents-iconbtn, .agents-linkbtn, .agents-chip-x, .agents-toast-action, .agents-toast-x, .agents-modebtn,
     .agents-seg button, .agents-step-head, .agents-toolcard-head, .agents-conn-tile, .agents-badge-btn,
     .agents-code-copy, .agents-chip-btn) {

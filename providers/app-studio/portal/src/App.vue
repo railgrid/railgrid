@@ -38,6 +38,7 @@ import {
 } from 'lucide-vue-next'
 import { api, isProjectAPIInitializingError, ProjectAPIRequestError } from './api'
 import PkConfirmDialog from './portalkit/ConfirmDialog.vue'
+import Tabs from './portalkit/Tabs.vue'
 import { confirmDialog, confirmState } from './portalkit/confirm'
 import {
   canSubmitCreatePrompt,
@@ -424,6 +425,10 @@ const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com'
 const GOOGLE_CLOUD_BASE_URL = 'https://aiplatform.googleapis.com'
 const CREATE_PROJECT_ROUTE = '~new'
 const MODELS_ROUTE = '~models'
+const appStudioSectionTabs = [
+  { id: 'projects', label: 'Projects', icon: Folder },
+  { id: 'models', label: 'Models', icon: Cpu },
+] as const
 const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
 const CODE_CONNECTIONS_URL = '/ui/providers/code/connections'
 const PUBLISHING_DOMAIN_SUFFIX = '.faros.app'
@@ -3790,6 +3795,14 @@ function openModelsSection() {
   props.navigate(MODELS_ROUTE)
 }
 
+function selectAppStudioSection(id: string) {
+  if (id === 'models') {
+    openModelsSection()
+  } else if (id === 'projects') {
+    openProjectsSection()
+  }
+}
+
 function closeSettings() {
   if (projectSettingsSaving.value || llmSaving.value) return
   showSettings.value = false
@@ -6623,33 +6636,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
   </div>
 
   <div v-else-if="!isBuilderVisible" class="min-h-0 bg-surface text-text-primary">
-    <div class="flex min-h-full w-full flex-col">
-      <nav class="mb-6 flex items-center gap-1 border-b border-border-subtle pb-3" aria-label="App Studio sections">
-        <button
-          type="button"
-          class="flex h-9 items-center gap-2 rounded-md px-3 text-[13px] transition"
-          :class="!isModelsRoute
-            ? 'bg-accent-subtle font-semibold text-accent shadow-[0_0_14px_var(--color-accent-glow)]'
-            : 'font-medium text-text-muted hover:bg-surface-hover hover:text-text-primary'"
-          :aria-current="!isModelsRoute ? 'page' : undefined"
-          @click="openProjectsSection"
-        >
-          <Folder class="h-4 w-4" :stroke-width="1.75" />
-          Projects
-        </button>
-        <button
-          type="button"
-          class="flex h-9 items-center gap-2 rounded-md px-3 text-[13px] transition"
-          :class="isModelsRoute
-            ? 'bg-accent-subtle font-semibold text-accent shadow-[0_0_14px_var(--color-accent-glow)]'
-            : 'font-medium text-text-muted hover:bg-surface-hover hover:text-text-primary'"
-          :aria-current="isModelsRoute ? 'page' : undefined"
-          @click="openModelsSection"
-        >
-          <Cpu class="h-4 w-4" :stroke-width="1.75" />
-          Models
-        </button>
-      </nav>
+    <div class="flex min-h-full w-full flex-col gap-4">
+      <Tabs
+        :tabs="appStudioSectionTabs"
+        :active="isModelsRoute ? 'models' : 'projects'"
+        aria-label="App Studio sections"
+        @select="selectAppStudioSection"
+      />
 
       <header v-if="isProjectIndexRoute" class="mb-4 flex items-center justify-between gap-3">
         <h2 class="truncate text-[14px] font-medium text-text-primary">Projects</h2>

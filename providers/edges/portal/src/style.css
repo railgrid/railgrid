@@ -29,7 +29,7 @@ faros-provider-edges {
   color: var(--color-text-primary);
 }
 
-faros-provider-edges .edges-app { padding: 8px 0; font-size: 13px; }
+faros-provider-edges .edges-app { display: flex; flex-direction: column; gap: 16px; padding: 8px 0; font-size: 13px; }
 
 /* ── Header ── */
 faros-provider-edges .edges-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }

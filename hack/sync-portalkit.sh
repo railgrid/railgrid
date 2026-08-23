@@ -4,8 +4,8 @@
 # primitives are copied per portal rather than imported across package
 # boundaries.
 #
-#   provider-sdk/portalkit      → vanilla-TS portals  (icons.ts, modal.ts)
-#   provider-sdk/portalkit-vue  → Vue SFC portals     (confirm.ts, ConfirmDialog.vue)
+#   provider-sdk/portalkit      → vanilla-TS portals  (icons.ts, modal.ts, tabs)
+#   provider-sdk/portalkit-vue  → Vue SFC portals     (confirm.ts, Tabs.vue)
 #
 # Edit the canonical files under provider-sdk/ and run `make sync-portalkit`.
 # CI runs `make verify-portalkit` to fail on drift.
@@ -20,7 +20,7 @@ TS_PORTALS=(
   "providers/kuery/portal"
   "providers/quickstart/portal"
 )
-TS_FILES=(icons.ts modal.ts tenant.ts toast.ts)
+TS_FILES=(icons.ts modal.ts tabs.css tabs.ts tenant.ts toast.ts)
 
 # Vue SFC portals + files.
 VUE_SRC="$ROOT/provider-sdk/portalkit-vue"
@@ -32,7 +32,7 @@ VUE_PORTALS=(
   "providers/edges/portal"
   "providers/infrastructure/portal"
 )
-VUE_FILES=(confirm.ts ConfirmDialog.vue ConfirmDialog.css ResourceTable.vue ResourceTableDeleteButton.vue ResourceTableDeleteButton.css ResourceTableEditButton.vue ResourceTableEditButton.css ConditionsPanel.vue StatusBadge.vue)
+VUE_FILES=(confirm.ts ConfirmDialog.vue ConfirmDialog.css ResourceTable.vue ResourceTableDeleteButton.vue ResourceTableDeleteButton.css ResourceTableEditButton.vue ResourceTableEditButton.css ConditionsPanel.vue StatusBadge.vue Tabs.vue)
 
 sync_group() {
   local src="$1"; shift
@@ -94,9 +94,10 @@ verify_all() {
   if ! verify_group "$VUE_SRC" VUE_PORTALS VUE_FILES; then
     stale=1
   fi
-  # tenant.ts and toast.ts are plain TS (no framework) and shared by portals of
-  # BOTH kinds, so the vanilla canonicals are also vendored into the Vue portals.
-  local vue_shared_files=(tenant.ts toast.ts)
+  # tenant.ts, toast.ts, and the tab helpers are plain assets (no framework)
+  # and shared by portals of BOTH kinds, so the vanilla canonicals are also
+  # vendored into the Vue portals.
+  local vue_shared_files=(tenant.ts toast.ts tabs.css tabs.ts)
   if ! verify_group "$TS_SRC" VUE_PORTALS vue_shared_files; then
     stale=1
   fi
@@ -128,20 +129,21 @@ esac
 sync_group "$TS_SRC" TS_PORTALS TS_FILES
 sync_group "$VUE_SRC" VUE_PORTALS VUE_FILES
 
-sync_group "$TS_SRC" VIBE_PORTALS VIBE_FILES
-
-# tenant.ts and toast.ts are plain TS (no framework) and shared by portals of
-# BOTH kinds, so the vanilla canonicals are also vendored into the Vue portals.
+# tenant.ts, toast.ts, and the tab helpers are plain assets (no framework) and
+# shared by portals of BOTH kinds, so the vanilla canonicals are also vendored
+# into the Vue portals.
 for p in "${VUE_PORTALS[@]}"; do
   cp "$TS_SRC/tenant.ts" "$ROOT/$p/src/portalkit/tenant.ts"
   cp "$TS_SRC/toast.ts" "$ROOT/$p/src/portalkit/toast.ts"
-  echo "synced tenant.ts, toast.ts -> $p/src/portalkit"
+  cp "$TS_SRC/tabs.css" "$ROOT/$p/src/portalkit/tabs.css"
+  cp "$TS_SRC/tabs.ts" "$ROOT/$p/src/portalkit/tabs.ts"
+  echo "synced tenant.ts, toast.ts, tabs.css, tabs.ts -> $p/src/portalkit"
 done
 
 # dashboardtile.ts is the shared scaffolding behind every provider's
 # <faros-dashboard-tile-*> element. Plain TS for the same reason as tenant.ts,
 # and vendored into every portal that ships (or may ship) a tile.
-for p in "${VUE_PORTALS[@]}" "${TS_PORTALS[@]}" "${VIBE_PORTALS[@]}"; do
+for p in "${VUE_PORTALS[@]}" "${TS_PORTALS[@]}"; do
   cp "$TS_SRC/dashboardtile.ts" "$ROOT/$p/src/portalkit/dashboardtile.ts"
   echo "synced dashboardtile.ts -> $p/src/portalkit"
 done

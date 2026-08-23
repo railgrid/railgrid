@@ -1,0 +1,158 @@
+/*
+ * CANONICAL SOURCE — provider-sdk/portalkit. Do not edit copies vendored into
+ * individual portals; edit this file and run `make sync-portalkit`.
+ *
+ * Tab markup is deliberately framework-neutral so the same recipe can be used
+ * by the string-building/Lit portals and by the Vue Tabs component:
+ *
+ *   <nav class="pk-tabs" aria-label="…">
+ *     <button class="pk-tab" type="button" aria-current="page">
+ *       <span class="pk-tab-icon">…</span>
+ *       <span class="pk-tab-label">…</span>
+ *       <span class="pk-tab-count">…</span>
+ *     </button>
+ *   </nav>
+ *
+ * The provider host supplies the --color-* tokens. The fallbacks keep a
+ * standalone provider readable when it is rendered outside the Faros shell.
+ */
+
+.pk-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  scrollbar-width: thin;
+}
+
+.pk-tabs > .pk-tab {
+  flex: 0 0 auto;
+}
+
+.pk-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 13px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-secondary, currentColor);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: nowrap;
+  box-shadow: none;
+}
+
+.pk-tab:hover:not(:disabled) {
+  background: var(--color-surface-hover, #1e2033);
+  color: var(--color-text-primary, inherit);
+  box-shadow: none;
+}
+
+.pk-tab:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
+
+.pk-tab[aria-current="page"],
+.pk-tab.is-active {
+  border: 0;
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent, #8b6bff);
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.pk-tab[aria-current="page"]:hover:not(:disabled),
+.pk-tab.is-active:hover:not(:disabled) {
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent, #8b6bff);
+  box-shadow: none;
+}
+
+.pk-tab:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.pk-tab-icon {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+/* Keep inline SVGs aligned with the Agents icon treatment while allowing
+ * Vue/Lit callers to supply their own icon component. */
+.pk-tab-icon svg {
+  width: 1.05em;
+  height: 1.05em;
+  display: inline-block;
+  vertical-align: -0.16em;
+  flex: none;
+  color: inherit;
+  stroke-width: 2;
+}
+
+.pk-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  min-height: 18px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-secondary, currentColor);
+  font-family: var(--font-mono, ui-monospace, "SFMono-Regular", Menlo, monospace);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.pk-tab[aria-current="page"] .pk-tab-count,
+.pk-tab.is-active .pk-tab-count {
+  background: var(--color-accent, #8b6bff);
+  color: var(--color-white, #fff);
+}
+
+.pk-tab-count.is-attention {
+  background: var(--color-warning, #f0a63a);
+  color: var(--color-white, #fff);
+}
+
+/* Detail-level tabs keep the same interaction recipe without a second
+ * separator competing with the detail header. */
+.pk-tabs-compact {
+  gap: 4px;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.pk-tabs-compact .pk-tab {
+  min-height: 30px;
+  padding: 6px 12px;
+  font-size: inherit;
+}
+
+@media (max-width: 560px) {
+  .pk-tabs {
+    gap: 2px;
+    padding-bottom: 8px;
+  }
+
+  .pk-tab {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+}

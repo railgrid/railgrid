@@ -20,6 +20,7 @@ import { AppStore } from './store'
 import { LightElement } from './ui/base'
 import { icon, type IconName } from './ui/icon'
 import { clearToasts } from './ui/toast'
+import { tabClass, tabCountClass, tabsClass } from './portalkit/tabs'
 import type { FarosContext } from './types'
 import { DEFAULT_ROUTE, MENUS, activeMenu, parseHash, syncHash, type MenuKey, type Route } from './router'
 
@@ -160,18 +161,22 @@ export class AgentsElement extends LightElement {
       connections: this.store.connections.data.length + this.store.toolsets.data.length,
       models: this.store.credentials.data.length,
     }
-    return html`<nav class="agents-nav" aria-label="Agents provider sections">
+    return html`<nav class="${tabsClass('agents-nav')}" aria-label="Agents provider sections">
       ${MENUS.map((m) => {
         const meta = MENU_META[m]
         const n = counts[m]
         const isActive = m === active
         return html`<button
-          class="agents-navtab ${isActive ? 'sel' : ''}"
+          class="${tabClass({ active: isActive })} agents-navtab ${isActive ? 'sel' : ''}"
+          type="button"
           aria-current=${isActive ? 'page' : nothing}
           @click=${() => this.go({ kind: 'menu', menu: m })}
         >
-          ${icon(meta.icon)} ${meta.label}
-          ${n ? html`<span class="agents-navcount ${m === 'activity' ? 'attn' : ''}">${n}</span>` : nothing}
+          <span class="pk-tab-icon">${icon(meta.icon)}</span>
+          <span class="pk-tab-label">${meta.label}</span>
+          ${n
+            ? html`<span class="${tabCountClass({ attention: m === 'activity' })} agents-navcount ${m === 'activity' ? 'attn' : ''}">${n}</span>`
+            : nothing}
         </button>`
       })}
       ${this.store.live

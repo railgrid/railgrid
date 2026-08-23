@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { GitBranch, Package, Plug } from 'lucide-vue-next'
 import type { FarosContext } from './types'
 import { setAPIContext, setBasePath } from './api'
 import ConnectionsView from './views/ConnectionsView.vue'
@@ -10,6 +11,7 @@ import PackagesView from './views/PackagesView.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import { resolveConfirm } from './portalkit/confirm'
 import { createResourceDeletions } from './refresh'
+import Tabs from './portalkit/Tabs.vue'
 
 // Sub-path routing (the shell pushes the trailing /providers/code/<sub> segment):
 //   ''  | 'connections'        → Connections
@@ -66,6 +68,12 @@ watch(
 
 const hasTenant = computed(() => !!props.ctx?.tenant)
 
+const tabs = [
+  { id: 'connections', label: 'Connections', icon: Plug },
+  { id: 'repositories', label: 'Repositories', icon: GitBranch },
+  { id: 'packages', label: 'Packages', icon: Package },
+] as const
+
 // navigate dispatches a faros-navigate CustomEvent from the component root so it
 // bubbles up to the <faros-provider-code> element, where ProviderFrame listens
 // and pushes the shell's vue-router. detail.path is the trailing segment the
@@ -95,11 +103,7 @@ function navigate(path: string) {
     </template>
 
     <template v-else>
-      <nav class="tabs">
-        <button :class="{ active: route.page === 'connections' }" @click="navigate('connections')">Connections</button>
-        <button :class="{ active: route.page === 'repositories' }" @click="navigate('repositories')">Repositories</button>
-        <button :class="{ active: route.page === 'packages' }" @click="navigate('packages')">Packages</button>
-      </nav>
+      <Tabs :tabs="tabs" :active="route.page" aria-label="Code provider sections" @select="navigate" />
 
       <p v-if="!hasTenant" class="empty">Select a workspace to manage code.</p>
 

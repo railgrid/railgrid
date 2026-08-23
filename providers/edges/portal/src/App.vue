@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { Server, Boxes, RefreshCw, Trash2, CircleDot, Plus } from 'lucide-vue-next'
+import { Server, Boxes, RefreshCw, Trash2, CircleDot, Plus, Plug } from 'lucide-vue-next'
 import { setToken, setTenant, listEdges, deleteEdge } from './api'
 import Wizard from './Wizard.vue'
 import Detail from './Detail.vue'
 import Workloads from './Workloads.vue'
 import Services from './Services.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
+import Tabs from './portalkit/Tabs.vue'
 import { confirmDialog } from './portalkit/confirm'
 import type { Edge, EdgeType, FarosContext, ErrorResponse } from './types'
 
@@ -22,6 +23,12 @@ const view = computed<'edges' | 'workloads' | 'services'>(() => {
   if (sub.startsWith('services')) return 'services'
   return 'edges'
 })
+
+const edgeRouteTabs = [
+  { id: 'edges', label: 'Edges', icon: Server },
+  { id: 'workloads', label: 'Workloads', icon: Boxes },
+  { id: 'services', label: 'Services', icon: Plug },
+] as const
 
 // navigate pushes the shell's router via a bubbling CustomEvent the element's
 // ProviderFrame host listens for. path is the trailing segment appended to
@@ -127,11 +134,13 @@ function rel(ts?: string): string {
     <!-- Section nav: Edges | Workloads | Services. Mirrors the sidebar's sub-nav
          items and pushes the shell route via navigate(). Hidden while the wizard
          or a detail view is open so those flows stay focused. -->
-    <nav v-if="!wizardOpen && !selected" class="wiz-steps" style="margin-bottom: 4px;">
-      <button class="wiz-step" :class="{ active: view === 'edges' }" @click="navigate('')">Edges</button>
-      <button class="wiz-step" :class="{ active: view === 'workloads' }" @click="navigate('workloads')">Workloads</button>
-      <button class="wiz-step" :class="{ active: view === 'services' }" @click="navigate('services')">Services</button>
-    </nav>
+    <Tabs
+      v-if="!wizardOpen && !selected"
+      :tabs="edgeRouteTabs"
+      :active="view"
+      aria-label="Edges sections"
+      @select="(id) => navigate(id === 'edges' ? '' : id)"
+    />
 
     <!-- Workloads view. -->
     <Workloads v-if="view === 'workloads' && !wizardOpen && !selected" />

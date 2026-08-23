@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { Plug, Table2, Warehouse } from 'lucide-vue-next'
 import { setBasePath, setTenant, setTenantSelection, setToken } from './api'
 import { setOperationContext } from './refresh'
 import ResourceImportWizard from './ResourceImportWizard.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
+import Tabs from './portalkit/Tabs.vue'
 import type { FarosContext } from './types'
 import ConnectionDetailView from './views/ConnectionDetailView.vue'
 import ConnectionsView from './views/ConnectionsView.vue'
@@ -47,6 +49,12 @@ const importKind = ref<'warehouse' | 'table' | null>(null)
 const importTrigger = ref<HTMLElement | null>(null)
 const rootRef = ref<HTMLElement | null>(null)
 
+const tabs = [
+  { id: 'connections', label: 'Connections', icon: Plug },
+  { id: 'warehouses', label: 'Warehouses', icon: Warehouse },
+  { id: 'tables', label: 'Tables', icon: Table2 },
+] as const
+
 watch(() => props.ctx?.basePath, v => setBasePath(v), { immediate: true })
 watch(() => props.ctx?.token, v => setToken(v), { immediate: true })
 watch(() => props.ctx?.tenant, v => setTenant(v), { immediate: true })
@@ -89,7 +97,7 @@ function restoreImportFocus(kind: 'warehouse' | 'table' | null, trigger: HTMLEle
 
 function focusDestination(path: 'connections' | 'warehouses'): void {
   void nextTick(() => {
-    rootRef.value?.querySelector<HTMLElement>(`[data-databricks-nav="${path}"]`)?.focus()
+    rootRef.value?.querySelector<HTMLElement>(`[data-pk-tab-id="${path}"]`)?.focus()
   })
 }
 
@@ -112,11 +120,7 @@ function importNavigate(path: 'connections' | 'warehouses') {
 
 <template>
   <div ref="rootRef" class="app">
-    <nav class="tabs" aria-label="Databricks resources">
-      <button data-databricks-nav="connections" type="button" :class="{ active: route.page === 'connections' }" @click="navigate('connections')">Connections</button>
-      <button data-databricks-nav="warehouses" type="button" :class="{ active: route.page === 'warehouses' }" @click="navigate('warehouses')">Warehouses</button>
-      <button data-databricks-nav="tables" type="button" :class="{ active: route.page === 'tables' }" @click="navigate('tables')">Tables</button>
-    </nav>
+    <Tabs :tabs="tabs" :active="route.page" aria-label="Databricks resource sections" @select="navigate" />
 
     <p v-if="!hasTenant" class="empty">Select a workspace to manage Databricks resources.</p>
 

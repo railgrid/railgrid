@@ -180,9 +180,11 @@ texture (login, empty states — sparingly), `.island` floating dock card,
   allowed. The scrim derives from **surface** (`color-mix(surface 60%)`), never
   from text (a text-derived scrim inverts to white in dark). Use the portalkit
   `confirmDialog()` — never `window.confirm`.
-- **Navigation.** Idle items are muted text on nothing; active = accent text on
-  `accent-subtle` + nav glow (`0 0 14px`). Section headers are 9px mono
-  uppercase with a trailing hairline rule.
+- **Navigation.** Shell/sidebar idle items are muted text on nothing; an active
+  shell nav item is accent text on `accent-subtle` + nav glow (`0 0 14px`).
+  Provider-level route/section tabs are the separate PortalKit pattern in §10:
+  they never glow or shadow. Section headers are 9px mono uppercase with a
+  trailing hairline rule.
 - **Sidebar rail.** The vertical dock is a **56px icon rail by default** —
   labels are a click away (toggle at the top, state persisted per browser),
   not a permanent tax on the canvas. Collapsed rows are icon-only, centered,
@@ -252,9 +254,11 @@ Two integration modes, one look:
 
 **Portalkit** (confirm dialogs, ResourceTable, StatusBadge, tenant helpers) is
 canonical in `provider-sdk/portalkit` (vanilla TS) and
-`provider-sdk/portalkit-vue` (SFC). Edit there, run `make sync-portalkit`;
-never edit the vendored copies under `*/src/portalkit/` — CI's
-`verify-portalkit` fails on drift.
+`provider-sdk/portalkit-vue` (SFC). The shared provider-tab assets are
+`provider-sdk/portalkit/tabs.css`, `tabs.ts`, and
+`provider-sdk/portalkit-vue/Tabs.vue`; edit canonical files, then run
+`make sync-portalkit`. Never edit the vendored copies under
+`*/src/portalkit/` — CI's `verify-portalkit` fails on drift.
 
 ## 10. Extended component specs
 
@@ -300,6 +304,29 @@ App-studio's `PreviewActionsMenu` / `ResponseModePicker` /
 - Destructive items: `danger` text, `danger-subtle` hover bg, separated by a
   hairline `border-subtle` divider.
 - Keyboard: arrows + Home/End, Escape closes, focus returns to the trigger.
+
+### Provider route tabs — ✅ implemented as PortalKit `Tabs`
+
+This is the labeled provider-level route/section navigation used by Agents, App
+Studio, Code, Databricks, and Edges. The canonical assets are
+`provider-sdk/portalkit/tabs.css`, `tabs.ts`, and
+`provider-sdk/portalkit-vue/Tabs.vue`; `make sync-portalkit` vendors them into
+the portals. Infrastructure, Kuery, and Quickstart have no equivalent
+provider-level bar.
+
+- Markup: a labeled nav with an icon + label and an optional count. Counts are
+  square 3px-radius mono tags; tabs use the 4px control radius.
+- Geometry: `padding: 7px 13px`, 4px gap, and a 1px bottom hairline. Narrow
+  hosts keep the row horizontal and allow overflow.
+- States: idle is muted text on transparent; hover is `surface-hover`; active
+  is accent text on `accent-subtle`; focus-visible is a 2px outline. Tabs have
+  no glow or shadow.
+- Semantics: each tab is `type="button"` and the active tab exposes
+  `aria-current="page"`. Routing remains caller-owned; Vue `Tabs` emits
+  `select` and exposes each id as `data-pk-tab-id`.
+
+Detail/workbench tabsets are not automatically provider-route tabs; apply this
+spec when the tabset is the provider-level route/section bar.
 
 ### Select / combobox
 - Closed control: exactly `.k-input` (4px, overlay bg, focus ring + glow) with
@@ -456,6 +483,8 @@ Before merging any UI change:
 - [ ] No new `border-radius` outside {2,3,4,6,8,12px, circles}; no pills.
 - [ ] Badges are square mono tags; status maps to the §6 tone table.
 - [ ] Exactly the sanctioned things glow; danger never glows.
+- [ ] Provider-level route/section tabs use PortalKit `Tabs`: caller-owned
+      routing, `aria-current="page"`, and no tab glow/shadow.
 - [ ] Works in BOTH themes (toggle it — don't trust the default).
 - [ ] Uses `k-*` / portalkit primitives instead of re-derived markup.
 - [ ] No per-page `max-w-*` wrapper (width is owned by `AppLayout`).

@@ -32,33 +32,6 @@ faros-provider-code .app {
   gap: 16px;
 }
 
-/* Tabs (segmented sub-nav) */
-faros-provider-code .tabs {
-  display: flex;
-  gap: 4px;
-}
-faros-provider-code .tabs button {
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  padding: 5px 12px;
-  cursor: pointer;
-  color: var(--color-text-secondary, #8a8ca6);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-}
-faros-provider-code .tabs button:hover {
-  color: var(--color-text-primary, inherit);
-  background: var(--color-surface-hover, rgba(255, 255, 255, 0.07));
-}
-faros-provider-code .tabs button.active {
-  color: var(--color-accent, #8b6bff);
-  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
-  border-color: var(--color-accent, #8b6bff);
-  box-shadow: 0 0 14px var(--color-accent-glow);
-}
-
 /* Page scaffold */
 faros-provider-code .page {
   display: flex;
