@@ -48,6 +48,8 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	"github.com/faroshq/provider-sdk/tenantaccess"
+
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/bindings"
 	"github.com/faroshq/provider-app-studio/workspace"
@@ -98,9 +100,34 @@ type Reconciler struct {
 	// previous owner must never be committed over the live one. Nil means
 	// single-replica: always owner.
 	Owns func(workspace.Scope) bool
-	// HubBase / HubInsecure address the hub for MCP commit calls.
+	// HubBase / HubInsecure address the hub for MCP commit calls and for the
+	// tenant-path client below.
 	HubBase     string
 	HubInsecure bool
+	// TenantClientFor is a test seam for the tenant-path client: a client on
+	// the workspace cluster authenticated as the project ServiceAccount.
+	// Production leaves it nil and dials {HubBase}/clusters/{cluster} with the
+	// identity token. Instance and repository writes go through THIS client —
+	// the workspace's own bindings — rather than the claimed VW, so they reach
+	// whichever copy of infrastructure/code the workspace binds (platform or
+	// self-hosted) with no permission-claim identity pinning (see package
+	// tenantaccess).
+	TenantClientFor func(clusterName, token string) (client.Client, error)
+}
+
+// tenantClient resolves the client used for instance/repository writes. vw is
+// the claimed-VW fallback for deployments with no hub address configured
+// (REST-only dev); that path still depends on first-party permission claims
+// and cannot serve mixed platform/self-hosted workspaces.
+func (r *Reconciler) tenantClient(clusterName, token string, vw client.Client) (client.Client, error) {
+	if r.TenantClientFor != nil {
+		return r.TenantClientFor(clusterName, token)
+	}
+	if r.HubBase == "" {
+		log.Printf("WARNING app-studio project reconciler: FAROS_HUB_URL is empty; falling back to the claimed-VW client, which cannot serve workspaces whose infrastructure/code provider identity differs from this deployment's pins")
+		return vw, nil
+	}
+	return tenantaccess.NewClient(r.HubBase, clusterName, token, r.HubInsecure)
 }
 
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
@@ -127,7 +154,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	if !p.DeletionTimestamp.IsZero() {
-		return r.finalize(ctx, c, &p)
+		return r.finalize(ctx, c, &p, string(req.ClusterName))
 	}
 	previewPolicyChanged, err := reconcileDevelopmentPreviewPolicy(&p)
 	if err != nil {
@@ -163,6 +190,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	// Everything below that touches instances or repositories acts as the
+	// project's ServiceAccount against the tenant workspace itself. The
+	// identity objects are provisioned over the claimed VW (built-in types),
+	// then the writes ride the workspace's own bindings.
+	token, err := r.ensureIdentity(ctx, c, &p)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("project identity: %w", err)
+	}
+	if token == "" {
+		// Token controller not done; nothing else can proceed safely.
+		return ctrl.Result{RequeueAfter: requeueInterval}, nil
+	}
+	tc, err := r.tenantClient(clusterName, token, c)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("tenant client: %w", err)
+	}
+
 	// Converge each bound instance, folding observed state per environment.
 	allReady := true
 	instancesNeedRetry := false
@@ -190,7 +234,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 					continue
 				}
 			}
-			obj, err := r.ensureInstance(ctx, c, &p, effectiveBinding)
+			obj, err := r.ensureInstance(ctx, tc, &p, effectiveBinding)
 			switch {
 			case apierrors.IsInvalid(err) || bindings.IsInvalidBinding(err):
 				// The API server rejects the spec, or the binding cannot even
@@ -239,11 +283,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	// creates the repo on the git host), then keep git in step with the
 	// workspace. A commit failure is retried on the poll, not escalated —
 	// instances must keep converging regardless.
-	repo, err := r.ensureRepository(ctx, c, &p)
+	repo, err := r.ensureRepository(ctx, tc, &p)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("repository: %w", err)
 	}
-	dirty, err := r.commitWorkspace(ctx, c, &p, repo)
+	dirty, err := r.commitWorkspace(ctx, token, &p, repo)
 	if err != nil {
 		log.Printf("app-studio project %s: commit convergence: %v", p.Name, err)
 		dirty = true
@@ -515,22 +559,39 @@ func (r *Reconciler) ensureInstance(ctx context.Context, c client.Client, p *aiv
 // finalize deletes bound instances, then releases the finalizer. The
 // infrastructure provider's template owns the runtime namespace and
 // garbage-collects every materialized workload when the instance goes away.
-func (r *Reconciler) finalize(ctx context.Context, c client.Client, p *aiv1alpha1.Project) (ctrl.Result, error) {
+func (r *Reconciler) finalize(ctx context.Context, c client.Client, p *aiv1alpha1.Project, clusterName string) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(p, finalizer) {
 		return ctrl.Result{}, nil
 	}
-	for _, env := range providerBindings(p) {
-		for _, binding := range env.bindings {
-			want, _, err := bindings.Desired(p, binding)
-			if err != nil {
-				// Un-buildable desired state also means nothing was created.
-				continue
-			}
-			obj := &unstructured.Unstructured{}
-			obj.SetGroupVersionKind(want.GroupVersionKind())
-			obj.SetName(want.GetName())
-			if err := c.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, fmt.Errorf("deleting instance for binding %q: %w", binding.Name, err)
+	if bound := providerBindings(p); len(bound) > 0 {
+		// Deletion goes through the tenant-path client like every other
+		// instance write. Blocking on the identity here is deliberate: the
+		// old claimed-VW path treated an unserved resource's 404 as "already
+		// gone" and released the finalizer over live instances.
+		token, err := r.ensureIdentity(ctx, c, p)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("project identity for teardown: %w", err)
+		}
+		if token == "" {
+			return ctrl.Result{RequeueAfter: requeueInterval}, nil
+		}
+		tc, err := r.tenantClient(clusterName, token, c)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("tenant client for teardown: %w", err)
+		}
+		for _, env := range bound {
+			for _, binding := range env.bindings {
+				want, _, err := bindings.Desired(p, binding)
+				if err != nil {
+					// Un-buildable desired state also means nothing was created.
+					continue
+				}
+				obj := &unstructured.Unstructured{}
+				obj.SetGroupVersionKind(want.GroupVersionKind())
+				obj.SetName(want.GetName())
+				if err := tc.Delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, fmt.Errorf("deleting instance for binding %q: %w", binding.Name, err)
+				}
 			}
 		}
 	}

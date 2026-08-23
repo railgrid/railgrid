@@ -57,21 +57,17 @@ spec:
     # tenant APIBinding at Enable time; a claim missing here is silently
     # denied at reconcile.
     permissionClaims:
-      # Infrastructure instances the Project reconciler lifecycles from a
-      # project's live bindings, plus the Studio's shared searxng + browser —
-      # every template's instances are ONE flattened resource (product
-      # selected by spec.template), so one claim covers them all.
-      - resource: instances
-        group: infrastructure.faros.sh
-        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-        tenantScoped: true
-      # Repository CRs the Project reconciler creates (git backing).
-      - resource: repositories
-        group: code.faros.sh
-        verbs: ["get", "list", "watch", "create", "update", "patch"]
-        tenantScoped: true
-      # Per-project ServiceAccount identity for reconciler commits, plus
-      # per-workspace LLM credential Secrets.
+      # Built-in types ONLY — deliberately no first-party (*.faros.sh)
+      # claims. Those must pin the serving APIExport's identityHash, and one
+      # export can pin exactly one identity per resource for every consumer
+      # at once, which breaks mixed platform/self-hosted dependency
+      # deployments. Instance and repository lifecycling instead acts as
+      # per-project/per-studio ServiceAccounts through each workspace's own
+      # bindings (tenantaccess package).
+      #
+      # Per-project ServiceAccount identity for reconciler instance and
+      # repository lifecycling + commits, plus per-workspace LLM credential
+      # Secrets.
       - resource: serviceaccounts
         verbs: ["get", "list", "watch", "create", "delete"]
         tenantScoped: true
@@ -98,12 +94,6 @@ spec:
     namespace: "faros-provider-app-studio"
     releaseName: "app-studio"
     docsURL: "https://github.com/faroshq/faros/blob/main/providers/app-studio/deploy/chart/README.md"
-    requiredValues:
-      - name: apiExport.infraIdentityHash
-        identityFor: "infrastructure.providers.faros.sh"
-        description: >-
-          Identity hash of the Application Templates APIExport, needed to lifecycle instances.
-      - name: apiExport.codeIdentityHash
-        identityFor: "code.providers.faros.sh"
-        description: >-
-          Identity hash of the code APIExport, needed for repository access.
+    # No requiredValues: app-studio pins no APIExport identity hashes — the
+    # reconcilers reach infrastructure/code through each workspace's own
+    # bindings, whichever copy that is.

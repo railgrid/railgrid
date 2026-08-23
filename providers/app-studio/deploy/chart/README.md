@@ -51,9 +51,6 @@ helm upgrade --install app-studio oci://ghcr.io/faroshq/charts/faros-app-studio-
 | `catalogEntry.renderAsConfigMap` | `true` |  |
 | `catalogEntry.uiURL` | `""` |  |
 | `catalogEntry.backendURL` | `""` |  |
-| `apiExport` |  |  |
-| `apiExport.infraIdentityHash` | `""` | REQUIRED for instance lifecycling: identityHash of the infrastructure provider's APIExport (infrastructure.providers.faros.sh), read from its status.identityHash in root:faros:providers:infrastructure (or copy it from /bonkers root-identities). kcp rejects first-party permission claims without it… |
-| `apiExport.codeIdentityHash` | `""` | Same, for the code provider's APIExport (code.providers.faros.sh): backs the repositories claim the Project reconciler needs to create the git backing repo. |
 | `providerKubeconfig` |  | Secret holding the workspace-admin kubeconfig minted by the platform admin via /bonkers (admin onboarding). Consumed by both the init container and the serve container. Key must be "kubeconfig". |
 | `providerKubeconfig.secretName` | `faros-provider-kubeconfig` |  |
 | `assistant` |  | Assistant chat behavior. |

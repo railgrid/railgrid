@@ -64,16 +64,6 @@ spec:
               value: /var/run/secrets/faros/faros-provider-kubeconfig
             - name: FAROS_SCHEMAS_DIR
               value: /etc/faros/schemas
-            {{- if .Values.apiExport.infraIdentityHash }}
-            # identityHash of the infrastructure APIExport — required for the
-            # first-party instance permission claims (see values.yaml).
-            - name: APP_STUDIO_INFRA_IDENTITY_HASH
-              value: {{ .Values.apiExport.infraIdentityHash | quote }}
-            {{- end }}
-            {{- if .Values.apiExport.codeIdentityHash }}
-            - name: APP_STUDIO_CODE_IDENTITY_HASH
-              value: {{ .Values.apiExport.codeIdentityHash | quote }}
-            {{- end }}
             {{- if $catalogEntryConfigMap }}
             # The CatalogEntry is a kcp resource, so the chart cannot apply it to
             # the hosting cluster. It is rendered into a ConfigMap (mounted below)

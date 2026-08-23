@@ -33,18 +33,12 @@ spec:
     # the hub writes these into the tenant APIBinding at Enable time; a claim
     # missing here is silently denied at reconcile.
     permissionClaims:
-      # Infrastructure instances the Project reconciler lifecycles from a
-      # project's live bindings, plus the Studio's shared searxng + browser —
-      # every template's instances are ONE flattened resource (product
-      # selected by spec.template), so one claim covers them all.
-      - resource: instances
-        group: infrastructure.faros.sh
-        verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-        tenantScoped: true
-      - resource: repositories
-        group: code.faros.sh
-        verbs: ["get", "list", "watch", "create", "update", "patch"]
-        tenantScoped: true
+      # Built-in types ONLY — deliberately no first-party (*.faros.sh)
+      # claims: those pin one APIExport identityHash for every consumer at
+      # once and break mixed platform/self-hosted dependency deployments.
+      # Instance and repository lifecycling acts as per-project/per-studio
+      # ServiceAccounts through each workspace's own bindings (tenantaccess
+      # package).
       - resource: serviceaccounts
         verbs: ["get", "list", "watch", "create", "delete"]
         tenantScoped: true
@@ -102,13 +96,7 @@ data:
         # The chart carries its own values reference, so the portal can show it
         # offline and for the version actually installed.
         valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
-        requiredValues:
-          - name: apiExport.infraIdentityHash
-            identityFor: "infrastructure.providers.faros.sh"
-            description: >-
-              Identity hash of the Application Templates APIExport, needed to lifecycle instances.
-          - name: apiExport.codeIdentityHash
-            identityFor: "code.providers.faros.sh"
-            description: >-
-              Identity hash of the code APIExport, needed for repository access.
+        # No requiredValues: app-studio pins no APIExport identity hashes —
+        # the reconcilers reach infrastructure/code through each workspace's
+        # own bindings, whichever copy that is.
 {{- end }}

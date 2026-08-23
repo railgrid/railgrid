@@ -21,7 +21,6 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/faroshq/provider-app-studio/hubmcp"
@@ -70,7 +69,7 @@ func scopeOf(p *aiv1alpha1.Project) (workspace.Scope, bool) {
 // commitWorkspace pushes dirty workspace files to git when the project is
 // idle. Returns (dirty, err): dirty=true means uncommitted work remains (not
 // committed this pass, or partially skipped) so the caller keeps polling.
-func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *aiv1alpha1.Project, repo *unstructured.Unstructured) (bool, error) {
+func (r *Reconciler) commitWorkspace(ctx context.Context, token string, p *aiv1alpha1.Project, repo *unstructured.Unstructured) (bool, error) {
 	if r.Workspace == nil || r.HubBase == "" {
 		return false, nil // commit convergence not wired (REST-only dev)
 	}
@@ -109,13 +108,6 @@ func (r *Reconciler) commitWorkspace(ctx context.Context, c client.Client, p *ai
 		return true, nil // an assistant turn owns the workspace; poll
 	}
 
-	token, err := r.ensureIdentity(ctx, c, p)
-	if err != nil {
-		return true, err
-	}
-	if token == "" {
-		return true, nil // token controller not done; poll
-	}
 	mcp := hubmcp.NewClient(r.HubBase, clusterOf(p), token, r.HubInsecure)
 	if !mcp.Ready() {
 		return true, nil

@@ -88,12 +88,6 @@ providerKubeconfig:
   secretName: faros-provider-kubeconfig
 
 # APIExport bootstrap (applied by the init container).
-apiExport:
-  # REQUIRED for kuery: the identityHash of the root edges.faros.sh
-  # APIExport. Copy it from the /bonkers "Root identities" view. Without it,
-  # tenant Enable accepts the edges claim but the controller engages zero edges.
-  edgesIdentityHash: ""
-
 serviceAccount:
   create: true
   name: ""   # empty → release-name

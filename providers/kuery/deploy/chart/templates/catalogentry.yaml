@@ -46,16 +46,26 @@ data:
 
       apiExport:
         name: "kuery.providers.faros.sh"
-        # The engagement controller watches the tenant's KubernetesCluster
-        # edges (via the APIExport virtual workspace) to know which edges to
-        # engage/disengage. LinuxServer edges carry no Kubernetes API and are
-        # not claimed. First-party claim: the init container stamps its
-        # identityHash from apiExport.edgesIdentityHash (Helm value, copied
-        # from /bonkers).
+        # Built-in types ONLY — deliberately no first-party (*.faros.sh)
+        # claims: those pin one APIExport identityHash for every consumer at
+        # once and break mixed platform/self-hosted deployments. Edge
+        # discovery acts as a per-workspace "faros-kuery" ServiceAccount
+        # through each workspace's own edges binding; these claims provision
+        # that identity.
         permissionClaims:
-          - resource: kubernetesclusters
-            group: edges.faros.sh
-            verbs: [get, list, watch]
+          - resource: serviceaccounts
+            verbs: [get, list, watch, create]
+            tenantScoped: true
+          - resource: secrets
+            verbs: [get, list, watch, create]
+            tenantScoped: true
+          - resource: clusterroles
+            group: rbac.authorization.k8s.io
+            verbs: [get, list, watch, create]
+            tenantScoped: true
+          - resource: clusterrolebindings
+            group: rbac.authorization.k8s.io
+            verbs: [get, list, watch, create]
             tenantScoped: true
       # Lets an organization run this provider in its own cluster
       # (docs/byo-providers.md). Keep manifest.yaml and
@@ -73,9 +83,7 @@ data:
         # The chart carries its own values reference, so the portal can show it
         # offline and for the version actually installed.
         valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
-        requiredValues:
-          - name: apiExport.edgesIdentityHash
-            identityFor: "edges.providers.faros.sh"
-            description: >-
-              kcp identity hash of the edges APIExport kuery claims against. Resolved for you; a wrong value leaves kuery running but seeing no edges.
+        # No requiredValues: kuery pins no APIExport identity hashes — edge
+        # discovery rides each workspace's own edges binding, whichever copy
+        # of the edges provider that is.
 {{- end }}

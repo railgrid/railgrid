@@ -21,8 +21,10 @@ package studio
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -35,6 +37,8 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
+
+	"github.com/faroshq/provider-sdk/tenantaccess"
 
 	aiv1alpha1 "github.com/faroshq/provider-app-studio/apis/ai/v1alpha1"
 )
@@ -64,6 +68,52 @@ const (
 // Reconciler converges the workspace's shared services.
 type Reconciler struct {
 	Manager mcmanager.Manager
+	// HubBase / HubInsecure address the hub for the tenant-path client.
+	HubBase     string
+	HubInsecure bool
+	// TenantClientFor is a test seam for the tenant-path client: a client on
+	// the workspace cluster authenticated as the Studio's ServiceAccount.
+	// Production leaves it nil and dials {HubBase}/clusters/{cluster} with the
+	// identity token. Instance writes go through THIS client — the
+	// workspace's own bindings — rather than the claimed VW, so they reach
+	// whichever copy of the infrastructure provider the workspace binds (see
+	// package tenantaccess).
+	TenantClientFor func(clusterName, token string) (client.Client, error)
+}
+
+// ensureIdentity provisions the Studio's ServiceAccount, RBAC, and token
+// Secret in the workspace, owned by the Studio so they garbage-collect with
+// it. An empty token with a nil error means "not ready yet, requeue".
+func (r *Reconciler) ensureIdentity(ctx context.Context, c client.Client, st *aiv1alpha1.Studio) (string, error) {
+	controller := true
+	owner := metav1.OwnerReference{
+		APIVersion: aiv1alpha1.SchemeGroupVersion.String(),
+		Kind:       "Studio",
+		Name:       st.Name,
+		UID:        st.UID,
+		Controller: &controller,
+	}
+	rules := []rbacv1.PolicyRule{{
+		APIGroups: []string{"infrastructure.faros.sh"},
+		Resources: []string{"*"},
+		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+	}}
+	return tenantaccess.EnsureIdentity(ctx, c, "faros-appstudio-studio-"+st.Name, []metav1.OwnerReference{owner}, rules)
+}
+
+// tenantClient resolves the client used for instance writes. vw is the
+// claimed-VW fallback for deployments with no hub address configured
+// (REST-only dev); that path still depends on first-party permission claims
+// and cannot serve mixed platform/self-hosted workspaces.
+func (r *Reconciler) tenantClient(clusterName, token string, vw client.Client) (client.Client, error) {
+	if r.TenantClientFor != nil {
+		return r.TenantClientFor(clusterName, token)
+	}
+	if r.HubBase == "" {
+		log.Printf("WARNING app-studio studio reconciler: FAROS_HUB_URL is empty; falling back to the claimed-VW client, which cannot serve workspaces whose infrastructure provider identity differs from this deployment's pins")
+		return vw, nil
+	}
+	return tenantaccess.NewClient(r.HubBase, clusterName, token, r.HubInsecure)
 }
 
 func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
@@ -90,7 +140,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 
 	if !st.DeletionTimestamp.IsZero() {
-		return r.finalize(ctx, c, &st)
+		return r.finalize(ctx, c, &st, string(req.ClusterName))
 	}
 	if !controllerutil.ContainsFinalizer(&st, aiv1alpha1.StudioFinalizer) {
 		controllerutil.AddFinalizer(&st, aiv1alpha1.StudioFinalizer)
@@ -100,11 +150,26 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	search, err := r.converge(ctx, c, &st, searchService(&st))
+	// Instance writes act as the Studio's ServiceAccount against the tenant
+	// workspace itself (see package tenantaccess); the identity objects are
+	// provisioned over the claimed VW (built-in types).
+	token, err := r.ensureIdentity(ctx, c, &st)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("studio identity: %w", err)
+	}
+	if token == "" {
+		return ctrl.Result{RequeueAfter: requeueInterval}, nil
+	}
+	tc, err := r.tenantClient(string(req.ClusterName), token, c)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("tenant client: %w", err)
+	}
+
+	search, err := r.converge(ctx, tc, &st, searchService(&st))
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	browser, err := r.converge(ctx, c, &st, browserService(&st))
+	browser, err := r.converge(ctx, tc, &st, browserService(&st))
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -261,14 +326,37 @@ func (r *Reconciler) deleteInstance(ctx context.Context, c client.Client, ref *a
 }
 
 // finalize tears down the shared services, then releases the finalizer.
-func (r *Reconciler) finalize(ctx context.Context, c client.Client, st *aiv1alpha1.Studio) (ctrl.Result, error) {
+func (r *Reconciler) finalize(ctx context.Context, c client.Client, st *aiv1alpha1.Studio, clusterName string) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(st, aiv1alpha1.StudioFinalizer) {
 		return ctrl.Result{}, nil
 	}
-	for _, svc := range []service{searchService(st), browserService(st)} {
-		if ref := svc.ref; ref != nil && ref.Resource != "" {
-			if err := r.deleteInstance(ctx, c, ref); err != nil {
-				return ctrl.Result{}, fmt.Errorf("deleting %s instance %s: %w", svc.name, ref.Name, err)
+	services := []service{searchService(st), browserService(st)}
+	anyRef := false
+	for _, svc := range services {
+		if svc.ref != nil && svc.ref.Resource != "" {
+			anyRef = true
+		}
+	}
+	if anyRef {
+		// Deletion rides the tenant-path client like every other instance
+		// write; blocking on the identity avoids releasing the finalizer over
+		// instances a claims-path 404 would have hidden.
+		token, err := r.ensureIdentity(ctx, c, st)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("studio identity for teardown: %w", err)
+		}
+		if token == "" {
+			return ctrl.Result{RequeueAfter: requeueInterval}, nil
+		}
+		tc, err := r.tenantClient(clusterName, token, c)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("tenant client for teardown: %w", err)
+		}
+		for _, svc := range services {
+			if ref := svc.ref; ref != nil && ref.Resource != "" {
+				if err := r.deleteInstance(ctx, tc, ref); err != nil {
+					return ctrl.Result{}, fmt.Errorf("deleting %s instance %s: %w", svc.name, ref.Name, err)
+				}
 			}
 		}
 	}

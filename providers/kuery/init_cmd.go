@@ -25,12 +25,14 @@ const (
 // APIExport, APIExportEndpointSlice, bind grant) using the workspace-admin
 // kubeconfig the admin onboarded. Idempotent.
 //
-// kuery's edges permission claim is a FIRST-PARTY type (faros.sh), so its
-// APIExport claim must carry the identityHash of the root APIExport that serves
-// edges. The workspace-scoped kubeconfig can't read the parent workspace to
-// resolve it, so the platform admin supplies it via KUERY_EDGES_IDENTITY_HASH
-// (a Helm value copied from the /bonkers "Root identities" view). Without it the
-// Enable flow's identity poll times out and kuery engages zero edges.
+// kuery's APIExport deliberately claims NO first-party (*.faros.sh)
+// resources. Such a claim must pin the serving APIExport's identityHash, and
+// an export can pin exactly one identity per claimed resource — for every
+// consuming workspace at once — which breaks the moment one org self-hosts
+// the edges provider while others use the platform copy. Edge discovery
+// instead acts as a per-workspace ServiceAccount through each workspace's
+// own edges binding (see engagement + provider-sdk/tenantaccess). Only
+// built-in types (no identityHash) are claimed, to provision that identity.
 func runInitCmd(ctx context.Context) error {
 	config, err := loadProviderConfig()
 	if err != nil {
@@ -47,10 +49,6 @@ func runInitCmd(ctx context.Context) error {
 		schemasDir = "/etc/faros/schemas"
 	}
 
-	edgesHash := os.Getenv("KUERY_EDGES_IDENTITY_HASH")
-	if edgesHash == "" {
-		log.Printf("WARNING KUERY_EDGES_IDENTITY_HASH is empty; the edges permission claim will have no identityHash and tenant Enable will not engage edges. Copy it from the /bonkers Root identities view into the chart value.")
-	}
 	catalogEntryFile := os.Getenv("FAROS_CATALOGENTRY_FILE")
 
 	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
@@ -58,18 +56,21 @@ func runInitCmd(ctx context.Context) error {
 		ExportName:    apiExportName,
 		WorkspacePath: workspacePath,
 		SchemasDir:    schemasDir,
+		// Built-in types backing the per-workspace engagement ServiceAccount
+		// (see engagement.ensureIdentity). Keep in sync with manifest.yaml +
+		// deploy/chart/templates/catalogentry.yaml — the hub writes the
+		// tenant APIBinding claims from those at Enable time, and a claim
+		// missing there is silently denied at reconcile.
 		Claims: []sdkinstall.PermissionClaim{
-			{
-				Group:        "faros.sh",
-				Resource:     "edges",
-				Verbs:        []string{"get", "list", "watch"},
-				IdentityHash: edgesHash,
-			},
+			{Resource: "serviceaccounts", Verbs: []string{"get", "list", "watch", "create"}},
+			{Resource: "secrets", Verbs: []string{"get", "list", "watch", "create"}},
+			{Group: "rbac.authorization.k8s.io", Resource: "clusterroles", Verbs: []string{"get", "list", "watch", "create"}},
+			{Group: "rbac.authorization.k8s.io", Resource: "clusterrolebindings", Verbs: []string{"get", "list", "watch", "create"}},
 		},
 		CatalogEntryFile: catalogEntryFile,
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)
 	}
-	log.Printf("kuery init: workspace bootstrapped (export=%s path=%s schemas=%s edgesHash=%t catalogEntry=%s)", apiExportName, workspacePath, schemasDir, edgesHash != "", catalogEntryFile)
+	log.Printf("kuery init: workspace bootstrapped (export=%s path=%s schemas=%s catalogEntry=%s)", apiExportName, workspacePath, schemasDir, catalogEntryFile)
 	return nil
 }

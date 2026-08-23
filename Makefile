@@ -1242,10 +1242,6 @@ KUERY_MANIFEST ?= providers/kuery/manifest.yaml
 KUERY_PROVIDER_MANIFEST ?= providers/kuery/provider.yaml
 KUERY_WORKSPACE_PATH ?= root:faros:providers:kuery
 KUERY_SCHEMAS_DIR ?= providers/kuery/deploy/chart/files/schemas
-# Optional: identityHash of the edges export for kuery's first-party edges
-# permission claim (copy from /bonkers Root identities). Empty → APIExport is
-# still created (Enable binds), but edge engagement won't activate until set.
-KUERY_EDGES_IDENTITY_HASH ?=
 # Dev runtime kubeconfig for the engagement controller, written by
 # init-provider-kuery from the provider SA token the hub mints.
 KUERY_RUNTIME_KUBECONFIG ?= $(KCP_DATA_DIR)/kuery-runtime.kubeconfig
@@ -1373,26 +1369,15 @@ init-provider-kuery: build-kuery-provider ## Bootstrap kuery APIExport (schemas+
 	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: faros\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: faros\n  context:\n    cluster: faros\n    user: faros\ncurrent-context: faros\nusers:\n- name: faros\n  user:\n    token: %s\n' \
 		"$(KUERY_KCP_SERVER)/clusters/$(KUERY_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(KUERY_RUNTIME_KUBECONFIG)
-	@# kcp requires kuery's first-party edges permissionClaim to carry the
-	@# identityHash of the export that serves edges. Tenants consume edges
-	@# through the core.faros.sh binding, so resolve core.faros.sh's
-	@# identityHash from system:controllers (override via KUERY_EDGES_IDENTITY_HASH).
-	@# The slice + bind grant are created inside install.Bootstrap using the
-	@# provider SA (cluster-admin → has `bind`), not the admin kubeconfig.
+	@# No identity hashes: kuery claims no first-party resources — edge
+	@# discovery acts as a per-workspace ServiceAccount through each tenant's
+	@# own edges binding. The slice + bind grant are created inside
+	@# install.Bootstrap using the provider SA (cluster-admin → has `bind`),
+	@# not the admin kubeconfig.
 	@echo "Running kuery-provider init (schemas + APIExport + endpoint slice + bind grant)"
-	@HASH="$(KUERY_EDGES_IDENTITY_HASH)"; \
-	if [ -z "$$HASH" ]; then \
-		HASH=$$(kubectl --kubeconfig=$(KUERY_KCP_KUBECONFIG) \
-			--server=$(KUERY_KCP_SERVER)/clusters/root:faros:system:controllers \
-			--insecure-skip-tls-verify \
-			get apiexport core.faros.sh -o jsonpath='{.status.identityHash}'); \
-		echo "resolved edges identityHash from core.faros.sh: $$HASH"; \
-	fi; \
-	test -n "$$HASH" || { echo "could not resolve core.faros.sh identityHash — is the hub bootstrapped?"; exit 1; }; \
 	FAROS_PROVIDER_KUBECONFIG=$(KUERY_RUNTIME_KUBECONFIG) \
 	KUERY_WORKSPACE_PATH=$(KUERY_WORKSPACE_PATH) \
 	FAROS_SCHEMAS_DIR=$(KUERY_SCHEMAS_DIR) \
-	KUERY_EDGES_IDENTITY_HASH=$$HASH \
 		$(BINDIR)/kuery-provider init
 
 uninstall-provider-kuery: ## Delete kuery CatalogEntry + Provider (full teardown)
@@ -1708,25 +1693,13 @@ init-provider-app-studio: build-app-studio-provider ## Bootstrap App Studio APIE
 	printf 'apiVersion: v1\nkind: Config\nclusters:\n- name: faros\n  cluster:\n    server: %s\n    insecure-skip-tls-verify: true\ncontexts:\n- name: faros\n  context:\n    cluster: faros\n    user: faros\ncurrent-context: faros\nusers:\n- name: faros\n  user:\n    token: %s\n' \
 		"$(APP_STUDIO_KCP_SERVER)/clusters/$(APP_STUDIO_WORKSPACE_PATH)" "$$TOKEN" \
 		> $(APP_STUDIO_PROVIDER_KUBECONFIG)
-	@echo "Running app-studio-provider init (creates APIExport + schemas + endpoint slice + bind grant + instance claims)"
-	@# The instance permission claims need the infrastructure APIExport's
-	@# identityHash. Auto-discover it in dev; APP_STUDIO_INFRA_IDENTITY_HASH
-	@# in the environment wins (prod supplies it via Helm).
-	INFRA_HASH=$${APP_STUDIO_INFRA_IDENTITY_HASH:-$$(kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
-		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:faros:providers:infrastructure \
-		--insecure-skip-tls-verify \
-		get apiexport infrastructure.providers.faros.sh -o jsonpath='{.status.identityHash}' 2>/dev/null)}; \
-	if [ -z "$$INFRA_HASH" ]; then echo "WARNING: could not discover the infrastructure APIExport identityHash — instance claims will be hash-less"; fi; \
-	CODE_HASH=$${APP_STUDIO_CODE_IDENTITY_HASH:-$$(kubectl --kubeconfig=$(APP_STUDIO_KCP_KUBECONFIG) \
-		--server=$(APP_STUDIO_KCP_SERVER)/clusters/root:faros:providers:code \
-		--insecure-skip-tls-verify \
-		get apiexport code.providers.faros.sh -o jsonpath='{.status.identityHash}' 2>/dev/null)}; \
-	if [ -z "$$CODE_HASH" ]; then echo "WARNING: could not discover the code APIExport identityHash — the repositories claim will be hash-less"; fi; \
+	@echo "Running app-studio-provider init (creates APIExport + schemas + endpoint slice + bind grant)"
+	@# No identity hashes: app-studio claims no first-party resources. The
+	@# reconcilers act as workspace ServiceAccounts through each tenant's own
+	@# bindings, so no APIExport identityHash pinning is involved.
 	FAROS_PROVIDER_KUBECONFIG=$(APP_STUDIO_PROVIDER_KUBECONFIG) \
 	APP_STUDIO_WORKSPACE_PATH=$(APP_STUDIO_WORKSPACE_PATH) \
 	FAROS_SCHEMAS_DIR=$(APP_STUDIO_SCHEMAS_DIR) \
-	APP_STUDIO_INFRA_IDENTITY_HASH="$$INFRA_HASH" \
-	APP_STUDIO_CODE_IDENTITY_HASH="$$CODE_HASH" \
 		$(BINDIR)/app-studio-provider init
 
 ## Delete the App Studio CatalogEntry. Useful while iterating on the chart.

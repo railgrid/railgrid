@@ -330,8 +330,8 @@ All nine, each embedding its own chart values reference:
 | `infrastructure` | none — self-bootstrap values use `{{workspacePath}}` / `{{kubeconfigSecret}}` |
 | `code` | none |
 | `databricks` | none |
-| `kuery` | none — the edges identity hash is resolved |
-| `app-studio` | none — infrastructure + code identity hashes are resolved |
+| `kuery` | none — claims no first-party resources; edge discovery acts as a per-workspace ServiceAccount through each tenant's own edges binding, so no identity hashes are involved |
+| `app-studio` | none — claims no first-party resources at all; its reconcilers act as workspace ServiceAccounts through each tenant's own bindings, so no identity hashes are involved |
 | `agents` | `store.databaseURLSecretRef.name` — Postgres is its only hard dependency, and the hub cannot invent your database |
 
 Identity hashes are declared with `identityFor` rather than as literals, so the

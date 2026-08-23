@@ -21,15 +21,15 @@ const (
 	apiExportName        = "ai.faros.sh"
 )
 
-// instanceClaimResources are the infrastructure instance resources the
-// Project reconciler lifecycles — the templates' instanceCRD plurals a
-// project's live bindings can reference. Extend as the template vocabulary
-// grows, and keep manifest.yaml + deploy/chart/templates/catalogentry.yaml in
-// sync: the hub writes the tenant APIBinding claims from those at Enable time,
-// and a claim missing there is silently denied at reconcile.
-// searxngs backs the Studio's shared web-search instance; browsers backs the
-// Studio's shared headless browser (development-preview inspection).
-var instanceClaimResources = []string{"instances"}
+// The APIExport deliberately claims NO first-party (*.faros.sh) resources.
+// Such claims must pin the serving APIExport's identityHash, and an export
+// can pin exactly one identity per claimed resource — for every consuming
+// workspace at once. That breaks the moment one org self-hosts a dependency
+// (infrastructure, code) while others use the platform copy. Instead the
+// reconcilers act as per-project/per-studio ServiceAccounts through each
+// workspace's OWN bindings (see package tenantaccess), which reach whichever
+// copy the workspace binds. Only built-in types (no identityHash) are
+// claimed, to provision those identities.
 
 // runInitCmd applies the App Studio provider's in-workspace objects
 // (APIResourceSchemas, APIExport, APIExportEndpointSlice, bind grant) using the
@@ -51,42 +51,14 @@ func runInitCmd(ctx context.Context) error {
 	}
 	catalogEntryFile := os.Getenv("FAROS_CATALOGENTRY_FILE")
 
-	// The Project reconciler creates/deletes infrastructure instances in
-	// tenant workspaces. Those are first-party (*.faros.sh) types, so kcp
-	// requires the identityHash of the APIExport serving them
-	// (infrastructure.providers.faros.sh) — Helm value in prod, the dev
-	// Makefile auto-discovers it.
-	infraHash := os.Getenv("APP_STUDIO_INFRA_IDENTITY_HASH")
-	if infraHash == "" {
-		log.Printf("WARNING: APP_STUDIO_INFRA_IDENTITY_HASH is empty — the instance permission claims will have no identityHash and tenant Enable will not engage instance lifecycling")
-	}
-	claims := make([]sdkinstall.PermissionClaim, 0, len(instanceClaimResources)+6)
-	for _, r := range instanceClaimResources {
-		claims = append(claims, sdkinstall.PermissionClaim{
-			Group:        "infrastructure.faros.sh",
-			Resource:     r,
-			Verbs:        []string{"get", "list", "watch", "create", "update", "patch", "delete"},
-			IdentityHash: infraHash,
-		})
-	}
-	// Repository creation (git backing) — the Project reconciler creates
-	// Repository CRs; commits go through the code provider's MCP as the
-	// project's ServiceAccount (commit bundles are code-provider-local).
-	codeHash := os.Getenv("APP_STUDIO_CODE_IDENTITY_HASH")
-	if codeHash == "" {
-		log.Printf("WARNING: APP_STUDIO_CODE_IDENTITY_HASH is empty — the repositories claim will have no identityHash and the reconciler cannot create repositories")
-	}
-	claims = append(claims, sdkinstall.PermissionClaim{
-		Group:        "code.faros.sh",
-		Resource:     "repositories",
-		Verbs:        []string{"get", "list", "watch", "create", "update", "patch"},
-		IdentityHash: codeHash,
-	})
-	// Per-project ServiceAccount identity: repository commits run in the
-	// reconciler long after the request that caused the edits, so they act as
-	// an identity of their own rather than borrowing the user's bearer. Also:
-	// per-project LLM credentials ride Secrets. Built-in types — no
-	// identityHash needed.
+	// Per-project/per-studio ServiceAccount identity: instance and repository
+	// lifecycling (and repository commits) run in the reconcilers long after
+	// the request that caused them, so they act as an identity of their own
+	// rather than borrowing the user's bearer. The identity objects are
+	// built-in types — no identityHash needed — and the resulting token acts
+	// through the workspace's own bindings for everything first-party. Also:
+	// per-project LLM credentials ride Secrets.
+	claims := make([]sdkinstall.PermissionClaim, 0, 4)
 	claims = append(claims,
 		sdkinstall.PermissionClaim{Resource: "serviceaccounts", Verbs: []string{"get", "list", "watch", "create", "delete"}},
 		sdkinstall.PermissionClaim{Resource: "secrets", Verbs: []string{"get", "list", "watch", "create", "update", "delete"}},

@@ -6,11 +6,25 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-// Package engagement watches KubernetesCluster edges across all tenant
-// workspaces that enabled the kuery provider (through the APIExport virtual
-// workspace — the tenant-scoped permission claim on edges.faros.sh
-// kubernetesclusters from the CatalogEntry) and feeds connected edges into
+// Package engagement discovers KubernetesCluster edges across all tenant
+// workspaces that enabled the kuery provider and feeds connected edges into
 // kuery's sync controller.
+//
+// Discovery deliberately uses NO permission claim on the edges provider's
+// resources. Such a claim must pin the edges APIExport's identityHash, and an
+// export can pin exactly one identity per claimed resource — for every
+// consuming workspace at once — which breaks the moment one org self-hosts
+// the edges provider while others use the platform copy (see
+// docs/byo-providers.md). Instead:
+//
+//   - Workspace discovery rides the APIExport virtual workspace's reflexive
+//     APIBinding serving: every consumer's binding to kuery's own export is
+//     visible without any claim.
+//   - Per workspace, a "faros-kuery" ServiceAccount (provisioned through the
+//     claimed built-in types, owned by the binding so it GCs with Disable) is
+//     granted read on kubernetesclusters, and edges are polled through the
+//     workspace's OWN edges binding — whichever copy of the edges provider
+//     that is (see provider-sdk/tenantaccess).
 //
 // Per edge, the data path is the edges provider's consumer proxy: a
 // rest.Config pointing at
@@ -38,7 +52,10 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -46,9 +63,12 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+
+	"github.com/faroshq/provider-sdk/tenantaccess"
 
 	"github.com/kcp-dev/multicluster-provider/apiexport"
 	apiskcpv1alpha1 "github.com/kcp-dev/sdk/apis/apis/v1alpha1"
@@ -115,6 +135,11 @@ type Controller struct {
 
 	mgr mcmanager.Manager
 
+	// tenantClientFor is a test seam for the per-workspace edge-poll client.
+	// Production leaves it nil and dials {hubBase}/clusters/{cluster} as the
+	// engagement ServiceAccount.
+	tenantClientFor func(clusterName, token string) (client.Client, error)
+
 	mu      sync.Mutex
 	engaged map[string]engagedEdge // "{tenantCluster}/{edgeName}" → engagement handle
 }
@@ -162,10 +187,13 @@ func New(cfg Config) (*Controller, error) {
 	// provider builds a typed cache over APIExportEndpointSlice (v1alpha1)
 	// and APIExport (v1alpha2) to discover virtual-workspace URLs — those
 	// kinds must be registered or the cache fails with "no kind is
-	// registered for the type ... APIExportEndpointSlice".
+	// registered for the type ... APIExportEndpointSlice". core/v1 + rbac/v1
+	// back the per-workspace ServiceAccount identity objects.
 	scheme := runtime.NewScheme()
 	utilruntime.Must(apiskcpv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(apiskcpv1alpha2.AddToScheme(scheme))
+	utilruntime.Must(corev1.AddToScheme(scheme))
+	utilruntime.Must(rbacv1.AddToScheme(scheme))
 
 	provider, err := apiexport.New(cfg.ProviderConfig, cfg.APIExportName, apiexport.Options{Scheme: scheme})
 	if err != nil {
@@ -179,13 +207,17 @@ func New(cfg Config) (*Controller, error) {
 		return nil, fmt.Errorf("creating multicluster manager: %w", err)
 	}
 
-	edge := &unstructured.Unstructured{}
-	edge.SetGroupVersionKind(edgeGVK)
+	// Drive reconciles off the consumer's APIBinding to kuery's own export —
+	// the one object every enabled workspace is guaranteed to expose through
+	// the VW without any claim. Edges themselves are polled per workspace on
+	// the requeue interval, not watched: after the claim removal the VW does
+	// not serve them, and the engagement cadence (claim renewal) already
+	// polls.
 	if err := mcbuilder.ControllerManagedBy(mgr).
 		Named("kuery-edge-engagement").
-		For(edge).
+		For(&apiskcpv1alpha2.APIBinding{}).
 		Complete(c); err != nil {
-		return nil, fmt.Errorf("registering edge reconciler: %w", err)
+		return nil, fmt.Errorf("registering engagement reconciler: %w", err)
 	}
 
 	c.mgr = mgr
@@ -232,34 +264,90 @@ func (c *Controller) TenantEdges(ctx context.Context, tenant string) ([]string, 
 	return edges, nil
 }
 
-// Reconcile maps one edge's state to an Engage/Disengage of the
+// Reconcile drives one enabled workspace: it resolves the workspace's
+// engagement identity, lists KubernetesCluster edges through the workspace's
+// own bindings, and maps each edge's state to an Engage/Disengage of the
 // corresponding kuery cluster, gated by this replica's claim on the edge.
+// Requeueing on renewInterval doubles as the claim heartbeat and the edge
+// poll.
 func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {
 	tenantCluster := string(req.ClusterName)
-	logger := klog.FromContext(ctx).WithValues("cluster", tenantCluster, "edge", req.Name)
-	key := tenantCluster + "/" + req.Name
 
 	cl, err := c.mgr.GetCluster(ctx, req.ClusterName)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("getting workspace cluster %s: %w", req.ClusterName, err)
 	}
 
-	edge := &unstructured.Unstructured{}
-	edge.SetGroupVersionKind(edgeGVK)
-	if err := cl.GetClient().Get(ctx, req.NamespacedName, edge); err != nil {
+	binding := &apiskcpv1alpha2.APIBinding{}
+	if err := cl.GetClient().Get(ctx, req.NamespacedName, binding); err != nil {
 		if apierrors.IsNotFound(err) {
-			c.dropLocal(ctx, key, true)
+			// kuery disabled in this workspace: stop syncing its edges.
+			c.dropCluster(ctx, tenantCluster)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
+	// The VW serves consumer bindings reflexively; only kuery's own binding
+	// marks an enabled workspace. (Without an apibindings claim no other
+	// binding is visible here anyway — this guard is for correctness, not
+	// filtering volume.)
+	if binding.Spec.Reference.Export == nil || binding.Spec.Reference.Export.Name != c.cfg.APIExportName {
+		return ctrl.Result{}, nil
+	}
+	if !binding.DeletionTimestamp.IsZero() {
+		c.dropCluster(ctx, tenantCluster)
+		return ctrl.Result{}, nil
+	}
+
+	token, err := c.ensureIdentity(ctx, cl.GetClient(), binding)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("engagement identity in %s: %w", tenantCluster, err)
+	}
+	if token == "" {
+		// Token controller not done; edges cannot be read yet.
+		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+	}
+	tc, err := c.tenantClient(tenantCluster, token)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("tenant client for %s: %w", tenantCluster, err)
+	}
+
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(edgeGVK.GroupVersion().WithKind(edgeGVK.Kind + "List"))
+	if err := tc.List(ctx, list); err != nil {
+		return ctrl.Result{}, fmt.Errorf("listing edges in %s: %w", tenantCluster, err)
+	}
+
+	requeueAfter := renewInterval
+	seen := make(map[string]bool, len(list.Items))
+	for i := range list.Items {
+		edge := &list.Items[i]
+		seen[edge.GetName()] = true
+		if d := c.reconcileEdge(ctx, tenantCluster, edge); d > 0 && d < requeueAfter {
+			requeueAfter = d
+		}
+	}
+	// Edges that disappeared between polls never produce a NotFound read on
+	// this path — reconcile against the full list instead.
+	c.dropAbsent(ctx, tenantCluster, seen)
+
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+}
+
+// reconcileEdge maps one edge's state to Engage/Disengage, returning a
+// shorter requeue when this edge needs a faster re-check than the standard
+// renewal poll (0 means no preference).
+func (c *Controller) reconcileEdge(ctx context.Context, tenantCluster string, edge *unstructured.Unstructured) time.Duration {
+	edgeName := edge.GetName()
+	logger := klog.FromContext(ctx).WithValues("cluster", tenantCluster, "edge", edgeName)
+	key := tenantCluster + "/" + edgeName
 
 	connected, _, _ := unstructured.NestedBool(edge.Object, "status", "connected")
 	if !connected {
 		// Globally down: whoever holds it marks the rows stale (Disengage)
 		// and releases the claim; kuery's GC reaps after the TTL.
 		c.dropLocal(ctx, key, true)
-		return ctrl.Result{}, nil
+		return 0
 	}
 
 	// Tenant identity is the workspace PATH the edges provider stamps onto
@@ -272,27 +360,27 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	tenant, _, _ := unstructured.NestedString(edge.Object, "status", "workspacePath")
 	if tenant == "" {
 		logger.V(4).Info("workspacePath not yet stamped; requeuing")
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		return 5 * time.Second
 	}
-	storeName := tenant + "/" + req.Name
+	storeName := tenant + "/" + edgeName
 
 	held, err := c.claims.tryAcquire(ctx, storeName)
 	if err != nil {
 		logger.Error(err, "claiming edge")
-		return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		return 15 * time.Second
 	}
 	if !held {
 		// Another replica owns this edge. If we used to, hand it over
 		// locally (its re-assert pass heals the transient stale our
-		// Disengage writes). Re-check on the claim TTL so an expired claim
-		// is taken over promptly.
+		// Disengage writes). The renewal poll re-checks, so an expired claim
+		// is taken over within one claim TTL.
 		c.dropLocal(ctx, key, false)
-		return ctrl.Result{RequeueAfter: claimTTL}, nil
+		return 0
 	}
 
-	if err := c.engage(ctx, key, tenantCluster, req.Name, tenant); err != nil {
+	if err := c.engage(ctx, key, tenantCluster, edgeName, tenant); err != nil {
 		logger.Error(err, "engaging edge")
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		return 30 * time.Second
 	}
 
 	// Owner heartbeat: every pass re-asserts the cluster row (status=active,
@@ -303,7 +391,65 @@ func (c *Controller) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if err := c.assertTenantLabel(ctx, storeName, tenant); err != nil {
 		logger.Error(err, "re-asserting cluster row")
 	}
-	return ctrl.Result{RequeueAfter: renewInterval}, nil
+	return 0
+}
+
+// engagementIdentityName is the per-workspace ServiceAccount the edge poll
+// runs as. One per workspace, owned by the kuery APIBinding so Disable
+// garbage-collects it.
+const engagementIdentityName = "faros-kuery"
+
+// ensureIdentity provisions the workspace's engagement ServiceAccount, RBAC,
+// and token Secret through the claimed built-in types. An empty token with a
+// nil error means "not ready yet, requeue".
+func (c *Controller) ensureIdentity(ctx context.Context, cl client.Client, binding *apiskcpv1alpha2.APIBinding) (string, error) {
+	owner := metav1.OwnerReference{
+		APIVersion: apiskcpv1alpha2.SchemeGroupVersion.String(),
+		Kind:       "APIBinding",
+		Name:       binding.Name,
+		UID:        binding.UID,
+	}
+	rules := []rbacv1.PolicyRule{{
+		// Read-only: discovery only. The per-edge data path is the edges
+		// consumer proxy, authorized separately by the Enable-time proxy
+		// grant.
+		APIGroups: []string{"edges.faros.sh"},
+		Resources: []string{"kubernetesclusters"},
+		Verbs:     []string{"get", "list", "watch"},
+	}}
+	return tenantaccess.EnsureIdentity(ctx, cl, engagementIdentityName, []metav1.OwnerReference{owner}, rules)
+}
+
+// tenantClient builds the client the edge poll uses: the workspace's own API
+// surface, as the engagement ServiceAccount. tenantClientFor is a test seam.
+func (c *Controller) tenantClient(clusterName, token string) (client.Client, error) {
+	if c.tenantClientFor != nil {
+		return c.tenantClientFor(clusterName, token)
+	}
+	return tenantaccess.NewClient(c.hubBase, clusterName, token, c.cfg.ProviderConfig.TLSClientConfig.Insecure)
+}
+
+// dropAbsent disengages this replica's engaged edges of one workspace that
+// are no longer present in the workspace's edge list.
+func (c *Controller) dropAbsent(ctx context.Context, tenantCluster string, seen map[string]bool) {
+	prefix := tenantCluster + "/"
+	var gone []string
+	c.mu.Lock()
+	for key, entry := range c.engaged {
+		if strings.HasPrefix(key, prefix) && !seen[entry.edgeName] {
+			gone = append(gone, key)
+		}
+	}
+	c.mu.Unlock()
+	for _, key := range gone {
+		c.dropLocal(ctx, key, true)
+	}
+}
+
+// dropCluster disengages every edge this replica syncs for one workspace —
+// the workspace disabled kuery (or its binding is going away).
+func (c *Controller) dropCluster(ctx context.Context, tenantCluster string) {
+	c.dropAbsent(ctx, tenantCluster, nil)
 }
 
 // engage builds the edgeproxy cluster client and hands it to kuery. Idempotent

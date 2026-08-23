@@ -59,8 +59,6 @@ helm upgrade --install kuery oci://ghcr.io/faroshq/charts/faros-kuery-provider \
 | `catalogEntry.enabled` | `true` |  |
 | `providerKubeconfig` |  | Secret holding the workspace-admin kubeconfig minted via /bonkers (admin onboarding). Consumed by both the init container and serve. Key "kubeconfig". |
 | `providerKubeconfig.secretName` | `faros-provider-kubeconfig` |  |
-| `apiExport` |  | APIExport bootstrap (applied by the init container). |
-| `apiExport.edgesIdentityHash` | `""` | REQUIRED for kuery: the identityHash of the root edges.faros.sh APIExport. Copy it from the /bonkers "Root identities" view. Without it, tenant Enable accepts the edges claim but the controller engages zero edges. |
 | `serviceAccount` |  |  |
 | `serviceAccount.create` | `true` |  |
 | `serviceAccount.name` | `""` |  |

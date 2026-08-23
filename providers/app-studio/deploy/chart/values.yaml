@@ -47,19 +47,6 @@ catalogEntry:
   uiURL: ""
   backendURL: ""
 
-apiExport:
-  # REQUIRED for instance lifecycling: identityHash of the infrastructure
-  # provider's APIExport (infrastructure.providers.faros.sh), read from
-  # its status.identityHash in root:faros:providers:infrastructure (or copy it
-  # from /bonkers root-identities). kcp rejects first-party permission claims
-  # without it — with an empty value the Project reconciler cannot create
-  # instances in tenant workspaces.
-  infraIdentityHash: ""
-  # Same, for the code provider's APIExport (code.providers.faros.sh):
-  # backs the repositories claim the Project reconciler needs to create the
-  # git backing repo.
-  codeIdentityHash: ""
-
 # Secret holding the workspace-admin kubeconfig minted by the platform admin
 # via /bonkers (admin onboarding). Consumed by both the init container and the
 # serve container. Key must be "kubeconfig".

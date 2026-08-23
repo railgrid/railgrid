@@ -261,7 +261,10 @@ func startControllerManager(ctx context.Context, config *rest.Config, deps contr
 	if err := (&session.Reconciler{Store: deps.Store}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("session controller: %w", err)
 	}
-	if err := (&studio.Reconciler{}).SetupWithManager(mgr); err != nil {
+	if err := (&studio.Reconciler{
+		HubBase:     deps.HubBase,
+		HubInsecure: deps.HubInsecure,
+	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("studio controller: %w", err)
 	}
 
