@@ -107,6 +107,23 @@ test('migrates the legacy deployments tab and active id to source History', () =
   assert.equal(restored.tabs[1].title, 'History')
 })
 
+test('drops the retired Threads tab while preserving the rest of a saved layout', () => {
+  const parsed = persistence.parseWorkbenchPersistence(JSON.stringify({
+    version: 1,
+    tabs: [{ kind: 'preview' }, { kind: 'threads' }, { kind: 'settings' }],
+    activeTabID: 'threads',
+  }))
+  assert.deepEqual(parsed, {
+    version: 1,
+    tabs: [{ kind: 'preview' }, { kind: 'settings' }],
+    activeTabID: '',
+  })
+
+  const restored = persistence.restoreWorkbenchState(parsed, [])
+  assert.deepEqual(restored.tabs.map((tab) => tab.id), ['preview', 'settings'])
+  assert.equal(restored.activeTabID, 'preview')
+})
+
 test('scope keys isolate tenant, organization, workspace, user, and project', () => {
   const storage = memoryStorage()
   const state = workbench.createDefaultWorkbenchState()

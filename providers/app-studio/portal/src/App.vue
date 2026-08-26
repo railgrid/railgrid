@@ -22,6 +22,7 @@ import {
   Loader2,
   Lock,
   MessageSquare,
+  PanelLeft,
   PanelRight,
   Plus,
   RefreshCw,
@@ -88,9 +89,21 @@ import {
   projectAssistantContextResources,
 } from './assistantThreadProjection'
 import {
+  assistantThreadFocusStorageKey,
   persistAssistantThreadFocus,
   restoreAssistantThreadFocus,
 } from './assistantThreadFocus'
+import {
+  markAssistantThreadRead,
+  markAssistantThreadUnread,
+  removeAssistantThreadReadState,
+  reconcileAssistantThreadReadState,
+} from './assistantThreadReadState'
+import {
+  readAssistantThreadPins,
+  removeAssistantThreadPin,
+  toggleAssistantThreadPin,
+} from './assistantThreadPinState'
 import {
   assistantAnnotationDraftStorageKey,
   clearAssistantAnnotationDraft,
@@ -102,7 +115,7 @@ import AssistantPlanPopover from './AssistantPlanPopover.vue'
 import AssistantPlanDisclosure from './AssistantPlanDisclosure.vue'
 import SkillsWorkbench from './SkillsWorkbench.vue'
 import CodeExplorer from './CodeExplorer.vue'
-import ThreadsWorkbench from './ThreadsWorkbench.vue'
+import ThreadRail from './ThreadRail.vue'
 import ProjectShareDialog from './ProjectShareDialog.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
 import ResponseModePicker, { type AssistantResponseMode } from './ResponseModePicker.vue'
@@ -311,7 +324,8 @@ function currentProjectRequestGuard(): ProjectRequestGuard {
 }
 
 function projectRequestIsCurrent(guard: ProjectRequestGuard, projectName = ''): boolean {
-  return guard.serial === projectLoadSerial &&
+  return appComponentMounted &&
+    guard.serial === projectLoadSerial &&
     guard.contextFingerprint === projectContextFingerprint(props.ctx) &&
     (!projectName || selected.value?.name === projectName)
 }
@@ -532,6 +546,7 @@ const assistantMarkdownClass = [
 ].join(' ')
 
 const projects = ref<Project[]>([])
+const APP_STUDIO_ICON_URL = '/ui/providers/app-studio/icon.svg'
 const PROJECTS_LAYOUT_PREFERENCE_KEY = 'faros:portal:app-studio:projects-layout'
 const projectLayout = ref<LayoutMode>(readLayoutPreference(PROJECTS_LAYOUT_PREFERENCE_KEY))
 watch(projectLayout, mode => writeLayoutPreference(PROJECTS_LAYOUT_PREFERENCE_KEY, mode))
@@ -544,7 +559,16 @@ const selected = ref<Project | null>(null)
 const messages = ref<ProjectMessageView[]>([])
 const assistantThreads = ref<ProjectAssistantThread[]>([])
 const activeAssistantThreadID = ref('')
+const activeAssistantThread = computed(() => assistantThreads.value.find((thread) => thread.id === activeAssistantThreadID.value))
+const activeAssistantThreadTitle = computed(() => activeAssistantThread.value?.title?.trim() || 'New thread')
+const editingAssistantThreadTitle = ref(false)
+const editingAssistantThreadID = ref('')
+const assistantThreadTitleDraft = ref('')
+const assistantThreadTitleInput = ref<HTMLInputElement | null>(null)
+const unreadAssistantThreadIDs = ref<string[]>([])
+const pinnedAssistantThreadIDs = ref<string[]>([])
 const threadMutationBusy = ref(false)
+const threadActioningID = ref('')
 const threadError = ref<string | null>(null)
 const assistantSkills = ref<ProjectAssistantSkill[]>([])
 const assistantSkillsLoading = ref(false)
@@ -553,6 +577,38 @@ const assistantSkillsWarnings = ref<string[]>([])
 let assistantSkillsLoadSerial = 0
 
 const conversationMessages = computed(() => projectMessagesForConversation(messages.value))
+watch(
+  () => [
+    selected.value?.name ?? '',
+    activeAssistantThreadID.value,
+    assistantThreads.value.map((thread) => `${thread.id}:${thread.updatedAt}`).join('|'),
+  ] as const,
+  ([projectName]) => {
+    unreadAssistantThreadIDs.value = projectName
+      ? reconcileAssistantThreadReadState(
+          assistantThreadFocusStorageKey(assistantThreadFocusScope(projectName)),
+          assistantThreads.value,
+          activeAssistantThreadID.value,
+        )
+      : []
+  },
+  { flush: 'sync' },
+)
+watch(
+  () => [
+    selected.value?.name ?? '',
+    assistantThreads.value.map((thread) => thread.id).join('|'),
+  ] as const,
+  ([projectName]) => {
+    pinnedAssistantThreadIDs.value = projectName
+      ? readAssistantThreadPins(
+          assistantThreadFocusStorageKey(assistantThreadFocusScope(projectName)),
+          assistantThreads.value.map((thread) => thread.id),
+        )
+      : []
+  },
+  { flush: 'sync' },
+)
 function heldReviewPanel(kind: 'approval' | 'follow_up'): PendingApprovalView | PendingFollowUpView | null {
   const hold = reviewPanelHold.value
   const run = activeAssistantRun
@@ -625,7 +681,17 @@ const selectedTurnSkills = ref<ProjectAssistantSkill[]>([])
 const selectedTurnResources = ref<ProjectAssistantContextResource[]>([])
 const assistantComposerParts = ref<ProjectAssistantContentPart[]>([])
 const assistantComposerRef = ref<{ focus: () => void; openPalette: () => void; closePalette: (restoreFocus?: boolean) => void } | null>(null)
-const threadsWorkbenchRef = ref<{ focusActiveThread?: () => void } | null>(null)
+const threadRailRef = ref<{
+  open?: () => void
+  openAndFocus?: () => void
+  expanded?: boolean
+  panelID?: string
+  toggle?: (returnFocus?: HTMLElement | null) => void
+  focusThread?: (threadID: string) => void
+  previewEnter?: () => void
+  previewLeave?: () => void
+} | null>(null)
+const threadRailExpanded = computed(() => threadRailRef.value?.expanded ?? true)
 const assistantIntent = ref<AssistantResponseMode>('default')
 const approvalMode = ref<ProjectAssistantApprovalMode>('on_request')
 const approvalModeLoading = ref(false)
@@ -786,11 +852,13 @@ const assistantWorkedDurationClock = new AssistantWorkedDurationClock({ namespac
 const assistantPlanAnnouncement = ref('')
 const promptRef = ref<HTMLTextAreaElement | null>(null)
 const workspaceRef = ref<HTMLDivElement | null>(null)
+const splitRegionRef = ref<HTMLDivElement | null>(null)
 const toolHostRef = ref<HTMLDivElement | null>(null)
 const mountedToolEl = ref<HTMLElement | null>(null)
 const splitWidth = ref(readSplitWidth())
 let toolLoadSerial = 0
 let projectLoadSerial = 0
+let appComponentMounted = true
 let activeProjectContextFingerprint = ''
 let initializationRetryTimer: number | undefined
 let landingPlaceholderDelayTimer: number | undefined
@@ -842,6 +910,91 @@ let approvalModeLoadSerial = 0
 let approvalModeSaveSerial = 0
 let deleteProjectRequestSerial = 0
 let projectSettingsSaveSerial = 0
+let projectOpenLatchSerial = 0
+let projectOpenLatchOwner = 0
+let threadHistoryLatchSerial = 0
+let threadHistoryLatchOwner = 0
+let conversationRefreshLatchSerial = 0
+let conversationRefreshLatchOwner = 0
+let threadMutationLatchSerial = 0
+let threadMutationLatchOwner = 0
+
+function beginProjectOpenLatch(): number {
+  const owner = ++projectOpenLatchSerial
+  projectOpenLatchOwner = owner
+  projectOpenLoading.value = true
+  return owner
+}
+
+function releaseProjectOpenLatch(owner: number) {
+  if (projectOpenLatchOwner !== owner) return
+  projectOpenLatchOwner = 0
+  projectOpenLoading.value = false
+}
+
+function resetProjectOpenLatch() {
+  projectOpenLatchOwner = 0
+  projectOpenLoading.value = false
+}
+
+function beginThreadHistoryLatch(): number {
+  const owner = ++threadHistoryLatchSerial
+  threadHistoryLatchOwner = owner
+  threadHistoryLoading.value = true
+  return owner
+}
+
+function releaseThreadHistoryLatch(owner: number, threadID = '') {
+  if (threadHistoryLatchOwner !== owner) return
+  threadHistoryLatchOwner = 0
+  if (!threadID || selectingThreadID.value === threadID) selectingThreadID.value = ''
+  threadHistoryLoading.value = false
+}
+
+function resetThreadHistoryLatch() {
+  threadHistoryLatchOwner = 0
+  selectingThreadID.value = ''
+  threadHistoryLoading.value = false
+}
+
+function beginConversationRefreshLatch(): number {
+  const owner = ++conversationRefreshLatchSerial
+  conversationRefreshLatchOwner = owner
+  conversationRefreshing.value = true
+  return owner
+}
+
+function releaseConversationRefreshLatch(owner: number) {
+  if (conversationRefreshLatchOwner !== owner) return
+  conversationRefreshLatchOwner = 0
+  conversationRefreshing.value = false
+}
+
+function resetConversationRefreshLatch() {
+  conversationRefreshLatchOwner = 0
+  conversationRefreshing.value = false
+}
+
+function beginThreadMutationLatch(threadID = ''): number {
+  const owner = ++threadMutationLatchSerial
+  threadMutationLatchOwner = owner
+  threadActioningID.value = threadID
+  threadMutationBusy.value = true
+  return owner
+}
+
+function releaseThreadMutationLatch(owner: number) {
+  if (threadMutationLatchOwner !== owner) return
+  threadMutationLatchOwner = 0
+  threadActioningID.value = ''
+  threadMutationBusy.value = false
+}
+
+function resetThreadMutationLatch() {
+  threadMutationLatchOwner = 0
+  threadActioningID.value = ''
+  threadMutationBusy.value = false
+}
 
 function clearPendingFirstProjectSubmission() {
   projectCreateGeneration++
@@ -897,12 +1050,14 @@ function invalidateProjectContextState() {
   assistantPendingStartStopRequested.value = false
   assistantStopError.value = null
   conversationConnectionState.value = 'idle'
-  conversationRefreshing.value = false
+  resetProjectOpenLatch()
+  resetThreadHistoryLatch()
+  resetConversationRefreshLatch()
+  resetThreadMutationLatch()
   conversationStatus.value = ''
   reviewPanelHold.value = null
   clearSelectedTurnAttachments()
   selectedLandingCategory.value = null
-  selectingThreadID.value = ''
   projectOpenLoading.value = hasToken && Boolean(selectedNameFromPath.value)
   threadHistoryLoading.value = hasToken && Boolean(selectedNameFromPath.value)
   loading.value = hasToken
@@ -910,8 +1065,10 @@ function invalidateProjectContextState() {
   initializing.value = false
   error.value = null
   busy.value = false
-  threadMutationBusy.value = false
   threadError.value = null
+  editingAssistantThreadTitle.value = false
+  editingAssistantThreadID.value = ''
+  assistantThreadTitleDraft.value = ''
   prompt.value = ''
   approvalModeLoading.value = false
   approvalModeSaving.value = false
@@ -1227,7 +1384,7 @@ watch(
   { immediate: true, flush: 'sync' },
 )
 const showNewProjectComposer = computed(() => isCreateRoute.value)
-const chatPaneStyle = computed(() => ({ flexBasis: `${splitWidth.value}%` }))
+const conversationPaneStyle = computed(() => ({ flexBasis: `${splitWidth.value}%` }))
 const assistantResumeBusy = computed(() => Object.keys(permissionBusy.value).length > 0 || Object.keys(followUpBusy.value).length > 0)
 // This latch deliberately does not depend on activeAssistantRun. Durable
 // reconciliation may replace or clear that object while an interrupt request
@@ -1706,13 +1863,6 @@ const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
     builtInTab: 'review',
   },
   {
-    id: 'builtin:threads',
-    title: 'Threads',
-    subtitle: 'Switch conversations, rename threads, or start a new one',
-    icon: MessageSquare,
-    builtInTab: 'threads',
-  },
-  {
     id: 'builtin:skills',
     title: 'Skills',
     subtitle: 'Browse, inspect, and manage assistant skills for this project',
@@ -1919,6 +2069,7 @@ const developmentPreviewUnavailableMessage = computed(() => {
 })
 
 onMounted(() => {
+  appComponentMounted = true
   void load()
   void loadProviders()
   void loadCreateReadiness()
@@ -1955,9 +2106,12 @@ watch(
       activeProjectContextFingerprint = ''
       activeAssistantThreadSequence = 0
       messageStreaming.value = false
-      conversationRefreshing.value = false
       conversationStatus.value = ''
       reviewPanelHold.value = null
+      resetProjectOpenLatch()
+      resetThreadHistoryLatch()
+      resetConversationRefreshLatch()
+      resetThreadMutationLatch()
       selectingThreadID.value = ''
       selected.value = null
       messages.value = []
@@ -2178,6 +2332,7 @@ useEscapeKey(() => {
 })
 
 onBeforeUnmount(() => {
+  appComponentMounted = false
   developmentPreviewComponentMounted = false
   developmentPreviewRefreshController.dispose()
   developmentPreviewAuthorizationSerial += 1
@@ -2205,15 +2360,22 @@ onBeforeUnmount(() => {
 
 async function load() {
   const requestGuard = beginProjectRequest()
-  selectingThreadID.value = ''
+  // Invalidate every assistant-thread operation before resetting its visible
+  // latches. The request/context guards keep late responses harmless while a
+  // replacement load establishes the new project/thread state.
+  assistantThreadRequestSerial += 1
+  // A new route/context load intentionally cancels any pending thread UI
+  // latches. In-flight requests remain harmlessly stale via their serial and
+  // context guards, while the replacement load owns any new latch state.
+  resetProjectOpenLatch()
+  resetThreadHistoryLatch()
+  resetConversationRefreshLatch()
+  resetThreadMutationLatch()
   if (!props.ctx?.token) {
     clearInitializationRetry()
     initializing.value = false
     loading.value = false
     projectsLoaded.value = false
-    projectOpenLoading.value = false
-    threadHistoryLoading.value = false
-    assistantThreadRequestSerial += 1
     assistantRunController.disconnect()
     activeAssistantSubscription?.abort()
     activeAssistantSubscription = null
@@ -2221,7 +2383,6 @@ async function load() {
     activeAssistantProject = ''
     activeAssistantThreadID.value = ''
     messageStreaming.value = false
-    conversationRefreshing.value = false
     conversationStatus.value = ''
     reviewPanelHold.value = null
     activeProjectContextFingerprint = ''
@@ -2240,8 +2401,8 @@ async function load() {
   ) {
     loading.value = false
     projectsLoaded.value = true
-    projectOpenLoading.value = false
-    threadHistoryLoading.value = false
+    resetProjectOpenLatch()
+    resetThreadHistoryLatch()
     return
   }
   clearInitializationRetry()
@@ -2258,8 +2419,8 @@ async function load() {
     if (isCreateRoute.value || isModelsRoute.value) {
 	  clearPendingFirstProjectSubmission()
       activeProjectContextFingerprint = ''
-      projectOpenLoading.value = false
-      threadHistoryLoading.value = false
+      resetProjectOpenLatch()
+      resetThreadHistoryLatch()
       assistantRunController.disconnect()
       activeAssistantSubscription?.abort()
       setActiveAssistantRun(null)
@@ -2271,8 +2432,8 @@ async function load() {
     }
     if (projectList.length === 0) {
       activeProjectContextFingerprint = ''
-      projectOpenLoading.value = false
-      threadHistoryLoading.value = false
+      resetProjectOpenLatch()
+      resetThreadHistoryLatch()
       assistantRunController.disconnect()
       activeAssistantSubscription?.abort()
       setActiveAssistantRun(null)
@@ -2290,8 +2451,8 @@ async function load() {
     } else {
 	  clearPendingFirstProjectSubmission()
       activeProjectContextFingerprint = ''
-      projectOpenLoading.value = false
-      threadHistoryLoading.value = false
+      resetProjectOpenLatch()
+      resetThreadHistoryLatch()
       assistantRunController.disconnect()
       activeAssistantSubscription?.abort()
       setActiveAssistantRun(null)
@@ -2314,8 +2475,8 @@ async function load() {
   } finally {
     if (projectRequestIsCurrent(requestGuard)) {
       loading.value = false
-      projectOpenLoading.value = false
-      threadHistoryLoading.value = false
+      resetProjectOpenLatch()
+      resetThreadHistoryLatch()
     }
   }
 }
@@ -3695,7 +3856,7 @@ async function createProjectAndStartConversation(
     messages.value = [{ id: `temp-${Date.now()}-user`, projectID: draftName, role: 'user', content, createdAt: now }]
   }
 
-  const current = () => pendingFirstProjectSubmission === submission && firstProjectSubmissionIsCurrent(
+  const current = () => appComponentMounted && pendingFirstProjectSubmission === submission && firstProjectSubmissionIsCurrent(
     submission,
     generation,
     projectCreateGeneration,
@@ -3910,8 +4071,8 @@ function enterProject(project: Project) {
   // the split pane in the same render cycle as the click; route hydration then
   // fills the conversation and active workbench without a blank interstitial.
   selected.value = project
-  projectOpenLoading.value = true
-  threadHistoryLoading.value = true
+  beginProjectOpenLatch()
+  beginThreadHistoryLatch()
   error.value = null
   props.navigate(encodeURIComponent(project.name))
 }
@@ -3926,8 +4087,8 @@ async function openProject(name: string, updateURL = true, requestGuardOverride?
   approvalModeSaving.value = false
   approvalModeError.value = null
   threadError.value = null
-  projectOpenLoading.value = true
-  threadHistoryLoading.value = true
+  const projectOpenLatchOwner = beginProjectOpenLatch()
+  const threadHistoryLatchOwner = beginThreadHistoryLatch()
   selectingThreadID.value = ''
   if (selected.value?.name !== name) {
     assistantRunController.disconnect()
@@ -3981,11 +4142,9 @@ async function openProject(name: string, updateURL = true, requestGuardOverride?
     if (handleProjectAPIInitializing(e)) return
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
+    releaseProjectOpenLatch(projectOpenLatchOwner)
+    releaseThreadHistoryLatch(threadHistoryLatchOwner)
     if (projectRequestIsCurrent(requestGuard) && approvalRequestSerial === approvalModeLoadSerial) approvalModeLoading.value = false
-    if (projectRequestIsCurrent(requestGuard) && assistantThreadLoadSerial === assistantThreadRequestSerial) {
-      projectOpenLoading.value = false
-      threadHistoryLoading.value = false
-    }
   }
 }
 
@@ -4012,7 +4171,7 @@ async function refreshSelectedProjectConversation(projectName: string) {
   const requestGuard = beginProjectRequest()
   const assistantThreadLoadSerial = ++assistantThreadRequestSerial
   selectingThreadID.value = ''
-  conversationRefreshing.value = true
+  const conversationRefreshLatchOwner = beginConversationRefreshLatch()
   try {
     const [project, threads, projectList] = await Promise.all([
       api.getProject(props.ctx, projectName),
@@ -4049,10 +4208,7 @@ async function refreshSelectedProjectConversation(projectName: string) {
     projects.value = projectList
     await recoverAssistantConversation(projectName, requestGuard)
   } finally {
-    if (
-      projectRequestIsCurrent(requestGuard, projectName) &&
-      assistantThreadLoadSerial === assistantThreadRequestSerial
-    ) conversationRefreshing.value = false
+    releaseConversationRefreshLatch(conversationRefreshLatchOwner)
   }
 }
 
@@ -4266,27 +4422,28 @@ function updateAssistantThreadFromEvent(threadID: string, patch: Partial<Project
   replaceAssistantThread({ ...existing, ...patch })
 }
 
-async function selectAssistantThread(threadID: string) {
+async function selectAssistantThread(threadID: string): Promise<boolean> {
   const projectName = selected.value?.name
-  if (!projectName || !threadID || messageStreaming.value || busy.value || conversationInteractionBusy.value) return
+  if (!projectName || !threadID || messageStreaming.value || busy.value || conversationInteractionBusy.value) return false
   if (threadID === activeAssistantThreadID.value) {
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), threadID)
-    return
+    setThreadUnread(threadID, false)
+    threadRailRef.value?.focusThread?.(threadID)
+    return true
   }
   const previousThreadID = activeAssistantThreadID.value
   const requestGuard = beginProjectRequest()
   const assistantThreadLoadSerial = ++assistantThreadRequestSerial
+  const threadHistoryLatchOwner = beginThreadHistoryLatch()
   selectingThreadID.value = threadID
-  threadHistoryLoading.value = true
   threadError.value = null
-  let restorePriorThreadFocus = false
   try {
     const items = await api.listAssistantThreadItems(props.ctx, projectName, threadID)
     if (
       !projectRequestIsCurrent(requestGuard, projectName) ||
       assistantThreadLoadSerial !== assistantThreadRequestSerial ||
       activeAssistantThreadID.value !== previousThreadID
-    ) return
+    ) return false
     // Do not strand the UI on a target thread until its history has loaded.
     // Commit the selection only after the request succeeds; a failure keeps
     // the prior thread, conversation, stream, and focus valid.
@@ -4300,6 +4457,8 @@ async function selectAssistantThread(threadID: string) {
     activeAssistantThreadSequence = maxAssistantThreadSequence(items)
     messages.value = projectAssistantThreadItems(items, projectName)
     messageStreaming.value = false
+    threadRailRef.value?.focusThread?.(threadID)
+    return true
   } catch (e) {
     if (
       projectRequestIsCurrent(requestGuard, projectName) &&
@@ -4307,21 +4466,11 @@ async function selectAssistantThread(threadID: string) {
       (activeAssistantThreadID.value === threadID || activeAssistantThreadID.value === previousThreadID)
     ) {
       threadError.value = e instanceof Error ? e.message : String(e)
-      restorePriorThreadFocus = true
+      threadRailRef.value?.focusThread?.(previousThreadID)
     }
+    return false
   } finally {
-    if (
-      projectRequestIsCurrent(requestGuard, projectName) &&
-      assistantThreadLoadSerial === assistantThreadRequestSerial &&
-      selectingThreadID.value === threadID
-    ) {
-      selectingThreadID.value = ''
-      threadHistoryLoading.value = false
-      if (restorePriorThreadFocus) {
-        await nextTick()
-        threadsWorkbenchRef.value?.focusActiveThread?.()
-      }
-    }
+    releaseThreadHistoryLatch(threadHistoryLatchOwner, threadID)
   }
 }
 
@@ -4329,11 +4478,15 @@ async function createAssistantThread() {
   const projectName = selected.value?.name
   if (!projectName || threadActionsDisabled.value) return
   const assistantThreadLoadSerial = ++assistantThreadRequestSerial
-  threadMutationBusy.value = true
+  const createIsCurrent = () =>
+    appComponentMounted &&
+    assistantThreadLoadSerial === assistantThreadRequestSerial &&
+    selected.value?.name === projectName
+  const threadMutationLatchOwner = beginThreadMutationLatch()
   threadError.value = null
   try {
     const thread = await api.createAssistantThread(props.ctx, projectName)
-    if (assistantThreadLoadSerial !== assistantThreadRequestSerial || selected.value?.name !== projectName) return
+    if (!createIsCurrent()) return
     assistantThreads.value = [thread, ...assistantThreads.value]
     activeAssistantThreadID.value = thread.id
     persistAssistantThreadFocus(assistantThreadFocusScope(projectName), thread.id)
@@ -4343,78 +4496,163 @@ async function createAssistantThread() {
     activeAssistantProject = ''
     assistantRunController.disconnect()
   } catch (e) {
-    if (assistantThreadLoadSerial === assistantThreadRequestSerial && selected.value?.name === projectName) {
+    if (createIsCurrent()) {
       threadError.value = e instanceof Error ? e.message : String(e)
     }
   } finally {
-    threadMutationBusy.value = false
+    releaseThreadMutationLatch(threadMutationLatchOwner)
   }
+}
+
+function beginAssistantThreadTitleRename() {
+  const thread = activeAssistantThread.value
+  if (!thread || threadActionsDisabled.value) return
+  editingAssistantThreadID.value = thread.id
+  assistantThreadTitleDraft.value = thread.title?.trim() || ''
+  editingAssistantThreadTitle.value = true
+  void nextTick(() => {
+    assistantThreadTitleInput.value?.focus()
+    assistantThreadTitleInput.value?.select()
+  })
+}
+
+function cancelAssistantThreadTitleRename() {
+  editingAssistantThreadTitle.value = false
+  editingAssistantThreadID.value = ''
+  assistantThreadTitleDraft.value = ''
 }
 
 async function renameAssistantThread(threadID: string, title: string) {
   const projectName = selected.value?.name
   const normalizedTitle = title.trim()
   if (!projectName || !threadID || !normalizedTitle || threadActionsDisabled.value) return
-  threadMutationBusy.value = true
+  const requestGuard = beginProjectRequest()
+  const renameRequestSerial = ++assistantThreadRequestSerial
+  const renameIsCurrent = () =>
+    projectRequestIsCurrent(requestGuard, projectName) &&
+    renameRequestSerial === assistantThreadRequestSerial
+  const threadMutationLatchOwner = beginThreadMutationLatch()
   threadError.value = null
   try {
     const thread = await api.patchAssistantThread(props.ctx, projectName, threadID, { title: normalizedTitle })
-    if (selected.value?.name !== projectName) return
+    if (!renameIsCurrent()) return
     replaceAssistantThread(thread)
   } catch (e) {
-    if (selected.value?.name === projectName) threadError.value = e instanceof Error ? e.message : String(e)
+    if (renameIsCurrent()) threadError.value = e instanceof Error ? e.message : String(e)
   } finally {
-    threadMutationBusy.value = false
+    releaseThreadMutationLatch(threadMutationLatchOwner)
   }
 }
 
-async function deleteAssistantThread(threadID: string) {
+async function commitAssistantThreadTitleRename() {
+  if (!editingAssistantThreadTitle.value) return
+  const threadID = editingAssistantThreadID.value
+  const thread = assistantThreads.value.find((candidate) => candidate.id === threadID)
+  const currentTitle = thread?.title?.trim() || ''
+  const normalizedTitle = assistantThreadTitleDraft.value.trim()
+  cancelAssistantThreadTitleRename()
+  if (!thread || !normalizedTitle || normalizedTitle === currentTitle) return
+  await renameAssistantThread(threadID, normalizedTitle)
+}
+
+function toggleThreadPin(threadID: string) {
   const projectName = selected.value?.name
-  if (!projectName || !threadID || threadActionsDisabled.value) return
-  const deletedIndex = assistantThreads.value.findIndex((thread) => thread.id === threadID)
-  if (deletedIndex < 0) return
+  if (!projectName || !assistantThreads.value.some((thread) => thread.id === threadID)) return
+  pinnedAssistantThreadIDs.value = toggleAssistantThreadPin(
+    assistantThreadFocusStorageKey(assistantThreadFocusScope(projectName)),
+    threadID,
+    pinnedAssistantThreadIDs.value,
+  )
+}
+
+function setThreadUnread(threadID: string, unread: boolean) {
+  const projectName = selected.value?.name
+  const thread = assistantThreads.value.find((candidate) => candidate.id === threadID)
+  if (!projectName || !thread) return
+  const scopeKey = assistantThreadFocusStorageKey(assistantThreadFocusScope(projectName))
+  if (threadID === activeAssistantThreadID.value) {
+    markAssistantThreadRead(scopeKey, thread)
+    unreadAssistantThreadIDs.value = unreadAssistantThreadIDs.value.filter((candidate) => candidate !== threadID)
+    return
+  }
+  if (unread) {
+    markAssistantThreadUnread(scopeKey, thread)
+    if (!unreadAssistantThreadIDs.value.includes(threadID)) {
+      unreadAssistantThreadIDs.value = [...unreadAssistantThreadIDs.value, threadID]
+    }
+    return
+  }
+  markAssistantThreadRead(scopeKey, thread)
+  unreadAssistantThreadIDs.value = unreadAssistantThreadIDs.value.filter((candidate) => candidate !== threadID)
+}
+
+async function archiveAssistantThread(threadID: string) {
+  const projectName = selected.value?.name
+  if (!projectName || !threadID || threadActionsDisabled.value || threadActioningID.value) return
+  const requestGuard = beginProjectRequest()
+  const archiveRequestSerial = ++assistantThreadRequestSerial
+  const archiveContextFingerprint = requestGuard.contextFingerprint
+  const requestIsCurrent = () =>
+    projectRequestIsCurrent(requestGuard, projectName) &&
+    archiveRequestSerial === assistantThreadRequestSerial
+  const contextIsCurrent = () =>
+    projectContextFingerprint(props.ctx) === archiveContextFingerprint &&
+    selected.value?.name === projectName
   const wasActive = activeAssistantThreadID.value === threadID
-  const remaining = assistantThreads.value.filter((thread) => thread.id !== threadID)
-  const nextThread = remaining[Math.min(deletedIndex, Math.max(remaining.length - 1, 0))]
-  const requestSerial = ++assistantThreadRequestSerial
-  threadMutationBusy.value = true
+  let nextThreadID = ''
+  let archiveFailed = false
+  const threadMutationLatchOwner = beginThreadMutationLatch(threadID)
   threadError.value = null
   try {
-    await api.deleteAssistantThread(props.ctx, projectName, threadID)
-    if (requestSerial !== assistantThreadRequestSerial || selected.value?.name !== projectName) return
-    clearStoredAssistantAnnotationDraft(projectName, threadID)
+    await api.patchAssistantThread(props.ctx, projectName, threadID, { archived: true })
+    if (!requestIsCurrent()) return
+    const threadStateScopeKey = assistantThreadFocusStorageKey(assistantThreadFocusScope(projectName))
+    // A paginated list is not a snapshot, so the state helpers intentionally
+    // retain IDs absent from it. Archive success is the explicit lifecycle
+    // event that retires the archived thread's local markers.
+    removeAssistantThreadPin(threadStateScopeKey, threadID)
+    removeAssistantThreadReadState(threadStateScopeKey, threadID)
+    pinnedAssistantThreadIDs.value = pinnedAssistantThreadIDs.value.filter((candidate) => candidate !== threadID)
+    unreadAssistantThreadIDs.value = unreadAssistantThreadIDs.value.filter((candidate) => candidate !== threadID)
+    const remaining = assistantThreads.value.filter((thread) => thread.id !== threadID)
     assistantThreads.value = remaining
-    if (!wasActive) return
-
-    assistantRunController.disconnect()
-    activeAssistantSubscription?.abort()
-    setActiveAssistantRun(null)
-    activeAssistantProject = ''
-    messageStreaming.value = false
-    reviewPanelHold.value = null
-    messages.value = []
-    if (nextThread) {
-      await selectAssistantThread(nextThread.id)
+    if (!wasActive) {
+      threadRailRef.value?.focusThread?.(activeAssistantThreadID.value)
       return
     }
-
-    // Keep the composer usable after deleting the final thread. Creating this
-    // blank thread intentionally omits a title so the backend's asynchronous
-    // title generation remains the only source of automatic names.
-    const replacement = await api.createAssistantThread(props.ctx, projectName)
-    if (requestSerial !== assistantThreadRequestSerial || selected.value?.name !== projectName) return
-    assistantThreads.value = [replacement]
-    activeAssistantThreadID.value = replacement.id
-    persistAssistantThreadFocus(assistantThreadFocusScope(projectName), replacement.id)
-    activeAssistantThreadSequence = 1
+    nextThreadID = remaining[0]?.id ?? ''
+    // Retire the archived conversation before loading or creating its
+    // replacement, so a failed replacement cannot leave stale messages under
+    // an archived thread ID.
+    assistantRunController.disconnect()
+    activeAssistantSubscription?.abort()
+    activeAssistantSubscription = null
     setActiveAssistantRun(null)
+    activeAssistantProject = ''
+    activeAssistantThreadID.value = ''
+    activeAssistantThreadSequence = 0
+    messageStreaming.value = false
+    conversationStatus.value = ''
+    reviewPanelHold.value = null
     messages.value = []
   } catch (e) {
-    if (requestSerial === assistantThreadRequestSerial && selected.value?.name === projectName) {
+    if (requestIsCurrent()) {
       threadError.value = e instanceof Error ? e.message : String(e)
+      archiveFailed = true
     }
+    return
   } finally {
-    threadMutationBusy.value = false
+    releaseThreadMutationLatch(threadMutationLatchOwner)
+    if (archiveFailed) threadRailRef.value?.focusThread?.(threadID)
+  }
+  if (!requestIsCurrent() || !contextIsCurrent()) return
+  if (nextThreadID) {
+    await selectAssistantThread(nextThreadID)
+    if (!contextIsCurrent()) return
+    threadRailRef.value?.focusThread?.(nextThreadID)
+  } else {
+    await createAssistantThread()
+    if (contextIsCurrent() && activeAssistantThreadID.value) threadRailRef.value?.focusThread?.(activeAssistantThreadID.value)
   }
 }
 
@@ -5281,6 +5519,19 @@ function openBuiltInWorkbenchTab(kind: WorkbenchBuiltInTab) {
   workbench.value = openWorkbenchBuiltInTab(workbench.value, kind)
 }
 
+function toggleThreadPanel(event?: MouseEvent) {
+  const returnFocus = event?.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  threadRailRef.value?.toggle?.(returnFocus)
+}
+
+function previewThreadPanel() {
+  threadRailRef.value?.previewEnter?.()
+}
+
+function closeThreadPanelPreview() {
+  threadRailRef.value?.previewLeave?.()
+}
+
 function openWorkbenchLauncher() {
   workbenchLauncherQuery.value = ''
   openBuiltInWorkbenchTab('launcher')
@@ -5376,7 +5627,6 @@ function workbenchTabIcon(tab: WorkbenchTabDescriptor): Component {
   if (tab.kind === 'history') return GitBranch
   if (tab.kind === 'settings') return Settings2
   if (tab.kind === 'skills') return Plug
-  if (tab.kind === 'threads') return MessageSquare
   if (tab.kind === 'launcher') return Plus
   return Wrench
 }
@@ -5472,6 +5722,8 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
   const hasStructuredContent = !steeringActiveRun && assistantComposerParts.value.some((part) => part.type !== 'text')
   if ((!content && !hasStructuredContent) || !selected.value || !llmConfigured.value || conversationInteractionBusy.value || llmSettingsLoading.value || (messageStreaming.value && !steeringActiveRun) || assistantResumeBusy.value || approvalModeLoading.value || approvalModeSaving.value) return false
   const projectName = selected.value.name
+  const sendRequestSerial = assistantThreadRequestSerial
+  const sendContextFingerprint = projectContextFingerprint(props.ctx)
   const turnSkills = steeringActiveRun ? [] : [...selectedTurnSkills.value]
   const turnResources = steeringActiveRun ? [] : [...selectedTurnResources.value]
   const turnContentParts = steeringActiveRun ? [] : [...assistantComposerParts.value]
@@ -5499,6 +5751,13 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
     : crypto.randomUUID()
   const payload = { ...startOperation, clientRequestID }
   pendingMessageSubmission = { fingerprint: submissionFingerprint, clientRequestID }
+  const firstSendIsCurrent = () =>
+    appComponentMounted &&
+    sendRequestSerial === assistantThreadRequestSerial &&
+    sendContextFingerprint === projectContextFingerprint(props.ctx) &&
+    selected.value?.name === projectName &&
+    pendingMessageSubmission?.fingerprint === submissionFingerprint &&
+    pendingMessageSubmission?.clientRequestID === clientRequestID
   const optimisticID = firstProjectPending
     ? messages.value.find((message) => message.projectID === projectName && message.role === 'user' && message.content === content)?.id ?? `optimistic-${clientRequestID}`
     : `optimistic-${clientRequestID}`
@@ -5545,6 +5804,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
       let thread = assistantThreads.value.find((candidate) => candidate.id === activeAssistantThreadID.value)
       if (!thread) {
         thread = await api.createAssistantThread(props.ctx, projectName)
+        if (!firstSendIsCurrent()) return false
         assistantThreads.value = [thread, ...assistantThreads.value]
         activeAssistantThreadID.value = thread.id
         persistAssistantThreadFocus(assistantThreadFocusScope(projectName), thread.id)
@@ -6403,18 +6663,24 @@ function detachMountedTool() {
 }
 
 function startResize(e: PointerEvent) {
-  if (!workspaceRef.value || window.innerWidth < 768) return
+  if (!splitRegionRef.value || window.innerWidth < 768) return
   e.preventDefault()
   window.addEventListener('pointermove', resizeWorkspace)
   window.addEventListener('pointerup', stopResize)
 }
 
+function splitPercentFromPointer(clientX: number, rect: Pick<DOMRect, 'left' | 'width'>): number | null {
+  if (!Number.isFinite(clientX) || !Number.isFinite(rect.left) || !Number.isFinite(rect.width) || rect.width <= 0) return null
+  const pct = ((clientX - rect.left) / rect.width) * 100
+  return Math.min(68, Math.max(32, pct))
+}
+
 function resizeWorkspace(e: PointerEvent) {
-  const root = workspaceRef.value
-  if (!root) return
-  const rect = root.getBoundingClientRect()
-  const pct = ((e.clientX - rect.left) / rect.width) * 100
-  splitWidth.value = Math.min(68, Math.max(32, pct))
+  const splitRegion = splitRegionRef.value
+  if (!splitRegion) return
+  const pct = splitPercentFromPointer(e.clientX, splitRegion.getBoundingClientRect())
+  if (pct === null) return
+  splitWidth.value = pct
 }
 
 function stopResize() {
@@ -7089,33 +7355,92 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     </div>
   </div>
 
-  <div v-else ref="workspaceRef" data-app-studio-workspace class="flex h-full min-h-0 w-full overflow-hidden bg-surface-raised/70 flex-col md:flex-row" :aria-busy="conversationLoading || conversationRefreshing">
-    <section
-      class="flex min-h-[360px] min-w-0 flex-col border-b border-border-subtle md:min-h-0 md:border-b-0 md:border-r"
-      :style="chatPaneStyle"
-    >
-      <header class="flex h-14 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
-        <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
-          <MessageSquare class="h-4 w-4 text-accent" :stroke-width="1.75" />
-        </div>
-        <div class="min-w-0 flex-1">
-          <div v-if="!selected" class="shimmer h-3.5 w-32 rounded bg-surface-overlay" aria-hidden="true" />
-          <div v-else class="truncate text-[13px] font-semibold text-text-primary">
-            {{ selected?.displayName || 'Project' }}
+  <div v-else ref="workspaceRef" data-app-studio-workspace class="flex h-full min-h-0 w-full flex-col overflow-hidden bg-surface-raised/70" :aria-busy="conversationLoading || conversationRefreshing">
+    <div ref="splitRegionRef" class="relative flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
+      <section data-app-studio-conversation-pane class="flex min-h-0 min-w-0 shrink-0 flex-col md:min-w-[432px]" :style="conversationPaneStyle">
+        <header data-app-studio-titlebar class="flex h-14 shrink-0 items-center gap-2 border-b border-border-subtle bg-surface-raised px-3">
+          <button
+            type="button"
+            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            title="Toggle thread side panel"
+            aria-label="Toggle thread side panel"
+            :aria-expanded="threadRailExpanded"
+            aria-controls="app-studio-thread-rail"
+            @click="toggleThreadPanel"
+            @pointerenter="previewThreadPanel"
+            @pointerleave="closeThreadPanelPreview"
+            @focusin="previewThreadPanel"
+            @focusout="closeThreadPanelPreview"
+          >
+            <PanelLeft class="h-4 w-4" :stroke-width="1.75" />
+          </button>
+          <div class="mx-1 h-6 w-px shrink-0 bg-border-subtle" aria-hidden="true" />
+          <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
+            <img :src="APP_STUDIO_ICON_URL" alt="" class="h-4 w-4 object-contain" />
           </div>
-          <div v-if="!selected" class="mt-2 shimmer h-2.5 w-48 rounded bg-surface-overlay" aria-hidden="true" />
-          <div v-else class="flex min-w-0 items-center gap-1.5 truncate text-[11px] text-text-muted">
-            <template v-if="selected?.repository">
+          <div class="min-w-0 flex-1">
+            <div v-if="!selected" class="shimmer h-3.5 w-32 rounded bg-surface-overlay" aria-hidden="true" />
+            <input
+              v-if="editingAssistantThreadTitle"
+              ref="assistantThreadTitleInput"
+              v-model="assistantThreadTitleDraft"
+              type="text"
+              class="h-7 w-full min-w-0 border-0 bg-transparent p-0 text-[13px] font-semibold text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              aria-label="Rename thread"
+              :disabled="threadMutationBusy"
+              @keydown.enter.exact.prevent="commitAssistantThreadTitleRename"
+              @keydown.esc.stop.prevent="cancelAssistantThreadTitleRename"
+              @blur="commitAssistantThreadTitleRename"
+            />
+            <button
+              v-else
+              type="button"
+              class="flex max-w-full min-w-0 items-center rounded-sm text-left text-[13px] font-semibold text-text-primary transition hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+              :disabled="!activeAssistantThread || threadActionsDisabled"
+              :title="activeAssistantThread ? `Rename thread: ${activeAssistantThreadTitle}` : undefined"
+              aria-label="Rename thread"
+              @click="beginAssistantThreadTitleRename"
+            >
+              <span class="truncate">{{ activeAssistantThreadTitle }}</span>
+            </button>
+            <div v-if="!selected" class="mt-2 shimmer h-2.5 w-48 rounded bg-surface-overlay" aria-hidden="true" />
+            <div v-else class="flex min-w-0 items-center gap-1.5 truncate text-[11px] text-text-muted">
+              <span class="truncate">{{ selected.displayName || selected.name || 'Project' }}</span>
+              <span aria-hidden="true">·</span>
               <GitBranch class="h-3 w-3 shrink-0" :stroke-width="2" />
-              <span class="truncate">{{ selected.repository.name || selected.repository.ref }}</span>
-            </template>
-            <template v-else>
-              <span class="truncate">{{ selected?.description || selected?.name || 'App Studio project' }}</span>
-            </template>
+              <span class="truncate">{{ selected.repository?.name || selected.repository?.ref || 'No repository' }}</span>
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
+        <div class="relative flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
+          <ThreadRail
+            ref="threadRailRef"
+            :threads="assistantThreads"
+            :active-thread-i-d="activeAssistantThreadID"
+            :unread-thread-i-ds="unreadAssistantThreadIDs"
+            :pinned-thread-i-ds="pinnedAssistantThreadIDs"
+            :loading="threadHistoryLoading || projectOpenLoading"
+            :selecting-thread-i-d="selectingThreadID"
+            :actioning-thread-i-d="threadActioningID"
+            :disabled="threadActionsDisabled"
+            :busy="threadMutationBusy"
+            @select="selectAssistantThread"
+            @create="createAssistantThread"
+            @archive="archiveAssistantThread"
+            @toggle-pin="toggleThreadPin"
+            @set-unread="setThreadUnread"
+          />
+          <section class="flex min-h-[360px] min-w-0 flex-1 flex-col border-b border-border-subtle md:min-h-0 md:min-w-[240px] md:border-b-0 md:border-r">
+      <div
+        v-if="threadError"
+        class="mx-3 mt-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger"
+        role="alert"
+        aria-live="assertive"
+        aria-atomic="true"
+      >
+        {{ threadError }}
+      </div>
       <div v-if="error && !projectRouteFailure" class="mx-3 mt-3 rounded-md border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger">
         <template v-if="isMissingCodeConnectionError(error)">
           You need to
@@ -7651,17 +7976,19 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       <div v-else class="flex min-h-0 flex-1 items-center justify-center p-6 text-center text-[13px] text-text-muted">
         {{ loading ? 'Loading projects...' : 'Select or create a project.' }}
       </div>
-    </section>
+          </section>
+        </div>
+      </section>
 
-    <div
-      class="hidden w-1.5 shrink-0 cursor-col-resize items-center justify-center bg-border-subtle transition hover:bg-accent/40 md:flex"
-      title="Resize"
-      @pointerdown="startResize"
-    >
-      <GripVertical class="h-4 w-4 text-text-muted" :stroke-width="1.75" />
-    </div>
+      <div
+        class="hidden w-1.5 shrink-0 cursor-col-resize items-center justify-center bg-border-subtle transition hover:bg-accent/40 md:flex"
+        title="Resize"
+        @pointerdown="startResize"
+      >
+        <GripVertical class="h-4 w-4 text-text-muted" :stroke-width="1.75" />
+      </div>
 
-    <section class="flex min-h-[360px] min-w-0 flex-1 flex-col md:min-h-0">
+      <section data-app-studio-workbench-pane class="flex min-h-[360px] min-w-0 flex-1 flex-col md:min-h-0">
       <header class="flex h-14 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
         <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
           <PanelRight class="h-4 w-4 text-accent" :stroke-width="1.75" />
@@ -8081,29 +8408,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       </div>
 
       <div
-        v-else-if="activeWorkbenchTab?.kind === 'threads'"
-        class="min-h-0 flex-1 overflow-auto p-3"
-        role="tabpanel"
-        :id="workbenchTabPanelID(activeWorkbenchTab)"
-        :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
-      >
-        <ThreadsWorkbench
-          ref="threadsWorkbenchRef"
-          :threads="assistantThreads"
-          :active-thread-i-d="activeAssistantThreadID"
-          :loading="threadHistoryLoading || projectOpenLoading"
-          :selecting-thread-i-d="selectingThreadID"
-          :disabled="threadActionsDisabled"
-          :busy="threadMutationBusy"
-          :error="threadError"
-          @select="selectAssistantThread"
-          @create="createAssistantThread"
-          @rename="renameAssistantThread"
-          @delete="deleteAssistantThread"
-        />
-      </div>
-
-      <div
         v-else-if="activeWorkbenchTab?.kind === 'review'"
         class="min-h-0 flex-1 overflow-auto p-3"
         role="tabpanel"
@@ -8345,7 +8649,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         <div ref="toolHostRef" class="h-full min-h-0 w-full overflow-auto p-3" />
       </div>
       </template>
-    </section>
+      </section>
+    </div>
   </div>
 
   <Teleport defer :to="projectControlSurfaceTarget">

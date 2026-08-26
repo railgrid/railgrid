@@ -64,6 +64,13 @@ export class ProjectAPIRequestError extends Error {
   }
 }
 
+export class ProjectAssistantThreadPaginationError extends Error {
+  constructor(message: string) {
+    super(`Unable to load assistant threads: ${message}`)
+    this.name = 'ProjectAssistantThreadPaginationError'
+  }
+}
+
 export function isProjectAPIInitializingError(err: unknown): err is ProjectAPIInitializingError {
   return err instanceof ProjectAPIInitializingError
 }
@@ -98,6 +105,9 @@ function baseURL(ctx: FarosContext | null): string {
 interface ProjectAPIRequestOptions {
   timeoutMS?: number
 }
+
+const ASSISTANT_THREAD_PAGE_SIZE = 500
+const MAX_ASSISTANT_THREAD_PAGES = 100
 
 async function request<T>(ctx: FarosContext | null, method: string, path: string, body?: unknown, options: ProjectAPIRequestOptions = {}): Promise<T> {
   const headers = tenantHeaders({ token: ctx?.token, json: body !== undefined })
@@ -931,12 +941,35 @@ export const api = {
   },
 
   async listAssistantThreads(ctx: FarosContext | null, name: string, includeArchived = false): Promise<ProjectAssistantThread[]> {
-    const page = await request<{ items: ProjectAssistantThread[] }>(
-      ctx,
-      'GET',
-      `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads?includeArchived=${includeArchived}`,
-    )
-    return page.items ?? []
+    const threads: ProjectAssistantThread[] = []
+    const seenCursors = new Set<string>()
+    let cursor = ''
+    for (let pageIndex = 0; pageIndex < MAX_ASSISTANT_THREAD_PAGES; pageIndex += 1) {
+      // A malformed or cyclic cursor must never spin the portal forever. The
+      // current cursor is recorded before each request, so a repeated cursor
+      // is detected without issuing the same page twice. Reject rather than
+      // returning the prefix: callers replace their local pin/read projection
+      // from this list and must not prune state from an incomplete response.
+      if (seenCursors.has(cursor)) {
+        throw new ProjectAssistantThreadPaginationError('cursor cycle detected')
+      }
+      seenCursors.add(cursor)
+      const query = new URLSearchParams({
+        includeArchived: String(includeArchived),
+        limit: String(ASSISTANT_THREAD_PAGE_SIZE),
+      })
+      if (cursor) query.set('cursor', cursor)
+      const page = await request<{ items?: ProjectAssistantThread[]; nextCursor?: string }>(
+        ctx,
+        'GET',
+        `${baseURL(ctx)}/${encodeURIComponent(name)}/assistant/threads?${query.toString()}`,
+      )
+      if (Array.isArray(page.items)) threads.push(...page.items)
+      const nextCursor = typeof page.nextCursor === 'string' ? page.nextCursor.trim() : ''
+      if (!nextCursor) return threads
+      cursor = nextCursor
+    }
+    throw new ProjectAssistantThreadPaginationError(`page limit exceeded (${MAX_ASSISTANT_THREAD_PAGES})`)
   },
 
   async createAssistantThread(ctx: FarosContext | null, name: string, title?: string): Promise<ProjectAssistantThread> {
@@ -947,7 +980,7 @@ export const api = {
     ctx: FarosContext | null,
     name: string,
     threadID: string,
-    body: { title: string },
+    body: { title?: string; archived?: boolean },
   ): Promise<ProjectAssistantThread> {
     return request<ProjectAssistantThread>(
       ctx,

@@ -449,7 +449,7 @@ test('settles terminal project-list failures and keeps a visible Retry action', 
   assert.ok(app.slice(skeletonStart, app.indexOf('>', skeletonStart)).includes('projects.length === 0'))
 })
 
-test('commits a thread selection only after history succeeds and restores prior focus on failure', () => {
+test('commits a thread selection only after history succeeds and clears the pending state', () => {
   const selectStart = app.indexOf('async function selectAssistantThread')
   const selectEnd = app.indexOf('\n\nasync function createAssistantThread', selectStart)
   assert.ok(selectStart >= 0 && selectEnd > selectStart)
@@ -458,10 +458,8 @@ test('commits a thread selection only after history succeeds and restores prior 
   const commitIndex = select.indexOf('activeAssistantThreadID.value = threadID')
   assert.ok(requestIndex >= 0 && commitIndex > requestIndex)
   assert.ok(select.includes('const previousThreadID = activeAssistantThreadID.value'))
-  assert.ok(select.includes('let restorePriorThreadFocus = false'))
-  assert.ok(select.includes('restorePriorThreadFocus = true'))
-  assert.ok(select.includes('threadsWorkbenchRef.value?.focusActiveThread?.()'))
-  assert.ok(select.includes("selectingThreadID.value = ''"))
+  assert.ok(select.includes('const threadHistoryLatchOwner = beginThreadHistoryLatch()'))
+  assert.ok(select.includes('releaseThreadHistoryLatch(threadHistoryLatchOwner, threadID)'))
 })
 
 test('restores the opening Share mode on every unsaved exit while reflecting successful saves', () => {

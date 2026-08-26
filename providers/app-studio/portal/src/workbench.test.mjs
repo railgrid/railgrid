@@ -177,22 +177,6 @@ test('review is a closeable built-in tab without being forced open by default', 
   assert.equal(closedReview.tabs.some((tab) => tab.id === 'review'), false)
 })
 
-test('threads is a closeable built-in tab that opens from the launcher catalog', () => {
-  const withThreads = openWorkbenchBuiltInTab(createDefaultWorkbenchState(), 'threads')
-  const closedThreads = closeWorkbenchTab(withThreads, 'threads')
-
-  assert.deepEqual(withThreads.tabs[withThreads.tabs.length - 1], {
-    id: 'threads',
-    kind: 'threads',
-    title: 'Threads',
-    subtitle: 'Manage assistant conversations for this project',
-    closeable: true,
-  })
-  assert.equal(withThreads.activeTabID, 'threads')
-  assert.equal(closedThreads.tabs.some((tab) => tab.id === 'threads'), false)
-  assert.equal(closedThreads.activeTabID, 'launcher')
-})
-
 test('reorders tabs by moving the dragged tab before the target tab while preserving active tab', () => {
   const state = openWorkbenchProviderTool(openWorkbenchBuiltInTab(createDefaultWorkbenchState(), 'providers'), connectionsTool)
   const reordered = reorderWorkbenchTab(state, 'provider:code/connections', 'preview')
