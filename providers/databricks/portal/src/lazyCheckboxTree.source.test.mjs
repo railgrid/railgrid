@@ -51,6 +51,15 @@ test('wizard stepper allocates one column to each of its four stages', async () 
   assert.match(styles, /\.import-steps\s*\{[\s\S]*?grid-template-columns:\s*repeat\(4,/)
 })
 
+test('wizard backdrop preserves the viewport scrim while honoring AppLayout insets', async () => {
+  const styles = await readFile(new URL('./style.css', import.meta.url), 'utf8')
+  const backdrop = styles.match(/faros-provider-databricks \.import-backdrop\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  assert.match(backdrop, /inset:\s*0;/)
+  assert.match(backdrop, /position:\s*fixed;/)
+  assert.match(backdrop, /padding:\s*24px calc\(24px \+ var\(--app-inset-right, 0px\)\) calc\(24px \+ var\(--app-inset-bottom, 0px\)\) calc\(24px \+ var\(--app-inset-left, 0px\)\);/)
+  assert.match(styles, /@media \(max-width: 620px\) \{[\s\S]*?faros-provider-databricks \.import-backdrop\s*\{[\s\S]*?padding:\s*10px calc\(10px \+ var\(--app-inset-right, 0px\)\) calc\(10px \+ var\(--app-inset-bottom, 0px\)\) calc\(10px \+ var\(--app-inset-left, 0px\)\);/)
+})
+
 test('wizard focus trap follows the natural tab sequence', async () => {
   const source = await readFile(new URL('./ResourceImportWizard.vue', import.meta.url), 'utf8')
   assert.match(source, /function dialogTabStops\(\)/)

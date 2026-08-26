@@ -128,6 +128,116 @@ describe.each([
   })
 })
 
+describe('getRepository health snapshot', () => {
+  it('retains conditions and provider health facts from one successful read', async () => {
+    setAPIContext({ tenant: 'repository-snapshot', token: 'repository-snapshot-token' })
+    let call: FetchCall | undefined
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      call = request(init)
+      return response({
+        data: {
+          code_faros_sh: {
+            v1alpha1: {
+              Repository: {
+                metadata: {
+                  name: 'orders',
+                  uid: 'orders-uid',
+                  generation: 3,
+                },
+                spec: {
+                  connectionRef: 'github',
+                  name: 'orders',
+                  owner: 'faros',
+                  visibility: 'private',
+                  defaultBranch: 'main',
+                },
+                status: {
+                  repoID: 'repo-42',
+                  htmlURL: 'https://github.example/orders',
+                  cloneURL: 'https://github.example/orders.git',
+                  sshURL: 'git@github.example:faros/orders.git',
+                  observedGeneration: 3,
+                  conditions: [{ type: 'Ready', status: 'True', reason: 'Synced', message: 'Repository is ready', lastTransitionTime: '2026-08-24T00:01:00Z' }],
+                },
+              },
+            },
+          },
+        },
+      })
+    }))
+
+    const repository = await api.getRepository('orders')
+
+    expect(repository).toMatchObject({
+      defaultBranch: 'main',
+      repoID: 'repo-42',
+      htmlURL: 'https://github.example/orders',
+      cloneURL: 'https://github.example/orders.git',
+      sshURL: 'git@github.example:faros/orders.git',
+      conditions: [{ type: 'Ready', status: 'True', reason: 'Synced' }],
+    })
+    expect(repository).not.toHaveProperty('rawObject')
+    expect(repository).not.toHaveProperty('labels')
+    expect(repository).not.toHaveProperty('annotations')
+    expect(call?.query).toContain('repoID htmlURL cloneURL sshURL observedGeneration conditions')
+    expect(call?.query).not.toContain('labels annotations')
+    expect(call?.query).not.toContain('autoInit')
+  })
+
+  it.each(['cloneURL', 'sshURL'] as const)('rejects a malformed repository %s status field', async field => {
+    setAPIContext({ tenant: `repository-malformed-${field}`, token: `repository-malformed-${field}-token` })
+    vi.stubGlobal('fetch', vi.fn(async () => response({
+      data: {
+        code_faros_sh: {
+          v1alpha1: {
+            Repository: {
+              metadata: { name: 'orders', uid: 'orders-uid' },
+              spec: { connectionRef: 'github', name: 'orders' },
+              status: { [field]: 42 },
+            },
+          },
+        },
+      },
+    })))
+
+    await expect(api.getRepository('orders')).rejects.toMatchObject({ reason: 'ProtocolError' })
+  })
+
+  it('maps clone and SSH URLs for repository list reads', async () => {
+    setAPIContext({ tenant: 'repository-list-urls', token: 'repository-list-urls-token' })
+    let call: FetchCall | undefined
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      call = request(init)
+      return response({
+        data: {
+          code_faros_sh: {
+            v1alpha1: {
+              Repositories: {
+                items: [{
+                  metadata: { name: 'orders', uid: 'orders-uid' },
+                  spec: { connectionRef: 'github', name: 'orders' },
+                  status: {
+                    htmlURL: 'https://github.example/orders',
+                    cloneURL: 'https://github.example/orders.git',
+                    sshURL: 'git@github.example:faros/orders.git',
+                  },
+                }],
+              },
+            },
+          },
+        },
+      })
+    }))
+
+    await expect(api.listRepositories()).resolves.toMatchObject([{
+      htmlURL: 'https://github.example/orders',
+      cloneURL: 'https://github.example/orders.git',
+      sshURL: 'git@github.example:faros/orders.git',
+    }])
+    expect(call?.query).toContain('status { htmlURL cloneURL sshURL observedGeneration conditions { type status reason message } }')
+  })
+})
+
 describe('Kubernetes deletion state', () => {
   const deletionTimestamp = '2026-08-17T12:34:56Z'
   const resources = [

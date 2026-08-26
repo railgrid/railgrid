@@ -140,7 +140,7 @@ writing any CSS**:
 | `.k-cell-mono` | Data-like cells (names, ids, timestamps) |
 | `.k-badge` (+ `--success/--warning/--danger/--muted`, `__dot`) | **Square 3px mono tag**: 10px/600 uppercase, `0.06em`, `*-subtle` bg, `color-mix(currentColor 35%)` hairline |
 | `.k-btn` (+ `--primary/--ghost/--text/--danger`) | 4px control; primary = solid accent + glow; ghost = overlay bg + hairline; text = transparent, borderless inline action; danger = danger-subtle tint, **no glow** |
-| `.k-back-action` | Intrinsic-width back-navigation modifier for `.k-btn`; start-aligned in flex/grid page flows, muted → accent on hover |
+| `.k-back-action` | Intrinsic-width, start-aligned borderless link modifier for `.k-btn`; 12px/500 accent link with a 6px icon gap, accent-hover underline, and no control surface |
 | `.k-input` | 4px overlay-bg input; focus = accent border + 3px subtle ring + glow |
 | `.k-eyebrow` / `.k-kpi` | Tracked uppercase label over an expanded tabular numeral |
 | `.k-menu` / `.k-menu-item` (+ `--danger`, `.is-selected`, `.k-menu-sep`) | Dropdown/context menu panel + items; selection = accent-subtle, no glow |
@@ -182,7 +182,17 @@ texture (login, empty states — sparingly), `.island` floating dock card,
   `portalkit/ResourceTableDeleteButton.vue` for compact row actions that reveal
   on row hover or keyboard focus (and remain visible on touch). Give every action
   a resource-specific accessible label, and keep destructive actions inside
-  `confirmDialog({ danger: true })`. `ResourceTable` keeps native table-row
+  `confirmDialog({ danger: true })`. The primary resource name uses a text-level
+  `.k-table-resource-link` action (accent, regular weight, transparent at rest
+  and hover), cross-resource references use ordinary cell text, external URLs
+  use a concise linked action plus `ExternalLink` icon, resource IDs and fully
+  qualified names use ordinary cell text, finite non-status enum values use a
+  muted square `.k-badge`, and secondary counts use muted text. Operational and
+  lifecycle state use `StatusBadge` with semantic tone; keep verbose provider
+  feedback in its title and accessible name rather than as a second visible
+  status line. Reserve mono for genuinely technical table content such as schema
+  column names and types; providers must not restyle these properties locally.
+  `ResourceTable` keeps native table-row
   semantics: interactive `<tr>` elements are focusable with `tabindex="0"`,
   Enter/Space activates the row, and nested links, buttons, inputs, selects,
   summaries, and other explicit controls do not activate the row. Do not turn a
@@ -381,6 +391,99 @@ and Quickstart have no equivalent provider-level bar.
 
 Detail/workbench tabsets are not automatically provider-route tabs; apply this
 spec when the tabset is the provider-level route/section bar.
+
+### Resource instance pages — ✅ implemented with PortalKit
+
+`ResourcePage`, `ResourceStatCards`, and `ResourceSectionCard` form the shared
+composition for provider resource instance screens. The caller owns navigation
+and resource-specific content:
+
+- Keep the backlink as a caller-owned hyperlink before and outside the
+  `ResourcePage` shell. Detail routes hide the provider-level collection tabs;
+  the backlink is the single return affordance for the resource list.
+- `ResourcePage` owns the title hierarchy and read-state shell. Its canonical
+  PortalKit title is responsive from 24px to 32px, with tight tracking and
+  leading, safe wrapping for long identifiers, and a 22px mobile size. Header
+  content has one fixed order: title → optional resource `kind` →
+  caller-provided context (`#meta`) → optional status (`#status`) → optional
+  subtitle, with PortalKit-owned dot separators between metadata items. The
+  header-side region contains actions only and follows that stack in source
+  order.
+  ResourcePage exposes `kind` as its only resource-type prop; section cards may
+  continue to use their independent `eyebrow` label. Callers must not add
+  provider-local title-size overrides. Header actions use one stable order:
+  provider-specific primary action, `Refresh`, then an overflow menu containing
+  `Delete`.
+- Use `ResourceStatCards` for provider-defined, meaningful facts with
+  provider-chosen icons. Default density keeps the existing card geometry
+  unchanged. The `density="compact"` option is opt-in for fact-heavy summaries.
+  Both densities use the same responsive grid: three columns, then two, then
+  one at narrower widths. These facts are not a universal resource field
+  schema.
+- Put product-facing content first in vertically stacked `ResourceSectionCard`
+  cards. Providers own each card's content and optional actions. Section action
+  buttons may use a leading Lucide icon with a visible label; icon-only actions
+  are not the default. Technical details are optional rather than a mandatory
+  final card. Providers may promote Conditions or health into an always-visible
+  product-facing section and omit raw configuration, metadata, or YAML when it
+  adds end-user noise. When technical details are shown, keep them closed by
+  default and limited to sanitized configuration, health, metadata, or a
+  read-only object snapshot; credentials, tokens, and other secrets do not
+  belong there.
+- `ResourceSectionCard` also supports a headerless body, which lets legacy or
+  template-driven groups keep their existing content without inventing a
+  second container. The shared card owns border-box containment (`width: 100%`,
+  `min-width: 0`); wide tables keep their controls and card width stable while
+  the table canvas scrolls internally.
+- Primary header anchors that use an accent background retain the
+  `text-on-accent` contrast token in both normal and hover states; changing the
+  background to `accent-hover` must not reduce readable contrast.
+- The read contract distinguishes first-load loading and error states from a
+  later refresh failure. A successful snapshot remains visible when a later
+  read fails, with a stale/error notice and `Retry`; `ResourcePage` emits retry
+  and the caller owns the fetch. Initial failures expose the same retry path.
+
+#### Resource reads and background refresh
+
+Resource pages, resource tables, and dashboard resource summaries share the
+`ResourceReadState` contract from PortalKit. `refreshMode` is either
+`foreground` or `background`. A first read may use a skeleton or pending state,
+but once a populated snapshot—or an authoritative empty snapshot—exists, keep
+it visible through every later background read and transient failure. A
+background read must not replace an empty or no-match body, spin or disable
+header actions, or otherwise disturb the useful surface. An out-of-flow
+`aria-busy` indicator or live status is appropriate when it helps communicate
+that a refresh is running.
+
+User `Refresh`, `Retry`, query, filter, and page actions are foreground reads:
+show immediate feedback even when the request is queued behind another read.
+Reads serialize. A timer request does not invalidate a useful active read; at
+most one follow-up is coalesced, with foreground priority. Explicit authority
+or resource/tenant/user identity invalidation fences stale results. Token
+rotation alone is not an identity change. Reset snapshots only when the
+tenant, user, or resource identity changes. Stop or unmount must cancel the
+timer and queued work.
+
+Use a slower cadence for stable resources (current providers use about 30s) and
+a faster, provider-appropriate cadence for unsettled or error states. Keep
+read-state ownership in the canonical PortalKit `ResourcePage`,
+`ResourceTable`, and `page-state.ts` surfaces; edit canonical sources first,
+then run `make sync-portalkit` so vendored portal copies stay synchronized.
+
+Adoption is intentionally lossless. Before moving a resource to this
+composition, inventory every legacy field, custom workflow/action/editor/table,
+read or mutation state (including stale and deleting states), and sensitive-data
+boundary. The shared layout must not flatten or discard provider-specific
+content; providers remain responsible for choosing meaningful stat cards,
+sections, editors, tables, and actions. Secrets and credential values are never
+rendered, even when a provider exposes a credential reference or edit workflow.
+
+Current consumers cover Code Repository and Connection; Edge and Edge Service;
+Databricks Connection, Warehouse, and Table; Infrastructure Application
+Template Instance; and MCP Access. These nine consumers inherit the canonical
+title hierarchy. They are adoption examples, not a universal field schema.
+The canonical Vue sources live under `provider-sdk/portalkit-vue`; edit them
+there and run `make sync-portalkit` to update provider copies.
 
 ### Select / combobox
 - Closed control: exactly `.k-input` (4px, overlay bg, focus ring + glow) with

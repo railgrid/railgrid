@@ -6,7 +6,14 @@ import type { ErrorResponse, PackageRow } from '../types'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { isCompleteFirstCursorPage, type ResourceTableChange } from '../portalkit/table'
-import { createLatestRefreshController, type LatestRefreshController } from '../refresh'
+import {
+  FAST_REFRESH_MS,
+  STABLE_REFRESH_MS,
+  createAdaptiveRefreshTimer,
+  createLatestRefreshController,
+  type LatestRefreshController,
+  type ResourceRefreshMode,
+} from '../refresh'
 import { createFullListReadCoordinator } from '../hybridPagination'
 import {
   applyPackagePaginationChange,
@@ -69,18 +76,27 @@ const rows = computed<Array<Record<string, unknown>>>(() => {
     })
 })
 
-let timer: number | undefined
 let refresh!: LatestRefreshController
 let forcePackageFullRead = false
+const refreshMode = ref<ResourceRefreshMode>('foreground')
+const poller = createAdaptiveRefreshTimer(() => load('background'), () => {
+  if (!loaded.value || error.value) return FAST_REFRESH_MS
+  const pending = rows.value.some(row => row.status === 'pending' || row.status === 'Deleting')
+  return pending ? FAST_REFRESH_MS : STABLE_REFRESH_MS
+})
 
 function errMessage(e: unknown): string {
   const err = e as ErrorResponse
   return err.reason ? `${err.reason}: ${err.message}` : err.message || String(e)
 }
 
-function load(forceFullRead = packageMode.value === 'client') {
+function load(mode: ResourceRefreshMode = 'foreground', forceFullRead = packageMode.value === 'client') {
   if (forceFullRead) forcePackageFullRead = true
-  refresh.request()
+  if (mode === 'foreground') {
+    refreshMode.value = 'foreground'
+    loading.value = true
+  }
+  refresh.request(mode)
 }
 
 interface PackageRequest {
@@ -120,7 +136,8 @@ function packageRequestIsCurrent(requestID: number, request: PackageRequest): bo
     current.filters.status === request.filters.status
 }
 
-refresh = createLatestRefreshController(async requestID => {
+refresh = createLatestRefreshController(async (requestID, mode) => {
+  refreshMode.value = mode
   const request = currentPackageRequest()
   const forceFullRead = forcePackageFullRead
   forcePackageFullRead = false
@@ -177,7 +194,10 @@ refresh = createLatestRefreshController(async requestID => {
     const err = e as ErrorResponse
     error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
   } finally {
-    if (refresh.isCurrent(requestID)) loading.value = false
+    if (refresh.isCurrent(requestID)) {
+      loading.value = false
+      poller.schedule()
+    }
   }
 })
 
@@ -212,7 +232,7 @@ function handlePackageChange(change: ResourceTableChange) {
     // invalidates it before the queued first server page is allowed to commit.
     packageFullRead.clear()
     if (transition.clearRows) packages.value = []
-    if (transition.reload) load(false)
+    if (transition.reload) load('foreground', false)
     return
   }
 
@@ -245,10 +265,10 @@ function handlePackageChange(change: ResourceTableChange) {
 
 onMounted(() => {
   load()
-  timer = window.setInterval(load, 5000)
+  poller.schedule()
 })
 onUnmounted(() => {
-  window.clearInterval(timer)
+  poller.stop()
   refresh.stop()
 })
 </script>
@@ -278,6 +298,7 @@ onUnmounted(() => {
       row-key="rowKey"
       :loaded="loaded"
       :loading="loading"
+      :refresh-mode="refreshMode"
       :error="error"
       :stale="loaded && !!error"
       retryable
@@ -287,7 +308,7 @@ onUnmounted(() => {
       @change="handlePackageChange"
     >
       <template #repositoryRef="{ row }">
-        <button v-if="row.showRepository && !row.deleting" class="k-btn k-btn--ghost code-inline-action" type="button" @click="emit('open', String(row.repositoryRef))">{{ row.repositoryRef }}</button>
+        <button v-if="row.showRepository && !row.deleting" class="k-btn k-btn--ghost k-table-resource-link" type="button" @click="emit('open', String(row.repositoryRef))">{{ row.repositoryRef }}</button>
         <span v-else-if="row.showRepository">{{ row.repositoryRef }}</span>
         <CornerDownRight v-else class="muted" :size="14" aria-label="Same repository as above" />
       </template>

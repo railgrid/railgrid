@@ -33,13 +33,33 @@ export interface Condition {
   reason?: string
   message?: string
   lastTransitionTime?: string
+  observedGeneration?: number
 }
 
 // EdgeDetail is a single edge with the full status needed for the detail view.
 export interface EdgeDetail extends Edge {
+  apiVersion: string
+  kind: 'KubernetesCluster' | 'LinuxServer'
+  namespace?: string
+  uid?: string
+  resourceVersion?: string
+  generation?: number
+  annotations?: Record<string, string>
+  observedGeneration?: number
+  spec: EdgeSpec
+  statusURL?: string
   joinToken?: string
   workspacePath?: string
   conditions: Condition[]
+  rawObject: Record<string, unknown>
+}
+
+export interface EdgeSpec {
+  labels?: Record<string, string>
+  sshPort?: number
+  sshUserMapping?: string
+  sshKeySecretRef?: { name?: string; namespace?: string }
+  sshCredentialsRef?: { name?: string; namespace?: string }
 }
 
 export interface ErrorResponse {

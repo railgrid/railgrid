@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ExternalLink } from 'lucide-vue-next'
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
@@ -7,7 +8,18 @@ import { api } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
 import { isCompleteFirstCursorPage, type ResourceTableChange } from '../portalkit/table'
 import type { Connection, ErrorResponse } from '../types'
-import { createCoalescedRead, createLatestRefreshController, createOperationLocks, operationKey, type LatestRefreshController } from '../refresh'
+import {
+  createAdaptiveRefreshTimer,
+  createCoalescedRead,
+  createLatestRefreshController,
+  createOperationLocks,
+  FAST_REFRESH_MS,
+  operationKey,
+  STABLE_REFRESH_MS,
+  type AdaptiveRefreshTimer,
+  type LatestRefreshController,
+  type ResourceRefreshMode,
+} from '../refresh'
 import { resourceNameError } from '../resourceName'
 import {
   cloneConnectionFilters,
@@ -59,19 +71,17 @@ const submitting = ref(false)
 const formError = ref<string | null>(null)
 const nameInput = ref<HTMLInputElement | null>(null)
 const formErrorRef = ref<HTMLElement | null>(null)
-let timer: number | undefined
+let poll!: AdaptiveRefreshTimer
 let refresh!: LatestRefreshController
 let mounted = false
 let fullWalkPending = false
 let serverPageReadPending = false
-let forceNextLoad = false
 let authorityGeneration = 0
 
 function invalidateCompleteAuthority(): void {
   authorityGeneration += 1
   completeRead.invalidate()
   serverPageRead.invalidate()
-  forceNextLoad = true
 }
 
 function errMessage(e: unknown): string {
@@ -92,15 +102,31 @@ function startCreate() {
   void nextTick(() => nameInput.value?.focus())
 }
 
+const refreshMode = ref<ResourceRefreshMode>('foreground')
+
+function requestRefresh(mode: ResourceRefreshMode): void {
+  if (mode === 'foreground') {
+    refreshMode.value = 'foreground'
+    loading.value = true
+  }
+  refresh.request(mode)
+}
+
 function load(): void
 function load(force: boolean): void
-function load(event: Event): void
-function load(forceOrEvent: boolean | Event = false): void {
-  const force = typeof forceOrEvent === 'boolean' ? forceOrEvent : forceNextLoad
-  forceNextLoad = false
-  if (!force && (fullWalkPending || serverPageReadPending)) return
-  refresh.request()
+function load(mode: ResourceRefreshMode): void
+function load(forceOrMode: boolean | ResourceRefreshMode = false): void {
+  const mode = typeof forceOrMode === 'string' ? forceOrMode : 'foreground'
+  requestRefresh(mode)
 }
+
+function pollCadence(): number {
+  const stable = loaded.value && !error.value && connections.value.every(connection =>
+    connection.status === 'Ready' && operationPhase(connection.name) !== 'deleting')
+  return stable ? STABLE_REFRESH_MS : FAST_REFRESH_MS
+}
+
+poll = createAdaptiveRefreshTimer(() => requestRefresh('background'), pollCadence)
 
 function operationLocked(name: string): boolean {
   return operations.isLocked(operationKey('connection', name))
@@ -291,11 +317,12 @@ async function remove(row: Record<string, unknown>) {
   }
 }
 
-refresh = createLatestRefreshController(async requestID => {
+refresh = createLatestRefreshController(async (requestID, mode) => {
   const request = currentConnectionRequest()
   let walkGeneration: number | undefined
   let serverPageGeneration: number | undefined
-  loading.value = true
+  refreshMode.value = mode
+  if (mode === 'foreground') loading.value = true
   // Never render the unfiltered server page as the result of a newly entered
   // query. Same-mode polling keeps its cached rows visible.
   if (request.active && request.mode === 'server') {
@@ -396,19 +423,21 @@ refresh = createLatestRefreshController(async requestID => {
   } finally {
     fullWalkPending = false
     serverPageReadPending = false
-    if (refresh.isCurrent(requestID)) loading.value = false
+    if (refresh.isCurrent(requestID)) {
+      if (mode === 'foreground') loading.value = false
+      poll.schedule()
+    }
   }
 })
 
 onMounted(() => {
   mounted = true
   load()
-  timer = window.setInterval(load, 5000)
 })
 onUnmounted(() => {
   mounted = false
   invalidateCompleteAuthority()
-  window.clearInterval(timer)
+  poll.stop()
   refresh.stop()
   completeRead.stop()
   serverPageRead.stop()
@@ -484,6 +513,7 @@ onUnmounted(() => {
       row-key="name"
       :loaded="loaded"
       :loading="loading"
+      :refresh-mode="refreshMode"
       :error="error"
       :stale="loaded && !!error"
       retryable
@@ -493,12 +523,22 @@ onUnmounted(() => {
       @change="handleConnectionChange"
       @row-click="(row) => openResource(String(row.name))"
     >
-      <template #name="{ value }"><button class="k-btn k-btn--ghost databricks-inline-action" type="button" :disabled="operationLocked(String(value))" @click.stop="openResource(String(value))">{{ value }}</button></template>
-      <template #host="{ value }"><code>{{ value }}</code></template>
-      <template #authType="{ value }">{{ value }}</template>
+      <template #name="{ value }"><button class="k-btn k-btn--ghost k-table-resource-link" type="button" :disabled="operationLocked(String(value))" @click.stop="openResource(String(value))">{{ value }}</button></template>
+      <template #host="{ value }">
+        <a
+          v-if="value"
+          :href="String(value)"
+          target="_blank"
+          rel="noopener"
+          :title="String(value)"
+          :aria-label="`Open Databricks workspace ${String(value)} in a new tab`"
+          @click.stop
+        >open <ExternalLink :size="12" aria-hidden="true" /></a>
+        <span v-else class="muted">—</span>
+      </template>
+      <template #authType="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
       <template #status="{ row }">
-        <StatusBadge :status="String(row.status)" />
-        <span v-if="row.message" class="row-message">{{ row.message }}</span>
+        <StatusBadge :status="String(row.status)" :title="String(row.message || '')" :aria-label="row.message ? `${String(row.status)}: ${String(row.message)}` : String(row.status)" />
       </template>
       <template #actions="{ row }">
         <div class="row-actions">

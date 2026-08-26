@@ -350,6 +350,39 @@ describe('stable Instance API lifecycle contract', () => {
     })
   })
 
+  it('promotes the controller child-resource summary from status.children', async () => {
+    setTenant('detail-children-contract')
+    setToken('detail-children-token')
+    const child = {
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      name: 'demo-web',
+      namespace: 'tenant-demo',
+      phase: 'Ready',
+      // A controller response must not make arbitrary child fields part of
+      // the portal's template-visible status namespace.
+      secretData: 'not-rendered',
+    }
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(request(init).query).toContain('InstanceYaml')
+      return instanceYaml(instance({ status: { phase: 'Ready', children: [child] } }))
+    }))
+
+    await expect(api.getInstance('demo')).resolves.toMatchObject({
+      children: [{
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        name: 'demo-web',
+        namespace: 'tenant-demo',
+        phase: 'Ready',
+      }],
+      status: { phase: 'Ready' },
+    })
+    const result = await api.getInstance('demo')
+    expect(result.status).not.toHaveProperty('children')
+    expect(result.children?.[0]).not.toHaveProperty('secretData')
+  })
+
   it('does not let stale enrichment erase a deletion observed by the list', async () => {
     setTenant('stale-enrichment')
     setToken('stale-enrichment-token')

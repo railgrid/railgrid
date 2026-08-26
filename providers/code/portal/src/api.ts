@@ -77,7 +77,6 @@ export function setAPIContext(context: APIReadContext): void {
 interface KCPMetadata {
   name: string
   uid: string
-  resourceVersion?: string | null
   generation?: number | null
   creationTimestamp?: string | null
   deletionTimestamp?: string | null
@@ -139,7 +138,6 @@ function validateRawCR(
   if (!isRecord(metadata) || typeof metadata.name !== 'string' || !metadata.name || typeof metadata.uid !== 'string' || !metadata.uid) {
     throw protocolError(`${label} was missing valid metadata.name or metadata.uid`)
   }
-  validateOptionalString(metadata.resourceVersion, `${label} metadata.resourceVersion`)
   validateOptionalString(metadata.creationTimestamp, `${label} metadata.creationTimestamp`)
   validateOptionalString(metadata.deletionTimestamp, `${label} metadata.deletionTimestamp`)
   if (metadata.generation !== undefined && metadata.generation !== null &&
@@ -427,23 +425,22 @@ function repoFromCR(cr: RawCR): Repository {
     owner: spec.owner ? String(spec.owner) : undefined,
     visibility: String(spec.visibility ?? 'private'),
     description: spec.description ? String(spec.description) : undefined,
+    defaultBranch: spec.defaultBranch ? String(spec.defaultBranch) : undefined,
     htmlURL: status.htmlURL ? String(status.htmlURL) : undefined,
-    sshURL: status.sshURL ? String(status.sshURL) : undefined,
     cloneURL: status.cloneURL ? String(status.cloneURL) : undefined,
+    sshURL: status.sshURL ? String(status.sshURL) : undefined,
     ready: reconciliation.reconciled && condTrue(cr, 'Ready'),
     message: reconciliation.waitingMessage ?? condMsg(cr, 'Ready'),
   }
 }
 
-// repoDetailFromCR is repoFromCR plus the raw status the detail view needs to
-// explain a pending repository: every condition verbatim and observed-vs-current
-// generation.
+// repoDetailFromCR is repoFromCR plus the provider health facts the conditions
+// section needs: the provider repository ID and every condition verbatim.
 function repoDetailFromCR(cr: RawCR): RepositoryDetail {
   const status = cr.status ?? {}
   return {
     ...repoFromCR(cr),
     repoID: status.repoID ? String(status.repoID) : undefined,
-    creationTimestamp: cr.metadata.creationTimestamp ?? undefined,
     conditions: (status.conditions ?? []).map(c => ({
       type: c.type,
       status: c.status,
@@ -594,16 +591,15 @@ async function deleteCodeResource(kind: CodeResourceKind, resource: string, name
 // is the GraphQL field code_faros_sh (dots → underscores), list fields are
 // the capitalised plural (Connections), single-get is the capitalised singular
 // (Connection(name: …)).
-const GQL_META = 'metadata { name uid resourceVersion generation creationTimestamp deletionTimestamp }'
+const GQL_META = 'metadata { name uid generation creationTimestamp deletionTimestamp }'
 const GQL_COND = 'conditions { type status reason message }'
 const F_CONNECTION = `${GQL_META} spec { provider type owner secretRef { name namespace key } baseURL } status { login scopes observedGeneration ${GQL_COND} }`
 // Detail fragment: adds generation/observedGeneration and per-condition
 // lastTransitionTime so the detail view can explain why a connection is pending.
 const F_CONNECTION_DETAIL = `${GQL_META} spec { provider type owner secretRef { name namespace key } baseURL } status { login scopes observedGeneration conditions { type status reason message lastTransitionTime } }`
-const F_REPOSITORY = `${GQL_META} spec { connectionRef name owner visibility description defaultBranch autoInit } status { repoID htmlURL cloneURL sshURL observedGeneration ${GQL_COND} }`
-// Detail fragment: adds generation/observedGeneration and per-condition
-// lastTransitionTime so the detail view can explain why a repository is pending.
-const F_REPOSITORY_DETAIL = `${GQL_META} spec { connectionRef name owner visibility description defaultBranch autoInit } status { repoID htmlURL cloneURL sshURL observedGeneration conditions { type status reason message lastTransitionTime } }`
+const F_REPOSITORY = `${GQL_META} spec { connectionRef name owner visibility description defaultBranch } status { htmlURL cloneURL sshURL observedGeneration ${GQL_COND} }`
+// Detail fragment adds per-condition lastTransitionTime for the conditions card.
+const F_REPOSITORY_DETAIL = `${GQL_META} spec { connectionRef name owner visibility description defaultBranch } status { repoID htmlURL cloneURL sshURL observedGeneration conditions { type status reason message lastTransitionTime } }`
 const F_DEPLOYKEY = `${GQL_META} spec { repositoryRef title publicKey readOnly } status { keyID secretRef { name } observedGeneration ${GQL_COND} }`
 const F_COLLABORATOR = `${GQL_META} spec { repositoryRef username permission } status { invitationID observedGeneration ${GQL_COND} }`
 const F_PACKAGE = `${GQL_META} spec { repositoryRef } status { packageName type visibility htmlURL versionCount updatedAt observedGeneration ${GQL_COND} }`

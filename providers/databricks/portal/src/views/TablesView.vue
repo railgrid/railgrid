@@ -11,7 +11,14 @@ import { confirmDialog } from '../portalkit/confirm'
 import { isCompleteFirstCursorPage, type ResourceTableChange } from '../portalkit/table'
 import { importPrerequisiteMessage, nextValidWarehouseRef, warehousesForConnection } from '../tableRefs'
 import type { Connection, ErrorResponse, Table, Warehouse } from '../types'
-import { createCoalescedRead, createLatestRefreshController, createOperationLocks, operationKey, type LatestRefreshController } from '../refresh'
+import {
+  createCoalescedRead,
+  createLatestRefreshController,
+  createOperationLocks,
+  operationKey,
+  type LatestRefreshController,
+  type ResourceRefreshMode,
+} from '../refresh'
 import { resourceNameError } from '../resourceName'
 import {
   cloneTableFilters,
@@ -33,6 +40,7 @@ const connections = ref<Connection[]>([])
 const warehouses = ref<Warehouse[]>([])
 const tables = ref<Table[]>([])
 const loading = ref(false)
+const refreshMode = ref<ResourceRefreshMode>('foreground')
 const loaded = ref(false)
 const error = ref<string | null>(null)
 const mutationError = ref<string | null>(null)
@@ -162,7 +170,9 @@ function load(forceOrEvent: boolean | Event = false): void {
   const force = typeof forceOrEvent === 'boolean' ? forceOrEvent : forceNextLoad
   forceNextLoad = false
   if (!force && (fullWalkPending || supportReadPending || serverPageReadPending)) return
-  refresh.request()
+  refreshMode.value = 'foreground'
+  loading.value = true
+  refresh.request('foreground')
 }
 
 function operationLocked(name: string): boolean {
@@ -373,12 +383,13 @@ async function remove(row: Record<string, unknown>) {
   }
 }
 
-refresh = createLatestRefreshController(async requestID => {
+refresh = createLatestRefreshController(async (requestID, mode) => {
   const request = currentTableRequest()
   let walkGeneration: number | undefined
   let supportGeneration: number | undefined
   let serverPageGeneration: number | undefined
-  loading.value = true
+  refreshMode.value = mode
+  if (mode === 'foreground') loading.value = true
   if (request.active && request.mode === 'server') {
     tables.value = []
     tablePageInfo.value = null
@@ -492,7 +503,7 @@ refresh = createLatestRefreshController(async requestID => {
     fullWalkPending = false
     supportReadPending = false
     serverPageReadPending = false
-    if (refresh.isCurrent(requestID)) loading.value = false
+    if (refresh.isCurrent(requestID) && mode === 'foreground') loading.value = false
   }
 })
 
@@ -521,9 +532,9 @@ onUnmounted(() => {
         <p class="page-meta">Imported table handles that App Studio can use by tableRef.</p>
       </div>
       <div class="actions">
-        <button class="k-btn k-btn--ghost icon-text" type="button" @click="load">
-          <RefreshCw class="button-icon" :stroke-width="1.75" />
-          Refresh
+        <button class="k-btn k-btn--ghost icon-text" type="button" :disabled="loading" :aria-busy="loading || undefined" @click="load">
+          <RefreshCw class="button-icon" :class="{ spin: loading }" :stroke-width="1.75" />
+          {{ loading ? 'Refreshing…' : 'Refresh' }}
         </button>
         <SplitCreateButton kind="table" :disabled="submitting" @manual="startCreate" @browse="browseCatalog" />
       </div>
@@ -613,6 +624,7 @@ onUnmounted(() => {
       row-key="name"
       :loaded="loaded"
       :loading="loading"
+      :refresh-mode="refreshMode"
       :error="error"
       :stale="loaded && !!error"
       retryable
@@ -621,13 +633,12 @@ onUnmounted(() => {
       @change="handleTableChange"
       @row-click="(row) => openResource(String(row.name))"
     >
-      <template #name="{ value }"><button class="k-btn k-btn--ghost databricks-inline-action mono strong" type="button" :disabled="operationLocked(String(value))" @click.stop="openResource(String(value))">{{ value }}</button></template>
-      <template #fullName="{ value }"><span class="mono">{{ value }}</span></template>
-      <template #warehouseRef="{ value }"><span class="mono">{{ value }}</span></template>
-      <template #columnCount="{ value }"><span>{{ value }}</span></template>
+      <template #name="{ value }"><button class="k-btn k-btn--ghost k-table-resource-link" type="button" :disabled="operationLocked(String(value))" @click.stop="openResource(String(value))">{{ value }}</button></template>
+      <template #fullName="{ value }">{{ value }}</template>
+      <template #warehouseRef="{ value }">{{ value }}</template>
+      <template #columnCount="{ value }"><span class="muted">{{ value }}</span></template>
       <template #status="{ row }">
-        <StatusBadge :status="String(row.status)" />
-        <span v-if="row.message" class="row-message">{{ row.message }}</span>
+        <StatusBadge :status="String(row.status)" :title="String(row.message || '')" :aria-label="row.message ? `${String(row.status)}: ${String(row.message)}` : String(row.status)" />
       </template>
       <template #actions="{ row }">
         <div class="row-actions">

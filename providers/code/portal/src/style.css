@@ -107,6 +107,513 @@ faros-provider-code .code-inline-action:hover {
   color: var(--color-accent-hover, #a18aff);
 }
 
+/* Repository detail composition: a readable header followed by stacked cards. */
+faros-provider-code .repo-detail {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+faros-provider-code .repo-detail__resource {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+}
+faros-provider-code .repo-detail__provider-mark {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 0;
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-radius: 6px;
+  background: var(--color-surface-raised, #111320);
+  color: var(--color-text-secondary, #8a8ca6);
+}
+faros-provider-code .repo-detail__resource > section > header {
+  padding-left: 52px;
+}
+faros-provider-code .repo-detail__back {
+  align-self: flex-start;
+  margin-bottom: -5px;
+  min-height: auto;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-accent, #8b6bff);
+  gap: 6px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+faros-provider-code .repo-detail__back:hover {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-accent-hover, #a18aff);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+faros-provider-code .repo-detail__back:active {
+  transform: none;
+}
+faros-provider-code .repo-detail__back svg {
+  flex: none;
+}
+faros-provider-code .repo-detail__actions a[class~="k-btn--primary"],
+faros-provider-code .repo-detail__actions a[class~="k-btn--primary"]:hover {
+  color: var(--color-on-accent, #ffffff);
+  text-decoration: none;
+}
+faros-provider-code .repo-detail__resource > section > header > div:first-child > div {
+  align-items: center;
+  gap: 7px;
+}
+faros-provider-code .repo-header__separator {
+  color: var(--color-text-muted, #5d5f78);
+}
+faros-provider-code .repo-detail__actions {
+  display: inline-flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+faros-provider-code .repo-detail__menu {
+  position: relative;
+}
+faros-provider-code .repo-detail__menu summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  list-style: none;
+  padding: 7px 8px;
+}
+faros-provider-code .repo-detail__menu summary::-webkit-details-marker {
+  display: none;
+}
+faros-provider-code .repo-detail__menu summary::marker {
+  display: none;
+}
+faros-provider-code .repo-detail .repo-detail__menu-popover {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  right: 0;
+  width: max-content;
+  min-width: 170px;
+  max-width: min(240px, calc(100vw - 32px));
+  border: 1px solid var(--color-border-default, rgba(255,255,255,.11));
+  border-radius: 6px;
+  background: var(--color-surface-overlay, #171927);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-surface, #0a0b12) 65%, transparent);
+  padding: 4px;
+}
+faros-provider-code .repo-detail__menu-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-danger, #ff5d5d);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 8px 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+faros-provider-code .repo-detail__menu-item:hover:not(:disabled) {
+  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
+}
+faros-provider-code .repo-detail__menu-item:disabled {
+  cursor: default;
+  opacity: .5;
+}
+faros-provider-code .repo-detail__sections {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+faros-provider-code .repo-section-card__facts {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 14px;
+  margin-left: auto;
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 11px;
+}
+faros-provider-code .repo-section-card__facts strong {
+  color: var(--color-text-primary, #e9e9f2);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, Menlo, monospace);
+  font-size: 14px;
+  font-weight: 600;
+}
+faros-provider-code .repo-integration-card__description {
+  max-width: 66ch;
+  margin: 0;
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 14px;
+  line-height: 1.55;
+}
+faros-provider-code .repo-integration-card__connection {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 22px;
+  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  padding-top: 19px;
+}
+faros-provider-code .repo-integration-card__connection-title {
+  margin: 0;
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+faros-provider-code .repo-integration-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+faros-provider-code .repo-integration-row__content {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+faros-provider-code .repo-integration-row__provider {
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 13px;
+  font-weight: 600;
+}
+faros-provider-code .repo-integration-row__connection {
+  overflow-wrap: anywhere;
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 11px;
+}
+faros-provider-code .repo-integration-editor {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  padding-top: 12px;
+}
+faros-provider-code .repo-integration-editor .conn-edit {
+  width: 100%;
+}
+faros-provider-code .repo-domain-block {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+faros-provider-code .repo-domain-block .panel-head {
+  border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  padding-bottom: 10px;
+}
+faros-provider-code .repo-conditions__facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px 18px;
+  margin: 0;
+}
+faros-provider-code .repo-conditions__facts > div {
+  min-width: 0;
+}
+faros-provider-code .repo-conditions__facts dt {
+  margin: 0 0 3px;
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+faros-provider-code .repo-conditions__facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 12px;
+}
+faros-provider-code .repo-detail__resource,
+faros-provider-code .repo-detail *,
+faros-provider-code .repo-detail *::before,
+faros-provider-code .repo-detail *::after,
+faros-provider-code .repo-section-card__facts,
+faros-provider-code .repo-integration-row,
+faros-provider-code .repo-integration-card__connection,
+faros-provider-code .repo-integration-card__description,
+faros-provider-code .repo-integration-editor,
+faros-provider-code .repo-domain-block,
+faros-provider-code .repo-detail input,
+faros-provider-code .repo-detail select,
+faros-provider-code .repo-detail textarea,
+faros-provider-code .repo-detail .form,
+faros-provider-code .repo-detail .conn-edit,
+faros-provider-code .repo-detail .props,
+faros-provider-code .repo-detail dl,
+faros-provider-code .repo-conditions__facts {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+}
+faros-provider-code .repo-detail input,
+faros-provider-code .repo-detail select,
+faros-provider-code .repo-detail textarea {
+  box-sizing: border-box;
+}
+faros-provider-code .repo-detail textarea {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* Connection detail composition: the shared resource shell owns the
+ * read/header boundary while Code owns these domain cards and facts. */
+faros-provider-code .connection-detail {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+faros-provider-code .connection-detail__resource {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+}
+faros-provider-code .connection-detail__provider-mark {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 0;
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-radius: 6px;
+  background: var(--color-surface-raised, #111320);
+  color: var(--color-text-secondary, #8a8ca6);
+}
+faros-provider-code .connection-detail__resource > section > header {
+  padding-left: 52px;
+}
+faros-provider-code .connection-detail__resource > section > header > div:first-child > div {
+  align-items: center;
+  gap: 7px;
+}
+faros-provider-code .connection-detail__back {
+  align-self: flex-start;
+  margin-bottom: -5px;
+  min-height: auto;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-accent, #8b6bff);
+  gap: 6px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+faros-provider-code .connection-detail__back:hover {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-accent-hover, #a18aff);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+faros-provider-code .connection-detail__back:active { transform: none; }
+faros-provider-code .connection-detail__back svg { flex: none; }
+faros-provider-code .connection-header__separator { color: var(--color-text-muted, #5d5f78); }
+faros-provider-code .connection-detail__actions {
+  display: inline-flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+faros-provider-code .connection-detail__menu { position: relative; }
+faros-provider-code .connection-detail__menu summary {
+  display: inline-flex;
+  min-width: 32px;
+  align-items: center;
+  justify-content: center;
+  list-style: none;
+  padding: 7px 8px;
+}
+faros-provider-code .connection-detail__menu summary::-webkit-details-marker,
+faros-provider-code .connection-detail__menu summary::marker { display: none; }
+faros-provider-code .connection-detail .connection-detail__menu-popover {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  right: 0;
+  width: max-content;
+  min-width: 170px;
+  max-width: min(240px, calc(100vw - 32px));
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, .11));
+  border-radius: 6px;
+  background: var(--color-surface-overlay, #171927);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-surface, #0a0b12) 65%, transparent);
+  padding: 4px;
+}
+faros-provider-code .connection-detail__menu-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-danger, #ff5d5d);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 8px 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+faros-provider-code .connection-detail__menu-item:hover:not(:disabled) {
+  background: var(--color-danger-subtle, rgba(255, 93, 93, .12));
+}
+faros-provider-code .connection-detail__menu-item:disabled { cursor: default; opacity: .5; }
+faros-provider-code .connection-detail__sections {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+faros-provider-code .connection-detail__resource,
+faros-provider-code .connection-detail *,
+faros-provider-code .connection-detail *::before,
+faros-provider-code .connection-detail *::after,
+faros-provider-code .connection-detail .props,
+faros-provider-code .connection-detail dl,
+faros-provider-code .connection-detail__facts,
+faros-provider-code .connection-detail__health-facts {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+}
+faros-provider-code .connection-detail__facts dd {
+  overflow-wrap: anywhere;
+}
+faros-provider-code .connection-detail__hint {
+  margin-bottom: 18px;
+  border-left: 2px solid var(--color-warning, #f0a63a);
+  background: var(--color-warning-subtle);
+  padding: 10px 12px;
+}
+faros-provider-code .connection-detail__hint-title {
+  margin: 0 0 4px;
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+faros-provider-code .connection-detail__hint p {
+  margin: 0;
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 12px;
+  line-height: 1.5;
+}
+faros-provider-code .connection-detail__deleting {
+  margin: 0;
+  border: 1px solid var(--color-warning-subtle);
+  border-radius: 6px;
+  background: var(--color-warning-subtle);
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 8px 10px;
+}
+faros-provider-code .repo-detail__deleting {
+  margin: 0;
+  border: 1px solid var(--color-warning-subtle);
+  border-radius: 6px;
+  background: var(--color-warning-subtle);
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 8px 10px;
+}
+faros-provider-code .connection-detail__health-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px 18px;
+  margin: 18px 0 0;
+}
+faros-provider-code .connection-detail__health-facts > div { min-width: 0; }
+faros-provider-code .connection-detail__health-facts dt {
+  margin: 0 0 3px;
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+faros-provider-code .connection-detail__health-facts dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  faros-provider-code .repo-section-card__facts {
+    margin-left: 0;
+  }
+}
+@media (max-width: 520px) {
+  faros-provider-code .repo-detail__provider-mark {
+    width: 32px;
+    height: 32px;
+  }
+  faros-provider-code .connection-detail__provider-mark {
+    width: 32px;
+    height: 32px;
+  }
+  faros-provider-code .repo-detail__resource > section > header {
+    padding-left: 44px;
+  }
+  faros-provider-code .repo-detail__actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  faros-provider-code .repo-integration-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+  faros-provider-code .repo-integration-row > button {
+    align-self: flex-start;
+  }
+  faros-provider-code .connection-detail__resource > section > header {
+    padding-left: 44px;
+  }
+  faros-provider-code .connection-detail__actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+
 /* Two-column grid for the detail page */
 faros-provider-code .grid-2 {
   display: grid;

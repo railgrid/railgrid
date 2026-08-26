@@ -25,6 +25,12 @@ const run = (over: Partial<RunSummary> = {}): RunSummary => ({
   ...over,
 })
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise })
+  return { promise, resolve }
+}
+
 describe('activity list', () => {
   it('keeps the shared route panel inset responsive without changing every agents panel', () => {
     const styles = readFileSync(resolve(process.cwd(), 'src/style.css'), 'utf8')
@@ -64,6 +70,43 @@ describe('activity list', () => {
     const api = stubApi({ listRuns: () => Promise.reject(new Error('502 upstream error')) })
     const el = await mount<Activity>('agents-activity', { store: makeStore(api), api })
     expect(text(el.querySelector('.agents-state-error'))).toContain('502 upstream error')
+  })
+
+  it('keeps loaded runs visible when a background refresh fails', async () => {
+    const listRuns = vi.fn()
+      .mockResolvedValueOnce({ items: [run()], nextCursor: '' })
+      .mockRejectedValueOnce(new Error('temporary refresh failure'))
+    const api = stubApi({ listRuns })
+    const el = await mount<Activity>('agents-activity', { store: makeStore(api), api })
+
+    await (el as unknown as { reload(mode: 'background'): Promise<void> }).reload('background')
+    await settle(el)
+
+    expect(text(el.querySelector('.agents-run-row'))).toContain('scout')
+    expect(text(el.querySelector('.agents-state-error'))).toContain('Showing the last loaded data')
+  })
+
+  it('does not let an older activity response overwrite a newer filter result', async () => {
+    const older = deferred<{ items: RunSummary[]; nextCursor: string }>()
+    const newer = deferred<{ items: RunSummary[]; nextCursor: string }>()
+    const listRuns = vi.fn()
+      .mockResolvedValueOnce({ items: [run({ agent: 'initial' })], nextCursor: '' })
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise)
+    const api = stubApi({ listRuns })
+    const el = await mount<Activity>('agents-activity', { store: makeStore(api), api })
+
+    const oldRead = (el as unknown as { reload(mode: 'background'): Promise<void> }).reload('background')
+    ;(el as unknown as { filterAgent: string }).filterAgent = 'new-agent'
+    const newRead = (el as unknown as { reload(mode: 'foreground'): Promise<void> }).reload('foreground')
+    newer.resolve({ items: [run({ agent: 'new-agent' })], nextCursor: '' })
+    await newRead
+    older.resolve({ items: [run({ agent: 'old-agent' })], nextCursor: '' })
+    await oldRead
+    await settle(el)
+
+    expect(text(el.querySelector('.agents-run-row'))).toContain('new-agent')
+    expect(text(el.querySelector('.agents-run-row'))).not.toContain('old-agent')
   })
 
   it('pins pending approvals and resolves them inline', async () => {
@@ -160,6 +203,44 @@ describe('run detail', () => {
     steps[0].querySelector<HTMLButtonElement>('.agents-step-head')!.click()
     await settle(el)
     expect(text(steps[0].querySelector('.agents-step-body'))).toContain('"ns"')
+  })
+
+  it('keeps the run trace visible when a live background refresh fails', async () => {
+    const getRun = vi.fn()
+      .mockResolvedValueOnce(detail())
+      .mockRejectedValueOnce(new Error('temporary refresh failure'))
+    const api = stubApi({ getRun })
+    const store = makeStore(api)
+    const el = await mount<RunDetailView>('agents-run-detail', { store, api, runID: 'r5' })
+
+    store.applyServerEvent({ type: 'run', data: { id: 'r5', agent: 'scout', phase: 'Running' } })
+    await settle(el)
+
+    expect(text(el.querySelector('.agents-runmeta'))).toContain('scout')
+    expect(text(el.querySelector('.agents-state-error'))).toContain('Showing the last loaded data')
+  })
+
+  it('does not let an older run response overwrite a newer run identity', async () => {
+    const older = deferred<RunDetail>()
+    const newer = deferred<RunDetail>()
+    const getRun = vi.fn()
+      .mockResolvedValueOnce(detail({ agent: 'initial' }))
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise)
+    const api = stubApi({ getRun })
+    const el = await mount<RunDetailView>('agents-run-detail', { store: makeStore(api), api, runID: 'r5' })
+
+    const oldRead = (el as unknown as { load(mode: 'background'): Promise<void> }).load('background')
+    el.runID = 'r6'
+    await el.updateComplete
+    newer.resolve(detail({ id: 'r6', agent: 'new-agent' }))
+    await settle(el)
+    older.resolve(detail({ id: 'r5', agent: 'old-agent' }))
+    await oldRead
+    await settle(el)
+
+    expect(text(el.querySelector('.agents-runmeta'))).toContain('new-agent')
+    expect(text(el.querySelector('.agents-runmeta'))).not.toContain('old-agent')
   })
 
   it('offers Cancel while running and approve/deny while paused', async () => {

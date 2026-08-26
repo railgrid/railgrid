@@ -34,6 +34,50 @@ controller.stop()
 controller.request()
 assert((seen.length as number) === 2, 'stopped refresh controller accepted a new request')
 
+// Background polling never fences an active foreground result, while a
+// foreground request supersedes an active background read. Only one follow-up
+// remains queued, and a later foreground request wins over queued polling.
+const modeCalls: Array<{ id: number; mode: 'foreground' | 'background' }> = []
+const modePending: Array<() => void> = []
+const modeController = createLatestRefreshController(async (requestID, mode) => {
+  modeCalls.push({ id: requestID, mode })
+  await new Promise<void>(resolve => modePending.push(resolve))
+})
+modeController.request('foreground')
+modeController.request('background')
+assert(modeController.isCurrent(modeCalls[0].id), 'background polling fenced the active foreground result')
+modePending.shift()?.()
+await new Promise<void>(resolve => setTimeout(resolve, 0))
+assert(modeCalls[1]?.mode === 'background', 'queued background polling did not run after foreground completion')
+modeController.request('foreground')
+assert(!modeController.isCurrent(modeCalls[1].id), 'manual foreground refresh did not supersede background polling')
+modeController.request('background')
+modePending.shift()?.()
+await new Promise<void>(resolve => setTimeout(resolve, 0))
+assert(modeCalls[2]?.mode === 'foreground', 'foreground priority was lost to a queued timer refresh')
+modePending.shift()?.()
+await new Promise<void>(resolve => setTimeout(resolve, 0))
+modeController.stop()
+
+const invalidationIDs: number[] = []
+const invalidationModes: Array<'foreground' | 'background'> = []
+const invalidationPending: Array<() => void> = []
+const invalidationController = createLatestRefreshController(async (requestID, mode) => {
+  invalidationIDs.push(requestID)
+  invalidationModes.push(mode)
+  await new Promise<void>(resolve => invalidationPending.push(resolve))
+})
+invalidationController.request('background')
+const oldInvalidatedID = invalidationIDs[0]
+invalidationController.invalidate()
+assert(!invalidationController.isCurrent(oldInvalidatedID), 'invalidate did not fence the active context')
+invalidationPending.shift()?.()
+await new Promise<void>(resolve => setTimeout(resolve, 0))
+assert(invalidationModes[1] === 'foreground', 'invalidate did not queue a foreground replacement')
+assert(invalidationController.isCurrent(invalidationIDs[1]), 'foreground replacement does not own the invalidated context')
+invalidationPending.shift()?.()
+invalidationController.stop()
+
 let readCalls = 0
 let resolveRead: ((value: string[]) => void) | undefined
 const completeRead = createCoalescedRead(async () => {

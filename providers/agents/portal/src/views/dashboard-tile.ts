@@ -49,14 +49,26 @@ export class AgentsDashboardTile extends LightElement {
   @state() private schedules: Schedule[] = []
   @state() private loading = true
   @state() private error: string | null = null
+  @state() private hasSnapshot = false
 
   private api = new ApiClient()
   private poller: TilePoller | null = null
   private _ctx: FarosContext | null = null
+  private contextGeneration = 0
 
   set farosContext(v: FarosContext | null) {
+    const changed = contextKey(v) !== contextKey(this._ctx)
     this._ctx = v
     this.api.setContext(v)
+    if (changed) {
+      this.contextGeneration += 1
+      this.agents = []
+      this.runs = []
+      this.schedules = []
+      this.error = null
+      this.hasSnapshot = false
+      this.loading = true
+    }
     this.poller?.refresh()
   }
   get farosContext(): FarosContext | null {
@@ -76,14 +88,17 @@ export class AgentsDashboardTile extends LightElement {
   }
 
   private async load(): Promise<void> {
+    const generation = this.contextGeneration
     if (!hasWorkspaceContext(this._ctx)) {
       this.agents = []
       this.runs = []
       this.schedules = []
       this.error = null
       this.loading = false
+      this.hasSnapshot = true
       return
     }
+    if (!this.hasSnapshot) this.loading = true
     try {
       // One page of runs is enough: the tile shows four. Asking for the full
       // history to display a handful is how a glanceable card becomes the
@@ -93,17 +108,27 @@ export class AgentsDashboardTile extends LightElement {
         this.api.listRuns({ limit: TILE_ROWS * 2 } as Record<string, unknown>),
         this.api.listSchedules(),
       ])
+      if (generation !== this.contextGeneration) return
       this.agents = agents
       this.runs = runPage.items
       this.schedules = schedules
       this.error = null
+      this.hasSnapshot = true
     } catch (e) {
-      this.agents = []
-      this.runs = []
-      this.schedules = []
-      this.error = isBenignTileError(e) ? null : tileErrorText(e)
+      if (generation !== this.contextGeneration) return
+      if (isBenignTileError(e)) {
+        this.error = null
+        if (!this.hasSnapshot) {
+          this.agents = []
+          this.runs = []
+          this.schedules = []
+          this.hasSnapshot = true
+        }
+      } else {
+        this.error = tileErrorText(e)
+      }
     } finally {
-      this.loading = false
+      if (generation === this.contextGeneration) this.loading = false
     }
   }
 
@@ -125,8 +150,8 @@ export class AgentsDashboardTile extends LightElement {
   }
 
   render(): TemplateResult {
-    if (this.loading) return html`<div class="agents-tile-msg">Loading agents…</div>`
-    if (this.error) return html`<div class="agents-tile-err">Failed to load: ${this.error}</div>`
+    if (this.loading && !this.hasSnapshot) return html`<div class="agents-tile-msg">Loading agents…</div>`
+    if (this.error && !this.hasSnapshot) return html`<div class="agents-tile-err">Failed to load: ${this.error}</div>`
 
     const failed = this.runs.filter((r) => FAILED_PHASES.has(r.phase)).length
     const next = this.nextRun()
@@ -134,6 +159,11 @@ export class AgentsDashboardTile extends LightElement {
 
     return html`
       <div class="agents-tile">
+        ${this.error
+          ? html`<div class="agents-tile-err" role="status" aria-live="polite">
+              Could not refresh. Showing the last loaded data. ${this.error}
+            </div>`
+          : nothing}
         <div class="agents-tile-stats">
           <span class="agents-tile-stat"
             >${icon('bot')}<strong>${this.agents.length}</strong>
@@ -175,6 +205,13 @@ export class AgentsDashboardTile extends LightElement {
       </div>
     `
   }
+}
+
+function contextKey(ctx: FarosContext | null): string {
+  if (!ctx) return ''
+  // Token rotation is not a resource identity change and must not blank an
+  // otherwise stable tile. The selected workspace is the identity boundary.
+  return [ctx.tenant, ctx.orgUUID, ctx.workspaceUUID].map((part) => part ?? '').join('\u0000')
 }
 
 // chevron mirrors tileClass.chevron — the same affordance the Vue tiles use to

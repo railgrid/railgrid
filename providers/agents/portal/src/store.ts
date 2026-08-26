@@ -18,13 +18,16 @@ export interface Slice<T> {
   data: T
   loading: boolean
   error: string | null
-  // loaded flips true after the first settled load, so views can tell
-  // "genuinely empty" from "not fetched yet".
+  // loaded flips true after the first settled load, including a failure.
   loaded: boolean
+  // hasSnapshot flips only after a successful response, including an
+  // authoritative empty result. A first-load failure is settled but stale
+  // content does not exist yet.
+  hasSnapshot: boolean
 }
 
 function slice<T>(initial: T): Slice<T> {
-  return { data: initial, loading: false, error: null, loaded: false }
+  return { data: initial, loading: false, error: null, loaded: false, hasSnapshot: false }
 }
 
 export type SliceKey = 'agents' | 'connections' | 'toolsets' | 'schedules' | 'triggers' | 'credentials' | 'inbox'
@@ -182,6 +185,7 @@ export class AppStore extends EventTarget {
     try {
       s.data = await LOADERS[key](this.api)
       s.error = null
+      s.hasSnapshot = true
     } catch (e) {
       s.error = (e as Error).message
     }

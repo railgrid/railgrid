@@ -1,0 +1,142 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import test from 'node:test'
+
+const page = fs.readFileSync(new URL('./MCPPage.vue', import.meta.url), 'utf8')
+const router = fs.readFileSync(new URL('../router/index.ts', import.meta.url), 'utf8')
+
+test('MCP detail keeps the canonical borderless backlink before its resource page', () => {
+  const css = fs.readFileSync(new URL('../../../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const back = css.match(/\.k-back-action\s*\{([^}]*)\}/s)?.[1] ?? ''
+  const hover = css.match(/\.k-back-action:hover\s*\{([^}]*)\}/s)?.[1] ?? ''
+  const focus = css.match(/\.k-back-action:focus-visible\s*\{([^}]*)\}/s)?.[1] ?? ''
+  const active = css.match(/\.k-back-action:active\s*\{([^}]*)\}/s)?.[1] ?? ''
+  const detailStart = page.indexOf('<template v-else>')
+  const backStart = page.indexOf('<a', detailStart)
+  const resourceStart = page.indexOf('<ResourcePage', detailStart)
+
+  assert.ok(detailStart >= 0)
+  assert.ok(backStart >= 0 && backStart < resourceStart)
+  assert.match(page.slice(backStart, resourceStart), /class="k-btn k-btn--ghost k-back-action"/)
+  assert.match(page.slice(backStart, resourceStart), /href="\/ui\/mcp"/)
+  assert.match(page.slice(backStart, resourceStart), />\s*[\s\S]*MCP Access\s*<\/a>/)
+
+  assert.match(back, /min-height:\s*auto/)
+  assert.match(back, /border:\s*0/)
+  assert.match(back, /background:\s*transparent/)
+  assert.match(back, /box-shadow:\s*none/)
+  assert.match(back, /color:\s*var\(--color-accent,/)
+  assert.match(back, /gap:\s*6px/)
+  assert.match(back, /padding:\s*0/)
+  assert.match(back, /font-size:\s*12px/)
+  assert.match(back, /font-weight:\s*500/)
+  assert.match(back, /align-self:\s*flex-start/)
+  assert.match(back, /inline-size:\s*fit-content/)
+  assert.match(back, /justify-self:\s*start/)
+  assert.match(hover, /border:\s*0/)
+  assert.match(hover, /background:\s*transparent/)
+  assert.match(hover, /box-shadow:\s*none/)
+  assert.match(hover, /color:\s*var\(--color-accent-hover,/)
+  assert.match(hover, /text-decoration:\s*underline/)
+  assert.match(focus, /outline:\s*2px solid var\(--color-accent,/)
+  assert.match(focus, /outline-offset:\s*2px/)
+  assert.doesNotMatch(focus, /(?:background|border|box-shadow)\s*:/)
+  assert.match(active, /transform:\s*none/)
+})
+
+test('MCP detail keeps the shared resource composition and deep-link contract', () => {
+  assert.match(router, /path: '\/mcp\/:name'/)
+  assert.match(router, /name: 'mcp-detail'/)
+  assert.match(page, /<a[\s\S]*href="\/ui\/mcp"/)
+  assert.match(page, /<ResourcePage/)
+  assert.match(page, /kind="MCP server"/)
+  assert.doesNotMatch(page, /<ResourcePage\b[^>]*\beyebrow=/)
+  assert.match(page, /<ResourceStatCards[\s\S]*density="compact"/)
+  assert.match(page, /<ResourceSectionCard/)
+  assert.match(page, /<StatusBadge/)
+  assert.match(page, /<ResourceTableDeleteButton/)
+})
+
+test('MCP connect snippets stay masked and selectors expose state', () => {
+  const template = page.slice(page.indexOf('<template>'))
+  assert.match(page, /const TOKEN_PLACEHOLDER = '<token>'/)
+  assert.match(page, /snippet\(c, selectedClient\.value, TOKEN_PLACEHOLDER\)/)
+  assert.match(page, /client === 'claude-desktop'/)
+  assert.match(page, /client === 'codex'/)
+  assert.match(page, /id: 'claude-code'/)
+  assert.match(page, /id: 'claude-desktop'/)
+  assert.match(page, /id: 'codex'/)
+  assert.match(page, /return `claude mcp add/)
+  assert.match(page, /return JSON\.stringify\(/)
+  assert.match(page, /--bearer-token-env-var/)
+  assert.doesNotMatch(template, /selectedConnect\.token(?!Ready)/)
+  assert.match(page, /role="tablist" aria-label="AI client setup"/)
+  assert.match(page, /:aria-selected="selectedClient === c\.id"/)
+  assert.match(page, /:aria-expanded="isProviderOpen\(p\.name\)"/)
+  assert.match(page, /:aria-controls="providerPanelID\(p\.name, providerIndex\)"/)
+  assert.doesNotMatch(page, /v-html=/)
+})
+
+test('MCP connect snippets contain long commands without widening the resource page', () => {
+  const bodyStart = page.indexOf('<template #body>')
+  const connectStart = page.indexOf('<ResourceSectionCard id="mcp-connect"', bodyStart)
+  const connectEnd = page.indexOf('</ResourceSectionCard>', connectStart)
+  assert.notEqual(bodyStart, -1)
+  assert.notEqual(connectStart, -1)
+  assert.notEqual(connectEnd, -1)
+
+  const body = page.slice(bodyStart, connectStart)
+  const connect = page.slice(connectStart, connectEnd)
+  assert.match(body, /<div class="grid min-w-0 gap-4">/)
+  assert.match(connect, /<div class="grid min-w-0 gap-2">/)
+  assert.match(connect, /<div class="relative min-w-0 max-w-full" role="tabpanel"/)
+  assert.match(connect, /<pre class="block w-full min-w-0 max-w-full overflow-x-auto whitespace-pre /)
+
+  const tabpanelStart = connect.indexOf('<div class="relative min-w-0 max-w-full" role="tabpanel"')
+  const tabpanelEnd = connect.indexOf('</div>', tabpanelStart)
+  assert.notEqual(tabpanelStart, -1)
+  assert.notEqual(tabpanelEnd, -1)
+  const tabpanel = connect.slice(tabpanelStart, tabpanelEnd)
+  assert.match(tabpanel, /<pre[\s\S]*<\/pre>/)
+  assert.match(tabpanel, /<button[\s\S]*class="k-btn k-btn--ghost absolute right-2 top-2 /)
+
+  const endpointRow = connect.slice(connect.indexOf('<div class="flex min-w-0 items-center gap-2">'))
+  assert.match(endpointRow, /<code class="min-w-0 flex-1 truncate /)
+  assert.match(endpointRow, /Copy endpoint/)
+})
+
+test('MCP reads preserve snapshots and expose recoverable failures', () => {
+  assert.match(page, /const selectedResourceMissing = computed/)
+  assert.match(page, /was not found in this workspace/)
+  assert.match(page, /:stale="loaded && !!error"/)
+  assert.match(page, /connectError/)
+  assert.match(page, /@click="loadConnect\(selectedServer\.name\)"/)
+  assert.match(page, /Deleting this MCP server\. The last successful snapshot remains visible/)
+  assert.match(page, /servers\.value = servers\.value\.filter\(\(server\) => server\.name !== name\)/)
+  assert.match(page, /if \(selected\.value === name\) void router\.replace\(\{ name: 'mcp' \}\)/)
+  assert.match(page, /void load\(\)/)
+  assert.match(page, /connect\.value = \{\}/)
+})
+
+test('MCP delete failures remain visible from both list and detail views', () => {
+  const listStart = page.indexOf('<template v-if="!selected">')
+  const detailStart = page.indexOf('<template v-else>', listStart)
+  assert.notEqual(listStart, -1)
+  assert.notEqual(detailStart, -1)
+
+  const listView = page.slice(listStart, detailStart)
+  const detailView = page.slice(detailStart)
+  assert.match(listView, /mutationError/)
+  assert.match(listView, /role="alert"/)
+  assert.match(detailView, /mutationError/)
+  assert.match(detailView, /role="alert"/)
+})
+
+test('MCP delete failures are fenced to the active server route', () => {
+  const removeStart = page.indexOf('async function remove(name: string)')
+  const removeEnd = page.indexOf('watch(selected,', removeStart)
+  const remove = page.slice(removeStart, removeEnd)
+  const catchStart = remove.indexOf('} catch')
+  assert.notEqual(catchStart, -1)
+  assert.match(remove.slice(catchStart), /selected\.value === name/)
+})

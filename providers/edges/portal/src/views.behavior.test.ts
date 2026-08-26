@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createRenderer, nextTick, type Component } from 'vue'
+import { createRenderer, createSSRApp, nextTick, type Component } from 'vue'
+import { renderToString } from '@vue/server-renderer'
 
 const api = vi.hoisted(() => ({
   listServices: vi.fn(),
   listServicesPage: vi.fn(),
   listEdges: vi.fn(),
   fetchServiceCatalog: vi.fn(),
+  getService: vi.fn(),
   createKubeEdgeService: vi.fn(),
   deleteEdgeService: vi.fn(),
   updateEdgeService: vi.fn(),
@@ -16,10 +18,15 @@ const api = vi.hoisted(() => ({
   deleteWorkload: vi.fn(),
   deployMarketplaceApp: vi.fn(),
 }))
+const confirm = vi.hoisted(() => ({
+  confirmDialog: vi.fn(),
+}))
 
 vi.mock('./api', () => api)
+vi.mock('./portalkit/confirm', () => confirm)
 
 import Services from './Services.vue'
+import ServiceEdit from './ServiceEdit.vue'
 import Workloads from './Workloads.vue'
 
 type HostNode = {
@@ -91,7 +98,7 @@ async function mount(component: Component, props: Record<string, unknown> = {}) 
   const previousDocument = globalThis.document
   globalThis.document = {
     getElementById: () => null,
-    createElement: () => ({ id: '', textContent: '' }),
+    createElement: () => ({ id: '', textContent: '', setAttribute() {} }),
     head: { appendChild() {} },
   } as unknown as Document
   const { renderer, root } = createHostRenderer()
@@ -107,6 +114,27 @@ async function mount(component: Component, props: Record<string, unknown> = {}) 
       globalThis.document = previousDocument
     },
   }
+}
+
+async function renderServiceMarkup(props: Record<string, unknown>): Promise<string> {
+  const source = ServiceEdit as unknown as {
+    setup: (props: Record<string, unknown>, context: Record<string, unknown>) => Record<string, any>
+    ssrRender: (...args: any[]) => unknown
+  }
+  const Wrapper = {
+    props: ['service', 'serviceName', 'catalog', 'edges'],
+    async setup(wrapperProps: Record<string, unknown>, context: Record<string, unknown>) {
+      const state = source.setup(wrapperProps, context)
+      const request = api.getService.mock.results.at(-1)?.value as Promise<unknown> | undefined
+      if (request && typeof request.then === 'function') await request
+      await Promise.resolve()
+      state.readLoaded.value = true
+      state.readLoading.value = false
+      return state
+    },
+    ssrRender: source.ssrRender,
+  }
+  return renderToString(createSSRApp(Wrapper, props))
 }
 
 async function flush() {
@@ -134,9 +162,11 @@ const workload = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  confirm.confirmDialog.mockResolvedValue(false)
   api.fetchServiceCatalog.mockResolvedValue([])
   api.listEdges.mockResolvedValue([edge])
   api.listServices.mockResolvedValue([service])
+  api.getService.mockResolvedValue(service)
   api.listWorkloads.mockResolvedValue([workload])
   api.listServicesPage.mockResolvedValue({ items: [service], continue: undefined })
   api.listWorkloadsPage.mockResolvedValue({ items: [workload], continue: undefined })
@@ -194,8 +224,7 @@ describe('edge list views', () => {
 
       view.pageMock.mockResolvedValueOnce({ items: view.pageRows, continue: undefined })
       state[view.change]({ reason: 'page-size', page: 1, pageSize: 50, query: '', filters: view.filters, cursor: null })
-      await flush()
-      expect(view.pageMock).toHaveBeenLastCalledWith({ limit: 50 })
+      await vi.waitFor(() => expect(view.pageMock).toHaveBeenLastCalledWith({ limit: 50 }))
     } finally {
       mounted.unmount()
     }
@@ -369,7 +398,10 @@ describe('edge list views', () => {
       full.resolve([{ ...view.pageRows[0], name: `${view.label}-stale` }])
       await flush()
       await flush()
-      expect(view.allMock).toHaveBeenCalledTimes(2)
+      // The complete target and supporting edge join are one refresh. The
+      // replacement remains queued until both parts settle, so no timer or
+      // query edit can overlap the active snapshot read.
+      expect(view.allMock).toHaveBeenCalledTimes(1)
       expect(api.listEdges).toHaveBeenCalledTimes(1)
       expect(maxConcurrentEdgeReads).toBe(1)
       expect(state.tableMode).toBe('client')
@@ -382,8 +414,8 @@ describe('edge list views', () => {
       // The stale support join is shared by the clear refresh and the fresh
       // transition. Resolving it must not commit the stale target result.
       staleEdges.resolve([edge])
-      await flush()
-      expect(api.listEdges).toHaveBeenCalledTimes(1)
+      await vi.waitFor(() => expect(view.allMock).toHaveBeenCalledTimes(2))
+      expect(api.listEdges).toHaveBeenCalledTimes(2)
       expect(maxConcurrentEdgeReads).toBe(1)
       expect(state.clientAuthorityReady).toBe(false)
 
@@ -442,6 +474,41 @@ describe('edge list views', () => {
     }
   })
 
+  it.each(views)('$label keeps an authoritative empty view quiet in background and exposes foreground feedback', async (view) => {
+    view.pageMock.mockResolvedValueOnce({ items: [], continue: undefined })
+    const mounted = await mount(view.component)
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      const background = deferred<unknown>()
+      view.pageMock.mockImplementationOnce(() => background.promise)
+      const backgroundRead = state.refresh('background')
+      await flush()
+
+      expect(state.loaded).toBe(true)
+      expect(state.loading).toBe(true)
+      expect(state.refreshMode).toBe('background')
+      expect(state.foregroundLoading).toBe(false)
+      expect(view.label === 'services' ? state.services : state.workloads).toEqual([])
+
+      const foreground = deferred<unknown>()
+      view.pageMock.mockImplementationOnce(() => foreground.promise)
+      const foregroundRead = state.refresh('foreground')
+      // Manual intent must be visible immediately even though the controller
+      // will serialize it behind the active background read.
+      expect(state.loading).toBe(true)
+      expect(state.refreshMode).toBe('foreground')
+      expect(state.foregroundLoading).toBe(true)
+
+      background.resolve({ items: [], continue: undefined })
+      await flush()
+      foreground.resolve({ items: [], continue: undefined })
+      await Promise.all([backgroundRead, foregroundRead])
+    } finally {
+      mounted.unmount()
+    }
+  })
+
   it('derives service filter options from the complete catalog and edge fleet', async () => {
     api.fetchServiceCatalog.mockResolvedValue([
       { type: 'generic', displayName: 'Generic HTTP', category: 'Other', auth: 'none', credential: {} },
@@ -477,6 +544,178 @@ describe('edge list views', () => {
           { value: 'Failed', label: 'Failed' }, { value: 'Unknown', label: 'Unknown' },
         ] },
       ])
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('labels blank-host services as agent loopback and treats no-auth credentials as not required', async () => {
+    const detail = {
+      ...service,
+      host: '',
+      targetNamespace: '',
+      targetName: '',
+      port: 8123,
+      hasCredentials: false,
+      conditions: [],
+    }
+    api.getService.mockResolvedValue(detail)
+    const mounted = await mount(ServiceEdit, {
+      service: detail,
+      serviceName: detail.name,
+      catalog: [{ type: 'generic', displayName: 'Generic HTTP', category: 'Other', auth: 'none', credential: {} }],
+      edges: [edge],
+    })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      expect(api.getService).toHaveBeenCalledWith('svc-a')
+      expect(state.targetSummary).toBe('Agent loopback:8123')
+      expect(state.targetSummary).not.toContain('—:')
+      expect(state.credentialsRequired).toBe(false)
+      expect(state.serviceStatCards.map((card: { id: string }) => card.id)).toEqual(['status', 'edge', 'target'])
+      expect(state.serviceStatCards[0]).toEqual(expect.objectContaining({
+        id: 'status', detail: 'No credentials required',
+      }))
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('keeps optional credentials neutral while retaining the credential form', async () => {
+    const detail = {
+      ...service,
+      serviceType: 'grafana-loki',
+      host: '',
+      targetNamespace: '',
+      targetName: '',
+      port: 3100,
+      hasCredentials: false,
+      conditions: [],
+    }
+    api.getService.mockResolvedValue(detail)
+    const mounted = await mount(ServiceEdit, {
+      service: detail,
+      serviceName: detail.name,
+      catalog: [{
+        type: 'grafana-loki', displayName: 'Grafana Loki', category: 'Monitoring', auth: 'bearer',
+        credential: { optional: true, packing: 'single', fields: [{ key: 'token', label: 'Bearer token', secret: true }] },
+      }],
+      edges: [edge],
+    })
+    try {
+      await flush()
+      await flush()
+      const state = mounted.instance.setupState
+      expect(state.readLoaded).toBe(true)
+      expect(state.credentialsSupported).toBe(true)
+      expect(state.credentialsOptional).toBe(true)
+      expect(state.credentialsRequired).toBe(false)
+      expect(state.credentialState).toEqual({
+        value: 'Not configured (optional)', detail: 'Optional credential', tone: 'default',
+      })
+      expect(state.serviceStatCards.map((card: { id: string }) => card.id)).toEqual(['status', 'edge', 'target'])
+      expect(state.serviceStatCards[0]).toEqual(expect.objectContaining({
+        id: 'status', detail: 'Optional credential',
+      }))
+      const markup = await renderServiceMarkup({
+        service: detail,
+        serviceName: detail.name,
+        catalog: [{
+          type: 'grafana-loki', displayName: 'Grafana Loki', category: 'Monitoring', auth: 'bearer',
+          credential: { optional: true, packing: 'single', fields: [{ key: 'token', label: 'Bearer token', secret: true }] },
+        }],
+        edges: [edge],
+      })
+      expect(markup).toContain('autocomplete="new-password"')
+      expect(markup).toContain('Set credentials')
+      expect(markup).toContain('Optional credential')
+      expect(markup).toContain('k-resource-stat-card--default')
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('keeps required absent credentials visible and warning-toned', async () => {
+    const detail = {
+      ...service,
+      serviceType: 'grafana',
+      hasCredentials: false,
+      conditions: [],
+    }
+    api.getService.mockResolvedValue(detail)
+    const mounted = await mount(ServiceEdit, {
+      service: detail,
+      serviceName: detail.name,
+      catalog: [{
+        type: 'grafana', displayName: 'Grafana', category: 'Monitoring', auth: 'bearer',
+        credential: { packing: 'single', fields: [{ key: 'token', label: 'Service account token', secret: true }] },
+      }],
+      edges: [edge],
+    })
+    try {
+      await flush()
+      await flush()
+      const state = mounted.instance.setupState
+      expect(state.readLoaded).toBe(true)
+      expect(state.credentialsSupported).toBe(true)
+      expect(state.credentialsOptional).toBe(false)
+      expect(state.credentialsRequired).toBe(true)
+      expect(state.credentialState).toEqual({
+        value: 'Missing', detail: 'Credentials missing', tone: 'warning',
+      })
+      expect(state.serviceStatCards.map((card: { id: string }) => card.id)).toEqual(['status', 'edge', 'target'])
+      expect(state.serviceStatCards.filter((card: { detail?: string }) => card.detail === 'Credentials missing')).toHaveLength(1)
+      expect(state.serviceStatCards[0]).toEqual(expect.objectContaining({
+        id: 'status', detail: 'Credentials missing', tone: 'warning',
+      }))
+      const markup = await renderServiceMarkup({
+        service: detail,
+        serviceName: detail.name,
+        catalog: [{
+          type: 'grafana', displayName: 'Grafana', category: 'Monitoring', auth: 'bearer',
+          credential: { packing: 'single', fields: [{ key: 'token', label: 'Service account token', secret: true }] },
+        }],
+        edges: [edge],
+      })
+      expect(markup).toContain('autocomplete="new-password"')
+      expect(markup).toContain('Set credentials')
+      expect(markup.match(/Credentials missing/g)).toHaveLength(1)
+      expect(markup).toContain('k-resource-stat-card--warning')
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('shows a distinct deleting phase while the service delete is pending and recovers on failure', async () => {
+    const detail = { ...service, hasCredentials: false, conditions: [] }
+    const pendingDelete = deferred<void>()
+    api.getService.mockResolvedValue(detail)
+    api.deleteEdgeService.mockImplementation(() => pendingDelete.promise)
+    confirm.confirmDialog.mockResolvedValue(true)
+    const mounted = await mount(ServiceEdit, {
+      service: detail,
+      serviceName: detail.name,
+      catalog: [{ type: 'generic', displayName: 'Generic HTTP', category: 'Other', auth: 'none', credential: {} }],
+      edges: [edge],
+    })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      const deletePromise = state.onDelete()
+      await flush()
+      expect(state.deleting).toBe(true)
+      expect(state.busy).toBe(true)
+      expect(state.serviceStatus).toBe('Deleting')
+      expect(state.serviceStatCards).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'status', value: 'Deleting', tone: 'warning' }),
+      ]))
+
+      pendingDelete.reject({ reason: 'HTTPError', message: 'delete failed' })
+      await deletePromise
+      expect(state.deleting).toBe(false)
+      expect(state.busy).toBe(false)
+      expect(state.mutationError).toBe('delete failed')
     } finally {
       mounted.unmount()
     }

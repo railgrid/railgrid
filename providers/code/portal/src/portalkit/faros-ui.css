@@ -196,18 +196,38 @@ html.light .k-card {
   background: transparent;
   border-color: transparent;
 }
-/* Back navigation sits at the start of a page flow. Explicit intrinsic sizing
- * prevents column flex/grid parents from stretching it into a full-width bar. */
+/* Back navigation is a borderless inline link, not a second control surface.
+ * Explicit intrinsic sizing prevents column flex/grid parents from stretching
+ * it into a full-width bar. */
 .k-back-action {
   align-self: flex-start;
   inline-size: fit-content;
   justify-self: start;
   margin-block-end: 4px;
-  color: var(--color-text-muted, #5d5f78);
+  min-height: auto;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-accent, #8b6bff);
+  gap: 6px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
 }
 .k-back-action:hover {
-  color: var(--color-accent, #8b6bff);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-accent-hover, #a18aff);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
+.k-back-action:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
+.k-back-action:active { transform: none; }
+.k-back-action svg { flex: none; }
 .k-btn--danger {
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   color: var(--color-danger, #ff5d5d);
@@ -1015,6 +1035,14 @@ html.light [data-k-tip]::after {
 .k-table__scroll:focus { outline: 0; }
 .k-table__scroll:focus-visible { box-shadow: inset 0 0 0 2px var(--color-accent, #8b6bff); }
 .k-table__table { min-width: 100%; }
+/* Keep ResourceTable columns intrinsic inside the dedicated scroll region.
+ * The specificity lets this shared contract survive a consumer's broad
+ * descendant reset without leaking a provider-specific selector into portals. */
+.k-table.k-table--resource .k-table__scroll > .k-table__table {
+  max-width: none;
+  min-width: 100%;
+  width: max-content;
+}
 .k-table__head-row { border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
 .k-table__heading {
   padding: 12px 20px;
@@ -1037,6 +1065,24 @@ html.light [data-k-tip]::after {
   font-size: 13px;
   color: var(--color-text-secondary, #8a8ca6);
   transition: color 0.1s ease;
+}
+/* Primary resource identity inside a table is a text-level navigation action,
+ * not a miniature ghost button. Keep this shared so provider list views do
+ * not drift in weight, color, or hover treatment. */
+.k-table-resource-link {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-accent, #8b6bff);
+  font-size: 12px;
+  font-weight: 400;
+  min-height: 0;
+  padding: 0;
+}
+.k-table-resource-link:hover {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--color-accent-hover, #a18aff);
 }
 /* Tailwind preflight makes SVGs block-level. Table-cell icons are inline
  * content, so restore their intrinsic inline flow and keep link labels intact. */
@@ -1173,8 +1219,343 @@ html.light [data-k-tip]::after {
 .k-conditions__message { white-space: normal; color: var(--color-text-primary, #e9e9f2); }
 .k-conditions__muted { color: var(--color-text-muted, #5d5f78); }
 
+/* ── Resource page ────────────────────────────────────────────────────────
+ * ResourcePage keeps page composition consistent across the host portal and
+ * standalone Vue providers. Read-state presentation is deliberately
+ * separate from the caller-owned body and actions. */
+.k-resource-page {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 18px;
+  color: var(--color-text-primary, #e9e9f2);
+}
+.k-resource-page__header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.k-resource-page__heading { min-width: 0; }
+.k-resource-page__eyebrow {
+  margin: 0 0 5px;
+  color: var(--color-text-muted, #5d5f78);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.k-resource-page__title {
+  margin: 0;
+  color: var(--color-text-primary, #e9e9f2);
+  overflow-wrap: anywhere;
+  font-weight: 600;
+  font-size: clamp(24px, 4vw, 32px);
+  letter-spacing: -.02em;
+  line-height: 1.12;
+  word-break: break-word;
+}
+.k-resource-page__subtitle {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.k-resource-page__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 11px;
+}
+.k-resource-page__kind {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+.k-resource-page__separator {
+  flex: 0 0 auto;
+  color: var(--color-text-muted, #5d5f78);
+}
+.k-resource-page__header-side {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+}
+.k-resource-page__status { display: inline-flex; flex: 0 0 auto; align-items: center; }
+.k-resource-page__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.k-resource-page__summary { min-width: 0; margin: 18px 0 20px; }
+.k-resource-stat-cards {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.k-resource-stat-card {
+  display: flex;
+  min-width: 0;
+  min-height: 78px;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 6px;
+  background: var(--color-surface-raised, #111320);
+  padding: 12px;
+}
+.k-resource-stat-card__icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--color-accent, #8b6bff) 30%, transparent);
+  border-radius: 4px;
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent, #8b6bff);
+}
+.k-resource-stat-card__content {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+.k-resource-stat-card__label {
+  overflow: hidden;
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.k-resource-stat-card__value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.k-resource-stat-card__value.mono {
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 12px;
+}
+.k-resource-stat-card__detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 10px;
+  line-height: 1.35;
+}
+.k-resource-stat-card--success .k-resource-stat-card__icon { border-color: color-mix(in srgb, var(--color-success, #2fd6a0) 35%, transparent); background: var(--color-success-subtle, rgba(47, 214, 160, 0.12)); color: var(--color-success, #2fd6a0); }
+.k-resource-stat-card--warning .k-resource-stat-card__icon { border-color: color-mix(in srgb, var(--color-warning, #f0a63a) 35%, transparent); background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); color: var(--color-warning, #f0a63a); }
+.k-resource-stat-card--danger .k-resource-stat-card__icon { border-color: color-mix(in srgb, var(--color-danger, #ff5d5d) 35%, transparent); background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); color: var(--color-danger, #ff5d5d); }
+/* Compact density is opt-in for detail views with several summary facts. The
+ * default recipe above remains the shared Edge geometry. */
+.k-resource-stat-cards--compact .k-resource-stat-card {
+  min-height: 64px;
+  gap: 8px;
+  padding: 10px;
+}
+.k-resource-stat-cards--compact .k-resource-stat-card__icon {
+  width: 26px;
+  height: 26px;
+}
+.k-resource-stat-cards--compact .k-resource-stat-card__content { gap: 2px; }
+.k-resource-stat-cards--compact .k-resource-stat-card__value { font-size: 12px; }
+.k-resource-stat-cards--compact .k-resource-stat-card__value.mono { font-size: 11px; }
+.k-resource-stat-cards--compact .k-resource-stat-card__detail { font-size: 9px; }
+.k-resource-section-card {
+  display: flex;
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+  flex-direction: column;
+  gap: 18px;
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-radius: 6px;
+  background: var(--color-surface-raised, #111320);
+  padding: 20px;
+}
+.k-resource-section-card__header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+.k-resource-section-card__heading { min-width: 0; }
+.k-resource-section-card__eyebrow {
+  margin: 0 0 4px;
+  color: var(--color-text-muted, #5d5f78);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.k-resource-section-card__title {
+  margin: 0;
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 14px;
+  font-weight: 600;
+}
+.k-resource-section-card__description {
+  margin: 4px 0 0;
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.k-resource-section-card__actions {
+  display: flex;
+  min-width: 0;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.k-resource-section-card__body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 18px;
+}
+.k-resource-page__read-error,
+.k-resource-page__stale {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-danger, #ff5d5d) 45%, transparent);
+  border-radius: 6px;
+  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
+  padding: 10px 12px;
+  font-size: 12px;
+}
+.k-resource-page__read-error { color: var(--color-danger, #ff5d5d); }
+.k-resource-page__stale { border-color: color-mix(in srgb, var(--color-warning, #f0a63a) 45%, transparent); background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); color: var(--color-warning, #f0a63a); }
+.k-resource-page__read-icon { flex: none; }
+.k-resource-page__read-message { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.k-resource-page__retry { flex: none; padding: 5px 9px; font-size: 11px; }
+.k-resource-page__loading {
+  display: flex;
+  min-height: 142px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 13px;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 6px;
+  background: var(--color-surface-raised, #111320);
+  padding: 20px;
+}
+.k-resource-page__skeleton { height: 13px; border-radius: 2px; }
+.k-resource-page__skeleton--short { width: 22%; }
+.k-resource-page__skeleton--wide { width: 76%; }
+.k-resource-page__skeleton--medium { width: 54%; }
+.k-resource-page__body { min-width: 0; }
+
+/* Low-emphasis technical disclosure used below a product-facing resource
+ * body. The caller owns the values; these recipes only provide consistent
+ * disclosure, definition-list, and read-only object geometry. */
+.k-resource-technical {
+  min-width: 0;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 6px;
+  background: var(--color-surface, #0a0b12);
+}
+.k-resource-technical__summary {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  color: var(--color-text-muted, #5d5f78);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  list-style: none;
+  user-select: none;
+}
+.k-resource-technical__summary::-webkit-details-marker { display: none; }
+.k-resource-technical__summary:hover { color: var(--color-text-secondary, #8a8ca6); background: var(--color-surface-hover, #1e2033); }
+.k-resource-technical__summary:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: -2px; }
+.k-resource-technical__summary-label { display: inline-flex; min-width: 0; align-items: center; gap: 7px; }
+.k-resource-technical__chevron { flex: none; transition: transform .15s ease; }
+.k-resource-technical[open] .k-resource-technical__chevron { transform: rotate(180deg); }
+.k-resource-technical__body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 18px;
+  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  padding: 16px 12px;
+}
+.k-resource-technical__section { min-width: 0; }
+.k-resource-technical__section-title {
+  margin: 0 0 9px;
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+.k-resource-technical__content { min-width: 0; color: var(--color-text-secondary, #8a8ca6); font-size: 12px; }
+.k-resource-technical__definition {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px 18px;
+  margin: 0;
+}
+.k-resource-technical__definition > div { min-width: 0; }
+.k-resource-technical__definition dt { margin: 0 0 3px; color: var(--color-text-muted, #5d5f78); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+.k-resource-technical__definition dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--color-text-primary, #e9e9f2); }
+.k-resource-technical__definition dd.mono,
+.k-resource-technical__pre { font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace); }
+.k-resource-technical__labels { grid-template-columns: minmax(120px, .35fr) minmax(0, 1fr); }
+.k-resource-technical__pre {
+  max-height: 360px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 4px;
+  background: var(--color-surface-overlay, #171927);
+  padding: 12px;
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+@media (max-width: 620px) {
+  .k-resource-page__header { flex-direction: column; }
+  .k-resource-page__header-side { justify-content: flex-start; }
+}
+
+@media (max-width: 859px) {
+  .k-resource-stat-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 520px) {
+  .k-resource-page__title { font-size: 22px; }
+  .k-resource-stat-cards { grid-template-columns: minmax(0, 1fr); }
+  .k-resource-section-card { padding: 16px; }
+  .k-resource-section-card__header { flex-direction: column; gap: 10px; }
+  .k-resource-section-card__actions { justify-content: flex-start; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .live-dot { animation: none; }
+  .k-resource-technical__chevron { transition: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

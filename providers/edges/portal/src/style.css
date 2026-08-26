@@ -157,6 +157,259 @@ faros-provider-edges .market-desc { margin: 0; font-size: 12px; color: var(--col
 faros-provider-edges .market-meta { font-size: 11px; }
 faros-provider-edges .compact-control { padding: 4px 10px; font-size: 12px; align-self: flex-start; }
 
+/* ── Resource detail composition ──────────────────────────────────────────
+ * One back link and one resource header are followed by stacked bordered
+ * cards. The disclosure controls below are intentionally local so provider
+ * actions and edge-specific content remain independent from ResourcePage. */
+faros-provider-edges .edge-detail {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 16px;
+}
+faros-provider-edges .edge-detail__resource {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+}
+faros-provider-edges .edge-detail__provider-mark {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  left: 0;
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-radius: 6px;
+  background: var(--color-surface-raised, #111320);
+  color: var(--color-text-secondary, #8a8ca6);
+}
+faros-provider-edges .edge-detail__resource > section > header {
+  padding-left: 52px;
+}
+faros-provider-edges .edge-detail__back {
+  align-self: flex-start;
+  margin-bottom: -5px;
+  min-height: auto;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-accent, #8b6bff);
+  gap: 6px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+faros-provider-edges .edge-detail__back:hover {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-accent-hover, #a18aff);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+faros-provider-edges .edge-detail__back:active { transform: none; }
+faros-provider-edges .edge-detail__back svg { flex: none; }
+faros-provider-edges .edge-detail__resource > section > header > div:first-child > div {
+  align-items: center;
+  gap: 7px;
+}
+faros-provider-edges .edge-header__separator { color: var(--color-text-muted, #5d5f78); }
+faros-provider-edges .edge-detail__actions {
+  display: inline-flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+faros-provider-edges .edge-detail .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+faros-provider-edges .edge-detail__menu { position: relative; }
+faros-provider-edges .edge-detail__menu summary {
+  display: inline-flex;
+  min-width: 32px;
+  align-items: center;
+  justify-content: center;
+  list-style: none;
+  padding: 7px 8px;
+}
+faros-provider-edges .edge-detail__menu summary::-webkit-details-marker,
+faros-provider-edges .edge-detail__menu summary::marker { display: none; }
+faros-provider-edges .edge-detail__menu-popover {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 170px;
+  border: 1px solid var(--color-border-default, rgba(255,255,255,.11));
+  border-radius: 6px;
+  background: var(--color-surface-overlay, #171927);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-surface, #0a0b12) 65%, transparent);
+  padding: 4px;
+}
+faros-provider-edges .edge-detail__menu-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-danger, #ff5d5d);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 8px 10px;
+  text-align: left;
+}
+faros-provider-edges .edge-detail__menu-item:hover:not(:disabled) { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); }
+faros-provider-edges .edge-detail__menu-item:disabled { cursor: default; opacity: .5; }
+faros-provider-edges .edge-detail__sections {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+faros-provider-edges .edge-section-card__count {
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 11px;
+  white-space: nowrap;
+}
+faros-provider-edges .edge-section-card__count strong {
+  color: var(--color-text-primary, #e9e9f2);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, Menlo, monospace);
+  font-size: 14px;
+  font-weight: 600;
+}
+faros-provider-edges .edge-connectivity-content,
+faros-provider-edges .edge-services-content,
+faros-provider-edges .edge-technical {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+faros-provider-edges .edge-services-content__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+faros-provider-edges .edge-upgrade { display: flex; min-width: 0; flex-direction: column; gap: 12px; }
+faros-provider-edges .edge-upgrade__banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+faros-provider-edges .edge-upgrade__banner .row { gap: 6px; min-width: 0; }
+faros-provider-edges .edge-upgrade__commands { display: flex; min-width: 0; flex-direction: column; gap: 12px; }
+faros-provider-edges .edge-upgrade__commands > p { margin: 0; font-size: 11px; }
+faros-provider-edges .edge-disclosure {
+  min-width: 0;
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 6px;
+  background: var(--color-surface-raised, #111320);
+}
+faros-provider-edges .edge-disclosure summary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+  padding: 12px 14px;
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 13px;
+  font-weight: 600;
+}
+faros-provider-edges .edge-disclosure summary::-webkit-details-marker,
+faros-provider-edges .edge-disclosure summary::marker { display: none; }
+faros-provider-edges .edge-disclosure summary::before {
+  content: '›';
+  flex: none;
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 18px;
+  line-height: 1;
+  transform: rotate(0deg);
+  transition: transform .15s ease;
+}
+faros-provider-edges .edge-disclosure[open] summary::before { transform: rotate(90deg); }
+faros-provider-edges .edge-disclosure summary:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: -2px;
+}
+faros-provider-edges .edge-disclosure__hint {
+  min-width: 0;
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 11px;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+faros-provider-edges .edge-disclosure__body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  padding: 14px;
+}
+faros-provider-edges .edge-disclosure__body > p { margin: 0; font-size: 12px; }
+faros-provider-edges .edge-services-content .svc-card { max-width: 100%; }
+faros-provider-edges .edge-technical > div {
+  gap: 0;
+  border-top: 0;
+  padding: 0;
+}
+faros-provider-edges .edge-technical > div > section {
+  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  padding: 18px 0;
+}
+faros-provider-edges .edge-technical > div > section:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+faros-provider-edges .edge-detail,
+faros-provider-edges .edge-detail *,
+faros-provider-edges .edge-detail *::before,
+faros-provider-edges .edge-detail *::after,
+faros-provider-edges .edge-section-card__count,
+faros-provider-edges .edge-connectivity-content,
+faros-provider-edges .edge-services-content,
+faros-provider-edges .edge-technical,
+faros-provider-edges .edge-detail input,
+faros-provider-edges .edge-detail select,
+faros-provider-edges .edge-detail textarea,
+faros-provider-edges .edge-detail dl,
+faros-provider-edges .edge-technical pre {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+}
+faros-provider-edges .edge-detail textarea,
+faros-provider-edges .edge-technical pre {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+faros-provider-edges .edge-technical pre { overflow: auto; }
+
+@media (max-width: 520px) {
+  faros-provider-edges .edge-detail__provider-mark { width: 32px; height: 32px; }
+  faros-provider-edges .edge-detail__resource > section > header { padding-left: 44px; }
+  faros-provider-edges .edge-detail__actions { width: 100%; justify-content: flex-start; }
+  faros-provider-edges .edge-disclosure summary { align-items: flex-start; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   faros-provider-edges .spin { animation: none; }
   faros-provider-edges *,
@@ -167,4 +420,219 @@ faros-provider-edges .compact-control { padding: 4px 10px; font-size: 12px; alig
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ── Service resource detail composition ──────────────────────────────────
+ * The list remains owned by ResourceTable; this page owns only the URL-backed
+ * Service snapshot, editing controls, and provider-specific facts. */
+faros-provider-edges .service-detail {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-direction: column;
+  gap: 16px;
+}
+faros-provider-edges .service-detail__resource {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+faros-provider-edges .service-detail__resource,
+faros-provider-edges .service-detail__resource > section,
+faros-provider-edges .service-detail__page,
+faros-provider-edges .service-detail__page > *,
+faros-provider-edges .service-detail__page > * > *,
+faros-provider-edges .service-detail__page > * > * > *,
+faros-provider-edges .service-detail__card,
+faros-provider-edges .service-detail__card > *,
+faros-provider-edges .service-detail__card > * > *,
+faros-provider-edges .service-detail__stats,
+faros-provider-edges .service-detail__stats > * {
+  box-sizing: border-box;
+  min-width: 0;
+}
+faros-provider-edges .service-detail__page,
+faros-provider-edges .service-detail__page > *,
+faros-provider-edges .service-detail__card,
+faros-provider-edges .service-detail__stats {
+  max-width: 100%;
+}
+faros-provider-edges .service-detail__page > header > :first-child,
+faros-provider-edges .service-detail__page > header > :first-child > h1,
+faros-provider-edges .service-detail__page > header > :first-child > p,
+faros-provider-edges .service-detail__page > header > :first-child > div,
+faros-provider-edges .service-detail__card > header > :first-child > p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+faros-provider-edges .service-detail__page input,
+faros-provider-edges .service-detail__page select,
+faros-provider-edges .service-detail__page textarea {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+faros-provider-edges .service-detail__back {
+  align-self: flex-start;
+  min-height: auto;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-accent, #8b6bff);
+  gap: 6px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
+}
+faros-provider-edges .service-detail__back:hover {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-accent-hover, #a18aff);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+faros-provider-edges .service-detail__back:active { transform: none; }
+faros-provider-edges .service-detail__back svg { flex: none; }
+faros-provider-edges .service-detail__separator { color: var(--color-text-muted, #5d5f78); }
+faros-provider-edges .service-detail__actions {
+  display: inline-flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+faros-provider-edges .service-detail__menu { position: relative; }
+faros-provider-edges .service-detail__menu summary {
+  display: inline-flex;
+  min-width: 32px;
+  align-items: center;
+  justify-content: center;
+  list-style: none;
+  padding: 7px 8px;
+}
+faros-provider-edges .service-detail__menu summary::-webkit-details-marker,
+faros-provider-edges .service-detail__menu summary::marker { display: none; }
+faros-provider-edges .service-detail__menu-popover {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 170px;
+  border: 1px solid var(--color-border-default, rgba(255,255,255,.11));
+  border-radius: 6px;
+  background: var(--color-surface-overlay, #171927);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-surface, #0a0b12) 65%, transparent);
+  padding: 4px;
+}
+faros-provider-edges .service-detail__menu-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-danger, #ff5d5d);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 8px 10px;
+  text-align: left;
+}
+faros-provider-edges .service-detail__menu-item:hover:not(:disabled) { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); }
+faros-provider-edges .service-detail__menu-item:disabled { cursor: default; opacity: .5; }
+faros-provider-edges .service-detail__sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+faros-provider-edges .service-detail__sections {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+faros-provider-edges .service-detail__facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px 18px;
+}
+faros-provider-edges .service-detail__facts > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+faros-provider-edges .service-detail__facts strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 13px;
+  font-weight: 500;
+}
+faros-provider-edges .service-detail__description,
+faros-provider-edges .service-detail__empty-tools { margin: 14px 0 0; font-size: 12px; }
+faros-provider-edges .service-detail__tools { margin-top: 16px; }
+faros-provider-edges .service-detail__tools ul {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+faros-provider-edges .service-detail__tools li { overflow-wrap: anywhere; font-size: 12px; }
+faros-provider-edges .service-detail__form-grid {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px;
+}
+faros-provider-edges .service-detail__form-grid--three { grid-template-columns: minmax(0, 1fr) 150px 120px; }
+faros-provider-edges .service-detail__form-grid--two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+faros-provider-edges .service-detail__target-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 2px 0;
+}
+faros-provider-edges .service-detail__target-mode label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; }
+faros-provider-edges .service-detail__target-mode label.is-disabled { opacity: .5; }
+faros-provider-edges .service-detail__field-help { margin-top: 1px; font-size: 11px; }
+faros-provider-edges .service-detail__form-actions { display: flex; justify-content: flex-end; }
+faros-provider-edges .service-detail__credential-hint { margin: 0; font-size: 12px; }
+faros-provider-edges .service-detail__credential-none { margin: 0; font-size: 12px; }
+faros-provider-edges .service-detail__credential-row {
+  display: flex;
+  min-width: 0;
+  align-items: flex-end;
+  gap: 10px;
+}
+faros-provider-edges .service-detail__credential-row .fld { flex: 1 1 180px; min-width: 0; }
+faros-provider-edges .service-detail__status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+faros-provider-edges .service-detail__url { display: block; margin-top: 12px; overflow-wrap: anywhere; font-size: 12px; }
+faros-provider-edges .service-detail__mutation-error { margin-bottom: 0; }
+
+@media (max-width: 720px) {
+  faros-provider-edges .service-detail__form-grid--three,
+  faros-provider-edges .service-detail__form-grid--two { grid-template-columns: 1fr; }
+  faros-provider-edges .service-detail__credential-row { align-items: stretch; flex-direction: column; }
+  faros-provider-edges .service-detail__credential-row > button { align-self: flex-start; }
+  faros-provider-edges .service-detail__actions,
+  faros-provider-edges .service-detail__page > header > :last-child,
+  faros-provider-edges .service-detail__page > header > :last-child > :last-child { width: 100%; justify-content: flex-start; }
+}
+
+@media (max-width: 420px) {
+  faros-provider-edges .service-detail__facts { grid-template-columns: minmax(0, 1fr); }
 }

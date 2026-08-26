@@ -13,7 +13,7 @@
 // No kind discovery or introspection is needed anymore.
 
 import { load as yamlLoad } from 'js-yaml'
-import type { ErrorResponse, Instance, JSONSchema, Template, TemplateExposure, TemplateView } from './types'
+import type { ErrorResponse, Instance, InstanceChild, JSONSchema, Template, TemplateExposure, TemplateView } from './types'
 import { columnsNeedInstanceData } from './view'
 
 const GROUP = 'infrastructure.faros.sh'
@@ -284,6 +284,21 @@ function instanceFromObj(c: RawObject): Instance {
     message: cond.message,
     time: cond.lastTransitionTime,
   }))
+  // status.children is controller-owned metadata that the detail page renders
+  // in its bounded child-resource table. Promote only the established child
+  // fields; keep the rest of status available to template-defined View fields
+  // without leaking arbitrary child object data into the status namespace.
+  const children: InstanceChild[] | undefined = Array.isArray(c.status?.children)
+    ? c.status.children
+      .filter(isRecord)
+      .map(child => ({
+        apiVersion: typeof child.apiVersion === 'string' ? child.apiVersion : '',
+        kind: typeof child.kind === 'string' ? child.kind : '',
+        name: typeof child.name === 'string' ? child.name : '',
+        ...(typeof child.namespace === 'string' ? { namespace: child.namespace } : {}),
+        ...(typeof child.phase === 'string' ? { phase: child.phase } : {}),
+      }))
+    : undefined
   // status outputs: everything under .status except the conditions/children
   // arrays (promoted to their own fields), so a View can reference status.*.
   let status: Record<string, unknown> | undefined
@@ -302,6 +317,7 @@ function instanceFromObj(c: RawObject): Instance {
     phase: c.metadata?.deletionTimestamp ? 'Deleting' : c.status?.phase || (conditions.find(x => x.type === 'Ready')?.status === 'True' ? 'Ready' : 'Pending'),
     message: c.metadata?.deletionTimestamp ? 'Deletion is in progress while provisioned resources are being cleaned up.' : c.status?.message,
     conditions,
+    children,
     values,
     status,
     createdAt: c.metadata?.creationTimestamp ?? '',

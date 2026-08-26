@@ -5,7 +5,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { createRenderer, createSSRApp, nextTick } from 'vue'
+import { createRenderer, createSSRApp, h, nextTick } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
 let vite
@@ -13,6 +13,8 @@ const testDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(testDirectory, '../../../..')
 const portalRoot = resolve(testDirectory, '..')
 const canonicalResourceTable = resolve(repositoryRoot, 'provider-sdk/portalkit-vue/ResourceTable.vue')
+const canonicalResourcePage = resolve(repositoryRoot, 'provider-sdk/portalkit-vue/ResourcePage.vue')
+const canonicalPageState = resolve(repositoryRoot, 'provider-sdk/portalkit/page-state.ts')
 const canonicalFarosUIStyle = resolve(repositoryRoot, 'provider-sdk/portalkit/faros-ui.css')
 const canonicalTableHelpers = resolve(repositoryRoot, 'provider-sdk/portalkit-vue/table.ts')
 test.before(async () => {
@@ -35,6 +37,10 @@ test.after(async () => vite?.close())
 
 async function resourceTable() {
   return (await vite.ssrLoadModule(canonicalResourceTable)).default
+}
+
+async function resourcePage() {
+  return (await vite.ssrLoadModule(canonicalResourcePage)).default
 }
 
 async function tableHelpers() {
@@ -64,7 +70,11 @@ function createHostRenderer() {
       node.parent = null
     },
     createElement(type) {
-      return { type, props: {}, children: [], parent: null }
+      const node = { type, props: {}, children: [], parent: null }
+      node.removeAttribute = name => { delete node.props[name] }
+      node.setAttribute = (name, value) => { node.props[name] = String(value) }
+      node.focus = () => {}
+      return node
     },
     createText(text) {
       return textNode(text)
@@ -132,6 +142,96 @@ async function mountInteractiveTable(ResourceTable, props) {
       app.unmount()
       globalThis.document = previousDocument
     },
+  }
+}
+
+function hostText(node) {
+  if (!node) return ''
+  if (node.type === '#text') return String(node.text ?? '')
+  return (node.children ?? []).map(hostText).join('')
+}
+
+function className(node) {
+  return String(node?.props?.class ?? '')
+}
+
+async function loadMountedSFC(path) {
+  const module = await vite.ssrLoadModule(path)
+  const source = await readFile(resolve(portalRoot, path.replace(/^\//, '')), 'utf8')
+  const template = source.match(/<template(?:\s[^>]*)?>([\s\S]*)<\/template>/)?.[1]
+  assert.ok(template, `${path} has a template for mounted behavior coverage`)
+  const [{ compile }, vueRuntime] = await Promise.all([
+    import('@vue/compiler-dom'),
+    import('vue'),
+  ])
+  // The runtime compiler intentionally receives templates only; the
+  // TypeScript casts in ResourceTable's event handlers are already checked by
+  // vue-tsc and are removed here solely to make this custom renderer harness
+  // executable without a second SFC transform.
+  const runtimeTemplate = template.replace(/\s+as HTML(?:Input|Select)Element/g, '')
+  const compiled = compile(runtimeTemplate, {
+    mode: 'function',
+    prefixIdentifiers: true,
+    expressionPlugins: ['typescript'],
+  })
+  assert.equal((compiled.errors ?? []).length, 0, `${path} template compiles for mounted behavior coverage`)
+  const compiledRender = new Function('Vue', compiled.code)(vueRuntime)
+  // `ssrLoadModule` gives script-setup components an SSR render function and
+  // marks their setup bindings as private to the generated render closure.
+  // The test-only runtime compiler needs those bindings through `_ctx`, so
+  // bridge the public proxy to the unwrapped setup state for this mounted
+  // harness without changing the production component.
+  module.default.render = (ctx, cache, _props, setupState) => compiledRender(new Proxy(ctx, {
+    get(target, key, receiver) {
+      const value = Reflect.get(target, key, receiver)
+      return value === undefined ? setupState?.[key] : value
+    },
+  }), cache)
+  return module.default
+}
+
+function mountDetailView(Component, props, components) {
+  const previousDocument = globalThis.document
+  const previousWindow = globalThis.window
+  const styleNode = {
+    id: '',
+    textContent: '',
+    setAttribute() {},
+  }
+  globalThis.document = {
+    documentElement: { style: { getPropertyValue: () => '' } },
+    getElementById: () => null,
+    createElement: () => styleNode,
+    head: { appendChild() {} },
+  }
+  globalThis.window = {
+    setInterval: () => 1,
+    clearInterval() {},
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+  }
+  const { renderer, root } = createHostRenderer()
+  const app = renderer.createApp(Component, props)
+  for (const [name, component] of Object.entries(components ?? {})) app.component(name, component)
+  app._context.provides[Symbol.for('v-scx')] = { modules: new Set() }
+  app.mount(root)
+  return {
+    root,
+    instance: app._instance,
+    find: predicate => findHostNode(root, predicate),
+    unmount() {
+      app.unmount()
+      if (previousDocument === undefined) delete globalThis.document
+      else globalThis.document = previousDocument
+      if (previousWindow === undefined) delete globalThis.window
+      else globalThis.window = previousWindow
+    },
+  }
+}
+
+async function flushVue() {
+  for (let i = 0; i < 6; i += 1) {
+    await Promise.resolve()
+    await nextTick()
   }
 }
 
@@ -238,6 +338,21 @@ test('initial loading mirrors configured search and filter controls without moun
   assert.doesNotMatch(plainHTML, /k-table__loading-controls/)
 })
 
+test('background mode keeps first-read skeletons and aria-busy unchanged', async () => {
+  const ResourceTable = await resourceTable()
+  const html = await renderToString(createSSRApp(ResourceTable, {
+    columns,
+    rows: [],
+    loaded: false,
+    loading: true,
+    refreshMode: 'background',
+  }))
+
+  assert.match(html, /aria-busy="true"/)
+  assert.match(html, /k-table__loading/)
+  assert.doesNotMatch(html, /<table|No data|k-table__pending-cell/)
+})
+
 test('initial read errors suppress skeleton and empty state and clear aria-busy', async () => {
   const ResourceTable = await resourceTable()
   const html = await renderToString(createSSRApp(ResourceTable, {
@@ -275,6 +390,57 @@ test('background refresh keeps rows and only updates the out-of-flow live region
   assert.match(html, /style="[^"]*position:absolute/)
   assert.doesNotMatch(html, /resource-table-updating/)
   assert.equal((html.match(/k-table__row(?=[ "\n])/g) ?? []).length, 2)
+})
+
+test('background refresh keeps authoritative empty and no-match bodies stable', async () => {
+  const ResourceTable = await resourceTable()
+  const cases = [
+    {
+      query: '',
+      expected: 'No resources yet.',
+      emptyText: 'No resources yet.',
+    },
+    {
+      query: 'orders',
+      expected: 'No resources match these filters.',
+      emptyText: 'No resources yet.',
+    },
+  ]
+
+  for (const testCase of cases) {
+    const html = await renderToString(createSSRApp(ResourceTable, {
+      columns,
+      rows: [],
+      loaded: true,
+      loading: true,
+      refreshMode: 'background',
+      searchable: true,
+      query: testCase.query,
+      emptyText: testCase.emptyText,
+    }))
+
+    assert.match(html, /aria-busy="true"/)
+    assert.match(html, new RegExp(testCase.expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    assert.doesNotMatch(html, /k-table__pending-cell|Loading resources|Searching resources/)
+    assert.match(html, /class="k-table__live"[^>]*role="status"[^>]*aria-live="polite"/)
+    assert.match(html, /class="k-table__live"[^>]*style="[^\"]*position:absolute/)
+    assert.match(html, /Updating…/)
+  }
+})
+
+test('background refresh keeps cached populated rows without an in-flow pending body', async () => {
+  const ResourceTable = await resourceTable()
+  const html = await renderToString(createSSRApp(ResourceTable, {
+    columns,
+    rows: [{ name: 'cached' }],
+    loaded: true,
+    loading: true,
+    refreshMode: 'background',
+  }))
+
+  assert.match(html, /cached/)
+  assert.doesNotMatch(html, /k-table__pending-cell|Loading resources|Searching resources/)
+  assert.match(html, /Updating…/)
 })
 
 test('searchable paginated tables render one bounded page and shared controls', async () => {
@@ -613,6 +779,27 @@ test('successful empty reads are the only empty-state case before a retrying bac
   assert.match(staleHTML, />Retry</)
 })
 
+test('background stale refreshes keep cached rows and retryable errors visible', async () => {
+  const ResourceTable = await resourceTable()
+  const html = await renderToString(createSSRApp(ResourceTable, {
+    columns,
+    rows: [{ name: 'orders' }],
+    loaded: true,
+    loading: true,
+    refreshMode: 'background',
+    error: 'read failed',
+    stale: true,
+    retryable: true,
+  }))
+
+  assert.match(html, /aria-busy="true"/)
+  assert.match(html, /Showing the last successful result\./)
+  assert.match(html, /read failed/)
+  assert.match(html, /orders/)
+  assert.match(html, />Retry</)
+  assert.doesNotMatch(html, /k-table__pending-cell|Loading resources|Searching resources/)
+})
+
 test('empty table bodies stay pending while loading, then show empty or results', async () => {
   const ResourceTable = await resourceTable()
   const pendingSearchHTML = await renderToString(createSSRApp(ResourceTable, {
@@ -676,6 +863,60 @@ test('empty table bodies stay pending while loading, then show empty or results'
   }))
   assert.match(resultsHTML, /orders/)
   assert.doesNotMatch(resultsHTML, /Searching resources/)
+})
+
+test('resource page announces loaded refreshes out of flow and preserves the body', async () => {
+  const ResourcePage = await resourcePage()
+  const html = await renderToString(createSSRApp({
+    render: () => h(ResourcePage, {
+      title: 'Orders',
+      loaded: true,
+      loading: true,
+      refreshMode: 'background',
+    }, {
+      default: () => h('p', 'Loaded body'),
+    }),
+  }))
+
+  assert.match(html, /aria-busy="true"/)
+  assert.match(html, /Loaded body/)
+  assert.doesNotMatch(html, /k-resource-page__loading/)
+  assert.match(html, /class="k-resource-page__live"[^>]*role="status"[^>]*aria-live="polite"/)
+  assert.match(html, /class="k-resource-page__live"[^>]*style="[^\"]*position:absolute/)
+  assert.match(html, /Updating…/)
+})
+
+test('resource page keeps first-read skeletons for background mode', async () => {
+  const ResourcePage = await resourcePage()
+  const html = await renderToString(createSSRApp(ResourcePage, {
+    title: 'Orders',
+    loaded: false,
+    loading: true,
+    refreshMode: 'background',
+  }))
+
+  assert.match(html, /aria-busy="true"/)
+  assert.match(html, /k-resource-page__loading/)
+  assert.doesNotMatch(html, /Loaded body|k-resource-page__stale/)
+})
+
+test('resource detail views keep provider-only metadata before the initial snapshot', async () => {
+  const details = {
+    connection: '/src/views/ConnectionDetailView.vue',
+    warehouse: '/src/views/WarehouseDetailView.vue',
+    table: '/src/views/TableDetailView.vue',
+  }
+  const kinds = { connection: 'Connection', warehouse: 'Warehouse', table: 'Table' }
+
+  for (const [name, path] of Object.entries(details)) {
+    const Component = (await vite.ssrLoadModule(path)).default
+    const html = await renderToString(createSSRApp(Component, { name: 'orders' }))
+    const meta = html.match(/<div class="k-resource-page__meta">(.*?)<\/div>/s)?.[1] ?? ''
+    assert.match(meta, new RegExp('<span class="k-resource-page__kind">' + kinds[name] + '</span>'))
+    assert.match(meta, /<span>Databricks<\/span>/)
+    assert.doesNotMatch(meta, /validated against|not validated yet|deletion requested/)
+    assert.doesNotMatch(meta, /k-resource-page__status/)
+  }
 })
 
 test('status tones distinguish retryable and actionable condition failures', async () => {
@@ -922,6 +1163,23 @@ test('canonical source exposes the row-key contract', async () => {
   assert.doesNotMatch(source, /resource-table-updating/)
 })
 
+test('canonical resource reads expose an additive refresh-mode contract', async () => {
+  const [pageState, table, page] = await Promise.all([
+    readFile(canonicalPageState, 'utf8'),
+    readFile(canonicalResourceTable, 'utf8'),
+    readFile(canonicalResourcePage, 'utf8'),
+  ])
+
+  assert.match(pageState, /export type ResourceRefreshMode = 'foreground' \| 'background'/)
+  assert.match(pageState, /refreshMode\?: ResourceRefreshMode/)
+  assert.match(table, /refreshMode\?: ResourceRefreshMode/)
+  assert.match(table, /refreshMode: 'foreground'/)
+  assert.match(table, /props\.refreshMode === 'foreground'/)
+  assert.match(page, /refreshMode\?: ResourceRefreshMode/)
+  assert.match(page, /refreshMode: 'foreground'/)
+  assert.match(page, /class="k-resource-page__live"/)
+})
+
 test('canonical server pagination surface has no mode or filter aliases', async () => {
   const source = await readFile(canonicalResourceTable, 'utf8')
   assert.match(source, /paginationMode\?: TablePaginationMode/)
@@ -958,7 +1216,7 @@ test('wizard and split-create sources preserve focus across deferred initializat
   assert.match(split, /deferredCloseTimer = window\.setTimeout/)
   assert.match(split, /closeMenuAfterTab\(\)/)
   assert.match(tables, /tableImportBlocker = computed\(\(\) => !loaded\.value \? '' : importPrerequisiteMessage/)
-  assert.match(tables, /class="k-btn k-btn--ghost icon-text" type="button" @click="load"/)
+  assert.match(tables, /class="k-btn k-btn--ghost icon-text"[\s\S]{0,200}@click="load"/)
   assert.match(tables, /@row-click="\(row\) => openResource\(String\(row\.name\)\)"/)
   assert.doesNotMatch(tables, /selectedTable|schemaRows|schemaLoaded|schemaPending|schemaError|schemaCache|schemaCached/)
   assert.doesNotMatch(tables, /<h3 class="databricks-resource-panel-title">Schema<\/h3>/)
@@ -981,4 +1239,279 @@ test('route tabs use PortalKit items and icons', async () => {
   assert.match(app, /<Tabs :tabs="tabs" :active="route\.page" aria-label="Databricks resource sections" @select="navigate" \/>/)
   assert.match(app, /querySelector<HTMLElement>\(`\[data-k-tab-id="\$\{path\}"\]`\)/)
   assert.doesNotMatch(style, /faros-provider-databricks \.tabs(?:\s|\{|\.)/)
+})
+
+test('resource detail views use the shared shell without dropping resource behavior', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const style = await readFile(new URL('./style.css', import.meta.url), 'utf8')
+  const details = {
+    connection: await readFile(new URL('./views/ConnectionDetailView.vue', import.meta.url), 'utf8'),
+    warehouse: await readFile(new URL('./views/WarehouseDetailView.vue', import.meta.url), 'utf8'),
+    table: await readFile(new URL('./views/TableDetailView.vue', import.meta.url), 'utf8'),
+  }
+
+  assert.match(app, /<template v-if="!route\.connection && !route\.warehouse && !route\.table">[\s\S]*<Tabs :tabs=/)
+  assert.match(app, /ConnectionDetailView v-if="route\.page === 'connections' && route\.connection"/)
+  assert.match(app, /WarehouseDetailView v-else-if="route\.page === 'warehouses' && route\.warehouse"/)
+  assert.match(app, /TableDetailView v-else-if="route\.page === 'tables' && route\.table"/)
+
+  const headerKinds = { connection: 'Connection', warehouse: 'Warehouse', table: 'Table' }
+  for (const [kind, source] of Object.entries(details)) {
+    assert.match(source, new RegExp('<ResourcePage.*kind="' + headerKinds[kind] + '"', 's'))
+    assert.doesNotMatch(source, /<ResourcePage[^>]*eyebrow=/)
+    const meta = source.match(/<template #meta>(.*?)<\/template>/s)?.[1].trim() ?? ''
+    assert.equal(meta, '<span>Databricks</span>', `${kind} metadata is provider-only`)
+    assert.doesNotMatch(meta, /validated against|not validated yet|deletion requested|aria-hidden="true">·/)
+    assert.match(source, /<template v-if="[^"]+" #status>.*StatusBadge/s)
+    assert.match(source, /import ResourcePage from '\.\.\/portalkit\/ResourcePage\.vue'/, `${kind} imports ResourcePage`)
+    assert.match(source, /import ResourceSectionCard from '\.\.\/portalkit\/ResourceSectionCard\.vue'/, `${kind} imports ResourceSectionCard`)
+    assert.match(source, /import ResourceStatCards, \{ type ResourceStatCard \}/, `${kind} imports ResourceStatCards`)
+    assert.match(source, /<a class="k-btn k-btn--ghost k-back-action"[^>]*@click\.prevent="goBack"/, `${kind} keeps the canonical backlink outside ResourcePage`)
+    assert.doesNotMatch(source, /databricks-resource-back/, `${kind} does not use a provider-local backlink class`)
+    assert.match(source, /<ResourcePage[\s\S]*:loaded="readState"[\s\S]*:loading="loading"[\s\S]*:error="error"[\s\S]*:stale="loaded && !!error"[\s\S]*retryable[\s\S]*@retry="load"/, `${kind} keeps the read contract`)
+    assert.match(source, /<template #summary><ResourceStatCards :cards="statCards" density="compact"/, `${kind} has compact stat cards`)
+    assert.match(source, /<template #actions>[\s\S]*Refresh[\s\S]*<details ref="actionsMenu" class="databricks-resource-menu">[\s\S]*Delete /, `${kind} orders Refresh before overflow Delete`)
+    assert.match(source, /<div v-if="[^\n]+" class="databricks-resource-sections">/, `${kind} stacks resource sections`)
+    assert.match(source, /<ResourceSectionCard id="[^\"]+-conditions"[\s\S]*<ConditionsPanel/, `${kind} keeps Conditions in a section card`)
+    assert.match(source, /createLatestRefreshController/, `${kind} keeps serialized refresh`)
+    assert.match(source, /createAdaptiveRefreshTimer/, `${kind} uses serialized adaptive polling`)
+    assert.match(source, /FAST_REFRESH_MS/, `${kind} keeps the fast reconciliation cadence`)
+    assert.match(source, /STABLE_REFRESH_MS/, `${kind} keeps the quiet ready cadence`)
+    assert.match(source, /poll\.schedule\(\)/, `${kind} schedules the next poll after each settled read`)
+    assert.doesNotMatch(source, /setInterval\(load, 5000\)/, `${kind} avoids overlapping fixed intervals`)
+    assert.match(source, /Updating…/, `${kind} keeps the in-place updating announcement`)
+    assert.match(source, /:stale="[^\"]*!!error/, `${kind} keeps stale snapshot signaling`)
+    assert.match(source, /operations\.tombstone\(/, `${kind} keeps deletion tombstones`)
+    assert.match(source, /confirmDialog\(\{[\s\S]*danger: true/, `${kind} keeps destructive confirmation`)
+  }
+
+  const connection = details.connection
+  assert.doesNotMatch(connection, /id="connection-status"/)
+  assert.doesNotMatch(connection, /The connection is validated and ready for dependent resources\./)
+  assert.match(connection, /Waiting for the connection controller to validate the credential\./)
+  assert.match(connection, /Workspace host[\s\S]*conn\.authType[\s\S]*conn\.secretName[\s\S]*conn\.secretNamespace[\s\S]*conn\.secretKey[\s\S]*conn\.workspaceID/)
+  assert.match(connection, /conn\.observedGeneration[\s\S]*conn\.generation[\s\S]*controller has not caught up/)
+  assert.match(connection, /id="connection-edit"[\s\S]*connection-edit-host[\s\S]*connection-edit-token[\s\S]*type="password"/)
+  assert.match(connection, /token: editToken\.value \|\| undefined/)
+  assert.match(connection, /Leave the token blank to keep the current Secret./)
+
+  const warehouse = details.warehouse
+  assert.doesNotMatch(warehouse, /id="warehouse-status"/)
+  assert.doesNotMatch(warehouse, /The warehouse is validated and ready for table metadata refreshes\./)
+  assert.match(warehouse, /id="warehouse-overview"[\s\S]*warehouse\.connectionRef[\s\S]*warehouse\.warehouseID[\s\S]*warehouse\.state/)
+  assert.match(warehouse, /warehouse\.observedGeneration[\s\S]*warehouse\.generation[\s\S]*controller has not caught up/)
+  assert.match(warehouse, /id="warehouse-edit"[\s\S]*warehouse-edit-id[\s\S]*Use the 16-character ID/)
+  assert.match(warehouse, /Tables that reference this warehouse will stop refreshing schema metadata\./)
+
+  const table = details.table
+  assert.doesNotMatch(table, /id="table-status"/)
+  assert.doesNotMatch(table, /The table schema is validated and ready for consumers\./)
+  assert.doesNotMatch(table, /id: 'full-name'/)
+  assert.doesNotMatch(table, /label: 'Databricks table'/)
+  assert.match(table, /id="table-overview"[\s\S]*table\.connectionRef[\s\S]*table\.warehouseRef[\s\S]*table\.catalog[\s\S]*table\.schema[\s\S]*table\.table[\s\S]*table\.fullName/)
+  assert.match(table, /<dt>Full name<\/dt><dd><code>\{\{ table\.fullName \}\}<\/code><\/dd>/)
+  assert.match(table, /table\.columns\.length[\s\S]*table\.refreshedAt[\s\S]*table\.creationTimestamp[\s\S]*table\.observedGeneration[\s\S]*table\.generation/)
+  assert.match(table, /id="table-schema"[\s\S]*schemaTruncated[\s\S]*schemaNotice[\s\S]*schemaRows[\s\S]*Search columns…/)
+  assert.match(table, /status === 'Pending'.*schemaCached/)
+  assert.match(table, /status === 'Status unavailable'.*showing cached columns/)
+  assert.match(table, /App Studio guidance and Databricks MCP tools will no longer be able to inspect this tableRef\./)
+
+  assert.match(style, /\.databricks-resource-actions\s*\{[\s\S]*gap: 8px/)
+  assert.doesNotMatch(style, /databricks-resource-back/)
+  assert.match(style, /\.databricks-resource-menu-popover\s*\{[\s\S]*position: absolute/)
+  assert.match(style, /\.databricks-resource-sections\s*\{[\s\S]*flex-direction: column[\s\S]*gap: 14px/)
+})
+
+test('Databricks resource lists use the canonical table property hierarchy', async () => {
+  const [connections, warehouses, tables, farosUI, localStyle] = await Promise.all([
+    readFile(new URL('./views/ConnectionsView.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./views/WarehousesView.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./views/TablesView.vue', import.meta.url), 'utf8'),
+    readFile(canonicalFarosUIStyle, 'utf8'),
+    readFile(new URL('./style.css', import.meta.url), 'utf8'),
+  ])
+
+  for (const source of [connections, warehouses, tables]) {
+    assert.match(source, /#name="\{ value \}"[\s\S]*k-table-resource-link/)
+  }
+  assert.doesNotMatch(tables, /k-table-resource-link mono strong/)
+  assert.doesNotMatch(connections, /#host="\{ value \}"><code>/)
+  assert.match(connections, /#host="\{ value \}"[\s\S]*Open Databricks workspace[\s\S]*<ExternalLink/)
+  assert.match(connections, /#authType="\{ value \}"><span class="k-badge k-badge--muted">/)
+  for (const source of [connections, warehouses, tables]) {
+    assert.match(source, /<StatusBadge :status="String\(row\.status\)" :title="String\(row\.message \|\| ''\)" :aria-label="row\.message/)
+    assert.doesNotMatch(source, /<span v-if="row\.message" class="row-message">/)
+  }
+  assert.match(warehouses, /#warehouseID="\{ value \}">\{\{ value \}\}<\/template>/)
+  assert.doesNotMatch(warehouses, /#warehouseID="\{ value \}"[\s\S]{0,80}class="mono"/)
+  assert.match(warehouses, /function warehouseStateTone[\s\S]*'RUNNING': return 'success'[\s\S]*'FAILED': return 'danger'/)
+  assert.match(warehouses, /#state="\{ row \}"><StatusBadge v-if="row\.state"[\s\S]*warehouseStateTone/)
+  assert.match(tables, /#fullName="\{ value \}">\{\{ value \}\}<\/template>/)
+  assert.doesNotMatch(tables, /#fullName="\{ value \}"[\s\S]{0,80}class="mono"/)
+  assert.match(tables, /#warehouseRef="\{ value \}">\{\{ value \}\}<\/template>/)
+  assert.match(tables, /#columnCount="\{ value \}"><span class="muted">/)
+  assert.match(farosUI, /\.k-table-resource-link\s*\{[\s\S]*color: var\(--color-accent[\s\S]*font-weight: 400[\s\S]*padding: 0;/)
+  assert.match(localStyle, /\.row-actions\s*\{\s*justify-content: flex-end;/)
+})
+
+test('resource detail deletes expose pending state, truthful status, and real browser backlinks', async () => {
+  const details = {
+    connection: await readFile(new URL('./views/ConnectionDetailView.vue', import.meta.url), 'utf8'),
+    warehouse: await readFile(new URL('./views/WarehouseDetailView.vue', import.meta.url), 'utf8'),
+    table: await readFile(new URL('./views/TableDetailView.vue', import.meta.url), 'utf8'),
+  }
+  const collections = {
+    connection: 'connections',
+    warehouse: 'warehouses',
+    table: 'tables',
+  }
+
+  for (const [kind, source] of Object.entries(details)) {
+    const collection = collections[kind]
+    assert.match(source, /const deleting = ref\(false\)/, `${kind} owns an immediate reactive delete state`)
+    assert.match(source, /if \(!current \|\| deleting\.value\) return/, `${kind} rejects duplicate delete starts`)
+    assert.match(source, /operations\.acquire\(lock, 'deleting'\)/, `${kind} keeps the serialized delete lock`)
+    assert.match(source, /deleting\.value = true/, `${kind} marks delete pending before the network call`)
+    assert.match(source, /operations\.tombstone\(lock, current\.uid\)/, `${kind} preserves the acknowledged-delete tombstone`)
+    assert.match(source, /deleting\.value = false/, `${kind} restores actions after delete completion or failure`)
+    assert.match(source, /:status="deleting \? 'Deleting' : [^"]+"/, `${kind} renders the pending status`)
+    assert.match(source, /:tone="deleting \? 'warning' : null"/, `${kind} gives pending status a warning tone`)
+    assert.match(source, /<p v-if="deleting"[^>]*role="status"[^>]*aria-live="polite">[\s\S]*Deleting this/, `${kind} announces deletion outside the closed menu`)
+    assert.match(source, new RegExp(`href="/ui/providers/databricks/${collection}"[^>]*:aria-disabled="deleting`), `${kind} has the real browser fallback backlink`)
+    assert.match(source, /:disabled="loading \|\| deleting \|\|/, `${kind} disables refresh while deleting`)
+    assert.match(source, /:disabled="![^"]+ \|\| loading \|\| deleting \|\| operationLocked/, `${kind} disables delete while deleting`)
+    assert.match(source, /if \(deleting\.value \|\| \(/, `${kind} guards back navigation while deleting`)
+  }
+})
+
+test('mounted resource detail deletes stay truthful through pending rejection and recovery', async () => {
+  const loadedModules = await Promise.all([
+      loadMountedSFC('/src/views/ConnectionDetailView.vue'),
+      loadMountedSFC('/src/views/WarehouseDetailView.vue'),
+      loadMountedSFC('/src/views/TableDetailView.vue'),
+      loadMountedSFC('/src/portalkit/ConditionsPanel.vue'),
+      loadMountedSFC('/src/portalkit/ResourcePage.vue'),
+      loadMountedSFC('/src/portalkit/ResourceSectionCard.vue'),
+      loadMountedSFC('/src/portalkit/ResourceStatCards.vue'),
+      loadMountedSFC('/src/portalkit/StatusBadge.vue'),
+      loadMountedSFC('/src/portalkit/ResourceTable.vue'),
+      vite.ssrLoadModule('/src/api.ts'),
+      vite.ssrLoadModule('/src/portalkit/confirm.ts'),
+      vite.ssrLoadModule('/src/refresh.ts'),
+  ])
+  const [ConnectionDetailView, WarehouseDetailView, TableDetailView, ConditionsPanel, ResourcePage, ResourceSectionCard, ResourceStatCards, StatusBadge, ResourceTable, apiModule, confirmModule, refreshModule] = loadedModules
+  const components = { ConditionsPanel, ResourcePage, ResourceSectionCard, ResourceStatCards, StatusBadge, ResourceTable }
+
+  const cases = [
+    {
+      kind: 'connection',
+      Component: ConnectionDetailView,
+      getMethod: 'getConnection',
+      deleteMethod: 'deleteConnection',
+      resource: {
+        name: 'orders', uid: 'connection-uid', host: 'https://dbc.example.com', authType: 'pat',
+        secretName: 'orders-token', secretNamespace: 'default', secretKey: 'token', status: 'Ready', conditions: [],
+      },
+      deleteError: { reason: 'HTTPError', message: 'connection delete failed' },
+    },
+    {
+      kind: 'warehouse',
+      Component: WarehouseDetailView,
+      getMethod: 'getWarehouse',
+      deleteMethod: 'deleteWarehouse',
+      resource: {
+        name: 'orders-sql', uid: 'warehouse-uid', connectionRef: 'orders', warehouseID: 'warehouse-123', status: 'Ready', conditions: [],
+      },
+      deleteError: { reason: 'HTTPError', message: 'warehouse delete failed' },
+    },
+    {
+      kind: 'table',
+      Component: TableDetailView,
+      getMethod: 'getTable',
+      deleteMethod: 'deleteTable',
+      resource: {
+        name: 'orders', uid: 'table-uid', connectionRef: 'orders', warehouseRef: 'orders-sql',
+        catalog: 'main', schema: 'sales', table: 'orders', fullName: 'main.sales.orders',
+        status: 'Ready', columns: [], conditions: [],
+      },
+      deleteError: { reason: 'HTTPError', message: 'table delete failed' },
+    },
+  ]
+
+  for (const testCase of cases) {
+    const originalGet = apiModule.api[testCase.getMethod]
+    const originalDelete = apiModule.api[testCase.deleteMethod]
+    const context = `mounted-detail-delete-${testCase.kind}`
+    let deleteCalls = 0
+    let rejectDelete
+    const deletePending = new Promise((_, reject) => { rejectDelete = reject })
+    apiModule.api[testCase.getMethod] = async () => testCase.resource
+    apiModule.api[testCase.deleteMethod] = async () => {
+      deleteCalls += 1
+      return deletePending
+    }
+    refreshModule.setOperationContext(context)
+    const mounted = mountDetailView(testCase.Component, { name: testCase.resource.name }, components)
+
+    try {
+      await flushVue()
+      assert.equal(typeof mounted.instance.setupState.deleteFromMenu, 'function', `${testCase.kind} exposes the overflow delete action`)
+      if (testCase.kind === 'connection') {
+        assert.equal(mounted.find(node => node.props?.id === 'connection-status'), null, 'connection omits redundant validation card when Ready')
+      }
+      if (testCase.kind === 'warehouse') {
+        assert.equal(mounted.find(node => node.props?.id === 'warehouse-status'), null, 'warehouse omits redundant validation card when Ready')
+      }
+      if (testCase.kind === 'table') {
+        assert.equal(mounted.find(node => node.props?.id === 'table-status'), null, 'table omits redundant validation card')
+      }
+      const menu = mounted.find(node => node.type === 'details' && className(node).includes('databricks-resource-menu'))
+      assert.ok(menu, `${testCase.kind} renders an overflow menu`)
+      menu.props.open = true
+
+      mounted.instance.setupState.deleteFromMenu()
+      assert.equal('open' in menu.props, false, `${testCase.kind} closes the overflow menu before deletion work`)
+      confirmModule.resolveConfirm(true)
+      await flushVue()
+
+      assert.equal(deleteCalls, 1, `${testCase.kind} starts exactly one delete request`)
+      assert.equal(mounted.instance.setupState.deleting, true, `${testCase.kind} keeps local deleting state true while the request is pending`)
+      const status = mounted.find(node => node.type === 'span' && className(node).includes('k-badge'))
+      assert.ok(status, `${testCase.kind} renders a status badge while deletion is pending`)
+      assert.match(hostText(status), /Deleting/)
+      assert.match(className(status), /k-badge--warning/)
+      assert.equal(mounted.find(node => node.props?.id === `${testCase.kind}-status`), null, `${testCase.kind} keeps validation detail in the summary instead of a duplicate card`)
+      assert.ok(mounted.find(node => node.props?.role === 'status' && node.props?.['aria-live'] === 'polite' && hostText(node).includes(`Deleting this ${testCase.kind}`)), `${testCase.kind} exposes visible polite deletion progress outside the menu`)
+
+      const back = mounted.find(node => node.type === 'a' && className(node).includes('k-back-action'))
+      assert.equal(mounted.find(node => node.type === 'a' && className(node).includes('databricks-resource-back')), null, `${testCase.kind} does not render the provider-local backlink class`)
+      const refresh = mounted.find(node => node.type === 'button' && className(node).includes('icon-text') && hostText(node).includes('Refresh'))
+      const deleteButton = mounted.find(node => node.type === 'button' && className(node).includes('databricks-resource-menu-item'))
+      assert.equal(back?.props?.['aria-disabled'], true, `${testCase.kind} guards back navigation while deleting`)
+      assert.equal(refresh?.props?.disabled, true, `${testCase.kind} guards refresh while deleting`)
+      assert.equal(deleteButton?.props?.disabled, true, `${testCase.kind} guards duplicate delete while deleting`)
+
+      rejectDelete(testCase.deleteError)
+      await flushVue()
+
+      assert.equal(mounted.instance.setupState.deleting, false, `${testCase.kind} clears local deleting state after rejection`)
+      const recoveredStatus = mounted.find(node => node.type === 'span' && className(node).includes('k-badge'))
+      assert.ok(recoveredStatus, `${testCase.kind} retains a status badge after delete rejection`)
+      assert.match(hostText(recoveredStatus), /Ready/)
+      assert.doesNotMatch(hostText(recoveredStatus), /Deleting/)
+      assert.equal(mounted.find(node => node.props?.role === 'status' && node.props?.['aria-live'] === 'polite' && hostText(node).includes(`Deleting this ${testCase.kind}`)), null, `${testCase.kind} clears pending progress after rejection`)
+      const mutationError = mounted.find(node => node.props?.role === 'alert' && className(node).includes('mutation-error'))
+      assert.ok(mutationError, `${testCase.kind} renders the delete error`)
+      assert.ok(hostText(mutationError).includes(testCase.deleteError.message), `${testCase.kind} includes the delete error message`)
+      assert.notEqual(back?.props?.['aria-disabled'], true, `${testCase.kind} restores back navigation after rejection`)
+      assert.equal(refresh?.props?.disabled, false, `${testCase.kind} restores refresh after rejection`)
+      assert.equal(deleteButton?.props?.disabled, false, `${testCase.kind} restores delete after rejection`)
+    } finally {
+      mounted.unmount()
+      confirmModule.resolveConfirm(false)
+      apiModule.api[testCase.getMethod] = originalGet
+      apiModule.api[testCase.deleteMethod] = originalDelete
+      refreshModule.setOperationContext('default')
+    }
+  }
 })

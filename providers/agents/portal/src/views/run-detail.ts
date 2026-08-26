@@ -8,7 +8,7 @@ import { property, state } from 'lit/decorators.js'
 import { repeat } from 'lit/directives/repeat.js'
 import { StoreElement } from '../ui/base'
 import { icon } from '../ui/icon'
-import { errorState, loadingState } from '../ui/states'
+import { errorState, loadingState, staleState } from '../ui/states'
 import { toast } from '../ui/toast'
 import { attachCodeCopy, renderMarkdown } from '../ui/markdown'
 import { fmtDuration, fmtTime, fmtTokens, fmtUSD, prettyJSON, type RunDetail as Run, type RunStep, type RunSummary } from '../types'
@@ -32,6 +32,7 @@ export class RunDetailView extends StoreElement {
   // in-process.
   private pollHandle = 0
   private tickHandle = 0
+  private requestGeneration = 0
   @state() private now = Date.now()
 
   connectedCallback(): void {
@@ -41,6 +42,7 @@ export class RunDetailView extends StoreElement {
 
   disconnectedCallback(): void {
     this.store?.removeEventListener('server', this.onServerEvent as EventListener)
+    this.requestGeneration += 1
     this.stopLive()
     super.disconnectedCallback()
   }
@@ -54,7 +56,7 @@ export class RunDetailView extends StoreElement {
       return
     }
     if (!this.pollHandle) {
-      this.pollHandle = window.setInterval(() => void this.load(), 3000)
+      this.pollHandle = window.setInterval(() => void this.load('background'), 3000)
     }
     if (!this.tickHandle) {
       // Separate, faster tick purely for the elapsed-time readout: a clock that
@@ -88,22 +90,27 @@ export class RunDetailView extends StoreElement {
       ev.data.id === this.runID ||
       ev.data.parentRunID === this.runID ||
       this.run?.children?.some((c) => c.id === ev.data.id)
-    if (ev.type === 'run' && mine) void this.load()
-    if (ev.type === 'inbox' && ev.data.runID === this.runID) void this.load()
+    if (ev.type === 'run' && mine) void this.load('background')
+    if (ev.type === 'inbox' && ev.data.runID === this.runID) void this.load('background')
   }
 
   protected updated(): void {
     attachCodeCopy(this)
   }
 
-  private async load(): Promise<void> {
+  private async load(_mode: 'foreground' | 'background' = 'foreground'): Promise<void> {
+    const requestedRunID = this.runID
+    const requestGeneration = ++this.requestGeneration
     try {
-      this.run = await this.api.getRun(this.runID)
+      const run = await this.api.getRun(requestedRunID)
+      if (requestGeneration !== this.requestGeneration || requestedRunID !== this.runID) return
+      this.run = run
       this.error = null
     } catch (e) {
+      if (requestGeneration !== this.requestGeneration || requestedRunID !== this.runID) return
       this.error = (e as Error).message
     }
-    this.syncLive(this.run)
+    if (requestGeneration === this.requestGeneration) this.syncLive(this.run)
   }
 
   private toggle(id: string): void {
@@ -138,7 +145,7 @@ export class RunDetailView extends StoreElement {
     const back = html`<button class="k-btn k-btn--ghost agents-back" @click=${() => this.navigate({ kind: 'menu', menu: 'activity' })}>
       ${icon('arrow-left')} Activity
     </button>`
-    if (this.error) {
+    if (this.error && !this.run) {
       return html`<div class="agents-detail">
         <div class="agents-detail-head"><div class="agents-detail-title">${back}</div></div>
         ${errorState(this.error, () => void this.load())}
@@ -159,6 +166,7 @@ export class RunDetailView extends StoreElement {
           <button class="k-btn k-btn--ghost secondary" @click=${() => void this.load()}>${icon('refresh')} Refresh</button>
         </div>
       </div>
+      ${this.error ? staleState(this.error, () => void this.load('foreground')) : nothing}
       ${this.header(r)} ${this.pending(r)} ${this.output(r)} ${this.timeline(r)} ${this.childRuns(r)}
     </div>`
   }

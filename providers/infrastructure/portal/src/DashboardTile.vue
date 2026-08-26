@@ -20,7 +20,7 @@ import { ArrowRight } from 'lucide-vue-next'
 import { AlertTriangle, Check, ChevronRight, Clock, Package } from 'lucide-vue-next'
 import { api, isContextChangedError, setTenant, setToken } from './api'
 import { tileClass } from './portalkit/dashboardtile'
-import { createLatestRefreshController, createResourceTombstones } from './refresh'
+import { createLatestRefreshController, createResourceTombstones, type ResourceRefreshMode } from './refresh'
 import type { Instance } from './types'
 
 interface FarosContext {
@@ -117,8 +117,8 @@ const refresh = createLatestRefreshController(async requestID => {
   }
 })
 
-function load(): Promise<void> {
-  return refresh.request()
+function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
+  return refresh.request(mode)
 }
 
 function dispatchNavigate(path: string) {
@@ -137,7 +137,7 @@ function openInstance(instance: Instance) {
 onMounted(() => {
   // 30s poll matches the catalog/instance list cadence in the main app —
   // anything tighter wastes the hub roundtrips for a tile users glance at.
-  pollHandle = window.setInterval(() => { void load() }, 30000)
+  pollHandle = window.setInterval(() => { void load('background') }, 30000)
 })
 onUnmounted(() => {
   if (pollHandle !== null) window.clearInterval(pollHandle)
@@ -179,14 +179,14 @@ function dotFor(phase: string) {
     </div>
     <div v-else-if="!loaded && error" :class="tileClass.error" role="alert" aria-live="assertive">
       Failed to load: {{ error }}
-      <button type="button" class="ml-2 font-medium underline" @click="load">Retry</button>
+      <button type="button" class="ml-2 font-medium underline" @click="load('foreground')">Retry</button>
     </div>
 
     <template v-else>
       <span v-if="loading" class="sr-only" role="status" aria-live="polite">Updating infrastructure instances…</span>
       <div v-if="error" :class="tileClass.error" role="alert" aria-live="assertive">
         Showing the last successful result. {{ error }}
-        <button type="button" class="ml-2 font-medium underline" @click="load">Retry</button>
+        <button type="button" class="ml-2 font-medium underline" @click="load('foreground')">Retry</button>
       </div>
       <!-- Slim horizontal status row (matches the clusters/edges tiles): a
            single inline line of icon + count + label chips rather than four

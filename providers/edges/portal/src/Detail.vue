@@ -1,9 +1,21 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { ArrowLeft, RefreshCw, Trash2, CircleDot, Server, Boxes, Copy, Check, TerminalSquare, Home, Plug, Plus, ArrowUpCircle, ChevronDown, ChevronUp } from 'lucide-vue-next'
+import { ArrowLeft, ArrowUpCircle, Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Ellipsis, Globe2, Home, Plug, Plus, RefreshCw, Server, TerminalSquare, Trash2 } from 'lucide-vue-next'
 import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, createKubeEdgeService, deleteEdgeService } from './api'
 import { confirmDialog } from './portalkit/confirm'
 import ConditionsPanel from './portalkit/ConditionsPanel.vue'
+import ResourcePage from './portalkit/ResourcePage.vue'
+import ResourceSectionCard from './portalkit/ResourceSectionCard.vue'
+import ResourceStatCards, { type ResourceStatCard } from './portalkit/ResourceStatCards.vue'
+import StatusBadge from './portalkit/StatusBadge.vue'
+import {
+  FAST_REFRESH_MS,
+  STABLE_REFRESH_MS,
+  createAdaptiveRefreshTimer,
+  createLatestRefreshController,
+  type LatestRefreshController,
+  type ResourceRefreshMode,
+} from './refresh'
 import type { EdgeDetail, EdgeService, EdgeType, ErrorResponse } from './types'
 
 const props = defineProps<{ name: string; type: EdgeType; cluster: string | null; token: string | null }>()
@@ -26,28 +38,72 @@ function openTerminal() {
 const edge = ref<EdgeDetail | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
+const readComplete = ref(false)
+const deleting = ref(false)
+const refreshMode = ref<ResourceRefreshMode>('foreground')
+const detailRefreshing = computed(() => loading.value && refreshMode.value === 'foreground')
+const mutationError = ref<string | null>(null)
 const copied = ref<string | null>(null)
+const actionsMenu = ref<HTMLDetailsElement | null>(null)
+const servicesExpanded = ref(false)
+const technicalExpanded = ref(false)
 
-async function load() {
-  loading.value = true
-  error.value = null
+let detailRefresh!: LatestRefreshController
+
+async function loadEdgeSnapshot(requestID: number) {
+  const hadSnapshot = edge.value !== null
   try {
-    edge.value = await getEdge(props.name, props.type)
+    const nextEdge = await getEdge(props.name, props.type)
+    if (!detailRefresh.isCurrent(requestID)) return
+    edge.value = nextEdge
+    readComplete.value = true
+    error.value = null
   } catch (e) {
-    error.value = (e as ErrorResponse)?.message ?? 'Failed to load edge'
-  } finally {
-    loading.value = false
+    if (!detailRefresh.isCurrent(requestID)) return
+    const response = e as ErrorResponse
+    if (response?.reason === 'NotFound') {
+      // A confirmed not-found must not leave an old snapshot looking current.
+      edge.value = null
+      readComplete.value = false
+      error.value = 'This edge is no longer available.'
+    } else {
+      // Keep the last successful snapshot visible when a refresh fails.
+      readComplete.value = hadSnapshot
+      error.value = response?.message ?? 'Failed to load edge'
+    }
   }
 }
 
+function load(mode: ResourceRefreshMode | Event = 'foreground') {
+  const requestedMode = typeof mode === 'string' ? mode : 'foreground'
+  if (requestedMode === 'foreground') {
+    refreshMode.value = 'foreground'
+    loading.value = true
+  }
+  return detailRefresh.request(requestedMode)
+}
+
+// The header Refresh represents the complete Edge detail snapshot: refresh
+// the authoritative edge and its provider-owned service catalog together.
+// Retry uses the same complete snapshot so the summary and service section do
+// not disagree after an explicit recovery.
+async function refreshDetail() {
+  if (deleting.value || detailRefreshing.value || saving.value || connecting.value) return
+  await load('foreground')
+}
+
 async function onDelete() {
-  if (!edge.value) return
+  if (!edge.value || deleting.value) return
+  actionsMenu.value?.removeAttribute('open')
   if (!(await confirmDialog({ title: `Delete ${props.type === 'server' ? 'server' : 'cluster'} "${props.name}"?`, danger: true, confirmLabel: 'Delete' }))) return
+  deleting.value = true
+  mutationError.value = null
   try {
     await deleteEdge(edge.value)
     emit('deleted')
   } catch (e) {
-    error.value = (e as ErrorResponse)?.message ?? 'Delete failed'
+    mutationError.value = (e as ErrorResponse)?.message ?? 'Delete failed'
+    deleting.value = false
   }
 }
 
@@ -57,6 +113,97 @@ async function copy(text: string, field: string) {
     copied.value = field
     setTimeout(() => (copied.value = null), 2000)
   } catch { /* clipboard denied */ }
+}
+
+const edgeTypeLabel = computed(() => props.type === 'server' ? 'Linux server' : 'Kubernetes cluster')
+const edgeStatus = computed(() => {
+  if (deleting.value) return 'Deleting'
+  if (!edge.value) return loading.value ? 'Loading' : 'Unavailable'
+  return edge.value.connected ? 'Connected' : (edge.value.phase || 'Disconnected')
+})
+
+function statusTone(status: string): 'success' | 'warning' | 'danger' | 'muted' {
+  const normalized = status.toLowerCase()
+  if (normalized === 'connected' || normalized === 'ready' || normalized === 'active') return 'success'
+  if (normalized === 'deleting' || normalized === 'pending' || normalized === 'provisioning' || normalized === 'loading') return 'warning'
+  if (normalized === 'disconnected' || normalized === 'unavailable' || normalized === 'failed' || normalized === 'error') return 'danger'
+  return 'muted'
+}
+
+const edgeStatusTone = computed(() => statusTone(edgeStatus.value))
+
+const metadataRows = computed(() => {
+  const value = edge.value
+  return [
+    { label: 'Resource name', value: value?.name || props.name, mono: true },
+    { label: 'Kind', value: value?.kind || (props.type === 'server' ? 'LinuxServer' : 'KubernetesCluster'), mono: false },
+    { label: 'API version', value: value?.apiVersion || 'edges.faros.sh/v1alpha1', mono: true },
+    { label: 'Workspace', value: value?.workspacePath || '—', mono: true },
+    { label: 'Namespace', value: value?.namespace || '—', mono: true },
+    { label: 'UID', value: value?.uid || '—', mono: true },
+    { label: 'Resource version', value: value?.resourceVersion || '—', mono: true },
+    { label: 'Generation', value: value?.generation ?? '—', mono: true },
+    { label: 'Created', value: value?.creationTimestamp ? formatTimestamp(value.creationTimestamp) : '—', mono: false },
+  ]
+})
+
+const labelRows = computed(() => Object.entries(edge.value?.labels ?? {}).sort(([a], [b]) => a.localeCompare(b)))
+
+const configurationRows = computed(() => {
+  const value = edge.value
+  if (!value) return []
+  if (props.type === 'server') {
+    return [
+      { label: 'SSH port', value: value.spec.sshPort ?? 22, mono: true },
+      { label: 'SSH user mapping', value: value.spec.sshUserMapping || 'Inherited', mono: false },
+      { label: 'SSH credentials', value: value.spec.sshCredentialsRef?.name || 'Agent-managed', mono: true },
+    ]
+  }
+  return [
+    { label: 'Scheduling labels', value: Object.keys(value.spec.labels ?? {}).length ? `${Object.keys(value.spec.labels ?? {}).length} configured` : 'None configured', mono: false },
+    { label: 'Cluster access', value: value.connected ? 'Tunnel available' : 'Waiting for agent', mono: false },
+  ]
+})
+
+function formatTimestamp(value: string): string {
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString()
+}
+
+function yamlScalar(value: unknown): string {
+  if (value === null) return 'null'
+  if (typeof value === 'string') return JSON.stringify(value)
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return JSON.stringify(value)
+}
+
+function toYaml(value: unknown, indent = 0): string {
+  const padding = ' '.repeat(indent)
+  if (Array.isArray(value)) {
+    return value.map(item => {
+      if (item && typeof item === 'object') return `${padding}-\n${toYaml(item, indent + 2)}`
+      return `${padding}- ${yamlScalar(item)}`
+    }).join('\n')
+  }
+  if (value && typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .filter(([, child]) => child !== undefined)
+      .map(([key, child]) => {
+        if (child && typeof child === 'object' && Object.keys(child as object).length > 0) {
+          return `${padding}${key}:\n${toYaml(child, indent + 2)}`
+        }
+        return `${padding}${key}: ${yamlScalar(child)}`
+      }).join('\n')
+  }
+  return `${padding}${yamlScalar(value)}`
+}
+
+const edgeYaml = computed(() => edge.value ? toYaml(edge.value.rawObject) : '')
+
+function serviceTone(service: EdgeService): 'success' | 'warning' | 'danger' | 'muted' {
+  if (service.phase === 'Ready') return 'success'
+  if (service.phase === 'Failed' || service.phase === 'Error') return 'danger'
+  return 'warning'
 }
 
 // ─── Upgrade ─────────────────────────────────────────────────────────
@@ -90,18 +237,78 @@ sudo systemctl restart faros-agent-${props.name}`,
 // Server edges: discovered by the agent. Kube edges: declared here (a cluster
 // has far more services than a host, so we don't auto-scan).
 const services = ref<EdgeService[]>([])
+const servicesLoaded = ref(false)
 const svcError = ref<string | null>(null)
 const connectFor = ref<string | null>(null) // Service name being connected
 const tokenInput = ref('')
 const connecting = ref(false)
 
-async function loadServices() {
+const servicesCardValue = computed(() => servicesLoaded.value ? String(services.value.length) : '—')
+const servicesCardDetail = computed(() => {
+  if (svcError.value) return servicesLoaded.value ? 'Stale' : 'Unavailable'
+  if (!servicesLoaded.value) return 'Loading'
+  return services.value.length === 1 ? 'service' : 'services'
+})
+const edgeStatCards = computed<ResourceStatCard[]>(() => [
+  {
+    id: 'connection',
+    label: 'Connection',
+    value: edgeStatus.value,
+    icon: Cable,
+    tone: edgeStatusTone.value === 'muted' ? 'default' : edgeStatusTone.value,
+  },
+  {
+    id: 'provider',
+    label: 'Provider',
+    value: 'Edges',
+    icon: Cloud,
+  },
+  {
+    id: 'type',
+    label: 'Type',
+    value: edgeTypeLabel.value,
+    icon: props.type === 'server' ? Server : Boxes,
+  },
+  {
+    id: 'hostname',
+    label: 'Hostname',
+    value: edge.value?.hostname || '—',
+    icon: Globe2,
+    mono: true,
+  },
+  {
+    id: 'agent',
+    label: 'Agent version',
+    value: edge.value?.agentVersion || '—',
+    detail: upgradeAvailable.value ? 'Upgrade available' : undefined,
+    icon: Cpu,
+    tone: upgradeAvailable.value ? 'warning' : 'default',
+    mono: true,
+  },
+  {
+    id: 'services',
+    label: 'Services',
+    value: servicesCardValue.value,
+    detail: servicesCardDetail.value,
+    icon: Plug,
+  },
+])
+
+async function loadServicesSnapshot(requestID: number) {
   try {
-    services.value = await listEdgeServices(props.name)
+    const nextServices = await listEdgeServices(props.name)
+    if (!detailRefresh.isCurrent(requestID)) return
+    services.value = nextServices
+    servicesLoaded.value = true
     svcError.value = null
   } catch (e) {
+    if (!detailRefresh.isCurrent(requestID)) return
     svcError.value = (e as ErrorResponse)?.message ?? 'Failed to load services'
   }
+}
+
+function loadServices() {
+  return load('foreground')
 }
 
 // Declare-service form (kube edges only).
@@ -110,6 +317,7 @@ const saving = ref(false)
 const draft = ref({ name: '', serviceType: 'home-assistant', targetNamespace: '', targetName: '', port: 8123 })
 
 function startAdd() {
+  servicesExpanded.value = true
   adding.value = true
   draft.value = { name: '', serviceType: 'home-assistant', targetNamespace: '', targetName: '', port: 8123 }
 }
@@ -175,285 +383,440 @@ async function submitConnect() {
   }
 }
 
-function svcOk(es: EdgeService): boolean {
-  return es.phase === 'Ready'
-}
+const poller = createAdaptiveRefreshTimer(() => {
+  void load('background')
+}, () => {
+  if (!readComplete.value || error.value || svcError.value || !edge.value) return FAST_REFRESH_MS
+  const phase = (edge.value.phase || '').toLowerCase()
+  const unsettledEdge = !edge.value.connected || ['pending', 'provisioning', 'deleting'].includes(phase)
+  const unsettledService = services.value.some(service => (service.phase || 'Pending').toLowerCase() !== 'ready')
+  return unsettledEdge || unsettledService ? FAST_REFRESH_MS : STABLE_REFRESH_MS
+})
 
-watch(() => [props.name, props.type], () => { load(); loadServices() }, { immediate: true })
-const timer = setInterval(() => { load(); loadServices() }, 10000)
-onUnmounted(() => clearInterval(timer))
+detailRefresh = createLatestRefreshController(async (requestID, mode) => {
+  if (deleting.value) return
+  refreshMode.value = mode
+  loading.value = true
+  if (mode === 'foreground') {
+    error.value = null
+    svcError.value = null
+  }
+  try {
+    await Promise.all([loadEdgeSnapshot(requestID), loadServicesSnapshot(requestID)])
+  } finally {
+    if (detailRefresh.isCurrent(requestID)) loading.value = false
+    poller.schedule()
+  }
+})
 
-function rel(ts?: string): string {
-  if (!ts) return '—'
-  const d = new Date(ts).getTime()
-  if (Number.isNaN(d)) return '—'
-  const secs = Math.max(0, Math.floor((Date.now() - d) / 1000))
-  if (secs < 60) return `${secs}s ago`
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
-  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`
-  return `${Math.floor(secs / 86400)}d ago`
-}
+watch(() => [props.name, props.type], () => {
+  detailRefresh.invalidate()
+  edge.value = null
+  services.value = []
+  readComplete.value = false
+  servicesLoaded.value = false
+  error.value = null
+  svcError.value = null
+  void load('foreground')
+}, { immediate: true })
+onUnmounted(() => {
+  detailRefresh.stop()
+  poller.stop()
+})
+
 </script>
 
 <template>
-  <div class="edges-app">
-    <header class="edges-header">
-      <div class="row">
-        <button class="k-btn k-btn--ghost" type="button" aria-label="Back to edges" title="Back to edges" @click="emit('back')"><ArrowLeft :size="16" aria-hidden="true" /> Back</button>
-        <div>
-          <h1 class="row">
-            <component :is="type === 'server' ? Server : Boxes" :size="16" />
-            {{ name }}
-          </h1>
-          <p>{{ type === 'server' ? 'Linux/SSH server' : 'Kubernetes cluster' }} edge</p>
-        </div>
-      </div>
-      <div class="header-actions">
-        <button class="k-btn k-btn--ghost" :disabled="loading" @click="load"><RefreshCw :size="14" :class="{ spin: loading }" /> Refresh</button>
-        <button class="k-btn k-btn--danger" @click="onDelete"><Trash2 :size="14" /> Delete</button>
-      </div>
-    </header>
+  <div class="edge-detail">
+    <a class="k-btn k-btn--ghost edge-detail__back" href="/ui/providers/edges" @click.prevent="emit('back')">
+      <ArrowLeft :size="14" aria-hidden="true" /> Edges
+    </a>
 
-    <div v-if="error" class="banner error">{{ error }}</div>
-    <div v-else-if="loading && !edge" class="muted pad">Loading…</div>
-
-    <template v-else-if="edge">
-      <!-- Overview -->
-      <div class="detail-grid">
-        <div class="field k-card">
-          <span class="lbl">Status</span>
-          <span class="k-badge" :class="edge.connected ? 'k-badge--success' : 'k-badge--warning'">
-            <CircleDot :size="12" /> {{ edge.connected ? 'Connected' : (edge.phase || 'Disconnected') }}
-          </span>
-        </div>
-        <div class="field k-card">
-          <span class="lbl">Agent version</span>
-          <span class="row" style="gap: 6px;">
-            <span class="mono">{{ edge.agentVersion || '—' }}</span>
-            <span v-if="upgradeAvailable" class="k-badge k-badge--warning" :title="upgradeCond?.message">
-              <ArrowUpCircle :size="11" /> Upgrade
-            </span>
-          </span>
-        </div>
-        <div class="field k-card"><span class="lbl">Hostname</span><span class="mono">{{ edge.hostname || '—' }}</span></div>
-        <div class="field k-card"><span class="lbl">Last heartbeat</span><span>{{ rel(edge.lastHeartbeatTime) }}</span></div>
-        <div class="field k-card"><span class="lbl">Created</span><span>{{ rel(edge.creationTimestamp) }}</span></div>
-        <div class="field k-card"><span class="lbl">Workspace</span><span class="mono">{{ edge.workspacePath || '—' }}</span></div>
+    <div class="edge-detail__resource">
+      <div class="edge-detail__provider-mark" role="img" :aria-label="`${edgeTypeLabel} icon`">
+        <Server v-if="type === 'server'" :size="20" :stroke-width="1.75" aria-hidden="true" />
+        <Boxes v-else :size="20" :stroke-width="1.75" aria-hidden="true" />
       </div>
 
-      <!-- Labels -->
-      <div v-if="edge.labels && Object.keys(edge.labels).length" class="section">
-        <h3>Labels</h3>
-        <div class="chips">
-          <span v-for="(v, k) in edge.labels" :key="k" class="k-badge k-badge--muted">{{ k }}={{ v }}</span>
-        </div>
-      </div>
-
-      <!-- Upgrade available: agent behind the hub release (UpgradeAvailable condition). -->
-      <div v-if="upgradeAvailable" class="section">
-        <div class="banner warn" style="display: flex; align-items: center; justify-content: space-between; gap: 10px;">
-          <span class="row" style="gap: 6px;">
-            <ArrowUpCircle :size="14" />
-            {{ upgradeCond?.message || 'A newer agent version is available.' }}
-          </span>
-          <button
-            type="button"
-            class="k-btn k-btn--ghost compact-control"
-            :aria-expanded="showUpgrade"
-            aria-controls="edges-upgrade-commands"
-            @click="showUpgrade = !showUpgrade"
-          >
-            {{ showUpgrade ? 'Hide' : 'Show' }} commands
-            <component :is="showUpgrade ? ChevronUp : ChevronDown" :size="14" aria-hidden="true" />
-          </button>
-        </div>
-
-        <div v-if="showUpgrade" id="edges-upgrade-commands" style="margin-top: 12px; display: flex; flex-direction: column; gap: 12px;">
-          <!-- Kubernetes: CLI or Helm. -->
-          <template v-if="type === 'kubernetes'">
-            <div class="snippet k-card">
-              <div class="snippet-head"><span>Option A — CLI</span>
-                <button class="copy" @click="copy(upgradeCliCommand, 'up-cli')">
-                  <component :is="copied === 'up-cli' ? Check : Copy" :size="12" /> {{ copied === 'up-cli' ? 'Copied' : 'Copy' }}
-                </button>
-              </div>
-              <pre>{{ upgradeCliCommand }}</pre>
-            </div>
-            <div class="snippet k-card">
-              <div class="snippet-head"><span>Option B — Helm</span>
-                <button class="copy" @click="copy(upgradeHelmSnippet, 'up-helm')">
-                  <component :is="copied === 'up-helm' ? Check : Copy" :size="12" /> {{ copied === 'up-helm' ? 'Copied' : 'Copy' }}
-                </button>
-              </div>
-              <pre>{{ upgradeHelmSnippet }}</pre>
-            </div>
+      <ResourcePage
+        :title="name"
+        :kind="edgeTypeLabel"
+        :loaded="readComplete"
+        :loading="loading"
+        :refresh-mode="refreshMode"
+        :error="error"
+        :stale="Boolean(edge && error)"
+        retryable
+        @retry="load"
+      >
+        <template #meta>
+          <span>Edges</span>
+          <template v-if="edge?.hostname">
+            <span class="edge-header__separator" aria-hidden="true">·</span>
+            <span class="mono">{{ edge.hostname }}</span>
           </template>
+        </template>
+        <template #status>
+          <StatusBadge :status="edgeStatus" :tone="edgeStatusTone" :connected="edge?.connected ?? null" />
+        </template>
 
-          <!-- Server: replace the binary and restart the unit. -->
-          <div v-else class="snippet k-card">
-            <div class="snippet-head"><span>Replace binary and restart</span>
-              <button class="copy" @click="copy(upgradeServerSnippet, 'up-srv')">
-                <component :is="copied === 'up-srv' ? Check : Copy" :size="12" /> {{ copied === 'up-srv' ? 'Copied' : 'Copy' }}
-              </button>
-            </div>
-            <pre>{{ upgradeServerSnippet }}</pre>
-          </div>
-
-          <p class="muted" style="font-size: 11px;">After upgrading, the agent reports its new version on the next heartbeat and this notice clears.</p>
-        </div>
-      </div>
-
-      <!-- Join instructions (only while not yet connected + a token is present) -->
-      <div v-if="!edge.connected && edge.joinToken" class="section">
-        <h3>Connect the agent</h3>
-        <p class="muted">This edge is waiting for its agent. Run on the target {{ type === 'server' ? 'server' : 'cluster' }}:</p>
-        <div class="snippet k-card">
-          <div class="snippet-head"><span>faros agent join</span>
-            <button class="copy" @click="copy(`faros agent join --edge-name ${name} --type ${type} --token ${edge.joinToken}`, 'join')">
-              <component :is="copied === 'join' ? Check : Copy" :size="12" /> {{ copied === 'join' ? 'Copied' : 'Copy' }}
+        <template #actions>
+          <div class="edge-detail__actions" role="group" aria-label="Edge actions">
+            <button
+              v-if="type === 'server' && edge?.connected"
+              class="k-btn k-btn--primary"
+              type="button"
+              :disabled="deleting"
+              @click="openTerminal"
+            >
+              <TerminalSquare :size="14" aria-hidden="true" /> Open terminal
             </button>
-          </div>
-          <pre>faros agent join --edge-name {{ name }} --type {{ type }} --token {{ edge.joinToken }}</pre>
-        </div>
-      </div>
-
-      <!-- Kubernetes: how to connect to the cluster. -->
-      <div v-if="type === 'kubernetes' && edge.connected" class="section">
-        <h3>Connect to this cluster</h3>
-        <p class="muted">Download a kubeconfig scoped to this edge and use kubectl through the hub tunnel:</p>
-        <div class="snippet k-card">
-          <div class="snippet-head"><span>kubectl</span>
-            <button class="copy" @click="copy(`faros kubeconfig edge ${name} > ${name}.kubeconfig\nkubectl --kubeconfig ${name}.kubeconfig get nodes`, 'kube')">
-              <component :is="copied === 'kube' ? Check : Copy" :size="12" /> {{ copied === 'kube' ? 'Copied' : 'Copy' }}
+            <button
+              type="button"
+              class="k-btn k-btn--ghost"
+              :disabled="detailRefreshing || deleting || saving || connecting"
+              :aria-busy="detailRefreshing || undefined"
+              @click="refreshDetail"
+            >
+              <RefreshCw :size="14" :class="{ spin: detailRefreshing }" aria-hidden="true" />
+              {{ detailRefreshing ? 'Refreshing…' : 'Refresh' }}
             </button>
+            <details ref="actionsMenu" class="edge-detail__menu">
+              <summary class="k-btn k-btn--ghost" aria-label="More edge actions">
+                <Ellipsis :size="16" aria-hidden="true" />
+                <span class="sr-only">More actions</span>
+              </summary>
+              <div class="edge-detail__menu-popover">
+                <button
+                  type="button"
+                  class="edge-detail__menu-item"
+                  :disabled="!edge || deleting || detailRefreshing || saving || connecting"
+                  @click="onDelete"
+                >
+                  Delete {{ type === 'server' ? 'server' : 'cluster' }}
+                </button>
+              </div>
+            </details>
           </div>
-          <pre>faros kubeconfig edge {{ name }} &gt; {{ name }}.kubeconfig
+        </template>
+
+        <template #summary>
+          <ResourceStatCards :cards="edgeStatCards" aria-label="Edge summary" />
+        </template>
+
+        <template #body>
+          <div v-if="mutationError" class="banner error" role="alert">{{ mutationError }}</div>
+          <div v-if="deleting" class="waiting" role="status">Deleting this edge. The last successful snapshot remains visible until the hub confirms removal.</div>
+
+          <div class="edge-detail__sections">
+            <ResourceSectionCard id="edge-connectivity" eyebrow="Access" title="Connectivity" description="Connect the agent, reach the edge, and keep its software current.">
+              <template #actions>
+                <StatusBadge :status="edgeStatus" :tone="edgeStatusTone" :connected="edge?.connected ?? null" />
+              </template>
+
+              <div v-if="edge" class="edge-connectivity-content">
+                <!-- Upgrade available: agent behind the hub release (UpgradeAvailable condition). -->
+                <div v-if="upgradeAvailable" class="edge-upgrade">
+                  <div class="banner warn edge-upgrade__banner">
+                    <span class="row">
+                      <ArrowUpCircle :size="14" aria-hidden="true" />
+                      {{ upgradeCond?.message || 'A newer agent version is available.' }}
+                    </span>
+                    <button
+                      type="button"
+                      class="k-btn k-btn--ghost compact-control"
+                      :aria-expanded="showUpgrade"
+                      aria-controls="edges-upgrade-commands"
+                      @click="showUpgrade = !showUpgrade"
+                    >
+                      {{ showUpgrade ? 'Hide' : 'Show' }} commands
+                      <component :is="showUpgrade ? ChevronUp : ChevronDown" :size="14" aria-hidden="true" />
+                    </button>
+                  </div>
+
+                  <div v-if="showUpgrade" id="edges-upgrade-commands" class="edge-upgrade__commands">
+                    <template v-if="type === 'kubernetes'">
+                      <div class="snippet k-card">
+                        <div class="snippet-head"><span>Option A — CLI</span>
+                          <button class="copy" @click="copy(upgradeCliCommand, 'up-cli')">
+                            <component :is="copied === 'up-cli' ? Check : Copy" :size="12" aria-hidden="true" /> {{ copied === 'up-cli' ? 'Copied' : 'Copy' }}
+                          </button>
+                        </div>
+                        <pre>{{ upgradeCliCommand }}</pre>
+                      </div>
+                      <div class="snippet k-card">
+                        <div class="snippet-head"><span>Option B — Helm</span>
+                          <button class="copy" @click="copy(upgradeHelmSnippet, 'up-helm')">
+                            <component :is="copied === 'up-helm' ? Check : Copy" :size="12" aria-hidden="true" /> {{ copied === 'up-helm' ? 'Copied' : 'Copy' }}
+                          </button>
+                        </div>
+                        <pre>{{ upgradeHelmSnippet }}</pre>
+                      </div>
+                    </template>
+
+                    <div v-else class="snippet k-card">
+                      <div class="snippet-head"><span>Replace binary and restart</span>
+                        <button class="copy" @click="copy(upgradeServerSnippet, 'up-srv')">
+                          <component :is="copied === 'up-srv' ? Check : Copy" :size="12" aria-hidden="true" /> {{ copied === 'up-srv' ? 'Copied' : 'Copy' }}
+                        </button>
+                      </div>
+                      <pre>{{ upgradeServerSnippet }}</pre>
+                    </div>
+
+                    <p class="muted">After upgrading, the agent reports its new version on the next heartbeat and this notice clears.</p>
+                  </div>
+                </div>
+
+                <!-- Join instructions are intentionally collapsed so the credential is not the default read. -->
+                <details v-if="!edge.connected && edge.joinToken" class="edge-disclosure">
+                  <summary>
+                    <span>Connect the agent</span>
+                    <span class="edge-disclosure__hint">Show join command</span>
+                  </summary>
+                  <div class="edge-disclosure__body">
+                    <p class="muted">This edge is waiting for its agent. Run on the target {{ type === 'server' ? 'server' : 'cluster' }}:</p>
+                    <div class="snippet k-card">
+                      <div class="snippet-head"><span>faros agent join</span>
+                        <button class="copy" @click="copy(`faros agent join --edge-name ${name} --type ${type} --token ${edge.joinToken}`, 'join')">
+                          <component :is="copied === 'join' ? Check : Copy" :size="12" aria-hidden="true" /> {{ copied === 'join' ? 'Copied' : 'Copy' }}
+                        </button>
+                      </div>
+                      <pre>faros agent join --edge-name {{ name }} --type {{ type }} --token {{ edge.joinToken }}</pre>
+                    </div>
+                  </div>
+                </details>
+
+                <!-- Kubernetes: how to connect to the cluster. -->
+                <details v-if="type === 'kubernetes' && edge.connected" class="edge-disclosure">
+                  <summary>
+                    <span>Connect to this cluster</span>
+                    <span class="edge-disclosure__hint">Show kubectl command</span>
+                  </summary>
+                  <div class="edge-disclosure__body">
+                    <p class="muted">Download a kubeconfig scoped to this edge and use kubectl through the hub tunnel:</p>
+                    <div class="snippet k-card">
+                      <div class="snippet-head"><span>kubectl</span>
+                        <button class="copy" @click="copy(`faros kubeconfig edge ${name} > ${name}.kubeconfig\nkubectl --kubeconfig ${name}.kubeconfig get nodes`, 'kube')">
+                          <component :is="copied === 'kube' ? Check : Copy" :size="12" aria-hidden="true" /> {{ copied === 'kube' ? 'Copied' : 'Copy' }}
+                        </button>
+                      </div>
+                      <pre>faros kubeconfig edge {{ name }} &gt; {{ name }}.kubeconfig
 kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
-        </div>
-      </div>
+                    </div>
+                  </div>
+                </details>
 
-      <!-- Server: SSH command + interactive terminal. -->
-      <div v-if="type === 'server' && edge.connected" class="section">
-        <h3>SSH access</h3>
-        <p class="muted">Open an interactive shell in the browser, or SSH from your own terminal:</p>
-        <div class="snippet k-card">
-          <div class="snippet-head"><span>faros ssh</span>
-            <button class="copy" @click="copy(`faros ssh ${name}`, 'ssh')">
-              <component :is="copied === 'ssh' ? Check : Copy" :size="12" /> {{ copied === 'ssh' ? 'Copied' : 'Copy' }}
-            </button>
-          </div>
-          <pre>faros ssh {{ name }}</pre>
-        </div>
-        <div class="wiz-actions" style="justify-content: flex-start;">
-          <button class="k-btn k-btn--primary" @click="openTerminal">
-            <TerminalSquare :size="14" /> Open terminal
-          </button>
-        </div>
-      </div>
-
-      <!-- Services: discovered on server edges, declared on kube edges. -->
-      <div class="section">
-        <div class="row" style="justify-content: space-between; align-items: baseline;">
-          <h3>Services</h3>
-          <button
-            v-if="type === 'kubernetes'"
-            type="button"
-            class="k-btn k-btn--ghost"
-            :aria-expanded="adding"
-            aria-controls="edges-service-create"
-            @click="startAdd"
-          ><Plus :size="14" aria-hidden="true" /> Add service</button>
-        </div>
-        <p class="muted">
-          {{ type === 'server'
-            ? 'Services discovered running on this host. Attach a token to let AI agents control them.'
-            : 'Kubernetes Services on this cluster, reached over cluster DNS. Attach a token to let AI agents control them.' }}
-        </p>
-        <div v-if="svcError" class="banner error">{{ svcError }}</div>
-
-        <!-- Declare form (kube edges) -->
-        <div v-if="adding" id="edges-service-create" class="svc-card k-card">
-          <div class="svc-head"><span class="svc-title"><Plus :size="15" /> New service</span></div>
-          <div class="svc-form">
-            <label>Name<input v-model="draft.name" class="svc-input k-input" placeholder="home-assistant" /></label>
-            <label>Type
-              <select v-model="draft.serviceType" class="svc-input k-input">
-                <option value="home-assistant">Home Assistant</option>
-                <option value="generic">Generic (proxy only)</option>
-              </select>
-            </label>
-            <label>Target namespace<input v-model="draft.targetNamespace" class="svc-input k-input" placeholder="home" /></label>
-            <label>Target service<input v-model="draft.targetName" class="svc-input k-input" placeholder="home-assistant" /></label>
-            <label>Port<input v-model.number="draft.port" type="number" class="svc-input k-input" placeholder="8123" /></label>
-          </div>
-          <div class="wiz-actions" style="justify-content: flex-start;">
-            <button class="k-btn k-btn--primary" :disabled="saving || !draftValid" @click="submitAdd">
-              {{ saving ? 'Adding…' : 'Add service' }}
-            </button>
-            <button class="k-btn k-btn--ghost" :disabled="saving" @click="adding = false">Cancel</button>
-          </div>
-        </div>
-
-        <div v-if="services.length === 0 && !adding" class="muted">
-          {{ type === 'server'
-            ? 'No services discovered yet. Discovery runs when the agent is connected.'
-            : 'No services declared yet. Add one to point at a Kubernetes Service in this cluster.' }}
-        </div>
-        <div v-else-if="services.length" class="svc-cards">
-          <div v-for="es in services" :key="es.name" class="svc-card k-card">
-            <div class="svc-head">
-              <span class="svc-title">
-                <Home v-if="es.serviceType === 'home-assistant'" :size="15" />
-                <Plug v-else :size="15" />
-                {{ es.serviceType === 'home-assistant' ? 'Home Assistant' : (es.serviceType || es.name) }}
-              </span>
-              <div class="row">
-                <span class="k-badge" :class="svcOk(es) ? 'k-badge--success' : 'k-badge--warning'">
-                  <CircleDot :size="12" /> {{ es.phase || 'Detected' }}
-                </span>
-                <button v-if="type === 'kubernetes'" class="k-table-action k-table-action--delete" title="Delete service" @click="removeService(es.name)">
-                  <Trash2 :size="14" />
-                </button>
+                <!-- Server: SSH command + interactive terminal. -->
+                <details v-if="type === 'server' && edge.connected" class="edge-disclosure">
+                  <summary>
+                    <span>SSH access</span>
+                    <span class="edge-disclosure__hint">Show SSH command</span>
+                  </summary>
+                  <div class="edge-disclosure__body">
+                    <p class="muted">Open an interactive shell in the browser, or SSH from your own terminal:</p>
+                    <div class="snippet k-card">
+                      <div class="snippet-head"><span>faros ssh</span>
+                        <button class="copy" @click="copy(`faros ssh ${name}`, 'ssh')">
+                          <component :is="copied === 'ssh' ? Check : Copy" :size="12" aria-hidden="true" /> {{ copied === 'ssh' ? 'Copied' : 'Copy' }}
+                        </button>
+                      </div>
+                      <pre>faros ssh {{ name }}</pre>
+                    </div>
+                  </div>
+                </details>
               </div>
-            </div>
-            <div class="svc-meta">
-              <span v-if="es.version" class="mono">v{{ es.version }}</span>
-              <span v-if="es.targetNamespace" class="mono">{{ es.targetName }}.{{ es.targetNamespace }}.svc:{{ es.port }}</span>
-              <span v-else class="mono">:{{ es.port }}</span>
-              <span v-if="es.installType" class="k-badge k-badge--muted">{{ es.installType }}</span>
-              <span v-if="es.hasCredentials" class="k-badge k-badge--success">token set</span>
-            </div>
+            </ResourceSectionCard>
 
-            <!-- Connect form -->
-            <div v-if="connectFor === es.name" class="svc-connect">
-              <input
-                v-model="tokenInput" type="password" class="svc-input k-input"
-                placeholder="Paste a long-lived access token" autocomplete="off"
-                @keyup.enter="submitConnect"
-              />
-              <div class="wiz-actions" style="justify-content: flex-start;">
-                <button class="k-btn k-btn--primary" :disabled="connecting || !tokenInput.trim()" @click="submitConnect">
-                  <Plug :size="14" /> {{ connecting ? 'Connecting…' : 'Save token' }}
+            <ResourceSectionCard id="edge-services" eyebrow="Provider services" title="Services" :description="type === 'server' ? 'Services discovered running on this host. Attach a token to let AI agents control them.' : 'Kubernetes Services on this cluster, reached over cluster DNS. Attach a token to let AI agents control them.'">
+              <template #actions>
+                <span class="edge-section-card__count"><strong>{{ servicesLoaded ? services.length : '—' }}</strong> {{ servicesLoaded ? (services.length === 1 ? 'service' : 'services') : 'services' }}</span>
+                <button
+                  type="button"
+                  class="k-btn k-btn--ghost"
+                  :disabled="!edge"
+                  :aria-expanded="servicesExpanded"
+                  aria-controls="edges-services-content"
+                  @click="servicesExpanded = !servicesExpanded"
+                >
+                  {{ servicesExpanded ? 'Hide services' : 'Manage services' }}
+                  <component :is="servicesExpanded ? ChevronUp : ChevronDown" :size="14" aria-hidden="true" />
                 </button>
-                <button class="k-btn k-btn--ghost" :disabled="connecting" @click="connectFor = null">Cancel</button>
-              </div>
-              <p v-if="es.serviceType === 'home-assistant'" class="muted small">
-                Create one in Home Assistant → your profile → Security → Long-lived access tokens.
-              </p>
-            </div>
-            <div v-else class="wiz-actions" style="justify-content: flex-start;">
-              <button class="k-btn k-btn--ghost" @click="startConnect(es.name)">
-                <Plug :size="14" /> {{ es.hasCredentials ? 'Update token' : 'Connect' }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
+              </template>
 
-      <!-- Conditions -->
-      <div class="section">
-        <ConditionsPanel :conditions="edge.conditions" empty-text="No conditions reported yet." />
-      </div>
-    </template>
+              <div v-if="edge && servicesExpanded" id="edges-services-content" class="edge-services-content">
+                <div v-if="svcError" class="banner error" role="alert">{{ svcError }}</div>
+
+                <div v-if="type === 'kubernetes'" class="edge-services-content__actions">
+                  <button
+                    type="button"
+                    class="k-btn k-btn--ghost"
+                    :disabled="deleting"
+                    :aria-expanded="adding"
+                    aria-controls="edges-service-create"
+                    @click="startAdd"
+                  ><Plus :size="14" aria-hidden="true" /> Add service</button>
+                </div>
+
+                <!-- Declare form (kube edges); opening Add service reveals it. -->
+                <div v-if="adding" id="edges-service-create" class="svc-card k-card">
+                  <div class="svc-head"><span class="svc-title"><Plus :size="15" aria-hidden="true" /> New service</span></div>
+                  <div class="svc-form">
+                    <label>Name<input v-model="draft.name" class="svc-input k-input" placeholder="home-assistant" /></label>
+                    <label>Type
+                      <select v-model="draft.serviceType" class="svc-input k-input">
+                        <option value="home-assistant">Home Assistant</option>
+                        <option value="generic">Generic (proxy only)</option>
+                      </select>
+                    </label>
+                    <label>Target namespace<input v-model="draft.targetNamespace" class="svc-input k-input" placeholder="home" /></label>
+                    <label>Target service<input v-model="draft.targetName" class="svc-input k-input" placeholder="home-assistant" /></label>
+                    <label>Port<input v-model.number="draft.port" type="number" class="svc-input k-input" placeholder="8123" /></label>
+                  </div>
+                  <div class="wiz-actions" style="justify-content: flex-start;">
+                    <button class="k-btn k-btn--primary" :disabled="saving || !draftValid" @click="submitAdd">
+                      {{ saving ? 'Adding…' : 'Add service' }}
+                    </button>
+                    <button class="k-btn k-btn--ghost" :disabled="saving" @click="adding = false">Cancel</button>
+                  </div>
+                </div>
+
+                <div v-if="!servicesLoaded && !svcError && !adding" class="muted" role="status" aria-live="polite">
+                  Loading services…
+                </div>
+                <div v-else-if="servicesLoaded && services.length === 0 && !adding" class="muted">
+                  {{ type === 'server'
+                    ? 'No services discovered yet. Discovery runs when the agent is connected.'
+                    : 'No services declared yet. Add one to point at a Kubernetes Service in this cluster.' }}
+                </div>
+                <div v-else-if="servicesLoaded && services.length" class="svc-cards">
+                  <div v-for="es in services" :key="es.name" class="svc-card k-card">
+                    <div class="svc-head">
+                      <span class="svc-title">
+                        <Home v-if="es.serviceType === 'home-assistant'" :size="15" aria-hidden="true" />
+                        <Plug v-else :size="15" aria-hidden="true" />
+                        {{ es.serviceType === 'home-assistant' ? 'Home Assistant' : (es.serviceType || es.name) }}
+                      </span>
+                      <div class="row">
+                        <StatusBadge :status="es.phase || 'Detected'" :tone="serviceTone(es)" />
+                        <button v-if="type === 'kubernetes'" class="k-table-action k-table-action--delete" type="button" title="Delete service" :disabled="deleting" @click="removeService(es.name)">
+                          <Trash2 :size="14" aria-hidden="true" />
+                        </button>
+                      </div>
+                    </div>
+                    <div class="svc-meta">
+                      <span v-if="es.version" class="mono">v{{ es.version }}</span>
+                      <span v-if="es.targetNamespace" class="mono">{{ es.targetName }}.{{ es.targetNamespace }}.svc:{{ es.port }}</span>
+                      <span v-else class="mono">:{{ es.port }}</span>
+                      <span v-if="es.installType" class="k-badge k-badge--muted">{{ es.installType }}</span>
+                      <span v-if="es.hasCredentials" class="k-badge k-badge--success">token set</span>
+                    </div>
+
+                    <!-- Connect form. -->
+                    <div v-if="connectFor === es.name" class="svc-connect">
+                      <input
+                        v-model="tokenInput" type="password" class="svc-input k-input"
+                        placeholder="Paste a long-lived access token" autocomplete="off"
+                        @keyup.enter="submitConnect"
+                      />
+                      <div class="wiz-actions" style="justify-content: flex-start;">
+                        <button class="k-btn k-btn--primary" :disabled="connecting || !tokenInput.trim()" @click="submitConnect">
+                          <Plug :size="14" aria-hidden="true" /> {{ connecting ? 'Connecting…' : 'Save token' }}
+                        </button>
+                        <button class="k-btn k-btn--ghost" :disabled="connecting" @click="connectFor = null">Cancel</button>
+                      </div>
+                      <p v-if="es.serviceType === 'home-assistant'" class="muted small">
+                        Create one in Home Assistant → your profile → Security → Long-lived access tokens.
+                      </p>
+                    </div>
+                    <div v-else class="wiz-actions" style="justify-content: flex-start;">
+                      <button class="k-btn k-btn--ghost" type="button" :disabled="deleting" @click="startConnect(es.name)">
+                        <Plug :size="14" aria-hidden="true" /> {{ es.hasCredentials ? 'Update token' : 'Connect' }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </ResourceSectionCard>
+
+            <ResourceSectionCard id="edge-technical" eyebrow="Diagnostics" title="Technical details" description="Configuration, health, metadata, and the read-only object snapshot.">
+              <template #actions>
+                <button
+                  type="button"
+                  class="k-btn k-btn--ghost"
+                  :disabled="!edge"
+                  :aria-expanded="technicalExpanded"
+                  aria-controls="edges-technical-content"
+                  @click="technicalExpanded = !technicalExpanded"
+                >
+                  {{ technicalExpanded ? 'Hide technical details' : 'Show technical details' }}
+                  <component :is="technicalExpanded ? ChevronUp : ChevronDown" :size="14" aria-hidden="true" />
+                </button>
+              </template>
+
+              <div v-if="edge && technicalExpanded" id="edges-technical-content" class="edge-technical">
+                <div class="k-resource-technical__body">
+                  <section class="k-resource-technical__section">
+                    <h3 class="k-resource-technical__section-title">Configuration</h3>
+                    <div class="k-resource-technical__content">
+                      <dl class="k-resource-technical__definition">
+                        <div v-for="row in configurationRows" :key="row.label">
+                          <dt>{{ row.label }}</dt>
+                          <dd :class="{ mono: row.mono }">{{ row.value }}</dd>
+                        </div>
+                      </dl>
+                    </div>
+                  </section>
+
+                  <section class="k-resource-technical__section">
+                    <h3 class="k-resource-technical__section-title">Health data</h3>
+                    <div class="k-resource-technical__content">
+                      <ConditionsPanel
+                        :conditions="edge.conditions"
+                        :generation="edge.generation"
+                        :observed-generation="edge.observedGeneration"
+                        empty-text="No health conditions reported yet."
+                      />
+                      <dl class="k-resource-technical__definition" style="margin-top: 12px;">
+                        <div><dt>Last heartbeat</dt><dd>{{ edge.lastHeartbeatTime ? formatTimestamp(edge.lastHeartbeatTime) : '—' }}</dd></div>
+                        <div><dt>Agent endpoint</dt><dd class="mono">{{ edge.statusURL || '—' }}</dd></div>
+                      </dl>
+                    </div>
+                  </section>
+
+                  <section class="k-resource-technical__section">
+                    <h3 class="k-resource-technical__section-title">Metadata</h3>
+                    <div class="k-resource-technical__content">
+                      <dl class="k-resource-technical__definition">
+                        <div v-for="row in metadataRows" :key="row.label">
+                          <dt>{{ row.label }}</dt>
+                          <dd :class="{ mono: row.mono }">{{ row.value }}</dd>
+                        </div>
+                      </dl>
+                      <template v-if="labelRows.length">
+                        <p class="k-resource-technical__section-title" style="margin-top: 14px;">Labels</p>
+                        <dl class="k-resource-technical__definition k-resource-technical__labels">
+                          <template v-for="([key, value]) in labelRows" :key="key">
+                            <dt>{{ key }}</dt>
+                            <dd class="mono">{{ value }}</dd>
+                          </template>
+                        </dl>
+                      </template>
+                    </div>
+                  </section>
+
+                  <section class="k-resource-technical__section">
+                    <h3 class="k-resource-technical__section-title">YAML / read-only object</h3>
+                    <div class="k-resource-technical__content">
+                      <p class="muted">Read-only snapshot from the latest successful object read.</p>
+                      <pre class="k-resource-technical__pre">{{ edgeYaml || 'No object snapshot available.' }}</pre>
+                    </div>
+                  </section>
+                </div>
+              </div>
+            </ResourceSectionCard>
+          </div>
+        </template>
+      </ResourcePage>
+    </div>
   </div>
 </template>

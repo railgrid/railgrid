@@ -1,47 +1,81 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { ArrowLeft, Save, KeyRound } from 'lucide-vue-next'
-import { updateEdgeService, connectEdgeService } from './api'
-import type { CatalogEntry, CatalogCredentialField, EdgeServiceEdit } from './api'
-import type { EdgeService, Edge, ErrorResponse } from './types'
+import { ref, computed, watch } from 'vue'
+import { ArrowLeft, Ellipsis, Globe2, KeyRound, Plug, RefreshCw, Save, Server } from 'lucide-vue-next'
+import { confirmDialog } from './portalkit/confirm'
+import { connectEdgeService, deleteEdgeService, getService, updateEdgeService } from './api'
+import type { CatalogCredentialField, CatalogEntry, EdgeServiceEdit } from './api'
+import type { Edge, EdgeService, ErrorResponse } from './types'
 import ConditionsPanel from './portalkit/ConditionsPanel.vue'
+import ResourcePage from './portalkit/ResourcePage.vue'
+import ResourceSectionCard from './portalkit/ResourceSectionCard.vue'
+import ResourceStatCards, { type ResourceStatCard, type ResourceStatTone } from './portalkit/ResourceStatCards.vue'
+import StatusBadge from './portalkit/StatusBadge.vue'
 
-// A dedicated per-service page: provider info (from the catalog) + editable
-// configuration + credentials + status. Reached from the Services list via the
-// Edit button; emits back/saved so the list can close it and refresh.
-const props = defineProps<{ service: EdgeService; catalog: CatalogEntry[]; edges: Edge[] }>()
-const emit = defineEmits<{ back: []; saved: [] }>()
+// The route owns the resource identity. A list-row snapshot is optional and is
+// used only as a seed; every instance page performs an exact getService read so
+// a resource beyond the current cursor page remains directly loadable.
+const props = withDefaults(defineProps<{
+  service?: EdgeService | null
+  serviceName?: string | null
+  catalog: CatalogEntry[]
+  edges: Edge[]
+}>(), { service: null, serviceName: null })
+const emit = defineEmits<{ back: []; saved: []; deleted: [] }>()
 
+const service = ref<EdgeService | null>(props.service)
+const readLoading = ref(true)
+const readLoaded = ref(false)
+const readError = ref<string | null>(null)
+const mutationError = ref<string | null>(null)
 const busy = ref(false)
-const error = ref<string | null>(null)
+// Delete has a distinct lifecycle from ordinary save/connect mutations. Keep
+// this state after the actions menu closes so the resource status and the
+// announcement remain truthful until the parent navigates away on success.
+const deleting = ref(false)
+const actionsMenu = ref<HTMLDetailsElement | null>(null)
+let selectionGeneration = 0
+let selectedName = ''
 
-// Editable config, seeded from the service.
-const form = ref<EdgeServiceEdit>({
-  serviceType: props.service.serviceType,
-  scheme: props.service.scheme || 'http',
-  port: props.service.port,
-  host: props.service.host ?? '',
-  targetNamespace: props.service.targetNamespace ?? '',
-  targetName: props.service.targetName ?? '',
-})
-const instructions = ref(props.service.instructions ?? '')
-const targetMode = ref<'host' | 'kube'>(props.service.host ? 'host' : props.service.targetName ? 'kube' : 'host')
+const currentName = computed(() => service.value?.name || props.serviceName || props.service?.name || '')
+const title = computed(() => currentName.value || 'Service')
 
-// The catalog entry for the currently-selected type drives the info panel,
-// scheme lock, host hints and credential fields.
+// Editable configuration, kept local so navigating between instance routes
+// never serializes unfinished form values or credential text into the URL.
+const form = ref<EdgeServiceEdit>({})
+const instructions = ref('')
+const targetMode = ref<'host' | 'kube'>('host')
+
+function seedForm(next: EdgeService | null): void {
+  form.value = next ? {
+    serviceType: next.serviceType,
+    scheme: next.scheme || 'http',
+    port: next.port,
+    host: next.host ?? '',
+    targetNamespace: next.targetNamespace ?? '',
+    targetName: next.targetName ?? '',
+  } : {}
+  instructions.value = next?.instructions ?? ''
+  targetMode.value = next?.host ? 'host' : next?.targetName ? 'kube' : 'host'
+}
+seedForm(service.value)
+
+// The catalog entry for the selected type drives provider information, scheme
+// locking, target hints, and credential fields.
 const entry = computed(() => props.catalog.find((c) => c.type === form.value.serviceType))
 const schemeLocked = computed(() => !!entry.value?.schemeLocked)
-const edgeIsServer = computed(() => props.edges.find((e) => e.name === props.service.edgeName)?.type === 'server')
+const edgeIsServer = computed(() =>
+  service.value?.edgeKind === 'LinuxServer' ||
+  props.edges.find((e) => e.name === service.value?.edgeName)?.type === 'server',
+)
 
-function onTypeChange() {
-  const c = entry.value
-  if (!c) return
-  if (c.defaultPort) form.value.port = c.defaultPort
-  if (c.defaultScheme) form.value.scheme = c.defaultScheme
-  if (c.hostRequired) targetMode.value = 'host'
+function onTypeChange(): void {
+  const catalogEntry = entry.value
+  if (!catalogEntry) return
+  if (catalogEntry.defaultPort) form.value.port = catalogEntry.defaultPort
+  if (catalogEntry.defaultScheme) form.value.scheme = catalogEntry.defaultScheme
+  if (catalogEntry.hostRequired) targetMode.value = 'host'
 }
 
-// Human labels for the auth badge.
 const AUTH_LABELS: Record<string, string> = {
   bearer: 'Bearer token',
   apiKeyHeader: 'API key (header)',
@@ -52,196 +86,379 @@ const AUTH_LABELS: Record<string, string> = {
   qbittorrent: 'Session login',
   none: 'No auth',
 }
-function authLabel(a?: string): string {
-  return AUTH_LABELS[a ?? ''] ?? a ?? '—'
+function authLabel(auth?: string): string {
+  return AUTH_LABELS[auth ?? ''] ?? auth ?? '—'
 }
 
-async function onSaveConfig() {
+function errorMessage(error: unknown, fallback: string): string {
+  return (error as ErrorResponse)?.message ?? fallback
+}
+
+function isNotFound(error: unknown): boolean {
+  return (error as ErrorResponse)?.reason === 'NotFound'
+}
+
+async function load(): Promise<void> {
+  const name = currentName.value.trim()
+  const generation = ++selectionGeneration
+  const hadSnapshot = readLoaded.value && service.value !== null
+  readLoading.value = true
+  readError.value = null
+  if (!name) {
+    service.value = null
+    readLoaded.value = false
+    readError.value = 'This service link does not include a resource name.'
+    readLoading.value = false
+    return
+  }
+  try {
+    const next = await getService(name)
+    if (generation !== selectionGeneration) return
+    service.value = next
+    seedForm(next)
+    readLoaded.value = true
+  } catch (error) {
+    if (generation !== selectionGeneration) return
+    if (isNotFound(error)) {
+      // A confirmed not-found must remove the previous snapshot so a stale
+      // service cannot remain actionable under a missing URL-owned resource.
+      service.value = null
+      readLoaded.value = false
+      readError.value = `Service "${name}" was not found in this workspace.`
+    } else {
+      readLoaded.value = hadSnapshot
+      readError.value = errorMessage(error, 'Failed to load service')
+    }
+  } finally {
+    if (generation === selectionGeneration) readLoading.value = false
+  }
+}
+
+// Reuse the mounted editor as shell history moves between service/<name>
+// routes. Only identity changes reset the form and read contract.
+watch(
+  () => [props.serviceName, props.service] as const,
+  ([name, next]) => {
+    const nextName = name || next?.name || ''
+    if (nextName === selectedName) return
+    selectedName = nextName
+    service.value = next ?? null
+    seedForm(service.value)
+    readLoaded.value = false
+    readError.value = null
+    mutationError.value = null
+    busy.value = false
+    deleting.value = false
+    void load()
+  },
+  { immediate: true },
+)
+
+const serviceStatus = computed(() => {
+  if (deleting.value) return 'Deleting'
+  if (!readLoaded.value) {
+    if (readLoading.value) return 'Loading'
+    if (readError.value) return 'Unavailable'
+  }
+  if (service.value?.phase) return service.value.phase
+  return 'Pending'
+})
+
+function statusTone(status: string): 'success' | 'warning' | 'danger' | 'muted' {
+  switch (status.toLowerCase()) {
+    case 'ready': return 'success'
+    case 'unreachable':
+    case 'unavailable':
+    case 'failed':
+    case 'error': return 'danger'
+    case 'loading':
+    case 'detected':
+    case 'pending':
+    case 'deleting': return 'warning'
+    default: return 'muted'
+  }
+}
+const targetSummary = computed(() => {
+  const value = service.value
+  if (!value) return '—'
+  const host = value.host?.trim()
+  const targetName = value.targetName?.trim()
+  const target = host || (targetName
+    ? `${value.targetNamespace ? `${value.targetNamespace}/` : ''}${targetName}`
+    : 'Agent loopback')
+  return value.port ? `${target}:${value.port}` : target
+})
+
+// The catalog distinguishes a service that has no credential mechanism from a
+// service that supports an optional credential. Keep those separate from a
+// required credential so an optional, unconfigured service is not presented as
+// unhealthy while its credential form remains available.
+const credentialsSupported = computed(() => {
+  const auth = (entry.value?.auth ?? '').toLowerCase()
+  return !!entry.value && auth !== '' && auth !== 'none'
+})
+const credentialsOptional = computed(() => credentialsSupported.value && !!entry.value?.credential.optional)
+const credentialsRequired = computed(() => credentialsSupported.value && !credentialsOptional.value)
+
+const credentialState = computed(() => {
+  if (!credentialsSupported.value) {
+    return { value: 'Not required', detail: 'No credentials required', tone: 'default' as const }
+  }
+  if (service.value?.hasCredentials) {
+    return { value: 'Configured', detail: 'Credentials configured', tone: 'success' as const }
+  }
+  if (credentialsOptional.value) {
+    return { value: 'Not configured (optional)', detail: 'Optional credential', tone: 'default' as const }
+  }
+  if (credentialsRequired.value) {
+    return { value: 'Missing', detail: 'Credentials missing', tone: 'warning' as const }
+  }
+  return { value: 'Not required', detail: 'No credentials required', tone: 'default' as const }
+})
+
+const serviceStatTone = computed<ResourceStatTone>(() => {
+  const tone = statusTone(serviceStatus.value)
+  if (tone === 'danger') return tone
+  if (credentialState.value.tone === 'warning') return 'warning'
+  return tone === 'muted' ? 'default' : tone
+})
+
+const credentialDescription = computed(() => {
+  if (!credentialsSupported.value) return 'This service does not require credentials.'
+  if (credentialsOptional.value) {
+    return 'Credentials are optional. Set one when this service requires authentication; the value is written to a workspace Secret and is never displayed after submission.'
+  }
+  return 'Set or update the credential used to authenticate this service. The value is written to a workspace Secret and is never displayed after submission.'
+})
+
+const serviceStatCards = computed<ResourceStatCard[]>(() => [
+  {
+    id: 'status',
+    label: 'Status',
+    value: serviceStatus.value,
+    detail: credentialState.value.detail,
+    icon: Plug,
+    tone: serviceStatTone.value,
+  },
+  { id: 'edge', label: 'Edge', value: service.value?.edgeName || '—', icon: Server, mono: true },
+  { id: 'target', label: 'Target', value: targetSummary.value, icon: Globe2, mono: true },
+])
+
+async function refreshDetail(): Promise<void> {
+  if (busy.value) return
+  await load()
+}
+
+async function onSaveConfig(): Promise<void> {
+  const name = currentName.value
+  if (!name || !service.value) return
   busy.value = true
-  error.value = null
+  mutationError.value = null
   try {
     const byHost = targetMode.value === 'host'
-    await updateEdgeService(props.service.name, {
+    await updateEdgeService(name, {
       serviceType: form.value.serviceType,
       scheme: form.value.scheme,
-      port: Number(form.value.port) || props.service.port,
-      host: byHost ? form.value.host?.trim() || undefined : undefined,
+      port: Number(form.value.port) || service.value.port,
+      host: byHost ? form.value.host?.trim() : undefined,
       targetNamespace: form.value.targetNamespace,
       targetName: byHost ? '' : form.value.targetName,
       instructions: instructions.value,
+      targetMode: targetMode.value,
     })
+    await load()
     emit('saved')
-  } catch (e) {
-    error.value = (e as ErrorResponse)?.message ?? 'Save failed'
+  } catch (error) {
+    mutationError.value = errorMessage(error, 'Save failed')
   } finally {
     busy.value = false
   }
 }
 
-// ── Credentials ────────────────────────────────────────────────────
-// Inputs keyed by field.key; packed into the single Secret "token" value per the
-// type's packing (mirrors Services.vue's create-form logic).
+// Credential inputs are packed into the single token Secret by the API. The
+// existing Secret value is never read or rendered; only hasCredentials and the
+// catalog's field labels/hints are exposed here.
 const credInputs = ref<Record<string, string>>({})
-const credFields = computed<CatalogCredentialField[]>(
-  () => entry.value?.credential.fields ?? [{ key: 'token', label: 'token', secret: true }],
+const credFields = computed<CatalogCredentialField[]>(() =>
+  entry.value?.credential.fields ?? [{ key: 'token', label: 'Credential', secret: true }],
 )
 function packedCredential(): string {
-  const cred = entry.value?.credential
-  if (cred?.packing === 'userpass') {
-    const u = (credInputs.value['username'] ?? '').trim()
-    const p = credInputs.value['password'] ?? ''
-    return `${u}:${p}`
+  if (entry.value?.credential.packing === 'userpass') {
+    const username = (credInputs.value.username ?? '').trim()
+    const password = credInputs.value.password ?? ''
+    return `${username}:${password}`
   }
   const key = credFields.value[0]?.key ?? 'token'
   return (credInputs.value[key] ?? '').trim()
 }
 const credFilled = computed(() => {
-  const cred = entry.value?.credential
-  if (cred?.packing === 'userpass') return !!(credInputs.value['username']?.trim() && credInputs.value['password'])
+  if (entry.value?.credential.packing === 'userpass') {
+    return !!(credInputs.value.username?.trim() && credInputs.value.password)
+  }
   return !!packedCredential()
 })
-async function onSaveCreds() {
+
+async function onSaveCreds(): Promise<void> {
+  const name = currentName.value
   const token = packedCredential()
-  if (!token) return
+  if (!credentialsSupported.value || !name || !service.value || !token) return
   busy.value = true
-  error.value = null
+  mutationError.value = null
   try {
-    await connectEdgeService(props.service.name, token)
+    await connectEdgeService(name, token)
     credInputs.value = {}
+    await load()
     emit('saved')
-  } catch (e) {
-    error.value = (e as ErrorResponse)?.message ?? 'Connect failed'
+  } catch (error) {
+    mutationError.value = errorMessage(error, 'Connect failed')
   } finally {
     busy.value = false
   }
 }
 
-function phaseClass(p?: string): string {
-  return p === 'Ready' ? 'k-badge--success' : p === 'Unreachable' ? 'k-badge--danger' : 'k-badge--warning'
+async function onDelete(): Promise<void> {
+  const name = currentName.value
+  if (!name || !service.value || busy.value || deleting.value) return
+  actionsMenu.value?.removeAttribute('open')
+  if (!(await confirmDialog({
+    title: `Delete service "${name}"?`,
+    message: 'Its MCP tools stop being exposed.',
+    danger: true,
+    confirmLabel: 'Delete',
+  }))) return
+  deleting.value = true
+  busy.value = true
+  mutationError.value = null
+  try {
+    await deleteEdgeService(name)
+    emit('deleted')
+  } catch (error) {
+    mutationError.value = errorMessage(error, 'Delete failed')
+    deleting.value = false
+  } finally {
+    busy.value = false
+  }
 }
 </script>
 
 <template>
-  <div class="edges-app">
-    <header class="edges-header">
-      <div style="display: flex; align-items: center; gap: 10px;">
-        <button class="k-btn k-btn--ghost" type="button" aria-label="Back to services" title="Back to services" @click="emit('back')"><ArrowLeft :size="16" aria-hidden="true" /> Back</button>
-        <div>
-          <h1>{{ service.name }} <span class="k-badge" :class="phaseClass(service.phase)">{{ service.phase || 'Pending' }}</span></h1>
-          <p>{{ entry?.displayName ?? service.serviceType }}<span v-if="entry?.description"> — {{ entry.description }}</span></p>
-        </div>
-      </div>
-    </header>
+  <div class="service-detail">
+    <a class="k-btn k-btn--ghost service-detail__back" href="/ui/providers/edges/services" @click.prevent="emit('back')">
+      <ArrowLeft :size="14" aria-hidden="true" /> Services
+    </a>
+    <div class="service-detail__resource">
+      <ResourcePage
+        class="service-detail__page"
+        :title="title"
+        kind="Service"
+        :subtitle="entry?.displayName || service?.serviceType || 'Edge service'"
+        :loaded="readLoaded"
+        :loading="readLoading"
+        :error="readError"
+        :stale="readLoaded && !!readError"
+        retryable
+        @retry="refreshDetail"
+      >
+        <template #meta>
+          <span>Edges</span>
+          <span class="service-detail__separator" aria-hidden="true">·</span>
+          <span class="mono">{{ service?.edgeName || 'Edge unavailable' }}</span>
+        </template>
+        <template #status>
+          <StatusBadge :status="serviceStatus" :tone="statusTone(serviceStatus)" />
+        </template>
+        <template #actions>
+          <div class="service-detail__actions" role="group" aria-label="Service actions">
+            <button class="k-btn k-btn--ghost" type="button" :disabled="busy || readLoading" :aria-busy="readLoading || undefined" @click="refreshDetail">
+              <RefreshCw :size="14" :class="{ spin: readLoading }" aria-hidden="true" />
+              {{ readLoading ? 'Refreshing…' : 'Refresh' }}
+            </button>
+            <details ref="actionsMenu" class="service-detail__menu">
+              <summary class="k-btn k-btn--ghost" aria-label="More service actions">
+                <Ellipsis :size="16" aria-hidden="true" />
+                <span class="service-detail__sr-only">More actions</span>
+              </summary>
+              <div class="service-detail__menu-popover">
+                <button class="service-detail__menu-item" type="button" :disabled="!service || busy || readLoading" @click="onDelete">Delete service</button>
+              </div>
+            </details>
+          </div>
+        </template>
 
-    <div v-if="error" class="banner error">{{ error }}</div>
+        <template #summary>
+          <ResourceStatCards class="service-detail__stats" :cards="serviceStatCards" density="compact" aria-label="Service summary" />
+        </template>
 
-    <!-- Provider info (from the catalog) -->
-    <div class="wiz-card k-card">
-      <div class="es-head">Provider info</div>
-      <div class="row" style="gap: 28px; flex-wrap: wrap;">
-        <div>
-          <span class="lbl">Auth</span>
-          <div><span class="k-badge k-badge--muted">{{ authLabel(entry?.auth) }}</span></div>
-        </div>
-        <div>
-          <span class="lbl">Default port</span>
-          <div class="mono">{{ entry?.defaultPort ?? '—' }}</div>
-        </div>
-        <div>
-          <span class="lbl">Scheme</span>
-          <div class="mono">{{ entry?.defaultScheme ?? 'http' }}{{ entry?.schemeLocked ? ' (fixed)' : '' }}</div>
-        </div>
-        <div>
-          <span class="lbl">Reached via</span>
-          <div class="mono">{{ entry?.hostRequired ? 'LAN host (required)' : 'Agent loopback' }}</div>
-        </div>
-      </div>
-      <div v-if="entry?.tools?.length" style="margin-top: 14px;">
-        <span class="lbl">Exposed AI tools</span>
-        <ul style="margin: 6px 0 0; padding-left: 18px;">
-          <li v-for="t in entry.tools" :key="t.name" style="margin: 2px 0;">
-            <span class="mono">{{ t.name }}</span><span v-if="t.description" class="muted"> — {{ t.description }}</span>
-          </li>
-        </ul>
-      </div>
-      <div v-else class="muted" style="margin-top: 8px; font-size: 12px;">Proxy-only — this service exposes no AI tools.</div>
-    </div>
+        <template #body>
+          <p v-if="mutationError" class="banner error service-detail__mutation-error" role="alert" aria-live="assertive">{{ mutationError }}</p>
+          <p v-if="deleting" class="waiting" role="status" aria-live="polite">Deleting this service. The last successful snapshot remains visible until the hub confirms removal.</p>
+          <div class="service-detail__sections">
+            <ResourceSectionCard class="service-detail__card" id="service-provider" eyebrow="Provider" title="Provider info" description="The catalog definition determines authentication, reachability, and exposed AI tools.">
+              <div class="service-detail__facts">
+                <div><span class="lbl">Type</span><strong>{{ entry?.displayName || service?.serviceType || '—' }}</strong></div>
+                <div><span class="lbl">Auth</span><StatusBadge :status="authLabel(entry?.auth)" tone="muted" /></div>
+                <div><span class="lbl">Default port</span><strong class="mono">{{ entry?.defaultPort ?? '—' }}</strong></div>
+                <div><span class="lbl">Default scheme</span><strong class="mono">{{ entry?.defaultScheme || 'http' }}{{ entry?.schemeLocked ? ' (fixed)' : '' }}</strong></div>
+                <div><span class="lbl">Reachability</span><strong>{{ entry?.hostRequired ? 'LAN host (required)' : targetMode === 'kube' ? 'Kubernetes Service' : 'Agent loopback' }}</strong></div>
+              </div>
+              <p v-if="entry?.description" class="service-detail__description">{{ entry.description }}</p>
+              <div v-if="entry?.tools?.length" class="service-detail__tools">
+                <span class="lbl">Exposed AI tools</span>
+                <ul>
+                  <li v-for="tool in entry.tools" :key="tool.name"><span class="mono">{{ tool.name }}</span><span v-if="tool.description" class="muted"> — {{ tool.description }}</span></li>
+                </ul>
+              </div>
+              <p v-else class="muted service-detail__empty-tools">Proxy-only — this service exposes no AI tools.</p>
+            </ResourceSectionCard>
 
-    <!-- Configuration -->
-    <div class="wiz-card k-card">
-      <div class="es-head">Configuration</div>
-      <div class="row" style="gap: 12px; align-items: flex-start;">
-        <label class="fld" style="flex: 1;">
-          <span class="lbl">Type</span>
-          <select v-model="form.serviceType" class="k-input" @change="onTypeChange">
-            <option v-for="c in catalog" :key="c.type" :value="c.type">{{ c.displayName }}</option>
-          </select>
-        </label>
-        <label class="fld" style="flex: 0 0 120px;">
-          <span class="lbl">Scheme</span>
-          <select v-model="form.scheme" class="k-input" :disabled="schemeLocked" :title="schemeLocked ? 'Fixed by the service type' : ''">
-            <option value="http">http</option>
-            <option value="https">https</option>
-          </select>
-        </label>
-        <label class="fld" style="flex: 0 0 120px;">
-          <span class="lbl">Port</span>
-          <input v-model="form.port" type="number" min="1" max="65535" class="k-input" />
-        </label>
-      </div>
-      <div class="row" style="gap: 16px; margin: 6px 0;">
-        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-          <input type="radio" value="host" v-model="targetMode" /> Host / IP
-        </label>
-        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;" :style="{ opacity: edgeIsServer ? 0.5 : 1 }">
-          <input type="radio" value="kube" v-model="targetMode" :disabled="edgeIsServer" /> Kubernetes Service
-        </label>
-      </div>
-      <div v-if="targetMode === 'host'" class="row" style="gap: 12px;">
-        <label class="fld" style="flex: 1;">
-          <span class="lbl">Host {{ entry?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span>
-          <input v-model="form.host" class="k-input" placeholder="192.168.1.1, myui.example.com" />
-          <span v-if="entry?.hostHelp" class="muted" style="font-size: 12px; margin-top: 4px;">{{ entry.hostHelp }}</span>
-        </label>
-      </div>
-      <div v-else class="row" style="gap: 12px;">
-        <label class="fld" style="flex: 1;">
-          <span class="lbl">Target namespace</span>
-          <input v-model="form.targetNamespace" class="k-input" placeholder="home" />
-        </label>
-        <label class="fld" style="flex: 1;">
-          <span class="lbl">Target service name</span>
-          <input v-model="form.targetName" class="k-input" placeholder="home-assistant" />
-        </label>
-      </div>
-      <label class="fld" style="margin-top: 8px;">
-        <span class="lbl">AI instructions (optional)</span>
-        <textarea v-model="instructions" class="k-input" rows="3" placeholder="Describe this service's entities/rooms so the AI knows your setup."></textarea>
-      </label>
-      <div class="wiz-actions">
-        <button class="k-btn k-btn--primary" :disabled="busy" @click="onSaveConfig"><Save :size="14" /> Save configuration</button>
-      </div>
-    </div>
+            <ResourceSectionCard class="service-detail__card" id="service-configuration" eyebrow="Desired state" title="Configuration" description="Update the service type, endpoint, and AI guidance without exposing stored credentials.">
+              <div class="service-detail__form-grid service-detail__form-grid--three">
+                <label class="fld"><span class="lbl">Type</span>
+                  <select v-model="form.serviceType" class="k-input" :disabled="busy || !service" @change="onTypeChange">
+                    <option v-if="service && !props.catalog.some((item) => item.type === form.serviceType)" :value="form.serviceType">{{ form.serviceType }}</option>
+                    <option v-for="catalogEntry in props.catalog" :key="catalogEntry.type" :value="catalogEntry.type">{{ catalogEntry.displayName }}</option>
+                  </select>
+                </label>
+                <label class="fld"><span class="lbl">Scheme</span>
+                  <select v-model="form.scheme" class="k-input" :disabled="busy || !service || schemeLocked" :title="schemeLocked ? 'Fixed by the service type' : ''"><option value="http">http</option><option value="https">https</option></select>
+                </label>
+                <label class="fld"><span class="lbl">Port</span><input v-model="form.port" type="number" min="1" max="65535" class="k-input" :disabled="busy || !service" /></label>
+              </div>
+              <div class="service-detail__target-mode" role="group" aria-label="Service target mode">
+                <span class="lbl">Target</span>
+                <label><input v-model="targetMode" type="radio" value="host" :disabled="busy || !service" /> Host / IP</label>
+                <label :class="{ 'is-disabled': edgeIsServer }"><input v-model="targetMode" type="radio" value="kube" :disabled="busy || !service || edgeIsServer" /> Kubernetes Service</label>
+              </div>
+              <div v-if="targetMode === 'host'" class="service-detail__form-grid">
+                <label class="fld"><span class="lbl">Host {{ entry?.hostRequired ? '(required)' : '(blank = agent loopback)' }}</span><input v-model="form.host" class="k-input" :disabled="busy || !service" placeholder="192.168.1.1, myui.example.com" /><span v-if="entry?.hostHelp" class="muted service-detail__field-help">{{ entry.hostHelp }}</span></label>
+              </div>
+              <div v-else class="service-detail__form-grid service-detail__form-grid--two">
+                <label class="fld"><span class="lbl">Target namespace</span><input v-model="form.targetNamespace" class="k-input" :disabled="busy || !service" placeholder="home" /></label>
+                <label class="fld"><span class="lbl">Target service name</span><input v-model="form.targetName" class="k-input" :disabled="busy || !service" placeholder="home-assistant" /></label>
+              </div>
+              <label class="fld"><span class="lbl">AI instructions (optional)</span><textarea v-model="instructions" class="k-input" rows="3" :disabled="busy || !service" placeholder="Describe this service's entities/rooms so the AI knows your setup."></textarea></label>
+              <div class="service-detail__form-actions"><button class="k-btn k-btn--primary" type="button" :disabled="busy || !service" @click="onSaveConfig"><Save :size="14" aria-hidden="true" /> Save configuration</button></div>
+            </ResourceSectionCard>
 
-    <!-- Credentials -->
-    <div class="wiz-card k-card">
-      <div class="es-head">Credentials</div>
-      <div class="muted" style="margin-bottom: 8px;">{{ entry?.credential.hint ?? 'Credential' }} — makes the service Ready. Stored as a Secret, never on the agent host.</div>
-      <div class="row" style="gap: 8px; align-items: flex-end;">
-        <label v-for="f in credFields" :key="f.key" class="fld" style="flex: 1;">
-          <span class="lbl">{{ f.label }}</span>
-          <input v-model="credInputs[f.key]" :type="f.secret ? 'password' : 'text'" class="k-input" :placeholder="f.label" />
-          <span v-if="f.help" class="muted" style="font-size: 12px; margin-top: 4px;">{{ f.help }}</span>
-        </label>
-        <button class="k-btn k-btn--ghost" :disabled="busy || !credFilled" @click="onSaveCreds"><KeyRound :size="14" /> {{ service.hasCredentials ? 'Update' : 'Set' }} credentials</button>
-      </div>
-    </div>
+            <ResourceSectionCard class="service-detail__card" id="service-credentials" eyebrow="Access" title="Credentials" :description="credentialDescription">
+              <template v-if="credentialsSupported">
+                <p class="muted service-detail__credential-hint">{{ entry?.credential.hint || 'Credential' }}{{ credentialsOptional ? ' (optional)' : '' }} — makes the service Ready when authentication is required.</p>
+                <div class="service-detail__credential-row">
+                  <label v-for="field in credFields" :key="field.key" class="fld"><span class="lbl">{{ field.label }}</span><input v-model="credInputs[field.key]" :type="field.secret ? 'password' : 'text'" class="k-input" :disabled="busy || !service" :placeholder="field.label" autocomplete="new-password" /><span v-if="field.help" class="muted service-detail__field-help">{{ field.help }}</span></label>
+                  <button class="k-btn k-btn--ghost" type="button" :disabled="busy || !service || !credFilled" @click="onSaveCreds"><KeyRound :size="14" aria-hidden="true" /> {{ service?.hasCredentials ? 'Update' : 'Set' }} credentials</button>
+                </div>
+              </template>
+              <p v-else class="muted service-detail__credential-none">No credentials required for this service.</p>
+            </ResourceSectionCard>
 
-    <!-- Status -->
-    <div class="wiz-card k-card">
-      <div class="es-head">Status <span class="k-badge" :class="phaseClass(service.phase)">{{ service.phase || 'Pending' }}</span></div>
-      <div v-if="service.url" class="muted mono" style="margin-bottom: 8px; font-size: 12px;">{{ service.url }}</div>
-      <ConditionsPanel :conditions="service.conditions" empty-text="No conditions reported yet." />
+            <ResourceSectionCard class="service-detail__card" id="service-status" eyebrow="Diagnostics" title="Status" description="Controller observations and the current service endpoint.">
+              <div class="service-detail__status-row"><StatusBadge :status="serviceStatus" :tone="statusTone(serviceStatus)" /><span v-if="service?.version" class="muted">Version <span class="mono">{{ service.version }}</span></span><span v-if="service?.installType" class="muted">Install <span class="mono">{{ service.installType }}</span></span></div>
+              <a v-if="service?.url" class="service-detail__url mono" :href="service.url" target="_blank" rel="noopener">{{ service.url }}</a>
+              <ConditionsPanel :conditions="service?.conditions || []" empty-text="No conditions reported yet." />
+            </ResourceSectionCard>
+          </div>
+        </template>
+      </ResourcePage>
     </div>
   </div>
 </template>

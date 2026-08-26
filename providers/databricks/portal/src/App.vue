@@ -120,7 +120,9 @@ function importNavigate(path: 'connections' | 'warehouses') {
 
 <template>
   <div ref="rootRef" class="app">
-    <Tabs :tabs="tabs" :active="route.page" aria-label="Databricks resource sections" @select="navigate" />
+    <template v-if="!route.connection && !route.warehouse && !route.table">
+      <Tabs :tabs="tabs" :active="route.page" aria-label="Databricks resource sections" @select="navigate" />
+    </template>
 
     <p v-if="!hasTenant" class="empty">Select a workspace to manage Databricks resources.</p>
 

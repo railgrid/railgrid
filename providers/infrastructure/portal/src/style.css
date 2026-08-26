@@ -14,6 +14,21 @@ faros-provider-infrastructure {
   color: var(--color-text-primary, #e9e9f2);
 }
 
+/* The standalone IIFE does not receive the host Tailwind `.sr-only` utility.
+ * Keep the detail page's live/status announcements and menu label accessible
+ * without allowing either to occupy layout space. */
+faros-provider-infrastructure .instance-detail__sr-only {
+  block-size: 1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  inline-size: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+}
+
 faros-provider-infrastructure .page {
   display: flex;
   flex-direction: column;
@@ -310,6 +325,109 @@ faros-provider-infrastructure .empty-followup {
   gap: 8px;
   justify-content: center;
   min-height: 72px;
+}
+
+/* Instance detail keeps its route backlink outside the shared ResourcePage
+ * shell, matching the other provider resource journeys. ResourcePage owns
+ * the header/read-state composition; these selectors only cover the
+ * provider-local action menu and stacked body geometry. */
+faros-provider-infrastructure .instance-detail {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+
+faros-provider-infrastructure .instance-detail__back {
+  align-self: flex-start;
+  min-height: 0;
+  border-color: transparent;
+  padding: 0;
+}
+
+faros-provider-infrastructure .instance-detail__back:hover {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-accent-hover, #a18aff);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+faros-provider-infrastructure .instance-detail__back:active { transform: none; }
+faros-provider-infrastructure .instance-detail__back svg { flex: none; }
+
+faros-provider-infrastructure .instance-detail__actions {
+  display: inline-flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+faros-provider-infrastructure .instance-detail__actions .icon-text { gap: 7px; }
+faros-provider-infrastructure .instance-detail__menu { position: relative; }
+faros-provider-infrastructure .instance-detail__menu summary {
+  display: inline-flex;
+  min-width: 32px;
+  align-items: center;
+  justify-content: center;
+  list-style: none;
+  padding: 7px 8px;
+}
+faros-provider-infrastructure .instance-detail__menu summary::-webkit-details-marker,
+faros-provider-infrastructure .instance-detail__menu summary::marker { display: none; }
+faros-provider-infrastructure .instance-detail__menu-popover {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 180px;
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-radius: 6px;
+  background: var(--color-surface-overlay, #171927);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-surface, #0a0b12) 65%, transparent);
+  padding: 4px;
+}
+faros-provider-infrastructure .instance-detail__menu-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-danger, #ff5d5d);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 8px 10px;
+  text-align: left;
+}
+faros-provider-infrastructure .instance-detail__menu-item:hover:not(:disabled) {
+  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
+}
+faros-provider-infrastructure .instance-detail__menu-item:disabled {
+  cursor: default;
+  opacity: .5;
+}
+
+faros-provider-infrastructure .instance-detail__sections {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+
+faros-provider-infrastructure .instance-detail__sections .detail-field {
+  padding-inline: 0;
+}
+
+faros-provider-infrastructure .instance-detail .spin {
+  animation: infrastructure-instance-spin .8s linear infinite;
+}
+
+@keyframes infrastructure-instance-spin {
+  to { transform: rotate(360deg); }
 }
 
 faros-provider-infrastructure .instance-list-actions,

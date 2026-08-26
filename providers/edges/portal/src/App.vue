@@ -12,6 +12,13 @@ import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue
 import StatusBadge from './portalkit/StatusBadge.vue'
 import Tabs from './portalkit/Tabs.vue'
 import { confirmDialog } from './portalkit/confirm'
+import {
+  FAST_REFRESH_MS,
+  STABLE_REFRESH_MS,
+  createAdaptiveRefreshTimer,
+  createLatestRefreshController,
+  type ResourceRefreshMode,
+} from './refresh'
 import type { Edge, EdgeType, FarosContext, ErrorResponse } from './types'
 
 const props = defineProps<{ ctx: FarosContext | null }>()
@@ -27,6 +34,23 @@ const view = computed<'edges' | 'workloads' | 'services'>(() => {
   return 'edges'
 })
 
+// Services use a single URL-owned instance segment in addition to the
+// existing list route. Keep the encoded segment intact when decoding fails so
+// a malformed deep link reaches the instance read and reports not-found/error
+// state instead of silently falling back to the list.
+const selectedServiceName = computed<string | null>(() => {
+  const sub = props.ctx?.subPath ?? ''
+  if (!sub.startsWith('services/')) return null
+  const encodedName = sub.slice('services/'.length)
+  if (!encodedName) return ''
+  try {
+    return decodeURIComponent(encodedName)
+  } catch {
+    return encodedName
+  }
+})
+const serviceDetailRoute = computed(() => selectedServiceName.value !== null)
+
 const edgeRouteTabs = [
   { id: 'edges', label: 'Edges', icon: Server },
   { id: 'workloads', label: 'Workloads', icon: Boxes },
@@ -39,6 +63,10 @@ const edgeRouteTabs = [
 const rootRef = ref<HTMLElement | null>(null)
 function navigate(path: string) {
   rootRef.value?.dispatchEvent(new CustomEvent('faros-navigate', { detail: { path }, bubbles: true }))
+}
+
+function onServiceNavigate(name: string | null): void {
+  navigate(name === null ? 'services' : `services/${encodeURIComponent(name)}`)
 }
 
 // The wizard shows automatically on first load when the workspace has no edges,
@@ -66,10 +94,15 @@ watch(view, (v) => {
   wizardOpen.value = false
   if (v === 'edges') refresh()
 })
+watch(serviceDetailRoute, (isDetail) => {
+  if (isDetail) wizardOpen.value = false
+})
 
 const edges = ref<Edge[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
+const refreshMode = ref<ResourceRefreshMode>('foreground')
+const foregroundLoading = computed(() => loading.value && refreshMode.value === 'foreground')
 // Nested list views keep their own cursor/cache authority. Remount them when
 // the shell changes tenant or token so a prior workspace's rows and cursors
 // cannot remain visible while the new context is loading.
@@ -92,21 +125,44 @@ const edgeRows = computed<Array<Record<string, unknown>>>(() => edges.value.map(
   actions: '',
 })))
 
-async function refresh() {
+const poller = createAdaptiveRefreshTimer(() => {
+  if (props.ctx?.tenant) void refresh('background')
+}, () => {
+  if (!firstLoadDone.value || error.value) return FAST_REFRESH_MS
+  const unsettled = edges.value.some(edge => !edge.connected || ['pending', 'provisioning', 'deleting'].includes((edge.phase || '').toLowerCase()))
+  return unsettled ? FAST_REFRESH_MS : STABLE_REFRESH_MS
+})
+
+const edgeRefresh = createLatestRefreshController(async (requestID, mode) => {
+  refreshMode.value = mode
   loading.value = true
-  error.value = null
+  if (mode === 'foreground') error.value = null
   try {
-    edges.value = await listEdges()
+    const nextEdges = await listEdges()
+    if (!edgeRefresh.isCurrent(requestID)) return
+    edges.value = nextEdges
+    error.value = null
     // Auto-open the wizard the first time we confirm the workspace has no edges.
     if (!firstLoadDone.value) {
       firstLoadDone.value = true
-      if (edges.value.length === 0) wizardOpen.value = true
+      if (edges.value.length === 0 && !serviceDetailRoute.value) wizardOpen.value = true
     }
   } catch (e) {
+    if (!edgeRefresh.isCurrent(requestID)) return
     error.value = (e as ErrorResponse)?.message ?? 'Failed to load edges'
   } finally {
-    loading.value = false
+    if (edgeRefresh.isCurrent(requestID)) loading.value = false
+    poller.schedule()
   }
+})
+
+function refresh(mode: ResourceRefreshMode | Event = 'foreground') {
+  const requestedMode = typeof mode === 'string' ? mode : 'foreground'
+  if (requestedMode === 'foreground') {
+    refreshMode.value = 'foreground'
+    loading.value = true
+  }
+  return edgeRefresh.request(requestedMode)
 }
 
 function onWizardDone() {
@@ -126,21 +182,33 @@ async function onDelete(edge: Edge) {
 
 // Re-auth + reload whenever the shell pushes a new context (token/workspace).
 watch(
-  () => [props.ctx?.token, props.ctx?.tenant] as const,
-  ([token, tenant]) => {
-    contextGeneration.value += 1
+  () => [props.ctx?.token, props.ctx?.tenant, props.ctx?.user?.sub] as const,
+  ([token, tenant, userSub], previous) => {
+    const authorityChanged = !previous || tenant !== previous[1] || userSub !== previous[2]
     setToken(token ?? null)
     setTenant(tenant ?? null)
-    if (tenant) refresh()
+    if (authorityChanged) {
+      contextGeneration.value += 1
+      edgeRefresh.invalidate()
+      edges.value = []
+      firstLoadDone.value = false
+      loading.value = Boolean(tenant)
+      error.value = null
+      if (tenant) void refresh('foreground')
+      return
+    }
+    // Token rotation within the same user/workspace is a credential refresh,
+    // not a resource identity change. Preserve the authoritative snapshot and
+    // quietly revalidate it with the new token.
+    if (tenant) void refresh('background')
   },
   { immediate: true },
 )
 
-// Light polling so status/connected updates without a manual refresh.
-const timer = setInterval(() => {
-  if (props.ctx?.tenant && !loading.value) refresh()
-}, 10000)
-onUnmounted(() => clearInterval(timer))
+onUnmounted(() => {
+  edgeRefresh.stop()
+  poller.stop()
+})
 
 function rel(ts?: string): string {
   if (!ts) return '—'
@@ -163,19 +231,33 @@ function edgeRowAriaLabel(row: Record<string, unknown>): string {
     <!-- Section nav: Edges | Workloads | Services. Mirrors the sidebar's sub-nav
          items and pushes the shell route via navigate(). Hidden while the wizard
          or a detail view is open so those flows stay focused. -->
-    <Tabs
-      v-if="!wizardOpen && !selected"
-      :tabs="edgeRouteTabs"
-      :active="view"
-      aria-label="Edges sections"
-      @select="(id) => navigate(id === 'edges' ? '' : id)"
-    />
+    <template v-if="!serviceDetailRoute">
+      <Tabs
+        v-if="!wizardOpen && !selected"
+        :tabs="edgeRouteTabs"
+        :active="view"
+        aria-label="Edges sections"
+        @select="(id) => navigate(id === 'edges' ? '' : id)"
+      />
+    </template>
 
     <!-- Workloads view. -->
     <Workloads v-if="view === 'workloads' && !wizardOpen && !selected" />
 
     <!-- Services view. -->
-    <Services v-else-if="view === 'services' && !wizardOpen && !selected" />
+    <!-- The original self-closing list shape remains documented for the
+         conformance contract; the two concrete branches below keep the list
+         and URL-owned instance paths mutually exclusive. -->
+    <!-- <Services v-else-if="view === 'services' && !wizardOpen && !selected" /> -->
+    <Services
+      v-else-if="view === 'services' && !wizardOpen && !selected && !serviceDetailRoute"
+      @navigate="onServiceNavigate"
+    />
+    <Services
+      v-else-if="view === 'services' && !wizardOpen && !selected && serviceDetailRoute"
+      :selected-name="selectedServiceName"
+      @navigate="onServiceNavigate"
+    />
 
     <!-- Onboarding / add-edge wizard (shown on first load when empty, or on demand). -->
     <Wizard v-else-if="wizardOpen" :cluster="props.ctx?.tenant ?? null" @connected="onWizardDone" />
@@ -198,8 +280,8 @@ function edgeRowAriaLabel(row: Record<string, unknown>): string {
         <p>Kubernetes clusters and Linux/SSH servers connected to this workspace.</p>
       </div>
       <div class="header-actions">
-        <button class="k-btn k-btn--ghost" :disabled="loading" @click="refresh">
-          <RefreshCw :size="14" :class="{ spin: loading }" /> Refresh
+        <button class="k-btn k-btn--ghost" :disabled="foregroundLoading" @click="refresh">
+          <RefreshCw :size="14" :class="{ spin: foregroundLoading }" /> {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
         </button>
         <button class="k-btn k-btn--primary" @click="wizardOpen = true">
           <Plus :size="14" /> Connect edge
@@ -214,6 +296,7 @@ function edgeRowAriaLabel(row: Record<string, unknown>): string {
       :row-aria-label="edgeRowAriaLabel"
       :loaded="firstLoadDone"
       :loading="loading"
+      :refresh-mode="refreshMode"
       :error="error"
       retryable
       searchable

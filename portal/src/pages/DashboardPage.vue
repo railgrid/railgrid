@@ -293,7 +293,7 @@ function onLayoutUpdated() {
                    customize controls stay a single coherent group. -->
               <button
                 type="button"
-                class="k-btn k-btn--ghost flex items-center gap-1.5 px-3 py-1.5 text-[12px]"
+                class="k-btn k-btn--primary flex items-center gap-1.5 px-3 py-1.5 text-[12px]"
                 @click="welcomeForced = true"
               >
                 <Rocket class="h-3.5 w-3.5" :stroke-width="2" /> Getting started

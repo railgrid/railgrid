@@ -103,7 +103,9 @@ function navigate(path: string) {
     </template>
 
     <template v-else>
-      <Tabs :tabs="tabs" :active="route.page" aria-label="Code provider sections" @select="navigate" />
+      <template v-if="!route.repo && !route.connection">
+        <Tabs :tabs="tabs" :active="route.page" aria-label="Code provider sections" @select="navigate" />
+      </template>
 
       <p v-if="!hasTenant" class="empty">Select a workspace to manage code.</p>
 

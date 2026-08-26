@@ -49,7 +49,16 @@ const rootRef = ref<HTMLElement | null>(null)
 const projects = ref<Project[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
+const hasSnapshot = ref(false)
 let poller: TilePoller | null = null
+let contextGeneration = 0
+
+function contextKey(ctx: TileContext | null): string {
+  if (!ctx) return ''
+  // Token rotation is not a resource identity change and must not blank an
+  // otherwise stable tile. The selected workspace is the identity boundary.
+  return [ctx.tenant, ctx.orgUUID, ctx.workspaceUUID].map((part) => part ?? '').join('\u0000')
+}
 
 function environment(project: Project, name: string): ProjectEnvironment | undefined {
   return (project.environments ?? []).find((env) => env.name === name)
@@ -85,23 +94,37 @@ const rows = computed(() =>
 
 async function load() {
   const ctx = props.context
+  const generation = contextGeneration
   if (!hasWorkspaceContext(ctx)) {
     projects.value = []
     error.value = null
     loading.value = false
+    hasSnapshot.value = true
     return
   }
+  if (!hasSnapshot.value) loading.value = true
   try {
     // The App Studio client takes the context per call rather than through
     // module-level setters, so the tile passes its own — no shared mutable
     // state with the full provider app when both are mounted.
-    projects.value = await api.listProjects(ctx as FarosContext)
+    const next = await api.listProjects(ctx as FarosContext)
+    if (generation !== contextGeneration) return
+    projects.value = next
     error.value = null
+    hasSnapshot.value = true
   } catch (e) {
-    projects.value = []
-    error.value = isBenignTileError(e) ? null : tileErrorText(e)
+    if (generation !== contextGeneration) return
+    if (isBenignTileError(e)) {
+      error.value = null
+      if (!hasSnapshot.value) {
+        projects.value = []
+        hasSnapshot.value = true
+      }
+    } else {
+      error.value = tileErrorText(e)
+    }
   } finally {
-    loading.value = false
+    if (generation === contextGeneration) loading.value = false
   }
 }
 
@@ -110,15 +133,29 @@ onMounted(() => {
   poller.start()
 })
 onUnmounted(() => poller?.stop())
-watch(() => props.context, () => poller?.refresh())
+watch(
+  () => contextKey(props.context),
+  (next, previous) => {
+    if (next === previous) return
+    contextGeneration += 1
+    projects.value = []
+    error.value = null
+    hasSnapshot.value = false
+    loading.value = true
+    poller?.refresh()
+  },
+)
 </script>
 
 <template>
   <div ref="rootRef" :class="tileClass.root">
-    <div v-if="loading" :class="tileClass.message">Loading projects&hellip;</div>
-    <div v-else-if="error" :class="tileClass.error">Failed to load: {{ error }}</div>
+    <div v-if="loading && !hasSnapshot" :class="tileClass.message">Loading projects&hellip;</div>
+    <div v-else-if="error && !hasSnapshot" :class="tileClass.error">Failed to load: {{ error }}</div>
 
     <template v-else>
+      <div v-if="error" :class="tileClass.error" role="status" aria-live="polite">
+        Could not refresh. Showing the last loaded data. {{ error }}
+      </div>
       <div :class="tileClass.stats">
         <span :class="[tileClass.stat, tileClass.statTotal]">
           <span v-html="ic('package', tileClass.statIcon)" />

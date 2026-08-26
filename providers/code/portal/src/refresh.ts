@@ -1,10 +1,50 @@
 import { reactive } from 'vue'
+import type { ResourceRefreshMode } from './portalkit/page-state'
+
+export type { ResourceRefreshMode } from './portalkit/page-state'
 
 export interface LatestRefreshController {
-  request(): void
+  request(mode?: ResourceRefreshMode): void
   invalidate(): void
   stop(): void
   isCurrent(requestID: number): boolean
+}
+
+export const FAST_REFRESH_MS = 5_000
+export const STABLE_REFRESH_MS = 30_000
+
+export interface AdaptiveRefreshTimer {
+  schedule(): void
+  stop(): void
+}
+
+/**
+ * Schedule one background read at a time. A one-shot timer lets callers adapt
+ * the next cadence from the latest resource snapshot without accumulating
+ * intervals while a slow read is in flight.
+ */
+export function createAdaptiveRefreshTimer(
+  read: () => void,
+  cadence: () => number,
+): AdaptiveRefreshTimer {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let stopped = false
+
+  return {
+    schedule() {
+      if (stopped) return
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = undefined
+        if (!stopped) read()
+      }, cadence())
+    },
+    stop() {
+      stopped = true
+      if (timer !== undefined) clearTimeout(timer)
+      timer = undefined
+    },
+  }
 }
 
 export type OperationPhase = 'creating' | 'saving' | 'deleting'
@@ -87,32 +127,33 @@ export function operationKey(kind: string, name: string): string {
 }
 
 // Serializes timer/manual/mutation refreshes. A request made while one is in
-// flight supersedes that result and queues one latest read, so stale responses
-// cannot overwrite newer state.
+// flight queues one latest read without fencing the active read. This lets a
+// timer observe the current snapshot instead of starving it, while a queued
+// foreground request still wins over any queued background request.
 export function createLatestRefreshController(
-  task: (requestID: number) => Promise<void>,
+  task: (requestID: number, mode: ResourceRefreshMode) => Promise<void>,
 ): LatestRefreshController {
   let generation = 0
   let active = false
-  let queued = false
+  let queuedMode: ResourceRefreshMode | undefined
   let stopped = false
 
-  const request = () => {
+  const request = (mode: ResourceRefreshMode = 'foreground') => {
     if (stopped) return
     if (active) {
-      generation += 1
-      queued = true
+      queuedMode = queuedMode === 'foreground' || mode === 'foreground' ? 'foreground' : 'background'
       return
     }
     const requestID = ++generation
     active = true
-    void task(requestID).catch(() => {
+    void task(requestID, mode).catch(() => {
       // Tasks own user-facing error state.
     }).finally(() => {
       active = false
-      if (queued && !stopped) {
-        queued = false
-        request()
+      if (queuedMode && !stopped) {
+        const nextMode = queuedMode
+        queuedMode = undefined
+        request(nextMode)
       }
     })
   }
@@ -121,13 +162,17 @@ export function createLatestRefreshController(
     request,
     invalidate() {
       if (stopped) return
+      // Unlike an ordinary queued request, invalidation fences the active
+      // result: it belongs to the previous tenant/resource identity. The
+      // replacement is foreground so a context switch cannot be hidden by a
+      // background retry.
       generation += 1
-      if (active) queued = true
+      if (active) queuedMode = 'foreground'
     },
     stop() {
       stopped = true
       generation += 1
-      queued = false
+      queuedMode = undefined
     },
     isCurrent(requestID) {
       return !stopped && requestID === generation

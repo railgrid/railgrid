@@ -8,7 +8,17 @@ import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vu
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import { isCompleteFirstCursorPage, type ResourceTableChange } from '../portalkit/table'
-import { createLatestRefreshController, createOperationLocks, operationKey, type LatestRefreshController, type ResourceDeletions } from '../refresh'
+import {
+  FAST_REFRESH_MS,
+  STABLE_REFRESH_MS,
+  createAdaptiveRefreshTimer,
+  createLatestRefreshController,
+  createOperationLocks,
+  operationKey,
+  type LatestRefreshController,
+  type ResourceDeletions,
+  type ResourceRefreshMode,
+} from '../refresh'
 import { createFullListReadCoordinator } from '../hybridPagination'
 import {
   cloneRepositoryFilters,
@@ -78,29 +88,52 @@ const autoInit = ref(true)
 const submitting = ref(false)
 const formError = ref<string | null>(null)
 
-let timer: number | undefined
 let mounted = false
 let repoRefresh!: LatestRefreshController
 let connectionRefresh!: LatestRefreshController
 let forceRepositoryFullRead = false
+const repositoryRefreshMode = ref<ResourceRefreshMode>('foreground')
+const connectionsRefreshMode = ref<ResourceRefreshMode>('foreground')
+const poller = createAdaptiveRefreshTimer(() => load('background'), () => {
+  if (!loaded.value || !connectionsLoaded.value || error.value || connectionsError.value) return FAST_REFRESH_MS
+  const repositoryPending = repos.value.some(repository => {
+    const status = repositoryStatus(repository)
+    return status === 'pending' || status === 'Deleting'
+  })
+  const connectionPending = connections.value.some(connection => (
+    !!connection.deletionTimestamp || !connection.validated || (
+      connection.generation !== undefined &&
+      (connection.observedGeneration === undefined || connection.observedGeneration < connection.generation)
+    )
+  ))
+  return repositoryPending || connectionPending ? FAST_REFRESH_MS : STABLE_REFRESH_MS
+})
 
 function errMessage(e: unknown): string {
   const err = e as ErrorResponse
   return err.reason ? `${err.reason}: ${err.message}` : err.message || String(e)
 }
 
-function loadRepositories(forceFullRead = repositoryMode.value === 'client') {
+function loadRepositories(mode: ResourceRefreshMode = 'foreground', forceFullRead = repositoryMode.value === 'client') {
   if (forceFullRead) forceRepositoryFullRead = true
-  repoRefresh.request()
+  if (mode === 'foreground') {
+    repositoryRefreshMode.value = 'foreground'
+    loading.value = true
+  }
+  repoRefresh.request(mode)
 }
 
-function loadConnections() {
-  connectionRefresh.request()
+function loadConnections(mode: ResourceRefreshMode = 'foreground') {
+  if (mode === 'foreground') {
+    connectionsRefreshMode.value = 'foreground'
+    connectionsLoading.value = true
+  }
+  connectionRefresh.request(mode)
 }
 
-function load() {
-  loadRepositories()
-  loadConnections()
+function load(mode: ResourceRefreshMode = 'foreground') {
+  loadRepositories(mode)
+  loadConnections(mode)
 }
 
 function openRepository(row: Record<string, unknown>) {
@@ -176,7 +209,7 @@ function handleRepositoryChange(change: ResourceTableChange): void {
     // even before client mode has been committed.
     repositoryFullRead.clear()
     if (transition.clearRows) repos.value = []
-    if (transition.reload) loadRepositories(false)
+    if (transition.reload) loadRepositories('foreground', false)
     return
   }
 
@@ -311,7 +344,8 @@ async function remove(row: Record<string, unknown>) {
   }
 }
 
-repoRefresh = createLatestRefreshController(async requestID => {
+repoRefresh = createLatestRefreshController(async (requestID, mode) => {
+  repositoryRefreshMode.value = mode
   const request = currentRepositoryRequest()
   const forceFullRead = forceRepositoryFullRead
   forceRepositoryFullRead = false
@@ -384,11 +418,15 @@ repoRefresh = createLatestRefreshController(async requestID => {
     const err = e as ErrorResponse
     error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
   } finally {
-    if (repoRefresh.isCurrent(requestID)) loading.value = false
+    if (repoRefresh.isCurrent(requestID)) {
+      loading.value = false
+      poller.schedule()
+    }
   }
 })
 
-connectionRefresh = createLatestRefreshController(async requestID => {
+connectionRefresh = createLatestRefreshController(async (requestID, mode) => {
+  connectionsRefreshMode.value = mode
   connectionsLoading.value = true
   try {
     const next = await api.listConnections()
@@ -405,18 +443,21 @@ connectionRefresh = createLatestRefreshController(async requestID => {
     const err = e as ErrorResponse
     connectionsError.value = err.reason === 'TenantMissing' ? null : errMessage(e)
   } finally {
-    if (connectionRefresh.isCurrent(requestID)) connectionsLoading.value = false
+    if (connectionRefresh.isCurrent(requestID)) {
+      connectionsLoading.value = false
+      poller.schedule()
+    }
   }
 })
 
 onMounted(() => {
   mounted = true
   load()
-  timer = window.setInterval(load, 5000)
+  poller.schedule()
 })
 onUnmounted(() => {
   mounted = false
-  window.clearInterval(timer)
+  poller.stop()
   repoRefresh.stop()
   connectionRefresh.stop()
 })
@@ -437,7 +478,7 @@ onUnmounted(() => {
     <span v-if="connectionsLoading && !connectionsLoaded" class="sr-only" role="status" aria-live="polite">Loading connections…</span>
     <div v-if="connectionsError" class="error read-error" role="alert" aria-live="assertive">
       <span>{{ connectionsLoaded ? 'Showing cached connection choices. ' : '' }}{{ connectionsError }}</span>
-      <button class="k-btn k-btn--ghost" type="button" @click="loadConnections">Retry connections</button>
+      <button class="k-btn k-btn--ghost" type="button" @click="loadConnections()">Retry connections</button>
     </div>
     <span v-else-if="connectionsLoading && connectionsLoaded" class="sr-only" role="status" aria-live="polite">Updating connections…</span>
     <p v-if="connectionsLoaded && !connectionChoices.length" class="empty">Add a ready connection first, then create repositories under it.</p>
@@ -487,6 +528,7 @@ onUnmounted(() => {
       row-key="name"
       :loaded="loaded"
       :loading="loading"
+      :refresh-mode="repositoryRefreshMode"
       :error="error"
       :stale="loaded && !!error"
       retryable
@@ -496,7 +538,7 @@ onUnmounted(() => {
       @change="handleRepositoryChange"
       @row-click="openRepository"
     >
-      <template #name="{ value, row }"><span v-if="row.deleting">{{ row.repo || value }}</span><button v-else class="k-btn k-btn--ghost code-inline-action" type="button" @click.stop="openRepository(row)">{{ row.repo || value }}</button></template>
+      <template #name="{ value, row }"><span v-if="row.deleting">{{ row.repo || value }}</span><button v-else class="k-btn k-btn--ghost k-table-resource-link" type="button" @click.stop="openRepository(row)">{{ row.repo || value }}</button></template>
       <template #connectionRef="{ value }">{{ value }}</template>
       <template #visibility="{ value }">{{ value }}</template>
       <template #url="{ row }"><a v-if="row.htmlURL && !row.deleting" :href="String(row.htmlURL)" target="_blank" rel="noopener" @click.stop>open <ExternalLink :size="12" aria-hidden="true" /></a><span v-else class="muted">—</span></template>

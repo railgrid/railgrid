@@ -151,6 +151,84 @@ test('keeps the canonical stylesheet handoff and native table-row contract', () 
   assert.doesNotMatch(table, /:role="interactive \? 'button' : undefined"/)
 })
 
+test('keeps the responsive ResourcePage title canonical across provider detail views', () => {
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const codeStyle = fs.readFileSync(new URL('../providers/code/portal/src/style.css', import.meta.url), 'utf8')
+  const edgesStyle = fs.readFileSync(new URL('../providers/edges/portal/src/style.css', import.meta.url), 'utf8')
+  const title = css.match(/\.k-resource-page__title\s*\{([^}]*)\}/s)?.[1] ?? ''
+
+  assert.match(title, /font-size:\s*clamp\(24px,\s*4vw,\s*32px\)/)
+  assert.match(title, /letter-spacing:\s*-\.02em/)
+  assert.match(title, /line-height:\s*1\.12/)
+  assert.match(title, /overflow-wrap:\s*anywhere/)
+  assert.match(title, /word-break:\s*break-word/)
+  assert.match(css, /@media\s*\(max-width:\s*520px\)[\s\S]*\.k-resource-page__title\s*\{[^}]*font-size:\s*22px;/)
+
+  for (const relative of [
+    '../providers/code/portal/src/views/ConnectionDetailView.vue',
+    '../providers/code/portal/src/views/RepoDetailView.vue',
+    '../providers/databricks/portal/src/views/ConnectionDetailView.vue',
+    '../providers/databricks/portal/src/views/TableDetailView.vue',
+    '../providers/databricks/portal/src/views/WarehouseDetailView.vue',
+    '../providers/edges/portal/src/Detail.vue',
+    '../providers/edges/portal/src/ServiceEdit.vue',
+    '../providers/infrastructure/portal/src/views/InstanceDetailPage.vue',
+    '../portal/src/pages/MCPPage.vue',
+  ]) {
+    assert.match(fs.readFileSync(new URL(relative, import.meta.url), 'utf8'), /<ResourcePage\b/)
+  }
+
+  assert.doesNotMatch(codeStyle, /(?:repo|connection)-detail__resource\s*>\s*section\s*>\s*header\s+h1/)
+  assert.doesNotMatch(edgesStyle, /(?:edge|service)-detail__resource\s*>\s*section\s*>\s*header\s+h1/)
+})
+
+test('keeps the ResourcePage title-first metadata and actions contract canonical', () => {
+  const page = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourcePage.vue', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const title = page.indexOf('<h1 class="k-resource-page__title">')
+  const meta = page.indexOf('class="k-resource-page__meta"')
+  const subtitle = page.indexOf('class="k-resource-page__subtitle"')
+  const headerSide = page.indexOf('class="k-resource-page__header-side"')
+  const headerEnd = page.indexOf('</header>', headerSide)
+  const metadataSource = page.slice(meta, subtitle)
+  const headerSideSource = page.slice(headerSide, headerEnd)
+
+  assert.match(page, /kind\?: string/)
+  assert.doesNotMatch(page, /\beyebrow\b/)
+  assert.ok(title >= 0 && title < meta && meta < subtitle, 'title, metadata, and subtitle must be ordered')
+  assert.match(metadataSource, /class="k-resource-page__kind"[^>]*>\{\{ kind \}\}/)
+  assert.match(metadataSource, /slot name="meta"/)
+  assert.match(metadataSource, /class="k-resource-page__status"[^>]*><slot name="status" \/>/)
+  assert.match(metadataSource, /class="k-resource-page__separator"[^>]*aria-hidden="true">·<\/span>/)
+  assert.doesNotMatch(page, /k-resource-page__eyebrow/)
+  assert.doesNotMatch(headerSideSource, /\$slots\.status|k-resource-page__status/)
+  assert.match(headerSideSource, /\$slots\.actions/)
+  const kindRule = css.match(/\.k-resource-page__kind\s*\{([^}]*)\}/s)?.[1] ?? ''
+  assert.match(kindRule, /display:\s*inline-flex;/)
+  assert.match(kindRule, /flex:\s*0 0 auto;/)
+  assert.match(kindRule, /align-items:\s*center;/)
+  assert.doesNotMatch(kindRule, /(?:color|font-family|font-size|font-weight|letter-spacing|text-transform):/)
+  assert.match(css, /\.k-resource-page__separator\s*\{[\s\S]*flex:\s*0 0 auto;/)
+  assert.match(css, /\.k-resource-page__status\s*\{[^}]*display:\s*inline-flex;/)
+
+  for (const relative of [
+    '../providers/code/portal/src/views/ConnectionDetailView.vue',
+    '../providers/code/portal/src/views/RepoDetailView.vue',
+    '../providers/databricks/portal/src/views/ConnectionDetailView.vue',
+    '../providers/databricks/portal/src/views/TableDetailView.vue',
+    '../providers/databricks/portal/src/views/WarehouseDetailView.vue',
+    '../providers/edges/portal/src/Detail.vue',
+    '../providers/edges/portal/src/ServiceEdit.vue',
+    '../providers/infrastructure/portal/src/views/InstanceDetailPage.vue',
+    '../portal/src/pages/MCPPage.vue',
+  ]) {
+    const source = fs.readFileSync(new URL(relative, import.meta.url), 'utf8')
+    for (const match of source.matchAll(/<ResourcePage\b[^>]*>/g)) {
+      assert.doesNotMatch(match[0], /\beyebrow\s*=/, `${relative} ResourcePage uses kind instead of eyebrow`)
+    }
+  }
+})
+
 test('keeps sidebar divider and child toggles on the borderless text-button recipe', () => {
   const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
   const layout = fs.readFileSync(new URL('../portal/src/components/AppLayout.vue', import.meta.url), 'utf8')
@@ -196,6 +274,18 @@ test('keeps resource-table controls and wide-table scrolling in the canonical re
 
   assert.match(sync, /VUE_FILES=\([^\n]*ResourceTable\.vue table\.ts/)
   assert.match(sync, /OBSOLETE_FILES=\([^\n]*ResourceTable\.css/)
+})
+
+test('keeps resource section cards bounded and supports headerless sections', () => {
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const sectionCard = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourceSectionCard.vue', import.meta.url), 'utf8')
+  const card = css.match(/\.k-resource-section-card\s*\{([^}]*)\}/s)?.[1] ?? ''
+
+  assert.match(card, /box-sizing:\s*border-box/)
+  assert.match(sectionCard, /title\?:\s*string/)
+  assert.match(sectionCard, /v-if="props\.title"[\s\S]*class="k-resource-section-card__title"/)
+  assert.match(sectionCard, /v-if="props\.eyebrow \|\| props\.title \|\| props\.description \|\| \$slots\.actions"/)
+  assert.match(sectionCard, /:aria-labelledby="props\.title && headingId \? headingId : undefined"/)
 })
 
 test('keeps platform-admin flat lists and navigation on shared host patterns', () => {

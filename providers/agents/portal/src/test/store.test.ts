@@ -33,8 +33,39 @@ describe('AppStore slices', () => {
     await store.load('schedules')
     expect(store.schedules.error).toBe('boom')
     expect(store.schedules.loaded).toBe(true)
-    // Previous data survives a transient failure.
+    expect(store.schedules.hasSnapshot).toBe(false)
     expect(store.schedules.data).toEqual([])
+  })
+
+  it('distinguishes a successful empty snapshot and retains it on a transient error', async () => {
+    const listSchedules = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error('temporarily unavailable'))
+    const store = makeStore(stubApi({ listSchedules }))
+
+    await store.load('schedules')
+    expect(store.schedules.hasSnapshot).toBe(true)
+    expect(store.schedules.data).toEqual([])
+
+    await store.load('schedules')
+    expect(store.schedules.hasSnapshot).toBe(true)
+    expect(store.schedules.data).toEqual([])
+    expect(store.schedules.error).toBe('temporarily unavailable')
+  })
+
+  it('retains a populated snapshot on a transient error', async () => {
+    const agent = { metadata: { name: 'scout' }, spec: {} }
+    const listAgents = vi.fn()
+      .mockResolvedValueOnce([agent])
+      .mockRejectedValueOnce(new Error('temporarily unavailable'))
+    const store = makeStore(stubApi({ listAgents }))
+
+    await store.load('agents')
+    await store.load('agents')
+
+    expect(store.agents.data).toEqual([agent])
+    expect(store.agents.hasSnapshot).toBe(true)
+    expect(store.agents.error).toBe('temporarily unavailable')
   })
 
   it('emits change on every settled load', async () => {

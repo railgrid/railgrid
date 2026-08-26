@@ -32,17 +32,17 @@ VUE_PORTALS=(
   "providers/edges/portal"
   "providers/infrastructure/portal"
 )
-VUE_FILES=(confirm.ts ConditionsPanel.vue ConfirmDialog.vue LayoutSelector.vue layoutPreference.ts ResourceTable.vue table.ts ResourceTableDeleteButton.vue ResourceTableEditButton.vue StatusBadge.vue Tabs.vue)
+VUE_FILES=(confirm.ts ConditionsPanel.vue ConfirmDialog.vue LayoutSelector.vue layoutPreference.ts ResourcePage.vue ResourceSectionCard.vue ResourceStatCards.vue ResourceTable.vue table.ts ResourceTableDeleteButton.vue ResourceTableEditButton.vue StatusBadge.vue Tabs.vue)
 
 # Plain assets from the vanilla kit are shared by both portal styles.
-VUE_SHARED_FILES=(dashboardtile.ts faros-ui.css icons.ts styles.ts tabs.ts tenant.ts toast.ts)
+VUE_SHARED_FILES=(dashboardtile.ts faros-ui.css icons.ts page-state.ts styles.ts tabs.ts tenant.ts toast.ts)
 ALL_PORTALS=("${TS_PORTALS[@]}" "${VUE_PORTALS[@]}")
 HOST_UI="$ROOT/portal/src/assets/faros-ui.css"
 
 # README.md documents the canonical kit but is not a distributable vendored
 # asset. Every other direct file in the canonical directories must be listed
 # above so adding a new source file cannot silently skip every portal.
-TS_CANONICAL_ONLY=(README.md)
+TS_CANONICAL_ONLY=(README.md page-state.ts)
 VUE_CANONICAL_ONLY=()
 
 # These files were visual implementations before faros-ui.css became the sole

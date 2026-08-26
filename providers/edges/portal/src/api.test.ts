@@ -5,6 +5,7 @@ import {
   createWorkload,
   deleteEdgeService,
   deleteWorkload,
+  getEdge,
   listEdgeServices,
   listEdges,
   listServices,
@@ -143,6 +144,71 @@ describe('cursor list pages', () => {
 })
 
 describe('unchanged edge fleet and CRUD contracts', () => {
+  it('maps a Kubernetes edge detail into human status plus a technical snapshot', async () => {
+    let call: { query: string; variables: Record<string, unknown> } | undefined
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      call = request(init)
+      return response({ data: { edges_faros_sh: { v1alpha1: {
+        KubernetesCluster: {
+          metadata: {
+            name: 'cluster-a', namespace: '', uid: 'uid-a', resourceVersion: 'rv-3', generation: 4,
+            creationTimestamp: '2026-08-22T00:00:00Z', labels: { region: 'eu' }, annotations: { owner: 'platform' },
+          },
+          spec: { labels: { region: 'eu' } },
+          status: {
+            phase: 'Ready', connected: true, hostname: 'cluster-a.local', agentVersion: 'v1',
+            lastHeartbeatTime: '2026-08-22T00:01:00Z', URL: '/edge/a', joinToken: 'sentinel-join-token',
+            conditions: [{ type: 'Ready', status: 'True', observedGeneration: 4 }],
+          },
+        },
+      } } } })
+    }))
+
+    const detail = await getEdge('cluster-a', 'kubernetes')
+    expect(detail).toMatchObject({
+      name: 'cluster-a',
+      type: 'kubernetes',
+      apiVersion: 'edges.faros.sh/v1alpha1',
+      kind: 'KubernetesCluster',
+      generation: 4,
+      observedGeneration: 4,
+      spec: { labels: { region: 'eu' } },
+      statusURL: '/edge/a',
+      rawObject: {
+        apiVersion: 'edges.faros.sh/v1alpha1',
+        kind: 'KubernetesCluster',
+        metadata: { name: 'cluster-a', uid: 'uid-a', generation: 4 },
+      },
+    })
+    expect(detail.joinToken).toBe('sentinel-join-token')
+    expect((detail.rawObject.status as Record<string, unknown>).joinToken).toBeUndefined()
+    expect(JSON.stringify(detail.rawObject)).not.toContain('sentinel-join-token')
+    expect(call?.query).toContain('metadata { name namespace uid resourceVersion generation creationTimestamp labels annotations }')
+    expect(call?.query).toContain('spec { labels }')
+    expect(call?.query).not.toContain('sshPort')
+  })
+
+  it('uses the server-only technical spec selection for Linux edges', async () => {
+    let call: { query: string; variables: Record<string, unknown> } | undefined
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      call = request(init)
+      return response({ data: { edges_faros_sh: { v1alpha1: {
+        LinuxServer: {
+          metadata: { name: 'server-a' },
+          spec: { sshPort: 2200, sshUserMapping: 'provided', sshCredentialsRef: { name: 'ssh-creds', namespace: 'faros-system' } },
+          status: { connected: false, phase: 'Pending', conditions: [] },
+        },
+      } } } })
+    }))
+
+    await expect(getEdge('server-a', 'server')).resolves.toMatchObject({
+      name: 'server-a',
+      kind: 'LinuxServer',
+      spec: { sshPort: 2200, sshUserMapping: 'provided' },
+    })
+    expect(call?.query).toContain('sshPort sshUserMapping sshKeySecretRef { name namespace } sshCredentialsRef { name namespace }')
+  })
+
   it('keeps listEdges as the unpaged merged fleet query and preserves kind/status joins', async () => {
     let call: { query: string; variables: Record<string, unknown> } | undefined
     vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {

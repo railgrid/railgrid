@@ -22,12 +22,17 @@ import {
   isBenignTileError,
   mostRecent,
   navigateFromTile,
-  TILE_POLL_MS,
   tileClass,
   tileErrorText,
   type TileContext,
 } from './portalkit/dashboardtile'
-import { createLatestRefreshController, type LatestRefreshController } from './refresh'
+import {
+  FAST_REFRESH_MS,
+  STABLE_REFRESH_MS,
+  createAdaptiveRefreshTimer,
+  createLatestRefreshController,
+  type LatestRefreshController,
+} from './refresh'
 
 const props = defineProps<{ context: TileContext | null }>()
 
@@ -37,8 +42,13 @@ const connections = ref<Connection[]>([])
 const loading = ref(true)
 const loaded = ref(false)
 const error = ref<string | null>(null)
-let timer: number | undefined
 let refresh!: LatestRefreshController
+const poller = createAdaptiveRefreshTimer(() => load('background'), () => {
+  if (!loaded.value || error.value) return FAST_REFRESH_MS
+  const pending = repositories.value.some(repository => !repository.ready || !!repository.deletionTimestamp) ||
+    connections.value.some(connection => !connection.validated || !!connection.deletionTimestamp)
+  return pending ? FAST_REFRESH_MS : STABLE_REFRESH_MS
+})
 
 const stats = computed(() => {
   const repos = repositories.value.length
@@ -51,11 +61,11 @@ const stats = computed(() => {
 // a stable list rather than faking recency.
 const rows = computed(() => mostRecent(repositories.value, (r) => r.name))
 
-function load() {
-  refresh.request()
+function load(mode: 'foreground' | 'background' = 'foreground') {
+  refresh.request(mode)
 }
 
-refresh = createLatestRefreshController(async requestID => {
+refresh = createLatestRefreshController(async (requestID, _mode) => {
   const ctx = props.context
   if (!hasWorkspaceContext(ctx)) {
     if (!refresh.isCurrent(requestID)) return
@@ -64,6 +74,7 @@ refresh = createLatestRefreshController(async requestID => {
     error.value = null
     loaded.value = true
     loading.value = false
+    poller.schedule()
     return
   }
   loading.value = true
@@ -81,16 +92,19 @@ refresh = createLatestRefreshController(async requestID => {
     if (!refresh.isCurrent(requestID)) return
     error.value = isBenignTileError(e) ? null : tileErrorText(e)
   } finally {
-    if (refresh.isCurrent(requestID)) loading.value = false
+    if (refresh.isCurrent(requestID)) {
+      loading.value = false
+      poller.schedule()
+    }
   }
 })
 
 onMounted(() => {
   load()
-  timer = window.setInterval(load, TILE_POLL_MS)
+  poller.schedule()
 })
 onUnmounted(() => {
-  window.clearInterval(timer)
+  poller.stop()
   refresh.stop()
 })
 watch(
@@ -110,10 +124,10 @@ watch(
 <template>
   <div ref="rootRef" :class="tileClass.root" :aria-busy="loading">
     <div v-if="loading && !loaded" :class="tileClass.message" role="status" aria-live="polite">Loading repositories&hellip;</div>
-    <div v-else-if="error && !loaded" :class="tileClass.error" role="alert" aria-live="assertive">Failed to load: {{ error }} <button type="button" class="k-btn k-btn--ghost code-inline-action" @click="load">Retry</button></div>
+      <div v-else-if="error && !loaded" :class="tileClass.error" role="alert" aria-live="assertive">Failed to load: {{ error }} <button type="button" class="k-btn k-btn--ghost code-inline-action" @click="load()">Retry</button></div>
 
     <template v-else>
-      <div v-if="error" :class="tileClass.error" role="alert" aria-live="assertive">Showing cached data. {{ error }} <button type="button" class="k-btn k-btn--ghost code-inline-action" @click="load">Retry</button></div>
+      <div v-if="error" :class="tileClass.error" role="alert" aria-live="assertive">Showing cached data. {{ error }} <button type="button" class="k-btn k-btn--ghost code-inline-action" @click="load()">Retry</button></div>
       <span v-else-if="loading" class="sr-only" role="status" aria-live="polite">Updating repositories…</span>
       <div :class="tileClass.stats">
         <span :class="[tileClass.stat, tileClass.statTotal]">

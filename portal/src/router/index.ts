@@ -27,9 +27,6 @@ const routes = [
   // handle the in-provider navigation; the URLs land on the portal SPA
   // at /providers/kubernetes-edges/* and /providers/server-edges/* via
   // ProviderFrame.
-  // /mcp + /mcp/:name removed: the mcp provider now ships its own custom-
-  // element micro-frontend under providers/mcp/portal/ and renders via
-  // the dynamic /providers/:name/:rest(.*)* route handled by ProviderFrame.
   {
     path: '/providers',
     name: 'providers',
@@ -43,6 +40,11 @@ const routes = [
   {
     path: '/mcp',
     name: 'mcp',
+    component: () => import('@/pages/MCPPage.vue'),
+  },
+  {
+    path: '/mcp/:name',
+    name: 'mcp-detail',
     component: () => import('@/pages/MCPPage.vue'),
   },
   {

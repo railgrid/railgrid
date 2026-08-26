@@ -6,7 +6,17 @@ import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
-import { createLatestRefreshController, createOperationLocks, operationKey, type LatestRefreshController, type ResourceDeletions } from '../refresh'
+import {
+  FAST_REFRESH_MS,
+  STABLE_REFRESH_MS,
+  createAdaptiveRefreshTimer,
+  createLatestRefreshController,
+  createOperationLocks,
+  operationKey,
+  type LatestRefreshController,
+  type ResourceDeletions,
+  type ResourceRefreshMode,
+} from '../refresh'
 
 const props = defineProps<{ deletions: ResourceDeletions }>()
 const emit = defineEmits<{ (e: 'open', name: string): void }>()
@@ -55,8 +65,18 @@ let oauthOrigin = ''
 let oauthPopup: Window | null = null
 let oauthPopupTimer: number | undefined
 let mounted = false
-let timer: number | undefined
 let refresh!: LatestRefreshController
+const refreshMode = ref<ResourceRefreshMode>('foreground')
+const poller = createAdaptiveRefreshTimer(() => load('background'), () => {
+  if (!loaded.value || error.value) return FAST_REFRESH_MS
+  const pending = connections.value.some(connection => (
+    !!connection.deletionTimestamp || !connection.validated || (
+      connection.generation !== undefined &&
+      (connection.observedGeneration === undefined || connection.observedGeneration < connection.generation)
+    )
+  ))
+  return pending ? FAST_REFRESH_MS : STABLE_REFRESH_MS
+})
 
 function errMessage(e: unknown): string {
   const err = e as ErrorResponse
@@ -133,8 +153,12 @@ function onMessage(ev: MessageEvent) {
   showForm.value = true
 }
 
-function load() {
-  refresh.request()
+function load(mode: ResourceRefreshMode = 'foreground') {
+  if (mode === 'foreground') {
+    refreshMode.value = 'foreground'
+    loading.value = true
+  }
+  refresh.request(mode)
 }
 
 function openConnection(row: Record<string, unknown>) {
@@ -196,7 +220,8 @@ async function remove(row: Record<string, unknown>) {
   }
 }
 
-refresh = createLatestRefreshController(async requestID => {
+refresh = createLatestRefreshController(async (requestID, mode) => {
+  refreshMode.value = mode
   loading.value = true
   try {
     const next = await api.listConnections()
@@ -211,14 +236,17 @@ refresh = createLatestRefreshController(async requestID => {
     const err = e as ErrorResponse
     error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
   } finally {
-    if (refresh.isCurrent(requestID)) loading.value = false
+    if (refresh.isCurrent(requestID)) {
+      loading.value = false
+      poller.schedule()
+    }
   }
 })
 
 onMounted(async () => {
   mounted = true
   load()
-  timer = window.setInterval(load, 5000)
+  poller.schedule()
   window.addEventListener('message', onMessage)
   const cfg = await api.oauthConfig()
   oauthEnabled.value = cfg.enabled
@@ -228,7 +256,7 @@ onMounted(async () => {
 onUnmounted(() => {
   mounted = false
   clearOAuthWait()
-  window.clearInterval(timer)
+  poller.stop()
   window.removeEventListener('message', onMessage)
   refresh.stop()
 })
@@ -287,6 +315,7 @@ onUnmounted(() => {
       row-key="name"
       :loaded="loaded"
       :loading="loading"
+      :refresh-mode="refreshMode"
       :error="error"
       :stale="loaded && !!error"
       retryable
@@ -295,7 +324,7 @@ onUnmounted(() => {
       @retry="load"
       @row-click="openConnection"
     >
-      <template #name="{ value, row }"><span v-if="row.deleting">{{ value }}</span><button v-else class="k-btn k-btn--ghost code-inline-action" type="button" @click.stop="openConnection(row)">{{ value }}</button></template>
+      <template #name="{ value, row }"><span v-if="row.deleting">{{ value }}</span><button v-else class="k-btn k-btn--ghost k-table-resource-link" type="button" @click.stop="openConnection(row)">{{ value }}</button></template>
       <template #owner="{ value }">{{ value }}</template>
       <template #login="{ value }">{{ value || '—' }}</template>
       <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>

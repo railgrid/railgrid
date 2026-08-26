@@ -85,19 +85,19 @@ export interface Repository {
   owner?: string
   visibility: string
   description?: string
+  defaultBranch?: string
   htmlURL?: string
-  sshURL?: string
   cloneURL?: string
+  sshURL?: string
   ready: boolean
   message?: string
 }
 
-// RepositoryDetail is a Repository plus the full status needed to debug one that
-// is stuck "pending": every condition verbatim and observed-vs-current
-// generation (a lag means the controller has not reconciled the latest spec).
+// RepositoryDetail is a Repository plus the provider health facts needed by the
+// conditions section: the provider-side repository ID and every condition
+// verbatim, with observed-vs-current generation for reconciliation context.
 export interface RepositoryDetail extends Repository {
   repoID?: string
-  creationTimestamp?: string
   conditions: ConditionInfo[]
 }
 

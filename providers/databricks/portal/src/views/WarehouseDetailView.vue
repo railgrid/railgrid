@@ -1,28 +1,44 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowLeft } from 'lucide-vue-next'
+import { Activity, ArrowLeft, Database, Ellipsis, Link2, RefreshCw, Settings2 } from 'lucide-vue-next'
 import { api } from '../api'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
+import ResourcePage from '../portalkit/ResourcePage.vue'
+import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
+import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import type { ErrorResponse, Warehouse } from '../types'
-import { createLatestRefreshController, createOperationLocks, operationKey, type LatestRefreshController } from '../refresh'
+import {
+  createAdaptiveRefreshTimer,
+  createLatestRefreshController,
+  createOperationLocks,
+  FAST_REFRESH_MS,
+  operationKey,
+  STABLE_REFRESH_MS,
+  type AdaptiveRefreshTimer,
+  type LatestRefreshController,
+  type ResourceRefreshMode,
+} from '../refresh'
 
 const props = defineProps<{ name: string }>()
 const emit = defineEmits<{ (e: 'back'): void }>()
 
 const warehouse = ref<Warehouse | null>(null)
 const loading = ref(false)
+const refreshMode = ref<ResourceRefreshMode>('foreground')
 const loaded = ref(false)
 const error = ref<string | null>(null)
 const editing = ref(false)
 const editWarehouseID = ref('')
 const saving = ref(false)
+const deleting = ref(false)
 const saveError = ref<string | null>(null)
 const mutationError = ref<string | null>(null)
 const editIDInput = ref<HTMLInputElement | null>(null)
 const saveErrorRef = ref<HTMLElement | null>(null)
-let timer: number | undefined
+const actionsMenu = ref<HTMLDetailsElement | null>(null)
+let poll!: AdaptiveRefreshTimer
 let refresh!: LatestRefreshController
 const operations = createOperationLocks()
 
@@ -53,14 +69,77 @@ const hint = computed(() => {
   }
 })
 
+type StatTone = 'default' | 'success' | 'warning' | 'danger'
+
+function statTone(status: string | undefined): StatTone {
+  if (!status) return 'default'
+  if (status === 'Ready') return 'success'
+  if (/fail|error|attention|unavailable/i.test(status)) return 'danger'
+  return 'warning'
+}
+
+const readState = computed<boolean | null>(() => {
+  if (loaded.value) return true
+  if (error.value) return false
+  return loading.value ? false : null
+})
+
+const statCards = computed<ResourceStatCard[]>(() => [
+  {
+    id: 'status',
+    label: 'Status',
+    value: deleting.value ? 'Deleting' : warehouse.value?.status || '—',
+    detail: deleting.value ? 'Deletion in progress' : hint.value || undefined,
+    icon: Activity,
+    tone: statTone(deleting.value ? 'Deleting' : warehouse.value?.status),
+  },
+  {
+    id: 'state',
+    label: 'Databricks state',
+    value: warehouse.value?.state || '—',
+    icon: Database,
+    mono: true,
+  },
+  {
+    id: 'connection',
+    label: 'Connection',
+    value: warehouse.value?.connectionRef || '—',
+    icon: Link2,
+    mono: true,
+  },
+  {
+    id: 'warehouse-id',
+    label: 'Warehouse ID',
+    value: warehouse.value?.warehouseID || '—',
+    icon: Database,
+    mono: true,
+  },
+])
+
 function errMessage(e: unknown): string {
   const err = e as ErrorResponse
   return err.reason ? `${err.reason}: ${err.message}` : err.message || String(e)
 }
 
-function load() {
-  refresh.request()
+function requestRefresh(mode: ResourceRefreshMode): void {
+  if (mode === 'foreground') {
+    refreshMode.value = 'foreground'
+    loading.value = true
+  }
+  refresh.request(mode)
 }
+
+function load(): void {
+  requestRefresh('foreground')
+}
+
+function pollCadence(): number {
+  const stable = loaded.value && !error.value && !deleting.value && !!warehouse.value &&
+    warehouse.value.status === 'Ready' && operationPhase(warehouse.value.name) !== 'deleting'
+  return stable ? STABLE_REFRESH_MS : FAST_REFRESH_MS
+}
+
+poll = createAdaptiveRefreshTimer(() => requestRefresh('background'), pollCadence)
 
 function operationLocked(name: string): boolean {
   return operations.isLocked(operationKey('warehouse', name))
@@ -68,6 +147,11 @@ function operationLocked(name: string): boolean {
 
 function operationPhase(name: string) {
   return operations.phase(operationKey('warehouse', name))
+}
+
+function goBack() {
+  if (deleting.value || (warehouse.value && operationLocked(warehouse.value.name))) return
+  emit('back')
 }
 
 function startEdit() {
@@ -117,33 +201,42 @@ async function saveEdit() {
 }
 
 async function remove() {
-  if (!warehouse.value) return
+  const current = warehouse.value
+  if (!current || deleting.value) return
   const ok = await confirmDialog({
-    title: `Delete warehouse "${warehouse.value.name}"?`,
+    title: `Delete warehouse "${current.name}"?`,
     message: 'Tables that reference this warehouse will stop refreshing schema metadata.',
     confirmLabel: 'Delete',
     danger: true,
   })
   if (!ok) return
-  const lock = operationKey('warehouse', warehouse.value.name)
+  const lock = operationKey('warehouse', current.name)
   if (!operations.acquire(lock, 'deleting')) {
-    mutationError.value = `Warehouse "${warehouse.value.name}" already has an operation in progress.`
+    mutationError.value = `Warehouse "${current.name}" already has an operation in progress.`
     return
   }
+  deleting.value = true
   mutationError.value = null
   try {
-    await api.deleteWarehouse(warehouse.value.name)
-    operations.tombstone(lock, warehouse.value.uid)
+    await api.deleteWarehouse(current.name)
+    operations.tombstone(lock, current.uid)
     emit('back')
   } catch (e) {
     mutationError.value = errMessage(e)
   } finally {
+    deleting.value = false
     operations.release(lock)
   }
 }
 
-refresh = createLatestRefreshController(async requestID => {
-  loading.value = true
+function deleteFromMenu() {
+  actionsMenu.value?.removeAttribute('open')
+  void remove()
+}
+
+refresh = createLatestRefreshController(async (requestID, mode) => {
+  refreshMode.value = mode
+  if (mode === 'foreground') loading.value = true
   try {
     const next = await api.getWarehouse(props.name)
     if (refresh.isCurrent(requestID)) {
@@ -156,13 +249,17 @@ refresh = createLatestRefreshController(async requestID => {
     const err = e as ErrorResponse
     error.value = err.reason === 'TenantMissing' ? null : errMessage(e)
   } finally {
-    if (refresh.isCurrent(requestID)) loading.value = false
+    if (refresh.isCurrent(requestID)) {
+      if (mode === 'foreground') loading.value = false
+      poll.schedule()
+    }
   }
 })
 
 watch(() => props.name, () => {
   warehouse.value = null
   loaded.value = false
+  deleting.value = false
   editing.value = false
   error.value = null
   mutationError.value = null
@@ -172,54 +269,66 @@ watch(() => props.name, () => {
 
 onMounted(() => {
   load()
-  timer = window.setInterval(load, 5000)
 })
 onUnmounted(() => {
-  window.clearInterval(timer)
+  poll.stop()
   refresh.stop()
 })
 </script>
 
 <template>
-  <section class="page">
-    <button class="k-btn k-btn--ghost k-back-action" type="button" :disabled="!!warehouse && operationLocked(warehouse.name)" @click="emit('back')"><ArrowLeft :size="14" aria-hidden="true" /> Warehouses</button>
+  <section class="databricks-resource-detail">
+    <a class="k-btn k-btn--ghost k-back-action" href="/ui/providers/databricks/warehouses" :aria-disabled="deleting || (!!warehouse && operationLocked(warehouse.name))" @click.prevent="goBack"><ArrowLeft :size="14" aria-hidden="true" /> Warehouses</a>
 
-    <header class="page-head">
-      <div>
-        <h2 class="page-title">{{ warehouse?.name || name }}</h2>
-        <p class="page-meta">
-          <span v-if="warehouse?.status === 'Ready'">validated against warehouse <code>{{ warehouse.warehouseID }}</code></span>
-          <span v-else-if="warehouse"><code>{{ warehouse.warehouseID }}</code></span>
-          <span v-else class="muted">not validated yet</span>
+    <ResourcePage
+      :title="warehouse?.name || name"
+      kind="Warehouse"
+      :loaded="readState"
+      :loading="loading"
+      :refresh-mode="refreshMode"
+      :error="error"
+      :stale="loaded && !!error"
+      retryable
+      @retry="load"
+    >
+      <template #meta>
+        <span>Databricks</span>
+      </template>
+      <template v-if="warehouse" #status><StatusBadge :status="deleting ? 'Deleting' : warehouse.status" :tone="deleting ? 'warning' : null" :title="warehouse.message" /></template>
+      <template #actions>
+        <div class="databricks-resource-actions" role="group" aria-label="Warehouse actions">
+          <button class="k-btn k-btn--ghost icon-text" type="button" :disabled="loading || deleting || (!!warehouse && operationLocked(warehouse.name))" :aria-busy="loading || undefined" @click="load">
+            <RefreshCw :size="14" :class="{ spin: loading }" aria-hidden="true" />
+            {{ loading ? 'Refreshing…' : 'Refresh' }}
+          </button>
+          <details ref="actionsMenu" class="databricks-resource-menu">
+            <summary class="k-btn k-btn--ghost" aria-label="More warehouse actions">
+              <Ellipsis :size="16" aria-hidden="true" />
+              <span class="sr-only">More actions</span>
+            </summary>
+            <div class="databricks-resource-menu-popover">
+              <button type="button" class="databricks-resource-menu-item" :disabled="!warehouse || loading || deleting || operationLocked(warehouse?.name || name)" @click="deleteFromMenu">
+                {{ operationPhase(warehouse?.name || name) === 'deleting' ? 'Deleting warehouse…' : 'Delete warehouse' }}
+              </button>
+            </div>
+          </details>
+        </div>
+      </template>
+      <template #summary><ResourceStatCards :cards="statCards" density="compact" aria-label="Warehouse summary" /></template>
+      <template #body>
+        <span v-if="loading" class="sr-only" role="status" aria-live="polite">Updating…</span>
+        <p v-if="deleting" class="warning deletion-progress" role="status" aria-live="polite">Deleting this warehouse. The last successful snapshot remains visible until the hub confirms removal.</p>
+        <p v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">
+          <span>{{ mutationError }}</span>
+          <button class="k-btn k-btn--ghost" type="button" @click="mutationError = null">Dismiss</button>
         </p>
-      </div>
-      <StatusBadge v-if="warehouse" :status="warehouse.status" :title="warehouse.message" />
-    </header>
 
-    <div v-if="error && !warehouse" class="error read-error" role="alert" aria-live="assertive">
-      <span>{{ error }}</span>
-      <button class="k-btn k-btn--ghost" type="button" @click="load">Retry</button>
-    </div>
-    <p v-else-if="loading && !warehouse" class="muted" role="status" aria-live="polite">Loading…</p>
-    <div v-if="error && warehouse" class="error read-error" role="alert" aria-live="assertive">
-      <span>Showing cached warehouse data. {{ error }}</span>
-      <button class="k-btn k-btn--ghost" type="button" @click="load">Retry</button>
-    </div>
-    <span v-else-if="loading && warehouse" class="sr-only" role="status" aria-live="polite">Updating…</span>
-    <div v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">
-      <span>{{ mutationError }}</span>
-      <button class="k-btn k-btn--ghost" type="button" @click="mutationError = null">Dismiss</button>
-    </div>
-
-    <template v-if="warehouse">
-      <div v-if="hint" class="databricks-resource-panel k-card">
-        <h3 class="databricks-resource-panel-title">Status</h3>
-        <p class="muted">{{ hint }}</p>
-      </div>
-
-      <div class="databricks-resource-panel k-card">
-        <h3 class="databricks-resource-panel-title">Overview</h3>
-        <dl class="props">
+        <div v-if="warehouse" class="databricks-resource-sections">
+          <ResourceSectionCard id="warehouse-overview" eyebrow="Warehouse" title="Overview" description="Connection reference, Databricks state, and reconciliation details.">
+            <template #actions>
+              <button v-if="!editing" class="k-btn k-btn--ghost icon-text" type="button" :disabled="operationLocked(warehouse.name)" @click="startEdit"><Settings2 :size="14" aria-hidden="true" /> Edit warehouse</button>
+            </template>
+            <dl class="props">
           <dt>Connection</dt><dd><code>{{ warehouse.connectionRef }}</code></dd>
           <dt>Warehouse ID</dt><dd><code>{{ warehouse.warehouseID }}</code></dd>
           <dt>State</dt><dd>{{ warehouse.state || '—' }}</dd>
@@ -229,11 +338,10 @@ onUnmounted(() => {
             <span v-if="reconciled" class="muted">up to date (generation {{ warehouse.generation }})</span>
             <span v-else class="warning">controller has not caught up (spec {{ warehouse.generation }}, observed {{ warehouse.observedGeneration }})</span>
           </dd>
-        </dl>
-      </div>
+            </dl>
+          </ResourceSectionCard>
 
-      <div v-if="editing" class="databricks-resource-panel k-card">
-        <h3 class="databricks-resource-panel-title">Edit warehouse</h3>
+          <ResourceSectionCard v-if="editing" id="warehouse-edit" eyebrow="Configuration" title="Edit warehouse" description="Update the Databricks SQL warehouse identifier used for validation.">
         <form class="form" @submit.prevent="saveEdit">
           <div class="field">
             <label class="field-label" for="warehouse-edit-id">Warehouse ID</label>
@@ -246,19 +354,18 @@ onUnmounted(() => {
             <span v-if="saveError" id="warehouse-edit-error" ref="saveErrorRef" class="error" role="alert" aria-live="assertive" tabindex="-1">{{ saveError }}</span>
           </div>
         </form>
-      </div>
+          </ResourceSectionCard>
 
-      <ConditionsPanel
-        :conditions="warehouse.conditions"
-        :generation="warehouse.generation"
-        :observed-generation="warehouse.observedGeneration"
-        empty-text="No conditions yet. Warehouse validation has not reported status for this resource."
-      />
-
-      <div class="actions">
-        <button class="k-btn k-btn--ghost" type="button" :disabled="operationLocked(warehouse.name)" @click="startEdit">Edit</button>
-        <button class="k-btn k-btn--danger resource-delete-button" type="button" :disabled="operationLocked(warehouse.name)" @click="remove">{{ operationPhase(warehouse.name) === 'deleting' ? 'Deleting warehouse…' : 'Delete warehouse' }}</button>
-      </div>
-    </template>
+          <ResourceSectionCard id="warehouse-conditions" eyebrow="Diagnostics" title="Conditions" description="Controller conditions and observed generation for this warehouse.">
+            <ConditionsPanel
+              :conditions="warehouse.conditions"
+              :generation="warehouse.generation"
+              :observed-generation="warehouse.observedGeneration"
+              empty-text="No conditions yet. Warehouse validation has not reported status for this resource."
+            />
+          </ResourceSectionCard>
+        </div>
+      </template>
+    </ResourcePage>
   </section>
 </template>

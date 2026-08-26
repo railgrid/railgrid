@@ -1,16 +1,54 @@
 import { reactive } from 'vue'
 
-/**
- * Serializes periodic/manual refreshes while retaining ownership of the latest
- * requested result. A request made while another is in flight is queued once;
- * the older result is ignored by `isCurrent` when the queued request supersedes
- * it. This keeps timer refreshes from racing and makes detail navigation safe.
- */
+// Serializes timer/manual/mutation refreshes. A request made while one is in
+// flight queues one latest read without fencing the active read. This lets a
+// timer observe the current snapshot instead of starving it, while a queued
+// foreground request still wins over any queued background request.
 export interface LatestRefreshController {
-  request(): void
+  request(mode?: ResourceRefreshMode): void
   invalidate(): void
   stop(): void
   isCurrent(requestID: number): boolean
+}
+
+/** A read's presentation priority, independent of whether it is in flight. */
+export type ResourceRefreshMode = 'foreground' | 'background'
+
+export const FAST_REFRESH_MS = 5_000
+export const STABLE_REFRESH_MS = 30_000
+
+export interface AdaptiveRefreshTimer {
+  schedule(): void
+  stop(): void
+}
+
+/**
+ * Schedule one background read at a time. A one-shot timer lets callers adapt
+ * the next cadence from the latest resource snapshot without accumulating
+ * intervals while a slow read is in flight.
+ */
+export function createAdaptiveRefreshTimer(
+  read: () => void,
+  cadence: () => number,
+): AdaptiveRefreshTimer {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let stopped = false
+
+  return {
+    schedule() {
+      if (stopped) return
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = undefined
+        if (!stopped) read()
+      }, cadence())
+    },
+    stop() {
+      stopped = true
+      if (timer !== undefined) clearTimeout(timer)
+      timer = undefined
+    },
+  }
 }
 
 /**
@@ -191,31 +229,36 @@ export function operationKey(kind: string, name: string): string {
 }
 
 export function createLatestRefreshController(
-  task: (requestID: number) => Promise<void>,
+  task: (requestID: number, mode: ResourceRefreshMode) => Promise<void>,
 ): LatestRefreshController {
   let generation = 0
   let active = false
-  let queued = false
+  let queuedMode: ResourceRefreshMode | undefined
   let stopped = false
 
-  const request = () => {
+  const request = (mode: ResourceRefreshMode = 'foreground') => {
     if (stopped) return
     if (active) {
-      generation += 1
-      queued = true
+      // A foreground request supersedes an active background read (and keeps
+      // the historical foreground-over-foreground latest-result behavior).
+      // Background polling never fences the active result; it only asks for a
+      // serialized follow-up after that result commits.
+      if (mode === 'foreground') generation += 1
+      queuedMode = queuedMode === 'foreground' || mode === 'foreground' ? 'foreground' : 'background'
       return
     }
 
     const requestID = ++generation
     active = true
-    void task(requestID).catch(() => {
+    void task(requestID, mode).catch(() => {
       // Tasks own their user-facing error state. The controller must still
       // release the serialization lock if a caller forgets to catch one.
     }).finally(() => {
       active = false
-      if (queued && !stopped) {
-        queued = false
-        request()
+      if (queuedMode && !stopped) {
+        const nextMode = queuedMode
+        queuedMode = undefined
+        request(nextMode)
       }
     })
   }
@@ -224,13 +267,16 @@ export function createLatestRefreshController(
     request,
     invalidate() {
       if (stopped) return
+      // Invalidation fences the active result because it belongs to the
+      // previous tenant/resource identity. The replacement is foreground so a
+      // context switch cannot be hidden by a background retry.
       generation += 1
-      if (active) queued = true
+      if (active) queuedMode = 'foreground'
     },
     stop() {
       stopped = true
       generation += 1
-      queued = false
+      queuedMode = undefined
     },
     isCurrent(requestID) {
       return !stopped && requestID === generation

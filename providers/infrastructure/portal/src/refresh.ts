@@ -1,24 +1,64 @@
 import { reactive } from 'vue'
+import type { ResourceRefreshMode } from './portalkit/page-state'
+
+export type { ResourceRefreshMode } from './portalkit/page-state'
 
 export interface LatestRefreshController {
-  request(): Promise<void>
+  request(mode?: ResourceRefreshMode): Promise<void>
   invalidate(): void
   stop(): void
   isCurrent(requestID: number): boolean
 }
 
+export const FAST_REFRESH_MS = 10_000
+export const STABLE_REFRESH_MS = 30_000
+
+export interface AdaptiveRefreshTimer {
+  schedule(): void
+  stop(): void
+}
+
 /**
- * Serializes refreshes and gives only the latest requested read permission to
- * commit. A request made during an active read queues one follow-up read and
- * waits for that latest cycle, which keeps polling and mutation reconciliation
- * from racing each other.
+ * Schedules one background read at a time so the next delay can be selected
+ * from the latest committed resource state. Callers schedule again after a
+ * read settles; this avoids interval overlap when an API response is slow.
+ */
+export function createAdaptiveRefreshTimer(
+  read: () => void,
+  cadence: () => number,
+): AdaptiveRefreshTimer {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let stopped = false
+
+  return {
+    schedule() {
+      if (stopped) return
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = undefined
+        if (!stopped) read()
+      }, cadence())
+    },
+    stop() {
+      stopped = true
+      if (timer !== undefined) clearTimeout(timer)
+      timer = undefined
+    },
+  }
+}
+
+/**
+ * Serializes timer, manual, and mutation refreshes. An ordinary request made
+ * during an active read queues at most one follow-up without fencing the valid
+ * active response. Foreground intent wins when requests are coalesced. Only an
+ * explicit invalidation rejects an old-context response.
  */
 export function createLatestRefreshController(
-  task: (requestID: number) => Promise<void>,
+  task: (requestID: number, mode: ResourceRefreshMode) => Promise<void>,
 ): LatestRefreshController {
   let generation = 0
   let active = false
-  let queued = false
+  let queuedMode: ResourceRefreshMode | undefined
   let stopped = false
   let waiters: Array<() => void> = []
 
@@ -28,17 +68,18 @@ export function createLatestRefreshController(
     for (const resolve of pending) resolve()
   }
 
-  const start = () => {
+  const start = (mode: ResourceRefreshMode) => {
     if (stopped || active) return
     const requestID = ++generation
     active = true
-    void task(requestID).catch(() => {
+    void task(requestID, mode).catch(() => {
       // The task owns user-visible error state.
     }).finally(() => {
       active = false
-      if (queued && !stopped) {
-        queued = false
-        start()
+      if (queuedMode && !stopped) {
+        const nextMode = queuedMode
+        queuedMode = undefined
+        start(nextMode)
       } else {
         settleWaiters()
       }
@@ -46,26 +87,27 @@ export function createLatestRefreshController(
   }
 
   return {
-    request() {
+    request(mode: ResourceRefreshMode = 'foreground') {
       if (stopped) return Promise.resolve()
       const complete = new Promise<void>(resolve => waiters.push(resolve))
       if (active) {
-        generation += 1
-        queued = true
+        queuedMode = queuedMode === 'foreground' || mode === 'foreground'
+          ? 'foreground'
+          : 'background'
       } else {
-        start()
+        start(mode)
       }
       return complete
     },
     invalidate() {
       if (stopped) return
       generation += 1
-      if (active) queued = true
+      if (active) queuedMode = 'foreground'
     },
     stop() {
       stopped = true
       generation += 1
-      queued = false
+      queuedMode = undefined
       settleWaiters()
     },
     isCurrent(requestID) {

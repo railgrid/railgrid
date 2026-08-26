@@ -14,6 +14,7 @@ const sources = await Promise.all(sourceFiles.map(async path => [
   await readFile(new URL(`./${path}`, import.meta.url), 'utf8'),
 ]))
 const style = await readFile(new URL('./style.css', import.meta.url), 'utf8')
+const farosUI = await readFile(new URL('./portalkit/faros-ui.css', import.meta.url), 'utf8')
 
 describe('Code portal conformance', () => {
   it('uses canonical k-* controls and scoped Code layout hooks', () => {
@@ -30,5 +31,11 @@ describe('Code portal conformance', () => {
     const source = sources.map(([, content]) => content).join('\n')
     expect(source).toMatch(/:row-aria-label="\(row\) => `Open repository/)
     expect(source).toMatch(/:row-aria-label="\(row\) => `Open connection/)
+  })
+
+  it('uses the canonical resource-link treatment for navigable table identities', () => {
+    const source = sources.map(([, content]) => content).join('\n')
+    expect(source.match(/k-table-resource-link/g)?.length).toBeGreaterThanOrEqual(3)
+    expect(farosUI).toMatch(/\.k-table-resource-link\s*\{[\s\S]*color: var\(--color-accent[\s\S]*font-weight: 400[\s\S]*padding: 0;/)
   })
 })

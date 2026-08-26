@@ -176,8 +176,10 @@ export function createTilePoller(load: () => Promise<void>, intervalMs = TILE_PO
   let handle: ReturnType<typeof setInterval> | null = null
   let inFlight = false
   let queued = false
+  let stopped = false
 
   const run = () => {
+    if (stopped) return
     if (inFlight) {
       queued = true
       return
@@ -185,7 +187,7 @@ export function createTilePoller(load: () => Promise<void>, intervalMs = TILE_PO
     inFlight = true
     void load().finally(() => {
       inFlight = false
-      if (queued) {
+      if (queued && !stopped) {
         queued = false
         run()
       }
@@ -194,10 +196,13 @@ export function createTilePoller(load: () => Promise<void>, intervalMs = TILE_PO
 
   return {
     start() {
+      stopped = false
       run()
       if (handle === null) handle = setInterval(run, intervalMs)
     },
     stop() {
+      stopped = true
+      queued = false
       if (handle !== null) {
         clearInterval(handle)
         handle = null

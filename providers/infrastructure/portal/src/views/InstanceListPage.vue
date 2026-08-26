@@ -6,7 +6,15 @@ import { api, isContextChangedError } from '../api'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import { confirmDialog } from '../portalkit/confirm'
-import { createLatestRefreshController, sameResourceIdentity, type ResourceTombstones } from '../refresh'
+import {
+  createAdaptiveRefreshTimer,
+  createLatestRefreshController,
+  FAST_REFRESH_MS,
+  sameResourceIdentity,
+  STABLE_REFRESH_MS,
+  type ResourceRefreshMode,
+  type ResourceTombstones,
+} from '../refresh'
 import { isCurrentInstanceListRequest, type InstanceListRequest } from '../instanceListRequest'
 import { resolve, type ResolvedValue } from '../view'
 import type { Instance, TemplateView, ViewColumn } from '../types'
@@ -21,6 +29,7 @@ const props = defineProps<{ tombstones: ResourceTombstones }>()
 const items = ref<Instance[]>([])
 const error = ref<string | null>(null)
 const loading = ref(false)
+const refreshMode = ref<ResourceRefreshMode>('foreground')
 const loaded = ref(false)
 const deletingInstanceKey = ref<string | null>(null)
 const deleteError = ref<string | null>(null)
@@ -40,8 +49,8 @@ const pageInfo = ref<{ hasNext: boolean; nextCursor: string | null } | null>(nul
 const clientAuthorityReady = ref(false)
 let reconcileAfterNextServerRead = false
 let pendingReadMode: InstanceListRequest['mode'] | null = null
-let pollHandle: number | null = null
 let active = true
+let mounted = false
 
 const STATUS_FILTER_OPTIONS = [
   { value: 'Ready', label: 'Ready' },
@@ -172,8 +181,23 @@ function updateTemplateMetadata(templates: Array<{ name: string; displayName: st
   templateFilterOptions.value = options
 }
 
-const refresh = createLatestRefreshController(async requestID => {
+function refreshCadence(): number {
+  if (!loaded.value || error.value || deletingInstanceKey.value !== null ||
+    items.value.some(instance => instanceIsDeleting(instance) || instance.phase !== 'Ready')) {
+    return FAST_REFRESH_MS
+  }
+  return STABLE_REFRESH_MS
+}
+
+const pollTimer = createAdaptiveRefreshTimer(
+  () => { void load('background') },
+  refreshCadence,
+)
+
+const refresh = createLatestRefreshController(async (requestID, mode) => {
   const request = currentRequest()
+  pendingReadMode = request.mode
+  refreshMode.value = mode
   loading.value = true
   try {
     let nextItems: Instance[]
@@ -253,13 +277,16 @@ const refresh = createLatestRefreshController(async requestID => {
     error.value = errorMessage(caught, 'failed to list instances')
   } finally {
     if (pendingReadMode === request.mode) pendingReadMode = null
-    if (refresh.isCurrent(requestID)) loading.value = false
+    if (refresh.isCurrent(requestID)) {
+      loading.value = false
+      if (mounted && active) pollTimer.schedule()
+    }
   }
 })
 
-function load(): Promise<void> {
-  pendingReadMode = paginationMode.value
-  return refresh.request()
+function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
+  if (mode === 'foreground' && loading.value) refreshMode.value = 'foreground'
+  return refresh.request(mode)
 }
 
 function resetToFirstServerPage() {
@@ -383,12 +410,13 @@ function formatAge(timestamp?: string): string {
 }
 
 onMounted(() => {
-  void load()
-  pollHandle = window.setInterval(() => { void load() }, 10000)
+  mounted = true
+  void load('foreground')
 })
 onUnmounted(() => {
   active = false
-  if (pollHandle !== null) window.clearInterval(pollHandle)
+  mounted = false
+  pollTimer.stop()
   refresh.stop()
 })
 </script>
@@ -401,7 +429,7 @@ onUnmounted(() => {
         <p class="page-meta">Provisioned into the active workspace.</p>
       </div>
       <div class="instance-list-actions">
-        <span class="refresh-cadence">auto-refresh 10s</span>
+        <span class="refresh-cadence">auto-refresh {{ refreshCadence() / 1000 }}s</span>
         <button type="button" class="k-btn k-btn--primary" @click="emit('navigate', 'catalog')">Browse templates</button>
       </div>
     </header>
@@ -427,13 +455,14 @@ onUnmounted(() => {
       row-key="rowKey"
       :loaded="loaded"
       :loading="loading"
+      :refresh-mode="refreshMode"
       :error="error"
       :stale="loaded && !!error"
       interactive
       retryable
       empty-text="No instances in this workspace yet."
       :row-aria-label="(row) => `Open instance ${String(rowInstance(row).name)}`"
-      @retry="load"
+      @retry="load('foreground')"
       @change="handleTableChange"
       @row-click="selectInstance"
     >
@@ -473,7 +502,7 @@ onUnmounted(() => {
       </template>
     </ResourceTable>
 
-    <div v-if="loaded && !error && items.length === 0" class="empty-followup">
+    <div v-if="loaded && items.length === 0" class="empty-followup">
       <span>Each workspace has its own instances.</span>
       <button type="button" class="k-btn k-btn--ghost" @click="emit('navigate', 'catalog')">Browse templates</button>
     </div>

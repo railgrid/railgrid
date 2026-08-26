@@ -2,6 +2,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import { AlertCircle, ChevronLeft, ChevronRight, Inbox, Search, X } from 'lucide-vue-next'
+import type { ResourceRefreshMode } from '../portalkit/page-state'
 import {
   cursorPageRange,
   deriveTableFilterOptions,
@@ -27,6 +28,8 @@ const props = withDefaults(defineProps<{
   loaded?: boolean | null
   /** True while a read is in flight. Cached rows remain visible after load. */
   loading?: boolean
+  /** Controls whether an empty authoritative body shows visible refresh progress. */
+  refreshMode?: ResourceRefreshMode
   error?: string | null
   /** Marks cached rows as stale when the latest read failed. */
   stale?: boolean
@@ -62,6 +65,7 @@ const props = withDefaults(defineProps<{
   // sentinel preserves omission so legacy callers retain loading -> content
   // behavior while explicit false still means the first read is incomplete.
   loaded: null,
+  refreshMode: 'foreground',
   variant: 'queryable',
   stale: false,
   retryable: false,
@@ -163,7 +167,9 @@ const visibleRange = computed(() => isServerPagination.value
   ? cursorPageRange(currentPage.value, currentPageSize.value, visibleRows.value.length, serverTotal.value)
   : tableRange(filteredRows.value.length, currentPage.value, currentPageSize.value))
 const activeFilters = computed(() => !!currentQuery.value.trim() || Object.values(currentFilters.value).some(Boolean))
-const showPendingBody = computed(() => !!props.loading && visibleRows.value.length === 0)
+const showPendingBody = computed(() =>
+  props.refreshMode === 'foreground' && !!props.loading && visibleRows.value.length === 0,
+)
 const pendingBodyText = computed(() => activeFilters.value ? 'Searching resources' : 'Loading resources')
 const hasConfiguredControls = computed(() =>
   props.variant === 'queryable' && (props.searchable || props.filters.length > 0),

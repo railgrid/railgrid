@@ -10,12 +10,21 @@ import StatusBadge from './portalkit/StatusBadge.vue'
 import { MARKETPLACE_CATEGORIES, type MarketplaceApp } from './marketplace'
 import { isCompleteFirstCursorPage, type ResourceTableChange, type TableFilterDefinition, type TablePageInfo } from './portalkit/table'
 import { createFullListReadCoordinator, createInFlightReadCoordinator, hasActiveTableFilters, sameTableRequest, tablePageInfo as makeTablePageInfo, type PaginationMode, type TableRequestState } from './pagination'
+import {
+  FAST_REFRESH_MS,
+  STABLE_REFRESH_MS,
+  createAdaptiveRefreshTimer,
+  createLatestRefreshController,
+  type ResourceRefreshMode,
+} from './refresh'
 
 const workloads = ref<Workload[]>([])
 const edges = ref<Edge[]>([])
 const loading = ref(true)
 const loaded = ref(false)
 const error = ref<string | null>(null)
+const refreshMode = ref<ResourceRefreshMode>('foreground')
+const foregroundLoading = computed(() => loading.value && refreshMode.value === 'foreground')
 const workloadColumns = [
   { key: 'expand', label: '' },
   { key: 'name', label: 'Name' },
@@ -106,7 +115,7 @@ async function onDeploy() {
       port: app.port,
     })
     closeDeploy()
-    await refresh(true)
+    await refresh('foreground', true)
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Deploy failed'
   } finally {
@@ -137,9 +146,9 @@ function toggle(name: string) {
 
 type WorkloadTableRequest = Omit<TableRequestState, 'filters'> & { filters: WorkloadFilterValues }
 
-let latestRefreshID = 0
 let stopped = false
 let clientReadToken = 0
+let forceNextCompleteRead = false
 
 function cloneWorkloadFilters(filters: WorkloadFilterValues): WorkloadFilterValues {
   return { strategy: filters.strategy, status: filters.status }
@@ -160,7 +169,7 @@ function currentWorkloadRequest(): WorkloadTableRequest {
 
 function workloadRequestIsCurrent(requestID: number, request: WorkloadTableRequest): boolean {
   const current = currentWorkloadRequest()
-  return !stopped && latestRefreshID === requestID && sameTableRequest(current, request)
+  return !stopped && workloadRefresh.isCurrent(requestID) && sameTableRequest(current, request)
 }
 
 // A complete client read is query-independent. Query/filter-only changes are
@@ -169,20 +178,27 @@ function workloadRequestIsCurrent(requestID: number, request: WorkloadTableReque
 // this guard through the stable request dimensions below.
 function workloadClientReadIsCurrent(requestID: number, request: WorkloadTableRequest, readGeneration: number): boolean {
   const current = currentWorkloadRequest()
-  return !stopped && latestRefreshID === requestID && tableMode.value === 'client' &&
+  return !stopped && workloadRefresh.isCurrent(requestID) && tableMode.value === 'client' &&
     current.active && current.page === request.page &&
     current.pageSize === request.pageSize && current.cursor === request.cursor &&
     completeWorkloadRead.generation() === readGeneration && clientAuthorityReady.value === false
 }
 
-// The optional event union keeps direct template @click/@retry bindings
-// type-safe while mutation callers can request a forced client read.
-async function refresh(forceClientRead: boolean | Event = false) {
-  const requestID = ++latestRefreshID
+const poller = createAdaptiveRefreshTimer(() => {
+  void refresh('background')
+}, () => {
+  if (!loaded.value || error.value) return FAST_REFRESH_MS
+  const unsettledWorkload = workloads.value.some(workload => (workload.phase || 'Pending').toLowerCase() !== 'running')
+  const unsettledEdge = edges.value.some(edge => !edge.connected || ['pending', 'provisioning', 'deleting'].includes((edge.phase || '').toLowerCase()))
+  return unsettledWorkload || unsettledEdge ? FAST_REFRESH_MS : STABLE_REFRESH_MS
+})
+
+const workloadRefresh = createLatestRefreshController(async (requestID, mode) => {
   const readToken = ++clientReadToken
   const request = currentWorkloadRequest()
   const wasClientAuthorityReady = clientAuthorityReady.value
-  const forceCompleteRead = request.mode === 'client' && (wasClientAuthorityReady || forceClientRead === true)
+  const forceCompleteRead = request.mode === 'client' && (wasClientAuthorityReady || forceNextCompleteRead)
+  forceNextCompleteRead = false
   if (forceCompleteRead) {
     clientAuthorityReady.value = false
     // Keep the visible complete rows while a polling/CRUD replacement is in
@@ -194,12 +210,13 @@ async function refresh(forceClientRead: boolean | Event = false) {
   }
   clientReadPending.value = request.mode === 'client'
   const readGeneration = completeWorkloadRead.generation()
+  refreshMode.value = mode
   loading.value = true
-  error.value = null
+  if (mode === 'foreground') error.value = null
   // Do not render an unfiltered page as though it matched a newly-entered
   // query/filter. Same-page polling keeps cached rows visible until the
   // replacement arrives.
-  if (request.active && request.mode === 'server') {
+  if (mode === 'foreground' && request.active && request.mode === 'server') {
     workloads.value = []
     tablePageInfo.value = null
   }
@@ -245,6 +262,7 @@ async function refresh(forceClientRead: boolean | Event = false) {
       tablePageInfo.value = makeTablePageInfo(nextPage.continue)
     }
     loaded.value = true
+    error.value = null
     if (!deployEdge.value && edges.value.length) deployEdge.value = edges.value[0].name
   } catch (e) {
     const current = request.mode === 'client' && request.active
@@ -254,8 +272,19 @@ async function refresh(forceClientRead: boolean | Event = false) {
     error.value = (e as ErrorResponse)?.message ?? 'Failed to load workloads'
   } finally {
     if (clientReadToken === readToken) clientReadPending.value = false
-    if (!stopped && latestRefreshID === requestID) loading.value = false
+    if (!stopped && workloadRefresh.isCurrent(requestID)) loading.value = false
+    poller.schedule()
   }
+})
+
+function refresh(mode: ResourceRefreshMode | Event = 'foreground', forceClientRead = false) {
+  if (forceClientRead) forceNextCompleteRead = true
+  const requestedMode = typeof mode === 'string' ? mode : 'foreground'
+  if (requestedMode === 'foreground') {
+    refreshMode.value = 'foreground'
+    loading.value = true
+  }
+  return workloadRefresh.request(requestedMode)
 }
 
 function handleWorkloadTableChange(change: ResourceTableChange) {
@@ -349,7 +378,7 @@ async function onCreate() {
     await createWorkload(d)
     showCreate.value = false
     draft.value = { name: '', image: 'nginx:latest', replicas: 1, strategy: 'Spread', selector: 'env=dev' }
-    await refresh(true)
+    await refresh('foreground', true)
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Create failed'
   } finally {
@@ -361,18 +390,17 @@ async function onDelete(w: Workload) {
   if (!(await confirmDialog({ title: `Delete workload "${w.name}"?`, message: 'Its Deployments on every edge are removed.', danger: true, confirmLabel: 'Delete' }))) return
   try {
     await deleteWorkload(w.name)
-    await refresh(true)
+    await refresh('foreground', true)
   } catch (e) {
     error.value = (e as ErrorResponse)?.message ?? 'Delete failed'
   }
 }
 
-onMounted(refresh)
-const timer = setInterval(refresh, 10000)
+onMounted(() => { void refresh('foreground') })
 onUnmounted(() => {
   stopped = true
-  latestRefreshID += 1
-  clearInterval(timer)
+  workloadRefresh.stop()
+  poller.stop()
 })
 
 function selectorText(s?: Record<string, string>): string {
@@ -402,8 +430,8 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
         <p>Deploy a workload across matching Kubernetes edges. Each edge's agent runs it locally.</p>
       </div>
       <div class="header-actions">
-        <button class="k-btn k-btn--ghost" :disabled="loading" @click="refresh">
-          <RefreshCw :size="14" :class="{ spin: loading }" /> Refresh
+        <button class="k-btn k-btn--ghost" :disabled="foregroundLoading" @click="refresh">
+          <RefreshCw :size="14" :class="{ spin: foregroundLoading }" /> {{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}
         </button>
         <button
           type="button"
@@ -522,6 +550,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       :row-aria-label="workloadRowAriaLabel"
       :loaded="loaded"
       :loading="loading"
+      :refresh-mode="refreshMode"
       :error="error"
       :stale="loaded && !!error"
       retryable

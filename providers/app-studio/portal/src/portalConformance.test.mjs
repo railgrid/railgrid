@@ -13,6 +13,7 @@ const shareDialog = await readFile(new URL('./ProjectShareDialog.vue', import.me
 const assistantPlanPopover = await readFile(new URL('./AssistantPlanPopover.vue', import.meta.url), 'utf8')
 const providerFrame = await readFile(new URL('../../../../portal/src/pages/ProviderFrame.vue', import.meta.url), 'utf8')
 const api = await readFile(new URL('./api.ts', import.meta.url), 'utf8')
+const dashboardTile = await readFile(new URL('./DashboardTile.vue', import.meta.url), 'utf8')
 
 test('uses host catalog chrome on landing routes and keeps project workbenches full bleed', () => {
   assert.match(providerFrame, /const APP_STUDIO_CREATE_ROUTE = '~new'/)
@@ -26,6 +27,14 @@ test('uses host catalog chrome on landing routes and keeps project workbenches f
   assert.match(app, /watch\(\s*isBuilderVisible,[\s\S]*props\.requestFullBleed\?\.\(visible\)[\s\S]*immediate: true, flush: 'sync'/)
   assert.match(providerFrame, /faros-layout-change/)
   assert.match(providerFrame, /providerFullBleedOverride\.value === true/)
+})
+
+test('keeps dashboard tile snapshots visible across background refresh failures', () => {
+  assert.match(dashboardTile, /const hasSnapshot = ref\(false\)/)
+  assert.match(dashboardTile, /if \(!hasSnapshot\.value\) \{[\s\S]*projects\.value = \[\][\s\S]*hasSnapshot\.value = true/)
+  assert.doesNotMatch(dashboardTile, /catch \(e\) \{\s*projects\.value = \[\]/)
+  assert.match(dashboardTile, /Could not refresh\. Showing the last loaded data\./)
+  assert.match(dashboardTile, /generation !== contextGeneration/)
 })
 
 test('keeps project search and creation controls mounted during the initial list read', () => {

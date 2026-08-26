@@ -10,7 +10,7 @@ import { property, state } from 'lit/decorators.js'
 import { repeat } from 'lit/directives/repeat.js'
 import { StoreElement } from '../ui/base'
 import { icon, type IconName } from '../ui/icon'
-import { emptyState, errorState, loadingState } from '../ui/states'
+import { emptyState, errorState, loadingState, staleState } from '../ui/states'
 import { toast } from '../ui/toast'
 import { fmtDuration, fmtTime, fmtTokens, fmtUSD, type InboxItem, type RunPhase, type RunSummary } from '../types'
 import type { RunFilter } from '../api'
@@ -53,6 +53,7 @@ export class Activity extends StoreElement {
   @state() private nextCursor = ''
   @state() private loading = false
   @state() private error: string | null = null
+  @state() private loaded = false
   @state() private filterAgent = ''
   @state() private filterClass = ''
   @state() private filterPhase = ''
@@ -62,6 +63,7 @@ export class Activity extends StoreElement {
 
   private started = false
   private refreshTimer = 0
+  private requestGeneration = 0
 
   connectedCallback(): void {
     super.connectedCallback()
@@ -71,6 +73,7 @@ export class Activity extends StoreElement {
   disconnectedCallback(): void {
     this.store?.removeEventListener('server', this.onServerEvent as EventListener)
     if (this.refreshTimer) clearTimeout(this.refreshTimer)
+    this.requestGeneration += 1
     super.disconnectedCallback()
   }
 
@@ -78,7 +81,7 @@ export class Activity extends StoreElement {
     super.willUpdate()
     if (!this.started && this.api) {
       this.started = true
-      void this.reload()
+      void this.reload('foreground')
     }
   }
 
@@ -89,7 +92,7 @@ export class Activity extends StoreElement {
     if (this.refreshTimer) return
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = 0
-      void this.reload()
+      void this.reload('background')
     }, 700)
   }
 
@@ -105,30 +108,43 @@ export class Activity extends StoreElement {
     }
   }
 
-  private async reload(): Promise<void> {
-    this.loading = true
+  private async reload(mode: 'foreground' | 'background' = 'foreground'): Promise<void> {
+    // Event-driven refreshes are deliberately quiet once a snapshot exists.
+    // Manual refresh/filter changes remain foreground work and keep their
+    // existing explicit pending feedback.
+    if (mode === 'foreground' || !this.loaded) this.loading = true
+    const requestGeneration = ++this.requestGeneration
     try {
       const page = await this.api.listRuns(this.filter())
+      if (requestGeneration !== this.requestGeneration) return
       this.runs = page.items
       this.nextCursor = page.nextCursor || ''
       this.error = null
+      this.loaded = true
     } catch (e) {
+      if (requestGeneration !== this.requestGeneration) return
       this.error = (e as Error).message
+    } finally {
+      if (requestGeneration === this.requestGeneration) this.loading = false
     }
-    this.loading = false
   }
 
   private async more(): Promise<void> {
     if (!this.nextCursor || this.loading) return
     this.loading = true
+    const requestGeneration = ++this.requestGeneration
     try {
       const page = await this.api.listRuns(this.filter(this.nextCursor))
+      if (requestGeneration !== this.requestGeneration) return
       this.runs = [...this.runs, ...page.items]
       this.nextCursor = page.nextCursor || ''
     } catch (e) {
-      toast('error', `Could not load more runs: ${(e as Error).message}`)
+      if (requestGeneration === this.requestGeneration) {
+        toast('error', `Could not load more runs: ${(e as Error).message}`)
+      }
+    } finally {
+      if (requestGeneration === this.requestGeneration) this.loading = false
     }
-    this.loading = false
   }
 
   private async resolve(item: InboxItem, decision: 'approve' | 'deny'): Promise<void> {
@@ -136,7 +152,7 @@ export class Activity extends StoreElement {
       await this.api.resolveInbox(item.id, decision)
       toast('ok', decision === 'approve' ? 'Approved — the run is resuming.' : 'Denied.')
       void this.store.load('inbox')
-      void this.reload()
+      void this.reload('foreground')
     } catch (e) {
       toast('error', `Could not ${decision}: ${(e as Error).message}`)
     }
@@ -156,9 +172,10 @@ export class Activity extends StoreElement {
   private approvals(): TemplateResult | typeof nothing {
     const slice = this.store.inbox
     const pending = this.store.pendingInbox().filter((i) => !this.agent || i.agentName === this.agent)
-    if (slice.error) return errorState(slice.error, () => void this.store.load('inbox'))
-    if (!pending.length) return nothing
-    return html`<section class="agents-approvals">
+    if (slice.error && !slice.hasSnapshot) return errorState(slice.error, () => void this.store.load('inbox'))
+    const stale = slice.error ? staleState(slice.error, () => void this.store.load('inbox')) : nothing
+    if (!pending.length) return stale
+    return html`${stale}<section class="agents-approvals">
       <h4>${icon('inbox')} Needs your attention (${pending.length})</h4>
       ${repeat(
         pending,
@@ -249,10 +266,14 @@ export class Activity extends StoreElement {
   }
 
   private table(): TemplateResult {
-    if (this.error) return errorState(this.error, () => void this.reload())
-    if (this.loading && !this.runs.length) return loadingState('Loading runs…')
-    if (!this.runs.length) return emptyState('gauge', 'No runs yet. Chat with an agent or fire a schedule to see one here.')
+    if (this.error && !this.loaded) return errorState(this.error, () => void this.reload('foreground'))
+    if (this.loading && !this.loaded) return loadingState('Loading runs…')
+    const stale = this.error ? staleState(this.error, () => void this.reload('foreground')) : nothing
+    if (!this.runs.length) {
+      return html`${stale}${emptyState('gauge', 'No runs yet. Chat with an agent or fire a schedule to see one here.')}`
+    }
     return html`
+      ${stale}
       <div class="agents-tablewrap k-table">
         <table class="agents-table agents-runs">
           <thead>
