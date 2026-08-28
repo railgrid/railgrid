@@ -75,6 +75,31 @@ jobs:
     - name: Verify codegen
       run: make verify-codegen
 
+  # The root portal is a separate npm project from the standalone provider
+  # portals below. Its production build runs vue-tsc first, so this single job
+  # covers both the root typecheck and the generated Vite bundle.
+  portal:
+    name: Root portal
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: portal
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: portal/package-lock.json
+
+      - name: Install root portal dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build root portal
+        run: npm run build
+
   # Standalone provider portals are separate npm projects and are not covered
   # by the root Go test target. Providers with a prebuild hook already run
   # their test/typecheck contract as part of `npm run build`, so those matrix

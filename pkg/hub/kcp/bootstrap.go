@@ -887,16 +887,44 @@ const WorkspaceDisplayNameAnnotation = "tenants.faros.sh/display-name"
 // SetWorkspaceDeletionAnnotation stamps the kcp Workspace at
 // root:faros:tenants:{orgUUID}:{wsUUID} with the soft-delete annotation
 // (WorkspaceDeletionAnnotation) carrying the given timestamp. The
-// soft-delete reconciler picks it up on its next poll. Idempotent
-// when the annotation is already set to the same value.
+// soft-delete reconciler picks it up on its next poll. Once a deletion
+// timestamp exists it is never replaced: the first request owns the
+// recovery-window start, and retries are successful no-ops. A concurrent
+// update is retried against a fresh Workspace so it cannot reset that clock.
 func (b *Bootstrapper) SetWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string, at time.Time) error {
-	return b.patchWorkspaceAnnotation(ctx, orgUUID, wsUUID, WorkspaceDeletionAnnotation, at.UTC().Format(time.RFC3339))
+	return b.patchWorkspaceDeletionAnnotationIfAbsent(ctx, orgUUID, wsUUID, at.UTC().Format(time.RFC3339))
 }
 
 // ClearWorkspaceDeletionAnnotation removes the soft-delete annotation
 // from the Workspace, signalling undelete. Idempotent on already-absent.
+// It performs one conditional update and returns conflicts to the REST layer,
+// which re-reads the annotation before deciding whether a retry is safe. That
+// boundary prevents a stale clear from deleting a newer deletion request.
 func (b *Bootstrapper) ClearWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string) error {
-	return b.patchWorkspaceAnnotation(ctx, orgUUID, wsUUID, WorkspaceDeletionAnnotation, "")
+	if orgUUID == "" || wsUUID == "" {
+		return fmt.Errorf("ClearWorkspaceDeletionAnnotation: orgUUID and wsUUID are required")
+	}
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return fmt.Errorf("creating org workspace client: %w", err)
+	}
+	ws, err := orgClient.Resource(workspaceGVR).Get(ctx, wsUUID, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	annos, _, _ := unstructured.NestedStringMap(ws.Object, "metadata", "annotations")
+	if _, present := annos[WorkspaceDeletionAnnotation]; !present {
+		return nil
+	}
+	delete(annos, WorkspaceDeletionAnnotation)
+	if err := unstructured.SetNestedStringMap(ws.Object, annos, "metadata", "annotations"); err != nil {
+		return fmt.Errorf("setting annotations: %w", err)
+	}
+	if _, err := orgClient.Resource(workspaceGVR).Update(ctx, ws, metav1.UpdateOptions{}); err != nil {
+		return fmt.Errorf("updating workspace %s/%s: %w", orgUUID, wsUUID, err)
+	}
+	return nil
 }
 
 // SetWorkspaceDisplayName stamps / overwrites the display-name
@@ -936,32 +964,86 @@ func (b *Bootstrapper) patchWorkspaceAnnotation(ctx context.Context, orgUUID, ws
 	if err != nil {
 		return fmt.Errorf("creating org workspace client: %w", err)
 	}
-	ws, err := orgClient.Resource(workspaceGVR).Get(ctx, wsUUID, metav1.GetOptions{})
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		ws, err := orgClient.Resource(workspaceGVR).Get(ctx, wsUUID, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		annos, _, _ := unstructured.NestedStringMap(ws.Object, "metadata", "annotations")
+		if annos == nil {
+			annos = map[string]string{}
+		}
+		if value == "" {
+			if _, present := annos[key]; !present {
+				return nil
+			}
+			delete(annos, key)
+		} else {
+			if existing := annos[key]; existing == value {
+				return nil
+			}
+			annos[key] = value
+		}
+		if err := unstructured.SetNestedStringMap(ws.Object, annos, "metadata", "annotations"); err != nil {
+			return fmt.Errorf("setting annotations: %w", err)
+		}
+		if _, err := orgClient.Resource(workspaceGVR).Update(ctx, ws, metav1.UpdateOptions{}); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			if !errors.IsConflict(err) {
+				return fmt.Errorf("updating workspace %s/%s: %w", orgUUID, wsUUID, err)
+			}
+		}
+	}
+	return fmt.Errorf("updating workspace %s/%s after %d conflicts: %w", orgUUID, wsUUID, maxAttempts, lastErr)
+}
+
+// patchWorkspaceDeletionAnnotationIfAbsent is the conditional variant used
+// by SetWorkspaceDeletionAnnotation. A plain get/modify/update would let a
+// second DELETE replace the first timestamp when it races with the original
+// request. The conditional read is repeated after conflicts and treats any
+// existing value (including an older or malformed value) as authoritative.
+func (b *Bootstrapper) patchWorkspaceDeletionAnnotationIfAbsent(ctx context.Context, orgUUID, wsUUID, value string) error {
+	if orgUUID == "" || wsUUID == "" {
+		return fmt.Errorf("patchWorkspaceDeletionAnnotationIfAbsent: orgUUID and wsUUID are required")
+	}
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
+	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
-		return err
+		return fmt.Errorf("creating org workspace client: %w", err)
 	}
-	annos, _, _ := unstructured.NestedStringMap(ws.Object, "metadata", "annotations")
-	if annos == nil {
-		annos = map[string]string{}
-	}
-	if value == "" {
-		if _, present := annos[key]; !present {
+
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		ws, err := orgClient.Resource(workspaceGVR).Get(ctx, wsUUID, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		annos, _, _ := unstructured.NestedStringMap(ws.Object, "metadata", "annotations")
+		if existing, present := annos[WorkspaceDeletionAnnotation]; present && existing != "" {
 			return nil
 		}
-		delete(annos, key)
-	} else {
-		if existing := annos[key]; existing == value {
-			return nil
+		if annos == nil {
+			annos = map[string]string{}
 		}
-		annos[key] = value
+		annos[WorkspaceDeletionAnnotation] = value
+		if err := unstructured.SetNestedStringMap(ws.Object, annos, "metadata", "annotations"); err != nil {
+			return fmt.Errorf("setting annotations: %w", err)
+		}
+		if _, err := orgClient.Resource(workspaceGVR).Update(ctx, ws, metav1.UpdateOptions{}); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			if !errors.IsConflict(err) {
+				return fmt.Errorf("updating workspace %s/%s: %w", orgUUID, wsUUID, err)
+			}
+		}
 	}
-	if err := unstructured.SetNestedStringMap(ws.Object, annos, "metadata", "annotations"); err != nil {
-		return fmt.Errorf("setting annotations: %w", err)
-	}
-	if _, err := orgClient.Resource(workspaceGVR).Update(ctx, ws, metav1.UpdateOptions{}); err != nil {
-		return fmt.Errorf("updating workspace %s/%s: %w", orgUUID, wsUUID, err)
-	}
-	return nil
+	return fmt.Errorf("updating workspace %s/%s after %d conflicts: %w", orgUUID, wsUUID, maxAttempts, lastErr)
 }
 
 // GetOrgMembershipRole returns the role of a single Membership in the

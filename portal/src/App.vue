@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useProvidersStore } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { registerProviderRoutes } from '@/router/providers'
 import { SESSION_EXPIRED_EVENT } from '@/composables/useGraphQL'
 import ControlPlaneProvisioning from '@/components/ControlPlaneProvisioning.vue'
@@ -13,7 +13,19 @@ import PkConfirmDialog from '@/portalkit/ConfirmDialog.vue'
 const auth = useAuthStore()
 const providers = useProvidersStore()
 const tenant = useTenantStore()
+const route = useRoute()
 const router = useRouter()
+
+// A portal bearer authenticates the caller; auth.clusterName is only the
+// current workspace's GraphQL target. Organization-only screens therefore
+// remain authenticated while the target is intentionally empty.
+const hasPortalSession = computed(() => !!auth.token)
+
+// Keep the terminal singleton mounted so sessions survive navigation, but do
+// not expose its chrome on the standalone organization chooser.
+const hideTerminalDock = computed(
+  () => route.path === '/organizations' || route.path.startsWith('/organizations/'),
+)
 
 // Register the dynamic provider route shape exactly once at app boot, before
 // any deep link like /providers/foo can be resolved.
@@ -25,7 +37,7 @@ registerProviderRoutes(router)
 // plane" screen. Returning users (cached selection) flip straight to
 // 'ready' inside bootstrap(), so this never flashes for them.
 const showProvisioning = computed(
-  () => auth.isAuthenticated && tenant.bootstrapState === 'provisioning',
+  () => hasPortalSession.value && tenant.bootstrapState === 'provisioning',
 )
 
 // A dead gateway session (401/403/404) is detected deep inside
@@ -41,7 +53,7 @@ function onSessionExpired() {
 onMounted(async () => {
   window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired)
   await auth.detectAuthMode()
-  if (auth.isAuthenticated) {
+  if (hasPortalSession.value) {
     providers.load()
     tenant.bootstrap()
   }
@@ -49,10 +61,11 @@ onMounted(async () => {
 
 onUnmounted(() => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired))
 
-// Authentication can arrive after onMounted (token login form). Watch and
-// kick off provider load + tenant bootstrap as soon as credentials land.
+// Authentication can arrive after onMounted (token login form). Watch the
+// bearer rather than the workspace target so organization-only state does not
+// look like a logged-out session.
 watch(
-  () => auth.isAuthenticated,
+  () => auth.token,
   (ok) => {
     if (!ok) return
     if (!providers.loaded) providers.load()
@@ -60,10 +73,10 @@ watch(
   },
 )
 
-// Tenant → auth bridge: the sidebar TenantContextChip switches the active
-// org/workspace by mutating the tenant store, but every `/graphql/{cluster}`
-// query is built from auth.clusterName. Without this sync the user flips
-// workspace in the chip and the MCP/edges/workload pages keep showing data
+// Tenant → auth bridge: the shell's workspace switcher changes the active
+// workspace in the tenant store, but every `/graphql/{cluster}`
+// query is built from auth.clusterName. Without this sync the user switches
+// workspace and the MCP/edges/workload pages keep showing data
 // from the login-time DefaultCluster. Mirror activeWorkspace.clusterName →
 // auth.clusterName so:
 //   1. useGraphQLQuery's watchEffect (which reads auth.isAuthenticated, a
@@ -71,13 +84,42 @@ watch(
 //   2. ProviderFrame's watch on auth.clusterName pushes a fresh
 //      farosContext to the mounted provider element; its auth-adapter
 //      hydrates and its useGraphQLQuery re-fires the same way.
-// The hub omits clusterName until the workspace reports Ready, so guard on
-// a non-empty value to avoid clearing a working selection during the brief
-// window before fetchWorkspaces resolves on a hard refresh.
+// The hub omits clusterName until the workspace reports Ready. Keep the
+// retained login cluster during the initial async hydration (this watcher is
+// intentionally not immediate), but clear it as soon as an explicit org-only
+// selection leaves no active workspace. This prevents workspace-scoped pages
+// from continuing to target the previous org's cluster.
 watch(
   () => tenant.activeWorkspace?.clusterName,
   (cluster) => {
-    if (cluster) auth.setClusterName(cluster)
+    auth.setClusterName(cluster ?? null)
+  },
+)
+
+// A persisted organization-only selection starts with no activeWorkspace, so
+// the bridge above has no value transition to observe on a hard refresh. Once
+// bootstrap begins hydrating that authority boundary (or reports an error),
+// clear any login-time cluster target; a workspace-scoped route must never
+// continue using the previous organization's cluster in the meantime.
+watch(
+  () => [tenant.orgUUID, tenant.workspaceMode, tenant.workspaceSelectionHydrated, tenant.workspaceLoadState] as const,
+  ([, mode, hydrated]) => {
+    if (mode === 'organization' || hydrated) {
+      auth.setClusterName(tenant.activeWorkspace?.clusterName ?? null)
+    }
+  },
+)
+
+// The provider catalog includes organization-owned registrations, while the
+// enabled binding map is workspace-owned. Clear both before loading the new
+// org so sidebar/catalog consumers never render the previous authority's
+// provider data during a switch; the store fences late responses as well.
+watch(
+  () => tenant.orgUUID,
+  (org, previousOrg) => {
+    if (org === previousOrg) return
+    providers.resetForOrganization()
+    if (auth.token) void providers.load(org)
   },
 )
 
@@ -108,6 +150,6 @@ watch(
        between pages never unmounts the dock. AppLayout (which every page renders)
        lives *inside* router-view, so keeping the dock here is what preserves the
        live xterm buffer + SSH WebSocket across route changes. -->
-  <TerminalDock />
+  <TerminalDock v-show="!hideTerminalDock" />
   <PkConfirmDialog />
 </template>

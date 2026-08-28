@@ -50,32 +50,42 @@ type fakeOps struct {
 	mu sync.Mutex
 
 	// Storage
-	orgWorkspaces     map[string]bool              // orgUUID set
-	orgMemberships    map[string]map[string]string // orgUUID → user → role
-	childWorkspaces   map[string]map[string]bool   // orgUUID → wsUUID set
-	wsDisplayNames    map[wsKey]string             // (org,ws) → display
-	wsDeletionAnnos   map[wsKey]time.Time          // (org,ws) → timestamp
-	mcpServerCalls    map[wsKey]int                // (org,ws) → count
-	farosBindingCalls map[wsKey]int                // (org,ws) → count
-	workspaceAdmins   map[wsKey]map[string]bool    // (org,ws) → rbacIdentity set
-	providerBindings  map[wsKey]map[string]string  // (org,ws) → provider → binding name
-	providerBindCalls map[wsKey]int                // (org,ws) → count
+	orgWorkspaces          map[string]bool              // orgUUID set
+	orgMemberships         map[string]map[string]string // orgUUID → user → role
+	childWorkspaces        map[string]map[string]bool   // orgUUID → wsUUID set
+	wsDisplayNames         map[wsKey]string             // (org,ws) → display
+	wsDeletionAnnos        map[wsKey]time.Time          // (org,ws) → timestamp
+	mcpServerCalls         map[wsKey]int                // (org,ws) → count
+	farosBindingCalls      map[wsKey]int                // (org,ws) → count
+	workspaceAdmins        map[wsKey]map[string]bool    // (org,ws) → rbacIdentity set
+	providerBindings       map[wsKey]map[string]string  // (org,ws) → provider → binding name
+	providerBindCalls      map[wsKey]int                // (org,ws) → count
+	setDeletionCalls       map[wsKey]int                // (org,ws) → count
+	setDeletionConflicts   map[wsKey]int                // conflicts to inject before a successful write
+	clearDeletionCalls     map[wsKey]int                // (org,ws) → count
+	clearDeletionConflicts map[wsKey]int                // conflicts to inject before a successful clear
+	clearDeletionRaceStamp map[wsKey]time.Time          // marker written by an injected clear race
 }
 
 type wsKey struct{ Org, WS string }
 
 func newFakeOps() *fakeOps {
 	return &fakeOps{
-		orgWorkspaces:     map[string]bool{},
-		orgMemberships:    map[string]map[string]string{},
-		childWorkspaces:   map[string]map[string]bool{},
-		wsDisplayNames:    map[wsKey]string{},
-		wsDeletionAnnos:   map[wsKey]time.Time{},
-		mcpServerCalls:    map[wsKey]int{},
-		farosBindingCalls: map[wsKey]int{},
-		workspaceAdmins:   map[wsKey]map[string]bool{},
-		providerBindings:  map[wsKey]map[string]string{},
-		providerBindCalls: map[wsKey]int{},
+		orgWorkspaces:          map[string]bool{},
+		orgMemberships:         map[string]map[string]string{},
+		childWorkspaces:        map[string]map[string]bool{},
+		wsDisplayNames:         map[wsKey]string{},
+		wsDeletionAnnos:        map[wsKey]time.Time{},
+		mcpServerCalls:         map[wsKey]int{},
+		farosBindingCalls:      map[wsKey]int{},
+		workspaceAdmins:        map[wsKey]map[string]bool{},
+		providerBindings:       map[wsKey]map[string]string{},
+		providerBindCalls:      map[wsKey]int{},
+		setDeletionCalls:       map[wsKey]int{},
+		setDeletionConflicts:   map[wsKey]int{},
+		clearDeletionCalls:     map[wsKey]int{},
+		clearDeletionConflicts: map[wsKey]int{},
+		clearDeletionRaceStamp: map[wsKey]time.Time{},
 	}
 }
 
@@ -273,14 +283,32 @@ func (f *fakeOps) GetWorkspaceDeletionRequestedAt(_ context.Context, orgUUID, ws
 func (f *fakeOps) SetWorkspaceDeletionAnnotation(_ context.Context, orgUUID, wsUUID string, at time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.wsDeletionAnnos[wsKey{orgUUID, wsUUID}] = at
+	key := wsKey{orgUUID, wsUUID}
+	f.setDeletionCalls[key]++
+	if f.setDeletionConflicts[key] > 0 {
+		f.setDeletionConflicts[key]--
+		return apierrors.NewConflict(schema.GroupResource{Group: "tenancy.kcp.io", Resource: "workspaces"}, wsUUID, fmt.Errorf("injected update conflict"))
+	}
+	if _, exists := f.wsDeletionAnnos[key]; exists {
+		return nil
+	}
+	f.wsDeletionAnnos[key] = at
 	return nil
 }
 
 func (f *fakeOps) ClearWorkspaceDeletionAnnotation(_ context.Context, orgUUID, wsUUID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	delete(f.wsDeletionAnnos, wsKey{orgUUID, wsUUID})
+	key := wsKey{orgUUID, wsUUID}
+	f.clearDeletionCalls[key]++
+	if f.clearDeletionConflicts[key] > 0 {
+		f.clearDeletionConflicts[key]--
+		if stamp, ok := f.clearDeletionRaceStamp[key]; ok {
+			f.wsDeletionAnnos[key] = stamp
+		}
+		return apierrors.NewConflict(schema.GroupResource{Group: "tenancy.kcp.io", Resource: "workspaces"}, wsUUID, fmt.Errorf("injected update conflict"))
+	}
+	delete(f.wsDeletionAnnos, key)
 	return nil
 }
 
@@ -466,6 +494,62 @@ func TestListOrgs_SuppressesSoftDeleted(t *testing.T) {
 	}
 }
 
+func TestListWorkspaces_PreservesSoftDeletedWorkspaceAdminRole(t *testing.T) {
+	requestedAt := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	softDeletedAt := metav1.NewTime(requestedAt)
+	umi := &tenancyv1alpha1.UserMembershipIndex{
+		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
+		Spec: tenancyv1alpha1.UserMembershipIndexSpec{
+			Entries: []tenancyv1alpha1.MembershipIndexEntry{{
+				OrgUUID:              "org-a",
+				WorkspaceUUID:        "ws-1",
+				Role:                 tenancyv1alpha1.MembershipRoleAdmin,
+				SoftDeletedAt:        &softDeletedAt,
+				WorkspaceDisplayName: "Platform",
+			}},
+		},
+	}
+	mgr, ops, _ := newTestManager(t, umi)
+	if err := ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1"); err != nil {
+		t.Fatalf("seed child workspace: %v", err)
+	}
+	ops.wsDisplayNames[wsKey{"org-a", "ws-1"}] = "Platform"
+	ops.wsDeletionAnnos[wsKey{"org-a", "ws-1"}] = requestedAt
+
+	for name, tc := range map[string]tenant.TenantContext{
+		"org admin":       adminTC("alice", "org-a", ""),
+		"workspace admin": memberTC("alice", "org-a", ""),
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := newTestServer(t, mgr, tc)
+			defer srv.Close()
+
+			resp, err := http.Get(srv.URL + "/api/orgs/org-a/workspaces")
+			if err != nil {
+				t.Fatalf("GET: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status: got %d, want 200", resp.StatusCode)
+			}
+			var list ListResponse[WorkspaceView]
+			if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if len(list.Items) != 1 {
+				t.Fatalf("items: got %#v, want one soft-deleted workspace", list.Items)
+			}
+			got := list.Items[0]
+			if got.UUID != "ws-1" || got.Role != tenancyv1alpha1.MembershipRoleAdmin {
+				t.Errorf("workspace projection: got %#v, want ws-1/admin", got)
+			}
+			if got.DeletionRequestedAt == nil || !got.DeletionRequestedAt.Equal(requestedAt) {
+				t.Errorf("deletion timestamp: got %v, want %v", got.DeletionRequestedAt, requestedAt)
+			}
+		})
+	}
+}
+
 func TestCreateOrg_ValidatesAndPersists(t *testing.T) {
 	mgr, ops, _ := newTestManager(t)
 	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
@@ -647,6 +731,159 @@ func TestDeleteWorkspace_SetsAnnotation(t *testing.T) {
 	}
 	if _, ok := ops.wsDeletionAnnos[wsKey{"org-a", "ws-1"}]; !ok {
 		t.Error("deletion annotation not set")
+	}
+}
+
+func TestDeleteWorkspace_IsIdempotentAndPreservesOriginalTimestamp(t *testing.T) {
+	original := time.Date(2026, 6, 1, 12, 34, 56, 0, time.UTC)
+	mgr, ops, _ := newTestManager(t)
+	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+	ops.wsDeletionAnnos[wsKey{"org-a", "ws-1"}] = original
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	for i := 0; i < 2; i++ {
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/orgs/org-a/workspaces/ws-1", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE #%d: %v", i+1, err)
+		}
+		if resp.StatusCode != http.StatusNoContent {
+			t.Errorf("DELETE #%d status: got %d, want 204", i+1, resp.StatusCode)
+		}
+		_ = resp.Body.Close()
+	}
+
+	if got := ops.wsDeletionAnnos[wsKey{"org-a", "ws-1"}]; !got.Equal(original) {
+		t.Errorf("deletion timestamp: got %s, want original %s", got.Format(time.RFC3339), original.Format(time.RFC3339))
+	}
+	if got := ops.setDeletionCalls[wsKey{"org-a", "ws-1"}]; got != 0 {
+		t.Errorf("SetWorkspaceDeletionAnnotation calls: got %d, want 0 for an already-requested deletion", got)
+	}
+}
+
+func TestDeleteWorkspace_RetriesUpdateConflictWithoutResettingTimestamp(t *testing.T) {
+	mgr, ops, _ := newTestManager(t)
+	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+	key := wsKey{"org-a", "ws-1"}
+	ops.setDeletionConflicts[key] = 1
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/orgs/org-a/workspaces/ws-1", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status: got %d, want 204", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	if got := ops.setDeletionCalls[key]; got != 2 {
+		t.Errorf("SetWorkspaceDeletionAnnotation calls: got %d, want 2 after one conflict", got)
+	}
+	if got := ops.wsDeletionAnnos[key]; got.IsZero() {
+		t.Error("deletion timestamp was not persisted after the retry")
+	}
+}
+
+func TestUndeleteWorkspace_RejectsExpiredGraceWindow(t *testing.T) {
+	requestedAt := time.Now().UTC().Add(-workspaceGracePeriod - time.Hour)
+	mgr, ops, _ := newTestManager(t)
+	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+	key := wsKey{"org-a", "ws-1"}
+	ops.wsDeletionAnnos[key] = requestedAt
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/orgs/org-a/workspaces/ws-1/undelete", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("undelete: %v", err)
+	}
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status: got %d, want 409", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	if got := ops.wsDeletionAnnos[key]; !got.Equal(requestedAt) {
+		t.Errorf("expired deletion timestamp changed: got %s, want %s", got.Format(time.RFC3339), requestedAt.Format(time.RFC3339))
+	}
+}
+
+func TestUndeleteWorkspace_ClearsWithinGraceWindow(t *testing.T) {
+	requestedAt := time.Now().UTC().Add(-time.Hour)
+	mgr, ops, _ := newTestManager(t)
+	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+	key := wsKey{"org-a", "ws-1"}
+	ops.wsDeletionAnnos[key] = requestedAt
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/orgs/org-a/workspaces/ws-1/undelete", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("undelete: %v", err)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("status: got %d, want 204", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	if _, found := ops.wsDeletionAnnos[key]; found {
+		t.Errorf("deletion annotation still present after successful restore: %v", ops.wsDeletionAnnos[key])
+	}
+}
+
+func TestUndeleteWorkspace_RetriesSameMarkerAfterConflict(t *testing.T) {
+	requestedAt := time.Now().UTC().Add(-time.Hour)
+	mgr, ops, _ := newTestManager(t)
+	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+	key := wsKey{"org-a", "ws-1"}
+	ops.wsDeletionAnnos[key] = requestedAt
+	ops.clearDeletionConflicts[key] = 1
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/orgs/org-a/workspaces/ws-1/undelete", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("undelete: %v", err)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status: got %d, want 204", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	if got := ops.clearDeletionCalls[key]; got != 2 {
+		t.Errorf("ClearWorkspaceDeletionAnnotation calls: got %d, want 2 after one conflict", got)
+	}
+	if _, found := ops.wsDeletionAnnos[key]; found {
+		t.Error("deletion annotation still present after conflict retry")
+	}
+}
+
+func TestUndeleteWorkspace_DoesNotClearNewerDeletionAfterConflict(t *testing.T) {
+	requestedAt := time.Now().UTC().Add(-time.Hour)
+	newer := time.Now().UTC().Add(-2 * time.Minute)
+	mgr, ops, _ := newTestManager(t)
+	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+	key := wsKey{"org-a", "ws-1"}
+	ops.wsDeletionAnnos[key] = requestedAt
+	ops.clearDeletionConflicts[key] = 1
+	ops.clearDeletionRaceStamp[key] = newer
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/orgs/org-a/workspaces/ws-1/undelete", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("undelete: %v", err)
+	}
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status: got %d, want 409", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+	if got := ops.wsDeletionAnnos[key]; !got.Equal(newer) {
+		t.Errorf("newer deletion marker was not preserved: got %s, want %s", got.Format(time.RFC3339), newer.Format(time.RFC3339))
 	}
 }
 

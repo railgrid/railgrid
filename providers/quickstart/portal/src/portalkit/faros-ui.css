@@ -1187,9 +1187,33 @@ html.light [data-k-tip]::after {
   background: var(--color-surface-overlay, #171927);
   color: var(--color-text-primary, #e9e9f2);
 }
+.k-table-action--neutral:hover,
+.k-table-action--neutral:focus-visible {
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-primary, #e9e9f2);
+}
+.k-table-action--accent:hover,
+.k-table-action--accent:focus-visible {
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent, #8b6bff);
+}
+.k-table-action--warning:hover,
+.k-table-action--warning:focus-visible {
+  background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12));
+  color: var(--color-warning, #f0a63a);
+}
+.k-table-action--danger:hover,
+.k-table-action--danger:focus-visible {
+  background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
+  color: var(--color-danger, #ff5d5d);
+}
 .k-table-action:focus-visible { outline: 2px solid var(--color-accent, #8b6bff); outline-offset: 2px; }
 .k-table-action:disabled { cursor: not-allowed; }
 .k-table-action--busy { color: var(--color-danger, #ff5d5d); cursor: progress; }
+.k-table-action--busy.k-table-action--neutral { color: var(--color-text-primary, #e9e9f2); }
+.k-table-action--busy.k-table-action--accent { color: var(--color-accent, #8b6bff); }
+.k-table-action--busy.k-table-action--warning { color: var(--color-warning, #f0a63a); }
+.k-table-action--busy.k-table-action--danger { color: var(--color-danger, #ff5d5d); }
 .k-table-action__icon { width: 14px; height: 14px; }
 .k-table-action__icon--spinning { animation: k-table-action-spin 0.8s linear infinite; }
 @keyframes k-table-action-spin { to { transform: rotate(360deg); } }

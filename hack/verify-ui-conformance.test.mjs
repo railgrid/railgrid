@@ -276,6 +276,36 @@ test('keeps resource-table controls and wide-table scrolling in the canonical re
   assert.match(sync, /OBSOLETE_FILES=\([^\n]*ResourceTable\.css/)
 })
 
+test('keeps generic resource-table icon actions accessible, toned, and vendored', () => {
+  const action = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourceTableActionButton.vue', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+  const sync = fs.readFileSync(new URL('./sync-portalkit.sh', import.meta.url), 'utf8')
+
+  assert.match(action, /icon: Component/)
+  assert.match(action, /label: string/)
+  assert.match(action, /busyLabel\?: string/)
+  assert.match(action, /busy\?: boolean/)
+  assert.match(action, /disabled\?: boolean/)
+  assert.match(action, /type ResourceTableActionTone = 'neutral' \| 'accent' \| 'warning' \| 'danger'/)
+  assert.match(action, /class="k-table-action"/)
+  assert.match(action, /:class="\[`k-table-action--\$\{tone\}`/)
+  assert.match(action, /:title="accessibleLabel"/)
+  assert.match(action, /:aria-label="accessibleLabel"/)
+  assert.match(action, /:aria-busy="busy \|\| undefined"/)
+  assert.match(action, /:disabled="disabled \|\| busy"/)
+  assert.match(action, /@click\.stop="emit\('click', \$event\)"/)
+  assert.match(action, /<Loader2 v-if="busy"[^>]*k-table-action__icon--spinning/)
+  assert.match(action, /<component[\s\S]*:is="icon"[\s\S]*v-else/)
+
+  for (const tone of ['neutral', 'accent', 'warning', 'danger']) {
+    assert.match(css, new RegExp(`\\.k-table-action--${tone}:hover,`))
+    assert.match(css, new RegExp(`\\.k-table-action--busy\\.k-table-action--${tone}\\s*\\{`))
+  }
+  assert.match(css, /\.k-table-action--busy\.k-table-action--accent\s*\{[^}]*color:\s*var\(--color-accent/s)
+  assert.match(css, /\.k-table-action--busy\.k-table-action--warning\s*\{[^}]*color:\s*var\(--color-warning/s)
+  assert.match(sync, /VUE_FILES=\([^)]*ResourceTableActionButton\.vue/)
+})
+
 test('keeps resource section cards bounded and supports headerless sections', () => {
   const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
   const sectionCard = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourceSectionCard.vue', import.meta.url), 'utf8')

@@ -18,6 +18,7 @@ limitations under the License.
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch, type CSSProperties } from 'vue'
 import { useRoute } from 'vue-router'
 import {
+  Building2,
   ChevronDown,
   Code2,
   LogOut,
@@ -32,6 +33,7 @@ import {
   UserRound,
 } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
+import { useTenantStore } from '@/stores/tenant'
 import { useThemeStore, type ThemeMode } from '@/stores/theme'
 
 interface Props {
@@ -50,12 +52,12 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   cli: []
-  profile: []
   undock: []
   logout: []
 }>()
 
 const auth = useAuthStore()
+const tenant = useTenantStore()
 const theme = useThemeStore()
 const route = useRoute()
 
@@ -67,13 +69,30 @@ const position = ref({ top: 0, left: 0 })
 
 let positionFrame: number | null = null
 let disposed = false
+let resizeObserver: ResizeObserver | null = null
+let deferredTabClose: ReturnType<typeof setTimeout> | undefined
+let initialFocusIndex = 0
 const panelId = useId()
 
 const email = computed(() => auth.user?.email?.trim() || 'Authenticated user')
+const identityLabel = computed(() => auth.user?.email?.trim() ? 'Email' : 'Account')
 const mcpActive = computed(() => route.path === '/mcp' || route.path.startsWith('/mcp/'))
-const settingsActive = computed(() => route.path === '/tenant' || route.path.startsWith('/tenant/'))
+const settingsActive = computed(() => route.path === '/settings' || route.path.startsWith('/settings/'))
 const adminActive = computed(() => route.path === '/bonkers' || route.path.startsWith('/bonkers/'))
-const contextRouteActive = computed(() => mcpActive.value || settingsActive.value || adminActive.value)
+const organizationsActive = computed(() => route.path === '/organizations')
+const contextRouteActive = computed(() => mcpActive.value || settingsActive.value || adminActive.value || organizationsActive.value)
+const orgLabel = computed(() => tenant.activeOrg?.displayName ?? 'Choose organization')
+const orgDetail = computed(() => {
+  const org = tenant.activeOrg
+  if (!org) return 'Authority context'
+  if (tenant.orgs.length > 1) return 'Switch organization'
+  if (org.personal) return 'Personal organization'
+  return org.role === 'admin' ? 'Organization admin' : 'Organization member'
+})
+const organizationDestination = computed(() => tenant.orgs.length > 1
+  ? { path: '/organizations', query: { from: route.fullPath } }
+  : { path: '/settings/organizations' },
+)
 const initials = computed(() => {
   const value = email.value === 'Authenticated user' ? '' : email.value
   const parts = value.split(/[@.\s_-]+/).filter(Boolean)
@@ -103,7 +122,7 @@ function clamp(value: number, minimum: number, maximum: number) {
 }
 
 function updatePosition() {
-  if (!isOpen.value || typeof window === 'undefined') return
+  if (!isOpen.value || disposed || typeof window === 'undefined') return
 
   const trigger = triggerRef.value
   const panel = panelRef.value
@@ -113,7 +132,7 @@ function updatePosition() {
   const gap = 8
   const triggerRect = trigger.getBoundingClientRect()
   const panelRect = panel.getBoundingClientRect()
-  const panelWidth = panelRect.width || Math.min(320, Math.max(0, window.innerWidth - margin * 2))
+  const panelWidth = panelRect.width || Math.min(340, Math.max(0, window.innerWidth - margin * 2))
   const panelHeight = panelRect.height || Math.min(600, Math.max(0, window.innerHeight - margin * 2))
   const belowSpace = window.innerHeight - triggerRect.bottom - gap
   const aboveSpace = triggerRect.top - gap
@@ -163,23 +182,31 @@ function positionPopover() {
 function getFocusableItems() {
   const panel = panelRef.value
   if (!panel) return []
-  return Array.from(panel.querySelectorAll<HTMLElement>('button:not([disabled]), a[href]'))
+  return Array.from(panel.querySelectorAll<HTMLElement>('button:not([disabled]):not([aria-disabled="true"]), a[href]:not([aria-disabled="true"])'))
 }
 
-function focusFirstItem() {
-  getFocusableItems()[0]?.focus()
+function focusMenuItem(index: number) {
+  const items = getFocusableItems()
+  if (items.length === 0) return
+  const bounded = (index + items.length) % items.length
+  items[bounded]?.focus()
 }
 
 function closeMenu(restoreFocus = false) {
   if (!isOpen.value) return
   isOpen.value = false
+  if (deferredTabClose !== undefined) {
+    clearTimeout(deferredTabClose)
+    deferredTabClose = undefined
+  }
   if (restoreFocus) {
     void nextTick(() => triggerRef.value?.focus())
   }
 }
 
-function openMenu() {
+function openMenu(focusIndex = 0) {
   if (isOpen.value) return
+  initialFocusIndex = focusIndex
   isOpen.value = true
 }
 
@@ -188,19 +215,59 @@ function toggleMenu() {
   else openMenu()
 }
 
+function onTriggerKeydown(event: KeyboardEvent) {
+  if (!isOpen.value && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+    event.preventDefault()
+    openMenu(event.key === 'ArrowDown' ? 0 : -1)
+  }
+}
+
 function onPanelKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     event.preventDefault()
     event.stopPropagation()
     closeMenu(true)
+    return
   }
+
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  const items = getFocusableItems()
+  if (items.length === 0) return
+
+  event.preventDefault()
+  const current = items.indexOf(document.activeElement as HTMLElement)
+  if (event.key === 'Home') focusMenuItem(0)
+  else if (event.key === 'End') focusMenuItem(items.length - 1)
+  else if (event.key === 'ArrowDown') focusMenuItem(current < 0 ? 0 : current + 1)
+  else focusMenuItem(current < 0 ? items.length - 1 : current - 1)
 }
 
 function onDocumentKeydown(event: KeyboardEvent) {
-  if (isOpen.value && event.key === 'Escape' && !panelRef.value?.contains(event.target as Node)) {
+  if (!isOpen.value) return
+  if (event.key === 'Escape' && !panelRef.value?.contains(event.target as Node)) {
     event.preventDefault()
     closeMenu(true)
+    return
   }
+  if (event.key !== 'Tab' || deferredTabClose !== undefined) return
+  // Let the browser move focus normally. The focusin handler closes as soon
+  // as focus leaves the panel; this fallback covers environments where Tab
+  // has no focus target and therefore emits no focusin event.
+  deferredTabClose = setTimeout(() => {
+    deferredTabClose = undefined
+    if (isOpen.value && !panelRef.value?.contains(document.activeElement)) closeMenu()
+  }, 0)
+}
+
+function observePanelResize() {
+  resizeObserver?.disconnect()
+  resizeObserver = null
+  if (typeof ResizeObserver === 'undefined' || !panelRef.value) return
+  resizeObserver = new ResizeObserver(() => {
+    if (!isOpen.value || disposed) return
+    positionPopover()
+  })
+  resizeObserver.observe(panelRef.value)
 }
 
 function onDocumentPointerdown(event: PointerEvent) {
@@ -217,16 +284,18 @@ function onDocumentFocusin(event: FocusEvent) {
   closeMenu()
 }
 
-function emitAndClose(eventName: 'cli' | 'profile' | 'undock' | 'logout') {
+function emitAndClose(eventName: 'cli' | 'undock' | 'logout') {
   if (eventName === 'cli') emit('cli')
-  else if (eventName === 'profile') emit('profile')
   else if (eventName === 'undock') emit('undock')
   else emit('logout')
-  closeMenu()
+  // Every menu action has to leave focus somewhere deterministic. Restoring
+  // the trigger also gives actions that open another surface (CLI setup) a
+  // stable handoff target while that surface establishes its own focus.
+  closeMenu(true)
 }
 
 function onRouteNavigation() {
-  closeMenu()
+  closeMenu(true)
 }
 
 watch(isOpen, async (open) => {
@@ -237,7 +306,9 @@ watch(isOpen, async (open) => {
     updatePosition()
     await nextTick()
     if (!isOpen.value || disposed) return
-    focusFirstItem()
+    observePanelResize()
+    focusMenuItem(initialFocusIndex)
+    initialFocusIndex = 0
     document.addEventListener('pointerdown', onDocumentPointerdown, true)
     document.addEventListener('keydown', onDocumentKeydown)
     document.addEventListener('focusin', onDocumentFocusin)
@@ -245,6 +316,8 @@ watch(isOpen, async (open) => {
     window.addEventListener('scroll', positionPopover, { capture: true, passive: true })
   } else {
     positionReady.value = false
+    resizeObserver?.disconnect()
+    resizeObserver = null
     if (typeof window !== 'undefined') {
       if (positionFrame !== null) {
         window.cancelAnimationFrame(positionFrame)
@@ -267,6 +340,9 @@ onBeforeUnmount(() => {
   if (typeof window !== 'undefined' && positionFrame !== null) {
     window.cancelAnimationFrame(positionFrame)
   }
+  if (deferredTabClose !== undefined) clearTimeout(deferredTabClose)
+  resizeObserver?.disconnect()
+  resizeObserver = null
   document.removeEventListener('pointerdown', onDocumentPointerdown, true)
   document.removeEventListener('keydown', onDocumentKeydown)
   document.removeEventListener('focusin', onDocumentFocusin)
@@ -292,19 +368,16 @@ onBeforeUnmount(() => {
     ]"
     :title="expanded ? undefined : 'Account & access'"
     @click="toggleMenu"
+    @keydown="onTriggerKeydown"
   >
-    <span v-if="expanded" class="relative flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-raised text-text-secondary">
-      <UserRound class="h-3 w-3" :stroke-width="1.75" aria-hidden="true" />
-      <span class="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-success" aria-hidden="true" />
-    </span>
-    <span v-else class="k-avatar k-avatar--sm" aria-hidden="true">
+    <span class="k-avatar k-avatar--sm" aria-hidden="true">
       <UserRound v-if="initials === '?'" class="h-3 w-3" :stroke-width="1.75" />
       <span v-else>{{ initials }}</span>
     </span>
 
     <span v-if="expanded" class="min-w-0 flex-1">
       <span class="block truncate font-mono text-[10px] text-text-secondary group-hover:text-text-primary">{{ email }}</span>
-      <span class="mt-0.5 block text-[10px] text-text-muted">Account &amp; access</span>
+      <span class="mt-0.5 block truncate text-[10px] text-text-muted">{{ orgLabel }}</span>
     </span>
     <ChevronDown
       v-if="expanded"
@@ -322,24 +395,35 @@ onBeforeUnmount(() => {
       ref="panelRef"
       role="dialog"
       aria-label="Account and access"
-      class="k-menu fixed z-[80] max-h-[calc(100vh-24px)] w-[320px] max-w-[calc(100vw-24px)] overflow-y-auto"
+      class="k-menu fixed z-[80] max-h-[calc(100vh-24px)] w-[340px] max-w-[calc(100vw-24px)] overflow-y-auto"
       :style="popoverStyle"
       @keydown="onPanelKeydown"
     >
-      <div class="px-2 py-1.5">
-        <span class="k-eyebrow">Identity</span>
-      </div>
-      <button type="button" class="k-menu-item" @click="emitAndClose('profile')">
+      <div class="flex items-center gap-2 px-2 py-2">
         <span class="k-avatar k-avatar--sm" aria-hidden="true">
           <UserRound v-if="initials === '?'" class="h-3 w-3" :stroke-width="1.75" />
           <span v-else>{{ initials }}</span>
         </span>
         <span class="min-w-0 flex-1">
           <span class="block truncate font-mono text-[11px] text-text-primary">{{ email }}</span>
-          <span class="mt-0.5 block text-[10px] text-text-muted">View profile</span>
+          <span class="mt-0.5 block text-[10px] text-text-muted">{{ identityLabel }}</span>
+        </span>
+      </div>
+
+      <router-link
+        :to="organizationDestination"
+        class="k-menu-item py-2"
+        @click="closeMenu(true)"
+      >
+        <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
+          <Building2 class="h-3.5 w-3.5 text-text-secondary" :stroke-width="1.75" aria-hidden="true" />
+        </span>
+        <span class="min-w-0 flex-1">
+          <span class="block truncate font-mono text-[11px] text-text-primary">{{ orgLabel }}</span>
+          <span class="mt-0.5 block text-[10px] text-text-muted">{{ orgDetail }}</span>
         </span>
         <ChevronDown class="h-3 w-3 -rotate-90 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
-      </button>
+      </router-link>
       <div class="my-1 h-px bg-border-subtle" />
 
       <div class="px-2 py-1.5">
@@ -355,7 +439,7 @@ onBeforeUnmount(() => {
         class="k-menu-item"
         :class="mcpActive ? 'is-selected' : ''"
         :aria-current="mcpActive ? 'page' : undefined"
-        @click="closeMenu()"
+        @click="closeMenu(true)"
       >
         <Plug class="h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" aria-hidden="true" />
         <span class="flex-1">MCP Access</span>
@@ -385,11 +469,11 @@ onBeforeUnmount(() => {
       <div class="my-1 h-px bg-border-subtle" />
 
       <router-link
-        to="/tenant"
+        to="/settings/workspaces"
         class="k-menu-item"
         :class="settingsActive ? 'is-selected' : ''"
         :aria-current="settingsActive ? 'page' : undefined"
-        @click="closeMenu()"
+        @click="closeMenu(true)"
       >
         <Settings class="h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" aria-hidden="true" />
         <span class="flex-1">Settings</span>
@@ -401,7 +485,7 @@ onBeforeUnmount(() => {
         class="k-menu-item"
         :class="adminActive ? 'is-selected' : ''"
         :aria-current="adminActive ? 'page' : undefined"
-        @click="closeMenu()"
+        @click="closeMenu(true)"
       >
         <ShieldAlert class="h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" aria-hidden="true" />
         <span class="flex-1">Platform admin</span>

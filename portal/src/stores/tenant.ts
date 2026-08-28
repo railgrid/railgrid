@@ -46,6 +46,10 @@ async function statusMessage(resp: Response): Promise<string> {
 interface PersistedTenant {
   orgUUID: string | null
   workspaceUUID: string | null
+  // `organization` is an intentional org-only selection. It must be kept
+  // separate from the first-login "nothing has been selected yet" state so a
+  // reload never silently picks a workspace the user did not choose.
+  workspaceMode?: 'workspace' | 'organization'
 }
 
 export interface OrgRow {
@@ -79,6 +83,17 @@ export interface WorkspaceRow {
   // list all workspaces but manage only those they're workspace-admin
   // in). Gates the workspace-admin controls in tenant settings.
   role?: 'admin' | 'member'
+}
+
+// A workspace can be selected while its cluster is still provisioning. It is
+// not an operating target until the hub supplies a clusterName, and a row
+// marked for deletion is never a valid target even if it still has one.
+export function isWorkspaceAvailable(workspace: WorkspaceRow | null | undefined): boolean {
+  return !!workspace && !workspace.deletionRequestedAt
+}
+
+export function isWorkspaceUsable(workspace: WorkspaceRow | null | undefined): boolean {
+  return isWorkspaceAvailable(workspace) && !!workspace?.clusterName
 }
 
 export interface MemberRow {
@@ -119,17 +134,37 @@ export interface TokenResponse {
   expiresAt: string
 }
 
+export interface CreateWorkspaceOptions {
+  // Settings surfaces can create a workspace without changing the portal's
+  // current operating target. The first-workspace flow keeps the default
+  // selecting behavior by omitting this option.
+  selectCreated?: boolean
+}
+
 function loadPersisted(): PersistedTenant {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return { orgUUID: null, workspaceUUID: null }
+    if (!raw) return { orgUUID: null, workspaceUUID: null, workspaceMode: 'workspace' }
     const parsed = JSON.parse(raw) as PersistedTenant
-    return {
-      orgUUID: parsed.orgUUID ?? null,
-      workspaceUUID: parsed.workspaceUUID ?? null,
+    const orgUUID = parsed.orgUUID ?? null
+    const storedWorkspaceUUID = parsed.workspaceUUID ?? null
+    const workspaceMode: 'workspace' | 'organization' = parsed.workspaceMode === 'organization' ||
+      (orgUUID !== null && storedWorkspaceUUID === null)
+      ? 'organization'
+      : 'workspace'
+    const normalized = {
+      orgUUID,
+      workspaceUUID: workspaceMode === 'organization' ? null : storedWorkspaceUUID,
+      workspaceMode,
     }
+    // Normalize the persisted boundary before any other store (notably the
+    // provider catalog) can read the old workspace UUID on this tick.
+    if (normalized.workspaceUUID !== storedWorkspaceUUID || normalized.workspaceMode !== parsed.workspaceMode) {
+      savePersisted(normalized)
+    }
+    return normalized
   } catch {
-    return { orgUUID: null, workspaceUUID: null }
+    return { orgUUID: null, workspaceUUID: null, workspaceMode: 'workspace' }
   }
 }
 
@@ -145,11 +180,133 @@ export const useTenantStore = defineStore('tenant', () => {
   const persisted = loadPersisted()
   const orgUUID = ref<string | null>(persisted.orgUUID)
   const workspaceUUID = ref<string | null>(persisted.workspaceUUID)
+  // Any persisted org without a workspace is an established organization-only
+  // context, regardless of which store version wrote the record. A record with
+  // no org remains first-login state and may choose the bootstrap default.
+  const workspaceMode = ref<'workspace' | 'organization'>(
+    persisted.workspaceMode
+      ?? (persisted.orgUUID && !persisted.workspaceUUID ? 'organization' : 'workspace'),
+  )
+  // A persisted org-only mode is authoritative even if an older or manually
+  // edited record still carries a workspace UUID. Do not let that stale UUID
+  // rehydrate a usable cluster target during bootstrap.
+  if (workspaceMode.value === 'organization') {
+    workspaceUUID.value = null
+    if (persisted.workspaceUUID !== null) {
+      savePersisted({ orgUUID: orgUUID.value, workspaceUUID: null, workspaceMode: 'organization' })
+    }
+  }
 
   const orgs = ref<OrgRow[]>([])
   const workspacesByOrg = ref<Record<string, WorkspaceRow[]>>({})
+  type WorkspaceLoadState = 'idle' | 'loading' | 'ready' | 'error'
+  const workspaceLoadStateByOrg = ref<Record<string, WorkspaceLoadState>>({})
+  const workspaceErrorByOrg = ref<Record<string, string | null>>({})
+  // Workspace reads are independent per organization. A refresh for org A
+  // must not invalidate (or finish) an in-flight read for org B, while two
+  // reads for the same org still use latest-result-wins semantics.
+  const workspacePendingByOrg = ref<Record<string, number>>({})
+  const workspaceRequestEpochByOrg = new Map<string, number>()
   const loading = ref(false)
   const error = ref<string | null>(null)
+  let orgRequestEpoch = 0
+  let orgPending = 0
+
+  function updateLoading(): void {
+    const workspacePending = Object.values(workspacePendingByOrg.value)
+      .some((pending) => pending > 0)
+    loading.value = orgPending > 0 || workspacePending
+  }
+
+  function beginWorkspaceRequest(targetOrgUUID: string): { epoch: number; selectionRevisionAtStart: number } {
+    const epoch = (workspaceRequestEpochByOrg.get(targetOrgUUID) ?? 0) + 1
+    workspaceRequestEpochByOrg.set(targetOrgUUID, epoch)
+    workspacePendingByOrg.value = {
+      ...workspacePendingByOrg.value,
+      [targetOrgUUID]: (workspacePendingByOrg.value[targetOrgUUID] ?? 0) + 1,
+    }
+    workspaceLoadStateByOrg.value = {
+      ...workspaceLoadStateByOrg.value,
+      [targetOrgUUID]: 'loading',
+    }
+    workspaceErrorByOrg.value = {
+      ...workspaceErrorByOrg.value,
+      [targetOrgUUID]: null,
+    }
+    updateLoading()
+    return { epoch, selectionRevisionAtStart: selectionRevision }
+  }
+
+  function finishWorkspaceRequest(targetOrgUUID: string): void {
+    const pending = workspacePendingByOrg.value[targetOrgUUID] ?? 0
+    const nextPending = Math.max(0, pending - 1)
+    const next = { ...workspacePendingByOrg.value }
+    if (nextPending === 0) delete next[targetOrgUUID]
+    else next[targetOrgUUID] = nextPending
+    workspacePendingByOrg.value = next
+    updateLoading()
+  }
+
+  // List endpoints used by Settings intentionally keep their read failures
+  // separate from the store-wide mutation error. The page loads the three
+  // workspace access sections concurrently, so one shared `error` value would
+  // let a slower read overwrite another section's explanation. Keys include
+  // the exact org/workspace target so a locally inspected workspace never
+  // inherits a different target's failure.
+  type ListReadKind = 'org-members' | 'workspace-members' | 'app-access' | 'service-accounts'
+  const listReadErrors = ref<Record<string, string | null>>({})
+  const listReadSequences = new Map<string, number>()
+  const listReadContexts = new Map<string, { targetOrgUUID: string; selectionRevisionAtStart: number }>()
+  let listReadSequence = 0
+
+  function listReadKey(kind: ListReadKind, targetOrgUUID: string, wsUUID?: string): string {
+    return `${kind}:${targetOrgUUID}:${wsUUID ?? ''}`
+  }
+
+  function beginListRead(kind: ListReadKind, targetOrgUUID: string, wsUUID?: string): { key: string; sequence: number } {
+    const key = listReadKey(kind, targetOrgUUID, wsUUID)
+    const sequence = ++listReadSequence
+    listReadSequences.set(key, sequence)
+    listReadContexts.set(key, { targetOrgUUID, selectionRevisionAtStart: selectionRevision })
+    listReadErrors.value = { ...listReadErrors.value, [key]: null }
+    return { key, sequence }
+  }
+
+  function finishListRead(read: { key: string; sequence: number }, message: string | null): void {
+    if (listReadSequences.get(read.key) !== read.sequence) return
+    listReadErrors.value = { ...listReadErrors.value, [read.key]: message }
+  }
+
+  function listReadError(kind: ListReadKind, targetOrgUUID: string, wsUUID?: string): string | null {
+    return listReadErrors.value[listReadKey(kind, targetOrgUUID, wsUUID)] ?? null
+  }
+
+  // Targeted operations may finish after the user changes organizations. Keep
+  // the legacy store-wide error for the active settings surface, but never let
+  // an old organization's failure become the current organization's error.
+  // The revision check also suppresses a late response after a switch away and
+  // back to the same organization.
+  function publishTargetError(
+    targetOrgUUID: string,
+    message: string,
+    selectionRevisionAtStart?: number,
+  ): void {
+    if (targetOrgUUID !== orgUUID.value) return
+    if (selectionRevisionAtStart !== undefined && selectionRevisionAtStart !== selectionRevision) return
+    error.value = message
+  }
+
+  function publishListReadError(read: { key: string; sequence: number }, message: string): void {
+    if (listReadSequences.get(read.key) !== read.sequence) return
+    const context = listReadContexts.get(read.key)
+    if (context) publishTargetError(context.targetOrgUUID, message, context.selectionRevisionAtStart)
+    finishListRead(read, message)
+  }
+
+  function readException(prefix: string, errorValue: unknown): string {
+    const detail = errorValue instanceof Error ? errorValue.message : String(errorValue ?? '')
+    return detail ? `${prefix}: ${detail}` : prefix
+  }
 
   // First-login provisioning state. On a brand-new account the hub's
   // org-bootstrap controller is still creating the personal org, the org
@@ -169,6 +326,42 @@ export const useTenantStore = defineStore('tenant', () => {
   // its cosmetic step list and warn once we pass the cold-start budget.
   const bootstrapAttempts = ref(0)
   let bootstrapRunning = false
+  // Every explicit org/workspace selection advances this revision. A
+  // workspace create can outlive a chooser switch; the completion may select
+  // its new row only when the selection context that started the request is
+  // still current.
+  let selectionRevision = 0
+  let workspaceCreationSequence = 0
+
+  // Workspace switches briefly invalidate the routed provider surface while
+  // the dashboard route is being restored. Keep that interval explicit so
+  // the shell can suppress the outgoing provider before its stale access
+  // checks render an unavailable state. The token is monotonic because a
+  // second switch may begin before the first navigation settles; an older
+  // finally must never clear the newer transition.
+  const workspaceTransitionToken = ref<number | null>(null)
+  let workspaceTransitionSequence = 0
+
+  function beginWorkspaceTransition(): number {
+    const token = ++workspaceTransitionSequence
+    workspaceTransitionToken.value = token
+    return token
+  }
+
+  function endWorkspaceTransition(token: number): void {
+    if (workspaceTransitionToken.value !== token) return
+    workspaceTransitionToken.value = null
+  }
+
+  function isCurrentWorkspaceCreate(
+    targetOrgUUID: string,
+    creationSequence: number,
+    selectionRevisionAtStart: number,
+  ): boolean {
+    return targetOrgUUID === orgUUID.value &&
+      creationSequence === workspaceCreationSequence &&
+      selectionRevision === selectionRevisionAtStart
+  }
 
   function delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms))
@@ -180,15 +373,25 @@ export const useTenantStore = defineStore('tenant', () => {
   const activeWorkspace = computed<WorkspaceRow | null>(() => {
     if (!orgUUID.value || !workspaceUUID.value) return null
     const wss = workspacesByOrg.value[orgUUID.value] ?? []
-    return wss.find((w) => w.uuid === workspaceUUID.value) ?? null
+    return wss.find((w) => w.uuid === workspaceUUID.value && isWorkspaceAvailable(w)) ?? null
   })
+  const activeWorkspaceUsable = computed(() => isWorkspaceUsable(activeWorkspace.value))
+  const workspaceLoadState = computed<WorkspaceLoadState>(() =>
+    orgUUID.value ? workspaceLoadStateByOrg.value[orgUUID.value] ?? 'idle' : 'idle',
+  )
+  const workspaceSelectionHydrated = computed(() => workspaceLoadState.value === 'ready')
+  const workspaceTransitioning = computed(() => workspaceTransitionToken.value !== null)
 
   // Whenever the selection changes, mirror to localStorage so a
   // refresh keeps the same active context.
   watch(
-    [orgUUID, workspaceUUID],
-    ([o, w]) => savePersisted({ orgUUID: o, workspaceUUID: w }),
+    [orgUUID, workspaceUUID, workspaceMode],
+    ([o, w, mode]) => savePersisted({ orgUUID: o, workspaceUUID: w, workspaceMode: mode }),
   )
+
+  function clearError() {
+    error.value = null
+  }
 
   // tenantHeaders is what every /api/orgs/* request needs alongside
   // the bearer token. Empty when nothing is selected so the caller
@@ -201,81 +404,190 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function fetchOrgs(): Promise<void> {
-    loading.value = true
-    error.value = null
+    const requestEpoch = ++orgRequestEpoch
+    const selectionRevisionAtStart = selectionRevision
+    orgPending++
+    updateLoading()
+    clearError()
     try {
       const resp = await authFetch('/api/orgs')
+      if (requestEpoch !== orgRequestEpoch || selectionRevision !== selectionRevisionAtStart) return
       if (!resp.ok) {
         error.value = `failed to list orgs: ${resp.status}`
         orgs.value = []
         return
       }
       const data = (await resp.json()) as { items: OrgRow[] }
+      if (requestEpoch !== orgRequestEpoch || selectionRevision !== selectionRevisionAtStart) return
       orgs.value = data.items ?? []
+      // A user selection made while this request was in flight is the
+      // authority. Do not let a late org list response reset it; a later
+      // refresh can validate the selection against fresh data.
+      if (selectionRevision !== selectionRevisionAtStart) return
       // Default selection: prefer the personal org; else first row.
       if (!orgUUID.value && orgs.value.length > 0) {
         const personal = orgs.value.find((o) => o.personal)
+        selectionRevision++
         orgUUID.value = (personal ?? orgs.value[0]).uuid
+        // No persisted authority exists here, so this is the first-login
+        // bootstrap path and may choose a default workspace below.
+        workspaceMode.value = 'workspace'
       }
       // Validate the persisted selection still exists; otherwise reset.
       if (orgUUID.value && !orgs.value.find((o) => o.uuid === orgUUID.value)) {
+        selectionRevision++
         orgUUID.value = orgs.value[0]?.uuid ?? null
         workspaceUUID.value = null
+        workspaceMode.value = 'workspace'
       }
     } catch (e: unknown) {
-      error.value = (e as Error).message
+      if (requestEpoch === orgRequestEpoch && selectionRevision === selectionRevisionAtStart) {
+        error.value = e instanceof Error ? e.message : String(e ?? 'Failed to list organizations.')
+      }
     } finally {
-      loading.value = false
+      orgPending = Math.max(0, orgPending - 1)
+      updateLoading()
     }
   }
 
-  async function fetchWorkspaces(targetOrgUUID: string): Promise<void> {
+  async function fetchWorkspaces(
+    targetOrgUUID: string,
+    options: { selectDefault?: boolean } = {},
+  ): Promise<void> {
     if (!targetOrgUUID) return
-    loading.value = true
-    error.value = null
+    const { epoch, selectionRevisionAtStart } = beginWorkspaceRequest(targetOrgUUID)
+    if (targetOrgUUID === orgUUID.value) clearError()
     try {
       const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces`, {
         headers: { 'X-Faros-Org': targetOrgUUID },
       })
+      if (epoch !== workspaceRequestEpochByOrg.get(targetOrgUUID)) return
       if (!resp.ok) {
-        error.value = `failed to list workspaces: ${resp.status}`
+        const message = `failed to list workspaces: ${resp.status}`
+        if (targetOrgUUID === orgUUID.value) {
+          error.value = `failed to list workspaces: ${resp.status}`
+        }
         workspacesByOrg.value = { ...workspacesByOrg.value, [targetOrgUUID]: [] }
+        workspaceLoadStateByOrg.value = {
+          ...workspaceLoadStateByOrg.value,
+          [targetOrgUUID]: 'error',
+        }
+        workspaceErrorByOrg.value = {
+          ...workspaceErrorByOrg.value,
+          [targetOrgUUID]: message,
+        }
         return
       }
       const data = (await resp.json()) as { items: WorkspaceRow[] }
-      workspacesByOrg.value = { ...workspacesByOrg.value, [targetOrgUUID]: data.items ?? [] }
-      // Default workspace selection: keep current if it still exists,
-      // otherwise pick the first row.
-      const list = workspacesByOrg.value[targetOrgUUID] ?? []
-      if (targetOrgUUID === orgUUID.value) {
-        if (!workspaceUUID.value || !list.find((w) => w.uuid === workspaceUUID.value)) {
-          workspaceUUID.value = list[0]?.uuid ?? null
+      if (epoch !== workspaceRequestEpochByOrg.get(targetOrgUUID)) return
+      const list = data.items ?? []
+      workspacesByOrg.value = { ...workspacesByOrg.value, [targetOrgUUID]: list }
+      workspaceLoadStateByOrg.value = {
+        ...workspaceLoadStateByOrg.value,
+        [targetOrgUUID]: 'ready',
+      }
+      workspaceErrorByOrg.value = {
+        ...workspaceErrorByOrg.value,
+        [targetOrgUUID]: null,
+      }
+      // Bootstrap and the legacy settings tree select a sensible default.
+      // Explicit organization switching opts out so choosing an authority
+      // boundary never silently chooses an operating workspace as well.
+      const allowDefault = options.selectDefault !== false && workspaceMode.value !== 'organization'
+      if (targetOrgUUID === orgUUID.value && selectionRevision === selectionRevisionAtStart) {
+        const selected = workspaceUUID.value
+          ? list.find((w) => w.uuid === workspaceUUID.value)
+          : null
+        if (!selected || !isWorkspaceUsable(selected)) {
+          // Deleting and still-provisioning rows are not operating targets.
+          // Clear a stale persisted UUID, then choose only a ready row for
+          // automatic defaults; the user can explicitly retry once the row
+          // reports a clusterName.
+          const nextWorkspaceUUID = allowDefault
+            ? list.find((w) => isWorkspaceUsable(w))?.uuid ?? null
+            : null
+          if (workspaceUUID.value !== nextWorkspaceUUID) {
+            selectionRevision++
+            workspaceUUID.value = nextWorkspaceUUID
+          }
         }
+        clearError()
       }
     } catch (e: unknown) {
-      error.value = (e as Error).message
+      if (epoch !== workspaceRequestEpochByOrg.get(targetOrgUUID)) return
+      const message = e instanceof Error ? e.message : String(e ?? 'Failed to list workspaces.')
+      if (targetOrgUUID === orgUUID.value) error.value = (e as Error).message
+      workspaceLoadStateByOrg.value = {
+        ...workspaceLoadStateByOrg.value,
+        [targetOrgUUID]: 'error',
+      }
+      workspaceErrorByOrg.value = {
+        ...workspaceErrorByOrg.value,
+        [targetOrgUUID]: message,
+      }
     } finally {
-      loading.value = false
+      finishWorkspaceRequest(targetOrgUUID)
     }
   }
 
   function selectOrg(uuid: string) {
     if (orgUUID.value === uuid) return
+    clearError()
+    selectionRevision++
     orgUUID.value = uuid
+    workspaceMode.value = 'workspace'
     // Clear workspace selection on org switch so we don't carry stale
     // state from the previous org.
     workspaceUUID.value = null
+    savePersisted({ orgUUID: uuid, workspaceUUID: null, workspaceMode: 'workspace' })
     // Lazy-load workspaces if we haven't seen them for this org.
-    if (!workspacesByOrg.value[uuid]) {
+    if (!workspacesByOrg.value[uuid] || workspaceLoadStateByOrg.value[uuid] !== 'ready') {
       void fetchWorkspaces(uuid)
     } else {
       const list = workspacesByOrg.value[uuid] ?? []
-      workspaceUUID.value = list[0]?.uuid ?? null
+      workspaceUUID.value = list.find((w) => isWorkspaceUsable(w))?.uuid ?? null
     }
   }
 
-  function selectWorkspace(uuid: string) {
+  // Organization switching is a governance-context action, not a shortcut to
+  // an arbitrary workspace. Keep selectOrg() for bootstrap/settings flows that
+  // intentionally enter the first workspace; the shell org switcher uses this
+  // action and leaves workspace selection to the separate workspace control.
+  async function selectOrganization(uuid: string): Promise<void> {
+    if (
+      orgUUID.value === uuid &&
+      workspaceMode.value === 'organization' &&
+      workspaceUUID.value === null
+    ) return
+    clearError()
+    selectionRevision++
+    orgUUID.value = uuid
+    workspaceMode.value = 'organization'
+    workspaceUUID.value = null
+    // Persist this authority boundary synchronously. The App/provider
+    // watchers may run before Vue's persistence watcher flushes, and must not
+    // observe the previous workspace while loading the new org catalog.
+    savePersisted({ orgUUID: uuid, workspaceUUID: null, workspaceMode: 'organization' })
+    if (!workspacesByOrg.value[uuid] || workspaceLoadStateByOrg.value[uuid] !== 'ready') {
+      await fetchWorkspaces(uuid, { selectDefault: false })
+    }
+  }
+
+  function selectWorkspace(uuid: string): boolean {
+    const selected = orgUUID.value
+      ? workspacesByOrg.value[orgUUID.value]?.find((workspace) => workspace.uuid === uuid)
+      : undefined
+    if (!selected || !isWorkspaceUsable(selected)) return false
+    if (workspaceUUID.value === uuid && workspaceMode.value === 'workspace') return false
+    clearError()
+    selectionRevision++
+    workspaceMode.value = 'workspace'
     workspaceUUID.value = uuid
+    // Persist the boundary synchronously. Provider enable/disable requests can
+    // complete before Vue flushes the persistence watcher; they must observe
+    // this workspace rather than the one that was selected previously.
+    savePersisted({ orgUUID: orgUUID.value, workspaceUUID: uuid, workspaceMode: 'workspace' })
+    return true
   }
 
   async function createOrg(displayName: string): Promise<OrgRow | null> {
@@ -290,11 +602,18 @@ export const useTenantStore = defineStore('tenant', () => {
     }
     const created = (await resp.json()) as OrgRow
     await fetchOrgs()
-    selectOrg(created.uuid)
+    await selectOrganization(created.uuid)
     return created
   }
 
-  async function createWorkspace(targetOrgUUID: string, displayName: string): Promise<WorkspaceRow | null> {
+  async function createWorkspace(
+    targetOrgUUID: string,
+    displayName: string,
+    options: CreateWorkspaceOptions = {},
+  ): Promise<WorkspaceRow | null> {
+    const creationSequence = ++workspaceCreationSequence
+    const selectionRevisionAtStart = selectionRevision
+    const workspaceAtStart = workspaceUUID.value
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces`, {
       method: 'POST',
       headers: {
@@ -304,12 +623,34 @@ export const useTenantStore = defineStore('tenant', () => {
       body: JSON.stringify({ displayName }),
     })
     if (!resp.ok) {
-      error.value = `failed to create workspace: ${resp.status}`
+      // The POST may resolve after the caller switched organizations. Do not
+      // publish an old target's failure through the shared store error, where
+      // the newly active organization would render it as its own problem.
+      if (isCurrentWorkspaceCreate(targetOrgUUID, creationSequence, selectionRevisionAtStart)) {
+        error.value = `failed to create workspace: ${resp.status}`
+      }
       return null
     }
     const created = (await resp.json()) as WorkspaceRow
-    await fetchWorkspaces(targetOrgUUID)
-    if (targetOrgUUID === orgUUID.value) {
+    const selectCreated = options.selectCreated !== false
+    // Refresh the target list without selecting a default. Per-org epochs keep
+    // this late refresh from superseding another organization's request, and
+    // the selection fence below keeps it from changing the active context.
+    await fetchWorkspaces(targetOrgUUID, { selectDefault: false })
+    if (!isCurrentWorkspaceCreate(targetOrgUUID, creationSequence, selectionRevisionAtStart)) return created
+    if (
+      isCurrentWorkspaceCreate(targetOrgUUID, creationSequence, selectionRevisionAtStart) &&
+      selectCreated &&
+      workspaceUUID.value === workspaceAtStart &&
+      workspacesByOrg.value[targetOrgUUID]?.some((workspace) => workspace.uuid === created.uuid)
+    ) {
+      // The first-workspace flow intentionally transitions from org-only
+      // governance context into an operating context. Keep the mode aligned
+      // with the selected (possibly still-provisioning) workspace so reloads
+      // do not silently return to organization-only state. Settings callers
+      // pass selectCreated:false and leave the current operating target alone.
+      workspaceMode.value = 'workspace'
+      selectionRevision++
       workspaceUUID.value = created.uuid
     }
     return created
@@ -322,22 +663,33 @@ export const useTenantStore = defineStore('tenant', () => {
   // While it waits, bootstrapState stays 'provisioning' and App.vue shows
   // the "creating control plane" takeover.
   //
-  // Returning users — anyone with a persisted org + workspace selection —
-  // skip the takeover entirely: we mark 'ready' immediately and refresh in
-  // the background, so the loading screen only ever shows on genuine first
-  // login (or a hard-reset localStorage). Idempotent: a second call while
-  // one is in flight is a no-op.
+  // Returning users — anyone with a persisted selection — skip the takeover
+  // entirely. An explicit org-only selection is a real mode, not a missing
+  // workspace: refresh its org/workspace metadata without selecting a default
+  // and keep the settings/organization surfaces available during the read.
+  // Idempotent: a second call while one is in flight is a no-op.
   async function bootstrap(): Promise<void> {
     if (bootstrapRunning) return
     bootstrapRunning = true
     try {
+      if (orgUUID.value && workspaceMode.value === 'organization') {
+        bootstrapState.value = 'ready'
+        await fetchOrgs()
+        if (orgUUID.value) {
+          await fetchWorkspaces(orgUUID.value, {
+            selectDefault: workspaceMode.value !== 'organization',
+          })
+        }
+        return
+      }
+
       // Optimistic path: a cached selection means the control plane already
       // existed last session. Don't block the UI; just refresh quietly.
       if (orgUUID.value && workspaceUUID.value) {
         bootstrapState.value = 'ready'
         try {
           await fetchOrgs()
-          if (orgUUID.value) await fetchWorkspaces(orgUUID.value)
+          if (orgUUID.value) await fetchWorkspaces(orgUUID.value, { selectDefault: true })
         } catch {
           /* best-effort refresh; the cached selection still drives the UI */
         }
@@ -359,12 +711,12 @@ export const useTenantStore = defineStore('tenant', () => {
           // The list can briefly carry the default workspace without a
           // clusterName; keep polling so the app doesn't target a cluster
           // that isn't serving yet.
-          const ready = list.find((w) => !!w.clusterName)
+          const ready = list.find((w) => isWorkspaceUsable(w))
           if (ready) {
             const selected = workspaceUUID.value
               ? list.find((w) => w.uuid === workspaceUUID.value)
               : null
-            if (!selected || !selected.clusterName) {
+            if (!isWorkspaceUsable(selected)) {
               workspaceUUID.value = ready.uuid
             }
             bootstrapState.value = 'ready'
@@ -388,13 +740,14 @@ export const useTenantStore = defineStore('tenant', () => {
   // ===== org-level CRUD =====
 
   async function patchOrgDisplayName(targetOrgUUID: string, displayName: string): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', 'X-Faros-Org': targetOrgUUID },
       body: JSON.stringify({ displayName }),
     })
     if (!resp.ok) {
-      error.value = `failed to patch org: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to patch org: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
     await fetchOrgs()
@@ -402,12 +755,13 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function deleteOrg(targetOrgUUID: string): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}`, {
       method: 'DELETE',
       headers: { 'X-Faros-Org': targetOrgUUID },
     })
     if (!resp.ok) {
-      error.value = `failed to delete org: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to delete org: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
     await fetchOrgs()
@@ -415,12 +769,13 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function undeleteOrg(targetOrgUUID: string): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/undelete`, {
       method: 'POST',
       headers: { 'X-Faros-Org': targetOrgUUID },
     })
     if (!resp.ok) {
-      error.value = `failed to undelete org: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to undelete org: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
     await fetchOrgs()
@@ -430,6 +785,7 @@ export const useTenantStore = defineStore('tenant', () => {
   // ===== workspace CRUD =====
 
   async function patchWorkspaceDisplayName(targetOrgUUID: string, wsUUID: string, displayName: string): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}`, {
       method: 'PATCH',
       headers: {
@@ -440,14 +796,15 @@ export const useTenantStore = defineStore('tenant', () => {
       body: JSON.stringify({ displayName }),
     })
     if (!resp.ok) {
-      error.value = `failed to patch workspace: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to patch workspace: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
-    await fetchWorkspaces(targetOrgUUID)
+    await fetchWorkspaces(targetOrgUUID, { selectDefault: false })
     return true
   }
 
   async function deleteWorkspace(targetOrgUUID: string, wsUUID: string): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}`, {
       method: 'DELETE',
       headers: {
@@ -456,14 +813,15 @@ export const useTenantStore = defineStore('tenant', () => {
       },
     })
     if (!resp.ok) {
-      error.value = `failed to delete workspace: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to delete workspace: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
-    await fetchWorkspaces(targetOrgUUID)
+    await fetchWorkspaces(targetOrgUUID, { selectDefault: false })
     return true
   }
 
   async function undeleteWorkspace(targetOrgUUID: string, wsUUID: string): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/undelete`, {
       method: 'POST',
       headers: {
@@ -472,28 +830,38 @@ export const useTenantStore = defineStore('tenant', () => {
       },
     })
     if (!resp.ok) {
-      error.value = `failed to undelete workspace: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to undelete workspace: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
-    await fetchWorkspaces(targetOrgUUID)
+    await fetchWorkspaces(targetOrgUUID, { selectDefault: false })
     return true
   }
 
   // ===== Org membership =====
 
   async function listOrgMembers(targetOrgUUID: string): Promise<MemberRow[]> {
-    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships`, {
-      headers: { 'X-Faros-Org': targetOrgUUID },
-    })
-    if (!resp.ok) {
-      error.value = `failed to list org members: ${resp.status}`
+    const read = beginListRead('org-members', targetOrgUUID)
+    try {
+      const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships`, {
+        headers: { 'X-Faros-Org': targetOrgUUID },
+      })
+      if (!resp.ok) {
+        const message = `failed to list org members: ${resp.status}`
+        publishListReadError(read, message)
+        return []
+      }
+      const data = (await resp.json()) as { items: MemberRow[] }
+      finishListRead(read, null)
+      return data.items ?? []
+    } catch (errorValue: unknown) {
+      const message = readException('failed to list org members', errorValue)
+      publishListReadError(read, message)
       return []
     }
-    const data = (await resp.json()) as { items: MemberRow[] }
-    return data.items ?? []
   }
 
   async function addOrgMember(targetOrgUUID: string, user: string, role: 'admin' | 'member'): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Faros-Org': targetOrgUUID },
@@ -501,45 +869,52 @@ export const useTenantStore = defineStore('tenant', () => {
     })
     if (!resp.ok) {
       const msg = await statusMessage(resp)
-      error.value = msg ? `failed to add member: ${msg}` : `failed to add member: ${resp.status}`
+      publishTargetError(
+        targetOrgUUID,
+        msg ? `failed to add member: ${msg}` : `failed to add member: ${resp.status}`,
+        selectionRevisionAtStart,
+      )
       return false
     }
     return true
   }
 
   async function patchOrgMemberRole(targetOrgUUID: string, user: string, role: 'admin' | 'member'): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships/${user}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json', 'X-Faros-Org': targetOrgUUID },
       body: JSON.stringify({ role }),
     })
     if (!resp.ok) {
-      error.value = `failed to patch member role: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to patch member role: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
     return true
   }
 
   async function removeOrgMember(targetOrgUUID: string, user: string, cascade = false): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const url = `/api/orgs/${targetOrgUUID}/memberships/${user}${cascade ? '?cascade=true' : ''}`
     const resp = await authFetch(url, {
       method: 'DELETE',
       headers: { 'X-Faros-Org': targetOrgUUID },
     })
     if (!resp.ok) {
-      error.value = `failed to remove member: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to remove member: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
     return true
   }
 
   async function leaveOrg(targetOrgUUID: string): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/memberships/me`, {
       method: 'DELETE',
       headers: { 'X-Faros-Org': targetOrgUUID },
     })
     if (!resp.ok) {
-      error.value = `failed to leave org: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to leave org: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
     await fetchOrgs()
@@ -554,30 +929,49 @@ export const useTenantStore = defineStore('tenant', () => {
   // workspace — creating one grants the creator automatically.
 
   async function listWorkspaceMembers(targetOrgUUID: string, wsUUID: string): Promise<MemberRow[]> {
-    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/memberships`, {
-      headers: { 'X-Faros-Org': targetOrgUUID, 'X-Faros-Workspace': wsUUID },
-    })
-    if (!resp.ok) {
-      error.value = `failed to list workspace members: ${resp.status}`
+    const read = beginListRead('workspace-members', targetOrgUUID, wsUUID)
+    try {
+      const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/memberships`, {
+        headers: { 'X-Faros-Org': targetOrgUUID, 'X-Faros-Workspace': wsUUID },
+      })
+      if (!resp.ok) {
+        const message = `failed to list workspace members: ${resp.status}`
+        publishListReadError(read, message)
+        return []
+      }
+      const data = (await resp.json()) as { items: MemberRow[] }
+      finishListRead(read, null)
+      return data.items ?? []
+    } catch (errorValue: unknown) {
+      const message = readException('failed to list workspace members', errorValue)
+      publishListReadError(read, message)
       return []
     }
-    const data = (await resp.json()) as { items: MemberRow[] }
-    return data.items ?? []
   }
 
   async function listAppAccessGrants(targetOrgUUID: string, wsUUID: string): Promise<AppAccessGrantRow[]> {
-    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/app-access`, {
-      headers: { 'X-Faros-Org': targetOrgUUID, 'X-Faros-Workspace': wsUUID },
-    })
-    if (!resp.ok) {
-      error.value = `failed to list app access grants: ${resp.status}`
+    const read = beginListRead('app-access', targetOrgUUID, wsUUID)
+    try {
+      const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/app-access`, {
+        headers: { 'X-Faros-Org': targetOrgUUID, 'X-Faros-Workspace': wsUUID },
+      })
+      if (!resp.ok) {
+        const message = `failed to list app access grants: ${resp.status}`
+        publishListReadError(read, message)
+        return []
+      }
+      const data = (await resp.json()) as { items: AppAccessGrantRow[] }
+      finishListRead(read, null)
+      return data.items ?? []
+    } catch (errorValue: unknown) {
+      const message = readException('failed to list app access grants', errorValue)
+      publishListReadError(read, message)
       return []
     }
-    const data = (await resp.json()) as { items: AppAccessGrantRow[] }
-    return data.items ?? []
   }
 
   async function revokeAppAccessGrant(targetOrgUUID: string, wsUUID: string, binding: string): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(
       `/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/app-access/${encodeURIComponent(binding)}`,
       {
@@ -587,7 +981,11 @@ export const useTenantStore = defineStore('tenant', () => {
     )
     if (!resp.ok) {
       const msg = await statusMessage(resp)
-      error.value = msg ? `failed to revoke app access: ${msg}` : `failed to revoke app access: ${resp.status}`
+      publishTargetError(
+        targetOrgUUID,
+        msg ? `failed to revoke app access: ${msg}` : `failed to revoke app access: ${resp.status}`,
+        selectionRevisionAtStart,
+      )
       return false
     }
     return true
@@ -599,6 +997,7 @@ export const useTenantStore = defineStore('tenant', () => {
     user: string,
     role: 'admin' | 'member',
   ): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/memberships`, {
       method: 'POST',
       headers: {
@@ -610,7 +1009,11 @@ export const useTenantStore = defineStore('tenant', () => {
     })
     if (!resp.ok) {
       const msg = await statusMessage(resp)
-      error.value = msg ? `failed to add member: ${msg}` : `failed to add member: ${resp.status}`
+      publishTargetError(
+        targetOrgUUID,
+        msg ? `failed to add member: ${msg}` : `failed to add member: ${resp.status}`,
+        selectionRevisionAtStart,
+      )
       return false
     }
     return true
@@ -622,6 +1025,7 @@ export const useTenantStore = defineStore('tenant', () => {
     user: string,
     role: 'admin' | 'member',
   ): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/memberships/${user}`, {
       method: 'PATCH',
       headers: {
@@ -632,19 +1036,20 @@ export const useTenantStore = defineStore('tenant', () => {
       body: JSON.stringify({ role }),
     })
     if (!resp.ok) {
-      error.value = `failed to patch member role: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to patch member role: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
     return true
   }
 
   async function removeWorkspaceMember(targetOrgUUID: string, wsUUID: string, user: string): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/memberships/${user}`, {
       method: 'DELETE',
       headers: { 'X-Faros-Org': targetOrgUUID, 'X-Faros-Workspace': wsUUID },
     })
     if (!resp.ok) {
-      error.value = `failed to remove member: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to remove member: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
     return true
@@ -653,18 +1058,27 @@ export const useTenantStore = defineStore('tenant', () => {
   // ===== Service Accounts =====
 
   async function listServiceAccounts(targetOrgUUID: string, wsUUID: string): Promise<SARow[]> {
-    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts`, {
-      headers: {
-        'X-Faros-Org': targetOrgUUID,
-        'X-Faros-Workspace': wsUUID,
-      },
-    })
-    if (!resp.ok) {
-      error.value = `failed to list service accounts: ${resp.status}`
+    const read = beginListRead('service-accounts', targetOrgUUID, wsUUID)
+    try {
+      const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts`, {
+        headers: {
+          'X-Faros-Org': targetOrgUUID,
+          'X-Faros-Workspace': wsUUID,
+        },
+      })
+      if (!resp.ok) {
+        const message = `failed to list service accounts: ${resp.status}`
+        publishListReadError(read, message)
+        return []
+      }
+      const data = (await resp.json()) as { items: SARow[] }
+      finishListRead(read, null)
+      return data.items ?? []
+    } catch (errorValue: unknown) {
+      const message = readException('failed to list service accounts', errorValue)
+      publishListReadError(read, message)
       return []
     }
-    const data = (await resp.json()) as { items: SARow[] }
-    return data.items ?? []
   }
 
   async function createServiceAccount(
@@ -673,6 +1087,7 @@ export const useTenantStore = defineStore('tenant', () => {
     displayName: string,
     role: 'admin' | 'member',
   ): Promise<SARow | null> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts`, {
       method: 'POST',
       headers: {
@@ -683,13 +1098,14 @@ export const useTenantStore = defineStore('tenant', () => {
       body: JSON.stringify({ displayName, role }),
     })
     if (!resp.ok) {
-      error.value = `failed to create SA: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to create SA: ${resp.status}`, selectionRevisionAtStart)
       return null
     }
     return (await resp.json()) as SARow
   }
 
   async function deleteServiceAccount(targetOrgUUID: string, wsUUID: string, saUUID: string): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}`, {
       method: 'DELETE',
       headers: {
@@ -698,13 +1114,14 @@ export const useTenantStore = defineStore('tenant', () => {
       },
     })
     if (!resp.ok) {
-      error.value = `failed to delete SA: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to delete SA: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
     return true
   }
 
   async function issueSAToken(targetOrgUUID: string, wsUUID: string, saUUID: string): Promise<TokenResponse | null> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}/tokens`, {
       method: 'POST',
       headers: {
@@ -713,7 +1130,7 @@ export const useTenantStore = defineStore('tenant', () => {
       },
     })
     if (!resp.ok) {
-      error.value = `failed to issue token: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to issue token: ${resp.status}`, selectionRevisionAtStart)
       return null
     }
     return (await resp.json()) as TokenResponse
@@ -736,6 +1153,7 @@ export const useTenantStore = defineStore('tenant', () => {
     wsUUID: string,
     install: 'faros' | 'krew' = 'faros',
   ): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const url = `/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/kubeconfig?install=${encodeURIComponent(install)}`
     const resp = await authFetch(url, {
       headers: {
@@ -744,7 +1162,7 @@ export const useTenantStore = defineStore('tenant', () => {
       },
     })
     if (!resp.ok) {
-      error.value = `failed to download kubeconfig: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to download kubeconfig: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
     const blob = await resp.blob()
@@ -766,6 +1184,7 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   async function revokeSATokens(targetOrgUUID: string, wsUUID: string, saUUID: string): Promise<boolean> {
+    const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}/serviceaccounts/${saUUID}/tokens`, {
       method: 'DELETE',
       headers: {
@@ -774,7 +1193,7 @@ export const useTenantStore = defineStore('tenant', () => {
       },
     })
     if (!resp.ok) {
-      error.value = `failed to revoke tokens: ${resp.status}`
+      publishTargetError(targetOrgUUID, `failed to revoke tokens: ${resp.status}`, selectionRevisionAtStart)
       return false
     }
     return true
@@ -784,21 +1203,35 @@ export const useTenantStore = defineStore('tenant', () => {
     // state
     orgUUID,
     workspaceUUID,
+    workspaceMode,
     orgs,
     workspacesByOrg,
+    workspaceLoadStateByOrg,
+    workspaceErrorByOrg,
+    workspacePendingByOrg,
     loading,
     error,
+    clearError,
+    listReadError,
     bootstrapState,
     bootstrapAttempts,
     // computed
     activeOrg,
     activeWorkspace,
+    activeWorkspaceUsable,
+    workspaceLoadState,
+    workspaceSelectionHydrated,
+    workspaceTransitionToken,
+    workspaceTransitioning,
     // actions: selection
     tenantHeaders,
     fetchOrgs,
     fetchWorkspaces,
     selectOrg,
+    selectOrganization,
     selectWorkspace,
+    beginWorkspaceTransition,
+    endWorkspaceTransition,
     bootstrap,
     // actions: org
     createOrg,

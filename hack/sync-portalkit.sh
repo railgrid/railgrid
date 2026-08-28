@@ -32,7 +32,7 @@ VUE_PORTALS=(
   "providers/edges/portal"
   "providers/infrastructure/portal"
 )
-VUE_FILES=(confirm.ts ConditionsPanel.vue ConfirmDialog.vue LayoutSelector.vue layoutPreference.ts ResourcePage.vue ResourceSectionCard.vue ResourceStatCards.vue ResourceTable.vue table.ts ResourceTableDeleteButton.vue ResourceTableEditButton.vue StatusBadge.vue Tabs.vue)
+VUE_FILES=(confirm.ts ConditionsPanel.vue ConfirmDialog.vue LayoutSelector.vue layoutPreference.ts ResourcePage.vue ResourceSectionCard.vue ResourceStatCards.vue ResourceTable.vue table.ts ResourceTableActionButton.vue ResourceTableDeleteButton.vue ResourceTableEditButton.vue StatusBadge.vue Tabs.vue)
 
 # Plain assets from the vanilla kit are shared by both portal styles.
 VUE_SHARED_FILES=(dashboardtile.ts faros-ui.css icons.ts page-state.ts styles.ts tabs.ts tenant.ts toast.ts)

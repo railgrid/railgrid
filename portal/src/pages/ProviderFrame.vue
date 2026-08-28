@@ -30,6 +30,11 @@ const elementRef = ref<HTMLElement | null>(null)
 const loadState = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const loadError = ref<string | null>(null)
 const providerFullBleedOverride = ref<boolean | null>(null)
+// Every async bundle load and mount is fenced by this generation. A workspace
+// switch can make access disappear while a script is still in flight; that
+// completion must not resurrect an element for the old context.
+let mountGeneration = 0
+let boundMount: HTMLDivElement | null = null
 
 // Each provider's tag is faros-provider-<name>. The hyphen requirement
 // of custom element names matches naturally because provider names are
@@ -40,10 +45,18 @@ const APP_STUDIO_CREATE_ROUTE = '~new'
 const APP_STUDIO_MODELS_ROUTE = '~models'
 
 onMounted(() => {
-  if (!providers.loaded) providers.load()
+  if (!providers.loaded || providers.catalogOrgUUID !== tenant.orgUUID) {
+    providers.load(tenant.orgUUID)
+  }
 })
 
 const entry = computed(() => providers.byName(props.providerName))
+const catalogSettled = computed(() =>
+  providers.loaded && !providers.loading && !providers.error && providers.catalogOrgUUID === tenant.orgUUID,
+)
+const catalogError = computed(() => providers.error)
+const catalogLoading = computed(() => !catalogError.value && !catalogSettled.value)
+const catalogMissing = computed(() => catalogSettled.value && !entry.value)
 const providerRouteSegment = computed(() => props.subPath.split('/').filter(Boolean)[0] ?? '')
 const isAppStudioLandingRoute = computed(() =>
   props.providerName === 'app-studio' &&
@@ -54,20 +67,110 @@ const isFullBleedProvider = computed(() =>
   (!isAppStudioLandingRoute.value || providerFullBleedOverride.value === true),
 )
 
+const isBuiltinProvider = computed(() => {
+  const p = entry.value
+  return !!p && (!!p.builtin || !!p.builtinRoute)
+})
+
+// Only providers that publish an APIExport need a workspace APIBinding. A
+// builtin provider is shipped with the portal and remains usable without one.
+const requiresBinding = computed(() => {
+  const p = entry.value
+  return !!p && p.hasUI && !isBuiltinProvider.value && !!(p.apiExportName || p.apiExportPath)
+})
+
+const bindingRequestCurrent = computed(() =>
+  !!tenant.orgUUID &&
+  !!tenant.workspaceUUID &&
+  providers.bindingsRequestOrgUUID === tenant.orgUUID &&
+  providers.bindingsRequestWorkspaceUUID === tenant.workspaceUUID,
+)
+const bindingProjectionCurrent = computed(() =>
+  !!tenant.orgUUID &&
+  !!tenant.workspaceUUID &&
+  providers.bindingsOrgUUID === tenant.orgUUID &&
+  providers.bindingsWorkspace === tenant.workspaceUUID,
+)
+const bindingsAuthoritative = computed(() =>
+  requiresBinding.value &&
+  providers.bindingsLoadState === 'ready' &&
+  bindingProjectionCurrent.value,
+)
+const bindingErrorCurrent = computed(() =>
+  requiresBinding.value &&
+  providers.bindingsLoadState === 'error' &&
+  bindingRequestCurrent.value,
+)
+const bindingNoWorkspace = computed(() =>
+  requiresBinding.value && (!tenant.orgUUID || !tenant.workspaceUUID),
+)
+const bindingChecking = computed(() =>
+  requiresBinding.value &&
+  !bindingNoWorkspace.value &&
+  !bindingErrorCurrent.value &&
+  !bindingsAuthoritative.value,
+)
+const providerBound = computed(() =>
+  !!entry.value && providers.isEnabled(entry.value.name),
+)
+const bindingMissing = computed(() =>
+  requiresBinding.value &&
+  !bindingNoWorkspace.value &&
+  bindingsAuthoritative.value &&
+  !providerBound.value,
+)
+const accessAllowed = computed(() =>
+  catalogSettled.value &&
+  !!entry.value &&
+  !!entry.value.hasUI &&
+  !!entry.value.ready &&
+  (!requiresBinding.value || (bindingsAuthoritative.value && providerBound.value)),
+)
+
 watch(
   () => [props.providerName, providerRouteSegment.value] as const,
   () => { providerFullBleedOverride.value = null },
   { flush: 'sync' },
 )
 
-// On entry resolve OR provider switch, (re)load the script and mount.
+// The binding projection is workspace-scoped. Start it when a settled
+// catalog exposes an APIExport provider, but do not retry an authoritative
+// error automatically; the user gets a finite error state and an explicit
+// Retry action instead.
+const bindingRefreshNeeded = computed(() =>
+  requiresBinding.value &&
+  catalogSettled.value &&
+  !!tenant.orgUUID &&
+  !!tenant.workspaceUUID &&
+  !bindingsAuthoritative.value &&
+  !bindingErrorCurrent.value,
+)
+
 watch(
-  () => entry.value,
-  async (e) => {
-    if (!e || !e.ready) return
-    await loadAndMount(e.name, e.version)
+  bindingRefreshNeeded,
+  (needed) => {
+    if (needed) void providers.refreshBindings().catch(() => {})
   },
-  { immediate: true },
+  { immediate: true, flush: 'post' },
+)
+
+// Mount only after both catalog and workspace access are settled. This also
+// handles provider/org/workspace changes: an access transition first detaches
+// the old element, then a fresh bundle instance is created for the new scope.
+watch(
+  () => [
+    entry.value?.name,
+    entry.value?.version,
+    entry.value?.ready,
+    catalogSettled.value,
+    accessAllowed.value,
+  ] as const,
+  async ([name, version, ready, settled, allowed]) => {
+    clearMountedElement()
+    if (!name || !ready || !settled || !allowed) return
+    await loadAndMount(name, version)
+  },
+  { immediate: true, flush: 'post' },
 )
 
 // Theme / token / sub-route changes → push fresh context to the mounted
@@ -97,26 +200,66 @@ watch(
 watch(
   () => auth.clusterName,
   async () => {
-    if (!entry.value?.ready) return
-    await mountElement(entry.value.name)
+    // Only an already-mounted bundle needs the transport remount. During the
+    // initial load, invalidating the generation here would abandon the real
+    // loader and leave the frame stuck in its loading state.
+    if (loadState.value !== 'ready' || !accessAllowed.value || !entry.value?.ready) return
+    await nextTick()
+    if (!accessAllowed.value || !entry.value) return
+    mountElement(entry.value.name)
   },
   { flush: 'post' },
 )
 
-// mountElement creates a fresh custom-element instance and appends it
-// into the current mountRef div. Split out from loadAndMount so the
-// workspace-switch watch above can re-mount without re-fetching the
-// provider's main.js script.
-async function mountElement(name: string) {
-  if (!mountRef.value) return
+function isCurrentMount(generation: number, name: string): boolean {
+  return generation === mountGeneration &&
+    accessAllowed.value &&
+    entry.value?.name === name
+}
+
+function bindMountEvents() {
+  const mount = mountRef.value
+  if (!mount || boundMount === mount) return
+  boundMount?.removeEventListener('faros-navigate', onNavigate)
+  boundMount?.removeEventListener('faros-layout-change', onLayoutChange)
+  boundMount = mount
+  boundMount.addEventListener('faros-navigate', onNavigate)
+  boundMount.addEventListener('faros-layout-change', onLayoutChange)
+}
+
+// Detach both the live element and any listeners attached to its mount point.
+// The explicit cleanup matters when access is revoked while the route
+// component itself remains mounted (for example, during a workspace switch).
+function clearMountedElement() {
+  mountGeneration++
+  boundMount?.removeEventListener('faros-navigate', onNavigate)
+  boundMount?.removeEventListener('faros-layout-change', onLayoutChange)
+  boundMount = null
+  const element = elementRef.value
+  if (element?.parentNode) element.parentNode.removeChild(element)
+  mountRef.value?.replaceChildren()
+  elementRef.value = null
+  loadState.value = 'idle'
+  loadError.value = null
+}
+
+// mountElement creates a fresh custom-element instance and appends it into
+// the current access-approved mount point. Without an explicit generation it
+// is a deliberate remount for a transport/context change.
+function mountElement(name: string, generation?: number): boolean {
+  const currentGeneration = generation ?? ++mountGeneration
+  if (!mountRef.value || !isCurrentMount(currentGeneration, name)) return false
   mountRef.value.replaceChildren()
   const el = document.createElement(tagFor(name)) as HTMLElement
   mountRef.value.appendChild(el)
   elementRef.value = el
+  bindMountEvents()
   pushContext()
+  return true
 }
 
 async function loadAndMount(name: string, version: string | undefined) {
+  const generation = ++mountGeneration
   loadState.value = 'loading'
   loadError.value = null
 
@@ -132,43 +275,46 @@ async function loadAndMount(name: string, version: string | undefined) {
   const tag = tagFor(name)
   const ready = customElements.whenDefined(tag)
 
-  // Load the script.
-  await new Promise<void>((resolve, reject) => {
-    const s = document.createElement('script')
-    s.id = scriptID
-    s.src = src
-    s.async = true
-    s.onload = () => resolve()
-    s.onerror = () => reject(new Error(`failed to load ${src}`))
-    document.head.appendChild(s)
-  }).catch((e: Error) => {
-    loadState.value = 'error'
-    loadError.value = e.message
-    throw e
-  })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const s = document.createElement('script')
+      s.id = scriptID
+      s.src = src
+      s.async = true
+      s.onload = () => resolve()
+      s.onerror = () => reject(new Error(`failed to load ${src}`))
+      document.head.appendChild(s)
+    })
 
-  // 5s timeout so a script that loaded but never called customElements.define
-  // doesn't hang the loader forever.
-  await Promise.race([
-    ready,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`${tag} not defined within 5s`)), 5000),
-    ),
-  ]).catch((e: Error) => {
-    loadState.value = 'error'
-    loadError.value = e.message
-    throw e
-  })
+    // 5s timeout so a script that loaded but never called customElements.define
+    // doesn't hang the loader forever.
+    await Promise.race([
+      ready,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`${tag} not defined within 5s`)), 5000),
+      ),
+    ])
+  } catch (e: unknown) {
+    if (isCurrentMount(generation, name)) {
+      loadState.value = 'error'
+      loadError.value = e instanceof Error ? e.message : String(e)
+      mountRef.value?.replaceChildren()
+      elementRef.value = null
+    }
+    return
+  }
 
-  // DOM is ready; create + mount the element.
+  if (!isCurrentMount(generation, name)) return
+  // The access-approved div is created by the same render that flips
+  // accessAllowed. Wait one tick so the ref points at that fresh node.
   await nextTick()
-  await mountElement(name)
+  if (!isCurrentMount(generation, name) || !mountElement(name, generation)) return
   loadState.value = 'ready'
 }
 
 function pushContext() {
   const el = elementRef.value as HTMLElement & { farosContext?: unknown } | null
-  if (!el || !entry.value) return
+  if (!el || !entry.value || !accessAllowed.value) return
   el.farosContext = {
     // subPath is what the shell's vue-router parsed from
     // /providers/{name}/<rest> — empty for the bare provider URL,
@@ -210,19 +356,21 @@ function onLayoutChange(e: Event) {
   if (typeof fullBleed === 'boolean') providerFullBleedOverride.value = fullBleed
 }
 
+function retryCatalog() {
+  void providers.load(tenant.orgUUID).catch(() => {})
+}
+
+function retryBindings() {
+  void providers.refreshBindings().catch(() => {})
+}
+
 onMounted(() => {
-  mountRef.value?.addEventListener('faros-navigate', onNavigate)
-  mountRef.value?.addEventListener('faros-layout-change', onLayoutChange)
+  bindMountEvents()
 })
 onBeforeUnmount(() => {
-  mountRef.value?.removeEventListener('faros-navigate', onNavigate)
-  mountRef.value?.removeEventListener('faros-layout-change', onLayoutChange)
   // Leave the script + custom element class registered — re-visits are
   // free and the registry can't be unregistered anyway. Just detach.
-  if (elementRef.value && mountRef.value?.contains(elementRef.value)) {
-    mountRef.value.removeChild(elementRef.value)
-  }
-  elementRef.value = null
+  clearMountedElement()
 })
 </script>
 
@@ -231,7 +379,7 @@ onBeforeUnmount(() => {
     <div class="flex h-full min-h-0 flex-col">
       <!-- Portal chrome. Lives outside the provider's own element so the
            name/version/status come from the catalog, not the provider. -->
-      <header v-if="entry && !isFullBleedProvider" class="mb-4 flex flex-wrap items-center gap-3">
+      <header v-if="catalogSettled && entry && !isFullBleedProvider" class="mb-4 flex flex-wrap items-center gap-3">
         <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-surface-raised">
           <img
             v-if="entry.iconURL"
@@ -262,11 +410,27 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <div v-if="!entry" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted">
-        Loading provider&hellip;
+      <div
+        v-if="catalogError"
+        class="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-sm text-danger"
+      >
+        <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" :stroke-width="1.75" />
+        <div class="min-w-0">
+          <div class="font-medium">Failed to load provider catalog</div>
+          <div class="mt-1 text-xs font-mono">{{ catalogError }}</div>
+          <button type="button" class="k-btn k-btn--text mt-3 text-[11px]" @click="retryCatalog">
+            Retry
+          </button>
+        </div>
+      </div>
+      <div v-else-if="catalogLoading" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted">
+        Loading provider catalog&hellip;
+      </div>
+      <div v-else-if="catalogMissing" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted">
+        Provider <code class="font-mono text-text-secondary">{{ props.providerName }}</code> is not available in this catalog.
       </div>
       <div
-        v-else-if="!entry.ready"
+        v-else-if="entry && !entry.ready"
         class="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted"
       >
         <AlertCircle class="h-4 w-4 mt-0.5 text-text-muted" :stroke-width="1.75" />
@@ -276,6 +440,62 @@ onBeforeUnmount(() => {
             Waiting for <code class="text-text-secondary">{{ entry.name }}</code> to report Ready.
           </div>
         </div>
+      </div>
+      <div v-else-if="entry && !entry.hasUI" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted">
+        This provider does not publish a portal UI.
+      </div>
+      <div
+        v-else-if="bindingErrorCurrent"
+        class="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-sm text-danger"
+      >
+        <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" :stroke-width="1.75" />
+        <div class="min-w-0">
+          <div class="font-medium">Could not check provider access</div>
+          <div class="mt-1 text-xs font-mono">{{ providers.bindingsError }}</div>
+          <button type="button" class="k-btn k-btn--text mt-3 text-[11px]" @click="retryBindings">
+            Retry
+          </button>
+        </div>
+      </div>
+      <div
+        v-else-if="bindingNoWorkspace"
+        class="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted"
+      >
+        <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" :stroke-width="1.75" />
+        <div>
+          <div class="font-medium text-text-secondary">Select a workspace to use this provider</div>
+          <div class="mt-1 text-xs">Provider access is enabled separately in each workspace.</div>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <router-link :to="{ name: 'dashboard' }" class="k-btn k-btn--ghost text-[11px]">Dashboard</router-link>
+            <router-link to="/providers" class="k-btn k-btn--ghost text-[11px]">Providers</router-link>
+          </div>
+        </div>
+      </div>
+      <div
+        v-else-if="bindingChecking"
+        class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted"
+      >
+        Checking provider access&hellip;
+      </div>
+      <div
+        v-else-if="bindingMissing"
+        class="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted"
+      >
+        <AlertCircle class="mt-0.5 h-4 w-4 shrink-0" :stroke-width="1.75" />
+        <div>
+          <div class="font-medium text-text-secondary">Provider not enabled in this workspace</div>
+          <div class="mt-1 text-xs">Enable this provider from the catalog to use it here.</div>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <router-link :to="{ name: 'dashboard' }" class="k-btn k-btn--ghost text-[11px]">Dashboard</router-link>
+            <router-link to="/providers" class="k-btn k-btn--ghost text-[11px]">Providers</router-link>
+          </div>
+        </div>
+      </div>
+      <div
+        v-else-if="loadState === 'loading'"
+        class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted"
+      >
+        Loading provider&hellip;
       </div>
       <div
         v-else-if="loadState === 'error'"
@@ -291,6 +511,7 @@ onBeforeUnmount(() => {
       <!-- The provider's custom element mounts here. No iframe, no border,
            no scrollbars; it's just DOM in the portal's tree. -->
       <div
+        v-if="accessAllowed"
         ref="mountRef"
         class="min-h-0 flex-1"
       />

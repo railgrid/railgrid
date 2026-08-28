@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, nextTick, watchEffect } from 'vue'
+import { ref, onMounted, onUnmounted, computed, nextTick, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useTerminalSessionsStore } from '@/stores/terminalSessions'
@@ -7,11 +7,10 @@ import { useTenantStore } from '@/stores/tenant'
 import { setLayoutInsets } from '@/composables/useLayoutInsets'
 import { useSidebarExpansion } from '@/composables/useSidebarExpansion'
 import CliQuickstartModal from '@/components/CliQuickstartModal.vue'
-import UserProfileModal from '@/components/UserProfileModal.vue'
-import TenantContextChip from '@/components/TenantContextChip.vue'
 import AccountAccessMenu from '@/components/AccountAccessMenu.vue'
+import WorkspaceSwitcher from '@/components/WorkspaceSwitcher.vue'
 import FirstWorkspaceWizard from '@/components/FirstWorkspaceWizard.vue'
-import { Hexagon, LayoutDashboard, Zap, GripHorizontal, GripVertical, Puzzle, Dot, PanelLeftClose, PanelLeftOpen, ChevronDown, CircleHelp, ExternalLink } from 'lucide-vue-next'
+import { Hexagon, LayoutDashboard, Zap, GripHorizontal, GripVertical, Puzzle, Dot, PanelLeftClose, PanelLeftOpen, ChevronDown, CircleHelp, ExternalLink, Loader2 } from 'lucide-vue-next'
 import { useProvidersStore } from '@/stores/providers'
 import { useAdminStore } from '@/stores/admin'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -34,7 +33,7 @@ const router = useRouter()
 // Empty-org guard: when the active org has zero workspaces (after fetch
 // completes), every workspace-scoped page would try to query a cluster
 // that doesn't exist. Replace the slot with the create-workspace wizard
-// instead. Pages that don't need a workspace — the tenant settings page
+// instead. Pages that don't need a workspace — the settings page
 // and the providers catalog — render normally so the user keeps a
 // non-blocked path to manage orgs/workspaces.
 //
@@ -43,16 +42,79 @@ const router = useRouter()
 // the UI doesn't flash the wizard between an org switch and the fetch
 // resolving.
 const showWorkspaceWizard = computed(() => {
-  if (!auth.isAuthenticated) return false
+  if (!auth.token) return false
   const orgUUID = tenantStore.orgUUID
   if (!orgUUID) return false
   const list = tenantStore.workspacesByOrg[orgUUID]
-  if (!list || list.length > 0) return false
+  const activeWorkspace = tenantStore.activeWorkspace
+  if (activeWorkspace?.clusterName) return false
+  if (!tenantStore.workspaceSelectionHydrated) return false
+  if (!list || list.some((workspace) => !workspace.deletionRequestedAt)) return false
   const path = route.path
-  if (path === '/tenant' || path.startsWith('/tenant/')) return false
+  if (path === '/settings' || path.startsWith('/settings/')) return false
   if (path === '/providers') return false
+  if (path === '/organizations' || path.startsWith('/organizations/')) return false
   return true
 })
+
+// Do not mount workspace-scoped content against a selected workspace whose
+// kcp cluster is still provisioning (or whose backing row disappeared). The
+// list guard avoids a hard-refresh flash while the persisted workspace is
+// being hydrated; once the list arrives, readiness is authoritative.
+const showWorkspacePending = computed(() => {
+  const path = route.path
+  if (path === '/settings' || path.startsWith('/settings/')) return false
+  if (path === '/providers') return false
+  if (path === '/organizations' || path.startsWith('/organizations/')) return false
+  if (!auth.token) return false
+  if (!tenantStore.workspaceSelectionHydrated) return true
+  if (!tenantStore.workspaceUUID) return true
+  return !tenantStore.activeWorkspaceUsable
+})
+
+// An explicit organization switch intentionally leaves workspaceUUID empty.
+// Keep workspace-scoped routes from rendering against auth.clusterName's
+// previous transport target while the user is in that org-only state. The
+// settings and catalog surfaces are deliberately workspace-optional.
+watchEffect(() => {
+  if (!auth.token || !tenantStore.orgUUID || tenantStore.workspaceUUID) return
+  const list = tenantStore.workspacesByOrg[tenantStore.orgUUID]
+  if (!list || list.length === 0) return
+  const path = route.path
+  if (path === '/settings' || path.startsWith('/settings/') || path === '/providers' || path === '/organizations' || path.startsWith('/organizations/')) return
+  void router.replace('/settings/workspaces')
+})
+
+// Keep the routed slot suppressed for the whole navigation transition, but
+// defer the explanatory shell so a fast workspace switch does not flash a
+// status message. Watching the token (rather than only its boolean state)
+// resets the timer for a newer switch that starts before an older navigation
+// settles.
+const WORKSPACE_TRANSITION_INDICATOR_DELAY_MS = 200
+const showWorkspaceTransitionIndicator = ref(false)
+let workspaceTransitionTimer: ReturnType<typeof setTimeout> | undefined
+
+function clearWorkspaceTransitionTimer(): void {
+  if (workspaceTransitionTimer === undefined) return
+  clearTimeout(workspaceTransitionTimer)
+  workspaceTransitionTimer = undefined
+}
+
+watch(
+  () => tenantStore.workspaceTransitionToken,
+  (token) => {
+    clearWorkspaceTransitionTimer()
+    showWorkspaceTransitionIndicator.value = false
+    if (token === null) return
+    workspaceTransitionTimer = setTimeout(() => {
+      workspaceTransitionTimer = undefined
+      if (tenantStore.workspaceTransitionToken === token) {
+        showWorkspaceTransitionIndicator.value = true
+      }
+    }, WORKSPACE_TRANSITION_INDICATOR_DELAY_MS)
+  },
+  { immediate: true, flush: 'sync' },
+)
 
 const mainPaddingBottom = computed(() => {
   if (!terminalStore.isVisible || terminalStore.sessions.length === 0) return undefined
@@ -89,10 +151,10 @@ interface NavItem {
   iconURL?: string | null
 }
 
-// Static items above the Providers section. Everything provider-shaped
-// (Edges, MCP, Workloads, etc.) flows through providersStore — those
-// items get categorized + sub-nav treatment below. Dashboard is the
-// only true platform-wide page.
+// Static destinations precede categorized provider entries. Everything
+// provider-shaped (Edges, MCP, Workloads, etc.) flows through providersStore —
+// those items get categorized + sub-nav treatment below. Dashboard is the
+// only true platform-wide page; the Providers catalog is its adjacent entry.
 // Settings lives in the account-and-access menu rather than competing
 // with providers as a primary destination. The same menu is shared by
 // vertical, horizontal, and floating chrome.
@@ -100,8 +162,8 @@ const staticNavItems: NavItem[] = [
   { label: 'Dashboard', to: '/', icon: LayoutDashboard },
 ]
 
-// Catalog link sits at the top of the Providers section as a header that
-// also routes to the full catalog page when clicked.
+// Catalog link sits immediately below Dashboard and routes to the full
+// provider catalog page when clicked.
 const providersHeaderItem: NavItem = { label: 'Providers', to: '/providers', icon: Puzzle }
 
 // Resolve a category's Lucide component from the icon-name registry.
@@ -114,8 +176,8 @@ function categoryIcon(name: string | null): unknown {
 // horizontalNavSections shape: the horizontal + floating docks need to
 // distinguish what would otherwise be a stream of identical Puzzle
 // icons. Group items by category and render a tiny category chip
-// before each group so the bar reads as "Static | Kubernetes: x y |
-// MCP: z | Other: w" instead of a flat icon parade.
+// before each group so the bar reads as "Dashboard | Providers | Kubernetes:
+// x y | MCP: z | Other: w" instead of a flat icon parade.
 interface HorizontalSection {
   key: string
   label: string | null
@@ -124,7 +186,7 @@ interface HorizontalSection {
 }
 const horizontalNavSections = computed<HorizontalSection[]>(() => {
   const sections: HorizontalSection[] = []
-  sections.push({ key: 'static', label: null, icon: null, items: [...staticNavItems] })
+  sections.push({ key: 'static', label: null, icon: null, items: [...staticNavItems, providersHeaderItem] })
   const cat = providersStore.categorizedNavItems
   for (const g of cat.groups) {
     sections.push({
@@ -142,9 +204,6 @@ const horizontalNavSections = computed<HorizontalSection[]>(() => {
       items: cat.uncategorized.map((p) => ({ label: p.label, to: p.to, iconURL: p.iconURL })),
     })
   }
-  // Providers catalog link goes last so it acts as "+" rather than a
-  // sibling of the items.
-  sections.push({ key: 'catalog', label: null, icon: null, items: [providersHeaderItem] })
   return sections
 })
 
@@ -165,13 +224,14 @@ function handleLogout() {
   router.push('/login')
 }
 
-function handleAccountSwitch() {
-  auth.logout()
-  void router.replace('/login?switch=1')
+function retryWorkspaceHydration() {
+  if (!tenantStore.orgUUID) return
+  void tenantStore.fetchWorkspaces(tenantStore.orgUUID, {
+    selectDefault: tenantStore.workspaceMode !== 'organization',
+  })
 }
 
 const showCliModal = ref(false)
-const showProfileModal = ref(false)
 
 // --- Collapsible sidebar rail ---
 // The vertical dock defaults to a 56px icon rail so the canvas isn't taxed by
@@ -341,6 +401,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('mousemove', onDragMove)
   window.removeEventListener('mouseup', onDragEnd)
+  clearWorkspaceTransitionTimer()
   // TerminalDock outlives routed layouts. Never carry this page's dock
   // clearance into standalone shells such as platform admin or login.
   setLayoutInsets({ left: '0px', right: '0px', bottom: '0px' })
@@ -447,15 +508,12 @@ watchEffect(() => {
 
       <div class="mx-2 my-2 h-px bg-border-default/50" />
 
-      <!-- Active org/workspace context. Compact selector + link to the
-           full /tenant settings page. Sits above the static nav so the
-           "where am I" cue is the first thing users see. Needs the label
-           column — hidden on the collapsed rail. -->
-      <template v-if="sidebarExpanded">
-        <TenantContextChip variant="sidebar" />
+      <!-- Workspace is the frequent operating context, so it stays prominent
+           above navigation. Organization switching lives separately with the
+           account controls at the bottom of the shell. -->
+      <WorkspaceSwitcher :variant="sidebarExpanded ? 'sidebar' : 'compact'" />
 
-        <div class="mx-2 my-2 h-px bg-border-default/50" />
-      </template>
+      <div class="mx-2 my-2 h-px bg-border-default/50" />
 
       <!-- Scrollable nav region. With many providers this is the only
            part of the dock that grows, so it scrolls internally instead
@@ -463,7 +521,7 @@ watchEffect(() => {
            screen. min-h-0 lets it shrink below its content height inside
            the flex column; the header above and footer below stay pinned. -->
       <div class="-mr-1 flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
-      <!-- Static nav items (Dashboard, Workloads) -->
+      <!-- Static nav items (Dashboard, Providers) -->
       <router-link
         v-for="item in staticNavItems"
         :key="item.to"
@@ -471,9 +529,23 @@ watchEffect(() => {
         class="flex items-center gap-2.5 rounded-md px-3 py-2 text-[11px] font-medium transition-all duration-200"
         :class="[isActive(item.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
         :title="sidebarExpanded ? undefined : item.label"
+        :aria-label="sidebarExpanded ? undefined : item.label"
       >
         <component :is="item.icon" class="h-4 w-4 flex-shrink-0" :stroke-width="1.75" />
         <span v-if="sidebarExpanded">{{ item.label }}</span>
+      </router-link>
+
+      <!-- Providers catalog is the primary destination immediately below
+           Dashboard; provider categories and their entries follow it. -->
+      <router-link
+        :to="providersHeaderItem.to"
+        class="flex items-center gap-2.5 rounded-md px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider transition-all duration-200"
+        :class="[isActive(providersHeaderItem.to, true) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted/80 hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
+        :title="sidebarExpanded ? undefined : providersHeaderItem.label"
+        :aria-label="sidebarExpanded ? undefined : providersHeaderItem.label"
+      >
+        <Puzzle class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
+        <span v-if="sidebarExpanded">{{ providersHeaderItem.label }}</span>
       </router-link>
 
       <!-- Provider categories render as non-clickable section dividers:
@@ -504,23 +576,30 @@ watchEffect(() => {
         <div v-else class="mx-3 mt-3 mb-1 h-px bg-border-default/40" :title="group.name" />
         <template v-if="!sidebarExpanded || isNavGroupOpen('cat:' + group.name, group.items)">
           <template v-for="item in group.items" :key="item.to">
-            <router-link
-              :to="item.to"
+            <div
               class="group/nav flex items-center gap-2.5 rounded-md px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
               :class="[isActive(item.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
               :title="sidebarExpanded ? undefined : item.label"
             >
-              <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 flex-shrink-0 object-contain" />
-              <Puzzle v-else class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
-              <span v-if="sidebarExpanded" class="min-w-0 flex-1 truncate">{{ item.label }}</span>
-              <!-- Sub-nav toggle: stops the row navigation, flips only the
-                   children. Hidden on the rail (children don't render there). -->
+              <router-link
+                :to="item.to"
+                class="flex min-w-0 flex-1 items-center gap-2.5"
+                :class="sidebarExpanded ? '' : 'justify-center'"
+                :aria-label="sidebarExpanded ? undefined : item.label"
+              >
+                <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 flex-shrink-0 object-contain" />
+                <Puzzle v-else class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
+                <span v-if="sidebarExpanded" class="min-w-0 flex-1 truncate">{{ item.label }}</span>
+              </router-link>
+              <!-- Sub-nav toggle is a sibling of the route link so each
+                   control has one clear keyboard activation target. Hidden
+                   on the rail (children don't render there). -->
               <button
                 v-if="sidebarExpanded && item.children?.length"
                 type="button"
                 class="k-btn k-btn--text -mr-1 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-sm p-0 text-text-muted/70 hover:text-text-secondary"
                 :title="isNavGroupOpen('item:' + item.to, item.children) ? 'Hide ' + item.label + ' pages' : 'Show ' + item.label + ' pages'"
-                @click.prevent.stop="toggleNavGroup('item:' + item.to)"
+                @click="toggleNavGroup('item:' + item.to)"
               >
                 <ChevronDown
                   class="h-3 w-3 transition-transform duration-200"
@@ -528,7 +607,7 @@ watchEffect(() => {
                   :stroke-width="2"
                 />
               </button>
-            </router-link>
+            </div>
             <template v-if="sidebarExpanded && item.children?.length && isNavGroupOpen('item:' + item.to, item.children)">
               <router-link
                 v-for="child in item.children"
@@ -568,21 +647,27 @@ watchEffect(() => {
         <div v-else class="mx-3 mt-3 mb-1 h-px bg-border-default/40" title="Other" />
         <template v-if="!sidebarExpanded || isNavGroupOpen('cat:Other', providersStore.categorizedNavItems.uncategorized)">
           <template v-for="item in providersStore.categorizedNavItems.uncategorized" :key="'u-' + item.to">
-            <router-link
-              :to="item.to"
+            <div
               class="flex items-center gap-2.5 rounded-md px-3 py-1.5 text-[11px] font-medium transition-all duration-200"
               :class="[isActive(item.to) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
               :title="sidebarExpanded ? undefined : item.label"
             >
-              <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 flex-shrink-0 object-contain" />
-              <Puzzle v-else class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
-              <span v-if="sidebarExpanded" class="min-w-0 flex-1 truncate">{{ item.label }}</span>
+              <router-link
+                :to="item.to"
+                class="flex min-w-0 flex-1 items-center gap-2.5"
+                :class="sidebarExpanded ? '' : 'justify-center'"
+                :aria-label="sidebarExpanded ? undefined : item.label"
+              >
+                <img v-if="item.iconURL" :src="item.iconURL" alt="" class="h-3.5 w-3.5 flex-shrink-0 object-contain" />
+                <Puzzle v-else class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
+                <span v-if="sidebarExpanded" class="min-w-0 flex-1 truncate">{{ item.label }}</span>
+              </router-link>
               <button
                 v-if="sidebarExpanded && item.children?.length"
                 type="button"
                 class="k-btn k-btn--text -mr-1 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-sm p-0 text-text-muted/70 hover:text-text-secondary"
                 :title="isNavGroupOpen('item:' + item.to, item.children) ? 'Hide ' + item.label + ' pages' : 'Show ' + item.label + ' pages'"
-                @click.prevent.stop="toggleNavGroup('item:' + item.to)"
+                @click="toggleNavGroup('item:' + item.to)"
               >
                 <ChevronDown
                   class="h-3 w-3 transition-transform duration-200"
@@ -590,7 +675,7 @@ watchEffect(() => {
                   :stroke-width="2"
                 />
               </button>
-            </router-link>
+            </div>
             <template v-if="sidebarExpanded && item.children?.length && isNavGroupOpen('item:' + item.to, item.children)">
               <router-link
                 v-for="child in item.children"
@@ -607,20 +692,6 @@ watchEffect(() => {
         </template>
       </template>
 
-      <!-- Providers catalog link sits at the end as a slim tertiary link;
-           the rest of the section above is the actual provider tree. -->
-      <div class="mt-3 mb-1 flex items-center gap-2 px-3">
-        <div class="h-px flex-1 bg-border-default/40" />
-      </div>
-      <router-link
-        :to="providersHeaderItem.to"
-        class="flex items-center gap-2.5 rounded-md px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider transition-all duration-200"
-        :class="[isActive(providersHeaderItem.to, true) ? 'bg-accent/15 text-accent shadow-[0_0_14px_var(--color-accent-glow)]' : 'text-text-muted/80 hover:bg-surface-overlay/50 hover:text-text-secondary', sidebarExpanded ? '' : 'justify-center']"
-        :title="sidebarExpanded ? undefined : providersHeaderItem.label"
-      >
-        <Puzzle class="h-3.5 w-3.5 flex-shrink-0" :stroke-width="1.75" />
-        <span v-if="sidebarExpanded">{{ providersHeaderItem.label }}</span>
-      </router-link>
       </div>
       <!-- end scrollable nav region -->
 
@@ -640,14 +711,13 @@ watchEffect(() => {
         <ExternalLink v-if="sidebarExpanded" class="ml-auto h-3 w-3 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
       </a>
 
-      <!-- Situational tools and account controls live behind one stable
-           account affordance so the provider tree keeps the vertical space. -->
+      <!-- Identity, access, and the infrequent organization context share one
+           account flyout. Workspace remains the separate operating control. -->
       <AccountAccessMenu
         :expanded="sidebarExpanded"
         :show-platform-admin="adminStore.isAdmin === true"
         show-undock
         @cli="showCliModal = true"
-        @profile="showProfileModal = true"
         @undock="resetDockPos"
         @logout="handleLogout"
       />
@@ -684,8 +754,8 @@ watchEffect(() => {
 
       <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
-      <!-- Tenant context chip (horizontal variant) -->
-      <TenantContextChip variant="horizontal" />
+      <!-- Frequent operating context -->
+      <WorkspaceSwitcher variant="horizontal" />
 
       <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
@@ -730,14 +800,13 @@ watchEffect(() => {
       </div>
 
       <!-- Status -->
-      <span v-if="auth.clusterName" class="px-1 font-mono text-[9px] tracking-wider text-text-muted">
-        {{ auth.clusterName }}
+      <span v-if="tenantStore.activeWorkspace?.clusterName" class="px-1 font-mono text-[9px] tracking-wider text-text-muted">
+        {{ tenantStore.activeWorkspace.clusterName }}
       </span>
       <AccountAccessMenu
         :show-platform-admin="adminStore.isAdmin === true"
         show-undock
         @cli="showCliModal = true"
-        @profile="showProfileModal = true"
         @undock="resetDockPos"
         @logout="handleLogout"
       />
@@ -759,18 +828,46 @@ watchEffect(() => {
         page's useGraphQLQuery state; ProviderFrame's own watch on
         auth.clusterName re-creates its custom element post-flush so
         the new mountRef div doesn't render empty after the slot
-        wrapper rebuilds. The chrome above (sidebar, TenantContextChip,
-        popover) stays mounted because the key sits on the slot
+        wrapper rebuilds. The chrome above (sidebar and context switchers)
+        stays mounted because the key sits on the slot
         wrapper, not the layout shell.
 
         When the active org has no workspaces we never get a clusterName,
-        so swap the slot out for the create-workspace wizard. The wizard
-        triggers tenant.createWorkspace, which selects the new workspace,
-        which sets auth.clusterName, which re-keys this wrapper and
-        restores the original page.
+        so swap the slot out for the create-workspace wizard. A selected
+        workspace whose cluster is still provisioning gets a separate pending
+        shell; it must never render workspace-scoped content against the old
+        auth cluster.
       -->
       <div :key="auth.clusterName ?? 'unauth'" :class="slotClass">
-        <FirstWorkspaceWizard v-if="showWorkspaceWizard" />
+        <div
+          v-if="tenantStore.workspaceTransitioning"
+          class="flex min-h-52 flex-col items-center justify-center px-4 py-12 text-center"
+          aria-busy="true"
+        >
+          <div v-if="showWorkspaceTransitionIndicator" class="flex flex-col items-center">
+            <Loader2 class="h-5 w-5 animate-spin text-accent" :stroke-width="1.75" aria-hidden="true" />
+            <p class="mt-3 text-[13px] font-semibold text-text-primary">Switching workspace…</p>
+          </div>
+        </div>
+        <FirstWorkspaceWizard v-else-if="showWorkspaceWizard" />
+        <div v-else-if="showWorkspacePending" class="flex min-h-52 flex-col items-center justify-center px-4 py-12 text-center">
+          <Loader2 v-if="tenantStore.workspaceLoadState !== 'error'" class="h-5 w-5 animate-spin text-accent" :stroke-width="1.75" aria-hidden="true" />
+          <p class="mt-3 text-[13px] font-semibold text-text-primary">
+            {{ tenantStore.workspaceLoadState === 'error' ? 'Workspace data is unavailable' : 'Workspace is still provisioning' }}
+          </p>
+          <p v-if="tenantStore.workspaceLoadState === 'error'" class="mt-1 max-w-sm text-[11px] text-danger">
+            {{ tenantStore.error ?? 'The workspace list could not be loaded.' }}
+          </p>
+          <p v-else class="mt-1 max-w-sm text-[11px] text-text-muted">
+            This workspace will become available when its operating cluster is ready. Workspace-scoped tools stay paused until then.
+          </p>
+          <div class="mt-4 flex flex-wrap items-center justify-center gap-2">
+            <button v-if="tenantStore.workspaceLoadState === 'error'" type="button" class="k-btn k-btn--ghost text-[11px]" @click="retryWorkspaceHydration">
+              Retry
+            </button>
+            <router-link to="/settings/workspaces" class="k-btn k-btn--ghost text-[11px]">Manage workspaces</router-link>
+          </div>
+        </div>
         <slot v-else />
       </div>
     </main>
@@ -810,7 +907,7 @@ watchEffect(() => {
 
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
-        <TenantContextChip variant="horizontal" />
+        <WorkspaceSwitcher variant="horizontal" />
 
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
@@ -848,15 +945,14 @@ watchEffect(() => {
 
         <div class="mx-0.5 h-5 w-px bg-border-default/40" />
 
-        <span v-if="auth.clusterName" class="px-1 font-mono text-[9px] tracking-wider text-text-muted">
-          {{ auth.clusterName }}
+        <span v-if="tenantStore.activeWorkspace?.clusterName" class="px-1 font-mono text-[9px] tracking-wider text-text-muted">
+          {{ tenantStore.activeWorkspace.clusterName }}
         </span>
         <AccountAccessMenu
           :show-platform-admin="adminStore.isAdmin === true"
           :show-undock="hasCustomPos && !isDragging"
           undock-label="Reset position"
           @cli="showCliModal = true"
-          @profile="showProfileModal = true"
           @undock="resetDockPos"
           @logout="handleLogout"
         />
@@ -866,8 +962,6 @@ watchEffect(() => {
     <!-- CLI quickstart modal -->
     <CliQuickstartModal v-if="showCliModal" @close="showCliModal = false" />
 
-    <!-- User identity modal (email / user ID for sharing) -->
-    <UserProfileModal v-if="showProfileModal" @close="showProfileModal = false" @switch="handleAccountSwitch" />
   </div>
 </template>
 

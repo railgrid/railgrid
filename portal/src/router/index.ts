@@ -33,9 +33,34 @@ const routes = [
     component: () => import('@/pages/ProvidersPage.vue'),
   },
   {
-    path: '/tenant',
-    name: 'tenant',
+    path: '/settings',
+    name: 'settings',
+    redirect: '/settings/workspaces',
+  },
+  {
+    path: '/settings/workspaces',
+    name: 'settings-workspaces',
     component: () => import('@/pages/TenantSettingsPage.vue'),
+  },
+  {
+    path: '/settings/workspaces/:workspaceUUID',
+    name: 'settings-workspace-overview',
+    component: () => import('@/pages/TenantSettingsPage.vue'),
+  },
+  {
+    path: '/settings/organizations',
+    name: 'settings-organizations',
+    component: () => import('@/pages/TenantSettingsPage.vue'),
+  },
+  {
+    path: '/organizations',
+    name: 'organizations',
+    component: () => import('@/pages/OrganizationsPage.vue'),
+  },
+  {
+    path: '/organizations/new',
+    name: 'organization-create',
+    component: () => import('@/pages/OrganizationCreatePage.vue'),
   },
   {
     path: '/mcp',
@@ -85,7 +110,10 @@ router.beforeEach(async (to) => {
     // private preview iframe can enter app authorization first and bounce
     // through embedded login before the shared session exists.
     await auth.detectAuthMode()
-    if (!auth.isAuthenticated) return { name: 'login' }
+    // A bearer authenticates the portal caller; a cluster target is selected
+    // separately by the workspace control and is intentionally empty on
+    // organization-only routes.
+    if (!auth.token) return { name: 'login' }
   }
   // Admin-only routes: confirm access before loading. Non-admins are bounced to
   // the dashboard so the page never mounts and never fires admin data fetches.

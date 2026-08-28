@@ -181,8 +181,16 @@ texture (login, empty states — sparingly), `.island` floating dock card,
   `portalkit/ResourceTableEditButton.vue` and
   `portalkit/ResourceTableDeleteButton.vue` for compact row actions that reveal
   on row hover or keyboard focus (and remain visible on touch). Give every action
-  a resource-specific accessible label, and keep destructive actions inside
-  `confirmDialog({ danger: true })`. The primary resource name uses a text-level
+  a resource-specific accessible label. Use
+  `portalkit/ResourceTableActionButton.vue` for other compact row actions:
+  callers supply the Lucide icon and accessible label, and may provide a busy
+  label/state, disabled state, and one of the sanctioned `neutral`, `accent`,
+  `warning`, or `danger` tones. It inherits the same hover/focus/touch visibility
+  and event-isolation contract as the edit/delete shortcuts. Keep
+  `ResourceTableEditButton` and `ResourceTableDeleteButton` as the preferred
+  semantic shortcuts for edit/delete; destructive confirmation remains
+  caller-owned via `confirmDialog({ danger: true })`. The primary resource name
+  uses a text-level
   `.k-table-resource-link` action (accent, regular weight, transparent at rest
   and hover), cross-resource references use ordinary cell text, external URLs
   use a concise linked action plus `ExternalLink` icon, resource IDs and fully

@@ -3,7 +3,7 @@
 // page slot in AppLayout so the user gets a guided "create your first
 // workspace" affordance instead of a broken edges/dashboard/provider view
 // pointing at a non-existent cluster. Picking an org via the
-// TenantContextChip clears workspaceUUID; without this guard the app
+// Organization switching clears workspaceUUID; without this guard the app
 // keeps the previous org's clusterName pinned and every GraphQL query
 // runs against the wrong shard.
 //
@@ -93,7 +93,7 @@ async function handleCreate() {
 
         <div class="flex items-center justify-between gap-3 pt-2">
           <router-link
-            to="/tenant"
+            to="/settings/workspaces"
             class="flex items-center gap-1.5 text-[11px] font-medium text-text-muted transition-colors hover:text-text-secondary"
           >
             <Settings class="h-3 w-3" :stroke-width="2" />

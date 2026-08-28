@@ -20,7 +20,7 @@ test('uses host catalog chrome on landing routes and keeps project workbenches f
   assert.match(providerFrame, /const APP_STUDIO_MODELS_ROUTE = '~models'/)
   assert.match(providerFrame, /props\.providerName === 'app-studio' &&[\s\S]*\['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_MODELS_ROUTE\]\.includes\(providerRouteSegment\.value\)/)
   assert.match(providerFrame, /props\.providerName === 'app-studio' &&[\s\S]*!isAppStudioLandingRoute\.value \|\| providerFullBleedOverride\.value === true/)
-  assert.match(providerFrame, /<header v-if="entry && !isFullBleedProvider"/)
+  assert.match(providerFrame, /<header v-if="catalogSettled && entry && !isFullBleedProvider"/)
   assert.match(app, /<h2[^>]*>Projects<\/h2>/)
   assert.doesNotMatch(app, />App Studio<\/h1>/)
   assert.doesNotMatch(app, /max-w-\[1600px\]/)

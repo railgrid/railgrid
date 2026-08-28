@@ -28,6 +28,8 @@ import (
 	tenancyv1alpha1 "github.com/faroshq/faros/apis/tenancy/v1alpha1"
 )
 
+const workspaceGracePeriod = 30 * 24 * time.Hour
+
 // CreateWorkspaceRequest is the POST body for creating a Workspace.
 type CreateWorkspaceRequest struct {
 	DisplayName string `json:"displayName"`
@@ -44,8 +46,10 @@ type PatchWorkspaceRequest struct {
 // workspace-scope rows in their UMI).
 //
 // For simplicity v1 returns the full Workspace list to org admins
-// and the UMI-derived subset to members. Soft-deleted workspaces are
-// suppressed from the response.
+// and the UMI-derived subset to members. Workspaces in the soft-delete
+// grace window remain in the response: Settings is the lifecycle surface,
+// and retaining the caller's workspace-scope role is what lets an authorized
+// workspace admin restore one after the UMI marker has been reconciled.
 func (h *Handler) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	tc, ok := h.requireTenantContext(w, r, false, false)
 	if !ok {
@@ -62,7 +66,7 @@ func (h *Handler) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 		roleByWS := map[string]string{}
 		if idx, err := h.mgr.client.UserMembershipIndices().Get(r.Context(), tc.User, metav1.GetOptions{}); err == nil {
 			for _, e := range idx.Spec.Entries {
-				if e.OrgUUID == orgUUID && e.WorkspaceUUID != "" && e.SoftDeletedAt == nil {
+				if e.OrgUUID == orgUUID && e.WorkspaceUUID != "" {
 					roleByWS[e.WorkspaceUUID] = e.Role
 				}
 			}
@@ -97,7 +101,7 @@ func (h *Handler) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]WorkspaceView, 0)
 	for _, e := range idx.Spec.Entries {
-		if e.OrgUUID != orgUUID || e.WorkspaceUUID == "" || e.SoftDeletedAt != nil {
+		if e.OrgUUID != orgUUID || e.WorkspaceUUID == "" {
 			continue
 		}
 		view, ok := h.workspaceView(r, orgUUID, e.WorkspaceUUID)
@@ -256,25 +260,102 @@ func (h *Handler) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	orgUUID := mux.Vars(r)["org"]
 	wsUUID := mux.Vars(r)["ws"]
-	if err := h.mgr.bootstrapper.SetWorkspaceDeletionAnnotation(r.Context(), orgUUID, wsUUID, time.Now().UTC()); err != nil {
-		writeError(w, err)
-		return
+
+	// Keep DELETE idempotent without extending the recovery window. The
+	// annotation is the source of truth, so an already-requested deletion is a
+	// successful no-op even when the reconciler has already marked the UMI row.
+	const maxAttempts = 5
+	requestedAt := time.Now().UTC()
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		_, found, err := h.mgr.bootstrapper.GetWorkspaceDeletionRequestedAt(r.Context(), orgUUID, wsUUID)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if found {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		err = h.mgr.bootstrapper.SetWorkspaceDeletionAnnotation(r.Context(), orgUUID, wsUUID, requestedAt)
+		if err == nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		lastErr = err
+		if !apierrors.IsConflict(err) {
+			writeError(w, err)
+			return
+		}
+		// A concurrent annotation/status update may have won the write. Re-read
+		// on the next attempt; if it was a deletion request, the original
+		// timestamp is preserved and the retry returns the idempotent success.
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeError(w, lastErr)
 }
 
-// undeleteWorkspace clears the deletion-requested-at annotation.
+// undeleteWorkspace clears the deletion-requested-at annotation while the
+// 30-day recovery window is still open. The read/clear loop handles conflicts
+// from the soft-delete reconciler (or a concurrent delete) without clearing a
+// newer request that won the race.
 func (h *Handler) undeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireTenantContext(w, r, true, true); !ok {
 		return
 	}
 	orgUUID := mux.Vars(r)["org"]
 	wsUUID := mux.Vars(r)["ws"]
-	if err := h.mgr.bootstrapper.ClearWorkspaceDeletionAnnotation(r.Context(), orgUUID, wsUUID); err != nil {
-		writeError(w, err)
-		return
+
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		requestedAt, found, err := h.mgr.bootstrapper.GetWorkspaceDeletionRequestedAt(r.Context(), orgUUID, wsUUID)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if !found || requestedAt == nil {
+			// Idempotent: another actor may have already restored it.
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if !time.Now().UTC().Before(requestedAt.Add(workspaceGracePeriod)) {
+			writeStatus(w, http.StatusConflict, "Conflict", "workspace deletion grace period has expired")
+			return
+		}
+
+		err = h.mgr.bootstrapper.ClearWorkspaceDeletionAnnotation(r.Context(), orgUUID, wsUUID)
+		if err == nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		lastErr = err
+		if !apierrors.IsConflict(err) {
+			writeError(w, err)
+			return
+		}
+
+		// Do not let a conflict retry clear a newer deletion request. A
+		// conflict caused by an unrelated Workspace update is safe to retry,
+		// but a changed annotation means another delete won the race and owns
+		// the recovery clock now.
+		latest, latestFound, readErr := h.mgr.bootstrapper.GetWorkspaceDeletionRequestedAt(r.Context(), orgUUID, wsUUID)
+		if readErr != nil {
+			writeError(w, readErr)
+			return
+		}
+		if !latestFound || latest == nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if !latest.Equal(*requestedAt) {
+			writeStatus(w, http.StatusConflict, "Conflict", "workspace deletion changed while restore was in progress; retry")
+			return
+		}
+		// The same deletion marker is still present: retry the clear and
+		// re-validate the grace window on the next iteration.
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeError(w, lastErr)
 }
 
 // workspaceView builds a WorkspaceView from the kcp Workspace's
