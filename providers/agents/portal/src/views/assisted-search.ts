@@ -14,10 +14,11 @@
 // tool calls.
 
 import { html, nothing, type TemplateResult } from 'lit'
-import { state } from 'lit/decorators.js'
-import { StoreElement } from '../ui/base'
+import { property, state } from 'lit/decorators.js'
+import { StoreElement, type AuthoritySnapshot } from '../ui/base'
 import { icon } from '../ui/icon'
 import { mutate } from '../mutate'
+import type { CreateSuccessDetail } from '../router'
 import {
   DNS_LABEL_RE,
   INSTANCE_SIZES,
@@ -32,6 +33,8 @@ import { familiesForConns } from '../conn-defs'
 import type { ConnectionWrite } from '../types'
 
 export class AssistedSearch extends StoreElement {
+  @property({ type: Boolean }) routeOwned = false
+  @property({ type: Boolean }) page = false
   @state() private open = false
   @state() private agent = ''
   @state() private connName = 'search'
@@ -55,7 +58,16 @@ export class AssistedSearch extends StoreElement {
   }
 
   private cancel(): void {
+    if (this.busy) return
+    if (this.routeOwned || this.page) {
+      this.dispatchEvent(new CustomEvent('agents-cancel', { bubbles: true, composed: true }))
+      return
+    }
     this.open = false
+  }
+
+  private selectedAgent(): string {
+    return this.agent || this.store.agents.data[0]?.metadata.name || ''
   }
 
   private instanceName(): string {
@@ -79,6 +91,10 @@ export class AssistedSearch extends StoreElement {
     if (this.busy) return
     const conn = this.connName.trim()
     const inst = this.instanceName()
+    const agent = this.selectedAgent()
+    const size = this.size
+    const authority = this.captureAuthority()
+    this.agent = agent
     const errors = this.validate(conn, inst)
     this.errors = errors
     if (Object.keys(errors).length) return
@@ -93,21 +109,47 @@ export class AssistedSearch extends StoreElement {
       config: { provider: 'searxng', instance: inst },
     }
     this.busy = true
-    const res = await mutate(this.store, {
-      run: () => this.api.createConnection(body),
-      success: `Connection “${conn}” created — handing the rest to ${this.agent}.`,
-      failure: 'Create failed',
-      reload: ['connections'],
-    })
-    if (res) await this.grantToAgent(conn)
-    this.busy = false
-    if (!res) return
+    try {
+      const res = await mutate(authority.store, {
+        run: () => authority.api.createConnection(body),
+        success: `Connection “${conn}” created — handing the rest to ${agent}.`,
+        failure: 'Create failed',
+        reload: ['connections'],
+      })
+      // A context rotation can leave this light-DOM child alive until the
+      // shell's keyed route update flushes. Do not grant, hand off, or route a
+      // create response into a different authority in that gap.
+      if (!res || !this.authorityIsCurrent(authority)) return
 
-    this.store.setPendingPrompt(this.agent, searxngSetupPrompt({ connection: conn, instance: inst, size: this.size }))
-    this.open = false
-    // The chat playground lives in the agent's Config pane (right-hand split),
-    // so that is where "go to its chat" lands.
-    this.navigate({ kind: 'agent', name: this.agent, tab: 'config' })
+      await this.grantToAgent(agent, conn, authority)
+      if (!this.authorityIsCurrent(authority)) return
+
+      authority.store.setPendingPrompt(agent, searxngSetupPrompt({ connection: conn, instance: inst, size }))
+      if (this.routeOwned || this.page) {
+        this.dispatchEvent(
+          new CustomEvent<CreateSuccessDetail>('agents-create-success', {
+            detail: {
+              resource: 'connection',
+              name: conn,
+              item: res,
+              // Assisted setup intentionally keeps its existing handoff: the
+              // agent's Config/chat surface is where the provisioning prompt is
+              // actionable and visible.
+              destination: { kind: 'agent', name: agent, tab: 'config' },
+            },
+            bubbles: true,
+            composed: true,
+          }),
+        )
+      } else {
+        this.open = false
+        // The chat playground lives in the agent's Config pane (right-hand split),
+        // so that is where "go to its chat" lands.
+        this.navigate({ kind: 'agent', name: agent, tab: 'config' })
+      }
+    } finally {
+      this.busy = false
+    }
   }
 
   // grantToAgent wires the new connection into the driving agent's interactive
@@ -116,8 +158,8 @@ export class AssistedSearch extends StoreElement {
   // granted, so the agent would provision its own backend and still answer
   // "I can't make web requests". Failure is surfaced but not fatal — the
   // connection and the instance are still worth having.
-  private async grantToAgent(conn: string): Promise<void> {
-    const agent = this.store.agents.data.find((a) => a.metadata.name === this.agent)
+  private async grantToAgent(agentName: string, conn: string, authority: AuthoritySnapshot): Promise<void> {
+    const agent = authority.store.agents.data.find((a) => a.metadata.name === agentName)
     if (!agent) return
     const current = agent.spec?.tools?.interactive?.connections || []
     if (current.includes(conn)) return
@@ -127,17 +169,29 @@ export class AssistedSearch extends StoreElement {
     // refreshed yet, and without its type the `web` family would be dropped —
     // leaving the agent with a search backend but no web_search tool.
     const families = familiesForConns(connections, (n) =>
-      n === conn ? 'websearch' : this.store.connections.data.find((c) => c.metadata.name === n)?.spec.type,
+      n === conn ? 'websearch' : authority.store.connections.data.find((c) => c.metadata.name === n)?.spec.type,
     )
-    await mutate(this.store, {
-      run: () => this.api.patchAgent(this.agent, { interactiveConnections: connections, interactiveFamilies: families }),
-      success: `Wired “${conn}” into ${this.agent}'s tools.`,
-      failure: `Created the connection, but could not wire it into ${this.agent} — add it under the agent's Tools`,
+    await mutate(authority.store, {
+      run: () => authority.api.patchAgent(agentName, { interactiveConnections: connections, interactiveFamilies: families }),
+      success: `Wired “${conn}” into ${agentName}'s tools.`,
+      failure: `Created the connection, but could not wire it into ${agentName} — add it under the agent's Tools`,
       reload: ['agents'],
     })
   }
 
   render(): TemplateResult {
+    if (this.page) {
+      // A direct/bookmarked assisted route should remain truthful when its
+      // prerequisites disappear; it must not offer a form that cannot hand
+      // work to an agent.
+      if (!this.store.hasProvider('infrastructure')) return html`<div class="agents-panel k-card agents-route-panel"><p class="muted">Infrastructure is not enabled for this workspace.</p></div>`
+      if (!this.store.agents.data.length) return html`<div class="agents-panel k-card agents-route-panel"><p class="muted">Create an agent before using assisted search setup.</p></div>`
+      if (!this.store.connections.loaded) return html`<div class="agents-panel k-card agents-route-panel" role="status"><p class="muted">Loading connections…</p></div>`
+      if (selfHostedSearchConfigured(this.store.connections.data)) {
+        return html`<div class="agents-panel k-card agents-route-panel"><p class="muted">Self-hosted search is already configured in this workspace.</p></div>`
+      }
+      return this.dialog()
+    }
     // Both gates matter: no infrastructure tools means the agent cannot
     // provision anything, no agents means there is nobody to ask.
     if (!this.store.hasProvider('infrastructure') || !this.store.agents.data.length) return html`${nothing}`
@@ -168,7 +222,11 @@ export class AssistedSearch extends StoreElement {
           >One of your agents can provision the SearXNG instance for you — instead of you hopping to Infrastructure and back.</span
         >
       </div>
-      <button type="button" class="k-btn k-btn--ghost secondary" @click=${() => this.start()}>Set it up</button>
+      <button
+        type="button"
+        class="k-btn k-btn--ghost secondary"
+        @click=${() => (this.routeOwned ? this.navigate({ kind: 'create', resource: 'connection', type: 'assisted-search' }) : this.start())}
+      >Set it up</button>
       <button
         type="button"
         class="k-btn k-btn--ghost agents-iconbtn"
@@ -183,16 +241,19 @@ export class AssistedSearch extends StoreElement {
 
   private dialog(): TemplateResult {
     const agents = this.store.agents.data
-    return html`<div
-      class="agents-overlay"
-      @click=${(e: Event) => e.target === e.currentTarget && this.cancel()}
-      @keydown=${(e: KeyboardEvent) => e.key === 'Escape' && this.cancel()}
-    >
-      <form class="agents-dialog" role="dialog" aria-modal="true" aria-label="Assisted search setup" @submit=${(e: Event) => void this.submit(e)}>
-        <header class="agents-dialog-head">
+    const selected = this.selectedAgent()
+    const form = html`<form
+        class=${this.page ? 'agents-conn-form k-create-surface' : 'agents-dialog'}
+        role=${this.page ? nothing : 'dialog'}
+        aria-modal=${this.page ? nothing : 'true'}
+        aria-label="Assisted search setup"
+        @submit=${(e: Event) => void this.submit(e)}
+      >
+        ${this.page ? nothing : html`<header class="agents-dialog-head">
           <span class="agents-dialog-ic">${icon('sparkles')}</span>
           <h3>Self-hosted search, set up for you</h3>
-        </header>
+        </header>`}
+        <div class=${this.page ? 'k-create-body' : ''}>
         <p class="muted">
           We create the web-search connection pointing at an instance name, then your agent provisions the <code>searxng</code>
           instance itself. Nothing to paste back: agents reach it over the platform's internal path, so it is never published and
@@ -202,21 +263,32 @@ export class AssistedSearch extends StoreElement {
         ${agents.length > 1
           ? html`<label>
               Agent
-              <select class="k-input" aria-invalid=${this.errors.agent ? 'true' : nothing} @change=${(e: Event) => (this.agent = (e.target as HTMLSelectElement).value)}>
-                ${agents.map((a) => html`<option value=${a.metadata.name} ?selected=${a.metadata.name === this.agent}>${a.spec?.displayName || a.metadata.name}</option>`)}
+              <select
+                class="k-input"
+                ?disabled=${this.busy}
+                aria-invalid=${this.errors.agent ? 'true' : nothing}
+                @change=${(e: Event) => {
+                  if (this.busy) return
+                  this.agent = (e.target as HTMLSelectElement).value
+                }}
+              >
+                ${agents.map((a) => html`<option value=${a.metadata.name} ?selected=${a.metadata.name === selected}>${a.spec?.displayName || a.metadata.name}</option>`)}
               </select>
               ${this.errors.agent ? html`<span class="agents-fielderr">${this.errors.agent}</span>` : nothing}
             </label>`
-          : html`<p class="agents-hint">Driven by your agent <strong>${this.agent}</strong>.</p>`}
+          : html`<p class="agents-hint">Driven by your agent <strong>${selected}</strong>.</p>`}
 
         <label>
           Connection name
           <input class="k-input"
             name="connName"
             .value=${this.connName}
+            ?disabled=${this.busy}
             autocomplete="off"
             aria-invalid=${this.errors.connName ? 'true' : nothing}
-            @input=${(e: Event) => (this.connName = (e.target as HTMLInputElement).value)}
+            @input=${(e: Event) => {
+              if (!this.busy) this.connName = (e.target as HTMLInputElement).value
+            }}
           />
           ${this.errors.connName
             ? html`<span class="agents-fielderr">${this.errors.connName}</span>`
@@ -228,9 +300,11 @@ export class AssistedSearch extends StoreElement {
           <input class="k-input"
             name="instance"
             .value=${this.instanceName()}
+            ?disabled=${this.busy}
             autocomplete="off"
             aria-invalid=${this.errors.instance ? 'true' : nothing}
             @input=${(e: Event) => {
+              if (this.busy) return
               this.instanceTouched = true
               this.instance = (e.target as HTMLInputElement).value
             }}
@@ -244,17 +318,35 @@ export class AssistedSearch extends StoreElement {
           Size
           <div class="agents-modeseg" role="group" aria-label="Instance size">
             ${INSTANCE_SIZES.map(
-              (s) => html`<button type="button" class="k-btn k-btn--ghost agents-modebtn ${s === this.size ? 'sel' : ''}" @click=${() => (this.size = s)}>${s}</button>`,
+              (s) => html`<button
+                type="button"
+                ?disabled=${this.busy}
+                class="k-btn k-btn--ghost agents-modebtn ${s === this.size ? 'sel' : ''}"
+                @click=${() => {
+                  if (!this.busy) this.size = s
+                }}
+              >${s}</button>`,
             )}
           </div>
         </label>
-
-        <div class="agents-form-actions">
-          <button class="k-btn k-btn--primary" type="submit" ?disabled=${this.busy}>${icon('sparkles')} Create and hand off</button>
-          <button type="button" class="k-btn k-btn--ghost secondary" @click=${() => this.cancel()}>Cancel</button>
         </div>
-      </form>
-    </div>`
+
+        <div class=${this.page ? 'k-create-actions' : 'agents-form-actions'}>
+          <button type="button" ?disabled=${this.busy} class="k-btn k-btn--ghost secondary" @click=${() => this.cancel()}>Cancel</button>
+          <button class="k-btn k-btn--primary" type="submit" ?disabled=${this.busy}>${icon('sparkles')} Create and hand off</button>
+        </div>
+      </form>`
+    return this.page
+      ? html`<div class="agents-create-page k-create-page">
+          <button type="button" ?disabled=${this.busy} class="k-btn k-btn--ghost k-back-action" @click=${() => this.cancel()}>${icon('arrow-left')} Connections</button>
+          <header class="k-create-header"><h1 class="k-create-title">Set up assisted search</h1><p class="k-create-description">Create a private search connection and let an agent provision the supporting service.</p></header>
+          ${form}
+        </div>`
+      : html`<div
+          class="agents-overlay"
+          @click=${(e: Event) => e.target === e.currentTarget && this.cancel()}
+          @keydown=${(e: KeyboardEvent) => e.key === 'Escape' && this.cancel()}
+        >${form}</div>`
   }
 }
 

@@ -257,15 +257,18 @@ export class AgentChat extends StoreElement {
   private async deleteSession(): Promise<void> {
     const id = this.sessionID
     if (!id || this.streaming) return
+    const authority = this.captureAuthority()
+    const agent = this.name
     const ok = await confirmModal({
       title: 'Delete this chat?',
       message: 'The transcript is removed from the agent’s memory for this session.',
       danger: true,
       confirmLabel: 'Delete',
     })
-    if (!ok) return
+    if (!ok || !this.authorityIsCurrent(authority)) return
     try {
-      await this.api.deleteSession(this.name, id)
+      await authority.api.deleteSession(agent, id)
+      if (!this.authorityIsCurrent(authority)) return
       toast('ok', 'Chat deleted.')
       this.sessions = this.sessions.filter((s) => s.id !== id)
       this.messages = []

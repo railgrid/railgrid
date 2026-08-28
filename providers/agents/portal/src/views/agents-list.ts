@@ -3,48 +3,36 @@
 // wizard, which — unlike the old bare name field — collects the model
 // credential the agent needs to be usable on arrival.
 
-import { html, nothing, type TemplateResult } from 'lit'
-import { state } from 'lit/decorators.js'
+import { html, type TemplateResult } from 'lit'
 import { repeat } from 'lit/directives/repeat.js'
 import { StoreElement } from '../ui/base'
 import { icon } from '../ui/icon'
 import { sliceView } from '../ui/states'
 import { confirmModal } from '../portalkit/modal'
 import { mutate } from '../mutate'
-import type { Agent, AgentCreate } from '../types'
+import type { Agent } from '../types'
 
+// Keep the element registration available to standalone consumers that import
+// only the list view; the shell also imports the route surface explicitly.
 import './agent-create'
 
 export class AgentsList extends StoreElement {
-  @state() private creating = false
-
   private async del(name: string): Promise<void> {
+    const authority = this.captureAuthority()
     const ok = await confirmModal({
       title: `Delete agent “${name}”?`,
       message: 'This also deletes its chat history.',
       danger: true,
       confirmLabel: 'Delete',
     })
-    if (!ok) return
-    await mutate(this.store, {
-      run: () => this.api.deleteAgent(name),
+    if (!ok || !this.authorityIsCurrent(authority)) return
+    await mutate(authority.store, {
+      run: () => authority.api.deleteAgent(name),
       success: `Agent “${name}” deleted.`,
       failure: 'Delete failed',
-      optimistic: () => (this.store.agents.data = this.store.agents.data.filter((a) => a.metadata.name !== name)),
+      optimistic: () => (authority.store.agents.data = authority.store.agents.data.filter((a) => a.metadata.name !== name)),
       reload: ['agents'],
     })
-  }
-
-  private async create(body: AgentCreate): Promise<void> {
-    const res = await mutate(this.store, {
-      run: () => this.api.createAgent(body),
-      success: `Agent “${body.name}” created.`,
-      failure: 'Create failed',
-      reload: ['agents'],
-    })
-    if (!res) return
-    this.creating = false
-    this.navigate({ kind: 'agent', name: body.name, tab: 'config' })
   }
 
   render(): TemplateResult {
@@ -52,7 +40,7 @@ export class AgentsList extends StoreElement {
       <div class="agents-menu">
         <div class="agents-panel-head">
           <h3>Agents</h3>
-          <button class="k-btn k-btn--primary" @click=${() => (this.creating = true)}>${icon('plus')} New agent</button>
+          <button class="k-btn k-btn--primary" @click=${() => this.navigate({ kind: 'create', resource: 'agent' })}>${icon('plus')} New agent</button>
         </div>
         ${sliceView<Agent>({
           slice: this.store.agents,
@@ -68,14 +56,6 @@ export class AgentsList extends StoreElement {
           </div>`,
         })}
       </div>
-      ${this.creating
-        ? html`<agents-agent-create
-            .store=${this.store}
-            .api=${this.api}
-            @agents-create=${(e: CustomEvent<AgentCreate>) => void this.create(e.detail)}
-            @agents-cancel=${() => (this.creating = false)}
-          ></agents-agent-create>`
-        : nothing}
     `
   }
 

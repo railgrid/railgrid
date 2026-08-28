@@ -187,13 +187,16 @@ export class AutomationSection extends StoreElement {
   }
 
   private async del(name: string): Promise<void> {
-    const ok = await confirmModal({ title: `Delete ${this.meta.one} “${name}”?`, danger: true, confirmLabel: 'Delete' })
-    if (!ok) return
-    await mutate(this.store, {
-      run: () => (this.kind === 'schedule' ? this.api.deleteSchedule(name) : this.api.deleteTrigger(name)),
-      success: `${cap(this.meta.one)} deleted.`,
+    const authority = this.captureAuthority()
+    const kind = this.kind
+    const one = META[kind].one
+    const ok = await confirmModal({ title: `Delete ${one} “${name}”?`, danger: true, confirmLabel: 'Delete' })
+    if (!ok || !this.authorityIsCurrent(authority)) return
+    await mutate(authority.store, {
+      run: () => (kind === 'schedule' ? authority.api.deleteSchedule(name) : authority.api.deleteTrigger(name)),
+      success: `${cap(one)} deleted.`,
       failure: 'Delete failed',
-      reload: [this.kind === 'schedule' ? 'schedules' : 'triggers'],
+      reload: [kind === 'schedule' ? 'schedules' : 'triggers'],
     })
   }
 

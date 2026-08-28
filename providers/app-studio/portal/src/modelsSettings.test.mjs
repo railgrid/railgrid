@@ -24,6 +24,7 @@ const baseProps = {
   status: null,
   actionError: null,
   editorOpen: false,
+  creationRoute: false,
   editingModelID: null,
   name: '',
   provider: 'openai-compatible',
@@ -77,6 +78,41 @@ test('uses an explicit empty state before opening the model form', async () => {
   assert.doesNotMatch(html, /aria-label="Model configuration form"/)
 })
 
+test('route-owned model creation keeps the collection out of the form surface', async () => {
+  const html = await render({
+    creationRoute: true,
+    settings: {
+      provider: 'openai-compatible',
+      baseURL: 'https://api.openai.com/v1',
+      model: 'gpt-5.4',
+      configured: true,
+      defaultModelID: 'gpt-high',
+      models: [{ id: 'gpt-high', name: 'GPT High', provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-5.4', configured: true, default: true }],
+    },
+  })
+
+  assert.match(html, /aria-label="New model"/)
+  assert.match(html, /aria-label="Model configuration form"/)
+  assert.doesNotMatch(html, />New model</)
+  assert.doesNotMatch(html, /aria-label="Model GPT High"/)
+  assert.doesNotMatch(html, />New model<\/button>/)
+})
+
+test('route-owned model creation keeps the form actionable when settings load fails', async () => {
+  const html = await render({
+    creationRoute: true,
+    loadError: 'Could not load model settings.',
+    settings: null,
+  })
+
+  assert.match(html, /Could not load model settings\./)
+  assert.match(html, />Retry</)
+  assert.match(html, /aria-label="Model configuration form"/)
+  assert.match(html, /Display name/)
+  assert.doesNotMatch(html, />New model</)
+  assert.doesNotMatch(html, /No models configured/)
+})
+
 test('renders a guided provider, endpoint, and credential form', async () => {
   const html = await render({
     editorOpen: true,
@@ -104,11 +140,31 @@ test('renders a guided provider, endpoint, and credential form', async () => {
 test('App Studio owns save state while the extracted surface owns presentation', async () => {
   const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 
+  assert.match(app, /const CREATE_MODEL_ROUTE = 'create\/model'/)
+  assert.match(app, /const isCreateModelRoute = computed\(\(\) => routePath\.value === CREATE_MODEL_ROUTE\)/)
+  assert.match(app, /const routePath = computed\(\(\) => \(props\.ctx\?\.subPath \?\? ''\)\.split\('\/'\)\.filter\(Boolean\)\.join\('\/'\)\)/)
+  assert.match(app, /v-if="showSettings[\s\S]*\(\(isModelsRoute \|\| isCreateModelRoute\) && !\(initializing && !loading\)\)"/)
+  assert.match(app, /<ModelsSettings[\s\S]*:creation-route="isCreateModelRoute"/)
   assert.match(app, /<ModelsSettings[\s\S]*@save="saveLLMSettings"[\s\S]*@delete="deleteLLMModel"[\s\S]*@set-default="setDefaultLLMModel"/)
   assert.match(app, /function selectLLMProvider[\s\S]*llmBaseURL\.value = GEMINI_BASE_URL[\s\S]*llmBaseURL\.value = 'https:\/\/api\.openai\.com\/v1'/)
   assert.match(app, /async function saveLLMSettings[\s\S]*api\.patchLLMModel[\s\S]*api\.createLLMModel/)
   assert.match(app, /async function deleteLLMModel[\s\S]*api\.deleteLLMModel/)
   assert.match(app, /catch \(e\)[\s\S]*llmActionError\.value = e instanceof Error/)
+})
+
+test('model creation replaces its route entry and nested navigation accepts replace metadata', async () => {
+  const [app, element] = await Promise.all([
+    readFile(new URL('./App.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./element.ts', import.meta.url), 'utf8'),
+  ])
+
+  assert.match(app, /function openNewLLMModelEditor\(\)[\s\S]*props\.navigate\(CREATE_MODEL_ROUTE\)/)
+  assert.match(app, /function cancelLLMEditor\(\)[\s\S]*const returnRoute = routeOwnedCreation[\s\S]*props\.navigate\(returnRoute, \{ replace: true \}\)/)
+  assert.match(app, /const routeOwnedCreation = isCreateModelRoute\.value && !llmEditingModelID\.value[\s\S]*const returnRoute = routeOwnedCreation[\s\S]*props\.navigate\(returnRoute, \{ replace: true \}\)/)
+  assert.match(app, /const detail = \(e as CustomEvent<\{ path\?: unknown; replace\?: unknown \}>\)\.detail/)
+  assert.match(app, /Nested provider tabs have one persisted descriptor rather than their own/)
+  assert.match(element, /navigate: \(path: string, options\?: NavigationOptions\) => this\.navigate\(path, options\)/)
+  assert.match(element, /detail: \{ path, \.\.\.\(options\.replace === true \? \{ replace: true \} : \{\}\) \}/)
 })
 
 test('composer exposes the configured model picker and sends its stable ID', async () => {
@@ -122,4 +178,42 @@ test('composer exposes the configured model picker and sends its stable ID', asy
   assert.match(app, /startAssistantReview[\s\S]*modelID: payload\.modelID/)
   assert.match(picker, /aria-label="Choose model"/)
   assert.match(picker, /aria-haspopup="listbox"/)
+})
+
+test('guards delayed model mutations against context, route, and newer mutation generations', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const mutationStart = app.indexOf('async function saveLLMSettings')
+  const mutationEnd = app.indexOf('async function createProjectFromPrompt', mutationStart)
+  assert.ok(mutationStart >= 0 && mutationEnd > mutationStart)
+  const mutations = app.slice(mutationStart, mutationEnd)
+
+  assert.match(app, /interface LLMModelMutationGuard[\s\S]*generation: number[\s\S]*contextFingerprint: string[\s\S]*routePath: string/)
+  assert.match(app, /function invalidateLLMModelMutationState\(\)[\s\S]*llmModelMutationGeneration \+= 1/)
+  assert.match(app, /function beginLLMModelMutation\(\): LLMModelMutationGuard[\s\S]*generation: \+\+llmModelMutationGeneration/)
+  assert.match(app, /function llmModelMutationIsCurrent\(guard: LLMModelMutationGuard\): boolean[\s\S]*guard\.contextFingerprint === appContextFingerprint\(props\.ctx\)[\s\S]*guard\.routePath === routePath\.value/)
+  assert.match(app, /watch\(\s*\(\) => props\.ctx\?\.subPath \?\? ''[\s\S]*invalidateLLMModelMutationState\(\)/)
+  assert.match(app, /function invalidateProjectContextState\(\)[\s\S]*invalidateLLMModelMutationState\(\)/)
+
+  for (const operation of ['saveLLMSettings', 'deleteLLMModel', 'setDefaultLLMModel']) {
+    const start = mutations.indexOf(`async function ${operation}`)
+    assert.ok(start >= 0, `${operation} should remain App Studio-owned`)
+    const end = mutations.indexOf('\nasync function ', start + 1)
+    const block = mutations.slice(start, end < 0 ? mutations.length : end)
+    assert.match(block, /const guard = beginLLMModelMutation\(\)/)
+    assert.match(block, /if \(!llmModelMutationIsCurrent\(guard\)\) return/)
+    assert.match(block, /catch \(e\) \{[\s\S]*if \(!llmModelMutationIsCurrent\(guard\)\) return/)
+    assert.match(block, /finally \{[\s\S]*if \(llmModelMutationIsCurrent\(guard\)\) llmSaving\.value = false/)
+  }
+})
+
+test('uses the stored project-creation destination and Models fallback for route-owned creation', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  assert.match(app, /modelsReturnRoute\.value === CREATE_PROJECT_ROUTE \? CREATE_PROJECT_ROUTE : MODELS_ROUTE/)
+  assert.match(app, /function openNewLLMModelEditor\(\)[\s\S]*if \(!modelsReturnRoute\.value && isCreateRoute\.value\) modelsReturnRoute\.value = CREATE_PROJECT_ROUTE/)
+
+  const cancelStart = app.indexOf('function cancelLLMEditor')
+  const saveStart = app.indexOf('async function saveLLMSettings')
+  const saveEnd = app.indexOf('\nasync function deleteLLMModel', saveStart)
+  assert.match(app.slice(cancelStart, saveStart), /const returnRoute = routeOwnedCreation[\s\S]*modelsReturnRoute\.value = ''[\s\S]*props\.navigate\(returnRoute, \{ replace: true \}\)/)
+  assert.match(app.slice(saveStart, saveEnd), /const returnRoute = routeOwnedCreation[\s\S]*modelsReturnRoute\.value = ''[\s\S]*props\.navigate\(returnRoute, \{ replace: true \}\)/)
 })

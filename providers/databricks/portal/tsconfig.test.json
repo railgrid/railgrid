@@ -24,6 +24,9 @@
     "src/resourceName.test.ts",
     "src/tableRefs.ts",
     "src/tableRefs.test.ts",
+    "src/route.ts",
+    "src/navigation.ts",
+    "src/route.test.ts",
     "src/components/splitCreate.ts",
     "src/components/splitCreate.test.ts",
     "src/types.ts"

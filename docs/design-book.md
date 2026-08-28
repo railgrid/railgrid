@@ -493,6 +493,36 @@ title hierarchy. They are adoption examples, not a universal field schema.
 The canonical Vue sources live under `provider-sdk/portalkit-vue`; edit them
 there and run `make sync-portalkit` to update provider copies.
 
+### Resource creation
+
+Use a focused, route-owned flow when creating an independently managed resource
+or when creation requires prerequisites, sensitive input, multiple meaningful
+decisions, or follow-up progress.
+
+Use a dialog, drawer, or inline control for compact additions whose meaning
+depends on the current parent. Do not insert substantial creation forms into
+collection pages where they reflow or compete with the collection.
+
+Choose the surface based on the user's task—not field count, API shape, or
+implementation convenience. Use the operation's truthful domain verb, such as
+**Connect**, **Provision**, or **Deploy**.
+
+Use readable, provider-owned creation routes. Avoid collisions between action
+routes and valid resource identifiers; prefer `/create/<resource-type>` when
+existing detail routes use `/<collection>/:name`.
+
+Route-owned creation uses one back action, one page title and description, one
+principal form surface, and a right-aligned **Cancel → primary action** footer.
+Simple forms are constrained; dense provisioning forms may use the full content
+column. Wizards keep this page skeleton and place progress inside it rather than
+retaining dialog chrome.
+
+After creation, navigate to the resource when it owns status or recovery;
+otherwise return to the collection with the result clearly visible.
+
+This is the target standard. Existing creation flows will adopt it
+incrementally.
+
 ### Select / combobox
 - Closed control: exactly `.k-input` (4px, overlay bg, focus ring + glow) with
   a 3.5px chevron in `text-muted`. Native `<select>` popups cannot be styled —
@@ -673,6 +703,10 @@ Before merging any UI change:
 - [ ] Works in BOTH themes (toggle it — don't trust the default).
 - [ ] Uses `k-*` / portalkit primitives instead of re-derived markup.
 - [ ] No per-page `max-w-*` wrapper (width is owned by `AppLayout`).
+- [ ] The creation surface matches the task: focused and route-owned for
+      independently managed resources; contextual for compact, parent-dependent
+      additions. Route-owned flows use the canonical creation skeleton, and
+      substantial forms do not reflow collection pages.
 - [ ] Mono for identifiers; tabular-nums for aligned digits.
 - [ ] Icons are Lucide (or portalkit `ic()`) per §11 — no emoji, no Unicode
       glyph icons; stroke/size on the law; only status icons carry color.

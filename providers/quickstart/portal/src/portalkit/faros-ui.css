@@ -228,6 +228,73 @@ html.light .k-card {
 }
 .k-back-action:active { transform: none; }
 .k-back-action svg { flex: none; }
+
+/* ── Route-owned create page ──────────────────────────────────────────────
+ * One hierarchy across providers: back action, one page heading, one form
+ * surface, and a right-aligned Cancel → primary footer. Providers own field
+ * content and may opt into the wide surface for dense provisioning tasks. */
+.k-create-page {
+  width: 100%;
+  min-width: 0;
+}
+.k-create-header {
+  margin-block: 14px 22px;
+}
+.k-create-title {
+  margin: 0;
+  color: var(--color-text-primary, #e9e9f2);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.k-create-description {
+  max-width: 42rem;
+  margin: 6px 0 0;
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.k-create-surface {
+  width: 100%;
+  max-width: 42rem;
+  overflow: clip;
+  background: var(--color-surface-raised, #111320);
+  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  border-radius: 6px;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-surface, #0a0b12) 40%, transparent);
+}
+html.light .k-create-surface {
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--color-text-primary, #e9e9f2) 4%, transparent);
+}
+.k-create-surface--wide { max-width: none; }
+.k-create-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+}
+.k-create-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  background: color-mix(in srgb, var(--color-surface, #0a0b12) 44%, var(--color-surface-raised, #111320));
+}
+.k-create-actions > [role="alert"] {
+  flex: 1 1 100%;
+  order: -1;
+}
+
+@media (max-width: 620px) {
+  .k-create-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+  }
+}
 .k-btn--danger {
   background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12));
   color: var(--color-danger, #ff5d5d);

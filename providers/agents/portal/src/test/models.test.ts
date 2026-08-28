@@ -7,7 +7,7 @@
 //      liveness was only set when a parsed event arrived and the server sends
 //      nothing but comment frames until something happens.
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import '../views/models'
 import { ApiClient } from '../api'
 import { AppStore } from '../store'
@@ -82,6 +82,30 @@ describe('api client array normalization', () => {
   it('listRuns() tolerates a null items array', async () => {
     const p = await clientWith({ items: null }).listRuns()
     expect(p.items).toEqual([])
+  })
+
+  it('does not resurrect a stored workspace after the host explicitly clears context', () => {
+    localStorage.setItem('faros:portal:tenant', JSON.stringify({ orgUUID: 'old-org', workspaceUUID: 'old-workspace' }))
+    const api = new ApiClient()
+    api.setContext({ basePath: '/ui/providers/agents', orgUUID: null, workspaceUUID: null, token: null })
+
+    expect(api.tenant()).toEqual({ orgUUID: null, workspaceUUID: null })
+    expect(api.hasWorkspace()).toBe(false)
+    expect(api.contextAuthority().usable).toBe(false)
+  })
+
+  it('omits stale tenant headers after the host explicitly clears context', async () => {
+    localStorage.setItem('faros:portal:tenant', JSON.stringify({ orgUUID: 'old-org', workspaceUUID: 'old-workspace' }))
+    const api = new ApiClient()
+    api.setContext({ basePath: '/ui/providers/agents', orgUUID: null, workspaceUUID: null, token: null })
+    const request = vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ items: [] }) })
+    globalThis.fetch = request as typeof fetch
+
+    await api.get('/api/agents')
+
+    const headers = request.mock.calls[0]?.[1]?.headers as Record<string, string>
+    expect(headers['X-Faros-Org']).toBeUndefined()
+    expect(headers['X-Faros-Workspace']).toBeUndefined()
   })
 })
 

@@ -18,7 +18,8 @@ const dashboardTile = await readFile(new URL('./DashboardTile.vue', import.meta.
 test('uses host catalog chrome on landing routes and keeps project workbenches full bleed', () => {
   assert.match(providerFrame, /const APP_STUDIO_CREATE_ROUTE = '~new'/)
   assert.match(providerFrame, /const APP_STUDIO_MODELS_ROUTE = '~models'/)
-  assert.match(providerFrame, /props\.providerName === 'app-studio' &&[\s\S]*\['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_MODELS_ROUTE\]\.includes\(providerRouteSegment\.value\)/)
+  assert.match(providerFrame, /const APP_STUDIO_CREATE_MODEL_ROUTE = 'create\/model'/)
+  assert.match(providerFrame, /props\.providerName === 'app-studio' &&[\s\S]*\['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_MODELS_ROUTE, APP_STUDIO_CREATE_MODEL_ROUTE\]\.includes\(providerRoutePath\.value\)/)
   assert.match(providerFrame, /props\.providerName === 'app-studio' &&[\s\S]*!isAppStudioLandingRoute\.value \|\| providerFullBleedOverride\.value === true/)
   assert.match(providerFrame, /<header v-if="catalogSettled && entry && !isFullBleedProvider"/)
   assert.match(app, /<h2[^>]*>Projects<\/h2>/)
@@ -57,7 +58,7 @@ test('presents Projects and Models through the shared tabs surface without a gen
   assert.match(app, /import Tabs from '\.\/portalkit\/Tabs\.vue'/)
   assert.match(app, /const appStudioSectionTabs = \[[\s\S]*id: 'projects'[\s\S]*Folder[\s\S]*id: 'models'[\s\S]*Cpu/)
   assert.match(landing, /<div class="flex min-h-full w-full flex-col gap-4">/)
-  assert.match(landing, /<Tabs[\s\S]*:tabs="appStudioSectionTabs"[\s\S]*:active="isModelsRoute \? 'models' : 'projects'"[\s\S]*aria-label="App Studio sections"[\s\S]*@select="selectAppStudioSection"/)
+  assert.match(landing, /<Tabs[\s\S]*:tabs="appStudioSectionTabs"[\s\S]*:active="isModelsRoute \|\| isCreateModelRoute \? 'models' : 'projects'"[\s\S]*aria-label="App Studio sections"[\s\S]*@select="selectAppStudioSection"/)
   assert.match(app, /function selectAppStudioSection\(id: string\)[\s\S]*openModelsSection\(\)[\s\S]*openProjectsSection\(\)/)
   assert.doesNotMatch(landing, /<nav[^>]*aria-label="App Studio sections"/)
   assert.doesNotMatch(landing, /shadow-\[0_0_14px_var\(--color-accent-glow\)\]/)
@@ -65,8 +66,8 @@ test('presents Projects and Models through the shared tabs surface without a gen
   assert.doesNotMatch(landing, /Back to projects|closeNewProjectComposer/)
   assert.doesNotMatch(landing, />\s*Settings\s*</)
   assert.match(landing, /id="app-studio-models-host"/)
-  assert.match(app, /if \(isModelsRoute\.value\) return '#app-studio-models-host'/)
-  assert.match(app, /isCreateRoute\.value \|\| isModelsRoute\.value \? '' : routeSegment\.value/)
+  assert.match(app, /if \(isModelsRoute\.value \|\| isCreateModelRoute\.value\) return '#app-studio-models-host'/)
+  assert.match(app, /isCreateRoute\.value \|\| isModelsRoute\.value \|\| isCreateModelRoute\.value \? '' : routeSegment\.value/)
 })
 
 test('uses shared confirmation and status primitives without local duplicates', () => {

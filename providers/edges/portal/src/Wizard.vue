@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, onUnmounted } from 'vue'
-import { Boxes, Server, ArrowRight, Copy, Check, Loader2, CircleDot, PartyPopper } from 'lucide-vue-next'
+import { ArrowLeft, Boxes, Server, ArrowRight, Copy, Check, Loader2, CircleDot, PartyPopper } from 'lucide-vue-next'
 import { createEdge, probeEdge } from './api'
 import type { EdgeType, ErrorResponse } from './types'
 
 const props = defineProps<{ cluster: string | null }>()
-const emit = defineEmits<{ connected: [] }>()
+const emit = defineEmits<{
+  cancel: []
+  created: [name: string, type: EdgeType]
+}>()
 
 type Step = 1 | 2 | 3
 const step = ref<Step>(1)
@@ -154,6 +157,9 @@ function fmt(s: number) {
       <input v-model="labels" class="k-input" placeholder="env=prod, region=us-east" />
 
       <div class="wiz-actions">
+        <button class="k-btn k-btn--ghost" @click="emit('cancel')">
+          <ArrowLeft :size="14" aria-hidden="true" /> Back to edges
+        </button>
         <button class="k-btn k-btn--primary" :disabled="!canContinue" @click="handleCreate">
           <Loader2 v-if="saving" :size="14" class="spin" />
           {{ saving ? 'Creating…' : 'Create & continue' }}
@@ -192,7 +198,8 @@ function fmt(s: number) {
 
       <div class="waiting"><Loader2 :size="14" class="spin" /> Waiting for <b>{{ trimmed }}</b> to connect… <span class="muted">({{ fmt(elapsed) }})</span></div>
       <div class="wiz-actions">
-        <button class="k-btn k-btn--ghost" @click="emit('connected')">Skip — I'll come back later</button>
+        <button class="k-btn k-btn--ghost" @click="emit('cancel')">Back to edges</button>
+        <button class="k-btn k-btn--ghost" @click="emit('created', trimmed, edgeType)">Skip — view edge details</button>
       </div>
     </div>
 
@@ -202,7 +209,7 @@ function fmt(s: number) {
       <h3><b>{{ trimmed }}</b> is online</h3>
       <p class="muted">Agent {{ agentVersion || '—' }} · connected after {{ fmt(elapsed) }}</p>
       <div class="wiz-actions">
-        <button class="k-btn k-btn--primary" @click="emit('connected')">View edges <ArrowRight :size="14" /></button>
+        <button class="k-btn k-btn--primary" @click="emit('created', trimmed, edgeType)">View edge details <ArrowRight :size="14" /></button>
       </div>
     </div>
   </div>

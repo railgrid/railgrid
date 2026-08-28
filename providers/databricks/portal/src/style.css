@@ -133,6 +133,31 @@ faros-provider-databricks .databricks-resource-panel {
   padding: 14px 16px;
 }
 
+faros-provider-databricks .databricks-create-page {
+  min-width: 0;
+}
+
+faros-provider-databricks .databricks-create-head {
+  display: block;
+}
+
+faros-provider-databricks .databricks-back-action {
+  margin-bottom: 10px;
+}
+
+faros-provider-databricks .databricks-create-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+}
+
+faros-provider-databricks .databricks-create-card .form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 faros-provider-databricks .databricks-resource-panel-head {
   align-items: center;
   display: flex;
@@ -358,6 +383,15 @@ faros-provider-databricks .import-backdrop {
   z-index: 80;
 }
 
+/* Browse/import is a route-owned page, so it keeps the same stepper and
+ * result presentation without covering a collection or depending on modal
+ * focus restoration. */
+faros-provider-databricks .import-route {
+  display: flex;
+  min-width: 0;
+  justify-content: center;
+}
+
 faros-provider-databricks .import-dialog {
   background: var(--color-surface-raised, #111320);
   border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
@@ -368,6 +402,12 @@ faros-provider-databricks .import-dialog {
   max-height: min(760px, calc(100vh - 48px));
   overflow: hidden;
   width: min(720px, 100%);
+}
+
+faros-provider-databricks .import-dialog--route {
+  box-shadow: none;
+  max-height: none;
+  width: 100%;
 }
 
 faros-provider-databricks .import-head,

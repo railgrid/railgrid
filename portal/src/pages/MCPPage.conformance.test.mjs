@@ -11,7 +11,7 @@ test('MCP detail keeps the canonical borderless backlink before its resource pag
   const hover = css.match(/\.k-back-action:hover\s*\{([^}]*)\}/s)?.[1] ?? ''
   const focus = css.match(/\.k-back-action:focus-visible\s*\{([^}]*)\}/s)?.[1] ?? ''
   const active = css.match(/\.k-back-action:active\s*\{([^}]*)\}/s)?.[1] ?? ''
-  const detailStart = page.indexOf('<template v-else>')
+  const detailStart = page.indexOf('<template v-if="!isCreate && selected">')
   const backStart = page.indexOf('<a', detailStart)
   const resourceStart = page.indexOf('<ResourcePage', detailStart)
 
@@ -45,6 +45,10 @@ test('MCP detail keeps the canonical borderless backlink before its resource pag
 })
 
 test('MCP detail keeps the shared resource composition and deep-link contract', () => {
+  assert.match(router, /path: '\/mcp'/)
+  assert.match(router, /name: 'mcp'/)
+  assert.match(router, /path: '\/create\/mcp-server'/)
+  assert.match(router, /name: 'mcp-create'/)
   assert.match(router, /path: '\/mcp\/:name'/)
   assert.match(router, /name: 'mcp-detail'/)
   assert.match(page, /<a[\s\S]*href="\/ui\/mcp"/)
@@ -55,6 +59,27 @@ test('MCP detail keeps the shared resource composition and deep-link contract', 
   assert.match(page, /<ResourceSectionCard/)
   assert.match(page, /<StatusBadge/)
   assert.match(page, /<ResourceTableDeleteButton/)
+})
+
+test('MCP creation is route-owned and replaces the form entry on exit', () => {
+  assert.match(page, /const isCreate = computed\(\(\) => route\.name === 'mcp-create'\)/)
+  assert.match(page, /@click="openCreate"/)
+  assert.match(page, /router\.push\(\{ name: 'mcp-create' \}\)/)
+  assert.match(page, /function cancelCreate\(\)/)
+  assert.match(page, /router\.replace\(\{ name: 'mcp' \}\)/)
+  assert.match(page, /<form[\s\S]*@submit\.prevent="create"/)
+  assert.match(page, /await router\.replace\(\{ name: 'mcp-detail', params: \{ name: createdName \} \}\)/)
+  assert.doesNotMatch(page, /showCreate/)
+})
+
+test('MCP creation fences stale route sessions and preserves its collection instance', () => {
+  assert.match(page, /let createSessionGeneration = 0/)
+  assert.match(page, /createSessionGeneration \+= 1/)
+  assert.match(page, /const sessionGeneration = createSessionGeneration/)
+  assert.match(page, /sessionGeneration === createSessionGeneration/)
+  assert.match(page, /if \(!currentSession\(\)\) return/)
+  assert.match(page, /v-show="!isCreate && !selected" data-mcp-route-surface="collection"/)
+  assert.match(page, /v-show="isCreate" class="k-create-page" data-mcp-route-surface="create"/)
 })
 
 test('MCP connect snippets stay masked and selectors expose state', () => {
@@ -119,8 +144,8 @@ test('MCP reads preserve snapshots and expose recoverable failures', () => {
 })
 
 test('MCP delete failures remain visible from both list and detail views', () => {
-  const listStart = page.indexOf('<template v-if="!selected">')
-  const detailStart = page.indexOf('<template v-else>', listStart)
+  const listStart = page.indexOf('data-mcp-route-surface="collection"')
+  const detailStart = page.indexOf('<template v-if="!isCreate && selected">', listStart)
   assert.notEqual(listStart, -1)
   assert.notEqual(detailStart, -1)
 

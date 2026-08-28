@@ -5,6 +5,7 @@ import type { FarosContext } from './types'
 
 const TAG = 'faros-provider-app-studio'
 const TILE_TAG = 'faros-dashboard-tile-app-studio'
+type NavigationOptions = { replace?: boolean }
 
 class ProjectsElement extends HTMLElement {
   private app: VueApp | null = null
@@ -41,7 +42,7 @@ class ProjectsElement extends HTMLElement {
       render: () =>
         h(App, {
           ctx: this.state.ctx,
-          navigate: (path: string) => this.navigate(path),
+          navigate: (path: string, options?: NavigationOptions) => this.navigate(path, options),
           requestFullBleed: (fullBleed: boolean) => this.requestFullBleed(fullBleed),
         }),
     })
@@ -57,10 +58,10 @@ class ProjectsElement extends HTMLElement {
     this.overlayRoot = null
   }
 
-  private navigate(path: string): void {
+  private navigate(path: string, options: NavigationOptions = {}): void {
     this.dispatchEvent(
       new CustomEvent('faros-navigate', {
-        detail: { path },
+        detail: { path, ...(options.replace === true ? { replace: true } : {}) },
         bubbles: true,
       }),
     )

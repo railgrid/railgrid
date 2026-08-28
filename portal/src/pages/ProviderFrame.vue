@@ -43,6 +43,7 @@ const tagFor = (name: string) => `faros-provider-${name}`
 
 const APP_STUDIO_CREATE_ROUTE = '~new'
 const APP_STUDIO_MODELS_ROUTE = '~models'
+const APP_STUDIO_CREATE_MODEL_ROUTE = 'create/model'
 
 onMounted(() => {
   if (!providers.loaded || providers.catalogOrgUUID !== tenant.orgUUID) {
@@ -57,10 +58,10 @@ const catalogSettled = computed(() =>
 const catalogError = computed(() => providers.error)
 const catalogLoading = computed(() => !catalogError.value && !catalogSettled.value)
 const catalogMissing = computed(() => catalogSettled.value && !entry.value)
-const providerRouteSegment = computed(() => props.subPath.split('/').filter(Boolean)[0] ?? '')
+const providerRoutePath = computed(() => props.subPath.split('/').filter(Boolean).join('/'))
 const isAppStudioLandingRoute = computed(() =>
   props.providerName === 'app-studio' &&
-  ['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_MODELS_ROUTE].includes(providerRouteSegment.value),
+  ['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_MODELS_ROUTE, APP_STUDIO_CREATE_MODEL_ROUTE].includes(providerRoutePath.value),
 )
 const isFullBleedProvider = computed(() =>
   props.providerName === 'app-studio' &&
@@ -128,7 +129,7 @@ const accessAllowed = computed(() =>
 )
 
 watch(
-  () => [props.providerName, providerRouteSegment.value] as const,
+  () => [props.providerName, providerRoutePath.value] as const,
   () => { providerFullBleedOverride.value = null },
   { flush: 'sync' },
 )
@@ -344,10 +345,12 @@ function pushContext() {
 
 // Bubble faros-navigate CustomEvents up into Vue Router.
 function onNavigate(e: Event) {
-  const ce = e as CustomEvent<{ path: string }>
+  const ce = e as CustomEvent<{ path: string; replace?: boolean }>
   const p = ce.detail?.path
   if (typeof p !== 'string' || !entry.value) return
-  router.push(`/providers/${entry.value.name}/${p.replace(/^\//, '')}`)
+  const target = `/providers/${entry.value.name}/${p.replace(/^\//, '')}`
+  if (ce.detail.replace === true) void router.replace(target)
+  else void router.push(target)
 }
 
 function onLayoutChange(e: Event) {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue'
 import SplitCreateButton from '../components/SplitCreateButton.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
@@ -20,7 +20,6 @@ import {
   type LatestRefreshController,
   type ResourceRefreshMode,
 } from '../refresh'
-import { resourceNameError } from '../resourceName'
 import {
   cloneWarehouseFilters,
   databricksHybridTransition,
@@ -35,7 +34,7 @@ import {
   warehouseFilters,
 } from '../databricksPagination'
 
-const emit = defineEmits<{ (e: 'open', name: string): void; (e: 'browse', trigger?: HTMLElement): void }>()
+const emit = defineEmits<{ (e: 'open', name: string): void; (e: 'create', mode: 'manual' | 'browse'): void }>()
 
 const connections = ref<Connection[]>([])
 const warehouses = ref<Warehouse[]>([])
@@ -61,17 +60,13 @@ const warehouseFiltersValue = ref<WarehouseFilterValues>(cloneWarehouseFilters(E
 const warehouseCursor = ref<string | null>(null)
 const warehousePageInfo = ref<ReturnType<typeof toPageInfo> | null>(null)
 
-const showForm = ref(false)
-const submitting = ref(false)
-const formError = ref<string | null>(null)
-const nameInput = ref<HTMLInputElement | null>(null)
-const formErrorRef = ref<HTMLElement | null>(null)
 let poll!: AdaptiveRefreshTimer
 let refresh!: LatestRefreshController
 let mounted = false
 let fullWalkPending = false
 let supportReadPending = false
 let serverPageReadPending = false
+let activatedOnce = false
 let authorityGeneration = 0
 
 function invalidateCompleteAuthority(): void {
@@ -97,24 +92,11 @@ function warehouseStateTone(state: unknown): 'success' | 'warning' | 'danger' | 
   }
 }
 
-const form = reactive({
-  name: '',
-  connectionRef: '',
-  warehouseID: '',
-})
-
 const filterDefinitions = computed(() => warehouseFilters(connections.value))
 
 function errMessage(e: unknown): string {
   const err = e as ErrorResponse
   return err.reason ? `${err.reason}: ${err.message}` : err.message || String(e)
-}
-
-function resetForm() {
-  form.name = ''
-  form.connectionRef = connections.value[0]?.name ?? ''
-  form.warehouseID = ''
-  formError.value = null
 }
 
 const refreshMode = ref<ResourceRefreshMode>('foreground')
@@ -153,88 +135,6 @@ function operationPhase(name: string) {
 
 function openResource(name: string): void {
   if (!operationLocked(name)) emit('open', name)
-}
-
-function startCreate() {
-  resetForm()
-  showForm.value = true
-  void nextTick(() => nameInput.value?.focus())
-}
-
-function closeForm() {
-  resetForm()
-  showForm.value = false
-}
-
-function browseCatalog(trigger?: HTMLElement) {
-  if (showForm.value) closeForm()
-  emit('browse', trigger)
-}
-
-async function focusFormError(message: string) {
-  formError.value = message
-  await nextTick()
-  formErrorRef.value?.focus()
-}
-
-async function submit() {
-  formError.value = null
-  mutationError.value = null
-  if (!loaded.value) {
-    await focusFormError('Warehouse list is still loading. Retry the read before creating a warehouse.')
-    return
-  }
-  if (!form.name || !form.connectionRef || !form.warehouseID) {
-    await focusFormError('Name, connection, and warehouse ID are required.')
-    return
-  }
-  const nameError = resourceNameError(form.name, 'Name')
-  if (nameError) {
-    await focusFormError(nameError)
-    return
-  }
-  const desiredName = form.name.trim()
-  const lock = operationKey('warehouse', desiredName)
-  if (!operations.acquire(lock, 'creating')) {
-    await focusFormError(`Warehouse "${desiredName}" already has an update in progress.`)
-    return
-  }
-  submitting.value = true
-  try {
-    // A server page is not a complete duplicate or foreign-key check. Read
-    // both authoritative collections before applying the new warehouse.
-    const [existing, availableConnections] = await Promise.all([
-      completeRead.request(),
-      api.listConnections(),
-    ])
-    operations.reconcile('warehouse', existing.map(({ name, uid }) => ({ name, uid })))
-    if (operations.isTombstoned(lock)) {
-      await focusFormError(`Warehouse "${desiredName}" is still being removed. Retry after the list refresh confirms it is gone.`)
-      return
-    }
-    if (existing.some(warehouse => warehouse.name === desiredName)) {
-      await focusFormError(`Warehouse "${desiredName}" already exists.`)
-      return
-    }
-    if (!availableConnections.some(connection => connection.name === form.connectionRef)) {
-      await focusFormError('Selected connection is no longer available in this workspace.')
-      return
-    }
-    await api.saveWarehouse({
-      name: desiredName,
-      connectionRef: form.connectionRef,
-      warehouseID: form.warehouseID,
-    })
-    invalidateCompleteAuthority()
-    resetForm()
-    showForm.value = false
-    load()
-  } catch (e) {
-    await focusFormError(errMessage(e))
-  } finally {
-    submitting.value = false
-    operations.release(lock)
-  }
 }
 
 interface WarehouseRequest {
@@ -455,9 +355,6 @@ refresh = createLatestRefreshController(async (requestID, mode) => {
     }
     loaded.value = true
     error.value = null
-    if (connections.value.length && !connections.value.some(c => c.name === form.connectionRef)) {
-      form.connectionRef = connections.value[0].name
-    }
   } catch (e) {
     fullWalkPending = false
     supportReadPending = false
@@ -485,6 +382,13 @@ onMounted(() => {
   mounted = true
   load()
 })
+onActivated(() => {
+  if (!activatedOnce) {
+    activatedOnce = true
+    return
+  }
+  load('foreground')
+})
 onUnmounted(() => {
   mounted = false
   invalidateCompleteAuthority()
@@ -504,38 +408,10 @@ onUnmounted(() => {
         <h2 class="page-title">Warehouses</h2>
         <p class="page-meta">SQL warehouses available to imported Databricks tables. Click one to inspect status and defaults.</p>
       </div>
-      <SplitCreateButton kind="warehouse" :disabled="submitting" @manual="startCreate" @browse="browseCatalog" />
+      <SplitCreateButton kind="warehouse" @manual="emit('create', 'manual')" @browse="emit('create', 'browse')" />
     </header>
 
     <p v-if="loaded && !connections.length" class="empty">Add a connection first, then import warehouses under it.</p>
-
-    <div v-if="showForm" class="databricks-resource-panel k-card">
-      <h3 class="databricks-resource-panel-title">New warehouse</h3>
-      <form class="form" @submit.prevent="submit">
-        <div class="field">
-          <label class="field-label" for="warehouse-connection">Connection</label>
-          <select id="warehouse-connection" class="k-input" v-model="form.connectionRef" :disabled="submitting" required aria-required="true" aria-describedby="warehouse-connection-hint warehouse-form-error" :aria-invalid="!!formError">
-            <option v-for="conn in connections" :key="conn.name" :value="conn.name">{{ conn.name }}</option>
-          </select>
-          <span id="warehouse-connection-hint" class="field-hint">The Databricks workspace connection this warehouse belongs to.</span>
-        </div>
-        <div class="field">
-          <label class="field-label" for="warehouse-name">Object name</label>
-          <input id="warehouse-name" class="k-input" ref="nameInput" v-model="form.name" :disabled="submitting" placeholder="orders-sql" autocomplete="off" required aria-required="true" aria-describedby="warehouse-name-hint warehouse-form-error" :aria-invalid="!!formError" />
-          <span id="warehouse-name-hint" class="field-hint">How this warehouse is referred to from faros. Use lowercase letters, numbers, and hyphens; the name is preserved exactly.</span>
-        </div>
-        <div class="field">
-          <label class="field-label" for="warehouse-id">Warehouse ID</label>
-          <input id="warehouse-id" class="k-input" v-model="form.warehouseID" :disabled="submitting" placeholder="abc123def4567890" autocomplete="off" required aria-required="true" aria-describedby="warehouse-id-hint warehouse-form-error" :aria-invalid="!!formError" />
-          <span id="warehouse-id-hint" class="field-hint">In Databricks: SQL → SQL Warehouses → open the warehouse. Use the 16-character ID from Connection details (/sql/1.0/warehouses/&lt;id&gt;), not the numeric ?o= workspace ID. The token identity needs “Can use” permission.</span>
-        </div>
-        <div class="actions">
-          <button class="k-btn k-btn--primary" type="submit" :disabled="submitting">{{ submitting ? 'Creating…' : 'Create' }}</button>
-          <button class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="closeForm">Cancel</button>
-          <span v-if="formError" id="warehouse-form-error" ref="formErrorRef" class="error" role="alert" aria-live="assertive" tabindex="-1">{{ formError }}</span>
-        </div>
-      </form>
-    </div>
 
     <div v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">
       <span>{{ mutationError }}</span>

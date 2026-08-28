@@ -1,17 +1,21 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, provide, ref, watch } from 'vue'
 import { GitBranch, Package, Plug } from 'lucide-vue-next'
 import type { FarosContext } from './types'
 import { setAPIContext, setBasePath } from './api'
 import ConnectionsView from './views/ConnectionsView.vue'
+import ConnectionCreateView from './views/ConnectionCreateView.vue'
 import ConnectionDetailView from './views/ConnectionDetailView.vue'
 import RepositoriesView from './views/RepositoriesView.vue'
+import RepositoryCreateView from './views/RepositoryCreateView.vue'
 import RepoDetailView from './views/RepoDetailView.vue'
 import PackagesView from './views/PackagesView.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import { resolveConfirm } from './portalkit/confirm'
 import { createResourceDeletions } from './refresh'
 import Tabs from './portalkit/Tabs.vue'
+import { contextGenerationKey } from './context'
+import { codeNavigationDetail, parseCodeSubPath, type CodeRoute } from './routes'
 
 // Sub-path routing (the shell pushes the trailing /providers/code/<sub> segment):
 //   ''  | 'connections'        → Connections
@@ -19,30 +23,14 @@ import Tabs from './portalkit/Tabs.vue'
 //   'repositories'             → Repositories
 //   'repositories/<name>'      → RepoDetail
 //   'packages'                 → Packages (workspace-wide)
+//   'create/connection/token'  → token connection creation
+//   'create/connection/github' → GitHub OAuth connection creation
+//   'create/repository'        → repository creation
 const props = defineProps<{ ctx: FarosContext | null }>()
 
-interface Route {
-  page: 'connections' | 'repositories' | 'packages'
-  repo?: string
-  connection?: string
-}
-
-function parse(sub: string | null | undefined): Route {
-  const s = (sub ?? '').replace(/^\/+|\/+$/g, '')
-  if (s === '' || s === 'connections') return { page: 'connections' }
-  if (s === 'packages') return { page: 'packages' }
-  const parts = s.split('/')
-  if (parts[0] === 'connections') {
-    return parts.length > 1 ? { page: 'connections', connection: decodeURIComponent(parts[1]) } : { page: 'connections' }
-  }
-  if (parts[0] === 'repositories') {
-    return parts.length > 1 ? { page: 'repositories', repo: decodeURIComponent(parts[1]) } : { page: 'repositories' }
-  }
-  return { page: 'connections' }
-}
-
-const route = computed(() => parse(props.ctx?.subPath))
+const route = computed<CodeRoute>(() => parseCodeSubPath(props.ctx?.subPath))
 const contextGeneration = ref(0)
+provide(contextGenerationKey, contextGeneration)
 const contextInitialized = computed(() => props.ctx !== null)
 const deletions = createResourceDeletions()
 let deletionAuthority = ''
@@ -51,8 +39,12 @@ let deletionAuthority = ''
 // authority changes. This clears actionable old-workspace state immediately and
 // lets each unmounted refresh controller reject late responses.
 watch(
-  () => [props.ctx?.basePath, props.ctx?.token, props.ctx?.tenant, props.ctx?.user?.sub] as const,
+  () => [props.ctx?.basePath, props.ctx?.token, props.ctx?.tenant, props.ctx?.user?.sub, props.ctx?.user?.email] as const,
   ([basePath, token, tenant, userSub]) => {
+    // This must run synchronously. The keyed route remount is a Vue render
+    // effect and therefore happens later; an async form continuation can
+    // otherwise commit between the context update and that unmount.
+    contextGeneration.value += 1
     // The dialog is module-global, so remounting the routed page is not enough
     // to revoke a confirmation opened under the previous authority.
     resolveConfirm(false)
@@ -60,10 +52,9 @@ watch(
     if (nextDeletionAuthority !== deletionAuthority) deletions.clear()
     deletionAuthority = nextDeletionAuthority
     setBasePath(basePath)
-    setAPIContext({ token, tenant })
-    contextGeneration.value += 1
+    setAPIContext({ token, tenant, user: userSub })
   },
-  { immediate: true },
+  { immediate: true, flush: 'sync' },
 )
 
 const hasTenant = computed(() => !!props.ctx?.tenant)
@@ -79,10 +70,10 @@ const tabs = [
 // and pushes the shell's vue-router. detail.path is the trailing segment the
 // shell appends to /providers/code/.
 const rootRef = ref<HTMLElement | null>(null)
-function navigate(path: string) {
+function navigate(path: string, options: { replace?: boolean } = {}) {
   const el = rootRef.value
   if (!el) return
-  el.dispatchEvent(new CustomEvent('faros-navigate', { detail: { path }, bubbles: true }))
+  el.dispatchEvent(new CustomEvent('faros-navigate', { detail: codeNavigationDetail(path, options), bubbles: true }))
 }
 </script>
 
@@ -104,17 +95,54 @@ function navigate(path: string) {
 
     <template v-else>
       <template v-if="!route.repo && !route.connection">
-        <Tabs :tabs="tabs" :active="route.page" aria-label="Code provider sections" @select="navigate" />
+        <template v-if="!route.create">
+          <Tabs :tabs="tabs" :active="route.page" aria-label="Code provider sections" @select="navigate" />
+        </template>
       </template>
 
       <p v-if="!hasTenant" class="empty">Select a workspace to manage code.</p>
 
       <template v-else>
+        <ConnectionCreateView
+          v-if="route.create?.resource === 'connection'"
+          :key="`${contextGeneration}:create-connection:${route.create.method}`"
+          :method="route.create.method"
+          :deletions="deletions"
+          @cancel="navigate('connections', { replace: true })"
+          @created="(n: string) => navigate('connections/' + encodeURIComponent(n), { replace: true })"
+        />
+        <RepositoryCreateView
+          v-if="route.create?.resource === 'repository'"
+          :key="`${contextGeneration}:create-repository`"
+          :deletions="deletions"
+          @cancel="navigate('repositories', { replace: true })"
+          @created="(n: string) => navigate('repositories/' + encodeURIComponent(n), { replace: true })"
+        />
         <ConnectionDetailView v-if="route.page === 'connections' && route.connection" :key="`${contextGeneration}:connection:${route.connection}`" :name="route.connection" :deletions="deletions" @back="navigate('connections')" />
-        <ConnectionsView v-else-if="route.page === 'connections'" :key="`${contextGeneration}:connections`" :deletions="deletions" @open="(n: string) => navigate('connections/' + encodeURIComponent(n))" />
-        <PackagesView v-else-if="route.page === 'packages'" :key="`${contextGeneration}:packages`" @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
-        <RepoDetailView v-else-if="route.repo" :key="`${contextGeneration}:repository:${route.repo}`" :name="route.repo" :deletions="deletions" @back="navigate('repositories')" />
-        <RepositoriesView v-else :key="`${contextGeneration}:repositories`" :deletions="deletions" @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
+        <RepoDetailView v-if="route.repo" :key="`${contextGeneration}:repository:${route.repo}`" :name="route.repo" :deletions="deletions" @back="navigate('repositories')" />
+        <PackagesView v-if="route.page === 'packages'" :key="`${contextGeneration}:packages`" @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))" />
+
+        <!-- Keep collection-local query/filter/page/scroll state while a routed
+             create or detail surface is active. The context key still drops the
+             cache immediately when workspace authority changes. -->
+        <KeepAlive :max="1">
+          <ConnectionsView
+            v-if="route.page === 'connections' && !route.create && !route.connection"
+            :key="`${contextGeneration}:connections`"
+            :deletions="deletions"
+            @open="(n: string) => navigate('connections/' + encodeURIComponent(n))"
+            @create="(method: 'token' | 'github') => navigate('create/connection/' + method)"
+          />
+        </KeepAlive>
+        <KeepAlive :max="1">
+          <RepositoriesView
+            v-if="route.page === 'repositories' && !route.create && !route.repo"
+            :key="`${contextGeneration}:repositories`"
+            :deletions="deletions"
+            @open="(n: string) => navigate('repositories/' + encodeURIComponent(n))"
+            @create="navigate('create/repository')"
+          />
+        </KeepAlive>
       </template>
     </template>
 

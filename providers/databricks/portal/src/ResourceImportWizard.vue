@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ArrowLeft, Database, LoaderCircle, X } from 'lucide-vue-next'
 import { api } from './api'
+import { contextGenerationKey } from './context'
 import LazyCheckboxTree from './LazyCheckboxTree.vue'
 import {
   REGISTRATION_LIMIT,
@@ -41,7 +42,14 @@ type Step = 'source' | 'browse' | 'review' | 'results'
 
 interface ReviewEntry { key: string; label: string; item: RegistrationItem; name: string }
 
-const props = defineProps<{ kind: Kind }>()
+interface ContinuationToken {
+  generation: number
+  context: number
+}
+
+const props = withDefaults(defineProps<{ kind: Kind; routeOwned?: boolean }>(), {
+  routeOwned: false,
+})
 const emit = defineEmits<{
   (event: 'close'): void
   (event: 'registered'): void
@@ -70,7 +78,15 @@ const error = ref<string | null>(null)
 const initializationState = reactive<InitializationState>({ connections: 'idle', warehouses: 'idle', tables: 'idle' })
 const initializationErrors = reactive<Record<InitializationResource, string | null>>({ connections: null, warehouses: null, tables: null })
 const initializationGeneration: Record<InitializationResource, number> = { connections: 0, warehouses: 0, tables: 0 }
+const contextGeneration = inject(contextGenerationKey, ref(0))
+let initializationRunGeneration = 0
 let treeGeneration = 0
+let submissionGeneration = 0
+let focusGeneration = 0
+let mounted = false
+// The host advances the shared context synchronously, then Vue flushes the
+// keyed replacement. Keep this instance inert during that scheduling window.
+let mountedContextGeneration: number | null = null
 let previousFocus: HTMLElement | null = null
 
 const plural = computed(() => props.kind === 'warehouse' ? 'warehouses' : 'tables')
@@ -96,31 +112,70 @@ function phaseLabel(resource: InitializationResource): string {
   return resource === 'connections' ? 'connections' : resource === 'warehouses' ? 'registered warehouses' : 'registered tables'
 }
 
-async function loadInitializationPhase(resource: InitializationResource): Promise<void> {
+function isMountedContextCurrent(): boolean {
+  return mounted && mountedContextGeneration !== null && contextGeneration.value === mountedContextGeneration
+}
+
+function isCurrentInitialization(resource: InitializationResource, token: ContinuationToken): boolean {
+  return isMountedContextCurrent() && initializationGeneration[resource] === token.generation && contextGeneration.value === token.context
+}
+
+function isCurrentInitializationRun(token: ContinuationToken): boolean {
+  return isMountedContextCurrent() && initializationRunGeneration === token.generation && contextGeneration.value === token.context
+}
+
+function isCurrentTree(token: ContinuationToken): boolean {
+  return isMountedContextCurrent() && treeGeneration === token.generation && contextGeneration.value === token.context
+}
+
+function isCurrentSubmission(token: ContinuationToken): boolean {
+  return isMountedContextCurrent() && submissionGeneration === token.generation && contextGeneration.value === token.context
+}
+
+function isCurrentFocus(token: ContinuationToken): boolean {
+  return focusGeneration === token.generation && mountedContextGeneration === token.context && contextGeneration.value === token.context
+}
+
+function contextChangedError(): Error {
+  return new Error('Connection changed while selecting the branch; nothing was selected.')
+}
+
+async function loadInitializationPhase(resource: InitializationResource, expectedContext = contextGeneration.value): Promise<void> {
+  if (!isMountedContextCurrent() || expectedContext !== mountedContextGeneration) return
   const generation = ++initializationGeneration[resource]
+  const token = { generation, context: expectedContext }
   initializationState[resource] = 'loading'; initializationErrors[resource] = null
   try {
     if (resource === 'connections') {
-      const list = await api.listConnections(); if (initializationGeneration[resource] !== generation) return
+      const list = await api.listConnections(); if (!isCurrentInitialization(resource, token)) return
       connections.value = list
       if (!list.some(item => item.name === connectionRef.value)) connectionRef.value = list[0]?.name ?? ''
     } else if (resource === 'warehouses') {
-      const list = await api.listWarehouses(); if (initializationGeneration[resource] !== generation) return
+      const list = await api.listWarehouses(); if (!isCurrentInitialization(resource, token)) return
       warehouses.value = list
       if (!list.some(item => item.name === warehouseRef.value && item.connectionRef === connectionRef.value)) warehouseRef.value = list.find(item => item.connectionRef === connectionRef.value)?.name ?? ''
     } else {
-      const list = await api.listTables(); if (initializationGeneration[resource] !== generation) return
+      const list = await api.listTables(); if (!isCurrentInitialization(resource, token)) return
       currentTables.value = list
     }
+    if (!isCurrentInitialization(resource, token)) return
     initializationState[resource] = 'success'
   } catch (cause) {
-    if (initializationGeneration[resource] !== generation) return
+    if (!isCurrentInitialization(resource, token)) return
     initializationState[resource] = 'error'; initializationErrors[resource] = message(cause)
   }
 }
 
-async function initialize(): Promise<void> { await Promise.all(requiredInitialization.value.map(loadInitializationPhase)) }
-function retryInitialization(resource: InitializationResource): void { if (initializationState[resource] !== 'loading') void loadInitializationPhase(resource) }
+async function initialize(): Promise<ContinuationToken | null> {
+  const token = { generation: ++initializationRunGeneration, context: contextGeneration.value }
+  await Promise.all(requiredInitialization.value.map(resource => loadInitializationPhase(resource, token.context)))
+  return isCurrentInitializationRun(token) ? token : null
+}
+function retryInitialization(resource: InitializationResource): void {
+  if (!isMountedContextCurrent() || initializationState[resource] === 'loading') return
+  initializationRunGeneration += 1
+  void loadInitializationPhase(resource)
+}
 
 function initializationBlocker(): string | null {
   const pending = requiredInitialization.value.find(resource => initializationState[resource] === 'loading')
@@ -161,50 +216,60 @@ function tableNode(item: RemoteTable, parentId: string): RegistrationTreeNode {
   return { id: `table:${item.catalog}:${item.schema}:${item.name}`, kind: 'table', label: item.name, detail: item.tableType || item.dataSourceFormat || 'Table', parentId, depth: 3, disabled, disabledReason: existing ? 'Already registered' : disabled ? item.unsupportedReason || item.reason || 'Unsupported table' : undefined, expanded: false, childrenLoaded: true, loading: false, childIds: [], catalog: item.catalog, schema: item.schema, table: item.name }
 }
 
-async function fetchChildren(parent: RegistrationTreeNode, pageToken?: string): Promise<TreePage> {
+async function fetchChildren(parent: RegistrationTreeNode, pageToken: string | undefined, token: ContinuationToken): Promise<TreePage> {
+  if (!isCurrentTree(token)) throw contextChangedError()
   if (parent.kind === 'catalog') {
     const page = await api.discoverSchemas(connectionRef.value, parent.catalog || parent.label, pageToken)
+    if (!isCurrentTree(token)) throw contextChangedError()
     return { nodes: page.items.map(item => schemaNode(item, parent.id)), nextPageToken: page.nextPageToken }
   }
   if (parent.kind === 'schema') {
     const page = await api.discoverTables(connectionRef.value, parent.catalog || '', parent.schema || parent.label, pageToken)
+    if (!isCurrentTree(token)) throw contextChangedError()
     return { nodes: page.items.map(item => tableNode(item, parent.id)), nextPageToken: page.nextPageToken }
   }
   return { nodes: [] }
 }
 
-async function loadRoot(append = false): Promise<void> {
-  if (rootLoading.value) return
-  const generation = treeGeneration
-  const token = append ? rootNextPageToken.value : undefined
+async function loadRoot(append = false): Promise<ContinuationToken | null> {
+  if (!isMountedContextCurrent() || rootLoading.value) return null
+  const treeToken = { generation: treeGeneration, context: contextGeneration.value }
+  const pageToken = append ? rootNextPageToken.value : undefined
   rootLoading.value = true; rootError.value = ''
   try {
-    const page = props.kind === 'warehouse' ? await api.discoverWarehouses(connectionRef.value, token) : await api.discoverCatalogs(connectionRef.value, token)
-    if (generation !== treeGeneration) return
+    const page = props.kind === 'warehouse' ? await api.discoverWarehouses(connectionRef.value, pageToken) : await api.discoverCatalogs(connectionRef.value, pageToken)
+    if (!isCurrentTree(treeToken)) return null
     const nodes = props.kind === 'warehouse' ? (page.items as RemoteWarehouse[]).map(warehouseNode) : (page.items as RemoteCatalog[]).map(catalogNode)
     if (!append) tree.value = emptyRegistrationTree()
     appendTreePage(tree.value, undefined, { nodes })
     rootNextPageToken.value = page.nextPageToken
-  } catch (cause) { if (generation === treeGeneration) rootError.value = message(cause) }
-  finally { if (generation === treeGeneration) rootLoading.value = false }
+    return treeToken
+  } catch (cause) {
+    if (isCurrentTree(treeToken)) {
+      rootError.value = message(cause)
+      return treeToken
+    }
+  }
+  finally { if (isCurrentTree(treeToken)) rootLoading.value = false }
+  return null
 }
 
 async function loadNodePage(id: string, append = false): Promise<void> {
   const node = tree.value.nodes[id]
-  if (!node || node.loading || isLeaf(node)) return
-  const generation = treeGeneration
+  if (!isMountedContextCurrent() || !node || node.loading || isLeaf(node)) return
+  const treeToken = { generation: treeGeneration, context: contextGeneration.value }
   node.loading = true; node.error = undefined
   try {
-    const page = await fetchChildren(node, append ? node.nextPageToken : undefined)
-    if (generation !== treeGeneration || tree.value.nodes[id] !== node) return
+    const page = await fetchChildren(node, append ? node.nextPageToken : undefined, treeToken)
+    if (!isCurrentTree(treeToken) || tree.value.nodes[id] !== node) return
     appendTreePage(tree.value, id, page)
-  } catch (cause) { if (generation === treeGeneration) node.error = message(cause) }
-  finally { if (generation === treeGeneration && tree.value.nodes[id] === node) node.loading = false }
+  } catch (cause) { if (isCurrentTree(treeToken) && tree.value.nodes[id] === node) node.error = message(cause) }
+  finally { if (isCurrentTree(treeToken) && tree.value.nodes[id] === node) node.loading = false }
 }
 
 async function expandNode(id: string): Promise<void> {
   const node = tree.value.nodes[id]
-  if (!node || node.disabled || isLeaf(node)) return
+  if (!isMountedContextCurrent() || !node || node.disabled || isLeaf(node)) return
   if (node.error) { node.expanded = true; await loadNodePage(id); return }
   node.expanded = !node.expanded
   if (node.expanded && !node.childrenLoaded) await loadNodePage(id)
@@ -212,7 +277,7 @@ async function expandNode(id: string): Promise<void> {
 
 async function toggleNode(id: string, checked: boolean): Promise<void> {
   const node = tree.value.nodes[id]
-  if (!node || node.disabled || submitting.value || branchChecking.value) return
+  if (!isMountedContextCurrent() || !node || node.disabled || submitting.value || branchChecking.value) return
   error.value = null
   if (isLeaf(node)) { error.value = updateLeafSelection(tree.value, id, checked); return }
   if (!checked) {
@@ -220,15 +285,15 @@ async function toggleNode(id: string, checked: boolean): Promise<void> {
     tree.value.selectedLeafIds = tree.value.selectedLeafIds.filter(selected => !descendants.has(selected))
     return
   }
-  const generation = treeGeneration
+  const treeToken = { generation: treeGeneration, context: contextGeneration.value }
   const remaining = REGISTRATION_LIMIT - tree.value.selectedLeafIds.length
   branchChecking.value = true
-  const result = await exhaustBranchSelection(tree.value, id, async (parent, token) => {
-    const page = await fetchChildren(parent, token)
-    if (generation !== treeGeneration) throw new Error('Connection changed while selecting the branch; nothing was selected.')
+  const result = await exhaustBranchSelection(tree.value, id, async (parent, pageToken) => {
+    const page = await fetchChildren(parent, pageToken, treeToken)
+    if (!isCurrentTree(treeToken)) throw contextChangedError()
     return page
   }, remaining)
-  if (generation === treeGeneration) {
+  if (isCurrentTree(treeToken)) {
     if (result.complete && result.state) { tree.value = result.state; tree.value.nodes[id].expanded = true }
     else error.value = result.reason || 'The complete branch could not be selected.'
     branchChecking.value = false
@@ -238,11 +303,15 @@ async function toggleNode(id: string, checked: boolean): Promise<void> {
 function loadMore(parentId?: string): void { if (parentId) void loadNodePage(parentId, true); else void loadRoot(true) }
 
 async function fromSource(): Promise<void> {
+  if (!isMountedContextCurrent()) return
+  const expectedContext = contextGeneration.value
   error.value = null
   const blocker = initializationBlocker(); if (blocker) { error.value = blocker; return }
   if (!connectionRef.value) { error.value = 'Select a connection.'; return }
   if (props.kind === 'table' && !warehouseRef.value) { error.value = 'Select a registered warehouse on this connection.'; return }
-  resetTree(); step.value = 'browse'; await loadRoot()
+  resetTree(); step.value = 'browse'
+  const treeToken = await loadRoot()
+  if (!treeToken || !isCurrentTree(treeToken) || contextGeneration.value !== expectedContext) return
   focusStep()
 }
 
@@ -260,6 +329,7 @@ function validateReviewEntries(entries: readonly ReviewEntry[]): string | null {
 const reviewValidationError = computed(() => validateReviewEntries(reviewEntries.value))
 
 function review(): void {
+  if (!isMountedContextCurrent()) return
   const entries = selectedNodes.value.map(node => { const name = suggested(node); return { key: node.id, label: node.kind === 'warehouse' ? node.label : `${node.catalog}.${node.schema}.${node.table}`, item: registrationItem(node, name), name } })
   const invalid = validateReviewEntries(entries); if (invalid) { error.value = invalid; return }
   reviewEntries.value = entries; reviewCoordinates.value = coordinates(); registrationFrozen.value = false; error.value = null; step.value = 'review'
@@ -269,49 +339,108 @@ function review(): void {
 function emitRegisteredIfNeeded(batch: readonly RegistrationResult[]): void { if (batch.some(result => result.state === 'created' || result.state === 'existing')) emit('registered') }
 
 async function register(): Promise<void> {
-  if (submitting.value) return
+  if (!isMountedContextCurrent() || submitting.value) return
+  const submissionToken = { generation: ++submissionGeneration, context: contextGeneration.value }
+  if (!isCurrentSubmission(submissionToken)) return
   const invalid = reviewValidationError.value; if (invalid) { error.value = invalid; return }
   const coordinatesSnapshot = reviewCoordinates.value ?? coordinates()
-  registrationItems.value = reviewEntries.value.map(entry => ({ ...entry.item, name: entry.name }))
+  const registrationItemsSnapshot = reviewEntries.value.map(entry => ({ ...entry.item, name: entry.name }))
+  registrationItems.value = registrationItemsSnapshot
   registrationFrozen.value = true; submitting.value = true; error.value = null
   try {
-    const response = await api.registerResources({ kind: props.kind, connectionRef: coordinatesSnapshot.connectionRef, warehouseRef: props.kind === 'table' ? coordinatesSnapshot.warehouseRef : undefined, items: registrationItems.value })
-    results.value = materializeRegistrationResults(registrationItems.value, response.results); step.value = 'results'; emitRegisteredIfNeeded(response.results); focusStep()
-    if (response.results.length !== registrationItems.value.length) error.value = `Registration returned ${response.results.length} of ${registrationItems.value.length} expected results.`
-  } catch (cause) { results.value = materializeRegistrationResults(registrationItems.value, []); step.value = 'results'; error.value = message(cause); focusStep() }
-  finally { submitting.value = false }
+    const response = await api.registerResources({ kind: props.kind, connectionRef: coordinatesSnapshot.connectionRef, warehouseRef: props.kind === 'table' ? coordinatesSnapshot.warehouseRef : undefined, items: registrationItemsSnapshot })
+    if (!isCurrentSubmission(submissionToken)) return
+    results.value = materializeRegistrationResults(registrationItemsSnapshot, response.results)
+    step.value = 'results'
+    if (!isCurrentSubmission(submissionToken)) return
+    emitRegisteredIfNeeded(response.results)
+    if (!isCurrentSubmission(submissionToken)) return
+    focusStep()
+    if (response.results.length !== registrationItemsSnapshot.length && isCurrentSubmission(submissionToken)) error.value = `Registration returned ${response.results.length} of ${registrationItemsSnapshot.length} expected results.`
+  } catch (cause) {
+    if (!isCurrentSubmission(submissionToken)) return
+    results.value = materializeRegistrationResults(registrationItemsSnapshot, [])
+    step.value = 'results'
+    if (!isCurrentSubmission(submissionToken)) return
+    error.value = message(cause)
+    focusStep()
+  }
+  finally { if (isCurrentSubmission(submissionToken)) submitting.value = false }
 }
 
 async function retryFailed(): Promise<void> {
-  if (submitting.value || !reviewCoordinates.value) return
+  if (!isMountedContextCurrent() || submitting.value || !reviewCoordinates.value) return
+  const submissionToken = { generation: ++submissionGeneration, context: contextGeneration.value }
+  if (!isCurrentSubmission(submissionToken)) return
+  const coordinatesSnapshot = reviewCoordinates.value
   const entries = retryableResults.value.map(index => ({ index, item: registrationItems.value[index] })).filter((entry): entry is { index: number; item: RegistrationItem } => !!entry.item)
   if (!entries.length) return
+  const retryItems = entries.map(entry => entry.item)
   submitting.value = true; error.value = null
   try {
-    const response = await api.registerResources({ kind: props.kind, connectionRef: reviewCoordinates.value.connectionRef, warehouseRef: props.kind === 'table' ? reviewCoordinates.value.warehouseRef : undefined, items: entries.map(entry => entry.item) })
-    results.value = mergeRegistrationResults(results.value, entries.map(entry => entry.item), response.results, entries.map(entry => entry.index)); emitRegisteredIfNeeded(response.results)
-  } catch (cause) { error.value = message(cause) }
-  finally { submitting.value = false }
+    const response = await api.registerResources({ kind: props.kind, connectionRef: coordinatesSnapshot.connectionRef, warehouseRef: props.kind === 'table' ? coordinatesSnapshot.warehouseRef : undefined, items: retryItems })
+    if (!isCurrentSubmission(submissionToken)) return
+    results.value = mergeRegistrationResults(results.value, retryItems, response.results, entries.map(entry => entry.index)); emitRegisteredIfNeeded(response.results)
+  } catch (cause) { if (isCurrentSubmission(submissionToken)) error.value = message(cause) }
+  finally { if (isCurrentSubmission(submissionToken)) submitting.value = false }
 }
 
 function back(): void {
-  if (dialogBusy.value) return
+  if (!isMountedContextCurrent() || dialogBusy.value) return
   error.value = null
   if (step.value === 'browse') { resetTree(); step.value = 'source' }
   else if (step.value === 'review') { registrationFrozen.value = false; step.value = 'browse' }
   focusStep()
 }
-function navigateTo(path: 'connections' | 'warehouses'): void { previousFocus = null; emit('navigate', path) }
-function focusStep(): void { void nextTick(() => root.value?.querySelector<HTMLElement>('.import-body button:not(:disabled),.import-body input:not(:disabled),.import-body select:not(:disabled),[role="treeitem"]')?.focus()) }
-function focusDialog(): void { void nextTick(() => root.value?.querySelector<HTMLElement>('.import-head button:not(:disabled),.import-body button:not(:disabled),.import-body input:not(:disabled),.import-body select:not(:disabled),[role="treeitem"]')?.focus()) }
-function restoreFocus(): void { const target = previousFocus; previousFocus = null; if (target) void nextTick(() => { if (target.isConnected) target.focus() }) }
-function close(): void { if (!submitting.value) { restoreFocus(); emit('close') } }
+function navigateTo(path: 'connections' | 'warehouses'): void {
+  if (!isMountedContextCurrent()) return
+  previousFocus = null
+  emit('navigate', path)
+}
+function focusStep(): void {
+  if (props.routeOwned || !mounted) return
+  if (!isMountedContextCurrent()) return
+  const token = { generation: ++focusGeneration, context: contextGeneration.value }
+  void nextTick(() => {
+    if (mounted && isCurrentFocus(token)) {
+      root.value?.querySelector<HTMLElement>('.import-body button:not(:disabled),.import-body input:not(:disabled),.import-body select:not(:disabled),[role="treeitem"]')?.focus()
+    }
+  })
+}
+function focusDialog(): void {
+  if (props.routeOwned || !mounted) return
+  if (!isMountedContextCurrent()) return
+  const token = { generation: ++focusGeneration, context: contextGeneration.value }
+  void nextTick(() => {
+    if (mounted && isCurrentFocus(token)) {
+      root.value?.querySelector<HTMLElement>('.import-head button:not(:disabled),.import-body button:not(:disabled),.import-body input:not(:disabled),.import-body select:not(:disabled),[role="treeitem"]')?.focus()
+    }
+  })
+}
+function restoreFocus(): void {
+  if (props.routeOwned) { previousFocus = null; return }
+  const target = previousFocus
+  previousFocus = null
+  if (!target) return
+  const token = { generation: ++focusGeneration, context: contextGeneration.value }
+  void nextTick(() => {
+    if (isCurrentFocus(token) && target.isConnected) target.focus()
+  })
+}
+function close(): void {
+  if (isMountedContextCurrent() && !submitting.value) { restoreFocus(); emit('close') }
+}
+function backdropPointerDown(event: PointerEvent): void {
+  if (!props.routeOwned && event.target === event.currentTarget) close()
+}
 function dialogTabStops(): HTMLElement[] {
   if (!root.value) return []
   return [...root.value.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled),[role="treeitem"][tabindex="0"]')]
     .filter(element => element.tabIndex === 0)
 }
 function keydown(event: KeyboardEvent): void {
+  if (props.routeOwned) return
+  if (!isMountedContextCurrent()) return
   if (event.key === 'Escape') { event.preventDefault(); close(); return }
   if (event.key !== 'Tab' || !root.value) return
   const focusable = dialogTabStops()
@@ -322,14 +451,33 @@ function keydown(event: KeyboardEvent): void {
 
 watch(connectionRef, (next, previous) => { if (next !== previous) { resetTree(); if (step.value !== 'source') step.value = 'source'; if (!matchingWarehouses.value.some(item => item.name === warehouseRef.value)) warehouseRef.value = matchingWarehouses.value[0]?.name ?? '' } })
 watch(warehouseRef, (next, previous) => { if (next !== previous) { resetTree(); if (step.value !== 'source') step.value = 'source' } })
-onMounted(() => { previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null; focusDialog(); void initialize().then(() => focusStep()) })
-onBeforeUnmount(restoreFocus)
+onMounted(() => {
+  mounted = true
+  mountedContextGeneration = contextGeneration.value
+  if (!props.routeOwned) {
+    previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    focusDialog()
+  }
+  void initialize().then(token => {
+    if (token && isCurrentInitializationRun(token)) focusStep()
+  })
+})
+onBeforeUnmount(() => {
+  mounted = false
+  initializationRunGeneration += 1
+  treeGeneration += 1
+  submissionGeneration += 1
+  for (const resource of ['connections', 'warehouses', 'tables'] as const) initializationGeneration[resource] += 1
+  restoreFocus()
+})
 </script>
 
 <template>
-  <div class="import-backdrop" @pointerdown.self="close">
-    <section ref="root" class="import-dialog" role="dialog" aria-modal="true" aria-labelledby="registration-title" aria-describedby="registration-description" :aria-busy="dialogBusy ? 'true' : 'false'" @keydown="keydown">
-      <header class="import-head"><div><span class="import-eyebrow">{{ stepLabel }}</span><h2 id="registration-title">New {{ kind }}</h2><p id="registration-description">Browse Databricks metadata and register selected {{ plural }}.</p></div><button class="k-btn k-btn--ghost databricks-dialog-close" type="button" aria-label="Close" :disabled="submitting" @click="close"><X :stroke-width="1.75" /></button></header>
+  <div :class="props.routeOwned ? 'k-create-page' : 'import-backdrop'" @pointerdown="backdropPointerDown">
+    <button v-if="props.routeOwned" class="k-btn k-btn--ghost k-back-action" type="button" :disabled="submitting" @click="close"><ArrowLeft :stroke-width="1.75" /> {{ kind === 'table' ? 'Tables' : 'Warehouses' }}</button>
+    <header v-if="props.routeOwned" class="k-create-header"><h2 id="registration-title" class="k-create-title">Register {{ plural }}</h2><p id="registration-description" class="k-create-description">Browse Databricks metadata and register selected {{ plural }}.</p></header>
+    <section ref="root" :class="['import-dialog', { 'k-create-surface k-create-surface--wide': props.routeOwned }]" :role="props.routeOwned ? undefined : 'dialog'" :aria-modal="props.routeOwned ? undefined : 'true'" aria-labelledby="registration-title" aria-describedby="registration-description" :aria-busy="dialogBusy ? 'true' : 'false'" @keydown="keydown">
+      <header v-if="!props.routeOwned" class="import-head"><div><span class="import-eyebrow">{{ stepLabel }}</span><h2 id="registration-title">New {{ kind }}</h2><p id="registration-description">Browse Databricks metadata and register selected {{ plural }}.</p></div><button class="k-btn k-btn--ghost databricks-dialog-close" type="button" aria-label="Close" :disabled="submitting" @click="close"><X :stroke-width="1.75" /></button></header>
       <ol class="import-steps" aria-label="Import progress"><li :aria-current="step === 'source' ? 'step' : undefined">Source</li><li :aria-current="step === 'browse' ? 'step' : undefined">Browse</li><li :aria-current="step === 'review' ? 'step' : undefined">Review</li><li :aria-current="step === 'results' ? 'step' : undefined">Results</li></ol>
       <div class="import-body">
         <div v-if="step === 'source'" class="import-stack">
@@ -346,7 +494,7 @@ onBeforeUnmount(restoreFocus)
         <p v-if="submitting" class="import-loading" role="status" aria-live="polite"><LoaderCircle class="spin" :stroke-width="1.75" /> Registering selected {{ plural }}…</p>
         <p v-if="error" class="error" role="alert" aria-live="assertive">{{ error }}</p>
       </div>
-      <footer class="import-actions"><button v-if="step === 'browse' || step === 'review'" class="k-btn k-btn--ghost icon-text" type="button" :disabled="dialogBusy" @click="back"><ArrowLeft :stroke-width="1.75" /> Back</button><span class="import-spacer" /><button v-if="step === 'source'" class="k-btn k-btn--primary" type="button" :disabled="initializationPending || submitting" @click="fromSource">Browse</button><button v-else-if="step === 'browse'" class="k-btn k-btn--primary" type="button" :disabled="!tree.selectedLeafIds.length || dialogBusy" @click="review">Review {{ tree.selectedLeafIds.length }}</button><button v-else-if="step === 'review'" class="k-btn k-btn--primary" type="button" :disabled="submitting || !!reviewValidationError" @click="register">{{ submitting ? 'Registering…' : `Register ${reviewEntries.length}` }}</button><button v-else class="k-btn k-btn--primary" type="button" @click="close">Done</button></footer>
+      <footer :class="props.routeOwned ? 'k-create-actions' : 'import-actions'"><button v-if="step === 'browse' || step === 'review'" class="k-btn k-btn--ghost icon-text" type="button" :disabled="dialogBusy" @click="back"><ArrowLeft :stroke-width="1.75" /> Back</button><span class="import-spacer" /><button v-if="props.routeOwned && step !== 'results'" class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="close">Cancel</button><button v-if="step === 'source'" class="k-btn k-btn--primary" type="button" :disabled="initializationPending || submitting" @click="fromSource">Browse</button><button v-else-if="step === 'browse'" class="k-btn k-btn--primary" type="button" :disabled="!tree.selectedLeafIds.length || dialogBusy" @click="review">Review {{ tree.selectedLeafIds.length }}</button><button v-else-if="step === 'review'" class="k-btn k-btn--primary" type="button" :disabled="submitting || !!reviewValidationError" @click="register">{{ submitting ? 'Registering…' : `Register ${reviewEntries.length}` }}</button><button v-else class="k-btn k-btn--primary" type="button" @click="close">Done</button></footer>
     </section>
   </div>
 </template>

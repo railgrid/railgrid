@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { ArrowLeft, ArrowUpCircle, Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Ellipsis, Globe2, Home, Plug, Plus, RefreshCw, Server, TerminalSquare, Trash2 } from 'lucide-vue-next'
-import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, createKubeEdgeService, deleteEdgeService } from './api'
+import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, deleteEdgeService } from './api'
 import { confirmDialog } from './portalkit/confirm'
 import ConditionsPanel from './portalkit/ConditionsPanel.vue'
 import ResourcePage from './portalkit/ResourcePage.vue'
@@ -19,7 +19,7 @@ import {
 import type { EdgeDetail, EdgeService, EdgeType, ErrorResponse } from './types'
 
 const props = defineProps<{ name: string; type: EdgeType; cluster: string | null; token: string | null }>()
-const emit = defineEmits<{ back: []; deleted: [] }>()
+const emit = defineEmits<{ back: []; deleted: []; addService: [] }>()
 
 // SSH terminals dock at the bottom of the host portal (survives page
 // navigation) rather than rendering inline here. The provider is an isolated
@@ -88,7 +88,7 @@ function load(mode: ResourceRefreshMode | Event = 'foreground') {
 // Retry uses the same complete snapshot so the summary and service section do
 // not disagree after an explicit recovery.
 async function refreshDetail() {
-  if (deleting.value || detailRefreshing.value || saving.value || connecting.value) return
+  if (deleting.value || detailRefreshing.value || connecting.value) return
   await load('foreground')
 }
 
@@ -311,47 +311,6 @@ function loadServices() {
   return load('foreground')
 }
 
-// Declare-service form (kube edges only).
-const adding = ref(false)
-const saving = ref(false)
-const draft = ref({ name: '', serviceType: 'home-assistant', targetNamespace: '', targetName: '', port: 8123 })
-
-function startAdd() {
-  servicesExpanded.value = true
-  adding.value = true
-  draft.value = { name: '', serviceType: 'home-assistant', targetNamespace: '', targetName: '', port: 8123 }
-}
-
-const draftValid = computed(
-  () =>
-    !!draft.value.name.trim() &&
-    !!draft.value.targetNamespace.trim() &&
-    !!draft.value.targetName.trim() &&
-    draft.value.port > 0,
-)
-
-async function submitAdd() {
-  if (!draftValid.value) return
-  saving.value = true
-  svcError.value = null
-  try {
-    await createKubeEdgeService({
-      name: draft.value.name.trim(),
-      edgeName: props.name,
-      serviceType: draft.value.serviceType,
-      targetNamespace: draft.value.targetNamespace.trim(),
-      targetName: draft.value.targetName.trim(),
-      port: Number(draft.value.port),
-    })
-    adding.value = false
-    await loadServices()
-  } catch (e) {
-    svcError.value = (e as ErrorResponse)?.message ?? 'Failed to add service'
-  } finally {
-    saving.value = false
-  }
-}
-
 async function removeService(name: string) {
   if (!(await confirmDialog({ title: `Delete service "${name}"?`, danger: true, confirmLabel: 'Delete' }))) return
   try {
@@ -474,7 +433,7 @@ onUnmounted(() => {
             <button
               type="button"
               class="k-btn k-btn--ghost"
-              :disabled="detailRefreshing || deleting || saving || connecting"
+              :disabled="detailRefreshing || deleting || connecting"
               :aria-busy="detailRefreshing || undefined"
               @click="refreshDetail"
             >
@@ -490,7 +449,7 @@ onUnmounted(() => {
                 <button
                   type="button"
                   class="edge-detail__menu-item"
-                  :disabled="!edge || deleting || detailRefreshing || saving || connecting"
+                  :disabled="!edge || deleting || detailRefreshing || connecting"
                   @click="onDelete"
                 >
                   Delete {{ type === 'server' ? 'server' : 'cluster' }}
@@ -651,39 +610,14 @@ kubectl --kubeconfig {{ name }}.kubeconfig get nodes</pre>
                     type="button"
                     class="k-btn k-btn--ghost"
                     :disabled="deleting"
-                    :aria-expanded="adding"
-                    aria-controls="edges-service-create"
-                    @click="startAdd"
+                    @click="emit('addService')"
                   ><Plus :size="14" aria-hidden="true" /> Add service</button>
                 </div>
 
-                <!-- Declare form (kube edges); opening Add service reveals it. -->
-                <div v-if="adding" id="edges-service-create" class="svc-card k-card">
-                  <div class="svc-head"><span class="svc-title"><Plus :size="15" aria-hidden="true" /> New service</span></div>
-                  <div class="svc-form">
-                    <label>Name<input v-model="draft.name" class="svc-input k-input" placeholder="home-assistant" /></label>
-                    <label>Type
-                      <select v-model="draft.serviceType" class="svc-input k-input">
-                        <option value="home-assistant">Home Assistant</option>
-                        <option value="generic">Generic (proxy only)</option>
-                      </select>
-                    </label>
-                    <label>Target namespace<input v-model="draft.targetNamespace" class="svc-input k-input" placeholder="home" /></label>
-                    <label>Target service<input v-model="draft.targetName" class="svc-input k-input" placeholder="home-assistant" /></label>
-                    <label>Port<input v-model.number="draft.port" type="number" class="svc-input k-input" placeholder="8123" /></label>
-                  </div>
-                  <div class="wiz-actions" style="justify-content: flex-start;">
-                    <button class="k-btn k-btn--primary" :disabled="saving || !draftValid" @click="submitAdd">
-                      {{ saving ? 'Adding…' : 'Add service' }}
-                    </button>
-                    <button class="k-btn k-btn--ghost" :disabled="saving" @click="adding = false">Cancel</button>
-                  </div>
-                </div>
-
-                <div v-if="!servicesLoaded && !svcError && !adding" class="muted" role="status" aria-live="polite">
+                <div v-if="!servicesLoaded && !svcError" class="muted" role="status" aria-live="polite">
                   Loading services…
                 </div>
-                <div v-else-if="servicesLoaded && services.length === 0 && !adding" class="muted">
+                <div v-else-if="servicesLoaded && services.length === 0" class="muted">
                   {{ type === 'server'
                     ? 'No services discovered yet. Discovery runs when the agent is connected.'
                     : 'No services declared yet. Add one to point at a Kubernetes Service in this cluster.' }}

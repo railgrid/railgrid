@@ -101,7 +101,7 @@ async function submit() {
 </script>
 
 <template>
-  <section class="page">
+  <section class="page k-create-page">
     <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="submitting" @click="emit('navigate', 'catalog')"><ArrowLeft :size="14" aria-hidden="true" /> Back to templates</button>
     <div v-if="loading && !loaded" class="page-loading-shell" role="status" aria-live="polite" aria-busy="true">
       <span>Loading template…</span>
@@ -113,18 +113,17 @@ async function submit() {
       <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
     </div>
     <template v-else-if="template">
-      <header class="page-head">
-        <div>
-          <h2 class="page-title">Provision {{ template.displayName }}</h2>
-          <p class="page-meta">{{ template.description }}</p>
-        </div>
+      <header class="k-create-header">
+        <h2 class="k-create-title">Provision {{ template.displayName }}</h2>
+        <p class="k-create-description">{{ template.description }}</p>
       </header>
       <div v-if="readError" class="stale-banner" role="alert" aria-live="assertive">
         <span>Showing the last successful template. {{ readError }}</span>
         <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
       </div>
       <span v-if="loading" class="sr-only" role="status" aria-live="polite">Rechecking template…</span>
-      <form class="form" :aria-busy="submitting || loading" @submit.prevent="submit">
+      <form class="k-create-surface k-create-surface--wide" :aria-busy="submitting || loading" @submit.prevent="submit">
+        <div class="k-create-body">
         <div class="dynform-row">
           <label for="infrastructure-instance-name">
             <span class="dynform-label">Instance name<span class="required">*</span></span>
@@ -135,11 +134,12 @@ async function submit() {
         <DynamicForm :schema="template.inputsSchema" v-model:values="values" />
         <div v-if="mutationError" class="read-error" role="alert" aria-live="assertive">{{ mutationError }}</div>
         <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Provisioning instance…</span>
-        <div class="actions">
+        </div>
+        <div class="k-create-actions">
+          <button type="button" class="k-btn k-btn--ghost" :disabled="submitting" @click="emit('navigate', 'catalog')">Cancel</button>
           <button type="submit" class="k-btn k-btn--primary" :disabled="submitting || loading">
             {{ submitting ? 'Provisioning…' : 'Provision' }}
           </button>
-          <button type="button" class="k-btn k-btn--ghost" :disabled="submitting" @click="emit('navigate', 'catalog')">Cancel</button>
         </div>
       </form>
     </template>

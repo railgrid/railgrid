@@ -5,7 +5,7 @@
 // both are "reusable capability config".
 
 import { html, nothing, type TemplateResult } from 'lit'
-import { state } from 'lit/decorators.js'
+import { property, state } from 'lit/decorators.js'
 import { repeat } from 'lit/directives/repeat.js'
 import { unsafeHTML } from 'lit/directives/unsafe-html.js'
 import { StoreElement } from '../ui/base'
@@ -14,6 +14,7 @@ import { sliceView } from '../ui/states'
 import { toast } from '../ui/toast'
 import { confirmModal } from '../portalkit/modal'
 import { mutate } from '../mutate'
+import type { CreateSuccessDetail } from '../router'
 import {
   CATEGORY_META,
   CONN_DEFS,
@@ -68,6 +69,13 @@ function unwired(c: Connection, agents: Agent[]): boolean {
 }
 
 export class Connections extends StoreElement {
+  // The collection and create surfaces share the type definitions, but only
+  // the route-owned instance renders a consequential create flow. Keeping the
+  // property explicit also leaves standalone consumers on the compact picker
+  // behaviour until they opt into hash-owned navigation.
+  @property({ type: Boolean }) routeOwned = false
+  @property({ type: Boolean }) createRoute = false
+  @property({ type: String }) createType = ''
   @state() private connType: string | null = null
   @state() private connMode = ''
   @state() private editing: string | null = null
@@ -76,13 +84,22 @@ export class Connections extends StoreElement {
     const v: Record<string, string> = {}
     form.querySelectorAll<HTMLInputElement>('input[name]').forEach((el) => (v[el.name] = el.value.trim()))
     const mode = this.connMode || def.modes?.[0].id || ''
+    const body = def.build(v, mode)
     const res = await mutate(this.store, {
-      run: () => this.api.createConnection(def.build(v, mode)),
+      run: () => this.api.createConnection(body),
       success: 'Connection created.',
       failure: 'Create failed',
       reload: ['connections'],
     })
-    if (res) {
+    if (res && this.routeOwned) {
+      this.dispatchEvent(
+        new CustomEvent<CreateSuccessDetail>('agents-create-success', {
+          detail: { resource: 'connection', name: body.name, item: res },
+          bubbles: true,
+          composed: true,
+        }),
+      )
+    } else if (res) {
       this.connType = null
       this.connMode = ''
     }
@@ -109,10 +126,11 @@ export class Connections extends StoreElement {
   }
 
   private async del(name: string): Promise<void> {
+    const authority = this.captureAuthority()
     const ok = await confirmModal({ title: `Delete connection “${name}”?`, danger: true, confirmLabel: 'Delete' })
-    if (!ok) return
-    await mutate(this.store, {
-      run: () => this.api.deleteConnection(name),
+    if (!ok || !this.authorityIsCurrent(authority)) return
+    await mutate(authority.store, {
+      run: () => authority.api.deleteConnection(name),
       success: 'Connection deleted.',
       failure: 'Delete failed',
       reload: ['connections'],
@@ -148,10 +166,16 @@ export class Connections extends StoreElement {
   }
 
   render(): TemplateResult {
+    if (this.createRoute) return this.createRouteSurface()
     return html`
       <div class="agents-menu">
         <div class="agents-panel k-card agents-route-panel">
-          <h3>Connections</h3>
+          <div class="agents-panel-head">
+            <h3>Connections</h3>
+            ${this.routeOwned
+              ? html`<button class="k-btn k-btn--primary" @click=${() => this.navigate({ kind: 'create', resource: 'connection' })}>${icon('plus')} New connection</button>`
+              : nothing}
+          </div>
           <p class="muted">
             Shared credentials for external systems. Each is a ${icon('wrench')} <strong>Tool</strong> agents call, a
             ${icon('megaphone')} <strong>Channel</strong> they message you on, or a ${icon('plug')} generic
@@ -164,11 +188,44 @@ export class Connections extends StoreElement {
             retry: () => void this.store.load('connections'),
             content: (rows) => this.table(rows),
           })}
-          ${this.editorArea()}
+          ${this.routeOwned
+            ? this.editing
+              ? this.editorArea()
+              : html`<agents-assisted-search .store=${this.store} .api=${this.api} .routeOwned=${true}></agents-assisted-search>`
+            : this.editorArea()}
         </div>
-        <agents-toolsets .store=${this.store} .api=${this.api}></agents-toolsets>
+        <agents-toolsets .store=${this.store} .api=${this.api} .routeOwned=${this.routeOwned}></agents-toolsets>
       </div>
     `
+  }
+
+  private createRouteSurface(): TemplateResult {
+    if (!this.createType) {
+      return html`<div class="agents-menu agents-create-page k-create-page">
+        <button type="button" class="k-btn k-btn--ghost k-back-action" @click=${() => this.cancelCreate()}>${icon('arrow-left')} Connections</button>
+        <header class="k-create-header"><h1 class="k-create-title">Create connection</h1><p class="k-create-description">Choose the tool, channel, or external service you want agents to use.</p></header>
+        <div class="k-create-surface k-create-surface--wide">
+          <div class="k-create-body">${this.picker(false)}</div>
+        </div>
+      </div>`
+    }
+    if (this.createType === 'assisted-search') {
+      return html`<div class="agents-menu agents-create-page">
+        <agents-assisted-search .store=${this.store} .api=${this.api} .routeOwned=${true} .page=${true}></agents-assisted-search>
+      </div>`
+    }
+    const def = CONN_DEFS.find((d) => d.id === this.createType)
+    if (!def) {
+      return html`<div class="agents-create-page k-create-page">
+        <button type="button" class="k-btn k-btn--ghost k-back-action" @click=${() => this.cancelCreate()}>${icon('arrow-left')} Connections</button>
+        <header class="k-create-header"><h1 class="k-create-title">Connection type unavailable</h1><p class="k-create-description">That connection type is not available in this version of the Agents provider.</p></header>
+      </div>`
+    }
+    return html`<div class="agents-menu agents-create-page k-create-page">
+      <button type="button" class="k-btn k-btn--ghost k-back-action" @click=${() => this.cancelCreate()}>${icon('arrow-left')} Connections</button>
+      <header class="k-create-header"><h1 class="k-create-title">Connect ${def.label}</h1><p class="k-create-description">${def.desc}</p></header>
+      ${this.createForm(def)}
+    </div>`
   }
 
   private table(rows: Connection[]): TemplateResult {
@@ -269,12 +326,16 @@ export class Connections extends StoreElement {
     return this.picker()
   }
 
-  private picker(): TemplateResult {
+  private picker(showHeading = true): TemplateResult {
     const tile = (d: ConnTypeDef): TemplateResult => html`<button
       class="k-btn k-btn--ghost agents-conn-tile"
       @click=${() => {
-        this.connType = d.id
-        this.connMode = ''
+        if (this.routeOwned) {
+          this.navigate({ kind: 'create', resource: 'connection', type: d.id })
+        } else {
+          this.connType = d.id
+          this.connMode = ''
+        }
       }}
     >
       <span class="agents-conn-glyph">${icon(d.glyph)}</span>
@@ -282,7 +343,7 @@ export class Connections extends StoreElement {
       <span class="muted">${d.desc}</span>
     </button>`
     return html`<div class="agents-conn-picker">
-      <h4>Add a connection</h4>
+      ${showHeading ? html`<h4>Add a connection</h4>` : nothing}
       ${(['tool', 'channel', 'connection'] as ConnCategory[]).map((cat) => {
         const defs = CONN_DEFS.filter((d) => connCategory(d.id) === cat)
         if (!defs.length) return nothing
@@ -291,7 +352,7 @@ export class Connections extends StoreElement {
           <h5 class="agents-conn-grouphead">${icon(m.icon)} ${m.label}s <span class="muted">— ${m.blurb}</span></h5>
           <div class="agents-conn-types">${defs.map(tile)}</div>
           ${cat === 'tool'
-            ? html`<agents-assisted-search .store=${this.store} .api=${this.api}></agents-assisted-search>`
+            ? html`<agents-assisted-search .store=${this.store} .api=${this.api} .routeOwned=${this.routeOwned}></agents-assisted-search>`
             : nothing}
         </div>`
       })}
@@ -313,9 +374,12 @@ export class Connections extends StoreElement {
   }
 
   private createForm(def: ConnTypeDef): TemplateResult {
-    const mode = this.connMode || def.modes?.[0].id || ''
+    // A routed connection element can be reused while the type segment changes
+    // (for example after browser back/forward). Ignore a mode from the prior
+    // type instead of indexing an absent mode.
+    const mode = def.modes?.some((m) => m.id === this.connMode) ? this.connMode : def.modes?.[0].id || ''
     const activeMode = def.modes?.find((m) => m.id === mode)
-    let fields = def.modes ? activeMode!.fields : def.fields || []
+    let fields = def.modes ? activeMode?.fields || [] : def.fields || []
     const advanced = [...(def.advanced || []), ...(activeMode?.advanced || [])]
     // Platform OAuth app configured (operator env)? Then OAuth modes need no
     // client id/secret — drop those fields.
@@ -323,17 +387,22 @@ export class Connections extends StoreElement {
     const platformApp = isOAuthMode && this.store.oauthApps.has(def.id)
     if (platformApp) fields = fields.filter((f) => f.key !== 'clientID' && f.key !== 'clientSecret')
     return html`<form
-      class="agents-conn-form k-card"
+      class=${this.routeOwned ? 'agents-conn-form k-create-surface' : 'agents-conn-form k-card'}
       @submit=${(e: Event) => {
         e.preventDefault()
         void this.create(def, e.target as HTMLFormElement)
       }}
     >
-      <div class="agents-conn-form k-cardhead">
-        <button type="button" class="k-btn k-btn--ghost agents-back" @click=${() => (this.connType = null)}>${icon('arrow-left')} connection types</button>
-        <h4>${icon(def.glyph)} ${def.label}</h4>
+      <div class=${this.routeOwned ? 'k-create-body' : ''}>
+      <div class="agents-conn-formhead">
+        <button
+          type="button"
+          class="k-btn k-btn--ghost agents-back"
+          @click=${() => (this.routeOwned ? this.navigate({ kind: 'create', resource: 'connection' }) : (this.connType = null))}
+        >${icon('arrow-left')} connection types</button>
+        ${this.routeOwned ? nothing : html`<h4>${icon(def.glyph)} ${def.label}</h4>`}
       </div>
-      <p class="muted">${def.desc}</p>
+      ${this.routeOwned ? nothing : html`<p class="muted">${def.desc}</p>`}
       ${def.setup
         ? html`<details class="agents-setup" open>
             <summary>Before you start — setup steps</summary>
@@ -366,8 +435,20 @@ export class Connections extends StoreElement {
       ${advanced.length
         ? html`<details class="agents-adv"><summary>Advanced</summary>${advanced.map((f) => this.field(f))}</details>`
         : nothing}
-      <div><button class="k-btn k-btn--primary" type="submit">Create connection</button></div>
+      </div>
+      <div class=${this.routeOwned ? 'k-create-actions' : ''}>
+        ${this.routeOwned ? html`<button type="button" class="k-btn k-btn--ghost secondary" @click=${() => this.cancelCreate()}>Cancel</button>` : nothing}
+        <button class="k-btn k-btn--primary" type="submit">Create connection</button>
+      </div>
     </form>`
+  }
+
+  private cancelCreate(): void {
+    if (this.routeOwned) {
+      this.dispatchEvent(new CustomEvent('agents-cancel', { bubbles: true, composed: true }))
+      return
+    }
+    this.connType = null
   }
 
   private editForm(c: Connection): TemplateResult {

@@ -27,6 +27,7 @@ faros-provider-agents .agents-app { display: flex; flex-direction: column; gap: 
 faros-provider-agents .agents-view { display: flex; flex-direction: column; gap: 18px; }
 faros-provider-agents .agents-empty { display: flex; align-items: center; justify-content: center; text-align: center; min-height: 340px; }
 faros-provider-agents .agents-menu { display: flex; flex-direction: column; gap: 18px; }
+faros-provider-agents .agents-create-page { display: flex; flex-direction: column; gap: 18px; width: 100%; }
 
 /* --- top nav -------------------------------------------------------------
    Layout and tab treatment live in the canonical PortalKit recipe. Keep the

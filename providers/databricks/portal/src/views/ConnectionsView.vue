@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ExternalLink } from 'lucide-vue-next'
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onActivated, onMounted, onUnmounted, ref } from 'vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
@@ -20,7 +20,6 @@ import {
   type LatestRefreshController,
   type ResourceRefreshMode,
 } from '../refresh'
-import { resourceNameError } from '../resourceName'
 import {
   cloneConnectionFilters,
   CONNECTION_FILTERS,
@@ -35,7 +34,7 @@ import {
   type DatabricksPaginationMode,
 } from '../databricksPagination'
 
-const emit = defineEmits<{ (e: 'open', name: string): void }>()
+const emit = defineEmits<{ (e: 'open', name: string): void; (e: 'create'): void }>()
 
 const connections = ref<Connection[]>([])
 const loading = ref(false)
@@ -62,20 +61,12 @@ const rows = computed<Array<Record<string, unknown>>>(() => connections.value
   .filter(conn => !operations.isTombstoned(operationKey('connection', conn.name), conn.uid))
   .map(conn => ({ ...conn })))
 
-// connection form
-const showForm = ref(false)
-const name = ref('')
-const host = ref('')
-const token = ref('')
-const submitting = ref(false)
-const formError = ref<string | null>(null)
-const nameInput = ref<HTMLInputElement | null>(null)
-const formErrorRef = ref<HTMLElement | null>(null)
 let poll!: AdaptiveRefreshTimer
 let refresh!: LatestRefreshController
 let mounted = false
 let fullWalkPending = false
 let serverPageReadPending = false
+let activatedOnce = false
 let authorityGeneration = 0
 
 function invalidateCompleteAuthority(): void {
@@ -87,19 +78,6 @@ function invalidateCompleteAuthority(): void {
 function errMessage(e: unknown): string {
   const err = e as ErrorResponse
   return err.reason ? `${err.reason}: ${err.message}` : err.message || String(e)
-}
-
-function resetForm() {
-  name.value = ''
-  host.value = ''
-  token.value = ''
-  formError.value = null
-}
-
-function startCreate() {
-  resetForm()
-  showForm.value = true
-  void nextTick(() => nameInput.value?.focus())
 }
 
 const refreshMode = ref<ResourceRefreshMode>('foreground')
@@ -138,65 +116,6 @@ function operationPhase(name: string) {
 
 function openResource(name: string): void {
   if (!operationLocked(name)) emit('open', name)
-}
-
-async function focusFormError(message: string) {
-  formError.value = message
-  await nextTick()
-  formErrorRef.value?.focus()
-}
-
-async function submit() {
-  formError.value = null
-  mutationError.value = null
-  if (!loaded.value) {
-    await focusFormError('Connection list is still loading. Retry the read before creating a connection.')
-    return
-  }
-  if (!name.value || !host.value || !token.value) {
-    await focusFormError('Name, workspace host, and token are required.')
-    return
-  }
-  const nameError = resourceNameError(name.value, 'Name')
-  if (nameError) {
-    await focusFormError(nameError)
-    return
-  }
-  const desiredName = name.value.trim()
-  const lock = operationKey('connection', desiredName)
-  if (!operations.acquire(lock, 'creating')) {
-    await focusFormError(`Connection "${desiredName}" already has an update in progress.`)
-    return
-  }
-  submitting.value = true
-  try {
-    // The visible rows may be one cursor page. Duplicate protection must use a
-    // complete authoritative read before allowing the mutation.
-    const existing = await completeRead.request()
-    operations.reconcile('connection', existing.map(({ name, uid }) => ({ name, uid })))
-    if (operations.isTombstoned(lock)) {
-      await focusFormError(`Connection "${desiredName}" is still being removed. Retry after the list refresh confirms it is gone.`)
-      return
-    }
-    if (existing.some(connection => connection.name === desiredName)) {
-      await focusFormError(`Connection "${desiredName}" already exists.`)
-      return
-    }
-    await api.saveConnection({
-      name: desiredName,
-      host: host.value,
-      token: token.value,
-    })
-    invalidateCompleteAuthority()
-    resetForm()
-    showForm.value = false
-    load()
-  } catch (e) {
-    await focusFormError(errMessage(e))
-  } finally {
-    submitting.value = false
-    operations.release(lock)
-  }
 }
 
 interface ConnectionRequest {
@@ -434,6 +353,13 @@ onMounted(() => {
   mounted = true
   load()
 })
+onActivated(() => {
+  if (!activatedOnce) {
+    activatedOnce = true
+    return
+  }
+  load('foreground')
+})
 onUnmounted(() => {
   mounted = false
   invalidateCompleteAuthority()
@@ -452,38 +378,9 @@ onUnmounted(() => {
         <p class="page-meta">Databricks workspaces available to tables in this faros workspace.</p>
       </div>
       <div class="actions">
-        <button class="k-btn k-btn--primary" type="button" :disabled="submitting" @click="showForm ? (showForm = false) : startCreate()">
-          {{ showForm ? 'Cancel' : 'Add connection' }}
-        </button>
+        <button class="k-btn k-btn--primary" type="button" @click="emit('create')">Add connection</button>
       </div>
     </header>
-
-    <div v-if="showForm" class="databricks-resource-panel k-card">
-      <h3 class="databricks-resource-panel-title">Connect with a token</h3>
-      <form class="form" @submit.prevent="submit">
-        <div class="field">
-          <label class="field-label" for="connection-name">Name</label>
-          <input id="connection-name" class="k-input" ref="nameInput" v-model="name" :disabled="submitting" autocomplete="off" placeholder="orders-prod" required aria-required="true" aria-describedby="connection-name-hint connection-form-error" :aria-invalid="!!formError" />
-          <span id="connection-name-hint" class="field-hint">How this workspace is referred to from faros. Use lowercase letters, numbers, and hyphens; the name is preserved exactly.</span>
-        </div>
-        <div class="field">
-          <label class="field-label" for="connection-host">Workspace host</label>
-          <input id="connection-host" class="k-input" v-model="host" :disabled="submitting" autocomplete="url" placeholder="https://dbc-example.cloud.databricks.com" required aria-required="true" aria-describedby="connection-host-hint connection-form-error" :aria-invalid="!!formError" />
-          <span id="connection-host-hint" class="field-hint">Use the HTTPS root URL from the Databricks browser address bar (AWS, Azure, or GCP), with no path.</span>
-        </div>
-        <div class="field">
-          <label class="field-label" for="connection-token">Token</label>
-          <input id="connection-token" class="k-input" v-model="token" :disabled="submitting" type="password" autocomplete="new-password" placeholder="Paste token" required aria-required="true" aria-describedby="connection-token-hint connection-form-error" :aria-invalid="!!formError" />
-          <span id="connection-token-hint" class="field-hint">Create a personal access token in Databricks: avatar → Settings → Developer → Access tokens → Manage → Generate new token. Its identity needs SELECT on the catalogs and schemas you plan to import, plus access to a running SQL warehouse.</span>
-        </div>
-        <div class="actions">
-      <button class="k-btn k-btn--primary" type="submit" :disabled="submitting">{{ submitting ? 'Connecting...' : 'Create' }}</button>
-          <button class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="() => { resetForm(); showForm = false }">Cancel</button>
-          <span v-if="formError" id="connection-form-error" ref="formErrorRef" class="error" role="alert" aria-live="assertive" tabindex="-1">{{ formError }}</span>
-        </div>
-        <p class="muted">The token is stored as a Secret in your workspace; the provider validates it and shows the status below.</p>
-      </form>
-    </div>
 
     <div v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">
       <span>{{ mutationError }}</span>

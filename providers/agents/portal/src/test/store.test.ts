@@ -4,7 +4,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { parseSSEFrame, readSSE, type SSEEvent } from '../api'
 import { makeStore, stubApi } from './helpers'
-import type { InboxItem } from '../types'
+import type { Agent, Connection, Credential, InboxItem, Toolset } from '../types'
 
 const inboxItem = (id: string, state = 'pending'): InboxItem => ({
   id,
@@ -14,6 +14,14 @@ const inboxItem = (id: string, state = 'pending'): InboxItem => ({
   prompt: 'approve?',
   createdAt: new Date().toISOString(),
 })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
 
 describe('AppStore slices', () => {
   it('tracks loading → loaded and exposes the data', async () => {
@@ -74,6 +82,82 @@ describe('AppStore slices', () => {
     store.addEventListener('change', seen)
     await store.load('connections')
     expect(seen).toHaveBeenCalled()
+  })
+})
+
+describe('create-result adoption refresh races', () => {
+  it('merges an adopted agent into a list response that started first', async () => {
+    const pending = deferred<Agent[]>()
+    const existing: Agent = { metadata: { name: 'existing' }, spec: {} }
+    const created: Agent = { metadata: { name: 'created' }, spec: { displayName: 'Created' } }
+    const store = makeStore(stubApi({ listAgents: () => pending.promise }))
+
+    const refresh = store.load('agents')
+    store.adopt('agents', created)
+    pending.resolve([existing])
+    await refresh
+
+    expect(store.agents.data).toEqual([existing, created])
+    expect(store.agents.error).toBeNull()
+    expect(store.agents.hasSnapshot).toBe(true)
+  })
+
+  it('merges an adopted connection without preserving unrelated stale rows', async () => {
+    const pending = deferred<Connection[]>()
+    const existing: Connection = { metadata: { name: 'existing' }, spec: { type: 'slack' } }
+    const created: Connection = { metadata: { name: 'created' }, spec: { type: 'github' } }
+    const store = makeStore(stubApi({ listConnections: () => pending.promise }))
+    store.connections.data = [{ metadata: { name: 'stale' }, spec: { type: 'old' } }]
+    store.connections.hasSnapshot = true
+
+    const refresh = store.load('connections')
+    store.adopt('connections', created)
+    pending.resolve([existing])
+    await refresh
+
+    expect(store.connections.data).toEqual([existing, created])
+  })
+
+  it('merges an adopted toolset into the authoritative list result', async () => {
+    const pending = deferred<Toolset[]>()
+    const created: Toolset = { metadata: { name: 'created' }, spec: { connections: [] } }
+    const store = makeStore(stubApi({ listToolsets: () => pending.promise }))
+
+    const refresh = store.load('toolsets')
+    store.adopt('toolsets', created)
+    pending.resolve([])
+    await refresh
+
+    expect(store.toolsets.data).toEqual([created])
+  })
+
+  it('merges an adopted model credential by its non-metadata name', async () => {
+    const pending = deferred<Credential[]>()
+    const created: Credential = { name: 'created', provider: 'openai-compatible', model: 'gpt-5' }
+    const store = makeStore(stubApi({ listCredentials: () => pending.promise }))
+
+    const refresh = store.load('credentials')
+    store.adopt('credentials', created)
+    pending.resolve([])
+    await refresh
+
+    expect(store.credentials.data).toEqual([created])
+  })
+
+  it('lets a later refresh remove an adopted item once it is authoritative', async () => {
+    const pending = deferred<Agent[]>()
+    const created: Agent = { metadata: { name: 'created' }, spec: {} }
+    const listAgents = vi.fn().mockImplementationOnce(() => pending.promise).mockResolvedValueOnce([])
+    const store = makeStore(stubApi({ listAgents }))
+
+    const firstRefresh = store.load('agents')
+    store.adopt('agents', created)
+    pending.resolve([])
+    await firstRefresh
+    expect(store.agents.data).toEqual([created])
+
+    await store.load('agents')
+    expect(store.agents.data).toEqual([])
   })
 })
 

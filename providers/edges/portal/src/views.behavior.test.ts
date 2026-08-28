@@ -27,7 +27,9 @@ vi.mock('./portalkit/confirm', () => confirm)
 
 import Services from './Services.vue'
 import ServiceEdit from './ServiceEdit.vue'
+import ServiceCreate from './ServiceCreate.vue'
 import Workloads from './Workloads.vue'
+import WorkloadCreate from './WorkloadCreate.vue'
 
 type HostNode = {
   type: string
@@ -544,6 +546,162 @@ describe('edge list views', () => {
           { value: 'Failed', label: 'Failed' }, { value: 'Unknown', label: 'Unknown' },
         ] },
       ])
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('revalidates a marketplace target before mutation when the selected edge disappears', async () => {
+    const latestEdges = deferred<unknown[]>()
+    api.listEdges.mockReset()
+    api.listEdges.mockResolvedValueOnce([edge]).mockImplementationOnce(() => latestEdges.promise)
+    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana' })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      expect(state.deployEdge).toBe('edge-a')
+      expect(state.canSubmit).toBe(true)
+
+      const submit = state.submit()
+      await flush()
+      expect(api.listEdges).toHaveBeenCalledTimes(2)
+      expect(state.busy).toBe(true)
+      expect(api.deployMarketplaceApp).not.toHaveBeenCalled()
+
+      // The edge was present when the form loaded but is gone by the time the
+      // mutation would begin. The stale target must never reach the workload or
+      // follow-up Service API, and the form should expose the refreshed state.
+      latestEdges.resolve([])
+      await submit
+      await flush()
+      expect(api.deployMarketplaceApp).not.toHaveBeenCalled()
+      expect(state.deployEdge).toBe('')
+      expect(state.error).toBe('The selected KubernetesCluster edge is no longer available. Choose another edge.')
+      expect(state.busy).toBe(false)
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('does not start marketplace mutation after unmount during edge preflight', async () => {
+    const freshEdges = deferred<unknown[]>()
+    api.listEdges.mockReset()
+    api.listEdges.mockResolvedValueOnce([edge]).mockImplementationOnce(() => freshEdges.promise)
+    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana' })
+    const state = mounted.instance.setupState
+    await flush()
+    const submit = state.submit()
+    await flush()
+    expect(api.listEdges).toHaveBeenCalledTimes(2)
+    expect(api.deployMarketplaceApp).not.toHaveBeenCalled()
+
+    mounted.unmount()
+    freshEdges.resolve([edge])
+    await submit
+    await flush()
+
+    expect(api.deployMarketplaceApp).not.toHaveBeenCalled()
+    expect(state.error).toBeNull()
+    expect(state.edges).toEqual([edge])
+  })
+
+  it('keeps cancellation disabled while a marketplace deployment is in flight', async () => {
+    const freshEdges = deferred<unknown[]>()
+    const canceled = vi.fn()
+    api.listEdges.mockReset()
+    api.listEdges.mockResolvedValueOnce([edge]).mockImplementationOnce(() => freshEdges.promise)
+    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana', onCancel: canceled })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      const submit = state.submit()
+      await flush()
+
+      state.cancel()
+      expect(canceled).not.toHaveBeenCalled()
+      expect(state.busy).toBe(true)
+
+      freshEdges.resolve([edge])
+      await submit
+      expect(api.deployMarketplaceApp).toHaveBeenCalledTimes(1)
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('ignores the initial marketplace edge read after the route unmounts', async () => {
+    const initialEdges = deferred<unknown[]>()
+    api.listEdges.mockReset().mockImplementation(() => initialEdges.promise)
+    const mounted = await mount(WorkloadCreate, { mode: 'marketplace', appType: 'grafana' })
+    const state = mounted.instance.setupState
+    mounted.unmount()
+    initialEdges.resolve([edge])
+    await flush()
+
+    expect(state.edges).toEqual([])
+    expect(state.loading).toBe(true)
+    expect(state.error).toBeNull()
+    expect(api.deployMarketplaceApp).not.toHaveBeenCalled()
+  })
+
+  it('requires host mode and a normalized host for host-required catalog entries', async () => {
+    api.fetchServiceCatalog.mockResolvedValue([{
+      type: 'unifi-network', displayName: 'UniFi Network', category: 'Network',
+      defaultPort: 443, defaultScheme: 'https', schemeLocked: true, hostRequired: true,
+      credential: { fields: [{ key: 'apiKey', label: 'API key', secret: true }] }, auth: 'apiKeyHeader',
+    }])
+    const mounted = await mount(ServiceCreate)
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      state.draft.name = 'unifi'
+      expect(state.targetMode).toBe('host')
+
+      // A malicious/stale target-mode value must not bypass catalog policy by
+      // supplying a Kubernetes Service target instead of a LAN host.
+      state.targetMode = 'kube'
+      state.draft.targetName = 'network'
+      expect(state.canCreate).toBe(false)
+      await state.onCreate()
+      expect(api.createKubeEdgeService).not.toHaveBeenCalled()
+
+      state.targetMode = 'host'
+      state.draft.host = '   '
+      expect(state.canCreate).toBe(false)
+      await state.onCreate()
+      expect(api.createKubeEdgeService).not.toHaveBeenCalled()
+
+      state.draft.host = '  https://192.168.1.1:443/  '
+      expect(state.canCreate).toBe(true)
+      await state.onCreate()
+      expect(api.createKubeEdgeService).toHaveBeenCalledWith(expect.objectContaining({
+        host: '192.168.1.1',
+        targetName: '',
+        edgeKind: 'KubernetesCluster',
+      }))
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('preserves edge kind when KubernetesCluster and LinuxServer share a name', async () => {
+    api.listEdges.mockResolvedValue([
+      { ...edge, name: 'shared', type: 'kubernetes' },
+      { ...edge, name: 'shared', type: 'server' },
+    ])
+    const mounted = await mount(ServiceCreate, { initialEdgeName: 'shared', initialEdgeType: 'server' })
+    try {
+      await flush()
+      const state = mounted.instance.setupState
+      expect(state.selectedEdgeKey).toBe('server/shared')
+      expect(state.selectedEdge.type).toBe('server')
+
+      state.draft.name = 'shared-service'
+      await state.onCreate()
+      expect(api.createKubeEdgeService).toHaveBeenCalledWith(expect.objectContaining({
+        edgeName: 'shared',
+        edgeKind: 'LinuxServer',
+      }))
     } finally {
       mounted.unmount()
     }

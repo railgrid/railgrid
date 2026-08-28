@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { RefreshCw } from 'lucide-vue-next'
 import SplitCreateButton from '../components/SplitCreateButton.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
@@ -34,7 +34,7 @@ import {
   type TableFilterValues,
 } from '../databricksPagination'
 
-const emit = defineEmits<{ (e: 'open', name: string): void; (e: 'browse', trigger?: HTMLElement): void }>()
+const emit = defineEmits<{ (e: 'open', name: string): void; (e: 'create', mode: 'manual' | 'browse'): void }>()
 
 const connections = ref<Connection[]>([])
 const warehouses = ref<Warehouse[]>([])
@@ -76,6 +76,7 @@ let fullWalkPending = false
 let supportReadPending = false
 let serverPageReadPending = false
 let forceNextLoad = false
+let activatedOnce = false
 let authorityGeneration = 0
 
 function invalidateCompleteAuthority(): void {
@@ -123,30 +124,9 @@ function resetForm() {
   formError.value = null
 }
 
-function startCreate() {
-  resetForm()
-  showForm.value = true
-  void nextTick(() => nameInput.value?.focus())
-}
-
 function closeForm() {
   resetForm()
   showForm.value = false
-}
-
-function browseCatalog(trigger?: HTMLElement) {
-  if (showForm.value) closeForm()
-  emit('browse', trigger)
-}
-
-// Prefill the Databricks-provided samples catalog (readable in every
-// workspace) so a first import needs no lookup: samples.nyctaxi.trips.
-function fillDemo() {
-  if (!editing.value) form.name = 'nyctaxi-trips'
-  form.catalog = 'samples'
-  form.schema = 'nyctaxi'
-  form.table = 'trips'
-  formError.value = null
 }
 
 function editTable(row: Record<string, unknown>) {
@@ -514,6 +494,13 @@ onMounted(() => {
   mounted = true
   load()
 })
+onActivated(() => {
+  if (!activatedOnce) {
+    activatedOnce = true
+    return
+  }
+  load(true)
+})
 onUnmounted(() => {
   mounted = false
   invalidateCompleteAuthority()
@@ -536,7 +523,7 @@ onUnmounted(() => {
           <RefreshCw class="button-icon" :class="{ spin: loading }" :stroke-width="1.75" />
           {{ loading ? 'Refreshing…' : 'Refresh' }}
         </button>
-        <SplitCreateButton kind="table" :disabled="submitting" @manual="startCreate" @browse="browseCatalog" />
+        <SplitCreateButton kind="table" :disabled="submitting" @manual="emit('create', 'manual')" @browse="emit('create', 'browse')" />
       </div>
     </header>
 
@@ -544,8 +531,7 @@ onUnmounted(() => {
 
     <div v-if="showForm" class="databricks-resource-panel k-card">
       <div class="databricks-resource-panel-head">
-        <h3 class="databricks-resource-panel-title">{{ editing ? 'Update table' : 'Import table' }}</h3>
-        <button v-if="!editing" class="k-btn k-btn--ghost databricks-inline-action" type="button" :disabled="submitting" @click="fillDemo" title="Prefill samples.nyctaxi.trips — Databricks demo data available in every workspace">Fill with demo data</button>
+        <h3 class="databricks-resource-panel-title">Update table</h3>
       </div>
       <div v-if="tableImportBlocker" class="warning" role="status">
         {{ tableImportBlocker }}

@@ -68,6 +68,11 @@ const routes = [
     component: () => import('@/pages/MCPPage.vue'),
   },
   {
+    path: '/create/mcp-server',
+    name: 'mcp-create',
+    component: () => import('@/pages/MCPPage.vue'),
+  },
+  {
     path: '/mcp/:name',
     name: 'mcp-detail',
     component: () => import('@/pages/MCPPage.vue'),

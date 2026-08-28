@@ -3,23 +3,30 @@
 // families list is never hand-picked.
 
 import { html, nothing, type TemplateResult } from 'lit'
-import { state } from 'lit/decorators.js'
+import { property, state } from 'lit/decorators.js'
 import { repeat } from 'lit/directives/repeat.js'
 import { StoreElement } from '../ui/base'
 import { icon } from '../ui/icon'
 import { errorState } from '../ui/states'
 import { confirmModal } from '../portalkit/modal'
 import { mutate } from '../mutate'
+import type { CreateSuccessDetail } from '../router'
 import type { Toolset } from '../types'
 
 export class Toolsets extends StoreElement {
-  // editing: null = closed, '' = creating, name = editing that toolset.
+  @property({ type: Boolean }) routeOwned = false
+  @property({ type: Boolean }) createRoute = false
+  // editing is null when closed, otherwise the existing toolset being edited.
   @state() private editing: string | null = null
   @state() private draftName = ''
   @state() private draftDisplay = ''
   @state() private draftConns: string[] = []
 
   private openCreate(): void {
+    if (this.routeOwned) {
+      this.navigate({ kind: 'create', resource: 'toolset' })
+      return
+    }
     this.editing = ''
     this.draftName = ''
     this.draftDisplay = ''
@@ -35,6 +42,11 @@ export class Toolsets extends StoreElement {
 
   private async save(e: Event): Promise<void> {
     e.preventDefault()
+    const form = e.currentTarget as HTMLFormElement
+    // Read the create id from the form as well as the draft state. This keeps
+    // the route surface correct for native form submission and for callers
+    // that set an input before dispatching submit in an embedded host.
+    const name = (form.querySelector<HTMLInputElement>('[name=name]')?.value || this.draftName).trim()
     const connections = this.draftConns
     const families = this.store.familiesFor(connections)
     const displayName = this.draftDisplay.trim()
@@ -47,24 +59,35 @@ export class Toolsets extends StoreElement {
           reload: ['toolsets'],
         })
       : await mutate(this.store, {
-          run: () => this.api.createToolset({ name: this.draftName.trim(), displayName, families, connections }),
+          run: () => this.api.createToolset({ name, displayName, families, connections }),
           success: 'Toolset created.',
           failure: 'Create failed',
           reload: ['toolsets'],
         })
-    if (res) this.editing = null
+    if (res && this.routeOwned && !editing) {
+      this.dispatchEvent(
+        new CustomEvent<CreateSuccessDetail>('agents-create-success', {
+          detail: { resource: 'toolset', name, item: res },
+          bubbles: true,
+          composed: true,
+        }),
+      )
+    } else if (res) {
+      this.editing = null
+    }
   }
 
   private async del(name: string): Promise<void> {
+    const authority = this.captureAuthority()
     const ok = await confirmModal({
       title: `Delete toolset “${name}”?`,
       message: 'Agents linking it will lose those tools.',
       danger: true,
       confirmLabel: 'Delete',
     })
-    if (!ok) return
-    await mutate(this.store, {
-      run: () => this.api.deleteToolset(name),
+    if (!ok || !this.authorityIsCurrent(authority)) return
+    await mutate(authority.store, {
+      run: () => authority.api.deleteToolset(name),
       success: 'Toolset deleted.',
       failure: 'Delete failed',
       reload: ['toolsets'],
@@ -78,6 +101,7 @@ export class Toolsets extends StoreElement {
   }
 
   render(): TemplateResult {
+    if (this.createRoute) return this.createSurface()
     const slice = this.store.toolsets
     return html`<div class="agents-panel k-card agents-route-panel">
       <div class="agents-panel-head">
@@ -131,16 +155,26 @@ export class Toolsets extends StoreElement {
     </div>`
   }
 
+  private createSurface(): TemplateResult {
+    return html`<div class="agents-menu agents-create-page k-create-page">
+      <button type="button" class="k-btn k-btn--ghost k-back-action" @click=${() => this.cancelCreate()}>${icon('arrow-left')} Connections</button>
+      <header class="k-create-header"><h1 class="k-create-title">Create toolset</h1><p class="k-create-description">Bundle reusable tools once, then attach the toolset to any agent.</p></header>
+      ${this.form()}
+    </div>`
+  }
+
   private form(): TemplateResult {
     const toolConns = this.store.toolConnections()
     const isEdit = !!this.editing
-    return html`<form class="agents-toolset-form k-card" @submit=${(e: Event) => void this.save(e)}>
-      <h4>${isEdit ? html`Edit toolset <code>${this.editing}</code>` : 'New toolset'}</h4>
+    return html`<form class=${this.createRoute ? 'agents-toolset-form k-create-surface' : 'agents-toolset-form k-card'} @submit=${(e: Event) => void this.save(e)}>
+      <div class=${this.createRoute ? 'k-create-body' : ''}>
+      ${this.createRoute ? nothing : html`<h4>${isEdit ? html`Edit toolset <code>${this.editing}</code>` : 'New toolset'}</h4>`}
       ${isEdit
         ? html`<label>Display name<input class="k-input" .value=${this.draftDisplay} @input=${(e: Event) => (this.draftDisplay = (e.target as HTMLInputElement).value)} /></label>`
         : html`<div class="agents-grid2">
             <label
               >Name *<input class="k-input"
+                name="name"
                 required
                 pattern="[a-z0-9-]+"
                 placeholder="dev-tools"
@@ -177,11 +211,20 @@ export class Toolsets extends StoreElement {
         </div>
         <span class="agents-hint">Tool families are derived from these connections — never picked by hand.</span>
       </fieldset>
-      <div class="agents-form-actions">
+      </div>
+      <div class=${this.createRoute ? 'k-create-actions' : 'agents-form-actions'}>
+        <button type="button" class="k-btn k-btn--ghost secondary" @click=${() => this.cancelCreate()}>Cancel</button>
         <button class="k-btn k-btn--primary" type="submit">${isEdit ? 'Save' : 'Create toolset'}</button>
-        <button type="button" class="k-btn k-btn--ghost secondary" @click=${() => (this.editing = null)}>Cancel</button>
       </div>
     </form>`
+  }
+
+  private cancelCreate(): void {
+    if (this.createRoute) {
+      this.dispatchEvent(new CustomEvent('agents-cancel', { bubbles: true, composed: true }))
+      return
+    }
+    this.editing = null
   }
 }
 

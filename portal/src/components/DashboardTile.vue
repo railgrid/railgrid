@@ -176,10 +176,12 @@ function pushContext() {
 }
 
 function onNavigate(e: Event) {
-  const ce = e as CustomEvent<{ path: string }>
+  const ce = e as CustomEvent<{ path: string; replace?: boolean }>
   const p = ce.detail?.path
   if (typeof p !== 'string') return
-  router.push(`/providers/${props.provider.name}/${p.replace(/^\//, '')}`)
+  const target = `/providers/${props.provider.name}/${p.replace(/^\//, '')}`
+  if (ce.detail.replace === true) void router.replace(target)
+  else void router.push(target)
 }
 
 onMounted(() => mountRef.value?.addEventListener('faros-navigate', onNavigate))

@@ -10,7 +10,7 @@
 // Each credential is its own Secret (faros-agents-model-<name>).
 
 import { html, nothing, svg, type TemplateResult } from 'lit'
-import { state } from 'lit/decorators.js'
+import { property, state } from 'lit/decorators.js'
 import { repeat } from 'lit/directives/repeat.js'
 import { StoreElement } from '../ui/base'
 import { icon } from '../ui/icon'
@@ -18,6 +18,7 @@ import { errorState } from '../ui/states'
 import { toast } from '../ui/toast'
 import { confirmModal } from '../portalkit/modal'
 import { mutate } from '../mutate'
+import type { CreateSuccessDetail } from '../router'
 import { PROVIDER_PRESETS } from '../conn-defs'
 import {
   fmtTokens,
@@ -30,6 +31,8 @@ import {
 } from '../types'
 
 export class Models extends StoreElement {
+  @property({ type: Boolean }) routeOwned = false
+  @property({ type: Boolean }) createRoute = false
   @state() private catalog: ModelInfo[] = []
   @state() private usage: UsageResponse | null = null
   @state() private usageError: string | null = null
@@ -93,15 +96,16 @@ export class Models extends StoreElement {
   }
 
   private async del(name: string): Promise<void> {
+    const authority = this.captureAuthority()
     const ok = await confirmModal({
       title: `Delete credential “${name}”?`,
       message: 'Agents using it will need reassigning.',
       danger: true,
       confirmLabel: 'Delete',
     })
-    if (!ok) return
-    await mutate(this.store, {
-      run: () => this.api.deleteCredential(name),
+    if (!ok || !this.authorityIsCurrent(authority)) return
+    await mutate(authority.store, {
+      run: () => authority.api.deleteCredential(name),
       success: 'Credential deleted.',
       failure: 'Delete failed',
       reload: ['credentials'],
@@ -109,11 +113,17 @@ export class Models extends StoreElement {
   }
 
   render(): TemplateResult {
+    if (this.createRoute) return this.createSurface()
     const creds = this.store.credentials
     return html`<div class="agents-panel k-card agents-route-panel">
       <div class="agents-panel-head">
         <h3>Models</h3>
-        ${this.creating ? nothing : html`<button class="k-btn k-btn--primary" @click=${() => (this.creating = true)}>${icon('plus')} New model</button>`}
+        ${this.creating
+          ? nothing
+          : html`<button
+              class="k-btn k-btn--primary"
+              @click=${() => (this.routeOwned ? this.navigate({ kind: 'create', resource: 'model' }) : (this.creating = true))}
+            >${icon('plus')} New model</button>`}
       </div>
       <p class="muted">
         Model credentials shared across the workspace (each is a Secret <code>faros-agents-model-&lt;name&gt;</code>). Assign them to
@@ -133,6 +143,17 @@ export class Models extends StoreElement {
               )}
             </div>`}
       ${this.creating ? this.createForm() : nothing}
+      <datalist id="agents-catalog-models">
+        ${this.catalog.map((m) => html`<option value=${m.id}>${m.label || m.id}</option>`)}
+      </datalist>
+    </div>`
+  }
+
+  private createSurface(): TemplateResult {
+    return html`<div class="agents-menu agents-create-page k-create-page">
+      <button type="button" class="k-btn k-btn--ghost k-back-action" @click=${() => this.cancelCreate()}>${icon('arrow-left')} Models</button>
+      <header class="k-create-header"><h1 class="k-create-title">Add model credential</h1><p class="k-create-description">Configure a workspace model endpoint and credential for your agents.</p></header>
+      ${this.createForm()}
       <datalist id="agents-catalog-models">
         ${this.catalog.map((m) => html`<option value=${m.id}>${m.label || m.id}</option>`)}
       </datalist>
@@ -396,27 +417,41 @@ export class Models extends StoreElement {
 
   private createForm(): TemplateResult {
     return html`<form
-      class="agents-cred-form agents-model-create"
+      class=${this.createRoute ? 'agents-cred-form agents-model-create k-create-surface' : 'agents-cred-form agents-model-create'}
       @submit=${(e: Event) => {
         e.preventDefault()
         const f = e.target as HTMLFormElement
         const g = (n: string): string => (f.querySelector<HTMLInputElement>(`[name=${n}]`)?.value || '').trim()
+        const body = {
+          name: g('name'),
+          provider: 'openai-compatible',
+          baseURL: g('baseURL'),
+          model: g('model'),
+          apiKey: g('apiKey'),
+        }
         void mutate(this.store, {
-          run: () =>
-            this.api.saveCredential({
-              name: g('name'),
-              provider: 'openai-compatible',
-              baseURL: g('baseURL'),
-              model: g('model'),
-              apiKey: g('apiKey'),
-            }),
+          run: () => this.api.saveCredential(body),
           success: 'Credential saved.',
           failure: 'Save failed',
           reload: ['credentials'],
-        }).then((ok) => ok && (this.creating = false))
+        }).then((res) => {
+          if (!res) return
+          if (this.routeOwned) {
+            this.dispatchEvent(
+              new CustomEvent<CreateSuccessDetail>('agents-create-success', {
+                detail: { resource: 'model', name: body.name, item: res },
+                bubbles: true,
+                composed: true,
+              }),
+            )
+            return
+          }
+          this.creating = false
+        })
       }}
     >
-      <h4>New model credential</h4>
+      <div class=${this.createRoute ? 'k-create-body' : ''}>
+      ${this.createRoute ? nothing : html`<h4>New model credential</h4>`}
       <div class="agents-grid2">
         <label>Name<input class="k-input" name="name" required pattern="[a-z0-9-]+" placeholder="my-openai" /></label>
         <label>
@@ -440,11 +475,20 @@ export class Models extends StoreElement {
         <label>Model<input class="k-input mono" name="model"  placeholder="gpt-4o" required list="agents-catalog-models" /></label>
       </div>
       <label>API key<input class="k-input" name="apiKey" type="password" autocomplete="off" placeholder="sk-…" required /></label>
-      <div class="agents-form-actions">
+      </div>
+      <div class=${this.createRoute ? 'k-create-actions' : 'agents-form-actions'}>
+        <button type="button" class="k-btn k-btn--ghost secondary" @click=${() => this.cancelCreate()}>Cancel</button>
         <button class="k-btn k-btn--primary" type="submit">Add credential</button>
-        <button type="button" class="k-btn k-btn--ghost secondary" @click=${() => (this.creating = false)}>Cancel</button>
       </div>
     </form>`
+  }
+
+  private cancelCreate(): void {
+    if (this.createRoute) {
+      this.dispatchEvent(new CustomEvent('agents-cancel', { bubbles: true, composed: true }))
+      return
+    }
+    this.creating = false
   }
 }
 

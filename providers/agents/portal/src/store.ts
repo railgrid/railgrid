@@ -32,6 +32,29 @@ function slice<T>(initial: T): Slice<T> {
 
 export type SliceKey = 'agents' | 'connections' | 'toolsets' | 'schedules' | 'triggers' | 'credentials' | 'inbox'
 
+// These are the collections whose create response is returned to the shell
+// before the next list response necessarily includes it. The other slices do
+// not have a create-result adoption path, so keeping this mapping explicit
+// prevents an arbitrary list item from being treated as locally authoritative.
+export interface CreateCollectionItems {
+  agents: Agent
+  connections: Connection
+  toolsets: Toolset
+  credentials: Credential
+}
+
+export type CreateCollectionKey = keyof CreateCollectionItems
+
+interface AdoptedItem {
+  // A list request captures the collection generation when it starts. An item
+  // with a newer generation must survive that request's response if the
+  // response does not contain it.
+  generation: number
+  item: unknown
+}
+
+const CREATE_COLLECTION_KEYS: CreateCollectionKey[] = ['agents', 'connections', 'toolsets', 'credentials']
+
 // ServerEvent mirrors one /api/events push. `run` and `inbox` carry an id;
 // `schedule` and `trigger` (a background job fired) carry the source's name and
 // the run it started.
@@ -75,10 +98,26 @@ export class AppStore extends EventTarget {
   private api: ApiClient
   private abort: AbortController | null = null
   private poll: ReturnType<typeof setInterval> | null = null
+  private collectionGenerations: Record<CreateCollectionKey, number> = {
+    agents: 0,
+    connections: 0,
+    toolsets: 0,
+    credentials: 0,
+  }
+  private adoptedItems: Record<CreateCollectionKey, Map<string, AdoptedItem>> = {
+    agents: new Map(),
+    connections: new Map(),
+    toolsets: new Map(),
+    credentials: new Map(),
+  }
+  private nextLoadID = 0
+  private latestLoadID: Partial<Record<SliceKey, number>> = {}
+  private pendingLoads: Partial<Record<CreateCollectionKey, Map<number, number>>> = {}
 
   constructor(api: ApiClient) {
     super()
     this.api = api
+    for (const key of CREATE_COLLECTION_KEYS) this.pendingLoads[key] = new Map()
   }
 
   private changed(): void {
@@ -180,18 +219,84 @@ export class AppStore extends EventTarget {
   async load(key: SliceKey): Promise<void> {
     if (!this.api.hasWorkspace()) return
     const s = this[key] as Slice<unknown[]>
+    const loadID = ++this.nextLoadID
+    const requestGeneration = this.collectionGeneration(key)
+    this.latestLoadID[key] = loadID
+    this.pendingLoads[key as CreateCollectionKey]?.set(loadID, requestGeneration)
     s.loading = true
     this.changed()
     try {
-      s.data = await LOADERS[key](this.api)
-      s.error = null
-      s.hasSnapshot = true
+      const rows = await LOADERS[key](this.api)
+      // A refresh started before a successful create may return a snapshot
+      // that cannot contain the newly-created item yet. Only the latest load
+      // may replace the slice; when that load predates an adoption, merge the
+      // adopted item back in. This keeps refreshes authoritative for every
+      // other row instead of suppressing the reload altogether.
+      if (this.latestLoadID[key] === loadID) {
+        s.data = this.mergeLoadedRows(key, rows, requestGeneration)
+        s.error = null
+        s.hasSnapshot = true
+      }
     } catch (e) {
-      s.error = (e as Error).message
+      // Preserve the error from the most recent request. An older failed
+      // request must not hide a newer successful refresh (or vice versa).
+      if (this.latestLoadID[key] === loadID) s.error = (e as Error).message
+    } finally {
+      this.pendingLoads[key as CreateCollectionKey]?.delete(loadID)
+      this.pruneAdoptedItems(key)
+      if (this.latestLoadID[key] === loadID) {
+        s.loading = false
+        s.loaded = true
+      }
+      this.changed()
     }
-    s.loading = false
-    s.loaded = true
+  }
+
+  // adopt inserts the server's successful create result immediately, while
+  // recording which collection generation produced it. A list request that
+  // began at an older generation merges this item into its otherwise
+  // authoritative response instead of deleting it from the UI.
+  adopt<K extends CreateCollectionKey>(key: K, item: CreateCollectionItems[K]): void {
+    const id = createCollectionItemID(key, item)
+    if (!id) return
+
+    const generation = this.collectionGenerations[key] + 1
+    this.collectionGenerations[key] = generation
+    this.adoptedItems[key].set(id, { generation, item })
+
+    const s = this[key] as Slice<Array<CreateCollectionItems[K]>>
+    s.data = [...s.data.filter((existing) => createCollectionItemID(key, existing) !== id), item]
+    s.hasSnapshot = true
     this.changed()
+  }
+
+  private collectionGeneration(key: SliceKey): number {
+    return isCreateCollectionKey(key) ? this.collectionGenerations[key] : 0
+  }
+
+  private mergeLoadedRows(key: SliceKey, rows: unknown[], requestGeneration: number): unknown[] {
+    if (!isCreateCollectionKey(key)) return rows
+    const newer = [...this.adoptedItems[key].entries()].filter(([, adopted]) => adopted.generation > requestGeneration)
+    if (!newer.length) return rows
+
+    const present = new Set(rows.map((row) => createCollectionItemID(key, row)).filter(Boolean))
+    const merged = [...rows]
+    for (const [id, adopted] of newer) {
+      if (!present.has(id)) merged.push(adopted.item)
+    }
+    return merged
+  }
+
+  private pruneAdoptedItems(key: SliceKey): void {
+    if (!isCreateCollectionKey(key)) return
+    const pending = this.pendingLoads[key]
+    for (const [id, adopted] of this.adoptedItems[key]) {
+      // Keep the marker until every request that predates the adoption has
+      // settled. Otherwise a newer response could observe the item and then
+      // an older in-flight response could still erase it.
+      const hasOlderPendingLoad = [...(pending?.values() || [])].some((generation) => generation < adopted.generation)
+      if (!hasOlderPendingLoad) this.adoptedItems[key].delete(id)
+    }
   }
 
   async loadOAuthApps(): Promise<void> {
@@ -285,6 +390,19 @@ export class AppStore extends EventTarget {
     this.dispatchEvent(new CustomEvent<ServerEvent>('server', { detail: ev }))
     this.changed()
   }
+}
+
+function isCreateCollectionKey(key: SliceKey): key is CreateCollectionKey {
+  return CREATE_COLLECTION_KEYS.includes(key as CreateCollectionKey)
+}
+
+function createCollectionItemID(key: CreateCollectionKey, item: unknown): string {
+  if (key === 'credentials') {
+    const name = (item as Credential | null | undefined)?.name
+    return typeof name === 'string' ? name : ''
+  }
+  const name = (item as { metadata?: { name?: unknown } } | null | undefined)?.metadata?.name
+  return typeof name === 'string' ? name : ''
 }
 
 const LOADERS: Record<SliceKey, (api: ApiClient) => Promise<unknown[]>> = {

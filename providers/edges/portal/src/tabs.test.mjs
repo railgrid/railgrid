@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 const readSource = (file) => readFileSync(resolve(process.cwd(), 'src', file), 'utf8')
 const app = readSource('App.vue')
+const edgeCollection = readSource('EdgeCollection.vue')
 const services = readSource('Services.vue')
 const workloads = readSource('Workloads.vue')
 const styles = readSource('style.css')
@@ -13,21 +14,24 @@ describe('Edges portal conformance', () => {
     expect(app).toMatch(/import Tabs from '\.\/portalkit\/Tabs\.vue'/)
     expect(app).toMatch(/const edgeRouteTabs = \[[\s\S]*id: 'edges'[\s\S]*Server[\s\S]*id: 'workloads'[\s\S]*Boxes[\s\S]*id: 'services'[\s\S]*Plug/)
 
-    const routeTabs = app.match(/<Tabs[\s\S]*?@select="\(id\) => navigate\(id === 'edges' \? '' : id\)"\s*\/>/)?.[0]
+    const routeTabs = app.match(/<Tabs[\s\S]*?@select="selectView"\s*\/>/)?.[0]
     expect(routeTabs).toBeTruthy()
-    expect(routeTabs).toMatch(/v-if="!wizardOpen && !selected"/)
+    expect(routeTabs).toMatch(/v-if="!route\.edge && !route\.service && !route\.connect && !route\.create && !route\.deploy"/)
     expect(routeTabs).toMatch(/:tabs="edgeRouteTabs"/)
     expect(routeTabs).toMatch(/:active="view"/)
     expect(routeTabs).toMatch(/aria-label="Edges sections"/)
     expect(routeTabs).not.toMatch(/wiz-steps|wiz-step|style=/)
   })
 
-  it('keeps wizard progression styling and overlay route guards intact', () => {
+  it('keeps route-owned creation and detail surfaces out of collection overlays', () => {
     expect(styles).toMatch(/faros-provider-edges \.edges-app \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*gap: 16px;/)
-    expect(app).toMatch(/<Workloads v-if="view === 'workloads' && !wizardOpen && !selected" \/>/)
-    expect(app).toMatch(/<Services v-else-if="view === 'services' && !wizardOpen && !selected" \/>/)
-    expect(app).toMatch(/<Wizard v-else-if="wizardOpen"/)
-    expect(app).toMatch(/<Detail[\s\S]*v-else-if="selected"/)
+    expect(app).toMatch(/<WorkloadCreate[\s\S]*route\.deploy\?\.resource === 'workload'/)
+    expect(app).toMatch(/<ServiceCreate[\s\S]*route\.create\?\.resource === 'service'/)
+    expect(app).toMatch(/<Wizard[\s\S]*route\.connect\?\.resource === 'edge'/)
+    expect(app).toMatch(/<Detail[\s\S]*v-if="route\.edge"/)
+    expect(app).not.toMatch(/const selected = ref/)
+    expect(services).not.toMatch(/const showCreate = ref/)
+    expect(workloads).not.toMatch(/const showCreate = ref/)
     expect(styles).toMatch(/\.wiz-steps\s*\{[\s\S]*\.wiz-step\s*\{[\s\S]*\.wiz-step\.active\s*\{[\s\S]*\.wiz-step\.done\s*\{/)
   })
 
@@ -40,7 +44,7 @@ describe('Edges portal conformance', () => {
 
   it('keeps interactive table rows labeled and nested actions explicit', () => {
     for (const [source, labelFunction] of [
-      [app, 'edgeRowAriaLabel'],
+      [edgeCollection, 'edgeRowAriaLabel'],
       [services, 'serviceRowAriaLabel'],
       [workloads, 'workloadRowAriaLabel'],
     ]) {
@@ -49,7 +53,7 @@ describe('Edges portal conformance', () => {
       expect(source).toMatch(/@row-click=/)
     }
 
-    expect(app).toMatch(/ResourceTableDeleteButton/)
+    expect(edgeCollection).toMatch(/ResourceTableDeleteButton/)
     expect(services).toMatch(/ResourceTableEditButton/)
     expect(services).toMatch(/ResourceTableDeleteButton/)
     expect(workloads).toMatch(/ResourceTableDeleteButton/)

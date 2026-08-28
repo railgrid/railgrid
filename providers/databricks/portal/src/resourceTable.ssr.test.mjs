@@ -5,7 +5,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { createRenderer, createSSRApp, h, nextTick } from 'vue'
+import { createRenderer, createSSRApp, h, nextTick, ref, watch } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
 let vite
@@ -17,6 +17,13 @@ const canonicalResourcePage = resolve(repositoryRoot, 'provider-sdk/portalkit-vu
 const canonicalPageState = resolve(repositoryRoot, 'provider-sdk/portalkit/page-state.ts')
 const canonicalFarosUIStyle = resolve(repositoryRoot, 'provider-sdk/portalkit/faros-ui.css')
 const canonicalTableHelpers = resolve(repositoryRoot, 'provider-sdk/portalkit-vue/table.ts')
+
+// The mounted SFC checks these browser constructors while applying v-model
+// updates. The host-renderer harness supplies plain objects instead of a DOM,
+// so provide inert constructors that keep that browser-only branch false.
+if (typeof globalThis.Document === 'undefined') globalThis.Document = class {}
+if (typeof globalThis.ShadowRoot === 'undefined') globalThis.ShadowRoot = class {}
+
 test.before(async () => {
   vite = await createServer({
     root: portalRoot,
@@ -70,9 +77,16 @@ function createHostRenderer() {
       node.parent = null
     },
     createElement(type) {
-      const node = { type, props: {}, children: [], parent: null }
+      const node = { type, props: {}, children: [], parent: null, addEventListener() {}, removeEventListener() {} }
+      Object.defineProperties(node, {
+        value: { get: () => node.props.value ?? '', set: value => { node.props.value = value } },
+        options: { get: () => node.children.filter(child => child.type === 'option') },
+        multiple: { get: () => !!node.props.multiple },
+        selectedIndex: { get: () => node.props.selectedIndex ?? -1, set: value => { node.props.selectedIndex = value } },
+      })
       node.removeAttribute = name => { delete node.props[name] }
       node.setAttribute = (name, value) => { node.props[name] = String(value) }
+      node.getRootNode = () => globalThis.document ?? null
       node.focus = () => {}
       return node
     },
@@ -190,7 +204,7 @@ async function loadMountedSFC(path) {
   return module.default
 }
 
-function mountDetailView(Component, props, components) {
+function mountDetailView(Component, props, components, provides = {}) {
   const previousDocument = globalThis.document
   const previousWindow = globalThis.window
   const styleNode = {
@@ -212,6 +226,7 @@ function mountDetailView(Component, props, components) {
   const { renderer, root } = createHostRenderer()
   const app = renderer.createApp(Component, props)
   for (const [name, component] of Object.entries(components ?? {})) app.component(name, component)
+  Object.assign(app._context.provides, provides)
   app._context.provides[Symbol.for('v-scx')] = { modules: new Set() }
   app.mount(root)
   return {
@@ -1201,15 +1216,15 @@ test('wizard and split-create sources preserve focus across deferred initializat
   const tableDetail = await readFile(new URL('./views/TableDetailView.vue', import.meta.url), 'utf8')
   const style = await readFile(new URL('./style.css', import.meta.url), 'utf8')
   assert.match(wizard, /focusDialog\(\)/)
-  assert.match(wizard, /void initialize\(\)\.then\(\(\) => focusStep\(\)\)/)
+  assert.match(wizard, /void initialize\(\)\.then\(token => \{[\s\S]*isCurrentInitializationRun\(token\)[\s\S]*focusStep\(\)/)
   assert.match(wizard, /function navigateTo/)
-  assert.match(app, /restoreImportFocus\(/)
-  assert.match(app, /function focusDestination/)
-  assert.match(app, /data-k-tab-id=/)
-  assert.doesNotMatch(app, /data-databricks-nav=/)
-  assert.match(app, /focusDestination\(path\)/)
-  assert.match(app, /@browse="\(trigger\) => openImport\('warehouse', trigger\)"/)
-  assert.match(app, /@browse="\(trigger\) => openImport\('table', trigger\)"/)
+  assert.match(app, /navigationDetail/)
+  assert.match(app, /function navigate\(path: string, replace = false\)/)
+  assert.match(app, /detail: navigationDetail\(path, replace\)/)
+  assert.match(app, /createPath/)
+  assert.match(app, /route-owned/)
+  assert.match(app, /@create="\(mode: 'manual' \| 'browse'\) => openCreate\('warehouse', mode\)"/)
+  assert.match(app, /@create="\(mode: 'manual' \| 'browse'\) => openCreate\('table', mode\)"/)
   assert.match(split, /data-split-create-trigger/)
   assert.match(split, /emit\('browse', trigger\)/)
   assert.match(split, /function closeMenuAfterTab/)
@@ -1237,7 +1252,9 @@ test('route tabs use PortalKit items and icons', async () => {
   assert.match(app, /\{ id: 'warehouses', label: 'Warehouses', icon: Warehouse \}/)
   assert.match(app, /\{ id: 'tables', label: 'Tables', icon: Table2 \}/)
   assert.match(app, /<Tabs :tabs="tabs" :active="route\.page" aria-label="Databricks resource sections" @select="navigate" \/>/)
-  assert.match(app, /querySelector<HTMLElement>\(`\[data-k-tab-id="\$\{path\}"\]`\)/)
+  assert.match(app, /<ConnectionsView[\s\S]*v-if="route\.page === 'connections' && !route\.connection"/)
+  assert.match(app, /<WarehousesView[\s\S]*v-else-if="route\.page === 'warehouses' && !route\.warehouse"/)
+  assert.match(app, /<TablesView[\s\S]*v-else-if="route\.page === 'tables' && !route\.table"/)
   assert.doesNotMatch(style, /faros-provider-databricks \.tabs(?:\s|\{|\.)/)
 })
 
@@ -1250,7 +1267,7 @@ test('resource detail views use the shared shell without dropping resource behav
     table: await readFile(new URL('./views/TableDetailView.vue', import.meta.url), 'utf8'),
   }
 
-  assert.match(app, /<template v-if="!route\.connection && !route\.warehouse && !route\.table">[\s\S]*<Tabs :tabs=/)
+  assert.match(app, /<template v-if="route\.page !== 'create' && !route\.connection && !route\.warehouse && !route\.table">[\s\S]*<Tabs :tabs=/)
   assert.match(app, /ConnectionDetailView v-if="route\.page === 'connections' && route\.connection"/)
   assert.match(app, /WarehouseDetailView v-else-if="route\.page === 'warehouses' && route\.warehouse"/)
   assert.match(app, /TableDetailView v-else-if="route\.page === 'tables' && route\.table"/)
@@ -1354,6 +1371,619 @@ test('Databricks resource lists use the canonical table property hierarchy', asy
   assert.match(localStyle, /\.row-actions\s*\{\s*justify-content: flex-end;/)
 })
 
+test('manual creation pages ignore rejected unrelated collection reads', async () => {
+  const [CreateWarehouseView, CreateTableView, apiModule] = await Promise.all([
+    loadMountedSFC('/src/views/CreateWarehouseView.vue'),
+    loadMountedSFC('/src/views/CreateTableView.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+  ])
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    listWarehouses: apiModule.api.listWarehouses,
+    listTables: apiModule.api.listTables,
+  }
+  let warehouseReads = 0
+  let tableReads = 0
+  apiModule.api.listConnections = async () => [{ name: 'orders', host: 'https://dbc.example.com', authType: 'pat', secretName: 'orders-token', secretNamespace: 'default', secretKey: 'token', status: 'Ready', conditions: [] }]
+  apiModule.api.listWarehouses = async () => {
+    warehouseReads += 1
+    throw new Error('warehouse collection should not load before manual creation')
+  }
+  apiModule.api.listTables = async () => {
+    tableReads += 1
+    throw new Error('table collection should not load before manual creation')
+  }
+
+  let warehouseMounted
+  let tableMounted
+  try {
+    warehouseMounted = mountDetailView(CreateWarehouseView, {}, {})
+    await flushVue()
+    assert.equal(warehouseMounted.instance.setupState.loaded, true, 'warehouse creation became ready from its connection prerequisite')
+    assert.equal(warehouseReads, 0, 'warehouse creation did not invoke the unrelated warehouse collection read')
+    warehouseMounted.unmount()
+
+    apiModule.api.listWarehouses = async () => [{ name: 'orders-sql', connectionRef: 'orders', warehouseID: 'warehouse-123', status: 'Ready', conditions: [] }]
+    tableMounted = mountDetailView(CreateTableView, {}, {})
+    await flushVue()
+    assert.equal(tableMounted.instance.setupState.loaded, true, 'table creation became ready from connection and warehouse prerequisites')
+    assert.equal(tableReads, 0, 'table creation did not invoke the unrelated table collection read')
+  } finally {
+    tableMounted?.unmount()
+    warehouseMounted?.unmount()
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.listTables = original.listTables
+  }
+})
+
+test('manual creation attempts become inert after their route unmounts', async () => {
+  const [CreateConnectionView, CreateWarehouseView, CreateTableView, apiModule] = await Promise.all([
+    loadMountedSFC('/src/views/CreateConnectionView.vue'),
+    loadMountedSFC('/src/views/CreateWarehouseView.vue'),
+    loadMountedSFC('/src/views/CreateTableView.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+  ])
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    listWarehouses: apiModule.api.listWarehouses,
+    listTables: apiModule.api.listTables,
+    saveConnection: apiModule.api.saveConnection,
+    saveWarehouse: apiModule.api.saveWarehouse,
+    saveTable: apiModule.api.saveTable,
+  }
+  const connection = {
+    name: 'orders', host: 'https://dbc.example.com', authType: 'pat', secretName: 'orders-token',
+    secretNamespace: 'default', secretKey: 'token', status: 'Ready', conditions: [],
+  }
+  const warehouse = {
+    name: 'orders-sql', connectionRef: 'orders', warehouseID: 'warehouse-123', status: 'Ready', conditions: [],
+  }
+  const cases = [
+    {
+      Component: CreateConnectionView,
+      fields: { name: 'new-connection', host: 'https://dbc-new.example.com', token: 'secret-token' },
+      save: 'saveConnection',
+      result: { name: 'new-connection' },
+    },
+    {
+      Component: CreateWarehouseView,
+      fields: { name: 'new-warehouse', connectionRef: 'orders', warehouseID: 'warehouse-456' },
+      save: 'saveWarehouse',
+      result: { name: 'new-warehouse' },
+    },
+    {
+      Component: CreateTableView,
+      fields: {
+        name: 'new-table', connectionRef: 'orders', warehouseRef: 'orders-sql',
+        catalog: 'main', schema: 'sales', table: 'orders',
+      },
+      save: 'saveTable',
+      result: { name: 'new-table' },
+    },
+  ]
+
+  apiModule.api.listConnections = async () => [connection]
+  apiModule.api.listWarehouses = async () => [warehouse]
+  apiModule.api.listTables = async () => []
+  try {
+    for (const testCase of cases) {
+      let resolveSave
+      let saveStartedResolve
+      const saveStarted = new Promise(resolve => { saveStartedResolve = resolve })
+      const savePending = new Promise(resolve => { resolveSave = resolve })
+      let createdEvents = 0
+      apiModule.api[testCase.save] = async () => {
+        saveStartedResolve()
+        return savePending
+      }
+      const mounted = mountDetailView(testCase.Component, { onCreated: () => { createdEvents += 1 } }, {})
+      try {
+        await flushVue()
+        Object.assign(mounted.instance.setupState.form, testCase.fields)
+        await flushVue()
+        const submitPromise = mounted.instance.setupState.submit()
+        await saveStarted
+        await nextTick()
+        assert.equal(mounted.instance.setupState.submitting, true, `${testCase.save} marks the attempt pending`)
+
+        // A route transition unmounts the form while the server mutation is
+        // still pending. Its eventual response must not navigate or rewrite
+        // the abandoned component's state.
+        mounted.unmount()
+        resolveSave(testCase.result)
+        await submitPromise
+        await flushVue()
+
+        assert.equal(createdEvents, 0, `${testCase.save} did not emit success after unmount`)
+        assert.equal(mounted.instance.setupState.submitting, true, `${testCase.save} left abandoned state untouched after unmount`)
+      } finally {
+        mounted.unmount()
+      }
+    }
+  } finally {
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.listTables = original.listTables
+    apiModule.api.saveConnection = original.saveConnection
+    apiModule.api.saveWarehouse = original.saveWarehouse
+    apiModule.api.saveTable = original.saveTable
+  }
+})
+
+test('manual creation rejects a save resolved before the context-driven unmount flush', async () => {
+  const [CreateConnectionView, apiModule, contextModule] = await Promise.all([
+    loadMountedSFC('/src/views/CreateConnectionView.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+    vite.ssrLoadModule('/src/context.ts'),
+  ])
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    saveConnection: apiModule.api.saveConnection,
+  }
+  const existing = {
+    name: 'orders', host: 'https://dbc.example.com', authType: 'pat', secretName: 'orders-token',
+    secretNamespace: 'default', secretKey: 'token', status: 'Ready', conditions: [],
+  }
+  let resolveSave
+  let saveStartedResolve
+  const saveStarted = new Promise(resolve => { saveStartedResolve = resolve })
+  const savePending = new Promise(resolve => { resolveSave = resolve })
+  apiModule.api.listConnections = async () => [existing]
+  apiModule.api.saveConnection = async () => {
+    saveStartedResolve()
+    return savePending
+  }
+
+  const contextGeneration = ref(0)
+  let unmounted = false
+  let emittedBeforeUnmount = 0
+  const mounted = mountDetailView(
+    CreateConnectionView,
+    {
+      onCreated: () => {
+        if (!unmounted) emittedBeforeUnmount += 1
+      },
+    },
+    {},
+    { [contextModule.contextGenerationKey]: contextGeneration },
+  )
+  const originalUnmount = mounted.unmount
+  mounted.unmount = () => {
+    if (unmounted) return
+    unmounted = true
+    originalUnmount()
+  }
+  try {
+    await flushVue()
+    Object.assign(mounted.instance.setupState.form, {
+      name: 'new-connection', host: 'https://dbc-new.example.com', token: 'secret-token',
+    })
+    await flushVue()
+    const submitPromise = mounted.instance.setupState.submit()
+    await saveStarted
+
+    // Resolving the save queues its continuation first. The synchronous
+    // authority change must fence that continuation before Vue's queued
+    // keyed unmount runs in the following microtask.
+    resolveSave({ name: 'new-connection' })
+    contextGeneration.value += 1
+    queueMicrotask(() => mounted.unmount())
+    await submitPromise
+
+    assert.equal(emittedBeforeUnmount, 0, 'context change fenced success before the keyed unmount')
+    assert.equal(unmounted, true, 'the simulated keyed unmount still ran after the save continuation')
+  } finally {
+    mounted.unmount()
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.saveConnection = original.saveConnection
+  }
+})
+
+test('manual creation does not focus after context changes during initial loading', async () => {
+  const [CreateConnectionView, CreateWarehouseView, CreateTableView, apiModule, contextModule] = await Promise.all([
+    loadMountedSFC('/src/views/CreateConnectionView.vue'),
+    loadMountedSFC('/src/views/CreateWarehouseView.vue'),
+    loadMountedSFC('/src/views/CreateTableView.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+    vite.ssrLoadModule('/src/context.ts'),
+  ])
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    listWarehouses: apiModule.api.listWarehouses,
+  }
+  const connection = {
+    name: 'orders', host: 'https://dbc.example.com', authType: 'pat', secretName: 'orders-token',
+    secretNamespace: 'default', secretKey: 'token', status: 'Ready', conditions: [],
+  }
+  const warehouse = {
+    name: 'orders-sql', connectionRef: 'orders', warehouseID: 'warehouse-123', status: 'Ready', conditions: [],
+  }
+  const cases = [
+    { Component: CreateConnectionView, inputID: 'connection-name' },
+    { Component: CreateWarehouseView, inputID: 'warehouse-name' },
+    { Component: CreateTableView, inputID: 'table-name' },
+  ]
+
+  try {
+    for (const testCase of cases) {
+      let resolveLoad
+      const loadPending = new Promise(resolve => { resolveLoad = resolve })
+      apiModule.api.listConnections = async () => loadPending.then(() => [connection])
+      apiModule.api.listWarehouses = async () => loadPending.then(() => [warehouse])
+      const contextGeneration = ref(0)
+      let contextChanged = false
+      let unmounted = false
+      let focused = 0
+      const mounted = mountDetailView(
+        testCase.Component,
+        {},
+        {},
+        { [contextModule.contextGenerationKey]: contextGeneration },
+      )
+      const originalUnmount = mounted.unmount
+      mounted.unmount = () => {
+        if (unmounted) return
+        unmounted = true
+        originalUnmount()
+      }
+      const input = mounted.find(node => node.props?.id === testCase.inputID)
+      assert.ok(input, `${testCase.inputID} rendered before its initial read settled`)
+      input.focus = () => { focused += 1 }
+      const stop = watch(() => mounted.instance.setupState.loaded, loaded => {
+        if (!loaded || contextChanged) return
+        contextChanged = true
+        contextGeneration.value += 1
+        // Vue's keyed unmount is queued after the resolved load continuation;
+        // the focus continuation must still observe the changed authority.
+        queueMicrotask(() => queueMicrotask(() => mounted.unmount()))
+      }, { flush: 'sync' })
+      try {
+        resolveLoad()
+        await flushVue()
+        assert.equal(contextChanged, true, `${testCase.inputID} observed the simulated context change`)
+        assert.equal(focused, 0, `${testCase.inputID} did not focus after its context changed`)
+        assert.equal(unmounted, true, `${testCase.inputID} was unmounted after the stale focus continuation`)
+      } finally {
+        stop()
+        mounted.unmount()
+      }
+    }
+  } finally {
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+  }
+})
+
+test('import wizard fences initialization before the keyed unmount flush', async () => {
+  const [Wizard, apiModule, contextModule] = await Promise.all([
+    loadMountedSFC('/src/ResourceImportWizard.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+    vite.ssrLoadModule('/src/context.ts'),
+  ])
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    listWarehouses: apiModule.api.listWarehouses,
+  }
+  let resolveConnections
+  let resolveWarehouses
+  apiModule.api.listConnections = async () => new Promise(resolve => { resolveConnections = resolve })
+  apiModule.api.listWarehouses = async () => new Promise(resolve => { resolveWarehouses = resolve })
+  const contextGeneration = ref(0)
+  let mounted
+  let unmounted = false
+  try {
+    mounted = mountDetailView(
+      Wizard,
+      { kind: 'warehouse', routeOwned: true },
+      {},
+      { [contextModule.contextGenerationKey]: contextGeneration },
+    )
+    assert.equal(mounted.instance.setupState.initializationState.connections, 'loading')
+    assert.equal(mounted.instance.setupState.initializationState.warehouses, 'loading')
+
+    const originalUnmount = mounted.unmount
+    mounted.unmount = () => {
+      if (unmounted) return
+      unmounted = true
+      originalUnmount()
+    }
+    resolveConnections([{ name: 'orders', host: 'https://dbc.example.com', authType: 'pat', secretName: 'orders-token', secretNamespace: 'default', secretKey: 'token', status: 'Ready', conditions: [] }])
+    resolveWarehouses([{ name: 'orders-sql', connectionRef: 'orders', warehouseID: 'warehouse-123', status: 'Ready', conditions: [] }])
+    contextGeneration.value += 1
+    // The host's keyed replacement is queued after the settled read
+    // continuations. The old wizard must still reject those continuations.
+    queueMicrotask(() => mounted.unmount())
+    await flushVue()
+
+    assert.deepEqual(mounted.instance.setupState.connections, [], 'stale connections did not populate the source state')
+    assert.deepEqual(mounted.instance.setupState.warehouses, [], 'stale warehouses did not populate the source state')
+    assert.equal(mounted.instance.setupState.initializationState.connections, 'loading', 'stale initialization did not clear busy state')
+    assert.equal(mounted.instance.setupState.initializationState.warehouses, 'loading', 'stale initialization did not clear busy state')
+    assert.equal(mounted.instance.setupState.error, null, 'stale initialization did not create an error')
+    assert.equal(unmounted, true, 'the simulated keyed unmount ran after the read continuations')
+  } finally {
+    mounted?.unmount()
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+  }
+})
+
+test('import wizard fences root and exhaustive branch discovery on context rotation', async () => {
+  const [Wizard, apiModule, contextModule] = await Promise.all([
+    loadMountedSFC('/src/ResourceImportWizard.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+    vite.ssrLoadModule('/src/context.ts'),
+  ])
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    listWarehouses: apiModule.api.listWarehouses,
+    discoverWarehouses: apiModule.api.discoverWarehouses,
+    discoverSchemas: apiModule.api.discoverSchemas,
+    discoverTables: apiModule.api.discoverTables,
+  }
+  const connection = { name: 'orders', host: 'https://dbc.example.com', authType: 'pat', secretName: 'orders-token', secretNamespace: 'default', secretKey: 'token', status: 'Ready', conditions: [] }
+  apiModule.api.listConnections = async () => [connection]
+  apiModule.api.listWarehouses = async () => []
+  let resolveRoot
+  let rootStartedResolve
+  const rootStarted = new Promise(resolve => { rootStartedResolve = resolve })
+  const rootPending = new Promise(resolve => { resolveRoot = resolve })
+  apiModule.api.discoverWarehouses = async () => {
+    rootStartedResolve()
+    return rootPending
+  }
+  let resolveSchemas
+  let schemasStartedResolve
+  const schemasStarted = new Promise(resolve => { schemasStartedResolve = resolve })
+  const schemasPending = new Promise(resolve => { resolveSchemas = resolve })
+  apiModule.api.discoverSchemas = async () => {
+    schemasStartedResolve()
+    return schemasPending
+  }
+  apiModule.api.discoverTables = async () => ({ items: [] })
+  const contextGeneration = ref(0)
+  let mounted
+  let unmounted = false
+  try {
+    mounted = mountDetailView(
+      Wizard,
+      { kind: 'warehouse', routeOwned: true },
+      {},
+      { [contextModule.contextGenerationKey]: contextGeneration },
+    )
+    await flushVue()
+    const state = mounted.instance.setupState
+    const rootPromise = state.fromSource()
+    await rootStarted
+    assert.equal(state.step, 'browse')
+    assert.equal(state.rootLoading, true)
+    resolveRoot({ items: [{ id: 'warehouse-123', name: 'orders-sql', state: 'RUNNING', supported: true }] })
+    contextGeneration.value += 1
+    queueMicrotask(() => {
+      if (unmounted) return
+      unmounted = true
+      mounted.unmount()
+    })
+    await rootPromise
+    await flushVue()
+    assert.deepEqual(state.tree.roots, [], 'stale root discovery did not populate the tree')
+    assert.equal(state.rootError, '', 'stale root discovery did not create an error')
+    assert.equal(state.rootLoading, true, 'stale root discovery did not clear busy state')
+    assert.equal(state.error, null, 'stale root discovery did not create an error')
+
+    // Use a fresh keyed instance for the branch window. The branch helper
+    // resolves into a private snapshot, so an abandoned response must not
+    // select or append anything to the visible tree.
+    const branchContext = ref(0)
+    unmounted = false
+    mounted = mountDetailView(
+      Wizard,
+      { kind: 'warehouse', routeOwned: true },
+      {},
+      { [contextModule.contextGenerationKey]: branchContext },
+    )
+    await flushVue()
+    const branchState = mounted.instance.setupState
+    const branch = {
+      id: 'catalog:main', kind: 'catalog', label: 'main', depth: 1, disabled: false,
+      expanded: false, childrenLoaded: false, loading: false, childIds: [],
+      catalog: 'main',
+    }
+    branchState.tree.roots = [branch.id]
+    branchState.tree.nodes[branch.id] = branch
+    const branchPromise = branchState.toggleNode(branch.id, true)
+    await schemasStarted
+    assert.equal(branchState.branchChecking, true)
+    resolveSchemas({ items: [{ name: 'sales', catalog: 'main', supported: true }] })
+    branchContext.value += 1
+    queueMicrotask(() => {
+      if (unmounted) return
+      unmounted = true
+      mounted.unmount()
+    })
+    await branchPromise
+    await flushVue()
+    assert.deepEqual(branchState.tree.selectedLeafIds, [], 'stale branch discovery selected resources')
+    assert.deepEqual(branchState.tree.nodes[branch.id].childIds, [], 'stale branch discovery appended children')
+    assert.equal(branchState.error, null, 'stale branch discovery created an error')
+    assert.equal(branchState.branchChecking, true, 'stale branch discovery cleared busy state')
+  } finally {
+    mounted?.unmount()
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.discoverWarehouses = original.discoverWarehouses
+    apiModule.api.discoverSchemas = original.discoverSchemas
+    apiModule.api.discoverTables = original.discoverTables
+  }
+})
+
+test('import wizard fences register and retry results, errors, and finalizers', async () => {
+  const [Wizard, apiModule, contextModule] = await Promise.all([
+    loadMountedSFC('/src/ResourceImportWizard.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+    vite.ssrLoadModule('/src/context.ts'),
+  ])
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    listWarehouses: apiModule.api.listWarehouses,
+    registerResources: apiModule.api.registerResources,
+  }
+  const connection = { name: 'orders', host: 'https://dbc.example.com', authType: 'pat', secretName: 'orders-token', secretNamespace: 'default', secretKey: 'token', status: 'Ready', conditions: [] }
+  apiModule.api.listConnections = async () => [connection]
+  apiModule.api.listWarehouses = async () => []
+  let mounted
+  try {
+    const registerContext = ref(0)
+    let resolveRegister
+    let registerStartedResolve
+    const registerStarted = new Promise(resolve => { registerStartedResolve = resolve })
+    const registerPending = new Promise(resolve => { resolveRegister = resolve })
+    apiModule.api.registerResources = async () => {
+      registerStartedResolve()
+      return registerPending
+    }
+    let registered = 0
+    mounted = mountDetailView(
+      Wizard,
+      { kind: 'warehouse', routeOwned: true, onRegistered: () => { registered += 1 } },
+      {},
+      { [contextModule.contextGenerationKey]: registerContext },
+    )
+    await flushVue()
+    const state = mounted.instance.setupState
+    state.step = 'review'
+    state.reviewEntries = [{ key: 'warehouse:warehouse-123', label: 'orders-sql', item: { name: 'orders-sql', warehouseID: 'warehouse-123' }, name: 'orders-sql' }]
+    state.reviewCoordinates = { connectionRef: 'orders', warehouseRef: '', catalog: '', schema: '' }
+    await flushVue()
+    const registerPromise = state.register()
+    await registerStarted
+    assert.equal(state.submitting, true)
+    resolveRegister({ results: [{ index: 0, name: 'orders-sql', state: 'created' }] })
+    registerContext.value += 1
+    queueMicrotask(() => mounted.unmount())
+    await registerPromise
+    await flushVue()
+    assert.deepEqual(state.results, [], 'stale registration did not populate results')
+    assert.equal(state.step, 'review', 'stale registration did not advance the step')
+    assert.equal(state.error, null, 'stale registration did not create an error')
+    assert.equal(state.submitting, true, 'stale registration cleared busy state')
+    assert.equal(registered, 0, 'stale registration emitted success')
+
+    const retryContext = ref(0)
+    let rejectRetry
+    let retryStartedResolve
+    const retryStarted = new Promise(resolve => { retryStartedResolve = resolve })
+    const retryPending = new Promise((_resolve, reject) => { rejectRetry = reject })
+    apiModule.api.registerResources = async () => {
+      retryStartedResolve()
+      return retryPending
+    }
+    mounted = mountDetailView(
+      Wizard,
+      { kind: 'warehouse', routeOwned: true, onRegistered: () => { registered += 1 } },
+      {},
+      { [contextModule.contextGenerationKey]: retryContext },
+    )
+    await flushVue()
+    const retryState = mounted.instance.setupState
+    retryState.step = 'results'
+    retryState.registrationItems = [{ name: 'orders-sql', warehouseID: 'warehouse-123' }]
+    retryState.results = [{ index: 0, name: 'orders-sql', state: 'failed', message: 'temporary failure' }]
+    retryState.reviewCoordinates = { connectionRef: 'orders', warehouseRef: '', catalog: '', schema: '' }
+    await flushVue()
+    const retryPromise = retryState.retryFailed()
+    await retryStarted
+    assert.equal(retryState.submitting, true)
+    rejectRetry(new Error('old context failure'))
+    retryContext.value += 1
+    queueMicrotask(() => mounted.unmount())
+    await retryPromise
+    await flushVue()
+    assert.equal(retryState.results[0].state, 'failed', 'stale retry replaced the existing result')
+    assert.equal(retryState.error, null, 'stale retry changed error state')
+    assert.equal(retryState.submitting, true, 'stale retry cleared busy state')
+    assert.equal(registered, 0, 'stale retry emitted success')
+  } finally {
+    mounted?.unmount()
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.registerResources = original.registerResources
+  }
+})
+
+test('import wizard does not focus after context changes before its nextTick continuation', async () => {
+  const [Wizard, apiModule, contextModule] = await Promise.all([
+    loadMountedSFC('/src/ResourceImportWizard.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+    vite.ssrLoadModule('/src/context.ts'),
+  ])
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    listWarehouses: apiModule.api.listWarehouses,
+  }
+  apiModule.api.listConnections = async () => []
+  apiModule.api.listWarehouses = async () => []
+  const previousHTMLElement = globalThis.HTMLElement
+  globalThis.HTMLElement = class {}
+  const contextGeneration = ref(0)
+  let mounted
+  let focused = 0
+  try {
+    mounted = mountDetailView(
+      Wizard,
+      { kind: 'warehouse', routeOwned: false },
+      {},
+      { [contextModule.contextGenerationKey]: contextGeneration },
+    )
+    const section = mounted.find(node => node.type === 'section')
+    assert.ok(section, 'modal wizard rendered a section for focus assertions')
+    section.querySelector = () => ({ focus: () => { focused += 1 } })
+    // Both the initial dialog focus and the initialization focus have been
+    // scheduled, but the context changes before either nextTick runs.
+    mounted.instance.setupState.focusStep()
+    contextGeneration.value += 1
+    queueMicrotask(() => mounted.unmount())
+    await flushVue()
+    assert.equal(focused, 0, 'stale focus continuation focused the abandoned wizard')
+  } finally {
+    mounted?.unmount()
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    if (previousHTMLElement === undefined) delete globalThis.HTMLElement
+    else globalThis.HTMLElement = previousHTMLElement
+  }
+})
+
+test('route-owned import is a page while modal mode keeps modal semantics', async () => {
+  const [wizard, app] = await Promise.all([
+    readFile(new URL('./ResourceImportWizard.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./App.vue', import.meta.url), 'utf8'),
+  ])
+  const Wizard = (await vite.ssrLoadModule('/src/ResourceImportWizard.vue')).default
+  const routeHTML = await renderToString(createSSRApp(Wizard, { kind: 'table', routeOwned: true }))
+  const modalHTML = await renderToString(createSSRApp(Wizard, { kind: 'table', routeOwned: false }))
+  assert.doesNotMatch(routeHTML, /role="dialog"/)
+  assert.doesNotMatch(routeHTML, /aria-modal=/)
+  assert.match(modalHTML, /role="dialog"/)
+  assert.match(modalHTML, /aria-modal="true"/)
+  assert.match(wizard, /if \(props\.routeOwned\) return/)
+  assert.match(wizard, /if \(!props\.routeOwned && event\.target === event\.currentTarget\) close\(\)/)
+  assert.match(wizard, /if \(props\.routeOwned \|\| !mounted\) return/)
+  assert.match(wizard, /if \(!props\.routeOwned\) \{[\s\S]*previousFocus = document\.activeElement/)
+  assert.match(app, /provide\(contextGenerationKey, contextVersion\)/)
+  assert.match(app, /immediate: true, flush: 'sync'/)
+  assert.match(app, /<KeepAlive :key="`collections:\$\{contextVersion\}`" :max="3">/)
+  assert.match(app, /route\.page === 'connections' && !route\.connection/)
+  assert.match(app, /route\.page === 'warehouses' && !route\.warehouse/)
+  assert.match(app, /route\.page === 'tables' && !route\.table/)
+  assert.match(app, /<ConnectionsView[\s\S]*:key="`connections:\$\{contextVersion\}`"/)
+  assert.match(app, /<WarehousesView[\s\S]*:key="`warehouses:\$\{contextVersion\}`"/)
+  assert.match(app, /<TablesView[\s\S]*:key="`tables:\$\{contextVersion\}`"/)
+  assert.doesNotMatch(app, /resourceVersion/)
+  assert.match(app, /Keying the cache by the context[\s\S]*generation clears every cached tenant snapshot/)
+})
+
 test('resource detail deletes expose pending state, truthful status, and real browser backlinks', async () => {
   const details = {
     connection: await readFile(new URL('./views/ConnectionDetailView.vue', import.meta.url), 'utf8'),
@@ -1381,6 +2011,207 @@ test('resource detail deletes expose pending state, truthful status, and real br
     assert.match(source, /:disabled="loading \|\| deleting \|\|/, `${kind} disables refresh while deleting`)
     assert.match(source, /:disabled="![^"]+ \|\| loading \|\| deleting \|\| operationLocked/, `${kind} disables delete while deleting`)
     assert.match(source, /if \(deleting\.value \|\| \(/, `${kind} guards back navigation while deleting`)
+  }
+})
+
+test('import wizard fences deep schema-to-table exhaustive selection on context rotation', async () => {
+  const [Wizard, apiModule, contextModule] = await Promise.all([
+    loadMountedSFC('/src/ResourceImportWizard.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+    vite.ssrLoadModule('/src/context.ts'),
+  ])
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    listWarehouses: apiModule.api.listWarehouses,
+    listTables: apiModule.api.listTables,
+    discoverSchemas: apiModule.api.discoverSchemas,
+    discoverTables: apiModule.api.discoverTables,
+  }
+  const connection = {
+    name: 'orders', host: 'https://dbc.example.com', authType: 'pat', secretName: 'orders-token',
+    secretNamespace: 'default', secretKey: 'token', status: 'Ready', conditions: [],
+  }
+  const warehouse = {
+    name: 'orders-sql', connectionRef: 'orders', warehouseID: 'warehouse-123', status: 'Ready', conditions: [],
+  }
+  let tableStartedResolve
+  let resolveTables
+  const tableStarted = new Promise(resolve => { tableStartedResolve = resolve })
+  const tablePending = new Promise(resolve => { resolveTables = resolve })
+  apiModule.api.listConnections = async () => [connection]
+  apiModule.api.listWarehouses = async () => [warehouse]
+  apiModule.api.listTables = async () => []
+  apiModule.api.discoverSchemas = async () => ({ items: [{ name: 'sales', catalog: 'main', supported: true }] })
+  apiModule.api.discoverTables = async () => {
+    tableStartedResolve()
+    return tablePending
+  }
+  const contextGeneration = ref(0)
+  let mounted
+  try {
+    mounted = mountDetailView(
+      Wizard,
+      { kind: 'table', routeOwned: true },
+      {},
+      { [contextModule.contextGenerationKey]: contextGeneration },
+    )
+    await flushVue()
+    const state = mounted.instance.setupState
+    const branch = {
+      id: 'catalog:main', kind: 'catalog', label: 'main', depth: 1, disabled: false,
+      expanded: false, childrenLoaded: false, loading: false, childIds: [], catalog: 'main',
+    }
+    state.tree.roots = [branch.id]
+    state.tree.nodes[branch.id] = branch
+    const selectionPromise = state.toggleNode(branch.id, true)
+    await tableStarted
+    assert.equal(state.branchChecking, true, 'deep branch selection stays busy while table discovery is pending')
+
+    resolveTables({ items: [{ name: 'orders', catalog: 'main', schema: 'sales', supported: true }] })
+    contextGeneration.value += 1
+    queueMicrotask(() => mounted.unmount())
+    await selectionPromise
+    await flushVue()
+
+    assert.deepEqual(state.tree.selectedLeafIds, [], 'stale deep branch discovery did not select a table')
+    assert.deepEqual(state.tree.nodes[branch.id].childIds, [], 'stale deep branch discovery did not append a schema')
+    assert.equal(state.error, null, 'stale deep branch discovery did not create an error')
+    assert.equal(state.branchChecking, true, 'stale deep branch discovery did not clear busy state')
+  } finally {
+    mounted?.unmount()
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.listTables = original.listTables
+    apiModule.api.discoverSchemas = original.discoverSchemas
+    apiModule.api.discoverTables = original.discoverTables
+  }
+})
+
+test('import wizard does not invoke registration after context authority changes', async () => {
+  const [Wizard, apiModule, contextModule] = await Promise.all([
+    loadMountedSFC('/src/ResourceImportWizard.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+    vite.ssrLoadModule('/src/context.ts'),
+  ])
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    listWarehouses: apiModule.api.listWarehouses,
+    registerResources: apiModule.api.registerResources,
+  }
+  const connection = {
+    name: 'orders', host: 'https://dbc.example.com', authType: 'pat', secretName: 'orders-token',
+    secretNamespace: 'default', secretKey: 'token', status: 'Ready', conditions: [],
+  }
+  const warehouse = {
+    name: 'orders-sql', connectionRef: 'orders', warehouseID: 'warehouse-123', status: 'Ready', conditions: [],
+  }
+  let registerCalls = 0
+  apiModule.api.listConnections = async () => [connection]
+  apiModule.api.listWarehouses = async () => [warehouse]
+  apiModule.api.registerResources = async () => {
+    registerCalls += 1
+    return { results: [{ index: 0, name: 'orders-sql', state: 'created' }] }
+  }
+  const contextGeneration = ref(0)
+  let mounted
+  try {
+    mounted = mountDetailView(
+      Wizard,
+      { kind: 'warehouse', routeOwned: true },
+      {},
+      { [contextModule.contextGenerationKey]: contextGeneration },
+    )
+    await flushVue()
+    const state = mounted.instance.setupState
+    state.step = 'review'
+    state.reviewEntries = [{
+      key: 'warehouse:warehouse-123', label: 'orders-sql',
+      item: { name: 'orders-sql', warehouseID: 'warehouse-123' }, name: 'orders-sql',
+    }]
+    state.reviewCoordinates = { connectionRef: 'orders', warehouseRef: '', catalog: '', schema: '' }
+    await flushVue()
+
+    contextGeneration.value += 1
+    await state.register()
+
+    assert.equal(registerCalls, 0, 'registration did not start after the context authority changed')
+    assert.equal(state.step, 'review', 'pre-rotation registration changed the wizard step')
+    assert.deepEqual(state.results, [], 'pre-rotation registration populated results')
+    assert.equal(state.submitting, false, 'pre-rotation registration changed busy state')
+    assert.equal(state.registrationFrozen, false, 'pre-rotation registration froze the review')
+  } finally {
+    mounted?.unmount()
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.registerResources = original.registerResources
+  }
+})
+
+test('import wizard completes a successful registration and emits once', async () => {
+  const [Wizard, apiModule, contextModule] = await Promise.all([
+    loadMountedSFC('/src/ResourceImportWizard.vue'),
+    vite.ssrLoadModule('/src/api.ts'),
+    vite.ssrLoadModule('/src/context.ts'),
+  ])
+  const original = {
+    listConnections: apiModule.api.listConnections,
+    listWarehouses: apiModule.api.listWarehouses,
+    registerResources: apiModule.api.registerResources,
+  }
+  const connection = {
+    name: 'orders', host: 'https://dbc.example.com', authType: 'pat', secretName: 'orders-token',
+    secretNamespace: 'default', secretKey: 'token', status: 'Ready', conditions: [],
+  }
+  const warehouse = {
+    name: 'orders-sql', connectionRef: 'orders', warehouseID: 'warehouse-123', status: 'Ready', conditions: [],
+  }
+  let registerCalls = 0
+  let receivedPayload
+  apiModule.api.listConnections = async () => [connection]
+  apiModule.api.listWarehouses = async () => [warehouse]
+  apiModule.api.registerResources = async payload => {
+    registerCalls += 1
+    receivedPayload = payload
+    return { results: [{ index: 0, name: 'orders-sql', state: 'created', message: 'accepted' }] }
+  }
+  const contextGeneration = ref(0)
+  let registered = 0
+  let mounted
+  try {
+    mounted = mountDetailView(
+      Wizard,
+      { kind: 'warehouse', routeOwned: true, onRegistered: () => { registered += 1 } },
+      {},
+      { [contextModule.contextGenerationKey]: contextGeneration },
+    )
+    await flushVue()
+    const state = mounted.instance.setupState
+    state.step = 'review'
+    state.reviewEntries = [{
+      key: 'warehouse:warehouse-123', label: 'orders-sql',
+      item: { name: 'orders-sql', warehouseID: 'warehouse-123' }, name: 'orders-sql',
+    }]
+    state.reviewCoordinates = { connectionRef: 'orders', warehouseRef: '', catalog: '', schema: '' }
+    await flushVue()
+
+    await state.register()
+
+    assert.equal(registerCalls, 1, 'successful registration made exactly one mutation request')
+    assert.deepEqual(receivedPayload, {
+      kind: 'warehouse', connectionRef: 'orders', warehouseRef: undefined,
+      items: [{ name: 'orders-sql', warehouseID: 'warehouse-123' }],
+    }, 'successful registration used the reviewed coordinates and item')
+    assert.deepEqual(state.results, [{ index: 0, name: 'orders-sql', state: 'created', message: 'accepted' }], 'successful registration exposed the provider result')
+    assert.equal(state.step, 'results', 'successful registration advanced to results')
+    assert.equal(state.submitting, false, 'successful registration cleared busy state')
+    assert.equal(state.registrationFrozen, true, 'successful registration kept the reviewed batch frozen')
+    assert.equal(state.error, null, 'successful registration did not create an error')
+    assert.equal(registered, 1, 'successful registration emitted exactly one registered event')
+  } finally {
+    mounted?.unmount()
+    apiModule.api.listConnections = original.listConnections
+    apiModule.api.listWarehouses = original.listWarehouses
+    apiModule.api.registerResources = original.registerResources
   }
 })
 

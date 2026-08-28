@@ -13,6 +13,7 @@ defineProps<{
   status: string | null
   actionError: string | null
   editorOpen: boolean
+  creationRoute: boolean
   editingModelID: string | null
   name: string
   provider: string
@@ -45,16 +46,18 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <section class="grid gap-4" aria-label="Models">
-    <div class="flex flex-wrap items-start justify-between gap-3">
+  <section class="grid gap-4" :aria-label="creationRoute ? 'New model' : 'Models'">
+    <div v-if="!creationRoute" class="flex flex-wrap items-start justify-between gap-3">
       <div class="min-w-0">
-        <h3 class="text-[14px] font-semibold text-text-primary">Models</h3>
+        <h3 class="text-[14px] font-semibold text-text-primary">{{ creationRoute ? 'New model' : 'Models' }}</h3>
         <p class="mt-1 max-w-2xl text-[12px] leading-5 text-text-muted">
-          Add workspace model connections, choose the default for project creation, and select a model per chat turn.
+          {{ creationRoute
+            ? 'Add a workspace model connection for project creation and chat.'
+            : 'Add workspace model connections, choose the default for project creation, and select a model per chat turn.' }}
         </p>
       </div>
       <button
-        v-if="!editorOpen && !(loading && !settings)"
+        v-if="!creationRoute && !editorOpen && !(loading && !settings)"
         type="button"
         class="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-accent bg-accent px-3 text-[12px] font-semibold text-surface shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
         :disabled="(settings?.models.length ?? 0) >= 20"
@@ -65,12 +68,12 @@ const emit = defineEmits<{
       </button>
     </div>
 
-    <div v-if="loading && !settings" class="grid min-h-48 content-start gap-3 rounded-md border border-dashed border-border-subtle bg-surface p-4" role="status" aria-live="polite" aria-busy="true">
+    <div v-if="loading && !settings && !creationRoute" class="grid min-h-48 content-start gap-3 rounded-md border border-dashed border-border-subtle bg-surface p-4" role="status" aria-live="polite" aria-busy="true">
       <div class="shimmer h-4 w-36 rounded bg-surface-overlay" />
       <div class="shimmer h-24 w-full rounded bg-surface-overlay" />
       <div class="text-[12px] text-text-muted">Loading models…</div>
     </div>
-    <div v-else-if="loadError && !settings" class="flex min-h-48 flex-col items-start justify-center gap-2 rounded-md border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
+    <div v-else-if="loadError && !settings && !creationRoute" class="flex min-h-48 flex-col items-start justify-center gap-2 rounded-md border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
       <div>{{ loadError }}</div>
       <button type="button" class="font-medium underline underline-offset-2" @click="emit('retry')">Retry</button>
     </div>
@@ -87,7 +90,7 @@ const emit = defineEmits<{
       <div v-if="actionError" class="rounded-md border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">{{ actionError }}</div>
       <div v-else-if="status" class="rounded-md border border-success/30 bg-success-subtle px-3 py-2 text-[12px] text-success" role="status" aria-live="polite">{{ status }}</div>
 
-      <div v-if="settings?.models.length" class="grid gap-3 sm:grid-cols-2">
+      <div v-if="settings?.models.length && !creationRoute" class="grid gap-3 sm:grid-cols-2">
         <article
           v-for="saved in settings.models"
           :key="saved.id"
@@ -126,7 +129,7 @@ const emit = defineEmits<{
         </article>
       </div>
 
-      <div v-else-if="!editorOpen" class="flex min-h-44 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border-subtle bg-surface px-5 py-8 text-center">
+      <div v-else-if="!editorOpen && !creationRoute" class="flex min-h-44 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border-subtle bg-surface px-5 py-8 text-center">
         <div class="flex h-10 w-10 items-center justify-center rounded-lg border border-border-subtle bg-surface-overlay text-text-muted"><Cpu class="h-5 w-5" :stroke-width="1.75" /></div>
         <div>
           <h4 class="text-[13px] font-semibold text-text-primary">No models configured</h4>
@@ -137,11 +140,12 @@ const emit = defineEmits<{
         </button>
       </div>
 
-      <form v-if="editorOpen" class="grid gap-4 rounded-lg border border-border-subtle bg-surface-overlay/40 p-4" aria-label="Model configuration form" @submit.prevent="emit('save')">
-        <div class="flex items-start gap-3">
+      <form v-if="editorOpen || creationRoute" :class="creationRoute ? 'k-create-surface k-create-surface--wide' : 'rounded-lg border border-border-subtle bg-surface-overlay/40 p-4'" aria-label="Model configuration form" @submit.prevent="emit('save')">
+        <div :class="creationRoute ? 'k-create-body' : 'grid gap-4'">
+        <div v-if="!creationRoute" class="flex items-start gap-3">
           <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-muted"><KeyRound class="h-4 w-4" :stroke-width="1.75" /></div>
           <div class="min-w-0">
-            <h4 class="text-[13px] font-semibold text-text-primary">{{ editingModelID ? 'Edit model' : 'New model' }}</h4>
+            <h4 class="text-[13px] font-semibold text-text-primary">{{ editingModelID && !creationRoute ? 'Edit model' : 'New model' }}</h4>
             <p class="mt-0.5 text-[11px] leading-4 text-text-muted">Give this connection a recognizable name, then configure its endpoint and workspace credential.</p>
           </div>
         </div>
@@ -189,15 +193,16 @@ const emit = defineEmits<{
         <section class="grid gap-2 border-t border-border-subtle pt-4" aria-labelledby="model-credential-heading">
           <h5 id="model-credential-heading" class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">Credential</h5>
           <textarea v-if="googleServiceAccountMode" :value="apiKey" class="min-h-[140px] resize-y rounded-md border border-border-subtle bg-surface px-3 py-2.5 font-mono text-[12px] leading-5 text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50" :placeholder="apiKeyPlaceholder" autocomplete="off" :disabled="saving" @input="emit('update:apiKey', ($event.target as HTMLTextAreaElement).value)" />
-          <input v-else :value="apiKey" class="h-10 rounded-md border border-border-subtle bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50" :placeholder="editingModelID ? `${apiKeyPlaceholder} (leave blank to keep current)` : apiKeyPlaceholder" type="password" autocomplete="off" :disabled="saving" @input="emit('update:apiKey', ($event.target as HTMLInputElement).value)" />
-          <p class="text-[11px] leading-4 text-text-muted">{{ apiKeyHint || (editingModelID ? 'Leave blank to keep the current credential.' : 'A credential is required before this model can be selected in chat.') }}</p>
+          <input v-else :value="apiKey" class="h-10 rounded-md border border-border-subtle bg-surface px-3 text-[13px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50" :placeholder="editingModelID && !creationRoute ? `${apiKeyPlaceholder} (leave blank to keep current)` : apiKeyPlaceholder" type="password" autocomplete="off" :disabled="saving" @input="emit('update:apiKey', ($event.target as HTMLInputElement).value)" />
+          <p class="text-[11px] leading-4 text-text-muted">{{ apiKeyHint || (editingModelID && !creationRoute ? 'Leave blank to keep the current credential.' : 'A credential is required before this model can be selected in chat.') }}</p>
         </section>
 
-        <footer class="flex flex-wrap items-center justify-end gap-2 border-t border-border-subtle pt-3">
-          <button type="button" class="inline-flex h-9 items-center justify-center rounded-md border border-border-subtle px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover" :disabled="saving" @click="emit('cancelEditor')">Cancel</button>
-          <button class="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-accent bg-accent px-3 text-[13px] font-semibold text-surface shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none" :disabled="saving || !name.trim() || !model.trim() || Boolean(baseURLError)">
+        </div>
+        <footer :class="creationRoute ? 'k-create-actions' : 'flex flex-wrap items-center justify-end gap-2 border-t border-border-subtle pt-3'">
+          <button type="button" :class="creationRoute ? 'k-btn k-btn--ghost' : 'inline-flex h-9 items-center justify-center rounded-md border border-border-subtle px-3 text-[13px] font-medium text-text-secondary transition hover:bg-surface-hover'" :disabled="saving" @click="emit('cancelEditor')">Cancel</button>
+          <button :class="creationRoute ? 'k-btn k-btn--primary' : 'inline-flex h-9 items-center justify-center gap-2 rounded-md border border-accent bg-accent px-3 text-[13px] font-semibold text-surface shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none'" :disabled="saving || !name.trim() || !model.trim() || Boolean(baseURLError)">
             <Loader2 v-if="saving" class="h-4 w-4 animate-spin" :stroke-width="1.75" /><Check v-else class="h-4 w-4" :stroke-width="1.75" />
-            {{ editingModelID ? 'Save changes' : 'Add model' }}
+            {{ editingModelID && !creationRoute ? 'Save changes' : 'Add model' }}
           </button>
         </footer>
       </form>

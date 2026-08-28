@@ -20,9 +20,10 @@ CRD (distributed to tenant workspaces via the core.faros.sh APIExport), and the
 in-core reconciler provisions each server's identity. A workspace can have many
 servers — e.g. a read-only "audit" endpoint and a full-access "ops" one.
 
-List view: a table of servers with create/delete. Detail view: per-server
-connect snippets plus the live federated-provider tool inventory (stamped on
-status.federatedProviders by the reconciler using that server's own identity).
+List view: a table of servers with delete. Creation is a focused, route-owned
+form at /create/mcp-server. Detail view: per-server connect snippets plus the
+live federated-provider tool inventory (stamped on status.federatedProviders by
+the reconciler using that server's own identity).
 -->
 
 <script setup lang="ts">
@@ -105,6 +106,7 @@ const selected = computed<string | null>(() => {
   const name = route.params.name
   return typeof name === 'string' && name.length > 0 ? name : null
 })
+const isCreate = computed(() => route.name === 'mcp-create')
 const selectedServer = computed(() => servers.value.find((s) => s.name === selected.value) ?? null)
 const selectedResourceMissing = computed(() => Boolean(selected.value && loaded.value && !selectedServer.value))
 
@@ -199,9 +201,41 @@ const statCards = computed<ResourceStatCard[]>(() => [
   },
 ])
 
-const showCreate = ref(false)
-const draft = ref({ name: '', displayName: '', instructions: '', readOnly: false })
+const emptyDraft = () => ({ name: '', displayName: '', instructions: '', readOnly: false })
+const draft = ref(emptyDraft())
 const busy = ref(false)
+let createSessionGeneration = 0
+
+function resetDraft() {
+  draft.value = emptyDraft()
+}
+
+function openCreate() {
+  resetDraft()
+  mutationError.value = null
+  void router.push({ name: 'mcp-create' })
+}
+
+function cancelCreate() {
+  resetDraft()
+  mutationError.value = null
+  void router.replace({ name: 'mcp' })
+}
+
+watch(isCreate, (creating, wasCreating) => {
+  // Each visit owns a distinct async session. Leaving and re-entering the same
+  // route must not let an older POST reset the new draft or redirect it.
+  createSessionGeneration += 1
+  busy.value = false
+  if (creating && !wasCreating) {
+    resetDraft()
+    mutationError.value = null
+  } else if (!creating && wasCreating) {
+    // Creation failures belong to the form. Do not carry one into the
+    // collection after browser-back or another route transition.
+    mutationError.value = null
+  }
+}, { immediate: true })
 
 const copiedField = ref<string | null>(null)
 async function copy(text: string, field: string) {
@@ -262,6 +296,8 @@ watch([orgUUID, workspaceUUID], () => {
   // cached token from the previous tenant to survive a context switch.
   listRequestID += 1
   connectRequestID += 1
+  createSessionGeneration += 1
+  busy.value = false
   connect.value = {}
   connectError.value = null
   // The list is a tenant-owned snapshot too. Drop it before the replacement
@@ -317,23 +353,49 @@ async function loadConnect(name: string) {
 
 async function create() {
   const b = base()
-  if (!b || !draft.value.name.trim()) return
+  const name = draft.value.name.trim()
+  if (!b) {
+    if (isCreate.value) mutationError.value = 'Select an organization and workspace to create an MCP server.'
+    return
+  }
+  if (!name || busy.value || !isCreate.value) return
+  const identity = tenantIdentity()
+  const sessionGeneration = createSessionGeneration
+  const currentSession = () => (
+    sessionGeneration === createSessionGeneration &&
+    identity === tenantIdentity() &&
+    isCreate.value
+  )
   busy.value = true
+  mutationError.value = null
   try {
     const res = await authFetch(b, {
       tenant: true,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(draft.value),
+      body: JSON.stringify({ ...draft.value, name }),
     })
     if (!res.ok) throw new Error(`Create failed (${res.status})`)
-    showCreate.value = false
-    draft.value = { name: '', displayName: '', instructions: '', readOnly: false }
+
+    // The API returns the accepted resource name. Fall back to the trimmed
+    // draft for compatible deployments that return an empty 201 response.
+    let createdName = name
+    try {
+      const body = (await res.json()) as { name?: unknown }
+      if (typeof body.name === 'string' && body.name.trim()) createdName = body.name.trim()
+    } catch {
+      // A successful create is still actionable when the response has no JSON.
+    }
+    if (!currentSession()) return
+
+    resetDraft()
     await load()
+    if (!currentSession()) return
+    await router.replace({ name: 'mcp-detail', params: { name: createdName } })
   } catch (e) {
-    error.value = (e as Error).message
+    if (currentSession()) mutationError.value = (e as Error).message
   } finally {
-    busy.value = false
+    if (sessionGeneration === createSessionGeneration) busy.value = false
   }
 }
 
@@ -455,8 +517,59 @@ function rel(ts?: string): string {
 <template>
   <AppLayout>
     <div>
+      <!-- ─── CREATE VIEW ────────────────────────────────────────────── -->
+      <section v-show="isCreate" class="k-create-page" data-mcp-route-surface="create">
+        <a
+          class="k-btn k-btn--ghost k-back-action"
+          href="/ui/mcp"
+          @click.prevent="cancelCreate"
+        >
+          <ArrowLeft :size="14" aria-hidden="true" />
+          MCP Access
+        </a>
+
+        <header class="k-create-header">
+          <h1 id="mcp-create-title" class="k-create-title">Create MCP server</h1>
+          <p class="k-create-description">Create a named endpoint for this workspace's tools.</p>
+        </header>
+
+        <section class="k-create-surface" aria-labelledby="mcp-create-title">
+          <form class="grid gap-3" @submit.prevent="create">
+            <div class="k-create-body">
+            <label class="grid gap-1">
+              <span class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Name</span>
+              <input v-model="draft.name" autofocus placeholder="ops" class="k-input font-mono text-[12px]" />
+            </label>
+            <label class="grid gap-1">
+              <span class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Display name</span>
+              <input v-model="draft.displayName" placeholder="Ops endpoint" class="k-input text-[12px]" />
+            </label>
+            <label class="grid gap-1">
+              <span class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Instructions (optional)</span>
+              <textarea v-model="draft.instructions" rows="2" placeholder="This is production — ask before destructive operations." class="k-input text-[12px]" />
+            </label>
+            <label class="flex items-center gap-2 text-[12px] text-text-secondary">
+              <input v-model="draft.readOnly" type="checkbox" class="k-checkbox" /> Read-only
+            </label>
+
+            <div v-if="mutationError" class="flex items-center gap-3 rounded-md border border-danger/30 bg-danger/5 p-3 text-[12px] text-danger" role="alert" aria-live="assertive">
+              <span class="min-w-0 flex-1">{{ mutationError }}</span>
+              <button type="button" class="k-btn k-btn--ghost shrink-0 px-2 py-1 text-danger" @click="mutationError = null">Dismiss</button>
+            </div>
+            </div>
+
+            <div class="k-create-actions">
+              <button type="button" class="k-btn k-btn--ghost px-3 py-2 text-[12px]" :disabled="busy" @click="cancelCreate">Cancel</button>
+              <button type="submit" class="k-btn k-btn--primary px-3 py-2 text-[12px]" :disabled="busy || !draft.name.trim()">
+                {{ busy ? 'Creating…' : 'Create server' }}
+              </button>
+            </div>
+          </form>
+        </section>
+      </section>
+
       <!-- ─── LIST VIEW ─────────────────────────────────────────────── -->
-      <template v-if="!selected">
+      <section v-show="!isCreate && !selected" data-mcp-route-surface="collection">
         <div class="mb-6 flex items-center justify-between">
           <div class="flex items-center gap-3">
             <div class="flex h-9 w-9 items-center justify-center rounded-xl bg-accent/10 text-accent">
@@ -470,36 +583,11 @@ function rel(ts?: string): string {
           <button
             type="button"
             class="k-btn k-btn--primary px-3 py-2 text-[12px]"
-            @click="showCreate = !showCreate"
+            @click="openCreate"
           >
             <Plus class="h-3.5 w-3.5" :stroke-width="2" /> New server
           </button>
         </div>
-
-        <!-- Create form -->
-        <section v-if="showCreate" class="mb-5 rounded-xl border border-border-subtle bg-surface-raised p-4">
-          <div class="grid gap-3">
-            <label class="grid gap-1">
-              <span class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Name</span>
-              <input v-model="draft.name" placeholder="ops" class="k-input font-mono text-[12px]" />
-            </label>
-            <label class="grid gap-1">
-              <span class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Display name</span>
-              <input v-model="draft.displayName" placeholder="Ops endpoint" class="k-input text-[12px]" />
-            </label>
-            <label class="grid gap-1">
-              <span class="text-[11px] font-semibold uppercase tracking-[0.12em] text-text-muted">Instructions (optional)</span>
-              <textarea v-model="draft.instructions" rows="2" placeholder="This is production — ask before destructive operations." class="k-input text-[12px]" />
-            </label>
-            <label class="flex items-center gap-2 text-[12px] text-text-secondary">
-              <input v-model="draft.readOnly" type="checkbox" class="k-checkbox" /> Read-only
-            </label>
-            <div class="flex justify-end gap-2">
-              <button type="button" class="k-btn k-btn--ghost px-3 py-2 text-[12px]" @click="showCreate = false">Cancel</button>
-              <button type="button" class="k-btn k-btn--primary px-3 py-2 text-[12px]" :disabled="busy || !draft.name.trim()" @click="create">Create</button>
-            </div>
-          </div>
-        </section>
 
         <div v-if="mutationError" class="mb-5 flex items-center gap-3 rounded-md border border-danger/30 bg-danger/5 p-3 text-[12px] text-danger" role="alert" aria-live="assertive">
           <span class="min-w-0 flex-1">{{ mutationError }}</span>
@@ -553,10 +641,10 @@ function rel(ts?: string): string {
             </div>
           </template>
         </ResourceTable>
-      </template>
+      </section>
 
       <!-- ─── DETAIL VIEW ───────────────────────────────────────────── -->
-      <template v-else>
+      <template v-if="!isCreate && selected">
         <a
           class="k-btn k-btn--ghost k-back-action"
           href="/ui/mcp"

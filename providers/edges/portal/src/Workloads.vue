@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted, onActivated } from 'vue'
 import { RefreshCw, Plus, ChevronRight, ChevronDown, Store, Rocket } from 'lucide-vue-next'
-import { listWorkloads, listWorkloadsPage, createWorkload, deleteWorkload, deployMarketplaceApp, listEdges, type WorkloadDraft } from './api'
+import { listWorkloads, listWorkloadsPage, deleteWorkload, listEdges } from './api'
 import type { Workload, Edge, ErrorResponse } from './types'
 import { confirmDialog } from './portalkit/confirm'
 import ResourceTable from './portalkit/ResourceTable.vue'
@@ -17,6 +17,13 @@ import {
   createLatestRefreshController,
   type ResourceRefreshMode,
 } from './refresh'
+
+const props = defineProps<{ result?: string | null }>()
+const emit = defineEmits<{
+  create: []
+  deploy: [app: MarketplaceApp]
+  dismissResult: []
+}>()
 
 const workloads = ref<Workload[]>([])
 const edges = ref<Edge[]>([])
@@ -86,58 +93,7 @@ const workloadFilters: TableFilterDefinition[] = [
   { key: 'status', label: 'Status', allLabel: 'Any status', options: WORKLOAD_STATUS_OPTIONS },
 ]
 
-// Marketplace deploy state.
 const showMarket = ref(true)
-const deployApp = ref<MarketplaceApp | null>(null)
-const deployName = ref('')
-const deployEdge = ref('')
-function openDeploy(app: MarketplaceApp) {
-  deployApp.value = app
-  deployName.value = app.type
-  deployEdge.value = edges.value[0]?.name ?? ''
-  error.value = null
-}
-function closeDeploy() {
-  deployApp.value = null
-}
-async function onDeploy() {
-  const app = deployApp.value
-  if (!app || !deployName.value.trim() || !deployEdge.value) return
-  busy.value = true
-  error.value = null
-  try {
-    await deployMarketplaceApp({
-      name: deployName.value.trim(),
-      edgeName: deployEdge.value,
-      chart: app.chart,
-      values: app.values,
-      serviceType: app.type,
-      port: app.port,
-    })
-    closeDeploy()
-    await refresh('foreground', true)
-  } catch (e) {
-    error.value = (e as ErrorResponse)?.message ?? 'Deploy failed'
-  } finally {
-    busy.value = false
-  }
-}
-const credentialHint: Record<string, string> = {
-  'api-key': 'API key (mint it in the app, paste on the Services tab)',
-  'user-pass': '"username:password" (paste on the Services tab)',
-  password: 'web password (paste on the Services tab)',
-  optional: 'no token needed',
-}
-
-const showCreate = ref(false)
-const busy = ref(false)
-const draft = ref<{ name: string; image: string; replicas: number; strategy: 'Spread' | 'Singleton'; selector: string }>({
-  name: '',
-  image: 'nginx:latest',
-  replicas: 1,
-  strategy: 'Spread',
-  selector: 'env=dev',
-})
 
 const expanded = ref<string | null>(null)
 function toggle(name: string) {
@@ -263,7 +219,6 @@ const workloadRefresh = createLatestRefreshController(async (requestID, mode) =>
     }
     loaded.value = true
     error.value = null
-    if (!deployEdge.value && edges.value.length) deployEdge.value = edges.value[0].name
   } catch (e) {
     const current = request.mode === 'client' && request.active
       ? workloadClientReadIsCurrent(requestID, request, readGeneration)
@@ -354,38 +309,6 @@ function handleWorkloadTableChange(change: ResourceTableChange) {
   void refresh()
 }
 
-function parseSelector(s: string): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const pair of s.split(',')) {
-    const [k, v] = pair.split('=').map((x) => x.trim())
-    if (k && v) out[k] = v
-  }
-  return out
-}
-
-async function onCreate() {
-  if (!draft.value.name.trim() || !draft.value.image.trim()) return
-  busy.value = true
-  error.value = null
-  try {
-    const d: WorkloadDraft = {
-      name: draft.value.name.trim(),
-      image: draft.value.image.trim(),
-      replicas: Number(draft.value.replicas) || 1,
-      strategy: draft.value.strategy,
-      selector: parseSelector(draft.value.selector),
-    }
-    await createWorkload(d)
-    showCreate.value = false
-    draft.value = { name: '', image: 'nginx:latest', replicas: 1, strategy: 'Spread', selector: 'env=dev' }
-    await refresh('foreground', true)
-  } catch (e) {
-    error.value = (e as ErrorResponse)?.message ?? 'Create failed'
-  } finally {
-    busy.value = false
-  }
-}
-
 async function onDelete(w: Workload) {
   if (!(await confirmDialog({ title: `Delete workload "${w.name}"?`, message: 'Its Deployments on every edge are removed.', danger: true, confirmLabel: 'Delete' }))) return
   try {
@@ -397,6 +320,12 @@ async function onDelete(w: Workload) {
 }
 
 onMounted(() => { void refresh('foreground') })
+// Workload create/deploy is route-owned while this collection remains cached.
+// Refresh on return to reconcile the newly submitted workload immediately and
+// retain the table's current query/filter/page state during that read.
+onActivated(() => {
+  if (!stopped) void refresh('foreground', true)
+})
 onUnmounted(() => {
   stopped = true
   workloadRefresh.stop()
@@ -436,14 +365,17 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
         <button
           type="button"
           class="k-btn k-btn--primary"
-          :aria-expanded="showCreate"
-          aria-controls="edges-workload-create"
-          @click="showCreate = !showCreate"
+          @click="emit('create')"
         >
           <Plus :size="14" aria-hidden="true" /> New workload
         </button>
       </div>
     </header>
+
+    <div v-if="props.result" class="banner success" role="status" aria-live="polite">
+      {{ props.result }}
+      <button type="button" class="k-btn k-btn--ghost compact-control" @click="emit('dismissResult')">Dismiss</button>
+    </div>
 
     <!-- Marketplace -->
     <div class="market k-card">
@@ -473,73 +405,12 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
               </div>
               <p class="market-desc">{{ app.description }}</p>
               <div class="market-meta muted mono">{{ app.chart.chart }}@{{ app.chart.version }} · :{{ app.port }}</div>
-              <button class="k-btn k-btn--primary compact-control" :disabled="edges.length === 0" @click="openDeploy(app)">
+              <button class="k-btn k-btn--primary compact-control" :disabled="edges.length === 0" @click="emit('deploy', app)">
                 <Rocket :size="13" /> Deploy
               </button>
             </div>
           </div>
         </div>
-      </div>
-    </div>
-
-    <!-- Deploy dialog -->
-    <div v-if="deployApp" class="wiz-card k-card">
-      <h3>Deploy {{ deployApp.label }}</h3>
-      <div class="row" style="gap: 12px; align-items: flex-start;">
-        <label class="fld" style="flex: 1;">
-          <span class="lbl">Name</span>
-          <input v-model="deployName" class="k-input" :placeholder="deployApp.type" />
-        </label>
-        <label class="fld" style="flex: 1;">
-          <span class="lbl">Edge</span>
-          <select v-model="deployEdge" class="k-input">
-            <option v-for="e in edges" :key="e.name" :value="e.name">{{ e.name }}</option>
-          </select>
-        </label>
-      </div>
-      <div class="muted" style="margin: 4px 0 12px;">
-        Deploys the chart onto <b>{{ deployEdge || '—' }}</b> and wires an edges Service.
-        Auth: {{ credentialHint[deployApp.credential] }}.
-      </div>
-      <div class="wiz-actions">
-        <button class="k-btn k-btn--ghost" @click="closeDeploy">Cancel</button>
-        <button class="k-btn k-btn--primary" :disabled="busy || !deployName.trim() || !deployEdge" @click="onDeploy">
-          <Rocket :size="14" /> Deploy
-        </button>
-      </div>
-    </div>
-
-    <!-- Create form -->
-    <div v-if="showCreate" id="edges-workload-create" class="wiz-card k-card">
-      <h3>New workload</h3>
-      <label class="fld">
-        <span class="lbl">Name</span>
-        <input v-model="draft.name" class="k-input" placeholder="nginx-demo" />
-      </label>
-      <label class="fld">
-        <span class="lbl">Image</span>
-        <input v-model="draft.image" class="k-input" placeholder="nginx:latest" />
-      </label>
-      <div class="row" style="gap: 12px; align-items: flex-start;">
-        <label class="fld" style="flex: 1;">
-          <span class="lbl">Replicas</span>
-          <input v-model="draft.replicas" type="number" min="1" class="k-input" />
-        </label>
-        <label class="fld" style="flex: 1;">
-          <span class="lbl">Strategy</span>
-          <select v-model="draft.strategy" class="k-input">
-            <option value="Spread">Spread (all matching edges)</option>
-            <option value="Singleton">Singleton (one edge)</option>
-          </select>
-        </label>
-      </div>
-      <label class="fld">
-        <span class="lbl">Edge selector (key=value, comma-separated)</span>
-        <input v-model="draft.selector" class="k-input" placeholder="env=dev" />
-      </label>
-      <div class="wiz-actions">
-        <button class="k-btn k-btn--ghost" @click="showCreate = false">Cancel</button>
-        <button class="k-btn k-btn--primary" :disabled="busy || !draft.name.trim() || !draft.image.trim()" @click="onCreate">Create</button>
       </div>
     </div>
 

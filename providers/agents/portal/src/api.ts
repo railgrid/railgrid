@@ -65,6 +65,18 @@ export interface RunFilter {
   limit?: number
 }
 
+// ContextAuthority is the security boundary for a mounted provider. The
+// workspace selects the data scope; userKey and token select the caller that
+// is allowed to read it. A token rotation for the same known user still
+// requires a fresh client/store, but does not require throwing away the
+// user's route.
+export interface ContextAuthority {
+  usable: boolean
+  tenantKey: string
+  userKey: string | null
+  token: string | null
+}
+
 // ApiError carries the HTTP status alongside the message so callers can tell a
 // 404 (agent gone) from a 502 (upstream) without string-matching.
 export class ApiError extends Error {
@@ -93,11 +105,16 @@ export class ApiClient {
     return serviceBase(this.ctx?.basePath || '/ui/providers/agents') + path
   }
 
-  tenant(): Tenant {
+  tenant(context: FarosContext | null = this.ctx): Tenant {
     const stored = readTenant()
+    // A host-supplied tenant is authoritative even when it explicitly clears
+    // one or both fields. Falling back through null here could keep using a
+    // stale localStorage workspace after the host has made the context
+    // unusable.
+    const hasContextTenant = !!context && ('orgUUID' in context || 'workspaceUUID' in context)
     return {
-      orgUUID: this.ctx?.orgUUID ?? stored.orgUUID,
-      workspaceUUID: this.ctx?.workspaceUUID ?? stored.workspaceUUID,
+      orgUUID: hasContextTenant ? context?.orgUUID ?? null : stored.orgUUID,
+      workspaceUUID: hasContextTenant ? context?.workspaceUUID ?? null : stored.workspaceUUID,
     }
   }
 
@@ -107,9 +124,21 @@ export class ApiClient {
   }
 
   // tenantKey identifies the current workspace for change-detection (load dedupe).
-  tenantKey(): string {
-    const t = this.tenant()
+  tenantKey(context: FarosContext | null = this.ctx): string {
+    const t = this.tenant(context)
     return `${t.orgUUID || ''}/${t.workspaceUUID || ''}`
+  }
+
+  contextAuthority(context: FarosContext | null = this.ctx): ContextAuthority {
+    const tenant = this.tenant(context)
+    const user = context?.user as { sub?: unknown; userId?: unknown; email?: unknown } | null | undefined
+    const userKey = [user?.sub, user?.userId, user?.email].find((value): value is string => typeof value === 'string' && value.length > 0) || null
+    return {
+      usable: !!context?.basePath && !!tenant.orgUUID && !!tenant.workspaceUUID,
+      tenantKey: this.tenantKey(context),
+      userKey,
+      token: context?.token ?? null,
+    }
   }
 
   private headers(hasBody: boolean): Record<string, string> {
@@ -117,7 +146,9 @@ export class ApiClient {
     // Host context wins over the localStorage copy portalkit read.
     const t = this.tenant()
     if (t.orgUUID) h['X-Faros-Org'] = t.orgUUID
+    else delete h['X-Faros-Org']
     if (t.workspaceUUID) h['X-Faros-Workspace'] = t.workspaceUUID
+    else delete h['X-Faros-Workspace']
     return h
   }
 

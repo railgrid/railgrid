@@ -15,16 +15,19 @@
 
 import { html, nothing, type TemplateResult } from 'lit'
 import { state } from 'lit/decorators.js'
-import { ApiClient } from './api'
+import { keyed } from 'lit/directives/keyed.js'
+import type { DirectiveResult } from 'lit/directive.js'
+import { ApiClient, type ContextAuthority } from './api'
 import { AppStore } from './store'
 import { LightElement } from './ui/base'
 import { icon, type IconName } from './ui/icon'
 import { clearToasts } from './ui/toast'
 import { tabClass, tabCountClass, tabsClass } from './portalkit/tabs'
-import type { FarosContext } from './types'
-import { DEFAULT_ROUTE, MENUS, activeMenu, parseHash, syncHash, type MenuKey, type Route } from './router'
+import type { Agent, Connection, Credential, FarosContext, Toolset } from './types'
+import { DEFAULT_ROUTE, MENUS, activeMenu, hashFor, parseHash, syncHash, writeHash, type CreateSuccessDetail, type MenuKey, type Route } from './router'
 
 import './views/agents-list'
+import './views/agent-create'
 import './views/agent-detail'
 import './views/activity'
 import './views/run-detail'
@@ -45,49 +48,130 @@ export class AgentsElement extends LightElement {
   private api = new ApiClient()
   private store = new AppStore(this.api)
   private loadedTenant: string | null = null
+  private authority: ContextAuthority | null = null
+  // Every API/store rotation gets a new route generation. Keying the active
+  // route surface on this value makes authority changes remount stateful views
+  // (chat transcripts, config hydration, model probes) instead of rebinding a
+  // live child to the new store in place.
+  private authorityGeneration = 0
+  // Incremented whenever a create surface is replaced or its authority is
+  // rotated. Route-owned children receive this marker, so a success from a
+  // detached/superseded form cannot be adopted by a later create session.
+  private createSession = 0
 
   set farosContext(v: FarosContext | null) {
+    const previous = this.authority
+    const next = this.api.contextAuthority(v)
     this.ctx = v
+    const changed = previous !== null && (
+      previous.usable !== next.usable ||
+      previous.tenantKey !== next.tenantKey ||
+      previous.userKey !== next.userKey ||
+      previous.token !== next.token
+    )
+
+    if (!next.usable) {
+      if (changed || this.loadedTenant !== null || this.store.live) {
+        this.rotateContext(v, true)
+      } else {
+        this.api.setContext(v)
+        this.authority = next
+        this.requestUpdate()
+      }
+      return
+    }
+
+    if (changed) {
+      this.rotateContext(v, this.shouldResetRoute(previous, next))
+      return
+    }
+
     this.api.setContext(v)
+    this.authority = next
     this.maybeLoad()
+    this.requestUpdate()
   }
   get farosContext(): FarosContext | null {
     return this.ctx
   }
 
   private onHashChange = (): void => {
-    this.route = parseHash()
+    this.restoreRoute()
+  }
+  private onPopState = (): void => {
+    this.restoreRoute()
+  }
+  private restoreRoute(): void {
+    const next = parseHash()
+    this.advanceCreateSession(this.route, next)
+    this.route = next
+    // Keep malformed/legacy external hashes from leaving the shell rendered on
+    // one route while the URL names another. Valid hashes are unchanged, so
+    // this remains a no-op for ordinary back/forward traversal.
+    syncHash(this.route)
+    this.requestUpdate()
   }
   private onStoreChange = (): void => this.requestUpdate()
   private onNavigate = (e: Event): void => {
-    this.go((e as CustomEvent<Route>).detail)
+    if (!this.eventBelongsToCurrentStore(e)) return
+    const next = (e as CustomEvent<Route>).detail
+    // A create session owns one history entry. Picker/type/assisted subroutes
+    // replace that entry so browser Back exits to the owning collection.
+    const replaceCreateEntry = this.route.kind === 'create' && next.kind === 'create'
+    this.go(next, replaceCreateEntry ? 'replace' : 'push')
+  }
+  private onCreateSuccess = (e: Event): void => {
+    if (!this.eventBelongsToCurrentStore(e) || !this.eventBelongsToActiveCreateSession(e)) return
+    const detail = (e as CustomEvent<CreateSuccessDetail>).detail
+    if (!detail || this.route.kind !== 'create' || detail.resource !== this.route.resource) return
+    this.adoptCreateResult(detail)
+    this.go(detail.destination || this.createSuccessRoute(detail), 'replace')
+  }
+  private onCreateCancel = (e: Event): void => {
+    if (!this.eventBelongsToCurrentStore(e) || !this.eventBelongsToActiveCreateSession(e)) return
+    if (this.route.kind !== 'create') return
+    this.go(this.createOwnerRoute(this.route), 'replace')
   }
 
   connectedCallback(): void {
     super.connectedCallback()
-    this.route = parseHash()
+    const next = parseHash()
+    this.advanceCreateSession(this.route, next)
+    this.route = next
+    // Canonicalize an unknown or legacy hash once on entry. Ordinary route
+    // changes use pushState below and are never rewritten during render.
+    syncHash(this.route)
     window.addEventListener('hashchange', this.onHashChange)
+    window.addEventListener('popstate', this.onPopState)
     this.addEventListener('agents-navigate', this.onNavigate)
+    this.addEventListener('agents-create-success', this.onCreateSuccess)
+    this.addEventListener('agents-cancel', this.onCreateCancel)
     this.store.addEventListener('change', this.onStoreChange)
     this.maybeLoad()
   }
 
   disconnectedCallback(): void {
     window.removeEventListener('hashchange', this.onHashChange)
+    window.removeEventListener('popstate', this.onPopState)
     this.removeEventListener('agents-navigate', this.onNavigate)
+    this.removeEventListener('agents-create-success', this.onCreateSuccess)
+    this.removeEventListener('agents-cancel', this.onCreateCancel)
     this.store.removeEventListener('change', this.onStoreChange)
     this.store.disconnect()
     super.disconnectedCallback()
   }
 
-  private go(r: Route): void {
+  private go(r: Route, mode: 'push' | 'replace' = 'push'): void {
+    this.advanceCreateSession(this.route, r)
     this.route = r
-    syncHash(r)
+    writeHash(r, mode)
+    this.requestUpdate()
   }
 
   private maybeLoad(): void {
-    if (!this.ctx?.basePath || !this.api.hasWorkspace()) return
-    const key = this.api.tenantKey()
+    const authority = this.authority || this.api.contextAuthority()
+    if (!authority.usable) return
+    const key = authority.tenantKey
     if (key === this.loadedTenant) return
     // Switching tenants (not the first load) resets to the Agents tab so we
     // never show a stale agent from another workspace. On first load we keep
@@ -95,7 +179,7 @@ export class AgentsElement extends LightElement {
     // the components themselves — no manual reset choreography needed.
     if (this.loadedTenant !== null) {
       clearToasts()
-      this.go(DEFAULT_ROUTE)
+      this.go(DEFAULT_ROUTE, 'replace')
     }
     this.loadedTenant = key
     // A fresh store drops every slice, so views can't render another
@@ -109,23 +193,72 @@ export class AgentsElement extends LightElement {
     this.requestUpdate()
   }
 
+  private rotateContext(v: FarosContext | null, resetRoute: boolean): void {
+    this.store.removeEventListener('change', this.onStoreChange)
+    this.store.disconnect()
+    this.authorityGeneration += 1
+    this.createSession += 1
+
+    const nextApi = new ApiClient()
+    nextApi.setContext(v)
+    this.api = nextApi
+    this.store = new AppStore(nextApi)
+    this.store.addEventListener('change', this.onStoreChange)
+    this.loadedTenant = null
+    this.authority = nextApi.contextAuthority()
+    clearToasts()
+    if (resetRoute) this.go(DEFAULT_ROUTE, 'replace')
+    this.maybeLoad()
+    this.requestUpdate()
+  }
+
+  private shouldResetRoute(previous: ContextAuthority | null, next: ContextAuthority): boolean {
+    if (!previous?.usable || previous.tenantKey !== next.tenantKey) return true
+    // A route can only safely survive a token refresh when both contexts name
+    // the same known subject. If either side omits a subject, treat the change
+    // as a caller change rather than risk showing the prior caller's detail.
+    return !(previous.userKey && next.userKey && previous.userKey === next.userKey)
+  }
+
+  private eventBelongsToCurrentStore(e: Event): boolean {
+    const source = e.target as { store?: AppStore } | null
+    return !source?.store || source.store === this.store
+  }
+
+  private eventBelongsToActiveCreateSession(e: Event): boolean {
+    // Assisted connection setup is rendered below the route-owned connection
+    // surface, so its event target does not carry the marker itself. Walk up
+    // the light-DOM parent chain to find the route-owned child. This also
+    // rejects a detached child that emits after a same-tick route transition.
+    let source = e.target as (Node & { createSession?: number }) | null
+    while (source) {
+      if (typeof source.createSession === 'number') return source.createSession === this.createSession
+      source = source.parentNode as (Node & { createSession?: number }) | null
+    }
+    return false
+  }
+
+  private advanceCreateSession(previous: Route, next: Route): void {
+    if (hashFor(previous) === hashFor(next)) return
+    if (previous.kind === 'create' || next.kind === 'create') this.createSession += 1
+  }
+
   render(): TemplateResult {
     if (!this.ctx) return html`<div class="k-card agents-empty"><p class="muted" role="status">Connecting…</p></div>`
-    if (!this.api.hasWorkspace()) {
+    if (!this.authority?.usable) {
       return html`<div class="k-card agents-empty">
         <p class="muted" role="status">Select an organization and workspace in the sidebar to use your agents.</p>
       </div>`
     }
-    syncHash(this.route)
     return html`
       <div class="agents-app">
         ${this.renderNav()}
-        <div class="agents-view">${this.renderRoute()}</div>
+        <div class="agents-view">${keyed(this.authorityGeneration, this.renderRoute())}</div>
       </div>
     `
   }
 
-  private renderRoute(): TemplateResult {
+  private renderRoute(): TemplateResult | DirectiveResult {
     const bind = { store: this.store, api: this.api }
     switch (this.route.kind) {
       case 'agent':
@@ -137,6 +270,8 @@ export class AgentsElement extends LightElement {
         ></agents-agent-detail>`
       case 'run':
         return html`<agents-run-detail .store=${bind.store} .api=${bind.api} .runID=${this.route.id}></agents-run-detail>`
+      case 'create':
+        return this.renderCreateRoute(this.route)
       default:
         switch (this.route.menu) {
           case 'agents':
@@ -144,10 +279,87 @@ export class AgentsElement extends LightElement {
           case 'activity':
             return html`<agents-activity .store=${bind.store} .api=${bind.api}></agents-activity>`
           case 'connections':
-            return html`<agents-connections .store=${bind.store} .api=${bind.api}></agents-connections>`
+            return html`<agents-connections .store=${bind.store} .api=${bind.api} .routeOwned=${true}></agents-connections>`
           case 'models':
-            return html`<agents-models .store=${bind.store} .api=${bind.api}></agents-models>`
+            return html`<agents-models .store=${bind.store} .api=${bind.api} .routeOwned=${true}></agents-models>`
         }
+    }
+  }
+
+  private renderCreateRoute(route: Extract<Route, { kind: 'create' }>): TemplateResult | DirectiveResult {
+    const bind = { store: this.store, api: this.api }
+    // A context rotation can leave an in-flight mutation on the old create
+    // child. Keying the route-owned surface forces Lit to detach that child
+    // when the session changes instead of overwriting its store/session
+    // properties in place. Late events from the detached child cannot bubble;
+    // events delivered before the replacement render still fail the marker
+    // checks above.
+    const render = (view: TemplateResult): TemplateResult | DirectiveResult => keyed(this.createSession, view)
+    switch (route.resource) {
+      case 'agent':
+        return render(html`<agents-agent-create .createSession=${this.createSession} .store=${bind.store} .api=${bind.api} .routeOwned=${true}></agents-agent-create>`)
+      case 'connection':
+        return render(html`<agents-connections
+          .createSession=${this.createSession}
+          .store=${bind.store}
+          .api=${bind.api}
+          .routeOwned=${true}
+          .createRoute=${true}
+          .createType=${route.type || ''}
+        ></agents-connections>`)
+      case 'toolset':
+        return render(html`<agents-toolsets
+          .createSession=${this.createSession}
+          .store=${bind.store}
+          .api=${bind.api}
+          .routeOwned=${true}
+          .createRoute=${true}
+        ></agents-toolsets>`)
+      case 'model':
+        return render(html`<agents-models .createSession=${this.createSession} .store=${bind.store} .api=${bind.api} .routeOwned=${true} .createRoute=${true}></agents-models>`)
+    }
+  }
+
+  private createOwnerRoute(route: Extract<Route, { kind: 'create' }>): Route {
+    if (route.resource === 'model') return { kind: 'menu', menu: 'models' }
+    if (route.resource === 'connection' || route.resource === 'toolset') return { kind: 'menu', menu: 'connections' }
+    return { kind: 'menu', menu: 'agents' }
+  }
+
+  private createSuccessRoute(detail: CreateSuccessDetail): Route {
+    if (detail.resource === 'agent' && detail.name) return { kind: 'agent', name: detail.name, tab: 'config' }
+    if (detail.resource === 'model') return { kind: 'menu', menu: 'models' }
+    if (detail.resource === 'connection' || detail.resource === 'toolset') return { kind: 'menu', menu: 'connections' }
+    return { kind: 'menu', menu: 'agents' }
+  }
+
+  private adoptCreateResult(detail: CreateSuccessDetail): void {
+    if (!detail.item) return
+    switch (detail.resource) {
+      case 'agent': {
+        const item = detail.item as Agent
+        if (!item.metadata?.name) return
+        this.store.adopt('agents', item)
+        break
+      }
+      case 'connection': {
+        const item = detail.item as Connection
+        if (!item.metadata?.name) return
+        this.store.adopt('connections', item)
+        break
+      }
+      case 'toolset': {
+        const item = detail.item as Toolset
+        if (!item.metadata?.name) return
+        this.store.adopt('toolsets', item)
+        break
+      }
+      case 'model': {
+        const item = detail.item as Credential
+        if (!item.name) return
+        this.store.adopt('credentials', item)
+        break
+      }
     }
   }
 

@@ -556,11 +556,54 @@ describe('Kubernetes cursor list pages', () => {
 })
 
 describe('oauthConfig', () => {
-  it('does not advertise an enabled OAuth flow without a start URL', async () => {
-    setAPIContext({ tenant: 'oauth-config', token: 'oauth-token' })
-    vi.stubGlobal('fetch', vi.fn(async () => response({ enabled: true })))
+  it('preserves a legitimate disabled response', async () => {
+    setAPIContext({ tenant: 'oauth-config-disabled', token: 'oauth-token-disabled' })
+    vi.stubGlobal('fetch', vi.fn(async () => response({ enabled: false })))
 
     await expect(api.oauthConfig()).resolves.toEqual({ enabled: false })
+  })
+
+  it('propagates transport failures so the view can offer a retry', async () => {
+    setAPIContext({ tenant: 'oauth-config-network', token: 'oauth-token-network' })
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('oauth backend unavailable')
+    }))
+
+    await expect(api.oauthConfig()).rejects.toThrow('oauth backend unavailable')
+  })
+
+  it('rejects non-success responses instead of treating them as disabled', async () => {
+    setAPIContext({ tenant: 'oauth-config-status', token: 'oauth-token-status' })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('upstream unavailable', {
+      status: 503,
+      statusText: 'Service Unavailable',
+    })))
+
+    await expect(api.oauthConfig()).rejects.toMatchObject({
+      reason: 'HTTPError',
+      message: '503: upstream unavailable',
+    })
+  })
+
+  it('rejects malformed JSON and response shapes', async () => {
+    setAPIContext({ tenant: 'oauth-config-malformed', token: 'oauth-token-malformed' })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response('{', { status: 200 }))
+      .mockResolvedValueOnce(response({ enabled: 'yes' }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(api.oauthConfig()).rejects.toMatchObject({ reason: 'ProtocolError' })
+    await expect(api.oauthConfig()).rejects.toMatchObject({ reason: 'ProtocolError' })
+  })
+
+  it('rejects an enabled response without a usable start URL', async () => {
+    setAPIContext({ tenant: 'oauth-config-missing-url', token: 'oauth-token-missing-url' })
+    vi.stubGlobal('fetch', vi.fn(async () => response({ enabled: true })))
+
+    await expect(api.oauthConfig()).rejects.toMatchObject({
+      reason: 'ProtocolError',
+      message: 'OAuth configuration response was enabled but missing a start URL',
+    })
   })
 
   it('preserves a configured relative OAuth start URL', async () => {
@@ -575,6 +618,89 @@ describe('oauthConfig', () => {
       enabled: true,
       startURL: '/services/providers/code/oauth/github/start',
       scopes: 'repo',
+    })
+  })
+
+  it('rejects a response that resolves after the authentication context changes', async () => {
+    setAPIContext({ tenant: 'oauth-config-old', token: 'oauth-config-old-token' })
+    let resolveResponse!: (value: Response) => void
+    const pending = new Promise<Response>(resolve => { resolveResponse = resolve })
+    vi.stubGlobal('fetch', vi.fn(() => pending))
+
+    const request = api.oauthConfig()
+    setAPIContext({ tenant: 'oauth-config-new', token: 'oauth-config-new-token' })
+    resolveResponse(response({ enabled: false }))
+
+    await expect(request).rejects.toMatchObject({ reason: 'ContextChanged' })
+  })
+})
+
+describe('connect', () => {
+  it('keeps explicit reconnect semantics: adopts the Connection and replaces its owned Secret', async () => {
+    setAPIContext({ tenant: 'connect-reconnect', token: 'connect-reconnect-token' })
+    const calls: FetchCall[] = []
+    const connection = {
+      apiVersion: 'code.faros.sh/v1alpha1',
+      kind: 'Connection',
+      metadata: { name: 'github-prod', uid: 'existing-connection-uid' },
+      spec: {
+        provider: 'github',
+        type: 'oauth',
+        owner: 'octocat',
+        secretRef: { name: 'github-prod-token', namespace: 'default', key: 'token' },
+      },
+      status: {},
+    }
+    const secret = {
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: { name: 'github-prod-token', uid: 'replacement-secret-uid' },
+      type: 'Opaque',
+      stringData: { token: 'replacement-token' },
+    }
+    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const call = request(init)
+      calls.push(call)
+      const manifest = JSON.parse(String(call.variables.y)) as { kind: string }
+      return response({ data: { applyYaml: JSON.stringify(manifest.kind === 'Connection' ? connection : secret) } })
+    }))
+
+    await expect(api.connect({
+      name: ' GitHub-Prod ',
+      owner: 'octocat',
+      token: 'replacement-token',
+      type: 'oauth',
+      baseURL: 'https://github.example.com/api/v3',
+    })).resolves.toMatchObject({ name: 'github-prod', uid: 'existing-connection-uid' })
+
+    expect(calls).toHaveLength(2)
+    const connectionManifest = JSON.parse(String(calls[0].variables.y)) as Record<string, unknown>
+    expect(connectionManifest).toMatchObject({
+      apiVersion: 'code.faros.sh/v1alpha1',
+      kind: 'Connection',
+      metadata: { name: 'github-prod' },
+      spec: {
+        provider: 'github',
+        type: 'oauth',
+        owner: 'octocat',
+        baseURL: 'https://github.example.com/api/v3',
+        secretRef: { name: 'github-prod-token', namespace: 'default', key: 'token' },
+      },
+    })
+    const secretManifest = JSON.parse(String(calls[1].variables.y)) as Record<string, unknown>
+    expect(secretManifest).toMatchObject({
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: {
+        name: 'github-prod-token',
+        ownerReferences: [{
+          apiVersion: 'code.faros.sh/v1alpha1',
+          kind: 'Connection',
+          name: 'github-prod',
+          uid: 'existing-connection-uid',
+        }],
+      },
+      stringData: { token: 'replacement-token' },
     })
   })
 })

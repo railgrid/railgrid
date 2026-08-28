@@ -3,6 +3,7 @@ import MarkdownIt from 'markdown-it'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import {
   AppWindow,
+  ArrowLeft,
   ArrowRight,
   ArrowUp,
   BarChart3,
@@ -281,7 +282,7 @@ import type {
 
 const props = defineProps<{
   ctx: FarosContext | null
-  navigate: (path: string) => void
+  navigate: (path: string, options?: { replace?: boolean }) => void
   requestFullBleed?: (fullBleed: boolean) => void
 }>()
 
@@ -294,6 +295,12 @@ interface ProjectThumbnailRequestGuard {
   serial: number
   contextFingerprint: string
   ctx: FarosContext | null
+}
+
+interface LLMModelMutationGuard {
+  generation: number
+  contextFingerprint: string
+  routePath: string
 }
 
 function appContextFingerprint(ctx: FarosContext | null): string {
@@ -443,6 +450,7 @@ const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com'
 const GOOGLE_CLOUD_BASE_URL = 'https://aiplatform.googleapis.com'
 const CREATE_PROJECT_ROUTE = '~new'
 const MODELS_ROUTE = '~models'
+const CREATE_MODEL_ROUTE = 'create/model'
 const appStudioSectionTabs = [
   { id: 'projects', label: 'Projects', icon: Folder },
   { id: 'models', label: 'Models', icon: Cpu },
@@ -841,6 +849,7 @@ const llmSaving = ref(false)
 const llmStatus = ref<string | null>(null)
 const llmActionError = ref<string | null>(null)
 const llmEditorOpen = ref(false)
+const llmCreateRouteSession = ref(false)
 const llmSettingsLoading = ref(false)
 const llmSettingsError = ref<string | null>(null)
 let llmSettingsLoadSerial = 0
@@ -871,6 +880,7 @@ let developmentPreviewRecoveryTimer: number | undefined
 let developmentPreviewComponentMounted = true
 let assistantThreadRequestSerial = 0
 let createReadinessLoadSerial = 0
+let llmModelMutationGeneration = 0
 const developmentPreviewRefreshController = new DevelopmentPreviewRefreshController<Project>({
   isMounted: () => developmentPreviewComponentMounted,
   selectedProjectName: () => selected.value?.name,
@@ -1001,6 +1011,29 @@ function clearPendingFirstProjectSubmission() {
   pendingFirstProjectSubmission = null
 }
 
+function invalidateLLMModelMutationState() {
+  llmModelMutationGeneration += 1
+  // A route/context transition owns the replacement busy state. The previous
+  // request remains in flight, but its finalizer is no longer allowed to
+  // touch this value.
+  llmSaving.value = false
+}
+
+function beginLLMModelMutation(): LLMModelMutationGuard {
+  return {
+    generation: ++llmModelMutationGeneration,
+    contextFingerprint: appContextFingerprint(props.ctx),
+    routePath: routePath.value,
+  }
+}
+
+function llmModelMutationIsCurrent(guard: LLMModelMutationGuard): boolean {
+  return appComponentMounted &&
+    guard.generation === llmModelMutationGeneration &&
+    guard.contextFingerprint === appContextFingerprint(props.ctx) &&
+    guard.routePath === routePath.value
+}
+
 function invalidateProjectContextState() {
   const hasToken = Boolean(props.ctx?.token)
   projectLoadSerial += 1
@@ -1021,6 +1054,7 @@ function invalidateProjectContextState() {
   projectSettingsSaveSerial += 1
   releaseLoadSerial += 1
   historyLoadSerial += 1
+  invalidateLLMModelMutationState()
 
   clearInitializationRetry()
   clearProjectThumbnailURLs()
@@ -1178,7 +1212,7 @@ function applyAssistantSkillsCatalogResponse(response: ProjectAssistantSkillsRes
 }
 
 async function loadAssistantSkills(projectName: string) {
-  if (!projectName || !props.ctx?.token || isCreateRoute.value || selected.value?.name !== projectName || selected.value.phase === 'Creating') return
+  if (!projectName || !props.ctx?.token || isCreateRoute.value || isCreateModelRoute.value || selected.value?.name !== projectName || selected.value.phase === 'Creating') return
   const serial = ++assistantSkillsLoadSerial
   assistantSkillsLoading.value = true
   assistantSkillsError.value = null
@@ -1187,12 +1221,13 @@ async function loadAssistantSkills(projectName: string) {
     if (
       serial !== assistantSkillsLoadSerial ||
       selected.value?.name !== projectName ||
-      isCreateRoute.value
+      isCreateRoute.value ||
+      isCreateModelRoute.value
     ) return
     applyAssistantSkillsCatalog(catalog.skills)
     assistantSkillsWarnings.value = catalog.warnings ?? []
   } catch (e) {
-    if (serial !== assistantSkillsLoadSerial || selected.value?.name !== projectName || isCreateRoute.value) return
+    if (serial !== assistantSkillsLoadSerial || selected.value?.name !== projectName || isCreateRoute.value || isCreateModelRoute.value) return
     // Skill discovery is intentionally scoped to the Skills workbench. A
     // stale or unavailable catalog must never make the project composer unusable.
     assistantSkillsError.value = e instanceof Error ? e.message : String(e)
@@ -1351,11 +1386,13 @@ const routeSegment = computed(() => {
     return raw
   }
 })
+const routePath = computed(() => (props.ctx?.subPath ?? '').split('/').filter(Boolean).join('/'))
 const isProjectIndexRoute = computed(() => routeSegment.value === '')
 const isCreateRoute = computed(() => routeSegment.value === CREATE_PROJECT_ROUTE)
 const isModelsRoute = computed(() => routeSegment.value === MODELS_ROUTE)
-const selectedNameFromPath = computed(() => (isCreateRoute.value || isModelsRoute.value ? '' : routeSegment.value))
-const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCreateRoute.value || isModelsRoute.value)
+const isCreateModelRoute = computed(() => routePath.value === CREATE_MODEL_ROUTE)
+const selectedNameFromPath = computed(() => (isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value ? '' : routeSegment.value))
+const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value)
 const modelsReturnRoute = ref('')
 const projectRouteLoading = computed(() => Boolean(
   projectOpenLoading.value ||
@@ -1376,7 +1413,7 @@ const projectRouteShellVisible = computed(() => projectRouteLoading.value || pro
 const conversationLoading = computed(() => projectRouteLoading.value || threadHistoryLoading.value || !!selectingThreadID.value)
 const conversationInteractionBusy = computed(() => conversationLoading.value || conversationRefreshing.value || projectRouteFailure.value)
 const isBuilderVisible = computed(() =>
-  !isAppStudioLandingRoute.value || (!isModelsRoute.value && selected.value !== null),
+  !isAppStudioLandingRoute.value || (!isModelsRoute.value && !isCreateModelRoute.value && selected.value !== null),
 )
 watch(
   isBuilderVisible,
@@ -1422,12 +1459,14 @@ const canSendPrompt = computed(() =>
 )
 const threadActionsDisabled = computed(() => conversationInteractionBusy.value || messageStreaming.value || busy.value || threadMutationBusy.value)
 const settingsProject = computed(() => (isAppStudioLandingRoute.value ? null : selected.value))
-const settingsTitle = computed(() => (settingsProject.value ? 'Project settings' : 'Models'))
-const settingsDescription = computed(() =>
-  settingsProject.value
-    ? 'Update this project and manage its development preview access.'
-    : 'Configure the model credentials App Studio uses when creating and chatting in projects.',
-)
+const settingsTitle = computed(() => (
+  isCreateModelRoute.value ? 'New model' : settingsProject.value ? 'Project settings' : 'Models'
+))
+const settingsDescription = computed(() => {
+  if (isCreateModelRoute.value) return 'Configure the model credentials App Studio uses when creating and chatting in projects.'
+  if (settingsProject.value) return 'Update this project and manage its development preview access.'
+  return 'Configure the model credentials App Studio uses when creating and chatting in projects.'
+})
 const activePlanMessage = computed(() =>
   activeAssistantPlanMessage(
     messages.value,
@@ -1771,12 +1810,12 @@ const settingsInWorkbench = computed(() => !!settingsProject.value && activeWork
 const publishingInWorkbench = computed(() => activeWorkbenchTab.value?.kind === 'publishing')
 const historyInWorkbench = computed(() => activeWorkbenchTab.value?.kind === 'history')
 const projectControlSurfaceInWorkbench = computed(() => settingsInWorkbench.value || publishingInWorkbench.value || historyInWorkbench.value)
-const settingsSurfaceInline = computed(() => projectControlSurfaceInWorkbench.value || isModelsRoute.value)
+const settingsSurfaceInline = computed(() => projectControlSurfaceInWorkbench.value || isModelsRoute.value || isCreateModelRoute.value)
 const projectControlSurfaceTarget = computed(() => {
   if (publishingInWorkbench.value) return '#app-studio-publishing-host'
   if (historyInWorkbench.value) return '#app-studio-history-host'
   if (settingsInWorkbench.value) return '#app-studio-project-settings-host'
-  if (isModelsRoute.value) return '#app-studio-models-host'
+  if (isModelsRoute.value || isCreateModelRoute.value) return '#app-studio-models-host'
   return 'body'
 })
 const productionSurfaceActive = computed(() => publishingInWorkbench.value || shareDialogOpen.value)
@@ -2092,6 +2131,7 @@ onMounted(() => {
 watch(
   () => props.ctx?.subPath ?? '',
   () => {
+    invalidateLLMModelMutationState()
     // A route change can leave the previous project's stream mounted until
     // the replacement project has hydrated. Detach that stream immediately,
     // while keeping the split-pane shell visible for the replacement load.
@@ -2130,6 +2170,7 @@ watch(
     // asynchronous project/catalog response can arrive. Otherwise a pending
     // default or old project's tabs could be written under the new scope.
     invalidateProjectContextState()
+    if (isCreateModelRoute.value) openLLMEditor()
     void load()
     void loadProviders()
     void loadCreateReadiness()
@@ -2213,10 +2254,10 @@ watch(
 )
 
 watch(
-  () => [selected.value?.name ?? '', props.ctx?.token ?? '', isCreateRoute.value] as const,
-  ([projectName, _token, createRoute]) => {
+  () => [selected.value?.name ?? '', props.ctx?.token ?? '', isCreateRoute.value, isCreateModelRoute.value] as const,
+  ([projectName, _token, createRoute, createModelRoute]) => {
     resetAssistantSkillsState()
-    if (projectName && !createRoute && selected.value?.phase !== 'Creating') {
+    if (projectName && !createRoute && !createModelRoute && selected.value?.phase !== 'Creating') {
       void loadAssistantSkills(projectName)
     }
   },
@@ -2416,7 +2457,7 @@ async function load() {
     void hydrateProjectThumbnails(projectList)
     projectsLoaded.value = true
     initializing.value = false
-    if (isCreateRoute.value || isModelsRoute.value) {
+    if (isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value) {
 	  clearPendingFirstProjectSubmission()
       activeProjectContextFingerprint = ''
       resetProjectOpenLatch()
@@ -3518,6 +3559,7 @@ function selectLLMProvider(provider: string) {
 }
 
 function openLLMEditor(modelID?: string) {
+  invalidateLLMModelMutationState()
   llmStatus.value = null
   llmActionError.value = null
   const saved = llmSettings.value?.models.find((model) => model.id === modelID)
@@ -3532,13 +3574,57 @@ function openLLMEditor(modelID?: string) {
   llmEditorOpen.value = true
 }
 
+function openNewLLMModelEditor() {
+  // Keep the project-creation handoff while it is active. A model opened
+  // directly from the Models section has no stored handoff and returns there.
+  if (!modelsReturnRoute.value && isCreateRoute.value) modelsReturnRoute.value = CREATE_PROJECT_ROUTE
+  openLLMEditor()
+  props.navigate(CREATE_MODEL_ROUTE)
+}
+
+function openModelEditor(modelID?: string) {
+  if (modelID !== undefined) {
+    openLLMEditor(modelID)
+    return
+  }
+  openNewLLMModelEditor()
+}
+
 function cancelLLMEditor() {
   if (llmSaving.value) return
+  const routeOwnedCreation = isCreateModelRoute.value
+  const returnRoute = routeOwnedCreation
+    ? (modelsReturnRoute.value === CREATE_PROJECT_ROUTE ? CREATE_PROJECT_ROUTE : MODELS_ROUTE)
+    : null
+  invalidateLLMModelMutationState()
   llmStatus.value = null
   llmActionError.value = null
   llmEditorOpen.value = false
   llmEditingModelID.value = null
+  if (returnRoute) {
+    modelsReturnRoute.value = ''
+    props.navigate(returnRoute, { replace: true })
+  }
 }
+
+watch(
+  isCreateModelRoute,
+  (active, previous) => {
+    if (active) {
+      llmCreateRouteSession.value = true
+      // A direct link or a browser revisit must always start a fresh model,
+      // even if a contextual edit or a previous draft was open before the
+      // route changed.
+      openLLMEditor()
+      return
+    }
+    if (previous && llmCreateRouteSession.value) {
+      llmCreateRouteSession.value = false
+      if (!llmEditingModelID.value) llmEditorOpen.value = false
+    }
+  },
+  { immediate: true, flush: 'sync' },
+)
 
 async function applyStarterPrompt(value: string) {
   replaceAssistantComposerText(value)
@@ -3720,6 +3806,13 @@ async function saveLLMSettings() {
   llmStatus.value = null
   llmActionError.value = null
   if (llmBaseURLError.value) return
+  const routeOwnedCreation = isCreateModelRoute.value && !llmEditingModelID.value
+  const editingID = llmEditingModelID.value
+  const returnRoute = routeOwnedCreation
+    ? (modelsReturnRoute.value === CREATE_PROJECT_ROUTE ? CREATE_PROJECT_ROUTE : MODELS_ROUTE)
+    : null
+  const guard = beginLLMModelMutation()
+  const mutationContext = props.ctx
   llmSaving.value = true
   try {
     const body: { name: string; provider?: string; baseURL?: string; model: string; apiKey?: string } = {
@@ -3729,22 +3822,32 @@ async function saveLLMSettings() {
       model: normalizeLLMModelInput(llmProvider.value, llmModel.value, llmCredentialMode.value),
     }
     if (llmApiKey.value.trim()) body.apiKey = llmApiKey.value.trim()
-    const editingID = llmEditingModelID.value
     const settings = editingID
-      ? await api.patchLLMModel(props.ctx, editingID, body)
-      : await api.createLLMModel(props.ctx, body)
+      ? await api.patchLLMModel(mutationContext, editingID, body)
+      : await api.createLLMModel(mutationContext, body)
+    if (!llmModelMutationIsCurrent(guard)) return
     applyLLMSettings(settings)
     llmStatus.value = editingID ? 'Model updated.' : 'Model added.'
     llmEditorOpen.value = false
     llmEditingModelID.value = null
+    if (returnRoute) {
+      modelsReturnRoute.value = ''
+      props.navigate(returnRoute, { replace: true })
+    }
   } catch (e) {
+    if (!llmModelMutationIsCurrent(guard)) return
     llmActionError.value = e instanceof Error ? e.message : String(e)
   } finally {
-    llmSaving.value = false
+    if (llmModelMutationIsCurrent(guard)) llmSaving.value = false
   }
 }
 
 async function deleteLLMModel(modelID: string) {
+  const confirmationGuard: LLMModelMutationGuard = {
+    generation: llmModelMutationGeneration,
+    contextFingerprint: appContextFingerprint(props.ctx),
+    routePath: routePath.value,
+  }
   const saved = llmSettings.value?.models.find((model) => model.id === modelID)
   if (!saved) return
   if (!(await confirmDialog({
@@ -3753,33 +3856,45 @@ async function deleteLLMModel(modelID: string) {
     danger: true,
     confirmLabel: 'Delete model',
   }))) return
+  if (!llmModelMutationIsCurrent(confirmationGuard)) return
+  const guard = beginLLMModelMutation()
+  const mutationContext = props.ctx
   llmSaving.value = true
   llmStatus.value = null
   llmActionError.value = null
   try {
-    const settings = await api.deleteLLMModel(props.ctx, modelID)
+    const settings = await api.deleteLLMModel(mutationContext, modelID)
+    if (!llmModelMutationIsCurrent(guard)) return
     applyLLMSettings(settings)
     llmStatus.value = 'Model deleted.'
-    if (llmEditingModelID.value === modelID) cancelLLMEditor()
+    if (llmEditingModelID.value === modelID) {
+      llmEditorOpen.value = false
+      llmEditingModelID.value = null
+    }
   } catch (e) {
+    if (!llmModelMutationIsCurrent(guard)) return
     llmActionError.value = e instanceof Error ? e.message : String(e)
   } finally {
-    llmSaving.value = false
+    if (llmModelMutationIsCurrent(guard)) llmSaving.value = false
   }
 }
 
 async function setDefaultLLMModel(modelID: string) {
+  const guard = beginLLMModelMutation()
+  const mutationContext = props.ctx
   llmSaving.value = true
   llmStatus.value = null
   llmActionError.value = null
   try {
-    const settings = await api.setDefaultLLMModel(props.ctx, modelID)
+    const settings = await api.setDefaultLLMModel(mutationContext, modelID)
+    if (!llmModelMutationIsCurrent(guard)) return
     applyLLMSettings(settings)
     llmStatus.value = 'Default model updated.'
   } catch (e) {
+    if (!llmModelMutationIsCurrent(guard)) return
     llmActionError.value = e instanceof Error ? e.message : String(e)
   } finally {
-    llmSaving.value = false
+    if (llmModelMutationIsCurrent(guard)) llmSaving.value = false
   }
 }
 
@@ -3980,7 +4095,11 @@ async function openSettings() {
     openBuiltInWorkbenchTab('settings')
     await nextTick()
   } else {
-    if (!llmSettings.value?.configured) openLLMEditor()
+    if (!llmSettings.value?.configured) {
+      modelsReturnRoute.value = isCreateRoute.value ? CREATE_PROJECT_ROUTE : ''
+      openNewLLMModelEditor()
+      return
+    }
     openModelsSection()
     return
   }
@@ -3994,7 +4113,8 @@ function openProjectsSection() {
 }
 
 function openModelsSection() {
-  modelsReturnRoute.value = isCreateRoute.value ? CREATE_PROJECT_ROUTE : ''
+  if (isCreateRoute.value) modelsReturnRoute.value = CREATE_PROJECT_ROUTE
+  else if (!isCreateModelRoute.value) modelsReturnRoute.value = ''
   props.navigate(MODELS_ROUTE)
 }
 
@@ -6647,9 +6767,14 @@ function pushToolContext() {
 
 function onNestedProviderNavigate(e: Event) {
   e.stopPropagation()
-  const path = ((e as CustomEvent<{ path?: string }>).detail?.path ?? '').replace(/^\/+/, '')
+  const detail = (e as CustomEvent<{ path?: unknown; replace?: unknown }>).detail
+  const path = (typeof detail?.path === 'string' ? detail.path : '').replace(/^\/+/, '')
   const tab = activeWorkbenchTab.value
   if (!tab || tab.kind !== 'provider') return
+  // Nested provider tabs have one persisted descriptor rather than their own
+  // shell history stack. Updating that descriptor in place is therefore the
+  // equivalent of both push and replace navigation, while accepting optional
+  // replace metadata keeps the nested event contract aligned with the shell.
   workbench.value = updateWorkbenchProviderToolPath(workbench.value, tab.id, path)
   void nextTick(pushToolContext)
 }
@@ -6962,8 +7087,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
   <div v-else-if="!isBuilderVisible" class="min-h-0 bg-surface text-text-primary">
     <div class="flex min-h-full w-full flex-col gap-4">
       <Tabs
+        v-if="!isCreateModelRoute"
         :tabs="appStudioSectionTabs"
-        :active="isModelsRoute ? 'models' : 'projects'"
+        :active="isModelsRoute || isCreateModelRoute ? 'models' : 'projects'"
         aria-label="App Studio sections"
         @select="selectAppStudioSection"
       />
@@ -7338,7 +7464,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </main>
       </div>
 
-      <section v-else-if="isModelsRoute" class="min-h-0 pb-6">
+      <section v-else-if="isModelsRoute || isCreateModelRoute" :class="isCreateModelRoute ? 'k-create-page pb-6' : 'min-h-0 pb-6'">
+        <button v-if="isCreateModelRoute" type="button" class="k-btn k-btn--ghost k-back-action" :disabled="llmSaving" @click="cancelLLMEditor">
+          <ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" /> Models
+        </button>
+        <header v-if="isCreateModelRoute" class="k-create-header">
+          <h1 class="k-create-title">Add model</h1>
+          <p class="k-create-description">Configure the model credentials App Studio uses when creating and chatting in projects.</p>
+        </header>
         <div id="app-studio-models-host" class="min-h-[420px]" />
       </section>
 
@@ -8655,24 +8788,26 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
   <Teleport defer :to="projectControlSurfaceTarget">
     <div
-      v-if="showSettings || publishingInWorkbench || historyInWorkbench || (isModelsRoute && !(initializing && !loading))"
+      v-if="showSettings || publishingInWorkbench || historyInWorkbench || ((isModelsRoute || isCreateModelRoute) && !(initializing && !loading))"
       :class="settingsSurfaceInline
         ? 'h-full min-h-0'
         : 'fixed inset-0 z-[100] flex items-center justify-center bg-surface/60 px-4 py-6 backdrop-blur-sm'"
       @click.self="!settingsSurfaceInline && closeSettings()"
     >
       <div
-        class="flex w-full flex-col overflow-hidden bg-surface-raised"
+        class="flex w-full flex-col"
         :class="projectControlSurfaceInWorkbench
-          ? 'h-full min-h-0'
+          ? 'h-full min-h-0 overflow-hidden bg-surface-raised'
+          : isCreateModelRoute
+            ? ''
           : isModelsRoute
             ? 'rounded-lg border border-border-subtle'
           : 'max-h-[90vh] max-w-2xl rounded-xl border border-border-subtle shadow-2xl'"
       >
-        <header v-if="!publishingInWorkbench && !historyInWorkbench" class="flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3">
+        <header v-if="!publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute" class="flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3">
           <div class="min-w-0">
             <div class="flex items-center gap-2">
-              <Cpu v-if="isModelsRoute" class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
+              <Cpu v-if="isModelsRoute || isCreateModelRoute" class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
               <Settings2 v-else class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
               <h2 class="truncate text-[15px] font-semibold text-text-primary">{{ settingsTitle }}</h2>
             </div>
@@ -8681,7 +8816,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </p>
           </div>
           <button
-            v-if="!settingsInWorkbench && !isModelsRoute"
+            v-if="!settingsInWorkbench && !isModelsRoute && !isCreateModelRoute"
             type="button"
             class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
             title="Close"
@@ -8691,7 +8826,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </button>
         </header>
 
-        <div class="min-h-0 overflow-auto p-4">
+        <div :class="isCreateModelRoute ? '' : 'min-h-0 overflow-auto p-4'">
           <div class="grid gap-4">
           <div
             v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench"
@@ -9075,7 +9210,8 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :saving="llmSaving"
             :status="llmStatus"
             :action-error="llmActionError"
-            :editor-open="llmEditorOpen"
+            :editor-open="llmEditorOpen || isCreateModelRoute"
+            :creation-route="isCreateModelRoute"
             :editing-model-i-d="llmEditingModelID"
             :name="llmName"
             :provider="llmProvider"
@@ -9090,7 +9226,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :google-provider="isGoogleGeminiProvider"
             :google-service-account-mode="isGoogleServiceAccountMode"
             @retry="loadLLMSettings"
-            @open-editor="openLLMEditor"
+            @open-editor="openModelEditor"
             @cancel-editor="cancelLLMEditor"
             @save="saveLLMSettings"
             @delete="deleteLLMModel"

@@ -1,0 +1,285 @@
+<script setup lang="ts">
+import { ArrowLeft, LoaderCircle, RefreshCw } from 'lucide-vue-next'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { api } from '../api'
+import { contextGenerationKey } from '../context'
+import {
+  createOperationLocks,
+  operationKey,
+} from '../refresh'
+import { importPrerequisiteMessage, nextValidWarehouseRef, warehousesForConnection } from '../tableRefs'
+import { resourceNameError } from '../resourceName'
+import type { Connection, ErrorResponse, Warehouse } from '../types'
+
+const emit = defineEmits<{
+  (event: 'cancel'): void
+  (event: 'created', name: string): void
+  (event: 'navigate', path: 'connections' | 'warehouses'): void
+}>()
+
+const connections = ref<Connection[]>([])
+const warehouses = ref<Warehouse[]>([])
+const loading = ref(false)
+const loaded = ref(false)
+const loadError = ref<string | null>(null)
+const submitting = ref(false)
+const formError = ref<string | null>(null)
+const nameInput = ref<HTMLInputElement | null>(null)
+const formErrorRef = ref<HTMLElement | null>(null)
+const operations = createOperationLocks()
+const contextGeneration = inject(contextGenerationKey, ref(0))
+
+// Route-owned forms may be replaced while a read or write is in flight. Every
+// async continuation must belong to the mounted form and latest attempt that
+// started it.
+let mounted = false
+let readGeneration = 0
+let mutationGeneration = 0
+
+interface ReadToken {
+  generation: number
+  context: number
+}
+
+const form = reactive({
+  name: '',
+  connectionRef: '',
+  warehouseRef: '',
+  catalog: '',
+  schema: '',
+  table: '',
+})
+
+const tableImportBlocker = computed(() => !loaded.value ? '' : importPrerequisiteMessage(connections.value, warehouses.value))
+const formWarehouses = computed(() => warehousesForConnection(warehouses.value, form.connectionRef))
+const hasConnections = computed(() => connections.value.length > 0)
+const hasWarehouses = computed(() => warehouses.value.length > 0)
+
+function errMessage(error: unknown): string {
+  const response = error as Partial<ErrorResponse>
+  return response.reason ? `${response.reason}: ${response.message}` : response.message || String(error)
+}
+
+function isCurrentRead(generation: number, expectedContext: number): boolean {
+  return mounted && generation === readGeneration && contextGeneration.value === expectedContext
+}
+
+function isCurrentMutation(generation: number, expectedContext: number): boolean {
+  return mounted && generation === mutationGeneration && contextGeneration.value === expectedContext
+}
+
+async function load(): Promise<ReadToken | null> {
+  const generation = ++readGeneration
+  const expectedContext = contextGeneration.value
+  loading.value = true
+  loaded.value = false
+  loadError.value = null
+  try {
+    const [availableConnections, availableWarehouses] = await Promise.all([
+      api.listConnections(),
+      api.listWarehouses(),
+    ])
+    if (!isCurrentRead(generation, expectedContext)) return null
+    connections.value = availableConnections
+    warehouses.value = availableWarehouses
+    if (!connections.value.some(connection => connection.name === form.connectionRef)) {
+      form.connectionRef = connections.value[0]?.name ?? ''
+    }
+    form.warehouseRef = nextValidWarehouseRef(warehouses.value, form.connectionRef, form.warehouseRef)
+    loaded.value = true
+    return { generation, context: expectedContext }
+  } catch (error) {
+    if (!isCurrentRead(generation, expectedContext)) return null
+    loadError.value = errMessage(error)
+    return null
+  } finally {
+    if (isCurrentRead(generation, expectedContext)) loading.value = false
+  }
+}
+
+async function focusFormError(message: string, generation: number, expectedContext: number): Promise<void> {
+  if (!isCurrentMutation(generation, expectedContext)) return
+  formError.value = message
+  await nextTick()
+  if (isCurrentMutation(generation, expectedContext)) formErrorRef.value?.focus()
+}
+
+// Prefill the Databricks-provided samples catalog (readable in every
+// workspace) so a first import needs no lookup: samples.nyctaxi.trips.
+function fillDemo(): void {
+  form.name = 'nyctaxi-trips'
+  form.catalog = 'samples'
+  form.schema = 'nyctaxi'
+  form.table = 'trips'
+  formError.value = null
+}
+
+async function submit(): Promise<void> {
+  if (!mounted || submitting.value) return
+  const generation = ++mutationGeneration
+  const expectedContext = contextGeneration.value
+  formError.value = null
+  if (!loaded.value) {
+    await focusFormError('Connection and warehouse lists are still loading. Retry the read before creating a table.', generation, expectedContext)
+    return
+  }
+  if (tableImportBlocker.value) {
+    await focusFormError(tableImportBlocker.value, generation, expectedContext)
+    return
+  }
+  if (!form.name || !form.connectionRef || !form.warehouseRef || !form.catalog || !form.schema || !form.table) {
+    await focusFormError('All table fields are required.', generation, expectedContext)
+    return
+  }
+  const nameError = resourceNameError(form.name, 'Name')
+  if (nameError) {
+    await focusFormError(nameError, generation, expectedContext)
+    return
+  }
+  const desiredName = form.name.trim()
+  const payload = {
+    name: desiredName,
+    connectionRef: form.connectionRef,
+    warehouseRef: form.warehouseRef,
+    catalog: form.catalog,
+    schema: form.schema,
+    table: form.table,
+  }
+  const lock = operationKey('table', desiredName)
+  if (!operations.acquire(lock, 'creating')) {
+    await focusFormError(`Table "${desiredName}" already has an update in progress.`, generation, expectedContext)
+    return
+  }
+  submitting.value = true
+  try {
+    // Resolve duplicate and foreign-key checks from complete, current reads;
+    // the collections that preceded this route may only have shown one page.
+    const [existingTables, availableConnections, availableWarehouses] = await Promise.all([
+      api.listTables(),
+      api.listConnections(),
+      api.listWarehouses(),
+    ])
+    if (!isCurrentMutation(generation, expectedContext)) return
+    operations.reconcile('table', existingTables.map(({ name, uid }) => ({ name, uid })))
+    if (operations.isTombstoned(lock)) {
+      await focusFormError(`Table "${desiredName}" is still being removed. Retry after the list refresh confirms it is gone.`, generation, expectedContext)
+      return
+    }
+    if (existingTables.some(table => table.name === desiredName)) {
+      await focusFormError(`Table "${desiredName}" already exists.`, generation, expectedContext)
+      return
+    }
+    if (!availableConnections.some(connection => connection.name === payload.connectionRef)) {
+      await focusFormError('Selected connection is no longer available in this workspace.', generation, expectedContext)
+      return
+    }
+    if (!availableWarehouses.some(warehouse => warehouse.name === payload.warehouseRef && warehouse.connectionRef === payload.connectionRef)) {
+      await focusFormError('Selected warehouse must belong to the selected connection.', generation, expectedContext)
+      return
+    }
+    const created = await api.saveTable(payload)
+    if (!isCurrentMutation(generation, expectedContext)) return
+    emit('created', created.name)
+  } catch (error) {
+    await focusFormError(errMessage(error), generation, expectedContext)
+  } finally {
+    operations.release(lock)
+    if (isCurrentMutation(generation, expectedContext)) submitting.value = false
+  }
+}
+
+function cancel(): void {
+  if (!submitting.value) emit('cancel')
+}
+
+onMounted(() => {
+  mounted = true
+  void load().then(readToken => {
+    if (readToken && isCurrentRead(readToken.generation, readToken.context)) nameInput.value?.focus()
+  })
+})
+
+onBeforeUnmount(() => {
+  mounted = false
+  readGeneration += 1
+  mutationGeneration += 1
+})
+
+watch(() => form.connectionRef, connectionRef => {
+  form.warehouseRef = nextValidWarehouseRef(warehouses.value, connectionRef, form.warehouseRef)
+})
+</script>
+
+<template>
+  <section class="page k-create-page" :aria-busy="loading || submitting ? 'true' : 'false'">
+    <button class="k-btn k-btn--ghost k-back-action" type="button" :disabled="submitting" @click="cancel">
+      <ArrowLeft :size="14" aria-hidden="true" /> Tables
+    </button>
+    <header class="k-create-header">
+      <h2 class="k-create-title">Register table</h2>
+      <p class="k-create-description">Register a metadata-only Databricks table handle for App Studio and MCP.</p>
+    </header>
+
+    <form class="k-create-surface k-create-surface--wide" @submit.prevent="submit">
+      <div class="k-create-body">
+      <div class="databricks-resource-panel-head">
+        <span class="databricks-resource-panel-title">Table details</span>
+        <button class="k-btn k-btn--ghost databricks-inline-action" type="button" :disabled="loading || submitting" @click="fillDemo" title="Prefill samples.nyctaxi.trips — Databricks demo data available in every workspace">Fill with demo data</button>
+      </div>
+      <p v-if="loading" class="muted" role="status"><LoaderCircle class="spin" :size="14" aria-hidden="true" /> Loading connections and warehouses…</p>
+      <p v-if="loadError" class="error" role="alert" aria-live="assertive">
+        <span>Could not load table prerequisites: {{ loadError }}</span>
+        <button class="k-btn k-btn--ghost" type="button" @click="load"><RefreshCw :size="14" aria-hidden="true" /> Retry</button>
+      </p>
+      <div v-if="tableImportBlocker" class="prerequisite" role="status">
+        {{ tableImportBlocker }}
+        <button v-if="!hasConnections" class="k-btn k-btn--ghost databricks-inline-action" type="button" @click="emit('navigate', 'connections')">Go to connections</button>
+        <button v-else-if="!hasWarehouses" class="k-btn k-btn--ghost databricks-inline-action" type="button" @click="emit('navigate', 'warehouses')">Go to warehouses</button>
+      </div>
+      <div class="form-grid">
+        <label class="field" for="table-name">
+          <span class="field-label">Name</span>
+          <input id="table-name" ref="nameInput" class="k-input" v-model="form.name" :disabled="loading || submitting" autocomplete="off" placeholder="order-history" required aria-required="true" aria-describedby="table-name-hint table-form-error" :aria-invalid="!!formError" />
+          <span id="table-name-hint" class="field-hint">The stable tableRef exposed to App Studio. Use lowercase letters, numbers, and hyphens; the name is preserved exactly.</span>
+        </label>
+        <label class="field" for="table-connection">
+          <span class="field-label">Connection</span>
+          <select id="table-connection" class="k-input" v-model="form.connectionRef" :disabled="loading || submitting || !hasConnections" required aria-required="true" aria-describedby="table-connection-hint table-form-error" :aria-invalid="!!formError">
+            <option value="" disabled>Select connection</option>
+            <option v-for="conn in connections" :key="conn.name" :value="conn.name">{{ conn.name }}</option>
+          </select>
+          <span id="table-connection-hint" class="field-hint">The Databricks workspace connection for this table.</span>
+        </label>
+        <label class="field" for="table-warehouse">
+          <span class="field-label">Warehouse</span>
+          <select id="table-warehouse" class="k-input" v-model="form.warehouseRef" :disabled="loading || submitting || !formWarehouses.length" required aria-required="true" aria-describedby="table-warehouse-hint table-form-error" :aria-invalid="!!formError">
+            <option value="" disabled>{{ formWarehouses.length ? 'Select warehouse' : 'No warehouses for this connection' }}</option>
+            <option v-for="wh in formWarehouses" :key="wh.name" :value="wh.name">{{ wh.name }}</option>
+          </select>
+          <span id="table-warehouse-hint" class="field-hint">A warehouse that belongs to the selected connection.</span>
+        </label>
+        <label class="field" for="table-catalog">
+          <span class="field-label">Catalog</span>
+          <input id="table-catalog" class="k-input" v-model="form.catalog" :disabled="loading || submitting" autocomplete="off" placeholder="sales" required aria-required="true" aria-describedby="table-catalog-hint table-form-error" :aria-invalid="!!formError" />
+          <span id="table-catalog-hint" class="field-hint">The Databricks catalog containing the table.</span>
+        </label>
+        <label class="field" for="table-schema">
+          <span class="field-label">Schema</span>
+          <input id="table-schema" class="k-input" v-model="form.schema" :disabled="loading || submitting" autocomplete="off" placeholder="gold" required aria-required="true" aria-describedby="table-schema-hint table-form-error" :aria-invalid="!!formError" />
+          <span id="table-schema-hint" class="field-hint">The Databricks schema containing the table.</span>
+        </label>
+        <label class="field" for="table-table">
+          <span class="field-label">Table</span>
+          <input id="table-table" class="k-input" v-model="form.table" :disabled="loading || submitting" autocomplete="off" placeholder="order_history" required aria-required="true" aria-describedby="table-table-hint table-form-error" :aria-invalid="!!formError" />
+          <span id="table-table-hint" class="field-hint">The exact table identifier in the selected catalog and schema.</span>
+        </label>
+      </div>
+      </div>
+      <div class="k-create-actions">
+        <span v-if="formError" id="table-form-error" ref="formErrorRef" class="error" role="alert" aria-live="assertive" tabindex="-1">{{ formError }}</span>
+        <button class="k-btn k-btn--ghost" type="button" :disabled="submitting" @click="cancel">Cancel</button>
+        <button class="k-btn k-btn--primary" type="submit" :disabled="loading || submitting || !!tableImportBlocker">{{ submitting ? 'Registering…' : 'Register table' }}</button>
+      </div>
+    </form>
+  </section>
+</template>

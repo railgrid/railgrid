@@ -87,6 +87,32 @@ faros-provider-code .code-form-actions {
   flex-wrap: wrap;
   gap: 8px;
 }
+faros-provider-code .code-create__back {
+  align-items: center;
+  align-self: flex-start;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--color-accent, #8b6bff);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 500;
+  gap: 6px;
+  margin-bottom: 8px;
+  min-height: auto;
+  padding: 0;
+}
+faros-provider-code .code-create__back:hover {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--color-accent-hover, #a18aff);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+faros-provider-code .code-create__back:active { transform: none; }
+faros-provider-code .code-create__back svg { flex: none; }
+faros-provider-code .code-create-panel { max-width: 42rem; }
 faros-provider-code .code-row-actions {
   align-items: center;
   display: flex;

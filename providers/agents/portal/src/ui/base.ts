@@ -9,12 +9,28 @@ import { LitElement } from 'lit'
 import { property } from 'lit/decorators.js'
 import type { ApiClient } from '../api'
 import type { AppStore } from '../store'
-import type { Route } from '../router'
+import { hashFor, type Route } from '../router'
 
 export class LightElement extends LitElement {
   protected createRenderRoot(): HTMLElement {
     return this
   }
+}
+
+// A confirmation is allowed to outlive the view that opened it. Keep the
+// authority references together so callers can verify the mounted surface
+// before starting a destructive write after the modal resolves.
+export interface AuthoritySnapshot {
+  readonly store: AppStore
+  readonly api: ApiClient
+  readonly host: HTMLElement | null
+  readonly routeKey: string | null
+}
+
+interface AgentsHost extends HTMLElement {
+  store?: AppStore
+  api?: ApiClient
+  route?: Route
 }
 
 // StoreElement is a light-DOM component wired to the shared AppStore: it
@@ -40,6 +56,29 @@ export class StoreElement extends LightElement {
 
   protected willUpdate(): void {
     this.bind()
+  }
+
+  protected captureAuthority(): AuthoritySnapshot {
+    const host = this.closest('faros-provider-agents') as AgentsHost | null
+    return {
+      store: this.store,
+      api: this.api,
+      host,
+      routeKey: host?.route ? hashFor(host.route) : null,
+    }
+  }
+
+  // A mounted child can still be connected for one turn after the shell has
+  // rotated its context. Compare against the owning shell as well as the
+  // child's properties so that same-tick token/user/tenant changes cannot
+  // turn an old confirmation into a write against the new or old authority.
+  protected authorityIsCurrent(snapshot: AuthoritySnapshot): boolean {
+    if (!this.isConnected || this.store !== snapshot.store || this.api !== snapshot.api) return false
+    const host = this.closest('faros-provider-agents') as AgentsHost | null
+    if (host !== snapshot.host) return false
+    if (!host) return true
+    if (!host.isConnected || host.store !== snapshot.store || host.api !== snapshot.api) return false
+    return (host.route ? hashFor(host.route) : null) === snapshot.routeKey
   }
 
   private bind(): void {

@@ -30,6 +30,8 @@ const TOKEN_KEY = 'token'
 
 let bearerToken: string | null = null
 let clusterName: string | null = null
+let providerBasePath: string | null = null
+let callerUser: string | null = null
 let apiContextGeneration = 0
 
 interface APIRequestContext {
@@ -44,6 +46,7 @@ interface APIRequestContext {
 export interface APIReadContext {
   token?: string | null
   tenant?: string | null
+  user?: string | null
 }
 
 function captureRequestContext(): APIRequestContext {
@@ -60,17 +63,23 @@ function assertRequestContext(context: APIRequestContext): void {
   }
 }
 
-// setBasePath is a no-op: kcp paths are built from the cluster name, not the
-// provider basePath. Kept so App.vue's watcher type-checks.
-export function setBasePath(_ctxBasePath?: string | null) {
-  void _ctxBasePath
+// The GraphQL path is built from the cluster name, not the provider basePath,
+// but basePath is still part of the shell authority. Track it so in-flight
+// requests are fenced when the host switches provider roots.
+export function setBasePath(ctxBasePath?: string | null) {
+  const nextBasePath = ctxBasePath || null
+  if (nextBasePath === providerBasePath) return
+  providerBasePath = nextBasePath
+  apiContextGeneration += 1
 }
 export function setAPIContext(context: APIReadContext): void {
   const nextToken = context.token || null
   const nextTenant = context.tenant || null
-  if (nextToken === bearerToken && nextTenant === clusterName) return
+  const nextUser = context.user || null
+  if (nextToken === bearerToken && nextTenant === clusterName && nextUser === callerUser) return
   bearerToken = nextToken
   clusterName = nextTenant
+  callerUser = nextUser
   apiContextGeneration += 1
 }
 
@@ -868,26 +877,44 @@ export const api = {
   },
 
   // oauthConfig probes the provider backend (via the hub /services proxy) for
-  // whether the "Connect with GitHub" flow is configured. Returns enabled:false
-  // (never throws) so the view can silently fall back to the PAT form.
+  // whether the "Connect with GitHub" flow is configured. A valid disabled
+  // response is expected when no OAuth app is configured, but transport,
+  // status, and response-shape failures must reach the view so it can offer a
+  // retry instead of reporting a false "not configured" state.
   async oauthConfig(): Promise<{ enabled: boolean; startURL?: string; scopes?: string }> {
+    const context = captureRequestContext()
+    assertRequestContext(context)
+    const headers: Record<string, string> = { Accept: 'application/json' }
+    if (bearerToken) headers['Authorization'] = 'Bearer ' + bearerToken
+    const res = await fetch('/services/providers/code/oauth/github/config', { headers, credentials: 'same-origin' })
+    if (!res.ok) {
+      const text = await res.text()
+      assertRequestContext(context)
+      throw <ErrorResponse>{ reason: 'HTTPError', message: `${res.status}: ${text || res.statusText}` }
+    }
+    let body: unknown
     try {
-      const headers: Record<string, string> = { Accept: 'application/json' }
-      if (bearerToken) headers['Authorization'] = 'Bearer ' + bearerToken
-      const res = await fetch('/services/providers/code/oauth/github/config', { headers, credentials: 'same-origin' })
-      if (!res.ok) return { enabled: false }
-      const body: unknown = await res.json()
-      if (!isRecord(body) || typeof body.enabled !== 'boolean') return { enabled: false }
-      if ((body.startURL !== undefined && typeof body.startURL !== 'string') ||
-        (body.scopes !== undefined && typeof body.scopes !== 'string')) return { enabled: false }
-      if (body.enabled && (typeof body.startURL !== 'string' || !body.startURL.trim())) return { enabled: false }
-      return {
-        enabled: body.enabled,
-        startURL: body.startURL as string | undefined,
-        scopes: body.scopes as string | undefined,
-      }
+      body = await res.json()
     } catch {
-      return { enabled: false }
+      assertRequestContext(context)
+      throw protocolError('OAuth configuration returned malformed JSON')
+    }
+    assertRequestContext(context)
+    if (!isRecord(body) || typeof body.enabled !== 'boolean') {
+      throw protocolError('OAuth configuration response had an invalid shape')
+    }
+    if ((body.startURL !== undefined && typeof body.startURL !== 'string') ||
+      (body.scopes !== undefined && typeof body.scopes !== 'string')) {
+      throw protocolError('OAuth configuration response had an invalid shape')
+    }
+    if (body.enabled && (typeof body.startURL !== 'string' || !body.startURL.trim())) {
+      throw protocolError('OAuth configuration response was enabled but missing a start URL')
+    }
+    if (!body.enabled) return { enabled: false }
+    return {
+      enabled: true,
+      startURL: body.startURL as string,
+      scopes: body.scopes as string | undefined,
     }
   },
 

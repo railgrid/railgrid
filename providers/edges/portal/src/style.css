@@ -86,6 +86,7 @@ faros-provider-edges .copy:disabled { opacity: .4; cursor: default; }
 faros-provider-edges .waiting { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--color-accent, #8b6bff) 20%, transparent); background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); border-radius: 6px; color: var(--color-text-secondary, #8a8ca6); }
 faros-provider-edges .banner.warn { border: 1px solid color-mix(in srgb, var(--color-warning, #f0a63a) 30%, transparent); background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); color: var(--color-warning, #f0a63a); padding: 10px 12px; border-radius: 6px; font-size: 12px; }
 faros-provider-edges .banner.error { border: 1px solid color-mix(in srgb, var(--color-danger, #ff5d5d) 30%, transparent); background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); color: var(--color-danger, #ff5d5d); padding: 10px 12px; border-radius: 6px; margin-bottom: 14px; font-size: 12px; }
+faros-provider-edges .banner.success { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid color-mix(in srgb, var(--color-success) 30%, transparent); background: var(--color-success-subtle); color: var(--color-success); padding: 10px 12px; border-radius: 6px; margin-bottom: 14px; font-size: 12px; }
 
 /* ── Misc text ── */
 faros-provider-edges .row { display: flex; align-items: center; gap: 8px; }
