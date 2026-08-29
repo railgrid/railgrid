@@ -177,7 +177,7 @@ faros-provider-edges .edge-detail__provider-mark {
   position: absolute;
   z-index: 1;
   top: 0;
-  left: 0;
+  inset-inline-start: 0;
   display: grid;
   width: 38px;
   height: 38px;
@@ -188,31 +188,8 @@ faros-provider-edges .edge-detail__provider-mark {
   color: var(--color-text-secondary, #8a8ca6);
 }
 faros-provider-edges .edge-detail__resource > section > header {
-  padding-left: 52px;
+  padding-inline-start: 52px;
 }
-faros-provider-edges .edge-detail__back {
-  align-self: flex-start;
-  margin-bottom: -5px;
-  min-height: auto;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--color-accent, #8b6bff);
-  gap: 6px;
-  padding: 0;
-  font-size: 12px;
-  font-weight: 500;
-}
-faros-provider-edges .edge-detail__back:hover {
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--color-accent-hover, #a18aff);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-faros-provider-edges .edge-detail__back:active { transform: none; }
-faros-provider-edges .edge-detail__back svg { flex: none; }
 faros-provider-edges .edge-detail__resource > section > header > div:first-child > div {
   align-items: center;
   gap: 7px;
@@ -406,7 +383,7 @@ faros-provider-edges .edge-technical pre { overflow: auto; }
 
 @media (max-width: 520px) {
   faros-provider-edges .edge-detail__provider-mark { width: 32px; height: 32px; }
-  faros-provider-edges .edge-detail__resource > section > header { padding-left: 44px; }
+  faros-provider-edges .edge-detail__resource > section > header { padding-inline-start: 44px; }
   faros-provider-edges .edge-detail__actions { width: 100%; justify-content: flex-start; }
   faros-provider-edges .edge-disclosure summary { align-items: flex-start; }
 }
@@ -474,28 +451,6 @@ faros-provider-edges .service-detail__page textarea {
   min-width: 0;
   max-width: 100%;
 }
-faros-provider-edges .service-detail__back {
-  align-self: flex-start;
-  min-height: auto;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--color-accent, #8b6bff);
-  gap: 6px;
-  padding: 0;
-  font-size: 12px;
-  font-weight: 500;
-}
-faros-provider-edges .service-detail__back:hover {
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--color-accent-hover, #a18aff);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-faros-provider-edges .service-detail__back:active { transform: none; }
-faros-provider-edges .service-detail__back svg { flex: none; }
 faros-provider-edges .service-detail__separator { color: var(--color-text-muted, #5d5f78); }
 faros-provider-edges .service-detail__actions {
   display: inline-flex;

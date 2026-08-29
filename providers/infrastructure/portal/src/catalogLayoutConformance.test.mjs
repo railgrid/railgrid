@@ -27,7 +27,7 @@ describe('Infrastructure template catalog layouts', () => {
 
   it('keeps card geometry for grid mode and uses ResourceTable for list mode', () => {
     expect(source).toContain('v-if="layout === \'grid\'"')
-    expect(source).toContain('class="catalog-loading-grid"')
+    expect(source).toContain('class="catalog-loading-grid k-delayed-loading"')
     expect(source).toContain('<TemplateCard')
     expect(source).toMatch(/<ResourceTable[\s\S]*:loaded="loaded"[\s\S]*:loading="loading"/)
     expect(source).not.toContain('variant="simple"')
@@ -36,13 +36,13 @@ describe('Infrastructure template catalog layouts', () => {
   })
 
   it('shows the supported template fields without inventing a cloud column', () => {
-    expect(source).toContain("{ key: 'identity', label: 'Template' }")
+    expect(source).toContain("{ key: 'identity', label: 'Template', primary: true }")
     expect(source).toContain("{ key: 'category', label: 'Category' }")
     expect(source).toContain("{ key: 'kind', label: 'Kind' }")
     expect(source).toContain("{ key: 'version', label: 'Version' }")
     expect(source).toContain("{ key: 'exposure', label: 'Exposure' }")
     expect(source).not.toContain("{ key: 'cloud', label: 'Cloud' }")
-    expect(source).toContain('<p class="template-card-desc">{{ row.description }}</p>')
+    expect(source).toContain('<span class="template-card-desc">{{ row.description }}</span>')
   })
 
   it('retains true-empty refresh and filter-empty clearing in both layouts', () => {

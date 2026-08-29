@@ -338,25 +338,6 @@ faros-provider-infrastructure .instance-detail {
   gap: 14px;
 }
 
-faros-provider-infrastructure .instance-detail__back {
-  align-self: flex-start;
-  min-height: 0;
-  border-color: transparent;
-  padding: 0;
-}
-
-faros-provider-infrastructure .instance-detail__back:hover {
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-  color: var(--color-accent-hover, #a18aff);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-faros-provider-infrastructure .instance-detail__back:active { transform: none; }
-faros-provider-infrastructure .instance-detail__back svg { flex: none; }
-
 faros-provider-infrastructure .instance-detail__actions {
   display: inline-flex;
   min-width: 0;

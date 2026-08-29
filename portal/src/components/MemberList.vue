@@ -24,6 +24,8 @@ const props = defineProps<{
   // Rendered in the empty state so it never just says "No members." with no
   // hint about what adding one means.
   scopeLabel: string
+  // Scope-specific accessible name for the shared roster table.
+  tableLabel: string
   // add is a function prop (not an emit) so the component can await the
   // outcome: the typed identifier is only cleared when the add succeeded,
   // instead of being thrown away under a failure toast.
@@ -44,9 +46,9 @@ const newUser = ref('')
 const newRole = ref<'admin' | 'member'>('member')
 
 const memberColumns = computed(() => [
-  { key: 'user', label: 'User' },
+  { key: 'user', label: 'User', primary: true, fullValue: memberPrimaryValue },
   { key: 'role', label: 'Role' },
-  ...(!props.readonly ? [{ key: 'actions', label: '' }] : []),
+  ...(!props.readonly ? [{ key: 'actions', label: '', ariaLabel: 'Actions' }] : []),
 ])
 
 // ResourceTable intentionally accepts record-shaped rows so it can remain a
@@ -75,6 +77,12 @@ function memberEmail(row: Record<string, unknown>): string {
 
 function memberDisplayName(row: Record<string, unknown>): string {
   return String(row.userDisplayName ?? '')
+}
+
+function memberPrimaryValue(row: Record<string, unknown>): string {
+  const email = memberEmail(row)
+  const displayName = memberDisplayName(row)
+  return email && displayName ? `${email} · ${displayName}` : email || displayName || memberUser(row)
 }
 
 async function submit() {
@@ -123,6 +131,7 @@ async function submit() {
       class="mt-3"
       :columns="memberColumns"
       :rows="memberRows"
+      :aria-label="tableLabel"
       variant="simple"
       row-key="user"
       :interactive="false"

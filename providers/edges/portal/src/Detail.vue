@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { ArrowLeft, ArrowUpCircle, Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Ellipsis, Globe2, Home, Plug, Plus, RefreshCw, Server, TerminalSquare, Trash2 } from 'lucide-vue-next'
+import { ArrowUpCircle, Boxes, Cable, Check, ChevronDown, ChevronUp, Cloud, Copy, Cpu, Ellipsis, Globe2, Home, Plug, Plus, RefreshCw, Server, TerminalSquare, Trash2 } from 'lucide-vue-next'
 import { getEdge, deleteEdge, listEdgeServices, connectEdgeService, deleteEdgeService } from './api'
 import { confirmDialog } from './portalkit/confirm'
 import ConditionsPanel from './portalkit/ConditionsPanel.vue'
 import ResourcePage from './portalkit/ResourcePage.vue'
+import ResourceBackLink from './portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from './portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from './portalkit/ResourceStatCards.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
@@ -387,9 +388,9 @@ onUnmounted(() => {
 
 <template>
   <div class="edge-detail">
-    <a class="k-btn k-btn--ghost edge-detail__back" href="/ui/providers/edges" @click.prevent="emit('back')">
-      <ArrowLeft :size="14" aria-hidden="true" /> Edges
-    </a>
+    <ResourceBackLink class="edge-detail__back" href="/ui/providers/edges" @back="emit('back')">
+      Edges
+    </ResourceBackLink>
 
     <div class="edge-detail__resource">
       <div class="edge-detail__provider-mark" role="img" :aria-label="`${edgeTypeLabel} icon`">

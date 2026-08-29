@@ -82,12 +82,12 @@ const clients: { id: Client; label: string }[] = [
 ]
 
 const columns = [
-  { key: 'name', label: 'Name' },
+  { key: 'name', label: 'Name', primary: true },
   { key: 'displayName', label: 'Display' },
   { key: 'phase', label: 'Status' },
-  { key: 'tools', label: 'Tools' },
+  { key: 'tools', label: 'Tools', align: 'end' as const },
   { key: 'updated', label: 'Updated' },
-  { key: 'actions', label: '' },
+  { key: 'actions', label: '', ariaLabel: 'Actions' },
 ]
 
 const tenant = useTenantStore()
@@ -597,6 +597,7 @@ function rel(ts?: string): string {
         <ResourceTable
           :columns="columns"
           :rows="rows"
+          aria-label="MCP servers"
           searchable
           search-placeholder="Search MCP servers…"
           :filters="[{ key: 'phase', label: 'Status', allLabel: 'Any status' }]"
@@ -614,7 +615,11 @@ function rel(ts?: string): string {
           @row-click="openDetail"
         >
           <template #name="{ row }">
-            <span class="font-mono font-semibold text-text-primary">{{ (row as any).name }}</span>
+            <button
+              class="k-btn k-btn--ghost k-table-resource-link"
+              type="button"
+              @click.stop="openDetail(row)"
+            >{{ (row as any).name }}</button>
           </template>
           <template #displayName="{ value }">
             <span class="text-text-muted">{{ value }}</span>

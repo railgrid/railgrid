@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { AlertTriangle, ArrowLeft, ArrowLeftRight, Ellipsis, ExternalLink, Eye, GitBranch, Github, Package as PackageIcon, PackageOpen, Plug, RefreshCw, User, Users, X } from 'lucide-vue-next'
+import { AlertTriangle, ArrowLeftRight, Ellipsis, ExternalLink, Eye, GitBranch, Github, Package as PackageIcon, PackageOpen, Plug, RefreshCw, User, Users, X } from 'lucide-vue-next'
 import { api } from '../api'
 import type { Collaborator, Connection, DeployKey, ErrorResponse, Package, RepositoryDetail } from '../types'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
+import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
@@ -98,24 +99,24 @@ const packageFullRead = createFullListReadCoordinator(() => api.listPackages(pro
 
 const operations = createOperationLocks()
 const keyColumns = [
-  { key: 'title', label: 'Deploy key' },
+  { key: 'title', label: 'Deploy key', primary: true },
   { key: 'access', label: 'Access' },
   { key: 'status', label: 'Status' },
-  { key: 'actions', label: '' },
+  { key: 'actions', label: '', ariaLabel: 'Actions' },
 ]
 const collabColumns = [
-  { key: 'username', label: 'Collaborator' },
+  { key: 'username', label: 'Collaborator', primary: true },
   { key: 'permission', label: 'Permission' },
   { key: 'status', label: 'Status' },
-  { key: 'actions', label: '' },
+  { key: 'actions', label: '', ariaLabel: 'Actions' },
 ]
 const packageColumns = [
-  { key: 'name', label: 'Package' },
+  { key: 'name', label: 'Package', primary: true },
   { key: 'type', label: 'Type' },
   { key: 'visibility', label: 'Visibility' },
-  { key: 'versionCount', label: 'Versions' },
+  { key: 'versionCount', label: 'Versions', align: 'end' as const },
   { key: 'status', label: 'Status' },
-  { key: 'url', label: '' },
+  { key: 'url', label: '', ariaLabel: 'Package link' },
 ]
 function controllerCaughtUp(resource: { generation?: number; observedGeneration?: number }): boolean {
   return resource.generation === undefined ||
@@ -801,9 +802,9 @@ onUnmounted(() => {
 
 <template>
   <div class="repo-detail">
-    <a class="k-btn k-btn--ghost repo-detail__back" href="/ui/providers/code/repositories" @click.prevent="emit('back')">
-      <ArrowLeft :size="14" aria-hidden="true" /> Repositories
-    </a>
+    <ResourceBackLink class="repo-detail__back" href="/ui/providers/code/repositories" @back="emit('back')">
+      Repositories
+    </ResourceBackLink>
     <div class="repo-detail__resource">
       <div class="repo-detail__provider-mark" role="img" :aria-label="`${providerLabel(currentConn?.provider) || 'Provider unavailable'} mark`">
         <Github v-if="isGitHubProvider" :size="20" :stroke-width="1.75" aria-hidden="true" />
@@ -928,7 +929,7 @@ onUnmounted(() => {
               <p class="muted">A generated key's private half is written to a Secret in your workspace.</p>
             </form>
             <p v-if="keyDeleteError" class="error mutation-error" role="alert" aria-live="assertive">{{ keyDeleteError }}</p>
-            <ResourceTable :columns="keyColumns" :rows="keyRows" row-key="name" :loaded="keysLoaded" :loading="keysLoading" :refresh-mode="keyRefreshMode" :error="keysError" :stale="keysLoaded && !!keysError" retryable searchable search-placeholder="Search deploy keys…" :filters="[{ key: 'access', label: 'Access' }, { key: 'status', label: 'Status', allLabel: 'Any status' }]" paginated :page-size="10" empty-text="No deploy keys." :interactive="false" @retry="loadKeys">
+            <ResourceTable aria-label="Deploy keys" :columns="keyColumns" :rows="keyRows" row-key="name" :loaded="keysLoaded" :loading="keysLoading" :refresh-mode="keyRefreshMode" :error="keysError" :stale="keysLoaded && !!keysError" retryable searchable search-placeholder="Search deploy keys…" :filters="[{ key: 'access', label: 'Access' }, { key: 'status', label: 'Status', allLabel: 'Any status' }]" paginated :page-size="10" empty-text="No deploy keys." :interactive="false" @retry="loadKeys">
               <template #title="{ row }"><strong>{{ row.title }}</strong><div v-if="row.generated && row.secretName" class="muted">secret: <code>{{ row.secretName }}</code></div></template>
               <template #access="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
               <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>
@@ -943,7 +944,7 @@ onUnmounted(() => {
               <div class="code-form-actions"><button class="k-btn k-btn--primary" type="submit" :disabled="repositoryDeleting || collabSubmitting || !collabsLoaded">{{ collabSubmitting ? 'Adding…' : 'Add collaborator' }}</button><span v-if="collabError" class="error" role="alert">{{ collabError }}</span></div>
             </form>
             <p v-if="collabDeleteError" class="error mutation-error" role="alert" aria-live="assertive">{{ collabDeleteError }}</p>
-            <ResourceTable :columns="collabColumns" :rows="collabRows" row-key="name" :loaded="collabsLoaded" :loading="collabsLoading" :refresh-mode="collabRefreshMode" :error="collabsError" :stale="collabsLoaded && !!collabsError" retryable searchable search-placeholder="Search collaborators…" :filters="[{ key: 'permission', label: 'Permission' }, { key: 'status', label: 'Status', allLabel: 'Any status' }]" paginated :page-size="10" empty-text="No collaborators." :interactive="false" @retry="loadCollaborators">
+            <ResourceTable aria-label="Repository collaborators" :columns="collabColumns" :rows="collabRows" row-key="name" :loaded="collabsLoaded" :loading="collabsLoading" :refresh-mode="collabRefreshMode" :error="collabsError" :stale="collabsLoaded && !!collabsError" retryable searchable search-placeholder="Search collaborators…" :filters="[{ key: 'permission', label: 'Permission' }, { key: 'status', label: 'Status', allLabel: 'Any status' }]" paginated :page-size="10" empty-text="No collaborators." :interactive="false" @retry="loadCollaborators">
               <template #username="{ value }"><strong>{{ value }}</strong></template>
               <template #permission="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
               <template #status="{ row }"><StatusBadge :status="String(row.status)" :tone="row.deleting ? 'warning' : null" :title="String(row.message || '')" /></template>
@@ -966,8 +967,8 @@ onUnmounted(() => {
           </template>
           <div v-if="repo && packagesExpanded" id="repository-packages-content" class="repo-domain-block">
             <div class="panel-head"><h3 class="panel-title">Packages</h3><span v-if="packagesLoaded && packageMode === 'client'" class="muted">{{ packageRows.length }}</span></div>
-            <ResourceTable :columns="packageColumns" :rows="packageRows" row-key="rowKey" :loaded="packagesLoaded" :loading="packagesLoading" :refresh-mode="packageRefreshMode" :error="packagesError" :stale="packagesLoaded && !!packagesError" retryable searchable search-placeholder="Search packages…" :filters="PACKAGE_FILTERS" :pagination-mode="packageMode" :page="packagePage" :page-size="packagePageSize" :query="packageQuery" :filter-values="packageFilters" :cursor="packageCursor" :page-info="packagePageInfo" empty-text="No packages published to this repository yet." :interactive="false" @retry="loadPackages" @change="handlePackageChange">
-              <template #name="{ row }"><strong><a v-if="row.htmlURL && !repositoryDeleting && !row.deleting" :href="String(row.htmlURL)" target="_blank" rel="noopener">{{ row.name }}</a><template v-else>{{ row.name }}</template></strong></template>
+            <ResourceTable aria-label="Repository packages" :columns="packageColumns" :rows="packageRows" row-key="rowKey" :loaded="packagesLoaded" :loading="packagesLoading" :refresh-mode="packageRefreshMode" :error="packagesError" :stale="packagesLoaded && !!packagesError" retryable searchable search-placeholder="Search packages…" :filters="PACKAGE_FILTERS" :pagination-mode="packageMode" :page="packagePage" :page-size="packagePageSize" :query="packageQuery" :filter-values="packageFilters" :cursor="packageCursor" :page-info="packagePageInfo" empty-text="No packages published to this repository yet." :interactive="false" @retry="loadPackages" @change="handlePackageChange">
+              <template #name="{ row }"><strong><a v-if="row.htmlURL && !repositoryDeleting && !row.deleting" class="k-table-resource-link" :href="String(row.htmlURL)" target="_blank" rel="noopener">{{ row.name }}</a><template v-else>{{ row.name }}</template></strong></template>
               <template #type="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
               <template #visibility="{ value }"><span class="muted">{{ value === 'unknown' ? '—' : value }}</span></template>
               <template #versionCount="{ value }"><span class="muted">{{ value || 0 }}</span></template>

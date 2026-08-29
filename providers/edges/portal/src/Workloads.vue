@@ -33,13 +33,13 @@ const error = ref<string | null>(null)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
 const foregroundLoading = computed(() => loading.value && refreshMode.value === 'foreground')
 const workloadColumns = [
-  { key: 'expand', label: '' },
-  { key: 'name', label: 'Name' },
+  { key: 'expand', label: '', ariaLabel: 'Expand' },
+  { key: 'name', label: 'Name', primary: true },
   { key: 'image', label: 'Image' },
   { key: 'placement', label: 'Placement' },
   { key: 'status', label: 'Status' },
-  { key: 'ready', label: 'Ready' },
-  { key: 'actions', label: '' },
+  { key: 'ready', label: 'Ready', align: 'end' as const },
+  { key: 'actions', label: '', ariaLabel: 'Actions' },
 ]
 const workloadRows = computed<Array<Record<string, unknown>>>(() => workloads.value.map(workload => ({
   ...workload,
@@ -417,6 +417,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
     <ResourceTable
       :columns="workloadColumns"
       :rows="workloadRows"
+      aria-label="Workloads"
       row-key="name"
       :row-aria-label="workloadRowAriaLabel"
       :loaded="loaded"
@@ -447,7 +448,7 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
           class="k-table-action"
           :aria-label="`Toggle workload ${String(row.name)}`"
           :aria-expanded="expanded === row.name"
-          @click="toggle(String(row.name))"
+          @click.stop="toggle(String(row.name))"
         >
           <component :is="expanded === row.name ? ChevronDown : ChevronRight" :size="14" />
         </button>
@@ -458,9 +459,9 @@ function workloadRowAriaLabel(row: Record<string, unknown>): string {
       <template #status="{ value }"><StatusBadge :status="String(value)" :tone="workloadTone(value)" /></template>
       <template #ready="{ value }"><span class="mono">{{ value }}</span></template>
       <template #actions="{ row }"><div class="row-actions"><ResourceTableDeleteButton :label="`Delete workload ${String(row.name)}`" @click="onDelete(row as unknown as Workload)" /></div></template>
-      <template #after-row="{ row }">
+      <template #after-row="{ row, columnCount }">
         <tr v-if="expanded === row.name" class="detail-row">
-          <td :colspan="workloadColumns.length">
+          <td :colspan="columnCount">
             <div class="es-head">Per-edge status</div>
             <div v-if="workloadEdges(row).length === 0" class="muted">Not scheduled onto any edge yet (no edge matches the selector, or agents haven't reported).</div>
             <div v-else class="es-list">

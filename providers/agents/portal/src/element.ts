@@ -244,7 +244,7 @@ export class AgentsElement extends LightElement {
   }
 
   render(): TemplateResult {
-    if (!this.ctx) return html`<div class="k-card agents-empty"><p class="muted" role="status">Connecting…</p></div>`
+    if (!this.ctx) return html`<div class="k-card agents-empty k-loading-reveal"><p class="muted" role="status">Connecting…</p></div>`
     if (!this.authority?.usable) {
       return html`<div class="k-card agents-empty">
         <p class="muted" role="status">Select an organization and workspace in the sidebar to use your agents.</p>

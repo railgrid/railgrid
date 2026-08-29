@@ -45,12 +45,12 @@ const pageInfo = ref<PackagePageInfo | null>(null)
 const packageFullRead = createFullListReadCoordinator(() => api.listAllPackages())
 const columns = [
   { key: 'repositoryRef', label: 'Repository' },
-  { key: 'name', label: 'Package' },
+  { key: 'name', label: 'Package', primary: true },
   { key: 'type', label: 'Type' },
   { key: 'visibility', label: 'Visibility' },
-  { key: 'versionCount', label: 'Versions' },
+  { key: 'versionCount', label: 'Versions', align: 'end' as const },
   { key: 'status', label: 'Status' },
-  { key: 'url', label: '' },
+  { key: 'url', label: '', ariaLabel: 'Package link' },
 ]
 function controllerCaughtUp(resource: { generation?: number; observedGeneration?: number }): boolean {
   return resource.generation === undefined ||
@@ -285,6 +285,7 @@ onUnmounted(() => {
     <ResourceTable
       :columns="columns"
       :rows="rows"
+      aria-label="Packages"
       searchable
       search-placeholder="Search packages…"
       :filters="PACKAGE_FILTERS"
@@ -308,11 +309,11 @@ onUnmounted(() => {
       @change="handlePackageChange"
     >
       <template #repositoryRef="{ row }">
-        <button v-if="row.showRepository && !row.deleting" class="k-btn k-btn--ghost k-table-resource-link" type="button" @click="emit('open', String(row.repositoryRef))">{{ row.repositoryRef }}</button>
+        <button v-if="row.showRepository && !row.deleting" class="k-btn k-btn--ghost k-table-resource-link" type="button" @click.stop="emit('open', String(row.repositoryRef))">{{ row.repositoryRef }}</button>
         <span v-else-if="row.showRepository">{{ row.repositoryRef }}</span>
         <CornerDownRight v-else class="muted" :size="14" aria-label="Same repository as above" />
       </template>
-      <template #name="{ row }"><strong><a v-if="row.htmlURL && !row.deleting" :href="String(row.htmlURL)" target="_blank" rel="noopener">{{ row.name }}</a><template v-else>{{ row.name }}</template></strong></template>
+      <template #name="{ row }"><strong><a v-if="row.htmlURL && !row.deleting" class="k-table-resource-link" :href="String(row.htmlURL)" target="_blank" rel="noopener">{{ row.name }}</a><template v-else>{{ row.name }}</template></strong></template>
       <template #type="{ value }"><span class="k-badge k-badge--muted">{{ value }}</span></template>
       <template #visibility="{ value }"><span class="muted">{{ value === 'unknown' ? '—' : value }}</span></template>
       <template #versionCount="{ value }"><span class="muted">{{ value || 0 }}</span></template>

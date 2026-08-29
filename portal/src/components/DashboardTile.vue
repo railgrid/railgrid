@@ -8,7 +8,7 @@ import { useTenantStore } from '@/stores/tenant'
 // from the same vocabulary rather than approximating it.
 import { tileClass } from '@/portalkit/dashboardtile'
 import type { ProviderDTO } from '@/stores/providers'
-import { Puzzle, ChevronRight, X } from 'lucide-vue-next'
+import { CircleAlert, Puzzle, ChevronRight, RefreshCw, X } from 'lucide-vue-next'
 
 // DashboardTile is the portal-side mount point for one provider's
 // dashboard summary. Mirrors ProviderFrame.vue's lifecycle but for the
@@ -43,7 +43,6 @@ const router = useRouter()
 const mountRef = ref<HTMLDivElement | null>(null)
 const elementRef = ref<HTMLElement | null>(null)
 const loadState = ref<'idle' | 'loading' | 'ready' | 'no-tile' | 'error'>('idle')
-const loadError = ref<string | null>(null)
 
 const tagFor = (name: string) => `faros-dashboard-tile-${name}`
 
@@ -83,7 +82,6 @@ watch(
 
 async function loadAndMount(name: string, version: string | undefined) {
   loadState.value = 'loading'
-  loadError.value = null
 
   // Reuse ProviderFrame's script id so we don't double-load the bundle
   // when both the tile and the page are visible (e.g. user is on the
@@ -101,19 +99,23 @@ async function loadAndMount(name: string, version: string | undefined) {
     loadedHere = true
     const v = encodeURIComponent(version ?? '0')
     const src = `/ui/providers/${name}/main.js?v=${v}`
-    await new Promise<void>((resolve, reject) => {
-      const s = document.createElement('script')
-      s.id = scriptID
-      s.src = src
-      s.async = true
-      s.onload = () => resolve()
-      s.onerror = () => reject(new Error(`failed to load ${src}`))
-      document.head.appendChild(s)
-    }).catch((e: Error) => {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const s = document.createElement('script')
+        s.id = scriptID
+        s.src = src
+        s.async = true
+        s.onload = () => resolve()
+        s.onerror = () => {
+          s.remove()
+          reject(new Error(`failed to load ${src}`))
+        }
+        document.head.appendChild(s)
+      })
+    } catch {
       loadState.value = 'error'
-      loadError.value = e.message
-      throw e
-    })
+      return
+    }
   }
 
   // Registration is synchronous inside the bundle's IIFE, so once the script
@@ -154,6 +156,10 @@ async function loadAndMount(name: string, version: string | undefined) {
   elementRef.value = el
   pushContext()
   loadState.value = 'ready'
+}
+
+function retryLoad() {
+  void loadAndMount(props.provider.name, props.provider.version)
 }
 
 function pushContext() {
@@ -209,11 +215,12 @@ onBeforeUnmount(() => {
     <button
       v-if="editMode"
       type="button"
-      class="tile-no-drag k-btn k-btn--ghost absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay p-0 text-text-muted transition-colors hover:border-danger/40 hover:text-danger"
+      class="tile-no-drag k-btn k-btn--ghost absolute right-2 top-2 z-10 flex h-11 w-11 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay p-0 text-text-muted transition-colors hover:border-danger/40 hover:text-danger sm:h-8 sm:w-8"
+      :aria-label="`Remove ${provider.displayName} tile`"
       title="Remove tile"
       @click.stop="emit('remove', provider.name)"
     >
-      <X class="h-3.5 w-3.5" :stroke-width="2" />
+      <X class="h-4 w-4" :stroke-width="1.75" />
     </button>
 
     <!-- Tile header is portal chrome (icon, name, status) so a provider's
@@ -235,16 +242,31 @@ onBeforeUnmount(() => {
       </div>
       <router-link
         v-if="!editMode"
-        :to="`/providers/${provider.name}`"
+        :to="parentTo"
+        :aria-label="`Open ${provider.displayName}`"
         class="flex items-center gap-0.5 text-[11px] font-medium text-accent transition-colors hover:text-accent-hover"
       >
-        Open <ChevronRight class="h-3 w-3" :stroke-width="2" />
+        Open <ChevronRight class="h-3 w-3" :stroke-width="1.75" />
       </router-link>
     </div>
 
-    <div v-if="loadState === 'loading'" :class="tileClass.message">Loading&hellip;</div>
-    <div v-else-if="loadState === 'error'" :class="tileClass.error">
-      Failed to load tile: <span class="font-mono">{{ loadError }}</span>
+    <div v-if="loadState === 'loading'" role="status" aria-live="polite" :class="tileClass.message">
+      Loading summary&hellip;
+    </div>
+    <div v-else-if="loadState === 'error'" role="alert" class="flex items-start gap-2 text-[11px] text-text-muted">
+      <CircleAlert class="mt-0.5 h-4 w-4 flex-shrink-0 text-danger" :stroke-width="1.75" />
+      <div class="min-w-0">
+        <p class="font-medium text-text-primary">Summary unavailable</p>
+        <p class="mt-1">This provider's dashboard summary could not be loaded.</p>
+        <div class="mt-3 flex flex-wrap items-center gap-3">
+          <button type="button" class="tile-no-drag k-btn k-btn--ghost h-8 px-2.5 text-[11px]" @click="retryLoad">
+            <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" /> Retry
+          </button>
+          <router-link :to="parentTo" class="tile-no-drag font-medium text-accent hover:text-accent-hover">
+            Open provider
+          </router-link>
+        </div>
+      </div>
     </div>
     <!-- Provider ships no tile element: instead of a blank card, render a
          generic launcher from catalog metadata — status, category/version,
@@ -252,8 +274,9 @@ onBeforeUnmount(() => {
          disabled in edit mode so the links don't swallow a grid drag. -->
     <div
       v-else-if="loadState === 'no-tile'"
-      class="flex min-h-0 flex-1 flex-col gap-3"
+      class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1"
       :class="editMode ? 'pointer-events-none select-none' : ''"
+      :inert="editMode"
     >
       <div :class="tileClass.stats">
         <span :class="[tileClass.stat, provider.ready ? tileClass.statOk : tileClass.statWarn]">
@@ -285,7 +308,7 @@ onBeforeUnmount(() => {
         :to="parentTo"
         class="tile-no-drag mt-auto inline-flex items-center gap-0.5 text-[11px] font-medium text-accent transition-colors hover:text-accent-hover"
       >
-        Open {{ provider.displayName }} <ChevronRight class="h-3 w-3" :stroke-width="2" />
+        Open {{ provider.displayName }} <ChevronRight class="h-3 w-3" :stroke-width="1.75" />
       </router-link>
     </div>
     <!-- The provider's tile element mounts here. Always render the mount
@@ -297,6 +320,7 @@ onBeforeUnmount(() => {
       ref="mountRef"
       class="min-h-0 flex-1 overflow-auto"
       :class="[loadState === 'ready' ? '' : 'hidden', editMode ? 'pointer-events-none select-none' : '']"
+      :inert="editMode"
     />
   </div>
 </template>

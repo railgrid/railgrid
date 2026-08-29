@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { ArrowLeft, Ellipsis, Globe2, KeyRound, Plug, RefreshCw, Save, Server } from 'lucide-vue-next'
+import { Ellipsis, Globe2, KeyRound, Plug, RefreshCw, Save, Server } from 'lucide-vue-next'
 import { confirmDialog } from './portalkit/confirm'
 import { connectEdgeService, deleteEdgeService, getService, updateEdgeService } from './api'
 import type { CatalogCredentialField, CatalogEntry, EdgeServiceEdit } from './api'
 import type { Edge, EdgeService, ErrorResponse } from './types'
 import ConditionsPanel from './portalkit/ConditionsPanel.vue'
 import ResourcePage from './portalkit/ResourcePage.vue'
+import ResourceBackLink from './portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from './portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard, type ResourceStatTone } from './portalkit/ResourceStatCards.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
@@ -343,9 +344,9 @@ async function onDelete(): Promise<void> {
 
 <template>
   <div class="service-detail">
-    <a class="k-btn k-btn--ghost service-detail__back" href="/ui/providers/edges/services" @click.prevent="emit('back')">
-      <ArrowLeft :size="14" aria-hidden="true" /> Services
-    </a>
+    <ResourceBackLink class="service-detail__back" href="/ui/providers/edges/services" @back="emit('back')">
+      Services
+    </ResourceBackLink>
     <div class="service-detail__resource">
       <ResourcePage
         class="service-detail__page"

@@ -5,7 +5,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { createRenderer, createSSRApp, h, nextTick, ref, watch } from 'vue'
+import { createRenderer, createSSRApp, h, nextTick, reactive, ref, watch } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
 let vite
@@ -13,7 +13,10 @@ const testDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(testDirectory, '../../../..')
 const portalRoot = resolve(testDirectory, '..')
 const canonicalResourceTable = resolve(repositoryRoot, 'provider-sdk/portalkit-vue/ResourceTable.vue')
+const canonicalResourceTableFilter = resolve(repositoryRoot, 'provider-sdk/portalkit-vue/ResourceTableFilter.vue')
 const canonicalResourcePage = resolve(repositoryRoot, 'provider-sdk/portalkit-vue/ResourcePage.vue')
+const canonicalResourceStatCards = resolve(repositoryRoot, 'provider-sdk/portalkit-vue/ResourceStatCards.vue')
+const canonicalResourceBackLink = resolve(repositoryRoot, 'provider-sdk/portalkit-vue/ResourceBackLink.vue')
 const canonicalPageState = resolve(repositoryRoot, 'provider-sdk/portalkit/page-state.ts')
 const canonicalFarosUIStyle = resolve(repositoryRoot, 'provider-sdk/portalkit/faros-ui.css')
 const canonicalTableHelpers = resolve(repositoryRoot, 'provider-sdk/portalkit-vue/table.ts')
@@ -46,8 +49,16 @@ async function resourceTable() {
   return (await vite.ssrLoadModule(canonicalResourceTable)).default
 }
 
+async function resourceTableFilter() {
+  return (await vite.ssrLoadModule(canonicalResourceTableFilter)).default
+}
+
 async function resourcePage() {
   return (await vite.ssrLoadModule(canonicalResourcePage)).default
+}
+
+async function resourceStatCards() {
+  return (await vite.ssrLoadModule(canonicalResourceStatCards)).default
 }
 
 async function tableHelpers() {
@@ -135,16 +146,58 @@ function findHostNode(node, predicate) {
 
 async function mountInteractiveTable(ResourceTable, props) {
   const previousDocument = globalThis.document
+  const previousWindow = globalThis.window
   globalThis.document = {
     getElementById: () => null,
     createElement: () => ({ id: '', textContent: '' }),
     head: { appendChild() {} },
+  }
+  globalThis.window = {
+    addEventListener() {},
+    removeEventListener() {},
+    innerHeight: 900,
+    innerWidth: 1200,
   }
   const { renderer, root } = createHostRenderer()
   const app = renderer.createApp(ResourceTable, props)
   // Vite's SSR SFC transform wraps setup with useSSRContext even though this
   // test mounts through a host renderer. Supply the same minimal context that
   // renderToString would provide so mounted interaction assertions can run.
+  app._context.provides[Symbol.for('v-scx')] = { modules: new Set() }
+  try {
+    app.mount(root)
+    await nextTick()
+  } catch (error) {
+    if (previousWindow === undefined) delete globalThis.window
+    else globalThis.window = previousWindow
+    globalThis.document = previousDocument
+    throw error
+  }
+  return {
+    root,
+    instance: app._instance,
+    find: predicate => findHostNode(root, predicate),
+    unmount() {
+      app.unmount()
+      if (previousWindow === undefined) delete globalThis.window
+      else globalThis.window = previousWindow
+      globalThis.document = previousDocument
+    },
+  }
+}
+
+async function mountInteractiveResourcePage(ResourcePage, props, onRetry) {
+  const previousDocument = globalThis.document
+  globalThis.document = {
+    documentElement: { style: { getPropertyValue: () => '' } },
+    getElementById: () => null,
+    createElement: () => ({ id: '', textContent: '', setAttribute() {} }),
+    head: { appendChild() {} },
+  }
+  const { renderer, root } = createHostRenderer()
+  const app = renderer.createApp({
+    render: () => h(ResourcePage, { ...props, onRetry }),
+  })
   app._context.provides[Symbol.for('v-scx')] = { modules: new Set() }
   app.mount(root)
   await nextTick()
@@ -169,9 +222,38 @@ function className(node) {
   return String(node?.props?.class ?? '')
 }
 
+async function mountInteractiveBackLink(ResourceBackLink, props, onBack) {
+  const previousDocument = globalThis.document
+  globalThis.document = {
+    documentElement: { style: { getPropertyValue: () => '' } },
+    getElementById: () => null,
+    createElement: () => ({ id: '', textContent: '', setAttribute() {} }),
+    head: { appendChild() {} },
+  }
+  const { renderer, root } = createHostRenderer()
+  const app = renderer.createApp({
+    render: () => h(ResourceBackLink, { ...props, onBack }),
+  })
+  app._context.provides[Symbol.for('v-scx')] = { modules: new Set() }
+  app.mount(root)
+  await nextTick()
+  return {
+    root,
+    instance: app._instance,
+    find: predicate => findHostNode(root, predicate),
+    unmount() {
+      app.unmount()
+      globalThis.document = previousDocument
+    },
+  }
+}
+
 async function loadMountedSFC(path) {
   const module = await vite.ssrLoadModule(path)
-  const source = await readFile(resolve(portalRoot, path.replace(/^\//, '')), 'utf8')
+  const sourcePath = path.startsWith(repositoryRoot)
+    ? path
+    : resolve(portalRoot, path.replace(/^\//, ''))
+  const source = await readFile(sourcePath, 'utf8')
   const template = source.match(/<template(?:\s[^>]*)?>([\s\S]*)<\/template>/)?.[1]
   assert.ok(template, `${path} has a template for mounted behavior coverage`)
   const [{ compile }, vueRuntime] = await Promise.all([
@@ -219,9 +301,13 @@ function mountDetailView(Component, props, components, provides = {}) {
     head: { appendChild() {} },
   }
   globalThis.window = {
+    addEventListener() {},
+    removeEventListener() {},
     setInterval: () => 1,
     clearInterval() {},
     getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    innerHeight: 900,
+    innerWidth: 1200,
   }
   const { renderer, root } = createHostRenderer()
   const app = renderer.createApp(Component, props)
@@ -250,6 +336,91 @@ async function flushVue() {
   }
 }
 
+test('ResourceBackLink keeps the href fallback and emits only for active clicks', async () => {
+  const ResourceBackLink = await loadMountedSFC(canonicalResourceBackLink)
+  const style = await readFile(canonicalFarosUIStyle, 'utf8')
+  assert.match(style, /\.k-back-action:dir\(rtl\) svg\s*\{[^}]*transform:\s*scaleX\(-1\)/)
+  assert.match(style, /@media \(pointer: coarse\), \(any-pointer: coarse\)[\s\S]*\.k-back-action\s*\{[\s\S]*min-height:\s*44px;[\s\S]*min-width:\s*44px;/)
+  assert.match(style, /\.k-back-action\[aria-disabled="true"\][\s\S]*opacity:\s*0\.4/)
+  assert.match(style, /\.k-back-action\[aria-disabled="true"\][\s\S]*cursor:\s*not-allowed/)
+  const html = await renderToString(createSSRApp(ResourceBackLink, {
+    href: '/ui/providers/databricks/tables',
+  }))
+  assert.match(html, /<a class="k-btn k-btn--ghost k-back-action" href="\/ui\/providers\/databricks\/tables">/)
+  assert.match(html, /<svg[^>]*aria-hidden="true"/)
+  assert.match(html, />[\s\S]*Back[\s\S]*<\/a>/)
+
+  const backEvents = []
+  const active = await mountInteractiveBackLink(ResourceBackLink, { href: '/ui/providers/databricks/tables' }, event => backEvents.push(event))
+  try {
+    const anchor = active.find(node => node.type === 'a')
+    assert.ok(anchor)
+    let prevented = false
+    const event = {
+      button: 0,
+      altKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      shiftKey: false,
+      preventDefault() { prevented = true },
+    }
+    anchor.props.onClick(event)
+    assert.equal(prevented, true)
+    assert.deepEqual(backEvents, [event])
+    assert.equal(anchor.props['aria-disabled'], undefined)
+
+    for (const [label, options] of [
+      ['Cmd/Ctrl click', { ctrlKey: true }],
+      ['modified Meta click', { metaKey: true }],
+      ['shift click', { shiftKey: true }],
+      ['alt click', { altKey: true }],
+    ]) {
+      let modifiedPrevented = false
+      const modifiedEvent = {
+        button: 0,
+        altKey: false,
+        ctrlKey: false,
+        metaKey: false,
+        shiftKey: false,
+        ...options,
+        preventDefault() { modifiedPrevented = true },
+      }
+      anchor.props.onClick(modifiedEvent)
+      assert.equal(modifiedPrevented, false, `${label} keeps native link behavior`)
+    }
+    for (const [label, button] of [['middle click', 1], ['secondary click', 2]]) {
+      let auxiliaryPrevented = false
+      anchor.props.onAuxclick({ button, preventDefault() { auxiliaryPrevented = true } })
+      assert.equal(auxiliaryPrevented, false, `${label} keeps native link behavior`)
+    }
+    assert.deepEqual(backEvents, [event], 'modified and non-primary clicks do not emit back')
+  } finally {
+    active.unmount()
+  }
+
+  const disabledEvents = []
+  const disabled = await mountInteractiveBackLink(ResourceBackLink, { href: '/ui/providers/databricks/tables', disabled: true }, event => disabledEvents.push(event))
+  try {
+    const anchor = disabled.find(node => node.type === 'a')
+    assert.ok(anchor)
+    for (const options of [{ button: 0 }, { button: 0, metaKey: true }]) {
+      let prevented = false
+      anchor.props.onClick({ ...options, preventDefault() { prevented = true } })
+      assert.equal(prevented, true, 'disabled clicks always prevent native navigation')
+    }
+    for (const button of [1, 2]) {
+      let prevented = false
+      anchor.props.onAuxclick({ button, preventDefault() { prevented = true } })
+      assert.equal(prevented, true, 'disabled auxiliary clicks always prevent native navigation')
+    }
+    assert.deepEqual(disabledEvents, [])
+    assert.equal(anchor.props['aria-disabled'], 'true')
+    assert.equal(anchor.props.tabindex, -1, 'disabled links leave the tab order')
+  } finally {
+    disabled.unmount()
+  }
+})
+
 test('omitting loaded preserves the legacy content state', async () => {
   const ResourceTable = await resourceTable()
   const html = await renderToString(createSSRApp(ResourceTable, {
@@ -262,6 +433,29 @@ test('omitting loaded preserves the legacy content state', async () => {
   assert.match(html, /Ready/)
   assert.match(html, /<table/)
   assert.doesNotMatch(html, /resource-table-loading/)
+})
+
+test('row actions render at the right edge of the primary column', async () => {
+  const ResourceTable = await resourceTable()
+  const html = await renderToString(createSSRApp({
+    render: () => h(ResourceTable, {
+      columns: [
+        { key: 'expand', label: '' },
+        { key: 'name', label: 'Name' },
+        { key: 'status', label: 'Status' },
+        { key: 'actions', label: 'Actions' },
+      ],
+      rows: [{ expand: '+', name: 'orders', status: 'Ready', actions: '' }],
+    }, {
+      name: ({ value }) => h('a', { class: 'resource-name' }, String(value)),
+      actions: () => h('button', { class: 'row-operation' }, 'Delete'),
+    }),
+  }))
+
+  assert.match(html, /class="[^"]*k-table__heading--primary[^"]*"[^>]*>Name</)
+  assert.match(html, /class="[^"]*k-table__cell--primary[^"]*"[\s\S]*k-table__primary-content[\s\S]*orders[\s\S]*k-table__primary-actions[\s\S]*Delete/)
+  assert.doesNotMatch(html, />Actions<\/th>/)
+  assert.equal((html.match(/<td/g) ?? []).length, 3, 'actions are composed into the primary cell instead of a trailing cell')
 })
 
 test('simple tables are an explicit bounded-list variant without query or pagination controls', async () => {
@@ -417,7 +611,7 @@ test('background refresh keeps authoritative empty and no-match bodies stable', 
     },
     {
       query: 'orders',
-      expected: 'No resources match these filters.',
+      expected: 'No resources match your search.',
       emptyText: 'No resources yet.',
     },
   ]
@@ -468,6 +662,7 @@ test('searchable paginated tables render one bounded page and shared controls', 
     columns: [{ key: 'name', label: 'Name' }, { key: 'status', label: 'Status' }],
     rows,
     loaded: true,
+    ariaLabel: 'Databricks tables',
     searchable: true,
     filters: [{ key: 'status', label: 'Status', allLabel: 'Any status' }],
     paginated: true,
@@ -476,7 +671,8 @@ test('searchable paginated tables render one bounded page and shared controls', 
 
   assert.match(html, /k-table__controls/)
   assert.match(html, /placeholder="Search…"/)
-  assert.match(html, />Any status</)
+  assert.match(html, /k-table__filter-label[^>]*>Status</)
+  assert.match(html, /k-table__filter-value[^>]*>Any</)
   assert.match(html, /Showing[\s\S]*1–5[\s\S]*of[\s\S]*12/)
   assert.match(html, />1 \/ 3</)
   assert.equal((html.match(/class="[^\"]*k-table__row/g) ?? []).length, 5)
@@ -490,13 +686,208 @@ test('searchable paginated tables render one bounded page and shared controls', 
   assert.ok(controlsIndex < scrollIndex)
   assert.ok(scrollIndex < tableIndex)
   assert.ok(tableIndex < paginationIndex)
-  assert.match(html, /class="k-table__scroll" role="region" aria-label="Scrollable table" tabindex="0"/)
+  assert.match(html, /class="k-table__scroll" role="region" aria-label="Databricks tables scroll area" tabindex="0"/)
+  assert.match(html, /<table class="k-table__table" aria-label="Databricks tables">/)
 
   const tableStyle = await readFile(canonicalFarosUIStyle, 'utf8')
   assert.match(tableStyle, /\.k-table\.k-table--resource \{[\s\S]*?overflow: hidden;/)
   assert.match(tableStyle, /\.k-table__scroll \{[\s\S]*?overflow-x: auto;/)
   assert.match(tableStyle, /\.k-table__scroll:focus-visible \{[\s\S]*?box-shadow: inset/)
   assert.match(tableStyle, /\.k-table__pending-cell \{[\s\S]*?text-align: center;/)
+})
+
+test('filter widgets use consistent bespoke menus and reserve search for resource references', async () => {
+  const ResourceTable = await resourceTable()
+  const html = await renderToString(createSSRApp(ResourceTable, {
+    columns,
+    rows: [{ name: 'orders', connection: 'github-prod', status: 'Ready' }],
+    loaded: true,
+    filters: [
+      {
+        key: 'connection',
+        label: 'Connection',
+        control: 'combobox',
+        searchPlaceholder: 'Find a connection…',
+        options: [
+          { value: 'github-prod', label: 'github-prod' },
+          { value: 'gitlab-stage', label: 'gitlab-stage' },
+        ],
+      },
+      {
+        key: 'status',
+        label: 'Status',
+        allLabel: 'Any status',
+        options: [{ value: 'Ready', label: 'Ready' }],
+      },
+    ],
+    filterValues: { connection: 'github-prod', status: 'Ready' },
+  }))
+
+  assert.match(html, /k-table__filter-label[^>]*>Connection</)
+  assert.match(html, /k-table__filter--combobox is-active/)
+  assert.match(html, /aria-haspopup="listbox"/)
+  assert.match(html, /k-table__filter-value[^>]*>github-prod</)
+  assert.match(html, /k-table__filter-label[^>]*>Status</)
+  assert.match(html, /k-table__filter is-active/)
+  assert.match(html, /role="combobox"/)
+  assert.match(html, /k-table__filter-value[^>]*>Ready</)
+  assert.doesNotMatch(html, /<select|<option/)
+  assert.doesNotMatch(html, /Find a connection/, 'the closed combobox does not mount its search field')
+
+  const tableStyle = await readFile(canonicalFarosUIStyle, 'utf8')
+  assert.match(tableStyle, /\.k-table__filter \{[\s\S]*?flex:\s*0 1 auto;/)
+  assert.match(tableStyle, /\.k-table__filter-label \{[\s\S]*?border-inline-end:[\s\S]*?font-size:\s*10px;/)
+  assert.match(tableStyle, /\.k-table__filter\.is-active \{[\s\S]*?var\(--color-accent/)
+  assert.match(tableStyle, /\.k-table__filter:not\(\.is-active\)[\s\S]*?--k-table-readable-muted/)
+  assert.doesNotMatch(tableStyle, /k-table__filter-select/)
+  assert.match(tableStyle, /@media \(max-width: 600px\)[\s\S]*?\.k-table__filter,[\s\S]*?flex:\s*1 1 100%/)
+  assert.match(tableStyle, /\.k-table__search-clear:focus-visible,[\s\S]*?\.k-table__clear-filters:focus-visible/)
+})
+
+test('compact facet menus support keyboard selection without native selects', async () => {
+  const ResourceTableFilter = await resourceTableFilter()
+  const changes = []
+  const mounted = await mountInteractiveTable(ResourceTableFilter, {
+    definition: { key: 'status', label: 'Status', allLabel: 'Any status' },
+    options: [
+      { value: 'Ready', label: 'Ready' },
+      { value: 'Pending', label: 'Pending' },
+    ],
+    modelValue: 'Ready',
+    'onUpdate:modelValue': value => changes.push(value),
+  })
+
+  try {
+    const state = mounted.instance.setupState
+    await state.openFilter()
+    assert.equal(state.open, true)
+    assert.equal(state.activeIndex, 1)
+    state.onTriggerKeydown({ key: 'ArrowDown', preventDefault() {} })
+    assert.equal(state.activeIndex, 2)
+    state.onTriggerKeydown({ key: 'Enter', preventDefault() {} })
+    await nextTick()
+    assert.deepEqual(changes, ['Pending'])
+    assert.equal(state.open, false)
+  } finally {
+    mounted.unmount()
+  }
+})
+
+test('searchable resource filters narrow options and emit the selected value', async () => {
+  const ResourceTableFilter = await resourceTableFilter()
+  const changes = []
+  const mounted = await mountInteractiveTable(ResourceTableFilter, {
+    definition: {
+      key: 'connection',
+      label: 'Connection',
+      control: 'combobox',
+    },
+    options: [
+      { value: 'github-prod', label: 'github-prod' },
+      { value: 'github-stage', label: 'github-stage' },
+      { value: 'gitlab-prod', label: 'gitlab-prod' },
+    ],
+    modelValue: '',
+    'onUpdate:modelValue': value => changes.push(value),
+  })
+
+  try {
+    const state = mounted.instance.setupState
+    assert.deepEqual(state.optionList.map(option => option.value), ['', 'github-prod', 'github-stage', 'gitlab-prod'])
+    assert.equal(state.optionSummary, '3 options')
+    state.query = 'prod'
+    await nextTick()
+    assert.deepEqual(state.matchingOptions.map(option => option.value), ['github-prod', 'gitlab-prod'])
+    assert.deepEqual(state.optionList.map(option => option.value), ['github-prod', 'gitlab-prod'])
+    assert.equal(state.optionSummary, '2 of 3 options')
+    state.onSearchKeydown({ key: 'Enter', preventDefault() {} })
+    await nextTick()
+    assert.deepEqual(changes, ['github-prod'])
+  } finally {
+    mounted.unmount()
+  }
+})
+
+test('after-row receives the rendered column count after action composition', async () => {
+  const ResourceTable = await resourceTable()
+  const html = await renderToString(createSSRApp({
+    render: () => h(ResourceTable, {
+      ariaLabel: 'Orders',
+      columns: [
+        { key: 'name', label: 'Name' },
+        { key: 'status', label: 'Status' },
+        { key: 'actions', label: '' },
+      ],
+      rows: [{ name: 'orders', status: 'Ready', actions: '' }],
+    }, {
+      actions: () => h('button', { type: 'button' }, 'Delete'),
+      'after-row': ({ columnCount }) => h('tr', { class: 'after-row' }, [
+        h('td', { colspan: columnCount }, 'Details'),
+      ]),
+    }),
+  }))
+
+  assert.match(html, /class="after-row"[\s\S]*colspan="2"[\s\S]*Details/)
+  assert.doesNotMatch(html, /class="after-row"[\s\S]*colspan="3"/)
+})
+
+test('primary truncation disclosure follows the rendered value accessor without replacing slot semantics', async () => {
+  const ResourceTable = await resourceTable()
+  const html = await renderToString(createSSRApp({
+    render: () => h(ResourceTable, {
+      ariaLabel: 'Projects',
+      columns: [{
+        key: 'name',
+        label: 'Project',
+        primary: true,
+        fullValue: row => String(row.displayName || row.name),
+      }],
+      rows: [{ name: 'project-7f3a', displayName: 'Customer operations' }],
+    }, {
+      name: ({ row }) => h('strong', String(row.displayName)),
+    }),
+  }))
+
+  assert.match(html, /data-full-value="Customer operations"/)
+  assert.match(html, /<strong>Customer operations<\/strong>/)
+  assert.doesNotMatch(html, /k-table__primary-value[^>]*aria-label=/)
+  assert.doesNotMatch(html, /data-full-value="Customer operations"[^>]*title=/)
+})
+
+test('client filtering defers the full-set walk while server cursors stay immediate', async () => {
+  const ResourceTable = await resourceTable()
+  const mounted = await mountInteractiveTable(ResourceTable, {
+    ariaLabel: 'Orders',
+    columns,
+    rows: [{ name: 'orders-api' }, { name: 'events-api' }],
+    loaded: true,
+    searchable: true,
+    paginated: true,
+    pageSize: 10,
+  })
+
+  try {
+    const state = mounted.instance.setupState
+    assert.equal(state.deferredQuery, '')
+    assert.equal(state.filterPending, false)
+    state.setQuery('orders')
+    // The input state changes immediately, but the complete rows are not
+    // scanned during the setter itself.
+    assert.equal(state.query, 'orders')
+    assert.equal(state.deferredQuery, '')
+
+    await nextTick()
+    assert.equal(state.filterPending, true)
+    assert.deepEqual(state.filteredRows, [])
+
+    await new Promise(resolve => setTimeout(resolve, 125))
+    await nextTick()
+    assert.equal(state.filterPending, false)
+    assert.equal(state.deferredQuery, 'orders')
+    assert.deepEqual(state.filteredRows.map(row => row.name), ['orders-api'])
+  } finally {
+    mounted.unmount()
+  }
 })
 
 test('table view helpers compose full-dataset search, facets, and paging', async () => {
@@ -544,8 +935,9 @@ test('server pagination renders the supplied page and only explicit filter optio
   assert.match(html, /server-page-b/)
   assert.match(html, /Showing[\s\S]*3–4[\s\S]*of[\s\S]*7/)
   assert.match(html, />2 \/ 4</)
-  assert.match(html, /option value="ready"/)
-  assert.doesNotMatch(html, /option value="server-only"/)
+  const controls = html.slice(html.indexOf('k-table__controls'), html.indexOf('k-table__scroll'))
+  assert.match(controls, /k-table__filter-value[^>]*>Ready</)
+  assert.doesNotMatch(controls, /server-only/)
   assert.doesNotMatch(html, /disabled=""[^>]*aria-label="Next page"/)
 })
 
@@ -812,7 +1204,134 @@ test('background stale refreshes keep cached rows and retryable errors visible',
   assert.match(html, /read failed/)
   assert.match(html, /orders/)
   assert.match(html, />Retry</)
+  assert.match(html, /class="k-table__stale" role="status" aria-live="polite"/)
   assert.doesNotMatch(html, /k-table__pending-cell|Loading resources|Searching resources/)
+})
+
+test('foreground stale failures stay assertive while background failures are polite', async () => {
+  const ResourceTable = await resourceTable()
+  const props = {
+    columns,
+    rows: [{ name: 'cached' }],
+    loaded: true,
+    loading: false,
+    error: 'refresh failed',
+    stale: true,
+    retryable: true,
+  }
+
+  const foreground = await renderToString(createSSRApp(ResourceTable, {
+    ...props,
+    refreshMode: 'foreground',
+  }))
+  assert.match(foreground, /class="k-table__stale" role="alert" aria-live="assertive"/)
+
+  const background = await renderToString(createSSRApp(ResourceTable, {
+    ...props,
+    refreshMode: 'background',
+  }))
+  assert.match(background, /class="k-table__stale" role="status" aria-live="polite"/)
+})
+
+test('search and facet state expose one truthful recovery action and no-match copy', async () => {
+  const ResourceTable = await resourceTable()
+  const base = {
+    columns,
+    rows: [],
+    loaded: true,
+    loading: false,
+    searchable: true,
+    filters: [{ key: 'status', label: 'Status', options: [{ value: 'ready', label: 'Ready' }] }],
+    ariaLabel: 'Orders',
+  }
+
+  const queryOnly = await renderToString(createSSRApp(ResourceTable, {
+    ...base,
+    query: 'missing',
+  }))
+  assert.match(queryOnly, /aria-label="Search Orders"/)
+  assert.match(queryOnly, /No resources match your search\./)
+  assert.doesNotMatch(queryOnly, />Clear filters</)
+  assert.doesNotMatch(queryOnly, />Clear all</)
+
+  const facetOnly = await renderToString(createSSRApp(ResourceTable, {
+    ...base,
+    filterValues: { status: 'ready' },
+  }))
+  assert.match(facetOnly, /No resources match these filters\./)
+  assert.match(facetOnly, />Clear filters</)
+  assert.doesNotMatch(facetOnly, />Clear all</)
+
+  const combined = await renderToString(createSSRApp(ResourceTable, {
+    ...base,
+    query: 'missing',
+    filterValues: { status: 'ready' },
+  }))
+  assert.match(combined, /No resources match your search and selected filters\./)
+  assert.match(combined, />Clear all</)
+  assert.doesNotMatch(combined, />Clear filters</)
+})
+
+test('loading skeleton geometry follows visible columns with a bounded cap', async () => {
+  const ResourceTable = await resourceTable()
+  const html = await renderToString(createSSRApp(ResourceTable, {
+    columns: [
+      { key: 'name', label: 'Name' },
+      { key: 'status', label: 'Status' },
+      { key: 'one', label: 'One' },
+      { key: 'two', label: 'Two' },
+      { key: 'three', label: 'Three' },
+      { key: 'four', label: 'Four' },
+      { key: 'five', label: 'Five' },
+      { key: 'actions', label: '' },
+    ],
+    rows: [],
+    loaded: false,
+    loading: true,
+  }))
+
+  assert.match(html, /k-table__loading-head[^>]*--k-table-loading-columns:6/)
+  const head = html.split('k-table__loading-row')[0]
+  assert.equal((head.match(/class="[^"]*shimmer[^"]*k-table__skeleton[^"]*"/g) ?? []).length, 6)
+  assert.doesNotMatch(html, /--k-table-loading-columns:7|--k-table-loading-columns:8/)
+})
+
+test('blank headers expose an accessible name and primary values retain measured overflow text', async () => {
+  const ResourceTable = await resourceTable()
+  const longName = 'orders-production-warehouse-with-a-distinguishing-suffix'
+  const html = await renderToString(createSSRApp({
+    render: () => h(ResourceTable, {
+      ariaLabel: 'Orders',
+      columns: [
+        { key: 'expand', label: '', ariaLabel: 'Expand order details', align: 'center' },
+        { key: 'name', label: 'Name', primary: true, align: 'start' },
+        { key: 'count', label: 'Count', align: 'end' },
+        { key: 'actions', label: '', ariaLabel: 'Order actions' },
+      ],
+      rows: [{ expand: '+', name: longName, count: 4, actions: '' }],
+    }, {
+      actions: () => h('button', { type: 'button' }, 'Delete'),
+    }),
+  }))
+
+  assert.match(html, /k-table__heading--center[^>]*aria-label="Expand order details"[^>]*><\//)
+  assert.match(html, /k-table__heading--end[^>]*>Count</)
+  assert.match(html, /k-table__cell--end[^>]*>[\s\S]*?4</)
+  assert.match(html, new RegExp(`data-full-value="${longName}"`))
+  assert.doesNotMatch(html, new RegExp(`title="${longName}"`))
+  assert.doesNotMatch(html, /k-table__primary-value[^>]*aria-label=/)
+  assert.match(html, /k-table__primary-actions[\s\S]*>Delete</)
+
+  const tableSource = await readFile(canonicalResourceTable, 'utf8')
+  const tableStyle = await readFile(canonicalFarosUIStyle, 'utf8')
+  assert.match(tableSource, /value\.scrollWidth > value\.clientWidth \+ 1/)
+  assert.match(tableSource, /@mouseenter="syncPrimaryOverflow"/)
+  assert.match(tableSource, /@mouseleave="hidePrimaryTooltip"/)
+  assert.match(tableSource, /@focusin="syncRowPrimaryOverflow"/)
+  assert.match(tableSource, /<Teleport to="body">/)
+  assert.match(tableSource, /window\.addEventListener\('scroll', hidePrimaryTooltip, true\)/)
+  assert.match(tableStyle, /\.k-table__primary-tooltip \{[\s\S]*?position: fixed;/)
+  assert.doesNotMatch(tableStyle, /\.k-table__primary-content(?::|\[)[\s\S]*?::after/)
 })
 
 test('empty table bodies stay pending while loading, then show empty or results', async () => {
@@ -865,7 +1384,7 @@ test('empty table bodies stay pending while loading, then show empty or results'
     query: 'orders',
     emptyText: 'No resources yet.',
   }))
-  assert.match(emptyHTML, /No resources match these filters\./)
+  assert.match(emptyHTML, /No resources match your search\./)
   assert.doesNotMatch(emptyHTML, /Searching resources/)
 
   const resultsHTML = await renderToString(createSSRApp(ResourceTable, {
@@ -880,14 +1399,14 @@ test('empty table bodies stay pending while loading, then show empty or results'
   assert.doesNotMatch(resultsHTML, /Searching resources/)
 })
 
-test('resource page announces loaded refreshes out of flow and preserves the body', async () => {
+test('resource page announces foreground loaded refreshes out of flow and preserves the body', async () => {
   const ResourcePage = await resourcePage()
   const html = await renderToString(createSSRApp({
     render: () => h(ResourcePage, {
       title: 'Orders',
       loaded: true,
       loading: true,
-      refreshMode: 'background',
+      refreshMode: 'foreground',
     }, {
       default: () => h('p', 'Loaded body'),
     }),
@@ -898,7 +1417,297 @@ test('resource page announces loaded refreshes out of flow and preserves the bod
   assert.doesNotMatch(html, /k-resource-page__loading/)
   assert.match(html, /class="k-resource-page__live"[^>]*role="status"[^>]*aria-live="polite"/)
   assert.match(html, /class="k-resource-page__live"[^>]*style="[^\"]*position:absolute/)
-  assert.match(html, /Updating…/)
+  assert.match(html, /Refreshing Orders…/)
+})
+
+test('resource page announces background refreshes politely while preserving the body', async () => {
+  const ResourcePage = await resourcePage()
+  const html = await renderToString(createSSRApp(ResourcePage, {
+    title: 'Orders',
+    loaded: true,
+    loading: true,
+    refreshMode: 'background',
+  }))
+
+  assert.match(html, /aria-busy="true"/)
+  assert.doesNotMatch(html, /k-resource-page__loading/)
+  assert.match(html, /Updating Orders…/)
+  assert.doesNotMatch(html, /Refreshing Orders…|Retrying Orders…/)
+  assert.match(html, /class="k-resource-page__live"[^>]*>/)
+})
+
+test('resource page keeps an unresolved first read out of the body before loading acknowledgement', async () => {
+  const ResourcePage = await resourcePage()
+  const html = await renderToString(createSSRApp({
+    render: () => h(ResourcePage, {
+      title: 'Orders',
+      loaded: false,
+      loading: false,
+    }, {
+      default: () => h('p', 'Awaiting read'),
+    }),
+  }))
+
+  assert.match(html, /aria-busy="true"/)
+  assert.match(html, /k-resource-page__loading/)
+  assert.match(html, /Loading Orders/)
+  assert.doesNotMatch(html, /Awaiting read/)
+})
+
+test('resource page exposes initial read errors and truthful retry progress', async () => {
+  const ResourcePage = await resourcePage()
+  const initialError = await renderToString(createSSRApp(ResourcePage, {
+    title: 'Orders',
+    loaded: false,
+    loading: false,
+    error: 'The request failed.',
+    retryable: true,
+  }))
+  assert.match(initialError, /aria-busy="false"/)
+  assert.match(initialError, /k-resource-page__read-error[^>]*role="alert"[^>]*aria-live="assertive"/)
+  assert.match(initialError, /The request failed\./)
+  assert.match(initialError, /<button[^>]*>Retry<\/button>/)
+  assert.doesNotMatch(initialError, /k-resource-page__body|Awaiting read/)
+
+  const retrying = await renderToString(createSSRApp(ResourcePage, {
+    title: 'Orders',
+    loaded: false,
+    loading: true,
+    error: 'The request failed.',
+    retryable: true,
+  }))
+  assert.match(retrying, /aria-busy="true"/)
+  assert.match(retrying, /Retrying Orders…/)
+  assert.match(retrying, /<button[^>]*disabled[^>]*aria-busy="true"[^>]*>Retrying…<\/button>/)
+  assert.doesNotMatch(retrying, /k-resource-page__loading/)
+})
+
+test('resource page uses the refresh mode for announcements and stale errors', async () => {
+  const ResourcePage = await resourcePage()
+  const foregroundError = await renderToString(createSSRApp(ResourcePage, {
+    title: 'Orders',
+    loaded: true,
+    loading: false,
+    refreshMode: 'foreground',
+    error: 'Refresh failed.',
+    stale: true,
+    retryable: true,
+  }))
+  assert.match(foregroundError, /k-resource-page__stale[^>]*role="alert"[^>]*aria-live="assertive"/)
+  assert.match(foregroundError, /Showing the last successful result\. Refresh failed\./)
+  assert.match(foregroundError, />Retry<\/button>/)
+
+  const backgroundError = await renderToString(createSSRApp(ResourcePage, {
+    title: 'Orders',
+    loaded: true,
+    loading: false,
+    refreshMode: 'background',
+    error: 'Background refresh failed.',
+    stale: true,
+    retryable: true,
+  }))
+  assert.match(backgroundError, /k-resource-page__stale[^>]*role="status"[^>]*aria-live="polite"/)
+  assert.match(backgroundError, /Showing the last successful result\. Background refresh failed\./)
+  assert.doesNotMatch(backgroundError, /Refreshing Orders…|Retrying Orders…/)
+})
+
+test('resource page latches Retry through delayed acknowledgement and releases it after settlement', async () => {
+  const ResourcePage = await resourcePage()
+  const props = reactive({
+    title: 'Orders',
+    loaded: false,
+    loading: false,
+    error: 'The request failed.',
+    retryable: true,
+  })
+  let retries = 0
+  const mounted = await mountInteractiveResourcePage(ResourcePage, props, () => {
+    retries += 1
+  })
+
+  try {
+    const state = mounted.instance.subTree.component.setupState
+    state.requestRetry()
+    state.requestRetry()
+    assert.equal(retries, 1)
+    await nextTick()
+    state.requestRetry()
+    assert.equal(retries, 1)
+    assert.equal(state.retrying, true)
+
+    props.loading = true
+    await nextTick()
+    assert.equal(state.retrying, true)
+    props.loading = false
+    await nextTick()
+    assert.equal(state.retrying, false)
+
+    state.requestRetry()
+    assert.equal(retries, 2)
+  } finally {
+    mounted.unmount()
+  }
+})
+
+test('resource page preserves metadata, action, summary, and body slots', async () => {
+  const ResourcePage = await resourcePage()
+  const html = await renderToString(createSSRApp({
+    render: () => h(ResourcePage, {
+      title: 'Orders / 注文 / נתונים',
+      kind: 'Table',
+      loaded: true,
+      loading: false,
+    }, {
+      meta: () => h('span', { class: 'long-meta' }, 'owner/very-long-identifier/'.repeat(8)),
+      status: () => h('span', { class: 'status-slot' }, 'Ready'),
+      actions: () => h('button', { class: 'action-slot' }, 'Refresh'),
+      summary: () => h('p', { class: 'summary-slot' }, 'Summary'),
+      body: () => h('p', { class: 'body-slot' }, 'Body'),
+    }),
+  }))
+
+  assert.match(html, /Orders \/ 注文 \/ נתונים/)
+  assert.match(html, /long-meta/)
+  assert.match(html, /status-slot/)
+  assert.match(html, /action-slot/)
+  assert.match(html, /summary-slot/)
+  assert.match(html, /body-slot/)
+})
+
+test('resource page keeps long copy while adapting from its content container', async () => {
+  const [ResourcePage, ResourceStatCards, ResourceSectionCard] = await Promise.all([
+    resourcePage(),
+    vite.ssrLoadModule(resolve(repositoryRoot, 'provider-sdk/portalkit-vue/ResourceStatCards.vue')).then(module => module.default),
+    vite.ssrLoadModule(resolve(repositoryRoot, 'provider-sdk/portalkit-vue/ResourceSectionCard.vue')).then(module => module.default),
+  ])
+  const style = await readFile(canonicalFarosUIStyle, 'utf8')
+  const title = `warehouse-${'very-long-identifier/'.repeat(8)}注文情報נתונים`
+  const subtitle = `説明-${'workspace-host/'.repeat(8)}重要な説明פרטים`
+  const sectionTitle = `section-${'reconciliation/'.repeat(8)}同期状態נתונים`
+  const sectionDescription = `description-${'controller-message/'.repeat(8)}状態の説明פרטים`
+  const html = await renderToString(createSSRApp({
+    render: () => h(ResourcePage, {
+      title,
+      subtitle,
+      kind: 'Table',
+      loaded: true,
+    }, {
+      status: () => h('span', { class: 'status-slot' }, `Ready ${'検証済み/'.repeat(5)}נתונים`),
+      actions: () => h('button', { class: 'header-action' }, 'Refresh'),
+      summary: () => h(ResourceStatCards, {
+        cards: [
+          { id: 'one', label: 'Primary', value: 'one' },
+          { id: 'two', label: 'Secondary', value: 'two' },
+          { id: 'three', label: 'Tertiary', value: 'three' },
+        ],
+      }),
+      body: () => h(ResourceSectionCard, {
+        id: 'resource-section',
+        title: sectionTitle,
+        description: sectionDescription,
+      }, {
+        actions: () => h('button', { class: 'section-action' }, 'Configure'),
+        default: () => h('p', { class: 'section-body' }, 'Body survives. גוף הנתונים.'),
+      }),
+    }),
+  }))
+
+  for (const copy of [title, subtitle, sectionTitle, sectionDescription, '検証済み/', 'Body survives.', 'גוף הנתונים.']) {
+    assert.match(html, new RegExp(copy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  }
+  assert.match(html, /data-k-resource-stat-cards/)
+  assert.match(html, /class="k-resource-section-card__actions"/)
+
+  assert.match(style, /\.k-resource-page\s*\{[\s\S]*container-name:\s*resource-page;[\s\S]*container-type:\s*inline-size;/)
+  assert.match(style, /@container resource-page \(max-width: 620px\)[\s\S]*repeat\(2, minmax\(0, 1fr\)\)/)
+  assert.match(style, /@container resource-page \(max-width: 420px\)[\s\S]*minmax\(0, 1fr\)/)
+  assert.match(style, /@supports not \(container-type: inline-size\)/)
+})
+
+test('resource stat cards keep native list semantics and count-aware layouts', async () => {
+  const ResourceStatCards = await resourceStatCards()
+  const style = await readFile(canonicalFarosUIStyle, 'utf8')
+  const source = await readFile(canonicalResourceStatCards, 'utf8')
+  const layouts = [
+    [1, 'count-1'],
+    [2, 'count-2'],
+    [3, 'count-3-plus'],
+    [4, 'count-4'],
+    [5, 'count-3-plus'],
+    [6, 'count-3-plus'],
+  ]
+
+  for (const [count, layout] of layouts) {
+    const cards = Array.from({ length: count }, (_, index) => ({
+      id: `card-${index}`,
+      label: `Card ${index}`,
+      value: String(index),
+    }))
+    const html = await renderToString(createSSRApp(ResourceStatCards, {
+      cards,
+      ariaLabel: 'Resource summary',
+    }))
+
+    assert.match(html, /<ul[^>]*aria-label="Resource summary"/)
+    assert.match(html, new RegExp(`class="[^"]*k-resource-stat-cards--${layout}`))
+    assert.equal((html.match(/<li\b/g) ?? []).length, count)
+    assert.doesNotMatch(html, /<article\b/)
+  }
+
+  const slotted = await renderToString(createSSRApp({
+    render: () => h(ResourceStatCards, {
+      cards: [
+        { id: 'status', label: 'Status', value: 'Ready', detail: 'Healthy', tone: 'success', mono: true },
+      ],
+      density: 'compact',
+      ariaLabel: 'Slotted summary',
+    }, {
+      'icon-status': () => h('span', { class: 'icon-slot' }, 'S'),
+    }),
+  }))
+  assert.match(slotted, /<ul[^>]*aria-label="Slotted summary"[^>]*data-density="compact"/)
+  assert.match(slotted, /data-k-resource-stat-card="status"/)
+  assert.match(slotted, /k-resource-stat-card--success/)
+  assert.match(slotted, /class="icon-slot"/)
+  assert.match(slotted, /k-resource-stat-card__detail[^>]*>Healthy/)
+  assert.match(slotted, /class="mono k-resource-stat-card__value">Ready/)
+
+  assert.doesNotMatch(source, /\bcolumns\s*\??\s*:/)
+  assert.match(style, /\.k-resource-page\s*\{[\s\S]*gap:\s*18px;/)
+  assert.match(style, /\.k-resource-page__summary\s*\{[^}]*margin:\s*0;/)
+  assert.match(style, /\.k-resource-stat-cards\s*\{[\s\S]*list-style:\s*none;[\s\S]*margin:\s*0;[\s\S]*padding:\s*0;/)
+  assert.match(style, /\.k-resource-stat-cards--count-1\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/)
+  assert.match(style, /\.k-resource-stat-cards--count-2,[\s\S]*\.k-resource-stat-cards--count-4\s*\{[^}]*repeat\(2,\s*minmax\(0,\s*1fr\)\)/)
+  assert.match(style, /@container resource-page \(max-width: 620px\)[\s\S]*\.k-resource-stat-cards \{\s*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);[\s\S]*\.k-resource-stat-cards--count-1/)
+  assert.match(style, /@container resource-page \(max-width: 420px\)[\s\S]*\.k-resource-stat-cards \{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);/)
+  assert.match(style, /@supports not \(container-type: inline-size\)[\s\S]*@media \(max-width: 620px\)[\s\S]*\.k-resource-stat-cards \{\s*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);[\s\S]*\.k-resource-stat-cards--count-1/)
+  assert.match(style, /@supports not \(container-type: inline-size\)[\s\S]*@media \(max-width: 420px\)[\s\S]*\.k-resource-stat-cards \{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);/)
+})
+
+function contrastRatio(foreground, background) {
+  const luminance = hex => {
+    const channels = hex.slice(1).match(/../g).map(channel => Number.parseInt(channel, 16) / 255)
+    const linear = channels.map(channel => channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+  }
+  const foregroundLuminance = luminance(foreground)
+  const backgroundLuminance = luminance(background)
+  return (Math.max(foregroundLuminance, backgroundLuminance) + 0.05) /
+    (Math.min(foregroundLuminance, backgroundLuminance) + 0.05)
+}
+
+test('resource page readable metadata and alert copy retain AA contrast in both themes', async () => {
+  const style = await readFile(canonicalFarosUIStyle, 'utf8')
+  assert.match(style, /\.k-resource-page__meta\s*\{[\s\S]*color:\s*var\(--color-text-secondary/)
+  assert.match(style, /\.k-resource-page__read-message\s*\{[\s\S]*color:\s*var\(--color-text-primary/)
+  assert.match(style, /\.k-resource-page__read-error\s*\{\s*color:\s*var\(--color-danger/)
+  assert.match(style, /\.k-resource-page__stale\s*\{[\s\S]*border-color:\s*color-mix\(in srgb, var\(--color-warning/)
+
+  assert.ok(contrastRatio('#8a8ca6', '#0a0b12') >= 4.5, 'dark metadata')
+  assert.ok(contrastRatio('#565975', '#f1f1f6') >= 4.5, 'light metadata')
+  assert.ok(contrastRatio('#e9e9f2', '#0a0b12') >= 4.5, 'dark alert copy')
+  assert.ok(contrastRatio('#14152a', '#fcebec') >= 4.5, 'light danger alert copy')
+  assert.ok(contrastRatio('#14152a', '#fdf2e0') >= 4.5, 'light warning alert copy')
 })
 
 test('resource page keeps first-read skeletons for background mode', async () => {
@@ -912,7 +1721,26 @@ test('resource page keeps first-read skeletons for background mode', async () =>
 
   assert.match(html, /aria-busy="true"/)
   assert.match(html, /k-resource-page__loading/)
+  assert.equal((html.match(/class="shimmer k-resource-page__skeleton /g) ?? []).length, 3)
   assert.doesNotMatch(html, /Loaded body|k-resource-page__stale/)
+})
+
+test('resource page accepts custom initial loading content while the shell owns live semantics', async () => {
+  const ResourcePage = await resourcePage()
+  const html = await renderToString(createSSRApp({
+    render: () => h(ResourcePage, {
+      title: 'Orders',
+      loaded: false,
+      loading: true,
+    }, {
+      loading: () => h('p', { class: 'loading-slot' }, 'Loading order rows…'),
+    }),
+  }))
+
+  assert.match(html, /<div class="k-resource-page__loading k-delayed-loading" role="status" aria-live="polite"/)
+  assert.match(html, /class="loading-slot">Loading order rows…<\/p>/)
+  assert.doesNotMatch(html, /k-resource-page__skeleton/)
+  assert.doesNotMatch(html, /class="loading-slot"[^>]*role=/)
 })
 
 test('resource detail views keep provider-only metadata before the initial snapshot', async () => {
@@ -1034,7 +1862,8 @@ test('resource table delete action has an accessible idle and busy contract', as
   const DeleteButton = (await vite.ssrLoadModule('/src/portalkit/ResourceTableDeleteButton.vue')).default
   const idle = await renderToString(createSSRApp(DeleteButton, { label: 'Delete connection orders-prod' }))
   assert.match(idle, /aria-label="Delete connection orders-prod"/)
-  assert.match(idle, /title="Delete connection orders-prod"/)
+  assert.match(idle, /data-k-tip="Delete connection orders-prod"/)
+  assert.doesNotMatch(idle, /title="Delete connection orders-prod"/)
   assert.match(idle, /lucide-trash2-icon/)
   assert.doesNotMatch(idle, /disabled/)
 
@@ -1044,6 +1873,7 @@ test('resource table delete action has an accessible idle and busy contract', as
     busy: true,
   }))
   assert.match(busy, /aria-label="Deleting connection orders-prod…"/)
+  assert.match(busy, /data-k-tip="Deleting connection orders-prod…"/)
   assert.match(busy, /aria-busy="true"/)
   assert.match(busy, /disabled/)
   assert.match(busy, /lucide-loader-circle/)
@@ -1053,7 +1883,8 @@ test('resource table edit action has an accessible disabled contract', async () 
   const EditButton = (await vite.ssrLoadModule('/src/portalkit/ResourceTableEditButton.vue')).default
   const enabled = await renderToString(createSSRApp(EditButton, { label: 'Edit table orders-prod' }))
   assert.match(enabled, /aria-label="Edit table orders-prod"/)
-  assert.match(enabled, /title="Edit table orders-prod"/)
+  assert.match(enabled, /data-k-tip="Edit table orders-prod"/)
+  assert.doesNotMatch(enabled, /title="Edit table orders-prod"/)
   assert.match(enabled, /lucide-pencil-icon/)
   assert.doesNotMatch(enabled, /disabled/)
 
@@ -1062,6 +1893,17 @@ test('resource table edit action has an accessible disabled contract', async () 
     disabled: true,
   }))
   assert.match(disabled, /disabled/)
+})
+
+test('resource table generic actions use the shared tooltip without a native duplicate', async () => {
+  const ActionButton = (await vite.ssrLoadModule('/src/portalkit/ResourceTableActionButton.vue')).default
+  const html = await renderToString(createSSRApp(ActionButton, {
+    icon: { render: () => h('svg') },
+    label: 'Rotate API key for orders-prod',
+  }))
+  assert.match(html, /aria-label="Rotate API key for orders-prod"/)
+  assert.match(html, /data-k-tip="Rotate API key for orders-prod"/)
+  assert.doesNotMatch(html, /title="Rotate API key for orders-prod"/)
 })
 
 test('resource table delete action uses the canonical shared recipe', async () => {
@@ -1283,7 +2125,8 @@ test('resource detail views use the shared shell without dropping resource behav
     assert.match(source, /import ResourcePage from '\.\.\/portalkit\/ResourcePage\.vue'/, `${kind} imports ResourcePage`)
     assert.match(source, /import ResourceSectionCard from '\.\.\/portalkit\/ResourceSectionCard\.vue'/, `${kind} imports ResourceSectionCard`)
     assert.match(source, /import ResourceStatCards, \{ type ResourceStatCard \}/, `${kind} imports ResourceStatCards`)
-    assert.match(source, /<a class="k-btn k-btn--ghost k-back-action"[^>]*@click\.prevent="goBack"/, `${kind} keeps the canonical backlink outside ResourcePage`)
+    assert.match(source, /<ResourceBackLink[\s\S]*href="\/ui\/providers\/databricks\/(?:connections|warehouses|tables)"[\s\S]*:disabled="deleting \|\| \(!!(?:conn|warehouse|table) && operationLocked\((?:conn|warehouse|table)\.name\)\)"[\s\S]*@back="goBack"[\s\S]*>[\s\S]*(?:Connections|Warehouses|Tables)[\s\S]*<\/ResourceBackLink>/, `${kind} keeps the canonical backlink outside ResourcePage`)
+    assert.match(source, /import ResourceBackLink from '\.\.\/portalkit\/ResourceBackLink\.vue'/, `${kind} imports ResourceBackLink`)
     assert.doesNotMatch(source, /databricks-resource-back/, `${kind} does not use a provider-local backlink class`)
     assert.match(source, /<ResourcePage[\s\S]*:loaded="readState"[\s\S]*:loading="loading"[\s\S]*:error="error"[\s\S]*:stale="loaded && !!error"[\s\S]*retryable[\s\S]*@retry="load"/, `${kind} keeps the read contract`)
     assert.match(source, /<template #summary><ResourceStatCards :cards="statCards" density="compact"/, `${kind} has compact stat cards`)
@@ -1296,7 +2139,8 @@ test('resource detail views use the shared shell without dropping resource behav
     assert.match(source, /STABLE_REFRESH_MS/, `${kind} keeps the quiet ready cadence`)
     assert.match(source, /poll\.schedule\(\)/, `${kind} schedules the next poll after each settled read`)
     assert.doesNotMatch(source, /setInterval\(load, 5000\)/, `${kind} avoids overlapping fixed intervals`)
-    assert.match(source, /Updating…/, `${kind} keeps the in-place updating announcement`)
+    assert.match(source, /:refresh-mode="refreshMode"/, `${kind} delegates the refresh announcement to ResourcePage`)
+    assert.doesNotMatch(source, /Updating…/, `${kind} does not duplicate ResourcePage's refresh announcement`)
     assert.match(source, /:stale="[^\"]*!!error/, `${kind} keeps stale snapshot signaling`)
     assert.match(source, /operations\.tombstone\(/, `${kind} keeps deletion tombstones`)
     assert.match(source, /confirmDialog\(\{[\s\S]*danger: true/, `${kind} keeps destructive confirmation`)
@@ -2007,7 +2851,7 @@ test('resource detail deletes expose pending state, truthful status, and real br
     assert.match(source, /:status="deleting \? 'Deleting' : [^"]+"/, `${kind} renders the pending status`)
     assert.match(source, /:tone="deleting \? 'warning' : null"/, `${kind} gives pending status a warning tone`)
     assert.match(source, /<p v-if="deleting"[^>]*role="status"[^>]*aria-live="polite">[\s\S]*Deleting this/, `${kind} announces deletion outside the closed menu`)
-    assert.match(source, new RegExp(`href="/ui/providers/databricks/${collection}"[^>]*:aria-disabled="deleting`), `${kind} has the real browser fallback backlink`)
+    assert.match(source, new RegExp(`<ResourceBackLink[\\s\\S]*href="/ui/providers/databricks/${collection}"[\\s\\S]*:disabled="deleting`), `${kind} has the real browser fallback backlink`)
     assert.match(source, /:disabled="loading \|\| deleting \|\|/, `${kind} disables refresh while deleting`)
     assert.match(source, /:disabled="![^"]+ \|\| loading \|\| deleting \|\| operationLocked/, `${kind} disables delete while deleting`)
     assert.match(source, /if \(deleting\.value \|\| \(/, `${kind} guards back navigation while deleting`)
@@ -2222,6 +3066,7 @@ test('mounted resource detail deletes stay truthful through pending rejection an
       loadMountedSFC('/src/views/TableDetailView.vue'),
       loadMountedSFC('/src/portalkit/ConditionsPanel.vue'),
       loadMountedSFC('/src/portalkit/ResourcePage.vue'),
+      loadMountedSFC('/src/portalkit/ResourceBackLink.vue'),
       loadMountedSFC('/src/portalkit/ResourceSectionCard.vue'),
       loadMountedSFC('/src/portalkit/ResourceStatCards.vue'),
       loadMountedSFC('/src/portalkit/StatusBadge.vue'),
@@ -2230,8 +3075,8 @@ test('mounted resource detail deletes stay truthful through pending rejection an
       vite.ssrLoadModule('/src/portalkit/confirm.ts'),
       vite.ssrLoadModule('/src/refresh.ts'),
   ])
-  const [ConnectionDetailView, WarehouseDetailView, TableDetailView, ConditionsPanel, ResourcePage, ResourceSectionCard, ResourceStatCards, StatusBadge, ResourceTable, apiModule, confirmModule, refreshModule] = loadedModules
-  const components = { ConditionsPanel, ResourcePage, ResourceSectionCard, ResourceStatCards, StatusBadge, ResourceTable }
+  const [ConnectionDetailView, WarehouseDetailView, TableDetailView, ConditionsPanel, ResourcePage, ResourceBackLink, ResourceSectionCard, ResourceStatCards, StatusBadge, ResourceTable, apiModule, confirmModule, refreshModule] = loadedModules
+  const components = { ConditionsPanel, ResourcePage, ResourceBackLink, ResourceSectionCard, ResourceStatCards, StatusBadge, ResourceTable }
 
   const cases = [
     {
@@ -2318,7 +3163,7 @@ test('mounted resource detail deletes stay truthful through pending rejection an
       assert.equal(mounted.find(node => node.type === 'a' && className(node).includes('databricks-resource-back')), null, `${testCase.kind} does not render the provider-local backlink class`)
       const refresh = mounted.find(node => node.type === 'button' && className(node).includes('icon-text') && hostText(node).includes('Refresh'))
       const deleteButton = mounted.find(node => node.type === 'button' && className(node).includes('databricks-resource-menu-item'))
-      assert.equal(back?.props?.['aria-disabled'], true, `${testCase.kind} guards back navigation while deleting`)
+      assert.equal(back?.props?.['aria-disabled'], 'true', `${testCase.kind} guards back navigation while deleting`)
       assert.equal(refresh?.props?.disabled, true, `${testCase.kind} guards refresh while deleting`)
       assert.equal(deleteButton?.props?.disabled, true, `${testCase.kind} guards duplicate delete while deleting`)
 
@@ -2334,7 +3179,7 @@ test('mounted resource detail deletes stay truthful through pending rejection an
       const mutationError = mounted.find(node => node.props?.role === 'alert' && className(node).includes('mutation-error'))
       assert.ok(mutationError, `${testCase.kind} renders the delete error`)
       assert.ok(hostText(mutationError).includes(testCase.deleteError.message), `${testCase.kind} includes the delete error message`)
-      assert.notEqual(back?.props?.['aria-disabled'], true, `${testCase.kind} restores back navigation after rejection`)
+      assert.notEqual(back?.props?.['aria-disabled'], 'true', `${testCase.kind} restores back navigation after rejection`)
       assert.equal(refresh?.props?.disabled, false, `${testCase.kind} restores refresh after rejection`)
       assert.equal(deleteButton?.props?.disabled, false, `${testCase.kind} restores delete after rejection`)
     } finally {

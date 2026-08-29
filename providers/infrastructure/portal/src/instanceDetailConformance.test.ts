@@ -8,8 +8,10 @@ const source = import.meta.glob('./views/InstanceDetailPage.vue', {
 
 describe('Infrastructure instance detail conformance', () => {
   it('keeps route navigation outside the shared resource shell and guards deletion', () => {
-    expect(source.indexOf('class="k-btn k-btn--ghost k-back-action instance-detail__back"')).toBeLessThan(source.indexOf('<ResourcePage'))
-    expect(source).toContain('@click.prevent="goBack"')
+    expect(source.indexOf('<ResourceBackLink')).toBeLessThan(source.indexOf('<ResourcePage'))
+    expect(source).toContain('class="instance-detail__back"')
+    expect(source).toContain(':disabled="deleting || deletionInProgress"')
+    expect(source).toContain('@back="goBack"')
     expect(source).toContain('if (deleting.value || deletionInProgress.value) return')
   })
 
@@ -33,7 +35,7 @@ describe('Infrastructure instance detail conformance', () => {
     expect(source).toContain(':title="group.title || \'\'"')
     expect(source).toContain('JSON.stringify(inst.values, null, 2)')
     expect(source).toContain("{ key: 'kind', label: 'Kind' }")
-    expect(source).toContain("{ key: 'name', label: 'Name' }")
+    expect(source).toContain("{ key: 'name', label: 'Name', primary: true }")
     expect(source).toContain("{ key: 'namespaceLabel', label: 'Namespace' }")
     expect(source).toContain("{ key: 'phaseLabel', label: 'Phase' }")
   })
@@ -48,6 +50,7 @@ describe('Infrastructure instance detail conformance', () => {
     expect(source).toContain('<p v-if="deleting" class="instance-message" role="status" aria-live="polite">Deleting this instance.')
     expect(source).toContain("actionsMenu.value?.removeAttribute('open')")
     expect(source).toContain('href="/ui/providers/infrastructure/instances"')
+    expect(source).toContain("import ResourceBackLink from '../portalkit/ResourceBackLink.vue'")
   })
 
   it('keeps automatic refresh quiet while manual refresh remains foreground', () => {

@@ -60,12 +60,12 @@ const connectionsLoading = ref(false)
 const connectionsLoaded = ref(false)
 const operations = createOperationLocks()
 const columns = [
-  { key: 'name', label: 'Name' },
+  { key: 'name', label: 'Name', primary: true, fullValue: (row: Record<string, unknown>) => String(row.repo || row.name) },
   { key: 'connectionRef', label: 'Connection' },
   { key: 'visibility', label: 'Visibility' },
   { key: 'url', label: 'URL' },
   { key: 'status', label: 'Status' },
-  { key: 'actions', label: '' },
+  { key: 'actions', label: '', ariaLabel: 'Actions' },
 ]
 const rows = computed<Array<Record<string, unknown>>>(() => repos.value
   .map(repository => {
@@ -402,6 +402,7 @@ onUnmounted(() => {
     <ResourceTable
       :columns="columns"
       :rows="rows"
+      aria-label="Repositories"
       searchable
       search-placeholder="Search repositories…"
       :filters="repositoryFilterDefinitions"

@@ -28,7 +28,7 @@ const emit = defineEmits<{
   <button
     class="k-table-action k-table-action--edit"
     type="button"
-    :title="label"
+    :data-k-tip="label"
     :aria-label="label"
     :disabled="disabled"
     @click.stop="emit('click', $event)"

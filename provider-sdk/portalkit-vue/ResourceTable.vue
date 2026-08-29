@@ -1,6 +1,6 @@
 <!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies under providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`. -->
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { AlertCircle, ChevronLeft, ChevronRight, Inbox, Search, X } from 'lucide-vue-next'
 import type { ResourceRefreshMode } from '../portalkit/page-state'
 import {
@@ -16,10 +16,32 @@ import {
   type TablePageInfo,
   type TablePaginationMode,
 } from './table'
+import ResourceTableFilter from './ResourceTableFilter.vue'
+import { useDelayedLoading } from './useDelayedLoading'
+
+type ResourceTableColumn = {
+  key: string
+  label: string
+  /** Accessible name for a visually blank header (for example an expand control). */
+  ariaLabel?: string
+  /** Full rendered value for truncation disclosure when a slot does not display row[key] verbatim. */
+  fullValue?: (row: Record<string, unknown>) => string
+  /** Logical cell/header alignment. Defaults to start. */
+  align?: 'start' | 'center' | 'end'
+  /** Receives the table's remaining width and hosts row actions. */
+  primary?: boolean
+}
+
+const CLIENT_FILTER_DEBOUNCE_MS = 100
+const MAX_SKELETON_COLUMNS = 6
+const PRIMARY_TOOLTIP_GAP = 6
+const PRIMARY_TOOLTIP_VIEWPORT_MARGIN = 8
 
 const props = withDefaults(defineProps<{
-  columns: Array<{ key: string; label: string }>
+  columns: ResourceTableColumn[]
   rows: Array<Record<string, unknown>>
+  /** Accessible name shared by the semantic table and its scroll affordance. */
+  ariaLabel?: string
   /** Queryable is the default/current resource-list contract. Simple is an explicit bounded-list opt-in. */
   variant?: 'queryable' | 'simple'
   /** Stable row identity. Resource names/ids are used when omitted. */
@@ -37,6 +59,8 @@ const props = withDefaults(defineProps<{
   retryable?: boolean
   emptyText?: string
   filterEmptyText?: string
+  searchEmptyText?: string
+  combinedFilterEmptyText?: string
   interactive?: boolean
   searchable?: boolean
   searchPlaceholder?: string
@@ -65,12 +89,15 @@ const props = withDefaults(defineProps<{
   // sentinel preserves omission so legacy callers retain loading -> content
   // behavior while explicit false still means the first read is incomplete.
   loaded: null,
+  ariaLabel: 'Resource table',
   refreshMode: 'foreground',
   variant: 'queryable',
   stale: false,
   retryable: false,
   emptyText: 'No data',
   filterEmptyText: 'No resources match these filters.',
+  searchEmptyText: 'No resources match your search.',
+  combinedFilterEmptyText: 'No resources match your search and selected filters.',
   interactive: true,
   searchable: false,
   searchPlaceholder: 'Search…',
@@ -113,18 +140,34 @@ const filterSignature = computed(() => Object.entries(currentFilters.value)
   .sort(([left], [right]) => left.localeCompare(right))
   .map(([key, value]) => `${key}\u0000${value}`)
   .join('\u0001'))
+// Client-side filtering can walk a complete provider result set. Keep the
+// input/filter state responsive and apply the expensive walk after a short
+// quiet period so each keystroke does not synchronously scan every row.
+const deferredQuery = ref(currentQuery.value)
+const deferredFilters = ref<TableFilterState>({ ...currentFilters.value })
+const filterPending = ref(false)
+const primaryTooltip = ref<{
+  value: string
+  left: number
+  top: number
+  positioned: boolean
+} | null>(null)
+const primaryTooltipElement = ref<HTMLElement | null>(null)
+let activePrimaryContent: HTMLElement | null = null
+let primaryTooltipRequest = 0
 
 const explicitReadState = computed(() => props.loaded !== null)
 const showInitialError = computed(() =>
   explicitReadState.value ? props.loaded === false && !!props.error : !!props.error,
 )
-const showInitialLoading = computed(() =>
+const initialReadPending = computed(() =>
   explicitReadState.value ? props.loaded === false : !!props.loading,
 )
+const showInitialLoading = useDelayedLoading(initialReadPending)
 const ariaBusy = computed(() =>
   explicitReadState.value
-    ? (!!props.loading && !(props.loaded === false && !!props.error)) || (props.loaded === false && !props.error)
-    : !!props.loading,
+    ? (!!props.loading && !(props.loaded === false && !!props.error)) || (props.loaded === false && !props.error) || filterPending.value
+    : !!props.loading || filterPending.value,
 )
 const filterOptions = computed(() => Object.fromEntries(
   props.filters.map(definition => [definition.key, isServerPagination.value
@@ -133,11 +176,12 @@ const filterOptions = computed(() => Object.fromEntries(
 ))
 const filteredRows = computed(() => {
   if (isServerPagination.value) return props.rows
+  if (filterPending.value) return []
   return filterTableRows(
     props.rows,
-    currentQuery.value,
+    deferredQuery.value,
     props.searchKeys.length ? props.searchKeys : props.columns.map(column => column.key).filter(key => key !== 'actions'),
-    currentFilters.value,
+    deferredFilters.value,
   )
 })
 const visibleRows = computed(() => isServerPagination.value
@@ -166,11 +210,38 @@ const totalPages = computed(() => {
 const visibleRange = computed(() => isServerPagination.value
   ? cursorPageRange(currentPage.value, currentPageSize.value, visibleRows.value.length, serverTotal.value)
   : tableRange(filteredRows.value.length, currentPage.value, currentPageSize.value))
-const activeFilters = computed(() => !!currentQuery.value.trim() || Object.values(currentFilters.value).some(Boolean))
+const hasQuery = computed(() => !!currentQuery.value.trim())
+const hasFacetFilters = computed(() => Object.values(currentFilters.value).some(Boolean))
+const activeFilters = computed(() => hasQuery.value || hasFacetFilters.value)
+const clearActionLabel = computed(() => hasQuery.value && hasFacetFilters.value ? 'Clear all' : 'Clear filters')
+const noMatchText = computed(() => {
+  if (hasQuery.value && hasFacetFilters.value) return props.combinedFilterEmptyText
+  if (hasQuery.value) return props.searchEmptyText
+  return props.filterEmptyText
+})
+const tableAriaLabel = computed(() => props.ariaLabel?.trim() || 'Resource table')
+const visibleColumns = computed(() => props.columns.filter(column => column.key !== 'actions'))
+const actionsColumn = computed(() => props.columns.find(column => column.key === 'actions') ?? null)
+const skeletonColumns = computed(() => {
+  const columns = visibleColumns.value.slice(0, MAX_SKELETON_COLUMNS)
+  return columns.length > 0 ? columns : [{ key: '__skeleton__', label: '' }]
+})
+const primaryColumnKey = computed(() => {
+  const columns = visibleColumns.value
+  return columns.find(column => column.primary)?.key
+    ?? columns.find(column => column.key === 'name')?.key
+    ?? columns[0]?.key
+    ?? null
+})
+const renderedColumnCount = computed(() => Math.max(visibleColumns.value.length, 1))
+const staleMessageRole = computed(() => props.refreshMode === 'background' ? 'status' : 'alert')
+const staleMessageLive = computed(() => props.refreshMode === 'background' ? 'polite' : 'assertive')
 const showPendingBody = computed(() =>
-  props.refreshMode === 'foreground' && !!props.loading && visibleRows.value.length === 0,
+  (filterPending.value || (props.refreshMode === 'foreground' && !!props.loading)) && visibleRows.value.length === 0,
 )
-const pendingBodyText = computed(() => activeFilters.value ? 'Searching resources' : 'Loading resources')
+const pendingBodyText = computed(() => filterPending.value
+  ? (activeFilters.value ? 'Searching resources' : 'Updating results')
+  : activeFilters.value ? 'Searching resources' : 'Loading resources')
 const hasConfiguredControls = computed(() =>
   props.variant === 'queryable' && (props.searchable || props.filters.length > 0),
 )
@@ -180,6 +251,7 @@ const showControls = computed(() =>
 )
 const showPagination = computed(() => {
   if (!paginationEnabled.value) return false
+  if (filterPending.value) return false
   if (!isServerPagination.value) return props.rows.length > 0
   return props.rows.length > 0
     || currentPage.value > 1
@@ -219,6 +291,23 @@ watch(() => props.pageSize, value => {
 watch([currentQuery, filterSignature, selectedPageSize], () => {
   if (props.page === undefined) page.value = 1
 })
+watch([currentQuery, filterSignature, isServerPagination], ([nextQuery], _previous, onCleanup) => {
+  const nextFilters = { ...currentFilters.value }
+  if (isServerPagination.value) {
+    filterPending.value = false
+    deferredQuery.value = nextQuery
+    deferredFilters.value = nextFilters
+    return
+  }
+
+  filterPending.value = true
+  const timer = setTimeout(() => {
+    deferredQuery.value = nextQuery
+    deferredFilters.value = nextFilters
+    filterPending.value = false
+  }, CLIENT_FILTER_DEBOUNCE_MS)
+  onCleanup(() => clearTimeout(timer))
+}, { flush: 'post' })
 watch([currentQuery, filterSignature], () => {
   if (isServerPagination.value) resetCursorHistory()
 })
@@ -326,6 +415,106 @@ function rowIdentity(row: Record<string, unknown>, index: number): string | numb
   return index
 }
 
+function primaryValue(row: Record<string, unknown>): string {
+  const key = primaryColumnKey.value
+  if (!key) return ''
+  const column = visibleColumns.value.find(candidate => candidate.key === key)
+  const renderedValue = column?.fullValue?.(row)
+  if (renderedValue !== null && renderedValue !== undefined) return String(renderedValue)
+  const value = row[key]
+  return value === null || value === undefined ? '' : String(value)
+}
+
+function updatePrimaryOverflow(container: HTMLElement | null) {
+  if (!container) return false
+  const value = container.querySelector<HTMLElement>('.k-table__primary-value')
+  if (!value) return false
+  const overflows = value.scrollWidth > value.clientWidth + 1
+  container.dataset.overflow = String(overflows)
+  return overflows
+}
+
+function hidePrimaryTooltip() {
+  primaryTooltipRequest += 1
+  activePrimaryContent = null
+  primaryTooltip.value = null
+}
+
+async function showPrimaryTooltip(container: HTMLElement | null) {
+  if (!container || !updatePrimaryOverflow(container)) {
+    hidePrimaryTooltip()
+    return
+  }
+
+  const value = container.dataset.fullValue?.trim()
+  if (!value) {
+    hidePrimaryTooltip()
+    return
+  }
+
+  const request = ++primaryTooltipRequest
+  activePrimaryContent = container
+  primaryTooltip.value = {
+    value,
+    left: PRIMARY_TOOLTIP_VIEWPORT_MARGIN,
+    top: PRIMARY_TOOLTIP_VIEWPORT_MARGIN,
+    positioned: false,
+  }
+
+  await nextTick()
+  if (request !== primaryTooltipRequest || activePrimaryContent !== container) return
+
+  const tooltip = primaryTooltipElement.value
+  if (!tooltip) return
+
+  const anchorRect = container.getBoundingClientRect()
+  const tooltipRect = tooltip.getBoundingClientRect()
+  const maxLeft = Math.max(
+    PRIMARY_TOOLTIP_VIEWPORT_MARGIN,
+    window.innerWidth - tooltipRect.width - PRIMARY_TOOLTIP_VIEWPORT_MARGIN,
+  )
+  const left = Math.min(Math.max(anchorRect.left, PRIMARY_TOOLTIP_VIEWPORT_MARGIN), maxLeft)
+  const below = anchorRect.bottom + PRIMARY_TOOLTIP_GAP
+  const above = anchorRect.top - tooltipRect.height - PRIMARY_TOOLTIP_GAP
+  const preferredTop = above >= PRIMARY_TOOLTIP_VIEWPORT_MARGIN ? above : below
+  const maxTop = Math.max(
+    PRIMARY_TOOLTIP_VIEWPORT_MARGIN,
+    window.innerHeight - tooltipRect.height - PRIMARY_TOOLTIP_VIEWPORT_MARGIN,
+  )
+
+  primaryTooltip.value = {
+    value,
+    left,
+    top: Math.min(Math.max(preferredTop, PRIMARY_TOOLTIP_VIEWPORT_MARGIN), maxTop),
+    positioned: true,
+  }
+}
+
+function syncPrimaryOverflow(event: MouseEvent) {
+  void showPrimaryTooltip(event.currentTarget as HTMLElement | null)
+}
+
+function syncRowPrimaryOverflow(event: FocusEvent) {
+  const row = event.currentTarget as HTMLElement | null
+  const container = row?.querySelector<HTMLElement>('.k-table__primary-content') ?? null
+  const target = event.target as Node | null
+  if (!row || !container || (target !== row && !container.contains(target))) {
+    hidePrimaryTooltip()
+    return
+  }
+  void showPrimaryTooltip(container)
+}
+
+onMounted(() => {
+  window.addEventListener('resize', hidePrimaryTooltip)
+  window.addEventListener('scroll', hidePrimaryTooltip, true)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', hidePrimaryTooltip)
+  window.removeEventListener('scroll', hidePrimaryTooltip, true)
+})
+
 function clearFilters() {
   const next = Object.fromEntries(props.filters.map(filter => [filter.key, '']))
   if (props.query === undefined) query.value = ''
@@ -402,7 +591,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
       aria-atomic="true"
       style="block-size: 1px; clip: rect(0 0 0 0); clip-path: inset(50%); inline-size: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap;"
     >
-      {{ explicitReadState && loading && loaded ? 'Updating…' : '' }}
+      {{ filterPending ? 'Updating table results…' : explicitReadState && loading && loaded ? 'Updating…' : '' }}
     </span>
     <div v-if="showInitialError" class="k-table__error" role="alert" aria-live="assertive">
       <AlertCircle class="k-table__error-icon" :stroke-width="1.75" />
@@ -410,24 +599,48 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
       <button v-if="retryable" class="k-table__retry" type="button" @click="emit('retry')">Retry</button>
     </div>
 
-    <div v-else-if="showInitialLoading" class="k-table__loading" role="status" aria-live="polite" aria-label="Loading resources">
+    <div
+      v-else-if="initialReadPending"
+      class="k-table__loading k-delayed-loading"
+      :role="showInitialLoading ? 'status' : undefined"
+      :aria-live="showInitialLoading ? 'polite' : undefined"
+      :aria-label="showInitialLoading ? `Loading ${tableAriaLabel.toLocaleLowerCase()}` : undefined"
+      :aria-hidden="showInitialLoading ? undefined : 'true'"
+    >
       <div v-if="hasConfiguredControls" class="k-table__loading-controls" aria-hidden="true">
         <div v-if="searchable" class="shimmer k-table__loading-control k-table__loading-control--search" />
         <div v-for="filter in filters" :key="filter.key" class="shimmer k-table__loading-control k-table__loading-control--filter" />
-        <div v-if="activeFilters" class="shimmer k-table__loading-control k-table__loading-control--clear" />
+        <div v-if="hasFacetFilters" class="shimmer k-table__loading-control k-table__loading-control--clear" />
       </div>
-      <div class="k-table__loading-head">
-        <div class="shimmer k-table__skeleton k-table__skeleton--short" />
+      <div class="k-table__loading-head" :style="{ '--k-table-loading-columns': skeletonColumns.length }">
+        <div
+          v-for="(column, index) in skeletonColumns"
+          :key="column.key"
+          class="shimmer k-table__skeleton"
+          :class="index === 0 ? 'k-table__skeleton--short' : ''"
+        />
       </div>
-      <div v-for="i in 5" :key="i" class="k-table__loading-row">
-        <div class="shimmer k-table__skeleton k-table__skeleton--wide" />
-        <div class="shimmer k-table__skeleton k-table__skeleton--mid" />
-        <div class="shimmer k-table__skeleton k-table__skeleton--small" />
+      <div
+        v-for="i in 5"
+        :key="i"
+        class="k-table__loading-row"
+        :style="{ '--k-table-loading-columns': skeletonColumns.length }"
+      >
+        <div
+          v-for="(column, index) in skeletonColumns"
+          :key="column.key"
+          class="shimmer k-table__skeleton"
+          :class="[
+            index === 0 ? 'k-table__skeleton--wide' : '',
+            index === 1 ? 'k-table__skeleton--mid' : '',
+            index === 2 ? 'k-table__skeleton--small' : '',
+          ]"
+        />
       </div>
     </div>
 
     <template v-else>
-      <div v-if="explicitReadState && error" class="k-table__stale" role="alert" aria-live="assertive">
+      <div v-if="explicitReadState && error" class="k-table__stale" :role="staleMessageRole" :aria-live="staleMessageLive">
         <AlertCircle class="k-table__error-icon" :stroke-width="1.75" />
         <span class="k-table__error-message">
           {{ stale ? 'Showing the last successful result. ' : '' }}{{ error }}
@@ -435,26 +648,27 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
         <button v-if="retryable" class="k-table__retry" type="button" @click="emit('retry')">Retry</button>
       </div>
 
-      <div v-if="showControls" class="k-table__controls" role="search" aria-label="Filter table">
+      <div v-if="showControls" class="k-table__controls" role="search" :aria-label="`Filter ${tableAriaLabel.toLocaleLowerCase()}`">
         <label v-if="searchable" class="k-table__search">
-          <span class="sr-only" style="position:absolute;block-size:1px;inline-size:1px;overflow:hidden;clip:rect(0 0 0 0)">Search table</span>
+          <span class="sr-only" style="position:absolute;block-size:1px;inline-size:1px;overflow:hidden;clip:rect(0 0 0 0)">Search {{ tableAriaLabel }}</span>
           <Search class="k-table__search-icon" :stroke-width="1.75" aria-hidden="true" />
-          <input :value="currentQuery" class="k-table__search-input" type="search" :placeholder="searchPlaceholder" autocomplete="off" @input="setQuery(($event.target as HTMLInputElement).value)">
+          <input :value="currentQuery" class="k-table__search-input" type="search" :aria-label="`Search ${tableAriaLabel}`" :placeholder="searchPlaceholder" autocomplete="off" @input="setQuery(($event.target as HTMLInputElement).value)">
           <button v-if="currentQuery" class="k-table__search-clear" type="button" aria-label="Clear search" @click="setQuery('')"><X :stroke-width="1.75" /></button>
         </label>
-        <label v-for="filter in filters" :key="filter.key">
-          <span class="sr-only" style="position:absolute;block-size:1px;inline-size:1px;overflow:hidden;clip:rect(0 0 0 0)">Filter by {{ filter.label }}</span>
-          <select :value="currentFilters[filter.key] || ''" class="k-table__filter-select" :aria-label="`Filter by ${filter.label}`" @change="setFilter(filter.key, ($event.target as HTMLSelectElement).value)">
-            <option value="">{{ filter.allLabel || `All ${filter.label.toLocaleLowerCase()}` }}</option>
-            <option v-for="option in filterOptions[filter.key]" :key="option.value" :value="option.value">{{ option.label }}</option>
-          </select>
-        </label>
-        <button v-if="activeFilters" class="k-table__clear-filters" type="button" @click="clearFilters">Clear filters</button>
+        <ResourceTableFilter
+          v-for="filter in filters"
+          :key="filter.key"
+          :definition="filter"
+          :options="filterOptions[filter.key]"
+          :model-value="currentFilters[filter.key] || ''"
+          @update:model-value="setFilter(filter.key, $event)"
+        />
+        <button v-if="hasFacetFilters" class="k-table__clear-filters" type="button" @click="clearFilters">{{ clearActionLabel }}</button>
       </div>
 
-      <div class="k-table__scroll" role="region" aria-label="Scrollable table" tabindex="0">
-        <table class="k-table__table">
-          <thead><tr class="k-table__head-row"><th v-for="col in columns" :key="col.key" class="k-table__heading">{{ col.label }}</th></tr></thead>
+      <div class="k-table__scroll" role="region" :aria-label="`${tableAriaLabel} scroll area`" tabindex="0">
+        <table class="k-table__table" :aria-label="tableAriaLabel">
+          <thead><tr class="k-table__head-row"><th v-for="col in visibleColumns" :key="col.key" class="k-table__heading" :class="[`k-table__heading--${col.align ?? 'start'}`, { 'k-table__heading--primary': col.key === primaryColumnKey }]" :aria-label="col.ariaLabel || col.label || col.key">{{ col.label }}</th></tr></thead>
           <tbody>
             <template v-for="(row, i) in visibleRows" :key="rowIdentity(row, i)">
               <tr
@@ -464,20 +678,37 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                 :aria-label="interactive ? rowAriaLabel(row, i) : undefined"
                 :style="{ animationDelay: `${i * 35}ms` }"
                 @click="onRowClick(row, $event)"
+                @focusin="syncRowPrimaryOverflow"
+                @focusout="hidePrimaryTooltip"
                 @keydown="onRowKeydown(row, $event)"
               >
-                <td v-for="col in columns" :key="col.key" class="k-table__cell">
-                  <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
+                <td v-for="col in visibleColumns" :key="col.key" class="k-table__cell" :class="[`k-table__cell--${col.align ?? 'start'}`, { 'k-table__cell--primary': col.key === primaryColumnKey }]">
+                  <div v-if="col.key === primaryColumnKey && actionsColumn" class="k-table__primary">
+                    <div class="k-table__primary-content" :data-full-value="primaryValue(row)" @mouseenter="syncPrimaryOverflow" @mouseleave="hidePrimaryTooltip">
+                      <span class="k-table__primary-value">
+                        <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
+                      </span>
+                    </div>
+                    <div class="k-table__primary-actions">
+                      <slot :name="actionsColumn.key" :value="row[actionsColumn.key]" :row="row">{{ row[actionsColumn.key] }}</slot>
+                    </div>
+                  </div>
+                  <div v-else-if="col.key === primaryColumnKey" class="k-table__primary-content" :data-full-value="primaryValue(row)" @mouseenter="syncPrimaryOverflow" @mouseleave="hidePrimaryTooltip">
+                    <span class="k-table__primary-value">
+                      <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
+                    </span>
+                  </div>
+                  <slot v-else :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
                 </td>
               </tr>
-              <slot name="after-row" :row="row" />
+              <slot name="after-row" :row="row" :column-count="renderedColumnCount" />
             </template>
-            <tr v-if="showPendingBody"><td :colspan="columns.length" class="k-table__pending-cell" role="status" aria-live="polite">
+            <tr v-if="showPendingBody"><td :colspan="renderedColumnCount" class="k-table__pending-cell" role="status" aria-live="polite">
               <p class="k-table__pending-label">{{ pendingBodyText }}</p>
             </td></tr>
-            <tr v-else-if="visibleRows.length === 0"><td :colspan="columns.length" class="k-table__empty-cell">
+            <tr v-else-if="visibleRows.length === 0"><td :colspan="renderedColumnCount" class="k-table__empty-cell">
               <Inbox class="k-table__empty-icon" :stroke-width="1.25" />
-              <p class="k-table__empty-label">{{ activeFilters ? filterEmptyText : emptyText }}</p>
+              <p class="k-table__empty-label">{{ activeFilters ? noMatchText : emptyText }}</p>
             </td></tr>
           </tbody>
         </table>
@@ -506,4 +737,17 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
       </footer>
     </template>
   </div>
+
+  <Teleport to="body">
+    <div
+      v-if="primaryTooltip"
+      ref="primaryTooltipElement"
+      class="k-table__primary-tooltip"
+      :class="{ 'k-table__primary-tooltip--positioned': primaryTooltip.positioned }"
+      :style="{ left: `${primaryTooltip.left}px`, top: `${primaryTooltip.top}px` }"
+      aria-hidden="true"
+    >
+      {{ primaryTooltip.value }}
+    </div>
+  </Teleport>
 </template>

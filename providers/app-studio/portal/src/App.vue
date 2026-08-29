@@ -44,6 +44,7 @@ import Tabs from './portalkit/Tabs.vue'
 import LayoutSelector from './portalkit/LayoutSelector.vue'
 import ResourceTable from './portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
+import { useDelayedLoading } from './portalkit/useDelayedLoading'
 import { confirmDialog, confirmState } from './portalkit/confirm'
 import { readLayoutPreference, writeLayoutPreference, type LayoutMode } from './portalkit/layoutPreference'
 import {
@@ -657,6 +658,10 @@ const pendingFollowUp = computed<PendingFollowUpView | null>(() => {
 const hasPendingReview = computed(() => pendingFollowUp.value !== null || pendingApproval.value !== null)
 const loading = ref(true)
 const projectsLoaded = ref(false)
+const projectInitialPending = computed(() =>
+  (loading.value || !projectsLoaded.value) && projects.value.length === 0,
+)
+const showProjectInitialLoading = useDelayedLoading(projectInitialPending)
 const projectOpenLoading = ref(false)
 const threadHistoryLoading = ref(false)
 const selectingThreadID = ref('')
@@ -1653,10 +1658,10 @@ const filteredProjects = computed(() => {
 })
 
 const projectTableColumns = [
-  { key: 'name', label: 'Project' },
+  { key: 'name', label: 'Project', primary: true, fullValue: (row: Record<string, unknown>) => String(row.displayName || row.name) },
   { key: 'phase', label: 'Phase' },
   { key: 'updated', label: 'Updated' },
-  { key: 'actions', label: 'Actions' },
+  { key: 'actions', label: 'Actions', ariaLabel: 'Actions' },
 ]
 
 const projectTableRows = computed<Array<Record<string, unknown>>>(() => filteredProjects.value.map(project => ({
@@ -7151,7 +7156,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </div>
 
         <template v-if="projectLayout === 'grid'">
-          <div v-if="(loading || !projectsLoaded) && projects.length === 0" class="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-5 pb-8" role="status" aria-live="polite" aria-busy="true">
+          <div
+            v-if="projectInitialPending"
+            class="k-delayed-loading grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-5 pb-8"
+            :role="showProjectInitialLoading ? 'status' : undefined"
+            :aria-live="showProjectInitialLoading ? 'polite' : undefined"
+            :aria-busy="showProjectInitialLoading ? 'true' : undefined"
+            :aria-hidden="showProjectInitialLoading ? undefined : 'true'"
+          >
             <article v-for="skeleton in 6" :key="skeleton" class="overflow-hidden rounded-lg border border-border-subtle bg-surface-raised" aria-hidden="true">
               <div class="shimmer aspect-[16/9] border-b border-border-subtle bg-surface" />
               <div class="grid gap-2 p-3">
@@ -7234,6 +7246,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           v-else
           :columns="projectTableColumns"
           :rows="projectTableRows"
+          aria-label="Projects"
           row-key="name"
           :loaded="projectsLoaded"
           :loading="loading"
@@ -7243,10 +7256,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           @row-click="enterProjectTableRow"
         >
           <template #name="{ row }">
-            <div class="min-w-[220px]">
-              <div class="truncate font-semibold text-text-primary">{{ String(row.displayName || row.name) }}</div>
-              <div class="mt-1 line-clamp-2 text-[12px] leading-[17px] text-text-muted">{{ String(row.description || row.name) }}</div>
-            </div>
+            <button
+              class="k-btn k-btn--ghost k-table-resource-link min-w-[220px] text-left"
+              type="button"
+              @click.stop="enterProjectTableRow(row)"
+            >
+              <span class="block truncate font-semibold">{{ String(row.displayName || row.name) }}</span>
+              <span class="mt-1 block line-clamp-2 text-[12px] leading-[17px] text-text-muted">{{ String(row.description || row.name) }}</span>
+            </button>
           </template>
           <template #phase="{ value }"><StatusBadge :status="String(value)" /></template>
           <template #updated="{ value }"><span class="whitespace-nowrap text-text-muted">{{ String(value) }}</span></template>

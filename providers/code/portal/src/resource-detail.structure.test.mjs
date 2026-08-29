@@ -34,7 +34,10 @@ function resourcePageSlot(source, name) {
 describe('Code repository resource detail cards', () => {
   it('hides provider tabs for repository detail and preserves the backlink', () => {
     expect(app).toMatch(/<template v-if="!route\.repo && !route\.connection">[\s\S]*<Tabs :tabs=/)
-    expect(detail).toMatch(/<a class="k-btn k-btn--ghost repo-detail__back" href="\/ui\/providers\/code\/repositories" @click\.prevent="emit\('back'\)"[^>]*>[\s\S]*<ArrowLeft/)
+    expect(detail).toMatch(/<ResourceBackLink class="repo-detail__back" href="\/ui\/providers\/code\/repositories" @back="emit\('back'\)">[\s\S]*Repositories[\s\S]*<\/ResourceBackLink>/)
+    expect(detail).toMatch(/import ResourceBackLink from '\.\.\/portalkit\/ResourceBackLink\.vue'/)
+    expect(style).toMatch(/\.repo-detail__provider-mark\s*\{[^}]*inset-inline-start:\s*0;/s)
+    expect(style).toMatch(/\.repo-detail__resource > section > header\s*\{[^}]*padding-inline-start:\s*52px;/s)
     expect(detail).not.toMatch(/:breadcrumbs=|@navigate=|<Tabs\b/)
   })
 
@@ -130,7 +133,7 @@ describe('Code repository resource detail cards', () => {
     const tableRule = farosUI.match(/\.k-table\.k-table--resource \.k-table__scroll > \.k-table__table\s*\{([\s\S]*?)\}/)?.[1] ?? ''
     expect(tableRule).toMatch(/max-width:\s*none/)
     expect(tableRule).toMatch(/min-width:\s*100%/)
-    expect(tableRule).toMatch(/width:\s*max-content/)
+    expect(tableRule).toMatch(/width:\s*100%/)
     expect(farosUI).toMatch(/\.k-table__scroll\s*\{[\s\S]*overflow-x:\s*auto/)
     expect(farosUI).not.toMatch(/table-layout:\s*fixed/)
     expect(style).not.toMatch(/\.k-table(?:-[A-Za-z0-9_-]+)?\b/)
@@ -141,7 +144,10 @@ describe('Code connection resource detail cards', () => {
   it('preserves the connection route backlink outside ResourcePage', () => {
     expect(app).toMatch(/connections<.*ConnectionDetailView|ConnectionDetailView.*connections/)
     expect(app).toMatch(/<template v-if="!route\.repo && !route\.connection">[\s\S]*<Tabs :tabs=/)
-    expect(connectionDetail).toMatch(/<a class="k-btn k-btn--ghost connection-detail__back" href="\/ui\/providers\/code\/connections" @click\.prevent="emit\('back'\)"[^>]*>[\s\S]*<ArrowLeft[\s\S]*Connections/)
+    expect(connectionDetail).toMatch(/<ResourceBackLink class="connection-detail__back" href="\/ui\/providers\/code\/connections" @back="emit\('back'\)">[\s\S]*Connections[\s\S]*<\/ResourceBackLink>/)
+    expect(connectionDetail).toMatch(/import ResourceBackLink from '\.\.\/portalkit\/ResourceBackLink\.vue'/)
+    expect(style).toMatch(/\.connection-detail__provider-mark\s*\{[^}]*inset-inline-start:\s*0;/s)
+    expect(style).toMatch(/\.connection-detail__resource > section > header\s*\{[^}]*padding-inline-start:\s*52px;/s)
     expect(connectionDetail).not.toMatch(/:breadcrumbs=|@navigate=|<Tabs\b/)
   })
 
@@ -175,7 +181,8 @@ describe('Code connection resource detail cards', () => {
     expect(connectionDetail).toMatch(/FAST_REFRESH_MS/)
     expect(connectionDetail).toMatch(/createLatestRefreshController/)
     expect(connectionDetail).toContain(':stale="loaded && !!error"')
-    expect(connectionDetail).toContain('Updating connection…')
+    expect(connectionDetail).toContain(':refresh-mode="refreshMode"')
+    expect(connectionDetail).not.toContain('Updating connection…')
     expect(connectionDetail).toContain('mutationError')
     expect(connectionDetail).toContain('Deleting this connection.')
     expect(connectionDetail).toMatch(/async function deleteConnection\(\)/)

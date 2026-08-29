@@ -10,6 +10,7 @@ import { resolveConfirm } from './portalkit/confirm'
 import { setBasePath, setTenant, setToken } from './api'
 import { createResourceTombstones } from './refresh'
 import type { FarosContext } from './types'
+import { useDelayedLoading } from './portalkit/useDelayedLoading'
 
 // Two top-level pages: 'templates' and 'instances'. Sub-routes:
 //
@@ -59,6 +60,8 @@ function parseSubPath(sub: string | null | undefined): Route {
 const route = computed<Route>(() => parseSubPath(props.ctx?.subPath))
 const tenantPath = computed(() => props.ctx?.tenant ?? null)
 const contextInitialized = computed(() => props.ctx !== null)
+const contextPending = computed(() => !contextInitialized.value)
+const showContextLoading = useDelayedLoading(contextPending)
 const contextVersion = ref(0)
 // Route-local pages remount during detail/list navigation, but acknowledged
 // deletions must remain marked Deleting until a successful list proves the old
@@ -148,7 +151,13 @@ function provisioned(name: string) {
       stays put until they pick one in the shell's sidebar chip.
     -->
     <template v-if="!contextInitialized">
-      <section class="page" role="status" aria-live="polite" aria-busy="true">
+      <section
+        class="page k-delayed-loading"
+        :role="showContextLoading ? 'status' : undefined"
+        :aria-live="showContextLoading ? 'polite' : undefined"
+        :aria-busy="showContextLoading ? 'true' : undefined"
+        :aria-hidden="showContextLoading ? undefined : 'true'"
+      >
         <header class="page-head">
           <div>
             <h2 class="page-title">Infrastructure</h2>

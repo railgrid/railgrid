@@ -186,7 +186,7 @@ export class AssistedSearch extends StoreElement {
       // work to an agent.
       if (!this.store.hasProvider('infrastructure')) return html`<div class="agents-panel k-card agents-route-panel"><p class="muted">Infrastructure is not enabled for this workspace.</p></div>`
       if (!this.store.agents.data.length) return html`<div class="agents-panel k-card agents-route-panel"><p class="muted">Create an agent before using assisted search setup.</p></div>`
-      if (!this.store.connections.loaded) return html`<div class="agents-panel k-card agents-route-panel" role="status"><p class="muted">Loading connections…</p></div>`
+      if (!this.store.connections.loaded) return html`<div class="agents-panel k-card agents-route-panel k-loading-reveal" role="status"><p class="muted">Loading connections…</p></div>`
       if (selfHostedSearchConfigured(this.store.connections.data)) {
         return html`<div class="agents-panel k-card agents-route-panel"><p class="muted">Self-hosted search is already configured in this workspace.</p></div>`
       }

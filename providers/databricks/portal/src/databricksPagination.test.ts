@@ -19,8 +19,10 @@ const warehouseConnectionFilter = warehouseFilters(manyConnections).find(filter 
 const tableWarehouseFilter = tableFilters(manyWarehouses).find(filter => filter.key === 'warehouseRef')
 equal(warehouseConnectionFilter?.options?.length, 101, 'warehouse filter retains every supporting connection choice')
 equal(warehouseConnectionFilter?.options?.some(option => option.value === 'connection-100'), true, 'warehouse filter includes a connection after item 100')
+equal(warehouseConnectionFilter?.control, 'combobox', 'warehouse connection filter uses searchable resource selection')
 equal(tableWarehouseFilter?.options?.length, 101, 'table filter retains every supporting warehouse choice')
 equal(tableWarehouseFilter?.options?.some(option => option.value === 'warehouse-100'), true, 'table filter includes a warehouse after item 100')
+equal(tableWarehouseFilter?.control, 'combobox', 'table warehouse filter uses searchable resource selection')
 
 equal(
   serverCursorChange({ reason: 'page', page: 3, cursor: 'opaque-page-3' }),

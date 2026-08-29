@@ -87,6 +87,8 @@ export function warehouseFilters(connections: readonly Connection[]): TableFilte
     {
       key: 'connectionRef',
       label: 'Connection',
+      control: 'combobox',
+      searchPlaceholder: 'Find a connection…',
       options: resourceOptions(connections.map(connection => connection.name)),
     },
     {
@@ -108,6 +110,8 @@ export function tableFilters(warehouses: readonly Warehouse[]): TableFilterDefin
     {
       key: 'warehouseRef',
       label: 'Warehouse',
+      control: 'combobox',
+      searchPlaceholder: 'Find a warehouse…',
       options: resourceOptions(warehouses.map(warehouse => warehouse.name)),
     },
     {

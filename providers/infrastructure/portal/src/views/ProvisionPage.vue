@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onUnmounted, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { ArrowLeft } from 'lucide-vue-next'
 import DynamicForm from '../components/DynamicForm.vue'
 import { api, isContextChangedError } from '../api'
 import type { Template, ErrorResponse } from '../types'
+import { useDelayedLoading } from '../portalkit/useDelayedLoading'
 import { REASON_CLOUD_CREDENTIALS_MISSING, REASON_API_BINDING_MISSING, REASON_TENANT_MISSING } from '../types'
 
 const props = defineProps<{ templateName: string }>()
@@ -17,6 +18,8 @@ const values = ref<Record<string, unknown>>({})
 const instanceName = ref('')
 const loading = ref(true)
 const loaded = ref(false)
+const initialReadPending = computed(() => loading.value && !loaded.value)
+const showInitialLoading = useDelayedLoading(initialReadPending)
 const readError = ref<string | null>(null)
 const mutationError = ref<string | null>(null)
 const submitting = ref(false)
@@ -103,7 +106,14 @@ async function submit() {
 <template>
   <section class="page k-create-page">
     <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="submitting" @click="emit('navigate', 'catalog')"><ArrowLeft :size="14" aria-hidden="true" /> Back to templates</button>
-    <div v-if="loading && !loaded" class="page-loading-shell" role="status" aria-live="polite" aria-busy="true">
+    <div
+      v-if="initialReadPending"
+      class="page-loading-shell k-delayed-loading"
+      :role="showInitialLoading ? 'status' : undefined"
+      :aria-live="showInitialLoading ? 'polite' : undefined"
+      :aria-busy="showInitialLoading ? 'true' : undefined"
+      :aria-hidden="showInitialLoading ? undefined : 'true'"
+    >
       <span>Loading template…</span>
       <div class="shimmer page-loading-line page-loading-line-short" aria-hidden="true" />
       <div class="shimmer page-loading-panel" aria-hidden="true" />

@@ -111,5 +111,7 @@ portal/tsconfig.tsbuildinfo
 # Agent harness artifacts
 .superpowers/
 docs/superpowers/
+.impeccable/
+/PRODUCT.md
 agent_docs/
 hack/provider-sdk-cutover.sh

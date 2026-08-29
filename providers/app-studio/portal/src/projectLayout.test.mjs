@@ -19,7 +19,8 @@ test('keeps the existing gallery as the grid branch and uses table loading geome
   assert.ok(branchStart >= 0 && listStart > branchStart)
 
   const grid = app.slice(branchStart, listStart)
-  assert.match(grid, /v-if="\(loading \|\| !projectsLoaded\) && projects\.length === 0"/)
+  assert.match(grid, /v-if="projectInitialPending"/)
+  assert.match(grid, /:aria-hidden="showProjectInitialLoading \? undefined : 'true'"/)
   assert.match(grid, /v-for="project in filteredProjects"/)
   assert.match(grid, /v-if="projectThumbnailURLs\[project\.name\]"/)
   assert.match(grid, /@click="enterProject\(project\)"/)

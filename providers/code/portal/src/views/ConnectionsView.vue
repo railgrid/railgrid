@@ -32,11 +32,11 @@ const loading = ref(false)
 const loaded = ref(false)
 const operations = createOperationLocks()
 const columns = [
-  { key: 'name', label: 'Name' },
+  { key: 'name', label: 'Name', primary: true },
   { key: 'owner', label: 'Owner' },
   { key: 'login', label: 'Login' },
   { key: 'status', label: 'Status' },
-  { key: 'actions', label: '' },
+  { key: 'actions', label: '', ariaLabel: 'Actions' },
 ]
 const rows = computed<Array<Record<string, unknown>>>(() => connections.value
   .map(connection => {
@@ -190,6 +190,7 @@ onUnmounted(() => {
     <ResourceTable
       :columns="columns"
       :rows="rows"
+      aria-label="Git connections"
       searchable
       search-placeholder="Search connections…"
       :filters="[{ key: 'owner', label: 'Owner' }, { key: 'status', label: 'Status', allLabel: 'Any status' }]"

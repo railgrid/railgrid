@@ -389,13 +389,14 @@ onUnmounted(() => {
 
     <ResourceTable
       :columns="[
-        { key: 'name', label: 'Name' },
+        { key: 'name', label: 'Name', primary: true },
         { key: 'host', label: 'Workspace host' },
         { key: 'authType', label: 'Auth' },
         { key: 'status', label: 'Status' },
-        { key: 'actions', label: '' },
+        { key: 'actions', label: '', ariaLabel: 'Actions' },
       ]"
       :rows="rows"
+      aria-label="Databricks connections"
       searchable
       search-placeholder="Search connections…"
       :filters="CONNECTION_FILTERS"

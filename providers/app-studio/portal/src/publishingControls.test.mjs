@@ -442,11 +442,11 @@ test('settles terminal project-list failures and keeps a visible Retry action', 
 
   const landingStart = app.indexOf('<div v-else-if="!isBuilderVisible"')
   const errorStart = app.indexOf('<div v-if="error"', landingStart)
-  const skeletonStart = app.indexOf('<div v-if="(loading || !projectsLoaded) && projects.length === 0"', errorStart)
+  const skeletonStart = app.indexOf('v-if="projectInitialPending"', errorStart)
   assert.ok(landingStart >= 0 && errorStart > landingStart && skeletonStart > errorStart)
   const listError = app.slice(errorStart, skeletonStart)
   assert.ok(listError.includes('@click="load"'))
-  assert.ok(app.slice(skeletonStart, app.indexOf('>', skeletonStart)).includes('projects.length === 0'))
+  assert.match(app, /const projectInitialPending = computed\(\(\) =>[\s\S]*\(loading\.value \|\| !projectsLoaded\.value\) && projects\.value\.length === 0/)
 })
 
 test('commits a thread selection only after history succeeds and clears the pending state', () => {

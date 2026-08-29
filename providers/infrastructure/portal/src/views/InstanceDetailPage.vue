@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowLeft, Boxes, CalendarClock, Ellipsis, FileCode2, RefreshCw } from 'lucide-vue-next'
+import { Boxes, CalendarClock, Ellipsis, FileCode2, RefreshCw } from 'lucide-vue-next'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import ViewValue from '../components/ViewValue.vue'
 import { api, isContextChangedError } from '../api'
 import ConditionsPanel, { type ConditionInfo } from '../portalkit/ConditionsPanel.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
+import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
@@ -257,15 +258,14 @@ onUnmounted(() => {
 
 <template>
   <section class="instance-detail">
-    <a
-      class="k-btn k-btn--ghost k-back-action instance-detail__back"
+    <ResourceBackLink
+      class="instance-detail__back"
       href="/ui/providers/infrastructure/instances"
-      :aria-disabled="deleting || deletionInProgress || undefined"
-      @click.prevent="goBack"
+      :disabled="deleting || deletionInProgress"
+      @back="goBack"
     >
-      <ArrowLeft :size="14" aria-hidden="true" />
       Instances
-    </a>
+    </ResourceBackLink>
 
     <ResourcePage
       :title="inst?.name || instanceName"
@@ -365,11 +365,12 @@ onUnmounted(() => {
             <ResourceTable
               :columns="[
                 { key: 'kind', label: 'Kind' },
-                { key: 'name', label: 'Name' },
+                { key: 'name', label: 'Name', primary: true },
                 { key: 'namespaceLabel', label: 'Namespace' },
                 { key: 'phaseLabel', label: 'Phase' },
               ]"
               :rows="childRows"
+              aria-label="Instance child resources"
               row-key="rowID"
               :interactive="false"
               empty-text="No child resources have been reported yet."

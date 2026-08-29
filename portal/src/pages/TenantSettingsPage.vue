@@ -27,12 +27,15 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import MemberList from '@/components/MemberList.vue'
+import WorkspaceControlHeader from '@/components/WorkspaceControlHeader.vue'
 import { useTenantStore, type AppAccessGrantRow, type MemberRow, type OrgRow, type SARow, type TokenResponse, type WorkspaceRow } from '@/stores/tenant'
 import { confirmDialog } from '@/portalkit/confirm'
 import ResourceTable from '@/portalkit/ResourceTable.vue'
 import ResourceTableActionButton from '@/portalkit/ResourceTableActionButton.vue'
 import ResourceTableDeleteButton from '@/portalkit/ResourceTableDeleteButton.vue'
+import ResourceTableFilter from '@/portalkit/ResourceTableFilter.vue'
 import StatusBadge from '@/portalkit/StatusBadge.vue'
+import type { TableFilterDefinition, TableFilterOption } from '@/portalkit/table'
 import { toast } from '@/portalkit/toast'
 import { useEscapeKey } from '@/composables/useEscapeKey'
 import Tabs from '@/portalkit/Tabs.vue'
@@ -51,6 +54,7 @@ import {
   Plus,
   RotateCcw,
   RefreshCw,
+  Search,
   ShieldCheck,
   Settings2,
   Trash2,
@@ -65,8 +69,8 @@ const router = useRouter()
 type SettingsSection = 'organizations' | 'workspaces'
 
 const settingsTabs = [
-  { id: 'organizations', label: 'Organizations', icon: Building2 },
   { id: 'workspaces', label: 'Workspaces', icon: FolderTree },
+  { id: 'organizations', label: 'Organizations', icon: Building2 },
 ] as const
 
 const activeSection = computed<SettingsSection>(() => {
@@ -391,7 +395,20 @@ const selectedWorkspaceUUID = ref<string | null>(null)
 const scopedOrgUUID = ref<string | null>(null)
 const workspaceListLoading = ref(false)
 const workspaceListError = ref<string | null>(null)
+const workspaceSearch = ref('')
+type WorkspaceLifecycleFilter = '' | 'not-deleting' | 'deleting'
+const workspaceLifecycleFilter = ref<WorkspaceLifecycleFilter>('not-deleting')
+const workspaceLifecycleFilterDefinition: TableFilterDefinition = {
+  key: 'lifecycle',
+  label: 'Lifecycle',
+  allLabel: 'All workspaces',
+}
+const workspaceLifecycleFilterOptions: TableFilterOption[] = [
+  { value: 'not-deleting', label: 'Not deleting' },
+  { value: 'deleting', label: 'Deleting' },
+]
 let workspaceListRequest = 0
+const WORKSPACE_SEARCH_THRESHOLD = 5
 const WORKSPACE_GRACE_PERIOD_MS = 30 * 24 * 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
 const WORKSPACE_COUNTDOWN_REFRESH_MS = 60 * 1000
@@ -404,8 +421,39 @@ let deletionCountdownTimer: number | null = null
 // loaded.
 const workspaces = computed<WorkspaceRow[]>(() => {
   const org = tenant.orgUUID
-  if (!org || scopedOrgUUID.value !== org || workspaceListLoading.value) return []
+  if (!org || scopedOrgUUID.value !== org) return []
   return (tenant.workspacesByOrg[org] ?? []).filter((workspace) => workspace.orgUUID === org)
+})
+
+const workspaceListInitialLoading = computed(() => workspaceListLoading.value && workspaces.value.length === 0)
+function workspaceMatchesLifecycleFilter(
+  workspace: WorkspaceRow,
+  filter: WorkspaceLifecycleFilter = workspaceLifecycleFilter.value,
+): boolean {
+  if (filter === 'deleting') return !!workspace.deletionRequestedAt
+  if (filter === 'not-deleting') return !workspace.deletionRequestedAt
+  return true
+}
+
+const lifecycleFilteredWorkspaces = computed(() =>
+  workspaces.value.filter((workspace) => workspaceMatchesLifecycleFilter(workspace)),
+)
+const showWorkspaceSearch = computed(() => lifecycleFilteredWorkspaces.value.length > WORKSPACE_SEARCH_THRESHOLD)
+const filteredWorkspaces = computed(() => {
+  const query = showWorkspaceSearch.value ? workspaceSearch.value.trim().toLocaleLowerCase() : ''
+  if (!query) return lifecycleFilteredWorkspaces.value
+  return lifecycleFilteredWorkspaces.value.filter((workspace) =>
+    `${workspace.displayName || ''} ${workspace.uuid}`.toLocaleLowerCase().includes(query),
+  )
+})
+const workspaceFilterResultAnnouncement = computed(() => {
+  const shown = filteredWorkspaces.value.length
+  const total = workspaces.value.length
+  return `${shown} of ${total} ${total === 1 ? 'workspace' : 'workspaces'} shown.`
+})
+
+watch(showWorkspaceSearch, (visible) => {
+  if (!visible) workspaceSearch.value = ''
 })
 
 const selectedWorkspace = computed<WorkspaceRow | null>(() => {
@@ -457,21 +505,27 @@ async function normalizeWorkspaceSelection(orgUUID: string, loadedWorkspaces: Wo
       await router.replace('/settings/workspaces')
       return
     }
+    if (!workspaceMatchesLifecycleFilter(routedWorkspace)) {
+      workspaceLifecycleFilter.value = routedWorkspace.deletionRequestedAt ? 'deleting' : 'not-deleting'
+    }
     selectedWorkspaceUUID.value = routedWorkspace.uuid
     return
   }
 
   const globalWorkspaceUUID = tenant.workspaceUUID
-  selectedWorkspaceUUID.value = globalWorkspaceUUID && loadedWorkspaces.some((workspace) => workspace.uuid === globalWorkspaceUUID)
+  selectedWorkspaceUUID.value = globalWorkspaceUUID && loadedWorkspaces.some((workspace) =>
+    workspace.uuid === globalWorkspaceUUID && workspaceMatchesLifecycleFilter(workspace),
+  )
     ? globalWorkspaceUUID
     : null
 }
 
 async function reloadScopedWorkspaces(orgUUID: string | null): Promise<void> {
   const request = ++workspaceListRequest
-  scopedOrgUUID.value = null
+  const refreshingCurrentScope = !!orgUUID && scopedOrgUUID.value === orgUUID
+  if (!refreshingCurrentScope) scopedOrgUUID.value = null
   workspaceListError.value = null
-  selectedWorkspaceUUID.value = null
+  if (!refreshingCurrentScope) selectedWorkspaceUUID.value = null
   if (!orgUUID) {
     workspaceListLoading.value = false
     // A nested workspace route has no valid scope once the active org is
@@ -497,7 +551,7 @@ async function reloadScopedWorkspaces(orgUUID: string | null): Promise<void> {
     const loadState = tenant.workspaceLoadStateByOrg[orgUUID] ?? 'idle'
     if (loadState === 'loading') return
     if (loadState === 'error') {
-      scopedOrgUUID.value = null
+      if (!refreshingCurrentScope) scopedOrgUUID.value = null
       workspaceListError.value = tenant.workspaceErrorByOrg[orgUUID] ?? 'Failed to load workspaces.'
       return
     }
@@ -547,7 +601,7 @@ watch(
       ? tenant.workspaceErrorByOrg[orgUUID] ?? 'Failed to load workspaces.'
       : null
     if (loadState === 'error') {
-      scopedOrgUUID.value = null
+      if (scopedOrgUUID.value !== orgUUID) selectedWorkspaceUUID.value = null
       workspaceListLoading.value = false
       return
     }
@@ -564,6 +618,37 @@ function selectWorkspace(workspace: WorkspaceRow): void {
   // the shell's workspace switcher and must not change just because someone is
   // inspecting a row (especially a provisioning or deleting row).
   void router.push(workspaceRoutePath(workspace.uuid))
+}
+
+function selectWorkspaceFromControl(event: Event): void {
+  const workspaceUUID = (event.target as HTMLSelectElement).value
+  const workspace = workspaces.value.find((candidate) => candidate.uuid === workspaceUUID)
+  if (workspace) selectWorkspace(workspace)
+}
+
+function setWorkspaceLifecycleFilter(value: string): void {
+  if (value !== '' && value !== 'not-deleting' && value !== 'deleting') return
+  const nextFilter = value as WorkspaceLifecycleFilter
+  workspaceLifecycleFilter.value = nextFilter
+
+  const visibleWorkspaces = workspaces.value.filter((workspace) =>
+    workspaceMatchesLifecycleFilter(workspace, nextFilter),
+  )
+  if (visibleWorkspaces.some((workspace) => workspace.uuid === selectedWorkspaceUUID.value)) return
+
+  const firstVisibleWorkspace = visibleWorkspaces[0]
+  if (firstVisibleWorkspace) {
+    selectWorkspace(firstVisibleWorkspace)
+    return
+  }
+
+  selectedWorkspaceUUID.value = null
+  if (workspaceRouteUUID.value) void router.push('/settings/workspaces')
+}
+
+function clearWorkspaceFilters(): void {
+  workspaceSearch.value = ''
+  setWorkspaceLifecycleFilter('')
 }
 
 // Organization switching happens in the standalone chooser or shell account
@@ -651,6 +736,48 @@ function isCurrentTarget(target: WorkspaceTarget): boolean {
 // UMI rows) — the same rows the tenant middleware resolves server-side.
 const canManageWs = computed(() => selWs.value?.role === 'admin')
 const canEditWs = computed(() => canManageWs.value && !selWs.value?.deletionRequestedAt)
+
+const inspectedWorkspaceIsActive = computed(() =>
+  tenant.workspaceMode === 'workspace' &&
+  !!selWs.value &&
+  tenant.workspaceUUID === selWs.value.uuid,
+)
+const activeWorkspaceName = computed(() =>
+  tenant.activeWorkspace?.displayName || tenant.activeWorkspace?.uuid || null,
+)
+const activateWorkspaceDisabledReason = computed<string | null>(() => {
+  const workspace = selWs.value
+  if (!workspace) return 'Select a Workspace to inspect before switching context.'
+  if (tenant.orgLoadState === 'loading') return 'Organization data is refreshing. Wait for verification before switching context.'
+  if (tenant.orgLoadState !== 'ready' || tenant.orgError || !tenant.orgListLoaded) {
+    return 'Organization data could not be verified. Retry before switching context.'
+  }
+  if (workspaceListLoading.value) return 'Workspace data is refreshing. Wait for verification before switching context.'
+  if (workspaceListError.value) return 'Workspace data could not be verified. Retry before switching context.'
+  const workspaceLoadState = tenant.workspaceLoadStateByOrg[workspace.orgUUID] ?? 'idle'
+  if (workspaceLoadState === 'loading') return 'Workspace data is refreshing. Wait for verification before switching context.'
+  if (workspaceLoadState !== 'ready' || tenant.workspaceErrorByOrg[workspace.orgUUID]) {
+    return 'Workspace data could not be verified. Retry before switching context.'
+  }
+  if (workspace.deletionRequestedAt) return 'A Workspace pending deletion cannot become the active operating context.'
+  if (!workspace.clusterName) return 'This Workspace can become active after its control plane is ready.'
+  return null
+})
+
+async function activateInspectedWorkspace(): Promise<void> {
+  const workspace = selWs.value
+  if (!workspace || activateWorkspaceDisabledReason.value) return
+  const changed = tenant.selectWorkspace(workspace.uuid)
+  if (!changed && !inspectedWorkspaceIsActive.value) return
+  const transitionToken = tenant.beginWorkspaceTransition()
+  try {
+    await router.push({ name: 'dashboard' })
+    toast('ok', `Switched operating context to "${workspace.displayName || workspace.uuid}".`)
+  } finally {
+    tenant.endWorkspaceTransition(transitionToken)
+  }
+}
+
 const kubeconfigDisabledReason = computed<string | null>(() => {
   const workspace = selWs.value
   if (!workspace) return 'Select a workspace before downloading a kubeconfig.'
@@ -660,17 +787,17 @@ const kubeconfigDisabledReason = computed<string | null>(() => {
 })
 
 const appAccessColumns = computed(() => [
-  { key: 'app', label: 'App' },
+  { key: 'app', label: 'App', primary: true },
   { key: 'user', label: 'User' },
-  ...(canEditWs.value ? [{ key: 'actions', label: '' }] : []),
+  ...(canEditWs.value ? [{ key: 'actions', label: '', ariaLabel: 'Actions' }] : []),
 ])
 
 const serviceAccountColumns = [
-  { key: 'displayName', label: 'Name' },
+  { key: 'displayName', label: 'Name', primary: true },
   { key: 'role', label: 'Role' },
   { key: 'createdAt', label: 'Created' },
   { key: 'lastTokenIssuedAt', label: 'Last token' },
-  { key: 'actions', label: '' },
+  { key: 'actions', label: '', ariaLabel: 'Actions' },
 ]
 
 // Workspace creation obeys Organization.spec.workspaceCreation: admins
@@ -699,6 +826,8 @@ watch(
     newWorkspaceOpen.value = false
     newWsName.value = ''
     newWsBusy.value = false
+    workspaceSearch.value = ''
+    workspaceLifecycleFilter.value = 'not-deleting'
     dismissToken()
   },
 )
@@ -1291,14 +1420,17 @@ async function onRevokeTokens(uuid: string, name: string) {
 }
 
 const copiedToken = ref(false)
+const tokenCopyError = ref<string | null>(null)
 async function copyToken() {
   if (!issuedToken.value) return
+  copiedToken.value = false
+  tokenCopyError.value = null
   try {
     await navigator.clipboard.writeText(issuedToken.value.token)
     copiedToken.value = true
     setTimeout(() => (copiedToken.value = false), 1500)
   } catch {
-    /* ignore */
+    tokenCopyError.value = 'The token could not be copied automatically. Select the token above and copy it manually before closing this dialog.'
   }
 }
 
@@ -1306,6 +1438,7 @@ function dismissToken() {
   issuedToken.value = null
   issuedTokenSA.value = null
   copiedToken.value = false
+  tokenCopyError.value = null
 }
 
 function clearWorkspaceAccessState(): void {
@@ -1404,11 +1537,17 @@ function fmtDate(s?: string | null): string {
       <header class="mb-4">
         <div>
           <h1 class="flex items-center gap-2 text-xl font-semibold text-text-primary">
-            <Settings2 class="h-5 w-5 text-accent" :stroke-width="1.75" />
-            Settings
+            <FolderTree v-if="activeSection === 'workspaces'" class="h-5 w-5 text-accent" :stroke-width="1.75" />
+            <Settings2 v-else class="h-5 w-5 text-accent" :stroke-width="1.75" />
+            {{ activeSection === 'workspaces' ? 'Workspaces' : 'Organization settings' }}
           </h1>
           <p class="mt-1 text-sm text-text-muted">
-            Manage the selected organization and its workspaces. Choose a workspace to view its access and service accounts.
+            <template v-if="activeSection === 'workspaces'">
+              Inspect Workspace configuration without changing your active operating context.
+            </template>
+            <template v-else>
+              Manage metadata, membership, and lifecycle for the selected Organization.
+            </template>
           </p>
         </div>
       </header>
@@ -1468,23 +1607,88 @@ function fmtDate(s?: string | null): string {
             </div>
 
             <div v-if="workspaceListError" role="alert" class="flex items-start justify-between gap-2 border-b border-danger/20 bg-danger-subtle px-3 py-2 text-[11px] text-danger">
-              <span>{{ workspaceListError }}</span>
+              <span>
+                {{ workspaces.length ? `${workspaceListError} Showing the last-known list; switching context is paused until retry succeeds.` : workspaceListError }}
+              </span>
               <button type="button" class="k-btn k-btn--text shrink-0 text-[10px]" @click="reloadScopedWorkspaces(organizationSettingsOrg.uuid)">
                 Retry
               </button>
             </div>
 
-            <div v-if="workspaceListLoading" class="flex min-h-28 items-center justify-center px-3 py-6 text-[11px] text-text-muted" role="status">
+            <div v-if="workspaceListInitialLoading" class="flex min-h-28 items-center justify-center px-3 py-6 text-[11px] text-text-muted" role="status">
               Loading workspaces…
             </div>
             <div v-else-if="workspaces.length === 0" class="px-3 py-5 text-[11px] text-text-muted">
               No workspaces in this organization yet.
             </div>
-            <ul v-else class="space-y-0.5 p-1" aria-label="Active organization workspaces">
-              <li v-for="workspace in workspaces" :key="workspace.uuid">
+            <div v-else>
+              <div class="k-table__controls" role="search" aria-label="Filter workspaces">
+                <label v-if="showWorkspaceSearch" class="k-table__search hidden lg:block">
+                  <span class="sr-only">Search Workspaces</span>
+                  <Search class="k-table__search-icon" :stroke-width="1.75" aria-hidden="true" />
+                  <input
+                    id="workspace-settings-search"
+                    v-model="workspaceSearch"
+                    type="search"
+                    class="k-table__search-input"
+                    placeholder="Search Workspaces"
+                    autocomplete="off"
+                    aria-label="Search Workspaces"
+                  />
+                  <button
+                    v-if="workspaceSearch"
+                    type="button"
+                    class="k-table__search-clear"
+                    aria-label="Clear Workspace search"
+                    @click="workspaceSearch = ''"
+                  >
+                    <X :stroke-width="1.75" aria-hidden="true" />
+                  </button>
+                </label>
+                <ResourceTableFilter
+                  :definition="workspaceLifecycleFilterDefinition"
+                  :options="workspaceLifecycleFilterOptions"
+                  :model-value="workspaceLifecycleFilter"
+                  @update:model-value="setWorkspaceLifecycleFilter"
+                />
+                <button
+                  v-if="workspaceLifecycleFilter"
+                  type="button"
+                  class="k-table__clear-filters"
+                  @click="clearWorkspaceFilters"
+                >
+                  {{ workspaceSearch ? 'Clear all' : 'Clear filters' }}
+                </button>
+                <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+                  {{ workspaceFilterResultAnnouncement }}
+                </span>
+              </div>
+
+              <div class="p-2 lg:hidden">
+                <label for="workspace-inspection-select" class="mb-1.5 block text-[11px] font-medium text-text-secondary">
+                  Workspace to inspect
+                </label>
+                <select
+                  id="workspace-inspection-select"
+                  class="k-input min-h-11 w-full text-base"
+                  :value="selectedWorkspaceUUID || ''"
+                  :disabled="lifecycleFilteredWorkspaces.length === 0"
+                  @change="selectWorkspaceFromControl"
+                >
+                  <option value="" disabled>
+                    {{ lifecycleFilteredWorkspaces.length === 0 ? 'No Workspaces match this filter' : 'Choose a Workspace' }}
+                  </option>
+                  <option v-for="workspace in lifecycleFilteredWorkspaces" :key="workspace.uuid" :value="workspace.uuid">
+                    {{ workspace.displayName || workspace.uuid }} · {{ workspaceStatus(workspace) }}
+                  </option>
+                </select>
+              </div>
+
+            <ul class="hidden max-h-96 space-y-0.5 overflow-y-auto p-1 lg:block" aria-label="Filtered active organization workspaces">
+              <li v-for="workspace in filteredWorkspaces" :key="workspace.uuid">
                 <button
                   type="button"
-                  class="k-btn k-btn--ghost flex w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 py-2 text-left transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-70"
+                  class="k-btn k-btn--ghost flex min-h-11 w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 py-2 text-left transition-colors hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-70"
                   :class="selectedWorkspaceUUID === workspace.uuid ? 'bg-accent/10 text-accent' : 'text-text-secondary'"
                   :disabled="!canSelectWorkspace(workspace)"
                   :aria-label="workspaceButtonLabel(workspace)"
@@ -1507,7 +1711,12 @@ function fmtDate(s?: string | null): string {
                   />
                 </button>
               </li>
+              <li v-if="filteredWorkspaces.length === 0" class="px-2 py-5 text-center text-[11px] text-text-muted">
+                <template v-if="workspaceSearch">No workspaces match “{{ workspaceSearch }}”.</template>
+                <template v-else>No workspaces match the selected lifecycle filter.</template>
+              </li>
             </ul>
+            </div>
 
             <div v-if="canCreateWorkspace()" class="border-t border-border-subtle p-2">
               <form v-if="newWorkspaceOpen" class="flex items-center gap-1" @submit.prevent="onCreateWorkspace">
@@ -1540,7 +1749,7 @@ function fmtDate(s?: string | null): string {
               <button
                 v-else
                 type="button"
-                class="k-btn k-btn--ghost flex w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 py-1.5 text-left text-[11px] text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary"
+                class="k-btn k-btn--ghost flex min-h-11 w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 py-1.5 text-left text-[11px] text-text-muted transition-colors hover:bg-surface-hover hover:text-text-secondary lg:min-h-0"
                 @click="openNewWorkspace"
               >
                 <Plus class="h-3 w-3" :stroke-width="2" />
@@ -1553,7 +1762,7 @@ function fmtDate(s?: string | null): string {
         <!-- ================= Right: detail pane ================= -->
         <div class="min-w-0 flex-1 space-y-5">
           <div
-            v-if="workspaceListLoading"
+            v-if="workspaceListInitialLoading"
             class="rounded-lg border border-border-subtle bg-surface-raised/60 p-6 text-sm text-text-muted"
             role="status"
           >
@@ -1568,85 +1777,70 @@ function fmtDate(s?: string | null): string {
 
           <!-- ========== Workspace detail ========== -->
           <template v-else-if="selWs">
-            <!-- Overview -->
-            <section class="rounded-xl border border-border-subtle bg-surface-raised/60 p-5">
-              <div class="mb-4 flex items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <div class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">
-                    Workspace · {{ activeOrg?.displayName }}
-                  </div>
-                  <div v-if="!editingWsName" class="mt-1 flex items-center gap-2">
-                    <h2 class="truncate text-lg font-semibold text-text-primary">{{ selWs.displayName || selWs.uuid }}</h2>
+            <WorkspaceControlHeader
+              :workspace-name="selWs.displayName || selWs.uuid"
+              :organization-name="activeOrg?.displayName || activeOrg?.uuid || 'Unknown Organization'"
+              :status="workspaceStatus(selWs)"
+              :status-tone="workspaceStatus(selWs) === 'Ready' ? 'success' : workspaceStatus(selWs) === 'Deleting' ? 'danger' : 'warning'"
+              :active-workspace-name="activeWorkspaceName"
+              :is-active="inspectedWorkspaceIsActive"
+              :switch-disabled="!!activateWorkspaceDisabledReason"
+              :switch-disabled-reason="activateWorkspaceDisabledReason"
+              @activate="activateInspectedWorkspace"
+            >
+              <template #actions>
+                <button
+                  type="button"
+                  class="k-btn k-btn--ghost min-h-11 px-2.5 text-[11px] text-text-muted hover:text-accent sm:min-h-0 sm:py-1"
+                  :disabled="kubeconfigBusy || !!kubeconfigDisabledReason"
+                  :title="kubeconfigDisabledReason ?? 'Download a kubeconfig targeting this Workspace control plane'"
+                  @click="onDownloadKubeconfig"
+                >
+                  <Loader2 v-if="kubeconfigBusy" class="h-3 w-3 animate-spin" :stroke-width="2" />
+                  <Download v-else class="h-3 w-3" :stroke-width="2" />
+                  Download kubeconfig
+                </button>
+              </template>
+
+              <template #details>
+                <div class="grid gap-4 sm:grid-cols-2" role="group" aria-label="Workspace details">
+                <div class="sm:col-span-2">
+                  <div class="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Display name</div>
+                  <div v-if="!editingWsName" class="mt-1 flex flex-wrap items-center gap-2">
+                    <span class="text-sm text-text-primary">{{ selWs.displayName || selWs.uuid }}</span>
                     <button
                       v-if="canEditWs"
                       type="button"
-                      class="k-btn k-btn--ghost px-2 py-0.5 text-[11px] text-text-muted transition-colors hover:text-accent disabled:opacity-50"
-                      :disabled="!!selWs.deletionRequestedAt"
+                      class="k-btn k-btn--ghost min-h-11 px-2 text-[11px] text-text-muted hover:text-accent sm:min-h-0 sm:py-0.5"
                       @click="startEditWsName"
                     >
-                      <Pencil class="inline h-3 w-3" :stroke-width="2" /> Rename
+                      <Pencil class="h-3 w-3" :stroke-width="2" /> Rename Workspace
                     </button>
-                    <span
-                      v-else
-                      class="k-badge k-badge--muted"
-                      title="You are a member of this workspace; workspace admins manage it"
-                    >
+                    <span v-else class="k-badge k-badge--muted" title="Workspace admins manage this setting">
                       <span class="k-badge__dot k-badge__dot--muted" aria-hidden="true" />
                       member
                     </span>
                   </div>
-                  <div v-else class="mt-1 flex items-center gap-2">
+                  <div v-else class="mt-1 flex flex-col gap-2 sm:flex-row sm:items-center">
                     <input
                       v-model="wsNameDraft"
-                      class="k-input flex-1 px-2 py-1 text-sm"
-                      aria-label="Workspace name"
+                      class="k-input min-h-11 min-w-0 flex-1 px-2 text-base sm:min-h-0 sm:py-1 sm:text-sm"
+                      aria-label="Workspace display name"
                       @keyup.enter="saveWsName"
                       @keyup.esc="editingWsName = false"
                     />
-                    <button
-                      type="button"
-                      class="k-btn k-btn--ghost px-2 py-1 text-[11px] text-success transition-colors hover:border-success/40 hover:bg-success-subtle disabled:opacity-60"
-                      :disabled="wsBusy || !wsNameDraft.trim()"
-                      @click="saveWsName"
-                    >
-                      <Loader2 v-if="wsBusy" class="inline h-3 w-3 animate-spin" :stroke-width="2" />
-                      <Check v-else class="inline h-3 w-3" :stroke-width="2" /> Save
-                    </button>
-                    <button
-                      type="button"
-                      class="k-btn k-btn--ghost px-2 py-1 text-[11px] text-text-muted hover:text-text-secondary"
-                      @click="editingWsName = false"
-                    >
-                      Cancel
-                    </button>
+                    <div class="flex gap-2">
+                      <button type="button" class="k-btn k-btn--primary min-h-11 px-3 text-[11px] sm:min-h-0 sm:py-1" :disabled="wsBusy || !wsNameDraft.trim()" @click="saveWsName">
+                        <Loader2 v-if="wsBusy" class="h-3 w-3 animate-spin" :stroke-width="2" />
+                        <Check v-else class="h-3 w-3" :stroke-width="2" /> Save name
+                      </button>
+                      <button type="button" class="k-btn k-btn--ghost min-h-11 px-3 text-[11px] text-text-muted sm:min-h-0 sm:py-1" @click="editingWsName = false">Cancel</button>
+                    </div>
                   </div>
                 </div>
-                <div class="flex shrink-0 items-center gap-2">
-                  <button
-                    type="button"
-                    class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:text-accent disabled:opacity-50"
-                    :disabled="kubeconfigBusy || !selWs.clusterName || !!selWs.deletionRequestedAt"
-                    :aria-describedby="kubeconfigDisabledReason ? 'workspace-kubeconfig-help' : undefined"
-                    :title="kubeconfigDisabledReason ?? 'Download a kubeconfig targeting this workspace\'s control plane'"
-                    @click="onDownloadKubeconfig"
-                  >
-                    <Loader2 v-if="kubeconfigBusy" class="h-3 w-3 animate-spin" :stroke-width="2" />
-                    <Download v-else class="h-3 w-3" :stroke-width="2" />
-                    Kubeconfig
-                  </button>
-                  <span
-                    v-if="kubeconfigDisabledReason"
-                    id="workspace-kubeconfig-help"
-                    class="max-w-[18rem] text-[10px] text-text-muted"
-                    role="status"
-                  >{{ kubeconfigDisabledReason }}</span>
-                </div>
-              </div>
-
-              <div class="grid gap-3 sm:grid-cols-2">
                 <div>
                   <div class="text-[10px] font-semibold uppercase tracking-wider text-text-muted">UUID</div>
-                  <div class="font-mono text-[12px] text-text-secondary">{{ selWs.uuid }}</div>
+                  <div class="break-all font-mono text-[12px] text-text-secondary">{{ selWs.uuid }}</div>
                 </div>
                 <div>
                   <div class="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Cluster</div>
@@ -1658,55 +1852,56 @@ function fmtDate(s?: string | null): string {
                   <div class="text-[10px] font-semibold uppercase tracking-wider text-text-muted">Deletion requested</div>
                   <div class="text-[12px] text-warning">{{ fmtDate(selWs.deletionRequestedAt) }}</div>
                 </div>
-              </div>
+                </div>
+              </template>
 
               <!-- Danger zone — workspace-admin only; members have no
                    destructive action to take here, so the zone disappears
                    entirely rather than showing disabled buttons. -->
-              <div v-if="canManageWs" class="mt-4">
-                <h3 class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-danger/80">Danger zone</h3>
-                <div class="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-danger/20 p-3">
-                  <div class="min-w-0">
-                    <h4 v-if="!selWs.deletionRequestedAt" class="text-[12px] font-semibold text-text-primary">Delete this workspace</h4>
-                    <h4 v-else class="text-[12px] font-semibold text-text-primary">Restore this workspace</h4>
-                    <p v-if="!selWs.deletionRequestedAt" class="mt-1 text-[11px] text-text-muted">
-                      Deleting starts a recoverable 30-day grace window. You can restore this workspace during that window.
-                    </p>
-                    <p v-else class="mt-1 text-[11px] text-text-muted">
-                      This workspace is in its recoverable 30-day grace window. Restore it to cancel deletion.
-                    </p>
-                  </div>
-                  <div class="flex shrink-0 flex-wrap gap-2">
-                    <button
-                      v-if="!selWs.deletionRequestedAt"
-                      type="button"
-                      class="k-btn k-btn--danger inline-flex items-center gap-1 px-2.5 py-1 text-[11px] disabled:opacity-50"
-                      :disabled="wsBusy"
-                      title="Soft-delete with 30-day grace"
-                      @click="onDeleteWorkspace"
-                    >
-                      <Trash2 class="h-3 w-3" :stroke-width="2" /> Delete workspace
-                    </button>
-                    <button
-                      v-else
-                      type="button"
-                      class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] text-accent transition-colors hover:bg-accent-subtle disabled:opacity-50"
-                      :disabled="wsBusy"
-                      @click="onUndeleteWorkspace"
-                    >
-                      <RotateCcw class="h-3 w-3" :stroke-width="2" /> Restore workspace
-                    </button>
+              <template v-if="canManageWs" #lifecycle>
+                <div aria-labelledby="workspace-danger-zone-title">
+                  <h3 id="workspace-danger-zone-title" class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-danger/80">Danger zone</h3>
+                  <div class="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-danger/20 p-3">
+                    <div class="min-w-0">
+                      <h4 v-if="!selWs.deletionRequestedAt" class="text-[12px] font-semibold text-text-primary">Delete this workspace</h4>
+                      <h4 v-else class="text-[12px] font-semibold text-text-primary">Restore this workspace</h4>
+                      <p v-if="!selWs.deletionRequestedAt" class="mt-1 text-[11px] text-text-muted">
+                        Deleting starts a recoverable 30-day grace window. You can restore this workspace during that window.
+                      </p>
+                      <p v-else class="mt-1 text-[11px] text-text-muted">
+                        This workspace is in its recoverable 30-day grace window. Restore it to cancel deletion.
+                      </p>
+                    </div>
+                    <div class="flex shrink-0 flex-wrap gap-2">
+                      <button
+                        v-if="!selWs.deletionRequestedAt"
+                        type="button"
+                        class="k-btn k-btn--danger min-h-11 px-2.5 text-[11px] disabled:opacity-50 sm:min-h-0 sm:py-1"
+                        :disabled="wsBusy"
+                        title="Soft-delete with 30-day grace"
+                        @click="onDeleteWorkspace"
+                      >
+                        <Trash2 class="h-3 w-3" :stroke-width="2" /> Delete workspace
+                      </button>
+                      <button
+                        v-else
+                        type="button"
+                        class="k-btn k-btn--ghost min-h-11 px-2.5 text-[11px] text-accent transition-colors hover:bg-accent-subtle disabled:opacity-50 sm:min-h-0 sm:py-1"
+                        :disabled="wsBusy"
+                        @click="onUndeleteWorkspace"
+                      >
+                        <RotateCcw class="h-3 w-3" :stroke-width="2" /> Restore workspace
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </section>
+              </template>
+            </WorkspaceControlHeader>
 
             <!-- Access -->
-            <div class="space-y-5">
-                <section class="rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="workspace-members-title">
+            <section class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 sm:p-5" aria-labelledby="workspace-members-title">
                   <div class="mb-4">
-                    <p class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Access</p>
-                    <h2 id="workspace-members-title" class="mt-1 text-lg font-semibold text-text-primary">Workspace members</h2>
+                    <h2 id="workspace-members-title" class="text-lg font-semibold text-text-primary">Workspace members</h2>
                     <p class="mt-1 text-[12px] text-text-muted">
                       Manage who can open <span class="font-mono text-text-secondary">{{ selWs.displayName || selWs.uuid }}</span>.
                       Only workspace admins can add, remove, or change members.
@@ -1732,21 +1927,20 @@ function fmtDate(s?: string | null): string {
                       :loading="wsMembersLoading"
                       :busy="wsMemberBusy"
                       scope-label="this workspace"
+                      table-label="Workspace members"
                       :add="onAddWsMember"
                       :readonly="!canEditWs"
                       @change-role="onChangeWsMemberRole"
                       @remove="onRemoveWsMember"
                     />
                   </template>
-                </section>
+            </section>
 
-                <section v-if="showAppAccess && !selWs.deletionRequestedAt" class="rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="workspace-app-access-title">
+            <section v-if="showAppAccess && !selWs.deletionRequestedAt" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 sm:p-5" aria-labelledby="workspace-app-access-title">
                   <h2 id="workspace-app-access-title" class="mb-1 text-lg font-semibold text-text-primary">App access</h2>
                   <p class="mb-3 text-[12px] text-text-muted">
-                    People invited to open <span class="font-medium text-text-secondary">private published apps</span>
-                    in this workspace without being workspace members. Invitations are sent from the
-                    app's Share dialog in App Studio; this list keeps them visible and revocable.
-                    Workspace members can open every app here without a grant.
+                    App-specific grants let people open private published apps without becoming Workspace members.
+                    Create grants from the app's Share dialog; revoke them here. Workspace members need no grant.
                   </p>
 
                   <div v-if="appAccessError" class="flex items-start justify-between gap-3 rounded-lg border border-danger/20 bg-danger-subtle px-3 py-2 text-[11px] text-danger" role="alert">
@@ -1763,6 +1957,7 @@ function fmtDate(s?: string | null): string {
                     v-else
                     :columns="appAccessColumns"
                     :rows="appAccessRows"
+                    aria-label="Published app access grants"
                     variant="simple"
                     row-key="binding"
                     :interactive="false"
@@ -1789,20 +1984,18 @@ function fmtDate(s?: string | null): string {
                       </div>
                     </template>
                   </ResourceTable>
-                </section>
-            </div>
+            </section>
 
             <!-- Service accounts -->
-            <section class="rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="workspace-service-accounts-title">
+            <section class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 sm:p-5" aria-labelledby="workspace-service-accounts-title">
                 <div class="mb-4">
-                  <p class="text-[10px] font-semibold uppercase tracking-[0.15em] text-text-muted">Service accounts</p>
-                  <h2 id="workspace-service-accounts-title" class="mt-1 flex items-center gap-2 text-lg font-semibold text-text-primary">
+                  <h2 id="workspace-service-accounts-title" class="flex items-center gap-2 text-lg font-semibold text-text-primary">
                     <KeyRound class="h-4 w-4 text-accent" :stroke-width="1.75" />
-                    {{ selWs.displayName || selWs.uuid }}
+                    Service accounts
                   </h2>
                   <p class="mt-1 text-[12px] text-text-muted">
-                    Machine identities scoped to this workspace, authenticating with short-lived bearer
-                    tokens for CI and automation.
+                    Machine identities for CI and automation in <span class="font-mono text-text-secondary">{{ selWs.displayName || selWs.uuid }}</span>.
+                    Issued bearer tokens are short-lived and shown only once.
                   </p>
                 </div>
 
@@ -1851,6 +2044,7 @@ function fmtDate(s?: string | null): string {
                   v-if="canEditWs"
                   :columns="serviceAccountColumns"
                   :rows="serviceAccountRows"
+                  aria-label="Workspace service accounts"
                   variant="simple"
                   row-key="uuid"
                   :interactive="false"
@@ -1914,6 +2108,7 @@ function fmtDate(s?: string | null): string {
                   </ResourceTable>
                 </template>
             </section>
+
           </template>
 
         </div>
@@ -2086,6 +2281,7 @@ function fmtDate(s?: string | null): string {
               :loading="orgMembersLoading"
               :busy="orgMemberBusy"
               scope-label="this organization"
+              table-label="Organization members"
               :add="onAddOrgMember"
               :readonly="!canManageOrgMembers"
               @change-role="onChangeOrgMemberRole"
@@ -2127,24 +2323,35 @@ function fmtDate(s?: string | null): string {
           rows="4"
           class="k-input w-full resize-none bg-surface-overlay/40 p-2 font-mono text-[11px] text-text-secondary"
           aria-label="Issued service account token"
+          :aria-describedby="tokenCopyError ? 'issued-token-copy-error' : 'issued-token-description'"
           :value="issuedToken.token"
+          @focus="($event.target as HTMLTextAreaElement).select()"
         />
+        <p
+          v-if="tokenCopyError"
+          id="issued-token-copy-error"
+          class="mt-2 flex items-start gap-2 text-[11px] leading-relaxed text-danger"
+          role="alert"
+        >
+          <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
+          {{ tokenCopyError }}
+        </p>
         <div class="mt-3 flex justify-end gap-2">
           <button
             type="button"
-            class="k-btn k-btn--ghost px-3 py-1.5 text-[12px] text-accent hover:bg-accent-subtle"
+            class="k-btn k-btn--primary min-h-11 px-3 text-[12px] sm:min-h-0 sm:py-1.5"
             @click="copyToken"
           >
             <Check v-if="copiedToken" class="h-3 w-3" :stroke-width="2" />
             <Copy v-else class="h-3 w-3" :stroke-width="2" />
-            {{ copiedToken ? 'Copied' : 'Copy' }}
+            {{ copiedToken ? 'Token copied' : 'Copy token' }}
           </button>
           <button
             type="button"
-            class="k-btn k-btn--ghost px-3 py-1.5 text-[12px] text-text-muted hover:text-text-secondary"
+            class="k-btn k-btn--ghost min-h-11 px-3 text-[12px] text-text-muted hover:text-text-secondary sm:min-h-0 sm:py-1.5"
             @click="dismissToken"
           >
-            Done
+            {{ tokenCopyError ? 'Close without copying' : 'I saved the token' }}
           </button>
         </div>
       </div>

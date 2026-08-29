@@ -58,13 +58,13 @@ const error = ref<string | null>(null)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
 const foregroundLoading = computed(() => loading.value && refreshMode.value === 'foreground')
 const serviceColumns = [
-  { key: 'name', label: 'Name' },
+  { key: 'name', label: 'Name', primary: true },
   { key: 'edgeName', label: 'Edge' },
   { key: 'typeLabel', label: 'Type' },
   { key: 'target', label: 'Target' },
   { key: 'status', label: 'Status' },
   { key: 'credentials', label: 'Creds' },
-  { key: 'actions', label: '' },
+  { key: 'actions', label: '', ariaLabel: 'Actions' },
 ]
 const serviceRows = computed<Array<Record<string, unknown>>>(() => services.value.map(service => ({
   ...service,
@@ -117,6 +117,8 @@ const serviceFilters = computed<TableFilterDefinition[]>(() => {
     {
       key: 'edgeName',
       label: 'Edge',
+      control: 'combobox',
+      searchPlaceholder: 'Find an edge…',
       options: edges.value.map(edge => ({ value: edge.name, label: edge.name })),
     },
     {
@@ -444,6 +446,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
     <ResourceTable
       :columns="serviceColumns"
       :rows="serviceRows"
+      aria-label="Services"
       row-key="name"
       :row-aria-label="serviceRowAriaLabel"
       :loaded="loaded"
@@ -468,7 +471,7 @@ function serviceRowAriaLabel(row: Record<string, unknown>): string {
       @change="handleServiceTableChange"
       @row-click="(row) => openEdit(row as unknown as EdgeService)"
     >
-      <template #name="{ value }"><span class="name">{{ value }}</span></template>
+      <template #name="{ value, row }"><button class="k-btn k-btn--ghost k-table-resource-link" type="button" @click.stop="openEdit(row as unknown as EdgeService)">{{ value }}</button></template>
       <template #edgeName="{ value }"><span class="muted">{{ value }}</span></template>
       <template #typeLabel="{ value }"><span class="mono muted">{{ value }}</span></template>
       <template #target="{ value }"><span class="mono muted">{{ value }}</span></template>

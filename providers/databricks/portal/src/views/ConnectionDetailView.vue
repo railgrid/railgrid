@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Activity, ArrowLeft, Database, Ellipsis, KeyRound, RefreshCw, Settings2 } from 'lucide-vue-next'
+import { Activity, Database, Ellipsis, KeyRound, RefreshCw, Settings2 } from 'lucide-vue-next'
 import { api } from '../api'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
+import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
@@ -277,7 +278,13 @@ onUnmounted(() => {
 
 <template>
   <section class="databricks-resource-detail">
-    <a class="k-btn k-btn--ghost k-back-action" href="/ui/providers/databricks/connections" :aria-disabled="deleting || (!!conn && operationLocked(conn.name))" @click.prevent="goBack"><ArrowLeft :size="14" aria-hidden="true" /> Connections</a>
+    <ResourceBackLink
+      href="/ui/providers/databricks/connections"
+      :disabled="deleting || (!!conn && operationLocked(conn.name))"
+      @back="goBack"
+    >
+      Connections
+    </ResourceBackLink>
 
     <ResourcePage
       :title="conn?.name || name"
@@ -315,7 +322,6 @@ onUnmounted(() => {
       </template>
       <template #summary><ResourceStatCards :cards="statCards" density="compact" aria-label="Connection summary" /></template>
       <template #body>
-        <span v-if="loading" class="sr-only" role="status" aria-live="polite">Updating…</span>
         <p v-if="deleting" class="warning deletion-progress" role="status" aria-live="polite">Deleting this connection. The last successful snapshot remains visible until the hub confirms removal.</p>
         <p v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">
           <span>{{ mutationError }}</span>

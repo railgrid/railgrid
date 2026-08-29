@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Activity, ArrowLeft, Ellipsis, RefreshCw, Table2, Warehouse } from 'lucide-vue-next'
+import { Activity, Ellipsis, RefreshCw, Table2, Warehouse } from 'lucide-vue-next'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { api } from '../api'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
+import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
 import { confirmDialog } from '../portalkit/confirm'
@@ -260,7 +261,13 @@ onUnmounted(() => {
 
 <template>
   <section class="databricks-resource-detail">
-    <a class="k-btn k-btn--ghost k-back-action" href="/ui/providers/databricks/tables" :aria-disabled="deleting || (!!table && operationLocked(table.name))" @click.prevent="goBack"><ArrowLeft :size="14" aria-hidden="true" /> Tables</a>
+    <ResourceBackLink
+      href="/ui/providers/databricks/tables"
+      :disabled="deleting || (!!table && operationLocked(table.name))"
+      @back="goBack"
+    >
+      Tables
+    </ResourceBackLink>
 
     <ResourcePage
       :title="table?.name || name"
@@ -298,7 +305,6 @@ onUnmounted(() => {
       </template>
       <template #summary><ResourceStatCards :cards="statCards" density="compact" aria-label="Table summary" /></template>
       <template #body>
-        <span v-if="loading" class="sr-only" role="status" aria-live="polite">Updating…</span>
         <p v-if="deleting" class="warning deletion-progress" role="status" aria-live="polite">Deleting this table. The last successful snapshot remains visible until the hub confirms removal.</p>
         <p v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">
           <span>{{ mutationError }}</span>
@@ -334,12 +340,13 @@ onUnmounted(() => {
             <p v-if="schemaTruncated" class="warning" role="status">{{ schemaNotice }}</p>
             <ResourceTable
           :columns="[
-            { key: 'name', label: 'Column' },
+            { key: 'name', label: 'Column', primary: true },
             { key: 'type', label: 'Type' },
             { key: 'nullableLabel', label: 'Nullable' },
             { key: 'comment', label: 'Comment' },
           ]"
           :rows="schemaRows"
+          aria-label="Table schema columns"
           searchable
           search-placeholder="Search columns…"
           :filters="[{ key: 'type', label: 'Type' }, { key: 'nullableLabel', label: 'Nullable' }]"

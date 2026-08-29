@@ -129,13 +129,16 @@ watch(
 // to a workspace where a provider isn't enabled keeps showing the
 // previous workspace's enabled chips in the sidebar, and switching
 // to a workspace where MORE providers are enabled hides the new
-// ones. Refresh whenever the active cluster flips. Best-effort: a
-// 403 (workspace not bootstrapped yet) doesn't break the rest of
-// the layout, refreshBindings swallows it via load()'s catch path.
+// ones. Watch the tenant authority tuple as well as cluster readiness:
+// organization-only mode intentionally has no clusterName, and two
+// workspace rows can briefly share the same cluster readiness while the
+// selected UUID changes. Best-effort: a 403 (workspace not bootstrapped yet)
+// does not break the rest of the layout; refreshBindings surfaces a retry
+// state to consumers.
 watch(
-  () => auth.clusterName,
-  (c) => {
-    if (!c || !providers.loaded) return
+  () => [tenant.orgUUID, tenant.workspaceUUID, tenant.workspaceMode, auth.clusterName] as const,
+  () => {
+    if (!providers.loaded) return
     providers.refreshBindings().catch(() => {
       /* failures already surface via missing Disable button / enable dialog */
     })

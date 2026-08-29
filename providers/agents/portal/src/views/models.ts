@@ -164,7 +164,7 @@ export class Models extends StoreElement {
 
   private dashboard(): TemplateResult {
     if (this.usageError) return errorState(`Usage unavailable: ${this.usageError}`, () => void this.loadUsage())
-    if (!this.usage) return html`<div class="k-card agents-dash-loading muted" role="status">Loading usage…</div>`
+    if (!this.usage) return html`<div class="k-card agents-dash-loading k-loading-reveal muted" role="status">Loading usage…</div>`
     // Normalize defensively as well as in the client: a throw in here takes the
     // whole Models view down with it, including the controls to fix whatever
     // was wrong. Nothing about an empty workspace should cost the user the page.

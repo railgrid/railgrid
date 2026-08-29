@@ -40,7 +40,7 @@ test('keeps dashboard tile snapshots visible across background refresh failures'
 
 test('keeps project search and creation controls mounted during the initial list read', () => {
   const headerStart = app.indexOf('<header v-if="isProjectIndexRoute"')
-  const galleryStart = app.indexOf('<div v-if="(loading || !projectsLoaded)', headerStart)
+  const galleryStart = app.indexOf('v-if="projectInitialPending"', headerStart)
   assert.ok(headerStart >= 0 && galleryStart > headerStart)
   const controls = app.slice(headerStart, galleryStart)
   assert.match(controls, />\s*New project\s*</)

@@ -93,7 +93,7 @@ export class AgentConfig extends StoreElement {
 
   render(): TemplateResult {
     const a = this.store.agent(this.name)
-    if (!a) return html`<div class="k-card agents-state agents-state-loading" role="status">Loading configuration…</div>`
+    if (!a) return html`<div class="k-card agents-state agents-state-loading k-loading-reveal" role="status">Loading configuration…</div>`
     return html`
       ${this.personaSection()} ${this.modelSection(a)} ${this.policySection()} ${this.toolsSection(a)} ${this.channelsSection(a)}
       <agents-automation .store=${this.store} .api=${this.api} kind="schedule" .agent=${this.name}></agents-automation>

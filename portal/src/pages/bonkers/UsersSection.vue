@@ -7,7 +7,7 @@ import { useAdminStore } from '@/stores/admin'
 const admin = useAdminStore()
 
 const columns = [
-  { key: 'email', label: 'Email' },
+  { key: 'email', label: 'Email', primary: true },
   { key: 'displayName', label: 'Name' },
   { key: 'rbacIdentity', label: 'RBAC identity' },
 ]
@@ -29,6 +29,7 @@ async function refresh() {
     <ResourceTable
       :columns="columns"
       :rows="userRows"
+      aria-label="Users"
       row-key="name"
       :interactive="false"
       searchable

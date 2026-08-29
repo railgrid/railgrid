@@ -140,7 +140,7 @@ writing any CSS**:
 | `.k-cell-mono` | Data-like cells (names, ids, timestamps) |
 | `.k-badge` (+ `--success/--warning/--danger/--muted`, `__dot`) | **Square 3px mono tag**: 10px/600 uppercase, `0.06em`, `*-subtle` bg, `color-mix(currentColor 35%)` hairline |
 | `.k-btn` (+ `--primary/--ghost/--text/--danger`) | 4px control; primary = solid accent + glow; ghost = overlay bg + hairline; text = transparent, borderless inline action; danger = danger-subtle tint, **no glow** |
-| `.k-back-action` | Intrinsic-width, start-aligned borderless link modifier for `.k-btn`; 12px/500 accent link with a 6px icon gap, accent-hover underline, and no control surface |
+| `.k-back-action` | Intrinsic-width, start-aligned borderless link modifier for `.k-btn`; 12px/500 accent link with a 6px icon gap, accent-hover underline, and no control surface. Vue resource detail pages use `ResourceBackLink`, which always renders a real `href`; only an unmodified primary activation is intercepted for caller-owned SPA `back` routing, while modified and non-primary clicks retain native browser behavior. Disabled state prevents navigation and `back` emission, exposes `aria-disabled="true"`, and leaves keyboard tab order with `tabindex="-1"`. The arrow flips in RTL; coarse and hybrid any-pointer targets are at least 44×44px. Use `.k-back-action` directly for create flows and other non-detail controls. |
 | `.k-input` | 4px overlay-bg input; focus = accent border + 3px subtle ring + glow |
 | `.k-eyebrow` / `.k-kpi` | Tracked uppercase label over an expanded tabular numeral |
 | `.k-menu` / `.k-menu-item` (+ `--danger`, `.is-selected`, `.k-menu-sep`) | Dropdown/context menu panel + items; selection = accent-subtle, no glow |
@@ -180,7 +180,11 @@ texture (login, empty states — sparingly), `.island` floating dock card,
   rows lift text to primary. Vue resource tables use
   `portalkit/ResourceTableEditButton.vue` and
   `portalkit/ResourceTableDeleteButton.vue` for compact row actions that reveal
-  on row hover or keyboard focus (and remain visible on touch). Give every action
+  on row hover or keyboard focus (and remain visible on touch). The primary
+  column takes the table's remaining width, and its right edge owns these row
+  actions so operations stay reachable without horizontal scrolling. Mark an
+  equivalent primary field with `primary: true`; otherwise `name`, then the
+  first non-action column, is used. Give every action
   a resource-specific accessible label. Use
   `portalkit/ResourceTableActionButton.vue` for other compact row actions:
   callers supply the Lucide icon and accessible label, and may provide a busy
@@ -354,6 +358,8 @@ App-studio's `PreviewActionsMenu` / `ResponseModePicker` /
 - Items: 4px radius (`rounded-md`), `padding: 6px 8px`, 12px
   `text-secondary`; hover = `surface-overlay` bg + `text-primary`; active/
   selected = `accent-subtle` bg + `accent` text, NO glow (menus aren't nav).
+- Focus: a crisp 2px inset accent outline, with no glow. Disabled items remain
+  visible at reduced opacity and do not retain the hover surface.
 - Destructive items: `danger` text, `danger-subtle` hover bg, separated by a
   hairline `border-subtle` divider.
 - Keyboard: arrows + Home/End, Escape closes, focus returns to the trigger.
@@ -406,9 +412,16 @@ spec when the tabset is the provider-level route/section bar.
 composition for provider resource instance screens. The caller owns navigation
 and resource-specific content:
 
-- Keep the backlink as a caller-owned hyperlink before and outside the
-  `ResourcePage` shell. Detail routes hide the provider-level collection tabs;
-  the backlink is the single return affordance for the resource list.
+- For Vue resource detail pages, use `ResourceBackLink` as the caller-owned
+  hyperlink before and outside the `ResourcePage` shell. It always renders a
+  real `href`; only an unmodified primary activation is intercepted for
+  caller-owned SPA `back` routing, while modified and non-primary clicks retain
+  native browser behavior. Disabled state prevents navigation and `back`
+  emission, exposes `aria-disabled="true"`, and leaves keyboard tab order with
+  `tabindex="-1"`. Its arrow flips in RTL. Coarse and hybrid any-pointer input
+  receive at least 44×44px targets for the backlink and ResourcePage actions.
+  Detail routes hide the provider-level collection tabs; the backlink is the
+  single return affordance for the resource list.
 - `ResourcePage` owns the title hierarchy and read-state shell. Its canonical
   PortalKit title is responsive from 24px to 32px, with tight tracking and
   leading, safe wrapping for long identifiers, and a 22px mobile size. Header
@@ -417,6 +430,10 @@ and resource-specific content:
   subtitle, with PortalKit-owned dot separators between metadata items. The
   header-side region contains actions only and follows that stack in source
   order.
+  Callers may provide a `#loading` slot for loading visuals; the canonical
+  shell owns the polite status/live-region semantics and supplies the three-bar
+  skeleton fallback. Coarse and hybrid any-pointer input receive at least
+  44×44px targets for ResourcePage actions.
   ResourcePage exposes `kind` as its only resource-type prop; section cards may
   continue to use their independent `eyebrow` label. Callers must not add
   provider-local title-size overrides. Header actions use one stable order:
@@ -426,8 +443,10 @@ and resource-specific content:
   provider-chosen icons. Default density keeps the existing card geometry
   unchanged. The `density="compact"` option is opt-in for fact-heavy summaries.
   Both densities use the same responsive grid: three columns, then two, then
-  one at narrower widths. These facts are not a universal resource field
-  schema.
+  one at narrower widths. `ResourceStatCards` renders a native list and
+  balances one, two, four, and three-plus cards with count-aware grid classes;
+  `ResourcePage` owns summary-slot spacing, so callers should not add a second
+  wrapper margin. These facts are not a universal resource field schema.
 - Put product-facing content first in vertically stacked `ResourceSectionCard`
   cards. Providers own each card's content and optional actions. Section action
   buttons may use a leading Lucide icon with a visible label; icon-only actions
@@ -450,6 +469,8 @@ and resource-specific content:
   later refresh failure. A successful snapshot remains visible when a later
   read fails, with a stale/error notice and `Retry`; `ResourcePage` emits retry
   and the caller owns the fetch. Initial failures expose the same retry path.
+  The canonical shell retains polite status/live-region semantics for loading;
+  callers customize only the loading visuals through `#loading`.
 
 #### Resource reads and background refresh
 
@@ -581,10 +602,18 @@ retains the current page when it remains valid. The shared presentation is:
 - 4px-radius ghost icon-buttons (‹ ›) + mono `tabular-nums` "12–24 of 96" label
   in `text-muted`.
 - Current page indicator in `accent-subtle` with `accent` text. No number soup.
-- Search plus compact categorical selects above the table; one `Clear filters`
-  action appears only when a filter is active.
+- Search plus compact, visibly labeled facets above the table; short categorical
+  filters use the shared select-only PortalKit listbox, while resource-reference
+  inventories explicitly opt into search inside the same menu. Narrow screens stack facets at
+  full width. One `Clear filters` action appears only when a facet is active.
 - For wide tables, only the table canvas scrolls horizontally. Search/filter
   controls and the pagination footer remain pinned to the full card width.
+- Primary resource names disclose their full value in a viewport-positioned
+  overlay only when measurement shows real truncation, so table scroll and card
+  boundaries cannot clip it. When a primary-column slot renders a label other
+  than `row[column.key]`, provide the column's `fullValue(row)` accessor so the
+  disclosure matches the visible label. Icon-only row actions use the shared `data-k-tip` tooltip on
+  hover and keyboard focus; never add a duplicate native `title` tooltip.
 - Prefer "Load more" (a `.k-btn--ghost`) or infinite scroll for streams such as
   activity/event feeds; do not force page navigation onto an append-only flow.
 

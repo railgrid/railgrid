@@ -6,6 +6,7 @@ import { api, isContextChangedError } from '../api'
 import LayoutSelector from '../portalkit/LayoutSelector.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import { readLayoutPreference, writeLayoutPreference, type LayoutMode } from '../portalkit/layoutPreference'
+import { useDelayedLoading } from '../portalkit/useDelayedLoading'
 import type { Template } from '../types'
 
 const emit = defineEmits<{
@@ -15,6 +16,8 @@ const emit = defineEmits<{
 
 const loading = ref(true)
 const loaded = ref(false)
+const initialReadPending = computed(() => !loaded.value && loading.value)
+const showInitialLoading = useDelayedLoading(initialReadPending)
 const error = ref<string | null>(null)
 const templates = ref<Template[]>([])
 const category = ref('')
@@ -24,7 +27,7 @@ const layout = ref<LayoutMode>(readLayoutPreference(layoutPreferenceKey))
 let requestSerial = 0
 
 const tableColumns = [
-  { key: 'identity', label: 'Template' },
+  { key: 'identity', label: 'Template', primary: true },
   { key: 'category', label: 'Category' },
   { key: 'kind', label: 'Kind' },
   { key: 'version', label: 'Version' },
@@ -118,7 +121,15 @@ function selectTemplateRow(row: Record<string, unknown>) {
         <span>Showing the last successful result. {{ error }}</span>
         <button type="button" class="k-btn k-btn--ghost" @click="load">Retry</button>
       </div>
-      <div v-if="!loaded && loading" class="catalog-loading-grid" role="status" aria-live="polite" aria-busy="true" aria-label="Loading templates">
+      <div
+        v-if="initialReadPending"
+        class="catalog-loading-grid k-delayed-loading"
+        :role="showInitialLoading ? 'status' : undefined"
+        :aria-live="showInitialLoading ? 'polite' : undefined"
+        :aria-busy="showInitialLoading ? 'true' : undefined"
+        :aria-label="showInitialLoading ? 'Loading templates' : undefined"
+        :aria-hidden="showInitialLoading ? undefined : 'true'"
+      >
         <div v-for="i in 6" :key="i" class="catalog-loading-card k-card" aria-hidden="true">
           <div class="shimmer page-loading-line page-loading-line-short" />
           <div class="shimmer page-loading-line" />
@@ -151,6 +162,7 @@ function selectTemplateRow(row: Record<string, unknown>) {
       <ResourceTable
         :columns="tableColumns"
         :rows="tableRows"
+        aria-label="Infrastructure templates"
         row-key="name"
         :loaded="loaded"
         :loading="loading"
@@ -164,9 +176,11 @@ function selectTemplateRow(row: Record<string, unknown>) {
         @row-click="selectTemplateRow"
       >
         <template #identity="{ value, row }">
-          <div class="template-card-title">{{ value }}</div>
-          <div class="cell-mono">{{ row.name }}</div>
-          <p class="template-card-desc">{{ row.description }}</p>
+          <button class="k-btn k-btn--ghost k-table-resource-link text-left" type="button" @click.stop="selectTemplateRow(row)">
+            <span class="template-card-title">{{ value }}</span>
+            <span class="cell-mono">{{ row.name }}</span>
+            <span class="template-card-desc">{{ row.description }}</span>
+          </button>
         </template>
         <template #kind="{ value }"><span class="cell-mono">{{ value }}</span></template>
         <template #version="{ value }"><span class="cell-mono">{{ value }}</span></template>

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowLeft, Ellipsis, GitBranch, KeyRound, Link2, Plug, RefreshCw, User } from 'lucide-vue-next'
+import { Ellipsis, GitBranch, KeyRound, Link2, Plug, RefreshCw, User } from 'lucide-vue-next'
 import { api } from '../api'
 import type { ConnectionDetail, ErrorResponse } from '../types'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
+import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
@@ -243,9 +244,9 @@ onUnmounted(() => {
 
 <template>
   <div class="connection-detail">
-    <a class="k-btn k-btn--ghost connection-detail__back" href="/ui/providers/code/connections" @click.prevent="emit('back')">
-      <ArrowLeft :size="14" aria-hidden="true" /> Connections
-    </a>
+    <ResourceBackLink class="connection-detail__back" href="/ui/providers/code/connections" @back="emit('back')">
+      Connections
+    </ResourceBackLink>
 
     <div class="connection-detail__resource">
       <div class="connection-detail__provider-mark" role="img" :aria-label="`${conn?.provider || 'Provider unavailable'} mark`">
@@ -313,7 +314,6 @@ onUnmounted(() => {
 
         <template #body>
           <template v-if="conn">
-            <span v-if="foregroundRefreshing && loaded && !error" class="sr-only" role="status" aria-live="polite">Updating connection…</span>
             <p v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">{{ mutationError }}</p>
             <p v-if="deleting" class="connection-detail__deleting" role="status" aria-live="polite">
               Deleting this connection. The last successful snapshot remains visible until the hub confirms removal.

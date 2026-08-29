@@ -588,14 +588,15 @@ onUnmounted(() => {
 
     <ResourceTable
       :columns="[
-        { key: 'name', label: 'TableRef' },
+        { key: 'name', label: 'TableRef', primary: true },
         { key: 'fullName', label: 'Databricks table' },
         { key: 'warehouseRef', label: 'Warehouse' },
-        { key: 'columnCount', label: 'Columns' },
+        { key: 'columnCount', label: 'Columns', align: 'end' },
         { key: 'status', label: 'Status' },
-        { key: 'actions', label: '' },
+        { key: 'actions', label: '', ariaLabel: 'Actions' },
       ]"
       :rows="rows"
+      aria-label="Databricks tables"
       searchable
       search-placeholder="Search tables…"
       :filters="filterDefinitions"

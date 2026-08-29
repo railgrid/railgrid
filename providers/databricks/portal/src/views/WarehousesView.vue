@@ -420,14 +420,15 @@ onUnmounted(() => {
 
     <ResourceTable
       :columns="[
-        { key: 'name', label: 'Name' },
+        { key: 'name', label: 'Name', primary: true },
         { key: 'connectionRef', label: 'Connection' },
         { key: 'warehouseID', label: 'Warehouse ID' },
         { key: 'state', label: 'State' },
         { key: 'status', label: 'Status' },
-        { key: 'actions', label: '' },
+        { key: 'actions', label: '', ariaLabel: 'Actions' },
       ]"
       :rows="rows"
+      aria-label="Databricks SQL warehouses"
       searchable
       search-placeholder="Search warehouses…"
       :filters="filterDefinitions"

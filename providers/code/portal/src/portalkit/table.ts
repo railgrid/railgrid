@@ -11,6 +11,9 @@ export interface TableFilterDefinition {
   label: string
   allLabel?: string
   options?: TableFilterOption[]
+  /** Bespoke select-only listbox by default; resource inventories opt into search. */
+  control?: 'select' | 'combobox'
+  searchPlaceholder?: string
 }
 
 export type TableFilterState = Record<string, string>

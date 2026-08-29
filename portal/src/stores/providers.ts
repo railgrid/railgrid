@@ -167,11 +167,13 @@ export const useProvidersStore = defineStore('providers', () => {
   // bindingsWorkspace records which workspace the map above was fetched for,
   // and is the only safe way to read an *empty* map as "nothing is enabled
   // here". Two windows make emptiness ambiguous otherwise: load() flips
-  // `loaded` before awaiting refreshBindings, and on a workspace switch the map
-  // holds the previous workspace's answer until the refetch lands. Callers that
-  // branch on emptiness (the first-run welcome flow) must check this matches
-  // the active workspace; callers that only read individual entries (the
-  // sidebar, the Disable button) tolerate the staleness and don't need it.
+  // `loaded` before awaiting refreshBindings. A same-scope refresh intentionally
+  // retains the last-known map while it is loading or has errored; an org,
+  // workspace, or organization-only transition clears it before the request.
+  // Callers that branch on emptiness (the first-run welcome flow) must check
+  // this matches the active workspace; callers that only read individual
+  // entries (the sidebar, the Disable button) can pair the map with
+  // `bindingsStale` when they need to explain that it is non-authoritative.
   const bindingsWorkspace = ref<string | null>(null)
   // Binding reads are a separate finite state machine from the catalog read.
   // ProviderFrame must not interpret an empty map as "unbound" until this
@@ -183,6 +185,12 @@ export const useProvidersStore = defineStore('providers', () => {
   const bindingsOrgUUID = ref<string | null>(null)
   const bindingsRequestOrgUUID = ref<string | null>(null)
   const bindingsRequestWorkspaceUUID = ref<string | null>(null)
+  // True while loading or retrying an established projection for the same
+  // tenant scope. Consumers can keep rendering the last-known navigation set
+  // while showing a non-authoritative refresh/error affordance. A projection
+  // from another org/workspace is never marked stale: it is cleared before
+  // the new request starts.
+  const bindingsStale = ref(false)
   let bindingRequestSequence = 0
   // Provider enables/disables are long-lived writes (the hub may ask us to
   // retry while it provisions the provider workspace). Keep a generation per
@@ -427,6 +435,7 @@ export const useProvidersStore = defineStore('providers', () => {
     bindingsByProvider.value = {}
     bindingsWorkspace.value = null
     bindingsOrgUUID.value = null
+    bindingsStale.value = false
   }
 
   function clearBindings(invalidate = true) {
@@ -538,7 +547,16 @@ export const useProvidersStore = defineStore('providers', () => {
     bindingsRequestOrgUUID.value = t.orgUUID
     bindingsRequestWorkspaceUUID.value = t.workspaceUUID
     bindingsError.value = null
-    clearBindingProjection()
+    // Keep an established projection only while re-reading the exact same
+    // org/workspace. This is the last-known navigation state and is safe to
+    // retain as explicitly non-authoritative while loading or on error. Any
+    // authority boundary (org, workspace, or organization-only mode) must
+    // clear before the request so the old binding set cannot leak.
+    const retainProjection = !!t.orgUUID && !!t.workspaceUUID &&
+      bindingsOrgUUID.value === t.orgUUID &&
+      bindingsWorkspace.value === t.workspaceUUID
+    if (!retainProjection) clearBindingProjection()
+    bindingsStale.value = retainProjection
     // Organization-only mode is intentionally workspace-free. Even if an
     // older tab has not observed the synchronous tenant normalization yet,
     // never probe its stale workspace for enabled bindings.
@@ -564,6 +582,7 @@ export const useProvidersStore = defineStore('providers', () => {
       bindingsByProvider.value = body.bindingsByProvider ?? {}
       bindingsOrgUUID.value = t.orgUUID
       bindingsWorkspace.value = t.workspaceUUID
+      bindingsStale.value = false
       bindingsLoadState.value = 'ready'
     } catch (e: unknown) {
       // A late failure belongs to the request's captured tenant, not to the
@@ -786,6 +805,7 @@ export const useProvidersStore = defineStore('providers', () => {
     bindingsOrgUUID,
     bindingsRequestOrgUUID,
     bindingsRequestWorkspaceUUID,
+    bindingsStale,
     enabledNavItems,
     categorizedNavItems,
     enableable,

@@ -25,12 +25,12 @@ const emit = defineEmits<{
 }>()
 
 const edgeColumns = [
-  { key: 'name', label: 'Name' },
+  { key: 'name', label: 'Name', primary: true },
   { key: 'typeLabel', label: 'Type' },
   { key: 'status', label: 'Status' },
   { key: 'agentVersion', label: 'Agent' },
   { key: 'lastHeartbeat', label: 'Last heartbeat' },
-  { key: 'actions', label: '' },
+  { key: 'actions', label: '', ariaLabel: 'Actions' },
 ]
 
 const edgeRows = computed(() => props.edges.map(edge => ({
@@ -84,6 +84,7 @@ onActivated(() => emit('activated'))
     <ResourceTable
       :columns="edgeColumns"
       :rows="edgeRows"
+      aria-label="Edges"
       row-key="rowKey"
       :row-aria-label="edgeRowAriaLabel"
       :loaded="props.loaded"
@@ -100,7 +101,7 @@ onActivated(() => emit('activated'))
       @retry="emit('refresh')"
       @row-click="emit('open', $event)"
     >
-      <template #name="{ value }"><span class="name">{{ value }}</span></template>
+      <template #name="{ value, row }"><button class="k-btn k-btn--ghost k-table-resource-link" type="button" @click.stop="emit('open', row)">{{ value }}</button></template>
       <template #typeLabel="{ value, row }"><span class="k-badge k-badge--muted"><component :is="row.type === 'server' ? Server : Boxes" :size="12" />{{ value }}</span></template>
       <template #status="{ value }"><StatusBadge :status="String(value)" /></template>
       <template #agentVersion="{ value }"><span class="mono muted">{{ value }}</span></template>

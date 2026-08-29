@@ -118,6 +118,7 @@ describe('repository table pagination state', () => {
     ])
     const byKey = Object.fromEntries(filters.map(filter => [filter.key, filter]))
     expect(byKey.connectionRef.options?.map(option => option.value)).toEqual(['alpha', 'zeta'])
+    expect(byKey.connectionRef.control).toBe('combobox')
     expect(byKey.visibility.options).toEqual(REPOSITORY_VISIBILITY_OPTIONS)
     expect(byKey.status.options).toEqual(REPOSITORY_STATUS_OPTIONS)
   })

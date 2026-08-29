@@ -13,4 +13,9 @@ describe('Infrastructure resource table conformance', () => {
     expect(source).toContain("@retry=\"load('foreground')\"")
     expect(source).not.toContain('window.setInterval')
   })
+
+  it('uses searchable resource selection for the template facet', () => {
+    expect(source).toMatch(/key:\s*'template',[\s\S]*?control:\s*'combobox'/)
+    expect(source).toContain("searchPlaceholder: 'Find a template…'")
+  })
 })

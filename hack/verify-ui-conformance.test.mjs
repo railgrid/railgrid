@@ -155,14 +155,39 @@ test('keeps the responsive ResourcePage title canonical across provider detail v
   const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
   const codeStyle = fs.readFileSync(new URL('../providers/code/portal/src/style.css', import.meta.url), 'utf8')
   const edgesStyle = fs.readFileSync(new URL('../providers/edges/portal/src/style.css', import.meta.url), 'utf8')
+  const resourcePage = css.match(/\.k-resource-page\s*\{([^}]*)\}/s)?.[1] ?? ''
   const title = css.match(/\.k-resource-page__title\s*\{([^}]*)\}/s)?.[1] ?? ''
+  const subtitle = css.match(/\.k-resource-page__subtitle\s*\{([^}]*)\}/s)?.[1] ?? ''
+  const status = css.match(/\.k-resource-page__status\s*\{([^}]*)\}/s)?.[1] ?? ''
+  const sectionTitle = css.match(/\.k-resource-section-card__title\s*\{([^}]*)\}/s)?.[1] ?? ''
 
+  assert.match(resourcePage, /container-name:\s*resource-page;/)
+  assert.match(resourcePage, /container-type:\s*inline-size;/)
   assert.match(title, /font-size:\s*clamp\(24px,\s*4vw,\s*32px\)/)
   assert.match(title, /letter-spacing:\s*-\.02em/)
   assert.match(title, /line-height:\s*1\.12/)
   assert.match(title, /overflow-wrap:\s*anywhere/)
   assert.match(title, /word-break:\s*break-word/)
-  assert.match(css, /@media\s*\(max-width:\s*520px\)[\s\S]*\.k-resource-page__title\s*\{[^}]*font-size:\s*22px;/)
+  assert.match(subtitle, /overflow-wrap:\s*anywhere/)
+  assert.match(subtitle, /text-align:\s*start/)
+  assert.match(status, /min-width:\s*0/)
+  assert.match(status, /overflow-wrap:\s*anywhere/)
+  assert.match(sectionTitle, /overflow-wrap:\s*anywhere/)
+
+  for (const width of [620, 520, 420]) {
+    assert.match(css, new RegExp(`@container resource-page \\(max-width: ${width}px\\)`))
+    assert.match(css, new RegExp(`@media \\(max-width: ${width}px\\)`), `${width}px fallback remains available`)
+  }
+  assert.match(css, /@container resource-page \(max-width: 620px\)[\s\S]*\.k-resource-page__header[\s\S]*flex-direction:\s*column;[\s\S]*\.k-resource-stat-cards[\s\S]*repeat\(2/)
+  assert.match(css, /@container resource-page \(max-width: 520px\)[\s\S]*\.k-resource-section-card__header[\s\S]*flex-direction:\s*column;[\s\S]*\.k-resource-section-card__actions[\s\S]*justify-content:\s*flex-start;/)
+  assert.match(css, /@container resource-page \(max-width: 420px\)[\s\S]*\.k-resource-stat-cards[\s\S]*minmax\(0, 1fr\)[\s\S]*\.k-resource-page__read-error,[\s\S]*\.k-resource-page__stale[\s\S]*align-items:\s*flex-start;/)
+  assert.match(css, /@supports not \(container-type: inline-size\)[\s\S]*@media \(max-width: 620px\)[\s\S]*@media \(max-width: 520px\)[\s\S]*@media \(max-width: 420px\)/)
+  assert.doesNotMatch(css, /@media\s*\(max-width:\s*859px\)/)
+
+  const resourceCoarsePointer = css.slice(css.indexOf('@media (pointer: coarse)', css.indexOf('.k-resource-page')))
+  assert.match(resourceCoarsePointer, /\.k-resource-page__actions :where\(button, a\)/)
+  assert.match(resourceCoarsePointer, /\.k-resource-section-card__actions :where\(button, a\)/)
+  assert.match(resourceCoarsePointer, /\.k-resource-page__retry[\s\S]*min-height:\s*44px;[\s\S]*min-width:\s*44px;/)
 
   for (const relative of [
     '../providers/code/portal/src/views/ConnectionDetailView.vue',
@@ -229,6 +254,46 @@ test('keeps the ResourcePage title-first metadata and actions contract canonical
   }
 })
 
+test('keeps ResourcePage read-state announcements centralized and resilient', () => {
+  const page = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourcePage.vue', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+
+  assert.match(page, /props\.loaded === false && !props\.error/)
+  assert.match(page, /const showInitialLoading = useDelayedLoading\(initialReadPending\)/)
+  assert.match(page, /:aria-hidden="showInitialLoading \? undefined : 'true'"/)
+  assert.match(page, /props\.refreshMode === 'foreground'[\s\S]*Refreshing \$\{props\.title\}[\s\S]*Updating \$\{props\.title\}/)
+  assert.match(page, /const staleMessageRole = computed\([\s\S]*'background' \? 'status' : 'alert'/)
+  assert.match(page, /function requestRetry\(\)[\s\S]*if \(retrying\.value\) return[\s\S]*retryRequested\.value = true[\s\S]*emit\('retry'\)/)
+  assert.match(css, /\.k-resource-page__meta\s*\{[^}]*color:\s*var\(--color-text-secondary/s)
+  assert.match(css, /\.k-resource-page__read-message\s*\{[^}]*color:\s*var\(--color-text-primary/s)
+  assert.match(css, /@media\s*\(pointer:\s*coarse\)[\s\S]*\.k-resource-page__retry\s*\{[^}]*min-height:\s*44px;[^}]*min-width:\s*44px;/)
+
+  for (const relative of [
+    '../providers/code/portal/src/views/ConnectionDetailView.vue',
+    '../providers/databricks/portal/src/views/ConnectionDetailView.vue',
+    '../providers/databricks/portal/src/views/TableDetailView.vue',
+    '../providers/databricks/portal/src/views/WarehouseDetailView.vue',
+  ]) {
+    const source = fs.readFileSync(new URL(relative, import.meta.url), 'utf8')
+    assert.doesNotMatch(source, /class="sr-only"[^>]*role="status"[^>]*aria-live="polite"[^>]*>Updating(?: connection)?…<\/span>/)
+  }
+})
+
+test('keeps ResourceBackLink browser affordances and disabled state canonical', () => {
+  const back = fs.readFileSync(new URL('../provider-sdk/portalkit-vue/ResourceBackLink.vue', import.meta.url), 'utf8')
+  const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
+
+  assert.match(back, /if \(props\.disabled\) \{[\s\S]*event\.preventDefault\(\)[\s\S]*return/)
+  assert.match(back, /event\.button !== 0/)
+  assert.match(back, /event\.metaKey[\s\S]*event\.ctrlKey[\s\S]*event\.shiftKey[\s\S]*event\.altKey/)
+  assert.match(back, /event\.preventDefault\(\)[\s\S]*emit\('back', event\)/)
+  assert.match(back, /:aria-disabled="disabled \? 'true' : undefined"/)
+  assert.match(back, /:tabindex="disabled \? -1 : undefined"/)
+  assert.match(back, /<slot>Back<\/slot>/)
+  assert.match(css, /\.k-back-action\[aria-disabled="true"\][\s\S]*opacity:\s*0\.4/)
+  assert.match(css, /@media\s*\(pointer:\s*coarse\),\s*\(any-pointer:\s*coarse\)[\s\S]*\.k-back-action\s*\{[^}]*min-height:\s*44px;[^}]*min-width:\s*44px;/)
+})
+
 test('keeps sidebar divider and child toggles on the borderless text-button recipe', () => {
   const css = fs.readFileSync(new URL('../provider-sdk/portalkit/faros-ui.css', import.meta.url), 'utf8')
   const layout = fs.readFileSync(new URL('../portal/src/components/AppLayout.vue', import.meta.url), 'utf8')
@@ -253,7 +318,11 @@ test('keeps resource-table controls and wide-table scrolling in the canonical re
 
   assert.match(table, /class="k-table k-table--resource"/)
   assert.match(table, /class="k-table__controls"/)
-  assert.match(table, /class="k-table__scroll" role="region" aria-label="Scrollable table" tabindex="0"/)
+  assert.match(table, /ariaLabel\?: string/)
+  assert.match(table, /class="k-table__scroll" role="region" :aria-label="`\$\{tableAriaLabel\} scroll area`" tabindex="0"/)
+  assert.match(table, /<table class="k-table__table" :aria-label="tableAriaLabel">/)
+  assert.doesNotMatch(table, /Scrollable table/)
+  assert.match(table, /<slot name="after-row" :row="row" :column-count="renderedColumnCount" \/>/)
   assert.match(table, /class="k-table__pagination"/)
   assert.doesNotMatch(table, /ResourceTable\.css/)
 
@@ -262,6 +331,19 @@ test('keeps resource-table controls and wide-table scrolling in the canonical re
   assert.match(css, /\.k-table__cell svg\s*\{[^}]*display:\s*inline-block;[^}]*vertical-align:\s*middle;/s)
   assert.match(table, /v-if="hasConfiguredControls" class="k-table__loading-controls" aria-hidden="true"/)
   assert.match(table, /v-for="filter in filters"[^>]*k-table__loading-control--filter/)
+  assert.match(table, /const staleMessageRole = computed\(\(\) => props\.refreshMode === 'background' \? 'status' : 'alert'\)/)
+  assert.match(table, /const staleMessageLive = computed\(\(\) => props\.refreshMode === 'background' \? 'polite' : 'assertive'\)/)
+  assert.match(table, /class="k-table__stale" :role="staleMessageRole" :aria-live="staleMessageLive"/)
+  assert.match(table, /const hasQuery = computed\(\(\) => !!currentQuery\.value\.trim\(\)\)/)
+  assert.match(table, /const hasFacetFilters = computed\(\(\) => Object\.values\(currentFilters\.value\)\.some\(Boolean\)\)/)
+  assert.match(table, /const clearActionLabel = computed\(\(\) => hasQuery\.value && hasFacetFilters\.value \? 'Clear all' : 'Clear filters'\)/)
+  assert.match(table, /const noMatchText = computed\(\(\) => \{[\s\S]*props\.combinedFilterEmptyText[\s\S]*props\.searchEmptyText[\s\S]*props\.filterEmptyText/)
+  assert.match(table, /<button v-if="hasFacetFilters" class="k-table__clear-filters"[^>]*>\{\{ clearActionLabel \}\}<\/button>/)
+  assert.match(table, /<div v-if="hasFacetFilters" class="shimmer k-table__loading-control k-table__loading-control--clear" \/>/)
+  assert.match(table, /:aria-label="`Search \$\{tableAriaLabel\}`"/)
+  assert.match(table, /const MAX_SKELETON_COLUMNS = 6/)
+  assert.match(table, /visibleColumns\.value\.slice\(0, MAX_SKELETON_COLUMNS\)/)
+  assert.match(table, /--k-table-loading-columns/)
   assert.match(table, /variant\?: 'queryable' \| 'simple'/)
   assert.match(table, /variant: 'queryable'/)
   assert.match(table, /:class="`k-table--\$\{variant\}`"/)
@@ -271,9 +353,118 @@ test('keeps resource-table controls and wide-table scrolling in the canonical re
   assert.match(css, /\.k-table__search-input::\-webkit-search-cancel-button\s*\{[^}]*appearance:\s*none;/s)
   assert.match(css, /\.k-table th\s*\{[^}]*font-family:\s*var\(--font-mono/s)
   assert.match(css, /\.k-table__heading\s*\{[^}]*font-family:\s*var\(--font-mono/s)
+  assert.match(table, /primary\?: boolean/)
+  assert.match(table, /ariaLabel\?: string/)
+  assert.match(table, /fullValue\?: \(row: Record<string, unknown>\) => string/)
+  assert.match(table, /align\?: 'start' \| 'center' \| 'end'/)
+  assert.match(table, /col\.ariaLabel \|\| col\.label \|\| col\.key/)
+  assert.match(table, /k-table__heading--\$\{col\.align \?\? 'start'\}/)
+  assert.match(table, /k-table__cell--\$\{col\.align \?\? 'start'\}/)
+  assert.match(table, /function primaryValue\(row: Record<string, unknown>\): string/)
+  assert.match(table, /column\?\.fullValue\?\.\(row\)/)
+  assert.match(table, /data-full-value="primaryValue\(row\)"/)
+  assert.doesNotMatch(table, /data-full-value="primaryValue\(row\)"[^>]*title=/)
+  assert.doesNotMatch(table, /class="k-table__primary-value"[^>]*aria-label=/)
+  assert.match(table, /columns\.find\(column => column\.primary\)\?\.key[\s\S]*columns\.find\(column => column\.key === 'name'\)\?\.key[\s\S]*columns\[0\]\?\.key/)
+  assert.match(table, /v-for="col in visibleColumns"/)
+  assert.match(table, /class="k-table__primary-actions"/)
+  assert.match(table, /<slot :name="actionsColumn\.key"/)
+  assert.doesNotMatch(table, /v-for="col in columns"/)
+  assert.match(css, /\.k-table__heading--primary\s*\{\s*width:\s*100%;\s*\}/)
+  assert.match(css, /\.k-table__cell--primary\s*\{\s*width:\s*100%;\s*\}/)
+  assert.match(css, /\.k-table__row:hover \.k-table__primary-actions,[\s\S]*\.k-table__row:focus-within \.k-table__primary-actions/)
+  assert.match(css, /@media \(hover: none\)[\s\S]*\.k-table__primary-actions,[\s\S]*\.k-table__primary-actions \.k-table-action\s*\{[^}]*opacity:\s*1;/)
+  assert.match(css, /--k-table-readable-muted:\s*color-mix\(in srgb, var\(--color-text-secondary, #8a8ca6\) 90%, var\(--color-surface-raised, #111320\)\);/)
+  assert.match(css, /--k-table-control-border:\s*color-mix\(in srgb, var\(--color-text-secondary, #8a8ca6\) 70%, var\(--color-surface-overlay, #171927\)\);/)
+  assert.match(css, /--k-table-action-idle:\s*color-mix\(in srgb, var\(--color-text-secondary, #8a8ca6\) 80%, var\(--color-surface-raised, #111320\)\);/)
+  assert.match(css, /\.k-table__search-input,[\s\S]*\.k-table__page-size-select\s*\{[^}]*border:\s*1px solid var\(--k-table-control-border/s)
+  assert.match(css, /\.k-table__heading\s*\{[^}]*color:\s*var\(--k-table-readable-muted/s)
+  assert.match(css, /grid-template-columns:\s*repeat\(var\(--k-table-loading-columns, 3\), minmax\(0, 1fr\)\)/)
+  assert.match(css, /\.k-table\.k-table--resource \.k-table__heading--start,\s*\.k-table\.k-table--resource \.k-table__cell--start\s*\{\s*text-align:\s*start;/)
+  assert.match(css, /\.k-table\.k-table--resource \.k-table__heading--center,\s*\.k-table\.k-table--resource \.k-table__cell--center\s*\{\s*text-align:\s*center;/)
+  assert.match(css, /\.k-table\.k-table--resource \.k-table__heading--end,\s*\.k-table\.k-table--resource \.k-table__cell--end\s*\{\s*text-align:\s*end;/)
+  const genericTableRuleIndex = css.indexOf('.k-table th')
+  assert.ok(genericTableRuleIndex >= 0, 'generic table header rule must remain present')
+  for (const align of ['start', 'center', 'end']) {
+    const alignedSelectorIndex = css.indexOf(`.k-table.k-table--resource .k-table__heading--${align}`)
+    assert.ok(alignedSelectorIndex > genericTableRuleIndex, `${align} alignment override must follow generic table rules`)
+  }
+  assert.match(table, /<Teleport to="body">[\s\S]*class="k-table__primary-tooltip"/)
+  assert.match(css, /\.k-table__primary-tooltip\s*\{[^}]*position:\s*fixed;[^}]*visibility:\s*hidden;/s)
+  assert.match(css, /\.k-table__primary-tooltip--positioned\s*\{\s*visibility:\s*visible;/)
+  assert.match(css, /\.k-table-action\s*\{[^}]*color:\s*var\(--k-table-action-idle/s)
+  assert.match(css, /@media \(pointer: coarse\)[\s\S]*\.k-table__page-button,[\s\S]*\.k-table-action\s*\{[^}]*height:\s*44px;[^}]*min-height:\s*44px;[^}]*min-width:\s*44px;[\s\S]*opacity:\s*1;[\s\S]*pointer-events:\s*auto;[\s\S]*width:\s*44px;/)
+  assert.match(css, /@media \(pointer: coarse\)[\s\S]*\.k-table__search-clear\s*\{[^}]*min-height:\s*44px;[^}]*min-width:\s*44px;/)
+  assert.match(css, /@media \(pointer: coarse\)[\s\S]*\.k-table__primary-actions\s*\{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/)
 
-  assert.match(sync, /VUE_FILES=\([^\n]*ResourceTable\.vue table\.ts/)
+  assert.match(sync, /VUE_FILES=\([^\n]*ResourceTable\.vue/)
+  assert.match(sync, /VUE_FILES=\([^\n]*table\.ts/)
   assert.match(sync, /OBSOLETE_FILES=\([^\n]*ResourceTable\.css/)
+})
+
+test('keeps ResourceTable quiet color roles above their contrast floors in both themes', () => {
+  const host = fs.readFileSync(new URL('../portal/src/assets/main.css', import.meta.url), 'utf8')
+  const dark = host.match(/@theme\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+  const light = host.match(/html\.light\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
+
+  const token = (block, name) => {
+    const value = block.match(new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6});`))?.[1]
+    assert.ok(value, `${name} must be an opaque hex token for contrast verification`)
+    return value
+  }
+  const channels = value => [1, 3, 5].map(offset => Number.parseInt(value.slice(offset, offset + 2), 16))
+  const mix = (foreground, background, amount) => channels(foreground)
+    .map((value, index) => Math.round(value * amount + channels(background)[index] * (1 - amount)))
+  const luminance = color => color
+    .map(value => value / 255)
+    .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4)
+    .reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0)
+  const contrast = (left, right) => {
+    const [lighter, darker] = [luminance(left), luminance(right)].sort((a, b) => b - a)
+    return (lighter + 0.05) / (darker + 0.05)
+  }
+
+  for (const theme of [dark, light]) {
+    const secondary = token(theme, 'color-text-secondary')
+    const raised = token(theme, 'color-surface-raised')
+    const overlay = token(theme, 'color-surface-overlay')
+    assert.ok(contrast(mix(secondary, raised, 0.9), channels(raised)) >= 4.5, 'table tertiary text must meet WCAG AA')
+    assert.ok(contrast(mix(secondary, raised, 0.8), channels(raised)) >= 3, 'idle action icons must meet non-text contrast')
+    assert.ok(contrast(mix(secondary, overlay, 0.7), channels(overlay)) >= 3, 'table control borders must remain identifiable')
+  }
+})
+
+test('gives every ResourceTable caller a descriptive table and scroll-region name', () => {
+  const sourceRoots = [
+    path.resolve(new URL('../portal/', import.meta.url).pathname),
+    path.resolve(new URL('../providers/', import.meta.url).pathname),
+  ]
+  const vueFiles = []
+  const visit = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (['.git', 'dist', 'node_modules'].includes(entry.name)) continue
+      const absolute = path.join(directory, entry.name)
+      if (entry.isDirectory()) visit(absolute)
+      else if (entry.isFile() && entry.name.endsWith('.vue')) vueFiles.push(absolute)
+    }
+  }
+  sourceRoots.forEach(visit)
+
+  let callers = 0
+  for (const file of vueFiles) {
+    const source = fs.readFileSync(file, 'utf8')
+    for (const opening of source.matchAll(/<ResourceTable\b[^>]*>/g)) {
+      callers += 1
+      assert.match(opening[0], /(?:aria-label|:aria-label)=\s*(?:"[^"]+"|'[^']+')/, file)
+      assert.doesNotMatch(opening[0], /Scrollable table/, file)
+    }
+  }
+  assert.ok(callers > 0, 'ResourceTable callers should be discovered')
+
+  const workloads = fs.readFileSync(new URL('../providers/edges/portal/src/Workloads.vue', import.meta.url), 'utf8')
+  assert.match(workloads, /<template #after-row="\{ row, columnCount \}">/)
+  assert.match(workloads, /<td :colspan="columnCount">/)
+  assert.doesNotMatch(workloads, /:colspan="workloadColumns\.length"/)
 })
 
 test('keeps generic resource-table icon actions accessible, toned, and vendored', () => {
@@ -289,7 +480,8 @@ test('keeps generic resource-table icon actions accessible, toned, and vendored'
   assert.match(action, /type ResourceTableActionTone = 'neutral' \| 'accent' \| 'warning' \| 'danger'/)
   assert.match(action, /class="k-table-action"/)
   assert.match(action, /:class="\[`k-table-action--\$\{tone\}`/)
-  assert.match(action, /:title="accessibleLabel"/)
+  assert.match(action, /:data-k-tip="accessibleLabel"/)
+  assert.doesNotMatch(action, /:title="accessibleLabel"/)
   assert.match(action, /:aria-label="accessibleLabel"/)
   assert.match(action, /:aria-busy="busy \|\| undefined"/)
   assert.match(action, /:disabled="disabled \|\| busy"/)
@@ -338,15 +530,18 @@ test('keeps platform-admin flat lists and navigation on shared host patterns', (
   const store = fs.readFileSync(new URL('../portal/src/stores/admin.ts', import.meta.url), 'utf8')
   const shell = fs.readFileSync(new URL('../portal/src/pages/BonkersPage.vue', import.meta.url), 'utf8')
   const appLayout = fs.readFileSync(new URL('../portal/src/components/AppLayout.vue', import.meta.url), 'utf8')
+  const navigationDock = fs.readFileSync(new URL('../portal/src/composables/useNavigationDock.ts', import.meta.url), 'utf8')
   assert.match(store, /const loaded = ref\(false\)/)
   assert.match(store, /identities\.value = i\s+loaded\.value = true/)
   assert.match(shell, /import \{ useSidebarExpansion \} from '@\/composables\/useSidebarExpansion'/)
   assert.match(shell, /:class="sidebarExpanded \? 'w-48' : 'w-14'"/)
   assert.match(appLayout, /const \{ sidebarExpanded, toggleSidebar \} = useSidebarExpansion\(\)/)
+  assert.match(appLayout, /import \{ useNavigationDock \} from '@\/composables\/useNavigationDock'/)
+  assert.match(appLayout, /\} = useNavigationDock\(sidebarExpanded\)/)
   assert.match(shell, /shadow-\[0_0_14px_var\(--color-accent-glow\)\]/)
   assert.match(shell, /:aria-current="\$route\.path === s\.to \? 'page' : undefined"/)
   assert.match(shell, /auth\.logout\(\)\s+void router\.replace\('\/login'\)/)
-  assert.match(appLayout, /setLayoutInsets\(\{ left: '0px', right: '0px', bottom: '0px' \}\)/)
+  assert.match(navigationDock, /onUnmounted\(\(\) => \{[\s\S]*setLayoutInsets\(\{ left: '0px', right: '0px', bottom: '0px' \}\)/)
 })
 
 test('keeps dense checkboxes compact without decorative focus glow', () => {

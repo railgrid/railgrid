@@ -60,10 +60,12 @@ const STATUS_FILTER_OPTIONS = [
 ]
 
 const filters = computed<TableFilterDefinition[]>(() => [
-  {
-    key: 'template',
-    label: 'Template',
-    options: templateFilterOptions.value,
+    {
+      key: 'template',
+      label: 'Template',
+      control: 'combobox',
+      searchPlaceholder: 'Find a template…',
+      options: templateFilterOptions.value,
   },
   {
     key: 'status',
@@ -100,12 +102,12 @@ const dynamicColumns = computed<DynamicColumn[]>(() => {
 })
 
 const columns = computed(() => [
-  { key: 'name', label: 'Name' },
+  { key: 'name', label: 'Name', primary: true },
   { key: 'template', label: 'Template' },
   ...dynamicColumns.value.map(({ key, label }) => ({ key, label })),
   { key: 'status', label: 'Status' },
-  { key: 'age', label: 'Age' },
-  { key: 'actions', label: '' },
+  { key: 'age', label: 'Age', align: 'end' as const },
+  { key: 'actions', label: '', ariaLabel: 'Actions' },
 ])
 
 function instanceKey(instance: Pick<Instance, 'name'>): string {
@@ -442,6 +444,7 @@ onUnmounted(() => {
     <ResourceTable
       :columns="columns"
       :rows="rows"
+      aria-label="Infrastructure instances"
       searchable
       search-placeholder="Search instances…"
       :filters="filters"
@@ -469,7 +472,7 @@ onUnmounted(() => {
       <template #name="{ value, row }">
         <button
           type="button"
-          class="k-btn k-btn--ghost instance-name-link"
+          class="k-btn k-btn--ghost k-table-resource-link"
           :disabled="instanceIsDeleting(rowInstance(row)) || deletingInstanceKey === instanceKey(rowInstance(row))"
           :aria-label="`Open instance ${String(value)}`"
           @click.stop="selectInstance(row)"

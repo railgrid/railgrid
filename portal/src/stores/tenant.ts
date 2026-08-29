@@ -198,6 +198,10 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   const orgs = ref<OrgRow[]>([])
+  type OrgLoadState = 'idle' | 'loading' | 'ready' | 'error'
+  const orgLoadState = ref<OrgLoadState>('idle')
+  const orgError = ref<string | null>(null)
+  const orgListLoaded = ref(false)
   const workspacesByOrg = ref<Record<string, WorkspaceRow[]>>({})
   type WorkspaceLoadState = 'idle' | 'loading' | 'ready' | 'error'
   const workspaceLoadStateByOrg = ref<Record<string, WorkspaceLoadState>>({})
@@ -211,6 +215,13 @@ export const useTenantStore = defineStore('tenant', () => {
   const error = ref<string | null>(null)
   let orgRequestEpoch = 0
   let orgPending = 0
+  // The organization list is independent of the selected tenant headers, but
+  // its result still belongs to the selection authority that started it. Keep
+  // one request per selection revision so App bootstrap, the shell, and a
+  // mounted settings page can share the same read. A later selection gets a
+  // new key and therefore a fresh request whose epoch/revision fences this
+  // older one.
+  const orgRequestsBySelectionRevision = new Map<number, Promise<void>>()
 
   function updateLoading(): void {
     const workspacePending = Object.values(workspacePendingByOrg.value)
@@ -403,51 +414,95 @@ export const useTenantStore = defineStore('tenant', () => {
     return h
   }
 
-  async function fetchOrgs(): Promise<void> {
-    const requestEpoch = ++orgRequestEpoch
+  function fetchOrgs(): Promise<void> {
     const selectionRevisionAtStart = selectionRevision
+    const inFlight = orgRequestsBySelectionRevision.get(selectionRevisionAtStart)
+    if (inFlight) return inFlight
+
+    const requestEpoch = ++orgRequestEpoch
     orgPending++
     updateLoading()
     clearError()
-    try {
-      const resp = await authFetch('/api/orgs')
-      if (requestEpoch !== orgRequestEpoch || selectionRevision !== selectionRevisionAtStart) return
-      if (!resp.ok) {
-        error.value = `failed to list orgs: ${resp.status}`
-        orgs.value = []
-        return
+    orgLoadState.value = 'loading'
+    orgError.value = null
+
+    const resetStaleLoadState = (): void => {
+      if (
+        requestEpoch === orgRequestEpoch &&
+        selectionRevision !== selectionRevisionAtStart &&
+        orgLoadState.value === 'loading'
+      ) {
+        orgLoadState.value = 'idle'
+        orgError.value = null
       }
-      const data = (await resp.json()) as { items: OrgRow[] }
-      if (requestEpoch !== orgRequestEpoch || selectionRevision !== selectionRevisionAtStart) return
-      orgs.value = data.items ?? []
-      // A user selection made while this request was in flight is the
-      // authority. Do not let a late org list response reset it; a later
-      // refresh can validate the selection against fresh data.
-      if (selectionRevision !== selectionRevisionAtStart) return
-      // Default selection: prefer the personal org; else first row.
-      if (!orgUUID.value && orgs.value.length > 0) {
-        const personal = orgs.value.find((o) => o.personal)
-        selectionRevision++
-        orgUUID.value = (personal ?? orgs.value[0]).uuid
-        // No persisted authority exists here, so this is the first-login
-        // bootstrap path and may choose a default workspace below.
-        workspaceMode.value = 'workspace'
-      }
-      // Validate the persisted selection still exists; otherwise reset.
-      if (orgUUID.value && !orgs.value.find((o) => o.uuid === orgUUID.value)) {
-        selectionRevision++
-        orgUUID.value = orgs.value[0]?.uuid ?? null
-        workspaceUUID.value = null
-        workspaceMode.value = 'workspace'
-      }
-    } catch (e: unknown) {
-      if (requestEpoch === orgRequestEpoch && selectionRevision === selectionRevisionAtStart) {
-        error.value = e instanceof Error ? e.message : String(e ?? 'Failed to list organizations.')
-      }
-    } finally {
-      orgPending = Math.max(0, orgPending - 1)
-      updateLoading()
     }
+
+    let request!: Promise<void>
+    request = (async (): Promise<void> => {
+      try {
+        const resp = await authFetch('/api/orgs')
+        if (requestEpoch !== orgRequestEpoch || selectionRevision !== selectionRevisionAtStart) {
+          resetStaleLoadState()
+          return
+        }
+        if (!resp.ok) {
+          const message = `Unable to load organizations (HTTP ${resp.status}). Try again.`
+          error.value = `failed to list orgs: ${resp.status}`
+          orgLoadState.value = 'error'
+          orgError.value = message
+          return
+        }
+        const data = (await resp.json()) as { items: OrgRow[] }
+        if (requestEpoch !== orgRequestEpoch || selectionRevision !== selectionRevisionAtStart) {
+          resetStaleLoadState()
+          return
+        }
+        orgListLoaded.value = true
+        orgs.value = data.items ?? []
+        orgLoadState.value = 'ready'
+        orgError.value = null
+        // A user selection made while this request was in flight is the
+        // authority. Do not let a late org list response reset it; a later
+        // refresh can validate the selection against fresh data.
+        if (selectionRevision !== selectionRevisionAtStart) return
+        // Default selection: prefer the personal org; else first row.
+        if (!orgUUID.value && orgs.value.length > 0) {
+          const personal = orgs.value.find((o) => o.personal)
+          selectionRevision++
+          orgUUID.value = (personal ?? orgs.value[0]).uuid
+          // No persisted authority exists here, so this is the first-login
+          // bootstrap path and may choose a default workspace below.
+          workspaceMode.value = 'workspace'
+        }
+        // Validate the persisted selection still exists; otherwise reset.
+        if (orgUUID.value && !orgs.value.find((o) => o.uuid === orgUUID.value)) {
+          selectionRevision++
+          orgUUID.value = orgs.value[0]?.uuid ?? null
+          workspaceUUID.value = null
+          workspaceMode.value = 'workspace'
+        }
+      } catch (e: unknown) {
+        if (requestEpoch === orgRequestEpoch && selectionRevision === selectionRevisionAtStart) {
+          const message = readException('Unable to load organizations. Try again', e)
+          orgLoadState.value = 'error'
+          orgError.value = message
+          error.value = e instanceof Error ? e.message : String(e ?? 'Failed to list organizations.')
+        } else {
+          resetStaleLoadState()
+        }
+      } finally {
+        orgPending = Math.max(0, orgPending - 1)
+        updateLoading()
+        // Only the request that installed this entry may remove it. This
+        // keeps an older fenced request from deleting a newer same-key entry
+        // and makes the next call retry after either success or failure.
+        if (orgRequestsBySelectionRevision.get(selectionRevisionAtStart) === request) {
+          orgRequestsBySelectionRevision.delete(selectionRevisionAtStart)
+        }
+      }
+    })()
+    orgRequestsBySelectionRevision.set(selectionRevisionAtStart, request)
+    return request
   }
 
   async function fetchWorkspaces(
@@ -467,7 +522,6 @@ export const useTenantStore = defineStore('tenant', () => {
         if (targetOrgUUID === orgUUID.value) {
           error.value = `failed to list workspaces: ${resp.status}`
         }
-        workspacesByOrg.value = { ...workspacesByOrg.value, [targetOrgUUID]: [] }
         workspaceLoadStateByOrg.value = {
           ...workspaceLoadStateByOrg.value,
           [targetOrgUUID]: 'error',
@@ -1205,6 +1259,9 @@ export const useTenantStore = defineStore('tenant', () => {
     workspaceUUID,
     workspaceMode,
     orgs,
+    orgLoadState,
+    orgError,
+    orgListLoaded,
     workspacesByOrg,
     workspaceLoadStateByOrg,
     workspaceErrorByOrg,

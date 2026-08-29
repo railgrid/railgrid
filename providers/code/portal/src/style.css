@@ -149,7 +149,7 @@ faros-provider-code .repo-detail__provider-mark {
   position: absolute;
   z-index: 1;
   top: 0;
-  left: 0;
+  inset-inline-start: 0;
   display: grid;
   width: 38px;
   height: 38px;
@@ -160,34 +160,7 @@ faros-provider-code .repo-detail__provider-mark {
   color: var(--color-text-secondary, #8a8ca6);
 }
 faros-provider-code .repo-detail__resource > section > header {
-  padding-left: 52px;
-}
-faros-provider-code .repo-detail__back {
-  align-self: flex-start;
-  margin-bottom: -5px;
-  min-height: auto;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--color-accent, #8b6bff);
-  gap: 6px;
-  padding: 0;
-  font-size: 12px;
-  font-weight: 500;
-}
-faros-provider-code .repo-detail__back:hover {
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--color-accent-hover, #a18aff);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-faros-provider-code .repo-detail__back:active {
-  transform: none;
-}
-faros-provider-code .repo-detail__back svg {
-  flex: none;
+  padding-inline-start: 52px;
 }
 faros-provider-code .repo-detail__actions a[class~="k-btn--primary"],
 faros-provider-code .repo-detail__actions a[class~="k-btn--primary"]:hover {
@@ -426,7 +399,7 @@ faros-provider-code .connection-detail__provider-mark {
   position: absolute;
   z-index: 1;
   top: 0;
-  left: 0;
+  inset-inline-start: 0;
   display: grid;
   width: 38px;
   height: 38px;
@@ -437,35 +410,12 @@ faros-provider-code .connection-detail__provider-mark {
   color: var(--color-text-secondary, #8a8ca6);
 }
 faros-provider-code .connection-detail__resource > section > header {
-  padding-left: 52px;
+  padding-inline-start: 52px;
 }
 faros-provider-code .connection-detail__resource > section > header > div:first-child > div {
   align-items: center;
   gap: 7px;
 }
-faros-provider-code .connection-detail__back {
-  align-self: flex-start;
-  margin-bottom: -5px;
-  min-height: auto;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--color-accent, #8b6bff);
-  gap: 6px;
-  padding: 0;
-  font-size: 12px;
-  font-weight: 500;
-}
-faros-provider-code .connection-detail__back:hover {
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--color-accent-hover, #a18aff);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-faros-provider-code .connection-detail__back:active { transform: none; }
-faros-provider-code .connection-detail__back svg { flex: none; }
 faros-provider-code .connection-header__separator { color: var(--color-text-muted, #5d5f78); }
 faros-provider-code .connection-detail__actions {
   display: inline-flex;
@@ -617,7 +567,7 @@ faros-provider-code .connection-detail__health-facts dd {
     height: 32px;
   }
   faros-provider-code .repo-detail__resource > section > header {
-    padding-left: 44px;
+    padding-inline-start: 44px;
   }
   faros-provider-code .repo-detail__actions {
     width: 100%;
@@ -632,7 +582,7 @@ faros-provider-code .connection-detail__health-facts dd {
     align-self: flex-start;
   }
   faros-provider-code .connection-detail__resource > section > header {
-    padding-left: 44px;
+    padding-inline-start: 44px;
   }
   faros-provider-code .connection-detail__actions {
     width: 100%;

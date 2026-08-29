@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Activity, ArrowLeft, Database, Ellipsis, Link2, RefreshCw, Settings2 } from 'lucide-vue-next'
+import { Activity, Database, Ellipsis, Link2, RefreshCw, Settings2 } from 'lucide-vue-next'
 import { api } from '../api'
 import ConditionsPanel from '../portalkit/ConditionsPanel.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
+import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceStatCards, { type ResourceStatCard } from '../portalkit/ResourceStatCards.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
@@ -278,7 +279,13 @@ onUnmounted(() => {
 
 <template>
   <section class="databricks-resource-detail">
-    <a class="k-btn k-btn--ghost k-back-action" href="/ui/providers/databricks/warehouses" :aria-disabled="deleting || (!!warehouse && operationLocked(warehouse.name))" @click.prevent="goBack"><ArrowLeft :size="14" aria-hidden="true" /> Warehouses</a>
+    <ResourceBackLink
+      href="/ui/providers/databricks/warehouses"
+      :disabled="deleting || (!!warehouse && operationLocked(warehouse.name))"
+      @back="goBack"
+    >
+      Warehouses
+    </ResourceBackLink>
 
     <ResourcePage
       :title="warehouse?.name || name"
@@ -316,7 +323,6 @@ onUnmounted(() => {
       </template>
       <template #summary><ResourceStatCards :cards="statCards" density="compact" aria-label="Warehouse summary" /></template>
       <template #body>
-        <span v-if="loading" class="sr-only" role="status" aria-live="polite">Updating…</span>
         <p v-if="deleting" class="warning deletion-progress" role="status" aria-live="polite">Deleting this warehouse. The last successful snapshot remains visible until the hub confirms removal.</p>
         <p v-if="mutationError" class="error mutation-error" role="alert" aria-live="assertive">
           <span>{{ mutationError }}</span>

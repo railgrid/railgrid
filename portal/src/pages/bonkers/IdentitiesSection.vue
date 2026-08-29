@@ -7,7 +7,7 @@ import { useAdminStore } from '@/stores/admin'
 const admin = useAdminStore()
 
 const columns = [
-  { key: 'groupResource', label: 'Group / Resource' },
+  { key: 'groupResource', label: 'Group / Resource', primary: true },
   { key: 'export', label: 'Export' },
   { key: 'identityHash', label: 'identityHash' },
 ]
@@ -40,6 +40,7 @@ async function refresh() {
     <ResourceTable
       :columns="columns"
       :rows="identityRows"
+      aria-label="Provider API identities"
       :row-key="identityRowKey"
       :interactive="false"
       searchable

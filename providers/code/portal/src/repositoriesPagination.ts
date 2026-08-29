@@ -58,6 +58,8 @@ export function repositoryFilters(connections: readonly Connection[]): TableFilt
     {
       key: 'connectionRef',
       label: 'Connection',
+      control: 'combobox',
+      searchPlaceholder: 'Find a connection…',
       options: resourceOptions(connections.map(connection => connection.name)),
     },
     {

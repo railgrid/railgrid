@@ -27,13 +27,16 @@ export function sliceView<T>(o: SliceViewOptions<T>): TemplateResult {
     return html`${staleState(s.error, o.retry)}${content}`
   }
   if (s.error) return errorState(s.error, o.retry)
-  if (!s.loaded && s.loading) return loadingState()
+  // An unresolved slice is never an authoritative empty collection. The
+  // store normally marks loading synchronously, but treating all pre-load
+  // states as pending also protects the first render and context rotations.
+  if (!s.loaded) return loadingState()
   if (!s.data.length) return emptyState(o.emptyIcon, o.emptyText)
   return o.content(s.data)
 }
 
 export function loadingState(label = 'Loading…'): TemplateResult {
-  return html`<div class="k-card agents-state agents-state-loading" role="status">
+  return html`<div class="k-card agents-state agents-state-loading k-loading-reveal" role="status">
     <span class="agents-spinner" aria-hidden="true"></span> ${label}
   </div>`
 }

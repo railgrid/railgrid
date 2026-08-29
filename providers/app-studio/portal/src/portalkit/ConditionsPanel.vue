@@ -56,6 +56,7 @@ function conditionTone(status: string): 'success' | 'warning' | 'muted' {
         { key: 'sinceLabel', label: 'Since' },
       ]"
       :rows="rows"
+      aria-label="Resource conditions"
       :interactive="false"
       :empty-text="emptyText || 'No conditions yet. The controller has not reconciled this resource.'"
     >

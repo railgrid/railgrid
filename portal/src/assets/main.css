@@ -205,10 +205,7 @@ html.light .island {
 /* ── Island nav item ── */
 .island-nav {
   position: relative;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.island-nav:hover {
-  transform: translateY(-2px);
+  transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
 }
 .island-nav.active::after {
   content: "";

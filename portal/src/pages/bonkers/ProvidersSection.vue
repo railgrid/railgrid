@@ -11,11 +11,11 @@ import { useAdminStore, type KubeconfigServer } from '@/stores/admin'
 const admin = useAdminStore()
 
 const columns = [
-  { key: 'name', label: 'Name' },
+  { key: 'name', label: 'Name', primary: true, fullValue: (row: Record<string, unknown>) => providerDisplayName(row) },
   { key: 'status', label: 'Status' },
   { key: 'apiExportName', label: 'APIExport' },
   { key: 'workspaceCluster', label: 'Workspace cluster' },
-  { key: 'actions', label: '' },
+  { key: 'actions', label: '', ariaLabel: 'Actions' },
 ]
 
 const providerRows = computed<Record<string, unknown>[]>(() =>
@@ -158,6 +158,7 @@ async function remove(name: string) {
     <ResourceTable
       :columns="columns"
       :rows="providerRows"
+      aria-label="Providers"
       row-key="name"
       :interactive="false"
       searchable

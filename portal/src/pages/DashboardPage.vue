@@ -8,7 +8,7 @@ import WelcomeWizard from '@/components/WelcomeWizard.vue'
 import { useProvidersStore } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { useDashboardLayoutStore } from '@/stores/dashboardLayout'
-import { Puzzle, Plus, RotateCcw, Check, LayoutGrid, Rocket } from 'lucide-vue-next'
+import { Puzzle, Plus, RotateCcw, Check, LayoutDashboard, LayoutGrid, Rocket } from 'lucide-vue-next'
 
 // The dashboard iterates the catalog and mounts one <DashboardTile> per
 // ready provider. Each provider may register a
@@ -59,22 +59,42 @@ const gated = computed(() =>
 // probe results and is never wrongly empty because a bundle was slow.
 const candidateNames = computed(() => gated.value.map((p) => p.name))
 
-// Responsive column count so the grid fills wide screens instead of
-// leaving big dead margins. The store persists a user override (via
-// resize); this is the default when they have none.
-const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1280)
-function onResize() {
-  viewportWidth.value = window.innerWidth
-}
-onMounted(() => window.addEventListener('resize', onResize))
-onUnmounted(() => window.removeEventListener('resize', onResize))
+// Responsive column count follows the dashboard's actual content width, not
+// the browser viewport. AppLayout caps this column at max-w-5xl and the nav can
+// consume different amounts of the viewport, so viewport sizing made cards
+// unusably narrow at both phone and ultrawide sizes.
+const pageRef = ref<HTMLElement | null>(null)
+const pageWidth = ref(1024)
+const TILE_GAP = 16
+const MIN_TILE_WIDTH = 240
+const MAX_DASHBOARD_COLUMNS = 4
+let pageResizeObserver: ResizeObserver | null = null
+let fallbackResize: (() => void) | null = null
+
+onMounted(() => {
+  const page = pageRef.value
+  if (!page) return
+  const measure = () => {
+    pageWidth.value = page.clientWidth
+  }
+  measure()
+  if (typeof ResizeObserver !== 'undefined') {
+    pageResizeObserver = new ResizeObserver(measure)
+    pageResizeObserver.observe(page)
+  } else {
+    fallbackResize = measure
+    window.addEventListener('resize', measure)
+  }
+})
+
+onUnmounted(() => {
+  pageResizeObserver?.disconnect()
+  if (fallbackResize) window.removeEventListener('resize', fallbackResize)
+})
+
 const responsiveCols = computed(() => {
-  const w = viewportWidth.value
-  if (w < 768) return 2
-  if (w < 1280) return 3
-  if (w < 1680) return 4
-  if (w < 2200) return 5
-  return 6
+  const columns = Math.floor((pageWidth.value + TILE_GAP) / (MIN_TILE_WIDTH + TILE_GAP))
+  return Math.max(1, Math.min(MAX_DASHBOARD_COLUMNS, columns))
 })
 
 // Feed the layout store the live provider set + active tenant + column
@@ -205,20 +225,32 @@ function onRemove(name: string) {
   dash.hide(name)
 }
 
-// Persist geometry after a drag/resize settles. The grid fires
-// layout-updated on every step; debounce so we write once per gesture.
+// Persist geometry only after a user drag/resize settles. GridLayout's
+// layout-updated event also fires for mount and prop-driven responsive reflow,
+// so treating it as an edit would overwrite the authoritative wide layout
+// whenever the surrounding content column changes size.
 let persistTimer: ReturnType<typeof setTimeout> | null = null
-function onLayoutUpdated() {
+function onUserLayoutUpdated() {
   if (persistTimer) clearTimeout(persistTimer)
   persistTimer = setTimeout(() => dash.persist(), 300)
+}
+
+onUnmounted(() => {
+  if (persistTimer) clearTimeout(persistTimer)
+})
+
+// grid-layout-plus disables selection only after a drag/resize has started.
+// Cover the whole customize session so the initiating pointer movement cannot
+// leave text highlighted beneath the tile. Normal dashboard browsing keeps
+// native text selection.
+function onGridSelectStart(event: Event) {
+  if (editMode.value) event.preventDefault()
 }
 </script>
 
 <template>
-  <AppLayout full-bleed>
-    <!-- Full-bleed so the dashboard uses the whole width (no max-w-5xl side
-         margins on wide screens); we own padding + scroll here. -->
-    <div class="h-full w-full overflow-y-auto px-6 py-5">
+  <AppLayout>
+    <div ref="pageRef">
     <div v-if="initializing" class="mt-20 flex flex-col items-center justify-center">
       <div class="shimmer h-8 w-8 rounded-xl" />
       <div class="shimmer mt-4 h-3 w-40 rounded" />
@@ -242,23 +274,32 @@ function onLayoutUpdated() {
       </div>
 
       <template v-else>
-        <!-- Customize controls. -->
-        <div class="mb-4 flex items-center justify-between">
-          <h1 class="text-[13px] font-medium text-text-secondary">Dashboard</h1>
-          <div class="flex items-center gap-2">
+        <!-- Page heading and customize controls. -->
+        <header class="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div class="min-w-0">
+            <h1 class="flex items-center gap-2 text-xl font-semibold text-text-primary">
+              <LayoutDashboard class="h-5 w-5 flex-shrink-0 text-accent" :stroke-width="1.75" />
+              Dashboard
+            </h1>
+            <p class="mt-1 text-sm text-text-muted">Provider summaries for the active workspace.</p>
+          </div>
+          <div class="flex w-full flex-wrap items-center gap-2 md:w-auto md:justify-end">
             <template v-if="editMode">
               <!-- Add a previously-removed tile back. -->
               <div class="relative">
                 <button
                   type="button"
-                  class="k-btn k-btn--ghost flex items-center gap-1.5 px-3 py-1.5 text-[12px] disabled:cursor-not-allowed disabled:opacity-50"
+                  class="k-btn k-btn--ghost min-h-11 px-3 text-[12px] disabled:cursor-not-allowed disabled:opacity-50 md:min-h-0 md:py-1.5"
                   :disabled="addable.length === 0"
+                  :aria-expanded="addOpen"
+                  aria-controls="dashboard-add-menu"
                   @click="addOpen = !addOpen"
                 >
-                  <Plus class="h-3.5 w-3.5" :stroke-width="2" /> Add tile
+                  <Plus class="h-4 w-4" :stroke-width="1.75" /> Add tile
                 </button>
                 <div
                   v-if="addOpen && addable.length"
+                  id="dashboard-add-menu"
                   class="absolute right-0 z-20 mt-1 max-h-64 w-56 overflow-auto rounded-lg border border-border-subtle bg-surface-overlay py-1 shadow-lg"
                 >
                   <button
@@ -268,24 +309,24 @@ function onLayoutUpdated() {
                     class="k-menu-item"
                     @click="onAdd(name)"
                   >
-                    <Puzzle class="h-3.5 w-3.5 flex-shrink-0 text-text-muted" :stroke-width="1.75" />
+                    <Puzzle class="h-4 w-4 flex-shrink-0 text-text-muted" :stroke-width="1.75" />
                     <span class="truncate">{{ providerFor(name)?.displayName ?? name }}</span>
                   </button>
                 </div>
               </div>
               <button
                 type="button"
-                class="k-btn k-btn--ghost flex items-center gap-1.5 px-3 py-1.5 text-[12px]"
+                class="k-btn k-btn--ghost min-h-11 px-3 text-[12px] md:min-h-0 md:py-1.5"
                 @click="dash.reset()"
               >
-                <RotateCcw class="h-3.5 w-3.5" :stroke-width="2" /> Reset
+                <RotateCcw class="h-4 w-4" :stroke-width="1.75" /> Reset
               </button>
               <button
                 type="button"
-                class="k-btn k-btn--primary flex items-center gap-1.5 px-3 py-1.5 text-[12px]"
+                class="k-btn k-btn--primary min-h-11 px-3 text-[12px] md:min-h-0 md:py-1.5"
                 @click="toggleEdit"
               >
-                <Check class="h-3.5 w-3.5" :stroke-width="2" /> Done
+                <Check class="h-4 w-4" :stroke-width="1.75" /> Done
               </button>
             </template>
             <template v-else>
@@ -293,21 +334,21 @@ function onLayoutUpdated() {
                    customize controls stay a single coherent group. -->
               <button
                 type="button"
-                class="k-btn k-btn--primary flex items-center gap-1.5 px-3 py-1.5 text-[12px]"
+                class="k-btn k-btn--primary min-h-11 px-3 text-[12px] md:min-h-0 md:py-1.5"
                 @click="welcomeForced = true"
               >
-                <Rocket class="h-3.5 w-3.5" :stroke-width="2" /> Getting started
+                <Rocket class="h-4 w-4" :stroke-width="1.75" /> Getting started
               </button>
               <button
                 type="button"
-                class="k-btn k-btn--ghost flex items-center gap-1.5 px-3 py-1.5 text-[12px]"
+                class="k-btn k-btn--ghost min-h-11 px-3 text-[12px] md:min-h-0 md:py-1.5"
                 @click="toggleEdit"
               >
-                <LayoutGrid class="h-3.5 w-3.5" :stroke-width="2" /> Customize
+                <LayoutGrid class="h-4 w-4" :stroke-width="1.75" /> Customize
               </button>
             </template>
           </div>
-        </div>
+        </header>
 
         <!-- Nothing on the grid. Two distinct reasons, so the message must
              match: either the user removed tiles that can be added back
@@ -338,14 +379,15 @@ function onLayoutUpdated() {
         <GridLayout
           v-else
           v-model:layout="layout"
+          :class="editMode ? 'select-none' : undefined"
           :col-num="responsiveCols"
           :row-height="90"
-          :margin="[16, 16]"
+          :margin="[TILE_GAP, TILE_GAP]"
           :is-draggable="editMode"
           :is-resizable="editMode"
           :is-bounded="true"
           :vertical-compact="true"
-          @layout-updated="onLayoutUpdated"
+          @selectstart="onGridSelectStart"
         >
           <GridItem
             v-for="item in layout"
@@ -358,6 +400,8 @@ function onLayoutUpdated() {
             :min-w="1"
             :min-h="1"
             drag-ignore-from=".tile-no-drag"
+            @moved="onUserLayoutUpdated"
+            @resized="onUserLayoutUpdated"
           >
             <DashboardTile
               v-if="providerFor(item.i)"

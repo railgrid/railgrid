@@ -522,7 +522,7 @@ describe('edge list views', () => {
       await flush()
       const state = mounted.instance.setupState
       expect(state.serviceFilters).toMatchObject([
-        { key: 'edgeName', options: [{ value: 'edge-a' }, { value: 'edge-b' }] },
+        { key: 'edgeName', control: 'combobox', options: [{ value: 'edge-a' }, { value: 'edge-b' }] },
         { key: 'typeLabel', options: [{ value: 'Generic HTTP' }, { value: 'Home Assistant' }] },
         { key: 'status', options: [
           { value: 'Pending', label: 'Pending' }, { value: 'Detected', label: 'Detected' },

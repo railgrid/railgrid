@@ -91,7 +91,7 @@ html.light .k-card {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.15em;
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6));
 }
 .k-table tbody tr {
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
@@ -222,12 +222,31 @@ html.light .k-card {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+.k-back-action[aria-disabled="true"],
+.k-back-action[aria-disabled="true"]:hover {
+  color: var(--color-text-muted, #5d5f78);
+  cursor: not-allowed;
+  opacity: 0.4;
+  text-decoration: none;
+}
 .k-back-action:focus-visible {
   outline: 2px solid var(--color-accent, #8b6bff);
   outline-offset: 2px;
 }
 .k-back-action:active { transform: none; }
 .k-back-action svg { flex: none; }
+/* The back arrow follows the document direction while retaining one Lucide
+ * icon source in ResourceBackLink. */
+.k-back-action:dir(rtl) svg { transform: scaleX(-1); }
+
+@media (pointer: coarse), (any-pointer: coarse) {
+  /* Back links remain easy to hit on touch and pen input even though the
+   * desktop recipe is intentionally an inline text-level affordance. */
+  .k-back-action {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
 
 /* ── Route-owned create page ──────────────────────────────────────────────
  * One hierarchy across providers: back action, one page heading, one form
@@ -385,6 +404,20 @@ html.light .k-menu {
 .k-menu-item:hover {
   background: var(--color-surface-overlay, #171927);
   color: var(--color-text-primary, #e9e9f2);
+}
+.k-menu-item:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: -2px;
+}
+.k-menu-item:disabled,
+.k-menu-item[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+.k-menu-item:disabled:hover,
+.k-menu-item[aria-disabled="true"]:hover {
+  background: transparent;
+  color: var(--color-text-secondary, #8a8ca6);
 }
 .k-menu-item.is-selected {
   background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
@@ -978,10 +1011,26 @@ html.light [data-k-tip]::after {
 .k-table__retry:hover,
 .k-table__retry:focus-visible { background: var(--color-danger-subtle, rgba(255, 93, 93, 0.12)); }
 .k-table__loading { overflow: hidden; border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); border-radius: 6px; }
+.k-delayed-loading {
+  opacity: 1;
+  transition: opacity 120ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.k-delayed-loading[aria-hidden="true"] {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+.k-loading-reveal {
+  animation: k-loading-reveal 120ms cubic-bezier(0.16, 1, 0.3, 1) 180ms both;
+}
+@keyframes k-loading-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
 .k-table__loading-head,
 .k-table__loading-row {
   display: grid;
-  grid-template-columns: 1.4fr 1fr 0.7fr;
+  grid-template-columns: repeat(var(--k-table-loading-columns, 3), minmax(0, 1fr));
   gap: 16px;
   padding: 12px 20px;
 }
@@ -994,6 +1043,13 @@ html.light [data-k-tip]::after {
 .k-table__skeleton--mid { width: 64%; }
 .k-table__skeleton--small { width: 42%; }
 .k-table.k-table--resource {
+  /* Dense tables need a quiet third text level without dropping below AA.
+   * These roles stay inside the existing violet-tinted neutral system: violet
+   * remains reserved for action/focus, while readable copy and enabled controls
+   * derive from the theme's secondary foreground. */
+  --k-table-readable-muted: color-mix(in srgb, var(--color-text-secondary, #8a8ca6) 90%, var(--color-surface-raised, #111320));
+  --k-table-control-border: color-mix(in srgb, var(--color-text-secondary, #8a8ca6) 70%, var(--color-surface-overlay, #171927));
+  --k-table-action-idle: color-mix(in srgb, var(--color-text-secondary, #8a8ca6) 80%, var(--color-surface-raised, #111320));
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
@@ -1028,18 +1084,18 @@ html.light [data-k-tip]::after {
   position: relative;
 }
 .k-table__search-icon {
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6));
   height: 14px;
-  inset: 9px auto auto 10px;
+  inset: 50% auto auto 10px;
   pointer-events: none;
   position: absolute;
+  transform: translateY(-50%);
   width: 14px;
 }
 .k-table__search-input,
-.k-table__filter-select,
 .k-table__page-size-select {
   background: var(--color-surface-overlay, #171927);
-  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border: 1px solid var(--k-table-control-border, var(--color-text-secondary, #8a8ca6));
   border-radius: 4px;
   color: var(--color-text-primary, #e9e9f2);
   font: inherit;
@@ -1050,14 +1106,13 @@ html.light [data-k-tip]::after {
   padding: 0 30px;
   width: 100%;
 }
-.k-table__search-input::placeholder { color: var(--color-text-muted, #5d5f78); }
+.k-table__search-input::placeholder { color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6)); }
 .k-table__search-input::-webkit-search-decoration,
 .k-table__search-input::-webkit-search-cancel-button {
   -webkit-appearance: none;
   appearance: none;
 }
 .k-table__search-input:focus,
-.k-table__filter-select:focus,
 .k-table__page-size-select:focus {
   border-color: var(--color-accent, #8b6bff);
   box-shadow: 0 0 0 2px var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
@@ -1068,7 +1123,7 @@ html.light [data-k-tip]::after {
   background: transparent;
   border: 0;
   border-radius: 4px;
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6));
   cursor: pointer;
   display: inline-flex;
   height: 24px;
@@ -1080,7 +1135,185 @@ html.light [data-k-tip]::after {
 }
 .k-table__search-clear:hover { background: var(--color-surface-hover, #1e2033); color: var(--color-text-primary, #e9e9f2); }
 .k-table__search-clear svg { height: 13px; width: 13px; }
-.k-table__filter-select { min-width: 132px; padding: 0 28px 0 10px; }
+.k-table__filter {
+  align-items: center;
+  background: var(--color-surface-overlay, #171927);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-radius: 4px;
+  display: grid;
+  flex: 0 1 auto;
+  grid-template-columns: auto minmax(68px, auto);
+  height: 32px;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+  transition: border-color 120ms ease;
+}
+.k-table__filter--combobox {
+  grid-template-columns: auto minmax(116px, 1fr);
+  min-width: 210px;
+}
+.k-table__filter:hover {
+  border-color: var(--k-table-control-border, var(--color-text-secondary, #8a8ca6));
+}
+.k-table__filter.is-active {
+  border-color: color-mix(in srgb, var(--color-accent, #8b6bff) 42%, var(--color-border-default, rgba(255, 255, 255, 0.11)));
+}
+.k-table__filter:focus-within {
+  border-color: var(--color-accent, #8b6bff);
+  box-shadow: 0 0 0 2px var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+}
+.k-table__filter-label {
+  align-items: center;
+  align-self: stretch;
+  background: color-mix(in srgb, var(--color-surface-raised, #111320) 78%, var(--color-surface-overlay, #171927));
+  border-inline-end: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
+  color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6));
+  display: flex;
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  padding-inline: 9px 8px;
+  text-transform: uppercase;
+  transition: color 120ms ease;
+  white-space: nowrap;
+}
+.k-table__filter.is-active .k-table__filter-label {
+  color: var(--color-accent, #8b6bff);
+}
+.k-table__filter-trigger {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--color-text-primary, #e9e9f2);
+  font: inherit;
+  font-size: 12px;
+  height: 30px;
+  min-width: 0;
+  outline: 0;
+}
+.k-table__filter:not(.is-active) .k-table__filter-trigger {
+  color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6));
+}
+.k-table__filter-trigger {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 7px;
+  justify-content: space-between;
+  padding: 0 8px 0 7px;
+  text-align: start;
+  width: 100%;
+}
+.k-table__filter-trigger svg {
+  color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6));
+  flex: 0 0 auto;
+  height: 13px;
+  transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
+  width: 13px;
+}
+.k-table__filter-trigger[aria-expanded="true"] svg { transform: rotate(180deg); }
+.k-table__filter-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.k-table__filter-panel {
+  --k-table-filter-panel-max-height: 320px;
+  max-height: var(--k-table-filter-panel-max-height);
+  overflow: hidden;
+  position: fixed;
+  z-index: 1000;
+}
+.k-table__filter-search { display: block; position: relative; }
+.k-table__filter-search > svg {
+  color: var(--color-text-muted, #5d5f78);
+  height: 14px;
+  inset: 50% auto auto 9px;
+  pointer-events: none;
+  position: absolute;
+  transform: translateY(-50%);
+  width: 14px;
+}
+.k-table__filter-search input {
+  background: var(--color-surface-overlay, #171927);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-radius: 4px;
+  color: var(--color-text-primary, #e9e9f2);
+  font: inherit;
+  font-size: 12px;
+  height: 34px;
+  padding: 0 9px 0 30px;
+  width: 100%;
+}
+.k-table__filter-search input::placeholder { color: var(--color-text-secondary, #8a8ca6); }
+.k-table__filter-search input:focus {
+  border-color: var(--color-accent, #8b6bff);
+  box-shadow: 0 0 0 2px var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  outline: 0;
+}
+.k-table__filter-meta {
+  color: var(--color-text-muted, #5d5f78);
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  padding: 7px 4px 4px;
+  text-transform: uppercase;
+}
+.k-table__filter-options {
+  display: grid;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  max-height: max(0px, calc(var(--k-table-filter-panel-max-height) - 8px));
+  overflow-y: auto;
+  padding: 0;
+  scrollbar-color: var(--color-border-default, rgba(255, 255, 255, 0.11)) transparent;
+  scrollbar-width: thin;
+}
+.k-table__filter-panel--searchable .k-table__filter-options {
+  max-height: max(0px, calc(var(--k-table-filter-panel-max-height) - 78px));
+}
+.k-table__filter-option {
+  align-items: center;
+  border-radius: 3px;
+  color: var(--color-text-secondary, #8a8ca6);
+  cursor: pointer;
+  display: flex;
+  font-family: var(--font-mono, "IBM Plex Mono", monospace);
+  font-size: 11px;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 8px;
+}
+.k-table__filter-option:hover,
+.k-table__filter-option.is-active {
+  background: var(--color-surface-hover, #1e2033);
+  color: var(--color-text-primary, #e9e9f2);
+}
+.k-table__filter-option[aria-selected="true"] {
+  background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14));
+  color: var(--color-accent, #8b6bff);
+}
+.k-table__filter-option[aria-selected="true"].is-active {
+  background: color-mix(in srgb, var(--color-accent, #8b6bff) 18%, var(--color-surface-raised, #111320));
+  color: var(--color-text-primary, #e9e9f2);
+}
+.k-table__filter-option svg {
+  color: var(--color-accent, #8b6bff);
+  flex: 0 0 auto;
+  height: 13px;
+  opacity: 0;
+  width: 13px;
+}
+.k-table__filter-option[aria-selected="true"] svg { opacity: 1; }
+.k-table__filter-empty {
+  color: var(--color-text-muted, #5d5f78);
+  font-size: 12px;
+  margin: 0;
+  padding: 12px 8px;
+}
 .k-table__clear-filters {
   background: transparent;
   border: 0;
@@ -1093,6 +1326,11 @@ html.light [data-k-tip]::after {
   padding: 0 8px;
 }
 .k-table__clear-filters:hover { background: var(--color-accent-subtle, rgba(139, 107, 255, 0.14)); }
+.k-table__search-clear:focus-visible,
+.k-table__clear-filters:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+}
 .k-table__scroll {
   max-width: 100%;
   overscroll-behavior-inline: contain;
@@ -1102,13 +1340,13 @@ html.light [data-k-tip]::after {
 .k-table__scroll:focus { outline: 0; }
 .k-table__scroll:focus-visible { box-shadow: inset 0 0 0 2px var(--color-accent, #8b6bff); }
 .k-table__table { min-width: 100%; }
-/* Keep ResourceTable columns intrinsic inside the dedicated scroll region.
- * The specificity lets this shared contract survive a consumer's broad
- * descendant reset without leaking a provider-specific selector into portals. */
+/* Secondary columns take only their intrinsic width. The primary column takes
+ * the rest, while genuinely wide content still expands inside this scroll
+ * region. The specificity keeps the contract ahead of consumer resets. */
 .k-table.k-table--resource .k-table__scroll > .k-table__table {
   max-width: none;
   min-width: 100%;
-  width: max-content;
+  width: 100%;
 }
 .k-table__head-row { border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); }
 .k-table__heading {
@@ -1119,8 +1357,10 @@ html.light [data-k-tip]::after {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.15em;
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6));
+  width: 1%;
 }
+.k-table__heading--primary { width: 100%; }
 .k-table__row {
   animation: none;
   border-bottom: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
@@ -1132,7 +1372,72 @@ html.light [data-k-tip]::after {
   font-size: 13px;
   color: var(--color-text-secondary, #8a8ca6);
   transition: color 0.1s ease;
+  width: 1%;
 }
+.k-table__cell--primary { width: 100%; }
+.k-table__primary {
+  align-items: center;
+  display: flex;
+  min-width: 0;
+}
+.k-table__primary-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.k-table__primary-value {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.k-table__primary-actions {
+  align-items: center;
+  display: flex;
+  flex: none;
+  gap: 2px;
+  margin-inline-start: 12px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.k-table__row:hover .k-table__primary-actions,
+.k-table__row:focus-within .k-table__primary-actions,
+.k-table__primary-actions:has(.k-table-action--busy) {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Keep the full identifier in the DOM for copy and assistive technology. JS
+ * measures real overflow before teleporting this visual disclosure to the
+ * document body, where the table's scroll and card boundaries cannot clip it. */
+.k-table__primary-tooltip {
+  background: var(--color-surface-overlay, #171927);
+  border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  border-radius: 4px;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--color-surface, #0a0b12) 70%, transparent);
+  color: var(--color-text-primary, #e9e9f2);
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+  max-width: min(480px, calc(100vw - 16px));
+  padding: 6px 8px;
+  pointer-events: none;
+  position: fixed;
+  text-transform: none;
+  visibility: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  width: max-content;
+  z-index: 1100;
+}
+.k-table__primary-tooltip--positioned { visibility: visible; }
+.k-table.k-table--resource .k-table__heading--start,
+.k-table.k-table--resource .k-table__cell--start { text-align: start; }
+.k-table.k-table--resource .k-table__heading--center,
+.k-table.k-table--resource .k-table__cell--center { text-align: center; }
+.k-table.k-table--resource .k-table__heading--end,
+.k-table.k-table--resource .k-table__cell--end { text-align: end; }
 /* Primary resource identity inside a table is a text-level navigation action,
  * not a miniature ghost button. Keep this shared so provider list views do
  * not drift in weight, color, or hover treatment. */
@@ -1164,11 +1469,11 @@ html.light [data-k-tip]::after {
   outline: 2px solid var(--color-accent, #8b6bff);
   outline-offset: -2px;
 }
-.k-table__empty-cell { padding: 36px 20px; text-align: center; color: var(--color-text-muted, #5d5f78); }
+.k-table__empty-cell { padding: 36px 20px; text-align: center; color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6)); }
 .k-table__empty-icon { width: 24px; height: 24px; margin: 0 auto 8px; opacity: 0.7; }
 .k-table__empty-label { margin: 0; font-size: 12px; }
 .k-table__pending-cell { padding: 36px 20px; text-align: center; }
-.k-table__pending-label { color: var(--color-text-muted, #5d5f78); font-size: 12px; margin: 0; }
+.k-table__pending-label { color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6)); font-size: 12px; margin: 0; }
 .k-table__pagination {
   align-items: center;
   background: var(--color-surface, #0a0b12);
@@ -1180,7 +1485,7 @@ html.light [data-k-tip]::after {
 }
 .k-table__range,
 .k-table__page-indicator {
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6));
   font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
@@ -1188,7 +1493,7 @@ html.light [data-k-tip]::after {
 .k-table__range strong { color: var(--color-text-secondary, #8a8ca6); font-weight: 500; }
 .k-table__page-size {
   align-items: center;
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6));
   display: flex;
   font-size: 11px;
   gap: 7px;
@@ -1230,7 +1535,7 @@ html.light [data-k-tip]::after {
   background: transparent;
   border: 0;
   border-radius: 4px;
-  color: color-mix(in srgb, var(--color-text-muted, #5d5f78) 40%, transparent);
+  color: var(--k-table-action-idle, var(--color-text-secondary, #8a8ca6));
   cursor: pointer;
   display: inline-flex;
   height: 28px;
@@ -1285,15 +1590,65 @@ html.light [data-k-tip]::after {
 .k-table-action__icon--spinning { animation: k-table-action-spin 0.8s linear infinite; }
 @keyframes k-table-action-spin { to { transform: rotate(360deg); } }
 
+@media (prefers-reduced-motion: reduce) {
+  .k-delayed-loading { transition-duration: 1ms; }
+  .k-loading-reveal { animation-duration: 1ms; }
+}
+
 @media (max-width: 600px) {
   .k-table__search,
   .k-table__loading-control--search { flex-basis: 100%; }
-  .k-table__filter-select,
-  .k-table__loading-control--filter { flex: 1 1 130px; min-width: 0; }
+  .k-table__filter,
+  .k-table__loading-control--filter { flex: 1 1 100%; min-width: 0; width: 100%; }
+  .k-table__filter { grid-template-columns: 84px minmax(0, 1fr); }
+  .k-table__clear-filters { align-self: flex-start; }
   .k-table__pagination { flex-wrap: wrap; padding-inline: 12px; }
   .k-table__range { flex-basis: 100%; }
   .k-table__page-size { margin-inline-start: 0; }
   .k-table__page-actions { margin-inline-start: auto; }
+}
+
+@media (hover: none) {
+  .k-table__primary-actions,
+  .k-table__primary-actions .k-table-action {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* Coarse pointers need a full touch target even though desktop tables stay
+ * intentionally dense. Keep row shortcuts visible as well: hover is not a
+ * dependable affordance for touch, pen, or hybrid input. */
+@media (pointer: coarse) {
+  .k-table__search-input,
+  .k-table__filter,
+  .k-table__page-size-select {
+    min-height: 44px;
+  }
+  .k-table__filter-trigger { height: 42px; }
+  .k-table__search-clear {
+    inset-block-start: 0;
+    inset-inline-end: 0;
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .k-table__clear-filters,
+  .k-table__retry {
+    min-height: 44px;
+  }
+  .k-table__page-button,
+  .k-table-action {
+    height: 44px;
+    min-height: 44px;
+    min-width: 44px;
+    opacity: 1;
+    pointer-events: auto;
+    width: 44px;
+  }
+  .k-table__primary-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* ── Status / conditions ──────────────────────────────────────────────────
@@ -1315,6 +1670,8 @@ html.light [data-k-tip]::after {
  * standalone Vue providers. Read-state presentation is deliberately
  * separate from the caller-owned body and actions. */
 .k-resource-page {
+  container-name: resource-page;
+  container-type: inline-size;
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -1328,15 +1685,10 @@ html.light [data-k-tip]::after {
   justify-content: space-between;
   gap: 16px;
 }
-.k-resource-page__heading { min-width: 0; }
-.k-resource-page__eyebrow {
-  margin: 0 0 5px;
-  color: var(--color-text-muted, #5d5f78);
-  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: .12em;
-  text-transform: uppercase;
+.k-resource-page__heading {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 auto;
 }
 .k-resource-page__title {
   margin: 0;
@@ -1350,9 +1702,13 @@ html.light [data-k-tip]::after {
 }
 .k-resource-page__subtitle {
   margin: 4px 0 0;
+  max-width: 100%;
   color: var(--color-text-secondary, #8a8ca6);
   font-size: 12px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
+  text-align: start;
+  word-break: break-word;
 }
 .k-resource-page__meta {
   display: flex;
@@ -1360,8 +1716,23 @@ html.light [data-k-tip]::after {
   align-items: center;
   gap: 8px;
   margin-top: 7px;
-  color: var(--color-text-muted, #5d5f78);
+  min-width: 0;
+  max-width: 100%;
+  color: var(--color-text-secondary, #8a8ca6);
   font-size: 11px;
+  overflow-wrap: anywhere;
+  text-align: start;
+  word-break: break-word;
+}
+.k-resource-page__meta > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.k-resource-page__meta :where(code, a) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .k-resource-page__kind {
   display: inline-flex;
@@ -1370,25 +1741,40 @@ html.light [data-k-tip]::after {
 }
 .k-resource-page__separator {
   flex: 0 0 auto;
-  color: var(--color-text-muted, #5d5f78);
+  color: var(--color-text-secondary, #8a8ca6);
 }
 .k-resource-page__header-side {
   display: flex;
   min-width: 0;
+  max-width: 100%;
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 9px;
 }
-.k-resource-page__status { display: inline-flex; flex: 0 0 auto; align-items: center; }
+.k-resource-page__status {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+  align-items: center;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .k-resource-page__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.k-resource-page__summary { min-width: 0; margin: 18px 0 20px; }
+.k-resource-page__summary { min-width: 0; margin: 0; }
 .k-resource-stat-cards {
   display: grid;
   min-width: 0;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
+.k-resource-stat-cards--count-1 { grid-template-columns: minmax(0, 1fr); }
+.k-resource-stat-cards--count-2,
+.k-resource-stat-cards--count-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .k-resource-stat-card {
   display: flex;
   min-width: 0;
@@ -1418,14 +1804,13 @@ html.light [data-k-tip]::after {
   gap: 3px;
 }
 .k-resource-stat-card__label {
-  overflow: hidden;
   color: var(--color-text-muted, #5d5f78);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: .1em;
-  text-overflow: ellipsis;
   text-transform: uppercase;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .k-resource-stat-card__value {
   min-width: 0;
@@ -1483,7 +1868,11 @@ html.light [data-k-tip]::after {
   justify-content: space-between;
   gap: 18px;
 }
-.k-resource-section-card__heading { min-width: 0; }
+.k-resource-section-card__heading {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 auto;
+}
 .k-resource-section-card__eyebrow {
   margin: 0 0 4px;
   color: var(--color-text-muted, #5d5f78);
@@ -1492,18 +1881,29 @@ html.light [data-k-tip]::after {
   font-weight: 600;
   letter-spacing: .1em;
   text-transform: uppercase;
+  overflow-wrap: anywhere;
+  text-align: start;
+  word-break: break-word;
 }
 .k-resource-section-card__title {
   margin: 0;
+  max-width: 100%;
   color: var(--color-text-primary, #e9e9f2);
   font-size: 14px;
   font-weight: 600;
+  overflow-wrap: anywhere;
+  text-align: start;
+  word-break: break-word;
 }
 .k-resource-section-card__description {
   margin: 4px 0 0;
+  max-width: 100%;
   color: var(--color-text-muted, #5d5f78);
   font-size: 11px;
   line-height: 1.4;
+  overflow-wrap: anywhere;
+  text-align: start;
+  word-break: break-word;
 }
 .k-resource-section-card__actions {
   display: flex;
@@ -1525,6 +1925,7 @@ html.light [data-k-tip]::after {
   display: flex;
   min-width: 0;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   border: 1px solid color-mix(in srgb, var(--color-danger, #ff5d5d) 45%, transparent);
   border-radius: 6px;
@@ -1535,7 +1936,14 @@ html.light [data-k-tip]::after {
 .k-resource-page__read-error { color: var(--color-danger, #ff5d5d); }
 .k-resource-page__stale { border-color: color-mix(in srgb, var(--color-warning, #f0a63a) 45%, transparent); background: var(--color-warning-subtle, rgba(240, 166, 58, 0.12)); color: var(--color-warning, #f0a63a); }
 .k-resource-page__read-icon { flex: none; }
-.k-resource-page__read-message { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.k-resource-page__read-message {
+  min-width: 0;
+  flex: 1;
+  color: var(--color-text-primary, #e9e9f2);
+  overflow-wrap: anywhere;
+  text-align: start;
+  word-break: break-word;
+}
 .k-resource-page__retry { flex: none; padding: 5px 9px; font-size: 11px; }
 .k-resource-page__loading {
   display: flex;
@@ -1553,6 +1961,17 @@ html.light [data-k-tip]::after {
 .k-resource-page__skeleton--wide { width: 76%; }
 .k-resource-page__skeleton--medium { width: 54%; }
 .k-resource-page__body { min-width: 0; }
+
+@media (pointer: coarse), (any-pointer: coarse) {
+  .k-resource-page__actions :where(button, a),
+  .k-resource-page__actions details > summary,
+  .k-resource-section-card__actions :where(button, a),
+  .k-resource-section-card__actions details > summary,
+  .k-resource-page__retry {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
 
 /* Low-emphasis technical disclosure used below a product-facing resource
  * body. The caller owns the values; these recipes only provide consistent
@@ -1627,21 +2046,84 @@ html.light [data-k-tip]::after {
   white-space: pre;
 }
 
-@media (max-width: 620px) {
-  .k-resource-page__header { flex-direction: column; }
-  .k-resource-page__header-side { justify-content: flex-start; }
+/* Resource detail pages can be embedded in a host column, drawer, or split
+ * view. Keep adaptation tied to the page's inline size rather than to the
+ * viewport that happens to contain it. The fallback below preserves the same
+ * content-first behavior in browsers without container-query support. */
+@supports (container-type: inline-size) {
+  @container resource-page (max-width: 620px) {
+    .k-resource-page__header { flex-direction: column; }
+    .k-resource-page__header-side {
+      width: 100%;
+      justify-content: flex-start;
+    }
+    .k-resource-page__actions {
+      width: 100%;
+      justify-content: flex-start;
+    }
+    .k-resource-stat-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .k-resource-stat-cards--count-1 { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  @container resource-page (max-width: 520px) {
+    .k-resource-page__title { font-size: 22px; }
+    .k-resource-section-card { padding: 16px; }
+    .k-resource-section-card__header { flex-direction: column; gap: 10px; }
+    .k-resource-section-card__actions {
+      width: 100%;
+      justify-content: flex-start;
+    }
+  }
+
+  @container resource-page (max-width: 420px) {
+    .k-resource-stat-cards { grid-template-columns: minmax(0, 1fr); }
+    .k-resource-page__read-error,
+    .k-resource-page__stale {
+      align-items: flex-start;
+    }
+    .k-resource-page__read-message {
+      flex-basis: calc(100% - 24px);
+    }
+    .k-resource-page__retry { margin-inline-start: 24px; }
+  }
 }
 
-@media (max-width: 859px) {
-  .k-resource-stat-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
+@supports not (container-type: inline-size) {
+  @media (max-width: 620px) {
+    .k-resource-page__header { flex-direction: column; }
+    .k-resource-page__header-side {
+      width: 100%;
+      justify-content: flex-start;
+    }
+    .k-resource-page__actions {
+      width: 100%;
+      justify-content: flex-start;
+    }
+    .k-resource-stat-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .k-resource-stat-cards--count-1 { grid-template-columns: minmax(0, 1fr); }
+  }
 
-@media (max-width: 520px) {
-  .k-resource-page__title { font-size: 22px; }
-  .k-resource-stat-cards { grid-template-columns: minmax(0, 1fr); }
-  .k-resource-section-card { padding: 16px; }
-  .k-resource-section-card__header { flex-direction: column; gap: 10px; }
-  .k-resource-section-card__actions { justify-content: flex-start; }
+  @media (max-width: 520px) {
+    .k-resource-page__title { font-size: 22px; }
+    .k-resource-section-card { padding: 16px; }
+    .k-resource-section-card__header { flex-direction: column; gap: 10px; }
+    .k-resource-section-card__actions {
+      width: 100%;
+      justify-content: flex-start;
+    }
+  }
+
+  @media (max-width: 420px) {
+    .k-resource-stat-cards { grid-template-columns: minmax(0, 1fr); }
+    .k-resource-page__read-error,
+    .k-resource-page__stale {
+      align-items: flex-start;
+    }
+    .k-resource-page__read-message {
+      flex-basis: calc(100% - 24px);
+    }
+    .k-resource-page__retry { margin-inline-start: 24px; }
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

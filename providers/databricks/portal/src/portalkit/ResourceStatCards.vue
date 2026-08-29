@@ -9,6 +9,7 @@
 -->
 <script setup lang="ts">
 import type { Component } from 'vue'
+import { computed } from 'vue'
 import { ensureFarosUIStyles } from '../portalkit/styles'
 
 ensureFarosUIStyles()
@@ -34,17 +35,28 @@ const props = withDefaults(defineProps<{
   ariaLabel: 'Resource summary',
   density: 'default',
 })
+
+const cardLayout = computed(() => {
+  const count = props.cards.length
+  if (count <= 1) return 'count-1'
+  if (count === 2) return 'count-2'
+  if (count === 4) return 'count-4'
+  return 'count-3-plus'
+})
 </script>
 
 <template>
-  <div
+  <ul
     class="k-resource-stat-cards"
-    :class="{ 'k-resource-stat-cards--compact': props.density === 'compact' }"
+    :class="[
+      `k-resource-stat-cards--${cardLayout}`,
+      { 'k-resource-stat-cards--compact': props.density === 'compact' },
+    ]"
     :aria-label="props.ariaLabel"
     :data-density="props.density"
     data-k-resource-stat-cards
   >
-    <article
+    <li
       v-for="card in props.cards"
       :key="card.id"
       class="k-resource-stat-card"
@@ -60,6 +72,6 @@ const props = withDefaults(defineProps<{
         <strong class="k-resource-stat-card__value" :class="{ mono: card.mono }">{{ card.value }}</strong>
         <span v-if="card.detail" class="k-resource-stat-card__detail">{{ card.detail }}</span>
       </span>
-    </article>
-  </div>
+    </li>
+  </ul>
 </template>
